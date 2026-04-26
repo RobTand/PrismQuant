@@ -132,7 +132,9 @@ def _load_mtp_state_dict(model_path: str) -> dict[str, torch.Tensor]:
         wm = json.load(f)["weight_map"]
     mtp_files = sorted({wm[k] for k in wm if k.startswith("mtp.")})
     if not mtp_files:
-        raise RuntimeError("no mtp.* weights in safetensors index")
+        # Continue gracefully if no MTP tensors - some fintunes lack them
+        mtp_files = []
+        print("Warning: No mtp.* weights found in safetensors index!")
     out: dict[str, torch.Tensor] = {}
     for fn in mtp_files:
         with safe_open(str(src / fn), framework="pt") as sf:
