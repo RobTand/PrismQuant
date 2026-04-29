@@ -290,14 +290,25 @@ def build_extended_shard_regexes(
             n_body, layers_per_shard, layer_prefix="model.layers"))
 
     if include_mtp:
-        n_mtp = int(
+        n_mtp_config = int(
             text_cfg.get("num_nextn_predict_layers")
             or cfg.get("num_nextn_predict_layers")
             or text_cfg.get("num_mtp_layers")
             or cfg.get("num_mtp_layers")
-            or _count_mtp_layers_from_safetensors(model_path)
             or 0
         )
+        n_mtp_actual = _count_mtp_layers_from_safetensors(model_path)
+        # Empirical safetensors count is ground truth: a config may
+        # declare MTP layers (inherited from a base) when the finetune
+        # actually stripped the weights. Take the min so we never
+        # schedule MTP shards the runner can't fulfill.
+        n_mtp = min(n_mtp_config, n_mtp_actual) if n_mtp_actual > 0 else 0
+        if n_mtp_config > 0 and n_mtp_actual == 0:
+            print(f"[shard-schedule] config declares "
+                  f"{n_mtp_config} MTP layer(s) but safetensors index "
+                  f"has no `mtp.*` keys; skipping MTP shards "
+                  f"(common on Qwen3.5/3.6 finetunes that strip MTP)",
+                  flush=True)
         if n_mtp > 0:
             regexes.extend(build_layer_shard_regexes(
                 n_mtp, layers_per_shard, layer_prefix="mtp.layers"))
