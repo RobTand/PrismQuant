@@ -132,9 +132,13 @@ def _load_mtp_state_dict(model_path: str) -> dict[str, torch.Tensor]:
         wm = json.load(f)["weight_map"]
     mtp_files = sorted({wm[k] for k in wm if k.startswith("mtp.")})
     if not mtp_files:
-        # Continue gracefully if no MTP tensors - some fintunes lack them
-        mtp_files = []
-        print("Warning: No mtp.* weights found in safetensors index!")
+        # Some Qwen3.5/3.6 finetunes inherit num_nextn_predict_layers
+        # from the base config but strip the MTP weights. Return empty
+        # rather than raising — the runner detects empty and writes an
+        # empty shard pickle. See PR #1.
+        print("[mtp] no mtp.* weights in safetensors index; "
+              "returning empty state dict", flush=True)
+        return {}
     out: dict[str, torch.Tensor] = {}
     for fn in mtp_files:
         with safe_open(str(src / fn), framework="pt") as sf:
