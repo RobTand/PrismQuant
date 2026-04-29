@@ -1842,6 +1842,32 @@ def _run_mtp_streaming_shard(
     mtp_wrapper.eval()
 
     raw = _load_mtp_state_dict(model_path)
+    if not raw:
+        # No MTP weights in source — write empty pickle to satisfy the
+        # schedule and return. Mirrors the text-only visual fallback.
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "wb") as f:
+            pickle.dump({
+                "stats": {},
+                "router_counts": {},
+                "router_totals": {},
+                "expert_info": {},
+                "expert_saliency": {},
+                "meta": {
+                    "model": model_path,
+                    "dataset": dataset_name,
+                    "nsamples": int(calib.size(0)),
+                    "seqlen": seqlen,
+                    "dtype": dtype_name,
+                    "execution_device": str(device),
+                    "linear_include": linear_include,
+                    "linear_exclude": linear_exclude,
+                    "skipped_reason": "no MTP weights in source",
+                },
+            }, f)
+        print(f"[incremental/mtp] no MTP weights; wrote empty shard "
+              f"pickle to {output_path}", flush=True)
+        return
     missing, extra = _load_into_mtp(inner_mtp, raw)
     loaded = len(raw) - len(missing)
     print(f"[incremental/mtp] loaded {loaded}/{len(raw)} mtp weights "
