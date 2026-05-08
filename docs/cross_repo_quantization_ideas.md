@@ -553,31 +553,42 @@ Interpretation of the support labels:
 - `Not yet supported` means it is a real roadmap item rather than
   something the current codebase already does.
 
+Why these improvements are targeted instead of global:
+
+- Most of the quality loss usually comes from a relatively small set of
+  fragile Linears, not from every layer equally.
+- Many improvement methods are not free: they cost calibration time,
+  quantization time, export complexity, runtime complexity, or all four.
+- Applying them everywhere can spend a lot of work on layers that are
+  already good enough, while also making the search space noisier.
+- PrismaQuant's mixed-precision philosophy applies here too: spend the
+  expensive improvement where it materially changes the result.
+
 ## Suggested Order
 
 If the goal is near-term PrismaQuant improvement with reasonable
 engineering effort and a realistic Spark / vLLM deployment path, the
 order I would try is:
 
-1. Attention/router protection rules from JANGQ.
-2. Role-aware candidate menus instead of one uniform menu everywhere.
-3. Expert-only vLLM-compatible low-bit families for MoE models.
-4. Spark / vLLM deployment-aware profiles and validation metadata.
-5. Improve calibration signal quality for MoE and reasoning models.
-6. KV-cache quantization in deployment profiles.
-7. Small local post-allocation refiners from LLM Compressor.
-8. ParoQuant-style learned rotations via a plugin-backed serving path.
-9. Rotation-aware candidate states in experimental profiles.
-10. TurboQuant 4-bit expert codecs in offline research mode.
-11. TurboQuant 2/3-bit expert codecs after that.
-12. Custom vLLM type support only after the compatible path is strong.
-13. Prune-then-quant MoE pipelines after that.
+1. Use already-supported `MXFP8` / `BF16` / source passthrough more explicitly as the protected menu for attention, router, head, and other coherence-critical paths.
+2. Use already-supported `INT4`, `NVFP4`, and `MXFP4` more explicitly as low-bit menus for experts and other bulk-memory paths.
+3. Formalize those two ideas into role-aware candidate menus and Spark / vLLM deployment-aware profiles.
+4. Improve calibration signal quality for MoE and reasoning models before expanding into many heavier methods.
+5. Treat KV-cache precision as part of the deployment budget in those same profiles.
+6. Use already-supported `GPTQ` more explicitly as a targeted refiner on the highest-value layers under the chosen assignment.
+7. Extend the partially supported `AWQ` and `AutoRound` paths into explicit targeted local refiners for selected low-bit layers.
+8. Explore `SpinQuant` and `QuIP` as rotation-aware experimental transforms for selected fragile layers rather than as global defaults.
+9. Explore `ParoQuant` as the strongest plugin-backed `INT4` quality path, likely first on experts or other high-error layers.
+10. Explore `TurboQuant 4-bit` offline as an expert-codec research path after the compatible paths above are solid.
+11. Explore `TurboQuant 2/3-bit` only after the 4-bit TurboQuant case is understood.
+12. Add custom vLLM codec support only after the current compatible path is strong enough to justify the engineering cost.
+13. Revisit prune-then-quant MoE pipelines after the non-pruning mixed-precision and codec work is stable.
 
 Read another way, the expected order of arrival for the named methods is:
 
-1. Candidate-family work: `INT4`, `NVFP4`, `MXFP4`, `MXFP8`, `BF16`
-2. Local refiners: `AWQ`, `AutoRound`, `GPTQ`
-3. Rotation-aware transforms with known patterns: `SpinQuant`, `QuIP`, `ParoQuant`
+1. Already-supported candidate families: `INT4`, `NVFP4`, `MXFP4`, `MXFP8`, `BF16`
+2. Already-supported and partially supported targeted refiners: `GPTQ`, then `AWQ` / `AutoRound`
+3. Not-yet-supported rotation-aware transforms: `SpinQuant`, `QuIP`, `ParoQuant`
 4. New-codec expert paths: `TurboQuant 4-bit`, then `TurboQuant 2/3-bit`
 5. New vLLM runtime type support
 
