@@ -157,6 +157,8 @@ Source:
 - JANGQ / TurboQuant model cards listed above
 - `../spark-vllm-docker/README.md`
 - `../spark-vllm-docker/recipes/openai-gpt-oss-120b.yaml`
+- `../spark-vllm-docker/recipes/qwen3.5-122b-int4-autoround.yaml`
+- `../spark-vllm-docker/recipes/qwen3.5-397b-int4-autoround.yaml`
 
 Idea:
 
@@ -172,8 +174,11 @@ Why it matters:
 
 Likely PrismaQuant shape:
 
-- Start with expert-only families centered on `NVFP4`, `MXFP4`,
+- Start with expert-only families centered on `INT4`, `NVFP4`, `MXFP4`,
   `MXFP8`, and `BF16` depending on role.
+- Treat `INT4` as a first-class family, not just a fallback, with room
+  for `AWQ` and `AutoRound`-style variants where the serving stack
+  already supports them.
 - Keep attention, router, shared expert, and head layers out of the
   lowest bucket.
 
@@ -249,6 +254,8 @@ Expected payoff:
 Source:
 
 - `../llm-compressor/README.md`
+- `../spark-vllm-docker/recipes/qwen3.5-122b-int4-autoround.yaml`
+- `../spark-vllm-docker/recipes/qwen3.5-397b-int4-autoround.yaml`
 
 Idea:
 
@@ -261,6 +268,9 @@ Why it matters:
 - PrismaQuant already spends effort choosing where bits go.
 - `llm-compressor` suggests a complementary strategy for using those
   bits better on a small subset of critical layers.
+- The Spark repo reinforces that `INT4` refinement is practical today,
+  not hypothetical, because `AutoRound` recipes are already part of the
+  deployment toolbox.
 
 Likely PrismaQuant shape:
 
@@ -297,6 +307,9 @@ Why it matters:
   without giving away as much quality.
 - Unlike JANGTQ's codebook path, there is already a repo-owned vLLM
   integration pattern for this family of ideas.
+- ParoQuant is specifically an `INT4` story, which makes it a very
+  strong candidate if PrismaQuant wants better `INT4` quality rather
+  than only better FP4-style quality.
 
 Likely PrismaQuant shape:
 
@@ -454,9 +467,11 @@ order I would try is:
 
 The most important roadmap correction is:
 
-- `NVFP4` / `MXFP4` / `MXFP8` / `FP8` / `BF16` work belongs early because
-  it fits the current Spark / vLLM path.
+- `INT4` work belongs early alongside `NVFP4` / `MXFP4` / `MXFP8` /
+  `FP8` / `BF16`, because it also fits the current Spark / vLLM path and
+  is already represented there via `AWQ` and `AutoRound`.
 - ParoQuant-style rotation belongs in the middle because there is a real
-  vLLM plugin pattern in the repo, even though it is not stock support.
+  vLLM plugin pattern in the repo, even though it is not stock support,
+  and because it offers a stronger path for high-quality `INT4`.
 - JANGQ-style `2-bit` / `3-bit` TurboQuant and new vLLM type support
   belong later because they imply substantial runtime engineering.
