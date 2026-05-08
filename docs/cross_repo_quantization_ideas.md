@@ -611,6 +611,32 @@ Why these improvements are targeted instead of global:
 - PrismaQuant's mixed-precision philosophy applies here too: spend the
   expensive improvement where it materially changes the result.
 
+## Compatibility Cheat Sheet
+
+The key distinction is:
+
+- methods can be complementary in one overall model recipe
+- while still being effectively exclusive on the same tensor or layer
+
+For example, a model can absolutely use `INT4` on one layer, `MXFP8` on
+another, `GPTQ` on a few fragile survivors, and asymmetric KV-cache
+compression at runtime. But a single weight tensor usually should not be
+simultaneously "the AWQ layer" and "the AutoRound layer" and "the
+TurboQuant layer."
+
+| Method or tactic | Complementary with | Usually exclusive with on the same tensor | Why |
+|---|---|---|---|
+| Candidate-family selection (`INT4`, `NVFP4`, `MXFP4`, `MXFP8`, `BF16`) | All targeted refiners, role-aware menus, deployment profiles, KV-cache policy | Other final format choices for that same tensor | Every tensor ultimately ships in one chosen format family |
+| `GPTQ` | Candidate-family selection, BF16-to-8-bit rescue, deployment profiles | `AWQ` or `AutoRound` as the primary refiner on the same tensor | These are alternative main reconstruction/refinement backends for one tensor |
+| `AWQ` | Candidate-family selection, BF16-to-8-bit rescue, deployment profiles | `GPTQ` or `AutoRound` as the primary refiner on the same tensor | Same reason: usually one main local-refinement path per tensor |
+| `AutoRound` | Candidate-family selection, BF16-to-8-bit rescue, deployment profiles | `GPTQ` or `AWQ` as the primary refiner on the same tensor | Usually one dominant rounding/refinement recipe per tensor |
+| `SpinQuant` / `QuIP` | Candidate-family selection, one downstream quantizer, deployment profiles | Other rotation stacks as the primary transform on the same tensor | They are transform-style preconditioners; you normally pick one transform family per tensor |
+| `ParoQuant` | Candidate-family selection, deployment profiles, possibly expert-focused menus | `SpinQuant`, `QuIP`, or standard `GPTQ`/`AWQ`/`AutoRound` as the primary method on the same tensor | ParoQuant is a more opinionated integrated INT4+rotation path rather than a small additive tweak |
+| `TurboQuant 4-bit` / `TurboQuant 2/3-bit` | Higher-precision protected paths elsewhere in the model, deployment profiles, KV-cache policy | Standard `INT4` / `NVFP4` / `MXFP4` / `GPTQ` / `AWQ` / `AutoRound` / `ParoQuant` on the same tensor | TurboQuant is a distinct codec choice for that tensor, not a light post-pass |
+| Asymmetric KV-cache compression | Any weight-quantization method | Other mutually incompatible KV-cache policies for the same run | KV-cache policy is mostly orthogonal to weight quantization and can be combined with almost any weight recipe |
+| `BF16 -> 8-bit` rescue on protected layers | `GPTQ`, `AWQ`, `AutoRound`, role-aware menus | Leaving the same layer in unchanged `BF16` | This is a targeted use of refiners to replace the old protected state with a safe 8-bit state |
+| Custom vLLM codec support | Any method that needs a new runtime path | Nothing conceptually, but it is an enabler rather than a quantizer by itself | Runtime support can unlock new methods without being the method itself |
+
 ## Suggested Order
 
 If the goal is near-term PrismaQuant improvement with reasonable
