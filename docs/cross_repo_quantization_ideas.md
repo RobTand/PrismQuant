@@ -16,6 +16,36 @@ The focus here is narrow: ideas that could either:
 
 This is intentionally a working roadmap, not a literature review.
 
+## JANGQ / TurboQuant References
+
+The JANGQ model cards add an important refinement to the earlier
+cross-repo comparison: their low-bit story is not "quantize everything
+equally." The cards describe a selective recipe where routed expert
+weights are compressed very aggressively while attention and other
+coherence-critical paths remain at much higher precision.
+
+Reference links:
+
+- JANGQ collection:
+  <https://huggingface.co/collections/jangq/jang-turboquantized-models>
+- Qwen3.6-35B-A3B-JANGTQ2:
+  <https://huggingface.co/OsaurusAI/Qwen3.6-35B-A3B-JANGTQ2>
+- MiniMax-M2.7-JANGTQ:
+  <https://huggingface.co/OsaurusAI/MiniMax-M2.7-JANGTQ>
+- MiniMax-M2.7-Small-JANGTQ:
+  <https://huggingface.co/OsaurusAI/MiniMax-M2.7-Small-JANGTQ>
+
+Key takeaways from those cards:
+
+- JANGTQ uses ultra-low-bit TurboQuant on routed expert weights rather
+  than uniformly quantizing the whole model.
+- Attention, embeddings, shared experts, and `lm_head` are kept in
+  higher-precision affine form.
+- Some variants keep routers and norms even higher, which is a strong
+  clue that coherence and control paths need hard protection.
+- The MiniMax "Small" variant combines pruning with JANGTQ, which moves
+  expert pruning higher in the long-term plan for large MoE models.
+
 ## Quick Wins
 
 ### 1. Protect attention and routing paths more aggressively
@@ -23,6 +53,7 @@ This is intentionally a working roadmap, not a literature review.
 Source:
 
 - `../jangq/README.md`
+- JANGQ / TurboQuant model cards listed above
 
 Idea:
 
@@ -35,6 +66,8 @@ Why it matters:
 - JANG's reported results strongly suggest that low-bit failures on MoE
   models come from over-compressing attention and shared control paths,
   not from expert MLPs themselves.
+- The JANGQ cards make this more concrete: their recipe protects those
+  paths explicitly while pushing routed experts much lower.
 - PrismaQuant already measures sensitivity per linear, but a hard or
   semi-hard architecture prior could prevent catastrophic allocations
   that a pure knapsack view still permits.
@@ -49,6 +82,36 @@ Likely PrismaQuant shape:
 Expected payoff:
 
 - Better quality, especially on large MoE and reasoning models.
+
+### 1b. Add an expert-only ultra-low-bit candidate family
+
+Source:
+
+- JANGQ / TurboQuant model cards listed above
+
+Idea:
+
+- Introduce a dedicated candidate family for routed expert weights that
+  goes lower than the rest of the model, while the allocator keeps
+  attention, routers, shared experts, and heads out of that bucket.
+
+Why it matters:
+
+- The JANGQ cards suggest the biggest compression wins come from
+  separating "bulk expert memory" from "coherence-critical paths" rather
+  than finding one globally fair low-bit format.
+
+Likely PrismaQuant shape:
+
+- Add expert-only 2-bit / 3-bit candidate families behind architecture
+  profiles for MoE models.
+- Keep the rest of the candidate menu unchanged at first so the new
+  behavior can be isolated and measured cleanly.
+
+Expected payoff:
+
+- More compression on large MoE models with much lower quality risk than
+  a model-wide low-bit push.
 
 ### 2. Add selective local refiners after global allocation
 
@@ -113,6 +176,8 @@ Expected payoff:
 Source:
 
 - `../paroquant/README.md`
+- `../jangq/jang-tools/jang_tools/turboquant/linear.py`
+- `../jangq/jang-tools/jang_tools/loader.py`
 
 Idea:
 
@@ -126,9 +191,15 @@ Why it matters:
   giving away as much quality.
 - PrismaScout already identifies where the model is fragile; that makes
   it a good controller for where rotation is worth paying for.
+- JANGQ provides the lighter-weight precursor: fixed/random Hadamard
+  rotation plus codebook quantization. ParoQuant provides the stronger
+  learned-rotation follow-on.
 
 Likely PrismaQuant shape:
 
+- Start with cheap Hadamard-rotated low-bit candidates for experts.
+- Later add ParoQuant-style learned pairwise rotations for the worst
+  layers once the basic rotated-candidate plumbing exists.
 - Add a new candidate family:
   `plain NVFP4`, `plain MXFP8`, `rotated NVFP4`, `rotated INT4`, etc.
 - Limit rotation candidates to layers with strong outlier signatures or
@@ -137,6 +208,40 @@ Likely PrismaQuant shape:
 Expected payoff:
 
 - Better quality at low bits, especially near INT4/NVFP4 regimes.
+
+### 4b. Consider TurboQuant-style codebook candidates for experts
+
+Source:
+
+- JANGQ / TurboQuant model cards listed above
+- `../jangq/jang-tools/jang_tools/turboquant/linear.py`
+- `../jangq/jang-tools/jang_tools/build_jangtq_sidecar.py`
+
+Idea:
+
+- Add a non-affine, codebook-based expert candidate family to PrismaQuant
+  experiments rather than assuming all very-low-bit candidates must be
+  affine or RTN-like.
+
+Why it matters:
+
+- The JANGQ cards point to TurboQuant quality coming from three things in
+  combination: protected critical paths, Hadamard rotation, and
+  Lloyd-Max-style codebooks.
+- If PrismaQuant wants to compete in the 2-bit / 3-bit expert regime, it
+  likely needs a richer codec than plain affine quantization.
+
+Likely PrismaQuant shape:
+
+- Prototype codebook candidates for routed experts only.
+- Keep export/runtime support out of scope initially; use them first for
+  search and evaluation to see whether the frontier moves enough to
+  justify deeper integration.
+
+Expected payoff:
+
+- Potentially the largest compression gain in the roadmap, but only on
+  architectures where expert memory dominates.
 
 ### 5. Add activation quantization as part of mixed-precision search
 
@@ -208,6 +313,7 @@ Source:
 
 - `../paroquant/README.md`
 - `../llm-compressor/README.md`
+- JANGQ / TurboQuant model cards listed above
 
 Idea:
 
@@ -219,6 +325,9 @@ Why it matters:
 - The real opportunity is not just "rotate then quantize", but letting
   the allocator decide when the extra transformation cost is worth the
   quality saved.
+- JANGQ strengthens this argument because it shows a practical deployed
+  system where low-bit expert quality depends on a richer codec than
+  naive affine quantization.
 
 Likely PrismaQuant shape:
 
@@ -267,10 +376,12 @@ If the goal is near-term PrismaQuant improvement with reasonable
 engineering effort, the order I would try is:
 
 1. Attention/router protection rules from JANG.
-2. Small local post-allocation refiners from LLM Compressor.
-3. KV-cache quantization in deployment profiles.
-4. Selective ParoQuant-style pairwise rotations on the worst layers.
-5. Joint weight-and-activation candidate menus for a restricted subset.
+2. Expert-only ultra-low-bit candidate families for MoE models.
+3. Small local post-allocation refiners from LLM Compressor.
+4. KV-cache quantization in deployment profiles.
+5. JANGQ-style Hadamard-rotated codebook candidates for experts.
+6. Selective ParoQuant-style pairwise rotations on the worst layers.
+7. Joint weight-and-activation candidate menus for a restricted subset.
 
 ## Notes for Future Investigation
 
