@@ -279,17 +279,28 @@ Why it matters:
 - The Spark recipes show that `--kv-cache-dtype fp8` is part of normal
   practice, not an edge case.
 - Weight compression is not the only memory bottleneck at inference.
+- TurboQuant-style KV-cache compression adds an important nuance here:
+  the cache can be compressed asymmetrically, keeping `K` at a safer
+  precision while compressing `V` more aggressively. That is attractive
+  because `K` tends to be more quality-sensitive than `V`, so
+  asymmetric K/V compression can save memory without paying the full
+  quality cost of symmetric low-bit cache quantization.
 
 Likely PrismaQuant shape:
 
 - Add KV-cache settings to artifact metadata and the validation harness.
 - Treat runtime memory as "weights + KV-cache" instead of weights alone
   for deployment-oriented profiles.
+- Add room in deployment profiles for asymmetric KV-cache policies, not
+  just one uniform cache dtype.
 
 Expected payoff:
 
 - Smaller deployable memory footprint without forcing lower-quality
   weight choices.
+- A realistic path to memory savings that can arrive earlier than
+  TurboQuant weight-codec integration, because the value comes from
+  cache policy rather than from a new weight format.
 
 ### 4b. Improve calibration signal quality before adding exotic formats
 
