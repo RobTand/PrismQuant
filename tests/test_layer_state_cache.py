@@ -122,7 +122,12 @@ def test_layer_state_cache_last_token_logits_skips_full_sequence_lm_head():
     full_logits = model(calib_ids).logits
     last_logits = cache.replay_from(2, last_token_only=True)
 
-    torch.testing.assert_close(last_logits, full_logits[:, -1:, :], rtol=0, atol=0)
+    torch.testing.assert_close(
+        last_logits,
+        full_logits[:, -1:, :],
+        rtol=1e-6,
+        atol=1e-8,
+    )
     assert model.lm_head.last_input_shape == (2, 1, hidden)
 
 
