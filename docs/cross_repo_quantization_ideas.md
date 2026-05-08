@@ -667,6 +667,99 @@ Read another way, the expected order of arrival for the named methods is:
 5. New-codec expert paths: `TurboQuant 4-bit`, then `TurboQuant 2/3-bit`
 6. New vLLM runtime type support
 
+## Additional Practical Lessons
+
+The sibling repos also suggest a few practical lessons that are worth
+considering even though they are not standalone quantization methods.
+
+### 1. Profiles and recipes are a real capability
+
+Source:
+
+- `../llm-compressor/README.md`
+- `../spark-vllm-docker/recipes/README.md`
+
+Why it matters:
+
+- A lot of the real knowledge in these repos lives in reusable recipes,
+  not just in quantizer code.
+- PrismaQuant should keep strengthening named profiles so that candidate
+  menus, runtime assumptions, export constraints, and validation
+  thresholds travel together.
+
+### 2. Runtime packaging matters for nonstandard codecs
+
+Source:
+
+- `../jangq/jang-tools/jang_tools/build_jangtq_sidecar.py`
+- `../jangq/jang-tools/jang_tools/loader.py`
+
+Why it matters:
+
+- JANGQ is useful not just because of TurboQuant itself, but because it
+  shows how a nonstandard codec needs sidecar metadata, loader logic,
+  and a runtime contract.
+- If PrismaQuant eventually adopts richer codecs, this packaging pattern
+  will matter almost as much as the codec.
+
+### 3. Plugin-based runtime integration is an important middle ground
+
+Source:
+
+- `../paroquant/pyproject.toml`
+- `../paroquant/paroquant/inference/backends/vllm/plugin.py`
+
+Why it matters:
+
+- `paroquant` shows that there is a useful middle ground between "stock
+  vLLM only" and "fork the runtime."
+- Some richer PrismaQuant methods may be testable via a plugin path
+  before they are worth turning into first-class runtime support.
+
+### 4. Deployment details are part of the method
+
+Source:
+
+- `../spark-vllm-docker/README.md`
+- `../spark-vllm-docker/examples/README.md`
+
+Why it matters:
+
+- Backend choice, load format, KV-cache dtype, and hardware-specific
+  constraints can determine whether an otherwise-good quantization idea
+  is actually shippable.
+- PrismaQuant should continue to treat deployment-faithful validation as
+  part of the method, not an afterthought.
+
+### 5. Artifact flexibility is worth preserving
+
+Source:
+
+- `../llm-compressor/README.md`
+- `../jangq/FORMAT.md`
+
+Why it matters:
+
+- It is valuable to keep a clean separation between allocator decision,
+  per-layer refinement, export backend, and runtime backend.
+- That separation makes it easier to test new candidate families without
+  immediately committing to one export or runtime strategy.
+
+### 6. Operational polish can decide whether a method is usable
+
+Source:
+
+- `../paroquant/README.md`
+- `../spark-vllm-docker/README.md`
+
+Why it matters:
+
+- Kernel cache persistence, version pinning, validated launch recipes,
+  and backend-specific workarounds often determine whether a promising
+  method is usable in practice.
+- These details are not glamorous, but they strongly affect whether
+  PrismaQuant improvements can be reproduced and deployed reliably.
+
 ## Bottom Line
 
 The most important roadmap correction is:
