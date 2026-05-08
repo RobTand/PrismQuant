@@ -8,6 +8,7 @@ repositories at the same directory level:
 - `../llm-compressor`
 - `../paroquant`
 - `../jangq`
+- `../spark-vllm-docker`
 
 The focus here is narrow: ideas that could either:
 
@@ -45,6 +46,41 @@ Key takeaways from those cards:
   clue that coherence and control paths need hard protection.
 - The MiniMax "Small" variant combines pruning with JANGTQ, which moves
   expert pruning higher in the long-term plan for large MoE models.
+
+## Spark vLLM Deployment References
+
+The Spark-focused vLLM deployment repo is useful because it narrows the
+"what can we ship now?" question. Its recipes and patches are centered
+around the quantization families that are practical today on Spark with
+vLLM and FlashInfer, rather than around brand-new custom formats.
+
+Reference links:
+
+- Spark vLLM Docker:
+  <https://github.com/eugr/spark-vllm-docker>
+
+Local source pointers:
+
+- `../spark-vllm-docker/README.md`
+- `../spark-vllm-docker/recipes/README.md`
+- `../spark-vllm-docker/recipes/openai-gpt-oss-120b.yaml`
+- `../spark-vllm-docker/examples/README.md`
+
+Key takeaways from that repo:
+
+- The practical deployment menu today is built around `AWQ`,
+  `INT4/AutoRound`, `FP8`, `NVFP4`, `MXFP4`, `MXFP8`, and `BF16`, plus
+  runtime knobs like `--kv-cache-dtype fp8`.
+- The repo includes explicit Spark-oriented paths for `MXFP4`, `NVFP4`,
+  and `FP8`, which is a strong signal that PrismaQuant should prioritize
+  those families first for near-term shipping work.
+- The repo also highlights loader/runtime improvements like
+  `--load-format instanttensor`, which matter for deployment readiness
+  even when the quantized weights themselves are unchanged.
+- Nothing in the current Spark vLLM path suggests stock support for
+  JANGQ-style `2-bit` / `3-bit` TurboQuant expert codecs. That kind of
+  support should be treated as a later custom-runtime effort rather than
+  a quick follow-on to allocator changes.
 
 ## Quick Wins
 
@@ -103,21 +139,27 @@ Why it matters:
 
 Likely PrismaQuant shape:
 
-- Add expert-only 2-bit / 3-bit candidate families behind architecture
-  profiles for MoE models.
+- Start with a vLLM-compatible expert-only low-bit family for MoE
+  models, centered on formats like `NVFP4` and `MXFP4` where the Spark
+  deployment path already exists.
 - Keep the rest of the candidate menu unchanged at first so the new
   behavior can be isolated and measured cleanly.
+- Treat expert-only `2-bit` / `3-bit` candidates as research-only until
+  there is a credible export and runtime path.
 
 Expected payoff:
 
 - More compression on large MoE models with much lower quality risk than
-  a model-wide low-bit push.
+  a model-wide low-bit push, while staying inside a serving stack that
+  can actually be deployed today.
 
 ### 2. Add selective local refiners after global allocation
 
 Source:
 
 - `../llm-compressor/README.md`
+- `../spark-vllm-docker/README.md`
+- `../spark-vllm-docker/recipes/*.yaml`
 
 Idea:
 
@@ -157,6 +199,9 @@ Why it matters:
 - Weight compression is not the only memory bottleneck at inference.
 - KV-cache savings can make a slightly less aggressive weight allocation
   viable while still fitting the target hardware budget.
+- The Spark vLLM recipes reinforce that this is not theoretical:
+  `--kv-cache-dtype fp8` shows up repeatedly in the practical serving
+  configurations.
 
 Likely PrismaQuant shape:
 
@@ -273,6 +318,42 @@ Expected payoff:
 - Either smaller runtime memory, or higher-quality weights for the same
   total runtime memory budget.
 
+### 5b. Add deployment-aware artifact profiles for Spark / vLLM
+
+Source:
+
+- `../spark-vllm-docker/README.md`
+- `../spark-vllm-docker/recipes/README.md`
+- `../spark-vllm-docker/examples/README.md`
+
+Idea:
+
+- Treat deployment compatibility as a first-class profile dimension, not
+  just a post-hoc export filter.
+
+Why it matters:
+
+- The Spark repo shows that real deployment quality depends on more than
+  weight format alone: `FlashInfer` backend behavior, `instanttensor`
+  loading, `fp8` KV-cache choices, and Spark-specific recipe stability
+  all influence what is practical.
+- This is a good fit for PrismaQuant's existing profile concept because
+  it lets the search stay focused on formats and settings that map to a
+  proven serving stack.
+
+Likely PrismaQuant shape:
+
+- Add a `spark_vllm` deployment profile that prefers or requires
+  exportable families such as `NVFP4`, `MXFP4`, `MXFP8`, `FP8`, and
+  `BF16`.
+- Include runtime assumptions like KV-cache dtype and load-format in the
+  emitted artifact metadata and validation report.
+
+Expected payoff:
+
+- Better alignment between offline quantization search and the real
+  container/runtime path used on Spark systems.
+
 ### 6. Formalize non-uniform "profiles" by architecture family
 
 Source:
@@ -328,6 +409,10 @@ Why it matters:
 - JANGQ strengthens this argument because it shows a practical deployed
   system where low-bit expert quality depends on a richer codec than
   naive affine quantization.
+- The Spark vLLM deployment repo also sharpens the tradeoff: if a new
+  candidate family cannot be served in the current vLLM path, it should
+  not displace compatible `NVFP4` / `MXFP4` / `MXFP8` work in the near
+  term.
 
 Likely PrismaQuant shape:
 
@@ -339,6 +424,40 @@ Expected payoff:
 
 - Best chance of reaching lower-bit frontiers without losing quality,
   but clearly a larger engineering project.
+
+### 7b. Add custom vLLM type support only after the compatible path is strong
+
+Source:
+
+- JANGQ / TurboQuant model cards listed above
+- `../jangq/jang-tools/jang_tools/turboquant/linear.py`
+- `../spark-vllm-docker/README.md`
+
+Idea:
+
+- Defer custom vLLM support for brand-new expert codecs such as
+  TurboQuant-style `2-bit` / `3-bit` codebook formats until after
+  PrismaQuant has fully exploited the formats the current Spark vLLM
+  stack already handles well.
+
+Why it matters:
+
+- New type support is not just an allocator feature. It implies export
+  schema work, loader changes, kernel/backend work, testing, and ongoing
+  maintenance against a fast-moving vLLM branch.
+- The Spark repo is valuable because it shows how much engineering is
+  already involved even for formats that are close to mainline support.
+
+Likely PrismaQuant shape:
+
+- Keep custom-codec exploration alive in evaluation mode.
+- Postpone production export/runtime integration until the compatible
+  `NVFP4` / `MXFP4` / `MXFP8` / `FP8` / `BF16` roadmap is mature.
+
+Expected payoff:
+
+- Better sequencing. We keep the long-term frontier in view without
+  letting a large runtime project crowd out nearer deployment wins.
 
 ### 8. Add runtime-cache and hybrid-attention-aware compression
 
@@ -376,12 +495,14 @@ If the goal is near-term PrismaQuant improvement with reasonable
 engineering effort, the order I would try is:
 
 1. Attention/router protection rules from JANG.
-2. Expert-only ultra-low-bit candidate families for MoE models.
-3. Small local post-allocation refiners from LLM Compressor.
-4. KV-cache quantization in deployment profiles.
-5. JANGQ-style Hadamard-rotated codebook candidates for experts.
-6. Selective ParoQuant-style pairwise rotations on the worst layers.
-7. Joint weight-and-activation candidate menus for a restricted subset.
+2. Expert-only vLLM-compatible low-bit candidate families for MoE models.
+3. Spark / vLLM deployment-aware profiles and validation metadata.
+4. Small local post-allocation refiners from LLM Compressor.
+5. KV-cache quantization in deployment profiles.
+6. JANGQ-style Hadamard-rotated codebook candidates for experts.
+7. Selective ParoQuant-style pairwise rotations on the worst layers.
+8. Joint weight-and-activation candidate menus for a restricted subset.
+9. Custom vLLM type support for new expert codecs only after the above.
 
 ## Notes for Future Investigation
 
@@ -392,3 +513,6 @@ engineering effort, the order I would try is:
 - The LLM Compressor ideas are the broadest source of practical, staged
   PTQ components that can be bolted onto PrismaQuant without replacing
   its core search logic.
+- The Spark vLLM repo is the best current reality check for deployment:
+  it should pull the roadmap toward compatible `NVFP4` / `MXFP4` /
+  `MXFP8` / `FP8` work now, and push custom-codec runtime support later.
