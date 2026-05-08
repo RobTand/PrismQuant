@@ -15,15 +15,35 @@ The focus here is narrow: ideas that could either:
 - compress a model further at a similar quality level, or
 - improve quality at a similar compressed size.
 
-This is intentionally a working roadmap, not a literature review.
+This version is organized by what is actually realistic in vLLM today,
+because deployment on NVIDIA Spark via vLLM is the target environment.
 
-## JANGQ / TurboQuant References
+## Deployment Boundary
 
-The JANGQ model cards add an important refinement to the earlier
-cross-repo comparison: their low-bit story is not "quantize everything
-equally." The cards describe a selective recipe where routed expert
-weights are compressed very aggressively while attention and other
-coherence-critical paths remain at much higher precision.
+The strongest practical constraint comes from the current Spark vLLM
+path. The `spark-vllm-docker` repo is centered around `AWQ`,
+`INT4/AutoRound`, `FP8`, `NVFP4`, `MXFP4`, `MXFP8`, `BF16`, and runtime
+knobs like `--kv-cache-dtype fp8` and `--load-format instanttensor`.
+That is the best current reality check for what PrismaQuant should
+prioritize first.
+
+Separately, `paroquant` shows that vLLM can be extended by a repo-owned
+plugin. It is not just a paper idea:
+
+- `README.md` tells users to serve models with `vllm serve $MODEL`
+- `pyproject.toml` registers a `vllm.general_plugins` entrypoint
+- `paroquant/inference/backends/vllm/plugin.py` registers a custom
+  `paroquant` quantization config for vLLM
+
+That means there are really three categories for the roadmap:
+
+1. works in the current Spark / vLLM path today
+2. is reachable in vLLM with a known plugin-style integration path
+3. needs new type support and should be treated as later work
+
+## References
+
+### JANGQ / TurboQuant
 
 Reference links:
 
@@ -36,25 +56,20 @@ Reference links:
 - MiniMax-M2.7-Small-JANGTQ:
   <https://huggingface.co/OsaurusAI/MiniMax-M2.7-Small-JANGTQ>
 
-Key takeaways from those cards:
+Key takeaways:
 
-- JANGTQ uses ultra-low-bit TurboQuant on routed expert weights rather
-  than uniformly quantizing the whole model.
-- Attention, embeddings, shared experts, and `lm_head` are kept in
-  higher-precision affine form.
-- Some variants keep routers and norms even higher, which is a strong
-  clue that coherence and control paths need hard protection.
-- The MiniMax "Small" variant combines pruning with JANGTQ, which moves
-  expert pruning higher in the long-term plan for large MoE models.
+- JANGTQ pushes routed expert weights much lower than the rest of the
+  model.
+- Attention, embeddings, shared experts, and `lm_head` stay at much
+  higher precision.
+- Some variants keep routers and norms even higher, which strongly
+  supports hard protection for coherence and control paths.
+- The MiniMax "Small" variant combines pruning with quantization, which
+  keeps expert pruning on the long-term radar.
 
-## Spark vLLM Deployment References
+### Spark vLLM Docker
 
-The Spark-focused vLLM deployment repo is useful because it narrows the
-"what can we ship now?" question. Its recipes and patches are centered
-around the quantization families that are practical today on Spark with
-vLLM and FlashInfer, rather than around brand-new custom formats.
-
-Reference links:
+Reference link:
 
 - Spark vLLM Docker:
   <https://github.com/eugr/spark-vllm-docker>
@@ -66,23 +81,42 @@ Local source pointers:
 - `../spark-vllm-docker/recipes/openai-gpt-oss-120b.yaml`
 - `../spark-vllm-docker/examples/README.md`
 
-Key takeaways from that repo:
+Key takeaways:
 
 - The practical deployment menu today is built around `AWQ`,
-  `INT4/AutoRound`, `FP8`, `NVFP4`, `MXFP4`, `MXFP8`, and `BF16`, plus
-  runtime knobs like `--kv-cache-dtype fp8`.
-- The repo includes explicit Spark-oriented paths for `MXFP4`, `NVFP4`,
-  and `FP8`, which is a strong signal that PrismaQuant should prioritize
-  those families first for near-term shipping work.
-- The repo also highlights loader/runtime improvements like
-  `--load-format instanttensor`, which matter for deployment readiness
-  even when the quantized weights themselves are unchanged.
-- Nothing in the current Spark vLLM path suggests stock support for
-  JANGQ-style `2-bit` / `3-bit` TurboQuant expert codecs. That kind of
-  support should be treated as a later custom-runtime effort rather than
-  a quick follow-on to allocator changes.
+  `INT4/AutoRound`, `FP8`, `NVFP4`, `MXFP4`, `MXFP8`, and `BF16`.
+- The repo has explicit Spark-oriented paths for `MXFP4`, `NVFP4`, and
+  `FP8`.
+- It repeatedly uses `--kv-cache-dtype fp8`, which means KV precision is
+  part of the real deployment budget.
+- It highlights loader/runtime improvements like `--load-format
+  instanttensor`, which matter for shipping even when the model weights
+  themselves do not change.
 
-## Quick Wins
+### ParoQuant
+
+Local source pointers:
+
+- `../paroquant/README.md`
+- `../paroquant/pyproject.toml`
+- `../paroquant/paroquant/inference/backends/vllm/plugin.py`
+- `../paroquant/paroquant/cli/serve.py`
+
+Key takeaways:
+
+- `paroquant` claims direct vLLM support in its README.
+- It registers a real vLLM plugin via `vllm.general_plugins`.
+- Its vLLM backend is not "stock vLLM magically knows ParoQuant"; it is
+  a concrete custom integration built around a repo-owned quantization
+  config and kernels.
+- That makes ParoQuant ideas materially easier to adopt than a
+  completely new codec, but still more work than staying inside the
+  current stock Spark / vLLM format families.
+
+## Tier 1: Valid Today In Spark / vLLM
+
+These are the ideas that fit the current serving stack without needing a
+new vLLM type.
 
 ### 1. Protect attention and routing paths more aggressively
 
@@ -99,226 +133,56 @@ Idea:
 
 Why it matters:
 
-- JANG's reported results strongly suggest that low-bit failures on MoE
-  models come from over-compressing attention and shared control paths,
-  not from expert MLPs themselves.
-- The JANGQ cards make this more concrete: their recipe protects those
-  paths explicitly while pushing routed experts much lower.
-- PrismaQuant already measures sensitivity per linear, but a hard or
-  semi-hard architecture prior could prevent catastrophic allocations
-  that a pure knapsack view still permits.
+- The JANGQ cards suggest many MoE quality failures come from
+  over-compressing attention and control paths, not from expert MLPs
+  themselves.
+- This is allocator work, not runtime work.
 
 Likely PrismaQuant shape:
 
-- Add optional per-role minimum formats, for example:
-  `attention >= MXFP8`, `router >= BF16/MXFP8`, experts free to drop lower.
-- Add role-aware budget buckets so "cheap but dangerous" downgrades are
-  excluded before search.
+- Add optional per-role minimum formats such as:
+  `attention >= MXFP8`, `router >= BF16/MXFP8`, experts free to drop
+  lower within the supported family set.
+- Add role-aware budget buckets so dangerous downgrades are excluded
+  before search.
 
 Expected payoff:
 
 - Better quality, especially on large MoE and reasoning models.
 
-### 1b. Add an expert-only ultra-low-bit candidate family
+### 2. Add expert-only vLLM-compatible low-bit candidate families
 
 Source:
 
 - JANGQ / TurboQuant model cards listed above
+- `../spark-vllm-docker/README.md`
+- `../spark-vllm-docker/recipes/openai-gpt-oss-120b.yaml`
 
 Idea:
 
 - Introduce a dedicated candidate family for routed expert weights that
-  goes lower than the rest of the model, while the allocator keeps
-  attention, routers, shared experts, and heads out of that bucket.
+  goes lower than the rest of the model, but keep it inside the formats
+  that the current Spark / vLLM path already serves.
 
 Why it matters:
 
-- The JANGQ cards suggest the biggest compression wins come from
-  separating "bulk expert memory" from "coherence-critical paths" rather
-  than finding one globally fair low-bit format.
+- The JANGQ cards suggest the biggest wins come from separating bulk
+  expert memory from coherence-critical paths.
+- The Spark vLLM repo tells us what that can mean in practice today.
 
 Likely PrismaQuant shape:
 
-- Start with a vLLM-compatible expert-only low-bit family for MoE
-  models, centered on formats like `NVFP4` and `MXFP4` where the Spark
-  deployment path already exists.
-- Keep the rest of the candidate menu unchanged at first so the new
-  behavior can be isolated and measured cleanly.
-- Treat expert-only `2-bit` / `3-bit` candidates as research-only until
-  there is a credible export and runtime path.
+- Start with expert-only families centered on `NVFP4`, `MXFP4`,
+  `MXFP8`, and `BF16` depending on role.
+- Keep attention, router, shared expert, and head layers out of the
+  lowest bucket.
 
 Expected payoff:
 
-- More compression on large MoE models with much lower quality risk than
-  a model-wide low-bit push, while staying inside a serving stack that
-  can actually be deployed today.
+- More compression on MoE models while staying inside a deployment path
+  that already exists.
 
-### 2. Add selective local refiners after global allocation
-
-Source:
-
-- `../llm-compressor/README.md`
-- `../spark-vllm-docker/README.md`
-- `../spark-vllm-docker/recipes/*.yaml`
-
-Idea:
-
-- After PrismaScout chooses a global mixed-precision assignment, run a
-  second-stage local refinement on only the most sensitive layers using
-  methods in the AWQ / GPTQ / AutoRound / SmoothQuant family.
-
-Why it matters:
-
-- PrismaQuant already spends effort choosing *where* bits go.
-- `llm-compressor` suggests a complementary strategy for *how* to use
-  those bits better on a small subset of critical layers.
-
-Likely PrismaQuant shape:
-
-- Keep PrismaScout as the global allocator.
-- Add a post-allocation pass on the top-K most sensitivity-dense layers
-  or on layers whose measured KL remains far above the local prediction.
-
-Expected payoff:
-
-- Better quality at the same size with bounded extra runtime.
-
-### 3. Consider KV-cache quantization as a first-class runtime budget
-
-Source:
-
-- `../llm-compressor/README.md`
-
-Idea:
-
-- Extend PrismaQuant's artifact-selection and validation story to cover
-  KV-cache precision, ideally including per-head scaling variants.
-
-Why it matters:
-
-- Weight compression is not the only memory bottleneck at inference.
-- KV-cache savings can make a slightly less aggressive weight allocation
-  viable while still fitting the target hardware budget.
-- The Spark vLLM recipes reinforce that this is not theoretical:
-  `--kv-cache-dtype fp8` shows up repeatedly in the practical serving
-  configurations.
-
-Likely PrismaQuant shape:
-
-- Add KV-cache settings to the artifact metadata and validation harness.
-- Treat runtime memory as "weights + KV-cache" instead of weights alone
-  for deployment-oriented profiles.
-
-Expected payoff:
-
-- Smaller deployable memory footprint without needing more aggressive
-  weight loss everywhere.
-
-## Medium Effort
-
-### 4. Introduce pairwise rotation as a selective preconditioner
-
-Source:
-
-- `../paroquant/README.md`
-- `../jangq/jang-tools/jang_tools/turboquant/linear.py`
-- `../jangq/jang-tools/jang_tools/loader.py`
-
-Idea:
-
-- Borrow ParoQuant's learned pairwise rotations to suppress outliers
-  before low-bit quantization, but apply it selectively rather than
-  globally.
-
-Why it matters:
-
-- This is the clearest path to pushing difficult layers lower without
-  giving away as much quality.
-- PrismaScout already identifies where the model is fragile; that makes
-  it a good controller for where rotation is worth paying for.
-- JANGQ provides the lighter-weight precursor: fixed/random Hadamard
-  rotation plus codebook quantization. ParoQuant provides the stronger
-  learned-rotation follow-on.
-
-Likely PrismaQuant shape:
-
-- Start with cheap Hadamard-rotated low-bit candidates for experts.
-- Later add ParoQuant-style learned pairwise rotations for the worst
-  layers once the basic rotated-candidate plumbing exists.
-- Add a new candidate family:
-  `plain NVFP4`, `plain MXFP8`, `rotated NVFP4`, `rotated INT4`, etc.
-- Limit rotation candidates to layers with strong outlier signatures or
-  consistently high measured KL under standard formats.
-
-Expected payoff:
-
-- Better quality at low bits, especially near INT4/NVFP4 regimes.
-
-### 4b. Consider TurboQuant-style codebook candidates for experts
-
-Source:
-
-- JANGQ / TurboQuant model cards listed above
-- `../jangq/jang-tools/jang_tools/turboquant/linear.py`
-- `../jangq/jang-tools/jang_tools/build_jangtq_sidecar.py`
-
-Idea:
-
-- Add a non-affine, codebook-based expert candidate family to PrismaQuant
-  experiments rather than assuming all very-low-bit candidates must be
-  affine or RTN-like.
-
-Why it matters:
-
-- The JANGQ cards point to TurboQuant quality coming from three things in
-  combination: protected critical paths, Hadamard rotation, and
-  Lloyd-Max-style codebooks.
-- If PrismaQuant wants to compete in the 2-bit / 3-bit expert regime, it
-  likely needs a richer codec than plain affine quantization.
-
-Likely PrismaQuant shape:
-
-- Prototype codebook candidates for routed experts only.
-- Keep export/runtime support out of scope initially; use them first for
-  search and evaluation to see whether the frontier moves enough to
-  justify deeper integration.
-
-Expected payoff:
-
-- Potentially the largest compression gain in the roadmap, but only on
-  architectures where expert memory dominates.
-
-### 5. Add activation quantization as part of mixed-precision search
-
-Source:
-
-- `../llm-compressor/README.md`
-
-Idea:
-
-- Expand the search space from weight format only to joint
-  weight-and-activation format choices for a controlled subset of layers.
-
-Why it matters:
-
-- `llm-compressor` shows activation quantization is not just a serving
-  detail; it is a real compression axis.
-- PrismaQuant currently leaves some runtime memory savings on the table
-  by not budgeting activation precision directly.
-
-Likely PrismaQuant shape:
-
-- Start with a constrained menu such as:
-  `W4A16`, `W4AFP8`, `W8A8`, `MXFP8A16`.
-- Restrict activation search to attention projections, MLP in/out, or
-  only the layers selected by a sensitivity gate.
-
-Expected payoff:
-
-- Either smaller runtime memory, or higher-quality weights for the same
-  total runtime memory budget.
-
-### 5b. Add deployment-aware artifact profiles for Spark / vLLM
+### 3. Add Spark / vLLM deployment-aware artifact profiles
 
 Source:
 
@@ -333,13 +197,9 @@ Idea:
 
 Why it matters:
 
-- The Spark repo shows that real deployment quality depends on more than
-  weight format alone: `FlashInfer` backend behavior, `instanttensor`
-  loading, `fp8` KV-cache choices, and Spark-specific recipe stability
-  all influence what is practical.
-- This is a good fit for PrismaQuant's existing profile concept because
-  it lets the search stay focused on formats and settings that map to a
-  proven serving stack.
+- Real deployment quality depends on more than weight format alone:
+  backend behavior, load format, KV precision, and Spark-oriented recipe
+  stability all matter.
 
 Likely PrismaQuant shape:
 
@@ -352,80 +212,172 @@ Likely PrismaQuant shape:
 Expected payoff:
 
 - Better alignment between offline quantization search and the real
-  container/runtime path used on Spark systems.
+  runtime path used on Spark systems.
 
-### 6. Formalize non-uniform "profiles" by architecture family
+### 4. Consider KV-cache quantization as a first-class runtime budget
 
 Source:
 
 - `../llm-compressor/README.md`
-- `../jangq/README.md`
+- `../spark-vllm-docker/README.md`
+- `../spark-vllm-docker/recipes/*.yaml`
 
 Idea:
 
-- Add explicit architecture-aware allocation profiles instead of one
-  generic policy for all transformers.
+- Extend PrismaQuant's artifact-selection and validation story to cover
+  KV-cache precision.
 
 Why it matters:
 
-- Both repos implicitly encode knowledge like:
-  dense vs MoE vs multimodal vs hybrid-attention models need different
-  compression behavior.
-- PrismaQuant already has some model-profile logic; this could be pushed
-  further into the allocator and validation contracts.
+- The Spark recipes show that `--kv-cache-dtype fp8` is part of normal
+  practice, not an edge case.
+- Weight compression is not the only memory bottleneck at inference.
 
 Likely PrismaQuant shape:
 
-- Profiles such as:
-  `dense_reasoning`, `packed_moe_reasoning`, `vlm`, `hybrid_attention`.
-- Each profile controls candidate menus, format floors, exclusions, and
-  validation thresholds.
+- Add KV-cache settings to artifact metadata and the validation harness.
+- Treat runtime memory as "weights + KV-cache" instead of weights alone
+  for deployment-oriented profiles.
 
 Expected payoff:
 
-- Better quality and fewer catastrophic misallocations on newer model
-  families.
+- Smaller deployable memory footprint without forcing lower-quality
+  weight choices.
 
-## Research-Heavy
+### 5. Add selective local refiners after global allocation
 
-### 7. Make rotation-aware candidates part of the core frontier
+Source:
+
+- `../llm-compressor/README.md`
+
+Idea:
+
+- After PrismaScout chooses a global mixed-precision assignment, run a
+  second-stage local refinement on only the most sensitive layers using
+  methods in the AWQ / GPTQ / AutoRound / SmoothQuant family.
+
+Why it matters:
+
+- PrismaQuant already spends effort choosing where bits go.
+- `llm-compressor` suggests a complementary strategy for using those
+  bits better on a small subset of critical layers.
+
+Likely PrismaQuant shape:
+
+- Keep PrismaScout as the global allocator.
+- Add a post-allocation pass on the top-K most sensitivity-dense layers
+  or on layers whose measured KL remains far above the local prediction.
+
+Expected payoff:
+
+- Better quality at the same size with bounded extra runtime.
+
+## Tier 2: Reachable In vLLM With A Known Integration Path
+
+These ideas are not "stock Spark / vLLM today", but they are more
+credible than a greenfield codec because another repo already shows the
+basic integration pattern.
+
+### 6. Add ParoQuant-style learned pairwise rotations
 
 Source:
 
 - `../paroquant/README.md`
-- `../llm-compressor/README.md`
-- JANGQ / TurboQuant model cards listed above
+- `../paroquant/pyproject.toml`
+- `../paroquant/paroquant/inference/backends/vllm/plugin.py`
 
 Idea:
 
-- Treat preconditioned variants as full first-class states in the global
-  search, rather than a simple post-pass.
+- Borrow ParoQuant's learned pairwise rotations to suppress outliers
+  before low-bit quantization.
 
 Why it matters:
 
-- The real opportunity is not just "rotate then quantize", but letting
-  the allocator decide when the extra transformation cost is worth the
-  quality saved.
-- JANGQ strengthens this argument because it shows a practical deployed
-  system where low-bit expert quality depends on a richer codec than
-  naive affine quantization.
-- The Spark vLLM deployment repo also sharpens the tradeoff: if a new
-  candidate family cannot be served in the current vLLM path, it should
-  not displace compatible `NVFP4` / `MXFP4` / `MXFP8` work in the near
-  term.
+- This is one of the clearest paths to pushing difficult layers lower
+  without giving away as much quality.
+- Unlike JANGTQ's codebook path, there is already a repo-owned vLLM
+  integration pattern for this family of ideas.
 
 Likely PrismaQuant shape:
 
-- Multi-state per-layer search with transformed and untransformed
-  variants.
-- Separate storage/runtime cost accounting for the rotated artifacts.
+- Prototype a PrismaQuant export mode that emits a ParoQuant-like custom
+  quantization config for selected layers.
+- Prefer MoE expert projections and other high-error layers first.
+- Treat this as a plugin-backed serving path rather than assuming stock
+  vLLM support.
 
 Expected payoff:
 
-- Best chance of reaching lower-bit frontiers without losing quality,
-  but clearly a larger engineering project.
+- Better quality at low bits, especially in INT4-like regimes, with a
+  more credible path to serving than a completely novel codec.
 
-### 7b. Add custom vLLM type support only after the compatible path is strong
+### 7. Add rotation-aware candidates as optional frontier states
+
+Source:
+
+- `../paroquant/README.md`
+- `../jangq/jang-tools/jang_tools/turboquant/linear.py`
+- `../jangq/jang-tools/jang_tools/loader.py`
+
+Idea:
+
+- Let the allocator compare transformed and untransformed variants for a
+  selected subset of layers.
+
+Why it matters:
+
+- The allocator should eventually be able to decide when the extra
+  transformation cost is worth the quality it saves.
+- ParoQuant provides the learned-rotation reference, and JANGQ provides
+  the lighter-weight rotation intuition.
+
+Likely PrismaQuant shape:
+
+- Start with a very restricted candidate menu:
+  `plain NVFP4`, `plain MXFP8`, `rotated INT4`, `rotated NVFP4`.
+- Only enable these states in experimental or plugin-backed profiles.
+
+Expected payoff:
+
+- A better low-bit quality frontier without forcing every layer through a
+  heavier transform.
+
+## Tier 3: Later / Requires New vLLM Type Support
+
+These ideas should stay in the document, but they should not drive the
+near-term roadmap because they imply meaningful runtime, export, and
+maintenance work.
+
+### 8. Add TurboQuant-style 2-bit / 3-bit codebook candidates for experts
+
+Source:
+
+- JANGQ / TurboQuant model cards listed above
+- `../jangq/jang-tools/jang_tools/turboquant/linear.py`
+- `../jangq/jang-tools/jang_tools/build_jangtq_sidecar.py`
+
+Idea:
+
+- Add a non-affine, codebook-based expert candidate family to PrismaQuant
+  experiments.
+
+Why it matters:
+
+- The JANGQ cards suggest that protected critical paths plus a richer
+  low-bit expert codec can move the compression frontier.
+- But this is not part of the current Spark / vLLM deployment path.
+
+Likely PrismaQuant shape:
+
+- Keep these candidates in research and offline evaluation first.
+- Do not assume near-term serving support.
+
+Expected payoff:
+
+- Potentially very large compression gains on expert-heavy models, but
+  only after deeper runtime work.
+
+### 9. Add custom vLLM type support for new expert codecs
 
 Source:
 
@@ -435,84 +387,76 @@ Source:
 
 Idea:
 
-- Defer custom vLLM support for brand-new expert codecs such as
-  TurboQuant-style `2-bit` / `3-bit` codebook formats until after
-  PrismaQuant has fully exploited the formats the current Spark vLLM
-  stack already handles well.
+- Add explicit vLLM support for brand-new expert codecs such as
+  TurboQuant-style codebook formats.
 
 Why it matters:
 
-- New type support is not just an allocator feature. It implies export
-  schema work, loader changes, kernel/backend work, testing, and ongoing
-  maintenance against a fast-moving vLLM branch.
+- This is not just an allocator feature. It implies export schema work,
+  loader changes, kernel/backend work, tests, and ongoing maintenance
+  against a fast-moving vLLM branch.
 - The Spark repo is valuable because it shows how much engineering is
   already involved even for formats that are close to mainline support.
 
 Likely PrismaQuant shape:
 
-- Keep custom-codec exploration alive in evaluation mode.
-- Postpone production export/runtime integration until the compatible
-  `NVFP4` / `MXFP4` / `MXFP8` / `FP8` / `BF16` roadmap is mature.
+- Only pursue this after the compatible `NVFP4` / `MXFP4` / `MXFP8` /
+  `FP8` / `BF16` roadmap is mature.
 
 Expected payoff:
 
-- Better sequencing. We keep the long-term frontier in view without
-  letting a large runtime project crowd out nearer deployment wins.
+- Opens the door to deeper codec experiments, but at much higher
+  engineering cost.
 
-### 8. Add runtime-cache and hybrid-attention-aware compression
+### 10. Add prune-then-quant MoE pipelines
 
 Source:
 
-- `../jangq/README.md`
+- MiniMax-M2.7-Small-JANGTQ card
 
 Idea:
 
-- Extend PrismaQuant beyond "linear weight precision" into compression
-  policies for hybrid attention runtimes, pooled state, and long-context
-  cache components.
+- Combine expert pruning with quantization for very large MoE models.
 
 Why it matters:
 
-- JANG's DSV4 notes make it clear that modern inference memory is not
-  just model weights plus plain KV cache.
-- For DeepSeek-class and future hybrid-attention models, the deployable
-  budget may depend as much on cache/state policy as on weights.
+- JANGQ's MiniMax "Small" result suggests compression may eventually
+  come from combining structural reduction with low-bit expert codecs.
 
 Likely PrismaQuant shape:
 
-- Deployment profiles that jointly consider:
-  weights, KV cache, pooled attention state, and attention-type-specific
-  runtime structures.
+- Revisit this only after the allocator and serving story are stable for
+  non-pruning mixed-precision artifacts.
 
 Expected payoff:
 
-- Better compression decisions for new long-context models, but this is
-  probably a separate phase after weight-side improvements land.
+- Possibly large memory reduction on expert-heavy models, but not a
+  near-term serving win.
 
 ## Suggested Order
 
 If the goal is near-term PrismaQuant improvement with reasonable
-engineering effort, the order I would try is:
+engineering effort and a realistic Spark / vLLM deployment path, the
+order I would try is:
 
-1. Attention/router protection rules from JANG.
-2. Expert-only vLLM-compatible low-bit candidate families for MoE models.
+1. Attention/router protection rules from JANGQ.
+2. Expert-only vLLM-compatible low-bit families for MoE models.
 3. Spark / vLLM deployment-aware profiles and validation metadata.
-4. Small local post-allocation refiners from LLM Compressor.
-5. KV-cache quantization in deployment profiles.
-6. JANGQ-style Hadamard-rotated codebook candidates for experts.
-7. Selective ParoQuant-style pairwise rotations on the worst layers.
-8. Joint weight-and-activation candidate menus for a restricted subset.
-9. Custom vLLM type support for new expert codecs only after the above.
+4. KV-cache quantization in deployment profiles.
+5. Small local post-allocation refiners from LLM Compressor.
+6. ParoQuant-style learned rotations via a plugin-backed serving path.
+7. Rotation-aware candidate states in experimental profiles.
+8. TurboQuant-style expert codecs in offline research mode.
+9. Custom vLLM type support only after the compatible path is strong.
+10. Prune-then-quant MoE pipelines after that.
 
-## Notes for Future Investigation
+## Bottom Line
 
-- The JANG ideas are especially compelling for MoE and reasoning models.
-- The ParoQuant ideas are especially compelling when PrismaQuant wants to
-  push layers into true low-bit territory and current RTN-style formats
-  are not holding quality.
-- The LLM Compressor ideas are the broadest source of practical, staged
-  PTQ components that can be bolted onto PrismaQuant without replacing
-  its core search logic.
-- The Spark vLLM repo is the best current reality check for deployment:
-  it should pull the roadmap toward compatible `NVFP4` / `MXFP4` /
-  `MXFP8` / `FP8` work now, and push custom-codec runtime support later.
+The most important roadmap correction is:
+
+- `NVFP4` / `MXFP4` / `MXFP8` / `FP8` / `BF16` work belongs early because
+  it fits the current Spark / vLLM path.
+- ParoQuant-style rotation belongs in the middle because there is a real
+  vLLM plugin pattern in the repo, even though it is not stock support.
+- JANGQ-style `2-bit` / `3-bit` TurboQuant and new vLLM type support
+  belong later because they imply substantial runtime engineering.
