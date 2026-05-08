@@ -18,6 +18,15 @@ The focus here is narrow: ideas that could either:
 This version is organized by what is actually realistic in vLLM today,
 because deployment on NVIDIA Spark via vLLM is the target environment.
 
+The main near-term principle is:
+
+- do not just add more formats everywhere
+- add better formats where they are plausible
+- remove dangerous formats where structure tells us they are likely to hurt
+
+In other words, the highest-leverage short-term work is better
+candidate-menu design, not merely a larger candidate set.
+
 ## Deployment Boundary
 
 The strongest practical constraint comes from the current Spark vLLM
@@ -187,6 +196,39 @@ Expected payoff:
 - More compression on MoE models while staying inside a deployment path
   that already exists.
 
+### 2b. Make candidate menus role-aware instead of uniform
+
+Source:
+
+- JANGQ / TurboQuant model cards listed above
+- `../spark-vllm-docker/README.md`
+
+Idea:
+
+- Give different layer roles different format menus instead of exposing
+  the same candidate list everywhere.
+
+Why it matters:
+
+- This is the most practical form of the JANGQ lesson.
+- The allocator does not just need more options; it needs better priors
+  about which options are even worth considering for a given role.
+
+Likely PrismaQuant shape:
+
+- Attention / router / head / other coherence-critical paths:
+  restrict to higher-trust menus such as `BF16`, `MXFP8`, and source
+  passthrough where applicable.
+- Experts and other bulk memory paths:
+  allow lower-bit menus such as `INT4`, `NVFP4`, `MXFP4`, and `MXFP8`.
+- Shared experts and other semi-critical paths:
+  use an intermediate menu.
+
+Expected payoff:
+
+- Better allocations with very small engineering cost, because the
+  search space gets both safer and more informative.
+
 ### 3. Add Spark / vLLM deployment-aware artifact profiles
 
 Source:
@@ -248,6 +290,39 @@ Expected payoff:
 
 - Smaller deployable memory footprint without forcing lower-quality
   weight choices.
+
+### 4b. Improve calibration signal quality before adding exotic formats
+
+Source:
+
+- `../prismaquant/multi_chunk_probe.py`
+- JANGQ / TurboQuant model cards listed above
+
+Idea:
+
+- Improve the data the allocator sees before adding many new candidate
+  families.
+
+Why it matters:
+
+- A richer menu only helps if the measured signal is strong enough to
+  separate the good choices from the bad ones.
+- For MoE and reasoning models, better calibration coverage can matter
+  as much as one more format family.
+
+Likely PrismaQuant shape:
+
+- Use multi-chunk calibration more deliberately for important model
+  families.
+- Add role-aware or domain-aware calibration presets for MoE and
+  reasoning-heavy models.
+- Keep held-out validation splits clearly separated from candidate
+  generation.
+
+Expected payoff:
+
+- Better candidate ranking and more stable assignments without needing
+  new runtime support.
 
 ### 5. Add selective local refiners after global allocation
 
@@ -453,15 +528,17 @@ engineering effort and a realistic Spark / vLLM deployment path, the
 order I would try is:
 
 1. Attention/router protection rules from JANGQ.
-2. Expert-only vLLM-compatible low-bit families for MoE models.
-3. Spark / vLLM deployment-aware profiles and validation metadata.
-4. KV-cache quantization in deployment profiles.
-5. Small local post-allocation refiners from LLM Compressor.
-6. ParoQuant-style learned rotations via a plugin-backed serving path.
-7. Rotation-aware candidate states in experimental profiles.
-8. TurboQuant-style expert codecs in offline research mode.
-9. Custom vLLM type support only after the compatible path is strong.
-10. Prune-then-quant MoE pipelines after that.
+2. Role-aware candidate menus instead of one uniform menu everywhere.
+3. Expert-only vLLM-compatible low-bit families for MoE models.
+4. Spark / vLLM deployment-aware profiles and validation metadata.
+5. Improve calibration signal quality for MoE and reasoning models.
+6. KV-cache quantization in deployment profiles.
+7. Small local post-allocation refiners from LLM Compressor.
+8. ParoQuant-style learned rotations via a plugin-backed serving path.
+9. Rotation-aware candidate states in experimental profiles.
+10. TurboQuant-style expert codecs in offline research mode.
+11. Custom vLLM type support only after the compatible path is strong.
+12. Prune-then-quant MoE pipelines after that.
 
 ## Bottom Line
 
@@ -470,6 +547,12 @@ The most important roadmap correction is:
 - `INT4` work belongs early alongside `NVFP4` / `MXFP4` / `MXFP8` /
   `FP8` / `BF16`, because it also fits the current Spark / vLLM path and
   is already represented there via `AWQ` and `AutoRound`.
+- The best immediate win is better candidate-menu design: add useful
+  options where they are plausible, and remove risky ones where they are
+  structurally unlikely to work.
+- Better calibration signal quality is the other underappreciated cheap
+  lever; better menus and better signal should come before exotic new
+  codecs.
 - ParoQuant-style rotation belongs in the middle because there is a real
   vLLM plugin pattern in the repo, even though it is not stock support,
   and because it offers a stronger path for high-quality `INT4`.
