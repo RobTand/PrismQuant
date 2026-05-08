@@ -3058,6 +3058,8 @@ def _adjust_l3_max_lanes_for_memory(
             * 1024 ** 3
         ),
     )
+    if int(free_bytes) < headroom_bytes:
+        return max(requested // 2, 1)
     lanes = requested
     while lanes > 1:
         estimated_bytes = _estimate_l3_microbatch_memory_bytes(
