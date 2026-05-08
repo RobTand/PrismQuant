@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 from prismaquant import iterate_perturbed_allocation as ipa
+from prismaquant import memory_management as mm
 from prismaquant import propagated_cost as pc
 from prismaquant.perturbed_x_cache import PerturbedActivationCache
 from prismaquant.propagated_cost import CUDAGraphRegistry, _CUDAGraphEntry
@@ -217,6 +218,34 @@ def test_cuda_graph_output_clone_can_return_static_replay_tensor(monkeypatch):
     assert second is static_output
     assert first is second
     assert static_output.tolist() == [2.0, 2.0]
+
+
+def test_cuda_memory_info_uses_host_available_for_integrated_uma(monkeypatch):
+    monkeypatch.delenv("PRISMAQUANT_UMA_MEMORY_INFO", raising=False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (2, 100))
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda device=None: SimpleNamespace(is_integrated=1),
+    )
+    monkeypatch.setattr(mm, "_host_memory_info", lambda: (60, 128))
+
+    assert mm.cuda_memory_info(torch.device("cuda:0")) == (60, 100)
+
+
+def test_cuda_memory_info_can_disable_uma_host_available(monkeypatch):
+    monkeypatch.setenv("PRISMAQUANT_UMA_MEMORY_INFO", "cuda")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (2, 100))
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda device=None: SimpleNamespace(is_integrated=1),
+    )
+    monkeypatch.setattr(mm, "_host_memory_info", lambda: (60, 128))
+
+    assert mm.cuda_memory_info(torch.device("cuda:0")) == (2, 100)
 
 
 def test_graph_memory_audit_reports_registered_graphs(monkeypatch, capsys):

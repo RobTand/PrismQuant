@@ -445,6 +445,10 @@ class LayerHiddenStateCache:
         specs_by_target: dict[_TargetKey, tuple[_WeightTarget, fr.FormatSpec, str]] = {}
         self.missing_baseline_names = []
         self.skipped_activation_quant = []
+        external_weight_management = _env_truthy(
+            "PRISMAQUANT_EXTERNAL_WEIGHT_MANAGEMENT",
+            default=False,
+        )
         for name, fmt in self.baseline_assignment.items():
             target = self._linear_targets_by_name.get(name)
             if target is None:
@@ -465,35 +469,36 @@ class LayerHiddenStateCache:
             if not isinstance(param, torch.nn.Parameter):
                 continue
             canonical = fr.canonical_format_name(spec.name)
-            production = (
-                self._production_weight_cache.get(assignment_name, canonical)
-                if self._production_weight_cache is not None
-                else None
-            )
-            if production is not None:
-                quantized = production.to(
-                    device=param.device,
-                    dtype=param.dtype,
-                ).contiguous()
-            else:
-                if (
-                    self._production_weight_cache is not None
-                    and canonical not in {"BF16", "MXFP8", "MXFP8_E4M3"}
-                    and _env_truthy("PRISMAQUANT_STRICT_PRODUCTION_CACHE")
-                ):
-                    raise RuntimeError(
-                        f"production_weight_cache miss for "
-                        f"({assignment_name!r}, {canonical!r}); set "
-                        "PRISMAQUANT_STRICT_PRODUCTION_CACHE=0 to fall back "
-                        "to RTN, or rebuild the production cache."
-                    )
-                quantized = spec.quantize_dequantize(
-                    param.data.detach().clone()
-                ).to(
-                    device=param.device,
-                    dtype=param.dtype,
-                ).contiguous()
-            self._baseline_weight_values[key] = (target, quantized)
+            if not external_weight_management:
+                production = (
+                    self._production_weight_cache.get(assignment_name, canonical)
+                    if self._production_weight_cache is not None
+                    else None
+                )
+                if production is not None:
+                    quantized = production.to(
+                        device=param.device,
+                        dtype=param.dtype,
+                    ).contiguous()
+                else:
+                    if (
+                        self._production_weight_cache is not None
+                        and canonical not in {"BF16", "MXFP8", "MXFP8_E4M3"}
+                        and _env_truthy("PRISMAQUANT_STRICT_PRODUCTION_CACHE")
+                    ):
+                        raise RuntimeError(
+                            f"production_weight_cache miss for "
+                            f"({assignment_name!r}, {canonical!r}); set "
+                            "PRISMAQUANT_STRICT_PRODUCTION_CACHE=0 to fall back "
+                            "to RTN, or rebuild the production cache."
+                        )
+                    quantized = spec.quantize_dequantize(
+                        param.data.detach().clone()
+                    ).to(
+                        device=param.device,
+                        dtype=param.dtype,
+                    ).contiguous()
+                self._baseline_weight_values[key] = (target, quantized)
             if (
                 self.include_activation_quant
                 and spec.act_bits is not None
@@ -541,7 +546,13 @@ class LayerHiddenStateCache:
         ]
         originals: list[tuple[torch.nn.Parameter, torch.Tensor]] = []
         try:
-            values = dict(self._baseline_weight_values)
+            if _env_truthy(
+                "PRISMAQUANT_EXTERNAL_WEIGHT_MANAGEMENT",
+                default=False,
+            ):
+                values = {}
+            else:
+                values = dict(self._baseline_weight_values)
             for name, tensor in (weight_override or {}).items():
                 target = self._linear_targets_by_name.get(str(name))
                 if target is None:

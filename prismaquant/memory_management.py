@@ -66,7 +66,32 @@ def cuda_memory_info(device: torch.device | None = None) -> tuple[int, int] | No
         free_bytes, total_bytes = torch.cuda.mem_get_info(device)
     except TypeError:
         free_bytes, total_bytes = torch.cuda.mem_get_info()
+    if _use_host_available_for_uma(device):
+        host_info = _host_memory_info()
+        if host_info is not None:
+            host_available, _host_total = host_info
+            # Integrated CUDA devices share the host memory pool.  On GB10,
+            # mem_get_info() reports reclaimable page cache as unavailable,
+            # which makes cache and lane guardrails far too conservative
+            # after streamed weight snapshots.  MemAvailable already includes
+            # reclaimable cache, so use it as the better free-memory signal.
+            free_bytes = max(int(free_bytes), int(host_available))
+            free_bytes = min(int(free_bytes), int(total_bytes))
     return int(free_bytes), int(total_bytes)
+
+
+def _use_host_available_for_uma(device: torch.device | None = None) -> bool:
+    mode = os.environ.get("PRISMAQUANT_UMA_MEMORY_INFO", "auto")
+    mode = str(mode).strip().lower()
+    if mode in {"0", "false", "no", "off", "cuda"}:
+        return False
+    if mode in {"1", "true", "yes", "on", "host", "uma"}:
+        return True
+    try:
+        props = torch.cuda.get_device_properties(device)
+    except Exception:
+        return False
+    return bool(getattr(props, "is_integrated", False))
 
 
 def _host_memory_info() -> tuple[int, int] | None:

@@ -143,19 +143,35 @@ class WeightSession:
             return torch.load(
                 self._snapshot_dir / self._spilled[qname],
                 map_location="cpu",
+                weights_only=True,
             )
+        safe = qname.replace("/", "__").replace(".", "_")
+        fname = f"{safe}__bf16src.pt"
+        if self._snapshot_dir is not None:
+            existing = self._snapshot_dir / fname
+            if existing.is_file():
+                try:
+                    snap = torch.load(
+                        existing,
+                        map_location="cpu",
+                        weights_only=True,
+                    )
+                    live = self._live_weight(qname)
+                    if live is None or tuple(snap.shape) == tuple(live.shape):
+                        self._spilled[qname] = fname
+                        return snap
+                except Exception:
+                    pass
         live = self._live_weight(qname)
         if live is None:
             return None
         # Detach + clone to UMA (same physical memory; 'cpu' just means
         # not part of the model's param graph).  This is a one-time cost
         # per qname.
-        snap = live.detach().clone()
+        snap = live.detach().cpu().clone()
         if self._snapshot_dir is not None:
             # Spill to disk; do not hold in memory.  Atomic via tmp +
             # rename so a kill mid-write leaves no half-written file.
-            safe = qname.replace("/", "__").replace(".", "_")
-            fname = f"{safe}__bf16src.pt"
             tmp = self._snapshot_dir / (fname + ".tmp")
             torch.save(snap, tmp)
             import os as _os
@@ -165,6 +181,25 @@ class WeightSession:
                          # re-load from disk on subsequent calls.
         self._bf16_originals[qname] = snap
         return snap
+
+    def _ensure_bf16_snapshot_recorded(self, qname: str) -> bool:
+        """Ensure a BF16 source snapshot exists for future restores.
+
+        Initialization for a non-BF16 floor only needs to guarantee that the
+        source can be loaded later; it does not need the tensor immediately.
+        When a shared spill file already exists, record it without reading the
+        full weight back from disk. This keeps 27B retry startup from pulling
+        another full model worth of snapshots through the page cache.
+        """
+        if qname in self._bf16_originals or qname in self._spilled:
+            return True
+        if self._snapshot_dir is not None:
+            safe = qname.replace("/", "__").replace(".", "_")
+            fname = f"{safe}__bf16src.pt"
+            if (self._snapshot_dir / fname).is_file():
+                self._spilled[qname] = fname
+                return True
+        return self._ensure_bf16_snapshot(qname) is not None
 
     def _format_weight(self, qname: str, fmt: str) -> torch.Tensor | None:
         """Return the weight tensor that should be installed when
@@ -233,12 +268,13 @@ class WeightSession:
                 if fr.canonical_format_name(fmt) != "BF16":
                     self._initialize_missing.append(qname)
                 continue
-            # Snapshot BEFORE any overwrite.
-            self._ensure_bf16_snapshot(qname)
             self._current[qname] = fr.canonical_format_name(fmt)
             if self._current[qname] == "BF16":
                 self._bf16_kept += 1
                 continue  # live weight already holds BF16 source
+            # Snapshot BEFORE any overwrite. BF16-kept weights can be
+            # snapshotted lazily if a later stage actually changes them.
+            self._ensure_bf16_snapshot_recorded(qname)
             replacement = self._format_weight(qname, self._current[qname])
             if replacement is None:
                 continue  # cache miss; leave at BF16
@@ -292,6 +328,44 @@ class WeightSession:
         # rolls it back.
         self._current[qname] = new_canon
         return entry
+
+    def format_weight(self, qname: str, fmt: str) -> torch.Tensor | None:
+        """Return the tensor for ``qname`` at ``fmt`` using this session's
+        BF16 source snapshots and production cache.
+
+        This is intentionally a resolver, not a mutator: callers such as
+        lane-batched KL hooks use it to recompute only a target Linear while
+        the live model parameters stay materialized at the floor assignment.
+        """
+        return self._format_weight(str(qname), str(fmt))
+
+    def apply_assignment(self, assignment: Mapping[str, str]) -> int:
+        """Materialize ``assignment`` in-place without retaining undo clones.
+
+        This is for whole-assignment KL validation where the caller will move
+        monotonically from one assignment to the next and does not need a
+        per-step revert stack. It avoids staging hundreds of large tensors at
+        once on 27B-class models.
+        """
+        changed = 0
+        for qname, fmt in assignment.items():
+            if qname not in self._linear_by_qname:
+                if fr.canonical_format_name(fmt) != "BF16":
+                    self._stage_missing.append(qname)
+                continue
+            new_canon = fr.canonical_format_name(fmt)
+            if self._current.get(qname, "BF16") == new_canon:
+                continue
+            replacement = self._format_weight(qname, new_canon)
+            if replacement is None:
+                continue
+            live = self._live_weight(qname)
+            if live is None:
+                continue
+            live.copy_(replacement.to(device=live.device, dtype=live.dtype))
+            self._current[qname] = new_canon
+            changed += 1
+        return changed
 
     def revert_last(self) -> None:
         if not self._undo_stack:

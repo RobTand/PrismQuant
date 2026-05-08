@@ -2408,6 +2408,7 @@ def build_quant_weight_cache(
     *,
     skip_bf16: bool = True,
     production_weight_cache=None,
+    source_weight_resolver: Callable[[str, str], torch.Tensor | None] | None = None,
 ) -> QuantWeightCache:
     quant_map = _l3_quantizable_map(model)
     cache: dict[tuple[str, str], torch.Tensor] = {}
@@ -2434,32 +2435,43 @@ def build_quant_weight_cache(
                 if original_weight.device.type == "cuda" else None,
                 reason="L3 quant weight cache fill",
             )
-            production = (
-                production_weight_cache.get(entry.name, canonical)
-                if production_weight_cache is not None
+            resolved = (
+                source_weight_resolver(entry.name, canonical)
+                if source_weight_resolver is not None
                 else None
             )
-            if production is not None:
-                quantized = production.to(
+            if resolved is not None:
+                quantized = resolved.to(
                     device=original_weight.device,
                     dtype=original_weight.dtype,
                 )
             else:
-                if (
-                    production_weight_cache is not None
-                    and canonical not in {"BF16", "MXFP8", "MXFP8_E4M3"}
-                    and _env_flag_enabled("PRISMAQUANT_STRICT_PRODUCTION_CACHE")
-                ):
-                    raise RuntimeError(
-                        f"production_weight_cache miss for "
-                        f"({entry.name!r}, {canonical!r}); set "
-                        "PRISMAQUANT_STRICT_PRODUCTION_CACHE=0 to fall back "
-                        "to RTN, or rebuild the production cache."
-                    )
-                quantized = apply_format_quantization(original_weight, spec).to(
-                    device=original_weight.device,
-                    dtype=original_weight.dtype,
+                production = (
+                    production_weight_cache.get(entry.name, canonical)
+                    if production_weight_cache is not None
+                    else None
                 )
+                if production is not None:
+                    quantized = production.to(
+                        device=original_weight.device,
+                        dtype=original_weight.dtype,
+                    )
+                else:
+                    if (
+                        production_weight_cache is not None
+                        and canonical not in {"BF16", "MXFP8", "MXFP8_E4M3"}
+                        and _env_flag_enabled("PRISMAQUANT_STRICT_PRODUCTION_CACHE")
+                    ):
+                        raise RuntimeError(
+                            f"production_weight_cache miss for "
+                            f"({entry.name!r}, {canonical!r}); set "
+                            "PRISMAQUANT_STRICT_PRODUCTION_CACHE=0 to fall back "
+                            "to RTN, or rebuild the production cache."
+                        )
+                    quantized = apply_format_quantization(original_weight, spec).to(
+                        device=original_weight.device,
+                        dtype=original_weight.dtype,
+                    )
             quantized = quantized.contiguous()
             fmt_keys = {canonical, spec.name, *fr.aliases_for(spec.name)}
             for name_key in name_keys:
@@ -2519,6 +2531,7 @@ class _DepthGroupTargetHooks:
         quant_weight_cache: QuantWeightCache | None = None,
         include_activation_quant: bool = True,
         activation_max_abs: Mapping[str, float] | None = None,
+        source_weight_resolver: Callable[[str, str], torch.Tensor | None] | None = None,
     ):
         self.model = model
         self.assignment = _canonical_assignment(assignment)
@@ -2528,6 +2541,7 @@ class _DepthGroupTargetHooks:
         self.quant_weight_cache = quant_weight_cache
         self.include_activation_quant = bool(include_activation_quant)
         self.activation_max_abs = dict(activation_max_abs or {})
+        self.source_weight_resolver = source_weight_resolver
         self.handles = []
         self.missing: list[str] = []
 
@@ -2585,8 +2599,35 @@ class _DepthGroupTargetHooks:
             out_chunks = []
             for lane, y_lane, x_lane in zip(self.lanes, chunks, x_chunks):
                 fmt = self._format_for_lane(module_name, lane)
+                baseline_fmt = self.assignment.get(module_name, "BF16")
                 if fmt == "BF16":
-                    out_chunks.append(y_lane)
+                    w_hat = (
+                        self.quant_weight_cache.get(module_name, fmt)
+                        if self.quant_weight_cache is not None
+                        else None
+                    )
+                    if (
+                        w_hat is None
+                        and self.source_weight_resolver is not None
+                        and fmt != baseline_fmt
+                    ):
+                        w_hat = self.source_weight_resolver(module_name, fmt)
+                        if w_hat is None:
+                            raise RuntimeError(
+                                "source_weight_resolver returned no weight for "
+                                f"({module_name!r}, {fmt!r}); refusing to "
+                                "reuse the live baseline weight for a target override"
+                            )
+                    if w_hat is None:
+                        out_chunks.append(y_lane)
+                    else:
+                        out_chunks.append(
+                            F.linear(
+                                x_lane,
+                                w_hat.to(device=weight.device, dtype=weight.dtype),
+                                bias,
+                            )
+                        )
                     continue
                 spec = self.specs_by_name.get(fmt)
                 if spec is None:
@@ -2595,6 +2636,18 @@ class _DepthGroupTargetHooks:
                 w_hat = None
                 if self.quant_weight_cache is not None:
                     w_hat = self.quant_weight_cache.get(module_name, fmt)
+                if (
+                    w_hat is None
+                    and self.source_weight_resolver is not None
+                    and fmt != baseline_fmt
+                ):
+                    w_hat = self.source_weight_resolver(module_name, fmt)
+                    if w_hat is None:
+                        raise RuntimeError(
+                            "source_weight_resolver returned no weight for "
+                            f"({module_name!r}, {fmt!r}); refusing to "
+                            "quantize the live baseline weight for a target override"
+                        )
                 if w_hat is None:
                     w_hat = apply_format_quantization(weight, spec)
                 x_hat = (
@@ -2609,7 +2662,11 @@ class _DepthGroupTargetHooks:
                     else x_lane
                 )
                 out_chunks.append(
-                    F.linear(x_hat, w_hat.to(weight.dtype), bias)
+                    F.linear(
+                        x_hat,
+                        w_hat.to(device=weight.device, dtype=weight.dtype),
+                        bias,
+                    )
                 )
 
             replacement = torch.cat(out_chunks, dim=0)
@@ -2632,6 +2689,7 @@ class _OverrideSetTargetHooks:
         quant_weight_cache: QuantWeightCache | None = None,
         include_activation_quant: bool = True,
         activation_max_abs: Mapping[str, float] | None = None,
+        source_weight_resolver: Callable[[str, str], torch.Tensor | None] | None = None,
     ):
         self.model = model
         self.assignment = _canonical_assignment(assignment)
@@ -2647,6 +2705,7 @@ class _OverrideSetTargetHooks:
         self.quant_weight_cache = quant_weight_cache
         self.include_activation_quant = bool(include_activation_quant)
         self.activation_max_abs = dict(activation_max_abs or {})
+        self.source_weight_resolver = source_weight_resolver
         self.handles = []
         self.missing: list[str] = []
 
@@ -2708,8 +2767,35 @@ class _OverrideSetTargetHooks:
             bias = module.bias.detach() if module.bias is not None else None
             for lane_idx, (y_lane, x_lane) in enumerate(zip(chunks, x_chunks)):
                 fmt = self._format_for_lane(module_name, lane_idx)
+                baseline_fmt = self.assignment.get(module_name, "BF16")
                 if fmt == "BF16":
-                    out_chunks.append(y_lane)
+                    w_hat = (
+                        self.quant_weight_cache.get(module_name, fmt)
+                        if self.quant_weight_cache is not None
+                        else None
+                    )
+                    if (
+                        w_hat is None
+                        and self.source_weight_resolver is not None
+                        and fmt != baseline_fmt
+                    ):
+                        w_hat = self.source_weight_resolver(module_name, fmt)
+                        if w_hat is None:
+                            raise RuntimeError(
+                                "source_weight_resolver returned no weight for "
+                                f"({module_name!r}, {fmt!r}); refusing to "
+                                "reuse the live baseline weight for a target override"
+                            )
+                    if w_hat is None:
+                        out_chunks.append(y_lane)
+                    else:
+                        out_chunks.append(
+                            F.linear(
+                                x_lane,
+                                w_hat.to(device=weight.device, dtype=weight.dtype),
+                                bias,
+                            )
+                        )
                     continue
                 spec = self.specs_by_name.get(fmt)
                 if spec is None:
@@ -2718,6 +2804,18 @@ class _OverrideSetTargetHooks:
                 w_hat = None
                 if self.quant_weight_cache is not None:
                     w_hat = self.quant_weight_cache.get(module_name, fmt)
+                if (
+                    w_hat is None
+                    and self.source_weight_resolver is not None
+                    and fmt != baseline_fmt
+                ):
+                    w_hat = self.source_weight_resolver(module_name, fmt)
+                    if w_hat is None:
+                        raise RuntimeError(
+                            "source_weight_resolver returned no weight for "
+                            f"({module_name!r}, {fmt!r}); refusing to "
+                            "quantize the live baseline weight for a target override"
+                        )
                 if w_hat is None:
                     w_hat = apply_format_quantization(weight, spec)
                 x_hat = (
@@ -2731,7 +2829,13 @@ class _OverrideSetTargetHooks:
                     if self.include_activation_quant
                     else x_lane
                 )
-                out_chunks.append(F.linear(x_hat, w_hat.to(weight.dtype), bias))
+                out_chunks.append(
+                    F.linear(
+                        x_hat,
+                        w_hat.to(device=weight.device, dtype=weight.dtype),
+                        bias,
+                    )
+                )
             replacement = torch.cat(out_chunks, dim=0)
             return _replace_first_tensor_output(output, replacement)
 
@@ -3148,6 +3252,7 @@ def measure_lane_batched_kl_deltas(
     use_cuda_graphs: bool | None = None,
     use_replay_cache: bool | None = None,
     production_weight_cache=None,
+    source_weight_resolver: Callable[[str, str], torch.Tensor | None] | None = None,
 ) -> list[float]:
     """Measure end-KL for each candidate flip applied to baseline_assignment.
 
@@ -3218,6 +3323,8 @@ def measure_lane_batched_kl_deltas(
     )
     use_frozen_perturbed_cache = _maybe_disable_l3_frozen_cache_for_memory(
         device, use_frozen_perturbed_cache)
+    if source_weight_resolver is not None:
+        use_frozen_perturbed_cache = False
     calibration_call_count = max(
         len(ref_log_probs),
         _calibration_call_count(calib_ids),
@@ -3263,6 +3370,9 @@ def measure_lane_batched_kl_deltas(
             )
             for name in sorted(target_names)
         ]
+        cache_specs = list({id(spec): spec for spec in specs_by_name.values()}.values())
+        if source_weight_resolver is not None:
+            cache_specs = [*cache_specs, fr.get_format("BF16")]
         group_quant_cache = (
             (
                 _prefetch_production_weight_cache(
@@ -3272,8 +3382,10 @@ def measure_lane_batched_kl_deltas(
                 or build_quant_weight_cache(
                     model,
                     cache_entries,
-                    list({id(spec): spec for spec in specs_by_name.values()}.values()),
+                    cache_specs,
+                    skip_bf16=source_weight_resolver is None,
                     production_weight_cache=production_weight_cache,
+                    source_weight_resolver=source_weight_resolver,
                 )
             )
             if use_prequant_cache
@@ -3340,6 +3452,7 @@ def measure_lane_batched_kl_deltas(
                         quant_weight_cache=group_quant_cache,
                         include_activation_quant=include_activation_quant,
                         activation_max_abs=activation_max_abs,
+                        source_weight_resolver=source_weight_resolver,
                     )
                     target_hooks.install()
                     lane_key = tuple(
@@ -3545,6 +3658,7 @@ def measure_lane_batched_kl_deltas(
                             quant_weight_cache=group_quant_cache,
                             include_activation_quant=include_activation_quant,
                             activation_max_abs=activation_max_abs,
+                            source_weight_resolver=source_weight_resolver,
                         )
                         target_hooks.install()
                     rep_args, rep_kwargs = _repeat_inputs_for_lanes(
@@ -3706,6 +3820,7 @@ def measure_override_set_kl(
     use_cuda_graphs: bool | None = None,
     use_replay_cache: bool | None = None,
     production_weight_cache=None,
+    source_weight_resolver: Callable[[str, str], torch.Tensor | None] | None = None,
 ) -> list[float]:
     """Measure end-KL for simultaneous multi-Linear override candidates.
 
@@ -3761,6 +3876,8 @@ def measure_override_set_kl(
     )
     use_frozen_perturbed_cache = _maybe_disable_l3_frozen_cache_for_memory(
         device, use_frozen_perturbed_cache)
+    if source_weight_resolver is not None:
+        use_frozen_perturbed_cache = False
     calibration_call_count = max(
         len(ref_log_probs),
         _calibration_call_count(calib_ids),
@@ -3808,6 +3925,9 @@ def measure_override_set_kl(
             )
             for name in sorted(target_names)
         ]
+        cache_specs = list({id(spec): spec for spec in specs_by_name.values()}.values())
+        if source_weight_resolver is not None:
+            cache_specs = [*cache_specs, fr.get_format("BF16")]
         group_quant_cache = (
             (
                 _prefetch_production_weight_cache(
@@ -3817,8 +3937,10 @@ def measure_override_set_kl(
                 or build_quant_weight_cache(
                     model,
                     cache_entries,
-                    list({id(spec): spec for spec in specs_by_name.values()}.values()),
+                    cache_specs,
+                    skip_bf16=source_weight_resolver is None,
                     production_weight_cache=production_weight_cache,
+                    source_weight_resolver=source_weight_resolver,
                 )
             )
             if use_prequant_cache
@@ -3880,6 +4002,7 @@ def measure_override_set_kl(
                         quant_weight_cache=group_quant_cache,
                         include_activation_quant=include_activation_quant,
                         activation_max_abs=activation_max_abs,
+                        source_weight_resolver=source_weight_resolver,
                     )
                     target_hooks.install()
 
@@ -4055,6 +4178,7 @@ def measure_override_set_kl(
                             quant_weight_cache=group_quant_cache,
                             include_activation_quant=include_activation_quant,
                             activation_max_abs=activation_max_abs,
+                            source_weight_resolver=source_weight_resolver,
                         )
                         target_hooks.install()
                     rep_args, rep_kwargs = _repeat_inputs_for_lanes(

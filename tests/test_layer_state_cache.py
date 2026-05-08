@@ -152,6 +152,25 @@ def test_layer_state_cache_replay_with_weight_override():
     torch.testing.assert_close(target.weight, original_weight, rtol=0, atol=0)
 
 
+def test_layer_state_cache_external_weight_management_skips_baseline_weight_clones(monkeypatch):
+    torch.manual_seed(12)
+    model = _TinyCausalLM(layers=2, use_lm_head=False).eval()
+    calib_ids = _calib_ids(batch=1, seq=3)
+    cache = LayerHiddenStateCache(model)
+
+    monkeypatch.setenv("PRISMAQUANT_EXTERNAL_WEIGHT_MANAGEMENT", "1")
+    cache.populate(
+        {"model.layers.0.proj": "BF16", "model.layers.1.proj": "BF16"},
+        calib_ids,
+        device="cpu",
+        dtype=torch.float32,
+    )
+
+    assert cache._baseline_weight_values == {}
+    replay_logits = cache.replay_from(0)
+    torch.testing.assert_close(replay_logits, model(calib_ids).logits, rtol=0, atol=0)
+
+
 def test_layer_state_cache_invalidate_clears_state():
     torch.manual_seed(3)
     model = _TinyCausalLM().eval()

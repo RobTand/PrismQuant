@@ -30,6 +30,99 @@ def _specs():
     return [fr.get_format(n) for n in ("NVFP4", "MXFP8", "BF16")]
 
 
+def test_quant_weight_cache_can_resolve_bf16_from_source_weight():
+    model = nn.Module()
+    model.proj = nn.Linear(4, 3, bias=False)
+    model.proj.weight.data.zero_()
+    source = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+
+    cache = pc.build_quant_weight_cache(
+        model,
+        [
+            L3NeighborhoodEntry(
+                name="proj",
+                current_format="NVFP4",
+                formats=("BF16",),
+                margin=0.0,
+                l2_current_cost=0.0,
+            )
+        ],
+        [fr.get_format("BF16")],
+        skip_bf16=False,
+        source_weight_resolver=lambda name, fmt: (
+            source if (name, fmt) == ("proj", "BF16") else None
+        ),
+    )
+
+    torch.testing.assert_close(cache.get("proj", "BF16"), source)
+
+
+class _ResolverBlock(nn.Module):
+    def __init__(self, hidden: int):
+        super().__init__()
+        self.proj = nn.Linear(hidden, hidden, bias=False)
+
+    def forward(self, hidden_states):
+        return self.proj(hidden_states)
+
+
+class _ResolverLM(nn.Module):
+    def __init__(self, *, vocab: int = 4, hidden: int = 4):
+        super().__init__()
+        self.model = nn.Module()
+        self.model.embed_tokens = nn.Embedding(vocab, hidden)
+        self.model.layers = nn.ModuleList([_ResolverBlock(hidden)])
+        self.model.norm = nn.Identity()
+
+    def forward(self, input_ids):
+        hidden = self.model.embed_tokens(input_ids)
+        for layer in self.model.layers:
+            hidden = layer(hidden)
+        hidden = self.model.norm(hidden)
+        return SimpleNamespace(logits=hidden)
+
+
+def test_override_kl_uses_source_resolver_when_live_weight_is_floor(
+    tmp_path,
+    monkeypatch,
+):
+    torch.manual_seed(123)
+    model = _ResolverLM().eval()
+    calib_ids = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long)
+    source = torch.eye(4, dtype=torch.float32)
+    target_name = "model.layers.0.proj"
+    model.model.layers[0].proj.weight.data.copy_(source)
+    with torch.no_grad():
+        teacher_logits = model(calib_ids).logits[:, -1:, :]
+        ref_log_probs = [
+            torch.nn.functional.log_softmax(
+                teacher_logits[i:i + 1].float(),
+                dim=-1,
+            )
+            for i in range(calib_ids.size(0))
+        ]
+    model.model.layers[0].proj.weight.data.zero_()
+    monkeypatch.setenv("PRISMAQUANT_EXTERNAL_WEIGHT_MANAGEMENT", "1")
+    monkeypatch.setenv("PRISMAQUANT_L3_PREQUANT_CACHE", "0")
+
+    measured = pc.measure_override_set_kl(
+        model,
+        {target_name: "NVFP4"},
+        [{target_name: "BF16"}],
+        calib_ids,
+        ref_log_probs,
+        work_root=tmp_path,
+        max_lanes_per_batch=1,
+        kl_scope="last_token",
+        include_activation_quant=False,
+        source_weight_resolver=lambda name, fmt: (
+            source if (name, fmt) == (target_name, "BF16") else None
+        ),
+    )
+
+    assert measured == pytest.approx([0.0], abs=1e-7)
+
+
 def test_cuda_graph_auto_mode_requires_enough_repeated_calls(monkeypatch):
     monkeypatch.delenv("PRISMAQUANT_L3_CUDA_GRAPHS", raising=False)
     assert pc._env_cuda_graphs_enabled_for_call_count(
