@@ -368,6 +368,41 @@ Expected payoff:
 
 - Better quality at the same size with bounded extra runtime.
 
+### 5b. Use quality-improvement methods to rescue some protected BF16 layers into 8-bit
+
+Source:
+
+- JANGQ / TurboQuant model cards listed above
+- `../llm-compressor/README.md`
+
+Idea:
+
+- After the stronger per-layer quality-improvement methods are in place,
+  use them not only to make low-bit layers safer, but also to try to
+  move some currently protected `BF16` layers down to `MXFP8`,
+  `FP8_SOURCE`, or `INT8` where the held-out KL still stays within
+  budget.
+
+Why it matters:
+
+- A protected layer is not necessarily a forever-`BF16` layer.
+- Some of the highest-value savings may come from taking a small set of
+  quality-critical survivors and carefully "rescuing" them into 8-bit
+  formats rather than leaving them at `BF16`.
+
+Likely PrismaQuant shape:
+
+- Rank the largest or most expensive `BF16` survivors after allocation.
+- Apply stronger reconstruction or transform methods only to those
+  layers.
+- Accept a `BF16 -> 8-bit` move only when the measured held-out KL
+  stays inside the target quality envelope.
+
+Expected payoff:
+
+- High-value size reduction on the most expensive protected layers
+  without making the allocator globally more aggressive.
+
 ## Tier 2: Reachable In vLLM With A Known Integration Path
 
 These ideas are not "stock Spark / vLLM today", but they are more
@@ -547,6 +582,7 @@ would we hope to gain from it?
 | `AWQ` | Partially supported | Early-mid, Tier 1 | PrismaQuant already references AWQ in the broader per-tensor/export toolkit; extend that by turning AWQ into a clean local-refiner step after PrismaSCOUT chooses the global assignment, especially on sensitive `INT4` layers | Better `INT4` quality without changing the serving story |
 | `AutoRound` | Partially supported | Early-mid, Tier 1 | PrismaQuant already positions itself as able to compose with AutoRound-style rounding; extend that by using AutoRound as a clear local-refiner or candidate-construction backend for selected low-bit layers | Better `INT4` / low-bit reconstruction on layers already chosen for compression |
 | `GPTQ` | Already supported | Early-mid, Tier 1 | PrismaQuant already uses GPTQ-style reconstruction in its toolkit and polish/export path; extend that by focusing GPTQ refinement more explicitly on the highest-value layers under the chosen assignment | Better per-layer reconstruction where the surrogate says extra work is worth it |
+| `BF16 -> 8-bit rescue` on protected layers | Not yet supported as an explicit workflow | After targeted refiners, Tier 1 | Once `GPTQ`, `AWQ`, and `AutoRound` are being used more deliberately, apply them to the most expensive protected `BF16` survivors and try to move some of them into `MXFP8`, `FP8_SOURCE`, or `INT8` without breaking the held-out KL budget | High-value savings on the layers that are currently expensive enough to remain in `BF16` |
 | `SpinQuant` | Not yet supported | Mid, Tier 2 | Add as a rotation-aware transform option for selected fragile layers or experimental candidate states | Better low-bit quality, especially where outliers hurt plain `INT4` / `FP4` |
 | `QuIP` | Not yet supported | Mid, Tier 2 | Treat as another transform-style experimental path similar to SpinQuant | Additional rotation-based quality improvements if the added transform cost is justified |
 | `ParoQuant` | Not yet supported | Mid, Tier 2 | Use as the strongest plugin-backed `INT4` quality path, likely first on experts or other high-error layers | High-quality `INT4` with a more credible vLLM path than a brand-new codec |
@@ -588,20 +624,22 @@ order I would try is:
 5. Treat KV-cache precision as part of the deployment budget in those same profiles.
 6. Use already-supported `GPTQ` more explicitly as a targeted refiner on the highest-value layers under the chosen assignment.
 7. Extend the partially supported `AWQ` and `AutoRound` paths into explicit targeted local refiners for selected low-bit layers.
-8. Explore `SpinQuant` and `QuIP` as rotation-aware experimental transforms for selected fragile layers rather than as global defaults.
-9. Explore `ParoQuant` as the strongest plugin-backed `INT4` quality path, likely first on experts or other high-error layers.
-10. Explore `TurboQuant 4-bit` offline as an expert-codec research path after the compatible paths above are solid.
-11. Explore `TurboQuant 2/3-bit` only after the 4-bit TurboQuant case is understood.
-12. Add custom vLLM codec support only after the current compatible path is strong enough to justify the engineering cost.
-13. Revisit prune-then-quant MoE pipelines after the non-pruning mixed-precision and codec work is stable.
+8. Use those stronger quality-improvement methods to try to rescue some protected `BF16` survivors down into `MXFP8`, `FP8_SOURCE`, or `INT8`.
+9. Explore `SpinQuant` and `QuIP` as rotation-aware experimental transforms for selected fragile layers rather than as global defaults.
+10. Explore `ParoQuant` as the strongest plugin-backed `INT4` quality path, likely first on experts or other high-error layers.
+11. Explore `TurboQuant 4-bit` offline as an expert-codec research path after the compatible paths above are solid.
+12. Explore `TurboQuant 2/3-bit` only after the 4-bit TurboQuant case is understood.
+13. Add custom vLLM codec support only after the current compatible path is strong enough to justify the engineering cost.
+14. Revisit prune-then-quant MoE pipelines after the non-pruning mixed-precision and codec work is stable.
 
 Read another way, the expected order of arrival for the named methods is:
 
 1. Already-supported candidate families: `INT4`, `NVFP4`, `MXFP4`, `MXFP8`, `BF16`
 2. Already-supported and partially supported targeted refiners: `GPTQ`, then `AWQ` / `AutoRound`
-3. Not-yet-supported rotation-aware transforms: `SpinQuant`, `QuIP`, `ParoQuant`
-4. New-codec expert paths: `TurboQuant 4-bit`, then `TurboQuant 2/3-bit`
-5. New vLLM runtime type support
+3. Protected-layer `BF16 -> 8-bit` rescue using those refiners
+4. Not-yet-supported rotation-aware transforms: `SpinQuant`, `QuIP`, `ParoQuant`
+5. New-codec expert paths: `TurboQuant 4-bit`, then `TurboQuant 2/3-bit`
+6. New vLLM runtime type support
 
 ## Bottom Line
 
