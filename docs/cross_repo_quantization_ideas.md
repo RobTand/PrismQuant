@@ -528,19 +528,29 @@ quantization improvement discussed across the sibling repos, when would
 it enter the PrismaQuant roadmap, how would PrismaQuant use it, and what
 would we hope to gain from it?
 
-| Method | Planned stage | How PrismaQuant would use it | Potential benefit |
-|---|---|---|---|
-| `INT4` candidate family | Early, Tier 1 | Add as a first-class candidate family for expert and bulk layers in role-aware menus | Stronger compression in a deployment path vLLM already serves |
-| `NVFP4` / `MXFP4` candidate families | Early, Tier 1 | Keep as first-class low-bit candidates, especially for expert-heavy or memory-heavy paths | Better compression with a Spark/vLLM-compatible runtime path |
-| `MXFP8` / `BF16` / source passthrough | Early, Tier 1 | Use as protected formats for attention, router, head, and other coherence-critical paths | Quality protection and safer mixed-precision assignments |
-| `AWQ` | Early-mid, Tier 1 | Use as a local refiner after PrismaSCOUT chooses the global assignment, especially on sensitive `INT4` layers | Better `INT4` quality without changing the serving story |
-| `AutoRound` | Early-mid, Tier 1 | Use as a local refiner or candidate-construction backend for selected low-bit layers | Better `INT4` / low-bit reconstruction on layers already chosen for compression |
-| `GPTQ` | Early-mid, Tier 1 | Use as a local refiner for the highest-value layers under the chosen assignment | Better per-layer reconstruction where the surrogate says extra work is worth it |
-| `SpinQuant` | Mid, Tier 2 | Add as a rotation-aware transform option for selected fragile layers or experimental candidate states | Better low-bit quality, especially where outliers hurt plain `INT4` / `FP4` |
-| `QuIP` | Mid, Tier 2 | Treat as another transform-style experimental path similar to SpinQuant | Additional rotation-based quality improvements if the added transform cost is justified |
-| `ParoQuant` | Mid, Tier 2 | Use as the strongest plugin-backed `INT4` quality path, likely first on experts or other high-error layers | High-quality `INT4` with a more credible vLLM path than a brand-new codec |
-| `TurboQuant` / `JANGTQ` | Late, Tier 3 | Start as offline research for expert-only codebook candidates; defer serving integration | Potentially the largest MoE compression gain, but requires deeper runtime/export work |
-| custom vLLM codec support | Latest, Tier 3 | Add explicit runtime support only after the current compatible path is mature | Unlocks new codecs, but at the highest engineering cost |
+| Method | Support status today | Planned stage | How PrismaQuant would use it | Potential benefit |
+|---|---|---|---|---|
+| `INT4` candidate family | Already supported | Early, Tier 1 | Add as a first-class candidate family for expert and bulk layers in role-aware menus | Stronger compression in a deployment path vLLM already serves |
+| `NVFP4` / `MXFP4` candidate families | Already supported | Early, Tier 1 | Keep as first-class low-bit candidates, especially for expert-heavy or memory-heavy paths | Better compression with a Spark/vLLM-compatible runtime path |
+| `MXFP8` / `BF16` / source passthrough | Already supported | Early, Tier 1 | Use as protected formats for attention, router, head, and other coherence-critical paths | Quality protection and safer mixed-precision assignments |
+| `AWQ` | Partially supported | Early-mid, Tier 1 | Use as a local refiner after PrismaSCOUT chooses the global assignment, especially on sensitive `INT4` layers | Better `INT4` quality without changing the serving story |
+| `AutoRound` | Partially supported | Early-mid, Tier 1 | Use as a local refiner or candidate-construction backend for selected low-bit layers | Better `INT4` / low-bit reconstruction on layers already chosen for compression |
+| `GPTQ` | Already supported | Early-mid, Tier 1 | Use as a local refiner for the highest-value layers under the chosen assignment | Better per-layer reconstruction where the surrogate says extra work is worth it |
+| `SpinQuant` | Not yet supported | Mid, Tier 2 | Add as a rotation-aware transform option for selected fragile layers or experimental candidate states | Better low-bit quality, especially where outliers hurt plain `INT4` / `FP4` |
+| `QuIP` | Not yet supported | Mid, Tier 2 | Treat as another transform-style experimental path similar to SpinQuant | Additional rotation-based quality improvements if the added transform cost is justified |
+| `ParoQuant` | Not yet supported | Mid, Tier 2 | Use as the strongest plugin-backed `INT4` quality path, likely first on experts or other high-error layers | High-quality `INT4` with a more credible vLLM path than a brand-new codec |
+| `TurboQuant` / `JANGTQ` | Not yet supported | Late, Tier 3 | Start as offline research for expert-only codebook candidates; defer serving integration | Potentially the largest MoE compression gain, but requires deeper runtime/export work |
+| custom vLLM codec support | Not yet supported | Latest, Tier 3 | Add explicit runtime support only after the current compatible path is mature | Unlocks new codecs, but at the highest engineering cost |
+
+Interpretation of the support labels:
+
+- `Already supported` means the relevant format or mechanism is already
+  materially present in PrismaQuant / PrismaSCOUT today.
+- `Partially supported` means the repo clearly has some of the needed
+  machinery, but not yet as a clean first-class PrismaSCOUT workflow for
+  the use described here.
+- `Not yet supported` means it is a real roadmap item rather than
+  something the current codebase already does.
 
 ## Suggested Order
 
