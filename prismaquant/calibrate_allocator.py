@@ -292,23 +292,23 @@ def install_activation_hooks(
         key = id(mod)
         prev = module_specs.get(key)
         if prev is None:
-            module_specs[key] = (mod, spec, [name])
+            module_specs[key] = (mod, spec, [name], fmt)
             continue
-        prev_mod, prev_spec, prev_names = prev
+        prev_mod, prev_spec, prev_names, prev_fmt = prev
         prev_names.append(name)
         if prev_spec.name != spec.name:
             skipped.append(
                 {
                     "module": type(mod).__name__,
                     "weights": sorted(prev_names),
-                    "formats": sorted({prev_spec.name, spec.name}),
+                    "formats": sorted({prev_fmt, fmt}),
                 }
             )
-            module_specs[key] = (prev_mod, None, prev_names)
+            module_specs[key] = (prev_mod, None, prev_names, prev_fmt)
 
     handles = []
     active = []
-    for mod, spec, names in module_specs.values():
+    for mod, spec, names, fmt in module_specs.values():
         if spec is None:
             continue
         if spec.act_bits is None or spec.act_bits >= 16:
@@ -326,7 +326,13 @@ def install_activation_hooks(
             return args, kwargs
 
         handles.append(mod.register_forward_pre_hook(_pre_hook, with_kwargs=True))
-        active.append({"module": type(mod).__name__, "weights": sorted(names), "format": spec.name})
+        active.append(
+            {
+                "module": type(mod).__name__,
+                "weights": sorted(names),
+                "format": fmt,
+            }
+        )
     return handles, active, skipped
 
 

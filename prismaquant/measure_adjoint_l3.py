@@ -443,7 +443,10 @@ def collect_adjoint_l3(
     if rank <= 0:
         raise ValueError("calib_ids must contain at least one sample")
 
-    specs_by_name = {fr.canonical_format_name(spec.name): spec for spec in specs}
+    specs_by_name = {
+        fr.canonical_format_name(spec.name): fr.REGISTRY[fr.canonical_format_name(spec.name)]
+        for spec in specs
+    }
     if "BF16" not in specs_by_name:
         specs = [*specs, fr.get_format("BF16")]
         specs_by_name["BF16"] = fr.get_format("BF16")

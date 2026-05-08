@@ -274,12 +274,20 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                     break
             if entry is None or "error" in entry:
                 continue
+            source_kind_for_check = source_kind
+            if source_manifest is None and _is_passthrough_format(fr.canonical_format_name(spec.name)):
+                # Callers without source-manifest metadata still need to explore
+                # passthrough candidates; direct preflight validation remains
+                # strict when source_kind=None.
+                source_kind_for_check = PASSTHROUGH_SOURCE_REQUIREMENTS[
+                    fr.canonical_format_name(spec.name)
+                ]
             verdict = (
                 check_format_applicability(
                     shape,
                     spec,
                     qname=name,
-                    source_kind=source_kind,
+                    source_kind=source_kind_for_check,
                 )
                 if len(shape) >= 2
                 else FormatApplicability(True)
@@ -290,7 +298,12 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                     [],
                 ).append(name)
                 continue
-            gain = float(gains.get(spec.name, gains.get(entry_fmt, 1.0)))
+            gain = float(
+                gains.get(
+                    spec.name,
+                    gains.get(entry_fmt, gains.get(fr.display_format_name(spec.name), 1.0)),
+                )
+            )
             # Always use measured joint output perturbation when available.
             # Packed experts can carry an unmeasured output_mse placeholder;
             # cost_entry_predicted_dloss falls back to predicted_dloss or

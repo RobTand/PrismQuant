@@ -565,15 +565,14 @@ def select_formats_for_l3(
         chosen.add(ordered[idx + 1])
     if "BF16" in available:
         chosen.add("BF16")
-    return tuple(
-        sorted(
-            chosen,
-            key=lambda fmt: (
-                _bits_for_name(stats, name, specs_by_name[fmt]),
-                fmt,
-            ),
-        )
+    ordered = sorted(
+        chosen,
+        key=lambda fmt: (
+            _bits_for_name(stats, name, specs_by_name[fmt]),
+            fmt,
+        ),
     )
+    return tuple(specs_by_name[fmt].name for fmt in ordered)
 
 
 def _relative_margin(values: list[float], current_cost: float) -> float:

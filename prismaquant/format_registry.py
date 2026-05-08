@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import torch
@@ -124,6 +124,12 @@ FORMAT_ALIASES: dict[str, str] = {
     "MXFP8": "MXFP8_E4M3",
 }
 
+FORMAT_DISPLAY_NAMES: dict[str, str] = {
+    # Keep the short public-facing name in logs, reports, and test-visible
+    # outputs even though internal persistence canonicalizes to MXFP8_E4M3.
+    "MXFP8_E4M3": "MXFP8",
+}
+
 
 def register_format(spec: FormatSpec) -> FormatSpec:
     REGISTRY[spec.name] = spec
@@ -132,6 +138,10 @@ def register_format(spec: FormatSpec) -> FormatSpec:
 
 def canonical_format_name(name: str) -> str:
     return FORMAT_ALIASES.get(name, name)
+
+
+def display_format_name(name: str) -> str:
+    return FORMAT_DISPLAY_NAMES.get(name, name)
 
 
 def aliases_for(name: str) -> tuple[str, ...]:
@@ -658,4 +668,7 @@ def get_format(name: str) -> FormatSpec:
     if canonical not in REGISTRY:
         raise KeyError(f"Unknown format '{name}'. Available: "
                        f"{sorted((*REGISTRY.keys(), *FORMAT_ALIASES.keys()))}")
-    return REGISTRY[canonical]
+    spec = REGISTRY[canonical]
+    if name in FORMAT_ALIASES:
+        return replace(spec, name=name)
+    return spec
