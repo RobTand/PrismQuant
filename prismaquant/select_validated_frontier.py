@@ -141,7 +141,15 @@ def measured_frontier(
             "format_counts": dict(row.get("format_counts", {}) or {}),
             "changed_vs_base": int(row.get("changed_vs_base", 0) or 0),
             "mse": dict(row.get("mse", {}) or {}),
-            "surrogate_loss": row.get("surrogate_loss"),
+            # The surrogate the allocator optimized. validate_assignments_kl emits
+            # it nested as mse.predicted_dloss_sum; a top-level surrogate_loss (e.g.
+            # test fixtures or legacy rows) takes precedence when present. Without
+            # this fallback the surrogate-vs-KL Spearman below silently never fires.
+            "surrogate_loss": (
+                row.get("surrogate_loss")
+                if row.get("surrogate_loss") is not None
+                else (row.get("mse") or {}).get("predicted_dloss_sum")
+            ),
             "kl_repeats": list(row.get("kl_repeats", []) or []),
             "kl_std": row.get("kl_std"),
             "kl_stderr": row.get("kl_stderr"),
@@ -220,6 +228,72 @@ def spearman_rank_correlation(rows: Sequence[Mapping]) -> float | None:
     if den_x <= 0.0 or den_y <= 0.0:
         return None
     return float(num / (den_x * den_y))
+
+
+def worst_rank_inversion(rows: Sequence[Mapping]) -> dict | None:
+    """Surface the single most-misranked pair of frontier points.
+
+    Uses the same (surrogate_loss, kl) pairing as ``spearman_rank_correlation``
+    so the two agree on which rows count. Returns the pair whose surrogate-rank
+    ordering disagrees most strongly with the measured-KL-rank ordering, i.e.
+    the pair maximizing ``rank_kl_gap`` among discordant pairs. This checks
+    surrogate-vs-KL fidelity only; it says nothing about held-out PPL, which is
+    measured post-export and is not joined here. Returns ``None`` when fewer than
+    three usable pairs exist (same guard as the Spearman).
+    """
+    paired = [
+        {
+            "label": str(row.get("label") or row.get("path") or f"point[{idx}]"),
+            "surrogate_loss": float(row["surrogate_loss"]),
+            "kl": float(row["kl"]),
+        }
+        for idx, row in enumerate(rows)
+        if row.get("surrogate_loss") is not None
+        and math.isfinite(float(row["surrogate_loss"]))
+        and math.isfinite(float(row["kl"]))
+    ]
+    if len(paired) < 3:
+        return None
+    sur_ranks = _rank([p["surrogate_loss"] for p in paired])
+    kl_ranks = _rank([p["kl"] for p in paired])
+
+    worst = None
+    worst_gap = 0.0
+    for i in range(len(paired)):
+        for j in range(i + 1, len(paired)):
+            # Discordant: surrogate orders i,j one way, KL the other way.
+            sur_order = sur_ranks[i] - sur_ranks[j]
+            kl_order = kl_ranks[i] - kl_ranks[j]
+            if sur_order == 0.0 or kl_order == 0.0:
+                continue
+            if (sur_order > 0) == (kl_order > 0):
+                continue  # concordant, no inversion
+            gap = abs(kl_ranks[i] - kl_ranks[j])
+            if gap > worst_gap:
+                worst_gap = gap
+                worst = (i, j)
+    if worst is None:
+        return None
+
+    i, j = worst
+    # Order the reported pair so "better" = lower surrogate_loss (predicted best).
+    a, b = (paired[i], paired[j]) if paired[i]["surrogate_loss"] <= paired[j]["surrogate_loss"] else (paired[j], paired[i])
+    direction = "worse" if a["kl"] > b["kl"] else "better"
+    verdict = (
+        f"surrogate ranked '{a['label']}' better than '{b['label']}' "
+        f"(predicted_dloss {a['surrogate_loss']:.6g} < {b['surrogate_loss']:.6g}) "
+        f"but measured KL was {direction} ({a['kl']:.6g} vs {b['kl']:.6g})"
+    )
+    return {
+        "predicted_best_label": a["label"],
+        "predicted_best_surrogate_loss": a["surrogate_loss"],
+        "predicted_best_kl": a["kl"],
+        "predicted_worse_label": b["label"],
+        "predicted_worse_surrogate_loss": b["surrogate_loss"],
+        "predicted_worse_kl": b["kl"],
+        "rank_gap": float(worst_gap),
+        "verdict": verdict,
+    }
 
 
 def leave_one_out_kneedle_diagnostic(
@@ -387,6 +461,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else {"enabled": False, "reason": "mode_not_kneedle"}
     )
     rank_corr = spearman_rank_correlation(frontier)
+    worst_inversion = worst_rank_inversion(frontier)
     assignment = _load_assignment(selected["path"])
     layer_config = _layer_config_from_assignment(assignment)
 
@@ -415,6 +490,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "kneedle_comparison": knee_cmp,
         "leave_one_out": loo,
         "surrogate_spearman": rank_corr,
+        "surrogate_worst_rank_inversion": worst_inversion,
         "kl_noise_floor": float(args.kl_noise_floor),
         "practical_rel_eps": float(args.practical_rel_eps),
         "practical_abs_eps": float(args.practical_abs_eps),
@@ -445,6 +521,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             "[frontier-select] kneedle log-error="
             f"{log_k['label']}@{log_k['bpp']:.6f} "
             f"raw-linear={raw_k['label']}@{raw_k['bpp']:.6f}",
+            flush=True,
+        )
+    if rank_corr is not None:
+        print(
+            "[frontier-select] surrogate-vs-KL fidelity: "
+            f"spearman={rank_corr:.4f} (1.0=perfect, surrogate-vs-KL only)",
+            flush=True,
+        )
+        if worst_inversion is not None:
+            print(
+                f"[frontier-select] worst rank-inversion: {worst_inversion['verdict']}",
+                flush=True,
+            )
+    else:
+        print(
+            "[frontier-select] surrogate-vs-KL fidelity: unavailable "
+            "(need >=3 frontier points carrying predicted_dloss_sum)",
             flush=True,
         )
     print(f"[frontier-select] layer_config -> {layer_config_path}", flush=True)

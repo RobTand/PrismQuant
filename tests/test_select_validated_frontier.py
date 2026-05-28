@@ -11,6 +11,7 @@ from prismaquant.select_validated_frontier import (
     practical_knee,
     select_frontier_point,
     spearman_rank_correlation,
+    worst_rank_inversion,
 )
 
 
@@ -96,6 +97,72 @@ def test_select_frontier_reports_rank_and_leave_one_out_helpers():
     )
     assert diagnostic["enabled"]
     assert diagnostic["stable"]
+
+
+def test_measured_frontier_extracts_surrogate_from_nested_mse():
+    # Real validate_assignments_kl rows carry the surrogate nested as
+    # mse.predicted_dloss_sum, NOT a top-level surrogate_loss. This is the data
+    # path that previously left surrogate_spearman silently None on every run.
+    results = [
+        {"label": "a", "path": "a.json", "bpp": 4.5, "last_token_kl": 0.30,
+         "mse": {"predicted_dloss_sum": 3.0}},
+        {"label": "b", "path": "b.json", "bpp": 5.0, "last_token_kl": 0.20,
+         "mse": {"predicted_dloss_sum": 2.0}},
+        {"label": "c", "path": "c.json", "bpp": 5.5, "last_token_kl": 0.10,
+         "mse": {"predicted_dloss_sum": 1.0}},
+        {"label": "d", "path": "d.json", "bpp": 6.0, "last_token_kl": 0.09,
+         "mse": {"predicted_dloss_sum": 0.5}},
+    ]
+    frontier = measured_frontier(results)
+    for row in frontier:
+        assert row["surrogate_loss"] is not None
+    corr = spearman_rank_correlation(frontier)
+    assert corr is not None
+    assert corr > 0.9
+
+
+def test_measured_frontier_top_level_surrogate_loss_takes_precedence():
+    # Backward compat: an explicit top-level surrogate_loss still wins.
+    results = [
+        {"label": "a", "path": "a.json", "bpp": 4.5, "last_token_kl": 0.30,
+         "surrogate_loss": 9.0, "mse": {"predicted_dloss_sum": 3.0}},
+    ]
+    frontier = measured_frontier(results)
+    assert frontier[0]["surrogate_loss"] == 9.0
+
+
+def test_worst_rank_inversion_detects_mispredicted_pair():
+    # 'a' is predicted best (lowest surrogate) but measured worst (highest KL).
+    frontier = [
+        {"label": "a", "path": "a.json", "bpp": 4.5, "kl": 0.30, "surrogate_loss": 1.0},
+        {"label": "b", "path": "b.json", "bpp": 5.0, "kl": 0.20, "surrogate_loss": 2.0},
+        {"label": "c", "path": "c.json", "bpp": 5.5, "kl": 0.10, "surrogate_loss": 3.0},
+    ]
+    inv = worst_rank_inversion(frontier)
+    assert inv is not None
+    # 'a' (lowest surrogate) is the predicted-best of the worst inverted pair.
+    assert inv["predicted_best_label"] == "a"
+    assert inv["predicted_worse_label"] == "c"
+    assert inv["rank_gap"] > 0.0
+    assert "measured KL was worse" in inv["verdict"]
+
+
+def test_worst_rank_inversion_none_when_concordant():
+    # Perfectly concordant surrogate/KL ordering -> no inversion.
+    frontier = [
+        {"label": "a", "path": "a.json", "bpp": 4.5, "kl": 0.30, "surrogate_loss": 3.0},
+        {"label": "b", "path": "b.json", "bpp": 5.0, "kl": 0.20, "surrogate_loss": 2.0},
+        {"label": "c", "path": "c.json", "bpp": 5.5, "kl": 0.10, "surrogate_loss": 1.0},
+    ]
+    assert worst_rank_inversion(frontier) is None
+
+
+def test_worst_rank_inversion_none_when_too_few_pairs():
+    frontier = [
+        {"label": "a", "path": "a.json", "bpp": 4.5, "kl": 0.30, "surrogate_loss": 1.0},
+        {"label": "b", "path": "b.json", "bpp": 5.0, "kl": 0.20, "surrogate_loss": 2.0},
+    ]
+    assert worst_rank_inversion(frontier) is None
 
 
 def test_select_validated_frontier_cli_writes_layer_config(tmp_path):
