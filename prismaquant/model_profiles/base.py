@@ -440,6 +440,33 @@ class ModelProfile(ABC):
             return projection_name
         return None
 
+    def unpacked_expert_projection_names(self) -> tuple[str, ...]:
+        """Per-expert *module attribute* names for UNPACKED MoE experts.
+
+        Applies only to architectures where each routed expert is its own
+        ``nn.Module`` exposing per-projection ``nn.Linear`` attributes (the
+        MiniMax-M2 / Qwen3 / Qwen3.5 MoE layout, e.g. ``.w1``/``.w2``/``.w3``).
+        The batched-Fisher MoE-block detector and the fast-MoE forward swap in
+        the probes use these names to recognize an expert container; if the
+        names don't match, those optimizations silently no-op (probe speed
+        only — per-Linear Fisher still accumulates via the regular hooks).
+
+        Packed-expert architectures (DeepSeek-V4: 3D ``gate_up_proj`` /
+        ``down_proj`` tensors, no per-expert modules) have no such attributes
+        and never match the consumers of this accessor, so the default is
+        harmless for them. A declarative structure spec may override via an
+        ``unpacked_expert_projection_names`` field; otherwise the default is
+        the Qwen3/Qwen3.5 standard ``('w1', 'w2', 'w3')``. Profiles whose
+        unpacked experts use different attribute names should override this.
+        """
+        spec = self.structure_spec()
+        declared = getattr(spec, "unpacked_expert_projection_names", None)
+        if declared:
+            names = declared() if callable(declared) else declared
+            if names:
+                return tuple(names)
+        return ("w1", "w2", "w3")
+
     def _fallback_packed_expert_format_groups(self) -> tuple[tuple[str, ...], ...]:
         """Common legacy packed-MoE coupling groups for profiles without specs.
 
