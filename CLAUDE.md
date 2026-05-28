@@ -6,13 +6,19 @@ GPU-first execution, cache reuse, vLLM gating, and measurement discipline.
 
 Before working on PrismaQuant, read in order:
 
-- `.claude/prismaquant-handover-2026-05-20.md` — **CURRENT STATE.**
-  Grouped-KL cost surrogate validated on 27B (−3.52% PPL at 6.0 bpp,
-  fixes non-monotonicity). JSO 4B A/B saw jso_off win 0.8-1.6% PPL but
-  result has cost-surrogate confound; wall-off was committed then
-  REVERTED. Next: launch queued 27B JSO isolation A/B
-  (`/home/rob/dq-runs/qwen36_27b_jso_isolation.sh`). Open issues + file
-  map + commits inside.
+- `.claude/prismaquant-handover-2026-05-28.md` — **CURRENT STATE.**
+  Shipped two CPU-only wins (allocator `--bit-attribution-json` budget
+  report; revived the dead surrogate-vs-KL Spearman in
+  `select_validated_frontier`), **walled off grouped-KL** under
+  `archive/grouped_kl_2026-05-28/` (it LOST the shipped vLLM A/B on 27B —
+  the −3.52% figure was an HF/local screen the serving contract reversed),
+  and reconciled the stale docs. Open: pluggable MoE expert projection
+  names (DSv4), and the queued 27B JSO isolation A/B (scale 4 and 6).
+  Open issues + file map inside.
+- `.claude/prismaquant-handover-2026-05-20.md` — earlier state. Note its
+  grouped-KL "−3.52% PPL win" claim is **superseded**: that was a local /
+  HF-PPL screen; grouped-KL lost the production vLLM A/B and is now
+  archived. JSO wall-off was reverted pending the isolation A/B.
 - `.claude/prismaquant-handover-2026-05-02.md` — earlier state.
   PrismaSCOUT L3-redesign landed end-to-end. v5 proved 34% KL improvement
   over L2 at 4.5 bpp on Qwen 4B.

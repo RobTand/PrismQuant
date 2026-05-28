@@ -128,7 +128,8 @@ expansion when only one Linear is perturbed at a time. Its failure
 mode is also clear: when many Linears are perturbed jointly, the
 quadratic cross-terms (the off-diagonal of `H`) become
 non-negligible, and the additive sum overshoots the measured KL by
-30-50% across budgets (`docs/grouped_kl_allocator_results_2026-05-20.md`).
+30-50% across budgets
+(`archive/grouped_kl_2026-05-28/docs/grouped_kl_allocator_results_2026-05-20.md`).
 
 That bias is what drives the surrogate hierarchy in §3.
 
@@ -181,13 +182,13 @@ contract.
 |-------|------------------------------|-------------|-------------|-------------------------|
 | L1    | `½·H_trace·MSE_W`            | KB          | seconds     | First DP solve          |
 | L2    | Perturbed-X output MSE       | MB          | ~5 min      | Fixed-point DP re-solve |
-| L2b   | Grouped-KL (fusion-matched)  | MB          | ~30 min     | DP cost replacement     |
 | L3    | Paired BF16 end-KL           | small       | ~1 hr       | Bounded neighborhood DP |
 
 Archived research, not used by the current production path:
 
 | Level | Surrogate                    | Storage     | Time on 27B | Drives                  |
 |-------|------------------------------|-------------|-------------|-------------------------|
+| L2b   | Grouped-KL (fusion-matched)  | MB          | ~30 min     | DP cost replacement (ARCHIVED 2026-05-28 — lost shipped vLLM A/B; `archive/grouped_kl_2026-05-28/`) |
 | Lswap | Empirical budget-neutral swap | small      | ~1 hr/swap  | Post-DP refinement      |
 
 The cascade is **monotone in cost and quality**; each level can
@@ -230,11 +231,22 @@ The activation distribution is captured by `PerturbedActivationCache`
 cache**. Production runs forbid parallel activation stores. The L2
 fixed point lifts measured KL by 5-15% over L1 on 4B-27B models.
 
-### 3.3 L2b — grouped-KL (fusion-matched)
+### 3.3 L2b — grouped-KL (fusion-matched) — ARCHIVED 2026-05-28
 
-**This is the most recent material win** (validated 2026-05-20 on
-Qwen3.6-27B, `docs/grouped_kl_allocator_results_2026-05-20.md`). It
-replaces per-Linear additive `½·H_trace·MSE` with a measurement of
+> **ARCHIVED, not in the production path.** Grouped-KL looked like a win on
+> the local-allocator / HF-PPL screen below, but **lost the apples-to-apples
+> vLLM A/B** against the shipped Qwen3.6-27B 5.5 artifact (worse exact
+> full-vocab vLLM KL and worse direct WikiText PPL at matched bpp). Per the
+> measurement-discipline rule (KL/HF-PPL is a screen, not a promotion metric),
+> it is walled off: `COST_MODE=grouped-kl` now fails fast. The implementation,
+> tests, and the full validation record (including the "do not ship" decision)
+> live under `archive/grouped_kl_2026-05-28/`. The analysis below is retained
+> as design history. **Treat the PPL table as a screen-only result that the
+> serving contract reversed.**
+
+It was proposed 2026-05-20 on Qwen3.6-27B
+(`archive/grouped_kl_2026-05-28/docs/grouped_kl_allocator_results_2026-05-20.md`).
+It replaces per-Linear additive `½·H_trace·MSE` with a measurement of
 **group KL** taken over the model's fused-sibling decision units
 ({qkv}, {o_proj}, {gate_up}, {down_proj}, plus
 {in_proj_qkvz}, {in_proj_ab}, {linear_out_proj} for linear-attention),
@@ -248,8 +260,10 @@ promotions land at high budgets — empirically as the **non-monotone
 5.5→6.0 bpp PPL regression** that the per-Linear cost surrogate
 exhibits (Qwen3-4B quality survey, 2026-05-19).
 
-Grouped-KL **fixes the non-monotonicity** and beats per-Linear cost
-at all measured budgets on 27B (`docs/grouped_kl_allocator_results_2026-05-20.md`):
+On the local-allocator / HF-PPL screen, grouped-KL **fixed the
+non-monotonicity** and beat per-Linear cost at all measured budgets on 27B
+(`archive/grouped_kl_2026-05-28/docs/grouped_kl_allocator_results_2026-05-20.md`)
+— but this screen was **reversed by the vLLM serving contract** (see banner above):
 
 | Budget | per-Linear PPL | Grouped PPL | Δ        |
 |--------|---------------:|------------:|---------:|
@@ -257,11 +271,12 @@ at all measured budgets on 27B (`docs/grouped_kl_allocator_results_2026-05-20.md
 | 5.5    | 7.137          | 7.131       | −0.10%   |
 | 6.0    | 7.237          | 6.982       | **−3.52%** |
 
-It lives at `prismaquant/grouped_kl_cost.py`. Schema:
-`"prismaquant.grouped_kl_cost.v1"`. It does **not** yet measure MoE
-expert groups — see §10 — because experts route per token and the
-group-vs-sum damping observed on attention QKVO does not have an
-obvious MoE analogue. A 35B-A3B A/B is still queued.
+It now lives at `archive/grouped_kl_2026-05-28/prismaquant/grouped_kl_cost.py`.
+Schema: `"prismaquant.grouped_kl_cost.v1"`. It never measured MoE expert
+groups — experts route per token and the group-vs-sum damping observed on
+attention QKVO has no obvious MoE analogue — and on MoE it silently fell back
+to per-Linear baseline cost for experts (an inhomogeneous objective), which is
+one more reason it is walled off. The queued 35B-A3B A/B was never run.
 
 The grouped-KL share distribution (`group_KL / N_members`) is now pinned by
 a unit test: `group_KL → distribute → aggregate_fused_siblings → group_KL`
@@ -1162,12 +1177,19 @@ sensitivity to micro-quality** to the validator. Candidates:
 This is the right thing to add to the artifact registry's
 quality manifest.
 
-### 13.2 Productionizing grouped-KL for MoE
+### 13.2 Productionizing grouped-KL for MoE — SUPERSEDED (grouped-KL archived 2026-05-28)
 
-The grouped-KL win is validated on dense 27B and 4B. MoE expert
+> **Moot.** Grouped-KL was walled off after it lost the shipped vLLM A/B on
+> dense 27B (see §3.3 and `archive/grouped_kl_2026-05-28/`), so there is no
+> dense win to extend to MoE. The dense screen never survived the serving
+> contract; do not pursue the MoE extension below until grouped-KL is first
+> re-validated under vLLM serving on a dense model. The sketch is retained
+> only as a record of the original (now-defunct) plan.
+
+The grouped-KL screen result was on dense 27B and 4B. MoE expert
 fusion structure differs; the obvious analogue (per-expert group
-KL) is meaningless because experts route per-token. The candidate
-formulation is **routing-conditional** grouped-KL:
+KL) is meaningless because experts route per-token. The (defunct) candidate
+formulation was **routing-conditional** grouped-KL:
 
 > Given the routing pattern observed on calibration, for each set
 > of {layer-routed-experts}, measure end-KL when that whole

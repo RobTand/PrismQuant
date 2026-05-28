@@ -4,7 +4,7 @@
     {
       "name": "qwen36_27b_grouped_no_fp8_5p5",
       "model": "/home/rob/.cache/huggingface/qwen36-27b-bf16",
-      "source_doc": "docs/grouped_kl_allocator_results_2026-05-20.md",
+      "source_doc": "archive/grouped_kl_2026-05-28/docs/grouped_kl_allocator_results_2026-05-20.md",
       "source_section": "Prior No-FP8 Reproduction / Recorded 27B PPL",
       "target_bpp": 5.5,
       "achieved_bpp": 5.496609,
@@ -29,7 +29,7 @@
     {
       "name": "qwen36_27b_grouped_fp8_menu_5p5",
       "model": "/home/rob/.cache/huggingface/qwen36-27b-bf16",
-      "source_doc": "docs/grouped_kl_allocator_results_2026-05-20.md",
+      "source_doc": "archive/grouped_kl_2026-05-28/docs/grouped_kl_allocator_results_2026-05-20.md",
       "source_section": "Fresh FP8-Menu Run",
       "target_bpp": 5.5,
       "achieved_bpp": 5.499,
@@ -55,7 +55,7 @@
     {
       "name": "qwen36_27b_shipped_5p5_vllm_exact",
       "model": "/home/rob/.cache/huggingface/rdtand-Qwen3.6-27B-PrismaQuant-5.5bit-vllm",
-      "source_doc": "docs/grouped_kl_allocator_results_2026-05-20.md",
+      "source_doc": "archive/grouped_kl_2026-05-28/docs/grouped_kl_allocator_results_2026-05-20.md",
       "source_section": "Shipped 5.5 Comparison (2026-05-21)",
       "target_bpp": 5.5,
       "achieved_bpp": 5.5,

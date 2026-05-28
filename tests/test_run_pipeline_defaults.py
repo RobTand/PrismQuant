@@ -33,3 +33,26 @@ def test_multi_shot_passes_is_archived_and_blocked():
     assert "MULTI_SHOT_PASSES" in script
     assert "archive/multi_shot_2026-05-19" in script
     assert ': "${MULTI_SHOT_PASSES' not in script  # no opt-in default; user must explicitly opt out of vanilla
+
+
+def test_grouped_kl_is_archived_and_blocked():
+    """COST_MODE=grouped-kl fails fast with a pointer to the archive after it
+    lost the shipped vLLM A/B on Qwen3.6-27B. See
+    archive/grouped_kl_2026-05-28/README.md for the validation record."""
+    script = (
+        Path(__file__).resolve().parent.parent / "prismaquant" / "run-pipeline.sh"
+    ).read_text()
+
+    # grouped-kl is now a fail-fast dispatch arm pointing at the archive.
+    assert "archive/grouped_kl_2026-05-28" in script
+    # It is no longer advertised as a valid COST_MODE in the catch-all error.
+    assert (
+        "COST_MODE must be local, production-render-score, or production-render-staged"
+        in script
+    )
+    # The grouped-kl measurement invocation and its env knobs are gone.
+    assert "prismaquant.grouped_kl_cost" not in script
+    assert "GROUPED_KL_NSAMPLES" not in script
+    assert "GROUPED_KL_MAX_LANES" not in script
+    # production-render-score remains the default cost mode.
+    assert "COST_MODE:=production-render-score" in script

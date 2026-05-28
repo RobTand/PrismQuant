@@ -124,14 +124,9 @@ PY
 : "${PRODUCTION_CACHE_UNION:=0}"
 : "${PRODUCTION_CACHE_UNION_P_FP8:=0.75}"
 : "${COST_MODE:=production-render-score}"
-: "${GROUPED_KL_NSAMPLES:=8}"
-: "${GROUPED_KL_SEQLEN:=1024}"
-: "${GROUPED_KL_SEED:=42}"
-: "${GROUPED_KL_SCOPE:=full_sequence}"
-: "${GROUPED_KL_MAX_LANES:=4}"
-: "${PRODUCTION_RENDER_COST_NSAMPLES:=$GROUPED_KL_NSAMPLES}"
-: "${PRODUCTION_RENDER_COST_SEQLEN:=$GROUPED_KL_SEQLEN}"
-: "${PRODUCTION_RENDER_COST_SEED:=$GROUPED_KL_SEED}"
+: "${PRODUCTION_RENDER_COST_NSAMPLES:=8}"
+: "${PRODUCTION_RENDER_COST_SEQLEN:=1024}"
+: "${PRODUCTION_RENDER_COST_SEED:=42}"
 : "${PRODUCTION_RENDER_COST_SCORE_FIELD:=output_mse}"
 : "${PRODUCTION_RENDER_COST_REQUIRE_SCORES:=0}"
 : "${PRODUCTION_RENDER_COST_REQUIRE_OUTPUT:=1}"
@@ -200,23 +195,17 @@ case "$COST_MODE" in
   local)
     BASE_COST_PATH="${WORK_DIR}/artifacts/cost.pkl"
     COST_PATH="${BASE_COST_PATH}"
-    GROUPED_KL_PATH=""
     PRODUCTION_RENDER_COST_CACHE_PATH=""
     PRODUCTION_RENDER_COST_CACHE_DIR=""
     PRODUCTION_RENDER_COST_TAIL_QNAMES=""
     ;;
   grouped-kl)
-    BASE_COST_PATH="${WORK_DIR}/artifacts/cost_baseline.pkl"
-    COST_PATH="${WORK_DIR}/artifacts/cost.pkl"
-    GROUPED_KL_PATH="${WORK_DIR}/artifacts/grouped_kl.pkl"
-    PRODUCTION_RENDER_COST_CACHE_PATH=""
-    PRODUCTION_RENDER_COST_CACHE_DIR=""
-    PRODUCTION_RENDER_COST_TAIL_QNAMES=""
+    echo "[pipeline] ERROR: COST_MODE=grouped-kl — the grouped-KL (fusion-matched) cost surrogate is archived under archive/grouped_kl_2026-05-28. It fixed a local allocator non-monotonicity but LOST the shipped vLLM A/B on Qwen3.6-27B (worse exact vLLM KL and direct WikiText PPL than the shipped 5.5 artifact); see archive/grouped_kl_2026-05-28/README.md. Use production-render-score (default), production-render-staged, or local." >&2
+    exit 2
     ;;
   production-render-score|production-render)
     BASE_COST_PATH="${WORK_DIR}/artifacts/cost_baseline.pkl"
     COST_PATH="${WORK_DIR}/artifacts/cost.pkl"
-    GROUPED_KL_PATH=""
     PRODUCTION_RENDER_COST_CACHE_PATH="${WORK_DIR}/artifacts/production_render_score_cache.pkl"
     PRODUCTION_RENDER_COST_CACHE_DIR="${WORK_DIR}/artifacts/production_render_score_weight_cache"
     PRODUCTION_RENDER_COST_TAIL_QNAMES=""
@@ -224,13 +213,12 @@ case "$COST_MODE" in
   production-render-staged|production-render-tail)
     BASE_COST_PATH="${WORK_DIR}/artifacts/cost_baseline.pkl"
     COST_PATH="${WORK_DIR}/artifacts/cost.pkl"
-    GROUPED_KL_PATH=""
     PRODUCTION_RENDER_COST_CACHE_PATH="${WORK_DIR}/artifacts/production_render_score_staged_cache.pkl"
     PRODUCTION_RENDER_COST_CACHE_DIR="${WORK_DIR}/artifacts/production_render_score_staged_weight_cache"
     PRODUCTION_RENDER_COST_TAIL_QNAMES="${WORK_DIR}/artifacts/production_render_score_tail_qnames.txt"
     ;;
   *)
-    echo "[pipeline] ERROR: COST_MODE must be local, grouped-kl, production-render-score, or production-render-staged" >&2
+    echo "[pipeline] ERROR: COST_MODE must be local, production-render-score, or production-render-staged" >&2
     exit 2
     ;;
 esac
@@ -285,9 +273,6 @@ echo "  PRODUCTION_CACHE_RENDER_SCOPE=$PRODUCTION_CACHE_RENDER_SCOPE"
 echo "  PRODUCTION_CACHE_LEVERS=$PRODUCTION_CACHE_LEVERS"
 echo "  PRODUCTION_CACHE_DISABLE_LEVERS=$PRODUCTION_CACHE_DISABLE_LEVERS"
 echo "  COST_MODE=$COST_MODE"
-if [[ "$COST_MODE" == "grouped-kl" ]]; then
-  echo "  GROUPED_KL_NSAMPLES=$GROUPED_KL_NSAMPLES GROUPED_KL_SEQLEN=$GROUPED_KL_SEQLEN GROUPED_KL_SEED=$GROUPED_KL_SEED GROUPED_KL_SCOPE=$GROUPED_KL_SCOPE GROUPED_KL_MAX_LANES=$GROUPED_KL_MAX_LANES"
-fi
 if [[ "$COST_MODE" == "production-render-score" || "$COST_MODE" == "production-render" || "$COST_MODE" == "production-render-staged" || "$COST_MODE" == "production-render-tail" ]]; then
   echo "  PRODUCTION_RENDER_COST_NSAMPLES=$PRODUCTION_RENDER_COST_NSAMPLES PRODUCTION_RENDER_COST_SEQLEN=$PRODUCTION_RENDER_COST_SEQLEN PRODUCTION_RENDER_COST_SEED=$PRODUCTION_RENDER_COST_SEED SCORE_FIELD=$PRODUCTION_RENDER_COST_SCORE_FIELD"
 fi
@@ -460,35 +445,6 @@ PY
 fi
 # Fisher output-MSE allocator cost-status check removed; the archive guard
 # at the top of this file errors out before reaching here if the var is set.
-
-if [[ "$COST_MODE" == "grouped-kl" ]]; then
-  if [[ ! -f "$GROUPED_KL_PATH" || ! -f "$COST_PATH" ]]; then
-    echo "[pipeline] [2b/4] measuring grouped-KL cost objective ..."
-    python3 -m prismaquant.grouped_kl_cost \
-      --model "$MODEL_PATH" \
-      --dataset "$DATASET" \
-      --n-calib-samples "$GROUPED_KL_NSAMPLES" \
-      --calib-seqlen "$GROUPED_KL_SEQLEN" \
-      --calib-seed "$GROUPED_KL_SEED" \
-      --formats "$FORMATS" \
-      --baseline-cost "$BASE_COST_PATH" \
-      --output "$GROUPED_KL_PATH" \
-      --output-cost "$COST_PATH" \
-      --work-root "${WORK_DIR}/grouped_kl_work" \
-      --device "$DEVICE" --dtype bf16 \
-      --target-profile "$TARGET_PROFILE" \
-      --kl-scope "$GROUPED_KL_SCOPE" \
-      --max-lanes-per-batch "$GROUPED_KL_MAX_LANES" \
-      --production-cache-dir "${WORK_DIR}/artifacts/grouped_kl_production_weight_cache" \
-      --production-cache-output "${WORK_DIR}/artifacts/grouped_kl_production_weight_cache.pkl" \
-      --production-cache-levers "$PRODUCTION_CACHE_LEVERS" \
-      --production-cache-max-act-rows "$PRODUCTION_CACHE_MAX_ACT_ROWS" \
-      --production-cache-lru-gb "$PRODUCTION_CACHE_LRU_GB" \
-      2>&1 | tee "${WORK_DIR}/logs/grouped_kl_cost.log"
-  else
-    echo "[pipeline] [2b/4] grouped-KL cost exists, skipping"
-  fi
-fi
 
 if [[ "$COST_MODE" == "production-render-score" || "$COST_MODE" == "production-render" ]]; then
   if [[ ! -f "$PRODUCTION_RENDER_COST_CACHE_PATH" ]]; then
