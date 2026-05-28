@@ -74,7 +74,10 @@ uses a post-cliff log-error knee: when the frontier spans multiple orders of
 magnitude, the first half of the log-error range is treated as the
 catastrophic region and Kneedle is applied to the remaining operational
 frontier. The global log-error and raw-linear knees are still reported as
-diagnostics.
+diagnostics. (We implement Kneedle here rather than depend on the `kneed`
+PyPI package because the post-cliff log-error variant — trimming the
+catastrophic prefix before applying the knee — has no equivalent in `kneed`,
+and the curve is tiny so the dependency would not pay for itself.)
 """
 from __future__ import annotations
 
@@ -116,6 +119,7 @@ from .serving_profiles import (
     resolve_target_profile,
     serving_profile_names,
 )
+from .decision_units import block_id_from_qname
 from .schemas import validate_cost_payload, validate_probe_payload
 
 
@@ -367,6 +371,247 @@ def _find_candidate_for_format(
     return None
 
 
+# Role tokens used to bucket the bit-attribution report. Best-effort: anything
+# unrecognized buckets as "unknown" rather than failing, so new architectures
+# degrade gracefully instead of crashing a read-only diagnostic.
+_BIT_ATTR_KNOWN_ROLES = frozenset({
+    "q_proj", "k_proj", "v_proj", "o_proj", "qkv_proj",            # attention
+    "gate_proj", "up_proj", "down_proj", "gate_up_proj",           # MLP / fused
+    "in_proj_a", "in_proj_b", "in_proj_ba", "in_proj_qkv",         # linear attn
+    "in_proj_qkvz", "in_proj_z", "out_proj",
+    "lm_head", "embed_tokens",                                     # head / embed
+})
+
+
+def _parse_role_from_qname(qname: str) -> str:
+    """Best-effort role token for bit-attribution bucketing.
+
+    Distinguishes routed-expert and shared-expert projections from dense MLP
+    projections (so e.g. ``experts.7.down_proj`` does not collapse into the
+    dense ``down_proj`` bucket). Returns ``"unknown"`` on any name that doesn't
+    match a known pattern; this is a diagnostic, not a correctness path.
+    """
+    name = qname[4:] if qname.startswith("mtp.") else qname
+    parts = name.split(".")
+    if not parts:
+        return "unknown"
+    last = parts[-1]
+    # Unpacked routed expert: ...experts.<N>.<role>
+    if len(parts) >= 3 and parts[-2].isdigit() and "expert" in parts[-3]:
+        return f"expert.{last}" if last in _BIT_ATTR_KNOWN_ROLES else "expert.unknown"
+    # Packed routed expert (3D param, no per-expert index): ...experts.<role>
+    if len(parts) >= 2 and parts[-2] == "experts":
+        return f"expert.{last}" if last in _BIT_ATTR_KNOWN_ROLES else "expert.unknown"
+    # Shared expert: ...shared_expert(s).<role>
+    if len(parts) >= 2 and parts[-2] in ("shared_expert", "shared_experts"):
+        return f"shared_expert.{last}" if last in _BIT_ATTR_KNOWN_ROLES else "shared_expert.unknown"
+    if last in _BIT_ATTR_KNOWN_ROLES:
+        return last
+    return "unknown"
+
+
+def _bit_attr_block_sort_key(block_id: str) -> tuple:
+    """Sort layers.<N> numerically; non-layer blocks (lm_head, etc.) sort last."""
+    match = re.search(r"layers\.(\d+)", str(block_id))
+    if match:
+        return (0, int(match.group(1)), str(block_id))
+    return (1, 0, str(block_id))
+
+
+def _build_bit_attribution(
+    assignment_expanded: dict[str, str],
+    candidates: dict[str, list[Candidate]],
+    stats_entry_for,
+    format_specs: dict[str, "fr.FormatSpec"],
+) -> tuple[list[dict], list[dict], dict]:
+    """Build (buckets, per_linear_rows, body_totals) for the bit-attribution
+    report over the FINAL resolved body assignment.
+
+    Read-only: derives everything from the already-resolved assignment,
+    scored candidates, and probe stats. Visual / MTP Linears are excluded
+    (auxiliary to the body budget). Bits are recovered the same way
+    ``compute_achieved`` does, so the report's body bpp matches the artifact.
+    Entries with no scored candidate (expanded fused-sibling members, experts
+    priced at super-item granularity) report ``predicted_dloss=None`` rather
+    than fabricating a value.
+    """
+    buckets: dict[tuple[str, str], dict] = {}
+    per_linear: list[dict] = []
+    body_bits = 0.0
+    body_params = 0
+
+    for name, fmt in assignment_expanded.items():
+        if _is_visual_linear(name) or _is_mtp_linear(name):
+            continue
+        entry = stats_entry_for(name)
+        n_params = None
+        h_trace = None
+        if isinstance(entry, dict):
+            if entry.get("n_params") is not None:
+                n_params = int(entry["n_params"])
+            if entry.get("h_trace") is not None:
+                h_trace = float(entry["h_trace"])
+
+        cand = _find_candidate_for_format(candidates, name, fmt)
+        bits = None
+        pred_dloss = None
+        if cand is not None:
+            bits = 8.0 * cand.memory_bytes
+            pred_dloss = float(getattr(cand, "predicted_dloss", 0.0))
+        elif isinstance(entry, dict):
+            mem_map = entry.get("_memory_bytes_by_format")
+            if isinstance(mem_map, dict) and fmt in mem_map:
+                bits = 8.0 * mem_map[fmt]
+            elif fmt in format_specs and n_params:
+                shape = _shape_from_stats(entry)
+                bits = format_specs[fmt].effective_bits_for_shape(shape) * n_params
+
+        bpp = (bits / n_params) if (bits is not None and n_params) else None
+        block_id = block_id_from_qname(name)
+        role = _parse_role_from_qname(name)
+        per_linear.append({
+            "qname": name,
+            "block_id": block_id,
+            "role": role,
+            "format": fmt,
+            "bits": bits,
+            "bpp": bpp,
+            "n_params": n_params,
+            "h_trace": h_trace,
+            "predicted_dloss": pred_dloss,
+        })
+
+        bucket = buckets.setdefault((block_id, role), {
+            "block_id": block_id,
+            "role": role,
+            "n_linears": 0,
+            "bits_total": 0.0,
+            "n_params_total": 0,
+            "format_counts": defaultdict(int),
+            "sum_predicted_dloss": 0.0,
+            "predicted_dloss_n": 0,
+            "sum_h_trace": 0.0,
+            "h_trace_n": 0,
+        })
+        bucket["n_linears"] += 1
+        bucket["format_counts"][fmt] += 1
+        if bits is not None:
+            bucket["bits_total"] += bits
+            body_bits += bits
+        if n_params:
+            bucket["n_params_total"] += n_params
+            body_params += n_params
+        if pred_dloss is not None:
+            bucket["sum_predicted_dloss"] += pred_dloss
+            bucket["predicted_dloss_n"] += 1
+        if h_trace is not None:
+            bucket["sum_h_trace"] += h_trace
+            bucket["h_trace_n"] += 1
+
+    bucket_list: list[dict] = []
+    for bucket in buckets.values():
+        n_params_total = bucket["n_params_total"]
+        bucket_list.append({
+            "block_id": bucket["block_id"],
+            "role": bucket["role"],
+            "n_linears": bucket["n_linears"],
+            "bits_total": bucket["bits_total"],
+            "n_params_total": n_params_total,
+            "mean_bpp": (bucket["bits_total"] / n_params_total) if n_params_total else None,
+            "format_counts": dict(bucket["format_counts"]),
+            "sum_predicted_dloss": (
+                bucket["sum_predicted_dloss"] if bucket["predicted_dloss_n"] else None),
+            "predicted_dloss_coverage": f"{bucket['predicted_dloss_n']}/{bucket['n_linears']}",
+            "sum_h_trace": bucket["sum_h_trace"] if bucket["h_trace_n"] else None,
+        })
+
+    bucket_list.sort(key=lambda r: (_bit_attr_block_sort_key(r["block_id"]), r["role"]))
+    per_linear.sort(key=lambda r: (_bit_attr_block_sort_key(r["block_id"]), r["role"], r["qname"]))
+    totals = {
+        "body_bits": body_bits,
+        "body_quantizable_params": body_params,
+        "body_bits_per_param": (body_bits / body_params) if body_params else None,
+        "n_body_linears": len(per_linear),
+    }
+    return bucket_list, per_linear, totals
+
+
+def _write_bit_attribution_reports(
+    json_path: str | None,
+    csv_path: str | None,
+    *,
+    target_bits: float,
+    achieved_bits: float,
+    assignment_expanded: dict[str, str],
+    candidates: dict[str, list[Candidate]],
+    stats_entry_for,
+    format_specs: dict[str, "fr.FormatSpec"],
+) -> None:
+    """Write the bit-attribution JSON / CSV and print a compact per-role rollup.
+
+    No-op when neither output path is set."""
+    if not json_path and not csv_path:
+        return
+    buckets, per_linear, totals = _build_bit_attribution(
+        assignment_expanded, candidates, stats_entry_for, format_specs)
+
+    if json_path:
+        payload = {
+            "schema": "prismaquant.allocator.bit_attribution.v1",
+            "target_bits": float(target_bits),
+            "achieved_bits": float(achieved_bits),
+            "body_bits_per_param": totals["body_bits_per_param"],
+            "body_quantizable_params": totals["body_quantizable_params"],
+            "n_body_linears": totals["n_body_linears"],
+            "buckets": buckets,
+        }
+        path = Path(json_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+        print(f"[alloc] bit attribution (per block/role) → {path}", flush=True)
+
+    if csv_path:
+        path = Path(csv_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow([
+                "qname", "block_id", "role", "format",
+                "bits", "bpp", "n_params", "h_trace", "predicted_dloss",
+            ])
+            for row in per_linear:
+                writer.writerow([
+                    row["qname"], row["block_id"], row["role"], row["format"],
+                    "" if row["bits"] is None else f"{row['bits']:.6g}",
+                    "" if row["bpp"] is None else f"{row['bpp']:.6g}",
+                    "" if row["n_params"] is None else row["n_params"],
+                    "" if row["h_trace"] is None else f"{row['h_trace']:.6g}",
+                    "" if row["predicted_dloss"] is None else f"{row['predicted_dloss']:.6g}",
+                ])
+        print(f"[alloc] bit attribution (per Linear) → {path}", flush=True)
+
+    # Compact stdout rollup by role across all blocks — the at-a-glance answer
+    # to "where did the budget go?" without opening the JSON.
+    role_roll: dict[str, dict] = {}
+    for row in per_linear:
+        agg = role_roll.setdefault(row["role"], {
+            "n": 0, "bits": 0.0, "params": 0, "fmts": defaultdict(int)})
+        agg["n"] += 1
+        agg["fmts"][row["format"]] += 1
+        if row["bits"] is not None:
+            agg["bits"] += row["bits"]
+        if row["n_params"]:
+            agg["params"] += row["n_params"]
+    print("[alloc] bit attribution by role (body only):", flush=True)
+    for role in sorted(role_roll, key=lambda r: -(role_roll[r]["bits"])):
+        agg = role_roll[role]
+        mean_bpp = (agg["bits"] / agg["params"]) if agg["params"] else float("nan")
+        fmt_mix = " ".join(
+            f"{fmt}:{n}" for fmt, n in sorted(agg["fmts"].items(), key=lambda kv: -kv[1]))
+        print(f"    {role:>22}  n={agg['n']:>4}  mean_bpp={mean_bpp:6.3f}  [{fmt_mix}]",
+              flush=True)
+
+
 def discover_visual_linears_from_source(model_path: str) -> list[str]:
     """Scan the source safetensors index for `model.visual.blocks.*.weight`
     entries with rank-2 shapes — these are the Linear modules the visual
@@ -600,6 +845,15 @@ def main():
                     help="Uniform format for MTP Linears. BF16 is the "
                          "production default until MTP speculative-decode "
                          "acceptance is validated for quantized MTP weights.")
+    ap.add_argument("--bit-attribution-json", default=None,
+                    help="Optional path: write a read-only 'where did the "
+                         "budget go' report bucketing the final body "
+                         "assignment by (block, role) with per-bucket bpp, "
+                         "format mix, summed predicted_dloss and h_trace.")
+    ap.add_argument("--bit-attribution-csv", default=None,
+                    help="Optional path: write the flat per-Linear bit "
+                         "attribution table (qname, block, role, format, "
+                         "bits, bpp, n_params, h_trace, predicted_dloss).")
     args = ap.parse_args()
 
     if args.threads > 0:
@@ -1396,6 +1650,19 @@ def main():
         print(f"  {fmt:>14}: {n:>5} layers")
     print(f"\nLayer config → {out}")
     print(f"Feed to AutoRound via --layer_config {out}")
+
+    # Optional read-only "where did the budget go?" attribution over the final
+    # resolved body assignment. Derived from already-resolved data; no re-probe.
+    _write_bit_attribution_reports(
+        args.bit_attribution_json,
+        args.bit_attribution_csv,
+        target_bits=args.target_bits,
+        achieved_bits=achieved,
+        assignment_expanded=assignment_expanded,
+        candidates=candidates,
+        stats_entry_for=_stats_entry_for_assignment_name,
+        format_specs=format_specs,
+    )
 
 
 if __name__ == "__main__":
