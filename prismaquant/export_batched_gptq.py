@@ -24,7 +24,11 @@ The math is bitwise-equivalent to the per-Linear functions in
 """
 from __future__ import annotations
 
+import logging
+
 import torch
+
+logger = logging.getLogger(__name__)
 
 # Re-import codebook helpers from the main export module to avoid
 # duplicating the FP4 grid definition.
@@ -321,6 +325,16 @@ def gptq_obs_rounding_nvfp4_batched(
         # pack will RTN-quantize as if no GPTQ ran.
         if failed_mask.any():
             failed_idx = failed_mask.nonzero(as_tuple=True)[0]
+            # Surface the silent GPTQ->RTN degradation: these experts'
+            # Cholesky was singular/NaN/OOM, so they ship as un-error-
+            # propagated NVFP4 RTN (lower calibration fidelity than GPTQ).
+            logger.warning(
+                "batched GPTQ: %d/%d experts in this chunk fell back to "
+                "RTN (Cholesky failed); they export as un-error-propagated "
+                "NVFP4. Expert indices in chunk: %s",
+                int(failed_mask.sum().item()), int(failed_mask.numel()),
+                failed_idx.tolist(),
+            )
             for j in failed_idx.tolist():
                 override = (
                     global_real[j]

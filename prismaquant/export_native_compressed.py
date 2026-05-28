@@ -91,9 +91,15 @@ from .model_profiles.qwen3_5 import Qwen3_5Profile
 from .schemas import validate_layer_config_payload
 
 # ---------------------------------------------------------------------------
-# NVFP4 packing (inlined from compressed-tensors fp4_quantized.py to avoid
-# importing the library's __init__ which pulls in transformers internals
-# that are not stable across the 4.x → 5.x break).
+# NVFP4 packing. The byte layout (two 4-bit indices/byte, element-0 low nibble,
+# element-1 high nibble) matches compressed-tensors'
+# `compressed_tensors.compressors.nvfp4.helpers.pack_fp4_to_uint8` and is
+# verified byte-identical in tests. We pack indices directly rather than call
+# that helper because (a) it takes a FLOAT tensor and runs its own argmin
+# codebook assignment + clamping, whereas our scale-rule / JSO / four-over-six
+# `_round_to_codebook` path already produces the indices; and (b) importing the
+# library's package __init__ pulls in transformers internals that are not
+# stable across the transformers 4.x -> 5.x break.
 # ---------------------------------------------------------------------------
 FLOAT_TO_E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 NVFP4_MAX = 6.0     # max(|FLOAT_TO_E2M1|)
@@ -2041,14 +2047,6 @@ def _fp8_dequantize(
     )
 
 
-def _mxfp8_e8m0_to_scale(
-    e8m0_uint8: torch.Tensor,
-    *,
-    device: torch.device | None = None,
-) -> torch.Tensor:
-    return e8m0_to_scale(e8m0_uint8, device=device)
-
-
 def _mx_rounded_amax_power2(amax: torch.Tensor) -> torch.Tensor:
     """Match compressed-tensors' MX scale power-of-two rounding.
 
@@ -2219,7 +2217,7 @@ def _mxfp4_dequantize_2d(
     lo = (weight_packed & 0xF).to(torch.long)
     hi = ((weight_packed >> 4) & 0xF).to(torch.long)
     fp4_idx = torch.stack([lo, hi], dim=-1).reshape(rows, cols)
-    scale_by_col = _mxfp8_e8m0_to_scale(
+    scale_by_col = e8m0_to_scale(
         scale,
         device=weight_packed.device,
     ).repeat_interleave(group_size, dim=1)
@@ -2293,7 +2291,7 @@ def _mxfp8_dequantize_grouped(
     quant_fp8: torch.Tensor,
     e8m0_uint8: torch.Tensor,
 ) -> torch.Tensor:
-    scale = _mxfp8_e8m0_to_scale(e8m0_uint8, device=quant_fp8.device)
+    scale = e8m0_to_scale(e8m0_uint8, device=quant_fp8.device)
     return quant_fp8.to(torch.float32) * scale.unsqueeze(-1)
 
 
@@ -2615,7 +2613,7 @@ def _gptq_obs_rounding_mxfp4(
         block_end = block_start + group_size
         codec = _mxfp4_grouped_codec(W[:, block_start:block_end])
         scale_out[:, group_idx] = codec.scale
-    scale_by_col = _mxfp8_e8m0_to_scale(
+    scale_by_col = e8m0_to_scale(
         scale_out,
         device=W.device,
     ).repeat_interleave(group_size, dim=1)
@@ -2804,7 +2802,7 @@ def _gptq_obs_rounding_fp8_like(
                 element_max=element_max,
             )
             scale_out[:, group_idx] = scale_block
-        scale_by_col = _mxfp8_e8m0_to_scale(
+        scale_by_col = e8m0_to_scale(
             scale_out,
             device=W.device,
         ).repeat_interleave(group_size, dim=1)

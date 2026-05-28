@@ -901,7 +901,7 @@ class TestRoundTrip(unittest.TestCase):
                 element_max=enc.MXFP8_E4M3_MAX,
             )
             scale[:, group_idx] = scale_block
-        scale_by_col = enc._mxfp8_e8m0_to_scale(scale).repeat_interleave(
+        scale_by_col = enc.e8m0_to_scale(scale).repeat_interleave(
             group_size,
             dim=1,
         )
@@ -968,7 +968,7 @@ class TestRoundTrip(unittest.TestCase):
                 element_max=enc.MXFP8_E4M3_MAX,
             )
             scale[:, group_idx] = scale_block
-        scale_by_col = enc._mxfp8_e8m0_to_scale(scale).repeat_interleave(
+        scale_by_col = enc.e8m0_to_scale(scale).repeat_interleave(
             group_size,
             dim=1,
         )
@@ -1035,7 +1035,7 @@ class TestRoundTrip(unittest.TestCase):
                 W_work[:, block_start:block_start + group_size]
             )
             scale[:, group_idx] = codec.scale
-        scale_by_col = enc._mxfp8_e8m0_to_scale(scale).repeat_interleave(
+        scale_by_col = enc.e8m0_to_scale(scale).repeat_interleave(
             group_size,
             dim=1,
         )
@@ -1098,7 +1098,7 @@ class TestRoundTrip(unittest.TestCase):
                 W_work[:, block_start:block_start + group_size]
             )
             scale[:, group_idx] = codec.scale
-        scale_by_col = enc._mxfp8_e8m0_to_scale(scale).repeat_interleave(
+        scale_by_col = enc.e8m0_to_scale(scale).repeat_interleave(
             group_size,
             dim=1,
         )

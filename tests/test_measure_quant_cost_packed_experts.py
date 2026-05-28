@@ -9,11 +9,25 @@ import torch.nn.functional as F
 from prismaquant import format_registry as fr
 from prismaquant.measure_quant_cost import (
     ActivationIndex,
+    _batched_quantize,
     _finalize_results,
     _measure_packed_experts,
     _packed_experts_forward_with_weights,
     _packed_router_topk,
 )
+
+
+class _StubHDetail:
+    """Minimal HDetailIndex stand-in returning fixed per-channel Fisher."""
+
+    def __init__(self, mapping: dict[str, torch.Tensor]):
+        self._m = mapping
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._m
+
+    def load(self, name: str) -> torch.Tensor:
+        return self._m[name]
 from prismaquant.allocator_candidates import cost_entry_uses_measured_output_mse
 
 
@@ -94,6 +108,58 @@ class TinyModel(nn.Module):
 def _write_activation_cache(cache_dir, name: str, inputs: torch.Tensor) -> None:
     fname = re.sub(r"[^A-Za-z0-9_-]", "__", name) + ".pt"
     torch.save({"inputs": inputs, "name": name}, cache_dir / fname)
+
+
+def test_packed_expert_dloss_is_mean_field_not_product_of_sums():
+    """Guard the packed-expert Δloss scale fix.
+
+    h_em[e,m] = Σ_n grad² is the per-row SUM over in-features (channel
+    accumulator). The correct on-scale Δloss is the mean-field estimate
+    0.5·Σ h_em·mean_n(err²), matching the dense path's 0.5·Σ g²·err². The
+    previous code multiplied by N (=in-features), turning it into a
+    product-of-sums (Σg²)(Σerr²) that over-counts ~N× and over-promotes
+    experts in the allocator. This test pins the mean-field value and
+    rejects the ×N regression.
+    """
+    torch.manual_seed(7)
+    model = TinyModel().eval()
+    target_names = {"mlp.experts.gate_up_proj", "mlp.experts.down_proj"}
+
+    # Known per-channel Fisher [E, M] matching each packed weight's (E, M).
+    h_map: dict[str, torch.Tensor] = {}
+    for name in target_names:
+        w = dict(model.named_parameters())[name]
+        h_map[name] = torch.rand(w.size(0), w.size(1), dtype=torch.float32) + 0.1
+    h_detail = _StubHDetail(h_map)
+
+    spec = fr.get_format("NVFP4")
+    accum: dict = {}
+    _measure_packed_experts(
+        model, target_names, [spec], "cpu", torch.float32, accum,
+        act_cache=None, h_detail=h_detail,
+    )
+    results = _finalize_results(accum)
+
+    for name in target_names:
+        w = dict(model.named_parameters())[name].detach().float()
+        n_in = w.size(-1)
+        err = (w - _batched_quantize(spec, w)).float()
+        h_em = h_map[name]
+        expected_mean_field = float(
+            0.5 * (h_em * err.pow(2).mean(dim=-1)).sum().item()
+        )
+        old_product_of_sums = expected_mean_field * n_in  # the ×N regression
+        got = float(results[name]["NVFP4"]["predicted_dloss"])
+
+        # Matches the mean-field (no ×N) value...
+        assert abs(got - expected_mean_field) <= 1e-4 * max(expected_mean_field, 1e-12), (
+            f"{name}: dloss {got} != mean-field {expected_mean_field}"
+        )
+        # ...and is NOT the ~N× product-of-sums (n_in=16 here, so a clear gap).
+        assert got < 0.5 * old_product_of_sums, (
+            f"{name}: dloss {got} looks like the ×N product-of-sums "
+            f"{old_product_of_sums} (regression)"
+        )
 
 
 def test_packed_experts_measure_output_mse_from_expert_activation_cache(tmp_path):
