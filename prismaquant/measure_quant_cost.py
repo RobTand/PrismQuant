@@ -736,7 +736,19 @@ def _measure_packed_experts(
                 gate_up = gate_up_param.detach().to(device=dev, dtype=dtype)
                 down = down_param.detach().to(device=dev, dtype=dtype)
                 with torch.no_grad():
-                    top_k_index, top_k_weights = _packed_router_topk(router, X)
+                    # Prefer the MoE block's own routing when it exposes a
+                    # `route_tokens_to_experts` method — that is faithful to
+                    # whatever selection the architecture actually uses (e.g.
+                    # sigmoid scores + expert_bias top-k + norm + routed
+                    # scaling, with `top_k` living on the block rather than the
+                    # bare gate Linear) instead of the generic softmax top-k.
+                    # Falls back to the generic extraction for routers that
+                    # don't expose it (Qwen/DeepSeek-style bare gate Linears).
+                    _route_fn = getattr(parent_mod, "route_tokens_to_experts", None)
+                    if callable(_route_fn):
+                        top_k_index, top_k_weights = _route_fn(router(X))
+                    else:
+                        top_k_index, top_k_weights = _packed_router_topk(router, X)
                     y_ref = _packed_experts_forward_with_weights(
                         experts_mod,
                         X,

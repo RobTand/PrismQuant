@@ -59,6 +59,7 @@ except ModuleNotFoundError:
 from .layer_streaming import (
     _build_fp8_scale_inv_map,
     LayerCache,
+    _build_expert_packer,
     _build_install_resolver,
     _build_weight_map,
     _fast_install,
@@ -310,7 +311,8 @@ class StreamingContext:
                  fp8_scale_inv_map: dict[str, tuple[str, str]] | None = None,
                  estimated_layer_bytes: int = 0,
                  prefetch_workers: int = 3,
-                 prefetch_min_available_bytes: int = 0):
+                 prefetch_min_available_bytes: int = 0,
+                 expert_packer=None):
         self.model = model
         self.base_model = base_model
         self.layers = layers
@@ -344,6 +346,11 @@ class StreamingContext:
         # dequanted weights, not raw fp8 codes cast to bf16. Empty dict
         # for BF16-native checkpoints — loader path is unchanged.
         self.fp8_scale_inv_map = fp8_scale_inv_map or {}
+        # Optional per-expert -> packed-3D bridge for checkpoints that ship
+        # MoE experts unfused while the live module is packed. None for
+        # every other checkpoint/model (zero behavior change). Built once
+        # in `_build_streaming_context` from the model profile's spec.
+        self.expert_packer = expert_packer
         self._inflight: dict[int, Any] = {}
         self._inflight_lock = threading.Lock()
         self.configure_runtime_pressure_floor()
@@ -380,7 +387,8 @@ class StreamingContext:
         prefix = f"{self.layers_prefix}{L}."
         tensors = _read_layer_to_device(
             prefix, self.weight_shard, self.weight_ckpt, self.dtype,
-            self.device, fp8_scale_inv_map=self.fp8_scale_inv_map)
+            self.device, fp8_scale_inv_map=self.fp8_scale_inv_map,
+            pack_experts=self.expert_packer)
         # v20 fix #5: prefetch path doesn't force-insert. If the layer
         # exceeds effective budget, the put returns False and the
         # tensors fall out of scope here — ensure_loaded will re-load
@@ -430,7 +438,8 @@ class StreamingContext:
         prefix = f"{self.layers_prefix}{L}."
         tensors = _read_layer_to_device(
             prefix, self.weight_shard, self.weight_ckpt, self.dtype,
-            self.device, fp8_scale_inv_map=self.fp8_scale_inv_map)
+            self.device, fp8_scale_inv_map=self.fp8_scale_inv_map,
+            pack_experts=self.expert_packer)
         self.layer_cache.put(L, tensors)
         return tensors, "cold"
 
@@ -859,4 +868,5 @@ def _build_streaming_context(model_path: str, *,
         estimated_layer_bytes=estimated_layer_bytes,
         prefetch_workers=worker_count,
         prefetch_min_available_bytes=min_available_bytes,
+        expert_packer=_build_expert_packer(model, weight_ckpt),
     )

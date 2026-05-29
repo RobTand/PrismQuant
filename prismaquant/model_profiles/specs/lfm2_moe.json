@@ -1,0 +1,69 @@
+{
+  "schema": "prismaquant.model_structure.v1",
+  "id": "lfm2_moe",
+  "default_serving_profile": "vllm_packed_moe",
+  "runtime_requirements": {
+    "fast_kernel_packages": [
+      {
+        "module": "causal_conv1d",
+        "package": "causal-conv1d (Dao-AILab/causal-conv1d)"
+      }
+    ]
+  },
+  "match": {
+    "model_type": ["lfm2_moe", "lfm2-moe"],
+    "architectures": ["Lfm2Moe*"]
+  },
+  "staging": {
+    "text_only_strip_keys": [],
+    "promote_inner_model_type": false
+  },
+  "naming": {
+    "live_to_recipe": [],
+    "recipe_to_source": [],
+    "recipe_to_vllm": [
+      {
+        "regex": "\\.conv\\.",
+        "replace": ".short_conv."
+      }
+    ]
+  },
+  "fused_groups": [
+    {
+      "target": "self_attn.qkv_proj",
+      "members": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
+    },
+    {
+      "target": "feed_forward.w13",
+      "members": ["feed_forward.w1", "feed_forward.w3"]
+    }
+  ],
+  "packed_experts": {
+    "param_names": ["gate_up_proj", "down_proj"],
+    "module_class_names": ["Lfm2MoeExperts"],
+    "split_for_formats": ["*"],
+    "projection_splits": {
+      "gate_up_proj": ["w1", "w3"],
+      "down_proj": ["w2"]
+    },
+    "format_groups": [
+      ["gate_up_proj", "down_proj"],
+      ["w1", "w3", "w2"]
+    ]
+  },
+  "moe": {
+    "per_expert_regex": "re:^model[.]layers[.][0-9]+[.]feed_forward[.]experts[.][0-9]+[.](w1|w2|w3)$"
+  },
+  "pinned_names": [
+    "lm_head",
+    "model.embed_tokens",
+    "model.embedding_norm",
+    "operator_norm",
+    "ffn_norm",
+    "self_attn.q_layernorm",
+    "self_attn.k_layernorm",
+    "conv.conv",
+    "feed_forward.gate",
+    "feed_forward.expert_bias"
+  ]
+}

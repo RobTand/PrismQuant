@@ -4528,6 +4528,7 @@ def materialize_tensors_streaming(
     from transformers import AutoConfig, AutoModelForCausalLM
 
     from .layer_streaming import (
+        _build_expert_packer,
         _build_fp8_scale_inv_map,
         _build_install_resolver,
         _build_weight_map,
@@ -4570,6 +4571,12 @@ def materialize_tensors_streaming(
 
     weight_shard, weight_ckpt = _build_weight_map(model_path)
     source_dtype_by_name = _build_source_dtype_map(weight_shard, weight_ckpt)
+    # Per-expert -> packed-3D bridge for checkpoints that ship MoE experts
+    # unfused while the live module is packed (driven by the model profile;
+    # None for every other model). Keeps the exporter's source read aligned
+    # with the streaming probe/cost path — a raw checkpoint exports without
+    # an out-of-band pre-pack.
+    expert_packer = _build_expert_packer(model, weight_ckpt)
     # Native-FP8 dequant map, keyed by live weight-qname. Passed to
     # every `_read_layer_to_device` / `_materialize` call so fp8 source
     # weights land on the module as TRUE dequanted bf16 — not raw fp8
@@ -4826,7 +4833,7 @@ def materialize_tensors_streaming(
         load_t0 = time.time()
         tensors = _read_layer_to_device(
             f"{layers_prefix}{L}.", weight_shard, weight_ckpt, dtype, device,
-            fp8_scale_inv_map=fp8_scale_inv_map)
+            fp8_scale_inv_map=fp8_scale_inv_map, pack_experts=expert_packer)
         resolver = _build_install_resolver(model, layer_qname)
         _fast_install(resolver, tensors, device, model=model)
         load_s = time.time() - load_t0

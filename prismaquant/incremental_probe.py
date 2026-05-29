@@ -62,6 +62,7 @@ import torch.nn.functional as F
 from .layer_streaming import (
     _call_layer,
     _compute_position_embeddings,
+    _get_final_norm,
     _make_causal_mask,
 )
 from .sensitivity_probe import (
@@ -1321,7 +1322,7 @@ def _compute_global_precompute(
     # fold multi-stream `[B, T, hc_mult, H]` back to `[B, T, H]`.
     final_hidden_for_norm = _profile.collapse_hidden_after_layers(
         final_hidden, base_model)
-    norm_out = base_model.norm(final_hidden_for_norm)
+    norm_out = _get_final_norm(base_model)(final_hidden_for_norm)
     norm_out_d = norm_out.detach().requires_grad_(True)
     grad_buf = torch.zeros_like(norm_out_d)
     chunk_T = 256
@@ -2556,7 +2557,7 @@ def _run_mtp_streaming_shard(
     inputs_embeds_cpu = precomputed.activations_cpu[0]
     with torch.no_grad():
         pre_norm = precomputed.activations_cpu[-1].to(device).to(dtype)
-        body_final_cpu = base_model.norm(pre_norm).detach().cpu()
+        body_final_cpu = _get_final_norm(base_model)(pre_norm).detach().cpu()
         del pre_norm
     print(f"[incremental/mtp] body forward reused from global precompute "
           f"(norm only: {time.time()-t_phase:.1f}s)", flush=True)

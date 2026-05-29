@@ -17,6 +17,7 @@ from .base import ModelProfile
 from .default import DefaultProfile
 from .deepseek_v4 import DeepseekV4Profile
 from .gemma4 import Gemma4Profile
+from .lfm2_moe import Lfm2MoeProfile
 from .qwen3 import Qwen3Profile
 from .qwen3_5 import Qwen3_5Profile
 from .qwen3_5_dense import Qwen3_5DenseProfile
@@ -45,6 +46,7 @@ __all__ = [
     "Qwen3_5Profile",
     "Qwen3_5DenseProfile",
     "Gemma4Profile",
+    "Lfm2MoeProfile",
     "detect_profile",
     "profile_from_config",
     "profile_from_model",
