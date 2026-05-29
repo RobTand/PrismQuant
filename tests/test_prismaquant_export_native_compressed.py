@@ -1272,6 +1272,42 @@ class TestBuildQuantizationConfig(unittest.TestCase):
         # is_activation_quantization_format check enables W4A4 dispatch.
         self.assertEqual(nvfp4["format"], "nvfp4-pack-quantized")
 
+    def test_lfm2_experts_use_canonical_vllm_scheme_names(self):
+        # LFM2.5 names experts w1/w3/w2 on disk, but vLLM's FusedMoE scheme
+        # detection (get_moe_method) and ignore matching probe the canonical
+        # gate_proj/up_proj/down_proj. The exported config_groups targets AND
+        # ignore regexes for packed experts must therefore use the canonical
+        # names (weights still ship as w1/w2/w3), or vLLM mis-resolves the
+        # scheme (weight-only NVFP4A16 / BF16 experts left un-ignored) and the
+        # artifact fails to load.
+        from prismaquant.model_profiles.lfm2_moe import Lfm2MoeProfile
+        profile = Lfm2MoeProfile()
+        assignment = {
+            "model.layers.2.feed_forward.experts.gate_up_proj": "NVFP4",
+            "model.layers.2.feed_forward.experts.down_proj": "NVFP4",
+        }
+        qc = build_quantization_config(
+            assignment,
+            bf16_passthrough={
+                "model.layers.3.feed_forward.experts.gate_up_proj",
+                "model.layers.3.feed_forward.experts.down_proj",
+            },
+            profile=profile,
+        )
+        expert_targets = [t for g in qc["config_groups"].values()
+                          for t in g["targets"] if "experts" in t]
+        expert_ignores = [x for x in qc["ignore"]
+                          if "experts" in x and x.startswith("re:")]
+        all_expert = expert_targets + expert_ignores
+        self.assertTrue(all_expert, "expected packed-expert regexes")
+        self.assertTrue(any("gate_proj" in t for t in all_expert),
+                        "no canonical gate_proj target/ignore emitted")
+        # On-disk projection names must NOT leak into vLLM scheme regexes.
+        for t in all_expert:
+            self.assertNotIn("(w1", t, f"on-disk name leaked: {t}")
+            self.assertNotIn("w3|", t, f"on-disk name leaked: {t}")
+            self.assertNotIn("|w2", t, f"on-disk name leaked: {t}")
+
     def test_ignore_uses_vllm_internal_naming(self):
         profile = Qwen3_5Profile()
         assignment = {

@@ -3193,6 +3193,31 @@ def _packed_expert_parent_for_projection(profile, projection_name: str) -> str |
     return None
 
 
+def _vllm_moe_scheme_projection_names(profile, param_name: str) -> tuple[str, ...]:
+    """vLLM FusedMoE scheme-probe / ignore projection names for a packed
+    expert param — the canonical ``gate_proj``/``up_proj``/``down_proj``
+    that vLLM's ``get_moe_method`` and ignore matching dispatch on,
+    regardless of the on-disk weight names. Used ONLY for config_groups
+    targets + ignore regexes; weight export still uses the on-disk names.
+    See ModelProfile.vllm_fused_moe_scheme_projection_names."""
+    if profile is None:
+        try:
+            from .model_profiles import DefaultProfile
+            profile = DefaultProfile()
+        except Exception:
+            profile = None
+    if profile is not None:
+        getter = getattr(profile, "vllm_fused_moe_scheme_projection_names", None)
+        if callable(getter):
+            try:
+                projections = tuple(getter(param_name))
+                if projections:
+                    return projections
+            except Exception:
+                pass
+    return _packed_expert_projection_names(profile, param_name)
+
+
 def _all_packed_expert_projection_names(profile) -> tuple[str, ...]:
     projections: list[str] = []
     seen: set[str] = set()
@@ -5748,7 +5773,11 @@ def _bf16_packed_expert_ignore_regex(
     lm = _re.search(r"\.layers\.(\d+)\.", recipe_key)
     if lm:
         layer_idx = lm.group(1)
-    projections = _packed_expert_projection_names(profile, pn)
+    # vLLM's should_ignore_layer probes the canonical gate_proj/up_proj/
+    # down_proj names; emit the ignore regex with those (not the on-disk
+    # w1/w3/w2), else BF16 experts are not recognized as ignored and fall
+    # through to a quantized catch-all scheme.
+    projections = _vllm_moe_scheme_projection_names(profile, pn)
     proj_options = "|".join(_re.escape(proj) for proj in projections)
 
     # Use the profile's own regex as the base; swap its `(gate|up|down)_proj`
@@ -6020,7 +6049,9 @@ def build_quantization_config(
         packed_fused_states.setdefault(fused_qname, set()).add(state)
         seen = set(packed_fused_projections.setdefault(fused_qname, []))
         for member in _packed_format_group_members(fused_qname, leaf):
-            for projection in _packed_expert_projection_names(profile, member):
+            # vLLM scheme dispatch probes canonical gate_proj/up_proj/down_proj
+            # names, not the on-disk projection names (w1/w3/w2 on LFM2.5).
+            for projection in _vllm_moe_scheme_projection_names(profile, member):
                 if projection in seen:
                     continue
                 packed_fused_projections[fused_qname].append(projection)
@@ -6178,10 +6209,26 @@ def build_quantization_config(
         # per-expert regexes remain as a safety-net for any
         # per-expert Linear not captured by the collapse (e.g.
         # stray experts the recipe didn't enumerate).
+        # The profile per-expert regexes name on-disk projections; vLLM's
+        # scheme probe uses canonical gate_proj/up_proj/down_proj. Rewrite
+        # the projection group ONLY when the on-disk names differ from
+        # canonical (LFM2.5's w1/w3/w2) — left verbatim when the profile is
+        # already canonical (e.g. Qwen), so shipped configs don't churn.
+        ondisk: set[str] = set()
+        canon: set[str] = set()
+        for pname in sorted(_packed_expert_param_name_set(profile)):
+            ondisk.update(_packed_expert_projection_names(profile, pname))
+            canon.update(_vllm_moe_scheme_projection_names(profile, pname))
+        need_canon = ondisk != canon and bool(canon)
+        canon_opts = "|".join(sorted(canon)) or "gate_proj|up_proj|down_proj"
         expert_regexes = []
-        if (r := profile.per_expert_moe_regex()) is not None:
-            expert_regexes.append(r)
-        if (r := profile.per_expert_mtp_regex()) is not None:
+        for getter in (profile.per_expert_moe_regex, profile.per_expert_mtp_regex):
+            r = getter()
+            if r is None:
+                continue
+            if need_canon:
+                body = r[len("re:"):] if r.startswith("re:") else r
+                r = f"re:{_constrain_per_expert_projection_regex(body, canon_opts)}"
             expert_regexes.append(r)
         scheme["targets"] = _build_target_list(by_fmt[catchall]) + expert_regexes
         config_groups[f"group_{idx}"] = scheme

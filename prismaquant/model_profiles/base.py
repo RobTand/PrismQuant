@@ -440,6 +440,33 @@ class ModelProfile(ABC):
             return projection_name
         return None
 
+    def vllm_fused_moe_scheme_projection_names(
+        self, param_name: str
+    ) -> tuple[str, ...]:
+        """Per-expert projection names vLLM's FusedMoE scheme detection
+        (`get_moe_method`) and ignore-matching probe at load time.
+
+        vLLM builds synthetic per-expert names ``experts.0.gate_proj`` /
+        ``up_proj`` / ``down_proj`` to look up the FusedMoE quant scheme,
+        regardless of the checkpoint's actual projection names. So
+        compressed-tensors ``config_groups`` targets and ``ignore`` regexes
+        for packed experts must use THESE canonical names — not
+        :meth:`packed_expert_projection_names`, which names the on-disk
+        weights (e.g. LFM2.5's ``w1``/``w3``/``w2``). Using the on-disk
+        names makes vLLM mis-resolve the scheme (it loses the input-
+        activation spec → builds the weight-only NVFP4A16 variant, or marks
+        BF16 experts un-ignored) and the artifact fails to load. The weights
+        themselves still load via the model's expert mapping
+        (``gate_proj``=w1, ``up_proj``=w3, ``down_proj``=w2)."""
+        if param_name == "gate_up_proj":
+            return ("gate_proj", "up_proj")
+        if param_name == "down_proj":
+            return ("down_proj",)
+        if param_name in ("gate_proj", "up_proj", "down_proj"):
+            return (param_name,)
+        # Unknown packed param: fall back to the on-disk projection names.
+        return self.packed_expert_projection_names(param_name)
+
     def unpacked_expert_projection_names(self) -> tuple[str, ...]:
         """Per-expert *module attribute* names for UNPACKED MoE experts.
 
