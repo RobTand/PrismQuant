@@ -63,6 +63,16 @@ Linear), the tiny MoE router ``feed_forward.gate``, and the F32
 (``use_expert_bias=True``; vLLM loads it as
 ``gate.e_score_correction_bias``).
 
+The short-conv mixer Linears ``conv.in_proj`` / ``conv.out_proj`` are also
+pinned (BF16 passthrough). vLLM builds the mixer via
+``ShortConv(... prefix=".conv")`` WITHOUT a ``quant_config``
+(vllm/model_executor/models/lfm2_moe.py), so those Linears are always
+unquantized at serving time — emitting compressed-tensors scales for them
+makes the artifact fail to load (``KeyError: …short_conv.out_proj.
+input_global_scale``). Pinning keeps the export aligned with what vLLM can
+actually consume. They are a small share of params (the MoE experts hold
+~93%), so the bpp cost is negligible.
+
 Text-only family: no multimodal umbrella and no MTP head, so
 ``live_to_recipe_name`` / ``source_tensor_name`` are identity and
 ``has_mtp`` stays False.

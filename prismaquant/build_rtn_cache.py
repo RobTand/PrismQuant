@@ -322,8 +322,8 @@ def load_wikitext_calibration(
     split: str = "train",
     seed: int = 42,
 ) -> torch.Tensor:
-    from datasets import load_dataset
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1", split=split)
+    from .calibration_data import load_wikitext2_raw
+    ds = load_wikitext2_raw(split=split)
     text = "\n\n".join(row["text"] for row in ds if row["text"].strip())
     enc = tokenizer(text, return_tensors="pt", truncation=False).input_ids
     total = enc.size(1)

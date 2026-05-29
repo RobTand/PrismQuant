@@ -102,6 +102,18 @@ def test_shape_mismatch_fails_loud():
         raise AssertionError("expected ValueError on shape mismatch")
 
 
+def test_short_conv_linears_pinned_for_vllm():
+    """vLLM builds the LFM2.5 short-conv mixer (ShortConv) without a
+    quant_config, so its in_proj/out_proj are unquantized at serving time.
+    The profile must pin them (BF16 passthrough) or the exported artifact
+    fails to load (KeyError on …short_conv.out_proj.input_global_scale)."""
+    pins = list(Lfm2MoeProfile().pinned_names())
+    assert "conv.in_proj" in pins
+    assert "conv.out_proj" in pins
+    # depthwise conv + router/bias stay pinned too
+    assert "conv.conv" in pins
+
+
 def test_missing_expert_fails_loud():
     """A gap in the expert index range must raise."""
     prof, pat = _lfm_pat()

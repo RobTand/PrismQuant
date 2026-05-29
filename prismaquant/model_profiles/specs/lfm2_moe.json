@@ -63,6 +63,8 @@
     "self_attn.q_layernorm",
     "self_attn.k_layernorm",
     "conv.conv",
+    "conv.in_proj",
+    "conv.out_proj",
     "feed_forward.gate",
     "feed_forward.expert_bias"
   ]

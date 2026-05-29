@@ -54,6 +54,23 @@ def _sample_token_windows_from_texts(
     return torch.stack(windows, dim=0)
 
 
+def load_wikitext2_raw(split: str = "train"):
+    """Load wikitext-2-raw, tolerant of dataset-id deprecation.
+
+    Newer ``huggingface_hub`` rejects the bare ``"wikitext"`` repo id
+    (requires ``namespace/name``), so try the canonical mirror first and
+    fall back to the legacy id for older stacks."""
+    from datasets import load_dataset
+
+    last = None
+    for ds_id in ("Salesforce/wikitext", "wikitext", "mindchain/wikitext-2"):
+        try:
+            return load_dataset(ds_id, "wikitext-2-raw-v1", split=split)
+        except Exception as e:  # try the next id
+            last = e
+    raise RuntimeError(f"could not load wikitext-2-raw-v1: {last}")
+
+
 def load_wikitext_calibration_windowed(
     tokenizer,
     n_samples: int,
@@ -63,9 +80,7 @@ def load_wikitext_calibration_windowed(
     seed: int = 42,
 ) -> torch.Tensor:
     """Load small WikiText calibration windows without tokenizing the full corpus."""
-    from datasets import load_dataset
-
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1", split=split)
+    ds = load_wikitext2_raw(split=split)
     texts = [row["text"] for row in ds if str(row.get("text", "")).strip()]
     del ds
     return _sample_token_windows_from_texts(
