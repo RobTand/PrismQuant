@@ -2,6 +2,8 @@ import importlib
 from collections import OrderedDict
 from types import SimpleNamespace
 
+import importlib.util
+
 import pytest
 import torch
 import torch.nn as nn
@@ -329,6 +331,10 @@ def test_memory_budget_evicts_when_low(monkeypatch):
     assert evictor.evicted == [0]
 
 
+# triton is NOT a declared dependency -- it ships inside the CUDA torch wheel
+# and is absent from any CPU-only install.
+@pytest.mark.skipif(importlib.util.find_spec("triton") is None,
+                    reason="triton unavailable (CPU-only torch wheel)")
 def test_triton_warmup_compiles_kernel(monkeypatch):
     monkeypatch.delenv("PRISMAQUANT_NVFP4_FUSED_JIT_WARMUP", raising=False)
     module = importlib.import_module("prismaquant.kernels.nvfp4_fused")

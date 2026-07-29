@@ -35,6 +35,11 @@ dependencies = [
     "accelerate>=0.30",
     "compressed-tensors>=0.15",
     "gguf>=0.17",
+    # Multimodal calibration builds synthetic PIL images
+    # (sensitivity_probe._synthetic_multimodal_calibration_samples). Without
+    # it that function returns [] -- zero calibration samples, no error -- so
+    # the VL probe path silently does nothing. It was never declared.
+    "pillow>=10.0",
     "tqdm",
 ]
 
