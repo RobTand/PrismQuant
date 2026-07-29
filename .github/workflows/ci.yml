@@ -41,9 +41,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Floor and current. requires-python is >=3.10; the reference box runs
+        # Floor and current. requires-python is >=3.11 (schemas.py needs
+        # typing.NotRequired); the reference box runs
         # 3.12. Widen only when a version is actually exercised somewhere.
-        python: ["3.10", "3.12"]
+        python: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v7.0.1
 

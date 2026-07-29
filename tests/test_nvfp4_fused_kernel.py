@@ -1,6 +1,12 @@
 import pytest
 import torch
 
+# triton is NOT a declared dependency -- it ships with the CUDA torch wheel and
+# is absent from a CPU-only install, where this module's kernel import fails at
+# collection time and takes the whole suite down with it. Skip the module
+# instead: these are GPU kernel tests and have nothing to assert without it.
+pytest.importorskip("triton")
+
 from prismaquant import format_registry as fr
 from prismaquant.kernels.nvfp4_fused import (
     nvfp4_dequantize_weight,
