@@ -66,6 +66,18 @@ export TARGET_BITS=2.9
 ./prismaquant/run-pipeline.sh
 ```
 
+Every stage is also runnable on its own; the allocator takes the same menu as a
+flag, so a re-solve against existing probe/cost artifacts needs no re-measurement:
+
+```bash
+python -m prismaquant.allocator --formats NVFP4,FP8_DYNAMIC,BF16 \
+  --probe      $WORK_DIR/artifacts/probe.pkl \
+  --costs      $WORK_DIR/artifacts/cost.pkl \
+  --layer-config $WORK_DIR/artifacts/layer_config.json \
+  --pareto-csv $WORK_DIR/artifacts/pareto.csv \
+  --target-bits 4.75
+```
+
 The pipeline runs probe → cost → allocator → export → serve-smoke end-to-end, with fail-fast gates on any configuration that would break the measurement contract (it will tell you exactly why and what to set). Models too large for memory (200B+ MoE) run the streaming layer-by-layer path — peak memory is bounded by ~1 layer + a tunable cache.
 
 ---
@@ -145,7 +157,7 @@ First-class profiles in-tree:
 
 - **Qwen3 / 3.5 / 3.6** — dense + packed-3D MoE + MTP heads, Gated-DeltaNet hybrids
 - **Tencent Hy3** (`hy_v3`) — 295B/21B-active, 192-expert MoE + MTP sidecar
-- **DeepSeek-V4-Flash** — 671B-class, vendored transformer implementation
+- **DeepSeek-V4-Flash** (vendored transformer + profile) — 671B-class, per-expert-Linear MoE
 - **MiniMax M2 / M2.7** — nested per-expert MoE, native-FP8 source
 - **Gemma4** — multi-layer-type rope, KV sharing, visual/text profiles
 - **LFM2.5** — per-expert MoE + short-conv layers

@@ -22,6 +22,13 @@ cost. Set the env var to `"1"` to force a graph path for benchmarking, or
 | `PRISMAQUANT_FISHER_OUTPUT_MSE_ALLOCATOR` | **archived** | Historical Fisher row-weighted allocator objective. The production pipeline rejects it; archive context lives under `archive/fisher_2026-05-15/`. |
 | `PRISMAQUANT_FISHER_OUTPUT_MSE_ROW_WEIGHT_CLIP` | archived companion | Historical cap for Fisher output-MSE allocation; not used by the production pipeline. |
 
+## Cost-estimation subsampling
+
+| Flag | Default | What it does |
+|---|---|---|
+| `PRISMAQUANT_EXPERT_COST_SAMPLE` | `0` (off) | Stratified expert subsample for COST entries on stacked-expert (3D) weights: prices `S` of `E` experts and takes the mean, at `E/S` less quantize work. The allocator prices the whole stack as one unit, so this estimates exactly the quantity it consumes. **Export always quantizes every expert** — this only touches the DP's cost estimates. Added because an exhaustive IQ grid search on a 3.5G-element stack ran ~25 min/layer at full `E`, and a full-stack NVFP4/FP8 registry quantize swap-kills a unified-memory box the same way (2026-07-11). |
+| `PRISMAQUANT_GGUF_EXPERT_COST_SAMPLE` | `0` (off) | Legacy name for the above, read as a fallback when `PRISMAQUANT_EXPERT_COST_SAMPLE` is unset. The mechanism is family-agnostic despite the name; prefer the unprefixed flag. |
+
 ## Export flags
 
 | env var | default | what it does |
@@ -49,6 +56,13 @@ cost. Set the env var to `"1"` to force a graph path for benchmarking, or
 | `PRISMAQUANT_GPTQ_BLOCK_SIZE` | `128` | Column block size for the FP-Quant-style GPTQ OBS update across NVFP4, FP8_DYNAMIC/FP8_E4M3, and explicit MX research formats. Quantizer scales are fixed before the solve; each column is quantized and its error is propagated through the current GPTQ block and later blocks. `PRISMAQUANT_FP8_GPTQ_BLOCK_SIZE` remains accepted as a backward-compatible alias when the new flag is unset. |
 | `PRISMAQUANT_MXFP8_JOINT_SCALE_SHIFTS` | ignored | Legacy candidate E8M0 exponent shifts for the removed MXFP8 joint-scale search. Production MXFP8 no longer consumes `joint_scale_opt`; it uses the canonical E8M0 scale rule inside GPTQ. |
 | `PRISMAQUANT_MXFP8_SCALE_SWEEP_SHIFTS` | `0` | Explicit-ablation candidate E8M0 exponent shifts for MXFP8_E4M3 activation-weighted scale search. The default is a no-op; nonzero shifts are experimental and refine the current accepted render under the same progressive gate. |
+
+### Export-time overrides
+
+| Flag | Default | What it does |
+|---|---|---|
+| `PRISMAQUANT_TARGET_PROFILE` | unset | Audit export legality under the **same** serving profile the allocator solved with, instead of the architecture's spec default. Without it, an arch whose default differs (Hy3 defaults to `gguf`) coerces every format that default cannot serve — measured 2026-07-11: 226 dense FP8 Linears silently demoted to BF16 on the Hy3 compressed-tensors export. |
+| `PRISMAQUANT_EXPORT_INLINE_EXPERT_GPTQ` | `0` (off) | Run per-expert GPTQ inline during export, passing a transient rendered stack rather than materialising one. Opt-in; the default export path renders from the production cache. |
 
 ## Pipeline production-cache flags
 
@@ -126,7 +140,9 @@ PRISMAQUANT_DISABLE_RTN_COMPILE
 PRISMAQUANT_DO_NO_HARM
 PRISMAQUANT_DO_NO_HARM_VERBOSE
 PRISMAQUANT_EMPTY_CACHE_EACH_REPLAY_BATCH
+PRISMAQUANT_EXPERT_COST_SAMPLE
 PRISMAQUANT_EXPERT_LAZY_FILL
+PRISMAQUANT_EXPORT_INLINE_EXPERT_GPTQ
 PRISMAQUANT_EXTERNAL_WEIGHT_MANAGEMENT
 PRISMAQUANT_FISHER_GPTQ_ROW_WEIGHT_CLIP
 PRISMAQUANT_FISHER_OUTPUT_MSE_ALLOCATOR
@@ -141,6 +157,7 @@ PRISMAQUANT_FULL_SENTINEL
 PRISMAQUANT_FULL_SEQUENCE_KL
 PRISMAQUANT_FUSED_KERNEL_NVFP4
 PRISMAQUANT_FUSED_KERNEL_OVER_PROD_CACHE
+PRISMAQUANT_GGUF_EXPERT_COST_SAMPLE
 PRISMAQUANT_GPTQ_BLOCK_SIZE
 PRISMAQUANT_GPTQ_DAMP
 PRISMAQUANT_GPTQ_DAMP_ROLES
@@ -154,6 +171,7 @@ PRISMAQUANT_GRAPH_POOL
 PRISMAQUANT_GRAPH_SHARED_POOL
 PRISMAQUANT_HOST_MEM_RESERVE_FRACTION
 PRISMAQUANT_HOST_MEM_RESERVE_GB
+PRISMAQUANT_IQ_COMPILE_SWEEP
 PRISMAQUANT_KL_CUDA_GRAPHS
 PRISMAQUANT_KL_CUDA_GRAPHS_VERBOSE
 PRISMAQUANT_KL_CUDA_GRAPH_CACHE_SIZE
@@ -171,9 +189,9 @@ PRISMAQUANT_MASK_CUDA_DURING_META_INIT
 PRISMAQUANT_MAX_GPU_MEM_GB
 PRISMAQUANT_MXFP8_JOINT_SCALE_SHIFTS
 PRISMAQUANT_MXFP8_SCALE_SWEEP_SHIFTS
-PRISMAQUANT_NVFP4_FUSED_JIT_WARMUP
 PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES
 PRISMAQUANT_NVFP4_EXPORT_MATCH_RENDER_SCALE
+PRISMAQUANT_NVFP4_FUSED_JIT_WARMUP
 PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE
 PRISMAQUANT_NVFP4_JOINT_SCALE_GLOBAL_GRID
 PRISMAQUANT_NVFP4_JOINT_SCALE_GLOBAL_SPAN_HI
@@ -191,6 +209,7 @@ PRISMAQUANT_RENDER_PROGRESSIVE_GATES
 PRISMAQUANT_SHARED_WEIGHT_FORMAT_CACHE
 PRISMAQUANT_STRICT_ASSIGNMENT_COVERAGE
 PRISMAQUANT_STRICT_PRODUCTION_CACHE
+PRISMAQUANT_TARGET_PROFILE
 PRISMAQUANT_TMPDIR
 PRISMAQUANT_UMA_MEMORY_INFO
 PRISMAQUANT_VALIDATION_CUDA_GRAPHS
@@ -222,6 +241,11 @@ done
 ```
 
 ## GGUF lane (2026-07-06, `docs/gguf_lane.md`)
+
+| Flag | Default | What it does |
+|---|---|---|
+| `PRISMAQUANT_IQ_COMPILE_SWEEP` | `1` (on) | `torch.compile` the IQ full-grid sweep kernels. Set to `0`/`false`/`no` to force the eager path — the compiled and eager sweeps compute the same errors, so this is a debug/compat switch, not a quality one. |
+
 
 | Flag | Default | Meaning |
 |---|---|---|
