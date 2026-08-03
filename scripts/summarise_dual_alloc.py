@@ -135,9 +135,12 @@ def main() -> None:
         "mxfp8_dominance": mxfp8_dominance(),
     }
     for tag, note in (
-        ("a", "shippable today; body passthrough route measured-blocked"),
-        ("b", "CONTINGENT on the gridbook MXFP8 lane merging + releasing + "
-              "passing native-parity; producer route_status stays 'blocked'"),
+        ("a", "conservative fallback: no body passthrough, for a deploy that "
+              "cannot set GRIDBOOK_MXFP8_DENSE=1"),
+        ("b", "LIKELY SHIP PICK: gridbook 0.8.0 dense MXFP8 lane is released "
+              "and correctness-audited, so route_status is 'backed'. OPT-IN "
+              "pending its native-parity TIMING bench, so it makes "
+              "GRIDBOOK_MXFP8_DENSE=1 load-bearing alongside marlin."),
     ):
         root = probe / f"alloc-{tag}"
         if (root / "selection.json").is_file():

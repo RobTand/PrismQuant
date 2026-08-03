@@ -12,15 +12,19 @@
 #                         sm121, so this is the honest answer against the
 #                         5812.11 baseline.
 #
-#   (b) contingent        menu WITH it. CONTINGENT on the gridbook MXFP8 lane
-#                         merging, releasing, and passing its native-parity
-#                         bench -- it is on an unmerged opt-in branch, so the
-#                         producer-side route_status deliberately stays
-#                         `blocked` and is NOT flipped here. (b) is produced by
-#                         widening the MENU, not by editing the route table:
-#                         a blocked rung stays on the allocator's menu by
-#                         construction and the gate lives at export, so no
-#                         contract edit is needed to price the counterfactual.
+#   (b) LIKELY SHIP PICK  menu WITH it. Gridbook 0.8.0 is released with a
+#                         dense MXFP8 lane serving these bytes, so the route
+#                         is real and route_status is `backed`. It remains
+#                         OPT-IN pending its native-parity timing bench, which
+#                         makes GRIDBOOK_MXFP8_DENSE=1 a load-bearing serve
+#                         flag alongside marlin -- so (a) stays worth
+#                         computing as the conservative fallback if that flag
+#                         cannot be set at deploy.
+#
+# The single --formats list applies to experts AND body, so the body units in
+# both variants already carry the probe's K12-K18 columns. That matters for
+# (b): with passthrough legal the DP can MIX -- passthrough for sensitive body
+# units, cheap CB for flat ones -- and the body split is the reportable.
 #
 # Neither variant writes to artifacts/, artifacts-mxfp4-sm121/, or
 # cost_full.pkl. Both are CPU-only -- they must not be run while a GPU tenant
