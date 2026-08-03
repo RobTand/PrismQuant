@@ -54,8 +54,10 @@ python3 "${REPO}/scripts/merge_dsv4_mxfp4_cost.py" \
   --report "${PROBE}/merge_report.json"
 
 run_variant() {
-  local tag="$1" menu="$2" out="${PROBE}/alloc-${1}"
-  local disk_gb="${3:-92}"
+  local tag="$1" menu="$2" budget_b="${3:-92000000000}" extra_b="${4:-0}"
+  local eff_b=$(( budget_b + extra_b ))
+  local disk_gb; disk_gb=$(python3 -c "print(${eff_b}/1e9)")
+  local out="${PROBE}/alloc-${tag}-$(( budget_b / 1000000000 ))"
   mkdir -p "$out"
   ln -sfn "${ART}/probe.pkl" "$out/probe.pkl"
   ln -sfn "${ART}/cb_col_weights.pkl" "$out/cb_col_weights.pkl"
@@ -103,7 +105,24 @@ python3 -m prismaquant.allocator \
 # (c) vs (b) Delta-loss IS the quality cost of keeping the DSpark draft heads.
 # The speed side is measured post-export on the serve arm.
 MTP_BYTES="${MTP_BYTES:-10862838300}"
-run_variant a "$MENU_A"
-run_variant b "$MENU_B"
-run_variant c "$MENU_B" "$(python3 -c "print((92_000_000_000+${MTP_BYTES})/1e9)")"
-echo "[dual] all three variants complete; summarise with scripts/summarise_dual_alloc.py"
+# --- BUDGET AXIS ----------------------------------------------------------
+# The serving target moved to ~131k context, so weight bytes now trade against
+# KV-pool headroom: ~29.7 KB/token => ~3.97 GB per full 131k stream. 92 GB of
+# weights supports ~4 concurrent streams, 88 GB supports ~5.
+#
+# THE STREAM COUNT IS INTEGRAL, and that dominates the choice: every budget
+# between the 5-stream threshold and 92 GB buys exactly ZERO extra streams
+# while still costing quality. So the interesting point is not "as low as
+# possible" but "the LARGEST budget that still clears 5 streams" -- anything
+# below that is quality paid for nothing. 90e9 is added for (b) to test
+# whether the 5th stream is already reachable at roughly half the shave, which
+# is the one extra budget point the latitude allows. If 90 clears 5 streams it
+# strictly dominates 88; if it does not, 88 is vindicated and the extra run
+# cost ~4 CPU-minutes to prove it.
+run_variant a "$MENU_A" 92000000000
+run_variant b "$MENU_B" 92000000000
+run_variant b "$MENU_B" 90000000000
+run_variant b "$MENU_B" 88000000000
+run_variant c "$MENU_B" 92000000000 "$MTP_BYTES"
+run_variant c "$MENU_B" 88000000000 "$MTP_BYTES"
+echo "[dual] budget grid complete; summarise with scripts/summarise_dual_alloc.py"

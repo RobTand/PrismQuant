@@ -25,6 +25,10 @@ from pathlib import Path
 
 SHIPPABLE_BASELINE = 5812.11
 MTP_BYTES = 10_862_838_300      # mtp.* measured from the checkpoint headers
+# ~29.7 KB/token at 131k context, MLA latent 512 + 64 rope + indexer 128, fp8,
+# 43 layers. The count of concurrent streams a pool supports is INTEGRAL, so
+# quality paid below a threshold buys nothing until the next one is crossed.
+KV_GB_PER_131K_STREAM = 3.97
 MTP_EXPERT_BYTES = 10_267_656_192
 ALL_CB_BASELINE = 6553.987851366602
 N_BODY_ALLOCATABLE = 301          # probe inventory; 89 further F8_E4M3 tensors
@@ -162,11 +166,17 @@ def main() -> None:
               "pending its native-parity TIMING bench, so it makes "
               "GRIDBOOK_MXFP8_DENSE=1 load-bearing alongside marlin."),
     ):
-        root = probe / f"alloc-{tag}"
-        if (root / "selection.json").is_file():
-            out[f"variant_{tag}"] = {**summarise(root, tag), "note": note}
-        else:
-            out[f"variant_{tag}"] = {"status": "not run", "note": note}
+        for gtag, gb in GRID:
+            if gtag != tag:
+                continue
+            root = probe / f"alloc-{tag}-{gb}"
+            key = f"variant_{tag}_{gb}gb"
+            if (root / "selection.json").is_file():
+                out[key] = {**summarise(root, tag), "note": note,
+                            "budget_gb": gb}
+            else:
+                out[key] = {"status": "not run", "note": note,
+                            "budget_gb": gb}
     # Quality cost of the draft heads, and where the freed bytes went.
     va, vb, vc = (out.get(f"variant_{k}", {}) for k in "abc")
     if "predicted_dloss" in vb and "predicted_dloss" in vc:
@@ -194,6 +204,43 @@ def main() -> None:
                 "measured post-export on the serve arm; together these form "
                 "the decision table. Tonight ships MTP-INCLUSIVE regardless -- "
                 "you cannot measure the speed of heads you did not ship."
+            ),
+        }
+    # THE NUMBER THE USER ACCEPTS OR VETOES: what the shave costs in quality.
+    shave = {}
+    for tag in ("b", "c"):
+        cells = {gb: out.get(f"variant_{tag}_{gb}gb", {})
+                 for gb in (92, 90, 88)}
+        have = {gb: c["predicted_dloss"] for gb, c in cells.items()
+                if "predicted_dloss" in c}
+        if 92 in have:
+            for gb in (90, 88):
+                if gb in have:
+                    d = have[gb] - have[92]
+                    shave[f"{tag}: 92 -> {gb} GB"] = {
+                        "freed_gb": 92 - gb,
+                        "dloss_at_92": have[92],
+                        f"dloss_at_{gb}": have[gb],
+                        "marginal_dloss_cost": round(d, 3),
+                        "marginal_cost_pct": round(100 * d / have[92], 3),
+                        "dloss_per_gb_freed": round(d / (92 - gb), 3),
+                        "kv_streams_bought_est": round(
+                            (92 - gb) / KV_GB_PER_131K_STREAM, 2),
+                    }
+    if shave:
+        out["budget_shave_marginal_price"] = {
+            "question": "what does buying KV headroom cost in weight quality?",
+            "kv_gb_per_131k_stream": KV_GB_PER_131K_STREAM,
+            "cells": shave,
+            "why_an_intermediate_point": (
+                "Concurrent-stream count is INTEGRAL, so every budget between "
+                "the 5-stream threshold and 92 GB buys zero extra streams "
+                "while still costing quality. The 90 GB cell exists to test "
+                "whether the 5th stream is already reachable at roughly half "
+                "the shave; if it is, 90 strictly dominates 88 and 88 is "
+                "quality paid for nothing. Compare dloss_per_gb_freed across "
+                "cells: a rising figure means the DP is being forced off its "
+                "cheap moves and the shave is getting expensive."
             ),
         }
     merge_report = probe / "merge_report.json"
