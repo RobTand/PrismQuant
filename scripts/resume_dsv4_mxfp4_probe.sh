@@ -37,6 +37,43 @@ IMAGE="${IMAGE:-gridbook:test}"
 N_LAYERS="${N_LAYERS:-43}"
 MENU="${MENU:-NVFP4_CB_K12,NVFP4_CB_K13,NVFP4_CB_K14,NVFP4_CB_K15,NVFP4_CB_K16,NVFP4_CB_K17,NVFP4_CB_K18}"
 
+# ===========================================================================
+# HARD GATE — this script produces CORRECT DATA with an UNUSABLE PROVENANCE
+# CHAIN, and that is the worst failure shape available: it succeeds, and the
+# failure surfaces hours later at the allocator instead of here.
+#
+# WHY. A CB cost table carries a render identity attesting what a run actually
+# measured, and `cost_shard_is_reusable` refuses ANY measured-CB shard by
+# design ("would need its exact decoded source tensors reloaded and re-hashed
+# before acceptance"). So the tool cannot merge segments, and a hand-assembled
+# table is refused in turn by four independent guards: missing serialized-
+# payload identity, lattice bytes not covering the format menu, render identity
+# not binding those bytes for its scope, and format scope not exact/canonical/
+# qname-complete. Those guards are correct. An attestation a cost run is
+# supposed to EARN must not be writable by hand, so there is no fix on this
+# side -- only a contiguous single run produces a mergeable, validated table.
+#
+# The DATA from a segmented run is still fine for direct table reads (hull
+# analysis, coverage, interpolator validation all worked on it). It is only
+# unusable as an allocator cost cache. If that is genuinely what you want,
+# say so explicitly.
+# ===========================================================================
+if [ "${I_UNDERSTAND_UNMERGEABLE:-}" != "1" ]; then
+  cat >&2 <<'MSG'
+refusing: segmented resume produces a cost table the allocator will REJECT.
+
+  Shards from a resumed segment cannot be merged into a validated cost cache:
+  cost_shard_is_reusable fails closed on every measured-CB shard, and a
+  hand-assembled render identity is refused by the CB provenance guards. You
+  will get 43 correct layers and an allocator that will not load them.
+
+  For an ALLOCATION, run all layers in one contiguous container instead.
+  For direct table analysis (hull / coverage / interpolator validation), the
+  segmented data is fine -- set I_UNDERSTAND_UNMERGEABLE=1 to proceed.
+MSG
+  exit 64
+fi
+
 if [ -n "$(docker ps -q -f name=pq-mxfp4-probe)" ]; then
   echo "refusing: pq-mxfp4-probe is still RUNNING; stop it first" >&2
   exit 1
