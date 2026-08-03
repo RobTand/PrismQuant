@@ -189,8 +189,11 @@ def test_passthrough_is_legal_exactly_where_the_source_is_that_format(
     verdict = check_format_applicability(
         EXPERT_W13_SHAPE if fmt == "MXFP4_SOURCE" else BODY_WO_A_SHAPE,
         fmt,
+        # wq_b, not wq_a: wq_a is a FUSED shard and is masked for an
+        # unrelated serving-lane reason, which would make this test pass or
+        # fail for the wrong cause. This test is about the SOURCE-KIND gate.
         qname=("model.layers.3.mlp.experts.0.gate_proj"
-               if fmt == "MXFP4_SOURCE" else "model.layers.3.self_attn.wq_a"),
+               if fmt == "MXFP4_SOURCE" else "model.layers.3.self_attn.wq_b"),
         source_kind=kind,
         target_profile="nvfp4_cb",
     )
@@ -216,6 +219,39 @@ def test_production_profile_allows_mxfp4_on_experts_and_denies_it_elsewhere():
     denied = check_serving_format(
         "nvfp4_cb", "model.layers.39.self_attn.wq_a", "MXFP4_SOURCE")
     assert not denied.legal and denied.reason == "runtime_unsupported"
+
+
+def test_body_passthrough_is_masked_on_fused_attention_shards():
+    """vLLM fuses wq_a+wkv; Gridbook's passthrough lookup does not unfuse.
+
+    A passthrough declaration binds by TENSOR NAME, so a unit vLLM merges into
+    fused_wqa_wkv cannot bind under any spelling on current Gridbook. This was
+    established by executed loader-binding tests, not by reading the loader.
+
+    It is a serving-lane mask in the same sense as the source-kind masks: the
+    format is right about the bytes and the consumer cannot load them, so the
+    allocator must not spend budget on a unit the artifact could not serve.
+    """
+    for leaf in ("wq_a", "wkv"):
+        decision = check_serving_format(
+            "nvfp4_cb", f"model.layers.7.self_attn.{leaf}",
+            "FP8_BLOCK_UE8M0_SOURCE")
+        assert not decision.legal, leaf
+        assert decision.reason == "runtime_unsupported"
+    # The unfused body units bind fine -- also verified by execution upstream.
+    for leaf in ("wq_b", "wo_b"):
+        assert check_serving_format(
+            "nvfp4_cb", f"model.layers.7.self_attn.{leaf}",
+            "FP8_BLOCK_UE8M0_SOURCE").legal, leaf
+    assert check_serving_format(
+        "nvfp4_cb", "model.layers.7.mlp.shared_experts.gate_proj",
+        "FP8_BLOCK_UE8M0_SOURCE").legal
+    # FORMAT-SCOPED, not name-scoped: a CB rung on the same fused shard is
+    # unaffected, because CB binds through a different mechanism entirely.
+    # A mask that took the whole unit off the menu would cost real quality for
+    # a constraint that only applies to one format.
+    assert check_serving_format(
+        "nvfp4_cb", "model.layers.7.self_attn.wq_a", "NVFP4_CB_K14").legal
 
 
 def test_lane_metadata_declares_a_distinct_delegated_native_route():

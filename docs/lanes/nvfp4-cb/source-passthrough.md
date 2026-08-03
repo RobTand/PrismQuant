@@ -137,6 +137,39 @@ expert layer (256 experts × 3 projections)   = 3,422,552,064 B
 43 expert layers                             = 147,169,738,752 B
 ```
 
+## A passthrough can be right about the bytes and still not bind
+
+`FP8_BLOCK_UE8M0_SOURCE` is masked on `attn.wq_a` and `attn.wkv` — 86 of the
+301 allocatable body units.
+
+A passthrough declaration binds by **tensor name**, and Gridbook's passthrough
+lookup does no fused-shard resolution. vLLM merges `wq_a` + `wkv` into one
+`fused_wqa_wkv` module, so a declaration naming either shard cannot bind under
+*any* spelling. This was established by **executed loader-binding tests**, not
+by reading the loader. The unfused body units — `wq_b`, `wo_a`, `wo_b`,
+`indexer.*`, `shared_experts.*` — bind fine on checkpoint spelling, also
+verified by execution.
+
+This is a serving-lane mask in the same sense as the source-kind masks: the
+format is right about the bytes, the consumer cannot load them, so the
+allocator must not spend budget on a unit the artifact could not serve.
+
+Two properties worth keeping:
+
+* it is **format-scoped, not name-scoped** — a CB rung on the same fused shard
+  is unaffected, because CB binds through a different mechanism. A mask that
+  took the whole unit off the menu would cost real quality for a constraint
+  that applies to one format;
+* there is **no producer-side workaround**. Emitting the fused parent would
+  mean re-encoding two separately-scaled shards into one tensor, which is
+  precisely what a passthrough does not do. Lifting the ceiling is a
+  Gridbook-side change (fused-shard resolution in the passthrough lookup),
+  queued as future work.
+
+Measured impact is small: on the pre-mask 92 GB pick the DP put 28 body units
+on passthrough and only **one** was a fused shard, because it prefers
+`shared_experts` (21) and `wo_b` (6) — all bindable.
+
 ## Cost provenance
 
 Three values a selected rung's price can carry, and they are distinguishable in
