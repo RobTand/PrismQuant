@@ -74,7 +74,7 @@ probe inventory: 33,325 Linears
 | Format | Wire id | Source kind | bpw | Synth. | Route status on sm121 |
 |---|---|---|---|---|---|
 | `MXFP4_SOURCE` | `mxfp4_e2m1_ue8m0_g32` | `mxfp4` | 4.25 | yes | **backed — requires `--moe-backend marlin`** |
-| `FP8_BLOCK_UE8M0_SOURCE` | `fp8_e4m3_ue8m0_block128` | `fp8_ue8m0` | 8.00049 | yes | **blocked (measured)** |
+| `FP8_BLOCK_UE8M0_SOURCE` | `fp8_e4m3_ue8m0_block128` | `fp8_ue8m0` | 8.00049 | yes | **backed — requires `GRIDBOOK_MXFP8_DENSE=1`** |
 | `FP8_SOURCE` | — | `fp8` | 8.00195 | no | backed (other checkpoints) |
 | `BF16` | — | `bf16` | 16 | no | backed |
 
@@ -89,14 +89,24 @@ checkpoint already serves this way, so a route must exist" is **false**:
   Triton path is hard-excluded on SM12x (0/15 kernels). `--moe-backend marlin`
   is therefore **part of the serving contract, not a tuning hint**, and it
   travels with the artifact.
-* **`FP8_BLOCK_UE8M0_SOURCE` is blocked** — every route measured dead:
+* **`FP8_BLOCK_UE8M0_SOURCE` measured *blocked* on every vLLM route** —
   `deep_gemm` assert, cutlass `scaled_mm` rejects the block layout, triton
   `KeyError: float8_e8m0fnu`, flashinfer's gate is sm90-exact, marlin-linear
-  tops out at sm89.
+  tops out at sm89. Those rungs remain known-broken upstream.
 
-**The architectural consequence: CB re-encoding of the body is the only way
-DSV4-Flash serves on this box at all.** The body's CB rungs are load-bearing,
-not merely economical.
+**It is nevertheless backed today, for a different reason than the original
+guess.** Gridbook 0.8.0 ships a dense MXFP8 lane (`Mxfp8DenseLinearMethod`)
+that serves these bytes directly instead of through any of those rungs,
+correctness-audited on the real checkpoint (worst rel-Frobenius 5.9e-5 across
+all seven body shapes; 1.2e-4 for the DeepSeek block-scale embedding chain vs
+the block-dequant oracle). It is **opt-in pending its native-parity timing
+bench**, so `GRIDBOOK_MXFP8_DENSE=1` is part of the serving contract.
+
+This verdict has now moved **twice** — assumed backed, measured blocked,
+backed again by a different mechanism. That history is the argument for
+`route_status` being *data with evidence attached* rather than a comment: an
+assumption, a measurement, and a release each changed the answer, and only the
+last one is load-bearing.
 
 A blocked or pending rung still stays **on the menu** — if the DP wants it,
 that is the serving gap surfacing in the allocation rather than at deploy

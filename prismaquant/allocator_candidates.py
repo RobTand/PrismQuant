@@ -144,21 +144,32 @@ SOURCE_PASSTHROUGH_CONTRACTS: dict[str, SourcePassthroughContract] = {
             wire_format_id="fp8_e4m3_ue8m0_block128",
             zero_cost_by_construction=True,
             serving_route=f"{ROUTE_DELEGATED_NATIVE}_fp8_block_ue8m0",
-            route_status=ROUTE_STATUS_BLOCKED,
+            route_status=ROUTE_STATUS_BACKED,
+            route_requirement="GRIDBOOK_MXFP8_DENSE=1",
             detail=(
-                "native block-FP8 with UE8M0 block exponents. 'The checkpoint "
-                "already serves this way' turned out NOT to imply a serve "
-                "route on our target: measured on GB10/sm121, every route is "
-                "dead. Keeping the rung on the menu is deliberate — if the DP "
-                "still wants it, that is the serving gap becoming visible in "
-                "the allocation instead of at deploy time."
+                "native block-FP8 with UE8M0 block exponents. Its verdict has "
+                "moved TWICE, which is why route_status is data rather than a "
+                "comment: first assumed backed (because the checkpoint ships "
+                "this way), then measured BLOCKED on sm121 when every vLLM "
+                "route was tried and every one was dead, and now BACKED again "
+                "— not because the vLLM rungs were fixed, but because "
+                "Gridbook 0.8.0 owns a dense MXFP8 lane that serves these "
+                "bytes directly. The five broken vLLM rungs are retained "
+                "upstream as known-broken with symptoms; this route does not "
+                "go through them."
             ),
             route_evidence=(
-                "sm121 measured 2026-08-03: deep_gemm assert; cutlass "
-                "scaled_mm rejects the block layout; triton KeyError on "
-                "float8_e8m0fnu; flashinfer gated sm90-exact; marlin-linear "
-                "is <=sm89. CONSEQUENCE: CB re-encoding of the body is the "
-                "only way this checkpoint serves on this box at all."
+                "Gridbook 0.8.0 Mxfp8DenseLinearMethod, released with the "
+                "release ratchet satisfied. Correctness-audited on the real "
+                "checkpoint: worst rel-Frobenius 5.9e-5 across all seven body "
+                "shapes, and worst 1.2e-4 for the DeepSeek block-scale "
+                "embedding chain against the block-dequant oracle. OPT-IN "
+                "pending its native-parity TIMING bench, which is why the "
+                "requirement below is part of the contract; correctness is "
+                "established, rung-pricing promotion is not. Superseded the "
+                "2026-08-03 sm121 blocked verdict (deep_gemm assert, cutlass "
+                "scaled_mm block-layout reject, triton float8_e8m0fnu "
+                "KeyError, flashinfer sm90-exact gate, marlin-linear <=sm89)."
             ),
         ),
         # DeepSeek-V4 routed experts: nibble-packed E2M1 + E8M0 group scales.
