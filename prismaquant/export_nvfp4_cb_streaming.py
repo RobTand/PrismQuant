@@ -72,6 +72,7 @@ from prismaquant.allocator_candidates import (
 )
 from prismaquant.cb_export_config import (
     SOURCE_PASSTHROUGH_EXPORT_FORMATS,
+    STREAMING_REQUANT_EXPORT_FORMATS,
     parse_source_passthrough_declaration,
     build_cb_scheme,
     build_quant_config,
@@ -80,7 +81,10 @@ from prismaquant.cb_export_config import (
     codebook_tensors as _codebook_tensors,
     source_passthrough_wire,
 )
-from prismaquant.format_registry import get_format as _fr_get_format
+from prismaquant.format_registry import (
+    canonical_format_name,
+    get_format as _fr_get_format,
+)
 from prismaquant.export_nvfp4_cb import (
     _canonical_qname,
     _export_base_name,
@@ -406,6 +410,54 @@ def _stock_output_specs(fmt: str, shape) -> list[tuple[str, torch.dtype, tuple]]
             ("weight_scale", torch.float32, (n, 1)),
         ]
     raise ValueError(f"no stock streaming spec for {fmt!r}")
+
+
+def _requant_output_specs(fmt: str, shape) -> list[tuple[str, torch.dtype, tuple]]:
+    """On-disk ``(suffix, dtype, out_shape)`` for a re-quantized native rung.
+
+    Deliberately the SAME ``weight`` / ``weight_scale`` suffix pair the
+    FP8_E4M3 stock rung and the CT-normalized FP8_SOURCE lane already use: the
+    suffix names what a plane IS (elements, and their scales), not which codec
+    produced it, so a new native rung does not invent a third spelling for the
+    same two roles.
+
+      * MXFP8_UE8M0_G32: ``weight`` fp8_e4m3 [N, K], ``weight_scale``
+        float8_e8m0fnu [N, K/32]. The scale plane is the NATIVE E8M0 dtype, not
+        the ``uint8`` the compressed-tensors MXFP8 scheme serializes — that is
+        one of the reasons this rung is its own format rather than the stock
+        one (see the FormatSpec comment in format_registry).
+    """
+    n, k = int(shape[-2]), int(shape[-1])
+    spec = _fr_get_format(fmt)
+    group = int(spec.group_size)
+    if group <= 0 or k % group:
+        raise ValueError(
+            f"{fmt}: in_features={k} is not a multiple of the declared group "
+            f"size {group}; check_format_applicability should have masked this "
+            "target before it reached the exporter")
+    return [
+        ("weight", torch.float8_e4m3fn, (n, k)),
+        ("weight_scale", torch.float8_e8m0fnu, (n, k // group)),
+    ]
+
+
+def _requant_pack(fmt: str, w: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Encode one dense weight into its re-quantized on-disk planes.
+
+    Routes through the SAME registry codec the cost stage measured
+    (``mx_formats.mxfp8_ue8m0_qdq``), so priced error and shipped bytes are one
+    rendering rather than two implementations that agree by inspection.
+    """
+    canon = canonical_format_name(fmt)
+    if canon == "MXFP8_UE8M0_G32":
+        from prismaquant.mx_formats import mxfp8_ue8m0_qdq
+
+        spec = _fr_get_format(canon)
+        result = mxfp8_ue8m0_qdq(
+            w.to(torch.float32), group_size=int(spec.group_size)
+        )
+        return {"weight": result.quant, "weight_scale": result.scale}
+    raise ValueError(f"no re-quant streaming packer for {fmt!r}")
 
 
 class _StreamWriter:
@@ -1398,6 +1450,7 @@ def export_nvfp4_cb_streaming(
     source_targets: list[str] = []              # CT-normalized (FP8_SOURCE)
     native_source_targets: dict[str, str] = {}  # qname -> byte-verbatim format
     stock_targets: dict[str, str] = {}          # qname -> "NVFP4" | "FP8_E4M3"
+    requant_targets: dict[str, str] = {}        # qname -> re-encoded native fmt
     illegal = []
     for qname, fmt in assignment.items():
         if fmt == "BF16":
@@ -1416,14 +1469,22 @@ def export_nvfp4_cb_streaming(
         if canon in _STOCK_CT_FORMATS:
             stock_targets[qname] = canon
             continue
+        # Re-quantized native rungs: this producer WROTE the bytes (unlike the
+        # passthrough lane) but stock compressed-tensors cannot describe them
+        # (unlike the delegated lane), so they get their own emit branch, their
+        # own wire id and a scheme-less config group.
+        if canon in STREAMING_REQUANT_EXPORT_FORMATS:
+            requant_targets[qname] = canon
+            continue
         illegal.append((qname, fmt))
     if illegal:
         raise ValueError(
             "streaming CB export carries CB families + stock NVFP4/FP8_DYNAMIC "
             "(CT-delegated) + the source-passthrough family "
-            f"{sorted(SOURCE_PASSTHROUGH_EXPORT_FORMATS)} + BF16 only; "
-            f"unsupported rung(s) {sorted({f for _, f in illegal})} — assign a "
-            "legal format or use the in-memory export_nvfp4_cb.")
+            f"{sorted(SOURCE_PASSTHROUGH_EXPORT_FORMATS)} + the re-quantized "
+            f"native family {sorted(STREAMING_REQUANT_EXPORT_FORMATS)} + BF16 "
+            f"only; unsupported rung(s) {sorted({f for _, f in illegal})} — "
+            "assign a legal format or use the in-memory export_nvfp4_cb.")
 
     # --- ROUTE-PENDING SHIP GATE. A passthrough rung whose serve route has not
     # been validated stays ON the allocator's menu deliberately: an allocation
@@ -2165,6 +2226,52 @@ def export_nvfp4_cb_streaming(
                     else "stock_dtype_shape_mismatch"] += 1
         counts[canon_fmt] += 1
 
+    # Re-quantized native DENSE targets (MXFP8_UE8M0_G32). Structurally the
+    # stock-CT loop above with a different packer: one producer encodes the
+    # weight once into its element + scale planes and the writer streams them
+    # one at a time. The codec is RTN with no search and no cross-tensor input,
+    # so it is deterministic from the (unchanged) source weight and the same
+    # dtype+shape copy gate the stock lane uses is sound here too.
+    for qname in sorted(requant_targets):
+        canon_fmt = requant_targets[qname]
+        export_base = _base_name(qname)
+        kind, h = _resolve_target(qname)              # dense: kind == "tensor"
+        shape = _target_shape(qname)
+        emitted_bases.add(h)
+        state: dict = {}
+
+        def _render(h=h, canon_fmt=canon_fmt, state=state):
+            if "out" not in state:
+                w = skeleton.dequant_weight(h).to(device)
+                packed = _requant_pack(canon_fmt, w)
+                state["out"] = {s: t.cpu().contiguous()
+                                for s, t in packed.items()}
+                del w
+            return state["out"]
+
+        specs = _requant_output_specs(canon_fmt, shape)
+        expected = [(export_base + "." + s, d, o) for s, d, o in specs]
+        requant_ok = prior is not None and all(
+            prior.matches_dtype_shape(n, d, o) for n, d, o in expected)
+        if requant_ok:
+            for name, dtype, _sh in expected:
+                writer.add(name, dtype, prior.shape(name), None,
+                           copy_src=prior.raw_slice(name))
+            reuse["copied"] += 1
+        else:
+            for (name, dtype, out_shape), (suffix, _d, _o) in zip(
+                    expected, specs):
+                def _prod(suffix=suffix, _render=_render):
+                    return _render()[suffix]
+                writer.add(name, dtype, out_shape, _prod)
+            if prior is not None:
+                reuse["encoded"] += 1
+                reuse["reasons"][
+                    "requant_not_in_prior" if not prior.has(expected[0][0])
+                    else "requant_dtype_shape_mismatch"] += 1
+        tensor_names_by_target[qname] = [n for n, _d, _o in expected]
+        counts[canon_fmt] += 1
+
     # Passthrough: every remaining checkpoint tensor verbatim (BF16/norms/etc).
     # Per-expert tensors consumed by a stacked CB target are NOT passthrough.
     # Expert groups are keyed by the on-disk (checkpoint) prefix; a nested
@@ -2345,15 +2452,24 @@ def export_nvfp4_cb_streaming(
         return None
 
     def _source_passthrough_units() -> dict[str, str]:
-        """``{unit id: registry format}`` for every delegated unit, validated.
+        """``{unit id: registry format}`` for every DELEGATED-NATIVE unit.
 
-        No exhaustiveness claim: this says which units ARE passthrough, not
-        that every unit in the model was enumerated. What it does enforce is
-        that a unit is passthrough WHOLE — a routed-expert group with some
-        members delegated and some not would ship half a layer to the model's
-        own loader and half to gridbook's codec, which neither can serve.
+        No exhaustiveness claim: this says which units are delegated, not that
+        every unit in the model was enumerated. What it does enforce is that a
+        unit is delegated WHOLE — a routed-expert group with some members
+        delegated and some not would ship half a layer to the model's own
+        loader and half to gridbook's codec, which neither can serve.
+
+        Re-quantized native rungs are included: the consumer's dispatcher reads
+        this ONE map to decide "native route or CB decoder" and refuses a unit
+        whose format id it does not know, so a unit omitted here would be read
+        as CB — the one wrong answer that loads. They are still not
+        byte-verbatim, and the config group's ``weights.source_passthrough``
+        flag is what carries that distinction per unit.
         """
         units: dict[str, str] = {}
+        for qname, fmt in requant_targets.items():
+            units[_decision_unit_id(qname)] = fmt
         for qname, fmt in native_source_targets.items():
             unit = _decision_unit_id(qname)
             previous = units.setdefault(unit, fmt)
@@ -2407,7 +2523,8 @@ def export_nvfp4_cb_streaming(
                 for name in tensor_names_by_target.get(qname, ())
             },
             "passthrough_tensors": {
-                name for qname in native_source_targets
+                name
+                for qname in (*native_source_targets, *requant_targets)
                 for name in tensor_names_by_target.get(qname, ())
             },
             "cb_modules": cb_modules,
@@ -2425,6 +2542,7 @@ def export_nvfp4_cb_streaming(
         cb_targets=cb_targets,
         source_targets=source_targets,
         native_source_targets=native_source_targets,
+        requant_targets=requant_targets,
         stock_targets=stock_targets,
         by_group=by_group,
         codebooks=codebooks,
@@ -2445,6 +2563,9 @@ def export_nvfp4_cb_streaming(
         # The byte-verbatim lane keeps the CHECKPOINT spelling: those are the
         # names its tensors were actually written under, above.
         native_source_target_name=_base_name,
+        # Same rule for the re-quant lane: its planes were written under
+        # `_base_name(qname)`, so that is the name the group must claim.
+        requant_target_name=_base_name,
         source_passthrough_units=_declared_passthrough_units,
         route_pending_passthrough_acknowledged=sorted(route_pending),
         weight_only_stock_targets=sidecar_stock,

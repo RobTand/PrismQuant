@@ -1,8 +1,8 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-02 · branch `release/prismaquant-0.7.0` · verified against implementation
+As of: 2026-08-03 · branch `release/prismaquant-0.8.0` · verified against implementation
 baseline commit `7183d21`, with the external Gridbook runtime pinned to
-`746473c8459acd24c71e7602d1c982da2f8fa80e` (v0.7.0). This branch ports the dated
+`9011a19228ddb96b8a49e11a20ac75c99c83998e` (v0.8.0). This branch ports the dated
 2026-08-01 DeepSeek-V4-Flash-0731 92 GB study record (§9.2) forward from its 0.5.1
 working tree; the study's Gridbook-candidate claims were **not** carried over, because
 the candidate they described has since been reviewed, cut, and pinned as Gridbook 0.6.0.
@@ -1903,7 +1903,7 @@ keeps vLLM's weight loader off it.
 
 **Runtime defaults and kernel provenance live only in Gridbook.** The old table
 here was removed after it drifted from the runtime it described. The current pin is Gridbook
-0.7.0 at `746473c8459acd24c71e7602d1c982da2f8fa80e`; resolve it from
+0.8.0 at `9011a19228ddb96b8a49e11a20ac75c99c83998e`; resolve it from
 `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`, then consult that source's
 `docs/PLUGIN.md`, `docs/KERNELS.md`, and dated audits. The cross-project policy
 is only this: a numerics-changing path cannot be promoted by kernel arithmetic
@@ -2246,9 +2246,9 @@ polish, full rejected-methods catalog) is at
 
 ## 12. Known gaps and debt register
 
-Honest register, code-cited, as of 2026-08-02 (`release/prismaquant-0.7.0`, implementation
+Honest register, code-cited, as of 2026-08-03 (`release/prismaquant-0.8.0`, implementation
 baseline commit `7183d21`; external Gridbook pin
-`746473c8459acd24c71e7602d1c982da2f8fa80e`, v0.7.0). The DSv4 study's working tree carried a
+`9011a19228ddb96b8a49e11a20ac75c99c83998e`, v0.8.0). The DSv4 study's working tree carried a
 proposed **D29** ("the native-only Gridbook candidate is measured but not yet an attested
 runtime"). It is deliberately **not** ported: the 0.6.0 merge cut and pinned that candidate,
 so re-adding the row would assert a stale pin (`59cebf9f…`, v0.4.1) that no longer exists in

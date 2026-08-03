@@ -23,6 +23,7 @@ import torch
 from prismaquant import format_registry as fr
 from prismaquant.allocator_candidates import (
     PASSTHROUGH_WIRE_FORMAT_IDS,
+    REQUANT_WIRE_FORMAT_IDS,
     SOURCE_PASSTHROUGH_CONTRACTS,
     SourcePassthroughContract,
 )
@@ -213,6 +214,113 @@ DELEGATED_NATIVE_PASSTHROUGH_FORMATS: frozenset[str] = frozenset(
     if not source_passthrough_wire(name).ct_normalized
 )
 
+# ---------------------------------------------------------------------------
+# Re-quantized (non-passthrough) wire formats the STREAMING exporter emits
+# ---------------------------------------------------------------------------
+# Formats this lane produces with a real encoder, under their own wire id,
+# outside the compressed-tensors scheme vocabulary. Structurally these sit
+# between the two existing classes: like a passthrough they get a scheme-less
+# config group and a wire id (stock CT cannot describe them); unlike a
+# passthrough the producer WROTE these bytes, so they are re-derivable, they
+# carry a real measured cost, and they are legal on any source dtype.
+#
+# The literal here is the streaming exporter's emit surface, re-exported for
+# the serving profile's export lane (serving_profile_specs/nvfp4_cb.json
+# ``codec_formats_from``) so the allocator can never spend budget on a rung
+# this exporter would hard-fail on. Declaring it here rather than in
+# export_nvfp4_cb_streaming keeps the lane's format vocabulary in the module
+# that already owns the wire contract, and keeps the profile's lazy import off
+# a module that pulls the whole streaming stack.
+STREAMING_REQUANT_EXPORT_FORMATS: frozenset[str] = frozenset(
+    REQUANT_WIRE_FORMAT_IDS
+)
+REQUANT_WIRE_IDS: dict[str, str] = dict(REQUANT_WIRE_FORMAT_IDS)
+REQUANT_WIRE_FORMATS: dict[str, str] = {
+    wire_id: name for name, wire_id in REQUANT_WIRE_IDS.items()
+}
+
+# Every wire id the DELEGATED-NATIVE routing record may carry, from either
+# table. This is the producer-side mirror of the consumer's own registry
+# (``gridbook.source_passthrough.FORMATS``), which holds every id it can route
+# regardless of what produced the bytes. Ids must be unique across the two:
+# the consumer resolves a unit by id alone.
+DELEGATED_NATIVE_WIRE_FORMATS: dict[str, str] = {
+    **SOURCE_PASSTHROUGH_WIRE_FORMATS,
+    **REQUANT_WIRE_FORMATS,
+}
+
+# Config-group ``format`` token for a re-quantized native rung. Same reasoning
+# as SOURCE_PASSTHROUGH_GROUP_FORMAT: no compressed-tensors format string
+# describes "the Gridbook runtime reads this element+scale pair directly", and
+# borrowing one would make a stock CT loader believe it could read the group.
+REQUANT_NATIVE_GROUP_FORMAT = "gridbook-native"
+
+
+def requant_wire_id(format_name: str) -> str:
+    """Registry format name -> the consumer's wire id, for a re-quant rung.
+
+    Fails closed exactly like ``source_passthrough_wire_id``: the consumer's
+    format enum is closed, so a rung that reached the emitter without an id
+    cannot be declared, and an undeclared group reads to the consumer as CB.
+    """
+
+    canonical = fr.canonical_format_name(str(format_name))
+    try:
+        return REQUANT_WIRE_IDS[canonical]
+    except KeyError:
+        raise ValueError(
+            f"{canonical} is not a declared re-quantization wire format "
+            f"(allocator_candidates.REQUANT_WIRE_FORMAT_IDS: "
+            f"{sorted(REQUANT_WIRE_IDS)})"
+        ) from None
+
+
+def requant_native_config_group(format_name: str) -> dict[str, Any]:
+    """The scheme-less config group one re-quantized native rung gets.
+
+    Built from the FormatSpec for the same reason as its passthrough twin: the
+    group cannot describe a different on-disk contract than the one the
+    accountant priced and the emitter wrote.
+    """
+
+    canonical = fr.canonical_format_name(str(format_name))
+    wire = requant_wire_id(canonical)
+    spec = fr.get_format(canonical)
+    weights: dict[str, Any] = {
+        "num_bits": int(spec.weight_bits),
+        "type": "float",
+        "element_dtype": str(spec.weight_element_dtype),
+        "scale_dtype": str(spec.scale_dtype_name),
+        "symmetric": True,
+        "dynamic": False,
+        "strategy": "group",
+        "group_size": int(spec.group_size),
+        # These bytes WERE produced here, unlike a passthrough group.
+        "source_passthrough": False,
+    }
+    activations: dict[str, Any] | None = None
+    if spec.act_quant_changes_input:
+        # W8A8: the serving lane quantizes activations dynamically to the same
+        # grid, so the group says so. Stating None here would describe a
+        # weight-only contract the runtime does not implement.
+        activations = {
+            "num_bits": int(spec.act_bits),
+            "type": "float",
+            "element_dtype": str(spec.act_dtype_name),
+            "scale_dtype": str(spec.scale_dtype_name),
+            "symmetric": True,
+            "dynamic": True,
+            "strategy": "group",
+            "group_size": int(spec.act_group_size),
+        }
+    return {
+        "format": REQUANT_NATIVE_GROUP_FORMAT,
+        "source_format": canonical,
+        "wire_format_id": wire,
+        "weights": weights,
+        "input_activations": activations,
+    }
+
 
 def source_passthrough_config_group(format_name: str) -> dict[str, Any]:
     """The scheme-less config group one delegated-native passthrough gets.
@@ -267,6 +375,17 @@ def build_source_passthrough_declaration(
     There is no exhaustiveness claim here — the record says which units ARE
     passthrough, not that it has enumerated every unit in the model — so a
     partially-allocated model needs no special case.
+
+    WHAT THIS RECORD ACTUALLY MEANS, given it now carries re-quantized rungs
+    too: it is the DELEGATED-NATIVE ROUTING record — "these units are served by
+    a native Gridbook/model-owned route rather than by a CB codebook decoder",
+    which is the question the consumer's dispatcher asks. It is NOT a claim
+    that every listed unit's bytes came from the checkpoint unchanged; only the
+    ``*_SOURCE`` members make that stronger claim, and the config group's
+    ``weights.source_passthrough`` flag is where the two are distinguished per
+    unit. The key keeps its historical name because it is a shipped cross-repo
+    contract (``gridbook.source_passthrough.SCHEMA_KEY``) read by a released
+    consumer; renaming it would be a schema break for a wording improvement.
     """
 
     if not units:
@@ -283,7 +402,12 @@ def build_source_passthrough_declaration(
                 f"source_passthrough unit id {unit_id!r} is not a usable "
                 "module name"
             )
-        declared[unit] = source_passthrough_wire_id(format_name)
+        canonical = fr.canonical_format_name(str(format_name))
+        declared[unit] = (
+            REQUANT_WIRE_IDS[canonical]
+            if canonical in REQUANT_WIRE_IDS
+            else source_passthrough_wire_id(format_name)
+        )
     return {
         "version": SOURCE_PASSTHROUGH_DECLARATION_VERSION,
         "units": dict(sorted(declared.items())),
@@ -354,11 +478,15 @@ def parse_source_passthrough_declaration(
                 f"{SOURCE_PASSTHROUGH_DECLARATION_KEY} units must map string "
                 f"unit ids to string format ids, got {unit_id!r}: {wire_id!r}"
             )
-        if wire_id not in SOURCE_PASSTHROUGH_WIRE_FORMATS:
+        # The legal set is the UNION of the byte-verbatim and re-quantized
+        # wire tables: this record is the delegated-native ROUTING map the
+        # consumer dispatches on, and its ``FORMATS`` registry likewise holds
+        # every id it can route, whatever produced the bytes.
+        if wire_id not in DELEGATED_NATIVE_WIRE_FORMATS:
             raise ValueError(
                 f"{SOURCE_PASSTHROUGH_DECLARATION_KEY} unit {unit_id!r} "
                 f"declares unknown format id {wire_id!r}; legal ids are "
-                f"{sorted(SOURCE_PASSTHROUGH_WIRE_FORMATS)}"
+                f"{sorted(DELEGATED_NATIVE_WIRE_FORMATS)}"
             )
         parsed[unit_id] = wire_id
     contested = sorted(set(parsed) & _cb_config_group_targets(quant_config))
@@ -561,6 +689,7 @@ def build_quant_config(
     cb_targets: Mapping[str, CBTarget],
     source_targets: Iterable[str],
     native_source_targets: Mapping[str, str] | None = None,
+    requant_targets: Mapping[str, str] | None = None,
     stock_targets: Mapping[str, str],
     by_group: Mapping[tuple[str, str], Sequence[str]],
     codebooks: Mapping[tuple[str, str], object],
@@ -579,6 +708,7 @@ def build_quant_config(
     delegated_target_name: TargetName = _identity_target,
     source_target_name: TargetName = _identity_target,
     native_source_target_name: TargetName = _identity_target,
+    requant_target_name: TargetName = _identity_target,
     source_passthrough_units: Mapping[str, str] | None = None,
     route_pending_passthrough_acknowledged: Iterable[str] = (),
     weight_only_stock_targets: Iterable[str] = (),
@@ -594,6 +724,15 @@ def build_quant_config(
     from :func:`source_passthrough_config_group`.  The split is the wire
     contract, not a taxonomy: see ``_CT_SCALE_DTYPE_NAME``.
 
+    ``requant_targets`` is the RE-QUANTIZED native lane, ``{qname: format}``:
+    bytes this producer wrote with a real encoder, under a wire id stock
+    compressed-tensors cannot express.  One config group per format, from
+    :func:`requant_native_config_group`.  These units DO appear in the
+    ``source_passthrough`` declaration, because that record is the
+    delegated-native ROUTING map the consumer dispatches on and a unit missing
+    from it reads as CB; what they do not carry is the byte-verbatim claim,
+    which lives per unit in ``weights.source_passthrough``.
+
     ``source_passthrough_units`` is ``{unit id: registry format name}`` for the
     units this artifact delegates, and becomes the top-level
     ``source_passthrough`` key.  Empty or ``None`` omits the key entirely —
@@ -603,6 +742,7 @@ def build_quant_config(
 
     source_targets = list(source_targets)
     native_source_targets = dict(native_source_targets or {})
+    requant_targets = dict(requant_targets or {})
     weight_only_stock_targets = set(weight_only_stock_targets)
     assignment_sha = hashlib.sha256(
         json.dumps(
@@ -689,6 +829,19 @@ def build_quant_config(
         )
         config_groups[f"group_{len(config_groups)}"] = native_group
 
+    requant_by_format: dict[str, list[str]] = {}
+    for qname, fmt in requant_targets.items():
+        requant_by_format.setdefault(
+            fr.canonical_format_name(fmt), []
+        ).append(qname)
+    for fmt, qnames in sorted(requant_by_format.items()):
+        requant_group = requant_native_config_group(fmt)
+        requant_group["targets"] = sorted(
+            _explicit_regex(requant_target_name(qname))
+            for qname in qnames
+        )
+        config_groups[f"group_{len(config_groups)}"] = requant_group
+
     provenance: dict[str, Any] = {
         "git_commit": git_commit,
         "assignment_sha256": assignment_sha,
@@ -707,6 +860,12 @@ def build_quant_config(
         "source_passthrough_targets": {
             fmt: len(qnames)
             for fmt, qnames in sorted(native_by_format.items())
+        },
+        # Same per-format shape, different claim: these units were RE-ENCODED
+        # here, so they are deliberately not folded into the count above.
+        "requant_native_targets": {
+            fmt: len(qnames)
+            for fmt, qnames in sorted(requant_by_format.items())
         },
         "serialized_payload": dict(serialized_payload_summary),
         "render_identity_verified": cb_render_identity is not None,

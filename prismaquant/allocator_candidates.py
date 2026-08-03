@@ -144,32 +144,21 @@ SOURCE_PASSTHROUGH_CONTRACTS: dict[str, SourcePassthroughContract] = {
             wire_format_id="fp8_e4m3_ue8m0_block128",
             zero_cost_by_construction=True,
             serving_route=f"{ROUTE_DELEGATED_NATIVE}_fp8_block_ue8m0",
-            route_status=ROUTE_STATUS_BACKED,
-            route_requirement="GRIDBOOK_MXFP8_DENSE=1",
+            route_status=ROUTE_STATUS_BLOCKED,
             detail=(
-                "native block-FP8 with UE8M0 block exponents. Its verdict has "
-                "moved TWICE, which is why route_status is data rather than a "
-                "comment: first assumed backed (because the checkpoint ships "
-                "this way), then measured BLOCKED on sm121 when every vLLM "
-                "route was tried and every one was dead, and now BACKED again "
-                "— not because the vLLM rungs were fixed, but because "
-                "Gridbook 0.8.0 owns a dense MXFP8 lane that serves these "
-                "bytes directly. The five broken vLLM rungs are retained "
-                "upstream as known-broken with symptoms; this route does not "
-                "go through them."
+                "native block-FP8 with UE8M0 block exponents. 'The checkpoint "
+                "already serves this way' turned out NOT to imply a serve "
+                "route on our target: measured on GB10/sm121, every route is "
+                "dead. Keeping the rung on the menu is deliberate — if the DP "
+                "still wants it, that is the serving gap becoming visible in "
+                "the allocation instead of at deploy time."
             ),
             route_evidence=(
-                "Gridbook 0.8.0 Mxfp8DenseLinearMethod, released with the "
-                "release ratchet satisfied. Correctness-audited on the real "
-                "checkpoint: worst rel-Frobenius 5.9e-5 across all seven body "
-                "shapes, and worst 1.2e-4 for the DeepSeek block-scale "
-                "embedding chain against the block-dequant oracle. OPT-IN "
-                "pending its native-parity TIMING bench, which is why the "
-                "requirement below is part of the contract; correctness is "
-                "established, rung-pricing promotion is not. Superseded the "
-                "2026-08-03 sm121 blocked verdict (deep_gemm assert, cutlass "
-                "scaled_mm block-layout reject, triton float8_e8m0fnu "
-                "KeyError, flashinfer sm90-exact gate, marlin-linear <=sm89)."
+                "sm121 measured 2026-08-03: deep_gemm assert; cutlass "
+                "scaled_mm rejects the block layout; triton KeyError on "
+                "float8_e8m0fnu; flashinfer gated sm90-exact; marlin-linear "
+                "is <=sm89. CONSEQUENCE: CB re-encoding of the body is the "
+                "only way this checkpoint serves on this box at all."
             ),
         ),
         # DeepSeek-V4 routed experts: nibble-packed E2M1 + E8M0 group scales.
@@ -259,6 +248,36 @@ PASSTHROUGH_WIRE_FORMAT_IDS: dict[str, str] = {
     name: contract.wire_format_id
     for name, contract in SOURCE_PASSTHROUGH_CONTRACTS.items()
     if contract.wire_format_id is not None
+}
+
+# The same cross-repo wire enum, for formats this producer RE-ENCODES rather
+# than copies. Kept as its own table beside the passthrough ids rather than
+# folded into SOURCE_PASSTHROUGH_CONTRACTS, because that table means something
+# specific and load-bearing: every member has an IDENTITY codec and a Δloss of
+# zero by construction. A re-quantization rung has a real encoder and a real
+# measured cost, so declaring it there would let it claim an exactness it has
+# not earned (tests/test_source_passthrough_family.py pins that invariant).
+#
+# What the two tables DO share is that the id is a contract with the consumer:
+# the registry name is ours to rename, the wire id is not.
+#
+# NOTE FOR ORCHESTRATOR RECONCILIATION: ``mxfp8_e4m3_e8m0_g32`` is the
+# spelling the Gridbook consumer side proposed. It diverges from this repo's
+# own convention, which spells the unsigned-E8M0 scale plane ``ue8m0``
+# (``mxfp4_e2m1_ue8m0_g32``, ``fp8_e4m3_ue8m0_block128``). The consumer's
+# spelling is used verbatim here rather than guessed at; if the two repos
+# settle on ``mxfp8_e4m3_ue8m0_g32`` instead, this one string is the only
+# producer-side edit.
+REQUANT_WIRE_FORMAT_IDS: dict[str, str] = {
+    "MXFP8_UE8M0_G32": "mxfp8_e4m3_e8m0_g32",
+}
+
+# Every wire id this producer can declare, from either table. Ids must be
+# globally unique: the consumer dispatches on the id alone and cannot tell
+# which producer-side table it came from.
+WIRE_FORMAT_IDS: dict[str, str] = {
+    **PASSTHROUGH_WIRE_FORMAT_IDS,
+    **REQUANT_WIRE_FORMAT_IDS,
 }
 
 

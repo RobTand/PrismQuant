@@ -45,11 +45,11 @@ import sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
     pin = json.load(f)
-required = {"schema", "repository", "commit", "version"}
+required = {"schema", "repository", "commit", "version", "version_is_release"}
 if set(pin) != required:
     raise SystemExit(
         f"{path}: expected exactly {sorted(required)}, got {sorted(pin)}")
-if pin["schema"] != "prismaquant.gridbook_runtime_pin.v1":
+if pin["schema"] != "prismaquant.gridbook_runtime_pin.v2":
     raise SystemExit(f"{path}: unsupported schema {pin['schema']!r}")
 repo = pin["repository"]
 if not isinstance(repo, str) or not repo.startswith("https://") \
@@ -62,6 +62,13 @@ version = pin["version"]
 if not isinstance(version, str) or re.fullmatch(
         r"[0-9]+(?:[.][0-9]+)*(?:[A-Za-z0-9.+-]*)?", version) is None:
     raise SystemExit(f"{path}: invalid package version {version!r}")
+# True only when `commit` IS the release tag commit for `version`. A pin that
+# advances to a post-release master commit keeps the same `version` string (the
+# runtime self-reports it until the next bump), so the version alone cannot say
+# whether this runtime was ever released -- that is what this flag records, and
+# what stops a rung table from crediting an unreleased runtime.
+if not isinstance(pin["version_is_release"], bool):
+    raise SystemExit(f"{path}: version_is_release must be a JSON boolean")
 print(pin["schema"], repo, commit, version, sep="\t")
 PY
 )"; then

@@ -5,10 +5,17 @@
 # doc-staleness tests that the project had deliberately written to catch exactly
 # that kind of drift. Nobody was ignoring a red signal — there was no signal.
 #
-# WHAT IT CAN AND CANNOT COVER. Measured 2026-07-28 on the reference box: the
-# suite is 967 tests in ~51 s with `CUDA_VISIBLE_DEVICES=""` (955 passed,
-# 12 skipped, 0 failed), so the whole thing fits a free runner with CPU torch.
-# The 12 skips are the CUDA-gated tests. GitHub-hosted runners have no GPU, so
+# WHAT IT CAN AND CANNOT COVER. Re-measured 2026-08-03 ON THE RUNNER, which is
+# the number that matters here: the suite is ~2762 tests taking 10.5-14 min per
+# interpreter with `CUDA_VISIBLE_DEVICES=""` (2762 passed, 96 skipped,
+# 2 xfailed). The previous note in this header claimed 967 tests in ~51 s,
+# measured on the reference box on 2026-07-28; the suite has roughly tripled
+# since and an ARM workstation is not a free x86 runner, so that figure had
+# become misleading in both directions. The `tests` job allows 30 min, so the
+# margin is about 2x rather than the ~35x the old number implied — a further
+# doubling of the suite is a timeout, not a slow build, and should raise
+# `timeout-minutes` in the same PR. The skips are the CUDA-gated tests.
+# GitHub-hosted runners have no GPU, so
 # kernel numerics, real-checkpoint streaming and anything touching a served
 # artifact remain a manual gate on the Spark — this is a correctness net for
 # the allocator/solver/footprint/profile logic, which is where the PRs live and

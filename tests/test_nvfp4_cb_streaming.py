@@ -1848,3 +1848,137 @@ def test_source_passthrough_recipes_round_trip_through_canonicalize_format():
     with pytest.raises(ValueError, match="group-of-32"):
         canonicalize_format(
             {"data_type": "fp4_e2m1", "bits": 4, "group_size": 16})
+
+
+# ---------------------------------------------------------------------------
+# MXFP8_UE8M0_G32 — re-quantized native emission (the third streaming lane)
+# ---------------------------------------------------------------------------
+
+_MXFP8_RECIPE = {"data_type": "fp8_e4m3", "bits": 8, "group_size": 32,
+                 "scale_fmt": "ue8m0"}
+
+
+def _export_dsv4_with_mxfp8_body(workdir, out_name="mxfp8"):
+    """DSv4 source whose dense body Linear is RE-ENCODED to MXFP8, not copied.
+
+    Same checkpoint as the passthrough tests — the body Linear really is
+    block-FP8 on disk — so this exercises the interesting case: a re-quant
+    rung reading a block-scaled FP8 source.
+    """
+    mdl = workdir / "src_mxfp8"
+    tensors = _dsv4_source_model(mdl)
+    assignment, col_weights = _dsv4_recipe()
+    assignment["model.layers.0.self_attn.wq_a"] = _MXFP8_RECIPE
+    path = workdir / f"{out_name}.json"
+    _assign(path, assignment)
+    out = workdir / out_name
+    counts = export_nvfp4_cb_streaming(
+        mdl, path, out, col_weights, device="cpu",
+        allow_route_pending_passthrough=True)
+    return mdl, out, tensors, dict(counts)
+
+
+def test_mxfp8_requant_emits_the_declared_weight_and_scale_pair(workdir):
+    """The planned header is the emitted header: names, dtypes, byte counts."""
+    _mdl, out, _tensors, counts = _export_dsv4_with_mxfp8_body(workdir)
+    assert counts["MXFP8_UE8M0_G32"] == 1
+
+    header, _ = _st_header(out / "model.safetensors")
+    base = "layers.0.attn.wq_a"
+    assert header[base + ".weight"]["dtype"] == "F8_E4M3"
+    assert header[base + ".weight"]["shape"] == [_SOURCE_HID, _SOURCE_HID]
+    assert header[base + ".weight_scale"]["dtype"] == "F8_E8M0"
+    assert header[base + ".weight_scale"]["shape"] == [
+        _SOURCE_HID, _SOURCE_HID // 32]
+    # The source's own one-byte block-scale plane is GONE: this unit was
+    # re-encoded, so shipping the checkpoint's scale beside it would describe
+    # a tensor the new elements are not scaled by.
+    assert base + ".scale" not in header
+    lo, hi = header[base + ".weight_scale"]["data_offsets"]
+    assert hi - lo == _SOURCE_HID * (_SOURCE_HID // 32)   # one byte per group
+
+    # 8 + 8/32 = 8.25 bpw, on the bytes actually written.
+    wlo, whi = header[base + ".weight"]["data_offsets"]
+    n_params = _SOURCE_HID * _SOURCE_HID
+    assert 8.0 * ((whi - wlo) + (hi - lo)) / n_params == 8.25
+
+
+def test_mxfp8_requant_of_a_block_fp8_body_is_bit_exact_end_to_end(workdir):
+    """The exactness property, all the way through the shipped artifact.
+
+    The source Linear is E4M3 codes times a per-128x128 power of two. Decoding
+    the emitted MXFP8 planes must return those values EXACTLY — not close.
+    """
+    mdl, out, tensors, _counts = _export_dsv4_with_mxfp8_body(workdir)
+    base = "layers.0.attn.wq_a"
+
+    source = (
+        tensors[base + ".weight"].float()
+        * tensors[base + ".scale"].float()
+        .repeat_interleave(128, 0).repeat_interleave(128, 1)
+    )
+
+    emitted = load_file(str(out / "model.safetensors"))
+    weight = emitted[base + ".weight"].float()
+    scale = emitted[base + ".weight_scale"].float()
+    decoded = (
+        weight.reshape(_SOURCE_HID, _SOURCE_HID // 32, 32)
+        * scale.unsqueeze(-1)
+    ).reshape(_SOURCE_HID, _SOURCE_HID)
+
+    assert torch.equal(decoded, source)
+    assert float(((decoded - source) ** 2).mean()) == 0.0
+
+
+def test_mxfp8_requant_declares_a_native_group_and_routes_natively(workdir):
+    """It carries its own wire id and joins the delegated-native routing map.
+
+    The consumer's dispatcher reads ONE map (`source_passthrough.units`) to
+    decide "native route or CB decoder" and refuses an id it does not know, so
+    a unit omitted there would be read as CB — the one wrong answer that
+    loads. The byte-verbatim-vs-re-encoded distinction lives per unit in the
+    config group's `weights.source_passthrough` flag instead.
+    """
+    _mdl, out, _tensors, _counts = _export_dsv4_with_mxfp8_body(workdir)
+    config = json.loads((out / "quant_config.json").read_text())
+
+    groups = [g for g in config["config_groups"].values()
+              if g.get("source_format") == "MXFP8_UE8M0_G32"]
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["format"] == "gridbook-native"
+    assert group["wire_format_id"] == "mxfp8_e4m3_e8m0_g32"
+    assert group["weights"]["group_size"] == 32
+    assert group["weights"]["scale_dtype"] == "uint8_e8m0"
+    # The producer WROTE these bytes -- the one claim it must not borrow from
+    # its byte-verbatim neighbours.
+    assert group["weights"]["source_passthrough"] is False
+    # W8A8: the lane quantizes activations to the same per-32 grid.
+    acts = group["input_activations"]
+    assert acts["num_bits"] == 8 and acts["group_size"] == 32
+    assert acts["dynamic"] is True
+    from prismaquant.export_native_compressed import _explicit_regex
+    assert group["targets"] == [_explicit_regex("layers.0.attn.wq_a")]
+
+    declared = config["source_passthrough"]["units"]
+    assert config["source_passthrough"]["version"] == 1
+    # Unit ids stay in the RECIPE namespace (as the byte-verbatim lane's do);
+    # only the emitted TENSORS take the checkpoint spelling.
+    assert declared["model.layers.0.self_attn.wq_a"] == "mxfp8_e4m3_e8m0_g32"
+    # The routed-expert byte-verbatim half of the same artifact is unaffected.
+    assert any(fmt == "mxfp4_e2m1_ue8m0_g32" for fmt in declared.values())
+    assert config["provenance"]["requant_native_targets"] == {
+        "MXFP8_UE8M0_G32": 1}
+    assert "layers.0.attn.wq_a" not in set(config["ignore"])
+
+
+def test_mxfp8_requant_declaration_parses_on_the_producer_side(workdir):
+    """The producer self-parses what it writes, as it does for passthroughs."""
+    from prismaquant.cb_export_config import (
+        parse_source_passthrough_declaration,
+    )
+
+    _mdl, out, _tensors, _counts = _export_dsv4_with_mxfp8_body(workdir)
+    config = json.loads((out / "quant_config.json").read_text())
+    parsed = parse_source_passthrough_declaration(config)
+    assert parsed["model.layers.0.self_attn.wq_a"] == "mxfp8_e4m3_e8m0_g32"

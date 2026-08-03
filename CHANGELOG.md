@@ -1,5 +1,115 @@
 # Changelog
 
+## 0.8.0 — 2026-08-03
+
+This release advances the immutable runtime boundary to Gridbook **0.8.0** at
+exact commit `9011a19228ddb96b8a49e11a20ac75c99c83998e` — the released
+`v0.8.0` tag commit — and adds the source-passthrough format family, its
+measured serving verdicts, and the MXFP8 re-quantization rung.
+
+MINOR, not patch: the allocator menu gains formats, `route_backed` is replaced
+by a three-valued `route_status`, and the runtime pin file's schema moves to
+`v2`. Persisted assignments and shipped artifacts are unaffected.
+
+### Source-passthrough format family (#53)
+
+- **`SOURCE_PASSTHROUGH_CONTRACTS` makes "keep the checkpoint's own bytes" a
+  first-class rung** instead of two hand-written special cases. Two formats,
+  both from a header-only census of the released checkpoint: `MXFP4_SOURCE`
+  (routed experts, nibble-packed E2M1 + E8M0 group scales, **4.25 bpw**) and
+  `FP8_BLOCK_UE8M0_SOURCE` (body, E4M3 + one-byte UE8M0 block exponents at
+  128×128, **8.00049 bpw**). The census also corrected two live defects: the
+  source-kind scan keyed on "has a scale sibling" and stamped 33,024 MXFP4
+  experts as `FP8_SOURCE`-compatible — an 8.002 bpw format declared legal on a
+  4.25 bpw unit — and the body is not `FP8_SOURCE` at all.
+- **Zero-cost candidates, with bytes pinned to the checkpoint.** Shipping the
+  source bytes is the identity transform on the reference, so `predicted_dloss`
+  is `0.0` with provenance `cost_source="source_passthrough"`; the allocator
+  *synthesizes* the candidate because no cost table will ever carry a column
+  for a byte-copy contract. The claim cannot be forged — the provenance string
+  is honoured only for a declared passthrough format whose activation path is
+  the identity. `assignment_artifact_bytes` charges the unit's real header span
+  and refuses an allocation where the span and the closed-form byte count
+  disagree, rather than letting the artifact budget drift.
+- **Measured route verdicts replace assumed ones, and both inverted.**
+  `route_backed: bool` could not distinguish "nobody looked" from "we looked
+  and it is dead", so it becomes `route_status` (backed / pending / blocked)
+  plus `route_requirement` and `route_evidence`. Measured on GB10/sm121:
+  `MXFP4_SOURCE` is **backed but only via vLLM's Marlin MoE backend**
+  (requirement: `--moe-backend marlin`), and `FP8_BLOCK_UE8M0_SOURCE` was
+  **blocked** — every stock route dead. The second finding is load-bearing: CB
+  re-encoding of the body is the only way DSV4-Flash serves on this box by
+  default, so the body's CB rungs are architectural, not merely economical.
+- **Exporter verbatim stream-copy lane.** Passthrough tensors are stream-copied,
+  never materialized, so a 3.4 GB expert layer moves through the 16 MiB chunked
+  path without becoming a tensor. E8M0 scale planes are copied **verbatim**.
+  `quant_config.json` gains `source_passthrough` (schema v1); absence of the key
+  means "legacy all-CB artifact", so it is omitted rather than emitted empty.
+  `build_quant_config` round-trips its own output through the consumer's parser
+  before the file exists.
+- **Fixes a pre-existing silent corruption.** `_StreamWriter.write` built its
+  header as a dict, so two emit paths claiming one tensor name kept only the
+  last span while both blobs were written — a file whose offsets are wrong from
+  that point on, with no error. It now raises.
+
+### MXFP8_UE8M0_G32 menu format (#54)
+
+- **A second MX-FP8 format, because it is a different on-disk contract.**
+  `MXFP8_E4M3` defers to compressed-tensors, which rounds the group amax to a
+  power of two and can scale a group *up* — losing small values off the E4M3
+  subnormal ladder. This rung picks the smallest non-clipping shared exponent
+  and serializes `float8_e8m0fnu` rather than `uint8`. The `MXFP8` alias still
+  points at `MXFP8_E4M3`: repointing it would reinterpret every persisted
+  assignment that uses it.
+- **W8A8, with the A side measured.** The exactness claim is `weight_mse == 0.0`,
+  **not** `output_mse == 0.0`; declaring `act_bits=8` makes the cost stage apply
+  the activation closure before measuring, and a row with no measured
+  `output_mse` is masked off the menu rather than priced at the global minimum.
+- **A latent codec divergence fixed on the way.** `_batched_quantize` dispatches
+  on `weight_element_dtype`, which this rung shares with `MXFP8_E4M3` and
+  `FP8_CB`, so the batched render would have priced it with the codebook
+  replica's E8M0 snap — a different codec in the batched and unbatched paths.
+  `_EXPORT_ALIGNED_BATCH_FORMATS` routes it to the registry closure and a test
+  holds the two paths to each other.
+
+### Gridbook runtime pin advanced to 0.8.0, and a ratchet so it cannot drift
+
+- The pin now names Gridbook **0.8.0** at `9011a19228ddb96b8a49e11a20ac75c99c83998e`.
+  It reached that value through two intermediate bumps during development
+  (`7c0b527`, then `4d7292c`), and that is exactly what exposed the gap below.
+- **Pin schema `v1` → `v2`: the new `version_is_release` boolean.** A gridbook
+  feature merge does not bump `gridbook.__version__`, so a pin can advance to a
+  post-release master commit while still self-reporting the same version —
+  three distinct commits self-reported `0.7.0` during this work. The version
+  string alone therefore cannot say whether a runtime was ever released; the
+  commit is the identity and this flag records the rest.
+- **`rungs_by_runtime_version` is ratcheted against it**
+  (`tests/test_gridbook_runtime_boundary.py`): no key may name a runtime newer
+  than the one actually pinned, and the pinned version may appear as a key only
+  when its commit *is* that version's release. An unreleased pin backs nothing —
+  the fail-closed direction the spec's own "when the pin advances, ADD the
+  version key" rule already asked for, now enforced rather than trusted.
+- `serving_profile_specs/nvfp4_cb.json` gains the `0.8.0` key, carrying the same
+  fused mid-M rung set forward after verifying `FP8_FUSED_KBITS` is still
+  `tuple(range(28, 49, 4))` at the v0.8.0 tag commit. The block-FP8 body lane
+  moves from **BLOCKED** to **OPT-IN, NOT BACKED**: Gridbook 0.8.0 serves it
+  through its own sm120 block-scaled MXFP8 collective, correctness-audited at
+  worst rel-Frobenius 5.9e-5 over the seven real-checkpoint body shapes, but
+  behind `GRIDBOOK_MXFP8_DENSE=1` with the served timing bench still pending.
+  Available is not backed, so it prices no rung.
+
+### Also
+
+- Stage the dual-variant DP drivers for the mid-rung and body-route questions
+  (#55): `run_dsv4_mxfp4_dual_alloc.sh` and `summarise_dual_alloc.py`, which
+  produce the contingent allocation by *widening the menu* rather than editing
+  the route table — pricing a future is fine, declaring it is not.
+- Docs now cite the current pin rather than `746473c`; the `0.7.0` section below
+  deliberately still names that commit, because it records what 0.7.0 pinned.
+- `ci.yml`'s header claimed the suite was 967 tests in ~51 s (reference box,
+  2026-07-28). It is ~2762 tests in 10.5–14 min on the runner; the note now says
+  so, and names the real margin against the job's 30-minute timeout.
+
 ## 0.7.0 — 2026-08-02
 
 This release advances the immutable runtime boundary to Gridbook 0.7.0 at exact

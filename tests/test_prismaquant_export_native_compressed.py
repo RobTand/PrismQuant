@@ -1077,10 +1077,20 @@ class TestRoundTrip(unittest.TestCase):
             "MXFP4_SOURCE",
             "FP8_BLOCK_UE8M0_SOURCE",
         }
+        nvfp4_cb_container_requant = {
+            # RE-QUANTIZED carriers of the nvfp4_cb container: unlike the
+            # passthroughs above these DO have a render, but it is not a
+            # compressed-tensors one — the exporter writes the element and
+            # scale planes itself under a Gridbook wire id. "rendered ==
+            # served" is therefore a real claim with real content, and it is
+            # checked directly below (against the same E8M0 served formula the
+            # stock MXFP8 rungs use) rather than deferred to another file.
+            "MXFP8_UE8M0_G32",
+        }
         self.assertEqual(
             set(fr.REGISTRY),
             reconciled | set(explicit_gaps) | gguf_lane | nvfp4_cb_lane
-            | nvfp4_cb_container_passthroughs,
+            | nvfp4_cb_container_passthroughs | nvfp4_cb_container_requant,
         )
 
     def test_registry_render_dequant_matches_served_metadata(self):
@@ -1118,6 +1128,27 @@ class TestRoundTrip(unittest.TestCase):
                             W.reshape(W.shape[0], W.shape[1] // 32, 32)
                         ).dequant.reshape_as(W)
                         torch.testing.assert_close(rendered, served)
+                        continue
+
+                    if fmt == "MXFP8_UE8M0_G32":
+                        # Not a compressed-tensors rung: the STREAMING
+                        # exporter writes its planes itself. Pack with the
+                        # exporter's own packer, then decode with the same
+                        # served E8M0 formula the stock MXFP8 rungs use, and
+                        # require the registry render to equal it exactly.
+                        from prismaquant.export_nvfp4_cb_streaming import (
+                            _requant_pack,
+                        )
+
+                        packed = _requant_pack(fmt, W)
+                        served = _mxfp8_served_dequantize(
+                            packed["weight"],
+                            packed["weight_scale"].view(torch.uint8),
+                        )
+                        rendered = fr.get_format(fmt).quantize_dequantize(
+                            W.clone())
+                        torch.testing.assert_close(rendered, served)
+                        self.assertTrue(torch.equal(rendered, served))
                         continue
 
                     if fmt in {"MXFP8_E4M3", "MXFP8_E5M2", "MXFP8A16"}:

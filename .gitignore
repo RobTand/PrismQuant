@@ -38,3 +38,8 @@ tmp/
 
 # Editor swapfiles
 .*.swp
+
+# Staging dirs the probe creates beside the repo when no root is given
+# (sensitivity_probe.py: Path.cwd() / ".prismaquant_tmp"). Test runs leave
+# these behind, and they are never artifacts anyone means to track.
+.prismaquant_tmp/

@@ -41,12 +41,65 @@ def test_gridbook_pin_is_one_full_immutable_commit():
     ]
     assert pins == [PIN]
     payload = json.loads(PIN.read_text(encoding="utf-8"))
-    assert set(payload) == {"schema", "repository", "commit", "version"}
-    assert payload["schema"] == "prismaquant.gridbook_runtime_pin.v1"
+    assert set(payload) == {"schema", "repository", "commit", "version",
+                            "version_is_release"}
+    assert payload["schema"] == "prismaquant.gridbook_runtime_pin.v2"
     assert payload["repository"] == "https://github.com/RobTand/gridbook.git"
     assert re.fullmatch(r"[0-9a-f]{40}", payload["commit"])
     assert re.fullmatch(r"[0-9]+(?:[.][0-9]+)+(?:[A-Za-z0-9.+-]*)?",
                         payload["version"])
+    assert isinstance(payload["version_is_release"], bool)
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split("."))
+
+
+def test_rung_tables_may_only_credit_a_runtime_that_was_actually_released():
+    """The version-drift ratchet.
+
+    ``rungs_by_runtime_version`` is keyed by runtime VERSION, but the pin's
+    identity is its COMMIT -- and a feature merge does not bump
+    ``gridbook.__version__``. So a pin can advance to a post-release master
+    commit while keeping the same version string, and a rung table keyed on
+    that string silently starts describing a runtime nobody released. Three
+    different commits self-reported 0.7.0 during the source-passthrough work,
+    which is exactly how this gap was found.
+
+    Two properties close it without inventing a release-history table:
+
+      * no key may name a runtime NEWER than the one actually pinned -- a
+        table cannot promise rungs from a version this producer has never
+        resolved; and
+      * the pinned version may appear as a key only when the pinned commit IS
+        that version's release (``version_is_release``). An unreleased pin
+        backs nothing, which is the fail-closed direction the spec's own
+        "when the pin advances, ADD the version key" rule already asks for.
+    """
+    payload = json.loads(PIN.read_text(encoding="utf-8"))
+    pin_version = payload["version"]
+    spec = json.loads(
+        (REPO / "prismaquant" / "serving_profile_specs" / "nvfp4_cb.json")
+        .read_text(encoding="utf-8"))
+
+    keyed: set[str] = set()
+    for lane in spec["serving_lanes"]:
+        fused = lane.get("fused_mid_m")
+        if fused is not None:
+            keyed |= set(fused["rungs_by_runtime_version"])
+
+    for version in sorted(keyed):
+        assert _version_tuple(version) <= _version_tuple(pin_version), (
+            f"serving profile credits runtime {version}, which is newer than "
+            f"the pinned runtime {pin_version}: a rung table cannot promise a "
+            f"version the producer has never resolved")
+
+    if not payload["version_is_release"]:
+        assert pin_version not in keyed, (
+            f"the pin names version {pin_version} but its commit "
+            f"{payload['commit']} is not that version's release "
+            f"(version_is_release is false), so no rung table may credit it -- "
+            f"either pin the release tag commit or drop the {pin_version} key")
 
 
 def test_no_gridbook_runtime_or_tests_are_vendored():
@@ -188,10 +241,11 @@ def test_prepare_mounts_runtime_source_and_contract_read_only(tmp_path):
     copied_helper = assets / HELPER.name
     shutil.copy2(HELPER, copied_helper)
     (assets / PIN.name).write_text(json.dumps({
-        "schema": "prismaquant.gridbook_runtime_pin.v1",
+        "schema": "prismaquant.gridbook_runtime_pin.v2",
         "repository": "https://github.com/example/gridbook.git",
         "commit": commit,
         "version": "9.9.9",
+        "version_is_release": False,
     }), encoding="utf-8")
 
     prepared = _bash(

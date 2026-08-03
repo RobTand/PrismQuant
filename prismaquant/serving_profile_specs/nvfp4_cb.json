@@ -7,7 +7,8 @@
     "id": "nvfp4_cb",
     "exporter": "prismaquant.export_nvfp4_cb",
     "codec_formats_from": [
-      "prismaquant.export_nvfp4_cb:EXPORTABLE_FORMATS"
+      "prismaquant.export_nvfp4_cb:EXPORTABLE_FORMATS",
+      "prismaquant.cb_export_config:STREAMING_REQUANT_EXPORT_FORMATS"
     ],
     "passthrough_formats": [
       "MXFP4_SOURCE",
@@ -28,6 +29,7 @@
         "FP8_SOURCE",
         "FP8_BLOCK_UE8M0_SOURCE",
         "MXFP4_SOURCE",
+        "MXFP8_UE8M0_G32",
         "BF16"
       ],
       "reason": "profile_mismatch",
@@ -40,10 +42,11 @@
         "NVFP4",
         "FP8_DYNAMIC",
         "FP8_E4M3",
-        "FP8_SOURCE"
+        "FP8_SOURCE",
+        "MXFP8_UE8M0_G32"
       ],
       "reason": "runtime_unsupported",
-      "detail": "The nvfp4_cb container's stock compressed-tensors delegation is DENSE-ONLY today: neither export_nvfp4_cb nor the Gridbook runtime carries a stock-CT packed-MoE emission/serving path (35B first-contact, 2026-07-19 \u2014 the exporter's stock-NVFP4 global-scale pass is 2-D and Gridbook's MoE method is CB-only). Packed expert stacks use CB rungs (per-expert weighted VQ, served by Gridbook) or the BF16 passthrough until that path is built AND serve-validated. This is a declared capability of the container, not a quality judgement on the formats."
+      "detail": "The nvfp4_cb container's stock compressed-tensors delegation is DENSE-ONLY today: neither export_nvfp4_cb nor the Gridbook runtime carries a stock-CT packed-MoE emission/serving path (35B first-contact, 2026-07-19 \u2014 the exporter's stock-NVFP4 global-scale pass is 2-D and Gridbook's MoE method is CB-only). Packed expert stacks use CB rungs (per-expert weighted VQ, served by Gridbook) or the BF16 passthrough until that path is built AND serve-validated. This is a declared capability of the container, not a quality judgement on the formats. MXFP8_UE8M0_G32 joins the list for the SAME structural reason and not as a bpw judgement: its streaming emission is a 2-D dense path (one E4M3 plane plus one float8_e8m0fnu scale plane per Linear) with no packed-expert stacking, so a routed stack has no MXFP8 emission to ship. Its economic exclusion from the routed-expert ladder is a separate and independent fact recorded where the expert cost menu is enumerated (scripts/run_dsv4_mxfp4_cost.sh): at 8.25 bpw it is nearly double the <= 4.25 bpw rungs that menu measures, so it is simply not on it."
     },
     {
       "id": "mxfp4_source_is_routed_expert_only",
@@ -93,8 +96,8 @@
         "FP8_BLOCK_UE8M0_SOURCE"
       ],
       "activation_contract": "w8a8-dynamic-e4m3-block128-ue8m0",
-      "fallback_route": "gridbook 0.8.0 Mxfp8DenseLinearMethod (REQUIRES GRIDBOOK_MXFP8_DENSE=1; opt-in pending its native-parity timing bench)",
-      "detail": "SOURCE-PASSTHROUGH lane for the checkpoint's own block-FP8 body: E4M3 elements with ONE-BYTE UE8M0 block exponents at 128x128, copied verbatim. ROUTE STATUS: BACKED, via a Gridbook-owned lane -- and this verdict has moved twice, which is exactly why the producer stores route_status as data with evidence attached. It was first ASSUMED backed on the reasoning that the released checkpoint already serves this way; that inference was then measured FALSE on GB10/sm121, where every vLLM route was tried and every one was dead (deep_gemm assert, cutlass scaled_mm rejects the block layout, triton KeyError on float8_e8m0fnu, flashinfer gate is sm90-exact, marlin-linear tops out at sm89). It is backed now for a different reason than the original guess: Gridbook 0.8.0 ships a dense MXFP8 lane that serves these bytes directly rather than through any of those rungs, which remain known-broken upstream with recorded symptoms. Correctness is audited on the real checkpoint (worst rel-Frobenius 5.9e-5 across all seven body shapes; worst 1.2e-4 for the DeepSeek block-scale embedding chain against the block-dequant oracle). The lane is OPT-IN pending its native-parity TIMING bench, so GRIDBOOK_MXFP8_DENSE=1 is part of the serving contract, not a tuning hint: correctness is established, rung-pricing promotion is not. No fused_mid_m block -- a passthrough rung has no Gridbook decode prologue to fuse, so an empty backed set is the honest state rather than a data gap. Byte contract: 8.00049 bpw, pinned against the checkpoint's own header spans."
+      "fallback_route": "route_unbacked at Gridbook 0.8.0: every STOCK vLLM route is dead on sm121 (deep_gemm assert / cutlass scaled_mm reject / triton float8_e8m0fnu KeyError / flashinfer sm90-exact gate / marlin-linear <=sm89), and Gridbook 0.8.0's own Mxfp8DenseLinearMethod serves the format but is OPT-IN behind GRIDBOOK_MXFP8_DENSE=1 and refuses at load with the flag unset. AVAILABLE, NOT BACKED: the NATIVE-PARITY served timing bench is still pending, so this lane backs no rung.",
+      "detail": "SOURCE-PASSTHROUGH lane for the checkpoint's own block-FP8 body: E4M3 elements with ONE-BYTE UE8M0 block exponents at 128x128, copied verbatim. ROUTE STATUS: OPT-IN, NOT BACKED (was BLOCKED before Gridbook 0.8.0). The intuition that 'the released checkpoint already serves this way, so the route must exist' is measurably FALSE on our target -- on GB10/sm121, 2026-08-03, every STOCK route was tried and every one is dead: deep_gemm asserts, cutlass scaled_mm rejects the block layout, triton raises KeyError on float8_e8m0fnu, flashinfer's gate is sm90-exact, and marlin-linear tops out at sm89. WHAT CHANGED AT 0.8.0: Gridbook now serves this format itself, through its own sm120 block-scaled MXFP8 collective, by the exact embedding 128 = 4*32 (the DeepSeek block-128 UE8M0 plane broadcasts to per-32 MX scales with no element byte changed). That route is correctness-audited -- worst rel-Frobenius 5.9e-5 against an fp32 oracle over the seven real-checkpoint DSV4-Flash body shapes -- but it ships OPT-IN behind GRIDBOOK_MXFP8_DENSE=1 and refuses at load with the flag unset, because its NATIVE-PARITY served timing bench has not been run. So it is AVAILABLE, not BACKED, and it backs no rung here: pricing a rung on a lane the default serve never takes is the P5b defect this data exists to prevent. THE ARCHITECTURAL CONSEQUENCE THEREFORE STANDS: CB re-encoding of the body is still the only way DSV4-Flash serves on this box by default, so the body's CB rungs remain load-bearing rather than merely economical. The rung stays on the menu deliberately -- if the DP still wants it, that is the serving gap surfacing in the allocation instead of at deploy time -- but the exporter refuses to ship a selection containing it without an explicit override. Byte contract: 8.00049 bpw, pinned against the checkpoint's own header spans."
     },
     {
       "id": "delegated_native_mxfp4",
@@ -104,6 +107,15 @@
       "activation_contract": "delegated-native-mxfp4-e2m1-group32-ue8m0",
       "fallback_route": "vllm Marlin MoE (REQUIRES --moe-backend marlin; the auto default DeepGEMM_MXFP4 asserts on sm121)",
       "detail": "SOURCE-PASSTHROUGH lane for the released checkpoint's own packed routed experts: nibble-packed E2M1 with per-32 E8M0 group scales, copied verbatim, served by the model's native DeepseekV4 routed-expert path rather than by any codebook decoder. Declared as a DISTINCT lane so P5b never files these units under a CB contract they do not have -- a unit here has no CB activation contract at all, which is why the K0.2 attestation scopes itself to CB layers and the artifact declares its source-passthrough units explicitly rather than leaving them looking like a missing attestation. ROUTE STATUS: BACKED, measured on GB10/sm121 2026-08-03 -- native-confirmed via vLLM Marlin MoE. But ONLY off the default: the auto-selected DeepGEMM_MXFP4 backend asserts on the SF transformation, FlashInfer is gated to capability family 100, and the OAI Triton path is hard-excluded on SM12x (0/15 kernels). `--moe-backend marlin` is therefore part of the serving contract, not a tuning hint, and it travels with the artifact in its serving notes. No fused_mid_m block: a passthrough rung has no Gridbook decode prologue to fuse, so an empty backed set is the honest state, not a data gap."
+    },
+    {
+      "id": "mxfp8_ue8m0_g32",
+      "formats": [
+        "MXFP8_UE8M0_G32"
+      ],
+      "activation_contract": "w8a8-dynamic-mxfp8-e4m3-group32-ue8m0",
+      "fallback_route": "route_unbacked: Gridbook's Mxfp8DenseLinearMethod is OPT-IN behind GRIDBOOK_MXFP8_DENSE=1 and ships in no released runtime version yet; with the flag unset a unit declaring this format refuses at load (fail-closed)",
+      "detail": "RE-QUANTIZATION lane (not a passthrough): the producer re-encodes any source dtype to E4M3 elements with a float8_e8m0fnu shared exponent per 32 contiguous K, wire id mxfp8_e4m3_e8m0_g32, tensors <unit>.weight + <unit>.weight_scale row-major. ROUTE STATUS: UNBACKED. The consumer-side lane EXISTS and is correctness-audited (gridbook/mxfp8_dense_lane.py, kernel-vs-fp32-oracle over the real DSV4-Flash body shapes on GB10/sm121), but it is opt-in behind GRIDBOOK_MXFP8_DENSE=1 with the NATIVE-PARITY served bench still pending, and Gridbook does not default-enable a lane on correctness evidence alone. This spec's backed set describes what the DEFAULT serve takes, so an operator-flag-gated route is AVAILABLE, NOT BACKED -- the same call nvfp4_cb_quality_path makes about the opt-in fp4 fused mid-M route, and pricing a rung on a lane the default serve never takes is the exact P5b defect this data exists to prevent. NO fused_mid_m KEY, deliberately: a non-CB rung has no CB rung number, so ServingLaneSpec.backed_rungs can never report it backed through that field anyway, and an absent key resolves to the honest 'lane_declares_no_fused_mid_m_lane' source rather than inventing an empty CB ladder. WHEN THIS BECOMES BACKED, key it to the Gridbook version that first RELEASES the lane with the flag defaulted on -- NEVER to 0.7.0, which is the currently pinned version and does not contain it (the consumer branch self-reports 0.7.0 while unreleased, so the version string alone does not distinguish them; the runtime pin's commit does). A pinned version with no entry backs nothing, which is the fail-closed direction. ACTIVATION CONTRACT IS W8A8, not weight-only: the lane quantizes activations dynamically to MXFP8 per 32 reduction-axis elements with the same saturating-ceil rule as the weights (no static global scale, unlike NVFP4). That is why the format's exactness claim on a block-FP8 source is a WEIGHT-PLANE claim (weight_mse == 0.0) and not an output claim, and why cost_entry_is_bit_exact correctly refuses to short-circuit it. Byte contract: 8 + 8/32 = 8.25 bpw exactly, weight plane [N, K] E4M3 plus scale plane [N, K/32] float8_e8m0fnu."
     },
     {
       "id": "nvfp4_cb_quality_path",
@@ -157,10 +169,18 @@
             40,
             44,
             48
+          ],
+          "0.8.0": [
+            28,
+            32,
+            36,
+            40,
+            44,
+            48
           ]
         }
       },
-      "detail": "fp8-CB's fused prologue kernel consumes the SAME per-token dynamic E4M3 QDQ as its non-fused route, so the fused mid-M lane (9 <= M <= 128, measured 1.04x/1.26x/1.45x at M = 32/64/128) is a pure kernel substitution and ships as DEFAULT \u2014 but only for the rungs the consumer actually instantiates. Gridbook 0.5.0 instantiates K in {28,32,36,40,44,48} while production permits every K28..K48, so the published 27B K36..K47 ladder has five rungs silently taking expand+GEMM (gridbook ROADMAP K1.2 / ultraplan \u00a73 P4). Gridbook 0.6.0 RESOLVED K1.2 and the set is unchanged because it was never incomplete: k % 4 == 0 is a structural law of the format plus TMA, not a build option \u2014 type_size = 4k is the packed-B TMA box's contiguous extent and must be a 16-byte multiple, and the fused mainloop decodes with one sub-table width CbSubW = k/4 while the format splits k over n_sub = 4 RAGGEDLY (widths k//4 + (i < k%4)), so at k37 the true widths are (10,9,9,9) and a uniform decode would be WRONG, not merely unaligned. The five off-law rungs on the 27B ladder are therefore permanently fallback-served, not pending. 0.6.0 also makes the set queryable (cb_fused_kbits(), gridbook/codec.py FP8_FUSED_KBITS) so it is a checked law rather than a transcription. Gridbook 0.7.0 declares the SAME set a third time, and for the same structural reason: FP8_FUSED_KBITS is still range(28, 49, 4) there, and 0.7.0's content (the deepseek_v4 serving contract D0.1, plus the post-0.6.0 review remediation) does not touch the fused mid-M rung law. When the runtime pin advances, ADD the version key rather than editing an existing list \u2014 a pinned version with no key here backs nothing, which is the fail-closed direction."
+      "detail": "fp8-CB's fused prologue kernel consumes the SAME per-token dynamic E4M3 QDQ as its non-fused route, so the fused mid-M lane (9 <= M <= 128, measured 1.04x/1.26x/1.45x at M = 32/64/128) is a pure kernel substitution and ships as DEFAULT \u2014 but only for the rungs the consumer actually instantiates. Gridbook 0.5.0 instantiates K in {28,32,36,40,44,48} while production permits every K28..K48, so the published 27B K36..K47 ladder has five rungs silently taking expand+GEMM (gridbook ROADMAP K1.2 / ultraplan \u00a73 P4). Gridbook 0.6.0 RESOLVED K1.2 and the set is unchanged because it was never incomplete: k % 4 == 0 is a structural law of the format plus TMA, not a build option \u2014 type_size = 4k is the packed-B TMA box's contiguous extent and must be a 16-byte multiple, and the fused mainloop decodes with one sub-table width CbSubW = k/4 while the format splits k over n_sub = 4 RAGGEDLY (widths k//4 + (i < k%4)), so at k37 the true widths are (10,9,9,9) and a uniform decode would be WRONG, not merely unaligned. The five off-law rungs on the 27B ladder are therefore permanently fallback-served, not pending. 0.6.0 also makes the set queryable (cb_fused_kbits(), gridbook/codec.py FP8_FUSED_KBITS) so it is a checked law rather than a transcription. Gridbook 0.7.0 declares the SAME set a third time, and for the same structural reason: FP8_FUSED_KBITS is still range(28, 49, 4) there, and 0.7.0's content (the deepseek_v4 serving contract D0.1, plus the post-0.6.0 review remediation) does not touch the fused mid-M rung law. Gridbook 0.8.0 declares it a FOURTH time, verified the same way (FP8_FUSED_KBITS is still tuple(range(28, 49, 4)) at the v0.8.0 tag commit): 0.8.0's content is the delegated-native source-passthrough loader and the OPT-IN MXFP8 dense lane, and neither touches this rung law. When the runtime pin advances, ADD the version key rather than editing an existing list \u2014 a pinned version with no key here backs nothing, which is the fail-closed direction. A key may only name a runtime version that was actually RELEASED, and the pin records that with version_is_release; tests/test_gridbook_runtime_boundary.py ratchets it, because a feature merge does not bump gridbook's __version__ and three distinct commits self-reported 0.7.0 during the source-passthrough work."
     }
   ]
 }

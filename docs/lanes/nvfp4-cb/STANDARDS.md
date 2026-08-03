@@ -75,8 +75,8 @@ because `tests/test_gridbook_runtime_contract.py` compares rungs, layouts and
 to the rung set as a two-repo change, and re-read `codec.py` at the pinned
 commit before editing either the JSON or the paragraph below.
 
-For PrismaQuant 0.7.0 that pin is Gridbook 0.7.0 at exact commit
-`746473c8459acd24c71e7602d1c982da2f8fa80e`. Every serving-reachable Gridbook
+For PrismaQuant 0.8.0 that pin is Gridbook 0.8.0 at exact commit
+`9011a19228ddb96b8a49e11a20ac75c99c83998e`. Every serving-reachable Gridbook
 operation is native CUDA/CUTLASS and is resolved and attested at model load.
 Gridbook has no Triton dependency, dispatch arm, or fallback; if an artifact,
 shape, ABI, or device lacks its required native operation, serving fails closed.

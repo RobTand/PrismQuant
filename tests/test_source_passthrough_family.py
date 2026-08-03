@@ -231,39 +231,24 @@ def test_lane_metadata_declares_a_distinct_delegated_native_route():
 
 
 def test_route_status_follows_the_measurement_not_the_intuition():
-    """The CURRENT measured verdicts, pinned so a guess cannot replace them.
+    """The measured sm121 verdicts, which came out the opposite way round.
 
-    Both of these have been wrong at least once, in opposite directions, which
-    is the whole reason route_status is data with evidence attached rather
-    than a comment:
-
-      * MXFP4_SOURCE  assumed pending -> measured BACKED, but only off the
-        default backend (the auto-selected DeepGEMM_MXFP4 asserts on sm121).
-      * FP8_BLOCK_UE8M0_SOURCE  assumed backed because the checkpoint ships
-        that way -> measured BLOCKED when every vLLM route turned out dead ->
-        BACKED again once Gridbook 0.8.0 shipped a dense MXFP8 lane that
-        serves the bytes without going through those rungs.
-
-    This test is DELIBERATELY brittle. When a verdict moves again it must fail,
-    so that someone updates the evidence string alongside it rather than
-    quietly flipping a boolean. The mechanism that must NOT be brittle is
-    tested separately, table-agnostically, below.
+    "The released checkpoint already serves this way, so the route exists"
+    is false for the BODY passthrough and true for the EXPERT one — and only
+    off the default backend. Pinning both directions here keeps a plausible
+    guess from quietly replacing the measurement.
     """
     mxfp4 = SOURCE_PASSTHROUGH_CONTRACTS["MXFP4_SOURCE"]
     body = SOURCE_PASSTHROUGH_CONTRACTS["FP8_BLOCK_UE8M0_SOURCE"]
     assert mxfp4.route_status == ROUTE_STATUS_BACKED
+    assert mxfp4.route_backed
+    # BACKED only WITH a requirement; a backed route whose requirement is
+    # unmet serves no better than a blocked one, so it must be declared.
     assert mxfp4.route_requirement == "vllm --moe-backend marlin"
-    # Backed by a Gridbook-owned lane, not by the vLLM rungs that measured
-    # dead -- and still OPT-IN pending its timing bench, so the requirement is
-    # part of the contract. A backed route whose requirement goes unmet serves
-    # no better than a blocked one.
-    assert body.route_status == ROUTE_STATUS_BACKED
-    assert body.route_requirement == "GRIDBOOK_MXFP8_DENSE=1"
-    # Every verdict carries its evidence; a verdict without one is a rumour.
+    assert body.route_status == ROUTE_STATUS_BLOCKED
+    assert not body.route_backed
+    # Both carry the evidence for their verdict.
     assert mxfp4.route_evidence and body.route_evidence
-    assert "0.8.0" in body.route_evidence
-    # Both are backed WITH a requirement -- neither ships on defaults.
-    assert all(c.route_requirement for c in (mxfp4, body))
 
 
 def test_export_gate_set_is_derived_from_route_status_not_transcribed():
@@ -305,10 +290,8 @@ def test_serving_notes_carry_requirement_and_evidence():
     notes = passthrough_serving_notes()
     assert notes["MXFP4_SOURCE"]["requirement"] == "vllm --moe-backend marlin"
     assert notes["MXFP4_SOURCE"]["route_status"] == ROUTE_STATUS_BACKED
-    assert notes["FP8_BLOCK_UE8M0_SOURCE"]["requirement"] == (
-        "GRIDBOOK_MXFP8_DENSE=1")
     assert notes["FP8_BLOCK_UE8M0_SOURCE"]["route_status"] == (
-        ROUTE_STATUS_BACKED)
+        ROUTE_STATUS_BLOCKED)
     for entry in notes.values():
         assert entry["evidence"]
 

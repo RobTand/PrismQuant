@@ -8,6 +8,16 @@ from __future__ import annotations
 from . import format_registry as fr
 
 
+# The rungs whose SERVED path is the FlashInfer/CUTLASS MXFP8 GEMM. An
+# explicit set rather than an ``MXFP8`` prefix test: MXFP8_UE8M0_G32 shares the
+# prefix but rides a different lane entirely — Gridbook's own block-scaled
+# collective, reading a float8_e8m0fnu scale plane — so a prefix match would
+# gate it on a kernel it never reaches. The profile spec scopes the rule the
+# same way; this is the second guard, and the one a future spec edit would
+# land on first.
+_FLASHINFER_MXFP8_GEMM_FORMATS = frozenset({"MXFP8_E4M3", "MXFP8_E5M2"})
+
+
 def flashinfer_mxfp8_problem_size_accepts(
     fmt: str,
     *,
@@ -19,7 +29,7 @@ def flashinfer_mxfp8_problem_size_accepts(
         canonical = fr.canonical_format_name(fmt)
     except Exception:
         return None
-    if not canonical.startswith("MXFP8"):
+    if canonical not in _FLASHINFER_MXFP8_GEMM_FORMATS:
         return None
     try:
         import torch

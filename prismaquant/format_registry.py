@@ -48,6 +48,8 @@ from prismaquant.mx_formats import (
     e8m0_to_scale,
     mxfp8_e4m3_activation_qdq_vllm,
     mxfp8_e4m3_weight_qdq,
+    mxfp8_ue8m0_activation_qdq,
+    mxfp8_ue8m0_weight_qdq,
 )
 
 
@@ -565,6 +567,26 @@ def _mxfp8_e4m3_weight_rtn(w: torch.Tensor) -> torch.Tensor:
     return mxfp8_e4m3_weight_qdq(w).dequant.to(w.dtype)
 
 
+def _mxfp8_ue8m0_weight_rtn(w: torch.Tensor) -> torch.Tensor:
+    """MXFP8_UE8M0_G32 weight RTN — the saturating-ceil shared-exponent rule.
+
+    Same codec the streaming exporter writes, so emulation and shipped bytes
+    are one rendering (see ``mx_formats.mxfp8_ue8m0_shared_exponent``).
+    """
+    return mxfp8_ue8m0_weight_qdq(w).dequant.to(w.dtype)
+
+
+def _mxfp8_ue8m0_activation_rtn(x: torch.Tensor) -> torch.Tensor:
+    """MXFP8_UE8M0_G32 ACTIVATION RTN — dynamic per-32 E8M0, same ceil rule.
+
+    Mirrors the Gridbook lane's A side exactly (``Mxfp8DenseLinearMethod``
+    quantizes activations to MXFP8 per 32-element group each forward), so
+    ``output_mse`` measured through this closure is the real W8A8 error rather
+    than weight-only error.
+    """
+    return mxfp8_ue8m0_activation_qdq(x).dequant.to(x.dtype)
+
+
 def _make_plain_fp8_weight_rtn(
     element_dtype: torch.dtype,
     element_max: float,
@@ -753,6 +775,81 @@ register_format(FormatSpec(
     autoround_config=lambda: _mx_autoround(8, 32, 16, "fp8_e4m3"),
     quantize_dequantize=_mxfp8_e4m3_weight_rtn,
     activation_quantize_dequantize=lambda x: x,
+))
+
+# MXFP8_UE8M0_G32 — MX-FP8 for the Gridbook lane, with the saturating-ceil
+# shared-exponent rule and a native ``float8_e8m0fnu`` scale plane.
+#
+# WHY THIS IS NOT JUST ``MXFP8_E4M3``. It has the same element grid (E4M3),
+# the same group (32 along K) and the same 8.25 bpw, so the obvious question
+# is why the registry carries two. Three reasons, in the order that matters:
+#
+#   * SCALE RULE. MXFP8_E4M3 defers to compressed-tensors, which is the right
+#     authority for the stock vLLM lane it ships on. That rule rounds the
+#     group amax to a power of two, which can scale a group UP and knock the
+#     smallest normals off the E4M3 subnormal ladder. This format instead
+#     picks the smallest non-clipping exponent, which is what buys the
+#     exactness property below. See ``mx_formats.mxfp8_ue8m0_shared_exponent``.
+#   * SCALE DTYPE. The stock lane serializes E8M0 as ``uint8``; this one
+#     serializes ``float8_e8m0fnu``, the spelling DeepSeek-V4 already uses for
+#     its own block scales and the one the Gridbook consumer reads.
+#   * LANE. It rides its own wire id and its own (currently UNBACKED) serving
+#     lane, not the compressed-tensors scheme.
+#
+# That is the same "different on-disk contract, therefore a different format"
+# call FP8_BLOCK_UE8M0_SOURCE made against FP8_SOURCE, and the reason the
+# ``MXFP8 -> MXFP8_E4M3`` alias above is deliberately left alone: historical
+# artifacts and launchers spelled the stock compressed-tensors rung ``MXFP8``,
+# and quietly repointing that name at a rung with a different codec, a
+# different scale plane and a different serving lane would reinterpret every
+# persisted assignment that uses it.
+#
+# EXACT ON BLOCK-FP8 SOURCES, ON THE WEIGHT PLANE. Any tensor whose stored
+# form is E4M3 codes times a shared power of two — the DeepSeek
+# ``fp8_e4m3_ue8m0_block128`` body convention — re-encodes here with ZERO
+# weight error: the ceil rule never picks an exponent above the block's own, so
+# every element is an E4M3 code scaled down by a power of two, which is exactly
+# representable. 128 = 4*32, so a 32-wide chunk never straddles a block
+# boundary and the scale map is pure replication. This is a property of the
+# rule, not a measurement, and tests/test_mxfp8_ue8m0.py pins it.
+#
+# Read that claim precisely: it is ``weight_mse == 0.0``, NOT ``output_mse ==
+# 0.0``. The lane below quantizes activations, so a weight-lossless unit still
+# has real A-side error — which is exactly why ``cost_entry_is_bit_exact``
+# refuses to short-circuit a W·A· format on a zero weight_mse.
+#
+# RE-QUANTIZATION, NOT PASSTHROUGH. Unlike the ``*_SOURCE`` family this is
+# legal on ANY source dtype: it has a real encoder, so it is deliberately
+# absent from SOURCE_PASSTHROUGH_CONTRACTS and is not source-gated.
+#
+# W8A8, WITH THE A SIDE MEASURED. The Gridbook lane that serves this
+# (``Mxfp8DenseLinearMethod``, gridbook/mxfp8_dense_lane.py) quantizes
+# activations dynamically to MXFP8 per 32 reduction-axis elements, using the
+# SAME saturating-ceil rule as the weights — no static global scale to fit,
+# unlike NVFP4's ``nv_fp4_with_static_gs``. Declaring that here is not
+# bookkeeping: ``act_bits=8`` is what makes the cost stage apply
+# ``activation_quantize_dequantize`` before measuring ``output_mse``, so a
+# measured row carries genuine W8A8 error. Declaring A16 instead would price
+# an activation path the runtime does not take, and on a block-FP8 source
+# (weight_mse exactly 0.0) would hand the DP a free zero-cost rung.
+#
+# effective_bits = 8 + 8/32 = 8.25 bpw exactly.
+register_format(FormatSpec(
+    name="MXFP8_UE8M0_G32",
+    weight_bits=8, group_size=32, scale_bits=8,
+    scale_dtype_name="uint8_e8m0",
+    weight_element_dtype="fp8_e4m3",
+    act_bits=8, act_dtype_name="fp8_e4m3", act_group_size=32,
+    family="mx", min_capability_sm=100,
+    autoround_config=lambda: dict(bits=8, group_size=32,
+                                   data_type="fp8_e4m3", sym=True,
+                                   scale_fmt="ue8m0",
+                                   act_bits=8, act_group_size=32,
+                                   act_sym=True, act_data_type="mx_fp",
+                                   act_element_dtype="fp8_e4m3",
+                                   act_scale_fmt="ue8m0", act_dynamic=True),
+    quantize_dequantize=_mxfp8_ue8m0_weight_rtn,
+    activation_quantize_dequantize=_mxfp8_ue8m0_activation_rtn,
 ))
 
 # Plain FP8 (per-output-channel FP32 scale on weights, no microscaling).

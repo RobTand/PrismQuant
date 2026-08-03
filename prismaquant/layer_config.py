@@ -131,6 +131,14 @@ def canonicalize_format(entry: dict | str | int) -> str:
                     return "FP8_BLOCK_UE8M0_SOURCE"
                 return "FP8_SOURCE"
             if group_size == 32:
+                # Same split as the group-128 case immediately above, one
+                # granularity down: an explicit UE8M0 scale_fmt names the
+                # Gridbook-native rung whose scale plane is float8_e8m0fnu and
+                # whose encoder is the saturating-ceil rule, NOT the stock
+                # compressed-tensors MXFP8 scheme (uint8 scales, OCP rule).
+                # Absent scale_fmt keeps the historical reading.
+                if str(entry.get("scale_fmt", "")).lower() in _UE8M0_SCALE_FMTS:
+                    return "MXFP8_UE8M0_G32"
                 return "MXFP8_E4M3"
             if group_size in (0, -1):
                 return "FP8_E4M3"
@@ -163,6 +171,11 @@ def canonicalize_format(entry: dict | str | int) -> str:
             return "MXFP4_SOURCE"
         if value in ("mxfp4", "mx_fp4"):
             return "MXFP4"
+        if value in ("mxfp8_ue8m0_g32", "mxfp8_ue8m0"):
+            # Checked BEFORE the plain MXFP8 spellings, same reason as
+            # MXFP4_SOURCE above: two different on-disk contracts, and the
+            # narrower claim reads first so the pair is obviously deliberate.
+            return "MXFP8_UE8M0_G32"
         if value in ("mxfp8", "mxfp8_e4m3"):
             return "MXFP8_E4M3"
         if value in ("fp8_block_ue8m0_source", "fp8_block_ue8m0"):

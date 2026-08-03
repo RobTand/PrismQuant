@@ -1617,6 +1617,14 @@ def _gguf_imatrix_enabled() -> bool:
 # cost from an export that is always weighted.
 _CB_COST_FAMILIES = ("nvfp4_cb", "fp8_cb")
 
+# Formats the BATCHED render must delegate to their registry closure rather
+# than reproduce from the local codebook tables. Membership is a statement that
+# the closure IS the shipped codec (same math the exporter writes), so the
+# batched and unbatched cost paths cannot diverge. Keyed by name because the
+# distinction is per-format, not per-family: MXFP8_UE8M0_G32's siblings in
+# family "mx" legitimately use the generic codebook path.
+_EXPORT_ALIGNED_BATCH_FORMATS = frozenset({"MXFP8_UE8M0_G32"})
+
 
 UNROUTED_EXPERT_COST_SOURCE = "unrouted_expert_weight_only"
 
@@ -1710,6 +1718,22 @@ def _batched_quantize(
     col_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     elt = spec.weight_element_dtype
+    if spec.name in _EXPORT_ALIGNED_BATCH_FORMATS:
+        # Formats whose REGISTRY closure is the authoritative codec, not a
+        # codebook-RTN variant the generic path below could reproduce. The
+        # dispatch further down keys on weight_element_dtype, and these rungs
+        # share an element dtype with formats that DO use the generic path --
+        # MXFP8_UE8M0_G32 is "fp8_e4m3" like MXFP8_E4M3/FP8_CB, but its shared
+        # exponent is the saturating-ceil rule, not the codebook replica's
+        # E8M0 snap. Falling through would price the batched path with a
+        # different codec than the unbatched path and than the exporter, which
+        # is the resident-vs-served mismatch class this file exists to avoid.
+        #
+        # One call, not a per-slice loop like "nv" above: every scale here is
+        # local to its 32-group (no per-tensor global), and the registry fn
+        # reshapes (..., in) internally, so the stacked (N, out, in) tensor
+        # matches the unbatched path element for element.
+        return spec.quantize_dequantize(stacked_w.clone())
     if spec.family == "nv":
         # NVFP4 registry weights are export-codec-aligned (one rendering
         # everywhere); the registry fn reshapes (-1, in) internally, so it

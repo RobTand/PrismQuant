@@ -74,9 +74,16 @@ probe inventory: 33,325 Linears
 | Format | Wire id | Source kind | bpw | Synth. | Route status on sm121 |
 |---|---|---|---|---|---|
 | `MXFP4_SOURCE` | `mxfp4_e2m1_ue8m0_g32` | `mxfp4` | 4.25 | yes | **backed — requires `--moe-backend marlin`** |
-| `FP8_BLOCK_UE8M0_SOURCE` | `fp8_e4m3_ue8m0_block128` | `fp8_ue8m0` | 8.00049 | yes | **backed — requires `GRIDBOOK_MXFP8_DENSE=1`** |
+| `FP8_BLOCK_UE8M0_SOURCE` | `fp8_e4m3_ue8m0_block128` | `fp8_ue8m0` | 8.00049 | yes | **blocked (measured)** |
 | `FP8_SOURCE` | — | `fp8` | 8.00195 | no | backed (other checkpoints) |
 | `BF16` | — | `bf16` | 16 | no | backed |
+
+The same routing record also carries the one **re-quantized** native rung,
+which is not a passthrough and has no source kind (it is legal on any):
+
+| Format | Wire id | bpw | Route status on sm121 |
+|---|---|---|---|
+| `MXFP8_UE8M0_G32` | `mxfp8_e4m3_e8m0_g32` | 8.25 | **unbacked — consumer lane exists but is opt-in (`GRIDBOOK_MXFP8_DENSE=1`), serve-parity bench pending** |
 
 ### The route verdicts came out the opposite way round
 
@@ -89,24 +96,14 @@ checkpoint already serves this way, so a route must exist" is **false**:
   Triton path is hard-excluded on SM12x (0/15 kernels). `--moe-backend marlin`
   is therefore **part of the serving contract, not a tuning hint**, and it
   travels with the artifact.
-* **`FP8_BLOCK_UE8M0_SOURCE` measured *blocked* on every vLLM route** —
+* **`FP8_BLOCK_UE8M0_SOURCE` is blocked** — every route measured dead:
   `deep_gemm` assert, cutlass `scaled_mm` rejects the block layout, triton
   `KeyError: float8_e8m0fnu`, flashinfer's gate is sm90-exact, marlin-linear
-  tops out at sm89. Those rungs remain known-broken upstream.
+  tops out at sm89.
 
-**It is nevertheless backed today, for a different reason than the original
-guess.** Gridbook 0.8.0 ships a dense MXFP8 lane (`Mxfp8DenseLinearMethod`)
-that serves these bytes directly instead of through any of those rungs,
-correctness-audited on the real checkpoint (worst rel-Frobenius 5.9e-5 across
-all seven body shapes; 1.2e-4 for the DeepSeek block-scale embedding chain vs
-the block-dequant oracle). It is **opt-in pending its native-parity timing
-bench**, so `GRIDBOOK_MXFP8_DENSE=1` is part of the serving contract.
-
-This verdict has now moved **twice** — assumed backed, measured blocked,
-backed again by a different mechanism. That history is the argument for
-`route_status` being *data with evidence attached* rather than a comment: an
-assumption, a measurement, and a release each changed the answer, and only the
-last one is load-bearing.
+**The architectural consequence: CB re-encoding of the body is the only way
+DSV4-Flash serves on this box at all.** The body's CB rungs are load-bearing,
+not merely economical.
 
 A blocked or pending rung still stays **on the menu** — if the DP wants it,
 that is the serving gap surfacing in the allocation rather than at deploy
@@ -198,8 +195,21 @@ consumer-side reader is implemented and shipped, so this is its exact spelling
 ```
 
 * the format-id enum is **closed**: `mxfp4_e2m1_ue8m0_g32`,
-  `fp8_e4m3_ue8m0_block128` (`PASSTHROUGH_WIRE_FORMAT_IDS` is the one mapping
-  from registry name to wire id);
+  `fp8_e4m3_ue8m0_block128`, `mxfp8_e4m3_e8m0_g32`. Ids come from two producer
+  tables — `PASSTHROUGH_WIRE_FORMAT_IDS` (byte-verbatim) and
+  `REQUANT_WIRE_FORMAT_IDS` (re-encoded here) — whose union
+  `WIRE_FORMAT_IDS` must stay 1:1, because the consumer resolves a unit by id
+  alone (`gridbook.source_passthrough.FORMATS`);
+* **what this record actually claims** is *delegated-native routing* — "served
+  by a native Gridbook/model-owned route, not by a CB codebook decoder" —
+  which is the question the consumer's dispatcher asks. It is NOT a claim that
+  every listed unit's bytes are the checkpoint's own; a re-quantized rung is
+  listed here too, and a unit omitted here reads to the consumer as CB, the
+  one wrong answer that loads. The stronger byte-verbatim claim is per unit in
+  its config group's `weights.source_passthrough` flag (`true` for the
+  `*_SOURCE` family, `false` for a re-encode). The key keeps its historical
+  name because it is a shipped cross-repo contract
+  (`gridbook.source_passthrough.SCHEMA_KEY`);
 * a unit may be an expert group **or** a dense body Linear — there is no
   expert-only framing and no exhaustiveness claim;
 * **absence of the key means a legacy all-CB artifact**, so the key is emitted
