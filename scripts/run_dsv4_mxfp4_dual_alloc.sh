@@ -55,6 +55,7 @@ python3 "${REPO}/scripts/merge_dsv4_mxfp4_cost.py" \
 
 run_variant() {
   local tag="$1" menu="$2" out="${PROBE}/alloc-${1}"
+  local disk_gb="${3:-92}"
   mkdir -p "$out"
   ln -sfn "${ART}/probe.pkl" "$out/probe.pkl"
   ln -sfn "${ART}/cb_col_weights.pkl" "$out/cb_col_weights.pkl"
@@ -73,7 +74,7 @@ python3 -m prismaquant.allocator \
   --model ${RUN_ROOT}/source \
   --formats '${menu}' \
   --target-bits 2.17 --pareto-targets '${PARETO}' \
-  --target-disk-gb 92 --artifact-overhead-reserve-bytes 268435456 \
+  --target-disk-gb ${disk_gb} --artifact-overhead-reserve-bytes 268435456 \
   --target-profile nvfp4_cb \
   --cb-scale-coding two_tier --cb-codebook-source lattice \
   --cb-scale-sweep 1 --cb-encode-tier balanced \
@@ -84,6 +85,25 @@ python3 -m prismaquant.allocator \
   echo "[dual] variant ${tag} done -> $out/selection.json"
 }
 
+# --- (c) the no-MTP counterfactual --------------------------------------
+# Dropping the MTP block from the artifact is ARITHMETICALLY IDENTICAL to
+# raising the budget by its size, because MTP is never re-encoded and so sits
+# wholly in the immutable floor:
+#
+#     floor_without_mtp + body <= B    <=>    floor_with_mtp + body <= B + MTP
+#
+# So (c) runs the SAME table and menu as (b) at budget 92e9 + 10,862,838,300,
+# and its selection is exactly the selection a genuinely MTP-less artifact
+# would get. Only the REPORTED total needs correcting back down by the MTP
+# bytes, which the summariser does. Measured independently against the
+# checkpoint headers: mtp.* = 10,862,838,300 B, of which 10,267,656,192 B is
+# routed experts.
+#
+# Purpose is to price the QUALITY side of a speed-vs-quality exchange:
+# (c) vs (b) Delta-loss IS the quality cost of keeping the DSpark draft heads.
+# The speed side is measured post-export on the serve arm.
+MTP_BYTES="${MTP_BYTES:-10862838300}"
 run_variant a "$MENU_A"
 run_variant b "$MENU_B"
-echo "[dual] both variants complete; summarise with scripts/summarise_dual_alloc.py"
+run_variant c "$MENU_B" "$(python3 -c "print((92_000_000_000+${MTP_BYTES})/1e9)")"
+echo "[dual] all three variants complete; summarise with scripts/summarise_dual_alloc.py"

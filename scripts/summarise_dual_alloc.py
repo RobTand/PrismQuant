@@ -24,6 +24,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 SHIPPABLE_BASELINE = 5812.11
+MTP_BYTES = 10_862_838_300      # mtp.* measured from the checkpoint headers
+MTP_EXPERT_BYTES = 10_267_656_192
 ALL_CB_BASELINE = 6553.987851366602
 N_BODY_ALLOCATABLE = 301          # probe inventory; 89 further F8_E4M3 tensors
 N_BODY_FLOOR_ONLY = 89            # are not probeable and ship source-format
@@ -64,6 +66,13 @@ def summarise(root: Path, tag: str) -> dict:
         assert len(fmts) == 1, f"layer {layer} is not format-uniform: {fmts}"
         by_fmt[fmts[0]].append(layer)
     dloss = float(sel["predicted_dloss"])
+    corrected_gb = None
+    if tag == "c":
+        ub = sel.get("predicted_whole_artifact_upper_bound_gb")
+        if ub is not None:
+            # (c) ran at the inflated budget; the real no-MTP artifact is that
+            # much smaller, because those bytes were never going to be written.
+            corrected_gb = round(float(ub) - MTP_BYTES / 1e9, 6)
     mid_rungs = {f for f in by_fmt if re.fullmatch(r"NVFP4_CB_K(1[2367]|18)", f)}
     return {
         "variant": tag,
@@ -90,6 +99,9 @@ def summarise(root: Path, tag: str) -> dict:
         },
         "lane_units": sel.get("serving_lane_provenance", {}).get(
             "activation_contracts", {}),
+        **({"true_artifact_gb_without_mtp": corrected_gb,
+            "ran_at_inflated_budget_gb": round((92e9 + MTP_BYTES) / 1e9, 6)}
+           if corrected_gb is not None else {}),
     }
 
 
@@ -134,9 +146,17 @@ def main() -> None:
         },
         "mxfp8_dominance": mxfp8_dominance(),
     }
+    # (c) ran at budget 92e9 + MTP because dropping MTP from the floor is the
+    # same constraint as raising the budget by it. The SELECTION is therefore
+    # already the no-MTP one; only the reported total needs correcting back
+    # down, which is done per-variant below.
     for tag, note in (
         ("a", "conservative fallback: no body passthrough, for a deploy that "
               "cannot set GRIDBOOK_MXFP8_DENSE=1"),
+        ("c", "NO-MTP COUNTERFACTUAL (not shipping tonight): same menu as "
+              "(b) with the MTP block's bytes released to the allocatable "
+              "pool. (c) vs (b) Delta-loss IS the quality cost of keeping the "
+              "DSpark draft heads; the speed side is measured post-export."),
         ("b", "LIKELY SHIP PICK: gridbook 0.8.0 dense MXFP8 lane is released "
               "and correctness-audited, so route_status is 'backed'. OPT-IN "
               "pending its native-parity TIMING bench, so it makes "
@@ -147,6 +167,35 @@ def main() -> None:
             out[f"variant_{tag}"] = {**summarise(root, tag), "note": note}
         else:
             out[f"variant_{tag}"] = {"status": "not run", "note": note}
+    # Quality cost of the draft heads, and where the freed bytes went.
+    va, vb, vc = (out.get(f"variant_{k}", {}) for k in "abc")
+    if "predicted_dloss" in vb and "predicted_dloss" in vc:
+        dl_b, dl_c = vb["predicted_dloss"], vc["predicted_dloss"]
+        exp_b = {k: len(v) for k, v in vb["expert_layer_map"].items()}
+        exp_c = {k: len(v) for k, v in vc["expert_layer_map"].items()}
+        out["mtp_quality_exchange"] = {
+            "question": "what does keeping the DSpark draft heads cost in quality?",
+            "mtp_bytes_released": MTP_BYTES,
+            "mtp_expert_bytes": MTP_EXPERT_BYTES,
+            "dloss_with_mtp_shipped": dl_b,
+            "dloss_without_mtp": dl_c,
+            "quality_cost_of_keeping_mtp_dloss": round(dl_b - dl_c, 3),
+            "quality_cost_pct": round(100 * (dl_b - dl_c) / dl_b, 3),
+            "where_the_freed_bytes_went": {
+                "expert_format_counts_with_mtp": exp_b,
+                "expert_format_counts_without_mtp": exp_c,
+                "delta": {k: exp_c.get(k, 0) - exp_b.get(k, 0)
+                          for k in set(exp_b) | set(exp_c)},
+            },
+            "body_split_with_mtp": vb.get("body_split"),
+            "body_split_without_mtp": vc.get("body_split"),
+            "note": (
+                "the speed side (spec-decode tok/s + acceptance rate) is "
+                "measured post-export on the serve arm; together these form "
+                "the decision table. Tonight ships MTP-INCLUSIVE regardless -- "
+                "you cannot measure the speed of heads you did not ship."
+            ),
+        }
     merge_report = probe / "merge_report.json"
     if merge_report.is_file():
         out["interpolator_validation"] = json.loads(
