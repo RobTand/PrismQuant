@@ -1,0 +1,40 @@
+{
+  "budget": "102.8GB_high",
+  "target_bpp": 4.5,
+  "victim": "L14.gate_proj",
+  "e": 0.2,
+  "sign": 1,
+  "true_dloss": 0.00926609011958135,
+  "realized_dloss": 0.009283918244136657,
+  "regret": 1.7828124555308023e-05,
+  "regret_rel": 0.0019240180405361213,
+  "flip": true,
+  "victim_flip": true,
+  "assign_true": {
+    "L1.gate_proj": "FP8_CB_K33",
+    "L0.down_proj": "FP8_CB_K36",
+    "L0.up_proj": "FP8_CB_K34",
+    "L0.gate_proj": "FP8_CB_K32",
+    "L21.down_proj": "FP8_CB_K38",
+    "L14.down_proj": "FP8_CB_K38",
+    "L21.up_proj": "FP8_CB_K38",
+    "L14.up_proj": "FP8_CB_K37",
+    "L21.gate_proj": "FP8_CB_K37",
+    "L14.gate_proj": "FP8_CB_K37"
+  },
+  "assign_pert": {
+    "L1.gate_proj": "FP8_CB_K33",
+    "L0.down_proj": "FP8_CB_K36",
+    "L0.up_proj": "FP8_CB_K34",
+    "L0.gate_proj": "FP8_CB_K32",
+    "L21.down_proj": "FP8_CB_K38",
+    "L14.down_proj": "FP8_CB_K38",
+    "L21.up_proj": "FP8_CB_K37",
+    "L14.up_proj": "FP8_CB_K37",
+    "L21.gate_proj": "FP8_CB_K37",
+    "L14.gate_proj": "FP8_CB_K38"
+  },
+  "achieved_true": 4.5,
+  "achieved_pert": 4.5,
+  "held": "packed"
+}
