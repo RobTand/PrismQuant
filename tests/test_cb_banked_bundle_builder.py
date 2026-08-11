@@ -294,7 +294,7 @@ def test_builder_copies_distinct_gate_up_down_books_and_never_trains(
     bundle = build_bundle_from_model(
         model_dir=model_dir,
         col_weights=col,
-        formats=["FP8_CB_K28"],
+        formats=["FP8_CBL_K28"],
         output=tmp_path / "bundle.pqcb",
         device="cpu",
         routed_moe_book_selection=selection,
@@ -303,7 +303,7 @@ def test_builder_copies_distinct_gate_up_down_books_and_never_trains(
     observed_digests = []
     for projection in _PROJECTIONS:
         qname = f"model.layers.{_LAYER}.mlp.experts.{projection}"
-        cell = bundle.cell(qname, "FP8_CB_K28")
+        cell = bundle.cell(qname, "FP8_CBL_K28")
         actual = tuple(
             bundle.sidecar_tensors[ref]
             for ref in cell["codebook_ref"]
@@ -315,7 +315,7 @@ def test_builder_copies_distinct_gate_up_down_books_and_never_trains(
         observed_digests.append(tuple(cell["content_sha256"]))
         origin = bank.validate_banked_cbl_origin(
             cell["pretrained_origin"],
-            where=f"{qname}/FP8_CB_K28 test origin",
+            where=f"{qname}/FP8_CBL_K28 test origin",
         )
         assert origin["selection_sha256"] == hashlib.sha256(
             selection.read_bytes()
@@ -354,7 +354,7 @@ def test_builder_refuses_stale_current_imatrix_identity(tmp_path):
         build_bundle_from_model(
             model_dir=model_dir,
             col_weights=stale,
-            formats=["FP8_CB_K28"],
+            formats=["FP8_CBL_K28"],
             output=tmp_path / "stale.pqcb",
             device="cpu",
             routed_moe_book_selection=selection,
@@ -372,7 +372,7 @@ def test_builder_refuses_conflicting_redundant_packed_down_imatrix(tmp_path):
         build_bundle_from_model(
             model_dir=model_dir,
             col_weights=conflicting,
-            formats=["FP8_CB_K28"],
+            formats=["FP8_CBL_K28"],
             output=tmp_path / "conflicting.pqcb",
             device="cpu",
             routed_moe_book_selection=selection,

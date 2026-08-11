@@ -88,7 +88,7 @@ class RoutedMoECBLSelectionCell:
 
     @property
     def format_name(self) -> str:
-        return f"FP8_CB_K{self.rung}"
+        return f"FP8_CBL_K{self.rung}"
 
 
 @dataclass(frozen=True)
@@ -147,7 +147,7 @@ class BankedCBLBook:
 
     @property
     def format_name(self) -> str:
-        return f"FP8_CB_K{self.rung}"
+        return f"FP8_CBL_K{self.rung}"
 
 
 def banked_cbl_origin(
@@ -544,8 +544,13 @@ def load_banked_cbl_book(
         else _shape(request.col_weights_shape, where="expected col_weights shape")
     )
 
-    parsed = parse_format_name(f"FP8_CB_K{expected_rung}")
-    if parsed is None or parsed[0].grid != "fp8" or parsed[0].mode != "product":
+    parsed = parse_format_name(f"FP8_CBL_K{expected_rung}")
+    if (
+        parsed is None
+        or parsed[0].grid != "fp8"
+        or parsed[0].mode != "product"
+        or parsed[0].source != "learned"
+    ):
         raise BankedCBLBookError(
             f"K{expected_rung}: not a structural FP8 product-codebook rung"
         )

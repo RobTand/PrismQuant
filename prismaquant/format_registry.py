@@ -30,8 +30,8 @@ from compressed_tensors.quantization.utils.mxfp_utils import generate_mx_scales
 
 from prismaquant.cb_layout import (
     CODEWORDS_PER_SUPERBLOCK,
+    FAMILIES as CB_FAMILIES,
     FP4_GROUP,
-    FP8_PRODUCT_RUNGS,
     NVFP4_PRODUCT_RUNGS,
     NVFP4_SIGNED_RUNGS,
     SCALE_CODING_V1,
@@ -1152,23 +1152,25 @@ def _make_nvfp4_cb_signed_spec(k: int) -> FormatSpec:
     )
 
 
-def _make_fp8_cb_spec(k: int) -> FormatSpec:
+def _make_fp8_cb_spec(k: int, *, format_name: str, source: str) -> FormatSpec:
     # Index stream in scale_bits (32k bits / 256-superblock, weight_bits=0,
     # group_size=256) so effective_bits = k/8 exactly, mirroring the GGUF /
     # NVFP4_CB accounting. FP8_CB has NO group-16 scale plane; its
     # per-output-channel fp32 scales are accounted by nvfp4_cb_footprint
     # (the authoritative byte accountant, format-pipeline §1.5), which a
     # single-scale FormatSpec cannot model on top of the superblock stream.
+    data_type = "fp8_cbl" if source == "learned" else "fp8_cb"
     return FormatSpec(
-        name=f"FP8_CB_K{k}",
+        name=format_name,
         weight_bits=0, group_size=SUPERBLOCK,
         scale_bits=CODEWORDS_PER_SUPERBLOCK * k,
         scale_dtype_name="fp8_cb_vq",
-        weight_element_dtype=f"fp8_cb_k{k}",
+        weight_element_dtype=f"{data_type}_k{k}",
         act_bits=8, act_dtype_name="fp8_e4m3", act_group_size=0,
         family="fp8_cb", min_capability_sm=100,
         autoround_config=(
-            lambda k=k: dict(bits=0, group_size=0, data_type="fp8_cb",
+            lambda k=k, data_type=data_type: dict(
+                             bits=0, group_size=0, data_type=data_type,
                              cb_k=k, sym=True, act_bits=8,
                              act_data_type="fp8_e4m3", act_dynamic=True)
         ),
@@ -1183,8 +1185,15 @@ for _k in NVFP4_PRODUCT_RUNGS:               # 2.000 .. 3.500 bpw in 0.125 steps
     register_format(_make_nvfp4_cb_spec(_k))
 for _k in NVFP4_SIGNED_RUNGS:                # signed: 2.125 .. 2.5 bpw
     register_format(_make_nvfp4_cb_signed_spec(_k))
-for _k in FP8_PRODUCT_RUNGS:                 # 3.5 .. 6.0 bpw in 0.125 steps
-    register_format(_make_fp8_cb_spec(_k))
+for _family in CB_FAMILIES:
+    if _family.grid != "fp8" or _family.mode != "product":
+        continue
+    for _k in _family.rungs:
+        register_format(_make_fp8_cb_spec(
+            _k,
+            format_name=_family.name(_k),
+            source=str(_family.source),
+        ))
 
 
 def list_formats(family: str | None = None) -> list[FormatSpec]:

@@ -874,7 +874,9 @@ def export_nvfp4_cb(
     # learned cells come only from the immutable pre-render bundle.  The old
     # pooled trainer remains behind allow_unstamped_research for reproducible
     # historical experiments; it is never reached by a stamped export. ---
-    provided = spec.get("codebooks", {}) if source == "learned" else {}
+    # Source-bearing format names decide whether these values are consulted;
+    # the legacy run-global scalar cannot hide a supplied FP8_CBL book.
+    provided = spec.get("codebooks", {})
     train = bool(spec.get("train", False))
     iters = int(spec.get("iters", 4))
     seed = int(spec.get("seed", 0))
@@ -898,11 +900,7 @@ def export_nvfp4_cb(
     cb_group_target_names: dict[tuple[str, str], list[str]] = {}
     for qname, (grid, mode, k) in cb_targets.items():
         fmt = assignment[qname]
-        kind = (
-            codebook_source_for_format(fmt, _env_cb_context)
-            if _scoped_bundle_export
-            else source
-        )
+        kind = codebook_source_for_format(fmt, _env_cb_context)
         logical_qnames = learned_role_qnames_for_packed(qname)
         if kind == "learned":
             from prismaquant.cb_learned_bundle import (
@@ -925,7 +923,7 @@ def export_nvfp4_cb(
             ):
                 raise ValueError(
                     f"{qname}/{fmt}: routed learned CBL is limited to "
-                    "FP8_CB_K28..K33 covered by the immutable CBL bank"
+                    "the source-bearing FP8_CBL bank rungs"
                 )
             member_qnames = _expert_stack_members.get(qname)
             if member_qnames is None:
@@ -1022,11 +1020,7 @@ def export_nvfp4_cb(
         if qnames[0] in routed_role_plans:
             continue
         grid, mode, k = cb_targets[qnames[0]]
-        kind = (
-            codebook_source_for_format(fmt, _env_cb_context)
-            if _scoped_bundle_export
-            else source
-        )
+        kind = codebook_source_for_format(fmt, _env_cb_context)
         if kind == "lattice":
             codebooks[(ref, fmt)] = cb._resolve_codebook(
                 k, grid, mode, None, torch.device(device))

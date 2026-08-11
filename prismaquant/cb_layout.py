@@ -43,6 +43,7 @@ class CBFamily:
     rungs: tuple[int, ...]
     layout_versions: tuple[int, ...]
     moe_layout_versions: tuple[int, ...]
+    source: str | None = "lattice"
 
     def name(self, k: int) -> str:
         if int(k) not in self.rungs:
@@ -53,6 +54,7 @@ class CBFamily:
 NVFP4_PRODUCT_RUNGS = tuple(range(12, 25))
 NVFP4_SIGNED_RUNGS = (13, 14, 15, 16)
 FP8_PRODUCT_RUNGS = tuple(range(28, 49))
+FP8_CBL_PRODUCT_RUNGS = (28, 32, 36, 40, 44)
 
 FAMILIES = (
     CBFamily(
@@ -82,10 +84,29 @@ FAMILIES = (
         layout_versions=(1,),
         moe_layout_versions=(1,),
     ),
+    CBFamily(
+        prefix="FP8_CBL_K",
+        grid="fp8",
+        mode="product",
+        n_sub=4,
+        rungs=FP8_CBL_PRODUCT_RUNGS,
+        layout_versions=(1,),
+        moe_layout_versions=(1,),
+        source="learned",
+    ),
 )
 FAMILY_BY_PREFIX = {family.prefix: family for family in FAMILIES}
+# ``family_for(grid, mode)`` predates source-bearing names and continues to
+# mean the canonical lattice geometry.  Source-bearing callers already have a
+# parsed family and must use it directly; silently overwriting this mapping
+# with FP8_CBL would reinterpret every historical FP8_CB call site.
 FAMILY_BY_GRID_MODE = {
-    (family.grid, family.mode): family for family in FAMILIES
+    (family.grid, family.mode): family
+    for family in FAMILIES
+    if family.source == "lattice"
+}
+FAMILY_BY_GRID_MODE_SOURCE = {
+    (family.grid, family.mode, family.source): family for family in FAMILIES
 }
 CB_FORMATS = tuple(
     family.name(k) for family in FAMILIES for k in family.rungs
@@ -115,7 +136,9 @@ FP8_CB_FORMAT_NAMES = frozenset(
     if family.grid == "fp8"
     for k in family.rungs
 )
-_FORMAT_RE = re.compile(r"^(NVFP4_CB_[KS]|FP8_CB_K)(\d+)$")
+_FORMAT_RE = re.compile(
+    rf"^({'|'.join(re.escape(prefix) for prefix in FAMILY_BY_PREFIX)})(\d+)$"
+)
 
 
 def bit_split(k: int, n_sub: int) -> tuple[int, ...]:
@@ -130,14 +153,27 @@ def bit_split(k: int, n_sub: int) -> tuple[int, ...]:
                  for index in range(n_sub))
 
 
-def family_for(grid: str, mode: str) -> CBFamily:
-    """Return the one producer family for a serialized grid/mode pair."""
+def family_for(
+    grid: str,
+    mode: str,
+    source: str | None = "lattice",
+) -> CBFamily:
+    """Return the producer family for a serialized grid/mode/source tuple.
 
-    key = (str(grid).lower(), str(mode).lower())
+    The two-argument spelling remains the historical lattice lookup.  A
+    source-bearing format should normally be parsed by name instead, which
+    avoids erasing the distinction between FP8_CB and FP8_CBL.
+    """
+
+    key = (
+        str(grid).lower(),
+        str(mode).lower(),
+        None if source is None else str(source).lower(),
+    )
     try:
-        return FAMILY_BY_GRID_MODE[key]
+        return FAMILY_BY_GRID_MODE_SOURCE[key]
     except KeyError as exc:
-        raise ValueError(f"unknown CB grid/mode {key!r}") from exc
+        raise ValueError(f"unknown CB grid/mode/source {key!r}") from exc
 
 
 def subtable_bit_widths(
@@ -238,9 +274,11 @@ __all__ = [
     "CODEWORDS_PER_SUPERBLOCK",
     "FAMILIES",
     "FAMILY_BY_GRID_MODE",
+    "FAMILY_BY_GRID_MODE_SOURCE",
     "FAMILY_BY_PREFIX",
     "FP4_GROUP",
     "FP4_SCALE_GROUPS_PER_SUPERBLOCK",
+    "FP8_CBL_PRODUCT_RUNGS",
     "FP8_PRODUCT_RUNGS",
     "INDEX_BIT_ORDER",
     "INDEX_BYTES_PER_K",

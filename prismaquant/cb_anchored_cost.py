@@ -25,6 +25,7 @@ import pickle
 import re
 
 from prismaquant import format_registry as fr
+from prismaquant.cb_layout import parse_format_name
 from prismaquant.anchored_cost import (
     AURA_CURRENCY,
     AnchorScalar,
@@ -73,7 +74,7 @@ ROUTE_FLIP_LIMITATION = (
 _CB_RUNG = re.compile(r"_(?:K|S)(?P<rung>[0-9]+)$")
 _DEFAULT_ANCHORS = {
     ("nvfp4_cb", LATTICE_BASIS): "NVFP4_CB_K15",
-    ("fp8_cb", LEARNED_BASIS): "FP8_CB_K33",
+    ("fp8_cb", LEARNED_BASIS): "FP8_CBL_K32",
     ("fp8_cb", LATTICE_BASIS): "FP8_CB_K47",
 }
 
@@ -114,7 +115,12 @@ def _normalize_source_map(
     normalized: dict[str, str] = {}
     for raw_format, raw_source in source_map.items():
         canonical = _canonical_cb_format(str(raw_format))
-        source = str(raw_source).strip().lower()
+        parsed = parse_format_name(canonical)
+        source = (
+            str(parsed[0].source)
+            if parsed is not None and parsed[0].source is not None
+            else str(raw_source).strip().lower()
+        )
         if source not in {LEARNED_BASIS, LATTICE_BASIS}:
             raise AnchoredCostError(
                 f"{canonical}: unsupported codebook source {raw_source!r}"
@@ -130,9 +136,9 @@ def _normalize_source_map(
 class CodebookAnchoredFormatPlugin:
     """CB ladder/equivalence declaration consumed by ``anchored_cost``.
 
-    The source map must be taken directly from the loaded value-bearing bundle
-    or its validated ``CBSerializationContext``.  Missing candidates refuse;
-    neither FP8 K ranges nor a run-global ``codebook_source`` are consulted.
+    The source map supplies compatibility values only for source-unspecified
+    families. Source-bearing names decide their own equivalence class.
+    Missing candidates still refuse; no K-range inference is consulted.
     """
 
     def __init__(

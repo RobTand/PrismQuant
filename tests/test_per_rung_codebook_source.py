@@ -1,4 +1,4 @@
-"""CPU acceptance gates for one learned/lattice FP8-CB rung menu."""
+"""CPU acceptance gates for source-bearing FP8-CB format names."""
 
 from __future__ import annotations
 
@@ -27,15 +27,19 @@ from prismaquant.nvfp4_cb_footprint import (
 
 
 QNAME = "model.layers.0.self_attn.q_proj"
-QNAME_K47 = "model.layers.0.self_attn.k_proj"
-FORMATS = tuple(f"FP8_CB_K{rung}" for rung in range(28, 49))
+QNAME_LATTICE = "model.layers.0.self_attn.k_proj"
+CBL_FORMATS = tuple(f"FP8_CBL_K{rung}" for rung in (28, 32, 36, 40, 44))
+LATTICE_FORMATS = tuple(
+    f"FP8_CB_K{rung}" for rung in (28, 32, 36, 40, 44, 48)
+)
+FORMATS = CBL_FORMATS + LATTICE_FORMATS
 
 
 def _fast_distinct_learn_pool(weight, col_weights, rung):
     """Valid grid books whose render cannot be confused with the lattice."""
 
     del weight, col_weights
-    parsed = parse_format_name(f"FP8_CB_K{int(rung)}")
+    parsed = parse_format_name(f"FP8_CBL_K{int(rung)}")
     assert parsed is not None
     family, k = parsed
     widths = subtable_bit_widths(k, family.mode, family.n_sub)
@@ -55,7 +59,7 @@ def policy_bundle(tmp_path, monkeypatch):
     ).reshape(2, 256)
     col_weights = torch.linspace(0.25, 1.25, 256, dtype=torch.float32)
     bundle = learned_bundle.train_and_save_bundle_streaming(
-        tmp_path / "fp8-k28-k48.pqcb",
+        tmp_path / "fp8-source-bearing-names.pqcb",
         qnames=(QNAME,),
         weight_provider=lambda qname: weight,
         col_weights={QNAME: col_weights},
@@ -73,24 +77,11 @@ def _bundle_context(bundle):
     })
 
 
-def test_policy_bundle_carries_learned_k28_k46_and_lattice_k47_k48(
-    policy_bundle,
-):
+def test_bundle_sources_follow_format_names(policy_bundle):
     bundle, _weight, _col_weights = policy_bundle
     expected_sources = {
-        format_name: (
-            "learned"
-            if learned_bundle.CBL_RUNG_POLICY[
-                int(format_name.rsplit("K", 1)[1])
-            ]["enabled"]
-            else "lattice"
-        )
-        for format_name in FORMATS
-    }
-    assert expected_sources == {
-        **{f"FP8_CB_K{rung}": "learned" for rung in range(28, 47)},
-        "FP8_CB_K47": "lattice",
-        "FP8_CB_K48": "lattice",
+        **{format_name: "learned" for format_name in CBL_FORMATS},
+        **{format_name: "lattice" for format_name in LATTICE_FORMATS},
     }
     assert bundle.codebook_source_by_format == expected_sources
     assert set(bundle.codebook_refs_by_cell[QNAME]) == set(FORMATS)
@@ -105,29 +96,27 @@ def test_policy_bundle_carries_learned_k28_k46_and_lattice_k47_k48(
             assert all("cb_codebook.lattice." in ref for ref in refs)
 
 
-def test_k47_bundle_render_is_bitwise_the_no_bundle_lattice_render(
+def test_lattice_name_bundle_render_is_bitwise_no_bundle_lattice_render(
     policy_bundle, monkeypatch
 ):
     bundle, weight, col_weights = policy_bundle
     context = _bundle_context(bundle)
-    assert codebook_source_for_format("FP8_CB_K47", context) == "lattice"
+    assert codebook_source_for_format("FP8_CB_K48", context) == "lattice"
 
-    # Freeze-proof the authority: changing the process-global policy after
-    # the bundle context exists must not change this artifact's source map.
-    changed_policy = dict(learned_bundle.CBL_RUNG_POLICY[47])
+    changed_policy = dict(learned_bundle.CBL_RUNG_POLICY[48])
     changed_policy["enabled"] = True
-    monkeypatch.setitem(learned_bundle.CBL_RUNG_POLICY, 47, changed_policy)
-    assert codebook_source_for_format("FP8_CB_K47", context) == "lattice"
+    monkeypatch.setitem(learned_bundle.CBL_RUNG_POLICY, 48, changed_policy)
+    assert codebook_source_for_format("FP8_CB_K48", context) == "lattice"
 
     from_bundle = cb_quantize_dequantize_for_context(
-        fr.get_format("FP8_CB_K47"),
+        fr.get_format("FP8_CB_K48"),
         weight,
         context=context,
         qname=QNAME,
         col_weights=col_weights,
     )
     without_bundle = cb_quantize_dequantize_for_context(
-        fr.get_format("FP8_CB_K47"),
+        fr.get_format("FP8_CB_K48"),
         weight,
         context=CBSerializationContext.production(),
         qname=QNAME,
@@ -136,24 +125,24 @@ def test_k47_bundle_render_is_bitwise_the_no_bundle_lattice_render(
     assert torch.equal(from_bundle, without_bundle)
 
 
-def test_k43_bundle_render_resolves_the_exact_learned_values(policy_bundle):
+def test_cbl_name_bundle_render_resolves_exact_learned_values(policy_bundle):
     bundle, weight, col_weights = policy_bundle
     context = _bundle_context(bundle)
     exact_book = bundle.codebook_for(
         QNAME,
-        "FP8_CB_K43",
+        "FP8_CBL_K44",
         weight=weight,
         col_weights=col_weights,
     )
     automatic = cb_quantize_dequantize_for_context(
-        fr.get_format("FP8_CB_K43"),
+        fr.get_format("FP8_CBL_K44"),
         weight,
         context=context,
         qname=QNAME,
         col_weights=col_weights,
     )
     explicit = cb_quantize_dequantize_for_context(
-        fr.get_format("FP8_CB_K43"),
+        fr.get_format("FP8_CBL_K44"),
         weight,
         context=context,
         qname=QNAME,
@@ -161,7 +150,7 @@ def test_k43_bundle_render_resolves_the_exact_learned_values(policy_bundle):
         codebook=exact_book,
     )
     lattice = cb_quantize_dequantize_for_context(
-        fr.get_format("FP8_CB_K43"),
+        fr.get_format("FP8_CB_K44"),
         weight,
         context=CBSerializationContext.production(),
         qname=QNAME,
@@ -171,7 +160,7 @@ def test_k43_bundle_render_resolves_the_exact_learned_values(policy_bundle):
     assert not torch.equal(automatic, lattice)
 
 
-def test_cost_and_export_identity_refuse_an_induced_per_rung_mismatch(
+def test_cost_and_export_identity_refuse_an_induced_name_source_mismatch(
     policy_bundle,
 ):
     bundle, _weight, _col_weights = policy_bundle
@@ -191,12 +180,15 @@ def test_cost_and_export_identity_refuse_an_induced_per_rung_mismatch(
             "codebook_source_by_format"
         ]
         if mutation == "changed":
-            source_map["FP8_CB_K43"] = "lattice"
+            source_map["FP8_CBL_K44"] = "lattice"
         else:
-            source_map.pop("FP8_CB_K43")
+            source_map.pop("FP8_CBL_K44")
         with pytest.raises(
             ValueError,
-            match=r"per-rung codebook source map differs.*(changed|missing)",
+            match=(
+                r"(contradicts its format-name source|"
+                r"per-rung codebook source map differs.*missing)"
+            ),
         ):
             validate_cb_cost_provenance(
                 mismatched,
@@ -205,23 +197,21 @@ def test_cost_and_export_identity_refuse_an_induced_per_rung_mismatch(
                 where=f"induced {mutation} source mismatch",
             )
 
-    # The compact payload and actual quant_config provenance both carry the
-    # complete frozen bundle map, including both sides selected here.
     breakdown = cb_assignment_payload_breakdown(
         {
-            QNAME: "FP8_CB_K43",
-            QNAME_K47: "FP8_CB_K47",
+            QNAME: "FP8_CBL_K44",
+            QNAME_LATTICE: "FP8_CB_K48",
         },
         {
             QNAME: (2, 256),
-            QNAME_K47: (2, 256),
+            QNAME_LATTICE: (2, 256),
         },
         context=context,
     )
     serialized_summary = cb_payload_summary(breakdown)
     expected_export_sources = bundle.codebook_source_by_format
-    assert expected_export_sources["FP8_CB_K43"] == "learned"
-    assert expected_export_sources["FP8_CB_K47"] == "lattice"
+    assert expected_export_sources["FP8_CBL_K44"] == "learned"
+    assert expected_export_sources["FP8_CB_K48"] == "lattice"
     assert serialized_summary["context"][
         "codebook_source_by_format"
     ] == expected_export_sources
@@ -240,7 +230,7 @@ def test_cost_and_export_identity_refuse_an_induced_per_rung_mismatch(
         codebook_source=context.codebook_source,
         serialized_payload_summary=serialized_summary,
         serialization_context=context,
-        cb_render_identity={"schema": "test.per_rung_render.v1"},
+        cb_render_identity={"schema": "test.source_name_render.v1"},
         git_commit="test",
     )
     assert quant_config["provenance"]["serialized_payload"]["context"][
@@ -248,36 +238,41 @@ def test_cost_and_export_identity_refuse_an_induced_per_rung_mismatch(
     ] == expected_export_sources
 
 
-def test_codebook_for_remains_strict_on_a_lattice_cell(policy_bundle):
+def test_codebook_for_remains_strict_on_a_lattice_name(policy_bundle):
     bundle, _weight, _col_weights = policy_bundle
     with pytest.raises(
         ValueError,
-        match=r"FP8_CB_K47 is lattice .*not learned",
+        match=r"FP8_CB_K48 is lattice .*not learned",
     ):
-        bundle.codebook_for(QNAME, "FP8_CB_K47")
+        bundle.codebook_for(QNAME, "FP8_CB_K48")
 
 
 @pytest.mark.parametrize("source_scope", ("fp8", "all"))
-def test_policy_scope_with_only_lattice_rungs_needs_no_learned_digests(
+def test_policy_scope_with_only_lattice_names_needs_no_learned_digests(
     source_scope,
 ):
+    lattice_formats = ("FP8_CB_K47", "FP8_CB_K48")
     context = CBSerializationContext.production(
         codebook_source_scope=source_scope,
         codebook_source_by_format={
-            "FP8_CB_K47": "lattice",
-            "FP8_CB_K48": "lattice",
+            "FP8_CB_K47": "learned",
+            "FP8_CB_K48": "learned",
         },
     )
-    stamp = cb_serialization_context_stamp(context, formats=FORMATS[-2:])
+    stamp = cb_serialization_context_stamp(context, formats=lattice_formats)
 
     assert stamp["codebook_source"] == "lattice"
     assert stamp["codebook_source_scope"] == source_scope
+    assert stamp["codebook_source_by_format"] == {
+        "FP8_CB_K47": "lattice",
+        "FP8_CB_K48": "lattice",
+    }
     assert "codebook_content_sha256" not in stamp
     validate_cb_serialization_context_stamp(
         stamp,
         context,
-        where="all-lattice policy bundle",
-        formats=FORMATS[-2:],
+        where="all-lattice source names",
+        formats=lattice_formats,
     )
 
     contradictory = copy.deepcopy(stamp)
@@ -287,11 +282,9 @@ def test_policy_scope_with_only_lattice_rungs_needs_no_learned_digests(
             contradictory,
             context,
             where="contradictory all-lattice scalar",
-            formats=FORMATS[-2:],
+            formats=lattice_formats,
         )
 
-    # The policy-only compatibility path must obey the same scalar/map ANY
-    # rule even though it has no immutable bundle map to freeze.
     legacy_context = CBSerializationContext.production(
         codebook_source_scope=source_scope,
     )
@@ -313,10 +306,13 @@ def test_policy_scope_with_only_lattice_rungs_needs_no_learned_digests(
     with pytest.raises(ValueError, match="cannot carry learned bundle cells"):
         CBSerializationContext.production(
             codebook_source_scope="none",
-            codebook_source_by_format={"FP8_CB_K43": "learned"},
+            codebook_source_by_format={"FP8_CBL_K44": "lattice"},
         )
-    with pytest.raises(ValueError, match="learned NVFP4 bundle cells"):
-        CBSerializationContext.production(
-            codebook_source_scope="fp8",
-            codebook_source_by_format={"NVFP4_CB_K12": "learned"},
-        )
+
+    nvfp4_context = CBSerializationContext.production(
+        codebook_source_scope="fp8",
+        codebook_source_by_format={"NVFP4_CB_K12": "learned"},
+    )
+    assert codebook_source_for_format(
+        "NVFP4_CB_K12", nvfp4_context
+    ) == "lattice"

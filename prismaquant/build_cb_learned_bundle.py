@@ -18,7 +18,6 @@ import torch
 
 from . import format_registry as fr
 from .cb_learned_bundle import (
-    CBL_RUNG_POLICY,
     PretrainedCodebookCell,
     train_and_save_bundle_streaming,
 )
@@ -30,6 +29,7 @@ from .cb_banked_books import (
     load_banked_cbl_book,
     load_routed_moe_cbl_selection,
 )
+from .cb_layout import parse_format_name
 from .cb_warm_state import tensor_value_identity
 from .export_nvfp4_cb import _try_resolve_skeleton
 from .export_nvfp4_cb_streaming import (
@@ -186,15 +186,19 @@ def build_bundle_from_model(
     canonical_formats = _canonical_cb_formats(formats)
     learned_formats = tuple(
         name for name in canonical_formats
-        if name.startswith("FP8_CB_")
-        and CBL_RUNG_POLICY.get(
-            int(name.rsplit("K", 1)[1]), {}
-        ).get("enabled") is True
+        if (
+            (parsed := parse_format_name(name)) is not None
+            and parsed[0].source == "learned"
+        )
     )
-    if not any(name.startswith("FP8_CB_") for name in canonical_formats):
+    if not any(
+        (parsed := parse_format_name(name)) is not None
+        and parsed[0].grid == "fp8"
+        for name in canonical_formats
+    ):
         raise ValueError(
             "CB_CODEBOOK_SOURCE_SCOPE enables FP8 learned books, but the "
-            "requested format menu contains no FP8_CB rung"
+            "requested format menu contains no FP8 CB rung"
         )
     normalized_col = {
         str(name): torch.as_tensor(value)

@@ -27,7 +27,8 @@ from prismaquant.nvfp4_cb_footprint import (
 
 
 _NV = "NVFP4_CB_K12"
-_FP8 = "FP8_CB_K28"
+_FP8 = "FP8_CBL_K28"
+_FP8_LATTICE = "FP8_CB_K28"
 _QNAME = "model.layers.0.mlp.gate_proj"
 
 
@@ -71,7 +72,9 @@ def test_unset_scopes_pin_76666bd_stamp_and_rendered_bytes():
     assert context.codebook_source_scope is None
     assert context.scale_sweep_scope is None
 
-    stamp = cb_serialization_context_stamp(context, formats=[_NV, _FP8])
+    stamp = cb_serialization_context_stamp(
+        context, formats=[_NV, _FP8_LATTICE]
+    )
     assert "codebook_source_scope" not in stamp
     assert "scale_sweep_scope" not in stamp
     assert _canonical_sha256(stamp) == (
@@ -98,12 +101,12 @@ def test_unset_scopes_pin_76666bd_stamp_and_rendered_bytes():
     reduction_rtol = weight.shape[1] * 2 ** -23
     expected_packed = {
         _NV: "5434e7fb94b22160209b2692b94a6285af417bbfe61ea3a3f78207cb73678bde",
-        _FP8: "5d8dba3c2a76e3d46e564b2aa63777a1be53cc431d3772e5cbac14ead2b41ba9",
+        _FP8_LATTICE: "5d8dba3c2a76e3d46e564b2aa63777a1be53cc431d3772e5cbac14ead2b41ba9",
     }
     expected_fp8_scale = 0.0021216266322880983
     expected_fp8_scale_digest_on_aarch64 = (
         "620ea8dae04d1794e36f7322520386a450d05b41d03ff0f7ae573db0ecd33d59")
-    for format_name in (_NV, _FP8):
+    for format_name in (_NV, _FP8_LATTICE):
         grid = "fp4" if format_name == _NV else "fp8"
         k = int(format_name.rsplit("K", 1)[1])
         fields = cb_fields_for_context(
@@ -132,14 +135,14 @@ def test_unset_scopes_pin_76666bd_stamp_and_rendered_bytes():
 
 def test_homogeneous_explicit_scopes_canonicalize_to_old_stamp():
     baseline = cb_serialization_context_stamp(
-        CBSerializationContext.production(), formats=[_NV, _FP8]
+        CBSerializationContext.production(), formats=[_NV, _FP8_LATTICE]
     )
     explicit = cb_serialization_context_stamp(
         CBSerializationContext.production(
             codebook_source_scope="none",
             scale_sweep_scope="all",
         ),
-        formats=[_NV, _FP8],
+        formats=[_NV, _FP8_LATTICE],
     )
     assert explicit == baseline
 
@@ -162,7 +165,7 @@ def test_env_scopes_are_authoritative_and_all_warns():
         all_context = CBSerializationContext.production(
             codebook_source_scope="all",
         )
-    assert codebook_source_for_format(_NV, all_context) == "learned"
+    assert codebook_source_for_format(_NV, all_context) == "lattice"
 
     with pytest.raises(ValueError, match="inconsistent"):
         cb_serialization_context_from_env({

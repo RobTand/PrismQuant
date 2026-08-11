@@ -113,7 +113,7 @@ def test_resident_and_streaming_emit_identical_schemes_for_same_inputs():
 def test_cb_group_target_names_emit_distinct_logical_moe_role_groups():
     inputs = _config_inputs()
     packed = "model.layers.0.mlp.experts.gate_up_proj"
-    fmt = "FP8_CB_K28"
+    fmt = "FP8_CBL_K28"
     gate_key = ("layer0-gate", fmt)
     up_key = ("layer0-up", fmt)
     inputs["assignment"] = {packed: fmt}

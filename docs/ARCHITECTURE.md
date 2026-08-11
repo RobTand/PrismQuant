@@ -1,8 +1,9 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-11 · branch `perf/ldlq-atom-compile` · verified against
-implementation baseline commit `3a5ec22` plus this bundle-authoritative
-per-rung learned/lattice source-map contract, the routed-MoE learned-codebook
+As of: 2026-08-11 · branch `main` · verified against implementation baseline
+commit `7802634` plus this source-in-the-format-name FP8 codebook contract
+(`FP8_CBL_K28/K32/K36/K40/K44` are learned; every `FP8_CB_K28–K48` is
+lattice, including K48), the routed-MoE learned-codebook
 producer contract, the DeepSeek DSpark source-overlay contract, the streamed CB
 cached-menu render/consume contract, and the profile-declared routed-expert
 AURA/empirical hybrid key-space contract, plus the platform-agnostic anchored-cost
@@ -93,7 +94,7 @@ by measurement, not by the cost model (§2).
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
 | Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | NVFP4, FP8_DYNAMIC/E4M3, FP8_SOURCE, BF16 | production default |
-| CB ("gridbook") | `nvfp4_cb` codebook checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from the exact commit in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json` | FP4-CB / FP8-CB rungs plus the native menu | production only for architectures declared by Gridbook's packaged runtime contract; DSv4 is declared, while learned per-role expert LUTs remain device-validation-gated |
+| CB ("gridbook") | `nvfp4_cb` codebook checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from the exact commit in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json` | FP4-CB / lattice FP8-CB / learned FP8-CBL rungs plus the native menu | production only for architectures declared by Gridbook's packaged runtime contract; DSv4 is declared, while learned per-role expert LUTs remain device-validation-gated |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
 
 Lane detail, defaults and proven results: §9. Export codecs: §6. Pipeline defaults: §3.3.
@@ -421,13 +422,13 @@ VALIDATED_SOURCE_PREFETCH=require   VALIDATED_FRONTIER_PICK=kneedle,
                                     or `budget` under a TARGET_DISK_GB card
 VALIDATED_FRONTIER_SKIP_CALIB=$NSAMPLES (held-out disjointness, ON)
 CB_EXPERT_EMPIRICAL=0  CB_SCALE_CODING=two_tier  (D15: shipped values)
-CB_CODEBOOK_SOURCE_SCOPE=none  (legal none|fp8|all; build-time family selector
-                     for codebook training. `fp8` is the production learned-CB
-                     arm; `all` is warned research-only because learned
-                     NVFP4-CB is measured NO-GO)
-CB_CODEBOOK_SOURCE=lattice  (legacy artifact-wide ANY scalar; derived from the
-                     bundle's per-rung source map when present, otherwise from
-                     the legacy scope; `learned` when any rung is learned)
+CB_CODEBOOK_SOURCE_SCOPE=none  (legal none|fp8|all; legacy build-time bundle
+                     selector. It never changes an explicit family source:
+                     FP8_CBL is learned and FP8_CB is lattice. `all` remains
+                     warned research-only because learned NVFP4-CB is NO-GO)
+CB_CODEBOOK_SOURCE=lattice  (legacy artifact-wide ANY scalar/compatibility
+                     metadata; source-bearing format names ignore it, and an
+                     artifact containing any FP8_CBL rung reports `learned`)
 CB_CODEBOOK_BUNDLE=<empty at scope none; otherwise
                      WORK_DIR/artifacts/cb_learned_bundle.pqcb>
 CB_SCALE_SWEEP=1  CB_SCALE_SWEEP_SCOPE=<unset>  (legal
@@ -457,17 +458,18 @@ With the scope unset the bool decides and the scope is *derived* from it: `all` 
 must be present (`:691-701`) — the CB producer settings are never defaulted silently. Neither
 name has a `run-pipeline.sh` shell default; the CB drivers export them directly.
 
-**The learned-codebook selector is build-time intent; the bundle is render
-authority.** `CB_CODEBOOK_SOURCE_SCOPE=none|fp8|all` chooses which family the
-bundle builder may train, and `CBL_RUNG_POLICY[k]["enabled"]` decides each FP8
-rung within that family. Once a value-bearing bundle is present,
-`CBLearnedBundle.codebook_source_by_format` freezes its complete per-rung map
-and `cb_fields_for_context` checks the exact `(qname, format)` cell before it
-decides whether calling the strict `codebook_for()` is legal. The current
-production map is learned K28–K46 plus lattice K47/K48 in one menu; changing
-the process-global policy after context creation cannot reinterpret that
-artifact (`cb_learned_bundle.py`, `nvfp4_cb_footprint.py`). `all` still warns
-because learned NVFP4-CB is measured NO-GO.
+**The format name is render authority; the bundle is value authority.**
+`CBFamily.source` in `cb_layout.py` fixes the source for every source-bearing
+family, and `codebook_source_for_format` returns that value before consulting a
+context, bundle map, or environment selector. The only learned production
+names are `FP8_CBL_K28/K32/K36/K40/K44`. Every `FP8_CB_K28–K48` name is
+unconditionally lattice — including K28/K32/K36/K40/K44 and K48 — preserving
+the serialized identity of shipped artifacts. `CB_CODEBOOK_SOURCE_SCOPE` still
+controls whether the pipeline builds/loads a learned value bundle, but it
+cannot reinterpret either explicit family. The old scalar and per-format map
+remain compatibility metadata for families that declare no source; a bundle
+cell whose source contradicts its name is rejected (`cb_layout.py`,
+`cb_learned_bundle.py`, `nvfp4_cb_footprint.py`).
 
 **Scale search remains family-scoped producer identity.**
 `CB_SCALE_SWEEP_SCOPE=none|nvfp4|fp8|all` resolves the scale-search arm through
@@ -475,16 +477,14 @@ because learned NVFP4-CB is measured NO-GO.
 still means all/none (`:205-216,525-547,921-1031`). Production two-tier FP4
 requires the NVFP4 family to sweep, so a mixed artifact's measured one-shot-FP8
 arm is `nvfp4`, while sweep-matched CBL is `all` (or the legacy unset+true
-spelling; `:265-274`). Source-bearing cost stamps enumerate the exact
-`codebook_source_by_format` map, round-trip it, and compare the complete key/value
-map at the cost/render gate; the compact serialized-payload context copied into
-`quant_config.json` carries the complete frozen bundle map too. The legacy
-scalar is always the ANY of the stamped map, learned-content digests are required
-iff that map contains a learned rung, and an explicit non-`none` build scope is
-retained when the scalar alone cannot represent it (including an all-lattice
-K47/K48 policy menu). A missing K43 entry, learned→lattice flip, or contradictory
-scalar is a refusal (`nvfp4_cb_footprint.py`;
-`tests/test_per_rung_codebook_source.py`). The render stamp writes a sweep scope
+spelling; `:265-274`). Source-bearing cost stamps enumerate the name-resolved
+`codebook_source_by_format` map and compare it at the cost/render gate; the
+compact serialized-payload context copied into `quant_config.json` carries the
+same audit echo. That map records policy but does not choose it. The legacy
+scalar is the ANY of the resolved map, and learned-content digests are required
+iff a selected `FP8_CBL_*` format needs learned values. A missing learned cell,
+source/name contradiction, or contradictory scalar is a refusal
+(`nvfp4_cb_footprint.py`; `tests/test_cb_source_in_format_name.py`). The render stamp writes a sweep scope
 only for a genuinely mixed `nvfp4|fp8` choice; homogeneous scale-search choices
 retain the legacy shape. Therefore the unset/default all-lattice source and
 legacy all-family sweep retain the old stamp shape and rendered bytes, pinned

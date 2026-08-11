@@ -90,6 +90,11 @@ def canonicalize_format(entry: dict | str | int) -> str:
             if name not in _NVFP4_CB_FORMAT_NAMES:
                 raise ValueError(f"unsupported fp8_cb scheme: {entry!r}")
             return name
+        if dt == "fp8_cbl":
+            name = f"FP8_CBL_K{int(entry['cb_k'])}"
+            if name not in _NVFP4_CB_FORMAT_NAMES:
+                raise ValueError(f"unsupported fp8_cbl scheme: {entry!r}")
+            return name
         if dt == "nv_fp" and bits == 4:
             return "NVFP4"
         if dt == "mx_fp" and bits == 4:

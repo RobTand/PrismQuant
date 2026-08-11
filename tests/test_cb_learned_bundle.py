@@ -31,7 +31,7 @@ def _inputs():
 
 def _fast_learn_pool(weight, col_weights, rung):
     del weight, col_weights
-    parsed = parse_format_name(f"FP8_CB_K{int(rung)}")
+    parsed = parse_format_name(f"FP8_CBL_K{int(rung)}")
     assert parsed is not None
     family, k = parsed
     widths = subtable_bit_widths(k, family.mode, family.n_sub)
@@ -59,7 +59,7 @@ def mixed_bundle(tmp_path, monkeypatch):
         qnames=weights,
         weight_provider=provider,
         col_weights=col_weights,
-        formats=("NVFP4_CB_K12", "FP8_CB_K28"),
+        formats=("NVFP4_CB_K12", "FP8_CBL_K28"),
     )
     assert calls == sorted(weights)
     return loaded, weights, col_weights
@@ -67,7 +67,7 @@ def mixed_bundle(tmp_path, monkeypatch):
 
 def test_rung_policy_is_measurement_gated_not_the_2048_rule():
     assert bundle.require_cbl_rung_enabled(28) == 28
-    assert bundle.require_cbl_rung_enabled("FP8_CB_K43") == 43
+    assert bundle.require_cbl_rung_enabled(43) == 43
     assert bundle.CBL_RUNG_POLICY[43]["enabled"] is True
     expected_new_measurements = {
         44: (0.6057, "cbl_k43_k47.log:31"),
@@ -91,8 +91,8 @@ def test_rung_policy_is_measurement_gated_not_the_2048_rule():
     with pytest.raises(ValueError, match=r"K47.*measured_no_go_sweep_matched"):
         bundle.require_cbl_rung_enabled(47)
     with pytest.raises(ValueError, match=r"K48.*measured_no_go"):
-        bundle.require_cbl_rung_enabled("FP8_CB_K48")
-    with pytest.raises(ValueError, match="NVFP4 CBL is measured NO-GO"):
+        bundle.require_cbl_rung_enabled(48)
+    with pytest.raises(ValueError, match="explicit learned format name"):
         bundle.require_cbl_rung_enabled("NVFP4_CB_K16")
 
 
@@ -101,8 +101,8 @@ def test_bundle_has_distinct_learned_cells_and_complete_mixed_sidecar(mixed_bund
     refs = loaded.codebook_refs_by_cell
     qname, kname = sorted(weights)
 
-    q_refs = refs[qname]["FP8_CB_K28"]
-    k_refs = refs[kname]["FP8_CB_K28"]
+    q_refs = refs[qname]["FP8_CBL_K28"]
+    k_refs = refs[kname]["FP8_CBL_K28"]
     assert q_refs != k_refs
     assert all(qname in ref for ref in q_refs)
     assert all(kname in ref for ref in k_refs)
@@ -139,7 +139,7 @@ def test_learned_sidecar_roundtrip_is_bit_exact_vs_emulation(mixed_bundle):
     cw = col_weights[qname]
     learned = loaded.codebook_for(
         qname,
-        "FP8_CB_K28",
+        "FP8_CBL_K28",
         weight=weight,
         col_weights=cw,
     )
@@ -156,7 +156,7 @@ def test_learned_sidecar_roundtrip_is_bit_exact_vs_emulation(mixed_bundle):
         encode_tier="balanced",
     )
     reloaded = bundle.load_bundle(loaded.path)
-    disk_book = reloaded.codebook_for(qname, "FP8_CB_K28")
+    disk_book = reloaded.codebook_for(qname, "FP8_CBL_K28")
     unpacked = cb.nvfp4_cb_unpack(
         packed,
         28,
@@ -191,19 +191,19 @@ def test_learned_sidecar_roundtrip_is_bit_exact_vs_emulation(mixed_bundle):
 def test_bundle_refuses_missing_or_mismatched_values(mixed_bundle, tmp_path):
     loaded, weights, col_weights = mixed_bundle
     qname = "model.layers.1.self_attn.q_proj"
-    with pytest.raises(ValueError, match="no FP8_CB_K33 cell.*lattice fallback"):
-        loaded.codebook_for(qname, "FP8_CB_K33")
+    with pytest.raises(ValueError, match="no FP8_CBL_K32 cell.*lattice fallback"):
+        loaded.codebook_for(qname, "FP8_CBL_K32")
     with pytest.raises(ValueError, match="source weight does not match"):
         loaded.codebook_for(
             qname,
-            "FP8_CB_K28",
+            "FP8_CBL_K28",
             weight=weights[qname] + 1,
             col_weights=col_weights[qname],
         )
     with pytest.raises(ValueError, match="col_weights do not match"):
         loaded.codebook_for(
             qname,
-            "FP8_CB_K28",
+            "FP8_CBL_K28",
             weight=weights[qname],
             col_weights=col_weights[qname] + 1,
         )
@@ -350,7 +350,7 @@ def test_shared_expert_dense_name_is_not_misclassified_as_routed():
     )
 
 
-def test_builder_refuses_uncertified_rung_before_training(tmp_path, monkeypatch):
+def test_builder_refuses_relabeling_lattice_name_before_training(tmp_path, monkeypatch):
     called = False
 
     def should_not_train(*_args, **_kwargs):
@@ -360,13 +360,13 @@ def test_builder_refuses_uncertified_rung_before_training(tmp_path, monkeypatch)
 
     monkeypatch.setattr(bundle, "learn_pool", should_not_train)
     qname = "model.layers.0.self_attn.q_proj"
-    with pytest.raises(ValueError, match=r"K47.*measured_no_go_sweep_matched"):
+    with pytest.raises(ValueError, match="contradict source-bearing format"):
         bundle.train_and_save_bundle(
-            tmp_path / "k47.pqcb",
+            tmp_path / "ambiguous-old-name.pqcb",
             weights={qname: torch.zeros(2, 256)},
             col_weights={qname: torch.ones(256)},
-            formats=("FP8_CB_K47",),
-            learned_formats=("FP8_CB_K47",),
+            formats=("FP8_CB_K28",),
+            learned_formats=("FP8_CB_K28",),
         )
     assert called is False
 

@@ -380,9 +380,9 @@ def _validate_per_expert_format_groups(
                     layer, family, tensor_prefix
                 )
 
-                if wire_id.startswith(("NVFP4_CB_", "FP8_CB_")):
+                if wire_id.startswith(("NVFP4_CB_", "FP8_CB_", "FP8_CBL_")):
                     required = [tensor_prefix + ".cb_qweight"]
-                    if wire_id.startswith("FP8_CB_"):
+                    if wire_id.startswith(("FP8_CB_", "FP8_CBL_")):
                         required.append(tensor_prefix + ".weight_scale")
                     for name in required:
                         if name not in header:

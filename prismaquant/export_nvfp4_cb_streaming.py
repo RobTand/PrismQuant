@@ -2738,7 +2738,9 @@ def export_nvfp4_cb_streaming(
     # --- Resolve codebooks. Production learned cells are immutable bundle
     # inputs trained before cost; the bounded export-time trainer survives only
     # for an explicitly unstamped historical research run. ---
-    provided = spec.get("codebooks", {}) if source == "learned" else {}
+    # Source-bearing format names decide whether these values are consulted;
+    # the legacy run-global scalar cannot hide a supplied FP8_CBL book.
+    provided = spec.get("codebooks", {})
     train = bool(spec.get("train", False))
     iters = int(spec.get("iters", 4))
     seed = int(spec.get("seed", 0))
@@ -2759,10 +2761,7 @@ def export_nvfp4_cb_streaming(
     for qname in cb_targets:
         fmt = assignment[qname]
         grid, mode, k = cb_targets[qname]
-        source_kind = (
-            codebook_source_for_format(fmt, _env_cb_context)
-            if _scoped_bundle_export else source
-        )
+        source_kind = codebook_source_for_format(fmt, _env_cb_context)
         target_shape = _target_shape(qname)
         target_kind, target_handle = _resolve_target(qname)
         if source_kind == "learned":
@@ -2885,10 +2884,7 @@ def export_nvfp4_cb_streaming(
         if (ref, fmt) in role_group_keys:
             continue
         grid, mode, k = cb_targets[qnames[0]]
-        source_kind = (
-            codebook_source_for_format(fmt, _env_cb_context)
-            if _scoped_bundle_export else source
-        )
+        source_kind = codebook_source_for_format(fmt, _env_cb_context)
         if source_kind == "lattice":
             codebooks[(ref, fmt)] = cb._resolve_codebook(
                 k, grid, mode, None, torch.device(device))

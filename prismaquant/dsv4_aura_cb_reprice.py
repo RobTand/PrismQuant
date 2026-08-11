@@ -69,13 +69,34 @@ DSV4_CAMPAIGN_SCHEMA = "prismaquant.dsv4_cb_anchored_aura.v1"
 DSV4_TOTAL_UNITS = 33_325
 DSV4_EXPERT_UNITS = 43 * 256 * 3
 DSV4_NONEXPERT_UNITS = 301
-DSV4_EXPECTED_ANCHORS = 66_951
+DSV4_EXPECTED_ANCHORS = 99_975
 DSV4_BUDGET_BYTES = 112_690_000_000
 DSV4_ARTIFACT_RESERVE_BYTES = 268_435_456
 
 NVFP4_FORMATS = tuple(f"NVFP4_CB_K{k}" for k in range(12, 19))
-FP8_EXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(28, 34))
-FP8_NONEXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(28, 49))
+FP8_LATTICE_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(28, 49))
+FP8_LEARNED_FORMATS = tuple(
+    f"FP8_CBL_K{k}" for k in (28, 32, 36, 40, 44)
+)
+FP8_NONEXPERT_FORMATS = tuple(sorted(
+    (*FP8_LATTICE_FORMATS, *FP8_LEARNED_FORMATS),
+    key=lambda name: (
+        int(name.rsplit("K", 1)[1]),
+        name.startswith("FP8_CBL_"),
+    ),
+))
+FP8_EXPERT_FORMATS = tuple(
+    name for name in FP8_NONEXPERT_FORMATS
+    if int(name.rsplit("K", 1)[1]) <= 33
+)
+_ROUTED_LEARNED_EXPERT_RUNGS = (28, 32)
+DSV4_ANCHOR_FORMATS = {
+    ("nvfp4_cb", LATTICE_BASIS): "NVFP4_CB_K15",
+    ("fp8_cb", LEARNED_BASIS): "FP8_CBL_K32",
+    # One role/basis segment spans experts and nonexperts. K32 is the highest
+    # lattice rung legal for every source class, so it is the common anchor.
+    ("fp8_cb", LATTICE_BASIS): "FP8_CB_K32",
+}
 
 _ALL_ROLES = (
     "gate_proj", "up_proj", "down_proj",
@@ -91,10 +112,6 @@ _DSV4_ROLE_UNIT_COUNTS = {
     "wkv": 43,
     "wo_b": 43,
 }
-_DSV4_NONEXPERT_ROLE_UNIT_COUNTS = {
-    role: 43 for role in _ALL_ROLES
-}
-
 DSV4_PANEL_POLICY = CBPanelPolicy(
     panel_rungs_by_segment={
         **{
@@ -106,8 +123,8 @@ DSV4_PANEL_POLICY = CBPanelPolicy(
         },
         **{
             ("fp8_cb", role, LEARNED_BASIS): (
-                "FP8_CB_K28", "FP8_CB_K33",
-                "FP8_CB_K41", "FP8_CB_K46",
+                "FP8_CBL_K28", "FP8_CBL_K32",
+                "FP8_CBL_K40", "FP8_CBL_K44",
             )
             for role in _ALL_ROLES
         },
@@ -121,7 +138,7 @@ DSV4_PANEL_POLICY = CBPanelPolicy(
     validation_rungs_by_segment={
         **{
             ("fp8_cb", role, LEARNED_BASIS): (
-                "FP8_CB_K28", "FP8_CB_K46",
+                "FP8_CBL_K28", "FP8_CBL_K44",
             )
             for role in _ALL_ROLES
         },
@@ -248,7 +265,7 @@ def _validate_routed_selection(path: str | Path) -> str:
         (layer, projection, rung)
         for layer in range(43)
         for projection in ("gate_proj", "up_proj", "down_proj")
-        for rung in range(28, 34)
+        for rung in _ROUTED_LEARNED_EXPERT_RUNGS
     }
     if observed != expected:
         raise DSv4CampaignError(
@@ -275,7 +292,7 @@ def _validate_routed_bundle_selection_identity(
         (layer, projection, rung)
         for layer in range(43)
         for projection in ("gate_proj", "up_proj", "down_proj")
-        for rung in range(28, 34)
+        for rung in _ROUTED_LEARNED_EXPERT_RUNGS
     }
     observed: dict[tuple[int, str, int], tuple[str, str]] = {}
     wrong_selection: list[tuple[str, str, str]] = []
@@ -312,6 +329,18 @@ def _validate_routed_bundle_selection_identity(
                 str(origin["projection"]),
                 int(origin["rung"]),
             )
+            expected_format = f"FP8_CBL_K{coordinate[2]}"
+            if str(raw_format) != expected_format:
+                raise DSv4CampaignError(
+                    "routed learned bundle origin is attached to a format "
+                    "whose name does not declare learned source: "
+                    f"{raw_qname}/{raw_format}, expected {expected_format}"
+                )
+            if str(raw_cell.get("source", "")).strip().lower() != LEARNED_BASIS:
+                raise DSv4CampaignError(
+                    f"{raw_qname}/{raw_format}: routed learned bundle cell "
+                    "does not declare source='learned'"
+                )
             if coordinate in observed:
                 raise DSv4CampaignError(
                     "learned bundle repeats routed bank coordinate "
@@ -507,25 +536,15 @@ def _build_declarations(
 def _assert_authoritative_dsv4_basis_map(
     source_map: Mapping[str, str],
 ) -> None:
-    expected = {
-        **{format_name: LATTICE_BASIS for format_name in NVFP4_FORMATS},
-        **{
-            f"FP8_CB_K{k}": (
-                LEARNED_BASIS if k <= 46 else LATTICE_BASIS
-            )
-            for k in range(28, 49)
-        },
-    }
-    missing = sorted(set(expected) - set(source_map))
-    mismatched = {
-        name: (expected[name], source_map.get(name))
-        for name in expected
-        if name in source_map and source_map[name] != expected[name]
-    }
-    if missing or mismatched:
+    """Require value-bearing cells without letting their map choose source."""
+
+    required = {*NVFP4_FORMATS, *FP8_NONEXPERT_FORMATS}
+    missing = sorted(required - set(source_map))
+    if missing:
         raise DSv4CampaignError(
-            "bundle-authoritative basis map differs from the owner policy: "
-            f"missing={missing[:8]} mismatched={list(mismatched.items())[:8]}"
+            "bundle/context map lacks source-in-name campaign formats: "
+            f"missing={missing[:8]}. Map values do not choose learned versus "
+            "lattice; FP8_CBL and FP8_CB names do."
         )
 
 
@@ -540,7 +559,7 @@ def assert_dsv4_anchor_accounting(
     expected = {
         "nvfp4_cb|lattice": 33_325,
         "fp8_cb|learned": 33_325,
-        "fp8_cb|lattice": 301,
+        "fp8_cb|lattice": 33_325,
     }
     by_segment: Counter[str] = Counter(
         request.segment.stamp for request in requests
@@ -550,10 +569,7 @@ def assert_dsv4_anchor_accounting(
         for family, basis, role_counts in (
             ("nvfp4_cb", LATTICE_BASIS, _DSV4_ROLE_UNIT_COUNTS),
             ("fp8_cb", LEARNED_BASIS, _DSV4_ROLE_UNIT_COUNTS),
-            (
-                "fp8_cb", LATTICE_BASIS,
-                _DSV4_NONEXPERT_ROLE_UNIT_COUNTS,
-            ),
+            ("fp8_cb", LATTICE_BASIS, _DSV4_ROLE_UNIT_COUNTS),
         )
         for role, unit_count in role_counts.items()
     }
@@ -569,7 +585,9 @@ def assert_dsv4_anchor_accounting(
             f"expected_segments={expected_by_segment}"
         )
     if len(requests) != DSV4_EXPECTED_ANCHORS:
-        raise DSv4CampaignError("DSv4 anchor total is not 66,951")
+        raise DSv4CampaignError(
+            f"DSv4 anchor total is not {DSV4_EXPECTED_ANCHORS:,}"
+        )
     return dict(counts)
 
 
@@ -641,7 +659,8 @@ def prepare_dsv4_campaign(args: argparse.Namespace) -> PreparedDSv4Campaign:
         format_plan.menus["nonexpert"]
     ) != FP8_NONEXPERT_FORMATS:
         raise DSv4CampaignError(
-            "frozen CLI menus differ from DSv4 K28..K33/K28..K48 contract"
+            "frozen CLI menus differ from the DSv4 source-in-name FP8 "
+            "contract"
         )
     format_plan_path = work_dir / "checkpoints" / "source_format_plan.json"
     format_plan_path.parent.mkdir(parents=True, exist_ok=True)
@@ -676,6 +695,7 @@ def prepare_dsv4_campaign(args: argparse.Namespace) -> PreparedDSv4Campaign:
     plugin = CodebookAnchoredFormatPlugin(
         codebook_source_by_format=source_map,
         arm_identity=arm_identity,
+        anchor_formats=DSV4_ANCHOR_FORMATS,
     )
     units = build_cb_units(declarations, plugin)
     anchor_requests = plan_anchor_requests(units, plugin)
@@ -895,7 +915,7 @@ def _recipe_format(value: object) -> str:
         except Exception:
             pass
     data_type = str(value.get("data_type", "")).lower()
-    if data_type in {"nvfp4_cb", "fp8_cb"}:
+    if data_type in {"nvfp4_cb", "fp8_cb", "fp8_cbl"}:
         return f"{data_type.upper()}_K{int(value['cb_k'])}"
     try:
         # Delegate native/source recipe interpretation to the same shared
@@ -951,13 +971,17 @@ def render_economics_report(
         "NVFP4_CB_K15": 0.069821,
         "NVFP4_CB_K16": 0.069821,
         "NVFP4_CB_K18": 0.069821,
-        "FP8_CB_K28": 0.075109,
-        "FP8_CB_K33": 0.144363,
+        "FP8_CBL_K28": 0.075109,
+        # K32 CBL and lattice anchors use the measured K33 result as a
+        # conservative adjacent-rung proxy; source stays encoded by each name.
+        "FP8_CBL_K32": 0.144363,
+        "FP8_CB_K32": 0.144363,
         # Medians of elapsed_encode_seconds in the older 16-expert nested
         # production-shape pilot.  They are real rung timings, but predate the
-        # current compiled arm and are therefore conservative proxies.
-        "FP8_CB_K41": 1.3973947751555897,
-        "FP8_CB_K46": 3.335986553436669,
+        # current compiled arm. K41 and K46 conservatively proxy the adjacent
+        # legal learned rungs K40 and K44 respectively.
+        "FP8_CBL_K40": 1.3973947751555897,
+        "FP8_CBL_K44": 3.335986553436669,
         "FP8_CB_K47": 3.8868322437820098,
         "FP8_CB_K48": 4.442083168687532,
     }
@@ -1067,13 +1091,15 @@ def render_economics_report(
         "timing_sources": {
             "current_low_rungs": (
                 "docs/results/cb_encode_cuda_profile_2026-08-11.md: "
-                "K28=75.109ms, K33=144.363ms, conservative E8 "
+                "CBL K28=75.109ms; measured K33=144.363ms is the "
+                "conservative CBL/CB K32 proxy; conservative E8 "
                 "K28=69.821ms/expert"
             ),
             "older_high_rungs": (
                 "/home/rob/dq-runs/dsv4-flash-0731/nested-pilot/"
                 "raw_records.jsonl: medians of elapsed_encode_seconds for "
-                "K41/K46/K47/K48"
+                "K41/K46/K47/K48; K41/K46 conservatively proxy CBL "
+                "K40/K44"
             ),
             "p0_proxy": (
                 "/home/rob/dq-runs/dsv4-flash-0731/prod-cal-0p7/"
@@ -1113,10 +1139,12 @@ def render_economics_report(
         ) / 3600.0,
         "projection_limitation": (
             "K12/K15/K16/K18 use the measured 69.821ms/E production-shape "
-            "low-rung proxy; K41/K46/K47/K48 use older measured pilot "
-            "medians. P0 is a measured-phase scaling proxy, not a timing of "
-            "this new fused pass. Dot-product, checkpoint-fsync, allocator, "
-            "and export-copy wall time are not separately measured."
+            "low-rung proxy; CBL/CB K32 uses the measured K33 result; CBL "
+            "K40/K44 use older K41/K46 pilot medians; lattice K47/K48 use "
+            "their older measured pilot medians. P0 is a measured-phase "
+            "scaling proxy, not a timing of this new fused pass. Dot-product, "
+            "checkpoint-fsync, allocator, and export-copy wall time are not "
+            "separately measured."
         ),
         "projected_peak_new_disk_bytes": projected_new_disk,
         "projected_peak_new_disk_assumptions": (

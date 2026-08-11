@@ -12,7 +12,7 @@ from prismaquant.nvfp4_cb_footprint import (
 )
 
 
-_FORMAT = "FP8_CB_K28"
+_FORMAT = "FP8_CBL_K28"
 
 
 def _refs(label: str) -> tuple[str, ...]:

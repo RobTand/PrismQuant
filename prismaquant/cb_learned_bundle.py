@@ -166,10 +166,14 @@ def require_cbl_rung_enabled(rung_or_format: int | str) -> int:
 
     if isinstance(rung_or_format, str) and not str(rung_or_format).isdigit():
         canonical, family, rung = _canonical_format(rung_or_format)
-        if family.grid != "fp8" or family.mode != "product":
+        if (
+            family.grid != "fp8"
+            or family.mode != "product"
+            or family.source != "learned"
+        ):
             raise ValueError(
                 f"{canonical}: learned production bundles support FP8 product "
-                "codebooks only; NVFP4 CBL is measured NO-GO"
+                "codebooks with an explicit learned format name only"
             )
     else:
         rung = int(rung_or_format)
@@ -246,7 +250,7 @@ def learn_pool(
     """
 
     rung = int(rung)
-    canonical, family, _ = _canonical_format(f"FP8_CB_K{rung}")
+    canonical, family, _ = _canonical_format(f"FP8_CBL_K{rung}")
     if family.grid != "fp8" or family.mode != "product":
         raise ValueError(f"{canonical}: learn_pool requires an FP8 product rung")
     weight = torch.as_tensor(weight)
@@ -537,7 +541,7 @@ class CBLearnedBundle:
 
     @property
     def codebook_source_by_format(self) -> dict[str, str]:
-        """Return the bundle-authoritative per-rung source map.
+        """Return the name-authoritative per-format source map.
 
         Bundle construction chooses learned formats once for the complete
         menu, so every qname carrying a given rung must agree.  Refuse a
@@ -551,8 +555,19 @@ class CBLearnedBundle:
         for raw_qname, raw_formats in self.manifest["cells"].items():
             qname = str(raw_qname)
             for raw_format, raw_cell in raw_formats.items():
-                canonical, _family, _rung = _canonical_format(raw_format)
-                source = str(raw_cell["source"])
+                canonical, family, _rung = _canonical_format(raw_format)
+                cell_source = str(raw_cell["source"])
+                source = (
+                    str(family.source)
+                    if family.source is not None
+                    else cell_source
+                )
+                if family.source is not None and cell_source != source:
+                    raise ValueError(
+                        f"{self.path}: bundle cell source {cell_source!r} "
+                        f"contradicts format-name source {source!r} for "
+                        f"{qname}/{canonical}"
+                    )
                 previous = resolved.setdefault(canonical, source)
                 if previous != source:
                     raise ValueError(
@@ -750,26 +765,46 @@ def train_and_save_bundle(
     supplied_formats = {
         fmt for names in formats_by_qname.values() for fmt in names
     }
-    if learned_formats is None:
-        learned = {
-            fmt for fmt in supplied_formats
-            if (
-                _canonical_format(fmt)[1].grid == "fp8"
-                and CBL_RUNG_POLICY.get(
-                    _canonical_format(fmt)[2], {}
-                ).get("enabled") is True
-            )
-        }
-    else:
-        learned = {_canonical_format(fmt)[0] for fmt in learned_formats}
-    unknown_learned = sorted(learned - supplied_formats)
+    requested_learned = (
+        None
+        if learned_formats is None
+        else {_canonical_format(fmt)[0] for fmt in learned_formats}
+    )
+    unknown_learned = sorted((requested_learned or set()) - supplied_formats)
     if unknown_learned:
         raise ValueError(
             f"learned_formats are absent from bundle cells: {unknown_learned}"
         )
+    learned: set[str] = set()
+    source_conflicts: list[str] = []
+    for fmt in sorted(supplied_formats):
+        _canonical, family, _rung = _canonical_format(fmt)
+        if family.source is None:
+            if requested_learned is not None and fmt in requested_learned:
+                learned.add(fmt)
+            continue
+        name_is_learned = family.source == "learned"
+        requested_is_learned = (
+            name_is_learned
+            if requested_learned is None
+            else fmt in requested_learned
+        )
+        if requested_is_learned != name_is_learned:
+            source_conflicts.append(fmt)
+        if name_is_learned:
+            learned.add(fmt)
+    if source_conflicts:
+        raise ValueError(
+            "learned_formats contradict source-bearing format name(s): "
+            f"{source_conflicts[:8]}"
+        )
     for fmt in sorted(learned):
         _canonical, family, rung = _canonical_format(fmt)
-        if family.grid != "fp8" or family.mode != "product":
+        if (
+            family.grid != "fp8"
+            or family.mode != "product"
+            or family.source != "learned"
+        ):
             raise ValueError(
                 f"{fmt}: production learned bundle refuses NVFP4 CBL; it is "
                 "measured NO-GO"
@@ -816,7 +851,11 @@ def train_and_save_bundle(
         cells[qname] = {}
         for fmt in formats_by_qname[qname]:
             canonical, family, rung = _canonical_format(fmt)
-            source = "learned" if canonical in learned else "lattice"
+            source = (
+                str(family.source)
+                if family.source is not None
+                else ("learned" if canonical in learned else "lattice")
+            )
             supplied = supplied_books.get((qname, canonical))
             if source == "learned" and pretrained_codebook_provider is not None:
                 provided = pretrained_codebook_provider(
@@ -1163,6 +1202,11 @@ def load_bundle(path: str | Path) -> CBLearnedBundle:
             source = str(cell.get("source", ""))
             if source not in {"lattice", "learned"}:
                 raise ValueError(f"{path}: invalid source for {qname}/{canonical}")
+            if family.source is not None and source != family.source:
+                raise ValueError(
+                    f"{path}: source {source!r} contradicts source-bearing "
+                    f"format name {canonical!r} ({family.source!r})"
+                )
             expected_cell_members = {
                 "source", "codebook_ref", "content_sha256"
             } | ({"rung_policy"} if source == "learned" else set())
@@ -1178,7 +1222,11 @@ def load_bundle(path: str | Path) -> CBLearnedBundle:
                     f"{path}: cell members differ for {qname}/{canonical}"
                 )
             if source == "learned":
-                if family.grid != "fp8" or family.mode != "product":
+                if (
+                    family.grid != "fp8"
+                    or family.mode != "product"
+                    or family.source != "learned"
+                ):
                     raise ValueError(f"{path}: learned non-FP8 cell {qname}/{canonical}")
                 require_cbl_rung_enabled(rung)
                 if cell.get("rung_policy") != CBL_RUNG_POLICY[rung]:

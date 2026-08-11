@@ -25,7 +25,7 @@ def _historical_pool_sha(tables):
 def _fixture(tmp_path: Path):
     layer = 7
     projection = "gate_proj"
-    rung = 29
+    rung = 32
     source_digest = "a" * 64
     col_digest = "b" * 64
     source_shape = (2, 4, 256)
@@ -181,9 +181,9 @@ def test_loads_exact_fp16_book_from_explicit_accepted_shard(tmp_path):
     assert (resolved.layer, resolved.projection, resolved.rung) == (
         7,
         "gate_proj",
-        29,
+        32,
     )
-    assert resolved.format_name == "FP8_CB_K29"
+    assert resolved.format_name == "FP8_CBL_K32"
     assert resolved.encoded_expert_ids == (0, 1)
     assert resolved.book_path == fixture["book_path"]
     assert resolved.book_file_sha256 == hashlib.sha256(
@@ -204,7 +204,7 @@ def test_loads_exact_fp16_book_from_explicit_accepted_shard(tmp_path):
     [
         ({"layer": 8}, "burn cell"),
         ({"projection": "down_proj"}, "burn cell"),
-        ({"rung": 30}, "burn cell"),
+        ({"rung": 28}, "burn cell"),
         ({"source_digest": "c" * 64}, "source digest"),
         ({"col_weights_digest": "d" * 64}, "col_weights digest"),
         ({"source_shape": (2, 5, 256)}, "source shape"),

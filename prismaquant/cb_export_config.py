@@ -34,7 +34,6 @@ from prismaquant.cb_layout import (
     SUPERBLOCK,
     VEC_DIM,
     codebook_subtable_shapes,
-    family_for,
     parse_format_name,
     type_size,
 )
@@ -633,25 +632,47 @@ def build_cb_scheme(
     grid = str(grid).lower()
     mode = str(mode).lower()
     k = int(k)
-    family = family_for(grid, mode)
     parsed = parse_format_name(fmt)
-    if parsed is None or parsed[0] != family or parsed[1] != k:
+    if (
+        parsed is None
+        or parsed[0].grid != grid
+        or parsed[0].mode != mode
+        or parsed[1] != k
+    ):
         raise ValueError(
             f"CB format/fields disagree: {fmt!r} vs "
             f"grid={grid!r}, mode={mode!r}, k={k}"
         )
+    family = parsed[0]
     tensors = _validated_codebook_sequence(fmt, codebook)
-    names = _codebook_names_for_count(ref, fmt, len(tensors))
     coding = scale_coding if grid == "fp4" else SCALE_CODING_V1
-    resolved_codebook_source = (
+    supplied_codebook_source = (
         str(codebook_source).lower()
         if codebook_source is not None
         else ("lattice" if ref == "lattice" else "learned")
+    )
+    resolved_codebook_source = (
+        str(family.source)
+        if family.source is not None
+        else supplied_codebook_source
     )
     if resolved_codebook_source not in {"lattice", "learned"}:
         raise ValueError(
             f"unknown codebook_source {resolved_codebook_source!r}"
         )
+    if (
+        family.source is not None
+        and codebook_source is not None
+        and supplied_codebook_source != resolved_codebook_source
+    ):
+        raise ValueError(
+            f"{fmt}: codebook_source={supplied_codebook_source!r} contradicts "
+            f"the format-name source {resolved_codebook_source!r}"
+        )
+    if resolved_codebook_source == "learned" and ref == "lattice":
+        raise ValueError(f"{fmt}: learned format requires a learned codebook ref")
+    resolved_ref = "lattice" if resolved_codebook_source == "lattice" else ref
+    names = _codebook_names_for_count(resolved_ref, fmt, len(tensors))
     scheme: dict[str, Any] = {
         "grid": grid,
         "mode": mode,
@@ -664,7 +685,9 @@ def build_cb_scheme(
         "act_bits": 4 if grid == "fp4" else 8,
         "codebook_source": resolved_codebook_source,
         "codebook_ref": list(names) if len(names) > 1 else names[0],
-        "codebook_group": None if ref == "lattice" else ref,
+        "codebook_group": (
+            None if resolved_codebook_source == "lattice" else resolved_ref
+        ),
     }
     if coding == SCALE_CODING_TWO_TIER:
         scheme["scale_coding"] = _two_tier_scale_coding()
@@ -913,12 +936,23 @@ def build_quant_config(
         )
         config_groups[f"group_{len(config_groups)}"] = requant_group
 
+    from .nvfp4_cb_footprint import codebook_source_for_format
+
+    assignment_sources = {
+        codebook_source_for_format(assignment[qname], serialization_context)
+        for qname in cb_targets
+    }
+    resolved_artifact_source = (
+        "learned"
+        if "learned" in assignment_sources
+        else ("lattice" if assignment_sources else codebook_source)
+    )
     provenance: dict[str, Any] = {
         "git_commit": git_commit,
         "assignment_sha256": assignment_sha,
         "imatrix_sha256": imatrix_hasher.hexdigest(),
         "codebook_sha256": codebook_sha,
-        "codebook_source": codebook_source,
+        "codebook_source": resolved_artifact_source,
         "scale_sweep": bool(getattr(serialization_context, "scale_sweep")),
         "ldlq": bool(getattr(serialization_context, "ldlq")),
         **({
