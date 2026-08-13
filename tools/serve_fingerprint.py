@@ -54,7 +54,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 MANIFEST_SCHEMA = "prismaquant.serve_manifest/1"
 MANIFEST_FILENAME = "serve_manifest.json"
@@ -979,28 +979,128 @@ def gridbook_import_origin_identity(
     return identity
 
 
-def gridbook_distribution_provenance(
+def _normalized_gridbook_distribution_pin(
     expected_pin: Mapping[str, str],
-) -> dict[str, Any]:
-    """Attest the installed Gridbook package, not merely its version label.
+) -> dict[str, str]:
+    """Return one closed VCS or wheel-backed Gridbook distribution pin."""
 
-    PEP 610 binds the install to the exact external VCS revision.  RECORD then
-    binds the installed source/CUDA files and package metadata to their bytes.
-    Both are needed: a matching ``gridbook.__version__`` can be produced by an
-    unrelated checkout, while a truthful direct URL alone says nothing about
-    post-install file mutation.
-    """
+    base_keys = {"repository", "commit", "version"}
+    keys = set(expected_pin) if isinstance(expected_pin, Mapping) else set()
     if (
-        not isinstance(expected_pin, Mapping)
-        or set(expected_pin) != {"repository", "commit", "version"}
+        keys not in (base_keys, base_keys | {"wheel_sha256"})
         or expected_pin.get("repository") != GRIDBOOK_REPOSITORY
         or re.fullmatch(
             r"[0-9a-f]{40}", str(expected_pin.get("commit", ""))
         ) is None
         or not isinstance(expected_pin.get("version"), str)
         or not expected_pin.get("version")
+        or (
+            "wheel_sha256" in keys
+            and re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(expected_pin.get("wheel_sha256", "")),
+            ) is None
+        )
     ):
         raise ValueError("Gridbook distribution pin is not closed and exact")
+    return {key: str(expected_pin[key]) for key in sorted(keys)}
+
+
+def validate_gridbook_pep610_direct_url(
+    direct_url: object,
+    expected_pin: Mapping[str, str],
+) -> str:
+    """Validate PEP 610 identity for an exact VCS or release-wheel install.
+
+    The commit remains part of both pin forms.  A wheel install additionally
+    binds the independently verified wheel SHA-256; its installed source and
+    metadata bytes are bound to RECORD by :func:`gridbook_distribution_provenance`.
+    """
+
+    pin = _normalized_gridbook_distribution_pin(expected_pin)
+    if not isinstance(direct_url, Mapping):
+        raise ValueError("installed Gridbook PEP 610 direct_url is not an object")
+    direct_transport = direct_url.get("url")
+    try:
+        parsed_transport = urlsplit(direct_transport) if isinstance(
+            direct_transport, str
+        ) else None
+    except ValueError:
+        parsed_transport = None
+    local_transport = (
+        parsed_transport is not None
+        and parsed_transport.scheme == "file"
+        and parsed_transport.netloc in {"", "localhost"}
+        and parsed_transport.path.startswith("/")
+        and not parsed_transport.query
+        and not parsed_transport.fragment
+        and parsed_transport.username is None
+        and parsed_transport.password is None
+    )
+
+    wheel_sha256 = pin.get("wheel_sha256")
+    if wheel_sha256 is None:
+        expected_vcs = {
+            "vcs": "git",
+            "requested_revision": pin["commit"],
+            "commit_id": pin["commit"],
+        }
+        if (
+            set(direct_url) != {"url", "vcs_info"}
+            or direct_url.get("vcs_info") != expected_vcs
+            or not (direct_transport == pin["repository"] or local_transport)
+        ):
+            raise ValueError(
+                "installed Gridbook PEP 610 direct_url is not the exact "
+                "pinned VCS commit"
+            )
+        return "vcs"
+
+    archive_info = direct_url.get("archive_info")
+    archive_keys = set(archive_info) if isinstance(
+        archive_info, Mapping
+    ) else set()
+    hashes = archive_info.get("hashes") if isinstance(
+        archive_info, Mapping
+    ) else None
+    wheel_name = (
+        Path(unquote(parsed_transport.path)).name
+        if parsed_transport is not None else ""
+    )
+    wheel_name_pattern = re.compile(
+        rf"gridbook-{re.escape(pin['version'])}-[A-Za-z0-9_.+-]+[.]whl"
+    )
+    legacy_hash_valid = (
+        "hash" not in archive_keys
+        or archive_info.get("hash") == f"sha256={wheel_sha256}"
+    ) if isinstance(archive_info, Mapping) else False
+    if (
+        set(direct_url) != {"url", "archive_info"}
+        or not local_transport
+        or wheel_name_pattern.fullmatch(wheel_name) is None
+        or archive_keys not in ({"hashes"}, {"hash", "hashes"})
+        or hashes != {"sha256": wheel_sha256}
+        or not legacy_hash_valid
+    ):
+        raise ValueError(
+            "installed Gridbook PEP 610 direct_url is not the exact pinned "
+            "release wheel"
+        )
+    return "wheel"
+
+
+def gridbook_distribution_provenance(
+    expected_pin: Mapping[str, str],
+) -> dict[str, Any]:
+    """Attest the installed Gridbook package, not merely its version label.
+
+    PEP 610 binds the install to either the exact external VCS revision or an
+    independently pinned release-wheel digest.  RECORD then binds installed
+    source/CUDA files and package metadata to their bytes.  Both are needed: a
+    matching ``gridbook.__version__`` can be produced by unrelated code, while
+    a truthful direct URL alone says nothing about post-install file mutation.
+    """
+    expected_pin = _normalized_gridbook_distribution_pin(expected_pin)
 
     try:
         distribution = importlib_metadata.distribution("gridbook")
@@ -1023,49 +1123,7 @@ def gridbook_distribution_provenance(
         direct_url = json.loads(direct_path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise ValueError("installed Gridbook direct_url.json is unreadable") from exc
-    expected_vcs = {
-        "vcs": "git",
-        "requested_revision": expected_pin["commit"],
-        "commit_id": expected_pin["commit"],
-    }
-    direct_transport = direct_url.get("url") if isinstance(
-        direct_url, Mapping
-    ) else None
-    try:
-        parsed_transport = urlsplit(direct_transport) if isinstance(
-            direct_transport, str
-        ) else None
-    except ValueError:
-        parsed_transport = None
-    # Production installs use a verified copied checkout through
-    # ``git+file://...@<commit>``. Its PEP 610 URL truthfully names that local
-    # transport, not the checkout's canonical origin. Keep the raw object as
-    # evidence, but make release identity the separately pinned repository and
-    # exact requested/resolved VCS tuple. Bare ``dir_info`` installs, moving
-    # revisions, and arbitrary remotes remain inadmissible.
-    transport_valid = (
-        direct_transport == expected_pin["repository"]
-        or (
-            parsed_transport is not None
-            and parsed_transport.scheme == "file"
-            and parsed_transport.netloc in {"", "localhost"}
-            and parsed_transport.path.startswith("/")
-            and not parsed_transport.query
-            and not parsed_transport.fragment
-            and parsed_transport.username is None
-            and parsed_transport.password is None
-        )
-    )
-    if (
-        not isinstance(direct_url, Mapping)
-        or set(direct_url) != {"url", "vcs_info"}
-        or direct_url.get("vcs_info") != expected_vcs
-        or not transport_valid
-    ):
-        raise ValueError(
-            "installed Gridbook PEP 610 direct_url is not the exact pinned "
-            "VCS commit"
-        )
+    validate_gridbook_pep610_direct_url(direct_url, expected_pin)
 
     record_relative, record_path = _distribution_file(
         distribution, filename="RECORD"
@@ -1156,6 +1214,7 @@ def gridbook_runtime_pin() -> dict[str, str] | None:
     mapping = {
         "commit": "PQ_GRIDBOOK_RUNTIME_COMMIT",
         "version": "PQ_GRIDBOOK_RUNTIME_VERSION",
+        "wheel_sha256": "PQ_GRIDBOOK_RUNTIME_WHEEL_SHA256",
     }
     value = {
         field: os.environ[name]
@@ -1808,15 +1867,17 @@ def collect_manifest(
     runtime_pin = gridbook_runtime_pin()
     gridbook_distribution = None
     if runtime_pin is not None:
-        if set(runtime_pin) != {"commit", "version"}:
+        if set(runtime_pin) not in (
+            {"commit", "version"},
+            {"commit", "version", "wheel_sha256"},
+        ):
             raise ValueError(
-                "Gridbook runtime environment pin is partial; commit and version "
-                "must be present together"
+                "Gridbook runtime environment pin is partial; commit/version "
+                "and optional wheel SHA-256 must form one closed pin"
             )
         gridbook_distribution = gridbook_distribution_provenance({
             "repository": GRIDBOOK_REPOSITORY,
-            "commit": runtime_pin["commit"],
-            "version": runtime_pin["version"],
+            **runtime_pin,
         })
     manifest: dict[str, Any] = {
         "schema": MANIFEST_SCHEMA,
@@ -1933,19 +1994,15 @@ def self_manifest(
     """
     if not isinstance(require_engine_descendant, bool):
         raise TypeError("require_engine_descendant must be a bool")
-    if gridbook_pin_attestation is not None and (
-        not isinstance(gridbook_pin_attestation, Mapping)
-        or set(gridbook_pin_attestation) != {"repository", "commit", "version"}
-        or gridbook_pin_attestation.get("repository")
-        != "https://github.com/RobTand/gridbook.git"
-        or re.fullmatch(
-            r"[0-9a-f]{40}",
-            str(gridbook_pin_attestation.get("commit", "")),
-        ) is None
-        or not isinstance(gridbook_pin_attestation.get("version"), str)
-        or not gridbook_pin_attestation.get("version")
-    ):
-        raise ValueError("gridbook_pin_attestation is not an exact runtime pin")
+    if gridbook_pin_attestation is not None:
+        try:
+            gridbook_pin_attestation = _normalized_gridbook_distribution_pin(
+                gridbook_pin_attestation
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "gridbook_pin_attestation is not an exact runtime pin"
+            ) from exc
     parent_pid = os.getpid()
     descendants = descendant_process_pids(parent_pid)
     engine_descendants = [
@@ -1971,8 +2028,8 @@ def self_manifest(
     manifest["engine_descendant_pids"] = engine_descendants
     if gridbook_pin_attestation is not None:
         expected_runtime_pin = {
-            "commit": gridbook_pin_attestation["commit"],
-            "version": gridbook_pin_attestation["version"],
+            key: value for key, value in gridbook_pin_attestation.items()
+            if key != "repository"
         }
         observed_runtime_pin = manifest.get("gridbook_runtime_pin")
         if (

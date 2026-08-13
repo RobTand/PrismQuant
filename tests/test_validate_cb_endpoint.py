@@ -424,6 +424,47 @@ def test_manifest_fingerprint_cannot_be_stale():
         )
 
 
+def test_manifest_accepts_digest_pinned_gridbook_release_wheel():
+    manifest = _manifest("eager")
+    wheel_sha256 = "9" * 64
+    manifest["gridbook_runtime_pin"]["wheel_sha256"] = wheel_sha256
+    manifest["gridbook_distribution"]["direct_url"] = {
+        "url": "file:///opt/gridbook-install/gridbook-0.8.5-py3-none-any.whl",
+        "archive_info": {
+            "hash": f"sha256={wheel_sha256}",
+            "hashes": {"sha256": wheel_sha256},
+        },
+    }
+    manifest["serve_fingerprint"] = fingerprint(manifest)
+
+    assert cbv.validate_serve_manifest(
+        manifest,
+        arm="eager",
+        expected_served_model=_SERVED_MODEL,
+        requires_moe_marlin=False,
+        expected_model_sha="c" * 64,
+    ) == manifest["serve_fingerprint"]
+
+
+def test_manifest_rejects_release_wheel_digest_not_in_runtime_pin():
+    manifest = _manifest("eager")
+    manifest["gridbook_runtime_pin"]["wheel_sha256"] = "9" * 64
+    manifest["gridbook_distribution"]["direct_url"] = {
+        "url": "file:///opt/gridbook-install/gridbook-0.8.5-py3-none-any.whl",
+        "archive_info": {"hashes": {"sha256": "8" * 64}},
+    }
+    manifest["serve_fingerprint"] = fingerprint(manifest)
+
+    with pytest.raises(cbv.CBEndpointValidationError, match="PEP 610 identity"):
+        cbv.validate_serve_manifest(
+            manifest,
+            arm="eager",
+            expected_served_model=_SERVED_MODEL,
+            requires_moe_marlin=False,
+            expected_model_sha="c" * 64,
+        )
+
+
 def test_manifest_rejects_resigned_gridbook_import_shadow():
     manifest = _manifest("eager")
     origin = manifest["gridbook_distribution"]["import_origin"]

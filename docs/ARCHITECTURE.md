@@ -1,14 +1,14 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-12 · branch `ship/dsv4flash-fp8-w8a16` · verified against
-implementation baseline commit `d4a9738` plus the Gridbook pin promotion
+As of: 2026-08-13 · branch `fix/gridbook-wheel-provenance-v0121` · verified against
+implementation baseline commit `3c23cf0` plus the Gridbook wheel-attestation repair
 described by the named schemas and symbols below. The final integration commit is
 deliberately not predicted in this provenance stamp. This revision includes the Spark
 BF16 AURA-anchor residency and streamed-reverse lifetime corrections, the activation-safe
 AURA terminal/replay policy, the endpoint live-session and matched-budget
 execution-route identity contracts, the immutable AURA producer-image and mounted-source
 resume identity contract, the content-addressed campaign/release source-snapshot closure,
-the exact Gridbook installed-import-origin closure, the strict Gridbook runtime-contract-v3
+the exact Gridbook VCS-or-wheel installed-import-origin closure, the strict Gridbook runtime-contract-v3
 feature boundary, and the bundle-authoritative
 per-rung learned/lattice source-map contract, the routed-MoE learned-codebook
 producer contract, the DeepSeek DSpark source-overlay contract, the streamed CB
@@ -2436,7 +2436,8 @@ the parent and EngineCore is a child. Two guards ride on that:
 * **Clean producer and installed-runtime closure.** Each gold manifest binds a full
   PrismaQuant commit, independently observed `git_dirty=false`, optional tree id, and byte
   descriptors for the exact common/tool source-file closure. It separately attests the
-  installed Gridbook distribution: package/version, PEP 610 VCS requested/resolved commit,
+  installed Gridbook distribution: package/version, PEP 610 exact VCS
+  requested/resolved commit or independently pinned release-wheel SHA-256,
   `direct_url.json`, `METADATA`, `RECORD`, and every installed Python/CUDA/package-data file
   checked back against its RECORD SHA-256 and size. It also requires the lazy top-level
   package's resolved `__file__`, `__spec__.origin`, and every `__path__` entry to stay within
@@ -2961,19 +2962,26 @@ model analysis, allocation, artifact encoding, and exporter metadata. There is n
 under this repository and no sync operation between repositories.
 
 The complete integration is one immutable record, `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`.
-Every serving script resolves that record through `prismaquant/gridbook_runtime/gridbook_runtime.sh`, accepts only
-an exact clean commit checkout, materializes it as a self-contained standalone checkout in the
-commit-addressed cache, mounts that copy read-only, and independently re-reads the tracked pin
-inside the container before re-attesting it. The helper copies those already-verified bytes to a
-private writable checkout and force-installs the exact
-`git+file://<copy>@<pin.commit>` VCS target; the full requested/resolved commit is then checked in
-PEP 610 `direct_url.json`. Branch names, moving tags, dirty trees, arbitrary wheels, bare local
-directories, and editable installs are rejected. The shared Docker arguments launch at `/`
+Every source-backed serving script resolves that record through
+`prismaquant/gridbook_runtime/gridbook_runtime.sh`, accepts only an exact clean commit checkout,
+materializes it as a self-contained standalone checkout in the commit-addressed cache, mounts
+that copy read-only, and independently re-reads the tracked pin inside the container before
+re-attesting it. The helper copies those already-verified bytes to a private writable checkout
+and force-installs the exact `git+file://<copy>@<pin.commit>` VCS target; the full
+requested/resolved commit is then checked in PEP 610 `direct_url.json`.
+
+An immutable serving image may instead use a reviewed release wheel. That path is admissible
+only when the launcher supplies the independently verified 64-hex wheel digest, PEP 610 records
+the same SHA-256 under `archive_info`, the local wheel filename binds the selected package
+version, and the ordinary RECORD/source/import-origin closure below passes unchanged. The live
+manifest retains commit, version, and wheel digest together; the digest is not inferred from the
+installed package. Branch names, moving tags, dirty trees, unpinned or mismatched wheels, bare
+local directories, and editable installs are rejected. The shared Docker arguments launch at `/`
 with `PYTHONSAFEPATH=1`; after install, the helper requires imported `gridbook.__file__`,
 `__spec__.origin`, and every `__path__` entry to resolve inside the selected distribution's
 real package root and requires the imported version to match. Explicit `PYTHONPATH` shadows
 therefore fail the proof. Serve fingerprints include the resolved Gridbook commit and the
-installed distribution's PEP 610/RECORD/source/import-origin closure, so an A/B cannot silently
+installed distribution's PEP 610 VCS-or-wheel/RECORD/source/import-origin closure, so an A/B cannot silently
 compare different runtime code, a mutated same-version install, or a same-name package shadow.
 Materializing overrides is load-bearing for linked Git worktrees: their `.git` file points into
 an unmounted parent repository and is not a usable VCS identity inside Docker. The standalone
@@ -3636,7 +3644,7 @@ New with the 2026-07-30 merge:
 | D24 | **The KV-cotangent path has never touched a real KV-sharing checkpoint.** Its correctness is established by exact fp64 equivalence on a synthetic model (rel err 0.00e+00 vs one end-to-end autograd backward; the pre-fix protocol under-counts `k_proj` 85.1% / `v_proj` 38.5%) — a demonstration, not a measurement. No `num_kv_shared_layers > 0` model has been probed, so the magnitude of the correction on a shipping architecture is unknown, and the guard it replaced (`PRISMAQUANT_ALLOW_KV_SHARED_FISHER`) was the only thing previously stopping such a probe. | §7.5; `tests/test_kv_cotangent_path.py`; commit `b6ec9cb` | MED | Probe one real KV-sharing checkpoint (Gemma4-class) with the path on and off, and record the h_trace delta before any allocation claim rides on it. |
 | D25 | **Gemma4-31B tied-embeddings result is enablement, not quality.** The first end-to-end probe → cost → allocate → export on a tied model (244 NVFP4 / 119 FP8 / 27 BF16 at achieved 6.000 bpp, 27.18 GB, `tie_word_embeddings` preserved and no duplicated `lm_head` bytes) ran at **2 samples × seqlen 512** to reach failures fast. The artifact has not been served and no KL/PPL exists for it. Nothing in §1.2 should cite it. | §7.5; commit `d058267` | MED | Re-run at production calibration and take it through the §7 gates before the family table gains a row. |
 | D26 | **MEASUREMENT HALF CLOSED 2026-07-30 (wave 4, R16); the plumbing half is open.** The lane now has a KL evaluator: `prismaquant/gguf_kl_evaluator.py:measure_assignment_kl` wraps `llama-perplexity --kl-divergence-base` behind the `validate_assignments_kl` interface and returns `(mean, per_sequence, stats)` under the gold lane's key names — with the honest caveat that `per_sequence` is empty and `kl_tail_domain="aggregate"` (llama.cpp reports token-domain quantiles). Parsing is pinned against canned output in both shipped spellings; the live path is integration and unrun. **Still open:** `run-pipeline.sh`'s frontier loop is not wired to it (GGUF selection is still `surrogate`), and there is still no `PACKED_ROLE_SPLIT` plumbing, so every use of the split is a manual `allocator.py` invocation. | `prismaquant/gguf_kl_evaluator.py`; `prismaquant/lane_specs/gguf.json`; `grep -c PACKED_ROLE_SPLIT prismaquant/run-pipeline.sh` → 0 | LOW | Wire the frontier loop to the adapter, and plumb `PACKED_ROLE_SPLIT`. |
-| D27 | **CLOSED 2026-08-01; import resolution hardened 2026-08-12.** The version skew was not benign enough to preserve: the vendored package, mirror, and sync test were deleted. PrismaQuant consumes one full-commit pin, verifies PEP 610 plus package version, launches every Gridbook runtime from a neutral directory in Python safe-path mode, rejects an import outside the selected distribution root (including CWD/`PYTHONPATH` shadows), and fingerprints that import origin for every pinned serve. | `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`; `prismaquant/gridbook_runtime/gridbook_runtime.sh`; `tools/serve_fingerprint.py`; `tests/test_gridbook_runtime_boundary.py` | ~~LOW~~ closed | — |
+| D27 | **CLOSED 2026-08-01; import resolution hardened 2026-08-12; immutable-wheel parity added 2026-08-13.** The version skew was not benign enough to preserve: the vendored package, mirror, and sync test were deleted. PrismaQuant consumes one full-commit pin, verifies package version plus PEP 610 exact-VCS identity or an independently pinned release-wheel digest, launches from a neutral directory in Python safe-path mode, rejects an import outside the selected distribution root (including CWD/`PYTHONPATH` shadows), and fingerprints that import origin plus the complete RECORD-bound source closure for every pinned serve. | `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`; `prismaquant/gridbook_runtime/gridbook_runtime.sh`; `tools/serve_fingerprint.py`; `tests/test_serve_fingerprint_descendants.py` | ~~LOW~~ closed | — |
 | D28 | **Serve-time fast-kernel enforcement has no caller.** `require_fast_kernels(model)` — which reads the model profile's kernel requirements and hard-fails at startup when a required fast kernel (`causal-conv1d`, `flash-linear-attention`, …) is not importable — lost its only caller when `polish_from_assignment` was archived on **2026-05-15**, and was itself walled 2026-07-30 (R19) as an orphan. It is the only mechanized piece of **core principle 9's** "routed to a *performant* kernel (not a slow fallback)" gate, so that gate is **manual today**: nothing in the build or serve path refuses a checkpoint whose arch would silently fall back to the slow PyTorch implementation. The mechanism is written and tested — only the call site is missing. | `archive/orphans_2026-07-30/prismaquant/_fast_kernel_guard.py` + `tests/test_fast_kernel_guard.py`; sole historical caller `archive/polish_2026-05-15/prismaquant/polish_from_assignment.py:202` | LOW | Move the guard back and call it from `validate_native_export` / the serve launcher, keyed on the resolved profile — or, if serve-time enforcement belongs to the lane scripts, say so in §7 and delete the row. |
 | D29 | **The FP8-CB row scale is not bit-reproducible across CPU architectures.** It is the scalar argmin of a scale sweep whose objective reduces over every column of the row, and that reduction reorders differently on x86 than on aarch64: on the fixed `test_cbl_scope_identity` fixture the packed index bytes -- the payload that actually ships -- are **identical** on both, while the single float32 scale differs in the low bits. Found 2026-08-11 when a byte-identity test recorded on the aarch64 build box failed on x86 CI. Consequence for the provenance gate (§5): artifact byte-reproducibility is a **within-platform** guarantee, not a cross-platform one; a rebuild on a different architecture may differ in scale bytes without differing in indices. Artifacts are built on the Spark, so nothing shipped is affected. The test now pins the packed plane by exact digest everywhere and the scale by value within float32's own worst-case reordering bound (n·2^-23), keeping the exact digest assertion on the recording platform. | `tests/test_cbl_scope_identity.py::test_unset_scopes_pin_76666bd_stamp_and_rendered_bytes`; `nvfp4_cb_formats._sweep_encode_moment` | LOW | Decide whether cross-architecture byte reproducibility is a goal at all. If it is, the sweep objective needs a fixed reduction order; if it is not (the likely answer -- artifacts are Spark-built), say so in §5 so a future reader does not read a cross-platform promise into the provenance gate. |
 

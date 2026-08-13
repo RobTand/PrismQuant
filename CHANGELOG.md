@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.12.1 — 2026-08-13
+
+### Fixed
+
+- Serve fingerprints now attest both supported immutable Gridbook installation
+  forms: the existing exact VCS commit and an exact release wheel. Wheel-backed
+  images must provide `PQ_GRIDBOOK_RUNTIME_WHEEL_SHA256`; PrismaQuant requires
+  the matching PEP 610 archive SHA-256 and versioned wheel filename, then still
+  verifies `direct_url.json`, `METADATA`, `RECORD`, every installed Python/CUDA
+  source byte, and the actual import origin. Unpinned wheels, digest mismatches,
+  editable/bare-directory installs, and same-version import shadows remain
+  fail-closed. The v0.12.0 VCS evidence shape remains replay-compatible.
+- Endpoint, performance, and shipcard replay accept the optional digest-bound
+  wheel identity while continuing to require the tracked Gridbook commit and
+  version. This fixes production images that correctly install a reviewed wheel
+  instead of synthesizing VCS metadata inside the image.
+
 ## 0.12.0 — 2026-08-12
 
 The DSv4Flash export-readiness release. It lands the activation-safe,

@@ -135,6 +135,35 @@ def test_external_gridbook_pin_without_distribution_fails_closed(monkeypatch):
         )
 
 
+def test_external_gridbook_wheel_pin_is_forwarded_to_attestation(monkeypatch):
+    monkeypatch.setenv("PQ_GRIDBOOK_RUNTIME_COMMIT", "a" * 40)
+    monkeypatch.setenv("PQ_GRIDBOOK_RUNTIME_VERSION", "0.8.5")
+    monkeypatch.setenv("PQ_GRIDBOOK_RUNTIME_WHEEL_SHA256", "b" * 64)
+    distribution = {
+        "schema": "prismaquant.installed_gridbook_distribution/2",
+        "import_origin": {"schema": "prismaquant.gridbook_import_origin/1"},
+    }
+
+    def attest(pin):
+        assert pin == {
+            "repository": serve_fingerprint.GRIDBOOK_REPOSITORY,
+            "commit": "a" * 40,
+            "version": "0.8.5",
+            "wheel_sha256": "b" * 64,
+        }
+        return distribution
+
+    monkeypatch.setattr(
+        serve_fingerprint, "gridbook_distribution_provenance", attest
+    )
+    manifest = collect_manifest(
+        pids=[__import__("os").getpid()],
+        launch_argv=["vllm", "serve", "/m"],
+    )
+    assert manifest["gridbook_runtime_pin"]["wheel_sha256"] == "b" * 64
+    assert manifest["gridbook_distribution"] == distribution
+
+
 def test_external_gridbook_pin_and_distribution_are_recorded_in_stack(
     monkeypatch,
 ):

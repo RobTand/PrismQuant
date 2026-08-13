@@ -217,6 +217,7 @@ def _fake_gridbook_distribution(
     pin: dict,
     *,
     transport_url: str | None = None,
+    direct_url: dict | None = None,
 ):
     source_names = (
         "gridbook/__init__.py",
@@ -233,7 +234,7 @@ def _fake_gridbook_distribution(
     direct_name = f"{dist_info}/direct_url.json"
     metadata_name = f"{dist_info}/METADATA"
     record_name = f"{dist_info}/RECORD"
-    direct = {
+    direct = direct_url or {
         "url": transport_url or pin["repository"],
         "vcs_info": {
             "vcs": "git",
@@ -347,6 +348,75 @@ def test_gridbook_distribution_accepts_exact_local_vcs_transport(
         "requested_revision": pin["commit"],
         "commit_id": pin["commit"],
     }
+
+
+def test_gridbook_distribution_accepts_exact_release_wheel(
+    tmp_path, monkeypatch,
+):
+    wheel_sha256 = "6" * 64
+    pin = {
+        "repository": "https://github.com/RobTand/gridbook.git",
+        "commit": "5" * 40,
+        "version": "0.8.4",
+        "wheel_sha256": wheel_sha256,
+    }
+    direct_url = {
+        "url": "file:///opt/gridbook-install/gridbook-0.8.4-py3-none-any.whl",
+        "archive_info": {
+            "hash": f"sha256={wheel_sha256}",
+            "hashes": {"sha256": wheel_sha256},
+        },
+    }
+    distribution, _direct_name, module = _fake_gridbook_distribution(
+        tmp_path, pin, direct_url=direct_url
+    )
+    monkeypatch.setattr(
+        serve_fingerprint.importlib_metadata,
+        "distribution",
+        lambda name: distribution,
+    )
+    monkeypatch.setattr(
+        serve_fingerprint.importlib,
+        "import_module",
+        lambda name: module,
+    )
+
+    evidence = serve_fingerprint.gridbook_distribution_provenance(pin)
+    assert evidence["direct_url"] == direct_url
+    assert serve_fingerprint.validate_gridbook_pep610_direct_url(
+        direct_url, pin
+    ) == "wheel"
+
+
+def test_gridbook_distribution_rejects_wrong_release_wheel_digest(
+    tmp_path, monkeypatch,
+):
+    pin = {
+        "repository": "https://github.com/RobTand/gridbook.git",
+        "commit": "5" * 40,
+        "version": "0.8.4",
+        "wheel_sha256": "6" * 64,
+    }
+    direct_url = {
+        "url": "file:///opt/gridbook-install/gridbook-0.8.4-py3-none-any.whl",
+        "archive_info": {"hashes": {"sha256": "7" * 64}},
+    }
+    distribution, _direct_name, module = _fake_gridbook_distribution(
+        tmp_path, pin, direct_url=direct_url
+    )
+    monkeypatch.setattr(
+        serve_fingerprint.importlib_metadata,
+        "distribution",
+        lambda name: distribution,
+    )
+    monkeypatch.setattr(
+        serve_fingerprint.importlib,
+        "import_module",
+        lambda name: module,
+    )
+
+    with pytest.raises(ValueError, match="exact pinned release wheel"):
+        serve_fingerprint.gridbook_distribution_provenance(pin)
 
 
 def test_gridbook_distribution_attestation_rejects_non_vcs_direct_url(

@@ -43,7 +43,6 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlsplit
 
 from .gridbook_environment import (
     CANONICAL_GOLD_ENVIRONMENT,
@@ -965,6 +964,32 @@ def _verify_gold_producer_identity(
     return problems
 
 
+def _manifest_gridbook_runtime_pin(
+    manifest: Mapping[str, Any],
+    runtime_pin: Mapping[str, Any],
+) -> dict[str, str] | None:
+    """Return a live VCS/wheel install pin only when it matches tracked code."""
+
+    observed = manifest.get("gridbook_runtime_pin")
+    if not isinstance(observed, Mapping) or set(observed) not in (
+        {"commit", "version"},
+        {"commit", "version", "wheel_sha256"},
+    ):
+        return None
+    if (
+        observed.get("commit") != runtime_pin.get("commit")
+        or observed.get("version") != runtime_pin.get("version")
+        or (
+            "wheel_sha256" in observed
+            and re.fullmatch(
+                r"[0-9a-f]{64}", str(observed.get("wheel_sha256", ""))
+            ) is None
+        )
+    ):
+        return None
+    return {key: str(observed[key]) for key in sorted(observed)}
+
+
 def _verify_gridbook_distribution_identity(
     slot: str,
     manifest: Mapping[str, Any],
@@ -973,11 +998,9 @@ def _verify_gridbook_distribution_identity(
     canonical_sha,
 ) -> list[str]:
     distribution = manifest.get("gridbook_distribution")
-    expected_vcs = {
-        "vcs": "git",
-        "requested_revision": runtime_pin.get("commit"),
-        "commit_id": runtime_pin.get("commit"),
-    }
+    manifest_pin = _manifest_gridbook_runtime_pin(manifest, runtime_pin)
+    if manifest_pin is None:
+        return [f"{slot}: live Gridbook runtime pin differs from the tracked pin"]
     if not isinstance(distribution, Mapping) or set(distribution) != {
         "schema", "name", "repository", "version", "direct_url",
         "direct_url_path", "direct_url_identity", "metadata_path",
@@ -986,37 +1009,24 @@ def _verify_gridbook_distribution_identity(
     }:
         return [f"{slot}: installed Gridbook distribution evidence is not closed"]
     direct_url = distribution.get("direct_url")
-    transport = direct_url.get("url") if isinstance(
-        direct_url, Mapping
-    ) else None
     try:
-        parsed_transport = urlsplit(transport) if isinstance(
-            transport, str
-        ) else None
-    except ValueError:
-        parsed_transport = None
-    transport_valid = (
-        transport == runtime_pin.get("repository")
-        or (
-            parsed_transport is not None
-            and parsed_transport.scheme == "file"
-            and parsed_transport.netloc in {"", "localhost"}
-            and parsed_transport.path.startswith("/")
-            and not parsed_transport.query
-            and not parsed_transport.fragment
-            and parsed_transport.username is None
-            and parsed_transport.password is None
+        from tools.serve_fingerprint import (
+            validate_gridbook_pep610_direct_url,
         )
-    )
+
+        validate_gridbook_pep610_direct_url(direct_url, {
+            "repository": str(runtime_pin.get("repository", "")),
+            **manifest_pin,
+        })
+    except Exception:
+        return [
+            f"{slot}: installed Gridbook PEP 610 identity differs from the pin"
+        ]
     if (
         distribution.get("schema") != GRIDBOOK_DISTRIBUTION_SCHEMA
         or distribution.get("name") != "gridbook"
         or distribution.get("repository") != runtime_pin.get("repository")
         or distribution.get("version") != runtime_pin.get("version")
-        or not isinstance(direct_url, Mapping)
-        or set(direct_url) != {"url", "vcs_info"}
-        or direct_url.get("vcs_info") != expected_vcs
-        or not transport_valid
     ):
         return [
             f"{slot}: installed Gridbook PEP 610 identity differs from the pin"
@@ -1621,10 +1631,7 @@ def _verify_dsv4_gridbook_gold_contract(
     except Exception as exc:
         problem(f"tracked Gridbook release pin unavailable: {exc}")
         return problems
-    expected_runtime_pin = {
-        "commit": runtime_pin["commit"],
-        "version": runtime_pin["version"],
-    }
+    manifest_runtime_pin = _manifest_gridbook_runtime_pin(manifest, runtime_pin)
     packages = manifest.get("package_versions")
     extensions = manifest.get("resident_extensions")
     gpu_uuid = manifest.get("gpu_uuid")
@@ -1639,7 +1646,7 @@ def _verify_dsv4_gridbook_gold_contract(
         or not isinstance(packages, Mapping)
         or packages.get("vllm") != DSV4_SPARK_VLLM_VERSION
         or packages.get("gridbook") != runtime_pin["version"]
-        or manifest.get("gridbook_runtime_pin") != expected_runtime_pin
+        or manifest_runtime_pin is None
         or manifest.get("residency_readable") is not True
         or not isinstance(extensions, list)
         or any(not isinstance(name, str) for name in extensions)

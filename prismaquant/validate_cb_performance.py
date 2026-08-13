@@ -42,6 +42,7 @@ from .native_baseline_feasibility import (
     validate_native_baseline_certificate,
 )
 from .shipcard import (
+    _manifest_gridbook_runtime_pin,
     _verify_gridbook_distribution_identity,
     assert_weight_stat_attestation,
     compute_model_sha,
@@ -1451,10 +1452,10 @@ def _load_performance_serve_manifests(
         raise CBPerformanceValidationError(
             f"{label} serve manifest has the wrong source/model/image/Gridbook/GPU contract"
         )
-    if manifest.get("gridbook_runtime_pin") != {
+    if _manifest_gridbook_runtime_pin(manifest, {
         "commit": pin_commit,
         "version": pin_version,
-    }:
+    }) is None:
         raise CBPerformanceValidationError(f"{label} live server uses the wrong Gridbook pin")
     distribution_problems = _verify_gridbook_distribution_identity(
         "perf.matched_budget_parity",

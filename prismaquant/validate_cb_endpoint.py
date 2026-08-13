@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .shipcard import (
+    _manifest_gridbook_runtime_pin,
     _verify_gridbook_distribution_identity,
     compute_model_sha,
     fill_slot,
@@ -701,6 +702,11 @@ def validate_serve_manifest(
             "serve manifest has no resident reviewed Gridbook-native CUDA extension"
         )
     runtime_pin = _gridbook_runtime_pin()
+    manifest_pin = _manifest_gridbook_runtime_pin(payload, runtime_pin)
+    if manifest_pin is None:
+        raise CBEndpointValidationError(
+            "served Gridbook runtime pin differs from the tracked release pin"
+        )
     distribution_problems = _verify_gridbook_distribution_identity(
         "native_export",
         payload,
@@ -717,15 +723,6 @@ def validate_serve_manifest(
         payload,
         expected_served_model=expected_served_model,
     )
-    manifest_pin = payload.get("gridbook_runtime_pin")
-    expected_pin = {
-        "commit": runtime_pin["commit"],
-        "version": runtime_pin["version"],
-    }
-    if manifest_pin != expected_pin:
-        raise CBEndpointValidationError(
-            f"served Gridbook pin {manifest_pin!r} != tracked pin {expected_pin!r}"
-        )
     packages = payload.get("package_versions")
     if not isinstance(packages, Mapping):
         raise CBEndpointValidationError("serve manifest has no package versions")
