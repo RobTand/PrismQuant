@@ -21,6 +21,7 @@ import hashlib
 import math
 import os
 from pathlib import Path
+import struct
 import subprocess
 from typing import Literal, Protocol, runtime_checkable
 
@@ -44,6 +45,21 @@ from prismaquant.cost_stage_checkpoint import (
 AURA_CURRENCY = ANCHORED_AURA_COST_CURRENCY
 PRODUCTION_RENDER_SOURCE = ANCHORED_AURA_COST_SOURCE
 ANCHOR_SEGMENT_FIELDS = ("family", "role", "equivalence_class")
+SERVED_OPERATOR_AURA_CURRENCY = "aura_served_operator_predicted_dloss"
+SERVED_OPERATOR_ERROR_MODEL = "served_operator_weight_activation_mixed_v1"
+SERVED_OPERATOR_COST_SOURCE = "anchored_aura_signed_residual_v2"
+SIGNED_PROJECTION_SCHEMA = "prismaquant.aura.served_operator_projection.v1"
+SERVED_OPERATOR_CELL_SCHEMA = "prismaquant.anchored_served_operator_cell.v2"
+SERVED_OPERATOR_SEGMENT_FIELDS = (
+    *ANCHOR_SEGMENT_FIELDS,
+    "activation_contract_id",
+    "activation_contract_receipt_sha256",
+    "activation_qdq_identity_sha256",
+    "served_operator_contract_id",
+    "served_operator_contract_receipt_sha256",
+    "cost_currency",
+    "error_model",
+)
 _FORBIDDEN_COST_FIELDS = frozenset({
     "h_trace",
     "cw_m2",
@@ -716,6 +732,607 @@ class PricedCell:
 class HullResult:
     vertices: tuple[str, ...]
     interior: tuple[str, ...]
+
+
+def _validated_sha256(value: object, *, where: str) -> str:
+    digest = str(value).strip().lower()
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise ValueError(f"{where} is not SHA-256")
+    return digest
+
+
+def _float32_signed_values(
+    values: Sequence[float], *, where: str,
+) -> tuple[float, ...]:
+    normalized: list[float] = []
+    for index, raw in enumerate(values):
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError(f"{where}[{index}] is not finite")
+        try:
+            packed = struct.pack("<f", value)
+        except OverflowError as exc:
+            raise ValueError(f"{where}[{index}] is outside float32") from exc
+        normalized.append(struct.unpack("<f", packed)[0])
+    if not normalized:
+        raise ValueError(f"{where} is empty")
+    return tuple(normalized)
+
+
+def _signed_component_sha256(values: Sequence[float]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"prismaquant.signed_component.float32.v1\0")
+    digest.update(len(values).to_bytes(8, "little", signed=False))
+    for value in values:
+        digest.update(struct.pack("<f", float(value)))
+    return digest.hexdigest()
+
+
+def _predicted_signed_sha256(values: Sequence[float]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"prismaquant.predicted_signed_component.float64.v1\0")
+    digest.update(len(values).to_bytes(8, "little", signed=False))
+    for value in values:
+        digest.update(struct.pack("<d", float(value)))
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True, order=True)
+class ServedOperatorSegmentKey:
+    """A v2 transfer segment qualified by complete numerical contracts.
+
+    This is deliberately not an extension of :class:`SegmentKey`.  A v1
+    positive-cost segment and a v2 signed-residual segment must never compare
+    equal merely because their family, role, and basis strings match.
+    """
+
+    family: str
+    role: str
+    equivalence_class: str
+    activation_contract_id: str
+    activation_contract_receipt_sha256: str
+    activation_qdq_identity_sha256: str
+    served_operator_contract_id: str
+    served_operator_contract_receipt_sha256: str
+    cost_currency: str = SERVED_OPERATOR_AURA_CURRENCY
+    error_model: str = SERVED_OPERATOR_ERROR_MODEL
+
+    def __post_init__(self) -> None:
+        for name in (
+            "family",
+            "role",
+            "equivalence_class",
+            "activation_contract_id",
+            "served_operator_contract_id",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"served-operator segment {name} is empty")
+            object.__setattr__(self, name, value)
+        for name in (
+            "activation_contract_receipt_sha256",
+            "activation_qdq_identity_sha256",
+            "served_operator_contract_receipt_sha256",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _validated_sha256(
+                    getattr(self, name), where=f"served-operator segment {name}",
+                ),
+            )
+        if self.cost_currency != SERVED_OPERATOR_AURA_CURRENCY:
+            raise ValueError("served-operator segment uses a legacy currency")
+        if self.error_model != SERVED_OPERATOR_ERROR_MODEL:
+            raise ValueError("served-operator segment uses another error model")
+
+    @property
+    def base_segment(self) -> SegmentKey:
+        return SegmentKey(self.family, self.role, self.equivalence_class)
+
+    @property
+    def stamp(self) -> str:
+        return "|".join(
+            str(getattr(self, name)) for name in SERVED_OPERATOR_SEGMENT_FIELDS
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            name: str(getattr(self, name))
+            for name in SERVED_OPERATOR_SEGMENT_FIELDS
+        }
+
+
+@dataclass(frozen=True)
+class SignedProjectionReceipt:
+    """Identity receipt for one measured signed ``a``/``r`` probe vector."""
+
+    qname: str
+    segment: ServedOperatorSegmentKey
+    format_name: str
+    purpose: Literal["anchor", "panel", "validation"]
+    projection_boundary: str
+    probe_ids_sha256: str
+    n_probes: int
+    activation_signed_sha256: str
+    residual_signed_sha256: str
+    arm_identity_sha256: str
+    payload_identity_sha256: str
+    weight_render_identity_sha256: str
+    receipt_sha256: str
+    schema: str = SIGNED_PROJECTION_SCHEMA
+    signed_component_dtype: str = "float32"
+    weight_term_included: bool = True
+    activation_term_included: bool = True
+    mixed_term_included: bool = True
+    fisher_application_count: int = 1
+    rendered_weight_persisted: bool = False
+
+    def __post_init__(self) -> None:
+        for name in ("qname", "format_name", "projection_boundary"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"signed projection receipt {name} is empty")
+            object.__setattr__(self, name, value)
+        if self.purpose not in {"anchor", "panel", "validation"}:
+            raise ValueError("signed projection receipt purpose is invalid")
+        for name in (
+            "probe_ids_sha256",
+            "activation_signed_sha256",
+            "residual_signed_sha256",
+            "arm_identity_sha256",
+            "payload_identity_sha256",
+            "weight_render_identity_sha256",
+            "receipt_sha256",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _validated_sha256(
+                    getattr(self, name), where=f"signed projection receipt {name}",
+                ),
+            )
+        if int(self.n_probes) <= 0:
+            raise ValueError("signed projection receipt has no probes")
+        object.__setattr__(self, "n_probes", int(self.n_probes))
+        if self.schema != SIGNED_PROJECTION_SCHEMA:
+            raise ValueError("signed projection receipt schema is not v2")
+        if self.signed_component_dtype != "float32":
+            raise ValueError("signed projection components must be float32")
+        if not (
+            self.weight_term_included
+            and self.activation_term_included
+            and self.mixed_term_included
+        ):
+            raise ValueError("signed projection receipt omits an error term")
+        if int(self.fisher_application_count) != 1:
+            raise ValueError("signed projection receipt applies Fisher twice")
+        if self.rendered_weight_persisted is not False:
+            raise ValueError("signed projection receipt persisted rendered weight")
+        expected = canonical_json_sha256(
+            self.to_dict(include_receipt_sha256=False),
+            where="served-operator signed projection receipt",
+        )
+        if self.receipt_sha256 != expected:
+            raise ValueError("signed projection receipt checksum differs")
+
+    def to_dict(
+        self, *, include_receipt_sha256: bool = True,
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "schema": self.schema,
+            "qname": self.qname,
+            "segment": self.segment.to_dict(),
+            "format": self.format_name,
+            "purpose": self.purpose,
+            "projection_boundary": self.projection_boundary,
+            "probe_ids_sha256": self.probe_ids_sha256,
+            "n_probes": self.n_probes,
+            "signed_component_dtype": self.signed_component_dtype,
+            "signed_component_shape": [self.n_probes],
+            "activation_signed_sha256": self.activation_signed_sha256,
+            "residual_signed_sha256": self.residual_signed_sha256,
+            "arm_identity_sha256": self.arm_identity_sha256,
+            "payload_identity_sha256": self.payload_identity_sha256,
+            "weight_render_identity_sha256": self.weight_render_identity_sha256,
+            "cost_currency": self.segment.cost_currency,
+            "error_model": self.segment.error_model,
+            "weight_term_included": self.weight_term_included,
+            "activation_term_included": self.activation_term_included,
+            "mixed_term_included": self.mixed_term_included,
+            "fisher_application_count": self.fisher_application_count,
+            "rendered_weight_persisted": self.rendered_weight_persisted,
+        }
+        if include_receipt_sha256:
+            body["receipt_sha256"] = self.receipt_sha256
+        return body
+
+
+@dataclass(frozen=True)
+class SignedProjectionSamples:
+    """Measured, still-signed per-probe activation and residual components."""
+
+    qname: str
+    segment: ServedOperatorSegmentKey
+    format_name: str
+    purpose: Literal["anchor", "panel", "validation"]
+    probe_ids: tuple[str, ...]
+    activation_signed: tuple[float, ...]
+    residual_signed: tuple[float, ...]
+    receipt: SignedProjectionReceipt
+
+    def __post_init__(self) -> None:
+        qname = str(self.qname).strip()
+        format_name = str(self.format_name).strip()
+        if not qname or not format_name:
+            raise ValueError("signed projection sample identity is empty")
+        object.__setattr__(self, "qname", qname)
+        object.__setattr__(self, "format_name", format_name)
+        probe_ids = tuple(str(value).strip() for value in self.probe_ids)
+        if (
+            not probe_ids
+            or any(not value for value in probe_ids)
+            or len(probe_ids) != len(set(probe_ids))
+        ):
+            raise ValueError("signed projection probe ids are empty or duplicated")
+        activation = _float32_signed_values(
+            self.activation_signed, where="activation_signed",
+        )
+        residual = _float32_signed_values(
+            self.residual_signed, where="residual_signed",
+        )
+        if len(probe_ids) != len(activation) or len(activation) != len(residual):
+            raise ValueError("signed projection component shapes differ")
+        object.__setattr__(self, "probe_ids", probe_ids)
+        object.__setattr__(self, "activation_signed", activation)
+        object.__setattr__(self, "residual_signed", residual)
+        if not isinstance(self.receipt, SignedProjectionReceipt):
+            raise ValueError("signed projection has no typed receipt")
+        if (
+            self.receipt.qname != qname
+            or self.receipt.segment != self.segment
+            or self.receipt.format_name != format_name
+            or self.receipt.purpose != self.purpose
+            or self.receipt.n_probes != len(probe_ids)
+            or self.receipt.probe_ids_sha256
+            != canonical_json_sha256(
+                list(probe_ids), where="signed projection probe ids",
+            )
+            or self.receipt.activation_signed_sha256
+            != _signed_component_sha256(activation)
+            or self.receipt.residual_signed_sha256
+            != _signed_component_sha256(residual)
+        ):
+            raise ValueError("signed projection samples differ from receipt")
+
+    @property
+    def total_signed(self) -> tuple[float, ...]:
+        return tuple(
+            activation + residual
+            for activation, residual in zip(
+                self.activation_signed, self.residual_signed,
+            )
+        )
+
+    @property
+    def predicted_dloss(self) -> float:
+        total = self.total_signed
+        return 0.5 * math.fsum(value * value for value in total) / len(total)
+
+
+def make_signed_projection_samples_from_hashes(
+    *,
+    qname: str,
+    segment: ServedOperatorSegmentKey,
+    format_name: str,
+    purpose: Literal["anchor", "panel", "validation"],
+    probe_ids: Sequence[str],
+    activation_signed: Sequence[float],
+    residual_signed: Sequence[float],
+    projection_boundary: str,
+    arm_identity_sha256: str,
+    payload_identity_sha256: str,
+    weight_render_identity_sha256: str,
+) -> SignedProjectionSamples:
+    normalized_probe_ids = tuple(str(value).strip() for value in probe_ids)
+    normalized_activation = _float32_signed_values(
+        activation_signed, where="activation_signed",
+    )
+    normalized_residual = _float32_signed_values(
+        residual_signed, where="residual_signed",
+    )
+    body: dict[str, object] = {
+        "schema": SIGNED_PROJECTION_SCHEMA,
+        "qname": str(qname).strip(),
+        "segment": segment.to_dict(),
+        "format": str(format_name).strip(),
+        "purpose": purpose,
+        "projection_boundary": str(projection_boundary).strip(),
+        "probe_ids_sha256": canonical_json_sha256(
+            list(normalized_probe_ids), where="signed projection probe ids",
+        ),
+        "n_probes": len(normalized_probe_ids),
+        "signed_component_dtype": "float32",
+        "signed_component_shape": [len(normalized_probe_ids)],
+        "activation_signed_sha256": _signed_component_sha256(
+            normalized_activation
+        ),
+        "residual_signed_sha256": _signed_component_sha256(normalized_residual),
+        "arm_identity_sha256": str(arm_identity_sha256).lower(),
+        "payload_identity_sha256": str(payload_identity_sha256).lower(),
+        "weight_render_identity_sha256": str(
+            weight_render_identity_sha256
+        ).lower(),
+        "cost_currency": segment.cost_currency,
+        "error_model": segment.error_model,
+        "weight_term_included": True,
+        "activation_term_included": True,
+        "mixed_term_included": True,
+        "fisher_application_count": 1,
+        "rendered_weight_persisted": False,
+    }
+    receipt = SignedProjectionReceipt(
+        qname=str(body["qname"]),
+        segment=segment,
+        format_name=str(body["format"]),
+        purpose=purpose,
+        projection_boundary=str(body["projection_boundary"]),
+        probe_ids_sha256=str(body["probe_ids_sha256"]),
+        n_probes=int(body["n_probes"]),
+        activation_signed_sha256=str(body["activation_signed_sha256"]),
+        residual_signed_sha256=str(body["residual_signed_sha256"]),
+        arm_identity_sha256=str(body["arm_identity_sha256"]),
+        payload_identity_sha256=str(body["payload_identity_sha256"]),
+        weight_render_identity_sha256=str(
+            body["weight_render_identity_sha256"]
+        ),
+        receipt_sha256=canonical_json_sha256(
+            body, where="served-operator signed projection receipt",
+        ),
+    )
+    return SignedProjectionSamples(
+        qname=str(body["qname"]),
+        segment=segment,
+        format_name=str(body["format"]),
+        purpose=purpose,
+        probe_ids=normalized_probe_ids,
+        activation_signed=normalized_activation,
+        residual_signed=normalized_residual,
+        receipt=receipt,
+    )
+
+
+def make_signed_projection_samples(
+    *,
+    qname: str,
+    segment: ServedOperatorSegmentKey,
+    format_name: str,
+    purpose: Literal["anchor", "panel", "validation"],
+    probe_ids: Sequence[str],
+    activation_signed: Sequence[float],
+    residual_signed: Sequence[float],
+    projection_boundary: str,
+    arm_identity: object,
+    payload_identity: object,
+    weight_render_identity: object,
+) -> SignedProjectionSamples:
+    return make_signed_projection_samples_from_hashes(
+        qname=qname,
+        segment=segment,
+        format_name=format_name,
+        purpose=purpose,
+        probe_ids=probe_ids,
+        activation_signed=activation_signed,
+        residual_signed=residual_signed,
+        projection_boundary=projection_boundary,
+        arm_identity_sha256=canonical_json_sha256(
+            arm_identity, where="signed projection production arm identity",
+        ),
+        payload_identity_sha256=canonical_json_sha256(
+            payload_identity, where="signed projection payload identity",
+        ),
+        weight_render_identity_sha256=canonical_json_sha256(
+            weight_render_identity,
+            where="signed projection weight render identity",
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class ServedOperatorCandidateSpec:
+    """One legacy byte/rate candidate bound to its v2 numerical segment."""
+
+    candidate: CandidateSpec
+    segment: ServedOperatorSegmentKey
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate, CandidateSpec):
+            raise ValueError("served-operator candidate has no base candidate")
+        if (
+            self.candidate.family != self.segment.family
+            or self.candidate.equivalence_class
+            != self.segment.equivalence_class
+        ):
+            raise ValueError(
+                "served-operator candidate crosses family/equivalence segment"
+            )
+
+
+@dataclass(frozen=True)
+class SignedResidualShapeFit:
+    segment: ServedOperatorSegmentKey
+    anchor_format: str
+    rho_by_format: Mapping[str, float]
+    directly_measured_formats: tuple[str, ...]
+    coefficients: tuple[float, ...]
+    design_rank: int
+    design_rank_required: int
+    n_units: int
+    n_observations: int
+    anchor_residual_denominator: float
+    signed_correlation_by_format: Mapping[str, float]
+    arm_identity_sha256: str
+    payload_identity_sha256: str
+    fit_receipts_sha256: str
+    shape_fit_currency: str = SERVED_OPERATOR_AURA_CURRENCY
+
+    def __post_init__(self) -> None:
+        anchor_format = str(self.anchor_format).strip()
+        if not anchor_format:
+            raise ValueError("signed-residual fit anchor format is empty")
+        object.__setattr__(self, "anchor_format", anchor_format)
+        if self.shape_fit_currency != SERVED_OPERATOR_AURA_CURRENCY:
+            raise ValueError("signed-residual fit uses the legacy currency")
+        if self.segment.cost_currency != self.shape_fit_currency:
+            raise ValueError("signed-residual fit currency differs from segment")
+        rho = {str(name): float(value) for name, value in self.rho_by_format.items()}
+        if anchor_format not in rho or rho[anchor_format] != 1.0:
+            raise ValueError("signed-residual anchor rho must be exactly one")
+        if any(not math.isfinite(value) or value <= 0.0 for value in rho.values()):
+            raise ValueError("signed-residual rho must be finite and positive")
+        object.__setattr__(self, "rho_by_format", rho)
+        measured = tuple(sorted(str(value) for value in self.directly_measured_formats))
+        if anchor_format not in measured or not set(measured).issubset(rho):
+            raise ValueError("signed-residual measured format coverage is invalid")
+        object.__setattr__(self, "directly_measured_formats", measured)
+        correlations = {
+            str(name): float(value)
+            for name, value in self.signed_correlation_by_format.items()
+        }
+        if set(correlations) != set(measured):
+            raise ValueError("signed-residual correlation coverage differs")
+        if any(
+            not math.isfinite(value) or abs(value) > 1.0 + 1e-12
+            for value in correlations.values()
+        ):
+            raise ValueError("signed-residual correlation is invalid")
+        object.__setattr__(self, "signed_correlation_by_format", correlations)
+        denominator = float(self.anchor_residual_denominator)
+        if not math.isfinite(denominator) or denominator < 0.0:
+            raise ValueError("signed-residual denominator is invalid")
+        object.__setattr__(self, "anchor_residual_denominator", denominator)
+        for name in (
+            "arm_identity_sha256",
+            "payload_identity_sha256",
+            "fit_receipts_sha256",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _validated_sha256(
+                    getattr(self, name), where=f"signed-residual fit {name}",
+                ),
+            )
+
+    def rho(self, format_name: str) -> float:
+        try:
+            return float(self.rho_by_format[format_name])
+        except KeyError as exc:
+            raise AnchoredCostError(
+                f"signed-residual fit {self.segment.stamp} lacks "
+                f"{format_name!r}"
+            ) from exc
+
+
+@dataclass(frozen=True)
+class ServedOperatorPricedCell:
+    qname: str
+    candidate: CandidateSpec
+    predicted_dloss: float
+    segment: ServedOperatorSegmentKey
+    anchor_format: str
+    rho: float
+    activation_signed: tuple[float, ...]
+    anchor_residual_signed: tuple[float, ...]
+    predicted_total_signed: tuple[float, ...]
+    anchor_receipt_sha256: str
+    fit_receipts_sha256: str
+    arm_identity_sha256: str
+    payload_identity_sha256: str
+    cost_source: str = SERVED_OPERATOR_COST_SOURCE
+
+    def __post_init__(self) -> None:
+        if self.cost_source != SERVED_OPERATOR_COST_SOURCE:
+            raise ValueError("served-operator cell uses another cost source")
+        if not self.predicted_total_signed:
+            raise ValueError("served-operator cell has no signed probes")
+        if not (
+            len(self.activation_signed)
+            == len(self.anchor_residual_signed)
+            == len(self.predicted_total_signed)
+        ):
+            raise ValueError("served-operator cell signed shapes differ")
+        expected = 0.5 * math.fsum(
+            float(value) * float(value)
+            for value in self.predicted_total_signed
+        ) / len(self.predicted_total_signed)
+        if not math.isfinite(expected) or float(self.predicted_dloss) != expected:
+            raise ValueError("served-operator cell was not squared at final total")
+        if not math.isfinite(float(self.rho)) or float(self.rho) <= 0.0:
+            raise ValueError("served-operator cell rho is invalid")
+        for name in (
+            "anchor_receipt_sha256",
+            "fit_receipts_sha256",
+            "arm_identity_sha256",
+            "payload_identity_sha256",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _validated_sha256(
+                    getattr(self, name), where=f"served-operator cell {name}",
+                ),
+            )
+
+    def allocation_entry(self) -> dict[str, object]:
+        return {
+            "schema": SERVED_OPERATOR_CELL_SCHEMA,
+            "predicted_dloss": float(self.predicted_dloss),
+            "memory_bytes": int(self.candidate.payload_bytes),
+            "cost_currency": SERVED_OPERATOR_AURA_CURRENCY,
+            "cost_source": self.cost_source,
+            "error_model": SERVED_OPERATOR_ERROR_MODEL,
+            "anchor_segment": self.segment.to_dict(),
+            "anchor_format": self.anchor_format,
+            "signed_residual_rho": float(self.rho),
+            "activation_contract_id": self.segment.activation_contract_id,
+            "activation_contract_receipt_sha256": (
+                self.segment.activation_contract_receipt_sha256
+            ),
+            "activation_qdq_identity_sha256": (
+                self.segment.activation_qdq_identity_sha256
+            ),
+            "served_operator_contract_id": (
+                self.segment.served_operator_contract_id
+            ),
+            "served_operator_contract_receipt_sha256": (
+                self.segment.served_operator_contract_receipt_sha256
+            ),
+            "signed_components": {
+                "dtype": "float32",
+                "shape": [len(self.activation_signed)],
+                "activation_sha256": _signed_component_sha256(
+                    self.activation_signed
+                ),
+                "anchor_residual_sha256": _signed_component_sha256(
+                    self.anchor_residual_signed
+                ),
+                "predicted_total_dtype": "float64",
+                "predicted_total_sha256": _predicted_signed_sha256(
+                    self.predicted_total_signed
+                ),
+            },
+            "anchor_receipt_sha256": self.anchor_receipt_sha256,
+            "fit_receipts_sha256": self.fit_receipts_sha256,
+            "arm_identity_sha256": self.arm_identity_sha256,
+            "payload_identity_sha256": self.payload_identity_sha256,
+            "weight_term_included": True,
+            "activation_term_included": True,
+            "mixed_term_included": True,
+            "fisher_application_count": 1,
+        }
 
 
 def _plugin_identity(plugin: AnchoredFormatPlugin) -> dict[str, object]:

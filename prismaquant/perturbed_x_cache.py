@@ -410,6 +410,357 @@ def _replace_tensor_input(args, kwargs, where, key, value):
     return args, kwargs
 
 
+@torch.no_grad()
+def _aura_served_operator_signed_terms(
+    x: torch.Tensor,
+    output_gradient: torch.Tensor,
+    weight: torch.Tensor,
+    delta_weights: Mapping[str, torch.Tensor],
+    contract,
+    *,
+    qname: str,
+    role: str | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Project one local served-operator perturbation onto an AURA probe.
+
+    This is the ephemeral projection view of ``PerturbedActivationCache``'s
+    activation QDQ machinery.  It owns no activation or weight residency: the
+    caller supplies the live baseline input, source weight, and the current
+    layer's already-resident production ``dW`` tensors.  The exact local
+    perturbation is
+
+    ``Q_A(X) Q_W(W)^T - X W^T``
+
+    and is split into an activation-only signed term plus one mixed signed
+    term per rendered weight.  The weight-only term is harvested by AURA's
+    existing parameter-gradient hook.  Keeping these terms signed until the
+    caller sums repeated module invocations is load-bearing: squaring a call
+    or component early destroys real Fisher cancellation.
+    """
+    if not isinstance(x, torch.Tensor) or not isinstance(
+        output_gradient, torch.Tensor
+    ):
+        raise TypeError("served-operator projection requires Tensor X and G")
+    if x.device != output_gradient.device or x.device != weight.device:
+        raise RuntimeError(
+            f"served-operator projection for {qname} is not GPU-resident on "
+            "one device"
+        )
+    if tuple(x.shape[:-1]) != tuple(output_gradient.shape[:-1]):
+        raise RuntimeError(
+            f"served-operator projection shape mismatch for {qname}: "
+            f"X={tuple(x.shape)} G={tuple(output_gradient.shape)}"
+        )
+    if int(x.shape[-1]) != int(weight.shape[-1]) or int(
+        output_gradient.shape[-1]
+    ) != int(weight.shape[-2]):
+        raise RuntimeError(
+            f"served-operator projection Linear geometry mismatch for "
+            f"{qname}: X={tuple(x.shape)} G={tuple(output_gradient.shape)} "
+            f"W={tuple(weight.shape)}"
+        )
+    for fmt, delta in delta_weights.items():
+        if not isinstance(delta, torch.Tensor):
+            raise TypeError(
+                f"served-operator dW for {qname}@{fmt} is not a Tensor"
+            )
+        if delta.device != weight.device or tuple(delta.shape) != tuple(
+            weight.shape
+        ):
+            raise RuntimeError(
+                f"served-operator dW differs from source residency/shape for "
+                f"{qname}@{fmt}"
+            )
+
+    quantized = contract.quantize_dequantize(
+        x,
+        qname=qname,
+        role=role,
+        context=None,
+    )
+    if not isinstance(quantized, torch.Tensor):
+        raise TypeError(
+            f"served-operator contract returned a non-Tensor for {qname}"
+        )
+    if (
+        quantized.device != x.device
+        or quantized.dtype != x.dtype
+        or tuple(quantized.shape) != tuple(x.shape)
+    ):
+        raise RuntimeError(
+            f"served-operator QDQ changed residency/dtype/shape for {qname}: "
+            f"X=({x.device},{x.dtype},{tuple(x.shape)}) "
+            f"QX=({quantized.device},{quantized.dtype},"
+            f"{tuple(quantized.shape)})"
+        )
+
+    # One parameter-shaped FP32 scratch per *operator contract*, produced by
+    # a GEMM on the live device.  Every candidate sharing the exact receipt
+    # reuses it; only cheap dot reductions vary with dW.  No dA, D, or QX is
+    # retained after this call.
+    delta_activation = quantized.float() - x.float()
+    rows = int(x.numel() // x.shape[-1])
+    d_operator = torch.mm(
+        output_gradient.reshape(rows, output_gradient.shape[-1])
+        .float()
+        .transpose(0, 1),
+        delta_activation.reshape(rows, delta_activation.shape[-1]),
+    )
+    activation_signed = torch.dot(
+        d_operator.reshape(-1), weight.float().reshape(-1)
+    )
+    mixed_signed = {
+        str(fmt): torch.dot(
+            d_operator.reshape(-1), delta.float().reshape(-1)
+        )
+        for fmt, delta in delta_weights.items()
+    }
+    return activation_signed, mixed_signed
+
+
+class AuraServedOperatorProjectionLease:
+    """Ephemeral forward/backward hooks for exact activation-aware AURA.
+
+    The lease extends the existing perturbed-activation mechanism rather than
+    creating another cache.  Hooks observe the baseline Linear input without
+    mutating it, run the resolved target route's QDQ only when its output
+    cotangent arrives, and retain only GPU scalar projections until the probe
+    is finalized.  One instance is scoped to one resident streamed layer.
+    """
+
+    def __init__(
+        self,
+        modules: Mapping[str, nn.Linear],
+        contracts_by_qname_format: Mapping[str, Mapping[str, object]],
+        delta_weights: Mapping[tuple[str, str], torch.Tensor],
+        *,
+        roles_by_qname: Mapping[str, str] | None = None,
+    ) -> None:
+        self.modules = dict(modules)
+        self.contracts_by_qname_format = {
+            str(name): dict(rows)
+            for name, rows in contracts_by_qname_format.items()
+        }
+        self.delta_weights = delta_weights
+        self.roles_by_qname = dict(roles_by_qname or {})
+        self._handles: list[object] = []
+        self._in_probe = False
+        self._activation_signed: dict[tuple[str, str], torch.Tensor] = {}
+        self._mixed_signed: dict[tuple[str, str], torch.Tensor] = {}
+        self._forward_calls: dict[str, int] = {}
+        self._backward_calls: dict[str, int] = {}
+        self.telemetry = {
+            "schema": "prismaquant.aura.served_operator_projection.v1",
+            "persistent_cache_entries": 0,
+            "cpu_fallbacks": 0,
+            "qdq_calls": 0,
+            "operator_gemms": 0,
+        }
+        module_owners: dict[int, str] = {}
+        for name, module in self.modules.items():
+            if not isinstance(module, nn.Linear):
+                raise TypeError(f"served-operator target {name} is not Linear")
+            prior = module_owners.setdefault(id(module), name)
+            if prior != name:
+                raise RuntimeError(
+                    "served-operator projection refuses aliased qnames "
+                    f"{prior!r} and {name!r} for one live Linear"
+                )
+            rows = self.contracts_by_qname_format.get(name)
+            if rows is None:
+                raise RuntimeError(
+                    f"served-operator contracts do not cover {name}"
+                )
+            expected = {
+                fmt for qname, fmt in delta_weights if qname == name
+            }
+            unexpected = sorted(set(rows) - expected)
+            missing = sorted(expected - set(rows))
+            if unexpected:
+                raise RuntimeError(
+                    f"served-operator contracts contain unrendered formats "
+                    f"for {name}: {unexpected}"
+                )
+            if missing:
+                raise RuntimeError(
+                    f"served-operator contracts miss rendered formats for "
+                    f"{name}: {missing}"
+                )
+
+    @staticmethod
+    def _receipt_digest(contract, *, qname: str, fmt: str) -> str:
+        digest = str(getattr(contract, "receipt_digest", ""))
+        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise RuntimeError(
+                f"served-operator contract for {qname}@{fmt} has no canonical "
+                "receipt_digest"
+            )
+        return digest
+
+    def _activation_for_format(
+        self,
+        name: str,
+        fmt: str,
+    ) -> torch.Tensor | None:
+        contract = self.contracts_by_qname_format[name][fmt]
+        if bool(getattr(contract, "is_identity", False)):
+            return None
+        digest = self._receipt_digest(contract, qname=name, fmt=fmt)
+        return self._activation_signed.get((name, digest))
+
+    def __enter__(self) -> "AuraServedOperatorProjectionLease":
+        if self._handles:
+            raise RuntimeError("served-operator projection lease entered twice")
+        for name, module in self.modules.items():
+            if all(
+                bool(getattr(contract, "is_identity", False))
+                for contract in self.contracts_by_qname_format[name].values()
+            ):
+                continue
+            self._handles.append(
+                module.register_forward_hook(
+                    self._make_forward_hook(name), with_kwargs=True
+                )
+            )
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+        self._in_probe = False
+
+    def begin_probe(self) -> None:
+        if self._in_probe:
+            raise RuntimeError("served-operator probe already active")
+        self._activation_signed.clear()
+        self._mixed_signed.clear()
+        self._forward_calls.clear()
+        self._backward_calls.clear()
+        self._in_probe = True
+
+    def _make_forward_hook(self, name: str):
+        def _forward_hook(_module, args, kwargs, output):
+            if not self._in_probe:
+                raise RuntimeError(
+                    f"served-operator hook for {name} fired outside a probe"
+                )
+            _where, _key, x = _first_tensor_location(args, kwargs)
+            if not isinstance(x, torch.Tensor):
+                raise RuntimeError(
+                    f"served-operator Linear {name} received no Tensor input"
+                )
+            if not isinstance(output, torch.Tensor):
+                raise RuntimeError(
+                    f"served-operator Linear {name} returned a non-Tensor"
+                )
+            self._forward_calls[name] = self._forward_calls.get(name, 0) + 1
+
+            def _output_gradient_hook(output_gradient: torch.Tensor):
+                self._backward_calls[name] = (
+                    self._backward_calls.get(name, 0) + 1
+                )
+                by_receipt: dict[str, tuple[object, list[str]]] = {}
+                for fmt, contract in self.contracts_by_qname_format[
+                    name
+                ].items():
+                    if bool(getattr(contract, "is_identity", False)):
+                        continue
+                    digest = self._receipt_digest(
+                        contract, qname=name, fmt=fmt
+                    )
+                    row = by_receipt.get(digest)
+                    if row is None:
+                        by_receipt[digest] = (contract, [fmt])
+                    else:
+                        prior_contract, formats = row
+                        if getattr(prior_contract, "receipt", None) != getattr(
+                            contract, "receipt", None
+                        ):
+                            raise RuntimeError(
+                                "served-operator receipt digest collision for "
+                                f"{name}@{fmt}"
+                            )
+                        formats.append(fmt)
+                for digest, (contract, formats) in by_receipt.items():
+                    deltas = {
+                        fmt: self.delta_weights[(name, fmt)]
+                        for fmt in formats
+                        if (name, fmt) in self.delta_weights
+                    }
+                    if len(deltas) != len(formats):
+                        missing = sorted(set(formats) - set(deltas))
+                        raise RuntimeError(
+                            f"served-operator projection lacks dW for "
+                            f"{name}: {missing}"
+                        )
+                    activation, mixed = _aura_served_operator_signed_terms(
+                        x,
+                        output_gradient,
+                        self.modules[name].weight,
+                        deltas,
+                        contract,
+                        qname=name,
+                        role=self.roles_by_qname.get(name),
+                    )
+                    akey = (name, digest)
+                    prior_a = self._activation_signed.get(akey)
+                    self._activation_signed[akey] = (
+                        activation if prior_a is None else prior_a + activation
+                    )
+                    for fmt, value in mixed.items():
+                        key = (name, fmt)
+                        prior = self._mixed_signed.get(key)
+                        self._mixed_signed[key] = (
+                            value if prior is None else prior + value
+                        )
+                    self.telemetry["qdq_calls"] += 1
+                    self.telemetry["operator_gemms"] += 1
+                return output_gradient
+
+            output.register_hook(_output_gradient_hook)
+            return output
+
+        return _forward_hook
+
+    def finish_probe(
+        self,
+    ) -> tuple[
+        dict[tuple[str, str], torch.Tensor],
+        dict[tuple[str, str], torch.Tensor],
+    ]:
+        if not self._in_probe:
+            raise RuntimeError("served-operator probe is not active")
+        # An output that does not participate in the loss has G=0 exactly;
+        # its output hook correctly does not run.  Report the count but do not
+        # fabricate a nonzero term.
+        self.telemetry["zero_cotangent_forward_calls"] = sum(
+            self._forward_calls.get(name, 0)
+            - self._backward_calls.get(name, 0)
+            for name in self._forward_calls
+        )
+        self._in_probe = False
+        return dict(self._activation_signed), dict(self._mixed_signed)
+
+    def signed_terms_for_format(
+        self,
+        name: str,
+        fmt: str,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """Return summed activation-only and mixed terms for one candidate."""
+        if self._in_probe:
+            raise RuntimeError(
+                "served-operator signed terms are incomplete during a probe"
+            )
+        if name not in self.contracts_by_qname_format or fmt not in (
+            self.contracts_by_qname_format[name]
+        ):
+            raise KeyError((name, fmt))
+        return self._activation_for_format(name, fmt), self._mixed_signed.get(
+            (name, fmt)
+        )
+
+
 class PerturbedActivationCache:
     def __init__(
         self,

@@ -65,9 +65,19 @@ from prismaquant.routed_experts import (
 )
 
 SCHEMA = "prismaquant.aura_cost.v1"
+SERVED_OPERATOR_SCHEMA = "prismaquant.aura_cost.served_operator.v2"
 AURA_CHECKPOINT_IDENTITY_SCHEMA = "prismaquant.aura_checkpoint.identity.v1"
 AURA_CHECKPOINT_MANIFEST_SCHEMA = "prismaquant.aura_checkpoint.manifest.v1"
 AURA_CHECKPOINT_UNIT_SCHEMA = "prismaquant.aura_checkpoint.unit.v1"
+AURA_SERVED_OPERATOR_CHECKPOINT_IDENTITY_SCHEMA = (
+    "prismaquant.aura_checkpoint.served_operator.identity.v2"
+)
+AURA_SERVED_OPERATOR_CHECKPOINT_MANIFEST_SCHEMA = (
+    "prismaquant.aura_checkpoint.served_operator.manifest.v2"
+)
+AURA_SERVED_OPERATOR_CHECKPOINT_UNIT_SCHEMA = (
+    "prismaquant.aura_checkpoint.served_operator.unit.v2"
+)
 AURA_PRODUCTION_ANCHOR_DELTA_CONSUMER_IDENTITY = {
     "schema": "prismaquant.aura.production_anchor_delta_consumer.v1",
     "canonical_input": "production_weight_cache_canonical_cpu_tensor",
@@ -198,13 +208,15 @@ def _write_aura_checkpoint_manifest(
     checkpoint_dir: Path,
     identity: Mapping[str, object],
     names: Sequence[str],
+    *,
+    manifest_schema: str = AURA_CHECKPOINT_MANIFEST_SCHEMA,
 ) -> str:
     identity_sha256 = _canonical_json_sha256(
         identity,
         where="AURA checkpoint identity",
     )
     manifest = {
-        "schema": AURA_CHECKPOINT_MANIFEST_SCHEMA,
+        "schema": str(manifest_schema),
         "identity_sha256": identity_sha256,
         "identity": dict(identity),
         "units": [
@@ -233,6 +245,8 @@ def _write_aura_checkpoint_manifest(
 def _load_aura_checkpoint_manifest(
     checkpoint_dir: Path,
     expected_identity: Mapping[str, object],
+    *,
+    manifest_schema: str = AURA_CHECKPOINT_MANIFEST_SCHEMA,
 ) -> str:
     path = checkpoint_dir / "manifest.json"
     try:
@@ -250,11 +264,11 @@ def _load_aura_checkpoint_manifest(
             stored=manifest,
             expected="<object>",
         )
-    if manifest.get("schema") != AURA_CHECKPOINT_MANIFEST_SCHEMA:
+    if manifest.get("schema") != manifest_schema:
         _raise_checkpoint_identity_mismatch(
             field="manifest.schema",
             stored=manifest.get("schema"),
-            expected=AURA_CHECKPOINT_MANIFEST_SCHEMA,
+            expected=manifest_schema,
         )
     stored_identity = manifest.get("identity")
     from prismaquant.production_weight_cache import first_identity_difference
@@ -286,10 +300,11 @@ def _write_aura_unit_checkpoint(
     qname: str,
     identity_sha256: str,
     state: Mapping[str, object],
+    unit_schema: str = AURA_CHECKPOINT_UNIT_SCHEMA,
 ) -> None:
     state_bytes = pickle.dumps(dict(state), protocol=pickle.HIGHEST_PROTOCOL)
     envelope = {
-        "schema": AURA_CHECKPOINT_UNIT_SCHEMA,
+        "schema": str(unit_schema),
         "qname": str(qname),
         "identity_sha256": str(identity_sha256),
         "payload_sha256": hashlib.sha256(state_bytes).hexdigest(),
@@ -307,6 +322,7 @@ def _load_aura_unit_checkpoint(
     *,
     qname: str,
     identity_sha256: str,
+    unit_schema: str = AURA_CHECKPOINT_UNIT_SCHEMA,
 ) -> dict[str, object]:
     try:
         with path.open("rb") as handle:
@@ -322,7 +338,7 @@ def _load_aura_unit_checkpoint(
             "refusing reuse or recompute"
         )
     for field, expected in (
-        ("schema", AURA_CHECKPOINT_UNIT_SCHEMA),
+        ("schema", str(unit_schema)),
         ("qname", str(qname)),
         ("identity_sha256", str(identity_sha256)),
     ):
@@ -365,6 +381,8 @@ def _prepare_aura_checkpoints(
     resume: bool,
     identity: Mapping[str, object],
     names: Sequence[str],
+    manifest_schema: str = AURA_CHECKPOINT_MANIFEST_SCHEMA,
+    unit_schema: str = AURA_CHECKPOINT_UNIT_SCHEMA,
 ) -> tuple[Path, str, dict[str, dict[str, object]]]:
     root = Path(checkpoint_dir)
     if root.exists() and not root.is_dir():
@@ -377,7 +395,11 @@ def _prepare_aura_checkpoints(
                 f"AURA checkpoint manifest already exists at {manifest_path}; "
                 "pass --resume to validate and reuse it"
             )
-        identity_sha256 = _load_aura_checkpoint_manifest(root, identity)
+        identity_sha256 = _load_aura_checkpoint_manifest(
+            root,
+            identity,
+            manifest_schema=manifest_schema,
+        )
     else:
         existing_units = sorted((root / "units").glob("*.pkl"))
         if existing_units:
@@ -389,6 +411,7 @@ def _prepare_aura_checkpoints(
             root,
             identity,
             names,
+            manifest_schema=manifest_schema,
         )
 
     expected_paths = {
@@ -413,6 +436,7 @@ def _prepare_aura_checkpoints(
             path,
             qname=name,
             identity_sha256=identity_sha256,
+            unit_schema=unit_schema,
         )
     return root, identity_sha256, completed
 
@@ -1858,6 +1882,9 @@ def compute_aura_cost_streamed(
     anchor_renderer: object | None = None,
     include_routed_experts: bool = False,
     diagnostic_weight_mse_pairs: Sequence[tuple[str, str]] | None = None,
+    activation_operator_contracts: Mapping[
+        str, Mapping[str, object]
+    ] | None = None,
     profile=None,
 ) -> dict:
     """Layer-streamed KL-adjoint with identity-bound per-Linear shards.
@@ -1868,7 +1895,9 @@ def compute_aura_cost_streamed(
     unloads the layer.  Thus source weights, gradients, and rendered deltas
     are bounded by one decoder layer; no autograd graph can retain the whole
     model.  The resident :func:`compute_aura_cost` path is deliberately
-    unchanged.
+    unchanged.  ``activation_operator_contracts`` opts into the v2 served-
+    operator currency.  It must cover every rendered ``(qname, format)`` with
+    a typed, receipt-bound route; omitting it preserves v1 bit-for-bit.
     """
     if n_probes < 1:
         raise ValueError(f"n_probes must be >= 1, got {n_probes!r}")
@@ -2006,6 +2035,86 @@ def compute_aura_cost_streamed(
         fmt for name in names for fmt in render_formats[name]
     ))
 
+    served_operator_mode = activation_operator_contracts is not None
+    served_contracts: dict[str, dict[str, object]] = {}
+    if served_operator_mode:
+        raw_contracts = activation_operator_contracts
+        assert raw_contracts is not None
+        unexpected_names = sorted(set(raw_contracts) - set(names))
+        if unexpected_names:
+            raise ValueError(
+                "served-operator contracts contain unknown qnames; "
+                f"sample={unexpected_names[:8]}"
+            )
+        for name in names:
+            raw_rows = raw_contracts.get(name)
+            if not isinstance(raw_rows, Mapping):
+                raise ValueError(
+                    f"served-operator contracts do not cover {name}"
+                )
+            rows: dict[str, object] = {}
+            for raw_fmt, contract in raw_rows.items():
+                fmt = fr.canonical_format_name(raw_fmt)
+                if fmt in rows:
+                    raise ValueError(
+                        f"served-operator contracts duplicate {name}@{fmt}"
+                    )
+                rows[fmt] = contract
+            expected = set(render_formats[name])
+            if set(rows) != expected:
+                raise ValueError(
+                    f"served-operator contract plan differs for {name}: "
+                    f"missing={sorted(expected - set(rows))} "
+                    f"unexpected={sorted(set(rows) - expected)}"
+                )
+            for fmt, contract in rows.items():
+                receipt = getattr(contract, "receipt", None)
+                receipt_digest = str(
+                    getattr(contract, "receipt_digest", "")
+                )
+                activation_receipt = getattr(
+                    contract, "activation_contract_receipt", None
+                )
+                activation_digest = str(getattr(
+                    contract, "activation_contract_receipt_digest", ""
+                ))
+                if not isinstance(receipt, Mapping):
+                    raise ValueError(
+                        f"served-operator contract for {name}@{fmt} has no "
+                        "typed receipt"
+                    )
+                if re.fullmatch(r"[0-9a-f]{64}", receipt_digest) is None:
+                    raise ValueError(
+                        f"served-operator contract for {name}@{fmt} has no "
+                        "canonical receipt digest"
+                    )
+                if not isinstance(activation_receipt, Mapping) or re.fullmatch(
+                    r"[0-9a-f]{64}", activation_digest
+                ) is None:
+                    raise ValueError(
+                        f"served-operator contract for {name}@{fmt} has no "
+                        "canonical activation-contract receipt"
+                    )
+                # Validate JSON value-identity now, before any model or GPU
+                # work. The resolver supplies the digest; recomputing it here
+                # prevents an injected object from aliasing two semantics.
+                if _canonical_json_sha256(
+                    receipt, where=f"served-operator receipt {name}@{fmt}"
+                ) != receipt_digest:
+                    raise ValueError(
+                        f"served-operator receipt digest differs for "
+                        f"{name}@{fmt}"
+                    )
+                if _canonical_json_sha256(
+                    activation_receipt,
+                    where=f"activation-contract receipt {name}@{fmt}",
+                ) != activation_digest:
+                    raise ValueError(
+                        f"activation-contract receipt digest differs for "
+                        f"{name}@{fmt}"
+                    )
+            served_contracts[name] = rows
+
     anchor_identity: Mapping[str, object] | None = None
     if anchor_renderer is not None:
         if production_cache is not None:
@@ -2129,6 +2238,10 @@ def compute_aura_cost_streamed(
     g_trace: dict[str, float] = {}
     col_energy: dict[str, torch.Tensor] = {}
     weight_mse_diagnostic: dict[tuple[str, str], float] = {}
+    signed_total_probe: dict[tuple[str, str], list[float]] = {}
+    signed_weight_probe: dict[tuple[str, str], list[float]] = {}
+    signed_activation_probe: dict[tuple[str, str], list[float]] = {}
+    signed_mixed_probe: dict[tuple[str, str], list[float]] = {}
     source_weight_identity: dict[str, dict[str, object]] = {}
     completed_checkpoint_units: set[str] = set()
     checkpoint_root: Path | None = None
@@ -2162,6 +2275,8 @@ def compute_aura_cost_streamed(
             "streamed_gradient_harvest",
             "streamed_cotangent_rollover",
             "streamed_boundary_release",
+            "served_operator_contracts_by_qname_format",
+            "served_operator_currency_schema",
         } & set(extra)
         if reserved:
             raise ValueError(
@@ -2185,6 +2300,27 @@ def compute_aura_cost_streamed(
         )
         extra["streamed_cotangent_rollover"] = "in_place_per_probe"
         extra["streamed_boundary_release"] = "progressive_reverse"
+        if served_operator_mode:
+            extra["served_operator_currency_schema"] = SERVED_OPERATOR_SCHEMA
+            extra["served_operator_contracts_by_qname_format"] = {
+                name: {
+                    fmt: {
+                        "receipt": dict(getattr(contract, "receipt")),
+                        "receipt_digest": str(getattr(
+                            contract, "receipt_digest"
+                        )),
+                        "activation_contract_receipt": dict(getattr(
+                            contract, "activation_contract_receipt"
+                        )),
+                        "activation_contract_receipt_digest": str(getattr(
+                            contract,
+                            "activation_contract_receipt_digest",
+                        )),
+                    }
+                    for fmt, contract in sorted(served_contracts[name].items())
+                }
+                for name in sorted(served_contracts)
+            }
         if anchor_identity is not None:
             extra["production_anchor_renderer"] = dict(anchor_identity)
         identity = _build_aura_checkpoint_identity(
@@ -2210,12 +2346,26 @@ def compute_aura_cost_streamed(
             git_commit=checkpoint_git_commit,
             extra_identity=extra,
         )
+        if served_operator_mode:
+            identity["schema"] = (
+                AURA_SERVED_OPERATOR_CHECKPOINT_IDENTITY_SCHEMA
+            )
         checkpoint_root, checkpoint_identity_sha256, completed_states = (
             _prepare_aura_checkpoints(
                 checkpoint_dir,
                 resume=resume,
                 identity=identity,
                 names=names,
+                manifest_schema=(
+                    AURA_SERVED_OPERATOR_CHECKPOINT_MANIFEST_SCHEMA
+                    if served_operator_mode
+                    else AURA_CHECKPOINT_MANIFEST_SCHEMA
+                ),
+                unit_schema=(
+                    AURA_SERVED_OPERATOR_CHECKPOINT_UNIT_SCHEMA
+                    if served_operator_mode
+                    else AURA_CHECKPOINT_UNIT_SCHEMA
+                ),
             )
         )
         for name in names:
