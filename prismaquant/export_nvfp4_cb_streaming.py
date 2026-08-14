@@ -121,7 +121,15 @@ from prismaquant.export_output_safety import (
 from prismaquant.dspark_source_metadata import (
     apply_dspark_overlay_to_model_config,
     apply_dspark_overlay_to_quant_config,
+    build_dspark_target_bridge,
     discover_dspark_source_overlay,
+    dspark_cb_construction_target_for_physical_output,
+    dspark_cb_expected_physical_targets,
+    dspark_cb_physical_output_for_recipe_target,
+    dspark_cb_physical_output_for_construction_target,
+    dspark_cb_physical_source_for_recipe_target,
+    dspark_cb_source_passthrough_mapping,
+    dspark_construction_unit_for_physical_target,
 )
 from prismaquant.nvfp4_cb_footprint import (
     CBSerializationContext,
@@ -1266,6 +1274,100 @@ def _plan_expert_stacks(skeleton: _LazySkeleton, profile=None) -> dict[str, dict
     return experts
 
 
+_DSPARK_CB_EXPERT_WEIGHT_RE = re.compile(
+    r"^(mtp[.](?P<stage>\d+)[.]ffn[.]experts)[.]"
+    r"(?P<expert>\d+)[.](?P<projection>w1|w2|w3)[.]weight$"
+)
+_DSPARK_CB_EXPERT_RECIPE_PROJECTION = {
+    "w1": "gate_proj",
+    "w3": "up_proj",
+    "w2": "down_proj",
+}
+
+
+def _plan_dspark_cb_expert_stacks(
+    skeleton: _LazySkeleton,
+    source_config: dict,
+) -> dict[str, dict[str, dict[int, str]]]:
+    """Plan physical ``mtp.*`` experts for a Gridbook DSpark sidecar.
+
+    The ordinary DeepSeek profile intentionally drops MTP from its body/probe
+    namespace, so the generic expert planner cannot see these tensors.  This
+    adapter keeps the allocator/encoder vocabulary (``gate/up/down_proj``)
+    while binding each member to the released checkpoint's physical
+    ``w1/w3/w2`` base.  The closed DSpark source-layout validator runs before
+    this helper; the assertions here protect the exporter-specific grouping
+    from ever becoming partial or reordered.
+    """
+
+    try:
+        n_experts = int(source_config["n_routed_experts"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "DSpark CB sidecar requires integer n_routed_experts"
+        ) from exc
+    if n_experts <= 0:
+        raise ValueError(
+            "DSpark CB sidecar requires positive n_routed_experts"
+        )
+
+    groups: dict[str, dict[str, dict[int, str]]] = {}
+    for name in skeleton.keys():
+        match = _DSPARK_CB_EXPERT_WEIGHT_RE.fullmatch(str(name))
+        if match is None:
+            continue
+        prefix = match.group(1)
+        expert_id = int(match.group("expert"))
+        source_projection = match.group("projection")
+        recipe_projection = _DSPARK_CB_EXPERT_RECIPE_PROJECTION[
+            source_projection
+        ]
+        recipe_target = f"{prefix}.{expert_id}.{recipe_projection}"
+        physical_base = str(name)[: -len(".weight")]
+        resolved = dspark_cb_physical_source_for_recipe_target(
+            recipe_target, source_config
+        )
+        if resolved != physical_base:
+            raise AssertionError(
+                f"{recipe_target}: DSpark source planner resolved {resolved!r} "
+                f"instead of checkpoint base {physical_base!r}"
+            )
+        projection_members = groups.setdefault(prefix, {}).setdefault(
+            recipe_projection, {}
+        )
+        if expert_id in projection_members:
+            raise ValueError(
+                f"{recipe_target}: duplicate DSpark expert source member"
+            )
+        projection_members[expert_id] = physical_base
+
+    expected_stages = {0, 1, 2}
+    observed_stages = {
+        int(prefix.split(".", 2)[1]) for prefix in groups
+    }
+    if observed_stages != expected_stages:
+        raise ValueError(
+            "DSpark CB expert planner requires exactly physical stages "
+            f"{sorted(expected_stages)}, got {sorted(observed_stages)}"
+        )
+    expected_ids = list(range(n_experts))
+    expected_projections = set(_DSPARK_CB_EXPERT_RECIPE_PROJECTION.values())
+    for prefix, projections in sorted(groups.items()):
+        if set(projections) != expected_projections:
+            raise ValueError(
+                f"{prefix}: DSpark CB expert projections must be "
+                f"{sorted(expected_projections)}, got {sorted(projections)}"
+            )
+        for projection, members in sorted(projections.items()):
+            if sorted(members) != expected_ids:
+                raise ValueError(
+                    f"{prefix}.{projection}: DSpark CB expert ids must be "
+                    f"contiguous 0..{n_experts - 1}, got "
+                    f"{sorted(members)[:8]}"
+                )
+    return groups
+
+
 def _checkpoint_to_live_base(weight_key: str, profile) -> str | None:
     """Checkpoint ``<base>.weight`` key -> live module base, or None."""
     if profile is None:
@@ -2295,6 +2397,7 @@ def export_nvfp4_cb_streaming(
     per_expert_config_path: str | Path | None = None,
     warm_state_dir: str | Path | None = None,
     warm_verify_sample: int = 32,
+    dspark_cb_sidecar: bool = False,
 ) -> dict[str, int]:
     """Streaming counterpart of :func:`export_nvfp4_cb.export_nvfp4_cb`. Same
     signature + container; peak residency ~= one source tensor + codebooks.
@@ -2327,6 +2430,15 @@ def export_nvfp4_cb_streaming(
     ``per_expert_config_path`` enables the proposed split-stack producer ABI.
     It is a flat qname-to-format mapping; routed expert rows override the base
     layer config while all ordinary rows continue to come from that config.
+
+    ``dspark_cb_sidecar`` is the explicit DeepSeek-V4 DSpark draft producer.
+    It accepts the closed three-stage ``mtp.*`` source payload, keeps emitted
+    tensors in that physical checkpoint namespace, and writes Gridbook config
+    targets in vLLM's construction namespace
+    (``model.layers.{num_hidden_layers + stage}.*``).  The ordinary source-
+    passthrough overlay and this quantized sidecar mode are mutually exclusive.
+    A separate ``/draft`` artifact is emitted; the target artifact is never
+    rewritten or linked into the draft.
     """
     model_dir = Path(model_dir)
     out_dir = Path(out_dir)
@@ -2384,11 +2496,6 @@ def export_nvfp4_cb_streaming(
         )
 
     assignment = load_assignment(layer_config_path)
-    # Preserve the allocator's expanded, per-Linear namespace for independent
-    # release-route replay.  The serializer below collapses routed experts to
-    # physical stacks, which is correct for bytes but cannot replace the
-    # certified serving-unit member ledger.
-    finalized_tensor_formats = dict(assignment)
     _recipe_payload = json.loads(Path(layer_config_path).read_text())
     _recipe_cb_context_stamp, _recipe_cb_tensor_stamps = (
         cb_serialization_metadata_from_assignment_payload(_recipe_payload)
@@ -2439,8 +2546,62 @@ def export_nvfp4_cb_streaming(
     discovered_dspark_source_overlay = discover_dspark_source_overlay(
         skeleton, source_config
     )
+    dspark_hybrid_source_mapping: dict[str, str] = {}
+    if dspark_cb_sidecar:
+        if discovered_dspark_source_overlay is None:
+            raise ValueError(
+                "--dspark-cb-sidecar requires the validated released "
+                "DeepSeek-V4 three-stage mtp.* source payload"
+            )
+        if subset_prefixes != ["mtp."]:
+            raise ValueError(
+                "--dspark-cb-sidecar requires exactly --subset-prefix mtp.; "
+                "a draft sidecar must contain all and only the atomic mtp.* "
+                "checkpoint namespace"
+            )
+        dspark_hybrid_source_mapping = dspark_cb_source_passthrough_mapping(
+            source_config
+        )
+        for physical_source in dspark_hybrid_source_mapping:
+            source_format = (
+                discovered_dspark_source_overlay.physical_targets.get(
+                    physical_source
+                )
+            )
+            if source_format != _FP8_BLOCK_UE8M0_FORMAT:
+                raise ValueError(
+                    f"validated DSpark source has no "
+                    f"{_FP8_BLOCK_UE8M0_FORMAT} contract for "
+                    f"{physical_source}"
+                )
+            prior_format = assignment.get(physical_source)
+            if physical_source == "mtp.0.main_proj":
+                if prior_format not in (None, source_format):
+                    raise ValueError(
+                        f"{physical_source}: DSpark glue must remain "
+                        f"{source_format}, got {prior_format!r}"
+                    )
+                # main_proj is not allocator-owned, so make its immutable
+                # source route explicit here.
+                assignment[physical_source] = source_format
+            elif prior_format != source_format:
+                raise ValueError(
+                    f"{physical_source}: grouped-BMM wo_a must be explicitly "
+                    f"assigned {source_format}; CB Linear has no grouped-BMM "
+                    f"semantics, got {prior_format!r}"
+                )
+
+    # Preserve the allocator's expanded, per-Linear namespace for independent
+    # release-route replay.  The serializer below collapses routed experts to
+    # physical stacks, which is correct for bytes but cannot replace the
+    # certified serving-unit member ledger.
+    finalized_tensor_formats = dict(assignment)
     dspark_source_overlay = discovered_dspark_source_overlay
-    expert_groups = _plan_expert_stacks(skeleton, profile)
+    expert_groups = (
+        _plan_dspark_cb_expert_stacks(skeleton, source_config)
+        if dspark_cb_sidecar
+        else _plan_expert_stacks(skeleton, profile)
+    )
     # The allocator writes its layer_config EXPANDED per tensor even though it
     # decided each expert group atomically, so a per-expert checkpoint arrives
     # as one entry per (expert, projection). Gridbook only names stacks. Do the
@@ -2479,6 +2640,11 @@ def export_nvfp4_cb_streaming(
         assignment=assignment,
         profile=profile,
     )
+    if dspark_cb_sidecar and excluded_namespaces:
+        raise ValueError(
+            "--dspark-cb-sidecar does not permit namespace exclusions; the "
+            "three-stage draft payload is atomic"
+        )
     if dspark_source_overlay is not None:
         mtp_names = {
             name for name in skeleton.keys() if str(name).startswith("mtp.")
@@ -2519,9 +2685,16 @@ def export_nvfp4_cb_streaming(
                 "tensors would be omitted. Exclude the whole `mtp.` "
                 "namespace for a body-only artifact or keep all three stages."
             )
+    if dspark_cb_sidecar:
+        # Discovery above remains the authoritative closed source-layout gate,
+        # but the ordinary overlay would re-declare every decoder tensor as
+        # source passthrough after we just encoded it.  Quantized DSpark mode
+        # owns those targets through CB config groups instead.
+        dspark_source_overlay = None
     dspark_body_only = (
         discovered_dspark_source_overlay is not None
         and dspark_source_overlay is None
+        and not dspark_cb_sidecar
     )
     if expert_stack_members:
         col_weights = _packed_expert_col_weights(
@@ -2600,6 +2773,15 @@ def export_nvfp4_cb_streaming(
     }
 
     def _base_name(qname: str) -> str:
+        if dspark_cb_sidecar:
+            # Serialized draft tensors always keep their physical checkpoint
+            # identity.  Config-group targets are mapped separately below;
+            # conflating the two names is the original three-namespace bug.
+            if qname == "mtp.0.main_proj":
+                return qname
+            return dspark_cb_physical_output_for_recipe_target(
+                qname, source_config
+            )
         plan = _per_expert_plan_by_target.get(qname)
         if plan is not None:
             parent = _export_base_name(
@@ -2669,6 +2851,33 @@ def export_nvfp4_cb_streaming(
             f"native family {sorted(STREAMING_REQUANT_EXPORT_FORMATS)} + BF16 "
             f"only; unsupported rung(s) {sorted({f for _, f in illegal})} — "
             "assign a legal format or use the in-memory export_nvfp4_cb.")
+    if dspark_cb_sidecar:
+        expected_native_source_targets = set(dspark_hybrid_source_mapping)
+        unexpected_routes = {
+            "fp8_source": sorted(source_targets),
+            "native_source": sorted(
+                qname for qname in native_source_targets
+                if qname not in expected_native_source_targets
+            ),
+            "stock_ct": sorted(stock_targets),
+            "requant_native": sorted(requant_targets),
+        }
+        unexpected_routes = {
+            lane: names for lane, names in unexpected_routes.items() if names
+        }
+        missing_or_wrong_sources = {
+            target: native_source_targets.get(target)
+            for target in sorted(expected_native_source_targets)
+            if native_source_targets.get(target) != _FP8_BLOCK_UE8M0_FORMAT
+        }
+        if unexpected_routes or missing_or_wrong_sources:
+            raise ValueError(
+                "DSpark CB sidecar permits exactly 27 physical CB decoder "
+                "targets plus four immutable W8A16 source bases (main_proj "
+                "and one grouped-BMM wo_a per stage); unexpected routes="
+                f"{unexpected_routes}, missing_or_wrong_sources="
+                f"{missing_or_wrong_sources}"
+            )
 
     # --- ROUTE-PENDING SHIP GATE. A passthrough rung whose serve route has not
     # been validated stays ON the allocator's menu deliberately: an allocation
@@ -4023,6 +4232,14 @@ def export_nvfp4_cb_streaming(
     resolved_source_scale_keys = {
         entry[1] for entry in skeleton._fp8_scale_inv_map.values()
     }
+    _verbatim_prefix_reader = getattr(
+        profile, "source_passthrough_prefixes", None
+    )
+    source_verbatim_prefixes = (
+        tuple(_verbatim_prefix_reader())
+        if callable(_verbatim_prefix_reader)
+        else ()
+    )
     # FLOOR block-FP8: units no allocation target claimed. They ship weight AND
     # scale and get DECLARED, instead of losing their scale to the skip below
     # and being cast to bf16 under an `ignore` entry. See
@@ -4050,11 +4267,33 @@ def export_nvfp4_cb_streaming(
             continue
         if name in emitted_bases or name in consumed_expert_bases:
             continue
-        if name not in floor_fp8_scale_owner and (
-            name in resolved_source_scale_keys
-            or name.endswith(".weight_scale_inv")
-        ):
-            continue   # consumed with its fp8 weight, or an unused sidecar
+        if name not in floor_fp8_scale_owner and \
+                name in resolved_source_scale_keys:
+            # A resolved scale map says how a weight CAN be decoded; it does
+            # not say this export actually consumed that weight.  Once MTP's
+            # physical scale pairs became visible, the old global skip dropped
+            # every verbatim ``mtp.*.scale`` plane while still copying its
+            # weight.  Keep a remaining scale only when the profile explicitly
+            # owns the sibling weight through its verbatim namespace; an
+            # otherwise unallocated source unit still follows the established
+            # drop/ignore path unless the floor-FP8 declaration above claimed
+            # it.
+            weight_key = (
+                name[: -len(".scale")] + ".weight"
+                if name.endswith(".scale") else None
+            )
+            if (
+                weight_key in emitted_bases
+                or weight_key in consumed_expert_bases
+                or weight_key is None
+                or not any(
+                    weight_key.startswith(prefix)
+                    for prefix in source_verbatim_prefixes
+                )
+            ):
+                continue
+        if name.endswith(".weight_scale_inv"):
+            continue   # legacy FP8_SOURCE companions remain target-owned
         if name.endswith(".weight"):
             ckpt_qname = name[:-len(".weight")]
         elif _try_resolve_direct_packed_expert(
@@ -4170,7 +4409,12 @@ def export_nvfp4_cb_streaming(
     serialized_payload_summary = cb_payload_summary(serialized_payload)
 
     def _cb_target_name(qname: str) -> str:
-        return _base_name(qname)
+        physical = _base_name(qname)
+        if dspark_cb_sidecar:
+            return dspark_cb_construction_target_for_physical_output(
+                physical, source_config
+            )
+        return physical
 
     def _delegated_target_name(qname: str) -> str:
         return (
@@ -4190,7 +4434,24 @@ def export_nvfp4_cb_streaming(
         asked. Everything else — a dense body Linear on the UE8M0 lane — is its
         own unit.
         """
-        return _expert_group_of.get(qname, qname)
+        unit = _expert_group_of.get(qname, qname)
+        if dspark_cb_sidecar and unit in native_source_targets:
+            construction = dspark_construction_unit_for_physical_target(
+                unit,
+                num_hidden_layers=(
+                    discovered_dspark_source_overlay.num_hidden_layers
+                ),
+                n_mtp_layers=(
+                    discovered_dspark_source_overlay.n_mtp_layers
+                ),
+            )
+            if construction is None:
+                raise ValueError(
+                    f"{unit}: DSpark native source unit has no construction "
+                    "namespace mapping"
+                )
+            return construction
+        return unit
 
     def _physical_expert_module(prefix: str) -> str | None:
         """The SERIALIZED prefix K0.2 names this routed-expert group by.
@@ -4510,14 +4771,85 @@ def export_nvfp4_cb_streaming(
         include_tensor_formats=True,
         tensor_formats=finalized_tensor_formats,
     )
-    # DSpark is a metadata-only source overlay.  The ordinary copy loop above
-    # emitted its physical mtp.* weight/scale pairs byte-verbatim; now remove
-    # exactly those scale-bearing bases from `ignore`, extend the two existing
-    # source-layout groups, and declare the construction-time vLLM units.  No
-    # allocation target or tensor writer branch is changed by this step.
+    # Source DSpark is a metadata-only overlay. Quantized DSpark is a distinct
+    # producer mode: physical tensor bases stay ``mtp.*`` while the CB groups
+    # above were named in the construction namespace. Never apply the source
+    # overlay to that artifact or it would double-declare every decoder unit.
     quant_config = apply_dspark_overlay_to_quant_config(
         quant_config, dspark_source_overlay
     )
+    if dspark_cb_sidecar:
+        physical_cb_targets = sorted({_base_name(q) for q in cb_targets})
+        expected_physical_cb_targets = list(
+            dspark_cb_expected_physical_targets(source_config)
+        )
+        if physical_cb_targets != expected_physical_cb_targets:
+            raise ValueError(
+                "DSpark hybrid sidecar CB targets are not the exact 27-base "
+                "contract: missing="
+                f"{sorted(set(expected_physical_cb_targets) - set(physical_cb_targets))}, "
+                "extra="
+                f"{sorted(set(physical_cb_targets) - set(expected_physical_cb_targets))}"
+            )
+        construction_cb_targets = sorted({
+            _cb_target_name(q) for q in cb_targets
+        })
+        for construction in construction_cb_targets:
+            round_trip = dspark_cb_physical_output_for_construction_target(
+                construction, source_config
+            )
+            if round_trip not in physical_cb_targets:
+                raise AssertionError(
+                    f"DSpark construction target {construction!r} round-trips "
+                    f"to undeclared physical target {round_trip!r}"
+                )
+        bridge = build_dspark_target_bridge(
+            source_config,
+            contracted_cb_construction_targets=(
+                [
+                    dspark_cb_construction_target_for_physical_output(
+                        str(physical), source_config
+                    )
+                    for physical in activation_execution_contract[
+                        "target_names"
+                    ]
+                ]
+                if activation_execution_contract is not None else ()
+            ),
+            activation_execution_contract=activation_execution_contract,
+        )
+        if bridge is not None:
+            quant_config["dspark_target_bridge"] = bridge
+        expected_source_units = sorted(dspark_hybrid_source_mapping.values())
+        if sorted(_declared_passthrough_units) != expected_source_units:
+            raise AssertionError(
+                "DSpark hybrid source-passthrough declaration differs from "
+                f"the exact construction set: observed="
+                f"{sorted(_declared_passthrough_units)}, expected="
+                f"{expected_source_units}"
+            )
+        quant_config["provenance"]["dspark_cb_sidecar"] = {
+            "schema": "prismaquant.dspark_cb_sidecar.v1",
+            "num_hidden_layers": (
+                discovered_dspark_source_overlay.num_hidden_layers
+            ),
+            "n_mtp_layers": (
+                discovered_dspark_source_overlay.n_mtp_layers
+            ),
+            "physical_namespace": "mtp.{stage}",
+            "construction_namespace": (
+                "model.layers.{num_hidden_layers+stage}"
+            ),
+            "physical_cb_targets": physical_cb_targets,
+            "construction_cb_targets": construction_cb_targets,
+            "source_passthrough_targets": sorted(
+                dspark_hybrid_source_mapping
+            ),
+            "source_passthrough_physical_to_construction": dict(
+                sorted(dspark_hybrid_source_mapping.items())
+            ),
+            "activation_bridge_present": bridge is not None,
+        }
     _bind_source_model_identity_provenance(
         quant_config, source_model_identity
     )
@@ -4580,7 +4912,11 @@ def export_nvfp4_cb_streaming(
         "quant_method": "gridbook", "format": "nvfp4_cb",
         "config_file": "quant_config.json"}
     config = apply_dspark_overlay_to_model_config(
-        config, dspark_source_overlay
+        config,
+        (
+            discovered_dspark_source_overlay
+            if dspark_cb_sidecar else dspark_source_overlay
+        ),
     )
     if dspark_body_only:
         # A source artifact may already carry a stamp from a prior full DSpark
@@ -4649,7 +4985,7 @@ def export_nvfp4_cb_streaming(
 
     _verbatim = getattr(profile, "source_passthrough_prefixes", None)
     verbatim_prefixes = (
-        () if dspark_source_overlay is not None else
+        () if (dspark_source_overlay is not None or dspark_cb_sidecar) else
         (tuple(_verbatim()) if callable(_verbatim) else ("mtp.",))
     )
     completeness = assert_artifact_complete(
@@ -5152,6 +5488,13 @@ def main(argv=None) -> None:
                          "prefix (repeatable), e.g. 'model.layers.80.' for the "
                          "MTP sidecar; every allocation target must fall within "
                          "it. Default: whole-model passthrough.")
+    ap.add_argument(
+        "--dspark-cb-sidecar",
+        action="store_true",
+        help="emit a separate, quantized DeepSeek-V4 DSpark draft sidecar; "
+        "requires exactly --subset-prefix mtp. and the validated released "
+        "three-stage source topology",
+    )
     ap.add_argument("--reuse-prior", default=None, metavar="DIR",
                     help="reserved DELTA-EXPORT input; currently fails closed "
                          "until exact source/imatrix/codebook/exporter identity "
@@ -5208,7 +5551,8 @@ def main(argv=None) -> None:
         activation_scale_policy=args.activation_scale_policy,
         per_expert_config_path=args.per_expert_config,
         warm_state_dir=args.warm_state_dir,
-        warm_verify_sample=args.warm_verify_sample)
+        warm_verify_sample=args.warm_verify_sample,
+        dspark_cb_sidecar=args.dspark_cb_sidecar)
     size = sum(p.stat().st_size for p in Path(args.out).glob("*")) / 1e9
     print(f"wrote {args.out} ({size:.3f} GB)")
     for fmt, n in sorted(counts.items()):

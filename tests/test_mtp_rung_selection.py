@@ -16,9 +16,12 @@ import pytest
 
 from prismaquant.mtp_rung_selection import (
     AcceptancePoint,
+    DraftMemoryLedger,
+    MeasuredDraftConfiguration,
     RungPoint,
     ServeConstants,
     fit_acceptance,
+    select_measured_configuration,
     select_rung,
 )
 
@@ -264,3 +267,205 @@ def test_input_validation_fail_fast():
         AcceptancePoint(1.5, rung_name="x")  # acceptance outside [0,1]
     with pytest.raises(ValueError):
         AcceptancePoint(0.5)  # neither rung_name nor bits
+
+
+# --------------------------------------------------------------------------- #
+# Block-parallel / directly measured configuration selector
+# --------------------------------------------------------------------------- #
+def _measured(
+    name,
+    *,
+    resident,
+    cycle,
+    survival,
+    load=0.0,
+    k=5,
+    E=None,
+    measurement_id="dsv4-c1-fixed-v1",
+    scratch=0,
+):
+    return MeasuredDraftConfiguration(
+        name=name,
+        k=k,
+        resident_bytes=resident,
+        cycle_ms=cycle,
+        position_survival=survival,
+        measurement_id=measurement_id,
+        load_ms=load,
+        peak_scratch_bytes=scratch,
+        E=E,
+        measurement_source="prometheus-counter-delta",
+    )
+
+
+def _ledger(*, safety=100, mode="production"):
+    return DraftMemoryLedger(
+        usable_pool_bytes=1_000,
+        fixed_runtime_bytes=400,
+        target_kv_bytes=100,
+        draft_kv_bytes=20,
+        profiling_peak_bytes=30,
+        safety_margin_bytes=safety,
+        admission_mode=mode,
+    )
+
+
+def test_block_parallel_selector_uses_one_measured_cycle_not_k_times_cost():
+    # The larger draft accepts more positions, but its complete block cycle is
+    # slow enough that the smaller draft wins. The selector consumes cycle_ms
+    # exactly once; multiplying either value by k would be the DSpark bug.
+    small = _measured(
+        "K4", resident=100, cycle=40,
+        survival=(0.70, 0.50, 0.35, 0.20, 0.10), E=2.0,
+    )
+    large = _measured(
+        "K12", resident=200, cycle=75,
+        survival=(0.95, 0.90, 0.82, 0.73, 0.65), E=0.5,
+    )
+    result = select_measured_configuration(
+        [small, large], _ledger(safety=0), minimum_k=5
+    )
+    assert result.configuration.name == "K4"
+    expected = 1000 * (1 + sum(small.position_survival)) / small.cycle_ms
+    assert result.per_configuration["K4"][
+        "steady_state_tokens_per_second"
+    ] == pytest.approx(expected)
+
+
+def test_memory_ledger_can_relax_testing_without_changing_production_gate():
+    compact = _measured(
+        "compact", resident=200, cycle=60,
+        survival=(0.8, 0.6, 0.4, 0.2, 0.1),
+    )
+    accurate = _measured(
+        "accurate", resident=380, cycle=45,
+        survival=(0.95, 0.9, 0.8, 0.7, 0.6),
+    )
+    production = select_measured_configuration(
+        [compact, accurate], _ledger(safety=100), minimum_k=5
+    )
+    assert production.configuration.name == "compact"
+    assert production.provenance["memory"]["admission_mode"] == "production"
+    assert production.per_configuration["accurate"]["passes_memory"] is False
+
+    relaxed = select_measured_configuration(
+        [compact, accurate],
+        _ledger(safety=0, mode="test-only-relaxed"),
+        minimum_k=5,
+    )
+    assert relaxed.configuration.name == "accurate"
+    assert relaxed.provenance["memory"]["safety_margin_bytes"] == 0
+    assert relaxed.provenance["memory"]["admission_mode"] == \
+        "test-only-relaxed"
+
+
+def test_candidate_specific_peak_scratch_is_in_memory_gate():
+    steady_small_peak_large = _measured(
+        "scratchy", resident=100, scratch=260, cycle=40,
+        survival=(0.9, 0.8, 0.7, 0.6, 0.5),
+    )
+    stable = _measured(
+        "stable", resident=220, scratch=0, cycle=50,
+        survival=(0.8, 0.7, 0.6, 0.5, 0.4),
+    )
+    result = select_measured_configuration(
+        [steady_small_peak_large, stable], _ledger(safety=100), minimum_k=5
+    )
+    assert result.configuration.name == "stable"
+    assert result.per_configuration["scratchy"]["passes_memory"] is False
+
+
+def test_startup_amortization_can_choose_the_faster_loading_candidate():
+    slow_load = _measured(
+        "slow-load", resident=100, cycle=20,
+        survival=(0.8, 0.7, 0.6, 0.5, 0.4), load=10_000,
+    )
+    fast_load = _measured(
+        "fast-load", resident=100, cycle=22,
+        survival=(0.8, 0.7, 0.6, 0.5, 0.4), load=100,
+    )
+    steady = select_measured_configuration(
+        [slow_load, fast_load], _ledger(safety=0), minimum_k=5
+    )
+    assert steady.configuration.name == "slow-load"
+    short_service = select_measured_configuration(
+        [slow_load, fast_load], _ledger(safety=0),
+        expected_cycles=10, minimum_k=5,
+    )
+    assert short_service.configuration.name == "fast-load"
+    assert short_service.provenance["objective"] == \
+        "amortized_tokens_per_second"
+
+
+def test_joint_k_menu_respects_artifact_floor_and_scores_position_counters():
+    invalid_k4 = _measured(
+        "k4", resident=100, cycle=20, k=4,
+        survival=(0.9, 0.8, 0.7, 0.6),
+    )
+    valid_k5 = _measured(
+        "k5", resident=100, cycle=40, k=5,
+        survival=(0.7, 0.5, 0.3, 0.2, 0.1),
+    )
+    result = select_measured_configuration(
+        [invalid_k4, valid_k5], _ledger(safety=0), minimum_k=5
+    )
+    assert result.configuration.name == "k5"
+    assert result.per_configuration["k4"]["passes_k_floor"] is False
+    assert result.provenance["excluded"] == [
+        {"name": "k4", "reasons": ["below_k_floor"]}
+    ]
+
+
+def test_measured_selector_reports_pareto_frontier_and_json_provenance():
+    tiny = _measured(
+        "tiny", resident=100, cycle=50,
+        survival=(0.7, 0.5, 0.3, 0.2, 0.1), load=100,
+    )
+    fast = _measured(
+        "fast", resident=200, cycle=30,
+        survival=(0.8, 0.7, 0.6, 0.5, 0.4), load=200,
+    )
+    dominated = _measured(
+        "dominated", resident=250, cycle=60,
+        survival=(0.7, 0.5, 0.3, 0.2, 0.1), load=300,
+    )
+    result = select_measured_configuration(
+        [tiny, fast, dominated], _ledger(safety=0), minimum_k=5
+    )
+    assert result.pareto_frontier == ("fast", "tiny")
+    assert "dominated" not in result.pareto_frontier
+    assert json.loads(json.dumps(result.provenance))[
+        "selected_configuration"
+    ] == result.configuration.name
+
+
+def test_measured_selector_rejects_mixed_workloads_and_bad_survival():
+    good = _measured(
+        "a", resident=100, cycle=50,
+        survival=(0.8, 0.6, 0.4, 0.2, 0.1),
+    )
+    other_workload = _measured(
+        "b", resident=100, cycle=50,
+        survival=(0.8, 0.6, 0.4, 0.2, 0.1),
+        measurement_id="different",
+    )
+    with pytest.raises(ValueError, match="different measurement_id"):
+        select_measured_configuration(
+            [good, other_workload], _ledger(safety=0), minimum_k=5
+        )
+    with pytest.raises(ValueError, match="non-increasing"):
+        _measured(
+            "bad", resident=100, cycle=50,
+            survival=(0.7, 0.8, 0.4, 0.2, 0.1),
+        )
+
+
+def test_measured_selector_fails_when_no_candidate_fits():
+    candidate = _measured(
+        "too-large", resident=500, cycle=50,
+        survival=(0.8, 0.6, 0.4, 0.2, 0.1),
+    )
+    with pytest.raises(ValueError, match="no candidate passes"):
+        select_measured_configuration(
+            [candidate], _ledger(safety=100), minimum_k=5
+        )

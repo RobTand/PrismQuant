@@ -259,9 +259,11 @@ class DeepseekV4Profile(ModelProfile):
     def fp8_scale_pairs(self, model_path: str
                         ) -> dict[str, tuple[str, str]] | None:
         """DSv4 stores F8_E8M0 `.scale` siblings (not `.weight_scale_inv`).
-        Build the `{live_weight_qname: (shard_path, scale_ckpt_key)}`
-        map by pairing every `.scale` ckpt key with its `.weight`
-        sibling, then routing the weight key through `checkpoint_to_live_name`."""
+        Build the `{weight_qname: (shard_path, scale_ckpt_key)}` map by
+        pairing every `.scale` ckpt key with its `.weight` sibling. Body
+        weights route through `checkpoint_to_live_name`; deliberately
+        probe-excluded `mtp.*` weights retain their physical checkpoint key so
+        the separate DSpark sidecar producer can decode their source values."""
         import json as _json
         import os as _os
         from safetensors import safe_open as _safe_open
@@ -285,10 +287,31 @@ class DeepseekV4Profile(ModelProfile):
             base = ck_key[: -len(".scale")]
             weight_ck = base + ".weight"
             if weight_ck not in weight_keys:
+                # ``mtp.*.scale`` is exclusively the serialized scale
+                # sibling of ``mtp.*.weight``.  The body scanner keeps its
+                # historical best-effort behaviour for unrelated standalone
+                # scales, but an MTP scale without its physical weight would
+                # make the sidecar source undecodable.  Refuse that malformed
+                # namespace at map construction rather than silently dropping
+                # the only scale that can decode a native-FP8 weight later.
+                if ck_key.startswith("mtp."):
+                    raise RuntimeError(
+                        f"DeepSeek-v4 MTP scale {ck_key!r} has no serialized "
+                        f"weight sibling {weight_ck!r}"
+                    )
                 continue
             weight_live = self.checkpoint_to_live_name(weight_ck)
             if weight_live is None:
-                continue
+                # MTP intentionally stays outside the body/probe namespace:
+                # ``checkpoint_to_live_name`` must continue to drop it while
+                # ``has_mtp()`` is false.  CB sidecar source decode operates
+                # on the physical checkpoint namespace, however, so retain
+                # the canonical physical key for an otherwise valid MTP
+                # weight/scale sibling pair.
+                if weight_ck.startswith("mtp."):
+                    weight_live = weight_ck
+                else:
+                    continue
             out[weight_live] = (_os.path.join(model_path, shard), ck_key)
         return out
 

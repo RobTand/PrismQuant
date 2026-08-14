@@ -38,6 +38,7 @@ from typing import Any, Mapping, Protocol
 
 
 DSPARK_OVERLAY_SCHEMA = "prismaquant.dspark_source_overlay.v1"
+DSPARK_TARGET_BRIDGE_SCHEMA = "gridbook.dspark-target-bridge.v1"
 DSPARK_STAGE_COUNT = 3
 MXFP4_SOURCE_FORMAT = "MXFP4_SOURCE"
 FP8_BLOCK_UE8M0_SOURCE_FORMAT = "FP8_BLOCK_UE8M0_SOURCE"
@@ -47,6 +48,42 @@ _ROUTED_EXPERT_RE = re.compile(
     r"(?P<leaf>w1|w2|w3)$"
 )
 _PHYSICAL_RE = re.compile(r"^mtp\.(?P<stage>\d+)\.(?P<rest>.+)$")
+_CONSTRUCTION_RE = re.compile(
+    r"^model[.]layers[.](?P<layer>\d+)[.](?P<rest>.+)$"
+)
+_CB_EXPERT_RECIPE_RE = re.compile(
+    r"^ffn[.]experts[.](?P<expert>\d+)[.]"
+    r"(?P<projection>gate_proj|up_proj|down_proj)$"
+)
+_CB_DIRECT_OUTPUT_RE = re.compile(
+    r"^(?:attn[.](?:wq_a|wkv|wq_b|wo_a|wo_b)|"
+    r"ffn[.]shared_experts[.](?:w1|w2|w3))$"
+)
+_CB_PACKED_EXPERT_OUTPUTS = frozenset({
+    "ffn.experts.gate_up_proj",
+    "ffn.experts.down_proj",
+})
+_DSPARK_CB_HYBRID_TAILS = (
+    "attn.wkv",
+    "attn.wo_b",
+    "attn.wq_a",
+    "attn.wq_b",
+    "ffn.experts.down_proj",
+    "ffn.experts.gate_up_proj",
+    "ffn.shared_experts.w1",
+    "ffn.shared_experts.w2",
+    "ffn.shared_experts.w3",
+)
+_CB_EXPERT_SOURCE_PROJECTION = {
+    "gate_proj": "w1",
+    "up_proj": "w3",
+    "down_proj": "w2",
+}
+_CB_EXPERT_OUTPUT_PROJECTION = {
+    "gate_proj": "gate_up_proj",
+    "up_proj": "gate_up_proj",
+    "down_proj": "down_proj",
+}
 
 _FP8_REST_TO_CONSTRUCTION = {
     "attn.wq_a": "attn.fused_wqa_wkv",
@@ -137,6 +174,466 @@ def _config_is_released_dspark(config: Mapping[str, Any]) -> bool:
         and any(name == "DeepseekV4ForCausalLM" for name in architectures)
         and config.get("dspark_block_size") is not None
     )
+
+
+def _dspark_cb_topology(config: Mapping[str, Any]) -> tuple[int, int]:
+    """Return the released DSpark ``(body layers, draft stages)`` topology.
+
+    The source checkpoint predates the emitted ``n_mtp_layers`` field, so its
+    three-stage fact is recoverable from ``dspark_target_layer_ids``.  A
+    materialized sidecar carries ``n_mtp_layers`` directly.  If both spellings
+    are present they must agree; neither is guessed from observed target names.
+    """
+
+    if not isinstance(config, Mapping):
+        raise ValueError("DSpark CB namespace requires a source config object")
+
+    def integer(name: str, raw: object) -> int:
+        if isinstance(raw, bool):
+            raise ValueError(f"DSpark config {name} must be an integer")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"DSpark config {name} must be an integer"
+            ) from exc
+        if isinstance(raw, float) and not raw.is_integer():
+            raise ValueError(f"DSpark config {name} must be an integer")
+        if isinstance(raw, str) and raw.strip() != str(value):
+            raise ValueError(f"DSpark config {name} must be an integer")
+        return value
+
+    try:
+        body_layers = integer(
+            "num_hidden_layers", config["num_hidden_layers"]
+        )
+    except KeyError as exc:
+        raise ValueError(
+            "DSpark CB namespace requires num_hidden_layers"
+        ) from exc
+    if body_layers <= 0:
+        raise ValueError(
+            "DSpark config num_hidden_layers must be positive, got "
+            f"{body_layers}"
+        )
+
+    target_ids_raw = config.get("dspark_target_layer_ids")
+    target_ids: tuple[int, ...] | None = None
+    if target_ids_raw is not None:
+        if isinstance(target_ids_raw, (str, bytes)):
+            raise ValueError(
+                "DSpark config dspark_target_layer_ids must be an integer list"
+            )
+        try:
+            target_ids = tuple(
+                integer("dspark_target_layer_ids entry", raw)
+                for raw in target_ids_raw
+            )
+        except TypeError as exc:
+            raise ValueError(
+                "DSpark config dspark_target_layer_ids must be an integer list"
+            ) from exc
+        if (
+            len(target_ids) != DSPARK_STAGE_COUNT
+            or len(set(target_ids)) != DSPARK_STAGE_COUNT
+            or any(target < 0 or target >= body_layers for target in target_ids)
+        ):
+            raise ValueError(
+                "DSpark CB namespace requires exactly three distinct target "
+                f"layer ids in [0, {body_layers}); got {target_ids}"
+            )
+
+    stages_raw = config.get("n_mtp_layers")
+    if stages_raw is None:
+        if target_ids is None:
+            raise ValueError(
+                "DSpark CB namespace requires n_mtp_layers or the released "
+                "three-entry dspark_target_layer_ids"
+            )
+        stages = len(target_ids)
+    else:
+        stages = integer("n_mtp_layers", stages_raw)
+    if stages != DSPARK_STAGE_COUNT:
+        raise ValueError(
+            "DSpark CB namespace supports exactly three draft stages, got "
+            f"{stages}"
+        )
+    if target_ids is not None and len(target_ids) != stages:
+        raise ValueError(
+            "DSpark n_mtp_layers disagrees with dspark_target_layer_ids"
+        )
+    return body_layers, stages
+
+
+def _dspark_physical_parts(
+    name: str,
+    *,
+    n_mtp_layers: int,
+) -> tuple[int, str]:
+    if not isinstance(name, str):
+        raise ValueError("DSpark physical target must be a string")
+    match = _PHYSICAL_RE.fullmatch(name)
+    if match is None or any(not part for part in name.split(".")):
+        raise ValueError(
+            f"{name!r}: expected physical DSpark base mtp.{{stage}}.<tail>"
+        )
+    stage = int(match.group("stage"))
+    if not 0 <= stage < n_mtp_layers:
+        raise ValueError(
+            f"{name!r}: DSpark stage must be in [0, {n_mtp_layers})"
+        )
+    rest = match.group("rest")
+    serialized_suffixes = (
+        ".weight",
+        ".scale",
+        ".cb_qweight",
+        ".weight_scale",
+        ".weight_global_scale",
+        ".input_global_scale",
+    )
+    if rest.endswith(serialized_suffixes):
+        raise ValueError(
+            f"{name!r}: DSpark namespace helpers require a tensor base, not "
+            "a serialized tensor leaf"
+        )
+    return stage, rest
+
+
+def _dspark_cb_output_tail(rest: str, *, where: str) -> str:
+    if rest == "main_proj":
+        raise ValueError(
+            f"{where}: main_proj is DSpark glue, not a contracted CB target"
+        )
+    if _CB_DIRECT_OUTPUT_RE.fullmatch(rest) or rest in _CB_PACKED_EXPERT_OUTPUTS:
+        return rest
+    raise ValueError(
+        f"{where}: unsupported DSpark CB output tail {rest!r}"
+    )
+
+
+def dspark_cb_physical_source_for_recipe_target(
+    recipe_target: str,
+    config: Mapping[str, Any],
+) -> str:
+    """Resolve one CB recipe target to the physical source tensor base.
+
+    Dense attention and shared-expert recipes already use checkpoint spelling.
+    Routed-expert recipes use the allocator's logical projection vocabulary;
+    the released checkpoint stores those members as ``w1/w3/w2``.
+    """
+
+    _body_layers, stages = _dspark_cb_topology(config)
+    stage, rest = _dspark_physical_parts(
+        recipe_target, n_mtp_layers=stages
+    )
+    expert = _CB_EXPERT_RECIPE_RE.fullmatch(rest)
+    if expert is not None:
+        projection = _CB_EXPERT_SOURCE_PROJECTION[expert.group("projection")]
+        return (
+            f"mtp.{stage}.ffn.experts.{int(expert.group('expert'))}."
+            f"{projection}"
+        )
+    if _CB_DIRECT_OUTPUT_RE.fullmatch(rest):
+        return recipe_target
+    if rest in _CB_PACKED_EXPERT_OUTPUTS:
+        raise ValueError(
+            f"{recipe_target!r}: a packed DSpark CB output has no single "
+            "checkpoint source member"
+        )
+    _dspark_cb_output_tail(rest, where=recipe_target)
+    raise AssertionError("unreachable DSpark CB source classification")
+
+
+def dspark_cb_physical_output_for_recipe_target(
+    recipe_target: str,
+    config: Mapping[str, Any],
+) -> str:
+    """Resolve a direct/member recipe target to its physical CB output base."""
+
+    _body_layers, stages = _dspark_cb_topology(config)
+    stage, rest = _dspark_physical_parts(
+        recipe_target, n_mtp_layers=stages
+    )
+    expert = _CB_EXPERT_RECIPE_RE.fullmatch(rest)
+    if expert is not None:
+        projection = _CB_EXPERT_OUTPUT_PROJECTION[expert.group("projection")]
+        return f"mtp.{stage}.ffn.experts.{projection}"
+    _dspark_cb_output_tail(rest, where=recipe_target)
+    return recipe_target
+
+
+def dspark_cb_construction_target_for_physical_output(
+    physical_output: str,
+    config: Mapping[str, Any],
+) -> str:
+    """Map a serialized physical CB base to vLLM construction namespace."""
+
+    body_layers, stages = _dspark_cb_topology(config)
+    stage, rest = _dspark_physical_parts(
+        physical_output, n_mtp_layers=stages
+    )
+    _dspark_cb_output_tail(rest, where=physical_output)
+    return f"model.layers.{body_layers + stage}.{rest}"
+
+
+def dspark_cb_physical_output_for_construction_target(
+    construction_target: str,
+    config: Mapping[str, Any],
+) -> str:
+    """Invert the same-tail DSpark construction mapping, fail closed."""
+
+    body_layers, stages = _dspark_cb_topology(config)
+    if not isinstance(construction_target, str):
+        raise ValueError("DSpark construction target must be a string")
+    match = _CONSTRUCTION_RE.fullmatch(construction_target)
+    if match is None or any(not part for part in construction_target.split(".")):
+        raise ValueError(
+            f"{construction_target!r}: expected DSpark construction target "
+            "model.layers.{L+stage}.<tail>"
+        )
+    layer = int(match.group("layer"))
+    stage = layer - body_layers
+    if not 0 <= stage < stages:
+        raise ValueError(
+            f"{construction_target!r}: construction layer must be in "
+            f"[{body_layers}, {body_layers + stages})"
+        )
+    rest = match.group("rest")
+    _dspark_cb_output_tail(rest, where=construction_target)
+    return f"mtp.{stage}.{rest}"
+
+
+def dspark_cb_expected_physical_targets(
+    config: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return the exact hybrid sidecar CB bases in physical namespace.
+
+    DSpark ``wo_a`` is a grouped BMM, not an ordinary dense Linear.  Gridbook's
+    generic CB Linear method does not implement that algebra, so all three
+    ``wo_a`` bases remain on their released source-FP8 W8A16 route.  The CB
+    surface is consequently nine physical bases per stage (27 total for the
+    released three-stage topology).
+    """
+
+    _body_layers, stages = _dspark_cb_topology(config)
+    return tuple(sorted(
+        f"mtp.{stage}.{tail}"
+        for stage in range(stages)
+        for tail in _DSPARK_CB_HYBRID_TAILS
+    ))
+
+
+def dspark_cb_source_passthrough_mapping(
+    config: Mapping[str, Any],
+) -> dict[str, str]:
+    """Return exact physical -> construction W8A16 routes for the sidecar."""
+
+    body_layers, stages = _dspark_cb_topology(config)
+    physical = ["mtp.0.main_proj"] + [
+        f"mtp.{stage}.attn.wo_a" for stage in range(stages)
+    ]
+    mapping: dict[str, str] = {}
+    for target in sorted(physical):
+        construction = dspark_construction_unit_for_physical_target(
+            target,
+            num_hidden_layers=body_layers,
+            n_mtp_layers=stages,
+        )
+        if construction is None:
+            raise AssertionError(
+                f"internal DSpark hybrid source target has no construction "
+                f"mapping: {target}"
+            )
+        mapping[target] = construction
+    return mapping
+
+
+def _unique_string_names(raw: object, *, where: str) -> tuple[str, ...]:
+    if isinstance(raw, (str, bytes)):
+        raise ValueError(f"{where} must be a sequence of target names")
+    try:
+        values = tuple(raw)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(f"{where} must be a sequence of target names") from exc
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError(f"{where} must contain nonempty strings")
+    if len(set(values)) != len(values):
+        raise ValueError(f"{where} must not contain duplicate target names")
+    return values
+
+
+def _execution_contract_target_names(
+    execution_contract: Mapping[str, Any],
+) -> tuple[str, ...]:
+    if not isinstance(execution_contract, Mapping):
+        raise ValueError("DSpark target bridge execution contract must be an object")
+    if "target_names" not in execution_contract:
+        raise ValueError(
+            "DSpark target bridge execution contract has no target_names"
+        )
+    names = _unique_string_names(
+        execution_contract["target_names"],
+        where="execution-contract target_names",
+    )
+    try:
+        target_count = int(execution_contract["target_count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "DSpark target bridge execution contract requires target_count"
+        ) from exc
+    if target_count != len(names):
+        raise ValueError(
+            "execution-contract target_count disagrees with target_names: "
+            f"{target_count} != {len(names)}"
+        )
+    return names
+
+
+def _expected_dspark_target_bridge(
+    config: Mapping[str, Any],
+    *,
+    contracted_cb_construction_targets: object,
+    activation_execution_contract: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    construction = _unique_string_names(
+        () if contracted_cb_construction_targets is None
+        else contracted_cb_construction_targets,
+        where="contracted CB construction targets",
+    )
+    if activation_execution_contract is None:
+        if construction:
+            raise ValueError(
+                "contracted DSpark CB targets require an activation execution "
+                "contract"
+            )
+        return None
+    physical = _execution_contract_target_names(activation_execution_contract)
+    if not construction or not physical:
+        raise ValueError(
+            "DSpark target bridge must be wholly present or absent; contracted "
+            "targets and execution-contract target_names must both be nonempty"
+        )
+
+    body_layers, stages = _dspark_cb_topology(config)
+    mapping = {
+        target: dspark_cb_physical_output_for_construction_target(target, config)
+        for target in construction
+    }
+    if len(set(mapping.values())) != len(mapping):
+        raise ValueError(
+            "DSpark construction-to-physical mapping must be one-to-one"
+        )
+    physical_set = set(physical)
+    if set(mapping.values()) != physical_set:
+        raise ValueError(
+            "DSpark bridge physical values must exactly equal execution-contract "
+            "target_names: missing="
+            f"{sorted(physical_set - set(mapping.values()))[:8]}, extra="
+            f"{sorted(set(mapping.values()) - physical_set)[:8]}"
+        )
+
+    observed_stages = {
+        _dspark_physical_parts(name, n_mtp_layers=stages)[0]
+        for name in physical
+    }
+    expected_stages = set(range(stages))
+    if observed_stages != expected_stages:
+        raise ValueError(
+            "DSpark target bridge requires the complete three-stage set: "
+            f"expected={sorted(expected_stages)}, got={sorted(observed_stages)}"
+        )
+    return {
+        "schema": DSPARK_TARGET_BRIDGE_SCHEMA,
+        "num_hidden_layers": body_layers,
+        "n_mtp_layers": stages,
+        "construction_to_physical": dict(sorted(mapping.items())),
+    }
+
+
+def build_dspark_target_bridge(
+    config: Mapping[str, Any],
+    *,
+    contracted_cb_construction_targets: object = (),
+    activation_execution_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Build the optional Gridbook DSpark activation-namespace bridge.
+
+    Absence is legal only when both the contracted target set and activation
+    execution contract are absent.  A present record covers all three stages,
+    maps exact same-tail CB targets one-to-one, and never admits ``main_proj``.
+    """
+
+    return _expected_dspark_target_bridge(
+        config,
+        contracted_cb_construction_targets=contracted_cb_construction_targets,
+        activation_execution_contract=activation_execution_contract,
+    )
+
+
+def validate_dspark_target_bridge(
+    bridge: Mapping[str, Any] | None,
+    config: Mapping[str, Any],
+    *,
+    contracted_cb_construction_targets: object = (),
+    activation_execution_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Validate and canonicalize a top-level ``dspark_target_bridge`` record."""
+
+    expected = _expected_dspark_target_bridge(
+        config,
+        contracted_cb_construction_targets=contracted_cb_construction_targets,
+        activation_execution_contract=activation_execution_contract,
+    )
+    if expected is None:
+        if bridge is not None:
+            raise ValueError(
+                "dspark_target_bridge must be absent without contracted targets"
+            )
+        return None
+    if not isinstance(bridge, Mapping):
+        raise ValueError("dspark_target_bridge must be an object")
+    required = {
+        "schema",
+        "num_hidden_layers",
+        "n_mtp_layers",
+        "construction_to_physical",
+    }
+    if set(bridge) != required:
+        raise ValueError(
+            "dspark_target_bridge keys must be exactly "
+            f"{sorted(required)}, got {sorted(str(key) for key in bridge)}"
+        )
+    if bridge.get("schema") != DSPARK_TARGET_BRIDGE_SCHEMA:
+        raise ValueError(
+            "dspark_target_bridge must use schema "
+            f"{DSPARK_TARGET_BRIDGE_SCHEMA!r}"
+        )
+    mapping = bridge.get("construction_to_physical")
+    if not isinstance(mapping, Mapping):
+        raise ValueError(
+            "dspark_target_bridge.construction_to_physical must be an object"
+        )
+    if any(
+        not isinstance(key, str)
+        or not isinstance(value, str)
+        or not key
+        or not value
+        for key, value in mapping.items()
+    ):
+        raise ValueError(
+            "dspark_target_bridge construction mapping requires nonempty "
+            "string keys and values"
+        )
+    if len(set(mapping.values())) != len(mapping):
+        raise ValueError(
+            "dspark_target_bridge construction mapping must be one-to-one"
+        )
+    if dict(bridge) != expected:
+        raise ValueError(
+            "dspark_target_bridge does not exactly match the source topology, "
+            "contracted CB targets, and execution-contract target_names"
+        )
+    return expected
 
 
 def dspark_construction_unit_for_physical_target(
@@ -1215,15 +1712,22 @@ __all__ = [
     "ArtifactHeaderSkeleton",
     "DSPARK_OVERLAY_SCHEMA",
     "DSPARK_STAGE_COUNT",
+    "DSPARK_TARGET_BRIDGE_SCHEMA",
     "DSparkSourceOverlay",
     "apply_dspark_overlay_to_model_config",
     "apply_dspark_overlay_to_quant_config",
     "apply_dspark_sidecar_overlay",
+    "build_dspark_target_bridge",
     "build_dspark_sidecar_overlay",
     "discover_dspark_source_overlay",
     "discover_dspark_source_overlay_from_artifact",
+    "dspark_cb_construction_target_for_physical_output",
+    "dspark_cb_physical_output_for_construction_target",
+    "dspark_cb_physical_output_for_recipe_target",
+    "dspark_cb_physical_source_for_recipe_target",
     "dspark_construction_unit_for_physical_target",
     "parse_dspark_overlay_provenance",
+    "validate_dspark_target_bridge",
 ]
 
 

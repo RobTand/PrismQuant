@@ -11,13 +11,16 @@ resume identity contract, the content-addressed campaign/release source-snapshot
 the exact Gridbook VCS-or-wheel installed-import-origin closure, the strict Gridbook runtime-contract-v3
 feature boundary, and the bundle-authoritative
 per-rung learned/lattice source-map contract, the routed-MoE learned-codebook
-producer contract, the DeepSeek DSpark source-overlay contract, the streamed CB
-cached-menu render/consume contract, and the profile-declared routed-expert
+producer contract, the DeepSeek DSpark source-overlay contract, the experimental
+DSpark hybrid CB/source-FP8 sidecar producer and physical/construction namespace contract, the streamed
+CB cached-menu render/consume contract, and the profile-declared routed-expert
 AURA/empirical hybrid key-space contract, the offline value-closed DSv4
 WikiText gold-input contract, plus the platform-agnostic anchored-cost
 mechanism, CB mapping plugin, DSv4 one-shot acceptance-driver contract, the
 anchored-AURA allocator admission branch (P0, closed 2026-08-11), and the
-one-purpose CPU-only W8A16 readmission plus tracked pre-export handoff gate.
+one-purpose CPU-only W8A16 readmission plus tracked pre-export handoff gate,
+and the measured block-parallel MTP configuration selector with an explicit
+serve-memory ledger.
 The external runtime record pins Gridbook **0.8.5** at exact commit
 `e992e5980c96333a48149f96392d6cff56ae9e3f`, with
 `gridbook.runtime-contract.v3` and the exact required feature map
@@ -1790,8 +1793,9 @@ which is why the recipe filter here stays `mtp.` regardless of the source prefix
 `validate_mtp_assignment_coverage` `:9195-9222` **hard-fails** when the source has tensors under
 `mtp_source_prefix()`, the profile `has_mtp()`, and the recipe has no `mtp.*` entries.
 
-**DeepSeek-V4 DSpark is a source-format metadata overlay, not a second
-quantization pass.** The released Flash checkpoint already carries three complete
+**DeepSeek-V4 DSpark has two explicit producer modes.** The release-default mode is a
+source-format metadata overlay, not a second quantization pass. The released Flash checkpoint
+already carries three complete
 `mtp.{0,1,2}` stages: 2,304 routed-expert projection bases as packed MXFP4
 E2M1 + E8M0 and 25 dense/shared/attention bases as block-FP8 E4M3 + E8M0.
 `dspark_source_metadata.py` derives the released layout from model config and
@@ -1828,6 +1832,71 @@ tests additionally pin the model container's SHA-256, inode, size, and mtime.
 All non-MTP config groups, ignores, and pre-existing delegated routes must remain
 identical, and a route-pending source format still requires the artifact's prior
 ship acknowledgement.
+
+The experimental `--dspark-cb-sidecar` mode is the deliberate exception. Its expanded recipe
+contains all 2,328 decoder Linears, but exactly 2,325 are K12 CB. The three
+`mtp.{0,1,2}.attn.wo_a` bases remain released block-128 source-FP8 W8A16 because vLLM marks
+that projection as a grouped BMM and Gridbook's generic CB Linear implements only ordinary
+dense GEMM; flattening `[T,G,K]` would mix groups and produce the wrong output shape.
+`mtp.0.main_proj` is the fourth explicit W8A16 source base. The 2,325 logical CB decisions
+collapse to exactly 27 physical CB qweights under `mtp.{0,1,2}.*`, declared at Gridbook's
+construction names `model.layers.{L,L+1,L+2}.*`. Routed experts are validated as a closed
+3-stage × 256-expert × {gate,up,down} set and collapse into six packed expert stacks.
+
+The weight-only safetensors header is therefore exactly 82 tensors: 27 CB qweights, the
+unchanged 47 non-Linear glue tensors, and eight W8A16 source planes (`weight` + UE8M0 `scale`
+for `main_proj` and all three `wo_a`). The CB parameter count is 19,623,051,264. Relative to
+the unsafe all-CB K12 draft, retaining `wo_a` adds 78,256,128 bytes (about 74.63 MiB) before
+small JSON/header variance. The input builder refuses anything except the released
+three-stage layout and records all four physical→construction source routes. The streaming
+exporter refuses a subset other than `mtp.`, any CB `wo_a`, unexpected decoder routes,
+incomplete stages, or a non-source member of that four-base set; it records exact physical CB,
+construction CB, and source physical→construction sets in
+`prismaquant.dspark_cb_sidecar.v1` provenance. When an activation execution contract is
+present, the artifact additionally carries a validated one-to-one `dspark_target_bridge`;
+weight-only experiments intentionally omit it.
+
+This producer does not promote the lane. The pinned Gridbook 0.8.5 runtime predates the
+physical→construction→registered DSpark bridge. A candidate consumer implements that bridge,
+and its closed ABI advances the consumer schema to `gridbook.runtime-contract.v4`
+(`contract_version=4`, `dspark_construction_physical_bridge=1`,
+`source_fp8_block128_w8a16=1`). The draft decode receipt requires both features: the
+physical/construction namespace bridge and the delegated grouped-BMM W8A16 route are each
+load-bearing. It must be released as
+Gridbook 0.8.6 and pinned by its exact release commit; the older 0.8.5/v3 record remains
+immutable historical evidence. Then the separate draft artifact must pass load,
+generation, measured residency/scratch, acceptance-by-position, and paired-throughput gates.
+The draft is served from its own path and never mutates the immutable target artifact.
+
+**MTP optimization is a discrete serve problem, not a body-rung default.**
+`mtp_rung_selection.select_rung` remains the sequential-drafter model used by
+the Hy3 input builder: it fits acceptance against `sqrt(E)` and prices
+`t + k*d(b)`. DSpark is block-parallel and must not use that denominator. Its
+ship authority is `select_measured_configuration`, whose candidate is the joint
+`(quantization assignment, k)` and whose score is
+`1000 * (1 + sum(position_survival)) / measured_cycle_ms`. Position survival is
+the exact cumulative accepted-at-position counter divided by draft cycles. All
+positions are generated in one DSpark backbone call, so `measured_cycle_ms` is
+charged once, never multiplied by `k`. An optional declared service horizon
+amortizes measured load time; without one, steady-state throughput is primary
+and load time is a tie-break. The selector additionally emits the non-dominated
+speed/residency/load frontier.
+
+Admission is a hard, fully itemized constraint over fixed target/runtime,
+target KV, draft KV, profiling peak, safety margin, candidate resident bytes,
+and candidate-specific peak scratch. Every term and the admission mode are in
+`mtp_configuration_selection/1` provenance. A zero-margin
+`test-only-relaxed` ledger permits an operator-authorized load experiment but
+cannot support a release-memory claim; a ship decision must be recomputed under
+the production ledger. Candidates from different workloads are not comparable
+and are refused. The released DSv4 draft's trained block size gives a hard
+`minimum_k=5`; smaller candidates are excluded before the argmax. The selector
+does not make a quantized DSpark artifact loadable by itself: the three physical
+`mtp.{0,1,2}` stages, construction prefixes `model.layers.{43,44,45}`, and
+registered draft prefixes `model.layers.{0,1,2}` remain three distinct loader
+namespaces, and the released Gridbook consumer must explicitly close that contract before a
+CB MTP sidecar can pass the serve gates. A candidate implementation exists, but is not part of
+the pinned 0.8.5 runtime and therefore carries no release evidence yet.
 
 `_bf16_upgrade_audit` `:1965-2087` (emitted `:8622`) classifies each BF16 Linear as
 passthrough/immutable, runtime-coerced, or a genuine budget choice — a manifest, not a policy;
@@ -2791,7 +2860,7 @@ artifacts exported before the rename.
 | gemma4 | `gemma4.py` | 140 | ✅ | `vllm_packed_moe` | CT | ⚠ none | none |
 | lfm2_moe (LFM2.5) | `lfm2_moe.py` | 150 | ✅ | `vllm_packed_moe` | CT | ⚠ none | `has_mtp → False` |
 | minimax_m2 | `minimax_m2.py` | 160 | ✅ **added R22** — all 8 overrides declared | `vllm_packed_moe` **(added R22)** | CT | ⚠ none | `has_mtp → False` |
-| deepseek_v4 | `deepseek_v4.py` | 170 | ✅ | `vllm_packed_moe` **(added R22)** | CT, **nvfp4_cb** (CT) | declared by exact Gridbook 0.8.5 v3 commit `e992e59`; streaming CB export, W8A16 source passthrough, top-level loader, and routed per-role LUT ABI are wired and the installed-wheel GPU route gate passed; full-artifact served parity remains a post-export gate | `has_mtp → False`; three source-quantized DSpark stages are declared by the header-validated physical→construction overlay (§6.3), with no tensor rewrite |
+| deepseek_v4 | `deepseek_v4.py` | 170 | ✅ | `vllm_packed_moe` **(added R22)** | CT, **nvfp4_cb** (CT) | declared by exact Gridbook 0.8.5 v3 commit `e992e59`; streaming CB export, W8A16 source passthrough, top-level loader, and routed per-role LUT ABI are wired and the installed-wheel GPU route gate passed; full-artifact served parity remains a post-export gate | `has_mtp → False`; three source-quantized DSpark stages are declared by the header-validated physical→construction overlay (§6.3), with no tensor rewrite. The experimental hybrid sidecar emits 27 physical K12 CB targets plus four physical W8A16 bases (`main_proj` and three grouped-BMM `wo_a`) with exact construction declarations. A Gridbook candidate closes construction→registered mapping, but it remains non-shipping until that consumer is released/pinned and the sidecar clears load, memory, acceptance, and paired-speed gates. |
 | hy_v3 | `hy_v3.py` | 180 | ✅ | `gguf` (overridden, L1) | CT, nvfp4_cb, **gguf** (gguf) | declared by pinned Gridbook contract | `has_mtp → False`; MTP passthrough + out-of-band CB scripts |
 | laguna (poolside S/XS 2.x) | `laguna.py` | 190 | ✅ | `nvfp4_cb` (overridden, L1) | CT, **nvfp4_cb** (nvfp4_cb) | declared by pinned Gridbook contract; drafter still separate | `has_mtp → False` |
 | default | `default.py` | — (terminal) | n/a by design | — | CT (default) | n/a | none |
