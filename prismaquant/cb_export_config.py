@@ -38,6 +38,7 @@ from prismaquant.cb_layout import (
     parse_format_name,
     type_size,
 )
+from prismaquant.nvfp4_cb_footprint import codebook_source_for_format
 from prismaquant.export_native_compressed import (
     FP8_E4M3_SCHEME,
     FP8_SOURCE_SCHEME,
@@ -784,6 +785,17 @@ def build_quant_config(
         ).hexdigest()
         for name, tensor in codebook_tensors_by_name.items()
     }
+    context_codebook_source = str(
+        getattr(serialization_context, "codebook_source")
+    ).strip().lower()
+    context_codebook_source_by_family = getattr(
+        serialization_context, "codebook_source_by_family", None
+    )
+    if str(codebook_source).strip().lower() != context_codebook_source:
+        raise ValueError(
+            "quant-config codebook_source differs from its serialization "
+            f"context: {codebook_source!r} vs {context_codebook_source!r}"
+        )
 
     config_groups: dict[str, dict[str, Any]] = {}
     activation_contract_ref = None
@@ -806,7 +818,9 @@ def build_quant_config(
             codebook=codebooks[(ref, fmt)],
             scale_coding=scale_coding,
             activation_contract=activation_contract_ref,
-            codebook_source=codebook_source,
+            codebook_source=codebook_source_for_format(
+                fmt, serialization_context
+            ),
         )
         config_groups[f"group_{group_index}"] = {
             "targets": sorted(cb_target_name(qname) for qname in qnames),
@@ -871,6 +885,11 @@ def build_quant_config(
         "imatrix_sha256": imatrix_hasher.hexdigest(),
         "codebook_sha256": codebook_sha,
         "codebook_source": codebook_source,
+        **({
+            "codebook_source_by_family": dict(sorted(
+                context_codebook_source_by_family.items()
+            )),
+        } if context_codebook_source_by_family is not None else {}),
         "scale_sweep": bool(getattr(serialization_context, "scale_sweep")),
         "ldlq": bool(getattr(serialization_context, "ldlq")),
         **({

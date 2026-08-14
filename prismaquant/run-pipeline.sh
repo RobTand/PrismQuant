@@ -105,10 +105,17 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
   : "${PRISMAQUANT_CB_MINCHAIN_AUDIT_MEDIAN:=0.05}"
   : "${PRISMAQUANT_CB_MINCHAIN_AUDIT_P95:=0.15}"
   : "${PRISMAQUANT_CB_ENCODE_TIER:=balanced}"
-  if [[ "$CB_CODEBOOK_SOURCE" == "learned" ]]; then
+  _CB_CODEBOOK_SOURCE_NORMALIZED="${CB_CODEBOOK_SOURCE,,}"
+  _CB_CODEBOOK_SOURCE_NORMALIZED="${_CB_CODEBOOK_SOURCE_NORMALIZED//[[:space:]]/}"
+  if [[ "$_CB_CODEBOOK_SOURCE_NORMALIZED" == *"="* ]]; then
+    echo "[pipeline] ERROR: per-family CB_CODEBOOK_SOURCE is prerequisite-only until resident/streaming exporter grouping and learned-book value replay consume the same map. Use the scalar CB_CODEBOOK_SOURCE=lattice production setting." >&2
+    exit 2
+  fi
+  if [[ "$_CB_CODEBOOK_SOURCE_NORMALIZED" == "learned" ]]; then
     echo "[pipeline] ERROR: learned CB is research-only until one immutable value-bearing codebook bundle is loaded verbatim by cost/cache/KL/export. Digests alone do not supply those values, and export-time retraining depends on the selected assignment. Use CB_CODEBOOK_SOURCE=lattice." >&2
     exit 2
   fi
+  unset _CB_CODEBOOK_SOURCE_NORMALIZED
   # Cost renderers resolve CBSerializationContext from the environment. These
   # must be exported (not merely shell locals) or a legacy-v1/default split can
   # recur between the Python cost process and the exporter CLI.

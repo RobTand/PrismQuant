@@ -485,6 +485,29 @@ def test_allocator_blocks_digest_only_learned_cb_before_reading_inputs(
 
 
 @pytest.mark.parametrize(
+    "source",
+    (
+        "fp4=lattice,fp8=lattice",
+        "fp4=lattice,fp8=learned",
+        "fp4=learned,fp8=lattice",
+    ),
+)
+def test_allocator_blocks_keyed_source_before_reading_inputs(
+    tmp_path, monkeypatch, source,
+):
+    monkeypatch.setattr(sys, "argv", [
+        "allocator",
+        "--probe", str(tmp_path / "not-read-probe.pkl"),
+        "--costs", str(tmp_path / "not-read-cost.pkl"),
+        "--layer-config", str(tmp_path / "layer_config.json"),
+        "--pareto-csv", str(tmp_path / "pareto.csv"),
+        "--cb-codebook-source", source,
+    ])
+    with pytest.raises(SystemExit, match="per-family.*production CLI"):
+        alloc.main()
+
+
+@pytest.mark.parametrize(
     "aux_flag,aux_name",
     [
         ("--mtp-format", "mtp.layers.0.mlp.up_proj"),

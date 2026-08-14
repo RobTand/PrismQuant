@@ -1,7 +1,8 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-08 · branch `integration/dsv4-ldlq-export` · verified against implementation
-baseline commit `c740e98` plus the DeepSeek DSpark source-overlay contract,
+As of: 2026-08-10 · branch `integration/dsv4-ldlq-export` · verified against implementation
+baseline commit `cf0420e` plus the fail-closed per-family codebook-source
+plumbing and the DeepSeek DSpark source-overlay contract,
 with the external Gridbook runtime pinned to release commit
 `c9c1265` (v0.8.1). The active DeepSeek deployment packages local integration
 commit `b159bb8` on top of that release. This branch ports the dated
@@ -379,6 +380,8 @@ VALIDATED_SOURCE_PREFETCH=require   VALIDATED_FRONTIER_PICK=kneedle,
                                     or `budget` under a TARGET_DISK_GB card
 VALIDATED_FRONTIER_SKIP_CALIB=$NSAMPLES (held-out disjointness, ON)
 CB_EXPERT_EMPIRICAL=0  CB_SCALE_CODING=two_tier  (D15: shipped values)
+CB_CODEBOOK_SOURCE=lattice  (complete fp4=...,fp8=... maps are prerequisite-only
+                             and refused by the production pipeline/allocator)
 PRISMAQUANT_CB_LDLQ=0  (opt-in post-fit feedback assignment)
 PRISMAQUANT_CB_LDLQ_GATE=holdout|in_sample|0  (default holdout: do-no-harm certified on rows the LDLQ fit never saw; per-Linear and per-expert fallback to raw; byte-neutral. `in_sample` is the pre-2026-08-08 legacy scoring, reproduction only)
 PRISMAQUANT_CB_MINCHAIN=0  (opt-in monotone packed-expert rung chain)
@@ -2199,7 +2202,19 @@ transaction, so failure publishes nothing. The flag defaults off pending the ski
 real-GPU identity gate. It is an execution knob, **not** a serialization-context or render-
 identity dimension: on/off artifacts must be byte-identical. Successful runs log wall time plus
 read/encode/write busy and stall totals and write-budget stall count
-(`export_nvfp4_cb_streaming._StreamWriter`). The flag-gated
+(`export_nvfp4_cb_streaming._StreamWriter`).
+
+The serialization, config, cache-proof, and byte-accounting APIs can represent a complete
+`CB_CODEBOOK_SOURCE=fp4=lattice,fp8=learned` map (or its inverse) and stamp
+`codebook_source_by_family`; legacy scalar settings retain their existing representation.
+This is prerequisite plumbing only: `run-pipeline.sh:105-121` and
+`allocator.py:1978-2021` reject every keyed map because resident and streaming exporters
+still group/train/load codebooks under one scalar source. The production setting therefore
+remains scalar `lattice`; enabling a map requires both exporters and every value-bearing
+learned-book consumer to resolve the same per-family values
+(`nvfp4_cb_footprint.py:121-228`).
+
+The flag-gated
 `PRISMAQUANT_CB_LDLQ=1` encoder mode keeps that scale
 sweep and codebook fit intact, then performs deterministic fixed-codebook/fixed-scale
 assignment in 64-column Hessian-feedback blocks using the same cached activation rows and

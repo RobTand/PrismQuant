@@ -2051,6 +2051,7 @@ def validate_cb_render_identity_metadata(
 
     from prismaquant.nvfp4_cb_footprint import (
         cb_serialization_context_from_stamp,
+        codebook_source_for_format,
         lattice_codebook_content_sha256,
         validate_cb_serialization_context_stamp,
     )
@@ -2067,11 +2068,21 @@ def validate_cb_render_identity_metadata(
             where=where,
         )
     formats = sorted({fmt for values in scope.values() for fmt in values})
-    if context.codebook_source == "lattice":
+    lattice_formats = [
+        fmt
+        for fmt in formats
+        if codebook_source_for_format(fmt, context) == "lattice"
+    ]
+    learned_formats = [
+        fmt
+        for fmt in formats
+        if codebook_source_for_format(fmt, context) == "learned"
+    ]
+    if lattice_formats:
         observed_lattice = stamp.get("lattice_codebook_sha256_by_format")
         expected_lattice = {
             fmt: list(lattice_codebook_content_sha256(fmt))
-            for fmt in formats
+            for fmt in lattice_formats
         }
         if not isinstance(observed_lattice, Mapping) or dict(
             observed_lattice
@@ -2080,7 +2091,7 @@ def validate_cb_render_identity_metadata(
                 f"{where}: CB render identity does not bind the exact "
                 "canonical lattice codebook bytes for its format scope"
             )
-    else:
+    if learned_formats:
         learned_digests = stamp.get("codebook_content_sha256")
         if not isinstance(learned_digests, Mapping) or not learned_digests:
             raise ValueError(

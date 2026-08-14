@@ -146,5 +146,8 @@ def test_learned_cb_pipeline_is_blocked_before_production_stages():
 
     gate = "learned CB is research-only until one immutable value-bearing"
     assert gate in script
+    keyed_gate = "per-family CB_CODEBOOK_SOURCE is prerequisite-only"
+    assert keyed_gate in script
+    assert script.index(keyed_gate) < script.index("python3 -m prismaquant.allocator")
     assert script.index(gate) < script.index("python3 -m prismaquant.allocator")
     assert "Learned production is accepted" not in script

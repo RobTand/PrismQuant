@@ -33,6 +33,7 @@ from .format_registry import canonical_format_name
 from .nvfp4_cb_footprint import (
     CBSerializationContext,
     cb_serialization_context_stamp,
+    codebook_source_for_format,
     lattice_codebook_content_sha256,
 )
 
@@ -84,13 +85,19 @@ def warm_serialization_context(
     """Project the full byte-affecting encoder context onto one CB format."""
     fmt = canonical_format_name(format_name)
     stamp = cb_serialization_context_stamp(context, formats=[fmt])
+    source = codebook_source_for_format(fmt, context)
     # Lattice physical sidecar names do not affect assignment.  Export knows
     # those names while inline cost does not, so retain the canonical lattice
     # payload digests and discard artifact-wide naming details.  Learned
     # codebooks are not warm-startable until cost has the materialized table.
-    if context.codebook_source == "lattice":
+    if source == "lattice":
         stamp.pop("codebook_refs", None)
         stamp.pop("codebook_content_sha256", None)
+    # Warm records describe one format.  Project the optional artifact-wide
+    # map away so old scalar-only lattice records continue to match exactly,
+    # and an unrelated family's policy cannot invalidate this format's state.
+    stamp.pop("codebook_source_by_family", None)
+    stamp["codebook_source"] = source
     return {
         "schema": CB_WARM_CONTEXT_SCHEMA,
         "format": fmt,
@@ -104,10 +111,11 @@ def encoder_initializer_identity(
 ) -> dict[str, Any]:
     """Identify the codebook initializer/seed behind a selected scale."""
     fmt = canonical_format_name(format_name)
-    if context.codebook_source != "lattice":
+    if codebook_source_for_format(fmt, context) != "lattice":
         raise ValueError(
-            "CB warm state currently requires codebook_source='lattice'; "
-            "learned cost renders must bind their materialized initializer"
+            f"CB warm state currently requires codebook_source='lattice' for "
+            f"{fmt}; learned cost renders must bind their materialized "
+            "initializer"
         )
     from . import nvfp4_cb_formats as cb
 

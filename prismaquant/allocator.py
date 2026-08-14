@@ -126,6 +126,7 @@ from .allocator_candidates import (
 )
 from .nvfp4_cb_footprint import (
     CB_ASSIGNMENT_IDENTITIES_FIELD,
+    CB_CODEBOOK_GRIDS,
     CB_TENSOR_IDENTITY_FIELD,
     CBSerializationContext,
     cb_assignment_payload_breakdown,
@@ -133,6 +134,7 @@ from .nvfp4_cb_footprint import (
     cb_serialization_context_stamp,
     cb_tensor_payload_breakdown,
     is_cb_format,
+    parse_codebook_source_setting,
     validate_cb_cost_provenance,
     whole_artifact_budget_stamp,
 )
@@ -1707,14 +1709,13 @@ def main():
     )
     ap.add_argument(
         "--cb-codebook-source",
-        choices=("lattice", "learned"),
         default=None,
         help=(
-            "Exact CB sidecar sharing policy. Required when any body/auxiliary "
-            "format is CB so codebook identity/bytes cannot be guessed. The "
-            "production CLI currently accepts lattice only; learned is "
-            "rejected until every stage consumes one immutable value-bearing "
-            "bundle."
+            "Exact CB sidecar sharing policy: lattice/learned, or a complete "
+            "per-family map such as fp4=lattice,fp8=learned. Required when any "
+            "body/auxiliary format is CB so codebook identity/bytes cannot be "
+            "guessed. Any learned family remains rejected until every stage "
+            "consumes one immutable value-bearing bundle."
         ),
     )
     ap.add_argument(
@@ -1977,14 +1978,42 @@ def main():
                          "allocator).")
     args = ap.parse_args()
 
-    if args.cb_codebook_source == "learned":
+    cb_codebook_source = None
+    cb_codebook_source_by_family = None
+    if args.cb_codebook_source is not None:
+        try:
+            (
+                cb_codebook_source,
+                cb_codebook_source_by_family,
+            ) = parse_codebook_source_setting(
+                args.cb_codebook_source,
+                where="allocator",
+                name="--cb-codebook-source",
+            )
+        except ValueError as exc:
+            raise SystemExit(f"[alloc] ERROR: {exc}") from None
+    if cb_codebook_source_by_family is not None:
+        raise SystemExit(
+            "[alloc] ERROR: per-family CB codebook_source is not yet accepted "
+            "by the production CLI because resident/streaming exporter "
+            "grouping and learned-book value replay are still scalar. The "
+            "programmatic serialization/config APIs remain available for "
+            "prerequisite testing."
+        )
+    learned_families = (
+        list(CB_CODEBOOK_GRIDS)
+        if cb_codebook_source == "learned"
+        else []
+    )
+    if learned_families:
         raise SystemExit(
             "[alloc] ERROR: learned CB is blocked in the production allocator "
             "until an immutable value-bearing codebook bundle is loaded by "
             "cost, cache, KL, allocator, and export. A digest manifest proves "
             "identity but does not supply the codebook values, and export-time "
             "retraining is assignment-dependent. The direct learned exporter/"
-            "accounting APIs remain research-only."
+            "accounting APIs remain research-only. Blocked family/families: "
+            f"{learned_families}."
         )
 
     if args.target_disk_gb is not None:
@@ -2299,7 +2328,8 @@ def main():
 
             cb_serialization_context = CBSerializationContext(
                 scale_coding=args.cb_scale_coding,
-                codebook_source=args.cb_codebook_source,
+                codebook_source=cb_codebook_source,
+                codebook_source_by_family=cb_codebook_source_by_family,
                 scale_sweep=args.cb_scale_sweep == "1",
                 ldlq=args.cb_ldlq == "1",
                 ldlq_scope=args.cb_ldlq_scope,
