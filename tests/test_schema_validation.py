@@ -95,6 +95,25 @@ def test_cost_payload_validates_output_mse_measured_metadata():
         validate_cost_payload(payload, "cost.pkl")
 
 
+def test_cost_payload_validates_optional_activation_arm_scores():
+    payload = _cost_payload()
+    entry = payload["costs"][
+        "model.layers.0.mlp.experts.gate_up_proj"
+    ]["NVFP4"]
+    entry.update({
+        "activation_output_mse": 0.25,
+        "activation_output_mse_by_codebook_source": {
+            "lattice": 0.25,
+            "learned": 0.125,
+        },
+    })
+    assert validate_cost_payload(payload, "cost.pkl") is payload
+
+    entry["activation_output_mse_by_codebook_source"] = {"unknown": 0.5}
+    with pytest.raises(SchemaValidationError, match="unknown codebook source"):
+        validate_cost_payload(payload, "cost.pkl")
+
+
 def test_layer_config_rejects_malformed_dict_entry():
     payload = _layer_config_payload()
     payload["model.layers.0.self_attn.q_proj"] = {"bits": 4}

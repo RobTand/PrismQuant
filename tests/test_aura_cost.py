@@ -239,6 +239,50 @@ def test_provenance_records_seed_and_dw_split():
     assert payload["costs"]["body"]["NVFP4"]["dw_source"] == "rendered"
 
 
+def test_aura_carries_optional_render_cell_scores_without_repricing():
+    torch.manual_seed(15)
+    model = TinyLM().eval()
+    ids = _ids(batch=1, seqlen=4, seed=3)
+    rendered = model.body.weight.detach() + 0.03125
+    legacy_cache = _FakeCache({("body", "NVFP4"): rendered})
+    scored_cache = _FakeCache({("body", "NVFP4"): rendered})
+    scored_cache.metadata = {
+        "render_scores": {
+            "records": {
+                "body|NVFP4": {
+                    "qname": "body",
+                    "format": "NVFP4",
+                    "activation_output_mse": 0.125,
+                    "activation_output_mse_by_codebook_source": {
+                        "lattice": 0.125,
+                        "learned": 0.0625,
+                    },
+                },
+            },
+        },
+    }
+    kwargs = {
+        "n_probes": 2,
+        "n_linear_chunks": 1,
+        "min_free_gib": 0.0,
+        "seed_base": 900,
+    }
+
+    legacy = compute_aura_cost(
+        model, ids, ["NVFP4"], production_cache=legacy_cache, **kwargs)
+    scored = compute_aura_cost(
+        model, ids, ["NVFP4"], production_cache=scored_cache, **kwargs)
+    legacy_row = legacy["costs"]["body"]["NVFP4"]
+    scored_row = scored["costs"]["body"]["NVFP4"]
+
+    assert scored_row["predicted_dloss"] == legacy_row["predicted_dloss"]
+    assert scored_row["activation_output_mse"] == 0.125
+    assert scored_row["activation_output_mse_by_codebook_source"] == {
+        "lattice": 0.125,
+        "learned": 0.0625,
+    }
+
+
 def test_per_probe_samples_align_and_reproduce_mean():
     model = TinyLM().eval()
     payload = compute_aura_cost(

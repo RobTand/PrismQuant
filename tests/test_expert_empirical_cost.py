@@ -7,6 +7,7 @@ double-costed names; backfill only adds missing rows.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import types
 
 import pytest
@@ -54,7 +55,19 @@ def test_measure_unit_costs_on_tiny_packed_moe():
 
     stats, costs, unit_kls = measure_expert_unit_costs(
         model, None, calib, ["NVFP4", "FP8_DYNAMIC", "BF16"],
-        expert_chunk=1, progress=False)
+        expert_chunk=1, progress=False,
+        cell_scores={
+            name: {
+                "NVFP4": {
+                    "activation_output_mse": 0.25,
+                    "activation_output_mse_by_codebook_source": {
+                        "lattice": 0.25,
+                        "learned": 0.125,
+                    },
+                },
+            }
+            for name in EXPERT_NAMES
+        })
 
     assert set(stats) == EXPERT_NAMES
     assert set(costs) == EXPERT_NAMES
@@ -68,6 +81,10 @@ def test_measure_unit_costs_on_tiny_packed_moe():
         assert set(row) == {"NVFP4", "FP8_E4M3", "BF16"}
         assert row["BF16"]["predicted_dloss"] == 0.0
         assert row["NVFP4"]["cost_source"] == "empirical_unit_kl"
+        assert row["NVFP4"]["activation_output_mse"] == 0.25
+        assert row["NVFP4"][
+            "activation_output_mse_by_codebook_source"
+        ] == {"lattice": 0.25, "learned": 0.125}
         assert stats[name]["h_trace"] == 0.0
     # Member shares re-assemble exactly one unit KL per format.
     for fmt in ("NVFP4", "FP8_E4M3"):
@@ -85,6 +102,48 @@ def test_merge_refuses_double_costed_names():
     with pytest.raises(RuntimeError, match="collision"):
         merge_cost_payloads(
             base, {"a": {}}, {"a": {"NVFP4": {}}}, formats=["NVFP4", "BF16"])
+
+
+def test_replace_experts_preserves_optional_cell_scores_from_base():
+    scores = {
+        "activation_output_mse": 0.25,
+        "activation_output_mse_by_codebook_source": {
+            "lattice": 0.25,
+            "learned": 0.125,
+        },
+    }
+    base = {
+        "stats": {"experts.down_proj": {"h_trace": 1.0}},
+        "costs": {
+            "experts.down_proj": {
+                "NVFP4": {"weight_mse": 1.0, **scores},
+            },
+        },
+    }
+    empirical = {
+        "experts.down_proj": {
+            "NVFP4": {"predicted_dloss": 0.1},
+        },
+    }
+    empirical_before = deepcopy(empirical)
+
+    merged = merge_cost_payloads(
+        base,
+        {"experts.down_proj": {"h_trace": 0.0}},
+        empirical,
+        formats=["NVFP4"],
+        replace_experts=True,
+    )
+
+    row = merged["costs"]["experts.down_proj"]["NVFP4"]
+    assert row["predicted_dloss"] == 0.1
+    assert row["activation_output_mse"] == 0.25
+    assert row["activation_output_mse_by_codebook_source"] == {
+        "lattice": 0.25,
+        "learned": 0.125,
+    }
+    assert empirical == empirical_before
+    assert row is not empirical["experts.down_proj"]["NVFP4"]
 
 
 def test_merge_and_backfill():

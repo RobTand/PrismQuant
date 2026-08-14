@@ -8,6 +8,7 @@ load while malformed artifacts fail before optimization or export begins.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import math
 from numbers import Integral, Real
 from typing import NotRequired, TypedDict
 
@@ -31,6 +32,8 @@ class CostEntry(TypedDict, total=False):
     cost_source_per_expert: NotRequired[list[str]]
     cb_minchain_identity_per_expert: NotRequired[list[dict]]
     cb_minchain_interpolation: NotRequired[dict]
+    activation_output_mse: NotRequired[float]
+    activation_output_mse_by_codebook_source: NotRequired[dict[str, float]]
     error: str
 
 
@@ -295,6 +298,42 @@ def validate_cost_payload(payload, path: str | None = None):
                     f".costs[{name!r}][{fmt!r}].output_mse_measured",
                     "must be a boolean when present",
                 )
+            if "activation_output_mse" in entry:
+                value = _as_number(
+                    entry["activation_output_mse"],
+                    path,
+                    f".costs[{name!r}][{fmt!r}].activation_output_mse",
+                )
+                if not math.isfinite(value) or value < 0.0:
+                    _fail(
+                        path,
+                        f".costs[{name!r}][{fmt!r}].activation_output_mse",
+                        "must be finite and nonnegative",
+                    )
+            if "activation_output_mse_by_codebook_source" in entry:
+                arm_scores = entry[
+                    "activation_output_mse_by_codebook_source"
+                ]
+                where = (
+                    f".costs[{name!r}][{fmt!r}]"
+                    ".activation_output_mse_by_codebook_source"
+                )
+                if not _is_mapping(arm_scores):
+                    _fail(path, where, "must be a mapping when present")
+                for source, raw_value in arm_scores.items():
+                    if source not in {"lattice", "learned"}:
+                        _fail(path, where, f"unknown codebook source {source!r}")
+                    value = _as_number(
+                        raw_value,
+                        path,
+                        f"{where}[{source!r}]",
+                    )
+                    if not math.isfinite(value) or value < 0.0:
+                        _fail(
+                            path,
+                            f"{where}[{source!r}]",
+                            "must be finite and nonnegative",
+                        )
             if not has_signal:
                 _fail(
                     path,

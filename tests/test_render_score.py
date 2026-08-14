@@ -1,12 +1,41 @@
+import pytest
 import torch
 
 from prismaquant.render_score import (
     RenderMechanismSpec,
     gate_render_candidate,
+    persisted_cell_score_fields,
     register_render_mechanism,
     resolve_render_mechanism_order,
     score_render_error,
 )
+
+
+def test_persisted_cell_scores_are_optional_and_validate_both_sources():
+    assert persisted_cell_score_fields(None) == {}
+    assert persisted_cell_score_fields({}) == {}
+
+    fields = persisted_cell_score_fields({
+        "activation_output_mse": 0.25,
+        "activation_output_mse_by_codebook_source": {
+            "learned": 0.125,
+            "lattice": 0.25,
+        },
+    })
+    assert fields == {
+        "activation_output_mse": 0.25,
+        "activation_output_mse_by_codebook_source": {
+            "lattice": 0.25,
+            "learned": 0.125,
+        },
+    }
+
+    with pytest.raises(ValueError, match="unknown source"):
+        persisted_cell_score_fields({
+            "activation_output_mse_by_codebook_source": {"other": 1.0},
+        })
+    with pytest.raises(ValueError, match="finite nonnegative"):
+        persisted_cell_score_fields({"activation_output_mse": float("nan")})
 
 
 def test_score_render_error_prefers_lower_output_error():

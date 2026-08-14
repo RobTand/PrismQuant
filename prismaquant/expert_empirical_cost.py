@@ -61,6 +61,7 @@ from prismaquant.nvfp4_cb_footprint import (
     cb_serialization_context_from_env,
     validate_cb_cost_provenance,
 )
+from prismaquant.render_score import persisted_cell_score_fields
 
 SCHEMA = "prismaquant.expert_empirical_cost.v1"
 PASSTHROUGH_FORMATS = {"BF16", "FP8_SOURCE"}
@@ -102,6 +103,23 @@ def _canon_formats(formats: Sequence[str]) -> list[str]:
         if name and name not in seen:
             seen.append(name)
     return seen
+
+
+def _cell_score_fields(
+    cell_scores: Mapping[str, object] | None,
+    qname: str,
+    fmt: str,
+) -> dict[str, object]:
+    if not isinstance(cell_scores, Mapping):
+        return {}
+    per_name = cell_scores.get(qname)
+    if not isinstance(per_name, Mapping):
+        return {}
+    for alias in fr.aliases_for(fmt):
+        record = per_name.get(alias)
+        if isinstance(record, Mapping):
+            return persisted_cell_score_fields(record)
+    return {}
 
 
 _CALIB_BATCH_ENV = "PRISMAQUANT_EXPERT_CALIB_BATCH"
@@ -801,6 +819,7 @@ def measure_expert_unit_costs(
     expert_sample: int = 0,
     max_units: int = 0,
     unit_filter: str | None = None,
+    cell_scores: Mapping[str, object] | None = None,
 ) -> tuple[dict, dict, dict]:
     """Measure per-serving-unit empirical KL costs for packed-MoE experts.
 
@@ -985,11 +1004,13 @@ def measure_expert_unit_costs(
             for fmt in measured_fmts:
                 # Split the UNIT cost across members by n_params so the
                 # per-member sum re-assembles exactly one unit KL.
-                row[fmt] = {
+                entry = {
                     "predicted_dloss": kls[fmt] * npm / n_params_unit,
                     "cost_source": "empirical_unit_kl",
                     "output_mse_measured": False,
                 }
+                entry.update(_cell_score_fields(cell_scores, full, fmt))
+                row[fmt] = entry
             for fmt in menu:
                 if fmt in PASSTHROUGH_FORMATS:
                     row[fmt] = {
@@ -1060,15 +1081,37 @@ def merge_cost_payloads(
         context=cb_serialization_context_from_env(),
         where="expert empirical merge base",
     )
+    expert_costs_for_merge = dict(expert_costs)
     if overlap:
         for name in overlap:
+            base_row = base_costs[name]
+            expert_row = expert_costs_for_merge[name]
+            if isinstance(base_row, Mapping) and isinstance(expert_row, Mapping):
+                # Enrichment belongs to the merged payload.  The empirical
+                # payload is also returned to callers as a standalone result,
+                # so do not mutate its nested rows while preserving score
+                # metadata from the smooth base table.
+                expert_row = dict(expert_row)
+                for fmt, base_entry in base_row.items():
+                    if not isinstance(base_entry, Mapping):
+                        continue
+                    target = expert_row.get(fmt)
+                    if not isinstance(target, Mapping):
+                        continue
+                    target = dict(target)
+                    for field, value in persisted_cell_score_fields(
+                        base_entry
+                    ).items():
+                        target.setdefault(field, value)
+                    expert_row[fmt] = target
+                expert_costs_for_merge[name] = expert_row
             base_costs.pop(name)
             base_stats.pop(name, None)
         prov = dict(merged.get("provenance", {}) or {})
         prov["replaced_smooth_expert_rows"] = sorted(overlap)
         merged["provenance"] = prov
     base_stats.update(expert_stats)
-    base_costs.update(expert_costs)
+    base_costs.update(expert_costs_for_merge)
     merged["stats"] = base_stats
     merged["costs"] = base_costs
     merged["schema"] = SCHEMA

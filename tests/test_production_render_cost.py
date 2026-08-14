@@ -73,6 +73,8 @@ def test_production_render_cost_uses_render_score_directly():
     assert q["NVFP4"]["predicted_dloss"] == 12.0
     assert q["NVFP4"]["output_mse_measured"] is False
     assert q["NVFP4"]["cost_source"] == "production_render_score"
+    assert "activation_output_mse" not in q["NVFP4"]
+    assert "activation_output_mse_by_codebook_source" not in q["NVFP4"]
     assert q["MXFP8_E4M3"]["predicted_dloss"] == 6.0
     assert q["BF16"]["predicted_dloss"] == 0.0
 
@@ -81,6 +83,75 @@ def test_production_render_cost_uses_render_score_directly():
     assert o["NVFP4"]["cost_source"] == "fallback_baseline"
     assert cost["meta"]["render_score_entries"] == 2
     assert cost["meta"]["fallback_entries"] == 2
+
+
+def test_production_render_cost_preserves_optional_cell_scores_without_repricing():
+    cache = _cache_with_scores()
+    record = cache.metadata["render_scores"]["records"][
+        "layers.0.q_proj|NVFP4"
+    ]
+    record.update({
+        "activation_output_mse": 0.5,
+        "activation_output_mse_by_codebook_source": {
+            "lattice": 0.5,
+            "learned": 0.375,
+        },
+    })
+    baseline = {
+        "formats": ["NVFP4", "BF16"],
+        "costs": {
+            "layers.0.q_proj": {
+                "NVFP4": {"output_mse": 99.0},
+                "BF16": {"predicted_dloss": 0.0},
+            },
+        },
+    }
+
+    payload = synthesize_production_render_cost_payload(
+        cache,
+        baseline,
+        score_field="output_mse",
+    )
+    entry = payload["costs"]["layers.0.q_proj"]["NVFP4"]
+    assert entry["activation_output_mse"] == 0.5
+    assert entry["activation_output_mse_by_codebook_source"] == {
+        "lattice": 0.5,
+        "learned": 0.375,
+    }
+
+    stats = {
+        "layers.0.q_proj": {
+            "h_trace": 2.0,
+            "out_features": 32,
+            "in_features": 32,
+            "n_params": 1024,
+        },
+    }
+    enriched = build_candidates(
+        stats,
+        payload["costs"],
+        [fr.get_format("NVFP4"), fr.get_format("BF16")],
+    )
+    legacy_costs = {
+        name: {
+            fmt: {
+                key: value
+                for key, value in row.items()
+                if key not in {
+                    "activation_output_mse",
+                    "activation_output_mse_by_codebook_source",
+                }
+            }
+            for fmt, row in formats.items()
+        }
+        for name, formats in payload["costs"].items()
+    }
+    legacy = build_candidates(
+        stats,
+        legacy_costs,
+        [fr.get_format("NVFP4"), fr.get_format("BF16")],
+    )
+    assert enriched == legacy
 
 
 def test_production_render_cost_bypasses_h_trace_proxy_in_allocator():

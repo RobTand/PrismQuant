@@ -31,7 +31,7 @@ import re
 import signal
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import torch
@@ -44,6 +44,7 @@ from .nvfp4_cb_footprint import (
     cb_cost_provenance,
     cb_serialization_context_from_env,
 )
+from .render_score import persisted_cell_score_fields
 
 
 def _cb_cost_quantize_dequantize(
@@ -540,7 +541,8 @@ def _accumulate_result(bucket: dict, name: str, fmt: str,
                        cost_source: str | None = None,
                        weight_mse_per_expert: list[float] | None = None,
                        cost_source_per_expert: list[str] | None = None,
-                       raw_render: dict | None = None):
+                       raw_render: dict | None = None,
+                       score_carrier: Mapping[str, object] | None = None):
     per_name = bucket.setdefault(name, {})
     acc = per_name.setdefault(fmt, {
         "_count": 0,
@@ -612,6 +614,17 @@ def _accumulate_result(bucket: dict, name: str, fmt: str,
                     "MSE vectors"
                 )
             acc["_weight_mse_per_expert_raw_render"] = values
+    score_fields = persisted_cell_score_fields(score_carrier)
+    if score_fields:
+        # These values describe the already-scored cell rather than another
+        # accumulator statistic.  Repeated observations must therefore carry
+        # the same record; silently picking one would make persistence depend
+        # on traversal order.  Keep the internal key absent for legacy calls
+        # so the no-carrier path finalizes to the exact old row shape.
+        previous = acc.get("_cell_score_fields")
+        if previous is not None and previous != score_fields:
+            raise ValueError(f"{name}/{fmt}: conflicting cell score records")
+        acc["_cell_score_fields"] = score_fields
     acc["_weight_mse_sum"] += weight_mse
     acc["_output_mse_sum"] += output_mse
     acc["_rel_output_mse_sum"] += rel_output_mse
@@ -653,6 +666,7 @@ def _finalize_results(bucket: dict[str, dict]) -> dict[str, dict]:
             raw_dloss_sum = acc.pop("_predicted_dloss_raw_render_sum", 0.0)
             raw_per_expert = acc.pop(
                 "_weight_mse_per_expert_raw_render", None)
+            cell_score_fields = acc.pop("_cell_score_fields", None)
             entry = {
                 "weight_mse": acc.pop("_weight_mse_sum") / n,
                 "output_mse": acc.pop("_output_mse_sum") / n,
@@ -692,6 +706,8 @@ def _finalize_results(bucket: dict[str, dict]) -> dict[str, dict]:
                 )
             if raw_per_expert is not None:
                 entry["weight_mse_per_expert_raw_render"] = raw_per_expert
+            if cell_score_fields:
+                entry.update(cell_score_fields)
             out[name][fmt] = entry
     return out
 

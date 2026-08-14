@@ -20,6 +20,70 @@ from typing import Iterable, Mapping
 import torch
 
 
+_CODEBOOK_SCORE_SOURCES = frozenset({"lattice", "learned"})
+
+
+def _finite_nonnegative_score(value: object, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a finite nonnegative number")
+    try:
+        score = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a finite nonnegative number") from exc
+    if not math.isfinite(score) or score < 0.0:
+        raise ValueError(f"{label} must be a finite nonnegative number")
+    return score
+
+
+def persisted_cell_score_fields(
+    record: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Copy the optional per-cell scores used by adaptive CB measurement.
+
+    ``activation_output_mse`` is the unweighted output error
+    ``mean((X @ (W - W_hat).T) ** 2)`` on whichever rows the caller chose
+    (the adaptive path uses its held-out rows).  The by-source mapping carries
+    the same score for each codebook basis that was actually rendered.  An
+    absent score stays absent: legacy producers must not acquire empty/null
+    fields merely by passing through this helper.
+
+    This metadata is deliberately not an allocator input.  The authoritative
+    price remains the existing ``output_mse``/``predicted_dloss`` fields until
+    the adaptive allocator explicitly consumes the new measurements.
+    """
+    if not isinstance(record, Mapping):
+        return {}
+
+    out: dict[str, object] = {}
+    if "activation_output_mse" in record:
+        out["activation_output_mse"] = _finite_nonnegative_score(
+            record["activation_output_mse"], "activation_output_mse"
+        )
+
+    if "activation_output_mse_by_codebook_source" in record:
+        raw_scores = record["activation_output_mse_by_codebook_source"]
+        if not isinstance(raw_scores, Mapping):
+            raise ValueError(
+                "activation_output_mse_by_codebook_source must be a mapping"
+            )
+        scores: dict[str, float] = {}
+        for raw_source, raw_score in raw_scores.items():
+            source = str(raw_source).strip().lower()
+            if source not in _CODEBOOK_SCORE_SOURCES:
+                raise ValueError(
+                    "activation_output_mse_by_codebook_source has unknown "
+                    f"source {raw_source!r}"
+                )
+            scores[source] = _finite_nonnegative_score(
+                raw_score, f"{source} activation output MSE"
+            )
+        if scores:
+            out["activation_output_mse_by_codebook_source"] = dict(
+                sorted(scores.items())
+            )
+    return out
+
+
 @dataclass(frozen=True)
 class RenderGateDecision:
     accepted: bool

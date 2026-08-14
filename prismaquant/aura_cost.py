@@ -55,6 +55,11 @@ from prismaquant.nvfp4_cb_footprint import (
     cb_cost_provenance,
     is_cb_format,
 )
+from prismaquant.production_render_cost import (
+    _cache_render_score_records,
+    _lookup_record as _lookup_render_score_record,
+)
+from prismaquant.render_score import persisted_cell_score_fields
 
 SCHEMA = "prismaquant.aura_cost.v1"
 
@@ -416,6 +421,7 @@ def compute_aura_cost(
     names = list(linears.keys())
     fmts = [fr.canonical_format_name(f) for f in formats]
     nonzero_fmts = [f for f in fmts if f not in _ZERO_COST_FORMATS]
+    render_score_records = _cache_render_score_records(production_cache)
     cb_provenance: dict[str, object] = {}
     if any(is_cb_format(fmt) for fmt in fmts):
         if production_cache is None:
@@ -735,7 +741,7 @@ def compute_aura_cost(
                     / (n_probes - 1), 0.0)
             else:
                 var_x2 = 0.0
-            costs[n][f] = {
+            entry = {
                 "predicted_dloss": 0.5 * mean_x2,
                 "predicted_dloss_stderr": 0.5 * math.sqrt(var_x2 * inv),
                 # raw per-probe x² samples (predicted_dloss = 0.5·mean of
@@ -746,6 +752,13 @@ def compute_aura_cost(
                 "output_mse_measured": False,
                 "cost_source": "aura",
             }
+            render_record = _lookup_render_score_record(
+                render_score_records,
+                n,
+                f,
+            )
+            entry.update(persisted_cell_score_fields(render_record))
+            costs[n][f] = entry
     n_rendered = sum(1 for v in dw_src.values() if v == "rendered")
     n_rtn = sum(1 for v in dw_src.values() if v == "rtn")
     return {

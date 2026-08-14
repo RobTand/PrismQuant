@@ -184,12 +184,57 @@ def test_sidecar_metrics_none_when_ldlq_absent():
 
 def test_finalize_without_raw_render_keeps_legacy_row_schema():
     bucket: dict = {}
-    _accumulate_result(bucket, "lin", "NVFP4_CB_K12", 0.5, 0.25, 0.1,
-                       predicted_dloss=0.01)
+    explicit_none_bucket: dict = {}
+    args = ("lin", "NVFP4_CB_K12", 0.5, 0.25, 0.1)
+    _accumulate_result(bucket, *args, predicted_dloss=0.01)
+    _accumulate_result(
+        explicit_none_bucket, *args, predicted_dloss=0.01,
+        score_carrier=None,
+    )
     results = _finalize_results(bucket)
-    entry = results["lin"]["NVFP4_CB_K12"]
-    assert set(entry) == {
-        "weight_mse", "output_mse", "rel_output_mse", "predicted_dloss",
+    explicit_none_results = _finalize_results(explicit_none_bucket)
+    expected = {
+        "lin": {
+            "NVFP4_CB_K12": {
+                "weight_mse": 0.5,
+                "output_mse": 0.25,
+                "rel_output_mse": 0.1,
+                "predicted_dloss": 0.01,
+            },
+        },
+    }
+    assert results == expected
+    assert pickle.dumps(results) == pickle.dumps(expected)
+    assert pickle.dumps(results) == pickle.dumps(explicit_none_results)
+
+
+def test_finalize_carries_optional_activation_scores_additively():
+    score_carrier = {
+        "activation_output_mse": 0.25,
+        "activation_output_mse_by_codebook_source": {
+            "learned": 0.125,
+            "lattice": 0.25,
+        },
+    }
+    bucket: dict = {}
+    _accumulate_result(
+        bucket, "lin", "NVFP4_CB_K12", 0.5, 0.25, 0.1,
+        predicted_dloss=0.01,
+        score_carrier=score_carrier,
+    )
+    # The accumulator owns a normalized copy, not the caller's nested map.
+    score_carrier["activation_output_mse_by_codebook_source"]["lattice"] = 9.0
+    entry = _finalize_results(bucket)["lin"]["NVFP4_CB_K12"]
+    assert entry == {
+        "weight_mse": 0.5,
+        "output_mse": 0.25,
+        "rel_output_mse": 0.1,
+        "predicted_dloss": 0.01,
+        "activation_output_mse": 0.25,
+        "activation_output_mse_by_codebook_source": {
+            "lattice": 0.25,
+            "learned": 0.125,
+        },
     }
 
 

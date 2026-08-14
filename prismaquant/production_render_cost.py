@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from prismaquant import format_registry as fr
+from prismaquant.render_score import persisted_cell_score_fields
 
 
 SCHEMA = "prismaquant.production_render_score_cost.v1"
@@ -127,6 +128,7 @@ def _production_cost_entry(
     score_field: str,
 ) -> dict | None:
     metric = str(record.get("metric", "render_score"))
+    persisted_scores = persisted_cell_score_fields(record)
     if score_field in {"weight_mse_sum", "weight_mse"}:
         weight_mse = _score_value(record, "weight_mse")
         if weight_mse is None:
@@ -150,6 +152,7 @@ def _production_cost_entry(
             "n_weights": int(record.get("n_weights", 0) or 0),
             "activation_quantized": bool(record.get("activation_quantized", False)),
             "activation_clipped": bool(record.get("activation_clipped", False)),
+            **persisted_scores,
         }
     if score_field == "output_mse":
         # Use the production-rendered per-element output_mse (unweighted,
@@ -180,6 +183,7 @@ def _production_cost_entry(
             "n_weights": int(record.get("n_weights", 0) or 0),
             "activation_quantized": bool(record.get("activation_quantized", False)),
             "activation_clipped": bool(record.get("activation_clipped", False)),
+            **persisted_scores,
         }
     score = _score_value(record, score_field)
     mean_score = _score_value(record, "score")
@@ -202,6 +206,7 @@ def _production_cost_entry(
         "raw_render_score_sum": _score_value(record, "raw_render_score_sum"),
         "activation_quantized": bool(record.get("activation_quantized", False)),
         "activation_clipped": bool(record.get("activation_clipped", False)),
+        **persisted_scores,
     }
 
 

@@ -637,6 +637,37 @@ def test_render_score_clips_nvfp4_but_not_dynamic_mxfp8(monkeypatch):
     assert mxfp8["activation_quantized"] is True
 
 
+def test_render_score_record_persists_activation_mse_for_both_book_sources(
+    monkeypatch,
+):
+    from prismaquant.production_weight_cache import _render_score_record
+    from prismaquant.render_score import score_render_error
+
+    monkeypatch.setenv("PRISMAQUANT_DISABLE_RTN_COMPILE", "1")
+    reference = torch.eye(2, 32, dtype=torch.float32)
+    rendered = reference + 0.125
+    activations = torch.arange(64, dtype=torch.float32).reshape(2, 32) / 64.0
+    by_source = {"lattice": 0.5, "learned": 0.25}
+
+    record = _render_score_record(
+        qname="layer",
+        fmt="MXFP8_E4M3",
+        render_format="MXFP8_E4M3",
+        reference_weight=reference,
+        rendered_weight=rendered,
+        activations=activations,
+        activation_max_abs=None,
+        activation_output_mse_by_codebook_source=by_source,
+    )
+
+    assert record["activation_output_mse"] == score_render_error(
+        reference,
+        rendered,
+        activations,
+    )
+    assert record["activation_output_mse_by_codebook_source"] == by_source
+
+
 def test_production_cache_unifies_activation_max_abs_for_profile_fused_siblings(
     monkeypatch,
 ):

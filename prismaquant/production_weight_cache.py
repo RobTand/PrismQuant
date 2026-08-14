@@ -84,6 +84,7 @@ from prismaquant.build_rtn_cache import iter_quantizable_tensors
 from prismaquant.render_score import (
     gate_render_candidate,
     normalize_row_weights,
+    persisted_cell_score_fields,
     resolve_render_mechanism_order,
     score_render_error,
 )
@@ -1234,6 +1235,7 @@ def _render_score_record(
     rendered_weight: torch.Tensor,
     activations: torch.Tensor | None,
     activation_max_abs: float | None,
+    activation_output_mse_by_codebook_source: Mapping[str, float] | None = None,
 ) -> dict[str, object]:
     raw_score, raw_metric = _render_score_for_gate(
         reference_weight.detach().to(torch.float32),
@@ -1288,7 +1290,7 @@ def _render_score_record(
     n_weights = int(diff.numel())
     weight_mse = float(diff.pow(2).mean().item()) if n_weights > 0 else 0.0
     rows, cols = reference_weight.shape
-    return {
+    record = {
         "qname": str(qname),
         "format": str(fmt).upper(),
         "render_format": str(render_format).upper(),
@@ -1313,6 +1315,19 @@ def _render_score_record(
         "out_features": int(rows),
         "in_features": int(cols),
     }
+    # ``raw_score`` is X @ (W - W_hat).T when activations are present; unlike
+    # ``score`` above it does not fold the format's activation quantizer into
+    # the result.  Persist it under an unambiguous additive name for adaptive
+    # arm comparisons while retaining every legacy score field unchanged.
+    persisted_scores: dict[str, object] = {}
+    if raw_metric == "output_mse":
+        persisted_scores["activation_output_mse"] = raw_score
+    if activation_output_mse_by_codebook_source is not None:
+        persisted_scores["activation_output_mse_by_codebook_source"] = (
+            activation_output_mse_by_codebook_source
+        )
+    record.update(persisted_cell_score_fields(persisted_scores))
+    return record
 
 
 def _format_uses_static_activation_clip(fmt: str) -> bool:
