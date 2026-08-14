@@ -426,6 +426,18 @@ Quantization stays on the Spark in all three options; Strix is a serving box. Th
 > (d) C stays passive tracking. **New state:** B = "kernels authored, parity-verified and
 > benchmarked standalone; unserved". `docs/lanes/gguf.md`'s tracking table still owns A.
 
+> **LIVE KERNEL AUDIT — 2026-07-31.** The real `gfx1151` box is now reachable and
+> the HIP source has been exercised there. The arithmetic verdict is positive,
+> but the lane remains unserved and unqualified: capability/build attestation,
+> dtype and crossover contracts, fail-closed ROCm dispatch, binding validation,
+> permanent production-QDQ tests, exact runtime-path benchmarks and vLLM
+> eager/graph/soak evidence are open. A runtime/benchmark policy mismatch also
+> hides a material GEMM LUT regression. Native integer INT8/INT4 is not currently
+> served by Gridbook. **W4A16 INT4 is approved for Gridbook integration by
+> delegating vLLM's existing RDNA hybrid kernel; naive W8A8 IU8, W4A4 IU4 and an
+> integer-grid CB remain gated.** Full evidence, priorities and release gates:
+> `docs/audits/strix_halo_hip_live_audit_2026-07-31.md`.
+
 ### R21 (L4 P4) — Persist the auto-tuner's timings; defer λ · STRUCTURAL
 
 **What.** Give `gb/moe_autotune.py`'s per-candidate timings a durable sink instead of a print (`moe.py:1400-1405` is `print()`; the `log=` callback at `moe_autotune.py:111,138-150` has no persistent consumer). Emit a per-(format, shape-regime, box) ms table. Do **not** add λ yet. **Why not λ.** §9.2 confirms it is unimplemented, and `Candidate` (`allocator_solver.py:40-46`) carries `fmt / bits_per_param / memory_bytes / predicted_dloss` — no time term anywhere. Implementing λ today optimizes against a cost table that does not exist, on a lane that is not default, against a tax the kernel campaign moved 12×→1.75× in one week: a heuristic in an objective's clothes. **Strix is not the forcing function** *unless* R7-B is funded — under R7-A the only Strix lane is GGUF, one compute path per rung, nothing to trade. The real forcing function is two measured serving-cost tables that **disagree in ranking**; persisting the tuner output is what makes that observable, costs an afternoon, and pays for itself as kernel-campaign regression data regardless. **Cost** S, **risk** none. **Verdict-request.** Agree λ stays specified-not-implemented until two boxes' tables disagree?

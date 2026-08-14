@@ -368,6 +368,38 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
     echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb requires PRODUCTION_CACHE=0 PRODUCTION_RECACHE=0 — export_nvfp4_cb requantizes the bf16 skeleton and never reads the production cache; building one burns hours rendering bytes that never ship. Set PRODUCTION_CACHE=0 PRODUCTION_RECACHE=0." >&2
     exit 2
   fi
+  # Cost-currency licence gate (2026-08-10). NOT a format ban (principle 1) —
+  # the allocator's choice set is untouched. This refuses an invalid MEASUREMENT
+  # configuration, the same class as the archived-mode guards: the render-score
+  # objective's score field is `weight_mse` (audit M6), and on a CB menu that
+  # currency has two measured defects.
+  #
+  #   1. It does not survive a codebook-basis change. Registered test, 6 planes
+  #      x 256 experts: CV over experts of weight_mse_CBL/weight_mse_lattice
+  #      breaches the 0.10 bar at 8 of 10 rung-pairs, rising monotonically
+  #      0.088 (K28) -> 0.224 (K48). A lattice->lattice control on the SAME six
+  #      planes passes at 0.067, so it is the learned book, not the cohort.
+  #      (dq-runs/dsv4-quality-hybrid/F3_RECONCILIATION.md)
+  #   2. It already mis-ranks LDLQ: LDLQ strictly INFLATES the weight-domain
+  #      metric at every rung/family while improving activation-output error,
+  #      so a weight-currency cost prices the lever backwards.
+  #
+  # Near-constructive reason it must be so: CB candidates are SELECTED under an
+  # imatrix-weighted weight-domain metric (nvfp4_cb_formats.py `_eval_candidate`,
+  # `err = err * wq`), so CB error is shaped in one currency and, under this
+  # objective, scored in another.
+  #
+  # Historical reproduction is unaffected: this container/objective pair was
+  # only made reachable by the re-vet R3 axis split, so no shipped artifact was
+  # built with it. Escape hatch for research, deliberately loud:
+  if [[ "$COST_OBJECTIVE" == "render-score" \
+        && "${PRISMAQUANT_ALLOW_UNLICENSED_COST_CURRENCY:-0}" != "1" ]]; then
+    echo "[pipeline] ERROR: COST_MODE=production-render-score (COST_OBJECTIVE=render-score) is UNLICENSED on the nvfp4_cb lane — its score field is weight_mse, a currency measured NOT to survive a codebook-basis change (CV 0.088->0.224 across K28-K48, 8/10 rung-pairs over the 0.10 bar, with a lattice-only control on the same planes passing at 0.067) and already known to mis-rank LDLQ. Codebook source for this run: '${CB_CODEBOOK_SOURCE:-lattice}'. Use COST_MODE=aura (adjoint currency) or COST_MODE=local. To override for research, set PRISMAQUANT_ALLOW_UNLICENSED_COST_CURRENCY=1 — the resulting allocation is not shippable. See docs/lanes/nvfp4-cb/format-pipeline.md and dq-runs/dsv4-quality-hybrid/F3_RECONCILIATION.md." >&2
+    exit 2
+  fi
+  if [[ "$COST_OBJECTIVE" == "render-score" ]]; then
+    echo "[pipeline] WARNING: PRISMAQUANT_ALLOW_UNLICENSED_COST_CURRENCY=1 — allocating the CB lane in the weight_mse currency. Research only; this allocation is NOT shippable."
+  fi
 fi
 
 if [[ "$DEVICE" != cuda* || "$EXPORT_DEVICE" != cuda* ]]; then

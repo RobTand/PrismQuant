@@ -20,6 +20,11 @@ returning reader must know are that **`COST_MODE` defaults to `aura`** (§3.3), 
 is native CUDA/CUTLASS-only and fails closed (§9.2), and fused native-NVFP4 remains default-off
 after its teacher-backed quality gate (§9.2).
 
+Re-stamped **2026-08-10** · branch `integration/dsv4-ldlq-merge` · one behavioural change:
+`COST_OBJECTIVE=render-score` is now **fail-fast (`exit 2`) on the `nvfp4_cb` lane** — its
+`weight_mse` currency was measured not to survive a codebook-basis change (§4.7). Escape hatch
+`PRISMAQUANT_ALLOW_UNLICENSED_COST_CURRENCY=1`, research-only.
+
 **Prime directive:** the code is the authority. Where this document and the tree disagree, the
 document is wrong — fix it, or record the divergence in §12; never propagate it.
 
@@ -962,13 +967,36 @@ harvests the vector once (`harvest_cb_col_weights`, one definition, four call si
 unchanged reason: their **exporters** requantize the bf16 skeleton and never read a production
 cache, so building the *export* cache burns hours on bytes that never ship.
 
-**What this deliberately does NOT do.** The CB lane can now run `render-score` or
-`aura-adjoint`; neither is its default and neither is recommended. AURA's −38%/−17.9% margins
-are native-lane results, and CB's error surface (VQ quantization plus the expert route-flip
-floor) is a different animal. The pipeline prints that the combination is opt-in when it is
-selected. The A/B that would justify a CB default has not been run — and is **deferred by
-Robert (2026-07-30)** behind the NVFP4-vs-CB-FP8@4.5 criteria work; CB stays `weight-recon`
-until it runs.
+**What this deliberately does NOT do.** The CB lane can run `aura-adjoint`; it is not its
+default and not recommended. AURA's −38%/−17.9% margins are native-lane results, and CB's
+error surface (VQ quantization plus the expert route-flip floor) is a different animal. The
+pipeline prints that the combination is opt-in when it is selected. The A/B that would justify
+a CB default has not been run — and is **deferred by Robert (2026-07-30)** behind the
+NVFP4-vs-CB-FP8@4.5 criteria work; CB stays `weight-recon` until it runs.
+
+**`render-score` is UNLICENSED on the CB lane (2026-08-10) — fail-fast, `exit 2`.**
+`COST_OBJECTIVE=render-score` scores `weight_mse` (audit M6), and on a CB menu that currency
+has two *measured* defects, so the gate refuses the combination
+(`run-pipeline.sh`, the `EXPORT_CONTAINER == "nvfp4_cb"` block):
+
+1. **It does not survive a codebook-basis change.** Registered test over 6 planes × 256
+   experts: the CV across experts of `weight_mse_CBL / weight_mse_lattice` breaches its 0.10
+   bar at 8 of 10 rung-pairs, rising monotonically 0.088 (K28) → 0.224 (K48). A
+   lattice→lattice control on the *same six planes* passes at 0.067, so it is the learned
+   book, not the cohort.
+2. **It already mis-ranks LDLQ**, which strictly inflates the weight-domain metric at every
+   rung/family while improving activation-output error — so a weight-currency cost prices the
+   lever backwards.
+
+Near-constructive reason it must be so: CB candidates are *selected* under an imatrix-weighted
+weight-domain metric (`nvfp4_cb_formats.py` `_eval_candidate`, `err = err * wq`), so CB error
+is shaped in one currency and, under this objective, scored in another.
+
+This is **not** a format ban (principle 1) — the allocator's choice set is untouched; it
+refuses an invalid *measurement* configuration, the same class as the archived-mode guards.
+No shipped artifact is affected: the pairing was only made reachable by the re-vet R3 axis
+split. `PRISMAQUANT_ALLOW_UNLICENSED_COST_CURRENCY=1` overrides it for research and prints a
+loud not-shippable warning. Evidence: `dq-runs/dsv4-quality-hybrid/F3_RECONCILIATION.md`.
 
 **The trust-region readout that rides with the default objective.** `AURA_ADDITIVITY_GATE`
 defaults to **`measure`** (ruled 2026-07-30), so every `COST_MODE=aura` run performs one
