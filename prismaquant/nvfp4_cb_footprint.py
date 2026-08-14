@@ -178,9 +178,13 @@ class CBSerializationContext:
             )
         # Per-family LDLQ scope: none (no family), nvfp4 (only NVFP4_CB), all (both families).
         # The legacy bool `ldlq` maps to all/none for backward compat; new code uses scope.
+        # Direct construction with inconsistent explicit values must fail closed;
+        # old stamp rehydration is handled via from_stamp which derives scope when missing.
         allowed_scopes = {"none", "nvfp4", "all"}
         raw_scope = self.ldlq_scope
-        if raw_scope is None:
+        # Detect whether caller explicitly provided ldlq_scope (non-empty) vs derived
+        _scope_explicit = not (raw_scope is None or (isinstance(raw_scope, str) and str(raw_scope).strip() == ""))
+        if not _scope_explicit:
             # Derive from legacy bool for old stamps / env that only set PRISMAQUANT_CB_LDLQ.
             derived = "all" if bool(self.ldlq) else "none"
             object.__setattr__(self, "ldlq_scope", derived)
@@ -189,17 +193,14 @@ class CBSerializationContext:
             if scope not in allowed_scopes:
                 raise ValueError(f"CB ldlq_scope must be one of {sorted(allowed_scopes)}, got {raw_scope!r}")
             object.__setattr__(self, "ldlq_scope", scope)
-            # Keep legacy bool consistent: true if any family uses LDLQ.
             expected_ldlq = scope != "none"
             if bool(self.ldlq) != expected_ldlq:
-                # For mixed scope nvfp4, legacy bool is ambiguous; we normalize to True
-                # if scope is nvfp4 (since at least one family is LDLQ). This keeps old
-                # stamps that had ldlq=true for mixed assignments consistent.
-                if scope == "nvfp4" and bool(self.ldlq) is False:
-                    # Allow legacy false with scope nvfp4 only during rehydration from old stamp
-                    # that had no scope; otherwise require consistency.
-                    pass
-                object.__setattr__(self, "ldlq", expected_ldlq)
+                # Fail closed on inconsistent explicit values; old stamps use from_stamp which
+                # passes consistent derived values, so this only triggers on direct inconsistent construction.
+                raise ValueError(
+                    f"CB ldlq {self.ldlq!r} inconsistent with ldlq_scope {scope!r} (expected ldlq={expected_ldlq}) — "
+                    "scope is authoritative; pass consistent values or omit ldlq when providing scope"
+                )
         if not isinstance(self.minchain, bool):
             raise TypeError(
                 "CB minchain identity must be an explicit bool, got "
@@ -300,7 +301,7 @@ class CBSerializationContext:
         cls,
         *,
         scale_sweep: bool = True,
-        ldlq: bool = False,
+        ldlq: bool | None = None,
         ldlq_scope: str | None = None,
         minchain: bool = False,
         encode_tier: str = CB_ENCODE_TIER_DEFAULT,
@@ -314,17 +315,27 @@ class CBSerializationContext:
         )
         from .cb_minchain import MINCHAIN_CONTEXT_VERSION
 
-        # Scope is authoritative; ldlq bool is derived for backward compat.
-        # Callers that pass ldlq_scope explicitly win; otherwise derive from ldlq.
-        if ldlq_scope is not None:
+        # Scope is authoritative; ldlq bool is derived when scope is explicit.
+        # Use sentinel to detect explicit ldlq vs default, so scope-only calls
+        # derive correctly while inconsistent explicit pairs fail closed.
+        _ldlq_explicit = ldlq is not None
+        if ldlq_scope is not None and str(ldlq_scope).strip() != "":
             scope = str(ldlq_scope).strip().lower()
+            if _ldlq_explicit and bool(ldlq) != (scope != "none"):
+                raise ValueError(
+                    f"CB ldlq {ldlq!r} inconsistent with ldlq_scope {scope!r} (expected ldlq={scope != 'none'})"
+                )
+            # Derive ldlq from scope when scope is explicit
+            ldlq_val = scope != "none"
         else:
-            scope = "all" if bool(ldlq) else "none"
+            # No explicit scope — derive from ldlq
+            ldlq_val = bool(ldlq) if _ldlq_explicit else False
+            scope = "all" if ldlq_val else "none"
         return cls(
             scale_coding=PRODUCTION_FP4_SCALE_CODING,
             layout_version=2,
             scale_sweep=scale_sweep,
-            ldlq=bool(ldlq),
+            ldlq=bool(ldlq_val),
             ldlq_scope=scope,
             minchain=minchain,
             minchain_version=(MINCHAIN_CONTEXT_VERSION if minchain else None),
@@ -341,7 +352,7 @@ class CBSerializationContext:
         cls,
         *,
         scale_sweep: bool = True,
-        ldlq: bool = False,
+        ldlq: bool | None = None,
         ldlq_scope: str | None = None,
         minchain: bool = False,
         encode_tier: str = CB_ENCODE_TIER_DEFAULT,
@@ -352,15 +363,22 @@ class CBSerializationContext:
         """Explicit legacy writer context; old artifacts remain readable."""
         if minchain:
             raise ValueError("min-chain has no legacy-v1 serialization contract")
-        if ldlq_scope is not None:
+        _ldlq_explicit = ldlq is not None
+        if ldlq_scope is not None and str(ldlq_scope).strip() != "":
             scope = str(ldlq_scope).strip().lower()
+            if _ldlq_explicit and bool(ldlq) != (scope != "none"):
+                raise ValueError(
+                    f"CB ldlq {ldlq!r} inconsistent with ldlq_scope {scope!r} (expected ldlq={scope != 'none'})"
+                )
+            ldlq_val = scope != "none"
         else:
-            scope = "all" if bool(ldlq) else "none"
+            ldlq_val = bool(ldlq) if _ldlq_explicit else False
+            scope = "all" if ldlq_val else "none"
         return cls(
             scale_coding=LEGACY_FP4_SCALE_CODING,
             layout_version=1,
             scale_sweep=scale_sweep,
-            ldlq=bool(ldlq),
+            ldlq=bool(ldlq_val),
             ldlq_scope=scope,
             encode_tier=encode_tier,
             codebook_source=codebook_source,
@@ -588,7 +606,8 @@ def cb_serialization_context_from_stamp(
         )
     # Per-family scope: new stamps carry ldlq_scope, old stamps only have ldlq bool.
     raw_scope = stamp.get("ldlq_scope")
-    if raw_scope is None:
+    # Empty scope string is treated as unset (old stamps without scope).
+    if raw_scope is None or (isinstance(raw_scope, str) and str(raw_scope).strip() == ""):
         ldlq_scope = "all" if bool(stamp["ldlq"]) else "none"
     else:
         ldlq_scope = str(raw_scope).strip().lower()
@@ -682,38 +701,15 @@ def cb_serialization_context_from_env(
         name="CB_SCALE_SWEEP",
         where=where,
     )
-    # New per-family scope is authoritative; legacy bool maps to all/none.
-    raw_ldlq_scope_clean = str(raw_ldlq_scope).strip().lower() if raw_ldlq_scope is not None else None
-    if raw_ldlq_scope_clean is not None:
-        if raw_ldlq_scope_clean not in {"none", "nvfp4", "all"}:
-            raise ValueError(
-                f"{where}: PRISMAQUANT_CB_LDLQ_SCOPE must be one of none/nvfp4/all, got {raw_ldlq_scope!r}"
-            )
-        ldlq_scope = raw_ldlq_scope_clean
-        # Legacy bool, if also set, must be consistent with scope's ANY.
-        if raw_ldlq is not None:
-            legacy_ldlq = _parse_bool_setting(
-                raw_ldlq, default=False, name="PRISMAQUANT_CB_LDLQ", where=where,
-            )
-            expected_legacy = ldlq_scope != "none"
-            if legacy_ldlq != expected_legacy and not (
-                # Allow legacy true with scope nvfp4 (mixed) for backward compat;
-                # the legacy bool is ambiguous for mixed case.
-                ldlq_scope == "nvfp4" and legacy_ldlq is True
-            ):
-                raise ValueError(
-                    f"{where}: PRISMAQUANT_CB_LDLQ={raw_ldlq!r} inconsistent with "
-                    f"PRISMAQUANT_CB_LDLQ_SCOPE={raw_ldlq_scope!r}"
-                )
-        ldlq = ldlq_scope != "none"
-    else:
-        ldlq = _parse_bool_setting(
-            raw_ldlq,
-            default=False,
-            name="PRISMAQUANT_CB_LDLQ",
-            where=where,
-        )
-        ldlq_scope = "all" if ldlq else "none"
+    # Per-family scope normalized via shared helper (mirrors cb_ldlq_normalize.sh).
+    from .cb_ldlq_normalize import normalize_ldlq_vars
+
+    try:
+        _canon_legacy, _canon_scope = normalize_ldlq_vars(raw_ldlq, raw_ldlq_scope)
+    except ValueError as exc:
+        raise ValueError(f"{where}: {exc}") from None
+    ldlq = _canon_legacy == "1"
+    ldlq_scope = _canon_scope
     minchain = _parse_bool_setting(
         raw_minchain,
         default=False,
@@ -1034,6 +1030,8 @@ def cb_fields_for_context(
     col_weights=None,
     codebook=None,
     activation_rows=None,
+    return_gate_info: bool = False,
+    prepared_evidence=None,
 ):
     """Encode CB fields under the exact artifact serialization context.
 
@@ -1041,6 +1039,12 @@ def cb_fields_for_context(
     a correctness contract, not merely a byte-pricing option.  FP8-CB has no
     FP4 scale plane; it still requires the context so the measured result is
     stamped with the same codebook-sharing identity as allocation/export.
+
+    When ``return_gate_info`` is True, returns ``(fields, gate_info)`` where
+    ``gate_info`` is the exact per-unit gate decision from the shared
+    ``ldlq_reassign_cb_fields_gated`` path (or ``None`` when LDLQ is not
+    applied for this format under the declared scope).  Default False
+    preserves the existing ``fields``-only return for backward compatibility.
     """
     info = _cb_info(spec.name)
     if info is None:
@@ -1066,7 +1070,16 @@ def cb_fields_for_context(
         scale_coding=coding,
         encode_tier=context.encode_tier,
     )
+    gate_info: dict | None = None
     if _ldlq_for_format(spec.name, context):
+        # Production LDLQ scope requires gated behavior — fail-closed.
+        from .nvfp4_cb_formats import _ldlq_gate_enabled
+
+        if not _ldlq_gate_enabled():
+            raise RuntimeError(
+                f"{spec.name}: production LDLQ scope {context.ldlq_scope!r} requires PRISMAQUANT_CB_LDLQ_GATE=1; "
+                "ungated LDLQ is research-only without a context-stamped production artifact"
+            )
         if col_weights is None:
             raise ValueError(f"{spec.name}: LDLQ requires activation-weighted col_weights")
         if activation_rows is None:
@@ -1095,7 +1108,9 @@ def cb_fields_for_context(
                 grid=grid,
                 mode=mode,
                 k=_k,
+                prepared=prepared_evidence,
             )
+            gate_info = dict(_gate_info) if isinstance(_gate_info, dict) else _gate_info
         else:
             fields = ldlq_reassign_cb_fields(
                 weight,
@@ -1105,6 +1120,9 @@ def cb_fields_for_context(
                 grid=grid,
                 mode=mode,
             )
+            gate_info = {"gate": "disabled", "kept_ldlq": True, "metric": "activation_output_mse"}
+    if return_gate_info:
+        return fields, gate_info
     return fields
 
 

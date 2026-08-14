@@ -1028,14 +1028,14 @@ def _packed_expert_param_names(profile) -> frozenset[str]:
 
 
 def _packed_expert_projection_names(profile, packed_proj: str) -> tuple[str, ...]:
-    if profile is not None:
-        try:
-            names = tuple(profile.packed_expert_projection_names(packed_proj))
-            if names:
-                return names
-        except Exception:
-            pass
-    return _LEGACY_PACKED_PROJECTIONS.get(packed_proj, (packed_proj,))
+    """Strict delegate — profile order authoritative, fail-closed.
+
+    No regex/sorted/hardcoded gate/up fallback. Delegates to the neutral
+    shared helper so streaming and cb_ldlq share one authority.
+    """
+    from .cb_ldlq_fused_activation import get_packed_expert_projection_names_strict
+
+    return get_packed_expert_projection_names_strict(profile, packed_proj)
 
 
 def _plan_expert_stacks(skeleton: _LazySkeleton, profile=None) -> dict[str, dict]:
@@ -1144,6 +1144,111 @@ def _expert_member_qnames(prefix, packed_proj, members, profile
     return {(proj, e): f"{prefix}.{e}.{proj}"
             for proj in projections
             for e in range(n)}
+
+
+# ---------------------------------------------------------------------------
+# Public production helpers — single source for streaming export and derive
+# tool. Derive must import only these public helpers, not the private ones.
+# ---------------------------------------------------------------------------
+
+def open_packed_weight_source(model_dir: str | Path):
+    """Public opener: return the real lazy source for packed expert weights."""
+    return _LazySkeleton(str(model_dir))
+
+
+def get_packed_moe_planning(model_dir: str | Path):
+    """Public helper: detect profile, plan stacks, build expert_stack_members.
+
+    This is the single authoritative implementation for planning, member-map,
+    and packed topology. Both the streaming exporter and the derive tool call
+    this function (and the get_* wrappers below) — there is no duplicated
+    regex or hardcoded fallback. Fail-closed: a profile or planning failure
+    raises instead of silently yielding no packed groups.
+    """
+    dir_path = Path(model_dir)
+    prof = detect_profile(str(dir_path))
+    skel = open_packed_weight_source(str(dir_path))
+    groups = _plan_expert_stacks(skel, prof)
+    packed = _packed_expert_param_names(prof)
+    members: dict[str, dict[tuple[str, int], str]] = {}
+    for prefix, group in groups.items():
+        for packed_proj in packed:
+            projs = get_packed_expert_projection_names(prof, packed_proj)
+            if any(p not in group for p in projs):
+                continue
+            mq = _expert_member_qnames(prefix, packed_proj, group, prof)
+            members[f"{prefix}.{packed_proj}"] = mq
+    return prof, groups, members, packed
+
+
+def get_packed_expert_projection_names(profile, packed_proj: str) -> tuple[str, ...]:
+    """Public wrapper for profile-aware projection names and fusion order."""
+    return _packed_expert_projection_names(profile, packed_proj)
+
+
+def get_packed_expert_col_weights(col_weights, members_by_target, profile):
+    """Public wrapper for the exact imatrix pooling rule used in export."""
+    return _packed_expert_col_weights(col_weights, members_by_target, profile)
+
+
+def get_expert_weight(skeleton, profile, prefix, packed_proj, members, expert_id, *, logical_members=None, on_member=None):
+    """Public materializer: sole profile-order concatenation call (gate-then-up).
+
+    This is the single implementation that both the streaming pack loop and
+    the derive tool call. No other cat of expert members exists in the
+    production path.
+
+    ``members`` is the checkpoint-native ``expert_groups[prefix]`` mapping
+    ``projection -> {expert_id: checkpoint_base}`` (e.g. ``layers.N.ffn.experts.E.w1``).
+    ``logical_members`` when supplied is the authoritative
+    ``expert_stack_members[packed_qname]`` mapping ``(projection, expert_id) -> logical_qname``
+    (e.g. ``model.layers.N.mlp.experts.E.gate_proj``) in profile projection order.
+    ``on_member`` when supplied is called as
+    ``on_member(projection, expert_id, checkpoint_base, logical_qname, decoded_tensor)``
+    in profile order — strictly five arguments. A callback-internal
+    TypeError propagates exactly once with no retry. ``logical_members``
+    is required whenever ``on_member`` is supplied; it may be omitted only
+    for no-callback research/materialization call sites.
+    """
+    if on_member is not None and logical_members is None:
+        raise ValueError(
+            "get_expert_weight: on_member requires logical_members "
+            f"for {prefix}.{packed_proj} expert {expert_id}"
+        )
+    projections = _packed_expert_projection_names(profile, packed_proj)
+    tensors = []
+    for p in projections:
+        checkpoint_base = members[p][expert_id]
+        logical_qname = None
+        if logical_members is not None:
+            # logical_members is {(proj, eid): logical_qname}
+            try:
+                logical_qname = logical_members[(p, expert_id)]
+            except KeyError:
+                raise KeyError(
+                    f"get_expert_weight: logical_members missing {(p, expert_id)!r} for {prefix}.{packed_proj} expert {expert_id}"
+                ) from None
+        else:
+            # No logical map supplied — fail closed if on_member would need it,
+            # already handled above. For no-callback path, logical stays None.
+            pass
+        t = skeleton.dequant_weight(checkpoint_base + ".weight")
+        if on_member is not None:
+            # Strict 5-arg callback — no legacy retry, no TypeError swallowing
+            on_member(p, expert_id, checkpoint_base, logical_qname, t)
+        tensors.append(t)
+    return tensors[0] if len(tensors) == 1 else torch.cat(tensors, dim=0)
+
+
+def get_stacked_expert_weight(skeleton, profile, prefix, packed_proj, members, expert_ids=None, *, logical_members=None):
+    """Public stacked helper: delegates to the single materializer above."""
+    projections = _packed_expert_projection_names(profile, packed_proj)
+    if expert_ids is None:
+        expert_ids = range(_n_experts(members, projections))
+    return torch.stack([
+        get_expert_weight(skeleton, profile, prefix, packed_proj, members, eid, logical_members=logical_members)
+        for eid in expert_ids
+    ])
 
 
 def _collapse_per_expert_assignment(assignment, expert_groups, profile):
@@ -1550,20 +1655,10 @@ def _packed_expert_col_weights(col_weights, members_by_target, profile):
 
 
 def _stacked_source_weight(
-        skeleton, profile, prefix, packed_proj, members, expert_ids=None) -> \
+        skeleton, profile, prefix, packed_proj, members, expert_ids=None, *, logical_members=None) -> \
         torch.Tensor:
-    """Materialise the full stacked source weight (E, out, in) for a packed
-    expert group — used only where a stack must be resident (codebook
-    training sampling); the packer streams per expert."""
-    projections = _packed_expert_projection_names(profile, packed_proj)
-    if expert_ids is None:
-        expert_ids = range(_n_experts(members, projections))
-    return torch.stack([
-        _expert_weight(
-            skeleton, profile, prefix, packed_proj, members, expert_id
-        )
-        for expert_id in expert_ids
-    ])
+    """Legacy private stacked helper — delegates to the public single materializer."""
+    return get_stacked_expert_weight(skeleton, profile, prefix, packed_proj, members, expert_ids=expert_ids, logical_members=logical_members)
 
 
 def _n_experts(members: dict[str, dict[int, str]],
@@ -1589,23 +1684,9 @@ def _n_experts(members: dict[str, dict[int, str]],
 
 
 def _expert_weight(skeleton, profile, prefix, packed_proj, members,
-                   e, *, on_member=None) -> torch.Tensor:
-    """Materialize one expert's packed projection using profile-declared
-    projection names and order (for example LFM gate_up = ``w1`` then ``w3``).
-
-    ``on_member(projection, expert_id, checkpoint_base, decoded)`` is called for
-    each source tensor as it is decoded — the hook the render identity uses to
-    verify a stack MEMBER BY MEMBER, since a checkpoint that stores experts
-    per-expert has its source-value digests keyed per expert, not per stack."""
-    projections = _packed_expert_projection_names(profile, packed_proj)
-    tensors = []
-    for p in projections:
-        base = members[p][e]
-        t = skeleton.dequant_weight(base + ".weight")
-        if on_member is not None:
-            on_member(p, e, base, t)
-        tensors.append(t)
-    return tensors[0] if len(tensors) == 1 else torch.cat(tensors, dim=0)
+                   e, *, logical_members=None, on_member=None) -> torch.Tensor:
+    """Legacy private alias — delegates to the public sole materializer."""
+    return get_expert_weight(skeleton, profile, prefix, packed_proj, members, e, logical_members=logical_members, on_member=on_member)
 
 
 # ---------------------------------------------------------------------------
@@ -2219,6 +2300,17 @@ def export_nvfp4_cb_streaming(
     production_recipe_stamped = (
         _recipe_cb_context_stamp is not None or bool(_recipe_cb_tensor_stamps)
     )
+    # Fail-closed gate: production scope with gate disabled is research-only
+    if isinstance(_recipe_cb_context_stamp, dict):
+        _scope = str(_recipe_cb_context_stamp.get("ldlq_scope", "none")).strip().lower()
+        if _scope != "none":
+            from prismaquant.nvfp4_cb_formats import _ldlq_gate_enabled
+
+            if not _ldlq_gate_enabled():
+                raise RuntimeError(
+                    f"export_nvfp4_cb_streaming: production LDLQ scope {_scope!r} requires PRISMAQUANT_CB_LDLQ_GATE=1; "
+                    "ungated LDLQ is research-only without a context-stamped production artifact"
+                )
     _claimed_activation_contract = (
         _recipe_cb_context_stamp.get("activation_contract")
         if isinstance(_recipe_cb_context_stamp, dict)
@@ -2237,12 +2329,10 @@ def export_nvfp4_cb_streaming(
         where="export_nvfp4_cb_streaming layer config",
         assignment=assignment,
     )
-    skeleton = _LazySkeleton(model_dir)
-    try:
-        profile = detect_profile(str(model_dir))
-    except Exception:
-        profile = None
-    expert_groups = _plan_expert_stacks(skeleton, profile)
+    # Authoritative planning via the single shared public helper — same as derive.
+    # Fail-closed: profile/ planning failure raises instead of silently yielding no groups.
+    profile, expert_groups, _pre_members, _ = get_packed_moe_planning(model_dir)
+    skeleton = open_packed_weight_source(model_dir)
     # The allocator writes its layer_config EXPANDED per tensor even though it
     # decided each expert group atomically, so a per-expert checkpoint arrives
     # as one entry per (expert, projection). Gridbook only names stacks. Do the
@@ -2266,6 +2356,21 @@ def export_nvfp4_cb_streaming(
                 assignment, expert_groups, profile
             )
         )
+        # Validate contract: collapsed member map must equal authoritative planning
+        # for every packed stack it contains — otherwise the actual member map
+        # would drift from the single shared topology helper.
+        for _qname, _members in expert_stack_members.items():
+            _expected = _pre_members.get(_qname)
+            if _expected is None:
+                raise AssertionError(
+                    f"{_qname}: collapsed stack not in authoritative planning "
+                    f"{sorted(_pre_members)}"
+                )
+            if _expected != _members:
+                raise AssertionError(
+                    f"{_qname}: member map drift vs authoritative planning "
+                    f"(expected {_expected} got {_members})"
+                )
     # Namespace exclusion is validated against the COLLAPSED assignment, i.e.
     # the units as the allocator actually decided them, so a per-expert entry
     # cannot hide a collision behind its expanded spelling.
@@ -2276,7 +2381,7 @@ def export_nvfp4_cb_streaming(
         profile=profile,
     )
     if expert_stack_members:
-        col_weights = _packed_expert_col_weights(
+        col_weights = get_packed_expert_col_weights(
             col_weights, expert_stack_members, profile)
         print(
             f"[export-cb-stream] collapsed "
@@ -4127,7 +4232,7 @@ def _stream_pack_target(skeleton, profile, resolved, qname, grid, mode, k,
     # in-memory exporter packs a pre-stacked 3-D tensor. Peak = one MoE layer's
     # experts, not the model.
     prefix, packed_proj, grp = h
-    projections = _packed_expert_projection_names(profile, packed_proj)
+    projections = get_packed_expert_projection_names(profile, packed_proj)
     expert_ids = (
         sorted({expert_id for _projection, expert_id in member_qnames})
         if member_qnames is not None
@@ -4140,19 +4245,35 @@ def _stream_pack_target(skeleton, profile, resolved, qname, grid, mode, k,
         # cost rows and the imatrix are too), so the stack is verified member
         # by member as it is decoded. Hashing the concatenated stack instead
         # would certify a name the recipe never priced.
+        # Validation uses logical_qname (recipe identity) while checkpoint_base
+        # is validated against the authoritative group mapping without heuristic
+        # conversion.
         from prismaquant.production_weight_cache import (
             validate_cb_render_source_weight,
         )
 
-        def on_member(proj, e, _base, decoded, _q=member_qnames):
-            member = _q[(proj, e)]
+        def on_member(proj, e, checkpoint_base, logical_qname, decoded, _q=member_qnames, _grp=grp):
+            # Validate checkpoint_base against authoritative group (no heuristic conversion)
+            exp_ckpt = _grp[proj][e]
+            if checkpoint_base != exp_ckpt:
+                raise AssertionError(
+                    f"export_nvfp4_cb_streaming expert stack {prefix}.{packed_proj} expert {e} proj {proj}: "
+                    f"checkpoint_base {checkpoint_base!r} != authoritative group {exp_ckpt!r}"
+                )
+            # Validate logical_qname matches authoritative logical map
+            exp_logical = _q[(proj, e)]
+            if logical_qname != exp_logical:
+                raise AssertionError(
+                    f"export_nvfp4_cb_streaming expert stack {prefix}.{packed_proj} expert {e} proj {proj}: "
+                    f"logical_qname {logical_qname!r} != authoritative {exp_logical!r}"
+                )
             validate_cb_render_source_weight(
                 cb_render_identity,
-                member,
+                logical_qname,
                 decoded,
                 where="export_nvfp4_cb_streaming expert stack member",
             )
-            verified_source_qnames.add(member)
+            verified_source_qnames.add(logical_qname)
 
     # Fill a PREALLOCATED device buffer one expert at a time. Building a list
     # of E decoded experts, stacking it, then copying the stack to the device
@@ -4162,15 +4283,17 @@ def _stream_pack_target(skeleton, profile, resolved, qname, grid, mode, k,
     # one resident expert is the actual working set the module docstring
     # claims.
     first_expert = expert_ids[0]
-    first = _expert_weight(skeleton, profile, prefix, packed_proj, grp,
+    first = get_expert_weight(skeleton, profile, prefix, packed_proj, grp,
                            first_expert,
+                           logical_members=member_qnames,
                            on_member=on_member)
     w = torch.empty((n, *first.shape), dtype=first.dtype, device=device)
     w[0] = first.to(device)
     del first
     for local_index, expert_id in enumerate(expert_ids[1:], start=1):
-        chunk = _expert_weight(skeleton, profile, prefix, packed_proj, grp,
+        chunk = get_expert_weight(skeleton, profile, prefix, packed_proj, grp,
                                expert_id,
+                               logical_members=member_qnames,
                                on_member=on_member)
         w[local_index] = chunk.to(device)
         del chunk

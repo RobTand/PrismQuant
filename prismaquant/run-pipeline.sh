@@ -96,7 +96,27 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
   # until the served KL/PPL gate closes for the concrete artifact.
   : "${NVFP4_ACTIVATION_SCALE_POLICY:=mse_grid_calibrated.v1}"
   : "${CB_SCALE_SWEEP:=1}"
-  : "${PRISMAQUANT_CB_LDLQ:=0}"
+  # CB LDLQ scope/legacy normalization is the single source of truth in
+  # prismaquant/cb_ldlq_normalize.sh — sourced here and by tests.
+  # The helper is safe to source (no side effects) and normalizes the two
+  # vars via the authoritative truth table.
+  # shellcheck source=prismaquant/cb_ldlq_normalize.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/cb_ldlq_normalize.sh"
+  normalize_cb_ldlq_vars || exit 2
+  : "${PRISMAQUANT_CB_LDLQ_GATE:=1}"
+  case "$PRISMAQUANT_CB_LDLQ_GATE" in
+    1|true|True|TRUE|yes|Yes|YES|on|On|ON) PRISMAQUANT_CB_LDLQ_GATE=1 ;;
+    0|false|False|FALSE|no|No|NO|off|Off|OFF) PRISMAQUANT_CB_LDLQ_GATE=0 ;;
+    *)
+      echo "[pipeline] ERROR: PRISMAQUANT_CB_LDLQ_GATE must be 0 or 1" >&2
+      exit 2
+      ;;
+  esac
+  # Production scope nvfp4 must be gated — ungated LDLQ would silently share identity with gated.
+  if [[ "$PRISMAQUANT_CB_LDLQ_SCOPE" == "nvfp4" && "$PRISMAQUANT_CB_LDLQ_GATE" != "1" ]]; then
+    echo "[pipeline] ERROR: PRISMAQUANT_CB_LDLQ_SCOPE=nvfp4 requires PRISMAQUANT_CB_LDLQ_GATE=1 (gated LDLQ); ungated scope would share cache identity with gated artifact" >&2
+    exit 2
+  fi
   : "${PRISMAQUANT_CB_MINCHAIN:=0}"
   : "${PRISMAQUANT_CB_MINCHAIN_ANCHORS:=}"
   : "${PRISMAQUANT_CB_MINCHAIN_HOLDBACKS:=}"
@@ -120,14 +140,6 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
       exit 2
       ;;
   esac
-  case "$PRISMAQUANT_CB_LDLQ" in
-    1|true|True|TRUE|yes|Yes|YES|on|On|ON) PRISMAQUANT_CB_LDLQ=1 ;;
-    0|false|False|FALSE|no|No|NO|off|Off|OFF) PRISMAQUANT_CB_LDLQ=0 ;;
-    *)
-      echo "[pipeline] ERROR: PRISMAQUANT_CB_LDLQ must be 0 or 1" >&2
-      exit 2
-      ;;
-  esac
   case "$PRISMAQUANT_CB_MINCHAIN" in
     1|true|True|TRUE|yes|Yes|YES|on|On|ON) PRISMAQUANT_CB_MINCHAIN=1 ;;
     0|false|False|FALSE|no|No|NO|off|Off|OFF) PRISMAQUANT_CB_MINCHAIN=0 ;;
@@ -147,7 +159,7 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
     echo "[pipeline] ERROR: CB layout-v2/two_tier requires CB_SCALE_SWEEP=1; its scale encoder has no defined one-shot render" >&2
     exit 2
   fi
-  export CB_CODEBOOK_SOURCE CB_SCALE_CODING CB_SCALE_SWEEP PRISMAQUANT_CB_LDLQ
+  export CB_CODEBOOK_SOURCE CB_SCALE_CODING CB_SCALE_SWEEP PRISMAQUANT_CB_LDLQ PRISMAQUANT_CB_LDLQ_SCOPE PRISMAQUANT_CB_LDLQ_GATE
   export PRISMAQUANT_CB_MINCHAIN PRISMAQUANT_CB_MINCHAIN_ANCHORS
   export PRISMAQUANT_CB_MINCHAIN_HOLDBACKS PRISMAQUANT_CB_MINCHAIN_AUDIT_SEED
   export PRISMAQUANT_CB_MINCHAIN_BACKSTOP PRISMAQUANT_CB_MINCHAIN_AUDIT_MEDIAN
@@ -839,6 +851,7 @@ RENDER_ENV_SETTINGS=(
   "PRISMAQUANT_ACT_CLIP_QUANTILE=${PRISMAQUANT_ACT_CLIP_QUANTILE:-0.999}"
   "PRODUCTION_CACHE_LEVERS=$PRODUCTION_CACHE_LEVERS"
   "PRODUCTION_CACHE_DISABLE_LEVERS=${PRODUCTION_CACHE_DISABLE_LEVERS:-}"
+  "PRISMAQUANT_CB_LDLQ_GATE=${PRISMAQUANT_CB_LDLQ_GATE:-1}"
 )
 
 STAGE_SETTINGS_PATH="${WORK_DIR}/artifacts/stage_settings.json"
@@ -884,6 +897,8 @@ STAGE_SETTINGS_ENV=(
   "CB_CODEBOOK_SOURCE=${CB_CODEBOOK_SOURCE:-}"
   "CB_SCALE_SWEEP=${CB_SCALE_SWEEP:-}"
   "PRISMAQUANT_CB_LDLQ=${PRISMAQUANT_CB_LDLQ:-}"
+  "PRISMAQUANT_CB_LDLQ_SCOPE=${PRISMAQUANT_CB_LDLQ_SCOPE:-}"
+  "PRISMAQUANT_CB_LDLQ_GATE=${PRISMAQUANT_CB_LDLQ_GATE:-1}"
   "PRISMAQUANT_CB_MINCHAIN=${PRISMAQUANT_CB_MINCHAIN:-}"
   "PRISMAQUANT_CB_MINCHAIN_ANCHORS=${PRISMAQUANT_CB_MINCHAIN_ANCHORS:-}"
   "PRISMAQUANT_CB_MINCHAIN_HOLDBACKS=${PRISMAQUANT_CB_MINCHAIN_HOLDBACKS:-}"
@@ -1467,6 +1482,7 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
     --cb-codebook-source "$CB_CODEBOOK_SOURCE"
     --cb-scale-sweep "$CB_SCALE_SWEEP"
     --cb-ldlq "$PRISMAQUANT_CB_LDLQ"
+    --cb-ldlq-scope "$PRISMAQUANT_CB_LDLQ_SCOPE"
     --cb-minchain "$PRISMAQUANT_CB_MINCHAIN"
     --cb-encode-tier "$PRISMAQUANT_CB_ENCODE_TIER"
     --cb-col-weights "$CB_COL_WEIGHTS"

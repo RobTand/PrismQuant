@@ -574,6 +574,17 @@ def export_nvfp4_cb(
     production_recipe_stamped = (
         _recipe_cb_context_stamp is not None or bool(_recipe_cb_tensor_stamps)
     )
+    # Fail-closed gate: production scope with gate disabled is research-only
+    if isinstance(_recipe_cb_context_stamp, dict):
+        _scope = str(_recipe_cb_context_stamp.get("ldlq_scope", "none")).strip().lower()
+        if _scope != "none":
+            from prismaquant.nvfp4_cb_formats import _ldlq_gate_enabled
+
+            if not _ldlq_gate_enabled():
+                raise RuntimeError(
+                    f"export_nvfp4_cb: production LDLQ scope {_scope!r} requires PRISMAQUANT_CB_LDLQ_GATE=1; "
+                    "ungated LDLQ is research-only without a context-stamped production artifact"
+                )
     _claimed_activation_contract = (
         _recipe_cb_context_stamp.get("activation_contract")
         if isinstance(_recipe_cb_context_stamp, dict)

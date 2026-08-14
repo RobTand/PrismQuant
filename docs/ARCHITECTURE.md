@@ -1,8 +1,16 @@
 # PrismaQuant Architecture
 
 As of: 2026-08-07 · branch `orchestrator/dsv4-ldlq-reexport` · verified against implementation
-baseline commit `0c14957` plus the priced-interpolated-output fix and gated LDLQ
-post-allocation refinement, with the external Gridbook runtime pinned to
+baseline commit `0c14957` plus the priced-interpolated-output fix, gated LDLQ
+post-allocation refinement, per-family scope `nvfp4` (activation-gated, pooled
+missing-expert prior), derived-merge provenance repair, shared packed-topology
+via `open_packed_weight_source` / `get_packed_moe_planning` / `get_packed_expert_projection_names` / `get_packed_expert_col_weights` / `get_expert_weight`
+(mean-pooled col-weights, fused `gate_up_proj` E×2R×C encode, production-path recipe-stamped validated member-map contract (only when the assignment carries the reserved `__prismaquant__` recipe stamp and the streaming exporter can compare against authoritative `get_packed_moe_planning`; research/materialization call sites without a stamp or without `logical_members` are not validated),
+fused activation `prismaquant.cb_ldlq_fused_activation.concat_equal_member_samples.v1` profile-order
+row-concat with equal-count gate, `PROJECTION_RUNG_SCHEMA v3`, dual-namespace `get_expert_weight`
+with strictly five-argument `checkpoint_base` + `logical_qname` callback in profile order — `logical_members` required whenever `on_member` is supplied, with no legacy four-argument retry and no `TypeError` swallowing),
+memory-bounded fused `gate_up_proj` K13 path — `prismaquant/nvfp4_cb_formats.py:nvfp4_cb_reconstruct` chunked over the authoritative outer expert dimension (`PRISMAQUANT_CB_RECON_EXPERT_CHUNK=8` default ~512 MiB, `PRISMAQUANT_CB_RECON_ROW_CHUNK=4096` for dense) and both `ldlq_reassign_cb_fields_gated` per-expert `activation_output_mse` and the packed derive metric path `tools/derive_dual_basis_packed.py:encode_nvfp4_rung_packed` evaluated without ever materializing the 16 GiB fused reconstruction (chunk decode + immediate per-expert weight/weighted/output/relative MSE + prompt release, GPU-bound; derive emits per-expert fused and per-leaf gate/up metrics via authoritative slice_boundaries in one decode per chunk),
+with the external Gridbook runtime pinned to
 `9011a19228ddb96b8a49e11a20ac75c99c83998e` (v0.8.0). This branch ports the dated
 2026-08-01 DeepSeek-V4-Flash-0731 92 GB study record (§9.2) forward from its 0.5.1
 working tree; the study's Gridbook-candidate claims were **not** carried over, because
@@ -379,7 +387,8 @@ VALIDATED_SOURCE_PREFETCH=require   VALIDATED_FRONTIER_PICK=kneedle,
 VALIDATED_FRONTIER_SKIP_CALIB=$NSAMPLES (held-out disjointness, ON)
 CB_EXPERT_EMPIRICAL=0  CB_SCALE_CODING=two_tier  (D15: shipped values)
 PRISMAQUANT_CB_LDLQ=0  (opt-in post-fit feedback assignment)
-PRISMAQUANT_CB_LDLQ_GATE=1  (do-no-harm col-weighted MSE gate; per-Linear and per-expert fallback to raw when LDLQ regresses; byte-neutral)
+PRISMAQUANT_CB_LDLQ_SCOPE=<unset, maps to none; explicit nvfp4 gives NVFP4-CB LDLQ, FP8-CB raw>
+PRISMAQUANT_CB_LDLQ_GATE=1  (do-no-harm activation_output_mse gate; per-Linear and per-expert fallback to raw when LDLQ regresses; byte-neutral; pooled missing-expert prior identical to CBLDLQActivationLoader)
 PRISMAQUANT_CB_MINCHAIN=0  (opt-in monotone packed-expert rung chain)
 AURA_ADDITIVITY_GATE=measure
 PRISMAQUANT_GGUF_IMATRIX=1  DEVICE=cuda  EXPORT_DEVICE=cuda
@@ -1281,85 +1290,207 @@ silently corrupts.
 | Every format in the assignment must have an emit path | `EXPORTABLE_FORMATS` `:7517`, checked `:1548`; the serving profile's `export_lane.codec_formats_from` bounds the allocator's menu by that same constant (`serving_profiles.py:252-330`) | a format with no `config_groups` scheme used to be silently rewritten to BF16 at 16 bpp, blowing the selected byte budget (#27) |
 | Registry ↔ served metadata agree on bits/group | **not enforced** — `FormatSpec` (`format_registry.py:44-168`) and the export `*_SCHEME` constants (`:7247-7336`) are independent sources of truth with no reconciling test | a divergence mis-prices bpp or mis-declares the served scheme; §12 D17 |
 
-### 6.5 Post-allocation LDLQ refinement (DSv4 A-FAST re-export, 2026-08-07)
+### 6.5 Direct LDLQ remeasurement (scope `nvfp4`) — production recipe
 
-The A-FAST burn's cost table was measured **without** LDLQ (`cbl_semantics.ldlq_in_measurement=false`
-on every burn cell) but the per-tensor `cb_serialized_identity` already claimed `ldlq:true`
-for the intended export bytes.  The cost and the bytes therefore disagreed, and the
-`cb_render_identity` that would have made the mismatch fail-closed was absent from the
-research-assembled `cost_merged` path (the Pareto writer then KeyErrored before it could
-even stamp one).
+The production CB recipe measures NVFP4 **with** LDLQ and exports the same.
+`PRISMAQUANT_CB_LDLQ_SCOPE=nvfp4` (scope authoritative) gives the cost,
+allocator, and export planes a single fixed-codebook, fixed-scale LDLQ math:
 
-The honest fix is **not** to relabel the raw cost as LDLQ and not to weaken any guard.
-Instead the allocator's assignment (2.53 bpw, `c525f4025eac7061`, `predicted_dloss 619.71`)
-stays on its raw cost, and the exporter applies a **byte-neutral, per-unit gated LDLQ
-reassignment** on top of the already-chosen codebooks/scales:
-
-* `nvfp4_cb_formats.ldlq_reassign_cb_fields_gated` (`PRISMAQUANT_CB_LDLQ_GATE=1`, default-on)
-  scores the raw and LDLQ reconstructions with the same col-weighted MSE the cost's
-  `BRANCH_INTERPOLATED_OUTPUT` / `BRANCH_MEASURED` branch uses, and keeps the raw
-  indices per Linear (2-D) or per expert slice (3-D, mixing only the winning slices)
-  when LDLQ would regress.  `ldlq_reassign_cb_fields` without the gate remains the
-  verbatim assignment for cost-measurement parity.
-* The gate is byte-neutral by construction (fixed codebook, fixed scales, only the
-  `k`-bit indices move), so `cb_tensor_payload_breakdown` and `whole_artifact_budget`
-  are unchanged for the post-allocation refinement path.  Allocator optimality for
-  that path is claimed only for the raw cost basis it actually optimized; LDLQ-cost
-  optimality is not implied and requires the dual-basis reallocation below.
-* Truthful provenance is `prismaquant.cb_ldlq_refinement.v1`
-  (`cb_ldlq_refinement.py:build_refinement_provenance`): `cost_ldlq=false`,
-  `export_ldlq=true`, `gate=activation_output_mse`, `byte_neutral=true`, plus the
-  creation timestamp.  The derived `layer_config.json` carries it under
-  `__prismaquant__.post_allocation_refinement`, and both CB exporters copy it
-  into `quant_config.json/provenance.post_allocation_refinement` after
-  `validate_refinement_provenance` (invalid provenance aborts, it is never
-  silently dropped).  A forged context stamp (claiming the cost was LDLQ) is
-  never written.
-* The **dual-basis** production recipe (scope `nvfp4`, §6.5.1) keeps the raw NVFP4
-  bank as the immutable interpolation basis for FP8_CB, while the allocator-facing
-  NVFP4 cost plane, the allocator itself, and the exporter all use the gated LDLQ
-  NVFP4 plane.  Per-tensor identities therefore stamp `ldlq:true` for NVFP4_CB
-  and `ldlq:false` for FP8_CB, and the global recipe stamps `ldlq_scope:nvfp4`.
-
-`cb_fields_for_context` consults the gate (`_ldlq_gate_enabled`) and the scope
-(`_ldlq_for_format`) so every production render — cost or export — shares the
-same fixed-codebook LDLQ math under the declared scope, but only the dual-basis
-reallocation makes the raw→LDLQ bridge an allocator-plane change rather than a
-post-hoc polish.
+* `nvfp4_cb_formats.ldlq_reassign_cb_fields_gated` (`PRISMAQUANT_CB_LDLQ_GATE=1`,
+  default-on) is the shared encoder used identically in cost and export. It
+  scores raw and LDLQ reconstructions with `activation_output_mse` — direct
+  activation-replay output MSE `mean((activation_rows @ (W - W_hat).T)^2)` over
+  the same captured calibration rows that the cost's `BRANCH_MEASURED` /
+  `BRANCH_INTERPOLATED_OUTPUT` path records as `output_mse` — **not** a diagonal
+  `col_weighted_mse` (`(W-W_hat)^2` weighted by `E[‖x‖^2]`). The gate keeps the
+  raw indices per Linear (2-D) or per expert slice (3-D, mixing only winning
+  slices) when LDLQ would regress. `ldlq_reassign_cb_fields` without the gate
+  remains the verbatim assignment for cost-measurement parity only.
+* The gate is byte-neutral by construction (fixed codebook, fixed scales, only
+  the `k`-bit indices move), so `cb_tensor_payload_breakdown` and
+  `whole_artifact_budget` are unchanged between raw and gated-LDLQ for the same
+  `k`. Allocator optimality is claimed for the **LDLQ cost plane actually
+  measured** — not for a raw-cost optimum polished at export.
+* Per-family scope `nvfp4` means NVFP4_CB is LDLQ and FP8_CB is raw. Per-tensor
+  identities stamp `ldlq:true` for NVFP4_CB and `ldlq:false` for FP8_CB, and the
+  global recipe stamps `ldlq_scope:nvfp4`. `cb_fields_for_context` consults
+  `_ldlq_gate_enabled` and `_ldlq_for_format`, so cost, allocator, and export
+  share one math path; FP8 in this derive is **preserved deep-equal** from the
+  canonical merged file — any future FP8 interpolation must read the raw/no-LDLQ
+  plane, never LDLQ.
 
 #### 6.5.1 Dual-basis cost construction (scope `nvfp4`)
+
+**Authoritative source.** The immutable canonical cost is
+`/home/rob/dq-runs/dsv4-flash-0731/cost-ldlq/burn-afast/cost_merged.pkl`,
+109058144 bytes, sha256
+`03bb8dac46744cccb03018f982196dc35f92e3553254fe5acf6ca49265127801`, 33325 rows.
+It already has complete NVFP4 K12–K18 coverage for all 43 layers.
+NVFP4 K12/K15/K16/K18 are measured or explicit unrouted weight-only;
+K13/K14/K17 are within-NV band interpolation except 99 direct rows.
+FP8 experts use within-FP8 K29/K35 law plus full-layer audit fallbacks;
+dense has K36 only in this canonical file. No canonical row has cross-family
+interpolation and no L20–L22 family switch. Early mixed/cross-family phase is
+historical/archive only and must not be denied, but it is **not** the current
+allocation source. Raw NVFP4 is **not** the basis for current FP8 values;
+FP8 dicts remain deep-equal to the canonical file (see below). Future
+interpolation, if mentioned, uses the raw scope, never LDLQ.
 
 The production recipe keeps **three planes** in memory and on disk, never
 re-labeling one as the other:
 
-1. **NVFP4_CB raw** — immutable interpolation basis only. The burn's raw bank
-   (`cbl_semantics.ldlq_in_measurement=false`) is preserved byte-for-byte for
-   FP8_CB interpolation; it is never overwritten and its `cost_merged.pkl` is
-   never patched in place.
-2. **NVFP4_CB LDLQ** — the measured cost / allocator / export plane.  Each
-   NVFP4 entry is re-measured with the fixed-codebook, fixed-scale LDLQ encoder
-   (`PRISMAQUANT_CB_LDLQ_SCOPE=nvfp4`, `activation_output_mse` gate) and carries
-   its own provenance (`raw_source_digest`, `ldlq_context`, `gate_metric`,
-   `measured_vs_interpolated`, `output_metric`).  Direct measurement is preferred
-   for the allocator-critical rungs (`K12/K15/K18` plus an independent `K16`
-   holdout); if a saving law `saving(K)=mse_ldlq/mse_raw` is used to fill
-   `K13/K14/K17`, it must pass a held-out composition gate
-   `raw_interpolation × saving_interpolation` vs direct LDLQ at `K16` within the
-   stated tolerance, otherwise all seven rungs are direct-measured.  The law is
-   fit per-projection at minimum and tested for per-tensor/per-expert residuals.
-3. **FP8_CB raw** — raw/interpolated plane.  All FP8_CB costs remain
-   `ldlq:false` and are interpolated/projected from the **raw** NVFP4 bank
-   (1), even after (2) replaces the NVFP4 cost plane.  Ordering and provenance
-   are explicit: FP8 interpolation reads the raw bank, not the LDLQ bank, and
-   each FP8 entry records `interpolation_source:raw`.
+1. **NVFP4_CB raw** — immutable cost bank. The burn's raw bank
+   (`cbl_semantics.ldlq_in_measurement=false`) is never overwritten and its
+   `cost_merged.pkl` is never patched in place. Source weights, activation cache,
+   `cb_col_weights.pkl`, raw shards, and raw merged are reused; no raw values
+   are re-burned. This derive re-generates every selected/exported NVFP4 encoding
+   under LDLQ from source weights; there is no special first-22 canonical
+   population hole — the canonical file already has complete K12–K18 for all 43
+   layers.
+2. **NVFP4_CB LDLQ** — the measured cost / allocator / export plane. LDLQ is a
+   **low-rate NVFP4 K12–K18 candidate only** (high-rate LDLQ is not in scope;
+   see §12). Each NVFP4 entry is re-measured with the fixed-codebook,
+   fixed-scale LDLQ encoder (`PRISMAQUANT_CB_LDLQ_SCOPE=nvfp4`, raw fallback
+   gated by **direct activation replay `output_mse`** — not diagonal
+   `col_weighted_mse`) and carries its own provenance (`raw_source_digest`,
+   `ldlq_context`, `gate_metric`, `measured_vs_interpolated`, `output_metric`).
+   All seven NVFP4 rungs are direct-measured in the production derive because
+   `saving(K)` composition is unvalidated; `K12/K15/K18 + K16 holdout` as a
+   future optimization is documented only as research. If a saving law
+   `saving(K)=mse_ldlq/mse_raw` is used to fill `K13/K14/K17`, it must pass a
+   held-out composition gate `raw_interpolation × saving_interpolation` vs direct
+   LDLQ at `K16` within the stated tolerance, otherwise all seven rungs are
+   direct-measured. The law is fit per-projection at minimum and tested for
+   per-tensor/per-expert residuals. LDLQ has **no served KL/PPL evidence** and is
+   **not a production-default promotion**; it is a gated low-rate candidate.
+3. **FP8_CB raw** — preserved plane. All FP8_CB costs remain `ldlq:false` and
+   are **preserved deep-equal from the canonical `cost_merged.pkl`**
+   (`fp8_source=preserved_deep_equal_from_raw_merged`); this derive performs
+   **no FP8 reinterpolation**. Historical archived campaigns did cross-family
+   NVFP4→FP8 interpolation (see `archive/`), but the current canonical file has
+   **no cross-family interpolation** and is the sole source for FP8 (within-FP8
+   K29/K35 law plus audit-fallback, dense K36 only). Any future FP8 interpolation
+   must use the **raw/no-LDLQ scope, never the LDLQ plane**.
 
 Gated LDLQ is used identically in cost and export for the NVFP4 plane: if a
 unit falls back to raw, its allocator cost is the gated (raw) result and the
 exporter makes the same deterministic decision from identical activation
-evidence.  Aggregate and per-unit gate decisions are recorded durably
-(`ldlq_gate_telemetry.json` plus per-tensor `gate` fields) and the final report
-is based on observed counts, not a declared flag.  The raw interpolation plane
-is always ungated raw by definition.
+evidence. The gate is `PRISMAQUANT_CB_LDLQ_GATE=1` (direct activation-replay
+`output_mse` with `epsilon=1e-12`), fingerprinted in
+`pipeline.py:STAGE_SETTINGS_KEYS` and `run-pipeline.sh:RENDER_ENV_SETTINGS` so
+gated and ungated renders cannot share cache identity; for any production
+render with `ldlq_scope != none` the gate is **implied and fail-closed**
+(`cb_fields_for_context` and both exporters refuse `scope=nvfp4` with
+`gate=0` before any output, while the low-level `ldlq_reassign_cb_fields`
+remains reachable as research without a context-stamped artifact). Aggregate and
+per-unit gate decisions are recorded durably in the **derive manifest** plus
+per-tensor `gate` fields and in the projection/dense checkpoint identities
+(`activation_evidence` with `ACT_ROOT`, `fused_activation_policy`
+`prismaquant.cb_ldlq_fused_activation.concat_equal_member_samples.v1`, `member_order`,
+`slice_boundaries`, row counts, pooling/missing semantics,
+`evidence_sha256` (hash of the actual concatenated tensors) and loader contract
+`CBLDLQActivationLoader+fill_empty_expert_activation_rows`). The fused evidence
+is **profile-order gate-then-up row concat** (`CBLDLQActivationLoader` materialises
+`torch.cat([gate, up], dim=0)` deterministically; exact-equality dedup is removed):
+all declared members must be present together or absent together, rank 2, same
+width, and **equal row count** so `mean(square(cat(gate,up)))` exactly matches
+mean-pooled `cb_col_weights`; partial presence or rank/width/count mismatch fails
+closed and single-member `down_proj` is unchanged. `fill_empty_expert_activation_rows`
+runs only after per-expert fusion. `PROJECTION_RUNG_SCHEMA` is `v3` (bumped from
+`v2`) so the changed evidence semantics cannot resume stale `v2` checkpoints; all
+hashes are of the concatenated tensors, `member_order` is explicit, and
+`n_activation_rows` is the concatenated count. The CB exporters
+and the derive cost path share the deterministic
+`ldlq_reassign_cb_fields_gated` implementation and the same loader, therefore
+produce the same per-unit decision from the same activation evidence; the
+derive manifest (`fused_activation_policy` stamped) remains the single observed source.
+The final report is based on observed counts, not a declared flag. The shared
+public `get_expert_weight` API is the sole `torch.cat` materializer and now
+receives `logical_members` (`expert_stack_members` logical qnames) alongside the
+checkpoint-native `expert_groups` bases (`layers.N.ffn.experts.E.w1/w3/w2` vs
+`model.layers.N.mlp.experts.E.gate/up/down_proj`); its `on_member` callback
+receives both `checkpoint_base` and `logical_qname` with the decoded tensor in
+strictly five-argument profile projection order — `logical_members` is required
+whenever `on_member` is supplied (production path), with no `TypeError` swallowing or
+legacy four-argument retry; `logical_members` may be omitted only for no-callback
+research/materialization call sites. Both derive and streaming **production** call sites
+use that same API and validate `checkpoint_base` against the authoritative group map
+without heuristic `checkpoint_to_live` conversion, calling
+`validate_cb_render_source_weight` with the logical qname; streaming's collapsed member-map
+validation against authoritative `get_packed_moe_planning` is a **recipe-stamped production-path
+claim only** — it runs when the assignment carries the reserved `__prismaquant__` stamp and the
+exporter has an authoritative planning to compare against, not on research tables or
+materialization helpers. No regex/sorted/hardcoded gate/up fallback and no
+message-substring `no observed` classification exist; the `NoObservedExpertRowsError`
+typed exception and strict `get_packed_expert_projection_names_strict` (neutral shared helper
+`prismaquant.cb_ldlq_fused_activation.get_packed_expert_projection_names_strict`) are the
+single authority for projection order and missing-row semantics. `fill_empty_expert_activation_rows`
+typed no-observed handling preserves raw-fallback telemetry and pooling behavior with no
+string matching. Outside the profile no regex/string-replace or hardcoded `w`-mapping exists.
+
+**Memory-bounded fused reconstruction (2026-08-07, K13 16 GiB cat fix — follow-up 2026-08-07 packed-derive streaming).** `nvfp4_cb_formats.py:2714`
+`ldlq_reassign_cb_fields_gated` → `nvfp4_cb_reconstruct` → `torch.cat` over the full
+256-expert fused `gate_up_proj` requested a single 16 GiB allocation (67.03 GiB allocated +
+22.97 GiB reserved, 90.25 GiB process, 7.52 GiB free, Docker OOMKilled=false) and failed
+with `torch.OutOfMemoryError` in Docker. Root cause is the `product`-mode `torch.cat(parts, dim=-1)`
+materializing `(E·R, nvec, 8)` as one allocation plus the final `(E,R,C)` reconstruction.
+Fix is production-grade and HOT-PATH PRESERVING, not a launcher workaround and not reduced
+coverage: (1) `nvfp4_cb_reconstruct` (`prismaquant/nvfp4_cb_formats.py:2912`) is chunked over the
+authoritative outer expert dimension when `shape` is 3-D (`E,R,C`) and over rows otherwise,
+via `PRISMAQUANT_CB_RECON_EXPERT_CHUNK` (default 8 experts ~512 MiB decode chunk on logical
+E=256,R=4096,C=4096 fused gate_up_proj; physical MXFP4 source halves the stored reduce
+dimension to 2048 columns nibble-packed as I8, so on-disk bytes are half the logical
+width, while the decode chunk is sized on the logical 4096 width, validated) and
+`PRISMAQUANT_CB_RECON_ROW_CHUNK` (4096 rows, validated); each chunk's `torch.cat` is bounded to
+`chunk_experts·R·C` (~512 MiB decode chunk at 8 experts) and is decoded on GPU with prompt per-chunk release,
+so the 16 GiB contiguous cat cannot recur for the 256-expert path. Fail-closed on malformed 3-D
+`shape` (`rows != E*R` refuses invalid reshape). Note: 512 MiB is the largest single contiguous
+decode allocation (CPU/static bound, not a live allocation validation or guaranteed fit), not the total process peak — total peak also includes the BF16 logical fused weight 8 GiB (E=256,R=4096,C=4096; per leaf gate/up 2048 rows each, FP32 reconstruction 16 GiB), fields, col-weights, activations and CUDA workspace, and live CUDA
+with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is still required; the bound alone does
+not guarantee fit. (2)
+`ldlq_reassign_cb_fields_gated` (`prismaquant/nvfp4_cb_formats.py:2577`) no longer materializes the
+full 16 GiB raw and LDLQ reconstructions; per-expert `activation_output_mse` is evaluated
+chunked via the public `iter_nvfp4_cb_recon_chunks` — decode one expert chunk on GPU, compute
+`mean((act @ (W-W_hat).T)^2)` per expert immediately, release the chunk, continue — so peak
+residency is one chunk’s decode plus `weight` and `fields` (GPU-bound, no CPU/NVMe fallback, no
+metric switch). Dense/1-D paths are chunked over rows with identical mean aggregation. (3)
+`tools/derive_dual_basis_packed.py:encode_nvfp4_rung_packed` never calls `nvfp4_cb_reconstruct`
+for the 16 GiB fused parent; it decodes expert chunks via the public
+`prismaquant.nvfp4_cb_formats.iter_nvfp4_cb_recon_chunks` (validated 3-D shape and row alignment,
+preserves product tuple codebooks and two-tier field metadata, yields authoritative expert ranges
+and decoded chunks with explicit ownership) and immediately computes **all** emitted metrics
+(per-expert fused weight/weighted/output/relative MSE plus per-leaf gate/up metrics via
+authoritative profile-order `slice_boundaries` and fused `activation_rows`) in one pass per chunk,
+GPU-resident, no repeated decode, with prior BF16 rounding semantics (recon rounded to BF16
+before ` (weight - recon).float()` for weight/weighted MSE and `weight.to(FP32) - recon_BF16.to(FP32)`
+for output/relative). (4) LDLQ inverse-factor cache (`_LDLQ_FACTOR_CACHE`, 256 entries max ~16 GiB,
+bounded to 256) is explicitly cleared via `clear_ldlq_factor_cache()` (locked, fail-closed,
+preserves original exception as context if cleanup fails, no `try/except` around `del`) after each
+packed projection with shared fail-closed holder cleanup (attempts clear, drops holder before
+`torch.cuda.empty_cache`, always attempts empty even if clear failed, chains multiple failures with
+body as context) and before dense work, so `torch.cuda.empty_cache` can actually release.
+Full-resume (all 7 rungs validated/copied) does zero factor prewarm, as intended; if any rung is
+missing, the 256-factor cache remains 16 GiB for across-rung reuse within that projection — no
+claim is made that prewarm avoids overlap, and the 16 GiB peak is truthfully accounted.
+Useful across-rung reuse within one projection is preserved while `derive_one_projection_rung`
+also guarantees clear on success and exception (instead of leaking until process exit).
+The gate remains `activation_output_mse` with
+`epsilon=1e-12`, packed member order (`gate` then `up`) and `mean-pooled` col-weights are
+unchanged, missing-row pooling via `fill_empty_expert_activation_rows` and fail-closed
+`NoObservedExpertRowsError` / malformed-width/rank telemetry are preserved, output
+field/telemetry schema (`gate`, `per_expert_kept`, `raw_mse_per_expert`, …) is unchanged.
+Allocator fragmentation (`22.97 GiB reserved but unallocated` with only 7.52 GiB free) explains
+why a 16 GiB contiguous request failed even though `reserved+free` appears sufficient — free
+blocks are fragmented across cached segments; chunking bounds the largest contiguous request to
+~512 MiB decode chunk (CPU/static bound, not live allocation validation), while total process peak is larger (BF16 8 GiB logical fused weight, 16 GiB FP32 recon) and still requires live CUDA;
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is only a mitigation and not the fix.
+Provenance: `tests/test_cb_recon_chunking.py` pins chunked-vs-monolithic bit-identical
+reconstruction, gated decisions, winning-slice reconstruction, mixed `raw/LDLQ` splice, packed
+fused ordering, telemetry, fail-closed malformed inputs and validated chunk bounds
+(`PRISMAQUANT_CB_RECON_EXPERT_CHUNK=8` default, `PRISMAQUANT_CB_RECON_ROW_CHUNK=4096`); `tests/test_derive_packed_streaming.py`
+pins that `encode_nvfp4_rung_packed` never calls full `nvfp4_cb_reconstruct`, fused+single metric
+parity vs monolithic BF16 reference, max decode chunk bound (512 MiB), malformed-shape fail-closed, and factor-cache
+cleanup on success/failure/resume via actual `derive_layer_full`/`derive_one_projection_rung`.
 
 Re-allocation from the derived dual-basis table emits a fresh `layer_config`
 with freshly computed, exact per-tensor identities under scope `nvfp4`
@@ -1368,6 +1499,25 @@ the old identity map is preserved as the raw-cost optimum and a diff (bytes,
 `predicted_dloss`, and assignment histogram) is published.  Allocator optimality
 is claimed only for the cost plane actually measured — the raw plane for the
 old artifact, the dual-basis LDLQ plane for the new one.
+
+#### 6.5.2 Historical: post-allocation bridge (A-FAST, 2026-08-07, superseded)
+
+The A-FAST burn's `cost_merged.pkl` was measured **without** LDLQ
+(`cbl_semantics.ldlq_in_measurement=false`) but its `cb_serialized_identity`
+already claimed `ldlq:true` for the intended export bytes, and the
+`cb_render_identity` that would have made the mismatch fail-closed was absent
+from the research-assembled path (Pareto writer KeyErrored before stamping).
+The interim repair kept the raw-cost allocator optimum (2.53 bpw,
+`c525f4025eac7061`, `predicted_dloss 619.71`) and applied a **byte-neutral,
+per-unit gated LDLQ reassignment** at export — `ldlq_reassign_cb_fields_gated`
+over fixed codebooks/scales, provenance `prismaquant.cb_ldlq_refinement.v1`
+(`cost_ldlq=false`, `export_ldlq=true`, `gate=activation_output_mse`,
+`byte_neutral=true`) carried in `__prismaquant__.post_allocation_refinement`.
+That bridge preserved byte accounting but did **not** change the allocator plane;
+LDLQ-cost optimality required the direct remeasurement above. The bridge is
+retained only as history; production artifacts since the dual-basis derive use
+direct measurement, and the exporter no longer performs a raw→LDLQ bridge on a
+raw-cost optimum.
 
 ## 7. Validation & ship gates
 

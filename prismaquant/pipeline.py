@@ -67,11 +67,15 @@ _RENDER_SETTINGS: tuple[str, ...] = (
 # Every CB producer choice below changes either the fitted/assigned values or
 # their byte layout. Persisted cost/render artifacts must invalidate on any
 # change, including assignment-only LDLQ even though serving stays unchanged.
+# PRISMAQUANT_CB_LDLQ_GATE changes indices (gated vs ungated) and must
+# invalidate caches — gated and ungated artifacts must not share identity.
 _CB_SERIALIZATION_SETTINGS: tuple[str, ...] = (
     "CB_SCALE_CODING",
     "CB_CODEBOOK_SOURCE",
     "CB_SCALE_SWEEP",
     "PRISMAQUANT_CB_LDLQ",
+    "PRISMAQUANT_CB_LDLQ_SCOPE",
+    "PRISMAQUANT_CB_LDLQ_GATE",
     "PRISMAQUANT_CB_MINCHAIN",
     "PRISMAQUANT_CB_MINCHAIN_ANCHORS",
     "PRISMAQUANT_CB_MINCHAIN_HOLDBACKS",

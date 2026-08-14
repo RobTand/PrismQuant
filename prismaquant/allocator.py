@@ -1739,6 +1739,16 @@ def main():
         help="Exact CB feedback-assignment contract; required with CB formats.",
     )
     ap.add_argument(
+        "--cb-ldlq-scope",
+        choices=("none", "nvfp4", "all"),
+        default=None,
+        help=(
+            "Per-family LDLQ scope; when omitted the scope is inferred from "
+            "--cb-ldlq (0->none, 1->all) or from PRISMAQUANT_CB_LDLQ_SCOPE env. "
+            "Use nvfp4 for dual-basis re-measurement (NVFP4 LDLQ, FP8 raw)."
+        ),
+    )
+    ap.add_argument(
         "--cb-minchain",
         choices=("0", "1"),
         default="0",
@@ -2238,18 +2248,25 @@ def main():
         fr.get_format(args.visual_format).name,
     ))
     if any(is_cb_format(name) for name in cb_requested_names):
+        import os as _alloc_os
+
+        _has_scope_cli = getattr(args, "cb_ldlq_scope", None) is not None and str(getattr(args, "cb_ldlq_scope", "") or "").strip() != ""
+        _has_scope_env = str(_alloc_os.environ.get("PRISMAQUANT_CB_LDLQ_SCOPE", "") or "").strip() != ""
+        _has_ldlq_scope = _has_scope_cli or _has_scope_env
+        _has_ldlq_legacy = args.cb_ldlq is not None
         if (
             args.cb_scale_coding is None
             or args.cb_codebook_source is None
             or args.cb_scale_sweep is None
-            or args.cb_ldlq is None
+            or (not _has_ldlq_legacy and not _has_ldlq_scope)
             or args.cb_encode_tier is None
         ):
             raise SystemExit(
                 "[alloc] ERROR: a CB format is present in the body or fixed "
                 "auxiliary assignment but exact serialized "
                 "and renderer context is missing. Pass --cb-scale-coding, "
-                "--cb-codebook-source, --cb-scale-sweep, --cb-ldlq, "
+                "--cb-codebook-source, --cb-scale-sweep, --cb-ldlq or "
+                "--cb-ldlq-scope (or PRISMAQUANT_CB_LDLQ_SCOPE env), "
                 "--cb-minchain, and "
                 "--cb-encode-tier; refusing implicit render defaults."
             )
@@ -2285,11 +2302,27 @@ def main():
                 NVFP4_ACTIVATION_EXECUTION,
             )
 
+            # Per-family LDLQ scope: normalized via shared helper (mirrors cb_ldlq_normalize.sh).
+            import os as _os
+
+            from prismaquant.cb_ldlq_normalize import resolve_from_cli_and_env as _resolve_ldlq
+
+            try:
+                _canon_legacy, _canon_scope = _resolve_ldlq(
+                    getattr(args, "cb_ldlq", None),
+                    getattr(args, "cb_ldlq_scope", None),
+                    _os.environ,
+                )
+            except ValueError as exc:
+                raise SystemExit(f"[alloc] ERROR: {exc}") from None
+            _scope = _canon_scope
+            _ldlq = _canon_legacy == "1"
             cb_serialization_context = CBSerializationContext(
                 scale_coding=args.cb_scale_coding,
                 codebook_source=args.cb_codebook_source,
                 scale_sweep=args.cb_scale_sweep == "1",
-                ldlq=args.cb_ldlq == "1",
+                ldlq=_ldlq,
+                ldlq_scope=_scope,
                 minchain=args.cb_minchain == "1",
                 minchain_version=(
                     MINCHAIN_CONTEXT_VERSION if args.cb_minchain == "1" else None
@@ -2308,10 +2341,22 @@ def main():
             f"codebook_source={cb_serialization_context.codebook_source} "
             f"scale_sweep={cb_serialization_context.scale_sweep} "
             f"ldlq={cb_serialization_context.ldlq} "
+            f"ldlq_scope={getattr(cb_serialization_context, 'ldlq_scope', 'none')} "
             f"encode_tier={cb_serialization_context.encode_tier} "
             f"renderer_abi={cb_serialization_context.renderer_abi}",
             flush=True,
         )
+        # Fail-closed before any output mutation: production LDLQ scope requires gate=1.
+        # This mirrors the pipeline shell gate and exporter gates, but must be checked
+        # here for direct allocator invocation that bypasses the shell.
+        from prismaquant.nvfp4_cb_formats import _ldlq_gate_enabled
+
+        _scope_for_gate = str(getattr(cb_serialization_context, "ldlq_scope", "none")).strip().lower()
+        if _scope_for_gate != "none" and not _ldlq_gate_enabled():
+            raise SystemExit(
+                f"[alloc] ERROR: ldlq_scope={_scope_for_gate!r} requires PRISMAQUANT_CB_LDLQ_GATE=1; "
+                "got 0 — refusing to emit layer_config with ungated LDLQ"
+            )
         if research_cost_provenance is None:
             try:
                 validate_cb_cost_provenance(

@@ -1581,13 +1581,8 @@ def _measure_packed_experts(
             )
             acts_key = "down" if param_name == "down_proj" else "gate_up"
             packed_ldlq_activation_rows = tuple(derived[acts_key])
-            from .cb_ldlq import fill_empty_expert_activation_rows
-            packed_ldlq_activation_rows, cold_experts = (
-                fill_empty_expert_activation_rows(
-                    packed_ldlq_activation_rows,
-                    qname=full_name,
-                )
-            )
+            # Preserve cold empty entries — eligible-only LDLQ gate factors only warm experts; no pooled prior
+            cold_experts = tuple(i for i, v in enumerate(packed_ldlq_activation_rows) if v.numel() == 0 or (v.ndim == 2 and int(v.shape[0]) == 0))
             if cold_experts:
                 print(
                     f"[cost] {full_name}: LDLQ cold-expert routed-mean "

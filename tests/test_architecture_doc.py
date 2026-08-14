@@ -144,7 +144,14 @@ def test_cb_defaults_match_the_shipped_drivers():
     script = _pipeline()
     assert _shell_default(script, "CB_EXPERT_EMPIRICAL") == "0"
     assert _shell_default(script, "CB_SCALE_CODING") == "two_tier"
-    assert _shell_default(script, "PRISMAQUANT_CB_LDLQ") == "0"
+    # PRISMAQUANT_CB_LDLQ default is now via truth table (neither set -> 0/none),
+    # factored into prismaquant/cb_ldlq_normalize.sh — the single source of truth
+    # that run-pipeline.sh sources. Check the helper for the canonical defaults,
+    # and that run-pipeline.sh actually sources it.
+    helper = (ROOT / "prismaquant" / "cb_ldlq_normalize.sh").read_text(encoding="utf-8")
+    assert 'PRISMAQUANT_CB_LDLQ=0' in helper
+    assert 'PRISMAQUANT_CB_LDLQ_SCOPE="none"' in helper
+    assert "cb_ldlq_normalize.sh" in script and "normalize_cb_ldlq_vars" in script
     assert _shell_default(script, "PRISMAQUANT_CB_MINCHAIN") == "0"
     assert "PRISMAQUANT_CB_LDLQ=0" in _doc()
     assert "PRISMAQUANT_CB_MINCHAIN=0" in _doc()
