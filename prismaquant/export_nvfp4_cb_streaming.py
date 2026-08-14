@@ -134,6 +134,7 @@ from prismaquant.nvfp4_cb_footprint import (
     scale_sweep_for_format,
     cb_tensor_payload_breakdown,
     finalize_cb_export_artifact_inventory,
+    reconcile_selected_codebook_refs_by_qname_format,
     resolve_cb_encode_tier,
     whole_artifact_budget_from_assignment_payload,
     validate_cb_sidecar_tensors,
@@ -3110,24 +3111,11 @@ def export_nvfp4_cb_streaming(
                 )
             }
     if _scoped_bundle_export:
-        refs_by_format = {
-            str(qname): dict(by_format)
-            for qname, by_format in (
-                _env_cb_context.codebook_refs_by_qname_format or {}
-            ).items()
-        }
-        for qname, by_format in selected_refs_by_format.items():
-            target_formats = refs_by_format.setdefault(qname, {})
-            for fmt, refs in by_format.items():
-                previous = target_formats.get(fmt)
-                if previous is not None and tuple(
-                    (previous,) if isinstance(previous, str) else previous
-                ) != tuple(refs):
-                    raise ValueError(
-                        f"{qname}/{fmt}: streaming exporter refs differ from "
-                        "immutable bundle refs"
-                    )
-                target_formats[fmt] = refs
+        refs_by_format = reconcile_selected_codebook_refs_by_qname_format(
+            _env_cb_context,
+            selected_refs_by_format,
+            where="export_nvfp4_cb_streaming",
+        )
     else:
         refs_by_format = None
     serialization_context = CBSerializationContext(

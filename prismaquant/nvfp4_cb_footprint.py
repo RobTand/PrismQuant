@@ -2296,6 +2296,105 @@ def _physical_codebook_refs(
     return tuple(f"{base}.sub{index}" for index in range(expected_count))
 
 
+def reconcile_selected_codebook_refs_by_qname_format(
+    context: CBSerializationContext,
+    selected_refs_by_qname_format: Mapping[
+        str, Mapping[str, str | Sequence[str]]
+    ],
+    *,
+    where: str,
+) -> dict[str, dict[str, str | tuple[str, ...]]]:
+    """Merge exporter-selected refs without inventing redundant identities.
+
+    Exporters may collapse an allocator's per-Linear namespace into a
+    synthetic physical target (for example routed-MoE ``gate_up_proj``). A
+    selected ref set that is exactly the context's implicit ref set needs no
+    new explicit entry: materializing one would make the exporter context look
+    broader than the allocator recipe even though both resolve to identical
+    sidecar bytes. Existing explicit refs remain authoritative and are
+    conflict-checked; genuinely non-default refs are retained.
+    """
+
+    merged: dict[str, dict[str, str | tuple[str, ...]]] = {
+        str(qname): {
+            str(format_name): (
+                str(refs)
+                if isinstance(refs, str)
+                else tuple(str(ref) for ref in refs)
+            )
+            for format_name, refs in by_format.items()
+        }
+        for qname, by_format in (
+            context.codebook_refs_by_qname_format or {}
+        ).items()
+    }
+    legacy_refs = context.codebook_refs or {}
+
+    for raw_qname, raw_formats in selected_refs_by_qname_format.items():
+        qname = str(raw_qname)
+        if not isinstance(raw_formats, Mapping):
+            raise TypeError(
+                f"{where}: selected codebook refs for {qname!r} must be a "
+                "format mapping"
+            )
+        seen_formats: set[str] = set()
+        for raw_format, raw_refs in raw_formats.items():
+            canonical = fr.get_format(str(raw_format)).name
+            if canonical in seen_formats:
+                raise ValueError(
+                    f"{where}: selected codebook refs repeat canonical "
+                    f"format {canonical!r} for {qname!r}"
+                )
+            seen_formats.add(canonical)
+            selected = (
+                (str(raw_refs),)
+                if isinstance(raw_refs, str)
+                else tuple(str(ref) for ref in raw_refs)
+            )
+            if not selected or len(set(selected)) != len(selected):
+                raise ValueError(
+                    f"{where}: {qname}/{canonical} selected codebook refs "
+                    "must be one nonempty, duplicate-free table set"
+                )
+
+            explicit_by_format = merged.get(qname, {}).get(canonical)
+            explicit_legacy = legacy_refs.get(qname)
+            if explicit_by_format is not None and explicit_legacy is not None:
+                raise ValueError(
+                    f"{where}: {qname}/{canonical} has both per-format and "
+                    "legacy codebook refs"
+                )
+            explicit = (
+                explicit_by_format
+                if explicit_by_format is not None
+                else explicit_legacy
+            )
+            if explicit is not None:
+                expected = (
+                    (str(explicit),)
+                    if isinstance(explicit, str)
+                    else tuple(str(ref) for ref in explicit)
+                )
+                if selected != expected:
+                    raise ValueError(
+                        f"{where}: {qname}/{canonical} exporter refs differ "
+                        "from immutable recipe refs"
+                    )
+                continue
+
+            implicit = _physical_codebook_refs(qname, canonical, context)
+            if len(selected) != len(implicit):
+                raise ValueError(
+                    f"{where}: {qname}/{canonical} selected "
+                    f"{len(selected)} codebook refs, expected {len(implicit)}"
+                )
+            if selected == implicit:
+                continue
+            merged.setdefault(qname, {})[canonical] = selected
+
+    return merged
+
+
 def _sidecar_identity(
     qname: str,
     format_name: str,

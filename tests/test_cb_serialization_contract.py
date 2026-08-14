@@ -8,6 +8,7 @@ import json
 import math
 import pickle
 import struct
+from dataclasses import replace
 
 import pytest
 import torch
@@ -32,10 +33,12 @@ from prismaquant.nvfp4_cb_footprint import (
     cb_export_artifact_inventory,
     cb_serialization_context_from_stamp,
     cb_serialization_context_stamp,
+    cb_tensor_payload_breakdown,
     enforce_whole_artifact_budget,
     finalize_cb_export_artifact_inventory,
     load_cb_codebook_digest_manifest,
     lattice_codebook_content_sha256,
+    reconcile_selected_codebook_refs_by_qname_format,
     whole_artifact_budget_stamp,
     validate_cb_cost_provenance,
 )
@@ -210,6 +213,74 @@ def test_lattice_identity_rejects_noncanonical_materialized_bytes():
             {qname: fmt},
             {qname: (2, 256)},
             context=context,
+        )
+
+
+def test_reconcile_selected_refs_omits_redundant_packed_lattice_alias():
+    fmt = "NVFP4_CB_K16"
+    member = "model.layers.0.mlp.experts.0.gate_proj"
+    packed = "model.layers.0.mlp.experts.gate_up_proj"
+    refs = (
+        f"cb_codebook.lattice.{fmt}.sub0",
+        f"cb_codebook.lattice.{fmt}.sub1",
+    )
+    context = CBSerializationContext.production(
+        codebook_source_scope="fp8",
+        codebook_source_by_format={fmt: "lattice"},
+        codebook_refs_by_qname_format={member: {fmt: refs}},
+    )
+
+    merged = reconcile_selected_codebook_refs_by_qname_format(
+        context,
+        {packed: {fmt: refs}},
+        where="packed lattice regression",
+    )
+    assert merged == {member: {fmt: refs}}
+
+    explicit = replace(
+        context,
+        codebook_refs_by_qname_format={
+            member: {fmt: refs},
+            packed: {fmt: refs},
+        },
+    )
+    assert cb_tensor_payload_breakdown(
+        fmt, (4, 256), qname=packed, context=context
+    ) == cb_tensor_payload_breakdown(
+        fmt, (4, 256), qname=packed, context=explicit
+    )
+
+
+def test_reconcile_selected_refs_retains_nondefault_and_rejects_conflict():
+    fmt = "NVFP4_CB_K16"
+    qname = "model.layers.0.mlp.experts.gate_up_proj"
+    canonical = (
+        f"cb_codebook.lattice.{fmt}.sub0",
+        f"cb_codebook.lattice.{fmt}.sub1",
+    )
+    nondefault = (
+        f"cb_codebook.custom.{fmt}.sub0",
+        f"cb_codebook.custom.{fmt}.sub1",
+    )
+    context = CBSerializationContext.production(
+        codebook_source_scope="fp8",
+        codebook_source_by_format={fmt: "lattice"},
+    )
+    assert reconcile_selected_codebook_refs_by_qname_format(
+        context,
+        {qname: {fmt: nondefault}},
+        where="nondefault packed refs",
+    ) == {qname: {fmt: nondefault}}
+
+    explicit = replace(
+        context,
+        codebook_refs_by_qname_format={qname: {fmt: canonical}},
+    )
+    with pytest.raises(ValueError, match="immutable recipe refs"):
+        reconcile_selected_codebook_refs_by_qname_format(
+            explicit,
+            {qname: {fmt: nondefault}},
+            where="conflicting packed refs",
         )
 
 
