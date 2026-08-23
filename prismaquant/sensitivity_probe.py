@@ -2067,7 +2067,17 @@ class FisherAccumulator:
         # embedding fallback only fires for profiles that implement the
         # table as an nn.Linear (embeddings are normally not nn.Linear and
         # therefore never enter this loop).
-        _declared_embedding = str(self._name_projection.profile.embedding_name())
+        #
+        # Both accessors are read defensively, for the same reason: skipping
+        # here is an OPTIMIZATION, never a correctness gate, so a profile that
+        # declares neither simply does the extra work. `model_profile` is a
+        # loosely-typed optional kwarg that duck-typed objects reach (see
+        # tests/test_incremental_measure_quant_cost.py), and a probe must not
+        # start refusing profiles over a field that only saves it work.
+        _embedding_decl = getattr(
+            self._name_projection.profile, "embedding_name", None)
+        _declared_embedding = (
+            str(_embedding_decl()) if _embedding_decl is not None else None)
         def _skip_fisher_name(qname: str) -> bool:
             checker = getattr(self.model_profile, "is_pinned_name", None)
             if checker is not None and checker(qname):
