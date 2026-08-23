@@ -325,6 +325,7 @@ class ModelStructureSpec:
     bypass_hf_fp8_module_rewrite: bool = False
     fast_kernel_requirements: tuple[PackageRequirement, ...] = ()
     probe_skip_module_class_names: tuple[str, ...] = ()
+    probe_grouped_module_class_names: tuple[str, ...] = ()
     passthrough_prefixes: tuple[str, ...] = ()
     pinned_names: tuple[str, ...] = ("lm_head",)
     stage_text_only_strip_keys: tuple[str, ...] | None = None
@@ -398,6 +399,9 @@ class ModelStructureSpec:
             ),
             probe_skip_module_class_names=tuple(
                 str(v) for v in probe.get("skip_module_class_names", ())
+            ),
+            probe_grouped_module_class_names=tuple(
+                str(v) for v in probe.get("grouped_module_class_names", ())
             ),
             passthrough_prefixes=tuple(
                 str(v) for v in payload.get("passthrough_prefixes", ())

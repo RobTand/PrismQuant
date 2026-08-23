@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Added
+
+- **Grouped-BMM Fisher: DSv4's `attn.wo_a` is now an allocator decision**
+  (`sensitivity_probe.py`, `incremental_probe.py`, `measure_quant_cost.py`,
+  `model_profiles/*`). The grouped operand — 33.5M params × 43 layers, 17.9%
+  of decode read traffic — had never been priced: the probe skipped
+  `DeepseekV4GroupedLinear` because the dense accumulator cannot represent a
+  `[G,R,D]` consumption (its `chunk_h` comes out `[R,D]` against a `[G*R,D]`
+  plane), and the walk held the weight as a named pin. The new accumulator is
+  EXACT (the grouped Fisher is block-diagonal in `g`; one batched matmul per
+  hook), shares the dense rows' one global-token normalization and wiring
+  identity (`sum(fisher_row) == sum(fisher_col) == h_trace_raw` by
+  construction), reports flat-plane dims plus `num_groups` (never
+  `num_experts`, so packed-expert scoping cannot ride along), and dispatches
+  only on the new spec field `probe.grouped_module_class_names` — declared
+  classes lacking `n_groups` fail fast. The cost stage prices grouped units
+  from probe keys with no new plumbing and stamps their joint-output-MSE
+  screen honestly unmeasured (`output_mse_measured=False`): its dense
+  `y = X @ W.T` model would inflate the output term ~G-fold with cross-group
+  error no token sees. The walk claim for `wo_a` moves from
+  `pin(probe skips...)` to `decide`; no shipped artifact changes (the DSpark
+  sidecar keeps all three `wo_a` bases on source-FP8 W8A16, and CB export
+  still refuses grouped operands). Boundary: the W8A16 handoff's frozen
+  source closure pins `model_profiles/base.py`, `model_profiles/deepseek_v4.py`
+  and `specs/deepseek_v4.json` byte-for-byte, so the next handoff
+  verification refuses until those three files are re-frozen with review.
+  (`docs/ARCHITECTURE.md` §8.9; tests `tests/test_grouped_linear_fisher.py`.)
+
 ## 0.16.2 — 2026-08-22
 
 ### Fixed

@@ -1,7 +1,25 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-22 · `walker/consumer-cost` — stamps follow, newest first, each recording
-its own branch and date. Re-stamped (2026-08-22, `walker/consumer-cost`) for
+As of: 2026-08-22 · `walker/woa-grouped-fisher` — stamps follow, newest first, each recording
+its own branch and date. Re-stamped (2026-08-22, `walker/woa-grouped-fisher`) for
+**pricing the grouped operand `wo_a`** (§8.9): DSv4's grouped-BMM attention
+output projection — 17.9% of decode read traffic — was never an allocator
+decision because the probe skipped its class. The grouped Fisher accumulator
+(`prismaquant/sensitivity_probe.py`: exact per-group bmm reductions, flat-plane
+marginals, the ONE global-token normalization) landed FIRST; then
+`DeepseekV4GroupedLinear` moved from the spec's `probe_skip_module_class_names`
+to the new `probe.grouped_module_class_names`, which routes the probe to the
+grouped accumulator and lets the walk claim `wo_a` as an ordinary `decide`.
+Cost cells flow from probe keys with no new plumbing; the joint-output-MSE
+screen ships honestly unmeasured (`output_mse_measured=False`) for grouped
+units because the dense screen mis-models the contraction. No shipped artifact
+changes: the DSpark sidecar contract keeps all three `wo_a` bases on
+source-FP8 W8A16 (`dspark_cb_expected_physical_targets`), CB export still
+refuses grouped operands, and the W8A16 handoff's frozen source closure now
+names three drifted files (`model_profiles/base.py`,
+`model_profiles/deepseek_v4.py`, `specs/deepseek_v4.json`) that require a
+reviewed re-freeze before the next handoff verification passes. Previously
+re-stamped (2026-08-22, `walker/consumer-cost`) for
 **the cost consumer migrating onto the shared name-projection layer** (§8.8.1):
 `_scan_source_dtype_manifest` lost its private checkpoint→live→recipe builders
 (`_strip_weight_suffix`, `_to_recipe_name`, `_packed_to_recipe_name`,
@@ -3563,8 +3581,9 @@ routed-expert stacks get `num_experts_per_tok / n_routed_experts` (exact as an
 expectation under the per-layer-uniform expert invariant §6.4 — routing skew changes
 *which* experts are read, not how many bytes); allocator-assigned always-active units
 (`dense`) and always-active tensors the allocator never decided (`held_fixed` — norms,
-biases, routers, a pinned `lm_head`, and grouped operands the probe skips such as DSv4's
-`attn.wo_a`) get `1.0`. Both `topk` and `E` are read from the architecture's own config
+biases, routers, a pinned `lm_head`; DSv4's grouped `attn.wo_a`, which the probe prices
+since the grouped Fisher accumulator landed and which sits here only while no
+assignment covers it) get `1.0`. Both `topk` and `E` are read from the architecture's own config
 declarations and **cross-checked against the tensors' measured stack depth**; an MoE
 model that declares neither is refused rather than defaulted (principle 2 — the
 `moe_imatrix` "assume 8" fallback would mis-price the largest term in the ledger).
@@ -4910,9 +4929,12 @@ purpose), or `exclude(reason)` (outside the artifact's scope). Claims come
 from ordered `ClaimRule` lists supplied by the profile:
 `ModelProfile.walk_claim_rules()` (`model_profiles/base.py`) derives the base
 set from the profile's own declarations — spec
-`probe_skip_module_class_names` → pin (this is the `wo_a` rule: the spec
-already said the probe skips `DeepseekV4GroupedLinear`, so the walker turns
-that declaration into a named debt), `pinned_names` → pin, MTP/visual
+`probe_skip_module_class_names` → pin (the mechanism that held DSv4's
+grouped-BMM `attn.wo_a` as a named debt until it could be priced;
+2026-08-22 the grouped Fisher accumulator landed, `DeepseekV4GroupedLinear`
+moved to the spec's `probe_grouped_module_class_names`, and its weight
+became an ordinary `decide` — see §8.9),
+`pinned_names` → pin, MTP/visual
 prefixes and `nn.Embedding` weights and non-persistent buffers and
 non-floating or ≤1-D tensors → exclude with reasons, remaining `nn.Linear`
 weights → decide. **A matmul-fed node no rule matches fails the walk** with
@@ -5040,6 +5062,58 @@ consumers route their NAME derivations through it — cost
 enumerations — the probe still builds its tracked set from
 `named_modules()` plus shard regexes — so the edge-list migration
 proper remains open for all four.
+
+### 8.9 Pricing a grouped operand: the `wo_a` accumulator (2026-08-22)
+
+DSv4's `attn.wo_a` — 33,554,432 parameters × 43 layers, 1.443 GB/token,
+17.9% of decode read traffic — is consumed by a view + per-group
+`torch.bmm` inside `DeepseekV4GroupedLinear` (`y[...,g,r] = Σ_d x[...,g,d]·W[g,r,d]`).
+The class sat in the probe's skip list because the dense accumulator cannot
+represent that consumption: its chunk_h comes out `[R, D]` against a `[G*R, D]`
+plane (the `chunk_h * w.pow(2)` broadcast), and flattening groups into the
+token axis destroys the per-channel marginals. The walker then held the weight
+as a named pin — correct polarity, real debt.
+
+The debt is closed by ONE grouped mechanism (`prismaquant/sensitivity_probe.py`,
+shared by both probe backends):
+
+- **Math.** The elementwise Fisher of a grouped operand is block-diagonal in
+  `g`, so the exact per-token-summed empirical Fisher (audit M3's estimator,
+  never sum-then-square) reduces over one batched matmul:
+  `chunk_h[g,r,d] = Σ_t gy²[t,g,r]·x²[t,g,d]`. Every scalar and marginal —
+  `h_trace`, `fisher_row[g*R+r]`, `fisher_col[d]`, `g_sq_sum`, `act_sq_sum`,
+  `act_absmax`, `h_trace_per_group_raw[g]` — reduces the SAME fp32
+  `chunk_h`, so `sum(fisher_row) == sum(fisher_col) == h_trace_raw` holds by
+  construction, which is the card's wiring check.
+- **Schema.** The unit stays the whole logical tensor in FLAT-PLANE
+  coordinates: `out_features = G*R`, `in_features = D`, `n_params` counts all
+  groups, and `num_groups` distinguishes it from a same-shape dense Linear —
+  deliberately NOT `num_experts`, which `_shape_from_stats` and
+  `_stats_indicates_packed_expert` read as a packed expert stack. TP note:
+  identity/dispositions/byte totals are logical; a future rowwise shard cuts
+  the plane's row axis and must not straddle a group boundary.
+- **Normalization.** Unchanged and global: rows stay raw token sums until
+  `finalize_fisher_stats` divides every row by the GLOBAL calibration token
+  count. Grouped operands are attention output projections — every group sees
+  every token — so the shared denominator is exact, not merely consistent;
+  `n_tokens_seen` counts tokens, not token-group pairs.
+- **Dispatch.** Explicit declaration only: spec field
+  `probe.grouped_module_class_names` (conformance-tested like every other
+  spec field). A declared class whose instance lacks `n_groups` fails fast;
+  nothing heuristic falls through to the dense accumulator.
+- **Cost cells.** They flow from probe keys with no new plumbing; the weight
+  render is exact on the flat plane for every menu format because row-wise
+  quantization never mixes rows. The joint-output-MSE screen ships honestly
+  UNMEASURED (`output_mse_measured=False`) for grouped units in both cost
+  paths: its `y = X @ W.T` model would score each group slice against all
+  `G*R` outputs, inflating the output term ~G-fold with cross-group error no
+  token sees.
+- **Serving unchanged.** Candidacy is not assignment: the DSpark sidecar
+  contract keeps all three `wo_a` bases on source-FP8 W8A16
+  (`dspark_source_metadata.dspark_cb_expected_physical_targets`), CB export
+  still refuses grouped-BMM semantics, and Gridbook's pinned contract declares
+  no grouped structure lane. "Priced, kept on FP8_SOURCE" is now an honest
+  allocator decision where silence used to be.
 
 ## 9. Serving lanes
 

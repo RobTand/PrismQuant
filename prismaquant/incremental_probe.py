@@ -233,6 +233,9 @@ from .sensitivity_probe import (
     discover_moe_structure,
     discover_moe_routers,
     finalize_fisher_stats,
+    grouped_linear_fisher_chunk,
+    grouped_linear_groups,
+    grouped_linear_stats_entry,
     h_detail_blob,
     install_packed_expert_hooks,
     kv_cotangent_path_enabled,
@@ -1723,12 +1726,59 @@ def _compute_global_precompute(
             resident_stats[name]["n_tokens_seen"] += x2.size(0)
         return hook
 
+    def _make_resident_grouped_bwd(name: str, mod_ref: nn.Linear,
+                                   num_groups: int):
+        """Resident-path grouped fold (wo_a shape). Immediate like the
+        dense resident hook; reductions via `grouped_linear_fisher_chunk`
+        so both backends share one mechanism. Marginals land in the same
+        five-key slot and index the flat [G*R, D] plane."""
+        def hook(module, grad_input, grad_output):
+            gy = grad_output[0]
+            x = resident_saved_inputs.pop(name, None)
+            if x is None or gy is None:
+                return
+            pieces = grouped_linear_fisher_chunk(x, gy, num_groups,
+                                                 mod_ref.weight)
+            resident_stats[name]["h_trace_raw"] += float(
+                pieces["h_trace"].item())
+            if _emit_marginals:
+                _marginal_accumulate(
+                    resident_marginals, name,
+                    [pieces["fisher_row"], pieces["fisher_col"],
+                     pieces["g_sq_sum"], pieces["act_sq_sum"],
+                     pieces["act_absmax"]])
+            w = mod_ref.weight
+            if w is not None and not w.is_meta:
+                if pieces["h_w2"] is not None:
+                    resident_stats[name]["h_w2_sum_raw"] += float(
+                        pieces["h_w2"].item())
+            # TOKENS, not token-group pairs (metadata parity with dense).
+            tokens = int(x.numel()) // (num_groups * int(x.shape[-1]))
+            resident_stats[name]["n_tokens_seen"] += tokens
+        return hook
+
     for fqn in resident_tracked:
         mod = model.get_submodule(fqn)
         if not isinstance(mod, nn.Linear):
             continue
         w = mod.weight
         if w.is_meta:
+            continue
+        num_groups_res = grouped_linear_groups(mod, _profile)
+        if num_groups_res is not None:
+            resident_stats[fqn] = grouped_linear_stats_entry(
+                mod, num_groups_res,
+                w_max_abs=float(w.detach().abs().max().item()),
+                w_norm_sq=float(w.detach().pow(2).sum().item()))
+            if _emit_marginals:
+                resident_stats[fqn].update(
+                    _marginal_zeros(mod.out_features, mod.in_features))
+            for p in mod.parameters():
+                p.requires_grad_(True)
+            resident_handles.append(
+                mod.register_forward_hook(_make_resident_fwd(fqn)))
+            resident_handles.append(mod.register_full_backward_hook(
+                _make_resident_grouped_bwd(fqn, mod, num_groups_res)))
             continue
         resident_stats[fqn] = {
             "h_trace_raw": 0.0,
@@ -2413,6 +2463,71 @@ def _run_body_streaming_shard(
                 # Flag so the per-Linear hook short-circuits to deferred path.
                 pass  # (no-op, used as documentation; lookup happens per-call)
 
+            def _fold_grouped_layer_stat(name: str, x, gy, mod_ref,
+                                         num_groups: int):
+                """Grouped-BMM Fisher fold for ONE (x, gy) pair on the
+                body-shard path. Shares the dense path's storage exactly —
+                device_accums scalar slots, device_marginals five-vector
+                slot, acc_h_full, acc_g2_per_token — so every flush and
+                merge below this line is unchanged. The math comes from
+                `grouped_linear_fisher_chunk` (one mechanism with the
+                non-streaming backend); only the folding differs because
+                this site honors deferred_sync."""
+                pieces = grouped_linear_fisher_chunk(x, gy, num_groups,
+                                                     mod_ref.weight)
+                per_group_slot = grouped_per_group_acc.get(name)
+                if per_group_slot is None:
+                    grouped_per_group_acc[name] = pieces["trace_per_group"]
+                else:
+                    per_group_slot.add_(pieces["trace_per_group"])
+                if emit_marginals:
+                    _marginal_accumulate(
+                        device_marginals, name,
+                        [pieces["fisher_row"], pieces["fisher_col"],
+                         pieces["g_sq_sum"], pieces["act_sq_sum"],
+                         pieces["act_absmax"]])
+                if collect_h_full:
+                    # Per-(token, group) rows: the plane-coordinate
+                    # analog of the dense per-token vector.
+                    gy_sq = gy.detach().reshape(
+                        -1, num_groups, gy.shape[-1]).pow(2)
+                    x_sq = x.detach().reshape(
+                        -1, num_groups, x.shape[-1]).pow(2)
+                    pt = (gy_sq.sum(dim=-1) * x_sq.sum(dim=-1)).reshape(-1)
+                    acc_g2_per_token[name].append(
+                        pt.detach().to("cpu", dtype=torch.float32))
+                    acc = acc_h_full.get(name)
+                    if acc is None:
+                        acc = torch.zeros(
+                            int(pieces["chunk_flat"].shape[0]),
+                            int(pieces["chunk_flat"].shape[1]),
+                            dtype=torch.float32, device="cpu")
+                        acc_h_full[name] = acc
+                    acc.add_(pieces["chunk_flat"].to(acc.device).to(acc.dtype))
+                h_trace_dev = pieces["h_trace"]
+                if deferred_sync:
+                    slot = device_accums.get(name)
+                    if slot is None:
+                        slot = (
+                            torch.zeros((), device=h_trace_dev.device,
+                                        dtype=torch.float32),
+                            torch.zeros((), device=h_trace_dev.device,
+                                        dtype=torch.float32),
+                        )
+                        device_accums[name] = slot
+                    slot[0].add_(h_trace_dev)
+                    if pieces["h_w2"] is not None:
+                        slot[1].add_(pieces["h_w2"])
+                else:
+                    acc_stats[name]["h_trace_raw"] += float(
+                        h_trace_dev.item())
+                    if pieces["h_w2"] is not None:
+                        acc_stats[name]["h_w2_sum_raw"] += float(
+                            pieces["h_w2"].item())
+                tokens = int(x.numel()) // (
+                    num_groups * int(x.shape[-1]))
+                acc_stats[name]["n_tokens_seen"] += tokens
+
             def make_fwd(name: str):
                 def hook(module, inp, out):
                     x = inp[0] if isinstance(inp, tuple) else inp
@@ -2516,6 +2631,14 @@ def _run_body_streaming_shard(
                     x = saved_inputs.pop(name, None)
                     if x is None or gy is None:
                         return
+                    # Grouped-BMM operand: same immediate path, grouped
+                    # reductions (never the dense flatten below — it would
+                    # broadcast-fail against the [G*R, D] plane anyway).
+                    g_count = grouped_map.get(name)
+                    if g_count is not None:
+                        _fold_grouped_layer_stat(
+                            name, x.detach(), gy.detach(), mod_ref, g_count)
+                        return
                     gy2 = gy.reshape(-1, gy.size(-1))
                     x2 = x.reshape(-1, x.size(-1))
                     T = x2.size(0)
@@ -2603,6 +2726,18 @@ def _run_body_streaming_shard(
                     acc_stats[name]["n_tokens_seen"] += T
                 return hook
 
+            # Grouped-BMM operands in this shard's scope (wo_a shape):
+            # dispatched to `_fold_grouped_layer_stat` at backward time.
+            grouped_map: dict[str, int] = {}
+            for fqn in tracked_here:
+                try:
+                    g_mod = model.get_submodule(fqn)
+                except AttributeError:
+                    continue
+                g_count = grouped_linear_groups(g_mod, _shard_profile)
+                if g_count is not None:
+                    grouped_map[fqn] = g_count
+
             for fqn in tracked_here:
                 mod = model.get_submodule(fqn)
                 if not isinstance(mod, nn.Linear):
@@ -2614,6 +2749,19 @@ def _run_body_streaming_shard(
                 # batched .stack().cpu() and memoizes; subsequent shards
                 # / chunks return instantly with no device sync.
                 w_max_abs, w_norm_sq = _get_or_compute_w_stats(fqn, w)
+                if fqn in grouped_map:
+                    acc_stats[fqn] = grouped_linear_stats_entry(
+                        mod, grouped_map[fqn],
+                        w_max_abs=w_max_abs, w_norm_sq=w_norm_sq)
+                    if emit_marginals:
+                        acc_stats[fqn].update(
+                            _marginal_zeros(mod.out_features, mod.in_features))
+                    for p in mod.parameters():
+                        p.requires_grad_(True)
+                    handles.append(mod.register_forward_hook(make_fwd(fqn)))
+                    handles.append(mod.register_full_backward_hook(
+                        make_bwd(fqn, mod)))
+                    continue
                 acc_stats[fqn] = {
                     "h_trace_raw": 0.0,
                     "h_w2_sum_raw": 0.0,
@@ -2645,6 +2793,11 @@ def _run_body_streaming_shard(
             # Values are device-resident 0-dim fp32 tensors (flushed via
             # float() below — one sync per packed param per layer).
             packed_grad_acc: dict[str, torch.Tensor] = {}
+            # Per-GROUP Fisher trace [G] for grouped-BMM operands (wo_a
+            # shape) in this layer. Same device-resident discipline; the
+            # flush below lands it on the stats entry as a plain float
+            # list (pickle/merge-safe, like `h_trace_per_expert_raw`).
+            grouped_per_group_acc: dict[str, torch.Tensor] = {}
             # Per-expert per-channel Fisher [E, M] — enables per-expert
             # h_trace decomposition for the allocator's packed-3D prune
             # cost without re-measuring cost per expert. Always enabled
@@ -2780,6 +2933,15 @@ def _run_body_streaming_shard(
             # h_trace / h_w2_sum stay device-resident here too.
             if deferred_compute and deferred_queue:
                 for name, x, gy, mod_ref in deferred_queue:
+                    # Grouped-BMM operand: fold through the grouped
+                    # reductions; the dense flatten below would compute
+                    # the wrong-shaped marginals against the [G*R, D]
+                    # plane.
+                    g_count = grouped_map.get(name)
+                    if g_count is not None:
+                        _fold_grouped_layer_stat(name, x, gy, mod_ref,
+                                                 g_count)
+                        continue
                     gy2 = gy.reshape(-1, gy.size(-1))
                     x2 = x.reshape(-1, x.size(-1))
                     T = x2.size(0)
@@ -2888,6 +3050,25 @@ def _run_body_streaming_shard(
                     acc_stats[full_key]["h_trace_per_expert_raw"] = summed
             packed_channel_acc.clear()
 
+            # Per-group Fisher trace flush (grouped-BMM operands). One
+            # .cpu() per grouped param — same honesty as the packed
+            # per-expert list: plain floats, elementwise-merged across
+            # shard splits, normalized by the global token count in
+            # `finalize_fisher_stats`.
+            for local_key, per_group in grouped_per_group_acc.items():
+                full_key = f"{layer_prefix}{local_key}"
+                entry = acc_stats.get(full_key)
+                if entry is None:
+                    continue
+                vals = per_group.detach().to(torch.float64).tolist()
+                prev = entry.get("h_trace_per_group_raw")
+                if prev is None:
+                    entry["h_trace_per_group_raw"] = vals
+                else:
+                    entry["h_trace_per_group_raw"] = [
+                        p + float(v) for p, v in zip(prev, vals)]
+            grouped_per_group_acc.clear()
+
             # Per-expert AQUA marginals. One .cpu() per array (four per
             # packed param per layer -- the arrays are [E, M] / [E, N] /
             # [E], so ~8 MB per MoE layer at E=256; the dense marginals'
@@ -2939,6 +3120,18 @@ def _run_body_streaming_shard(
                         else:
                             prev["h_trace_per_expert_raw"] = [
                                 a + b for a, b in zip(per_prev, per_new)
+                            ]
+                    # Per-group Fisher (grouped-BMM operands): identical
+                    # elementwise-sum rule, same reason — it is a [G]
+                    # decomposition of the one h_trace across shard splits.
+                    grp_prev = prev.get("h_trace_per_group_raw")
+                    grp_new = s.get("h_trace_per_group_raw")
+                    if grp_new is not None:
+                        if grp_prev is None:
+                            prev["h_trace_per_group_raw"] = list(grp_new)
+                        else:
+                            prev["h_trace_per_group_raw"] = [
+                                a + b for a, b in zip(grp_prev, grp_new)
                             ]
                     # Per-expert AQUA marginals follow the SAME merge
                     # rules as the dense ones: sums add, an absmax bound

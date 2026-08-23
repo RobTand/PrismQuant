@@ -45,6 +45,7 @@ from .nvfp4_cb_footprint import (
     cb_cost_provenance,
     cb_serialization_context_from_env,
 )
+from .sensitivity_probe import grouped_linear_groups
 
 
 def _cb_cost_quantize_dequantize(
@@ -1129,8 +1130,19 @@ def measure_unbatched(model: nn.Module, act_cache: "ActivationIndex",
         W = mod.weight.detach()
         X_cpu, row_indices = act_cache.load_with_row_indices(canonical_name)
         X = X_cpu.to(W.dtype).to(W.device)
-        y_ref = X @ W.T
-        ref_energy = float(y_ref.float().pow(2).mean().item())
+        # Grouped-BMM operand (wo_a shape): the joint-output screen below
+        # models consumption as y = X @ W.T over the whole stored plane,
+        # which is not how a grouped operand is contracted (row (g,r) only
+        # ever meets group g's input slice). Scoring it dense would inflate
+        # the output term ~G-fold with cross-group error that no token ever
+        # sees — a fake measurement. Ship weight_mse + predicted_dloss and
+        # stamp the output side honestly unmeasured instead.
+        num_groups = grouped_linear_groups(mod, profile)
+        y_ref = None
+        ref_energy = 0.0
+        if num_groups is None:
+            y_ref = X @ W.T
+            ref_energy = float(y_ref.float().pow(2).mean().item())
         # Per-weight H diagonal and per-token g² weights if available.
         # Shape of H matches W; g² aligns with rows of X.
         h_full = None
@@ -1194,14 +1206,20 @@ def measure_unbatched(model: nn.Module, act_cache: "ActivationIndex",
                 X_hat = spec.activation_quantize_dequantize(X.clone())
                 err = (W - W_hat).float()
                 weight_mse = float(err.pow(2).mean().item())
-                y_q = X_hat @ W_hat.T
-                y_err_sq = (y_ref - y_q).float().pow(2)
-                output_mse = float(y_err_sq.mean().item())
+                output_mse = 0.0
+                rel_mse = 0.0
+                output_mse_measured = False
                 fisher_output_mse = None
-                if gq_rows is not None:
-                    fisher_output_mse = float(
-                        (y_err_sq * gq_rows.unsqueeze(1)).mean().item()
-                    )
+                if y_ref is not None:
+                    y_q = X_hat @ W_hat.T
+                    y_err_sq = (y_ref - y_q).float().pow(2)
+                    output_mse = float(y_err_sq.mean().item())
+                    rel_mse = output_mse / max(ref_energy, 1e-12)
+                    output_mse_measured = True
+                    if gq_rows is not None:
+                        fisher_output_mse = float(
+                            (y_err_sq * gq_rows.unsqueeze(1)).mean().item()
+                        )
                 predicted_dloss = None
                 if h_full is not None:
                     predicted_dloss = float(0.5 * (h_full * err.pow(2)).sum().item())
@@ -1213,6 +1231,7 @@ def measure_unbatched(model: nn.Module, act_cache: "ActivationIndex",
                     output_mse,
                     output_mse / max(ref_energy, 1e-12),
                     predicted_dloss=predicted_dloss,
+                    output_mse_measured=output_mse_measured,
                     fisher_output_mse=fisher_output_mse,
                     raw_render=_cb_raw_sidecar_metrics(
                         W, raw_out, h_full=h_full,
@@ -2651,6 +2670,16 @@ def measure_batched_gpu(model: nn.Module, act_cache: "ActivationIndex",
         for chunk_i, chunk in enumerate(chunks_list):
             names = [n for n, _ in chunk]
             N = len(chunk)
+            # Grouped-BMM operands (wo_a shape): the joint-output screen
+            # models y = X @ W.T over the whole plane, which is not how a
+            # grouped operand is contracted (row (g,r) only ever meets
+            # group g's input slice). Scoring it dense would inflate the
+            # output term ~G-fold with cross-group error no token sees —
+            # a fake measurement. Weight-side metrics stay exact; the
+            # output side ships stamped unmeasured.
+            grouped_flags = [
+                grouped_linear_groups(m, profile) is not None for _, m in chunk
+            ]
             # Lazy load activations for this chunk only. With prefetch
             # enabled, the future is already in flight from the prior
             # iteration (or kicked off above for the first chunk).
@@ -2831,14 +2860,17 @@ def measure_batched_gpu(model: nn.Module, act_cache: "ActivationIndex",
                     err = (Ws - W_hat).float()
                     weight_mse = err.pow(2).mean(dim=(1, 2))  # (n_sub,)
                     # Output side, one BMM per row bucket: every Linear is
-                    # scored on ALL of its own cached rows.
-                    output_mse = torch.empty(n_sub, dtype=torch.float32,
+                    # scored on ALL of its own cached rows. Grouped-BMM
+                    # members are skipped (see grouped_flags above) and
+                    # their output slots ship zeroed + stamped unmeasured.
+                    output_mse = torch.zeros(n_sub, dtype=torch.float32,
                                              device=dev)
                     fisher_output_mse = (
-                        torch.empty(n_sub, dtype=torch.float32, device=dev)
+                        torch.zeros(n_sub, dtype=torch.float32, device=dev)
                         if gq_per_item is not None else None)
                     for r, members in row_buckets.items():
-                        cs = [c for c in members if c in slot_of]
+                        cs = [c for c in members
+                              if c in slot_of and not grouped_flags[c]]
                         if not cs:
                             continue
                         bslots = [slot_in_bucket[c] for c in cs]
@@ -2896,9 +2928,11 @@ def measure_batched_gpu(model: nn.Module, act_cache: "ActivationIndex",
                                 if dloss_val is not None
                                 else None
                             ),
+                            output_mse_measured=not grouped_flags[item_i],
                             fisher_output_mse=(
                                 float(fisher_val)
-                                if fisher_val is not None
+                                if (fisher_val is not None
+                                    and not grouped_flags[item_i])
                                 else None
                             ),
                             n_activation_rows=rows_used[cpos],

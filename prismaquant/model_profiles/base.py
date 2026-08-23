@@ -1262,10 +1262,13 @@ class ModelProfile(ABC):
 
     def should_probe_linear(self, name: str, mod) -> bool:
         """Whether to register Fisher hooks on this Linear module.
-        DSv4 returns False for `DeepseekV4GroupedLinear` (its weight
-        shape doesn't match the per-token Hessian-trace effective
-        output dim, so the chunk_h * w.pow(2) accumulator can't
-        broadcast). Default: True for any nn.Linear instance.
+        DSv4's `DeepseekV4GroupedLinear` used to be skipped here (its
+        grouped consumption broke the dense chunk_h * w.pow(2)
+        accumulator); since the grouped Fisher accumulator landed it is
+        probed through the grouped path instead, driven by the spec's
+        `probe_grouped_module_class_names`. The skip list itself remains
+        for classes with no accumulator at all. Default: True for any
+        nn.Linear instance.
 
         Profiles may also use this to skip e.g. router gates that
         shouldn't carry Fisher info."""
@@ -1278,6 +1281,27 @@ class ModelProfile(ABC):
             if type(mod).__name__ in skipped:
                 return False
         return True
+
+    def probe_grouped_module_class_names(self) -> tuple[str, ...]:
+        """Module classes whose forward consumes their weight through a
+        grouped/batched contraction over a leading GROUP axis (the
+        `wo_a` shape: `y[..., g, r] = sum_d x[..., g, d] * W[g, r, d]`,
+        stored as one `[G*R, D]` plane on an `nn.Linear` subclass).
+
+        Declared per family in the structure spec under
+        ``probe.grouped_module_class_names`` — the same one-declaration
+        discipline as ``probe_skip_module_class_names``, which these
+        classes previously lived in. The probe routes a declared class
+        to the grouped Fisher accumulator (`prismaquant.sensitivity_probe.
+        grouped_linear_groups`) instead of the dense one; an empty
+        declaration means the family has no such classes.
+
+        A declared class must expose its group count as `n_groups`;
+        anything else fails fast rather than silently dense-hooking."""
+        spec = self.structure_spec()
+        if spec is None:
+            return ()
+        return tuple(spec.probe_grouped_module_class_names)
 
     def walk_claim_rules(self):
         """Claim rules for the discovery walker (`prismaquant.model_walk`).
@@ -1295,8 +1319,13 @@ class ModelProfile(ABC):
 
         1. **pin** — weights of module classes the profile's spec declares in
            ``probe_skip_module_class_names``. The probe cannot price them, so
-           they are held at source precision as a *named* debt (this is
-           exactly the ``wo_a`` case: matmul-fed, discovered, unpriced).
+           they are held at source precision as a *named* debt. (This was
+           the ``wo_a`` rule until the grouped Fisher accumulator landed:
+           DSv4 declared ``DeepseekV4GroupedLinear`` here, and the walk
+           turned that declaration into a named pin. Grouped classes now
+           live under ``probe_grouped_module_class_names`` and are decided
+           like any other Linear; the mechanism stays for the next class
+           no accumulator covers.)
         2. **pin** — ``pinned_names()`` (``lm_head`` and friends).
         3. **exclude** — the MTP sidecar (``mtp_source_prefix()``), read only
            under spec decode; dispositioned by the MTP lane.

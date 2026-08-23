@@ -438,12 +438,17 @@ class DeepseekV4Profile(ModelProfile):
 
     def walk_claim_rules(self):
         """DSv4 has four matmul-fed families the base rules cannot claim —
-        every one a bare Parameter (or an out-of-inventory Linear) on a
-        module class the probe's enumeration skips, which is the exact
-        `wo_a` failure class the walker exists to surface. Each is pinned
-        with the reason it ships at source precision; the GroupedLinear
-        (`wo_a`) pin itself comes from the base rules via the spec's
-        `probe_skip_module_class_names`."""
+        every one a bare Parameter on a module class the probe's dense
+        enumeration cannot hook, each pinned with the reason it ships at
+        source precision.
+
+        The fifth former member of that set — the grouped-BMM `wo_a` —
+        is NOT here any more: since the grouped Fisher accumulator landed,
+        `DeepseekV4GroupedLinear` is declared under the spec's
+        `probe_grouped_module_class_names` (it left
+        `probe_skip_module_class_names`), so the base rules claim its
+        weight as an ordinary `decide` and the allocator prices it like
+        any other Linear."""
         from prismaquant.model_walk import ClaimRule
 
         rules = [
