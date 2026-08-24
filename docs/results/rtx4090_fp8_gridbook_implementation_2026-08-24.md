@@ -195,3 +195,47 @@ physical RTX 4090 qualification pending**.
 The SM89 cross-compile receipt remains `compile_only` evidence and cannot be
 promoted by inference. It demonstrates neither the physical route, graph
 replay, memory envelope, nor throughput on a 4090.
+
+## Joint-candidate integration update — 17:45 EDT
+
+This append-only update supersedes the earlier references to the standalone
+v10 FP8 candidate for subsequent integration and release work.  The intended
+joint Gridbook FP8 + NVFP4 candidate is now
+`c052d703fce04b1e27d7f9d5945f67e7dfd841c8` (tree
+`0f3d784d921bf831dc162b1dc54ef511c533e4af`), a linear descendant of the
+reviewed FP8 commit `63e019f31b57c13b0fe9697441f5084eb194440a` and the
+shipped v0.9.0 base.  It packages `gridbook.runtime-contract.v11`, contract
+version 11, and `gridbook.lane-eligibility.v2`.  NVFP4 readers and producers
+admit K1--K25.  FP8 producers admit exactly K4 through K48 in steps of four;
+readers additionally retain the historical irregular high rungs.  The strict
+RTX4090 campaign remains unchanged: it physically renders only FP8-CB
+K4/K16/K48 plus `FP8_E4M3`, treats BF16 as the unrendered terminal, and admits
+no NVFP4 format.
+
+The exact immutable pair PrismaQuant
+`cb6730cc9049f74ae865ce14c60e1db43a3d8d17` (tree
+`9330d41aa6ab86e8ab5d280d751fbfb8374bb334`) plus Gridbook `c052d703`
+passes a CUDA-hidden, read-only-root cross-repository gate: **697 passed, 1
+explicitly GPU-only skip**.  The gate checked packaged v11 byte/load identity,
+both reader/producer domains, execution parsing, artifact conformance,
+attestation interoperability, runtime boundaries, strict RTX4090 burn,
+policy, graph, census, export, fingerprint, and shipcard behavior, TP/EP
+surfaces, and SM89/SM120 structural preflights.  Its resolver accepted all 24
+SM89 dense FP8-CB routes at the `compile_only` construction ceiling and
+correctly refused them under the device-qualified release policy.
+
+Durable log:
+`/home/rob/dq-runs/qwen38-27b-rtx4090-fp8cb-18gb-vonly-20260824/validation/candidate-pair-cb6730c-c052d703-cpu-crossrepo-v3.log`;
+SHA-256 `fa4f1e940d8a5c9f8e9ce6065f927e1e3eef70e54acd91eb4b679588eefd4008`.
+The joint Gridbook candidate also passed its clean pinned-vLLM structural gate
+with **406 passed, 1 GPU-only skip**; log
+`/home/rob/dq-runs/qwen38-27b-rtx4090-fp8cb-18gb-vonly-20260824/validation/gridbook-joint-c052d703-cpu-vllm-structural.log`,
+SHA-256 `e329eec4366b9842e97e21c3c49218f5b69dccfd4e9c0db8c3c57c439a279025`.
+
+No tag, wheel, or PrismaQuant runtime-pin advancement follows from these CPU
+receipts.  Every new SM89 and SM120 lane cell remains `compile_only`.  For the
+current joint candidate, release-gate item 1 above must therefore be read as
+requiring an immutable released Gridbook **v11-or-later contract-compatible**
+runtime whose exact SM89 cells have been promoted only by physical device,
+eager, graph, numeric, and performance evidence; the historical v10 wording is
+not permission to release the superseded standalone candidate.
