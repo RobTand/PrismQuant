@@ -6,10 +6,11 @@ codebooks. Production product coverage is derived from
 listed locally.
 
 Merge semantics: existing tables in data/nvfp4_cb_lattices.pt are PRESERVED
-and only missing keys are built — Lloyd runs on CUDA when available, whose
-float atomics can flip grid-snap ties, so rebuilding an existing table could
-silently invalidate published measurements against it (exp-1). Delete the .pt
-first to force a full rebuild.
+and only missing keys are built.  Missing canonical tables are built explicitly
+on CPU so the generator cannot silently inherit the machine's CUDA topology.
+The resulting asset still becomes canonical only after review and updating its
+digest pin; the runtime's cache-miss builder remains research-only.  Delete the
+.pt first to force a full rebuild.
 
     PYTHONPATH=. python scripts/gen_nvfp4_cb_lattices.py
 """
@@ -71,7 +72,13 @@ def main() -> None:
         if key in out:
             print(f"kept  {key}: {tuple(out[key].shape)}")
             continue
-        out[key] = cb._build_lattice(k, grid, d, positive=positive)
+        out[key] = cb._build_lattice(
+            k,
+            grid,
+            d,
+            positive=positive,
+            device="cpu",
+        )
         built += 1
         print(f"built {key}: {tuple(out[key].shape)}")
     cb._DATA.parent.mkdir(parents=True, exist_ok=True)

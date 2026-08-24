@@ -64,7 +64,7 @@ _MIXED_MENU = [
 ]
 _PRODUCT_CB_RUNGS = (
     [f"NVFP4_CB_K{k}" for k in range(12, 25)]
-    + [f"FP8_CB_K{k}" for k in range(28, 49)]
+    + [f"FP8_CB_K{k}" for k in range(4, 49, 4)]
 )
 _ALL_CB_RUNGS = list(_PRODUCT_CB_RUNGS)
 _CB_CONTEXT = CBSerializationContext.production()

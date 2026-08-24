@@ -75,6 +75,14 @@ _CB_SERIALIZATION_SETTINGS: tuple[str, ...] = (
     "CB_ROUTED_MOE_BOOK_SELECTION_SHA256",
     "CB_SCALE_SWEEP",
     "CB_SCALE_SWEEP_SCOPE",
+    # The strict FP8-only lane selects the existing no-activation payload
+    # schema.  Reusing a cache produced under the historical NVFP4 activation
+    # contract would make its stamped bytes disagree with export.
+    "CB_ACTIVATION_SCOPE",
+    # Probe marginals cover the full calibration corpus; activation-cache
+    # rows are intentionally capped.  They are different render inputs even
+    # when MODEL_PATH/DATASET/NSAMPLES/SEQLEN are identical.
+    "CB_IMATRIX_SOURCE",
     "PRISMAQUANT_CB_LDLQ",
     "PRISMAQUANT_CB_MINCHAIN",
     "PRISMAQUANT_CB_MINCHAIN_ANCHORS",
@@ -161,6 +169,8 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
         "SL<-AURA_COST_SEQLEN",
         "SEED<-AURA_COST_CALIB_SEED",
         "DTYPE<-AURA_COST_DTYPE",
+        "AURA_COST_STREAMING",
+        "AURA_COST_CHECKPOINT_DIR",
         *_HEAD_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
@@ -176,11 +186,16 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     # produced that cache. Minutes to rebuild, so keying is generous.
     "cb-col-weights": _key_pairs(
         "MODEL_PATH", "DATASET", "NSAMPLES", "SEQLEN", "ACTIVATION_ROWS_LIMIT",
+        "CB_IMATRIX_SOURCE",
     ),
     "cb-learned-bundle": _key_pairs(
         "MODEL_PATH", "FORMATS", "CB_CODEBOOK_SOURCE_SCOPE",
         "CB_CODEBOOK_BUNDLE", "CB_COL_WEIGHTS_SHA256",
         "CB_ROUTED_MOE_BOOK_SELECTION_SHA256",
+        "CB_ROUTED_BOOK_KEYING",
+        "CB_LEARNED_TRAINER_VERSION",
+        "CB_LEARNED_PROMOTION_RECEIPT_SHA256",
+        "CB_LEARNED_SOURCE_MODEL_IDENTITY_SHA256",
     ),
     "cb-hybrid-cost": _key_pairs(
         "MODEL_PATH", "FORMATS", "COST_MODE",

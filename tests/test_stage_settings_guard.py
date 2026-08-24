@@ -103,6 +103,78 @@ def test_changed_setting_is_exit_2_naming_the_diff(tmp_path):
     assert "refusing silent reuse" in joined
 
 
+def test_aura_cost_streaming_and_checkpoint_directory_are_reuse_identity(tmp_path):
+    base = _full_settings()
+    base.update({
+        "AURA_COST_STREAMING": "1",
+        "AURA_COST_CHECKPOINT_DIR": "/runs/aura-a",
+    })
+
+    for changed_key, changed_value in (
+        ("AURA_COST_STREAMING", "0"),
+        ("AURA_COST_CHECKPOINT_DIR", "/runs/aura-b"),
+    ):
+        artifact = tmp_path / f"cost-{changed_key}.pkl"
+        pipeline.check_stage_settings(
+            artifact, "aura-cost", _document(**base)
+        )
+        artifact.write_bytes(b"cost")
+
+        changed = dict(base, **{changed_key: changed_value})
+        code, messages = pipeline.check_stage_settings(
+            artifact, "aura-cost", _document(**changed)
+        )
+        assert code == 2
+        assert changed_key in "\n".join(messages)
+
+
+def test_cb_imatrix_source_is_reuse_identity_for_harvest_and_render(tmp_path):
+    base = _full_settings()
+    base["CB_IMATRIX_SOURCE"] = "activation-cache"
+
+    for stage in ("cb-col-weights", "aura-dw-cache", "frontier-cache"):
+        artifact = tmp_path / f"{stage}.pkl"
+        pipeline.check_stage_settings(artifact, stage, _document(**base))
+        artifact.write_bytes(b"artifact")
+
+        changed = dict(base, CB_IMATRIX_SOURCE="probe")
+        code, messages = pipeline.check_stage_settings(
+            artifact, stage, _document(**changed)
+        )
+        assert code == 2
+        assert "CB_IMATRIX_SOURCE" in "\n".join(messages)
+
+
+def test_cb_learned_v2_receipt_and_source_identity_are_reuse_identity(tmp_path):
+    base = _full_settings()
+    base.update({
+        "CB_LEARNED_TRAINER_VERSION": "v1",
+        "CB_LEARNED_PROMOTION_RECEIPT_SHA256": "",
+        "CB_LEARNED_SOURCE_MODEL_IDENTITY_SHA256": "",
+    })
+
+    for changed_key, changed_value in (
+        ("CB_LEARNED_TRAINER_VERSION", "v2"),
+        ("CB_LEARNED_PROMOTION_RECEIPT_SHA256", "a" * 64),
+        (
+            "CB_LEARNED_SOURCE_MODEL_IDENTITY_SHA256",
+            "b" * 64,
+        ),
+    ):
+        artifact = tmp_path / f"bundle-{changed_key}.pqcb"
+        pipeline.check_stage_settings(
+            artifact, "cb-learned-bundle", _document(**base)
+        )
+        artifact.write_bytes(b"bundle")
+
+        changed = dict(base, **{changed_key: changed_value})
+        code, messages = pipeline.check_stage_settings(
+            artifact, "cb-learned-bundle", _document(**changed)
+        )
+        assert code == 2
+        assert changed_key in "\n".join(messages)
+
+
 def test_missing_manifest_only_warns(tmp_path):
     artifact = tmp_path / "probe.pkl"
     artifact.write_bytes(b"x")
@@ -168,6 +240,8 @@ def test_late_override_resolves_a_missing_key(tmp_path):
                     CB_ROUTED_MOE_BOOK_SELECTION="",
                     CB_ROUTED_MOE_BOOK_SELECTION_SHA256="",
                     CB_SCALE_SWEEP="1", CB_SCALE_SWEEP_SCOPE="",
+                    CB_ACTIVATION_SCOPE="nvfp4",
+                    CB_IMATRIX_SOURCE="activation-cache",
                     PRISMAQUANT_CB_LDLQ="0",
                     PRISMAQUANT_CB_MINCHAIN="0",
                     PRISMAQUANT_CB_MINCHAIN_ANCHORS="",

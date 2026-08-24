@@ -77,6 +77,7 @@ from .cb_layout import (
     CODEWORDS_PER_SUPERBLOCK,
     FP4_GROUP,
     FP4_SCALE_GROUPS_PER_SUPERBLOCK,
+    FAMILIES,
     INDEX_BYTES_PER_K,
     SCALE_CODING_TWO_TIER,
     SCALE_CODING_V1,
@@ -179,6 +180,9 @@ def _resolve_encode_tier(tier: str | None) -> str:
     return t
 
 _DATA = Path(__file__).resolve().parent / "data" / "nvfp4_cb_lattices.pt"
+_LATTICE_ASSET_SHA256 = (
+    "b56606e138ac2fde531b2ac281347c6bf31b0fabbbab81d9aa4946c262fdd8bd"
+)
 _LATTICE_SEED = 1234
 _LATTICE_SAMPLES = 1 << 17
 _LATTICE_ITERS = 12
@@ -301,12 +305,54 @@ def _vq_assign(x: torch.Tensor, cb: torch.Tensor,
 # Fixed lattice + learned codebook (weighted Lloyd on the element grid).
 # ---------------------------------------------------------------------------
 
+def _fixed_order_segment_sum(
+    assign: torch.Tensor,
+    values: torch.Tensor,
+    segments: int,
+) -> torch.Tensor:
+    """Sum rows by assignment without floating-point atomic accumulation.
+
+    Learned-v2 sorts assignments stably, preserving source-row order inside
+    every centroid, and then performs one contiguous segmented reduction.  It
+    is more expensive than ``index_add_`` but has a fixed reduction topology
+    on one build/device and avoids CUDA's unordered floating-point atomics.
+    Integer ``bincount`` supplies segment lengths and is exact.
+    """
+
+    if assign.ndim != 1 or values.ndim != 2:
+        raise ValueError(
+            "fixed-order centroid accumulation expects 1-D assignments "
+            "and 2-D values"
+        )
+    if assign.shape[0] != values.shape[0]:
+        raise ValueError("fixed-order assignments and values have different row counts")
+    segment_reduce = getattr(torch, "segment_reduce", None)
+    if segment_reduce is None:
+        raise RuntimeError(
+            "learned-v2 fixed-order accumulation requires torch.segment_reduce"
+        )
+    order = torch.argsort(assign, stable=True)
+    lengths = torch.bincount(assign, minlength=int(segments))
+    return segment_reduce(
+        values.index_select(0, order),
+        "sum",
+        lengths=lengths,
+    )
+
+
 def _lloyd(samples: torch.Tensor, init: torch.Tensor, grid: str,
            weights: torch.Tensor | None, iters: int, seed: int,
-           positive: bool = False) -> torch.Tensor:
+           positive: bool = False,
+           accumulation: str = "atomic") -> torch.Tensor:
     """Grid-snapped weighted Lloyd. Every centroid coordinate is projected
     onto the element grid after each update, so codewords stay grid-valued
     (the positive half-grid for magnitude codebooks)."""
+    accumulation = str(accumulation).strip().lower()
+    if accumulation not in {"atomic", "fixed_order"}:
+        raise ValueError(
+            "Lloyd accumulation must be 'atomic' or 'fixed_order', got "
+            f"{accumulation!r}"
+        )
     cb = _snap_to_grid(init.to(torch.float32), grid, positive=positive)
     K, d = cb.shape
     gen = torch.Generator(device="cpu").manual_seed(int(seed))
@@ -316,17 +362,30 @@ def _lloyd(samples: torch.Tensor, init: torch.Tensor, grid: str,
         # 27B-Linear scale (m~3.1M, K=4096) and swap-kills a UMA box.
         counts = torch.bincount(assign, minlength=K).to(samples.dtype)
         if weights is None:
-            summ = torch.zeros(K, d, dtype=samples.dtype,
-                               device=samples.device)
-            summ.index_add_(0, assign, samples)
+            if accumulation == "fixed_order":
+                summ = _fixed_order_segment_sum(assign, samples, K)
+            else:
+                summ = torch.zeros(K, d, dtype=samples.dtype,
+                                   device=samples.device)
+                summ.index_add_(0, assign, samples)
             new = summ / counts.clamp_min(1.0).unsqueeze(-1)
         else:
-            wsum = torch.zeros(K, d, dtype=samples.dtype,
-                               device=samples.device)
-            wsum.index_add_(0, assign, weights)
-            summ = torch.zeros(K, d, dtype=samples.dtype,
-                               device=samples.device)
-            summ.index_add_(0, assign, weights * samples)
+            if accumulation == "fixed_order":
+                # Reduce both numerators in one sorted pass so they share the
+                # same fixed row order and segment topology.
+                reduced = _fixed_order_segment_sum(
+                    assign,
+                    torch.cat((weights, weights * samples), dim=1),
+                    K,
+                )
+                wsum, summ = reduced.split(d, dim=1)
+            else:
+                wsum = torch.zeros(K, d, dtype=samples.dtype,
+                                   device=samples.device)
+                wsum.index_add_(0, assign, weights)
+                summ = torch.zeros(K, d, dtype=samples.dtype,
+                                   device=samples.device)
+                summ.index_add_(0, assign, weights * samples)
             new = summ / wsum.clamp_min(1e-12)
         empty = counts == 0
         if bool(empty.any()):
@@ -341,12 +400,34 @@ def _lloyd(samples: torch.Tensor, init: torch.Tensor, grid: str,
 @lru_cache(maxsize=None)
 def _lattice_file() -> dict[str, torch.Tensor]:
     if _DATA.exists():
+        observed = hashlib.sha256(_DATA.read_bytes()).hexdigest()
+        if observed != _LATTICE_ASSET_SHA256:
+            raise RuntimeError(
+                "canonical CB lattice asset digest differs: expected "
+                f"{_LATTICE_ASSET_SHA256}, observed {observed}"
+            )
         return torch.load(_DATA, map_location="cpu", weights_only=True)
     return {}
 
 
 def _lattice_key(k: int, grid: str, d: int, positive: bool = False) -> str:
     return f"{grid}{'pos' if positive else ''}_d{d}_k{k}"
+
+
+@lru_cache(maxsize=1)
+def _production_lattice_keys() -> frozenset[str]:
+    """Canonical table keys needed by every producer-eligible CB rung."""
+
+    keys: set[str] = set()
+    for family in FAMILIES:
+        for rung in family.rungs:
+            widths = subtable_bit_widths(rung, family.mode, family.n_sub)
+            shapes = codebook_subtable_shapes(
+                rung, family.mode, family.n_sub
+            )
+            for width, (_, dimension) in zip(widths, shapes):
+                keys.add(_lattice_key(width, family.grid, dimension, False))
+    return frozenset(keys)
 
 
 @lru_cache(maxsize=None)
@@ -359,14 +440,29 @@ def _fixed_lattice_cpu(k: int, grid: str, d: int,
     cached = _lattice_file().get(_lattice_key(k, grid, d, positive))
     if cached is not None:
         return cached.to(torch.float32).contiguous()
+    key = _lattice_key(k, grid, d, positive)
+    if key in _production_lattice_keys():
+        raise RuntimeError(
+            f"canonical producer lattice {key!r} is missing from the "
+            "digest-bound asset; refusing device-dependent synthesis"
+        )
     return _build_lattice(k, grid, d, positive=positive)
 
 
-def _build_lattice(k: int, grid: str, d: int,
-                   positive: bool = False) -> torch.Tensor:
+def _build_lattice(
+    k: int,
+    grid: str,
+    d: int,
+    positive: bool = False,
+    *,
+    device: str | torch.device | None = None,
+) -> torch.Tensor:
     """Deterministic universal lattice: grid-snapped Lloyd on seeded samples
     drawn from the *post-normalization* distribution each grid's encoder
-    actually produces. Regenerated on cache miss.
+    actually produces. Regenerated on cache miss.  This is a research-only,
+    noncanonical fallback: production keys must come from the digest-pinned
+    asset.  ``device=None`` preserves the historical GPU-when-available
+    behavior; the canonical asset generator requests CPU explicitly.
 
     Both families must train at the data scale or the codewords cluster far
     from the data and reconstruction collapses (2026-07-15: the original fp4
@@ -397,8 +493,12 @@ def _build_lattice(k: int, grid: str, d: int,
         # Magnitude lattice: train on |x| of the same post-normalization
         # distribution.
         samples = samples.abs()
-    if torch.cuda.is_available():
-        samples = samples.cuda()
+    target_device = torch.device(
+        device
+        if device is not None
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    samples = samples.to(target_device)
     perm = torch.randperm(samples.shape[0], generator=gen).to(samples.device)[:K]
     init = samples[perm]
     return _lloyd(samples, init, grid, None, _LATTICE_ITERS, _LATTICE_SEED,
@@ -415,13 +515,16 @@ def fixed_lattice(k: int, grid: str, d: int = 8,
 def learn_codebook(vectors: torch.Tensor, k: int, *, grid: str,
                    col_weights: torch.Tensor | None = None,
                    init: torch.Tensor | None = None, iters: int = 4,
-                   seed: int = 0, positive: bool = False) -> torch.Tensor:
+                   seed: int = 0, positive: bool = False,
+                   accumulation: str = "atomic") -> torch.Tensor:
     """Weighted Lloyd codebook on the element grid. Returns a (2^k, d)
     grid-valued tensor (positive half-grid when ``positive=True`` — pass
     ``|vectors|`` to learn a magnitude-only codebook). Deterministic
-    given ``seed`` + ``init`` on CPU; on CUDA the index_add_ float atomics
-    can flip grid-snap ties across runs, so ship the resulting codebook
-    rather than regenerating it."""
+    given ``seed`` + ``init`` on CPU.  The default ``"atomic"`` preserves the
+    legacy trainer exactly; ``"fixed_order"`` uses stable assignment sorting
+    plus contiguous segment reductions for learned-v2 repeatability on one
+    fixed build/device.  Shipped codebooks remain value-bearing artifacts;
+    regeneration digests are not promised across architectures."""
     vectors = vectors.to(torch.float32)
     d = vectors.shape[-1]
     vectors = vectors.reshape(-1, d)
@@ -436,8 +539,16 @@ def learn_codebook(vectors: torch.Tensor, k: int, *, grid: str,
         weights = torch.broadcast_to(
             col_weights.to(vectors.device, torch.float32), vectors.shape
         ).contiguous()
-    return _lloyd(vectors, init, grid, weights, iters, seed,
-                  positive=positive)
+    return _lloyd(
+        vectors,
+        init,
+        grid,
+        weights,
+        iters,
+        seed,
+        positive=positive,
+        accumulation=accumulation,
+    )
 
 
 def _resolve_codebook(k: int, grid: str, mode: str,

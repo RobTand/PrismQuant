@@ -68,6 +68,7 @@ from collections import Counter
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
+from typing import Any
 
 import torch
 from safetensors import safe_open
@@ -115,6 +116,7 @@ from prismaquant.export_nvfp4_cb import (
     _export_base_name,
     _git_commit,
     _parse_cb_format,
+    _parse_producer_cb_format,
     _role_of,
     _to_device,
     _try_resolve_direct_packed_expert,
@@ -227,7 +229,7 @@ def _format_group_slug(format_wire_id: str) -> str:
 
 def _per_expert_format_wire_id(format_name: str) -> str:
     canonical = canonical_format_name(format_name)
-    if _parse_cb_format(canonical) is not None:
+    if _parse_producer_cb_format(canonical) is not None:
         return canonical
     if canonical == "MXFP4_SOURCE":
         return source_passthrough_wire_id(canonical)
@@ -455,32 +457,16 @@ def _source_model_identity_from_env(
     if not cache_path:
         return None
     from prismaquant.cost_streaming import (
+        compact_streamed_model_identity,
         validate_cached_streamed_model_identity,
     )
 
     identity = validate_cached_streamed_model_identity(
         model_dir, cache_path, require_complete_checkpoint=True
     )
-    shards = identity.get("shards")
-    checkpoint_weight_map = identity.get("checkpoint_weight_map")
-    if not isinstance(shards, list) or not isinstance(
-        checkpoint_weight_map, dict
-    ):
-        raise RuntimeError(
-            f"{_SOURCE_MODEL_IDENTITY_CACHE_ENV} does not attest the complete "
-            "indexed source checkpoint"
-        )
-    # The full object is several MiB for DSv4.  Its canonical content digest
-    # already binds the normalized config, execution map, complete source
-    # index, and every shard SHA; keep the artifact provenance compact while
-    # retaining coverage counts that make accidental partial identities loud.
-    return {
-        "schema": identity.get("schema"),
-        "content_sha256": identity.get("content_sha256"),
-        "resolved_commit": identity.get("resolved_commit"),
-        "checkpoint_shards": len(shards),
-        "checkpoint_tensors": len(checkpoint_weight_map),
-    }
+    return compact_streamed_model_identity(
+        identity, where=_SOURCE_MODEL_IDENTITY_CACHE_ENV
+    )
 
 
 def _require_production_source_model_identity(
@@ -529,8 +515,10 @@ def _bind_source_model_identity_provenance(
             "streaming export cannot bind source identity without provenance"
         )
     if "source_model_identity" in provenance:
+        if provenance["source_model_identity"] == source_model_identity:
+            return
         raise RuntimeError(
-            "streaming export quant config already carries a source identity"
+            "streaming export quant config carries a different source identity"
         )
     provenance["source_model_identity"] = dict(source_model_identity)
 
@@ -932,6 +920,7 @@ class _StreamWriter:
         # `shipcard.compute_model_sha`), so a reshard remains recognisable as
         # the same model without changing what identity means.
         self.last_tensor_content_sha256: dict[str, str] = {}
+        self.last_tensor_to_file: dict[str, str] = {}
 
     def add(self, name, dtype, shape, producer, copy_src=None, *, reader=None,
             encoder=None):
@@ -1035,6 +1024,7 @@ class _StreamWriter:
         self.last_content_bytes = None
         self.last_weight_manifest_files = {}
         self.last_tensor_content_sha256 = {}
+        self.last_tensor_to_file = {}
         path = Path(path)
         out_dir = path.parent
         planned = self._plan_containers(path, shard_bytes)
@@ -1182,6 +1172,11 @@ class _StreamWriter:
                 self.last_content_bytes = int(manifest[only]["bytes"])
             self.last_weight_manifest_files = manifest
             self.last_tensor_content_sha256 = tensor_digests
+            self.last_tensor_to_file = {
+                entry.name: name
+                for name, entries in planned
+                for entry in entries
+            }
             return timings
         except BaseException:
             for temp_path in owned_temps:
@@ -2706,6 +2701,8 @@ def export_nvfp4_cb_streaming(
     warm_verify_sample: int = 32,
     dspark_cb_sidecar: bool = False,
     shard_bytes: int = DEFAULT_SHARD_BYTES,
+    producer_policy: str | None = None,
+    producer_runtime_contract: Mapping[str, Any] | str | Path | None = None,
 ) -> dict[str, int]:
     """Streaming counterpart of :func:`export_nvfp4_cb.export_nvfp4_cb`. Same
     signature + container; peak residency ~= one source tensor + codebooks.
@@ -2969,6 +2966,17 @@ def export_nvfp4_cb_streaming(
                 assignment, expert_groups, profile
             )
         )
+    from prismaquant.rtx4090_qwen38_policy import (
+        prepare_rtx4090_export_policy,
+    )
+
+    _strict_producer = prepare_rtx4090_export_policy(
+        model_dir=model_dir,
+        assignment=assignment,
+        producer_policy=producer_policy,
+        runtime_contract=producer_runtime_contract,
+        where="export_nvfp4_cb_streaming",
+    )
     # Namespace exclusion is validated against the COLLAPSED assignment, i.e.
     # the units as the allocator actually decided them, so a per-expert entry
     # cannot hide a collision behind its expanded spelling.
@@ -3160,7 +3168,7 @@ def export_nvfp4_cb_streaming(
     for qname, fmt in assignment.items():
         if fmt == "BF16":
             continue
-        parsed = _parse_cb_format(fmt)
+        parsed = _parse_producer_cb_format(fmt)
         if parsed is not None:
             cb_targets[qname] = parsed
             continue
@@ -3856,18 +3864,27 @@ def export_nvfp4_cb_streaming(
     # user found it at serve time.
     from .cb_route_status_gate import gate_cb_export_units
 
-    cb_route_status_provenance = gate_cb_export_units(
-        assignment=assignment,
-        quantized_targets=(*cb_targets, *stock_targets),
-        routed_units=expert_stack_members,
-        role_split_units=(
-            qname for qname, roles in expert_role_plans.items() if roles
-        ),
-        shape_of=_target_shape,
-        allow_unbacked_route=allow_unbacked_route,
-        non_native_target=non_native_target,
-        exporter="export_nvfp4_cb_streaming",
-    )
+    if _strict_producer is not None:
+        from prismaquant.rtx4090_qwen38_policy import (
+            rtx4090_route_status_stamp,
+        )
+
+        cb_route_status_provenance = rtx4090_route_status_stamp(
+            _strict_producer[1], assignment
+        )
+    else:
+        cb_route_status_provenance = gate_cb_export_units(
+            assignment=assignment,
+            quantized_targets=(*cb_targets, *stock_targets),
+            routed_units=expert_stack_members,
+            role_split_units=(
+                qname for qname, roles in expert_role_plans.items() if roles
+            ),
+            shape_of=_target_shape,
+            allow_unbacked_route=allow_unbacked_route,
+            non_native_target=non_native_target,
+            exporter="export_nvfp4_cb_streaming",
+        )
     from prismaquant.nvfp4_cb_footprint import _ldlq_for_format
 
     routed_ldlq = sorted(
@@ -5316,6 +5333,22 @@ def export_nvfp4_cb_streaming(
         include_tensor_formats=True,
         tensor_formats=finalized_tensor_formats,
     )
+    if _strict_producer is not None:
+        _strict_runtime_contract, _strict_policy_stamp = _strict_producer
+        quant_config["format"] = "fp8_cb"
+        quant_config["provenance"]["producer_policy"] = _strict_policy_stamp
+        from prismaquant.rtx4090_artifact_census import (
+            bind_rtx4090_source_provenance,
+        )
+
+        bind_rtx4090_source_provenance(
+            quant_config, _strict_policy_stamp
+        )
+        quant_config["provenance"]["imatrix_sha256"] = (
+            quant_config["provenance"]["cb_render_identity"][
+                "col_weights_sha256"
+            ]
+        )
     # Source DSpark is a metadata-only overlay. Quantized DSpark is a distinct
     # producer mode: physical tensor bases stay ``mtp.*`` while the CB groups
     # above were named in the construction namespace. Never apply the source
@@ -5484,11 +5517,31 @@ def export_nvfp4_cb_streaming(
         raise AssertionError(
             "streaming writer published without an exact content digest"
         )
+    _strict_content_receipt = None
+    if _strict_producer is not None:
+        from prismaquant.shipcard import (
+            WEIGHT_CONTENT_MANIFEST_SCHEMA,
+            capture_attested_safetensors_write_receipt,
+        )
+
+        _strict_content_receipt = capture_attested_safetensors_write_receipt(
+            out_dir,
+            weight_manifest={
+                "schema": WEIGHT_CONTENT_MANIFEST_SCHEMA,
+                "algorithm": "sha256",
+                "files": dict(sorted(writer.last_weight_manifest_files.items())),
+            },
+            tensor_sha256=writer.last_tensor_content_sha256,
+            tensor_to_file=writer.last_tensor_to_file,
+        )
     # Layout-invariant payload identity, hashed in the same pass that hashed
     # the containers.  See `shard_layout.tensor_payload_identity` for why the
     # artifact needs an identity `model_sha` cannot provide.
     quant_config["provenance"]["tensor_payload_identity"] = (
-        tensor_payload_identity(writer.last_tensor_content_sha256)
+        tensor_payload_identity(
+            writer.last_tensor_content_sha256,
+            include_tensor_sha256=_strict_producer is not None,
+        )
     )
     if warm_session is not None:
         warm_provenance = warm_session.provenance()
@@ -5504,7 +5557,8 @@ def export_nvfp4_cb_streaming(
     src_config = model_dir / "config.json"
     config = json.loads(src_config.read_text()) if src_config.exists() else {}
     config["quantization_config"] = {
-        "quant_method": "gridbook", "format": "nvfp4_cb",
+        "quant_method": "gridbook",
+        "format": "fp8_cb" if _strict_producer is not None else "nvfp4_cb",
         "config_file": "quant_config.json"}
     config = apply_dspark_overlay_to_model_config(
         config,
@@ -5584,6 +5638,22 @@ def export_nvfp4_cb_streaming(
             else None
         ),
     )
+    if _strict_producer is not None:
+        from prismaquant.rtx4090_qwen38_policy import (
+            is_rtx4090_validation_only_policy,
+            validate_rtx4090_quant_config_manifest,
+        )
+
+        validate_rtx4090_quant_config_manifest(
+            quant_config,
+            runtime_contract=_strict_runtime_contract,
+            allow_unreleasable_validation_only=(
+                is_rtx4090_validation_only_policy(_strict_policy_stamp)
+            ),
+            artifact_dir=out_dir,
+            artifact_content_receipt=_strict_content_receipt,
+            where="export_nvfp4_cb_streaming finalized RTX4090 manifest",
+        )
     # FINAL GATE, read back off the PUBLISHED artifact rather than from the
     # planning state that produced it. Everything above knows what it meant to
     # write; this asks the only question a consumer can ask — for every
@@ -6152,6 +6222,18 @@ def main(argv=None) -> None:
         "legacy v1 for backward-compatible artifacts",
     )
     ap.add_argument("--device", default=None)
+    ap.add_argument(
+        "--producer-policy",
+        default=None,
+        help="opt-in strict producer policy id; the RTX4090 policy requires "
+             "--producer-runtime-contract",
+    )
+    ap.add_argument(
+        "--producer-runtime-contract",
+        default=None,
+        help="explicit Gridbook v10 runtime_contract.json for the strict "
+             "producer policy (never inferred from the current v4 pin)",
+    )
     ap.add_argument("--subset-prefix", action="append", default=None,
                     metavar="PREFIX",
                     help="opt-in: export ONLY tensors under this checkpoint "
@@ -6226,7 +6308,9 @@ def main(argv=None) -> None:
         warm_state_dir=args.warm_state_dir,
         warm_verify_sample=args.warm_verify_sample,
         dspark_cb_sidecar=args.dspark_cb_sidecar,
-        shard_bytes=args.shard_bytes)
+        shard_bytes=args.shard_bytes,
+        producer_policy=args.producer_policy,
+        producer_runtime_contract=args.producer_runtime_contract)
     size = sum(p.stat().st_size for p in Path(args.out).glob("*")) / 1e9
     print(f"wrote {args.out} ({size:.3f} GB)")
     for fmt, n in sorted(counts.items()):

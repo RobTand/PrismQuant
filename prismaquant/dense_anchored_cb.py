@@ -454,7 +454,7 @@ def _derive_dense_plan(profile, body: Sequence[str]) -> DensePlan:
         ("nvfp4_cb", NVFP4_CB_LADDER), ("fp8_cb", FP8_CB_LADDER),
     ):
         legal = tuple(
-            spec.name for spec in fr.list_formats(family)
+            spec.name for spec in fr.list_producer_formats(family)
             if check_serving_format(TARGET_PROFILE, None, spec.name).legal
         )
         if not legal:

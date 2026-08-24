@@ -226,6 +226,19 @@ def test_delta_reuse_signature_comes_from_the_canonical_scheme():
     }
 
 
+def test_reader_only_fp8_rung_cannot_enter_a_new_scheme():
+    with pytest.raises(ValueError, match="CB producer format/fields disagree"):
+        build_cb_scheme(
+            ref="lattice",
+            fmt="FP8_CB_K29",
+            grid="fp8",
+            mode="product",
+            k=29,
+            codebook=(),
+            scale_coding="v1",
+        )
+
+
 def test_scheme_rejects_noncanonical_sidecar_type_rank_and_shape():
     base = {
         "ref": "lattice",

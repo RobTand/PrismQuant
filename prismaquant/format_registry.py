@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Iterable
 
 import torch
 from compressed_tensors.quantization.utils.mxfp_utils import generate_mx_scales
@@ -31,11 +31,14 @@ from compressed_tensors.quantization.utils.mxfp_utils import generate_mx_scales
 from prismaquant.cb_layout import (
     CODEWORDS_PER_SUPERBLOCK,
     FP4_GROUP,
+    FP8_ACCEPTED_RUNGS,
     FP8_PRODUCT_RUNGS,
     NVFP4_PRODUCT_RUNGS,
     SCALE_CODING_V1,
     SCALE_PLANE_BYTES,
     SUPERBLOCK,
+    is_producer_format_name,
+    parse_format_name,
 )
 from prismaquant.fp8_dynamic import (
     fp8_dynamic_activation_qdq_vllm,
@@ -79,6 +82,12 @@ class FormatSpec:
     activation_quantize_dequantize: Callable[[torch.Tensor], torch.Tensor] = field(
         default=lambda x: x
     )
+    # Reader compatibility is deliberately wider than the producer surface
+    # for FP8-CB: old K28..K48 artifacts remain loadable even though new
+    # artifacts may only use K%4.  Kept last to preserve FormatSpec's existing
+    # positional constructor ABI. Menus/assignments must use the explicit
+    # producer APIs instead of treating registry membership as authority.
+    producer_eligible: bool = True
 
     @property
     def act_quant_changes_input(self) -> bool:
@@ -1132,7 +1141,7 @@ def _make_nvfp4_cb_spec(k: int) -> FormatSpec:
     )
 
 
-def _make_fp8_cb_spec(k: int) -> FormatSpec:
+def _make_fp8_cb_spec(k: int, *, producer_eligible: bool) -> FormatSpec:
     # Index stream in scale_bits (32k bits / 256-superblock, weight_bits=0,
     # group_size=256) so effective_bits = k/8 exactly, mirroring the GGUF /
     # NVFP4_CB accounting. FP8_CB has NO group-16 scale plane; its
@@ -1146,7 +1155,12 @@ def _make_fp8_cb_spec(k: int) -> FormatSpec:
         scale_dtype_name="fp8_cb_vq",
         weight_element_dtype=f"fp8_cb_k{k}",
         act_bits=8, act_dtype_name="fp8_e4m3", act_group_size=0,
-        family="fp8_cb", min_capability_sm=100,
+        # Ada has native FP8 tensor-core execution for Gridbook's SM89 decode
+        # and expand+CUTLASS routes.  A production artifact still needs the
+        # separate device-qualified lane-v2 cells; this floor is capability
+        # metadata, never a replacement for that release gate.
+        family="fp8_cb", min_capability_sm=89,
+        producer_eligible=producer_eligible,
         autoround_config=(
             lambda k=k: dict(bits=0, group_size=0, data_type="fp8_cb",
                              cb_k=k, sym=True, act_bits=8,
@@ -1161,8 +1175,16 @@ def _make_fp8_cb_spec(k: int) -> FormatSpec:
 
 for _k in NVFP4_PRODUCT_RUNGS:               # 2.000 .. 3.500 bpw in 0.125 steps
     register_format(_make_nvfp4_cb_spec(_k))
-for _k in FP8_PRODUCT_RUNGS:                 # 3.5 .. 6.0 bpw in 0.125 steps
-    register_format(_make_fp8_cb_spec(_k))
+for _k in FP8_ACCEPTED_RUNGS:
+    # Registry membership is a reader/reporting guarantee, not a producer
+    # menu. Historical off-law K28..K48 rungs remain resolvable while only the
+    # exact K4,K8,...,K48 ladder is eligible for a new artifact.
+    register_format(
+        _make_fp8_cb_spec(
+            _k,
+            producer_eligible=_k in FP8_PRODUCT_RUNGS,
+        )
+    )
 
 
 def list_formats(family: str | None = None) -> list[FormatSpec]:
@@ -1170,6 +1192,53 @@ def list_formats(family: str | None = None) -> list[FormatSpec]:
         return sorted(REGISTRY.values(), key=lambda s: s.effective_bits)
     return sorted((s for s in REGISTRY.values() if s.family == family),
                   key=lambda s: s.effective_bits)
+
+
+def list_producer_formats(family: str | None = None) -> list[FormatSpec]:
+    """Return formats legal in newly produced menus and assignments.
+
+    ``list_formats`` intentionally remains the compatibility inventory used by
+    readers and historical reports.  Producer code must opt into this narrower
+    API so accepting an old wire id cannot silently make it allocatable again.
+    """
+
+    return [
+        spec for spec in list_formats(family)
+        if spec.producer_eligible
+    ]
+
+
+def format_is_producer_eligible(name: str) -> bool:
+    """Whether a registered canonical/alias format may be newly produced."""
+
+    canonical = canonical_format_name(name)
+    spec = REGISTRY.get(canonical)
+    if spec is None or not spec.producer_eligible:
+        return False
+    # Pin CB eligibility to the torch-free wire source as a second invariant;
+    # a registry construction bug cannot widen the producer ladder by itself.
+    if parse_format_name(canonical) is not None:
+        return is_producer_format_name(canonical)
+    return True
+
+
+def require_producer_formats(
+    names: Iterable[str],
+    *,
+    where: str = "producer format menu",
+) -> list[FormatSpec]:
+    """Resolve a new-artifact menu without admitting reader-only wire ids."""
+
+    requested = [str(name) for name in names]
+    nonproducer = [
+        name for name in requested if not format_is_producer_eligible(name)
+    ]
+    if nonproducer:
+        raise ValueError(
+            f"{where} may contain only producer-eligible formats; "
+            f"reader-only/unsupported entries: {nonproducer}"
+        )
+    return [get_format(name) for name in requested]
 
 
 def get_format(name: str) -> FormatSpec:

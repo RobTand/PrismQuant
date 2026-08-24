@@ -611,6 +611,37 @@ def validate_streamed_model_identity(
     return canonical
 
 
+def compact_streamed_model_identity(
+    identity: object,
+    *,
+    where: str = "streamed model identity",
+) -> dict[str, object]:
+    """Return the compact, value-bearing identity stored in an artifact.
+
+    The full identity can be several MiB because it carries the complete
+    tensor-to-shard map and one SHA-256 per source shard.  ``content_sha256``
+    already binds those fields; the compact form retains coverage counts so a
+    partial checkpoint identity cannot be mistaken for the full source.
+    """
+
+    canonical = validate_streamed_model_identity(identity, where=where)
+    shards = canonical.get("shards")
+    checkpoint_weight_map = canonical.get("checkpoint_weight_map")
+    if not isinstance(shards, list) or not isinstance(
+        checkpoint_weight_map, dict
+    ):
+        raise RuntimeError(
+            f"{where} does not attest a complete indexed checkpoint"
+        )
+    return {
+        "schema": canonical.get("schema"),
+        "content_sha256": canonical.get("content_sha256"),
+        "resolved_commit": canonical.get("resolved_commit"),
+        "checkpoint_shards": len(shards),
+        "checkpoint_tensors": len(checkpoint_weight_map),
+    }
+
+
 def validate_cached_streamed_model_identity(
     source_model: str | Path,
     identity_cache_path: str | Path,

@@ -54,6 +54,9 @@ from prismaquant.cost_stage_checkpoint import (
 
 CB_ANCHORED_PLUGIN_SCHEMA = "prismaquant.cb_anchored_cost.plugin.v1"
 CB_ANCHORED_COST_SCHEMA = "prismaquant.cb_anchored_aura_cost.v1"
+STREAMED_CB_SHARD_MERGE_SCHEMA = (
+    "prismaquant.cb_anchored_aura_streamed_shard_merge.v1"
+)
 CB_ARTIFACT_PUBLISH_SCHEMA = (
     "prismaquant.cb_anchored_artifact_publish.v1"
 )
@@ -1628,6 +1631,462 @@ def run_streamed_cb_anchor_aura(
     return payload
 
 
+def merge_streamed_cb_anchor_aura_shards(
+    payloads: Sequence[Mapping[str, object]],
+    *,
+    col_weights: Mapping[str, object],
+    expected_qnames: Sequence[str] | None = None,
+    expected_formats_by_qname: Mapping[str, Sequence[str]] | None = None,
+    expected_purposes_by_qname: Mapping[
+        str, Mapping[str, Sequence[str]]
+    ] | None = None,
+    expected_unmeasured_formats_by_qname: (
+        Mapping[str, Sequence[str]] | None
+    ) = None,
+    expected_legal_cb_formats_by_qname: (
+        Mapping[str, Sequence[str]] | None
+    ) = None,
+) -> dict[str, object]:
+    """Reconstruct one global anchored-AURA payload from disjoint qnames.
+
+    A generic cost-pickle union is insufficient here.  Per-cell production
+    receipts bind the *global* renderer plan, purpose map, and CB render
+    identity.  This merge therefore rebuilds those value-bearing objects and
+    only then lets :func:`anchors_from_streamed_payload` mint receipts.  No
+    receipt from an input shard is carried forward.
+
+    The partition axis is deliberately qname, not format: every sparse cell
+    for one Linear stays with one worker, source-weight identities form a
+    disjoint cover, and one worker can install a decoder layer once for all of
+    that layer's anchor/panel/validation renders.
+    """
+    from prismaquant.production_weight_cache import merge_cb_render_identities
+
+    if not payloads:
+        raise AnchoredCostError("streamed CB shard merge needs at least one shard")
+    if not isinstance(col_weights, Mapping) or not col_weights:
+        raise AnchoredCostError("streamed CB shard merge needs current col_weights")
+
+    required_top_shared = ("schema", "n_probes", "token_scope")
+    required_provenance_shared = (
+        "seed_base",
+        "temperature",
+        "dw_dtype",
+        "measurement_dtype",
+        "include_lm_head",
+        "calib_shape",
+        "calib_sha256",
+        "calib_hash",
+        "calib_hashes",
+        "omitted_packed_experts",
+        "git_commit",
+        "streaming",
+        "streamed_gradient_harvest",
+        "streamed_cotangent_rollover",
+        "streamed_boundary_release",
+        "cb_cost_provenance_schema",
+        "cb_anchored_plugin",
+        "full_menu_materialized",
+    )
+    required_renderer_shared = (
+        "schema",
+        "calibration_hash",
+        "max_act_rows",
+        "arm_identity",
+        "source_model",
+        "source_weight_binding",
+        "cold_expert_provenance",
+        "producer_git_commit",
+        "producer_source_sha256",
+        "retention",
+        "transient_consumer_identity",
+    )
+
+    def _mapping(value: object, *, where: str) -> Mapping[str, object]:
+        if not isinstance(value, Mapping):
+            raise AnchoredCostError(f"{where} is not a mapping")
+        return value
+
+    def _payload_sort_key(payload: Mapping[str, object]) -> tuple[str, ...]:
+        costs = payload.get("costs")
+        if not isinstance(costs, Mapping):
+            return ()
+        return tuple(sorted(str(name) for name in costs))
+
+    # A canonical shard order makes the reconstructed provenance and its
+    # receipt payload digest invariant to command-line/input arrival order.
+    ordered_payloads = tuple(sorted(payloads, key=_payload_sort_key))
+    first = ordered_payloads[0]
+    first_provenance = _mapping(
+        first.get("provenance"), where="streamed CB shard 0 provenance"
+    )
+    first_renderer = _mapping(
+        first_provenance.get("production_anchor_renderer"),
+        where="streamed CB shard 0 renderer",
+    )
+    top_reference = {key: copy.deepcopy(first.get(key)) for key in required_top_shared}
+    provenance_reference = {
+        key: copy.deepcopy(first_provenance.get(key))
+        for key in required_provenance_shared
+    }
+    renderer_reference = {
+        key: copy.deepcopy(first_renderer.get(key))
+        for key in required_renderer_shared
+    }
+
+    merged_costs: dict[str, object] = {}
+    merged_stats: dict[str, object] = {}
+    merged_renderer_formats: dict[str, object] = {}
+    merged_purposes: dict[str, object] = {}
+    merged_unmeasured: dict[str, object] = {}
+    merged_source_records: dict[str, object] = {}
+    sparse_identities: list[Mapping[str, object]] = []
+    expanded_identities: list[Mapping[str, object]] = []
+    shard_scopes: list[list[str]] = []
+    format_union: set[str] = set()
+
+    sum_fields = (
+        "n_linear_chunks",
+        "dw_rendered_rows",
+        "dw_production_anchor_rows",
+        "dw_rtn_fallback_rows",
+        "production_anchor_expected_renders",
+        "production_anchor_rendered_this_invocation",
+        "production_anchor_restored_renders",
+        "production_anchor_union_render_count",
+    )
+    sums = {key: 0 for key in sum_fields}
+    maximum_live = 0
+    purpose_counts: Counter[str] = Counter()
+
+    for index, raw_payload in enumerate(ordered_payloads):
+        payload = _mapping(raw_payload, where=f"streamed CB shard {index}")
+        provenance = _mapping(
+            payload.get("provenance"),
+            where=f"streamed CB shard {index} provenance",
+        )
+        renderer = _mapping(
+            provenance.get("production_anchor_renderer"),
+            where=f"streamed CB shard {index} renderer",
+        )
+        for key, expected in top_reference.items():
+            if payload.get(key) != expected:
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} top-level {key!r} differs"
+                )
+        for key, expected in provenance_reference.items():
+            if provenance.get(key) != expected:
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} provenance {key!r} differs"
+                )
+        for key, expected in renderer_reference.items():
+            if renderer.get(key) != expected:
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} renderer {key!r} differs"
+                )
+
+        costs = _mapping(
+            payload.get("costs"), where=f"streamed CB shard {index} costs"
+        )
+        stats = _mapping(
+            payload.get("stats"), where=f"streamed CB shard {index} stats"
+        )
+        renderer_formats = _mapping(
+            renderer.get("formats_by_qname"),
+            where=f"streamed CB shard {index} renderer formats",
+        )
+        purposes = _mapping(
+            provenance.get("production_anchor_render_purposes"),
+            where=f"streamed CB shard {index} purposes",
+        )
+        unmeasured = _mapping(
+            provenance.get("production_anchor_unmeasured_formats_by_qname"),
+            where=f"streamed CB shard {index} unmeasured terminals",
+        )
+        sparse = _mapping(
+            provenance.get("production_anchor_sparse_render_identity"),
+            where=f"streamed CB shard {index} sparse CB identity",
+        )
+        expanded = _mapping(
+            provenance.get("cb_render_identity"),
+            where=f"streamed CB shard {index} expanded CB identity",
+        )
+        sparse_scope = _mapping(
+            sparse.get("cb_formats_by_qname"),
+            where=f"streamed CB shard {index} sparse CB scope",
+        )
+        expanded_scope = _mapping(
+            expanded.get("cb_formats_by_qname"),
+            where=f"streamed CB shard {index} expanded CB scope",
+        )
+        source_weights = _mapping(
+            renderer.get("source_weights"),
+            where=f"streamed CB shard {index} source weights",
+        )
+        source_records = _mapping(
+            source_weights.get("records"),
+            where=f"streamed CB shard {index} source records",
+        )
+        if source_weights.get("complete") is not True or (
+            source_weights.get("scope") != "sparse_anchor_plan"
+        ):
+            raise AnchoredCostError(
+                f"streamed CB shard {index} source-weight binding is not "
+                "complete sparse_anchor_plan"
+            )
+        source_records_digest = canonical_json_sha256(
+            source_records,
+            where=f"streamed CB shard {index} source records",
+        )
+        if source_weights.get("identity_sha256") != source_records_digest:
+            raise AnchoredCostError(
+                f"streamed CB shard {index} source-weight identity differs"
+            )
+        scope = set(map(str, costs))
+        scoped_sets = {
+            "stats": set(map(str, stats)),
+            "renderer formats": set(map(str, renderer_formats)),
+            "purposes": set(map(str, purposes)),
+            "unmeasured terminals": set(map(str, unmeasured)),
+            "sparse CB identity": set(map(str, sparse_scope)),
+            "expanded CB identity": set(map(str, expanded_scope)),
+            "source records": set(map(str, source_records)),
+        }
+        for label, observed in scoped_sets.items():
+            if observed != scope:
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} {label} scope differs from "
+                    f"costs: missing={sorted(scope - observed)[:8]} "
+                    f"unexpected={sorted(observed - scope)[:8]}"
+                )
+        overlap = set(merged_costs) & scope
+        if overlap:
+            raise AnchoredCostError(
+                "streamed CB shard qname scopes overlap; "
+                f"sample={sorted(overlap)[:8]}"
+            )
+        if not scope:
+            raise AnchoredCostError(f"streamed CB shard {index} is empty")
+
+        merged_costs.update(copy.deepcopy(dict(costs)))
+        merged_stats.update(copy.deepcopy(dict(stats)))
+        merged_renderer_formats.update(copy.deepcopy(dict(renderer_formats)))
+        merged_purposes.update(copy.deepcopy(dict(purposes)))
+        merged_unmeasured.update(copy.deepcopy(dict(unmeasured)))
+        merged_source_records.update(copy.deepcopy(dict(source_records)))
+        sparse_identities.append(sparse)
+        expanded_identities.append(expanded)
+        shard_scopes.append(sorted(scope))
+        format_union.update(
+            fr.canonical_format_name(str(value))
+            for value in payload.get("formats", ())
+        )
+        for key in sum_fields:
+            sums[key] += int(provenance.get(key, 0) or 0)
+        maximum_live = max(
+            maximum_live,
+            int(provenance.get("production_anchor_max_live_rendered", 0) or 0),
+        )
+        raw_counts = provenance.get("production_anchor_purpose_counts", {})
+        if not isinstance(raw_counts, Mapping):
+            raise AnchoredCostError(
+                f"streamed CB shard {index} purpose counts are malformed"
+            )
+        purpose_counts.update({
+            str(key): int(value) for key, value in raw_counts.items()
+        })
+
+    observed_qnames = set(merged_costs)
+    if expected_qnames is not None:
+        expected_sequence = tuple(str(name) for name in expected_qnames)
+        expected = set(expected_sequence)
+        if len(expected_sequence) != len(expected):
+            raise AnchoredCostError(
+                "streamed CB shard merge expected qname plan has duplicates"
+            )
+        if observed_qnames != expected:
+            raise AnchoredCostError(
+                "streamed CB shard merge is not the declared exact cover: "
+                f"missing={sorted(expected - observed_qnames)[:8]} "
+                f"unexpected={sorted(observed_qnames - expected)[:8]}"
+            )
+
+    def _canonical_format_plan(
+        value: Mapping[str, Sequence[str]],
+    ) -> dict[str, tuple[str, ...]]:
+        return {
+            str(name): tuple(
+                fr.canonical_format_name(str(format_name))
+                for format_name in formats
+            )
+            for name, formats in sorted(value.items())
+        }
+
+    def _canonical_cb_format_set_plan(
+        value: Mapping[str, Sequence[str]],
+    ) -> dict[str, tuple[str, ...]]:
+        """Canonicalize an unordered legal-CB domain like its identity does."""
+        return {
+            str(name): tuple(sorted({
+                fr.canonical_format_name(str(format_name))
+                for format_name in formats
+            }))
+            for name, formats in sorted(value.items())
+        }
+
+    observed_formats = _canonical_format_plan(merged_renderer_formats)
+    observed_unmeasured = _canonical_format_plan(merged_unmeasured)
+    # Validate the two non-CB plan surfaces here and the legal CB surface
+    # immediately after the identity union below.
+    if expected_formats_by_qname is not None and observed_formats != (
+        _canonical_format_plan(expected_formats_by_qname)
+    ):
+        raise AnchoredCostError(
+            "streamed CB shard merge rendered format plan differs from the "
+            "declared global plan"
+        )
+    if expected_unmeasured_formats_by_qname is not None and observed_unmeasured != (
+        _canonical_format_plan(expected_unmeasured_formats_by_qname)
+    ):
+        raise AnchoredCostError(
+            "streamed CB shard merge unmeasured terminal plan differs from "
+            "the declared global plan"
+        )
+    if expected_purposes_by_qname is not None:
+        def _canonical_purposes(value):
+            return {
+                str(name): {
+                    fr.canonical_format_name(str(format_name)): tuple(
+                        str(purpose) for purpose in purposes
+                    )
+                    for format_name, purposes in sorted(rows.items())
+                }
+                for name, rows in sorted(value.items())
+            }
+
+        if _canonical_purposes(merged_purposes) != _canonical_purposes(
+            expected_purposes_by_qname
+        ):
+            raise AnchoredCostError(
+                "streamed CB shard merge render-purpose plan differs from "
+                "the declared global plan"
+            )
+
+    try:
+        merged_sparse = merge_cb_render_identities(
+            sparse_identities,
+            col_weights=col_weights,  # type: ignore[arg-type]
+            where="streamed anchored-AURA sparse shard merge",
+        )
+        merged_expanded = merge_cb_render_identities(
+            expanded_identities,
+            col_weights=col_weights,  # type: ignore[arg-type]
+            where="streamed anchored-AURA extrapolation shard merge",
+        )
+    except (TypeError, ValueError) as exc:
+        raise AnchoredCostError(str(exc)) from None
+    if merged_sparse is None or merged_expanded is None:
+        raise AnchoredCostError("streamed CB shard merge produced no CB identity")
+    if expected_legal_cb_formats_by_qname is not None:
+        observed_legal = _canonical_cb_format_set_plan(
+            merged_expanded["cb_formats_by_qname"]
+        )
+        if observed_legal != _canonical_cb_format_set_plan(
+            expected_legal_cb_formats_by_qname
+        ):
+            raise AnchoredCostError(
+                "streamed CB shard merge legal CB plan differs from the "
+                "declared global plan"
+            )
+
+    merged_renderer = copy.deepcopy(dict(first_renderer))
+    merged_renderer.update({
+        "formats_by_qname": dict(sorted(merged_renderer_formats.items())),
+        "requested_entries": sum(
+            len(tuple(formats))
+            for formats in merged_renderer_formats.values()
+        ),
+        "cb_render_identity": merged_sparse,
+        "source_weights": {
+            "complete": True,
+            "scope": "sparse_anchor_plan",
+            "records": dict(sorted(merged_source_records.items())),
+            "identity_sha256": canonical_json_sha256(
+                dict(sorted(merged_source_records.items())),
+                where="merged production anchor source-weight identity",
+            ),
+        },
+    })
+
+    merged_provenance = copy.deepcopy(dict(first_provenance))
+    global_plan_identity = {
+        "rendered_formats_by_qname": {
+            name: list(formats)
+            for name, formats in sorted(observed_formats.items())
+        },
+        "render_purposes_by_qname": {
+            name: {
+                format_name: list(purposes)
+                for format_name, purposes in sorted(rows.items())
+            }
+            for name, rows in sorted(merged_purposes.items())
+        },
+        "unmeasured_formats_by_qname": {
+            name: list(formats)
+            for name, formats in sorted(observed_unmeasured.items())
+        },
+        "legal_cb_formats_by_qname": copy.deepcopy(
+            merged_expanded["cb_formats_by_qname"]
+        ),
+    }
+    global_plan_identity["identity_sha256"] = canonical_json_sha256(
+        global_plan_identity,
+        where="merged streamed anchored-AURA global cell plan",
+    )
+    merged_provenance.update({
+        **sums,
+        "n_linear_chunks": sums["n_linear_chunks"],
+        "production_anchor_max_live_rendered": maximum_live,
+        "production_anchor_purpose_counts": dict(sorted(purpose_counts.items())),
+        "production_anchor_renderer": merged_renderer,
+        "production_anchor_render_purposes": dict(sorted(merged_purposes.items())),
+        "production_anchor_unmeasured_formats_by_qname": dict(
+            sorted(merged_unmeasured.items())
+        ),
+        "production_anchor_sparse_render_identity": merged_sparse,
+        "production_anchor_sparse_serialized_payload": copy.deepcopy(
+            merged_sparse.get("cb_serialized_payload")
+        ),
+        "cb_render_identity": merged_expanded,
+        "cb_serialized_payload": copy.deepcopy(
+            merged_expanded.get("cb_serialized_payload")
+        ),
+        "streamed_shard_merge": {
+            "schema": STREAMED_CB_SHARD_MERGE_SCHEMA,
+            "shards": len(ordered_payloads),
+            "qnames": len(observed_qnames),
+            "qname_scopes": shard_scopes,
+            "exact_disjoint_cover": True,
+            "receipt_identity_reconstructed_globally": True,
+            "partition_axis": "whole_qnames",
+            "global_cell_plan": global_plan_identity,
+        },
+    })
+    merged_payload: dict[str, object] = {
+        "schema": top_reference["schema"],
+        "n_probes": top_reference["n_probes"],
+        "formats": sorted(format_union),
+        "token_scope": top_reference["token_scope"],
+        "stats": dict(sorted(merged_stats.items())),
+        "costs": dict(sorted(merged_costs.items())),
+        "provenance": merged_provenance,
+    }
+    # This revalidates the exact global objects from which every later
+    # per-cell receipt digest is derived.
+    _streamed_receipt_binding(merged_payload)
+    return merged_payload
+
+
 def require_allocator_supersurrogate_support() -> None:
     """Fail before P0 until allocator admission explicitly understands AURA."""
     from prismaquant import allocator_candidates as candidates
@@ -2001,6 +2460,7 @@ __all__ = [
     "LATTICE_BASIS",
     "LEARNED_BASIS",
     "ROUTE_FLIP_LIMITATION",
+    "STREAMED_CB_SHARD_MERGE_SCHEMA",
     "anchors_from_streamed_payload",
     "basis_segment_dict",
     "build_cb_allocator_cost_payload",
@@ -2011,6 +2471,7 @@ __all__ = [
     "fit_all_cb_segments",
     "fitted_cb_hull_report",
     "heldout_validation_report",
+    "merge_streamed_cb_anchor_aura_shards",
     "observations_from_streamed_payload",
     "plan_cb_panel_and_validation",
     "require_allocator_supersurrogate_support",

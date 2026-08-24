@@ -3,9 +3,10 @@
 Dated 2026-07-21 (Robert: "make a definitive determination about final kernel
 and format standards"); runtime boundary updated 2026-08-02 for Gridbook
 0.7.0, refreshed 2026-08-12 for released Gridbook 0.8.5, and re-pointed
-2026-08-21 to released Gridbook 0.8.11 when the producer pin advanced. This page is the
-contract production runs build against. Changes to it require a served A/B,
-not a preference.
+2026-08-21 to released Gridbook 0.8.11 when the producer pin advanced. The
+strict Ada candidate boundary was refreshed 2026-08-24 without promoting the
+tracked runtime. This page is the contract production runs build against.
+Changes to it require a served A/B, not a preference.
 
 The separately versioned, exact-commit-pinned Gridbook runtime follows this
 contract. Dense and MoE fused-FP4 prefill are disabled unless their respective
@@ -21,7 +22,7 @@ repository does not duplicate those tables.
 | Family | Rungs | Rate | Scale coding | Mode |
 |---|---|---|---|---|
 | NVFP4_CB (fp4 grid) | K12–K24, EVERY integer | 1.78125–3.28125 bpw serialized body | two-tier v2 (E8M0 super + 4-bit sub codes, 0.28125 bpw) | product, ceil-first uneven splits |
-| FP8_CB (e4m3 grid) | K28–K48, EVERY integer | 3.5–6.0 index bpw + `32/in_features` scale bpw | per-output-row fp32 tensor | product, ceil-first uneven splits |
+| FP8_CB (e4m3 grid) | producer: K4–K48 in steps of 4; reader: every K28–K48 plus the low producer rungs | 0.5–6.0 index bpw + `32/in_features` scale bpw | per-output-row fp32 tensor | product, ceil-first uneven splits |
 | NVFP4 (vanilla) | — | 4.5 bpw | group-16 E4M3 | menu member; Blackwell-only serving |
 | FP8_DYNAMIC | — | 8 bpw | per-channel | menu member |
 | BF16 / FP8_SOURCE | — | 16 / ~8 | — | passthrough-only (source dtype) |
@@ -44,11 +45,16 @@ repository does not duplicate those tables.
   Full mode: spec-reserved, unimplemented.
 - MTP sidecars: CB-quantized, rung by the canon throughput selector
   (`mtp_rung_selection.py`). Vision towers (VLMs): vanilla NVFP4.
-- Standard production menu = both product K-ladders (all integers) + NVFP4 +
+- Standard production menu = both product K-ladders (FP8 obeys K%4) + NVFP4 +
   FP8_DYNAMIC + BF16 (+FP8_SOURCE where the source is fp8). Target hardware:
-  Blackwell (GB10 sm_121 / RTX 5090 sm_120). Artifacts that happen to
-  allocate zero vanilla-NVFP4 units remain Ada-servable as a bonus, never a
-  constraint.
+  Blackwell (GB10 sm_121 / RTX 5090 sm_120). The separate strict
+  `qwen38_rtx4090_fp8_cb` campaign removes both NVFP4 families and is closed
+  to lattice FP8-CB (`CB_ACTIVATION_SCOPE=none`) plus delegated FP8/BF16. It
+  remains closed until an exact `sm_89` Gridbook v10 contract device-qualifies
+  dense decode and batch for **all twelve** K4..K48 step-4 producer rungs and a
+  physical RTX 4090 receipt proves 7/7 FULL plus 7/7 PIECEWISE capture. The
+  available explicit-sm89 SASS evidence is `compile_only`, not a device claim;
+  Gridbook 0.9.0 TP/EP behavior remains preserved.
 
 ## Runtime/kernel standard (owned by Gridbook)
 

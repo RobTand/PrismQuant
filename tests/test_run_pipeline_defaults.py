@@ -202,6 +202,53 @@ def test_core_recipe_defaults_are_pinned():
     assert ': "${VALIDATED_FRONTIER_PICK:=budget}"' in script
 
 
+def test_cb_export_gate_accepts_inherited_lane_and_wires_strict_producer_policy():
+    script = _run_pipeline_script()
+
+    # A hardware-specific profile reuses the historical serializer.  The
+    # pipeline therefore checks the inherited lane identity, not one profile
+    # id hardcoded into shell.
+    assert "require_profile_export_lane" in script
+    assert 'TARGET_PROFILE_RESOLVED" != "nvfp4_cb' not in script
+    assert "profile.producer_policy" in script
+    assert "profile.target_platform" in script
+    assert "GRIDBOOK_PRODUCER_RUNTIME_CONTRACT" in script
+    assert '--producer-policy "$CB_PRODUCER_POLICY"' in script
+    assert '--producer-runtime-contract "$GRIDBOOK_PRODUCER_RUNTIME_CONTRACT"' in script
+
+    # Reader-only legacy wire ids are rejected before either the cost menu or
+    # fixed-head assignment can be constructed.
+    assert script.count("format_is_producer_eligible") >= 2
+    assert "reader-only" in script
+
+
+def test_cb_activation_scope_is_validated_exported_and_stage_bound():
+    script = _run_pipeline_script()
+
+    assert _shell_default(script, "CB_ACTIVATION_SCOPE") == "nvfp4"
+    assert "CB_ACTIVATION_SCOPE must be none or nvfp4" in script
+    assert "export CB_ACTIVATION_SCOPE" in script
+    assert '"CB_ACTIVATION_SCOPE=${CB_ACTIVATION_SCOPE:-}"' in script
+
+
+def test_aura_streaming_identity_path_is_explicit_and_stage_bound():
+    from prismaquant.pipeline import STAGE_SETTINGS_KEYS
+
+    script = _run_pipeline_script()
+
+    assert _shell_default(script, "AURA_COST_STREAMING") == "0"
+    assert _shell_default(script, "AURA_COST_CHECKPOINT_DIR") == ""
+    assert "AURA_COST_STREAMING=1 requires an absolute" in script
+    assert '--checkpoint-dir "$AURA_COST_CHECKPOINT_DIR"' in script
+    assert '"AURA_COST_STREAMING=$AURA_COST_STREAMING"' in script
+    assert '"AURA_COST_CHECKPOINT_DIR=$AURA_COST_CHECKPOINT_DIR"' in script
+    aura_cost_sources = {
+        source for _manifest, source in STAGE_SETTINGS_KEYS["aura-cost"]
+    }
+    assert "AURA_COST_STREAMING" in aura_cost_sources
+    assert "AURA_COST_CHECKPOINT_DIR" in aura_cost_sources
+
+
 def test_learned_cb_pipeline_builds_immutable_bundle_before_production_stages():
     script = _run_pipeline_script()
 

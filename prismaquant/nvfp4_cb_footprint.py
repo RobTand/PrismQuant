@@ -1145,11 +1145,13 @@ def cb_serialization_context_from_env(
     """Resolve the producer identity used by a CB render.
 
     Production defaults are the v3 static-activation contract over the
-    layout-v2/lattice weight payload. Pipeline stages pass the choices
-    explicitly and stamp them into their cache provenance; the defaults keep
-    direct library calls aligned with the production writer. Callers that
-    consume an existing artifact use ``require_explicit=True`` so absence is
-    never mistaken for proof that a cache used today's defaults.
+    layout-v2/lattice weight payload. ``CB_ACTIVATION_SCOPE=none`` selects the
+    existing v2 no-activation contract for a closed FP8-only producer; the
+    historical mixed-family default remains ``nvfp4``. Pipeline stages pass
+    the choices explicitly and stamp them into their cache provenance; the
+    defaults keep direct library calls aligned with the production writer.
+    Callers that consume an existing artifact use ``require_explicit=True`` so
+    absence is never mistaken for proof that a cache used today's defaults.
     """
     if environ is None:
         import os
@@ -1164,6 +1166,7 @@ def cb_serialization_context_from_env(
     raw_ldlq_scope = environ.get("PRISMAQUANT_CB_LDLQ_SCOPE")
     raw_minchain = environ.get("PRISMAQUANT_CB_MINCHAIN")
     raw_tier = environ.get("PRISMAQUANT_CB_ENCODE_TIER")
+    raw_activation_scope = environ.get("CB_ACTIVATION_SCOPE")
     bundle_source = str(environ.get("CB_CODEBOOK_BUNDLE", "")).strip()
     if require_explicit and (
         not scale
@@ -1339,6 +1342,12 @@ def cb_serialization_context_from_env(
         NVFP4_ACTIVATION_CONTRACT_SCHEMA,
         NVFP4_ACTIVATION_EXECUTION,
     )
+    activation_scope = str(raw_activation_scope or "nvfp4").strip().lower()
+    if activation_scope not in {"none", "nvfp4"}:
+        raise ValueError(
+            f"{where}: CB_ACTIVATION_SCOPE must be none or nvfp4, got "
+            f"{raw_activation_scope!r}"
+        )
 
     return CBSerializationContext(
         scale_coding=scale or PRODUCTION_FP4_SCALE_CODING,
@@ -1352,8 +1361,16 @@ def cb_serialization_context_from_env(
         minchain=minchain,
         minchain_version=(MINCHAIN_CONTEXT_VERSION if minchain else None),
         encode_tier=resolve_cb_encode_tier(raw_tier, environ=environ),
-        activation_contract=NVFP4_ACTIVATION_CONTRACT_SCHEMA,
-        activation_execution=NVFP4_ACTIVATION_EXECUTION,
+        activation_contract=(
+            None
+            if activation_scope == "none"
+            else NVFP4_ACTIVATION_CONTRACT_SCHEMA
+        ),
+        activation_execution=(
+            None
+            if activation_scope == "none"
+            else NVFP4_ACTIVATION_EXECUTION
+        ),
         codebook_refs_by_qname_format=refs_by_qname_format,
         codebook_content_digests=digests,
         codebook_bundle_path=(bundle_source if bundle_requested else None),

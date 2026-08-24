@@ -47,6 +47,7 @@ from prismaquant.cb_layout import (
     CB_FORMAT_NAMES,
     family_for,
     parse_format_name,
+    parse_producer_format_name,
     subtable_bit_widths,
 )
 from prismaquant.cb_export_config import (
@@ -126,6 +127,16 @@ def _parse_cb_format(fmt: str) -> tuple[str, str, int] | None:
     product, k). None for non-CB. (``NVFP4_CB_S{k}`` was the signed family,
     deleted 2026-08-17; `parse_format_name` no longer recognizes it.)"""
     parsed = parse_format_name(str(fmt).strip().upper())
+    if parsed is None:
+        return None
+    family, k = parsed
+    return family.grid, family.mode, k
+
+
+def _parse_producer_cb_format(fmt: str) -> tuple[str, str, int] | None:
+    """Parse only CB rungs legal in a newly emitted artifact."""
+
+    parsed = parse_producer_format_name(str(fmt).strip().upper())
     if parsed is None:
         return None
     family, k = parsed
@@ -635,6 +646,8 @@ def export_nvfp4_cb(
     activation_cache_dir: str | Path | None = None,
     activation_scale_policy: str | None = None,
     shard_bytes: int = DEFAULT_SHARD_BYTES,
+    producer_policy: str | None = None,
+    producer_runtime_contract: dict | str | Path | None = None,
 ) -> dict[str, int]:
     """Export a CB checkpoint. See module docstring / LAYOUT.md for the layout.
 
@@ -704,6 +717,17 @@ def export_nvfp4_cb(
         )
 
     assignment = load_assignment(layer_config_path)
+    from prismaquant.rtx4090_qwen38_policy import (
+        prepare_rtx4090_export_policy,
+    )
+
+    _strict_producer = prepare_rtx4090_export_policy(
+        model_dir=model_dir,
+        assignment=assignment,
+        producer_policy=producer_policy,
+        runtime_contract=producer_runtime_contract,
+        where="export_nvfp4_cb",
+    )
     _recipe_payload = json.loads(Path(layer_config_path).read_text())
     _recipe_cb_context_stamp, _recipe_cb_tensor_stamps = (
         cb_serialization_metadata_from_assignment_payload(_recipe_payload)
@@ -781,7 +805,7 @@ def export_nvfp4_cb(
     for qname, fmt in assignment.items():
         if fmt == "BF16":
             continue
-        parsed = _parse_cb_format(fmt)
+        parsed = _parse_producer_cb_format(fmt)
         if parsed is not None:
             cb_targets[qname] = parsed
             continue
@@ -1332,18 +1356,31 @@ def export_nvfp4_cb(
                 f"{qname}: route-status gate cannot resolve a weight tensor")
         return tuple(int(v) for v in skeleton[wname].shape)
 
-    cb_route_status_provenance = gate_cb_export_units(
-        assignment=assignment,
-        quantized_targets=(*cb_targets, *stock_targets),
-        routed_units=_expert_stack_members,
-        role_split_units=(
-            qname for qname, roles in routed_role_plans.items() if roles
-        ),
-        shape_of=_route_gate_shape,
-        allow_unbacked_route=allow_unbacked_route,
-        non_native_target=non_native_target,
-        exporter="export_nvfp4_cb",
-    )
+    if _strict_producer is not None:
+        # The unreleased Ada candidate is qualified by the supplied Gridbook
+        # v10 contract, not by the repository's historical serving pin used by
+        # the generic gate.  The strict stamp is closed and cannot represent a
+        # generic override, non-native disposition, or fallback route.
+        from prismaquant.rtx4090_qwen38_policy import (
+            rtx4090_route_status_stamp,
+        )
+
+        cb_route_status_provenance = rtx4090_route_status_stamp(
+            _strict_producer[1], assignment
+        )
+    else:
+        cb_route_status_provenance = gate_cb_export_units(
+            assignment=assignment,
+            quantized_targets=(*cb_targets, *stock_targets),
+            routed_units=_expert_stack_members,
+            role_split_units=(
+                qname for qname, roles in routed_role_plans.items() if roles
+            ),
+            shape_of=_route_gate_shape,
+            allow_unbacked_route=allow_unbacked_route,
+            non_native_target=non_native_target,
+            exporter="export_nvfp4_cb",
+        )
 
     validate_cb_serialization_context_stamp(
         _recipe_cb_context_stamp,
@@ -1876,14 +1913,43 @@ def export_nvfp4_cb(
         streaming_provenance=None,
         include_tensor_formats=True,
     )
+    if _strict_producer is not None:
+        _strict_runtime_contract, _strict_policy_stamp = _strict_producer
+        quant_config["format"] = "fp8_cb"
+        quant_config["provenance"]["producer_policy"] = _strict_policy_stamp
+        from prismaquant.rtx4090_artifact_census import (
+            bind_rtx4090_source_provenance,
+        )
+
+        bind_rtx4090_source_provenance(
+            quant_config, _strict_policy_stamp
+        )
+        quant_config["provenance"]["imatrix_sha256"] = (
+            quant_config["provenance"]["cb_render_identity"][
+                "col_weights_sha256"
+            ]
+        )
 
     # --- Write safetensors (params only) + the codebook sidecar + configs. ---
     published_containers, _tensor_sha256 = _write_cb_containers(
         out_tensors, out_dir, int(shard_bytes))
+    _strict_content_receipt = None
+    if _strict_producer is not None:
+        from prismaquant.shipcard import verify_safetensors_content_once
+
+        _strict_content_receipt = verify_safetensors_content_once(
+            out_dir,
+            expected_weight_manifest=None,
+            expected_tensor_sha256=_tensor_sha256,
+            expected_files=published_containers,
+        )
     # Layout-invariant payload identity: `model_sha` binds container filenames
     # and sizes, so it moves with the shard budget; this digest does not.
     quant_config["provenance"]["tensor_payload_identity"] = (
-        tensor_payload_identity(_tensor_sha256)
+        tensor_payload_identity(
+            _tensor_sha256,
+            include_tensor_sha256=_strict_producer is not None,
+        )
     )
     # The route census principle 12 requires next to any bpp or KL claim; the
     # streaming exporter stamps the identical key. Its shape makes an
@@ -1900,7 +1966,7 @@ def export_nvfp4_cb(
     config = json.loads(src_config.read_text()) if src_config.exists() else {}
     config["quantization_config"] = {
         "quant_method": "gridbook",
-        "format": "nvfp4_cb",
+        "format": "fp8_cb" if _strict_producer is not None else "nvfp4_cb",
         "config_file": "quant_config.json",
         **({"codebook_file": codebook_file} if codebook_file else {}),
     }
@@ -1925,7 +1991,10 @@ def export_nvfp4_cb(
     # Open the refusal record before inventory finalization: the preliminary
     # quant_config binds the CB identity, while shipcard.json itself must be
     # measured by the recursive inventory and the hard artifact budget.
-    from prismaquant.shipcard import open_cb_export_shipcard
+    from prismaquant.shipcard import (
+        open_cb_export_shipcard,
+        safetensors_content_receipt_manifest,
+    )
 
     open_cb_export_shipcard(
         out_dir,
@@ -1933,6 +2002,11 @@ def export_nvfp4_cb(
         source_model=model_dir,
         layer_config_path=layer_config_path,
         exporter="export_nvfp4_cb",
+        weight_content_manifest=(
+            safetensors_content_receipt_manifest(_strict_content_receipt)
+            if _strict_content_receipt is not None
+            else None
+        ),
         build_extra={
             "routed_codebook_books": {
                 "keying": ["role"] if routed_role_plans else [],
@@ -1962,6 +2036,22 @@ def export_nvfp4_cb(
             else None
         ),
     )
+    if _strict_producer is not None:
+        from prismaquant.rtx4090_qwen38_policy import (
+            is_rtx4090_validation_only_policy,
+            validate_rtx4090_quant_config_manifest,
+        )
+
+        validate_rtx4090_quant_config_manifest(
+            quant_config,
+            runtime_contract=_strict_runtime_contract,
+            allow_unreleasable_validation_only=(
+                is_rtx4090_validation_only_policy(_strict_policy_stamp)
+            ),
+            artifact_dir=out_dir,
+            artifact_content_receipt=_strict_content_receipt,
+            where="export_nvfp4_cb finalized RTX4090 manifest",
+        )
     return dict(counts)
 
 
@@ -2043,6 +2133,18 @@ def main(argv: list[str] | None = None) -> None:
                     "super+sub coding (default), or explicit legacy v1 e4m3 "
                     "plane for backward-compatible artifacts")
     ap.add_argument("--device", default=None)
+    ap.add_argument(
+        "--producer-policy",
+        default=None,
+        help="opt-in strict producer policy id; the RTX4090 policy requires "
+             "--producer-runtime-contract",
+    )
+    ap.add_argument(
+        "--producer-runtime-contract",
+        default=None,
+        help="explicit Gridbook v10 runtime_contract.json for the strict "
+             "producer policy (never inferred from the current v4 pin)",
+    )
     args = ap.parse_args(argv)
     from prismaquant.gpu_guard import require_cuda_hot_path
     require_cuda_hot_path("export_nvfp4_cb")
@@ -2065,6 +2167,8 @@ def main(argv: list[str] | None = None) -> None:
         activation_cache_dir=args.activation_cache_dir,
         activation_scale_policy=args.activation_scale_policy,
         shard_bytes=args.shard_bytes,
+        producer_policy=args.producer_policy,
+        producer_runtime_contract=args.producer_runtime_contract,
     )
     size = sum(p.stat().st_size for p in Path(args.out).glob("*")) / 1e9
     print(f"wrote {args.out} ({size:.3f} GB)")

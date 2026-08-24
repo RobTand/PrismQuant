@@ -2988,6 +2988,19 @@ def run_streamed_production_anchor_aura(
     return payload
 
 
+def _stage_aura_model(model_path: str) -> str:
+    """Return AURA's canonical text-only execution view of a checkpoint.
+
+    Wrapper checkpoints must execute the nested ``text_config`` values, while
+    already-flattened sources stay on their original path.  The shared stager
+    also owns process-exit cleanup of any temporary staged tree, keeping it
+    alive for the complete resident or streaming AURA run.
+    """
+    from prismaquant.sensitivity_probe import stage_text_only
+
+    return stage_text_only(model_path)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Aura KL-adjoint allocator cost")
     p.add_argument("--model", required=True)
@@ -3147,14 +3160,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from prismaquant.calibration_data import load_wikitext_calibration_windowed
-    # Reuse the pipeline's text-only stager so multimodal (VL) checkpoints
-    # (e.g. Qwen3.6-27B Qwen3_5ForConditionalGeneration) load as a CausalLM
-    # with tensor names that match the production cache keys. No-op on
-    # pure-text checkpoints.
-    from prismaquant.build_rtn_cache import stage_multimodal
     from prismaquant.model_profiles import detect_profile
 
-    staged, _cleanup = stage_multimodal(args.model)
+    staged = _stage_aura_model(args.model)
     # Profile detection installs architecture-owned vendored modelling where
     # required and is also the fail-closed authority for routed-expert
     # membership.  Resolve it before model construction and reuse that exact

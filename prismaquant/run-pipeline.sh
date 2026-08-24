@@ -121,6 +121,43 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
   else
     : "${CB_CODEBOOK_BUNDLE:=}"
   fi
+  # Learned-v2 is a result-gated producer, not a new default.  Without an
+  # accepted two-holdout receipt the v2 builder emits lattice cells only; a
+  # run that explicitly asks for learned scope must therefore provide the
+  # receipt and the complete streamed source-identity cache.  v1 remains only
+  # for historical reproduction.
+  : "${CB_LEARNED_TRAINER_VERSION:=v1}"
+  : "${CB_LEARNED_PROMOTION_RECEIPT:=}"
+  : "${CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE:=${PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE:-}}"
+  case "$CB_LEARNED_TRAINER_VERSION" in
+    v1|v2) ;;
+    *)
+      echo "[pipeline] ERROR: CB_LEARNED_TRAINER_VERSION must be v1 or v2" >&2
+      exit 2
+      ;;
+  esac
+  if [[ "$CB_LEARNED_TRAINER_VERSION" == "v1" \
+     && -n "$CB_LEARNED_PROMOTION_RECEIPT" ]]; then
+    echo "[pipeline] ERROR: CB_LEARNED_PROMOTION_RECEIPT requires CB_LEARNED_TRAINER_VERSION=v2" >&2
+    exit 2
+  fi
+  if [[ "$CB_LEARNED_TRAINER_VERSION" == "v2" \
+     && "$CB_CODEBOOK_SOURCE_SCOPE" != "none" ]]; then
+    if [[ "${CB_IMATRIX_SOURCE:-activation-cache}" != "probe" ]]; then
+      echo "[pipeline] ERROR: learned-v2 requires CB_IMATRIX_SOURCE=probe so promotion binds full-corpus act_sq_sum/n_tokens_seen values" >&2
+      exit 2
+    fi
+    if [[ "$CB_LEARNED_PROMOTION_RECEIPT" != /* \
+       || ! -f "$CB_LEARNED_PROMOTION_RECEIPT" ]]; then
+      echo "[pipeline] ERROR: learned-v2 scope requires an existing absolute CB_LEARNED_PROMOTION_RECEIPT" >&2
+      exit 2
+    fi
+    if [[ "$CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE" != /* \
+       || ! -f "$CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE" ]]; then
+      echo "[pipeline] ERROR: learned-v2 promotion requires an existing absolute CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE" >&2
+      exit 2
+    fi
+  fi
   # Optional routed-expert learned cells are selected by an immutable JSON
   # manifest.  The manifest itself names the bank root and every accepted
   # burn shard absolutely; no directory scan or export-time training exists.
@@ -156,6 +193,11 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
   # policy, not a quality claim: Gridbook still keeps fused dispatch opt-in
   # until the served KL/PPL gate closes for the concrete artifact.
   : "${NVFP4_ACTIVATION_SCALE_POLICY:=mse_grid_calibrated.v1}"
+  # The historical mixed-family lane carries a calibrated NVFP4 W4A4
+  # activation contract.  FP8-only producers set `none`, which selects the
+  # already-supported no-activation serialization schema and prevents that
+  # metadata from entering cost/cache/export provenance.
+  : "${CB_ACTIVATION_SCOPE:=nvfp4}"
   : "${CB_SCALE_SWEEP:=1}"
   : "${PRISMAQUANT_CB_LDLQ:=0}"
   : "${PRISMAQUANT_CB_MINCHAIN:=0}"
@@ -174,6 +216,13 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
     0|false|False|FALSE|no|No|NO|off|Off|OFF) CB_SCALE_SWEEP=0 ;;
     *)
       echo "[pipeline] ERROR: CB_SCALE_SWEEP must be 0 or 1" >&2
+      exit 2
+      ;;
+  esac
+  case "$CB_ACTIVATION_SCOPE" in
+    none|nvfp4) ;;
+    *)
+      echo "[pipeline] ERROR: CB_ACTIVATION_SCOPE must be none or nvfp4" >&2
       exit 2
       ;;
   esac
@@ -220,9 +269,12 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
     exit 2
   fi
   export CB_CODEBOOK_SOURCE CB_CODEBOOK_SOURCE_SCOPE CB_CODEBOOK_BUNDLE
+  export CB_LEARNED_TRAINER_VERSION CB_LEARNED_PROMOTION_RECEIPT
+  export CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE
   export CB_ROUTED_MOE_BOOK_SELECTION
   export CB_ROUTED_MOE_BOOK_SELECTION_SHA256
   export CB_SCALE_CODING CB_SCALE_SWEEP CB_SCALE_SWEEP_SCOPE PRISMAQUANT_CB_LDLQ
+  export CB_ACTIVATION_SCOPE
   export PRISMAQUANT_CB_MINCHAIN PRISMAQUANT_CB_MINCHAIN_ANCHORS
   export PRISMAQUANT_CB_MINCHAIN_HOLDBACKS PRISMAQUANT_CB_MINCHAIN_AUDIT_SEED
   export PRISMAQUANT_CB_MINCHAIN_BACKSTOP PRISMAQUANT_CB_MINCHAIN_AUDIT_MEDIAN
@@ -463,12 +515,31 @@ fi
 # shared render-faithfulness assertion above (R3); what remains here is the
 # serving-profile and production-cache consistency the CB container needs.
 if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
-  if [[ "$TARGET_PROFILE_RESOLVED" != "nvfp4_cb" ]]; then
-    echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb requires the nvfp4_cb serving profile — the allocator must gate every candidate through the nvfp4_cb serving profile (allow_formats = CB rungs + NVFP4/FP8_DYNAMIC/BF16, in_features%256 shape rule) and the exporter hard-fails on non-CB formats in the assignment. The serving profile resolved to '${TARGET_PROFILE_RESOLVED}'; declare default_serving_profile=nvfp4_cb in the architecture spec, or set TARGET_PROFILE=nvfp4_cb." >&2
+  if ! PQ_TARGET_PROFILE_RESOLVED="$TARGET_PROFILE_RESOLVED" python3 - <<'PY'
+import os
+import sys
+
+from prismaquant.serving_profiles import require_profile_export_lane
+
+try:
+    require_profile_export_lane(
+        os.environ["PQ_TARGET_PROFILE_RESOLVED"], "nvfp4_cb"
+    )
+except (FileNotFoundError, ValueError) as exc:
+    print(f"[pipeline] ERROR: {exc}", file=sys.stderr)
+    raise SystemExit(2) from None
+PY
+  then
+    echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb requires a serving profile whose inherited export_lane.id is nvfp4_cb; the resolved profile is '${TARGET_PROFILE_RESOLVED}'." >&2
     exit 2
   fi
-  if [[ "${PRODUCTION_CACHE:-1}" != "0" || "${PRODUCTION_RECACHE:-1}" != "0" ]]; then
-    echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb requires PRODUCTION_CACHE=0 PRODUCTION_RECACHE=0 — export_nvfp4_cb requantizes the bf16 skeleton and never reads the production cache; building one burns hours rendering bytes that never ship. Set PRODUCTION_CACHE=0 PRODUCTION_RECACHE=0." >&2
+  if [[ "${PRODUCTION_RECACHE:-1}" != "0" ]]; then
+    echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb requires PRODUCTION_RECACHE=0 — the CB exporter re-encodes the selected assignment and does not consume a selected-assignment recache." >&2
+    exit 2
+  fi
+  if [[ "${PRODUCTION_CACHE:-1}" != "0" \
+     && "$SELECTION_MODE" != "validated-surrogate" ]]; then
+    echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb permits PRODUCTION_CACHE=1 only for SELECTION_MODE=validated-surrogate, where validate_assignments_kl consumes the identity-bound format-menu cache. Under surrogate selection the exporter re-encodes directly, so set PRODUCTION_CACHE=0." >&2
     exit 2
   fi
 fi
@@ -533,6 +604,13 @@ try:
 except Exception as exc:
     print(f"[pipeline] ERROR: invalid LM_HEAD_FORMAT: {exc}", file=sys.stderr)
     raise SystemExit(2) from None
+if not fr.format_is_producer_eligible(canonical):
+    print(
+        f"[pipeline] ERROR: LM_HEAD_FORMAT={canonical} is reader-only and "
+        "cannot enter a new artifact.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 allow = os.environ.get("PQ_ALLOW_PINNED", "")
 dp_unpinned = allow_pinned_lifts_lm_head(profile, allow)
 fixed_quantized = canonical != "BF16"
@@ -553,6 +631,14 @@ for raw in os.environ["PQ_BODY_FORMATS"].split(","):
     if not value:
         continue
     fmt = fr.get_format(value).name
+    if not fr.format_is_producer_eligible(fmt):
+        print(
+            f"[pipeline] ERROR: FORMATS contains reader-only {fmt}; legacy "
+            "wire ids may be inspected but cannot enter a new cost/allocator/"
+            "export menu.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     if fmt not in seen:
         seen.add(fmt)
         formats.append(value)
@@ -744,6 +830,8 @@ fi
 : "${AURA_COST_LINEAR_CHUNKS:=8}"
 : "${AURA_COST_PROBE_MICROBATCH:=8}"
 : "${AURA_COST_MIN_FREE_GIB:=18}"
+: "${AURA_COST_STREAMING:=0}"
+: "${AURA_COST_CHECKPOINT_DIR:=}"
 # auto: fp32 when the fp32-resident model fits with the min-free headroom
 # (27B-class, the regen recipe), else bf16 (35B-class — fp32 is ~140 GiB
 # against the 121 GiB pool and OOM-kills the box).
@@ -1002,7 +1090,7 @@ if [[ "$COST_MODE" == "production-render-score" || "$COST_MODE" == "production-r
   echo "  PRODUCTION_RENDER_COST_NSAMPLES=$PRODUCTION_RENDER_COST_NSAMPLES PRODUCTION_RENDER_COST_SEQLEN=$PRODUCTION_RENDER_COST_SEQLEN PRODUCTION_RENDER_COST_SEED=$PRODUCTION_RENDER_COST_SEED SCORE_FIELD=$PRODUCTION_RENDER_COST_SCORE_FIELD"
 fi
 if [[ "$COST_MODE" == "aura" ]]; then
-  echo "  AURA_COST_NPROBES=$AURA_COST_NPROBES AURA_COST_NSAMPLES=$AURA_COST_NSAMPLES AURA_COST_SEQLEN=$AURA_COST_SEQLEN AURA_COST_CALIB_SEED=$AURA_COST_CALIB_SEED AURA_COST_DTYPE=$AURA_COST_DTYPE"
+  echo "  AURA_COST_NPROBES=$AURA_COST_NPROBES AURA_COST_NSAMPLES=$AURA_COST_NSAMPLES AURA_COST_SEQLEN=$AURA_COST_SEQLEN AURA_COST_CALIB_SEED=$AURA_COST_CALIB_SEED AURA_COST_DTYPE=$AURA_COST_DTYPE STREAMING=$AURA_COST_STREAMING"
   echo "  AURA_EXPERT_NSAMPLES=$AURA_EXPERT_NSAMPLES AURA_EXPERT_SEQLEN=$AURA_EXPERT_SEQLEN VALIDATED_FRONTIER_MATERIALIZATION=$VALIDATED_FRONTIER_MATERIALIZATION"
 fi
 echo "  EXPORT_GPTQ=$EXPORT_GPTQ EXPORT_SCALE_SWEEP=$EXPORT_SCALE_SWEEP"
@@ -1093,6 +1181,8 @@ STAGE_SETTINGS_ENV=(
   "AURA_COST_SEQLEN=$AURA_COST_SEQLEN"
   "AURA_COST_CALIB_SEED=$AURA_COST_CALIB_SEED"
   "AURA_COST_DTYPE=$AURA_COST_DTYPE"
+  "AURA_COST_STREAMING=$AURA_COST_STREAMING"
+  "AURA_COST_CHECKPOINT_DIR=$AURA_COST_CHECKPOINT_DIR"
   "AURA_EXPERT_NSAMPLES=$AURA_EXPERT_NSAMPLES"
   "AURA_EXPERT_SEQLEN=$AURA_EXPERT_SEQLEN"
   "CB_EXPERT_NSAMPLES=$CB_EXPERT_NSAMPLES"
@@ -1112,12 +1202,19 @@ STAGE_SETTINGS_ENV=(
   "CB_CODEBOOK_SOURCE=${CB_CODEBOOK_SOURCE:-}"
   "CB_CODEBOOK_SOURCE_SCOPE=${CB_CODEBOOK_SOURCE_SCOPE:-}"
   "CB_CODEBOOK_BUNDLE=${CB_CODEBOOK_BUNDLE:-}"
+  "CB_LEARNED_TRAINER_VERSION=${CB_LEARNED_TRAINER_VERSION:-}"
+  "CB_LEARNED_PROMOTION_RECEIPT=${CB_LEARNED_PROMOTION_RECEIPT:-}"
+  "CB_LEARNED_PROMOTION_RECEIPT_SHA256="
+  "CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE=${CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE:-}"
+  "CB_LEARNED_SOURCE_MODEL_IDENTITY_SHA256="
   "CB_ROUTED_MOE_BOOK_SELECTION=${CB_ROUTED_MOE_BOOK_SELECTION:-}"
   "CB_ROUTED_MOE_BOOK_SELECTION_SHA256=${CB_ROUTED_MOE_BOOK_SELECTION_SHA256:-}"
   "CB_ROUTED_BOOK_KEYING=${CB_ROUTED_BOOK_KEYING:-}"
   "CB_ALLOW_PER_ROLE_BOOKS=${CB_ALLOW_PER_ROLE_BOOKS:-}"
   "CB_SCALE_SWEEP=${CB_SCALE_SWEEP:-}"
   "CB_SCALE_SWEEP_SCOPE=${CB_SCALE_SWEEP_SCOPE:-}"
+  "CB_ACTIVATION_SCOPE=${CB_ACTIVATION_SCOPE:-}"
+  "CB_IMATRIX_SOURCE=${CB_IMATRIX_SOURCE:-activation-cache}"
   "PRISMAQUANT_CB_LDLQ=${PRISMAQUANT_CB_LDLQ:-}"
   "PRISMAQUANT_CB_MINCHAIN=${PRISMAQUANT_CB_MINCHAIN:-}"
   "PRISMAQUANT_CB_MINCHAIN_ANCHORS=${PRISMAQUANT_CB_MINCHAIN_ANCHORS:-}"
@@ -1211,24 +1308,49 @@ require_stage_settings() {
 # -----------------------------------------------------------------------
 harvest_cb_col_weights() {
   local stage="$1"
-  require_stage_settings "$CB_COL_WEIGHTS" cb-col-weights
+  local imatrix_source="${CB_IMATRIX_SOURCE:-activation-cache}"
+  require_stage_settings "$CB_COL_WEIGHTS" cb-col-weights \
+    "CB_IMATRIX_SOURCE=$imatrix_source"
   if [[ -f "$CB_COL_WEIGHTS" ]]; then
     echo "[pipeline] ${stage} CB col-weights exist, skipping"
     return 0
   fi
-  echo "[pipeline] ${stage} harvesting CB col-weights (imatrix) from ${WORK_DIR}/act ..."
+  echo "[pipeline] ${stage} harvesting CB col-weights (imatrix source=${imatrix_source}) ..."
   CB_ACT_DIR="${WORK_DIR}/act" CB_COL_WEIGHTS="$CB_COL_WEIGHTS" \
+  CB_PROBE_PATH="$PROBE_PATH" CB_IMATRIX_SOURCE="$imatrix_source" \
   MODEL_PATH="$MODEL_PATH" CB_STAGE="$stage" python3 - <<'PY'
-import os, pickle
+import json, os, pickle
+from pathlib import Path
+
+from prismaquant.cb_imatrix import (
+    canonical_imatrix_sha256,
+    imatrix_from_probe_file,
+)
 from prismaquant.export_gguf import build_imatrix_from_act_cache
 from prismaquant.moe_imatrix import synthesize_packed_expert_col_weights
 act_dir = os.environ["CB_ACT_DIR"]
 out = os.environ["CB_COL_WEIGHTS"]
 stage = os.environ["CB_STAGE"]
-cw = build_imatrix_from_act_cache(act_dir)
+source = os.environ["CB_IMATRIX_SOURCE"]
+if source == "probe":
+    cw, provenance = imatrix_from_probe_file(os.environ["CB_PROBE_PATH"])
+    if not provenance.get("calibration_hash"):
+        raise SystemExit(
+            "[pipeline] ERROR: probe-derived CB imatrix has no calibration hash"
+        )
+elif source == "activation-cache":
+    cw = build_imatrix_from_act_cache(act_dir)
+    provenance = {
+        "schema": "prismaquant.cb_imatrix.activation_cache_rows.v1",
+        "source": "activation-cache",
+    }
+else:
+    raise SystemExit(
+        "[pipeline] ERROR: CB_IMATRIX_SOURCE must be probe or activation-cache"
+    )
 if not cw:
     raise SystemExit(
-        f"[pipeline] ERROR: no activation cache under {act_dir!r}; the "
+        f"[pipeline] ERROR: no imatrix values from {source!r}; the "
         f"weighted render needs a col-weights (imatrix) vector per target. "
         f"Run the probe+cost stages first (they populate {act_dir}).")
 added = synthesize_packed_expert_col_weights(
@@ -1239,7 +1361,21 @@ if added:
 os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
 with open(out, "wb") as fh:
     pickle.dump(cw, fh)
-print(f"[pipeline] {stage} wrote {out}: {len(cw)} entries")
+provenance = {
+    **provenance,
+    "source": source,
+    "final_entries": len(cw),
+    "synthesized_packed_entries": sorted(added),
+    "final_value_sha256": canonical_imatrix_sha256(cw),
+}
+Path(out + ".provenance.json").write_text(
+    json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+print(
+    f"[pipeline] {stage} wrote {out}: {len(cw)} entries "
+    f"value_sha256={provenance['final_value_sha256']}"
+)
 PY
 }
 
@@ -1250,11 +1386,23 @@ ensure_cb_learned_bundle() {
   harvest_cb_col_weights "$1"
   local col_sha
   col_sha="$(sha256sum "$CB_COL_WEIGHTS" | cut -d' ' -f1)"
+  local trainer_version="${CB_LEARNED_TRAINER_VERSION:-v1}"
+  local promotion_sha=""
+  if [[ -n "${CB_LEARNED_PROMOTION_RECEIPT:-}" ]]; then
+    promotion_sha="$(sha256sum "$CB_LEARNED_PROMOTION_RECEIPT" | cut -d' ' -f1)"
+  fi
+  local source_identity_sha=""
+  if [[ -n "${CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE:-}" ]]; then
+    source_identity_sha="$(sha256sum "$CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE" | cut -d' ' -f1)"
+  fi
   # The keying is part of a book's identity, so a bundle built under the other
   # rule must rebuild loudly rather than be reused.
   require_stage_settings "$CB_CODEBOOK_BUNDLE" cb-learned-bundle \
     "CB_COL_WEIGHTS_SHA256=$col_sha" \
-    "CB_ROUTED_BOOK_KEYING=${CB_ROUTED_BOOK_KEYING:-stack}"
+    "CB_ROUTED_BOOK_KEYING=${CB_ROUTED_BOOK_KEYING:-stack}" \
+    "CB_LEARNED_TRAINER_VERSION=$trainer_version" \
+    "CB_LEARNED_PROMOTION_RECEIPT_SHA256=$promotion_sha" \
+    "CB_LEARNED_SOURCE_MODEL_IDENTITY_SHA256=$source_identity_sha"
   if [[ -f "$CB_CODEBOOK_BUNDLE" ]]; then
     # Full name/shape/digest/cell validation; a same-path replacement never
     # counts as an immutable bundle merely because the file exists.
@@ -1274,13 +1422,24 @@ PY
       --routed-moe-book-selection "$CB_ROUTED_MOE_BOOK_SELECTION"
     )
   fi
+  local imatrix_args=(--col-weights "$CB_COL_WEIGHTS")
+  local learned_v2_args=()
+  if [[ "$trainer_version" == "v2" ]]; then
+    imatrix_args=(--imatrix-probe "$PROBE_PATH")
+    learned_v2_args=(
+      --promotion-receipt "$CB_LEARNED_PROMOTION_RECEIPT"
+      --source-model-identity-cache "$CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE"
+    )
+  fi
   python3 -m prismaquant.build_cb_learned_bundle \
     --model-dir "$MODEL_PATH" \
-    --col-weights "$CB_COL_WEIGHTS" \
+    "${imatrix_args[@]}" \
     --formats "$FORMATS" \
     --output "$CB_CODEBOOK_BUNDLE" \
     --device "$DEVICE" \
+    --trainer-version "$trainer_version" \
     --routed-book-keying "${CB_ROUTED_BOOK_KEYING:-stack}" \
+    "${learned_v2_args[@]+"${learned_v2_args[@]}"}" \
     "${routed_book_args[@]}"
 }
 
@@ -1480,6 +1639,37 @@ if [[ "$COST_MODE" == "production-render-score" || "$COST_MODE" == "production-r
 fi
 
 if [[ "$COST_MODE" == "aura" ]]; then
+  AURA_EXECUTION_ARGS=(
+    --hook-harvest
+    --gradient-checkpointing
+    --n-linear-chunks "$AURA_COST_LINEAR_CHUNKS"
+    --probe-microbatch "$AURA_COST_PROBE_MICROBATCH"
+  )
+  case "$AURA_COST_STREAMING" in
+    1|true|True|TRUE|yes|Yes|YES|on|On|ON)
+      AURA_COST_STREAMING=1
+      if [[ "$AURA_COST_CHECKPOINT_DIR" != /* ]]; then
+        echo "[pipeline] ERROR: AURA_COST_STREAMING=1 requires an absolute AURA_COST_CHECKPOINT_DIR" >&2
+        exit 2
+      fi
+      AURA_EXECUTION_ARGS=(
+        --streaming
+        --checkpoint-dir "$AURA_COST_CHECKPOINT_DIR"
+        --resume
+      )
+      ;;
+    0|false|False|FALSE|no|No|NO|off|Off|OFF)
+      AURA_COST_STREAMING=0
+      if [[ -n "$AURA_COST_CHECKPOINT_DIR" ]]; then
+        echo "[pipeline] ERROR: AURA_COST_CHECKPOINT_DIR requires AURA_COST_STREAMING=1" >&2
+        exit 2
+      fi
+      ;;
+    *)
+      echo "[pipeline] ERROR: AURA_COST_STREAMING must be 0 or 1" >&2
+      exit 2
+      ;;
+  esac
   # [2b] Production-faithful dW cache for the AURA adjoint. Under
   # SELECTION_MODE=validated-surrogate this IS the frontier cache (identical
   # path + settings to stage [4/4], which then skip-if-exists): ONE
@@ -1550,10 +1740,7 @@ PY
       --calib-seed "$AURA_COST_CALIB_SEED" \
       --dtype "$AURA_COST_DTYPE" \
       --dataset "$DATASET" \
-      --hook-harvest \
-      --gradient-checkpointing \
-      --n-linear-chunks "$AURA_COST_LINEAR_CHUNKS" \
-      --probe-microbatch "$AURA_COST_PROBE_MICROBATCH" \
+      "${AURA_EXECUTION_ARGS[@]}" \
       --min-free-gib "$AURA_COST_MIN_FREE_GIB" \
       --accurate-chunk-bytes \
       --allow-packed-expert-omission \
@@ -2483,6 +2670,36 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
     --shard-bytes "$EXPORT_SHARD_BYTES"
     --device "$EXPORT_DEVICE"
   )
+  if ! CB_PRODUCER_META="$(
+    PQ_TARGET_PROFILE_RESOLVED="$TARGET_PROFILE_RESOLVED" python3 - <<'PY'
+import os
+
+from prismaquant.serving_profiles import load_serving_profile
+
+profile = load_serving_profile(os.environ["PQ_TARGET_PROFILE_RESOLVED"])
+print(f"{profile.producer_policy or ''}|{profile.target_platform or ''}")
+PY
+  )"; then
+    echo "[pipeline] ERROR: failed to resolve the CB profile's producer policy." >&2
+    exit 2
+  fi
+  IFS='|' read -r CB_PRODUCER_POLICY CB_TARGET_PLATFORM <<<"$CB_PRODUCER_META"
+  if [[ -n "$CB_PRODUCER_POLICY" ]]; then
+    if [[ -z "$CB_TARGET_PLATFORM" ]]; then
+      echo "[pipeline] ERROR: serving profile '${TARGET_PROFILE_RESOLVED}' declares producer_policy='${CB_PRODUCER_POLICY}' but no exact target_platform." >&2
+      exit 2
+    fi
+    if [[ -z "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:-}" \
+       || ! -f "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:-}" ]]; then
+      echo "[pipeline] ERROR: producer policy '${CB_PRODUCER_POLICY}' for target '${CB_TARGET_PLATFORM}' requires GRIDBOOK_PRODUCER_RUNTIME_CONTRACT to name an existing Gridbook v10 contract. The current materialized v4 pin cannot qualify this route." >&2
+      exit 2
+    fi
+    CB_EXPORT_ARGS+=(
+      --producer-policy "$CB_PRODUCER_POLICY"
+      --producer-runtime-contract "$GRIDBOOK_PRODUCER_RUNTIME_CONTRACT"
+    )
+    echo "[pipeline] [4/4] strict producer policy ${CB_PRODUCER_POLICY}: target_platform=${CB_TARGET_PLATFORM}, contract=${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT}"
+  fi
   case "$CB_SCALE_SWEEP" in
     0|false|False|FALSE|no|No|NO) CB_EXPORT_ARGS+=(--no-scale-sweep) ;;
     1|true|True|TRUE|yes|Yes|YES|auto|"") ;;

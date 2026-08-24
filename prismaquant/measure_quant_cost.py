@@ -3103,8 +3103,13 @@ def prepare_cost_context(probe_path: str,
     if formats_csv:
         fmt_names = [s.strip() for s in formats_csv.split(",") if s.strip()]
     else:
-        fmt_names = [s.name for s in fr.list_formats()]
-    specs = [fr.get_format(n) for n in fmt_names]
+        fmt_names = [s.name for s in fr.list_producer_formats()]
+    try:
+        specs = fr.require_producer_formats(fmt_names, where="new cost menu")
+    except ValueError as exc:
+        raise SystemExit(
+            f"[cost] ERROR: {exc}"
+        ) from None
     print(f"[cost] measuring {len(specs)} formats: {[s.name for s in specs]}")
 
     act_cache = ActivationIndex(cache, stats)

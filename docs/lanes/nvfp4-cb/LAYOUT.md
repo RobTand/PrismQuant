@@ -24,20 +24,29 @@ selects it. Two grids, three index-encoding modes:
 | `NVFP4_CB_S{k}` | fp4 / E2M1 | positive half-grid + explicit signs | W4A4 | group-16 E4M3, **in the weight bytes** | production v2: `k/8 + 0.28125` |
 | `FP8_CB_K{k}`   | fp8 / E4M3 | E4M3 grid (‖·‖ ≤ 448) | W8A8 | **none in weight bytes** — per-output-channel fp32, separate tensor | `k/8` |
 
-`k` rungs (**all-integer ladders**, `prismaquant/format_registry.py:943,947`,
-`prismaquant/layer_config.py:34-39`): `NVFP4_CB_K12..K24`,
-`NVFP4_CB_S13..S16` (research-only, menu-excluded — `STANDARDS.md:24-33`),
-`FP8_CB_K28..K48`. The old step-4 `FP8_CB_K36/40/44/48` enumeration is stale;
-a stale copy of it crashed the first full-ladder 27B export on `cb_k=47`.
+`k` has separate producer and reader domains. New FP8-CB artifacts may use
+exactly `FP8_CB_K4,K8,...,K48`; this K%4 rule is the format/TMA producer law.
+Readers retain every historical `FP8_CB_K28..K48` wire id, including off-law
+rungs such as K29 and K47, so old artifacts remain inspectable and loadable.
+Reader acceptance is not menu authority: cost, allocation, learned-v2 bundle
+construction, and export use the producer-only registry API and reject those
+off-law ids. NVFP4-CB remains `NVFP4_CB_K12..K24`.
 A decoded fp4 tile is bit-compatible NVFP4 (E2M1 codes + NVFP4 group-16 E4M3
 scale) and feeds the existing CUTLASS FP4 path unchanged.
 
 Learned codebooks do **not** introduce `CBL_*` format names. They are a
-value-bearing rendering mode for the same FP8-CB wire formats. The current
-producer policy permits learned FP8-CB through K46 and rejects measured-NO-GO
-K47/K48; lattice rendering retains the full K28–K48 ladder (see
-`CBL_RUNG_POLICY` and `require_cbl_rung_enabled` in
-`prismaquant.cb_learned_bundle`).
+value-bearing rendering mode for the same FP8-CB wire formats. Learned-v2
+construction is restricted to the same K4..K48 step-4 producer ladder and
+records a per-rung learned-versus-lattice promotion decision; legacy bundles
+retain their versioned compatibility policy. See `CBL_RUNG_POLICY` and
+`prismaquant.cb_learned_promotion`.
+
+The strict `qwen38_rtx4090_fp8_cb` producer narrows this generic wire contract
+further: it currently permits canonical lattice references only, pending a
+strict artifact attestation for raw learned-v2 results, and sets
+`CB_ACTIVATION_SCOPE=none`. Thus its FP8-CB weights still execute dynamic W8A8
+E4M3, but no NVFP4 static-activation scalar/metadata or FP4 codebook family may
+appear in its config, sidecar, tensor census, or delegated terminals.
 
 **Hard constraint:** `in_features % 256 == 0` (the 256-weight superblock is both
 byte-exact and the vector-tiling unit). Linears that fail it are shipped BF16.

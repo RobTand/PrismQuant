@@ -57,8 +57,16 @@ def test_registry_parser_and_packer_share_the_layout_source():
         spec.name for spec in format_registry.list_formats()
         if spec.family in {"nvfp4_cb", "fp8_cb"}
     }
-    assert registry_names == cb_layout.CB_FORMAT_NAMES
-    assert layer_config._NVFP4_CB_FORMAT_NAMES == cb_layout.CB_FORMAT_NAMES
+    producer_registry_names = {
+        spec.name for spec in format_registry.list_producer_formats()
+        if spec.family in {"nvfp4_cb", "fp8_cb"}
+    }
+    assert registry_names == cb_layout.ACCEPTED_CB_FORMAT_NAMES
+    assert producer_registry_names == cb_layout.CB_FORMAT_NAMES
+    assert (
+        layer_config._NVFP4_CB_FORMAT_NAMES
+        == cb_layout.ACCEPTED_CB_FORMAT_NAMES
+    )
     assert nvfp4_cb_formats.VEC_DIM == cb_layout.VEC_DIM
     assert nvfp4_cb_formats.SUPERBLOCK == cb_layout.SUPERBLOCK
     assert nvfp4_cb_formats.FP4_GROUP == cb_layout.FP4_GROUP
@@ -73,6 +81,50 @@ def test_registry_parser_and_packer_share_the_layout_source():
                 ) == cb_layout.type_size(k, family.grid, coding)
 
 
+def test_fp8_product_and_reader_ladders_are_distinct_and_exact():
+    assert cb_layout.FP8_PRODUCT_RUNGS == tuple(range(4, 49, 4))
+    assert cb_layout.FP8_ACCEPTED_RUNGS == (
+        4, 8, 12, 16, 20, 24,
+        *range(28, 49),
+    )
+
+    for k in cb_layout.FP8_PRODUCT_RUNGS:
+        name = f"FP8_CB_K{k}"
+        assert cb_layout.parse_producer_format_name(name) is not None
+        assert cb_layout.is_producer_format_name(name)
+
+    # Historical off-law wire ids remain readable/reportable, but must not
+    # appear in a new assignment or export menu.
+    for k in (29, 33, 37, 41, 45, 47):
+        name = f"FP8_CB_K{k}"
+        assert cb_layout.parse_format_name(name) is not None
+        assert cb_layout.parse_producer_format_name(name) is None
+        assert not cb_layout.is_producer_format_name(name)
+
+    for k in (1, 2, 3, 25, 26, 27, 49):
+        assert cb_layout.parse_format_name(f"FP8_CB_K{k}") is None
+
+
+def test_registry_exposes_legacy_readers_but_not_legacy_producers():
+    from prismaquant import format_registry
+
+    assert format_registry.get_format("FP8_CB_K29").name == "FP8_CB_K29"
+    assert not format_registry.format_is_producer_eligible("FP8_CB_K29")
+    assert format_registry.format_is_producer_eligible("FP8_CB_K4")
+    assert format_registry.format_is_producer_eligible("FP8_CB_K48")
+    assert {
+        spec.name for spec in format_registry.list_producer_formats("fp8_cb")
+    } == cb_layout.FP8_CB_FORMAT_NAMES
+    assert {
+        spec.name for spec in format_registry.list_formats("fp8_cb")
+    } == cb_layout.FP8_ACCEPTED_FORMAT_NAMES
+    with pytest.raises(ValueError, match="reader-only"):
+        format_registry.require_producer_formats(
+            ["FP8_CB_K28", "FP8_CB_K29", "BF16"],
+            where="test allocator menu",
+        )
+
+
 def test_exact_accountant_uses_layout_subtable_shapes():
     from prismaquant.nvfp4_cb_footprint import codebook_subtable_shapes
 
@@ -84,6 +136,15 @@ def test_exact_accountant_uses_layout_subtable_shapes():
                     k, family.mode, family.n_sub
                 )
             )
+
+    # Reader compatibility is wider than ``family.rungs`` for FP8. Pin the
+    # exact accountant's ability to report two representative off-law legacy
+    # artifacts without widening the producer ladder.
+    for name in ("FP8_CB_K29", "FP8_CB_K47"):
+        family, k = cb_layout.parse_format_name(name)
+        assert codebook_subtable_shapes(name) == (
+            cb_layout.codebook_subtable_shapes(k, family.mode, family.n_sub)
+        )
 
 
 def test_family_and_subtable_rules_are_canonical():
@@ -197,4 +258,12 @@ def test_production_serving_profile_cb_allowlist_matches_layout():
 
     shape = next(rule for rule in profile.shape_rules
                  if rule.id == "cb_superblock_shape")
-    assert set(shape.formats) == cb_layout.CB_FORMAT_NAMES
+    assert set(shape.formats) == cb_layout.ACCEPTED_CB_FORMAT_NAMES
+
+    fp8_shape = next(rule for rule in profile.shape_rules
+                     if rule.id == "cb_fp8_out_features_load_gate")
+    assert set(fp8_shape.formats) == cb_layout.FP8_ACCEPTED_FORMAT_NAMES
+
+    fp8_lane = next(lane for lane in profile.serving_lanes
+                    if lane.id == "fp8_cb_fused_mid_m")
+    assert set(fp8_lane.formats) == cb_layout.FP8_ACCEPTED_FORMAT_NAMES

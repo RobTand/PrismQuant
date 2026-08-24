@@ -1,0 +1,11 @@
+{
+  "schema": "prismaquant.serving_profile.v1",
+  "id": "qwen38_rtx4090_fp8_cb_validation_only",
+  "runtime": "gridbook_plugin",
+  "target_platform": "sm_89",
+  "producer_policy": "qwen38_27b_rtx4090_fp8_cb_validation_only",
+  "extends": [
+    "qwen38_rtx4090_fp8_cb"
+  ],
+  "description": "UNRELEASABLE validation-only producer profile for building and structurally validating the strict FP8-only Qwen3.8 artifact on DGX Spark GB10 from Gridbook v10 compile_only SM89 cells. It inherits the exact FP8-CB/FP8_E4M3/BF16 menu and all NVFP4 refusals. Its artifact stamp is categorically rejected by shipcard, publication, and the physical RTX4090 validator."
+}

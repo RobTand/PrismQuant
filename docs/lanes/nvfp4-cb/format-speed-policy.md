@@ -143,12 +143,16 @@ encodes:
   fallback route it takes when it does not. The backed rung set is spec data
   keyed by the pinned Gridbook version in
   `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`; a pinned version
-  the spec does not declare backs nothing. The pinned Gridbook (0.8.11) instantiates
-  FP8-CB fused mid-M for K ∈ {28,32,36,40,44,48} while production permits
-  every K28..K48, so the allocator can no longer price an unbacked fast path
-  without recording that it did (the producer-side mirror of gridbook K1.2).
-  That gap is permanent, not pending: K1.2 resolved to `k % 4 == 0` as a
-  format+TMA law, so the off-law rungs will never gain a fused lane.
+  the spec does not declare backs nothing. The legacy 0.8.11 contract names
+  fused mid-M K ∈ {28,32,36,40,44,48}; new production obeys the generalized
+  K%4 ladder K4..K48. Every historical off-law K28..K48 wire id remains a
+  reader input only and can no longer enter allocator or exporter menus. Low
+  rungs and Ada remain unshippable: the current Gridbook v10 candidate carries
+  only `compile_only` exact-sm89 dense cells. Strict publication requires
+  `device_qualified` decode and batch cells for the complete twelve-rung
+  producer ladder, even when one assignment selects fewer rungs, plus the
+  separate physical 4090 graph/device receipt. The strict artifact is
+  lattice-only, sets `CB_ACTIVATION_SCOPE=none`, and contains no NVFP4 family.
 - **which estimator priced its activation contract**
   (`Candidate.activation_pricing`): the measured `output_mse` branch, a
   weight-only branch corrected by the per-family activation calibration, or a
@@ -222,11 +226,9 @@ profile. The native-versus-CB mixed frontier is therefore feasible only for
 dense and shared units. Packed experts require a lane-level native/CB A/B and
 native expert delegation before the allocator may claim that frontier.
 
-Signed S13..S16 remain registered, exportable, decodable, and shape-compatible
-for legacy and explicitly research-scoped use. They are excluded from the
-production `nvfp4_cb` allow-list after losing 609/776 (78.48%, conventionally
-rounded to 79%) matched weight-MSE comparisons. Every product rung remains in
-the production menu: NVFP4-CB K12..K24 and FP8-CB K28..K48.
+Signed S13..S16 remain a legacy Gridbook reader concern and are excluded from
+PrismaQuant's producer registry. Every current product rung remains in the
+production menu: NVFP4-CB K12..K24 and FP8-CB K4..K48 with K%4.
 
 ## 5. Evidence boundaries
 

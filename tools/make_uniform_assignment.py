@@ -134,8 +134,17 @@ def build_uniform_assignment(
     must move together (fused siblings, packed experts), so uniformity is
     enforced at UNIT granularity — a unit is never split by a legality verdict.
     """
-    fmt_name = fr.get_format(fmt).name
-    fallback_name = fr.get_format(fallback_format).name if fallback_format else None
+    requested_formats = [fmt]
+    if fallback_format:
+        requested_formats.append(fallback_format)
+    resolved_formats = fr.require_producer_formats(
+        requested_formats,
+        where="new uniform assignment",
+    )
+    fmt_name = resolved_formats[0].name
+    fallback_name = (
+        resolved_formats[1].name if fallback_format else None
+    )
     kinds = dict(source_kinds or {})
     tied = {strip_weight(str(n)) for n in tied_head_names}
 
@@ -233,6 +242,14 @@ def assert_assignment_legal(
     kinds = dict(source_kinds or {})
     by_qname = {strip_weight(t.recipe_name): t for t in graph.tensors}
 
+    try:
+        fr.require_producer_formats(
+            sorted(set(assignment.values())),
+            where="final uniform assignment",
+        )
+    except ValueError as exc:
+        raise AssertionError(str(exc)) from None
+
     illegal: list[str] = []
     for qname, fmt in sorted(assignment.items()):
         tensor = by_qname.get(qname)
@@ -291,6 +308,10 @@ def layer_config_payload(
     meta: Mapping | None = None,
 ) -> dict:
     """Render the assignment as an allocator-compatible layer_config payload."""
+    fr.require_producer_formats(
+        sorted(set(result.assignment.values())),
+        where="uniform layer_config payload",
+    )
     payload: dict = {
         name: fr.get_format(fmt).autoround_config()
         for name, fmt in sorted(result.assignment.items())

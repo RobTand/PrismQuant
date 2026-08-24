@@ -2355,7 +2355,14 @@ def main():
         fmt_names = [s.strip() for s in args.formats.split(",") if s.strip()]
     else:
         fmt_names = cost_data["formats"]
-    specs = [fr.get_format(n) for n in fmt_names]
+    try:
+        specs = fr.require_producer_formats(
+            fmt_names, where="new allocator assignment menu"
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            f"[alloc] ERROR: {exc}"
+        ) from None
     cb_serialization_context = None
     cb_col_weights = None
     cb_cost_render_identity = None

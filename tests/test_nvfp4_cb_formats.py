@@ -11,7 +11,12 @@ import torch
 from prismaquant import format_registry as fr
 from prismaquant import layer_config as lc
 from prismaquant import nvfp4_cb_formats as cb
-from prismaquant.cb_layout import bit_split
+from prismaquant.cb_layout import (
+    ACCEPTED_CB_FORMAT_NAMES,
+    FP8_ACCEPTED_RUNGS,
+    PRODUCT_CB_FORMAT_NAMES,
+    bit_split,
+)
 from prismaquant.nvfp4_cb_footprint import (
     CBSerializationContext,
     cb_serialization_context_stamp,
@@ -286,14 +291,12 @@ def test_flat_k_ceiling_raises():
 
 # (i) menu: all rungs register, resolve, sort by effective_bits.
 #
-# The FULL ladder is all-integer in every family (c52d04c, "every integer bit
-# width"): a step-4 FP8 set here is exactly the staleness that crashed the
-# first full-ladder 27B export on cb_k=47. _FP8_KS above stays a sampled
-# subset for the expensive per-rung parametrizations; the menu test pins the
-# whole set, per family, structurally.
+# Registry/layer-config parsing is the full READER domain: it retains every
+# historical K28..K48 wire id and adds the low K%4 rungs. New producer menus
+# are narrower and are pinned separately below.
 _MENU_LADDERS = (
     ("NVFP4_CB_K", tuple(range(12, 25)), lambda k: k / 8 + 0.5),
-    ("FP8_CB_K", tuple(range(28, 49)), lambda k: k / 8),
+    ("FP8_CB_K", FP8_ACCEPTED_RUNGS, lambda k: k / 8),
 )
 
 
@@ -308,11 +311,15 @@ def test_menu_registers_and_resolves():
         {"data_type": "nvfp4_cb", "cb_k": 20}) == "NVFP4_CB_K20"
     assert lc.canonicalize_format(
         {"data_type": "fp8_cb", "cb_k": 44}) == "FP8_CB_K44"
-    # The registered menu is EXACTLY the ladder the layer-config parser
-    # accepts — the two sources may not drift apart.
+    # Registry and layer-config parsing are compatibility readers. The
+    # explicit producer API is the narrower artifact-writing surface.
     fam = [s for s in fr.list_formats() if s.family in ("nvfp4_cb", "fp8_cb")]
-    assert {s.name for s in fam} == set(names)
-    assert set(lc._NVFP4_CB_FORMAT_NAMES) == set(names)
+    assert {s.name for s in fam} == ACCEPTED_CB_FORMAT_NAMES == set(names)
+    assert set(lc._NVFP4_CB_FORMAT_NAMES) == ACCEPTED_CB_FORMAT_NAMES
+    assert {
+        s.name for s in fr.list_producer_formats()
+        if s.family in ("nvfp4_cb", "fp8_cb")
+    } == PRODUCT_CB_FORMAT_NAMES
     # Per family: bpw strictly increasing in k, and exactly the accounting
     # formula (index stream + the fp4 family's group-16 scale plane).
     for prefix, ks, bpw in _MENU_LADDERS:

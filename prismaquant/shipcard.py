@@ -84,6 +84,14 @@ CB_REQUIRED_SLOTS: tuple[str, ...] = (
     "perf.matched_budget_parity",
 )
 
+#: Physical-Ada qualification for the strict context-first FP8-CB artifact.
+#: This is independent of the generic Gridbook native eager/graph pair: the
+#: latter proves load/generation, while this slot binds the exact RTX 4090,
+#: 32K/4-GiB serving shape and full-graph compiler receipt.  It is re-derived
+#: from ``quant_config.json`` by :func:`required_slots`, so deleting it from a
+#: mutable card cannot waive the hardware obligation.
+RTX4090_REQUIRED_SLOTS: tuple[str, ...] = ("rtx4090.fp8_cb",)
+
 #: Claims that can be attached to an already exported artifact.  Missing/null
 #: claims remain non-blocking for target-only artifacts, but every non-null
 #: recognized claim is verified automatically.  A DSpark sidecar artifact
@@ -93,7 +101,10 @@ OPTIONAL_SLOTS: tuple[str, ...] = ("mtp.dspark",)
 #: The vocabulary accepted by :func:`make_record`.  Whether a member is
 #: required is artifact-specific and is resolved by :func:`required_slots`.
 ALL_SLOTS: tuple[str, ...] = (
-    REQUIRED_SLOTS + CB_REQUIRED_SLOTS + OPTIONAL_SLOTS
+    REQUIRED_SLOTS
+    + CB_REQUIRED_SLOTS
+    + RTX4090_REQUIRED_SLOTS
+    + OPTIONAL_SLOTS
 )
 
 #: Slots whose number is invalid if it was produced against a spec-decode serve.
@@ -117,6 +128,35 @@ def _released_gridbook_runtime_pin() -> GridbookServingRuntimePin:
 SHIPCARD_RESERVED_BYTES = 256 * 1024
 WEIGHT_CONTENT_MANIFEST_SCHEMA = "prismaquant.weight_content_manifest/1"
 WEIGHT_STAT_ATTESTATION_SCHEMA = "prismaquant.weight_stat_attestation/1"
+SAFETENSORS_CONTENT_RECEIPT_SCHEMA = (
+    "prismaquant.safetensors_content_receipt/1"
+)
+_MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024
+_SAFETENSORS_DTYPE_BITS = {
+    "BOOL": 8,
+    "U8": 8,
+    "I8": 8,
+    "F8_E4M3": 8,
+    "F8_E4M3FN": 8,
+    "F8_E4M3FNUZ": 8,
+    "F8_E5M2": 8,
+    "F8_E5M2FNUZ": 8,
+    "F8_E8M0": 8,
+    "F4": 4,
+    "F4_E2M1": 4,
+    "F6_E2M3": 6,
+    "F6_E3M2": 6,
+    "U16": 16,
+    "I16": 16,
+    "F16": 16,
+    "BF16": 16,
+    "U32": 32,
+    "I32": 32,
+    "F32": 32,
+    "U64": 64,
+    "I64": 64,
+    "F64": 64,
+}
 CB_PERFORMANCE_RESULT_SCHEMA = "prismaquant.cb_performance_parity/1"
 CB_PERFORMANCE_EVIDENCE_SCHEMA = "prismaquant.cb_performance_evidence/1"
 DISPLACED_CONTAINER_ELIGIBILITY_SCHEMA = (
@@ -437,6 +477,671 @@ def _validate_weight_content_manifest(
             )
 
 
+def _content_stat(st: os.stat_result) -> dict[str, int]:
+    return {
+        "device": int(st.st_dev),
+        "inode": int(st.st_ino),
+        "bytes": int(st.st_size),
+        "mtime_ns": int(st.st_mtime_ns),
+        "ctime_ns": int(st.st_ctime_ns),
+    }
+
+
+def _closed_weight_content_manifest(
+    manifest: object,
+    *,
+    where: str | os.PathLike,
+) -> dict[str, dict[str, object]]:
+    if (
+        not isinstance(manifest, Mapping)
+        or set(manifest) != {"schema", "algorithm", "files"}
+        or manifest.get("schema") != WEIGHT_CONTENT_MANIFEST_SCHEMA
+        or manifest.get("algorithm") != "sha256"
+    ):
+        raise ValueError(f"invalid closed weight content manifest in {where}")
+    files = manifest.get("files")
+    if not isinstance(files, Mapping) or not files:
+        raise ValueError(f"empty weight content manifest in {where}")
+    normalized: dict[str, dict[str, object]] = {}
+    for name, row in files.items():
+        if (
+            not isinstance(name, str)
+            or not name.endswith(".safetensors")
+            or Path(name).name != name
+            or not isinstance(row, Mapping)
+            or set(row) != {"bytes", "sha256"}
+            or type(row.get("bytes")) is not int
+            or row.get("bytes") < 0
+            or not isinstance(row.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None
+        ):
+            raise ValueError(
+                f"invalid closed weight content manifest entry {name!r} in {where}"
+            )
+        normalized[name] = {
+            "bytes": int(row["bytes"]),
+            "sha256": str(row["sha256"]),
+        }
+    return dict(sorted(normalized.items()))
+
+
+def _closed_tensor_digest_ledger(
+    ledger: object,
+    *,
+    where: str | os.PathLike,
+) -> dict[str, str]:
+    if not isinstance(ledger, Mapping) or not ledger:
+        raise ValueError(f"empty tensor digest ledger in {where}")
+    normalized = {str(name): str(digest) for name, digest in ledger.items()}
+    if (
+        len(normalized) != len(ledger)
+        or any(not name for name in normalized)
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for digest in normalized.values()
+        )
+    ):
+        raise ValueError(f"invalid tensor digest ledger in {where}")
+    return dict(sorted(normalized.items()))
+
+
+def _strict_json_object(raw: bytes, *, where: str) -> Mapping[str, Any]:
+    def _pairs(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError(f"{where}: duplicate JSON key {key!r}")
+            out[key] = value
+        return out
+
+    def _constant(value: str) -> None:
+        raise ValueError(f"{where}: nonfinite JSON constant {value!r}")
+
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_pairs,
+            parse_constant=_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{where}: invalid safetensors header JSON: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{where}: safetensors header must be an object")
+    return payload
+
+
+def safetensors_header_spans(
+    raw_header: bytes,
+    *,
+    data_bytes: int,
+    where: str,
+) -> tuple[tuple[int, int, str], ...]:
+    """Validate one header and return its exact contiguous payload geometry."""
+
+    header = _strict_json_object(raw_header, where=where)
+    spans: list[tuple[int, int, str]] = []
+    for tensor_name, descriptor in header.items():
+        if tensor_name == "__metadata__":
+            if not isinstance(descriptor, Mapping) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in descriptor.items()
+            ):
+                raise ValueError(
+                    f"{where}: __metadata__ must be a string-to-string object"
+                )
+            continue
+        offsets = descriptor.get("data_offsets") if isinstance(
+            descriptor, Mapping
+        ) else None
+        dtype = descriptor.get("dtype") if isinstance(
+            descriptor, Mapping
+        ) else None
+        shape = descriptor.get("shape") if isinstance(
+            descriptor, Mapping
+        ) else None
+        if (
+            not isinstance(tensor_name, str)
+            or not tensor_name
+            or not isinstance(descriptor, Mapping)
+            or set(descriptor) != {"dtype", "shape", "data_offsets"}
+            or dtype not in _SAFETENSORS_DTYPE_BITS
+            or not isinstance(shape, list)
+            or any(type(dim) is not int or dim < 0 for dim in shape)
+            or not isinstance(offsets, list)
+            or len(offsets) != 2
+            or any(type(offset) is not int for offset in offsets)
+        ):
+            raise ValueError(f"{where}: invalid tensor header {tensor_name!r}")
+        start, end = offsets
+        if not 0 <= start <= end <= data_bytes:
+            raise ValueError(f"{where}: invalid data span for {tensor_name!r}")
+        expected_bytes = (
+            int(math.prod(shape)) * _SAFETENSORS_DTYPE_BITS[str(dtype)] + 7
+        ) // 8
+        if end - start != expected_bytes:
+            raise ValueError(
+                f"{where}: tensor {tensor_name!r} span is {end - start}B but "
+                f"{dtype}{tuple(shape)} requires {expected_bytes}B"
+            )
+        spans.append((start, end, tensor_name))
+    spans.sort()
+    if not spans:
+        raise ValueError(f"{where}: safetensors container has no tensors")
+    cursor = 0
+    for start, end, tensor_name in spans:
+        if start != cursor:
+            relation = "overlaps" if start < cursor else "leaves a gap after"
+            raise ValueError(
+                f"{where}: tensor {tensor_name!r} {relation} the preceding "
+                f"data span (expected offset {cursor}, got {start})"
+            )
+        cursor = end
+    if cursor != data_bytes:
+        raise ValueError(
+            f"{where}: tensor spans end at {cursor}B but data area is "
+            f"{data_bytes}B"
+        )
+    return tuple(spans)
+
+
+def _read_exact_fd(
+    fd: int,
+    length: int,
+    *,
+    digest: Any,
+    tensor_digest: Any | None = None,
+    capture: bool = False,
+) -> tuple[bytes, int]:
+    chunks: list[bytes] = []
+    remaining = int(length)
+    calls = 0
+    while remaining:
+        chunk = os.read(fd, min(1024 * 1024, remaining))
+        calls += 1
+        if not chunk:
+            raise ValueError("truncated safetensors content during verification")
+        digest.update(chunk)
+        if tensor_digest is not None:
+            tensor_digest.update(chunk)
+        if capture:
+            chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks), calls
+
+
+def _verify_open_safetensors_fd(
+    fd: int,
+    *,
+    name: str,
+    initial_stat: os.stat_result,
+) -> tuple[dict[str, object], int, int]:
+    """Hash one container and all tensor spans in one forward traversal."""
+
+    full_digest = hashlib.sha256()
+    raw_length, read_calls = _read_exact_fd(
+        fd, 8, digest=full_digest, capture=True
+    )
+    header_length = int.from_bytes(raw_length, byteorder="little", signed=False)
+    if (
+        header_length <= 0
+        or header_length > _MAX_SAFETENSORS_HEADER_BYTES
+        or header_length > int(initial_stat.st_size) - 8
+    ):
+        raise ValueError(f"{name}: invalid safetensors header length {header_length}")
+    raw_header, calls = _read_exact_fd(
+        fd, header_length, digest=full_digest, capture=True
+    )
+    read_calls += calls
+    data_bytes = int(initial_stat.st_size) - 8 - header_length
+    spans = safetensors_header_spans(
+        raw_header,
+        data_bytes=data_bytes,
+        where=name,
+    )
+    tensor_digests: dict[str, str] = {}
+    bytes_read = 8 + header_length
+    for start, end, tensor_name in spans:
+        tensor_digest = hashlib.sha256()
+        _ignored, calls = _read_exact_fd(
+            fd,
+            end - start,
+            digest=full_digest,
+            tensor_digest=tensor_digest,
+        )
+        read_calls += calls
+        bytes_read += end - start
+        tensor_digests[tensor_name] = tensor_digest.hexdigest()
+    final_stat = os.fstat(fd)
+    if _content_stat(final_stat) != _content_stat(initial_stat):
+        raise ValueError(f"{name}: file stat changed during content verification")
+    return {
+        "stat": _content_stat(final_stat),
+        "sha256": full_digest.hexdigest(),
+        "tensor_sha256": dict(sorted(tensor_digests.items())),
+    }, bytes_read, read_calls
+
+
+def _open_artifact_directory(root: Path) -> tuple[int, dict[str, int]]:
+    before = root.lstat()
+    if not stat.S_ISDIR(before.st_mode) or root.is_symlink():
+        raise ValueError(f"artifact root must be a real directory: {root}")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory_fd = os.open(root, flags)
+    opened = os.fstat(directory_fd)
+    if _content_stat(opened) != _content_stat(before):
+        os.close(directory_fd)
+        raise ValueError(f"artifact root changed while opening: {root}")
+    return directory_fd, {
+        "device": int(opened.st_dev),
+        "inode": int(opened.st_ino),
+    }
+
+
+def _current_safetensors_names(directory_fd: int) -> list[str]:
+    return sorted(
+        name for name in os.listdir(directory_fd)
+        if isinstance(name, str) and name.endswith(".safetensors")
+    )
+
+
+def _open_regular_nofollow(
+    directory_fd: int,
+    name: str,
+) -> tuple[int, os.stat_result]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=directory_fd)
+    except OSError as exc:
+        raise ValueError(f"cannot safely open weight container {name!r}: {exc}") from exc
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode):
+        os.close(fd)
+        raise ValueError(f"weight container is not a regular file: {name!r}")
+    return fd, opened
+
+
+def verify_safetensors_content_once(
+    model_dir: str | os.PathLike,
+    *,
+    expected_weight_manifest: Mapping[str, Any] | None,
+    expected_tensor_sha256: Mapping[str, str],
+    expected_tensor_to_file: Mapping[str, str] | None = None,
+    expected_files: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Verify container and tensor hashes in one sequential pass per shard.
+
+    The returned receipt is process-local no-clobber evidence.  It is never an
+    artifact wire field: inode and timestamp bindings deliberately become
+    invalid after a copy, at which point an independent validator performs one
+    fresh pass over the copied containers.
+    """
+
+    root = Path(model_dir)
+    manifest_files = (
+        _closed_weight_content_manifest(expected_weight_manifest, where=root)
+        if expected_weight_manifest is not None
+        else None
+    )
+    expected_names = (
+        sorted(str(name) for name in expected_files)
+        if expected_files is not None
+        else (sorted(manifest_files) if manifest_files is not None else None)
+    )
+    if expected_names is None or not expected_names or (
+        len(set(expected_names)) != len(expected_names)
+        or any(Path(name).name != name for name in expected_names)
+    ):
+        raise ValueError(
+            f"one-pass verification requires exact container names in {root}"
+        )
+    if manifest_files is not None and expected_names != sorted(manifest_files):
+        raise ValueError(
+            f"expected container names differ from weight manifest in {root}"
+        )
+    expected_tensors = _closed_tensor_digest_ledger(
+        expected_tensor_sha256, where=root
+    )
+    directory_fd, root_identity = _open_artifact_directory(root)
+    files: dict[str, dict[str, object]] = {}
+    content_bytes_read = 0
+    read_calls = 0
+    try:
+        names = _current_safetensors_names(directory_fd)
+        if names != expected_names:
+            raise ValueError(
+                f"safetensors set differs from weight manifest in {root}"
+            )
+        for name in names:
+            fd, opened = _open_regular_nofollow(directory_fd, name)
+            try:
+                record, bytes_read, calls = _verify_open_safetensors_fd(
+                    fd, name=name, initial_stat=opened
+                )
+            finally:
+                os.close(fd)
+            current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if not stat.S_ISREG(current.st_mode) or (
+                _content_stat(current) != record["stat"]
+            ):
+                raise ValueError(
+                    f"{name}: path changed during content verification"
+                )
+            files[name] = record
+            content_bytes_read += bytes_read
+            read_calls += calls
+        if _current_safetensors_names(directory_fd) != names:
+            raise ValueError(
+                f"safetensors namespace changed during verification: {root}"
+            )
+        current_root = root.lstat()
+        if (
+            not stat.S_ISDIR(current_root.st_mode)
+            or int(current_root.st_dev) != root_identity["device"]
+            or int(current_root.st_ino) != root_identity["inode"]
+        ):
+            raise ValueError(f"artifact root changed during verification: {root}")
+    finally:
+        os.close(directory_fd)
+
+    observed_manifest = {
+        "schema": WEIGHT_CONTENT_MANIFEST_SCHEMA,
+        "algorithm": "sha256",
+        "files": {
+            name: {
+                "bytes": row["stat"]["bytes"],
+                "sha256": row["sha256"],
+            }
+            for name, row in sorted(files.items())
+        },
+    }
+    if expected_weight_manifest is not None and (
+        observed_manifest != dict(expected_weight_manifest)
+    ):
+        raise ValueError(
+            f"weight content manifest differs from finalized bytes in {root}"
+        )
+    observed_tensors = {
+        tensor_name: digest
+        for row in files.values()
+        for tensor_name, digest in row["tensor_sha256"].items()
+    }
+    if dict(sorted(observed_tensors.items())) != expected_tensors:
+        raise ValueError(
+            f"tensor digest ledger differs from finalized bytes in {root}"
+        )
+    if expected_tensor_to_file is not None:
+        normalized_map = {
+            str(name): str(filename)
+            for name, filename in expected_tensor_to_file.items()
+        }
+        observed_map = {
+            tensor_name: filename
+            for filename, row in files.items()
+            for tensor_name in row["tensor_sha256"]
+        }
+        if normalized_map != dict(sorted(observed_map.items())):
+            raise ValueError(
+                f"tensor-to-shard map differs from finalized headers in {root}"
+            )
+    return {
+        "schema": SAFETENSORS_CONTENT_RECEIPT_SCHEMA,
+        "source": "verified_read",
+        "content_read_passes": 1,
+        "content_bytes_read": int(content_bytes_read),
+        "read_calls": int(read_calls),
+        "root": root_identity,
+        "files": files,
+    }
+
+
+def capture_attested_safetensors_write_receipt(
+    model_dir: str | os.PathLike,
+    *,
+    weight_manifest: Mapping[str, Any],
+    tensor_sha256: Mapping[str, str],
+    tensor_to_file: Mapping[str, str],
+) -> dict[str, Any]:
+    """Capture no-clobber stats for bytes hashed by an atomic writer.
+
+    This function does not infer or hash content.  Its digest arguments must
+    come from the writer that fed the same bytes to the just-published files.
+    The receipt's inode/stat binding is rechecked before strict finalization,
+    so any intervening path swap or mutation invalidates the zero-reread path.
+    """
+
+    root = Path(model_dir)
+    manifest_files = _closed_weight_content_manifest(weight_manifest, where=root)
+    tensor_ledger = _closed_tensor_digest_ledger(tensor_sha256, where=root)
+    normalized_map = {
+        str(name): str(filename) for name, filename in tensor_to_file.items()
+    }
+    if (
+        len(normalized_map) != len(tensor_to_file)
+        or set(normalized_map) != set(tensor_ledger)
+        or set(normalized_map.values()) != set(manifest_files)
+        or any(
+            Path(filename).name != filename
+            for filename in normalized_map.values()
+        )
+    ):
+        raise ValueError(
+            f"attested writer tensor-to-file map is incomplete in {root}"
+        )
+    directory_fd, root_identity = _open_artifact_directory(root)
+    files: dict[str, dict[str, object]] = {}
+    try:
+        names = _current_safetensors_names(directory_fd)
+        if names != sorted(manifest_files):
+            raise ValueError(
+                f"safetensors set differs from attested writer output in {root}"
+            )
+        for name in names:
+            current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if not stat.S_ISREG(current.st_mode):
+                raise ValueError(
+                    f"attested weight container is not regular: {name!r}"
+                )
+            expected_file = manifest_files[name]
+            if int(current.st_size) != expected_file["bytes"]:
+                raise ValueError(
+                    f"attested weight size changed before receipt: {name!r}"
+                )
+            files[name] = {
+                "stat": _content_stat(current),
+                "sha256": expected_file["sha256"],
+                "tensor_sha256": {
+                    tensor_name: tensor_ledger[tensor_name]
+                    for tensor_name, filename in sorted(normalized_map.items())
+                    if filename == name
+                },
+            }
+        if _current_safetensors_names(directory_fd) != names:
+            raise ValueError(
+                f"safetensors namespace changed while capturing receipt: {root}"
+            )
+        current_root = root.lstat()
+        if (
+            not stat.S_ISDIR(current_root.st_mode)
+            or int(current_root.st_dev) != root_identity["device"]
+            or int(current_root.st_ino) != root_identity["inode"]
+        ):
+            raise ValueError(f"artifact root changed while capturing receipt: {root}")
+    finally:
+        os.close(directory_fd)
+    return {
+        "schema": SAFETENSORS_CONTENT_RECEIPT_SCHEMA,
+        "source": "attested_write",
+        "content_read_passes": 0,
+        "content_bytes_read": 0,
+        "read_calls": 0,
+        "root": root_identity,
+        "files": files,
+    }
+
+
+def validate_safetensors_content_receipt(
+    model_dir: str | os.PathLike,
+    receipt: Mapping[str, Any],
+    *,
+    expected_weight_manifest: Mapping[str, Any],
+    expected_tensor_sha256: Mapping[str, str],
+    expected_tensor_to_file: Mapping[str, str],
+) -> None:
+    """Reuse a content receipt only while every bound path stat is unchanged."""
+
+    root = Path(model_dir)
+    if (
+        not isinstance(receipt, Mapping)
+        or set(receipt) != {
+            "schema",
+            "source",
+            "content_read_passes",
+            "content_bytes_read",
+            "read_calls",
+            "root",
+            "files",
+        }
+        or receipt.get("schema") != SAFETENSORS_CONTENT_RECEIPT_SCHEMA
+        or receipt.get("source") not in {"attested_write", "verified_read"}
+        or type(receipt.get("content_read_passes")) is not int
+        or receipt.get("content_read_passes") not in {0, 1}
+        or type(receipt.get("content_bytes_read")) is not int
+        or receipt.get("content_bytes_read") < 0
+        or type(receipt.get("read_calls")) is not int
+        or receipt.get("read_calls") < 0
+    ):
+        raise ValueError(f"invalid safetensors content receipt in {root}")
+    if receipt.get("source") == "attested_write" and (
+        receipt.get("content_read_passes") != 0
+        or receipt.get("content_bytes_read") != 0
+        or receipt.get("read_calls") != 0
+    ):
+        raise ValueError(f"invalid attested-write pass accounting in {root}")
+    if receipt.get("source") == "verified_read" and (
+        receipt.get("content_read_passes") != 1
+        or receipt.get("content_bytes_read") <= 0
+        or receipt.get("read_calls") <= 0
+    ):
+        raise ValueError(f"invalid verified-read pass accounting in {root}")
+    root_record = receipt.get("root")
+    files = receipt.get("files")
+    if (
+        not isinstance(root_record, Mapping)
+        or set(root_record) != {"device", "inode"}
+        or any(type(root_record.get(key)) is not int for key in root_record)
+        or not isinstance(files, Mapping)
+        or not files
+    ):
+        raise ValueError(f"invalid safetensors content receipt scope in {root}")
+    manifest_files = _closed_weight_content_manifest(
+        expected_weight_manifest, where=root
+    )
+    tensor_ledger = _closed_tensor_digest_ledger(
+        expected_tensor_sha256, where=root
+    )
+    normalized_map = {
+        str(name): str(filename)
+        for name, filename in expected_tensor_to_file.items()
+    }
+    if set(normalized_map) != set(tensor_ledger):
+        raise ValueError(f"expected tensor-to-file map is incomplete in {root}")
+    directory_fd, current_root_record = _open_artifact_directory(root)
+    try:
+        if current_root_record != dict(root_record):
+            raise ValueError(f"artifact root differs from content receipt: {root}")
+        names = _current_safetensors_names(directory_fd)
+        if names != sorted(files) or names != sorted(manifest_files):
+            raise ValueError(
+                f"safetensors set differs from content receipt in {root}"
+            )
+        observed_tensors: dict[str, str] = {}
+        observed_map: dict[str, str] = {}
+        for name in names:
+            row = files.get(name)
+            row_stat = row.get("stat") if isinstance(row, Mapping) else None
+            row_tensors = row.get("tensor_sha256") if isinstance(
+                row, Mapping
+            ) else None
+            if (
+                not isinstance(row, Mapping)
+                or set(row) != {"stat", "sha256", "tensor_sha256"}
+                or not isinstance(row_stat, Mapping)
+                or set(row_stat) != {
+                    "device", "inode", "bytes", "mtime_ns", "ctime_ns"
+                }
+                or any(type(row_stat.get(key)) is not int for key in row_stat)
+                or not isinstance(row.get("sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None
+                or not isinstance(row_tensors, Mapping)
+            ):
+                raise ValueError(
+                    f"invalid safetensors content receipt row {name!r} in {root}"
+                )
+            current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if not stat.S_ISREG(current.st_mode) or (
+                _content_stat(current) != dict(row_stat)
+            ):
+                raise ValueError(
+                    f"weight container changed after content receipt: {name!r}"
+                )
+            expected_file = manifest_files[name]
+            if (
+                row["sha256"] != expected_file["sha256"]
+                or row_stat["bytes"] != expected_file["bytes"]
+            ):
+                raise ValueError(
+                    f"weight manifest differs from content receipt: {name!r}"
+                )
+            normalized_row = _closed_tensor_digest_ledger(
+                row_tensors, where=f"{root}/{name}"
+            )
+            for tensor_name, digest in normalized_row.items():
+                if tensor_name in observed_tensors:
+                    raise ValueError(
+                        f"tensor appears in multiple receipt shards: {tensor_name!r}"
+                    )
+                observed_tensors[tensor_name] = digest
+                observed_map[tensor_name] = name
+        if _current_safetensors_names(directory_fd) != names:
+            raise ValueError(
+                f"safetensors namespace changed while checking receipt: {root}"
+            )
+        if dict(sorted(observed_tensors.items())) != tensor_ledger:
+            raise ValueError(f"tensor ledger differs from content receipt in {root}")
+        if dict(sorted(observed_map.items())) != dict(sorted(normalized_map.items())):
+            raise ValueError(
+                f"tensor-to-file map differs from content receipt in {root}"
+            )
+    finally:
+        os.close(directory_fd)
+
+
+def safetensors_content_receipt_manifest(
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the portable content manifest from a validated-style receipt."""
+
+    files = receipt.get("files") if isinstance(receipt, Mapping) else None
+    if not isinstance(files, Mapping) or not files:
+        raise ValueError("safetensors content receipt has no file rows")
+    return {
+        "schema": WEIGHT_CONTENT_MANIFEST_SCHEMA,
+        "algorithm": "sha256",
+        "files": {
+            str(name): {
+                "bytes": int(row["stat"]["bytes"]),
+                "sha256": str(row["sha256"]),
+            }
+            for name, row in sorted(files.items())
+        },
+    }
+
+
 def weight_stat_attestation(model_dir: str | os.PathLike) -> dict[str, Any]:
     """Cheap post-hash mutation detector for the large weight containers."""
     root = Path(model_dir)
@@ -617,6 +1322,8 @@ def build_shipcard(
         and cb_serving_lane(root) == CB_LANE_DSV4_FLASH
         else REQUIRED_SLOTS
     )
+    if _is_rtx4090_fp8_cb_artifact({}, model_dir=root):
+        slots.extend(RTX4090_REQUIRED_SLOTS)
     if _is_dspark_cb_sidecar_artifact(root):
         slots.append("mtp.dspark")
     card = {
@@ -653,13 +1360,38 @@ def build_shipcard(
         if isinstance(provenance, Mapping) and isinstance(
             provenance.get("cb_route_status"), Mapping
         ):
-            # local: the gate reaches the serving-lane resolution stack, and
-            # shipcard is imported very early.
-            from .cb_route_status_gate import shipcard_route_summary
+            route_status = provenance["cb_route_status"]
+            if route_status.get("schema") == (
+                "prismaquant.rtx4090_fp8_cb_route_status.v1"
+            ):
+                # Strict Ada evidence comes from the supplied candidate-v10
+                # contract, not the historical generic serving-pin gate.  Its
+                # compact row must not be projected through the v1 generic
+                # summary, which would emit misleading None fields.
+                from .rtx4090_qwen38_policy import (
+                    rtx4090_route_status_summary,
+                )
 
-            card["cb_route_status"] = shipcard_route_summary(
-                provenance["cb_route_status"]
-            )
+                policy = provenance.get("producer_policy")
+                assignment = provenance.get("tensor_formats")
+                if not isinstance(policy, Mapping) or not isinstance(
+                    assignment, Mapping
+                ):
+                    raise ValueError(
+                        "strict RTX4090 route status has no policy/assignment binding"
+                    )
+                card["cb_route_status"] = rtx4090_route_status_summary(
+                    route_status,
+                    producer_policy=policy,
+                    assignment=assignment,
+                    where="shipcard strict RTX4090 route status",
+                )
+            else:
+                # local: the generic gate reaches the serving-lane resolution
+                # stack, and shipcard is imported very early.
+                from .cb_route_status_gate import shipcard_route_summary
+
+                card["cb_route_status"] = shipcard_route_summary(route_status)
     return card
 
 
@@ -741,6 +1473,22 @@ def open_cb_export_shipcard(
         # written above, so it cannot describe a different assignment.
         "read_gb_per_token": read_traffic.read_traffic_claim(root),
     }
+    policy_stamp = provenance.get("producer_policy")
+    if isinstance(policy_stamp, Mapping):
+        from .rtx4090_qwen38_policy import (
+            is_rtx4090_validation_only_policy,
+        )
+
+        if is_rtx4090_validation_only_policy(policy_stamp):
+            # The on-disk stamp remains authoritative. Carry the disposition
+            # into the card as well so card-only verification cannot pass.
+            build.update({
+                "producer_policy": str(policy_stamp["id"]),
+                "serving_profile": str(policy_stamp["serving_profile"]),
+                "artifact_disposition": str(
+                    policy_stamp["artifact_disposition"]
+                ),
+            })
     collisions = sorted(set(build_extra or {}) & set(build))
     if collisions:
         raise ValueError(
@@ -926,6 +1674,12 @@ def verify(
 
     slots = card.get("slots") or {}
     is_gridbook_cb = _is_gridbook_card(card, model_dir=model_dir)
+    if _is_rtx4090_validation_only_artifact(card, model_dir):
+        problems.append(
+            "RTX4090 FP8-CB artifact is stamped "
+            "UNRELEASABLE_VALIDATION_ONLY: compile_only SM89 evidence can "
+            "never satisfy a shipcard, publication, or physical RTX4090 gate"
+        )
     if is_gridbook_cb and card.get("reserved_file_bytes") != SHIPCARD_RESERVED_BYTES:
         problems.append(
             "shipcard reserved_file_bytes is not the fixed "
@@ -980,10 +1734,27 @@ def verify(
         if is_gridbook_cb and slot in {
             "native_export.eager", "native_export.graph"
         }:
-            problems.extend(_verify_gridbook_native_record(
-                slot,
-                record,
-                model_dir=model_dir,
+            if _is_rtx4090_fp8_cb_artifact(card, model_dir=model_dir):
+                from .validate_rtx4090_fp8_cb import (
+                    verify_rtx4090_shipcard_record,
+                )
+
+                problems.extend(verify_rtx4090_shipcard_record(
+                    slot, record, model_dir=model_dir
+                ))
+            else:
+                problems.extend(_verify_gridbook_native_record(
+                    slot,
+                    record,
+                    model_dir=model_dir,
+                ))
+        if slot in RTX4090_REQUIRED_SLOTS:
+            from .validate_rtx4090_fp8_cb import (
+                verify_rtx4090_shipcard_record,
+            )
+
+            problems.extend(verify_rtx4090_shipcard_record(
+                slot, record, model_dir=model_dir
             ))
         if is_gridbook_cb and slot == "perf.matched_budget_parity":
             problems.extend(_verify_gridbook_performance_record(
@@ -3329,6 +4100,82 @@ def _is_gridbook_card(
     return isinstance(payload, Mapping) and payload.get("quant_method") == "gridbook"
 
 
+def _is_rtx4090_fp8_cb_artifact(
+    card: Mapping[str, Any],
+    *,
+    model_dir: str | os.PathLike | None = None,
+) -> bool:
+    """Resolve the strict Ada obligation from both card and artifact bytes.
+
+    ``shipcard.json`` is mutable by design, so its build block or slot map can
+    never be the sole authority.  The FP8-only exporter writes the distinct
+    top-level ``format: fp8_cb`` token into identity-bound
+    ``quant_config.json``; that token is sufficient to make the hardware slot
+    mandatory even if the policy stamp is malformed or missing.
+    """
+
+    slots = card.get("slots")
+    if isinstance(slots, Mapping) and any(
+        slot in slots for slot in RTX4090_REQUIRED_SLOTS
+    ):
+        return True
+    build = card.get("build")
+    if isinstance(build, Mapping) and (
+        build.get("producer_policy") == "qwen38_27b_rtx4090_fp8_cb"
+        or build.get("serving_profile") == "qwen38_rtx4090_fp8_cb"
+    ):
+        return True
+    if model_dir is None:
+        return False
+    quant_path = Path(model_dir) / "quant_config.json"
+    if not quant_path.is_file():
+        return False
+    try:
+        payload = json.loads(quant_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, Mapping):
+        return False
+    if payload.get("format") == "fp8_cb":
+        return True
+    provenance = payload.get("provenance")
+    policy = provenance.get("producer_policy") if isinstance(
+        provenance, Mapping
+    ) else None
+    return isinstance(policy, Mapping) and policy.get(
+        "id"
+    ) == "qwen38_27b_rtx4090_fp8_cb"
+
+
+def _is_rtx4090_validation_only_artifact(
+    card: Mapping[str, Any],
+    model_dir: str | os.PathLike | None,
+) -> bool:
+    """Read the immutable producer stamp that categorically forbids release."""
+
+    build = card.get("build")
+    if isinstance(build, Mapping) and build.get(
+        "artifact_disposition"
+    ) == "UNRELEASABLE_VALIDATION_ONLY":
+        return True
+    if model_dir is None:
+        return False
+    quant_path = Path(model_dir) / "quant_config.json"
+    try:
+        payload = json.loads(quant_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    provenance = payload.get("provenance") if isinstance(
+        payload, Mapping
+    ) else None
+    policy = provenance.get("producer_policy") if isinstance(
+        provenance, Mapping
+    ) else None
+    from .rtx4090_qwen38_policy import is_rtx4090_validation_only_policy
+
+    return is_rtx4090_validation_only_policy(policy)
+
+
 def required_slots(
     card: Mapping[str, Any],
     *,
@@ -3377,6 +4224,8 @@ def required_slots(
                     for slot in CB_REQUIRED_SLOTS
                     if slots_present.get(slot) is not None
                 )
+    if _is_rtx4090_fp8_cb_artifact(card, model_dir=model_dir):
+        required.extend(RTX4090_REQUIRED_SLOTS)
     slots = card.get("slots")
     if isinstance(slots, Mapping):
         required.extend(
