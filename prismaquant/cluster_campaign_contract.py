@@ -118,7 +118,10 @@ if len(_STAGE_BY_NAME) != len(STAGE_DAG):  # pragma: no cover - static guard
     raise RuntimeError("cluster campaign DAG contains duplicate stage names")
 
 _MANIFEST_BODY_KEYS = frozenset(
-    {"schema", "campaign_id", "coordinator", "producer", "inputs", "hosts"}
+    {
+        "schema", "campaign_id", "coordinator", "producer", "inputs",
+        "policy", "hosts",
+    }
 )
 _MANIFEST_KEYS = _MANIFEST_BODY_KEYS | {"identity_sha256"}
 _PRODUCER_KEYS = frozenset(
@@ -130,12 +133,42 @@ _INPUT_KEYS = frozenset(
 _SAMPLE_KEYS = frozenset(
     {"nsamples", "seqlen", "calib_seed", "activation_rows_limit"}
 )
+_POLICY_KEYS = frozenset({"retry", "telemetry", "resources", "outputs"})
+_RETRY_KEYS = frozenset({"max_attempts"})
+_TELEMETRY_KEYS = frozenset(
+    {"interval_milliseconds", "require_positive_gpu_utilization"}
+)
+_RESOURCE_KEYS = frozenset(
+    {
+        "coordinator_min_free_bytes", "worker_min_free_bytes",
+        "min_mem_available_bytes",
+    }
+)
+_OUTPUT_KEYS = frozenset({"owner", "transfer_mode"})
 _FIXED_SAMPLE_PARALLEL = MappingProxyType(
     {
         "nsamples": 32,
         "seqlen": 1024,
         "calib_seed": 42,
         "activation_rows_limit": 1024,
+    }
+)
+FIXED_CAMPAIGN_POLICY = MappingProxyType(
+    {
+        "retry": {"max_attempts": 2},
+        "telemetry": {
+            "interval_milliseconds": 1000,
+            "require_positive_gpu_utilization": True,
+        },
+        "resources": {
+            "coordinator_min_free_bytes": 100 * 1024**3,
+            "worker_min_free_bytes": 40 * 1024**3,
+            "min_mem_available_bytes": 64 * 1024**3,
+        },
+        "outputs": {
+            "owner": "coordinator",
+            "transfer_mode": "sha256_no_clobber",
+        },
     }
 )
 _HOST_KEYS = frozenset({"id", "transport", "roots", "expected"})
@@ -225,6 +258,12 @@ def _integer(
 ) -> int:
     if type(value) is not int or not minimum <= value <= maximum:
         _fail(f"{where} must be an integer in [{minimum}, {maximum}]")
+    return value
+
+
+def _boolean(value: object, *, where: str) -> bool:
+    if type(value) is not bool:
+        _fail(f"{where} must be a boolean")
     return value
 
 
@@ -331,6 +370,58 @@ def _normalize_inputs(value: object) -> dict[str, object]:
         ),
         "sample_parallel": normalized_sample,
     }
+
+
+def _normalize_policy(value: object) -> dict[str, object]:
+    raw = _exact_mapping(value, keys=_POLICY_KEYS, where="policy")
+    retry = _exact_mapping(raw["retry"], keys=_RETRY_KEYS, where="policy.retry")
+    telemetry = _exact_mapping(
+        raw["telemetry"], keys=_TELEMETRY_KEYS, where="policy.telemetry",
+    )
+    resources = _exact_mapping(
+        raw["resources"], keys=_RESOURCE_KEYS, where="policy.resources",
+    )
+    outputs = _exact_mapping(
+        raw["outputs"], keys=_OUTPUT_KEYS, where="policy.outputs",
+    )
+    normalized = {
+        "retry": {
+            "max_attempts": _integer(
+                retry["max_attempts"], where="policy.retry.max_attempts",
+                minimum=1, maximum=16,
+            ),
+        },
+        "telemetry": {
+            "interval_milliseconds": _integer(
+                telemetry["interval_milliseconds"],
+                where="policy.telemetry.interval_milliseconds",
+                minimum=100, maximum=60_000,
+            ),
+            "require_positive_gpu_utilization": _boolean(
+                telemetry["require_positive_gpu_utilization"],
+                where="policy.telemetry.require_positive_gpu_utilization",
+            ),
+        },
+        "resources": {
+            key: _integer(
+                resources[key], where=f"policy.resources.{key}", minimum=1,
+            )
+            for key in sorted(_RESOURCE_KEYS)
+        },
+        "outputs": {
+            "owner": _string(outputs["owner"], where="policy.outputs.owner"),
+            "transfer_mode": _string(
+                outputs["transfer_mode"],
+                where="policy.outputs.transfer_mode",
+            ),
+        },
+    }
+    if normalized != dict(FIXED_CAMPAIGN_POLICY):
+        _fail(
+            "policy must equal the fixed two-host campaign policy "
+            f"{dict(FIXED_CAMPAIGN_POLICY)}"
+        )
+    return normalized
 
 
 def _normalize_transport(value: object, *, where: str) -> dict[str, object]:
@@ -493,6 +584,7 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
     )
     producer = _normalize_producer(raw["producer"])
     inputs = _normalize_inputs(raw["inputs"])
+    policy = _normalize_policy(raw["policy"])
     raw_hosts = raw["hosts"]
     if type(raw_hosts) is not list or len(raw_hosts) != 2:
         _fail("hosts must be a list containing exactly two hosts")
@@ -527,6 +619,7 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
         "coordinator": coordinator,
         "producer": producer,
         "inputs": inputs,
+        "policy": policy,
         "hosts": hosts,
     }
 
@@ -883,6 +976,7 @@ __all__ = [
     "CAMPAIGN_STATE_SCHEMA",
     "CANONICAL_CONTAINER_PATHS",
     "ClusterCampaignContractError",
+    "FIXED_CAMPAIGN_POLICY",
     "RTX4090_COMPUTE_CAPABILITY",
     "RTX4090_GPU_NAME",
     "STAGE_DAG",

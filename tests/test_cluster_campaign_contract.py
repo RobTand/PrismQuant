@@ -95,6 +95,22 @@ def _manifest_body(*, reverse_hosts: bool = False) -> dict[str, object]:
                 "activation_rows_limit": 1024,
             },
         },
+        "policy": {
+            "retry": {"max_attempts": 2},
+            "telemetry": {
+                "interval_milliseconds": 1000,
+                "require_positive_gpu_utilization": True,
+            },
+            "resources": {
+                "coordinator_min_free_bytes": 100 * 1024**3,
+                "worker_min_free_bytes": 40 * 1024**3,
+                "min_mem_available_bytes": 64 * 1024**3,
+            },
+            "outputs": {
+                "owner": "coordinator",
+                "transfer_mode": "sha256_no_clobber",
+            },
+        },
         "hosts": hosts,
     }
 
@@ -205,6 +221,25 @@ def test_manifest_rejects_sample_contract_drift(field: str, value: int) -> None:
     body = _manifest_body()
     body["inputs"]["sample_parallel"][field] = value
     with pytest.raises(ClusterCampaignContractError, match="fixed RTX4090"):
+        seal_campaign_manifest(body)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("retry", "max_attempts", 3),
+        ("telemetry", "interval_milliseconds", 2000),
+        ("telemetry", "require_positive_gpu_utilization", False),
+        ("resources", "worker_min_free_bytes", 1),
+        ("outputs", "transfer_mode", "rsync_exit_only"),
+    ],
+)
+def test_manifest_rejects_runtime_policy_drift(
+    section: str, field: str, value: object,
+) -> None:
+    body = _manifest_body()
+    body["policy"][section][field] = value
+    with pytest.raises(ClusterCampaignContractError, match="fixed two-host"):
         seal_campaign_manifest(body)
 
 
