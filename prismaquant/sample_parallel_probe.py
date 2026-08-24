@@ -1886,6 +1886,57 @@ def _source_model_content_identity(
             body, where="sample-parallel model-content identity"
         ),
     }
+def _canonical_staged_text_tensor_view(
+    observed: Mapping[str, Mapping[str, object]],
+    *,
+    source_layout: str,
+) -> dict[str, dict[str, object]]:
+    """Return the exact text-staging view of one physical source manifest.
+
+    Released text-only Qwen3.8 source trees may retain the official wrapper's
+    ``model.language_model.*`` checkpoint keys after their config is promoted
+    to ``Qwen3_5ForCausalLM``.  The existing streamed loader maps that one
+    namespace to live ``model.*`` names.  Apply precisely the same prefix law
+    for census comparison while leaving the raw weight map in the model-
+    content identity.  No other prefix, mixed body namespace, or collision is
+    accepted.
+    """
+    normalized = {
+        str(name): dict(header) for name, header in observed.items()
+    }
+    if source_layout != "flattened_text":
+        return dict(sorted(normalized.items()))
+    wrapper_prefix = "model.language_model."
+    wrapper_names = sorted(
+        name for name in normalized if name.startswith(wrapper_prefix)
+    )
+    if not wrapper_names:
+        return dict(sorted(normalized.items()))
+    direct_body = sorted(
+        name for name in normalized
+        if name.startswith("model.") and not name.startswith(wrapper_prefix)
+    )
+    if direct_body:
+        raise SampleParallelProbeError(
+            "flattened text checkpoint mixes model.* and exact "
+            f"model.language_model.* body namespaces: {direct_body[:8]}"
+        )
+    canonical: dict[str, dict[str, object]] = {}
+    for name, header in normalized.items():
+        target = (
+            "model." + name[len(wrapper_prefix):]
+            if name.startswith(wrapper_prefix)
+            else name
+        )
+        if target in canonical:
+            raise SampleParallelProbeError(
+                "flattened text checkpoint namespace mapping collides at "
+                f"{target!r}"
+            )
+        canonical[target] = header
+    return dict(sorted(canonical.items()))
+
+
 def build_rtx4090_qname_census(
     model: str | Path,
     *,
@@ -1936,12 +1987,21 @@ def build_rtx4090_qname_census(
         )
     except Exception as exc:
         raise SampleParallelProbeError(str(exc)) from exc
-    if observed_tensors != expected_tensors:
-        missing = sorted(set(expected_tensors) - set(observed_tensors))
-        unexpected = sorted(set(observed_tensors) - set(expected_tensors))
+    canonical_observed_tensors = _canonical_staged_text_tensor_view(
+        observed_tensors,
+        source_layout=str(validated["source_layout"]),
+    )
+    if canonical_observed_tensors != expected_tensors:
+        missing = sorted(
+            set(expected_tensors) - set(canonical_observed_tensors)
+        )
+        unexpected = sorted(
+            set(canonical_observed_tensors) - set(expected_tensors)
+        )
         changed = sorted(
-            name for name in set(expected_tensors) & set(observed_tensors)
-            if expected_tensors[name] != observed_tensors[name]
+            name
+            for name in set(expected_tensors) & set(canonical_observed_tensors)
+            if expected_tensors[name] != canonical_observed_tensors[name]
         )
         raise SampleParallelProbeError(
             "source checkpoint differs from the authoritative Qwen3.8 "
