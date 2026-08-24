@@ -360,9 +360,18 @@ _PUBLISHED_FILES = frozenset({
 #     the CB field quantizer, lattice resolver, or bit packer.
 #   export_nvfp4_cb_streaming.py -- updates only the strict external Gridbook
 #     contract help text from v10 to v11. It cannot change exported bytes.
+# RE-FROZEN 2026-08-24 (producer assignment preflight), after enumerating the
+# whole closure and reviewing reachability against THIS handoff:
+#   export_nvfp4_cb_streaming.py -- adds the shared assignment parser as an
+#     outer decorator, before the transactional output wrapper. A valid W8A16
+#     assignment is parsed once more and then follows the byte-identical export
+#     body; an invalid/research-only CB spelling now refuses before creating a
+#     destination or preserved `.tmp-*` tree. The decorator neither rewrites
+#     the assignment nor touches tensor data, source discovery, or W8A16
+#     passthrough emission.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
-        "98957350648e993e36c918b2f143be60ec6b3108fbc2b8b7ed39fb6d647aa41e"
+        "e83ec16206bee87844ed85ce9485df6a28c2d196b4314a98b56b33602203ddf6"
     ),
     "prismaquant/cb_export_config.py": (
         "3aa767bba9e689d50234730846a1671088ec0b16278d18aa6fa2693815294412"
