@@ -36,6 +36,30 @@ Required behavior:
 - make production runs fail fast when required data cannot fit resident;
 - keep offline data-build steps clearly separated from production hot paths.
 
+### Self-Contained, Non-Agentic Operation
+
+PrismaQuant may be developed, diagnosed, and reviewed with agents, but an
+agent is never part of its runtime architecture. Straight quantization and
+scheduling must be a deterministic application function: a closed manifest
+declares inputs, hosts, partitions, stage order, barriers, retry policy, and
+outputs; machine-readable receipts determine the next state.
+
+Required behavior:
+
+- encode local and multi-host campaigns as explicit versioned state machines;
+- assign work from stable data such as sample indices, layers, and format
+  rungs, never from an agent's judgment during execution;
+- make transfers and barriers content-addressed and independently verifiable;
+- make retries idempotent, resumable, and deterministic from committed state;
+- publish resource and GPU-utilization telemetry as part of the campaign
+  receipt; and
+- fail closed on missing, conflicting, or ambiguous state instead of asking an
+  agent to infer how execution should continue.
+
+An operator or agent may supply a newly reviewed manifest or fix a defective
+implementation. Once launched, ordinary probe, quantization, allocation,
+export, and validation must complete without intelligence in the loop.
+
 ### One Cache Mechanism
 
 Rendered weights should flow through `ProductionWeightCache`. Activation
