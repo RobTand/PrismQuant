@@ -37,7 +37,7 @@ _FAKE_RUNTIME_PIN = {
     "version": "1.2.3",
     "version_is_release": True,
     "wheel_sha256": "c" * 64,
-    "runtime_contract_schema": "gridbook.runtime-contract.v10",
+    "runtime_contract_schema": "gridbook.runtime-contract.v11",
     "required_abi_features": {"sm89_fp8_cb": 1},
 }
 _FAKE_VLLM_PIN = {
@@ -281,7 +281,7 @@ def _valid_specialized_record(slot: str) -> dict[str, object]:
         "runtime_pin": copy.deepcopy(_FAKE_RUNTIME_PIN),
         "vllm_runtime_pin": copy.deepcopy(_FAKE_VLLM_PIN),
         "runtime_attestation": {
-            "runtime_contract_schema": "gridbook.runtime-contract.v10",
+            "runtime_contract_schema": "gridbook.runtime-contract.v11",
             "runtime_contract_sha256": "8" * 64,
             "lane_eligibility_schema": "gridbook.lane-eligibility.v2",
             "platform": "sm_89",

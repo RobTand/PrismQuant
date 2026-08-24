@@ -66,7 +66,14 @@ class CBFamily:
         return int(k) in self.rungs
 
 
-NVFP4_PRODUCT_RUNGS = tuple(range(12, 25))
+# The unsigned FP4 wire ABI carries one k-bit codeword for every 8 weights.
+# The public reader and producer domain stops at K25. K1 has the ceil-first
+# split (1, 0); K25 has split (13, 12). Width-14..16 lattice assets and the
+# direct uint32 codec endpoint remain available only to explicit low-level
+# research code. They have no public format id, registry entry, contract rung,
+# chooser candidate, assignment, bundle, or export path.
+NVFP4_PRODUCT_RUNGS = tuple(range(1, 26))
+NVFP4_ACCEPTED_RUNGS = NVFP4_PRODUCT_RUNGS
 FP8_PRODUCT_RUNGS = tuple(range(4, 49, 4))
 # Gridbook artifacts produced before the K%4/TMA rule was made a producer
 # invariant used every integer rung from K28 through K48.  They remain valid
@@ -99,7 +106,7 @@ FAMILIES = (
         mode="product",
         n_sub=2,
         rungs=NVFP4_PRODUCT_RUNGS,
-        accepted_rungs=NVFP4_PRODUCT_RUNGS,
+        accepted_rungs=NVFP4_ACCEPTED_RUNGS,
         layout_versions=(1, 2),
         moe_layout_versions=(2,),
     ),
@@ -315,6 +322,7 @@ __all__ = [
     "INDEX_BIT_ORDER",
     "INDEX_BYTES_PER_K",
     "LAYOUT_FOR_SCALE_CODING",
+    "NVFP4_ACCEPTED_RUNGS",
     "NVFP4_PRODUCT_RUNGS",
     "PRODUCT_CB_FORMAT_NAMES",
     "PRODUCT_CB_FORMATS",

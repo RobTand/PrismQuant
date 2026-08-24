@@ -97,18 +97,22 @@ from prismaquant.cb_anchored_cost import (
     run_streamed_cb_anchor_aura,
     write_cb_cost_payload,
 )
+from prismaquant.cb_layout import NVFP4_PRODUCT_RUNGS
 from prismaquant.cost_stage_checkpoint import (
     atomic_write_bytes,
     canonical_json_sha256,
 )
 
-CAMPAIGN_SCHEMA = "prismaquant.dense_anchored_cb.campaign.v1"
+CAMPAIGN_SCHEMA = "prismaquant.dense_anchored_cb.campaign.v2"
 TARGET_PROFILE = "nvfp4_cb"
 
 # NVFP4-CB is outside the gridbook fused mid-M kernel law (its lane backs no
 # fused rungs at any version; every rung rides the fallback route), so the
-# ladder is the exporter's contiguous production range.
-NVFP4_CB_LADDER = tuple(f"NVFP4_CB_K{k}" for k in range(12, 25))
+# campaign follows the authoritative contiguous producer range. The v2
+# campaign schema is intentionally incompatible with the old K12..K24 fit.
+NVFP4_CB_LADDER = tuple(
+    f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS
+)
 # FP8-CB IS bound by that law: k % 4 == 0 and nothing else, because
 # type_size = 4k must be a 16-byte multiple and the fused mainloop's uniform
 # CbSubW = k/4 is wrong for ragged off-law sub-tables.  This is the set
@@ -120,28 +124,33 @@ FP8_CB_RUNGS = tuple(cb_rung(name) for name in FP8_CB_LADDER)
 # One anchor per (family, basis), rendered for EVERY unit of that segment, so
 # it must be legal everywhere the segment reaches and interior enough to keep
 # the worst extrapolation short.
-#   nvfp4_cb: K12..K24 -> K18 is the midpoint.
+#   nvfp4_cb: K1..K25 -> K13 is the central integer rung.
 #   fp8_cb:   the 6 on-law rungs -> K36 is interior (worst distance 3 steps,
 #             tied with K40) and sits nearer the low rungs a tight byte budget
 #             actually selects.
 # Learned codebooks are a measured NULL on Qwen dense (holdout ~1.00 across
 # K28-K43), so this lane declares ONE basis and there is no learned segment.
 ANCHOR_FORMATS = {
-    ("nvfp4_cb", LATTICE_BASIS): "NVFP4_CB_K18",
+    ("nvfp4_cb", LATTICE_BASIS): "NVFP4_CB_K13",
     ("fp8_cb", LATTICE_BASIS): "FP8_CB_K36",
 }
 
 # Panel rungs must (a) stay inside the segment's legal ladder and (b) give the
-# shape design full rank after per-unit centering.  That second condition is
-# what fixes the parity choice: NVFP4-CB spans both parities, so its design is
-# (rung, rung_parity) and a panel of all-even rungs would centre the parity
-# column to zero and fail closed at rank 1 of 2.  K13/K16/K20/K23 spans the
-# ladder AND both parities.  Every legal FP8-CB rung is k % 4 == 0, so parity
+# shape design full rank after per-unit centering. The expanded NVFP4 design is
+# (rung, parity, below-K12 hinge, above-K24 hinge): it fits separate low-band
+# and endpoint effects and cannot reuse the old K12..K24 line as endpoint
+# evidence. The panel
+# brackets both hinges, both parities, and the exact K1/K25 endpoints. K25 is
+# the only producer rung above the high hinge, so its coefficient is honestly
+# a measured endpoint shoulder rather than an extrapolated high-band slope.
+# Every legal FP8-CB rung is k % 4 == 0, so parity
 # is constant there, the design drops to (rung,) alone, and any two distinct
 # rungs suffice -- K28..K48 is chosen to span rather than to satisfy rank.
 PANEL_RUNGS = {
-    "nvfp4_cb": ("NVFP4_CB_K13", "NVFP4_CB_K16",
-                 "NVFP4_CB_K20", "NVFP4_CB_K23"),
+    "nvfp4_cb": (
+        "NVFP4_CB_K1", "NVFP4_CB_K2", "NVFP4_CB_K11", "NVFP4_CB_K12",
+        "NVFP4_CB_K23", "NVFP4_CB_K24", "NVFP4_CB_K25",
+    ),
     "fp8_cb": ("FP8_CB_K28", "FP8_CB_K40", "FP8_CB_K48"),
 }
 # Held-out UNITS are the primary generalization axis (the fit is applied to
@@ -160,14 +169,18 @@ PANEL_RUNGS = {
 # all.  This lane has rungs to spare and takes the stronger design anyway; the
 # report tags each cell's `held_out_axes` so a reader can tell which was used.
 #
-# NVFP4-CB is validated at the extremes AND two interior rungs, so the report
-# separates the worst extrapolation from the typical one -- validating only at
-# K12/K24 makes a fit look worse than it is everywhere the DP actually selects.
+# NVFP4-CB validation is off-panel on both sides of the low hinge and within
+# the historical band. K25 is deliberately repeated on held-out units because
+# there is no second producer rung above K24: this tests transfer of the
+# measured endpoint shoulder without pretending that a held-out high-band
+# slope exists. The report's ``held_out_axes`` records that distinction.
 # FP8-CB has six legal rungs; one is the anchor, so the panel gives up a rung to
 # leave two genuine held-out rungs straddling it.
 VALIDATION_RUNGS = {
-    "nvfp4_cb": ("NVFP4_CB_K12", "NVFP4_CB_K15",
-                 "NVFP4_CB_K21", "NVFP4_CB_K24"),
+    "nvfp4_cb": (
+        "NVFP4_CB_K3", "NVFP4_CB_K10", "NVFP4_CB_K14",
+        "NVFP4_CB_K22", "NVFP4_CB_K25",
+    ),
     "fp8_cb": ("FP8_CB_K32", "FP8_CB_K44"),
 }
 # The smallest role on a hybrid-attention dense model is the full-attention

@@ -440,8 +440,8 @@ def test_panel_fits_are_separate_and_currency_invariance_is_diagnostic():
     )
 
 
-def test_shape_basis_is_derived_from_the_ladder_not_the_family():
-    """A constant column is unidentifiable, so the ladder decides the basis."""
+def test_shape_basis_is_derived_from_the_family_and_ladder():
+    """Only live, family-applicable columns enter the segment basis."""
     # Mixed parity (NVFP4-CB K12..K18): both registered columns resolve.
     assert _identifiable_cb_shape_columns(range(12, 19)) == (0, 1)
     assert _identifiable_cb_shape_columns((28, 29)) == (0, 1)
@@ -452,6 +452,20 @@ def test_shape_basis_is_derived_from_the_ladder_not_the_family():
     # The rung coordinate is always retained: CandidateSpec requires a
     # nonempty basis, and a one-rung ladder is never fitted anyway.
     assert _identifiable_cb_shape_columns((48,)) == (0,)
+    # Family is load-bearing: even a theoretical full FP8 producer ladder
+    # crossing both hinges keeps the historical rung-only basis.
+    assert _identifiable_cb_shape_columns(
+        range(4, 49, 4), family="fp8_cb",
+    ) == (0,)
+    # The expanded NVFP4 producer domain activates two independent hinge
+    # columns. A
+    # source-constrained ladder that stays within one band retains the old
+    # rung/parity basis; only a ladder crossing K12/K24 pays for the new terms.
+    assert _identifiable_cb_shape_columns(
+        range(1, 26), family="nvfp4_cb",
+    ) == (0, 1, 2, 3)
+    assert _identifiable_cb_shape_columns(range(1, 12)) == (0, 1)
+    assert _identifiable_cb_shape_columns(range(25, 33)) == (0, 1)
     with pytest.raises(AnchoredCostError, match="no rungs"):
         _identifiable_cb_shape_columns(())
 

@@ -10,7 +10,7 @@ cd "$PQ_REPO_ROOT"
 : "${MODEL_PATH:?Set MODEL_PATH to the original dense Qwen3.8 checkpoint}"
 : "${LAYER_CONFIG:?Set LAYER_CONFIG to the completed allocator layer_config.json}"
 : "${CB_COL_WEIGHTS:?Set CB_COL_WEIGHTS to the exact render-identity-bound pickle}"
-: "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:?Set GRIDBOOK_PRODUCER_RUNTIME_CONTRACT to the Gridbook v10 compile_only contract}"
+: "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:?Set GRIDBOOK_PRODUCER_RUNTIME_CONTRACT to the Gridbook v11 compile_only contract}"
 : "${CB_OUT:?Set CB_OUT to a fresh validation-only output directory}"
 
 exec python3 -m prismaquant.rtx4090_validation_export \

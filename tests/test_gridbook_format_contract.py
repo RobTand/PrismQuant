@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from prismaquant.cb_layout import FP8_ACCEPTED_RUNGS, FP8_PRODUCT_RUNGS
+from prismaquant.cb_layout import (
+    FP8_ACCEPTED_RUNGS,
+    FP8_PRODUCT_RUNGS,
+    NVFP4_ACCEPTED_RUNGS,
+    NVFP4_PRODUCT_RUNGS,
+)
 from prismaquant.gridbook_format_contract import (
     GRIDBOOK_PRODUCER_RUNGS_CONTRACT_SCHEMA,
     GridbookFormatContractError,
@@ -30,16 +35,19 @@ def _legacy_contract() -> dict:
     return json.loads(CURRENT.read_text(encoding="utf-8"))
 
 
-def _synthetic_v10() -> dict:
+def _synthetic_v11() -> dict:
     """Future schema fixture only; it is deliberately not a release pin."""
 
     contract = deepcopy(_legacy_contract())
     contract["schema"] = GRIDBOOK_PRODUCER_RUNGS_CONTRACT_SCHEMA
-    contract["contract_version"] = 10
+    contract["contract_version"] = 11
     for entry in contract["formats"]:
         if entry["family"] == "FP8_CB_K":
             entry["rungs"] = list(FP8_ACCEPTED_RUNGS)
             entry["producer_rungs"] = list(FP8_PRODUCT_RUNGS)
+        elif entry["family"] == "NVFP4_CB_K":
+            entry["rungs"] = list(NVFP4_ACCEPTED_RUNGS)
+            entry["producer_rungs"] = list(NVFP4_PRODUCT_RUNGS)
         else:
             entry["producer_rungs"] = list(entry["rungs"])
     return contract
@@ -68,8 +76,8 @@ def test_current_v4_is_reader_compatible_but_not_producer_attestation():
         )
 
 
-def test_v10_explicitly_attests_exact_reader_and_producer_domains():
-    contract = _synthetic_v10()
+def test_v11_explicitly_attests_exact_reader_and_producer_domains():
+    contract = _synthetic_v11()
     declarations = validate_gridbook_cb_rung_contract(
         contract, require_producer_attestation=True
     )
@@ -83,6 +91,20 @@ def test_v10_explicitly_attests_exact_reader_and_producer_domains():
         contract, "FP8_CB_K29"
     )
     assert not gridbook_contract_attests_producer_format(contract, "FP8_CB_K25")
+    nvfp4 = declarations["NVFP4_CB_K"]
+    assert nvfp4.accepted_rungs == NVFP4_ACCEPTED_RUNGS
+    assert nvfp4.producer_rungs == NVFP4_PRODUCT_RUNGS
+    assert gridbook_contract_attests_producer_format(contract, "NVFP4_CB_K1")
+    assert gridbook_contract_attests_producer_format(contract, "NVFP4_CB_K25")
+    assert not gridbook_contract_attests_producer_format(
+        contract, "NVFP4_CB_K26"
+    )
+    assert not gridbook_contract_attests_producer_format(
+        contract, "NVFP4_CB_K32"
+    )
+    assert not gridbook_contract_attests_producer_format(
+        contract, "NVFP4_CB_K33"
+    )
 
 
 @pytest.mark.parametrize(
@@ -103,10 +125,10 @@ def test_v10_explicitly_attests_exact_reader_and_producer_domains():
         ),
     ],
 )
-def test_v10_rejects_malformed_or_unversioned_producer_rungs(
+def test_v11_rejects_malformed_or_unversioned_producer_rungs(
     mutation, message
 ):
-    contract = _synthetic_v10()
+    contract = _synthetic_v11()
     mutation(_fp8_entry(contract))
     with pytest.raises(GridbookFormatContractError, match=message):
         gridbook_format_rungs(contract, "FP8_CB_K")
@@ -114,19 +136,19 @@ def test_v10_rejects_malformed_or_unversioned_producer_rungs(
     if "producer_rungs" in _fp8_entry(contract):
         contract["schema"] = "gridbook.runtime-contract.v9"
         contract["contract_version"] = 9
-        with pytest.raises(GridbookFormatContractError, match="exactly v4.*v10"):
+        with pytest.raises(GridbookFormatContractError, match="exactly v4.*v11"):
             gridbook_format_rungs(contract, "FP8_CB_K")
 
 
 def test_schema_and_contract_version_must_move_together():
-    contract = _synthetic_v10()
+    contract = _synthetic_v11()
     contract["contract_version"] = 4
     with pytest.raises(GridbookFormatContractError, match="move together"):
         gridbook_format_rungs(contract, "FP8_CB_K")
 
 
-def test_v10_must_match_prismaquant_product_ladder_exactly():
-    contract = _synthetic_v10()
+def test_v11_must_match_prismaquant_product_ladder_exactly():
+    contract = _synthetic_v11()
     _fp8_entry(contract)["producer_rungs"] = [4, 8, 12, 16, 20, 24, 28]
     with pytest.raises(GridbookFormatContractError, match="producer rungs differ"):
         validate_gridbook_cb_rung_contract(contract)

@@ -6231,7 +6231,7 @@ def main(argv=None) -> None:
     ap.add_argument(
         "--producer-runtime-contract",
         default=None,
-        help="explicit Gridbook v10 runtime_contract.json for the strict "
+        help="explicit Gridbook v11 runtime_contract.json for the strict "
              "producer policy (never inferred from the current v4 pin)",
     )
     ap.add_argument("--subset-prefix", action="append", default=None,

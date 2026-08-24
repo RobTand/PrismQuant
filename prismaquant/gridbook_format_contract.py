@@ -3,7 +3,7 @@
 Gridbook owns the runtime and its packaged ``runtime_contract.json``.  This
 module deliberately accepts a decoded contract mapping instead of importing
 Gridbook or reading an unpinned installation.  The currently materialized v4
-contract remains a reader-compatibility input; only v10's explicit
+contract remains a reader-compatibility input; only v11's explicit
 ``formats[].producer_rungs`` field can attest a new producer ladder.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from .cb_layout import (
 )
 
 
-GRIDBOOK_PRODUCER_RUNGS_CONTRACT_SCHEMA = "gridbook.runtime-contract.v10"
+GRIDBOOK_PRODUCER_RUNGS_CONTRACT_SCHEMA = "gridbook.runtime-contract.v11"
 _CONTRACT_SCHEMA_RE = re.compile(r"gridbook[.]runtime-contract[.]v([0-9]+)")
 
 
@@ -44,10 +44,10 @@ def _schema_version(contract: Mapping[str, Any], *, where: str) -> int:
             f"{where}: unsupported Gridbook runtime contract schema {schema!r}"
         )
     version = int(match.group(1))
-    if version not in {4, 10}:
+    if version not in {4, 11}:
         raise GridbookFormatContractError(
             f"{where}: unsupported Gridbook runtime contract version {version}; "
-            "the accepted schemas are exactly v4 (legacy reader) and v10 "
+            "the accepted schemas are exactly v4 (legacy reader) and v11 "
             "(producer-rung attestation)"
         )
     contract_version = contract.get("contract_version")
@@ -127,11 +127,11 @@ def gridbook_format_rungs(
         entry.get("rungs"), where=f"{where}.formats[{family!r}].rungs"
     )
     has_producer = "producer_rungs" in entry
-    if version == 10 and not has_producer:
+    if version == 11 and not has_producer:
         raise GridbookFormatContractError(
-            f"{where}.formats[{family!r}].producer_rungs is required by v10"
+            f"{where}.formats[{family!r}].producer_rungs is required by v11"
         )
-    if version < 10 and has_producer:
+    if version < 11 and has_producer:
         raise GridbookFormatContractError(
             f"{where}.formats[{family!r}].producer_rungs is not attested by "
             f"the v{version} schema"
@@ -152,7 +152,7 @@ def gridbook_format_rungs(
         family=str(family),
         accepted_rungs=accepted,
         producer_rungs=producer,
-        producer_rungs_attested=version == 10 and producer is not None,
+        producer_rungs_attested=version == 11 and producer is not None,
     )
 
 
@@ -164,8 +164,8 @@ def validate_gridbook_cb_rung_contract(
 ) -> dict[str, GridbookFormatRungs]:
     """Validate Gridbook's reader/producer rung boundary against PrismaQuant.
 
-    Pre-v10 contracts are accepted only as historical readers, and their rung
-    domains may be strict subsets of today's accepted domain.  A v10 contract
+    Pre-v11 contracts are accepted only as historical readers, and their rung
+    domains may be strict subsets of today's accepted domain.  A v11 contract
     must match both local sets exactly before it can attest production.
     """
 
@@ -179,7 +179,7 @@ def validate_gridbook_cb_rung_contract(
         raise GridbookFormatContractError(f"{where}.formats must be a JSON array")
     # Version the field for the whole format table, including compatibility
     # families PrismaQuant no longer produces (for example legacy signed FP4).
-    # Otherwise a partially-upgraded v10 contract could attest the two local
+    # Otherwise a partially-upgraded v11 contract could attest the two local
     # families while leaving another entry's producer semantics implicit.
     for index, entry in enumerate(raw_formats):
         if not isinstance(entry, Mapping) or not isinstance(entry.get("family"), str):
@@ -199,7 +199,7 @@ def validate_gridbook_cb_rung_contract(
                 f"{where} {family_name} reader rungs are unknown to "
                 f"PrismaQuant: {unexpected}"
             )
-        if version == 10:
+        if version == 11:
             if declared.accepted_rungs != local.accepted_rungs:
                 raise GridbookFormatContractError(
                     f"{where} {family_name} reader rungs differ from the "
@@ -225,7 +225,7 @@ def gridbook_contract_attests_producer_format(
     *,
     where: str = "Gridbook runtime contract",
 ) -> bool:
-    """Return true only for a local producer rung explicitly attested by v10."""
+    """Return true only for a local producer rung explicitly attested by v11."""
 
     parsed = parse_format_name(format_name)
     if parsed is None or not is_producer_format_name(format_name):

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build an explicitly UNRELEASABLE structural artifact on DGX Spark GB10.
-# The delegated launcher consumes only Gridbook v10 compile_only SM89 cells;
+# The delegated launcher consumes only Gridbook v11 compile_only SM89 cells;
 # its output can never satisfy shipcard, publication, or RTX4090 serving gates.
 
 set -euo pipefail

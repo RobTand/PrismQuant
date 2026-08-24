@@ -11,7 +11,7 @@ cd "$PQ_REPO_ROOT"
 
 : "${MODEL_PATH:?Set MODEL_PATH to the dense Qwen3.8-27B BF16 checkpoint}"
 : "${WORK_DIR:?Set WORK_DIR to a fresh output directory}"
-: "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:?Set GRIDBOOK_PRODUCER_RUNTIME_CONTRACT to the qualified Gridbook v10 JSON}"
+: "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:?Set GRIDBOOK_PRODUCER_RUNTIME_CONTRACT to the qualified Gridbook v11 JSON}"
 : "${RTX4090_BUILD_DISPOSITION:=strict}"
 if [[ "$RTX4090_BUILD_DISPOSITION" != strict \
    && "$RTX4090_BUILD_DISPOSITION" != validation_only ]]; then

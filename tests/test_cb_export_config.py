@@ -226,6 +226,49 @@ def test_delta_reuse_signature_comes_from_the_canonical_scheme():
     }
 
 
+@pytest.mark.parametrize(
+    ("k", "shapes", "type_size"),
+    [
+        (1, ((2, 4), (1, 4)), 13),
+        (25, ((8192, 4), (4096, 4)), 109),
+    ],
+)
+def test_nvfp4_endpoint_schemes_have_exact_geometry(k, shapes, type_size):
+    fmt = f"NVFP4_CB_K{k}"
+    codebook = tuple(torch.zeros(shape) for shape in shapes)
+    scheme = build_cb_scheme(
+        ref="lattice",
+        fmt=fmt,
+        grid="fp4",
+        mode="product",
+        k=k,
+        codebook=codebook,
+        scale_coding="two_tier",
+    )
+    assert scheme["k"] == k
+    assert scheme["n_sub"] == 2
+    assert scheme["type_size"] == type_size
+    assert scheme["codebook_source"] == "lattice"
+    assert scheme["codebook_ref"] == [
+        f"cb_codebook.lattice.{fmt}.sub0",
+        f"cb_codebook.lattice.{fmt}.sub1",
+    ]
+
+
+@pytest.mark.parametrize("k", [0, 33])
+def test_nvfp4_formats_outside_endpoint_domain_cannot_enter_scheme(k):
+    with pytest.raises(ValueError, match="CB producer format/fields disagree"):
+        build_cb_scheme(
+            ref="lattice",
+            fmt=f"NVFP4_CB_K{k}",
+            grid="fp4",
+            mode="product",
+            k=k,
+            codebook=(),
+            scale_coding="two_tier",
+        )
+
+
 def test_reader_only_fp8_rung_cannot_enter_a_new_scheme():
     with pytest.raises(ValueError, match="CB producer format/fields disagree"):
         build_cb_scheme(
@@ -236,6 +279,20 @@ def test_reader_only_fp8_rung_cannot_enter_a_new_scheme():
             k=29,
             codebook=(),
             scale_coding="v1",
+        )
+
+
+@pytest.mark.parametrize("k", [26, 32])
+def test_unsupported_nvfp4_rung_cannot_enter_a_new_scheme(k):
+    with pytest.raises(ValueError, match="CB producer format/fields disagree"):
+        build_cb_scheme(
+            ref="lattice",
+            fmt=f"NVFP4_CB_K{k}",
+            grid="fp4",
+            mode="product",
+            k=k,
+            codebook=(),
+            scale_coding="two_tier",
         )
 
 

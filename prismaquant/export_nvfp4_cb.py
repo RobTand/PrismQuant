@@ -1358,7 +1358,7 @@ def export_nvfp4_cb(
 
     if _strict_producer is not None:
         # The unreleased Ada candidate is qualified by the supplied Gridbook
-        # v10 contract, not by the repository's historical serving pin used by
+        # v11 contract, not by the repository's historical serving pin used by
         # the generic gate.  The strict stamp is closed and cannot represent a
         # generic override, non-native disposition, or fallback route.
         from prismaquant.rtx4090_qwen38_policy import (
@@ -2142,7 +2142,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument(
         "--producer-runtime-contract",
         default=None,
-        help="explicit Gridbook v10 runtime_contract.json for the strict "
+        help="explicit Gridbook v11 runtime_contract.json for the strict "
              "producer policy (never inferred from the current v4 pin)",
     )
     args = ap.parse_args(argv)

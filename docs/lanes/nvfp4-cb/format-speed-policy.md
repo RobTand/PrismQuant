@@ -119,8 +119,8 @@ and index-body bytes are diagnostics, not the acceptance gate.
 
 The relevant serialized contracts are:
 
-- production NVFP4-CB K12..K24 uses two-tier layout v2: `4k + 9` bytes per
-  256-weight superblock, about 1.78125..3.28125 bpw before shared sidecars;
+- production NVFP4-CB K1..K25 uses two-tier layout v2: `4k + 9` bytes per
+  256-weight superblock, 0.40625..3.40625 bpw before shared sidecars;
 - FP8-CB uses a `4k`-byte index body per superblock **plus** one FP32
   `weight_scale` per output row; and
 - product-VQ FP16 subtable sidecars are serialized once per codebook
@@ -147,7 +147,7 @@ encodes:
   fused mid-M K ∈ {28,32,36,40,44,48}; new production obeys the generalized
   K%4 ladder K4..K48. Every historical off-law K28..K48 wire id remains a
   reader input only and can no longer enter allocator or exporter menus. Low
-  rungs and Ada remain unshippable: the current Gridbook v10 candidate carries
+  rungs and Ada remain unshippable: the current Gridbook v11 candidate carries
   only `compile_only` exact-sm89 dense cells. Strict publication requires
   `device_qualified` decode and batch cells for the complete twelve-rung
   producer ladder, even when one assignment selects fewer rungs, plus the
@@ -216,7 +216,8 @@ loss and phase-specific latency gain; never compare an isolated promoted layer
 against an unfunded baseline.
 
 NVFP4-CB v2 is the capacity backbone in the approximately
-1.78125..3.28125-bpw band, but it does not yet have teacher-backed same-rate
+0.40625..3.40625-bpw body band, but the newly scaffolded K1..K11 and K25
+endpoints do not yet have teacher-backed same-rate
 quality validation. Keep its fused native-FP4 prefill paths explicit opt-ins
 until served KL/PPL and routing/shape gates pass; the path changes activation
 scales from the fp32-emulated bucket to native ue4m3 factors.
@@ -228,7 +229,12 @@ native expert delegation before the allocator may claim that frontier.
 
 Signed S13..S16 remain a legacy Gridbook reader concern and are excluded from
 PrismaQuant's producer registry. Every current product rung remains in the
-production menu: NVFP4-CB K12..K24 and FP8-CB K4..K48 with K%4.
+production menu: NVFP4-CB K1..K25 and FP8-CB K4..K48 with K%4. K26..K32 have
+no public reader or producer id; width-14..16 lattice/direct-codec work is
+research-only. Registry admission is scaffolding, not release evidence:
+endpoint artifacts require an exact Gridbook producer-rung contract and the
+widened dense campaign's low/mid/endpoint holdout gate. Old K12..K24
+interpolation receipts cannot price or promote the new bands.
 
 ## 5. Evidence boundaries
 

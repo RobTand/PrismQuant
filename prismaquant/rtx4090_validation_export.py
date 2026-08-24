@@ -3,7 +3,7 @@
 
 This handoff starts after allocation.  It consumes one completed
 ``layer_config.json``, its exact value-bound CB column weights, the original
-source checkpoint, and a Gridbook v10 compile-only SM89 contract.  It invokes
+source checkpoint, and a Gridbook v11 compile-only SM89 contract.  It invokes
 the existing streaming exporter directly: no probe, cost, retained format-menu
 cache, frontier selection, or stock pipeline stage is rerun.
 """
@@ -76,7 +76,7 @@ def preflight_direct_validation_export(
         (model / "config.json", "source config"),
         (recipe_path, "completed layer_config"),
         (col_path, "exact col_weights"),
-        (contract_path, "Gridbook v10 runtime contract"),
+        (contract_path, "Gridbook v11 runtime contract"),
     ):
         if not path.is_file():
             raise RTX4090DirectValidationExportError(
@@ -123,7 +123,7 @@ def preflight_direct_validation_export(
         )
 
     contract = _load_json_object(
-        contract_path, where="direct-export Gridbook v10 contract"
+        contract_path, where="direct-export Gridbook v11 contract"
     )
     attestation = require_rtx4090_compile_only_runtime_contract(
         contract,

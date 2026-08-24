@@ -16,12 +16,11 @@ must implement is mirrored exactly by `nvfp4_cb_unpack`.
 ## 0. Format family at a glance
 
 A codeword is a **d = 8** vector of grid values. A **k-bit index per 8 weights**
-selects it. Two grids, three index-encoding modes:
+selects it. Two grids and one production index-encoding mode:
 
 | family | grid | codeword values | act | scale plane | bpw (body) |
 |---|---|---|---|---|---|
 | `NVFP4_CB_K{k}` | fp4 / E2M1 | `{0,±.5,±1,±1.5,±2,±3,±4,±6}` | W4A4 | group-16 E4M3, **in the weight bytes** | production v2: `k/8 + 0.28125` |
-| `NVFP4_CB_S{k}` | fp4 / E2M1 | positive half-grid + explicit signs | W4A4 | group-16 E4M3, **in the weight bytes** | production v2: `k/8 + 0.28125` |
 | `FP8_CB_K{k}`   | fp8 / E4M3 | E4M3 grid (‖·‖ ≤ 448) | W8A8 | **none in weight bytes** — per-output-channel fp32, separate tensor | `k/8` |
 
 `k` has separate producer and reader domains. New FP8-CB artifacts may use
@@ -30,16 +29,22 @@ Readers retain every historical `FP8_CB_K28..K48` wire id, including off-law
 rungs such as K29 and K47, so old artifacts remain inspectable and loadable.
 Reader acceptance is not menu authority: cost, allocation, learned-v2 bundle
 construction, and export use the producer-only registry API and reject those
-off-law ids. NVFP4-CB remains `NVFP4_CB_K12..K24`.
+off-law ids. NVFP4-CB reader and producer domains are both exactly
+`NVFP4_CB_K1..K25`: K1 is the smallest nonempty wire stream and K25 splits
+`(13,12)`. K26..K32 have no public wire id. The direct codec retains a
+research-only K32 uint32 boundary test, which is not reader or producer
+authority.
 A decoded fp4 tile is bit-compatible NVFP4 (E2M1 codes + NVFP4 group-16 E4M3
 scale) and feeds the existing CUTLASS FP4 path unchanged.
 
-Learned codebooks do **not** introduce `CBL_*` format names. They are a
-value-bearing rendering mode for the same FP8-CB wire formats. Learned-v2
-construction is restricted to the same K4..K48 step-4 producer ladder and
-records a per-rung learned-versus-lattice promotion decision; legacy bundles
-retain their versioned compatibility policy. See `CBL_RUNG_POLICY` and
-`prismaquant.cb_learned_promotion`.
+Learned codebooks do **not** introduce `CBL_*` format names. The generic
+sidecar refs, shapes, digests, and byte accountant can represent a learned
+table for either product family without changing the wire format. Production
+policy is narrower: NVFP4-CB defaults to lattice and the immutable bundle
+builder/loader refuses learned NVFP4 cells without a new promotion receipt;
+learned-v2 construction remains restricted to FP8 K4..K48 step 4 and records
+its per-rung learned-versus-lattice decision. See `CBL_RUNG_POLICY`,
+`require_cbl_rung_enabled`, and `prismaquant.cb_learned_promotion`.
 
 The strict `qwen38_rtx4090_fp8_cb` producer narrows this generic wire contract
 further: it currently permits canonical lattice references only, pending a
@@ -117,16 +122,11 @@ halves) or `4` (fp8, four 2-dim quarters). Sub-index widths are
 Sub-index `i` decodes 8/n_sub coords via sub-codebook `i`; the 8-dim codeword is
 the concatenation `[sub0 | sub1 | …]`.
 
-**`signed` mode** — 8 explicit sign bits (low byte) then the `(k-8)`-bit
-magnitude index:
-```
- bit:  k-1 ............ 8 | 7 6 5 4 3 2 1 0
-       [  magnitude idx  ] | [ s7 … s1 s0 ]
-```
-Sign bit `j` (bit `j` of the low byte) is **1 iff coordinate `j` is negative**.
-The decoded coordinate `j` = `mag_codebook[mag_idx][j] × (−1 if s_j else +1)`.
-(The magnitude codebook is on the non-negative half-grid; sign is separable
-under the weighted-L2 objective, so `s_j = sign(x_j)` is jointly optimal.)
+At the public NVFP4 endpoints, `bit_split(1,2) = (1,0)`: sub1 has shape
+`(1,4)` and its index is the empty/zero bit field. `bit_split(25,2) = (13,12)`.
+The direct research codec also pins `bit_split(32,2) = (16,16)` and must split
+and mask those two fields independently rather than computing `1u << 32`; no
+serialized artifact may name that research endpoint.
 
 ### 1.2 Scale section (fp4 only) — two codings
 
@@ -167,6 +167,7 @@ bytes:
 
 | grid | k | type_size v1 (B/256) | **type_size v2** | index bits (32k) | scale bytes v1 / v2 |
 |---|---|---|---|---|---|
+| fp4 | 1  | 20  | **13**  | 32  | 16 / 9 |
 | fp4 | 12 | 64  | **57**  | 384 | 16 / 9 |
 | fp4 | 13 | 68  | **61**  | 416 | 16 / 9 |
 | fp4 | 14 | 72  | **65**  | 448 | 16 / 9 |
@@ -174,6 +175,7 @@ bytes:
 | fp4 | 18 | 88  | **81**  | 576 | 16 / 9 |
 | fp4 | 20 | 96  | **89**  | 640 | 16 / 9 |
 | fp4 | 24 | 112 | **105** | 768 | 16 / 9 |
+| fp4 | 32 | 144 | **137** | 1024 | 16 / 9 |
 | fp8 | 36 | 144 | —       | 1152 | 0 |
 | fp8 | 40 | 160 | —       | 1280 | 0 |
 | fp8 | 44 | 176 | —       | 1408 | 0 |
@@ -263,7 +265,7 @@ the exact ABI and ship gate are recorded in `MOE_LEARNED_CODEBOOK_SPEC.md`.
 
 | tensor | dtype / shape | meaning |
 |---|---|---|
-| `cb_codebook.<ref>.<fmt>` | fp16 `(2^K, 8)` | `full`/`signed` codebook (`K = k` full, `K = k-8` signed) |
+| `cb_codebook.<ref>.<fmt>` | fp16 `(2^K, 8)` | research `full` codebook (`K = k`) |
 | `cb_codebook.<ref>.<fmt>.sub{i}` | fp16 `(2^b_i, 8/n_sub)` | `product` sub-codebook `i` |
 
 `<ref>` is `lattice` (the deterministic fixed lattice, shipped once per format)
@@ -275,6 +277,21 @@ Codebook values are grid-valued and **exact in fp16** for both grids; the plugin
 may re-pack them to 4-bit (fp4) / 8-bit
 (fp8) codes in `process_weights_after_loading` (a load-time transform of a tiny
 table — not a resident weight expansion, so INV-1 is unaffected).
+
+The public FP4 product ladder needs d4 widths 0..13. The digest-pinned
+`nvfp4_cb_lattices.pt` additionally materializes research widths 14..16, and a
+missing public production key refuses runtime synthesis.
+`fp4-d4-nested-e2m1-v3` constructs widths 0..5
+as nested progressive-farthest subsets of the immutable width-6 table, and
+widths 13..16 as nested prefixes rooted in the exact width-12 table. Existing
+width-6..12 tensor bytes are pinned unchanged. The high master appends a
+deterministic well-distributed permutation of every missing E2M1 d4 vector,
+then deterministic duplicates only after all numeric vectors are present.
+Thus widening either constructed table cannot worsen nearest-codeword
+distortion solely through a non-nested table change. E2M1 has 15 distinct
+numeric values. A direct research K32 pair therefore has two `(65536,4)`
+physical tables (1,048,576 FP16 bytes total), while each width-16 table has
+50,625 distinct numeric rows; neither geometry creates a public K32 format.
 
 ### 3.1 Learned bundle, family scopes, and sidecar identity
 
@@ -379,8 +396,10 @@ For `rows = product(shape[:-1])` and `n_sb = in_features / 256`:
   is the separate fp32 output-row scale tensor);
 - CB global-scale bytes are always zero; no such tensor exists;
 - each product-codebook sidecar is the sum of its FP16 subtable payloads,
-  `Σ_i 2^b_i · (8/n_sub) · 2` bytes; signed mode is
-  `2^(k-8) · 8 · 2` bytes.
+  `Σ_i 2^b_i · (8/n_sub) · 2` bytes. For NVFP4 this is
+  `8·(2^ceil(k/2)+2^floor(k/2))`: 24 bytes at K1 and 98,304 bytes at the
+  public K25 endpoint. The direct research K32 geometry is not accepted by
+  this artifact accountant.
 
 Assignment accounting deduplicates the sidecar by its full serialized identity:
 format, source/sharing policy, physical refs, dtype, and subtable shapes. Both
@@ -483,7 +502,7 @@ codebooks — this is a distinct `quant_method`). Also mirrored into
 }
 ```
 
-`codebook_ref` is a single tensor name (`full`/`signed`) or a list of sub-table
+`codebook_ref` is a single tensor name (research `full`) or a list of sub-table
 names (`product`, ordered sub0..sub{n_sub-1}). Grouping: targets sharing one
 `(codebook_ref, format)` are one config group. Learned dense cells normally
 have distinct refs and therefore distinct groups; canonical lattice cells at
@@ -514,8 +533,6 @@ for each row, each superblock s:
     code = codewords[v]
     if full:    cw = codebook[code]
     if product: cw = concat(sub_cb[i][(code >> off_i) & ((1<<b_i)-1)] for i)
-    if signed:  mag = codebook[code >> 8]; sgn = bit j of (code & 0xFF)
-                cw = mag * (-1 if sgn else +1)            # per coord j
     for coord j in 0..7:
       w_idx  = s*256 + v*8 + j
       if fp4 v1: scale = e4m3(qweight[row, s*type_size + 4k + local_group16])

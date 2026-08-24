@@ -4,7 +4,7 @@ The registry is intentionally a compatibility superset.  This module is the
 campaign boundary that turns that inventory into one narrow artifact contract:
 FP8-CB K4,K8,...,K48 plus dynamic FP8 and BF16, dense Qwen3.8-27B only, with an
 18 GB whole-directory ceiling. Runtime device qualification comes from
-Gridbook v10; compile/CUDA-graph evidence is an independent PrismaQuant gate.
+Gridbook v11; compile/CUDA-graph evidence is an independent PrismaQuant gate.
 """
 from __future__ import annotations
 
@@ -286,7 +286,7 @@ def prepare_rtx4090_export_policy(
         )
     if runtime_contract is None:
         raise RTX4090Qwen38PolicyError(
-            f"{where}: {producer_policy} requires an explicit Gridbook v10 "
+            f"{where}: {producer_policy} requires an explicit Gridbook v11 "
             "runtime contract; the materialized v4 pin cannot qualify SM89"
         )
     contract = load_rtx4090_runtime_contract(
@@ -610,11 +610,11 @@ def rtx4090_route_status_stamp(
     producer_policy: Mapping[str, Any],
     assignment: Mapping[str, str],
 ) -> dict[str, Any]:
-    """Bind strict route status to the supplied v10 device attestation.
+    """Bind strict route status to the supplied v11 device attestation.
 
     The generic CB route gate intentionally resolves the repository's current
     historical serving pin.  That is the wrong authority for this unreleased
-    candidate: strict export is admitted by the external Gridbook v10 contract
+    candidate: strict export is admitted by the external Gridbook v11 contract
     supplied to :func:`prepare_rtx4090_export_policy`.  Preserve the complete
     full-ladder attestation, then bind the selected artifact population beside
     it.  No generic override/non-native/fallback disposition is representable
@@ -678,7 +678,7 @@ def validate_rtx4090_route_status(
     if dict(payload) != expected:
         raise RTX4090Qwen38PolicyError(
             f"{where}: cb_route_status differs from the exact supplied Gridbook "
-            "v10 runtime attestation and selected assignment"
+            "v11 runtime attestation and selected assignment"
         )
     runtime = payload["runtime_attestation"]
     expected_runtime_keys = {
@@ -1231,7 +1231,7 @@ def validate_rtx4090_quant_config_manifest(
                 )
         if runtime_contract is None:
             raise RTX4090Qwen38PolicyError(
-                f"{where}: the Gridbook v10 runtime contract is required to "
+                f"{where}: the Gridbook v11 runtime contract is required to "
                 "verify producer_policy.runtime_attestation"
             )
         runtime_resolver = (

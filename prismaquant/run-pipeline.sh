@@ -2691,7 +2691,7 @@ PY
     fi
     if [[ -z "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:-}" \
        || ! -f "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:-}" ]]; then
-      echo "[pipeline] ERROR: producer policy '${CB_PRODUCER_POLICY}' for target '${CB_TARGET_PLATFORM}' requires GRIDBOOK_PRODUCER_RUNTIME_CONTRACT to name an existing Gridbook v10 contract. The current materialized v4 pin cannot qualify this route." >&2
+      echo "[pipeline] ERROR: producer policy '${CB_PRODUCER_POLICY}' for target '${CB_TARGET_PLATFORM}' requires GRIDBOOK_PRODUCER_RUNTIME_CONTRACT to name an existing Gridbook v11 contract. The current materialized v4 pin cannot qualify this route." >&2
       exit 2
     fi
     CB_EXPORT_ARGS+=(

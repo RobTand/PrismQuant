@@ -285,12 +285,30 @@ def build(source_dir: Path, body_layer_config: Path, out_dir: Path,
 # --------------------------------------------------------------------------- #
 # Auto mode: menu construction, E resolution, selection
 # --------------------------------------------------------------------------- #
-def _expert_family_for_k(k: int) -> str:
-    if 12 <= k <= 24:
-        return "nvfp4_cb"
-    if 28 <= k <= 48:
-        return "fp8_cb"
-    raise ValueError(f"cb_k={k} maps to no known CB family (fp4 12-24, fp8 28-48)")
+def _expert_family_for_k(k: int, *, family: str | None = None) -> str:
+    from prismaquant.cb_layout import FAMILIES
+
+    matches = [
+        cb_family.prefix.removesuffix("_K").lower()
+        for cb_family in FAMILIES
+        if cb_family.is_producer_rung(k)
+    ]
+    if family is not None:
+        requested = str(family).strip().lower()
+        if requested not in matches:
+            raise ValueError(
+                f"cb_k={k} is not a producer rung of {requested!r}; "
+                f"eligible families are {matches}"
+            )
+        return requested
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(f"cb_k={k} maps to no producer-eligible CB family")
+    raise ValueError(
+        f"cb_k={k} is ambiguous across producer CB families {matches}; "
+        "pass family='nvfp4_cb' or family='fp8_cb'"
+    )
 
 
 def _expert_shape_bytes(source_dir: Path, shard_map: dict, base: str):

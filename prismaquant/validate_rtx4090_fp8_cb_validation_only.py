@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Structural validator for unreleasable GB10-built RTX4090 FP8-CB artifacts.
 
-This command consumes Gridbook v10 ``compile_only`` SM89 cells.  It validates
+This command consumes Gridbook v11 ``compile_only`` SM89 cells.  It validates
 the same FP8-only wire layout, source census, finalized tensor census, and
 content ledgers as the strict producer, but it can never emit serving or ship
 evidence and its immutable policy stamp is rejected by all release tooling.
@@ -53,7 +53,7 @@ def validate_rtx4090_validation_only_artifact(
             "artifact is not immutably stamped UNRELEASABLE_VALIDATION_ONLY"
         )
     contract = load_rtx4090_runtime_contract(
-        runtime_contract, where="validation-only Gridbook v10 contract"
+        runtime_contract, where="validation-only Gridbook v11 contract"
     )
     try:
         validate_qwen38_dense_config(

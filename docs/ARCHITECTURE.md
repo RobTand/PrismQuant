@@ -37,7 +37,7 @@ manifest/shipcard replay require the same pin. No candidate vLLM pin is supplied
 immutable image digest alone cannot qualify the lane. The last pre-vLLM operation inside the
 serving container scans every individually read-only-bound safetensors shard once and writes a
 stat-bound no-clobber receipt; post-serve census and endpoint/shipcard replay reuse it without a
-second weight-payload pass (`tools/serve_fingerprint.py`). Gridbook contract v10
+second weight-payload pass (`tools/serve_fingerprint.py`). Gridbook contract v11
 separates reader `rungs` from `producer_rungs` and adds closed-world
 `gridbook.lane-eligibility.v2`; a candidate runtime must device-qualify exact sm89 dense decode
 and batch routes for the **entire twelve-rung producer ladder**, even if one artifact selects a
@@ -49,7 +49,7 @@ artifact on exactly one DGX Spark GB10 through the ordinary GPU-bound pipeline, 
 `validate_rtx4090_fp8_cb_validation_only.py`. Shipcard verification, publication (including
 force flags), and the physical strict validator categorically refuse that identity. The
 production profile and its device-qualified resolver are unchanged: no physical RTX 4090
-correctness, graph, memory, or performance gate has run, no v10 Gridbook release is claimed or
+correctness, graph, memory, or performance gate has run, no v11 Gridbook release is claimed or
 pinned, and strict release remains fail-closed. The final
 integration commit is deliberately not predicted in this provenance stamp. Previously
 re-stamped (2026-08-23,
@@ -870,7 +870,7 @@ by measurement, not by the cost model (§2).
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
 | Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | NVFP4, FP8_DYNAMIC/E4M3, FP8_SOURCE, BF16 | production default |
-| CB ("gridbook") | historical mixed `nvfp4_cb`, or strict FP8-only `fp8_cb` checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | Historical FP4-CB plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. The strict Ada profile is lattice-only, sets `CB_ACTIVATION_SCOPE=none`, and adds only delegated `FP8_E4M3` and BF16 | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. `qwen38_rtx4090_fp8_cb` is an opt-in candidate and refuses until an external v10 release publishes device-qualified exact-sm89 dense decode+batch cells for all twelve producer rungs and a physical 4090 closes the graph/device gate. `qwen38_rtx4090_fp8_cb_validation_only` consumes exact compile-only cells solely to build/structurally validate an explicitly unreleasable artifact on GB10 |
+| CB ("gridbook") | historical mixed `nvfp4_cb`, or strict FP8-only `fp8_cb` checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. An attested sm120 target may register NVFP4 and FP8, after which AQUA chooses among those activation contracts without a manual family preference. The strict Ada profile is lattice-only, sets `CB_ACTIVATION_SCOPE=none`, and adds only delegated `FP8_E4M3` and BF16 | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. `qwen38_rtx4090_fp8_cb` is an opt-in candidate and refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells for all twelve producer rungs and a physical 4090 closes the graph/device gate. `qwen38_rtx4090_fp8_cb_validation_only` consumes exact compile-only cells solely to build/structurally validate an explicitly unreleasable artifact on GB10 |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
 
 Lane detail, defaults and proven results: §9. Export codecs: §6. Pipeline defaults: §3.3.
@@ -1176,7 +1176,7 @@ which is what the rows touched since are keyed on.
 | **4/4 E-gguf** | GGUF skeleton + export + llama.cpp smoke | `convert_hf_to_gguf.py` (`1461-1464`), `prismaquant.export_gguf` (`1469-1493`), `llama-completion` (`1500-1516`) | `artifacts/skeleton.gguf`, `exported.gguf` | settings-hash `gguf-skeleton` (`1488`); export always runs | GGUF lane; **exits 0** |
 | **4/4 E-cb** | CB col-weights + codebook export | `harvest_cb_col_weights "[4/4]"`, `export_nvfp4_cb[_streaming]` | `exported_nvfp4_cb/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`) + `.pqcb` codebook sidecar | settings-hash `cb-col-weights`; export always runs | CB lane; no in-lane serving smoke; **exits 0** |
 | **RTX4090 strict build (operator campaign)** | Run the ordinary per-Linear pipeline under the dense Qwen3.8 context-first policy, prove the exact 1,199-tensor/615-Linear source census, then replay config ownership and finalized artifact headers/sidecar before publication | `scripts/run_qwen38_rtx4090_fp8_cb_18gb.sh` → `run-pipeline.sh` + `rtx4090_qwen38_policy` + `rtx4090_artifact_census` | strict top-level `format: fp8_cb` lattice artifact, exact policy/runtime-contract/source-identity stamps, complete tensor-format assignment, and strict `rtx4090.fp8_cb` shipcard slot | no special cache: streamed AURA, the existing activation cache, probe-derived full-corpus imatrix, `ProductionWeightCache`, prefetch, allocator, and CB exporter remain authoritative and identity-bound | opt-in `TARGET_PROFILE=qwen38_rtx4090_fp8_cb`; exact menu FP8-CB K4..K48 step 4 + `FP8_E4M3` + BF16, `CB_CODEBOOK_SOURCE_SCOPE=none`, `CB_ACTIVATION_SCOPE=none`, fixed BF16 `lm_head`/MTP, and a non-forceable complete-publication ceiling of 18,000,000,000 bytes; currently refuses because the available sm89 lane-v2 rows are compile-only |
-| **RTX4090 validation-only GB10 build** | Exercise the exact strict serializer, source/artifact census, top-level `fp8_cb` manifest, and complete FP8-only assignment under Gridbook v10 compile-only SM89 structural cells | `scripts/run_qwen38_rtx4090_fp8_cb_validation_only_gb10.sh` → the same launcher/pipeline with `RTX4090_BUILD_DISPOSITION=validation_only` → `validate_rtx4090_fp8_cb_validation_only` | artifact stamped `UNRELEASABLE_VALIDATION_ONLY`, `runtime_qualification_ceiling=compile_only`, `build_host=dgx_spark_gb10`; no serving receipt | exactly the strict build's streamed AURA, activation cache, imatrix, `ProductionWeightCache`, required resident prefetch, allocator, and CB exporter; no parallel cache | launcher requires one visible GB10 at CC 12.1; assignments/config groups/tensor formats admit only FP8-CB K4..K48 step 4, delegated `FP8_E4M3`, and BF16. Shipcard, publisher, and strict RTX4090 validator always refuse it regardless of filled slots or force flags |
+| **RTX4090 validation-only GB10 build** | Exercise the exact strict serializer, source/artifact census, top-level `fp8_cb` manifest, and complete FP8-only assignment under Gridbook v11 compile-only SM89 structural cells | `scripts/run_qwen38_rtx4090_fp8_cb_validation_only_gb10.sh` → the same launcher/pipeline with `RTX4090_BUILD_DISPOSITION=validation_only` → `validate_rtx4090_fp8_cb_validation_only` | artifact stamped `UNRELEASABLE_VALIDATION_ONLY`, `runtime_qualification_ceiling=compile_only`, `build_host=dgx_spark_gb10`; no serving receipt | exactly the strict build's streamed AURA, activation cache, imatrix, `ProductionWeightCache`, required resident prefetch, allocator, and CB exporter; no parallel cache | launcher requires one visible GB10 at CC 12.1; assignments/config groups/tensor formats admit only FP8-CB K4..K48 step 4, delegated `FP8_E4M3`, and BF16. Shipcard, publisher, and strict RTX4090 validator always refuse it regardless of filled slots or force flags |
 | **RTX4090 validation-only direct export** | Consume a completed allocator assignment plus its exact value-bound column weights and original source; rerender only selected FP8-CB units, copy required source/BF16 tensors, then structurally validate | `scripts/export_qwen38_rtx4090_fp8_cb_validation_only.sh` → `prismaquant.rtx4090_validation_export` → existing `export_nvfp4_cb_streaming` → `validate_rtx4090_fp8_cb_validation_only` | the same top-level `fp8_cb`, `UNRELEASABLE_VALIDATION_ONLY` artifact; no retained-menu cache or serving receipt | no cache build: exporter streams the source and invokes the existing weighted renderer only for the selected assignment; `cb_render_identity` binds the exact supplied col-weights values and complete decoded-source identity | requires the allocator's assignment-bound whole-artifact budget stamp at a positive ceiling no greater than 18,000,000,000 bytes; refuses source namespace exclusions and every non-policy/NVFP4 format. It never calls `run-pipeline.sh`, and release/graph gates remain unchanged |
 | **4/4 E** | compressed-tensors export (§6) | `prismaquant.export_native_compressed` (`1665-1699`) | `exported/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`); `logs/export.log` | **none — always runs** | default lane |
 
@@ -2270,8 +2270,12 @@ experts at all. Instead each cell carries `held_out_axes` (`["unit","rung"]` or
 A pooled statistic cannot distinguish a fit validated off the panel from one validated
 only on it; that is the difference the split makes visible.
 
-Current tables. Dense: NVFP4-CB at K12/K15/K21/K24 (the extremes *and* two interior rungs,
-so the report separates worst-case extrapolation from typical) and FP8-CB at K32/K44,
+Current tables. Dense campaign v2: NVFP4-CB panel K1/K2/K11/K12/K23/K24/K25,
+with validation at K3/K10/K14/K22 and K25 on held-out units. Its shape basis is
+`(rung, parity, below-K12 hinge, above-K24 shoulder)`, so the historical
+K12..K24 line is not silently extrapolated to either endpoint. K25 is the only
+public rung above K24, so its term is a measured one-point shoulder, not a
+claimed high-band slope. FP8-CB remains at K32/K44,
 straddling the anchor; FP8-CB gives up a panel rung to afford them, since only six of its
 rungs are on-law. DSv4: NVFP4-CB at **K13/K17** — it previously had **no** validation at
 all, leaving 233,275 of 334,454 legal DP cells (**69.7%**) priced by a fit nothing
@@ -2802,7 +2806,7 @@ pricing and emulation. Registry-vs-callable consistency is pinned by
 | `MXFP8_E4M3` | `:720-728` | 8 / 32 / e8m0 | 8.25 | Registered, profile-allowed, **de-menued** |
 | `NVFP4A16`, `MXFP4`, `MXFP6_E3M2/E2M3`, `MXFP8A16`, `MXFP8_E5M2`, `FP8_E5M2`, `INT8_W8A16`, `INT4_W4A16_g128` | `:678-795` | — | — | Research / registry-only |
 | GGUF k-quants + IQ | `:884-902` | `_make_gguf_spec :864` | 2.0625–8.5 | GGUF lane (§9.3) |
-| `NVFP4_CB_K12..K24`; FP8-CB reader K4/K8/K12/K16/K20/K24 + every K28..K48; FP8-CB producer K4..K48 step 4 | `cb_layout.py`, registry construction in `format_registry.py` | product-VQ codebook, g256 | FP8 index stream `k/8` bpp plus per-row FP32 scales and deduplicated codebook sidecar | Historical mixed Gridbook menu remains readable. New FP8-CB producers emit exactly K4/K8/K12/K16/K20/K24/K28/K32/K36/K40/K44/K48; reader-only off-law K29–K47 artifacts remain inspectable but cannot enter a new menu, assignment, bundle, or export. Strict Ada profile allows only this FP8 ladder + `FP8_E4M3` + BF16 (§9.2) |
+| `NVFP4_CB_K1..K25`; FP8-CB reader K4/K8/K12/K16/K20/K24 + every K28..K48; FP8-CB producer K4..K48 step 4 | `cb_layout.py`, registry construction in `format_registry.py` | product-VQ codebook, g256 | NVFP4 v2 body `k/8 + 0.28125` bpw; FP8 index stream `k/8` bpw plus per-row FP32 scales; both add a deduplicated codebook sidecar | NVFP4 reader/producer domains are both every integer K1..K25; K26..K32 exist only in direct lattice/codec research and have no public format id. New endpoint artifacts remain Gridbook-v11 route-attestation and measurement gated. New FP8-CB producers emit exactly K4/K8/K12/K16/K20/K24/K28/K32/K36/K40/K44/K48; reader-only off-law K29–K47 artifacts remain inspectable but cannot enter a new menu, assignment, bundle, or export. Strict Ada profile allows only this FP8 ladder + `FP8_E4M3` + BF16 (§9.2) |
 | ~~`NVFP4_CB_S13..S16`~~ | — | signed codebook, g256 | — | **DELETED 2026-08-17** — every native Gridbook FP4 route requires the unsigned two-tier product layout (`n_sub == 2 and type_size == 4*k + 9`), so a signed rung could only ever ride a fallback; it had already lost 78.48% of matched weight-MSE comparisons. Registry, encoder, exporter and footprint branches removed; `cb_layout.subtable_bit_widths(..., "signed", ...)` and a recipe carrying `cb_mode: "signed"` now **refuse** rather than resolve to the product rung of the same `k` (§9.2) |
 
 MXFP8 is de-menued rather than denied — `vllm_packed_moe` still allows `MXFP8_E4M3` — because
@@ -2818,6 +2822,20 @@ FP8 per-row FP32 scales, and deduplicated sidecar identity. Candidate
 construction, assignment accounting, reports, and exporter assertions share
 that context; exact post-export inventory remains the final artifact check.
 
+NVFP4 endpoint geometry is explicit rather than inferred. K1 splits `(1,0)`
+and carries a one-row zero-bit second subtable; public K25 splits `(13,12)`.
+Production v2 type sizes are 13 and 109 bytes per superblock respectively. The
+FP16 sidecar is `8·(2^ceil(k/2)+2^floor(k/2))` bytes: 24 bytes at K1 and
+98,304 bytes at K25. Every d4 width 0..16 is materialized in the pinned asset,
+but widths 14..16 and the direct `(16,16)` uint32 codec boundary are explicitly
+research-only; public production lookup K1..K25 refuses a missing key.
+Historical width-6..12 tensors remain unchanged;
+`fp4-d4-nested-e2m1-v3` makes widths 0..5 nested subsets of width 6 and widths
+13..16 nested supersets of width 12, so widening the new bands cannot worsen
+nearest-codeword distortion solely through table replacement. Width 16
+necessarily has duplicate physical rows because the 15-value E2M1 grid
+contains only 15^4 distinct d4 vectors.
+
 The FP8 reader/producer split is deliberate compatibility, not rounding. The
 reader accepts the six low step-four rungs K4..K24 and every historical integer
 rung K28..K48. `list_producer_formats()` and every strict explicit-menu check
@@ -2825,7 +2843,7 @@ accept only the twelve `k % 4 == 0` rungs from K4 through K48; K29, K43, K47,
 and every other off-law legacy wire id remain readable but are never silently
 mapped to a neighboring rung. `FormatSpec.min_capability_sm=89` says the format
 can be considered on Ada; production legality still requires the exact
-platform/regime `device_qualified` cell from the external Gridbook v10
+platform/regime `device_qualified` cell from the external Gridbook v11
 lane-eligibility contract (§9.2), so registry admission alone makes no 4090
 support claim (`cb_layout.py`, `gridbook_format_contract.py`,
 `gridbook_execution_contract.py`).
@@ -3649,7 +3667,7 @@ re-render, it is the render the gate declined to keep.
 | Artifact survey (PPL/MMLU/end-KL) | `validation_harness.py` | no | **no thresholds at all** |
 | vLLM load + greedy smoke | `validate_native_export.py` | **echoed only** (`run-pipeline.sh:1704-1705`) | binary |
 | DSv4 CB exact eager + CUDA-graph load/generation | `scripts/serve_dsv4_cb_validate.sh {eager,graph}` → `validate_cb_endpoint.py` | no — operator-run, one fresh container per arm | **binary; each arm closes its matching `native_export.*` slot; eager also runs the independently recorded numeric gate before teardown** |
-| Strict Qwen3.8 RTX 4090 FP8-CB eager + mandatory full-graph proof | `SERVE_ARM=eager|graph scripts/serve_qwen38_rtx4090_fp8_cb.sh` → `validate_rtx4090_fp8_cb.py` + `rtx4090_graph_contract.py` | no — operator-run on one physical RTX 4090 per fresh arm | **blocking for an on-disk strict artifact: exact RTX 4090/sm89, 32K, seq=1, FP8 KV exactly 4 GiB, immutable released Gridbook v10/device-qualified lane-v2 receipt, deterministic generation, and graph mode 3 + explicit Inductor + `FULL_AND_PIECEWISE` captures `[1,2,4,8,16,32,64]` with `fullgraph=True,dynamic=False` and no fallback. Graph fills `native_export.graph` and `rtx4090.fp8_cb`; eager fills `native_export.eager`. No physical run exists yet.** |
+| Strict Qwen3.8 RTX 4090 FP8-CB eager + mandatory full-graph proof | `SERVE_ARM=eager|graph scripts/serve_qwen38_rtx4090_fp8_cb.sh` → `validate_rtx4090_fp8_cb.py` + `rtx4090_graph_contract.py` | no — operator-run on one physical RTX 4090 per fresh arm | **blocking for an on-disk strict artifact: exact RTX 4090/sm89, 32K, seq=1, FP8 KV exactly 4 GiB, immutable released Gridbook v11/device-qualified lane-v2 receipt, deterministic generation, and graph mode 3 + explicit Inductor + `FULL_AND_PIECEWISE` captures `[1,2,4,8,16,32,64]` with `fullgraph=True,dynamic=False` and no fallback. Graph fills `native_export.graph` and `rtx4090.fp8_cb`; eager fills `native_export.eager`. No physical run exists yet.** |
 | Numeric ship gate | `validate_quantized_model.py` | never by the build pipeline; the DSv4 CB eager serve driver invokes it against its already-bound live session | yes, exit 0/1; closes `ship_gate` |
 | Gold lane | `tools/measure_vllm_full_kl.py`, `tools/measure_vllm_wikitext_ppl.py` | never | manual, authoritative |
 | DSv4 CB matched-budget performance | `python -m prismaquant.validate_cb_performance` | no — operator-run after export | **blocking paired prefill/decode/mixed parity against the exact displaced container** |
@@ -4050,7 +4068,7 @@ A completed allocation can bypass the stock retained-format-menu workflow via
 `rtx4090_validation_export.py`. Its preflight replays the exact assignment-bound
 whole-artifact budget, requires a value-bearing/source-complete
 `cb_render_identity`, hashes the supplied column-weight values through the
-existing render-identity validator, and consumes the same compile-only v10
+existing render-identity validator, and consumes the same compile-only v11
 policy. It then constructs exactly one `export_nvfp4_cb_streaming` invocation
 with lattice/v1/no-activation settings and the validation-only producer policy.
 The exporter streams the source and rerenders only selected FP8-CB assignment
@@ -5254,7 +5272,7 @@ Spark-proven target, and the physically unqualified RTX 4090 candidate.
 flowchart LR
   subgraph CONT["artifact containers"]
     A1["compressed-tensors<br/>NVFP4 / FP8_DYNAMIC / FP8_SOURCE / BF16<br/>export_native_compressed.py"]
-    A2["codebook (CB)<br/>historical mixed nvfp4_cb reader<br/>FP8 reader: K4/K8/K12/K16/K20/K24 + every K28..K48<br/>new FP8 producer: K4..K48 step 4<br/>strict Ada fp8_cb: lattice FP8-CB + FP8_E4M3 + BF16 only<br/>CB_ACTIVATION_SCOPE=none"]
+    A2["codebook (CB)<br/>NVFP4 reader/producer: K1..K25 (new bands contract-gated)<br/>K26..K32: direct codec/lattice research only<br/>FP8 reader: K4/K8/K12/K16/K20/K24 + every K28..K48<br/>new FP8 producer: K4..K48 step 4<br/>strict Ada fp8_cb: lattice FP8-CB + FP8_E4M3 + BF16 only<br/>CB_ACTIVATION_SCOPE=none"]
     A3["GGUF<br/>Q2_K..Q8_0 + IQ family<br/>export_gguf.py"]
   end
 
@@ -5278,7 +5296,7 @@ flowchart LR
 
   R1 -->|"Spark-proven -- shipped rdtand artifacts"| H1
   R2 -->|"Spark-proven -- 295B-class at ~2.9 bpp on ONE Spark"| H1
-  R2 -.->|"v10 sm89 routes are compile_only; strict export refuses"| H3
+  R2 -.->|"v11 sm89 routes are compile_only; strict export refuses"| H3
   R3 -->|"Spark-proven -- 295B-class at 2.8 bpp; the KL harness for this lane"| H1
   R4 -->|"smoke-verified on the 0.19.2 venv only, never KL-measured"| H1
 
@@ -5525,13 +5543,13 @@ alias or loader table. Its producer codec remains an intentionally independent i
 the artifact ABI; CI
 compares every packing/layout field and every rung so incompatibility fails at the boundary.
 
-**Candidate contract v10 and the strict sm89 lane (implemented, not pinned or
-released).** V10 makes the reader/producer distinction explicit instead of
+**Candidate contract v11 and the strict sm89 lane (implemented, not pinned or
+released).** V11 makes the reader/producer distinction explicit instead of
 overloading one rung range. For FP8-CB, `formats[].rungs` is the reader domain
 K4/K8/K12/K16/K20/K24 plus every K28..K48, while
 `formats[].producer_rungs` is exactly K4..K48 step 4. PrismaQuant validates
 that external object with `gridbook_format_contract.py`; no local range is
-treated as evidence about a Gridbook runtime. V10 also carries
+treated as evidence about a Gridbook runtime. V11 also carries
 `gridbook.lane-eligibility.v2`, a closed-world table keyed by exact platform,
 family, structure, regime, and rung. The strict dense Ada producer asks
 `gridbook_execution_contract.require_device_qualified_gridbook_routes` for
@@ -5542,12 +5560,19 @@ intentionally **not** folded into that Gridbook table: the vLLM
 `fullgraph=True,dynamic=False` and mode-3 `FULL_AND_PIECEWISE` proof is external
 endpoint evidence under §7.
 
-The current v10 implementation's sm89 dense FP8-CB decode/batch rows cover all
+For NVFP4-CB, a compatible v11 contract must declare both `rungs` and
+`producer_rungs` as every integer K1..K25; every lane cell must be a subset.
+K26..K32 have no public contract identity. Released Gridbook 0.8.11/v4 remains
+a historical reader input and cannot attest this producer expansion. Therefore
+the wider local registry is scaffolding only until the exact external pin also
+publishes those rungs and device-qualifies the requested structure/regime cells.
+
+The current v11 implementation's sm89 dense FP8-CB decode/batch rows cover all
 twelve producer rungs but carry qualification `compile_only`. A no-device
 cross-compile produced explicit sm89 SASS and checked the extension/vLLM ABI;
 it did not execute a kernel or graph and therefore does not advance those rows
 to `device_qualified`. The tracked PrismaQuant producer/serving pin remains the
-released Gridbook 0.8.11/v4 record described above. No v10 release, wheel, or
+released Gridbook 0.8.11/v4 record described above. No v11 release, wheel, or
 pin advance is claimed here, and `qwen38_rtx4090_fp8_cb` remains structurally
 unable to export until an immutable external release plus physical RTX 4090
 evidence closes that boundary. Evidence and hashes:
@@ -5555,7 +5580,7 @@ evidence closes that boundary. Evidence and hashes:
 
 Qualification is family-wide at this boundary: artifact assignments may use
 any legal rung subset, but `require_rtx4090_runtime_contract` always requests
-all twelve producer rungs in both regimes. The candidate v10 changes neither
+all twelve producer rungs in both regimes. The candidate v11 changes neither
 the packaged tensor-parallel nor expert-parallel subtree from Gridbook 0.9.0,
 and its dense FP8 dispatch changes do not bypass their existing loader/runtime
 enforcement.
@@ -5626,8 +5651,8 @@ on a hardware grid, so a decoded tile *is* a bit-standard NVFP4/FP8 tensor and d
 is a gather rather than arithmetic. A weight vector is d=8 wide; a k-bit index selects a
 codeword; 32 codewords plus scales form a 256-weight superblock (external Gridbook
 `gridbook/codec.py`). Two
-ladders with different compatibility domains: historical `NVFP4_CB_K12–K24`
-(E2M1 grid, 1.78125–3.28125 serialized body bpw under production layout v2),
+ladders with different compatibility domains: `NVFP4_CB_K1–K25`
+(E2M1 grid, 0.40625–3.40625 serialized body bpw under production layout v2),
 and FP8-CB (E4M3) whose **reader** accepts K4/K8/K12/K16/K20/K24 plus every
 integer K28–K48, while a **new producer** may emit only
 K4/K8/K12/K16/K20/K24/K28/K32/K36/K40/K44/K48 —
@@ -5668,7 +5693,7 @@ after README/evidence/shipcard authoring. At most exactly 18,000,000,000 bytes
 of regular files may ship, rather than merely a modeled weight payload
 (`rtx4090_qwen38_policy.py`, `validate_rtx4090_fp8_cb.py`,
 `tools/publish_artifact.py`). This is an implemented, opt-in producer policy,
-not evidence that the candidate Gridbook v10 runtime has been released or that
+not evidence that the candidate Gridbook v11 runtime has been released or that
 the artifact has passed a physical RTX 4090 gate. Final provenance is
 value-closed as well as name-closed: `render_identity_verified` must be bool
 true; the shared source-complete render validator binds the canonical imatrix;
@@ -5677,7 +5702,7 @@ strict tensor-payload ledger replays its aggregate over the exact finalized
 header census; and the full weight-content manifest and producer Git identity
 bind to the on-disk containers and an exact clean (`dirty: false`) shipcard
 build record. Strict `cb_route_status` is a
-separate candidate-v10/sm89 record derived exactly from
+separate candidate-v11/sm89 record derived exactly from
 `producer_policy.runtime_attestation`, never the historical generic serving
 pin or an override/fallback disposition. Its shipcard summary therefore states
 device-qualified/backed decode+batch evidence explicitly instead of projecting
@@ -5995,12 +6020,12 @@ the DSv4 body/MTP/DSpark loader and routed per-role ABI consumed by this produce
 not retroactively promote the 92 GB study: the current 112.690 GB AURA artifact must still close
 the exact eager/graph, quality, and paired whole-model served native-parity shipcard gates.
 
-#### 9.2.1 Tracked v4 route status and candidate v10 lane-v2 (R3)
+#### 9.2.1 Tracked v4 route status and candidate v11 lane-v2 (R3)
 
 Principle 9 requires route status in a **structured** field a gate can read, and principle 14
 requires that field to be derived from a table the pinned runtime publishes, or refused. Both
 apply to this lane. The tracked released Gridbook 0.8.11/v4 contract publishes no eligibility
-table, so its honest answer remains `unattested`. The unreleased candidate v10 contract is a
+table, so its honest answer remains `unattested`. The unreleased candidate v11 contract is a
 separate path: its closed-world lane-v2 table is accepted structurally, but the current sm89
 cells are only `compile_only`. Neither state is physical RTX 4090 qualification, and one may not
 be used to upgrade the other.
@@ -6225,9 +6250,13 @@ reading e4m3 and Strix bf16. The HIP kernels are therefore **dtype-agnostic at m
 the LDS LUT is always filled as bf16 and any e4m3→bf16 conversion happens **once at fill time,
 never per gather** (the ALU term R6 removed on Blackwell stays removed), pinned by a test that
 asserts a bf16 sidecar is **bit-identical** to the e4m3 one. The cost is LDS footprint —
-a materialised LUT is 2 B/element, so K48 and NVFP4_CB K24 need the full 64 KiB. Those still
-*fit* here, because A and B are register-resident and the LUT is the only LDS consumer; the top
-rungs use the global-gather arm because it is measurably faster, not because the LUT overflows.
+a materialised LUT is 2 B/element, so K48 and NVFP4_CB K24 need the full 64 KiB. Public NVFP4 K25
+exceeds that old whole-codebook LDS envelope and therefore requires an attested
+global/partitioned lookup route; the registry expansion does not claim the historical LDS kernel
+covers it. Research-only K26..K32 (K32 is 1 MiB across its two subtables) are unsupported public
+formats. K24 and below still *fit* here because A and B are
+register-resident and the LUT is the only LDS consumer; the top historical rungs use the
+global-gather arm because it is measurably faster, not because the LUT overflows.
 `iu8`/`iu4` WMMA are present, and measured on this box at **1.56× bf16 LDS-fed but only 1.06×
 register-resident** (iu8) and 2.86× (iu4) — iu8's gain is halved LDS traffic, not faster math,
 which buys little in a GEMM whose operands are already in registers. Both need integer

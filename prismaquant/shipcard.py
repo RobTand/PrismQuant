@@ -1364,7 +1364,7 @@ def build_shipcard(
             if route_status.get("schema") == (
                 "prismaquant.rtx4090_fp8_cb_route_status.v1"
             ):
-                # Strict Ada evidence comes from the supplied candidate-v10
+                # Strict Ada evidence comes from the supplied candidate-v11
                 # contract, not the historical generic serving-pin gate.  Its
                 # compact row must not be projected through the v1 generic
                 # summary, which would emit misleading None fields.

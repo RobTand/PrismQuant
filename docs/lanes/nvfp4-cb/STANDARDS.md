@@ -5,7 +5,9 @@ and format standards"); runtime boundary updated 2026-08-02 for Gridbook
 0.7.0, refreshed 2026-08-12 for released Gridbook 0.8.5, and re-pointed
 2026-08-21 to released Gridbook 0.8.11 when the producer pin advanced. The
 strict Ada candidate boundary was refreshed 2026-08-24 without promoting the
-tracked runtime. This page is the contract production runs build against.
+tracked runtime. The NVFP4 producer scaffold was expanded the same day to
+K1..K25; widths above the public ceiling remain direct-codec/kernel research
+only. This page is the contract production runs build against.
 Changes to it require a served A/B, not a preference.
 
 The separately versioned, exact-commit-pinned Gridbook runtime follows this
@@ -21,7 +23,7 @@ repository does not duplicate those tables.
 
 | Family | Rungs | Rate | Scale coding | Mode |
 |---|---|---|---|---|
-| NVFP4_CB (fp4 grid) | K12–K24, EVERY integer | 1.78125–3.28125 bpw serialized body | two-tier v2 (E8M0 super + 4-bit sub codes, 0.28125 bpw) | product, ceil-first uneven splits |
+| NVFP4_CB (fp4 grid) | K1–K25, EVERY integer | 0.40625–3.40625 bpw serialized body | two-tier v2 (E8M0 super + 4-bit sub codes, 0.28125 bpw) | product, ceil-first uneven splits |
 | FP8_CB (e4m3 grid) | producer: K4–K48 in steps of 4; reader: every K28–K48 plus the low producer rungs | 0.5–6.0 index bpw + `32/in_features` scale bpw | per-output-row fp32 tensor | product, ceil-first uneven splits |
 | NVFP4 (vanilla) | — | 4.5 bpw | group-16 E4M3 | menu member; Blackwell-only serving |
 | FP8_DYNAMIC | — | 8 bpw | per-channel | menu member |
@@ -29,18 +31,29 @@ repository does not duplicate those tables.
 
 - Codeword layout: 32 k-bit codewords per 256-weight superblock, LSB-first;
   sub-index bit split is **ceil-first** (`_bit_split`), sub-0 at the LSBs.
-  Encoder-anchored tests pin this; it is frozen.
+  K1 is `(1,0)`, with a one-row zero-bit second subtable; the public K25
+  endpoint is `(13,12)`. A direct research-only K32 codec test pins `(16,16)`
+  and an all-ones uint32 word, but K32 has no public format id.
+- Canonical FP4 d4 lattices at widths 0..16 are versioned by
+  `STRUCTURED_FP4_D4_LATTICE_VERSION`. Historical width-6..12 tables continue
+  to resolve from the digest-pinned asset byte-for-byte. The materialized
+  low-width tables are nested subsets of width 6; the materialized high-width
+  tables are nested supersets of width 12. Production K1..K25 lookup is
+  asset-only and refuses a missing key. Widths 14..16 remain explicitly
+  research-only. Width 16 has 65,536 rows but 50,625 distinct numeric vectors
+  because E2M1 has 15 numeric values.
 - fp4 scale coding v1 (bare E4M3 plane) is legacy-compat only: readable,
   never produced by new exports.
-- **Signed S-rungs (S13–S16): CLOSED as research-only (measured,
+- **Signed S-rungs (S13–S16): DELETED after measured NO-GO
+  (measured,
   2026-07-22).** The K-vs-S head-to-head on Qwen3.5-0.8B (matched-rate menu,
   776 per-(Linear,k) direct cost comparisons): K wins 609/776 (78.48%), median S penalty
   +0.5–2.2%, allocator placed 6 S-units vs 147 K-units (only linear-attn
   in_proj_a/b/qkv/z ever preferred S). Serving propriety PROVEN: the signed
   chain (encoder → export → vLLM load → decode) is bit-exact on the real
   artifact (max |serve − reconstruct| = 0) plus the 18-test GPU battery.
-  S-rungs stay OFF production menus — correct but not worth menu space; the
-  spec keeps them for exotic weight geometries. Reproduction and immutable
+  S-rungs stay OFF production menus and were deleted from the producer format
+  vocabulary; no exotic-weight exception remains. Reproduction and immutable
   artifact identities: `../../results/qwen35_0p8b_s_rung_headtohead_2026-07-22.md`.
   Full mode: spec-reserved, unimplemented.
 - MTP sidecars: CB-quantized, rung by the canon throughput selector
@@ -50,11 +63,25 @@ repository does not duplicate those tables.
   Blackwell (GB10 sm_121 / RTX 5090 sm_120). The separate strict
   `qwen38_rtx4090_fp8_cb` campaign removes both NVFP4 families and is closed
   to lattice FP8-CB (`CB_ACTIVATION_SCOPE=none`) plus delegated FP8/BF16. It
-  remains closed until an exact `sm_89` Gridbook v10 contract device-qualifies
+  remains closed until an exact `sm_89` Gridbook v11 contract device-qualifies
   dense decode and batch for **all twelve** K4..K48 step-4 producer rungs and a
   physical RTX 4090 receipt proves 7/7 FULL plus 7/7 PIECEWISE capture. The
   available explicit-sm89 SASS evidence is `compile_only`, not a device claim;
   Gridbook 0.9.0 TP/EP behavior remains preserved.
+
+Target registration, not a hand-written family preference, controls AQUA's
+choice. SM89/RTX40 registers no NVFP4 or NVFP4-CB activation contract and is
+FP8-only. An exact attested sm120 target may register both NVFP4 K1..K25 and
+FP8; AQUA then compares the registered candidates in its normal currency. It
+must not bias one family manually, and K26..K32 are never registered.
+
+The widened NVFP4 registry is producer scaffolding, not a runtime claim. A
+new artifact using K1..K11 or K25 requires a Gridbook v11 contract whose
+NVFP4 `rungs` and `producer_rungs` both attest K1..K25, plus device-qualified
+route cells for the target structure and regime. K26..K32 are unsupported and
+must not appear in a contract cell. Released Gridbook 0.8.11/v4
+cannot provide producer-rung attestation, so release tooling must fail closed
+until the external pin advances.
 
 ## Runtime/kernel standard (owned by Gridbook)
 
@@ -129,3 +156,9 @@ gates to pass, followed by advancing the immutable external pin.
   back to full per-rung measurement. The gate is the contract; the laws
   are only ever proposals under it. (Measured on the 27B full-menu run:
   3.2% of tensors fall back.)
+- The old dense K12..K24 rung/parity interpolation is not endpoint evidence.
+  The widened dense campaign schema uses a below-K12 hinge and an above-K24
+  endpoint shoulder, measures K1/K25 in its panel, and validates K25 transfer
+  on held-out units. Because K25 is the only public rung above K24, this is not
+  described as a fitted high-band slope. No cost payload produced under the
+  former campaign schema may be restamped or extrapolated onto K1..K11 or K25.

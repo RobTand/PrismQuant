@@ -241,7 +241,11 @@ def test_serving_backed_restriction_refuses_an_unbacked_family():
     # restricting that family empties it. An empty menu is an error, never a
     # silent truncation.
     qname = "model.layers.0.self_attn.q_proj"
-    nvfp4_cb_formats = tuple(f"NVFP4_CB_K{k}" for k in range(12, 25))
+    from prismaquant.cb_layout import NVFP4_PRODUCT_RUNGS
+
+    nvfp4_cb_formats = tuple(
+        f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS
+    )
     with pytest.raises(ValueError, match="backs no fused mid-M rung"):
         build_source_class_format_plan(
             {qname: _stats((4096, 4096))},

@@ -501,7 +501,7 @@ def validate_candidate_runtime_pin(
     schema = runtime_contract.get("schema")
     abi = runtime_contract.get("abi_features")
     if (
-        schema != "gridbook.runtime-contract.v10"
+        schema != "gridbook.runtime-contract.v11"
         or payload.get("runtime_contract_schema") != schema
         or not isinstance(abi, Mapping)
         or not abi
@@ -515,7 +515,7 @@ def validate_candidate_runtime_pin(
         or payload.get("required_abi_features") != abi
     ):
         raise RTX4090FP8CBValidationError(
-            "candidate pin does not exactly bind the v10 runtime ABI"
+            "candidate pin does not exactly bind the v11 runtime ABI"
         )
     return {
         key: (dict(value) if isinstance(value, Mapping) else value)
@@ -576,7 +576,7 @@ def rtx4090_serve_environment(runtime_pin: Mapping[str, Any]) -> dict[str, str]:
 
 def rtx4090_serve_environment_allowlist() -> tuple[str, ...]:
     # Keep the validator and the stdlib-only in-container collector on one
-    # exact projection.  In particular this includes v10's two additional
+    # exact projection.  In particular this includes v11's two additional
     # source-level selectors, both of which must be absent on this FP8 lane.
     from tools.serve_fingerprint import RTX4090_SERVER_ENV_ALLOWLIST
 
@@ -768,14 +768,14 @@ def _validate_runtime_attestation(
     }
     if not isinstance(payload, Mapping) or set(payload) != required:
         raise RTX4090FP8CBValidationError(
-            "runtime attestation is not the closed v10/lane-v2 projection"
+            "runtime attestation is not the closed v11/lane-v2 projection"
         )
     contract_sha = str(payload.get("runtime_contract_sha256", ""))
     rungs = payload.get("rungs")
     routes = payload.get("regime_routes")
     if (
         payload.get("runtime_contract_schema")
-        != "gridbook.runtime-contract.v10"
+        != "gridbook.runtime-contract.v11"
         or payload.get("lane_eligibility_schema")
         != "gridbook.lane-eligibility.v2"
         or payload.get("platform") != "sm_89"
@@ -1462,7 +1462,7 @@ def verify_rtx4090_shipcard_record(
     except Exception as exc:
         problem(str(exc))
     if not isinstance(runtime_file, Mapping) or runtime_source_differs:
-        problem("v10 runtime-contract source/canonical identity is incomplete")
+        problem("v11 runtime-contract source/canonical identity is incomplete")
     if isinstance(runtime_pin, Mapping) and isinstance(distribution, Mapping):
         distribution_problems = _verify_gridbook_distribution_identity(
             slot,

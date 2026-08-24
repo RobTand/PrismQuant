@@ -1,4 +1,4 @@
-"""Torch-free consumer for Gridbook v10 device-route qualification.
+"""Torch-free consumer for Gridbook v11 device-route qualification.
 
 ``formats[].producer_rungs`` attests wire-format production.  The independent
 ``lane_eligibility`` v2 table attests routes on one exact compute capability.
@@ -365,7 +365,7 @@ def parse_gridbook_execution_contract(
     *,
     where: str = "Gridbook runtime contract",
 ) -> GridbookExecutionContract:
-    """Parse the closed-world v2 table after validating v10 producer rungs."""
+    """Parse the closed-world v2 table after validating v11 producer rungs."""
 
     try:
         validate_gridbook_cb_rung_contract(

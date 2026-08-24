@@ -17,8 +17,9 @@ Three VQ modes:
   argmin (chunked). Only feasible for k<=14; raises above without an explicit
   codebook.
 * ``product`` (default) — the 8-dim vector splits into two 4-dim halves, each
-  with its own ``2^(k/2)`` sub-codebook (ceil/floor bit split for odd k). Feasible
-  for the whole NVFP4-CB ladder (k=12..24).
+  with its own ``2^(k/2)`` sub-codebook (ceil/floor bit split for odd k). The
+  public NVFP4-CB ladder is k=1..25. Direct low-level research can exercise
+  wider codewords through k=32, but those values have no registry or export id.
 * ``signed`` — DELETED 2026-08-17. Sign-magnitude factorization (the
   IQ-family move) was a real serialized mode until then, but Gridbook's native
   FP4 path is written against the UNSIGNED two-tier product layout
@@ -92,8 +93,10 @@ from .cb_layout import (
 
 FP8_ELEMENT_MAX = 448.0
 NVFP4_GRID_MAX = 6.0            # max(|E2M1|); amax/6 == no-clip one-shot scale
-# Flat-table feasibility ceiling (encode-side exhaustive argmin + serve-side
-# LUT). Above this a structured/learned codebook must be supplied explicitly.
+# Flat-table feasibility ceiling for the research full-d8 Lloyd path. The
+# production fp4/d4 product lattice has a separate exact structured
+# construction through width 16; raising this global ceiling would accidentally
+# invite an infeasible 2^15/2^16 dense Lloyd solve for unrelated full tables.
 MAX_FLAT_K = 14
 # Slice stacked/huge tensors along the leading dim to bound VQ temporaries
 # (mirrors gguf_slice_max_elems' 64M IQ threshold — UMA swap-kill guard).
@@ -181,11 +184,32 @@ def _resolve_encode_tier(tier: str | None) -> str:
 
 _DATA = Path(__file__).resolve().parent / "data" / "nvfp4_cb_lattices.pt"
 _LATTICE_ASSET_SHA256 = (
-    "b56606e138ac2fde531b2ac281347c6bf31b0fabbbab81d9aa4946c262fdd8bd"
+    "e54db775e7d68028c1f50296c53602b0b703dd6c0c0e4a77910e5255f5d94b4b"
 )
 _LATTICE_SEED = 1234
 _LATTICE_SAMPLES = 1 << 17
 _LATTICE_ITERS = 12
+
+# Canonical structured fp4/d4 extension, version 3. Low widths 0..5 are nested
+# prefixes of a deterministic progressive-farthest ordering of the immutable
+# width-6 table (starting at its nearest-zero row), so each new rung is a set
+# superset and width 6 remains a superset without changing one historical byte.
+# At the high end, widths 13..16 are prefixes of one master table: the
+# historical digest-bound width-12 tensor is the exact first 4,096 rows, then a
+# deterministic permutation adds every missing E2M1^4 vector, and a
+# deterministic prefix cycle fills the unavoidable duplicate rows. Therefore
+# distortion cannot increase solely because either new ladder grew, and width
+# 16 covers all 15^4 numeric vectors. Widths 6..12 retain their existing tensor
+# bytes. Every production lookup is asset-only; these constructors exist for
+# the reviewed generator and invariant tests, never as a runtime cache fallback.
+STRUCTURED_FP4_D4_LATTICE_VERSION = "fp4-d4-nested-e2m1-v3"
+STRUCTURED_FP4_D4_LOW_BASE_K = 6
+STRUCTURED_FP4_D4_LOW_MAX_K = 5
+STRUCTURED_FP4_D4_HIGH_MIN_K = 13
+STRUCTURED_FP4_D4_MAX_K = 16
+_STRUCTURED_FP4_D4_BASE_K = 12
+_STRUCTURED_FP4_D4_PERMUTATION_MULTIPLIER = 104729
+_STRUCTURED_FP4_D4_PERMUTATION_OFFSET = 1234
 
 # E2M1: {0, +-0.5, +-1, +-1.5, +-2, +-3, +-4, +-6}
 _E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
@@ -414,6 +438,129 @@ def _lattice_key(k: int, grid: str, d: int, positive: bool = False) -> str:
     return f"{grid}{'pos' if positive else ''}_d{d}_k{k}"
 
 
+def _is_structured_fp4_d4_key(
+    k: int,
+    grid: str,
+    d: int,
+    positive: bool = False,
+) -> bool:
+    return (
+        str(grid) == "fp4"
+        and int(d) == 4
+        and not bool(positive)
+        and (
+            0 <= int(k) <= STRUCTURED_FP4_D4_LOW_MAX_K
+            or STRUCTURED_FP4_D4_HIGH_MIN_K
+            <= int(k)
+            <= STRUCTURED_FP4_D4_MAX_K
+        )
+    )
+
+
+@lru_cache(maxsize=1)
+def _structured_fp4_d4_low_master() -> torch.Tensor:
+    """Order the immutable width-6 rows by progressive farthest point."""
+
+    base_key = _lattice_key(
+        STRUCTURED_FP4_D4_LOW_BASE_K, "fp4", 4, False
+    )
+    base = _lattice_file().get(base_key)
+    expected_shape = (1 << STRUCTURED_FP4_D4_LOW_BASE_K, 4)
+    if base is None or tuple(base.shape) != expected_shape:
+        raise RuntimeError(
+            f"{STRUCTURED_FP4_D4_LATTICE_VERSION} requires canonical "
+            f"{base_key} with shape {expected_shape}"
+        )
+    base = base.to(torch.float32).contiguous()
+    first = int((base * base).sum(dim=1).argmin())
+    order = [first]
+    available = torch.ones(base.shape[0], dtype=torch.bool)
+    available[first] = False
+    min_distance = ((base - base[first]) ** 2).sum(dim=1)
+    while len(order) < base.shape[0]:
+        scores = min_distance.clone()
+        scores[~available] = -1.0
+        selected = int(scores.argmax())
+        order.append(selected)
+        available[selected] = False
+        distance = ((base - base[selected]) ** 2).sum(dim=1)
+        min_distance = torch.minimum(min_distance, distance)
+    return base.index_select(0, torch.tensor(order)).contiguous()
+
+
+@lru_cache(maxsize=1)
+def _structured_fp4_d4_high_master() -> torch.Tensor:
+    """Build the nested width-16 master from the canonical width-12 asset."""
+
+    base_key = _lattice_key(
+        _STRUCTURED_FP4_D4_BASE_K, "fp4", 4, False
+    )
+    base = _lattice_file().get(base_key)
+    expected_shape = (1 << _STRUCTURED_FP4_D4_BASE_K, 4)
+    if base is None or tuple(base.shape) != expected_shape:
+        raise RuntimeError(
+            f"{STRUCTURED_FP4_D4_LATTICE_VERSION} requires canonical "
+            f"{base_key} with shape {expected_shape}"
+        )
+    base = base.to(torch.float32).contiguous()
+    levels = tuple(sorted({
+        value
+        for magnitude in _E2M1_VALUES
+        for value in ({magnitude, -magnitude} if magnitude else {0.0})
+    }))
+    universe_size = len(levels) ** 4
+    seen = {tuple(float(value) for value in row) for row in base.tolist()}
+    additions: list[tuple[float, float, float, float]] = []
+    for ordinal in range(universe_size):
+        linear = (
+            _STRUCTURED_FP4_D4_PERMUTATION_MULTIPLIER * ordinal
+            + _STRUCTURED_FP4_D4_PERMUTATION_OFFSET
+        ) % universe_size
+        digits: list[int] = []
+        for _coordinate in range(4):
+            linear, digit = divmod(linear, len(levels))
+            digits.append(digit)
+        row = tuple(levels[digit] for digit in digits)
+        if row not in seen:
+            additions.append(row)
+            seen.add(row)
+    if len(seen) != universe_size:
+        raise RuntimeError(
+            f"nested fp4/d4 construction covered {len(seen)} of "
+            f"{universe_size} E2M1 vectors"
+        )
+    complete = torch.cat(
+        (base, torch.tensor(additions, dtype=torch.float32)), dim=0
+    ).contiguous()
+    target_rows = 1 << STRUCTURED_FP4_D4_MAX_K
+    remaining = target_rows - int(complete.shape[0])
+    if remaining < 0:
+        raise RuntimeError("nested fp4/d4 unique prefix exceeds width-16 table")
+    if remaining:
+        duplicate_indices = torch.arange(remaining) % complete.shape[0]
+        complete = torch.cat(
+            (complete, complete.index_select(0, duplicate_indices)), dim=0
+        ).contiguous()
+    return complete
+
+
+@lru_cache(maxsize=None)
+def _structured_fp4_d4_lattice(k: int) -> torch.Tensor:
+    """Return a nested low- or high-width E2M1 d4 generator table."""
+
+    k = int(k)
+    if 0 <= k <= STRUCTURED_FP4_D4_LOW_MAX_K:
+        return _structured_fp4_d4_low_master()[:1 << k].clone()
+    if STRUCTURED_FP4_D4_HIGH_MIN_K <= k <= STRUCTURED_FP4_D4_MAX_K:
+        return _structured_fp4_d4_high_master()[:1 << k].clone()
+    raise ValueError(
+        "structured fp4/d4 lattice width must be 0.."
+        f"{STRUCTURED_FP4_D4_LOW_MAX_K} or "
+        f"{STRUCTURED_FP4_D4_HIGH_MIN_K}.."
+        f"{STRUCTURED_FP4_D4_MAX_K}, got {k}"
+    )
+
+
 @lru_cache(maxsize=1)
 def _production_lattice_keys() -> frozenset[str]:
     """Canonical table keys needed by every producer-eligible CB rung."""
@@ -433,7 +580,8 @@ def _production_lattice_keys() -> frozenset[str]:
 @lru_cache(maxsize=None)
 def _fixed_lattice_cpu(k: int, grid: str, d: int,
                        positive: bool = False) -> torch.Tensor:
-    if k > MAX_FLAT_K:
+    structured = _is_structured_fp4_d4_key(k, grid, d, positive)
+    if k > MAX_FLAT_K and not structured:
         raise ValueError(
             f"flat codebook infeasible at k={k} (2^{k} codewords > "
             f"2^{MAX_FLAT_K}); provide an explicit/structured codebook")
@@ -477,6 +625,8 @@ def _build_lattice(
         ``_scale_and_vectorize`` (no hand-tuned scale constant), so the
         lattice matches the exact distribution the encoder feeds it.
     """
+    if _is_structured_fp4_d4_key(k, grid, d, positive):
+        return _structured_fp4_d4_lattice(int(k)).clone()
     K = 1 << k
     gen = torch.Generator(device="cpu").manual_seed(_LATTICE_SEED + k * 131 + d)
     m = max(_LATTICE_SAMPLES, K * 16)

@@ -112,7 +112,7 @@ export rather than recomputed from the row-capped activation replay cache.
 PrismaQuant never imports or vendors Gridbook. A strict export must receive an
 explicit Gridbook runtime contract with both:
 
-1. `gridbook.runtime-contract.v10`, whose `formats[].rungs` are reader domains
+1. `gridbook.runtime-contract.v11`, whose `formats[].rungs` are reader domains
    and whose `formats[].producer_rungs` exactly match producer domains; and
 2. `gridbook.lane-eligibility.v2`, resolved by exact platform, family, rung,
    structure, and both `decode` and `batch` regimes.
@@ -120,14 +120,14 @@ explicit Gridbook runtime contract with both:
 The lane table is closed-world. An exact `sm_89` runtime is producer-legal only
 when **all twelve** FP8-CB producer rungs—not merely the subset selected by one
 artifact—resolve to clean `backed`, flag-free, `device_qualified` routes in
-both decode and batch regimes. The strict artifact stamps that supplied v10
+both decode and batch regimes. The strict artifact stamps that supplied v11
 attestation directly beside its selected-rung/unit counts; it neither consults
 the repository's historical generic serving pin nor admits generic non-native,
 override, or fallback dispositions. Capability is never
 treated as a minimum: an sm90 or sm121 cell does not imply sm89 support. The
 initial structural Ada cells are `compile_only`, so the strict campaign is
 deliberately closed until physical RTX 4090 evidence advances Gridbook's
-immutable release contract. Contract v10 otherwise preserves Gridbook 0.9.0's
+immutable release contract. Contract v11 otherwise preserves Gridbook 0.9.0's
 tensor-parallel and expert-parallel declarations and enforcement; the new
 dense Ada rows neither widen nor disable TP/EP behavior.
 
@@ -179,7 +179,7 @@ finding serializer, census, and artifact-layout defects before Ada hardware is
 available. The launcher requires exactly one DGX Spark GB10 (compute capability
 12.1), then runs the ordinary GPU-bound pipeline and existing resident-prefetch
 and `ProductionWeightCache` mechanisms. It consumes exact backed, flag-free
-Gridbook v10 `compile_only` SM89 dense cells for the complete twelve-rung
+Gridbook v11 `compile_only` SM89 dense cells for the complete twelve-rung
 producer ladder. It does not weaken or call the production device-qualified
 resolver.
 
@@ -197,7 +197,7 @@ structural validator may accept this stamp, and it emits no serving evidence.
 For a campaign that already has a completed allocator `layer_config.json`, use
 `scripts/export_qwen38_rtx4090_fp8_cb_validation_only.sh`. The direct handoff
 requires the original source, the exact column-weight pickle bound by the
-assignment's source-complete `cb_render_identity`, the compile-only v10
+assignment's source-complete `cb_render_identity`, the compile-only v11
 contract, and a fresh output directory. It requires the allocator's exact
 assignment-bound whole-artifact budget stamp at a positive value no greater
 than 18,000,000,000 bytes and forbids namespace exclusions. It calls the

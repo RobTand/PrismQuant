@@ -105,6 +105,38 @@ def test_fp8_product_and_reader_ladders_are_distinct_and_exact():
         assert cb_layout.parse_format_name(f"FP8_CB_K{k}") is None
 
 
+def test_nvfp4_public_reader_and_producer_ladders_stop_at_k25():
+    assert cb_layout.NVFP4_PRODUCT_RUNGS == tuple(range(1, 26))
+    assert cb_layout.NVFP4_ACCEPTED_RUNGS == tuple(range(1, 26))
+    for k in cb_layout.NVFP4_PRODUCT_RUNGS:
+        name = f"NVFP4_CB_K{k}"
+        assert cb_layout.parse_format_name(name) is not None
+        assert cb_layout.parse_producer_format_name(name) is not None
+
+    for k in range(26, 33):
+        name = f"NVFP4_CB_K{k}"
+        assert cb_layout.parse_format_name(name) is None
+        assert cb_layout.parse_producer_format_name(name) is None
+        assert not cb_layout.is_producer_format_name(name)
+    for k in (0, 33):
+        assert cb_layout.parse_format_name(f"NVFP4_CB_K{k}") is None
+
+    assert cb_layout.bit_split(1, 2) == (1, 0)
+    assert cb_layout.codebook_subtable_shapes(1, "product", 2) == (
+        (2, 4), (1, 4),
+    )
+    assert cb_layout.bit_split(32, 2) == (16, 16)
+    assert cb_layout.codebook_subtable_shapes(32, "product", 2) == (
+        (65536, 4), (65536, 4),
+    )
+    assert cb_layout.type_size(
+        1, "fp4", cb_layout.SCALE_CODING_TWO_TIER
+    ) == 13
+    assert cb_layout.type_size(
+        32, "fp4", cb_layout.SCALE_CODING_TWO_TIER
+    ) == 137
+
+
 def test_registry_exposes_legacy_readers_but_not_legacy_producers():
     from prismaquant import format_registry
 
@@ -121,6 +153,23 @@ def test_registry_exposes_legacy_readers_but_not_legacy_producers():
     with pytest.raises(ValueError, match="reader-only"):
         format_registry.require_producer_formats(
             ["FP8_CB_K28", "FP8_CB_K29", "BF16"],
+            where="test allocator menu",
+        )
+
+    assert format_registry.format_is_producer_eligible("NVFP4_CB_K25")
+    assert not format_registry.format_is_producer_eligible("NVFP4_CB_K26")
+    assert not format_registry.format_is_producer_eligible("NVFP4_CB_K32")
+    assert {
+        spec.name for spec in format_registry.list_producer_formats("nvfp4_cb")
+    } == cb_layout.NVFP4_CB_FORMAT_NAMES
+    assert {
+        spec.name for spec in format_registry.list_formats("nvfp4_cb")
+    } == {
+        f"NVFP4_CB_K{k}" for k in cb_layout.NVFP4_ACCEPTED_RUNGS
+    }
+    with pytest.raises(ValueError, match="reader-only/unsupported.*NVFP4_CB_K26"):
+        format_registry.require_producer_formats(
+            ["NVFP4_CB_K25", "NVFP4_CB_K26"],
             where="test allocator menu",
         )
 
@@ -219,6 +268,10 @@ def test_product_menu_and_lattice_generator_derive_from_layout():
                     dimension,
                     family.mode == "signed",
                 ) in required
+    assert {
+        width for width, grid, dimension, positive in required
+        if (grid, dimension, positive) == ("fp4", 4, False)
+    } == set(range(17))
 
     for script in (
         "run_27b_cb_20gb.sh",
@@ -229,6 +282,17 @@ def test_product_menu_and_lattice_generator_derive_from_layout():
         assert "print_cb_format_menu.py" in text
         assert "range(12, 25)" not in text
         assert "range(28, 49)" not in text
+
+
+def test_bare_k_family_resolution_refuses_the_new_overlap():
+    from scripts.build_hy3_mtp_cb_inputs import _expert_family_for_k
+
+    assert _expert_family_for_k(1) == "nvfp4_cb"
+    assert _expert_family_for_k(40) == "fp8_cb"
+    with pytest.raises(ValueError, match="ambiguous"):
+        _expert_family_for_k(12)
+    assert _expert_family_for_k(12, family="nvfp4_cb") == "nvfp4_cb"
+    assert _expert_family_for_k(12, family="fp8_cb") == "fp8_cb"
 
 
 def test_production_serving_profile_cb_allowlist_matches_layout():

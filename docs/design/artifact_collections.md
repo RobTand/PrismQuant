@@ -142,36 +142,53 @@ validation can therefore be reused without pretending the exported bytes are
 the same.  Lattice assets are content-bound just like learned assets—"fixed"
 does not mean provenance-free.
 
-The schema encodes no minimum, maximum, or contiguous rung range.  K1, K32,
-holes between them, and overlaps with FP8 are all representable as explicit
-catalog members.  Promotion policy remains external: lattice-first is the
-safe production default, while a learned candidate must earn its extra asset,
+The schema encodes no intrinsic minimum, maximum, or contiguous rung range.
+K1, a future research K32, holes between them, and overlaps with FP8 are all
+representable as explicit catalog members. That data-model capability is not
+format authority. The current public NVFP4 format catalog is exactly K1–K25;
+K26–K32 have no parser, registry, contract, chooser, assignment, bundle, or
+export identity. Promotion policy remains external: lattice-first is the safe
+production default, while a learned candidate must earn its extra asset,
 training, and runtime complexity under the same target and qualification
-contract.
+contract. Learned NVFP4 remains receipt-gated and refused today.
 
-The current range-study recommendation is a **research catalog of K1–K32**, not
-a blanket support claim.  With two four-value-vector product subtables, the
-index split is `(ceil(K/2), floor(K/2))`; K1 is therefore the valid `(1, 0)`
-degenerate product, not malformed metadata.  An E2M1 value has 16 possibilities
-and a four-value tuple has `16^4 = 2^16` possibilities, so K32 gives each
-subtable 16 bits and exhausts the information-bearing lattice.  K33 can only
-duplicate tuples.
+The range study retains a **direct-codec/kernel research span through K32** but
+recommends a public artifact catalog of **K1–K25**. With two four-value-vector
+product subtables, the index split is `(ceil(K/2), floor(K/2))`; K1 is therefore
+the valid `(1, 0)` degenerate product, not malformed metadata. An E2M1 value
+has 15 distinct numeric possibilities (the two signed-zero encodings compare
+equal), so a four-value tuple has `15^4 = 50,625` distinct numeric vectors. A
+width-16 table can therefore fill 65,536 physical rows only by deterministic
+duplicate fill. K32 is still useful for a low-level uint32 packing boundary
+test, not as a shippable format.
 
-The physical boundary is earlier.  A BF16 product dictionary occupies
+The sidecar grows much earlier.  A BF16 product dictionary occupies
 `2 * (4*2^ceil(K/2) + 4*2^floor(K/2))` bytes: 65,536 at K24, 98,304 at K25,
-and 131,072 at K26.  The present GB10 full-dictionary staging budget is 101,376
+and 131,072 at K26. The present GB10 full-dictionary staging budget is 101,376
 bytes (`gridbook/csrc/cb_gemv_v2.cu`), making K25 the last rung compatible with
-that expander architecture and K24 the current production/fast-LUT boundary.
-K26–K32 require a new streamed, cached, or otherwise non-full-staging decoder;
-they are not a constants-only extension.  Accordingly:
+that whole-dictionary staging architecture. Gridbook's generic global-LUT
+kernel can structurally exercise larger direct-codec words, but the accepted
+performance cutoff is K25 and there is no legacy artifact reason to preserve
+K26–K32 as public wire ids. The external v11 contract must therefore declare
+both NVFP4 `rungs` and `producer_rungs` as K1–K25, and every eligibility cell
+must be a subset. Its current sm120 evidence is only `compile_only`: dense and
+routed decode are `backed`; routed batch is `backed` only for
+`role_split=false` through persistent-B, with a generic expand-to-BF16
+`fallback`; dense batch is likewise only the expand-to-BF16 `fallback`.
+Accordingly:
 
-- enumerate K1–K32 as possible research candidates;
-- qualify K1–K25 first, one explicit rung at a time;
-- never advertise K26–K32 until a new decode route clears parity and speed
-  gates; and
-- keep lattice and learned versions as distinct candidates at every rung,
+- enumerate and export K1–K25 as explicit artifact candidates;
+- keep K26–K32 confined to direct-codec, lattice-asset, and kernel research
+  tests with no public format spelling;
+- advertise every new band only as validation-only while its exact target,
+  structure, regime, rung, and predicate winner remains `compile_only` or
+  `fallback`;
+- promote no rung to a shipping chooser until both decode and batch have exact
+  `device_qualified` backed winners and physical parity/speed gates pass; and
+- keep lattice and learned versions conceptually distinct at every public rung,
   with lattice the baseline and learned promotion driven by measured artifact
-  quality after its shared asset cost is charged exactly once.
+  quality after its shared asset cost is charged exactly once; the current
+  NVFP4 producer refuses learned bases until that receipt exists.
 
 ## 5. Byte accounting
 
@@ -190,36 +207,72 @@ final recursive package measurement.
 ### 5.1 Hardware tiers and export shoulders
 
 As observed 2026-08-24, NVIDIA's desktop specifications group the relevant
-cards into 8 GB (RTX 5050/5060 and one 5060 Ti SKU), 12 GB (5070), and 16 GB
-(the other 5060 Ti SKU, 5070 Ti, and 5080).  Laptop parts are predominantly
-8 GB through 5070, 12 GB at 5070 Ti, and 16 GB at 5080.  Sources:
+cards into 8 GB (RTX 5050/5060 and one 5060 Ti SKU), 12 GB (5070), 16 GB
+(the other 5060 Ti SKU, 5070 Ti, and 5080), and 32 GB (5090). Laptop parts are
+predominantly 8 GB through 5070, 12 GB at 5070 Ti, 16 GB at 5080, and 24 GB at
+5090. Sources:
 [NVIDIA desktop comparison](https://www.nvidia.com/en-us/geforce/graphics-cards/compare/)
 and [NVIDIA laptop comparison](https://www.nvidia.com/en-us/geforce/laptops/50-series/).
 
-Two demand proxies point at different but complementary audiences.  Valve's
-July 2026 all-card survey reports desktop RTX 5060 at 3.03%, 5060 Ti at 2.40%,
-5070 at 3.62%, 5070 Ti at 1.78%, and 5080 at 1.63%; 5060 Laptop adds 2.19%.
-The [Steam survey](https://store.steampowered.com/hwsurvey/videocard?sort=chg)
-is an installed-use share, but combines the 8/16 GB 5060 Ti SKUs.  Hugging
-Face's opt-in AI-user census instead reports roughly 13k owners each for the
-5060 Ti and 5070 Ti, 9k for 5080, 6k for 5070, and 4k for 5060.  The
-[Hugging Face hardware page](https://huggingface.co/hardware) is an AI-demand
-proxy, not a population estimate.
+Two demand proxies point at different but complementary audiences. The live
+[Hugging Face hardware page](https://huggingface.co/hardware) gave the following
+per-SKU owner incidences; its
+[methodology](https://huggingface.co/docs/hub/en/hardware) makes this opt-in,
+self-reported public-profile telemetry rather than unique people, sales, or a
+population estimate:
 
-The solve grid should be dense from 5 through 14 decimal GB, but publication
-should expose a small set of qualified shoulders:
+| reported SKU | VRAM variants | HF incidences |
+|---|---:|---:|
+| RTX 5050 desktop / laptop | 8 GB / 8 GB | 255 / 237 |
+| RTX 5060 desktop / laptop | 8 GB / 8 GB | 3,625 / 1,010 |
+| RTX 5060 Ti desktop | 8 or 16 GB | 13,470 |
+| RTX 5070 desktop / laptop | 12 GB / 8 or 12 GB | 6,104 / 1,260 |
+| RTX 5070 Ti desktop / laptop | 16 GB / 12 GB | 13,530 / 964 |
+| RTX 5080 desktop / laptop | 16 GB / 16 GB | 9,264 / 1,046 |
+| RTX 5090 desktop / laptop | 32 GB / 24 GB | 16,538 / 994 |
+| RTX 5090 D desktop | 32 GB | 498 |
 
-| VRAM tier | Solve shoulders | Publication intent |
-|---|---|---|
-| 8 GiB | 5.0 and 5.5 GB | lab artifacts only until full GPU-only residency, context, eager/graph, KL, and PPL gates pass on real 5050/5060-class hardware |
-| 12 GiB | 7.5, 9.5, and 10.0 GB | 7.5 GB headroom build plus the largest physically qualified quality build; 10 GB is a useful experiment, not a product definition |
-| 16 GiB | 10.0, 13.0, and 14.0 GB | compact cross-tier build, 13 GB default, and 14 GB quality shoulder if runtime headroom remains green |
+Those rows total 68,795 incidences, 20.78% of the 331,048 summed NVIDIA-SKU
+incidences on the page. They are not a unique-user denominator. Valve's July
+2026 displayed RTX 50 rows instead sum to 16.60% of surveyed video cards. The
+[Steam survey](https://store.steampowered.com/hwsurvey/videocard/?sort=name)
+is optional and anonymous, publishes no respondent count, and combines such
+capacity variants as the 8/16 GB 5060 Ti. Allocating ambiguous identifiers to
+either possible capacity gives the following honest ranges:
 
-Because export is cheap, every shoulder may be materialized.  ReleaseDecision
-should normally publish at most one headroom and one quality artifact per VRAM
-tier, based on physical qualification and measured quality—not on a round
-marketing size.  The 8 GiB tier is the reach objective; the 12 and 16 GiB
-tiers are the credible initial shipping targets for a 27B model.
+| capacity | HF share of RTX 50 incidences | Steam share of all displayed cards |
+|---:|---:|---:|
+| 8 GB | 7.5–28.9% | 5.79–8.77% |
+| 12 GB | 10.3–12.1% | 3.99–4.57% |
+| 16 GB | 34.7–54.2% | 3.41–5.81% |
+| 24 GB | 1.4% | not separately listed |
+| 32 GB | 24.8% | 0.43% |
+
+These are a dated snapshot of mutable pages. A release campaign must store
+the source URL, observation time, extraction method, and raw receipt in a
+MarketSnapshot rather than silently treating these numbers as a current
+installed base.
+
+The solve grid should be dense from 5 through 25 decimal GB because one probe
+can feed many cheap solves and exports. Publication should expose a small,
+named collection of physically qualified shoulders:
+
+| artifact alias | target tier | whole-package target | publication intent |
+|---|---:|---:|---|
+| `vram-8-stretch` | 8 GiB | 6.0–6.5 GB | Experimental small-context reach build; ship only if full GPU-only residency and eager/graph, KV, KL, PPL, and performance gates pass on real 5050/5060 hardware. Otherwise publish a smaller model, not a nominally fitting 27B. |
+| `vram-12-compact` | 12 GiB | at most 10.0 GB | Primary compact 27B build, leaving roughly 3 GiB for runtime, activations, and a modest KV cache after exact resident/cold-load measurement. |
+| `vram-16-balanced` | 16 GiB | at most 13.0 GB | Primary broad-reach quality build; the current 12.98 GB oracle is the first regression target, not automatic qualification. |
+| `vram-24-quality` | 24 GiB | 19–20 GB | Higher-quality build with materially larger runtime/context headroom than a capacity-filling export. |
+| `vram-32-max-quality` | 32 GiB | approximately 23–25 GB | Stop at measured quality saturation rather than filling VRAM for its own sake. |
+
+A 10.0 GB decimal package is 9.31 GiB before runtime allocations, so it cannot
+be a fully resident 8-GiB artifact. It is a conditional 12-GiB target and a
+comfortable capacity target at 16 GiB or above. Because export is cheap, every
+solve shoulder may be materialized, but ReleaseDecision should normally publish
+at most one headroom and one quality artifact per tier based on physical
+qualification and measured quality—not on a round marketing size. The 8-GiB
+tier is the reach objective; 12 and 16 GiB are the credible initial shipping
+tiers for a 27B model.
 
 ## 6. Legacy Qwen3.8-27B regression oracle
 

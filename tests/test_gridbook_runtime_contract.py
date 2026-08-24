@@ -232,7 +232,7 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
     by_family = {entry["family"]: entry for entry in contract["formats"]}
 
     names = {spec.name for spec in list_formats()}
-    producer_k = {
+    accepted_k = {
         int(name.rsplit("K", 1)[1]) for name in names
         if name.startswith("NVFP4_CB_K")
     }
@@ -244,10 +244,10 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
         int(name.rsplit("K", 1)[1]) for name in names
         if name.startswith("FP8_CB_K")
     }
-    assert producer_k == set(by_family["NVFP4_CB_K"]["rungs"])
+    assert accepted_k == set(by_family["NVFP4_CB_K"]["rungs"])
     assert producer_s <= set(by_family["NVFP4_CB_S"]["rungs"])
     # Registry membership is the backwards-compatible reader inventory. The
-    # current v4 wheel knows only historical K28..K48; future v10 contracts
+    # current v4 wheel knows only historical K28..K48; future v11 contracts
     # explicitly distinguish their wider reader domain from producer_rungs.
     assert set(by_family["FP8_CB_K"]["rungs"]) <= accepted_fp8
     if "producer_rungs" in by_family["FP8_CB_K"]:
@@ -257,6 +257,14 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
         }
         assert producer_fp8 == set(
             by_family["FP8_CB_K"]["producer_rungs"]
+        )
+    if "producer_rungs" in by_family["NVFP4_CB_K"]:
+        producer_nvfp4 = {
+            int(spec.name.rsplit("K", 1)[1])
+            for spec in list_producer_formats("nvfp4_cb")
+        }
+        assert producer_nvfp4 == set(
+            by_family["NVFP4_CB_K"]["producer_rungs"]
         )
 
     packing = contract["packing"]

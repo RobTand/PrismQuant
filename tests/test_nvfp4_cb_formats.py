@@ -22,7 +22,7 @@ from prismaquant.nvfp4_cb_footprint import (
     cb_serialization_context_stamp,
 )
 
-_NVFP4_KS = list(range(12, 25))
+_NVFP4_KS = list(range(1, 26))
 _FP8_KS = [28, 32, 36, 40, 44, 48]
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -295,7 +295,7 @@ def test_flat_k_ceiling_raises():
 # historical K28..K48 wire id and adds the low K%4 rungs. New producer menus
 # are narrower and are pinned separately below.
 _MENU_LADDERS = (
-    ("NVFP4_CB_K", tuple(range(12, 25)), lambda k: k / 8 + 0.5),
+    ("NVFP4_CB_K", tuple(range(1, 26)), lambda k: k / 8 + 0.5),
     ("FP8_CB_K", FP8_ACCEPTED_RUNGS, lambda k: k / 8),
 )
 
@@ -389,6 +389,39 @@ def test_nvfp4_cb_pack_unpack_matches_emulation(device, grid, mode, k):
     rec = cb.nvfp4_cb_reconstruct(up, k, grid=grid, mode=mode).to(w.dtype)
     emu = cb.nvfp4_cb_reconstruct(fields, k, grid=grid, mode=mode).to(w.dtype)
     assert torch.equal(rec, emu)
+
+
+@pytest.mark.parametrize("k", [1, 32])
+def test_nvfp4_endpoint_bitstream_roundtrip_without_quantizer_cost(k):
+    """Pin K1 and the research-only uint32 endpoint in the direct codec."""
+
+    bits = cb.subtable_bit_widths(k, "product", 2)
+    indices = torch.zeros(1, 32, 2, dtype=torch.int64)
+    indices[..., 0] = torch.arange(32).reshape(1, 32) & ((1 << bits[0]) - 1)
+    if bits[1]:
+        indices[..., 1] = (
+            torch.arange(31, -1, -1).reshape(1, 32)
+            & ((1 << bits[1]) - 1)
+        )
+    fields = {
+        "indices": indices,
+        "scales": torch.ones(1, 16),
+        "shape": (1, 256),
+    }
+    packed = cb.nvfp4_cb_assemble_bytes(
+        fields, k, grid="fp4", mode="product"
+    )
+    unpacked = cb.nvfp4_cb_unpack(
+        packed, k, "fp4", "product", (1, 256)
+    )
+    assert torch.equal(unpacked["indices"], indices)
+    if k == 1:
+        assert torch.count_nonzero(unpacked["indices"][..., 1]) == 0
+    else:
+        codes = cb._vector_codes(fields, k, "fp4", "product")
+        codes[0, 0] = (1 << 32) - 1
+        raw = cb._pack_codes_to_bytes(codes, k)
+        assert torch.equal(cb._unpack_bytes_to_codes(raw, k), codes)
 
 
 def test_nvfp4_cb_assemble_asserts_type_size():

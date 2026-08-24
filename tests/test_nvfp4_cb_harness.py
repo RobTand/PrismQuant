@@ -18,7 +18,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from prismaquant.cb_layout import FP8_ACCEPTED_RUNGS, FP8_PRODUCT_RUNGS
+from prismaquant.cb_layout import (
+    FP8_ACCEPTED_RUNGS,
+    FP8_PRODUCT_RUNGS,
+    NVFP4_PRODUCT_RUNGS,
+)
 
 from prismaquant.index_entropy import index_entropy
 from prismaquant.nvfp4_cb_footprint import (
@@ -52,7 +56,7 @@ def _learned_context(fmt: str, role: str = "w") -> CBSerializationContext:
         },
     )
 
-@pytest.mark.parametrize("k", range(12, 25))
+@pytest.mark.parametrize("k", NVFP4_PRODUCT_RUNGS)
 def test_footprint_production_fp4_v2_is_4k_plus_9(k):
     shape = (128, 256)
     n = shape[0] * shape[1]
@@ -176,9 +180,21 @@ def test_odd_product_k_splits_larger_subtables_first():
 
 
 _REGISTERED_CB_FORMATS = (
-    [f"NVFP4_CB_K{k}" for k in range(12, 25)]
+    [f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS]
     + [f"FP8_CB_K{k}" for k in FP8_ACCEPTED_RUNGS]
 )
+
+
+@pytest.mark.parametrize(
+    ("fmt", "shapes", "sidecar_bytes"),
+    [
+        ("NVFP4_CB_K1", ((2, 4), (1, 4)), 24),
+        ("NVFP4_CB_K25", ((8192, 4), (4096, 4)), 98_304),
+    ],
+)
+def test_nvfp4_endpoint_sidecar_geometry(fmt, shapes, sidecar_bytes):
+    assert codebook_subtable_shapes(fmt) == shapes
+    assert codebook_sidecar_payload_bytes(fmt) == sidecar_bytes
 
 
 @pytest.mark.parametrize("k", [29, 47])

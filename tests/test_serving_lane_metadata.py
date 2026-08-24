@@ -122,7 +122,7 @@ def test_the_load_gates_are_declared_per_grid_from_the_family_table():
     fp8 = next(r for r in profile.shape_rules
                if r.id == "cb_fp8_out_features_load_gate")
     assert set(fp4.formats) == cb_layout.NVFP4_CB_FORMAT_NAMES
-    assert set(fp8.formats) == cb_layout.FP8_CB_FORMAT_NAMES
+    assert set(fp8.formats) == cb_layout.FP8_ACCEPTED_FORMAT_NAMES
     assert fp4.out_features_multiple_of == 8
     assert fp8.out_features_multiple_of == 16
     # Together the two per-grid sets are exactly the CB ladder — no rung
@@ -274,8 +274,9 @@ def test_block128_source_lane_is_w8a16_and_direct_g32_remains_w8a8():
 def test_the_fp4_opt_in_fused_mid_m_lane_is_available_not_backed():
     """Gridbook 0.6.0 shipped a contract-preserving fp4-CB v2 fused mid-M
     kernel (``csrc/cb_fused_fp4v2_gemm.cu``, dense, 9 <= M <= 128, decoded
-    weights bit-identical to ``cb_expand_v2`` at all 13 K12..K24 rungs) — and
-    at 0.8.0, the version this release pins, it is STILL OPT-IN behind
+    weights bit-identical to ``cb_expand_v2`` at the then-supported 13
+    K12..K24 rungs) — and at 0.8.11, the version this release pins, it is STILL
+    OPT-IN behind
     ``PRISMAQUANT_CB_FP4_FUSED_MIDM=1`` pending the served NATIVE-PARITY gate,
     with the flag unset leaving the dispatch byte-for-byte the BF16 bridge.
 
@@ -288,7 +289,9 @@ def test_the_fp4_opt_in_fused_mid_m_lane_is_available_not_backed():
                 if l.id == "nvfp4_cb_quality_path")
     assert lane.fused_mid_m_rungs_by_runtime_version == ()
     assert "PRISMAQUANT_CB_FP4_FUSED_MIDM" in lane.detail
-    for fmt in ("NVFP4_CB_K12", "NVFP4_CB_K24"):
+    for fmt in (
+        "NVFP4_CB_K1", "NVFP4_CB_K12", "NVFP4_CB_K24", "NVFP4_CB_K25",
+    ):
         route = sp.serving_lane_route(_PROFILE, fmt)
         assert not route.fused_mid_m_backed, fmt
         assert route.rungs_source == "lane_declares_no_fused_mid_m_lane"
@@ -385,7 +388,7 @@ def _cb_tables(menu):
 
 
 def test_candidates_carry_the_concrete_serving_lane_route():
-    menu = ["FP8_CB_K36", "FP8_CB_K37", "NVFP4_CB_K16", "BF16"]
+    menu = ["FP8_CB_K36", "NVFP4_CB_K16", "BF16"]
     stats, costs = _cb_tables(menu)
     cands = build_candidates(
         stats, costs, [fr.get_format(m) for m in menu],
@@ -395,20 +398,15 @@ def test_candidates_carry_the_concrete_serving_lane_route():
     attested = _attested_rungs()
     assert by_fmt["FP8_CB_K36"].serving_lane.fused_mid_m_backed is (
         36 in attested)
-    # K37 is off the fused rung set in every attested table, so it is on the
-    # fallback route regardless of which version the pin names.
-    assert not by_fmt["FP8_CB_K37"].serving_lane.fused_mid_m_backed
     assert by_fmt["NVFP4_CB_K16"].serving_lane.activation_contract == (
         "w4-bf16-bridge")
+    assert not by_fmt["NVFP4_CB_K16"].serving_lane.fused_mid_m_backed
     assert by_fmt["BF16"].serving_lane is None
-    # The route key separates a backed rung from a fallback one only while the
-    # pin names a version that attests it.  On an unattested pin both rungs
-    # fail closed onto the same execution route — which is the whole point of
-    # keying the backed set to a release.
+    # The FP8 route and NVFP4's declared BF16 bridge remain distinct even when
+    # a runtime pin attests neither fused path.
     assert (
-        (by_fmt["FP8_CB_K36"].serving_lane.route_key()
-         == by_fmt["FP8_CB_K37"].serving_lane.route_key())
-        is (36 not in attested)
+        by_fmt["FP8_CB_K36"].serving_lane.route_key()
+        != by_fmt["NVFP4_CB_K16"].serving_lane.route_key()
     )
     assert (
         sp.serving_lane_route(

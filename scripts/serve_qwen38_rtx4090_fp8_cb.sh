@@ -15,7 +15,7 @@ cd "$PQ_REPO_ROOT"
 : "${SERVE_IMAGE:?Set SERVE_IMAGE to immutable name@sha256:<digest>}"
 : "${GRIDBOOK_RUNTIME_PIN:?Set GRIDBOOK_RUNTIME_PIN to the candidate release pin JSON}"
 : "${VLLM_RUNTIME_PIN:?Set VLLM_RUNTIME_PIN to the official vLLM VCS/RECORD pin JSON}"
-: "${GRIDBOOK_RUNTIME_CONTRACT:?Set GRIDBOOK_RUNTIME_CONTRACT to its Gridbook v10 runtime_contract.json}"
+: "${GRIDBOOK_RUNTIME_CONTRACT:?Set GRIDBOOK_RUNTIME_CONTRACT to its Gridbook v11 runtime_contract.json}"
 : "${EVIDENCE_DIR:?Set EVIDENCE_DIR to a fresh dedicated absolute directory}"
 : "${SERVE_ARM:=graph}"
 
@@ -80,7 +80,7 @@ if [[ ! -f "$PQ_SHIPCARD" ]]; then
   exit 2
 fi
 
-# Validate the candidate pin, the v10 contract, every selected K%4 route, the
+# Validate the candidate pin, the v11 contract, every selected K%4 route, the
 # dense model identity, and the recursive 18 GB inventory before CUDA startup.
 PQ_MODEL_DIR="$MODEL_DIR" \
 PQ_RUNTIME_PIN="$GRIDBOOK_RUNTIME_PIN" \

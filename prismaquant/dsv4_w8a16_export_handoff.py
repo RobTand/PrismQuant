@@ -347,15 +347,28 @@ _PUBLISHED_FILES = frozenset({
 #     W8A16 lane assigns no CB rung, so the gate's per-unit loop sees no CB
 #     units on this lane; merge union with the R1 split-book gate reviewed
 #     line-by-line (both are additive parameters + calls at the same anchors).
+# RE-FROZEN 2026-08-24 (K1..K25 NVFP4 public producer scaffolding), after enumerating
+# the whole closure and reviewing reachability against THIS handoff:
+#   cb_export_config.py + nvfp4_cb_footprint.py -- the authoritative NVFP4
+#     product domain and exact codebook-sidecar accounting now include K1..K25.
+#     This handoff assigns only block-FP8 W8A16 source passthrough, no CB rung,
+#     so neither a CB scheme nor its sidecar/accounting branch is reached.
+#   nvfp4_cb_formats.py -- adds the digest-pinned nested d4 tables and uint32
+#     K32 direct research codec surface while preserving every historical
+#     lattice tensor hash. K26..K32 have no registry/export identity.
+#     W8A16 copies its checkpoint element/scale planes verbatim and never calls
+#     the CB field quantizer, lattice resolver, or bit packer.
+#   export_nvfp4_cb_streaming.py -- updates only the strict external Gridbook
+#     contract help text from v10 to v11. It cannot change exported bytes.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
-        "3380385f601623fc5d5b31147a226da15928b77b99dc15d2719e0ccb54232d1b"
+        "98957350648e993e36c918b2f143be60ec6b3108fbc2b8b7ed39fb6d647aa41e"
     ),
     "prismaquant/cb_export_config.py": (
-        "2bca669278cc1f3195c27747c05facea497e7b6ff2912bad7f917a184d1d6f94"
+        "3aa767bba9e689d50234730846a1671088ec0b16278d18aa6fa2693815294412"
     ),
     "prismaquant/nvfp4_cb_formats.py": (
-        "1f29d3c08af0272f8a709a1b820da9caeafa4e27865fa552e1d99432d4cb74f9"
+        "4ba07e811a6f1f2a853ad8967544bfb6663ea2374188e6c3bae6633c3a27e277"
     ),
     "prismaquant/dspark_source_metadata.py": (
         "94fac4b16922f381cffe989d7b9b1d00f211bb93d9479dfde30eb0c02ef167f7"
@@ -385,7 +398,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "1cc27e3b64043f9873da528ae2aa128e37c15be303109509f713b8d738c59f36"
     ),
     "prismaquant/nvfp4_cb_footprint.py": (
-        "68fa72cfb7274ceb8152db31940b2401e3d25485ea4b5a589ee8366b52997b93"
+        "96bc38a7ab18c6d2401ed2b66141eef9809409c78468f8ceb16c0891b9701547"
     ),
     "prismaquant/artifact_completeness.py": (
         "7f0c6c74733c2503b1e9607383264479007f49ae04e41700327bf0e97ab59767"

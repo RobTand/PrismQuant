@@ -295,23 +295,34 @@ class CBUnitDeclaration:
     serving_group: str | None = None
 
 
-# The registered CB shape design, widest first.  Which of these columns is
-# actually *identifiable* is a property of the declared ladder, not of the
-# family -- see _identifiable_cb_shape_columns.
+# The registered CB shape design, widest first. The low/high hinges let the
+# expanded NVFP4 ladder learn separate low-rate, historical K12..K24, and
+# high-rate endpoint adjustment instead of pretending the old one-line
+# interpolation covers K1 or K25. With the production cutoff at K25, the
+# above-K24 feature is a single measured endpoint shoulder, not evidence for a
+# wider high-band slope. It activates only for NVFP4 segments whose declared
+# ladder crosses that boundary, so source-constrained and every FP8 campaign
+# retain their previous basis exactly.
 _CB_SHAPE_COLUMNS: tuple[tuple[str, Callable[[int], float]], ...] = (
     ("rung", lambda rung: float(rung)),
     ("rung_parity", lambda rung: float(rung % 2)),
+    ("below_k12_hinge", lambda rung: float(max(0, 12 - rung))),
+    ("above_k24_hinge", lambda rung: float(max(0, rung - 24))),
 )
 
 
-def _identifiable_cb_shape_columns(rungs: Sequence[int]) -> tuple[int, ...]:
+def _identifiable_cb_shape_columns(
+    rungs: Sequence[int],
+    *,
+    family: str | None = None,
+) -> tuple[int, ...]:
     """Keep the rung coordinate plus the derived columns this ladder resolves.
 
     A derived feature that is constant across a segment's legal rungs carries
     no information: per-unit centering turns it into a zero column, the design
     drops to rank ``k-1`` of ``k``, and ``_fit_currency`` fails closed forever.
-    The ladder decides which survive, not the family.  Two live ladders make
-    that concrete -- the gridbook K1.2 fused mid-M kernel law admits only
+    The ladder decides whether a family-specific column is identifiable. Two
+    live ladders make that concrete -- the gridbook K1.2 fused mid-M kernel law admits only
     ``k % 4 == 0`` FP8-CB rungs, so parity is constant on every legal FP8-CB
     ladder, while NVFP4-CB (K12..K18) still spans both parities and keeps the
     full rung-plus-parity design.  The rung coordinate itself is always
@@ -322,11 +333,19 @@ def _identifiable_cb_shape_columns(rungs: Sequence[int]) -> tuple[int, ...]:
     distinct = {int(rung) for rung in rungs}
     if not distinct:
         raise AnchoredCostError("cannot derive a shape basis from no rungs")
-    return (0, *(
-        index
-        for index, (_name, projection) in enumerate(_CB_SHAPE_COLUMNS)
-        if index > 0 and len({projection(rung) for rung in distinct}) > 1
-    ))
+    lower, upper = min(distinct), max(distinct)
+    columns = [0]
+    if len({rung % 2 for rung in distinct}) > 1:
+        columns.append(1)
+    # A hinge is identifiable only when the ladder straddles it. On a ladder
+    # wholly above K24, for example, max(0, k-24) is collinear with `rung` after
+    # centering and must not be added merely because it varies.
+    if family in {None, "nvfp4_cb"}:
+        if lower < 12 <= upper:
+            columns.append(2)
+        if lower <= 24 < upper:
+            columns.append(3)
+    return tuple(columns)
 
 
 def _cb_declaration_ladder(
@@ -375,7 +394,9 @@ def build_cb_units(
                 plugin.basis_for_format(format_name),
             )].add(cb_rung(format_name))
     columns_by_segment = {
-        segment: _identifiable_cb_shape_columns(sorted(rungs))
+        segment: _identifiable_cb_shape_columns(
+            sorted(rungs), family=segment.family,
+        )
         for segment, rungs in ladder_rungs.items()
     }
 

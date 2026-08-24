@@ -33,6 +33,7 @@ from prismaquant.cb_layout import (
     FP4_GROUP,
     FP8_ACCEPTED_RUNGS,
     FP8_PRODUCT_RUNGS,
+    NVFP4_ACCEPTED_RUNGS,
     NVFP4_PRODUCT_RUNGS,
     SCALE_CODING_V1,
     SCALE_PLANE_BYTES,
@@ -1117,7 +1118,7 @@ register_format(_make_gguf_spec("IQ4_NL", 4, 32, 16))     # 18 B / 32 = 4.5
 # shape-dependent 32/in_features term. quantize_dequantize
 # is the weighted-VQ closure that also feeds the (Milestone B) byte packer;
 # activations are byte-identical to NVFP4 (fp4) / FP8 dynamic (fp8).
-def _make_nvfp4_cb_spec(k: int) -> FormatSpec:
+def _make_nvfp4_cb_spec(k: int, *, producer_eligible: bool) -> FormatSpec:
     return FormatSpec(
         name=f"NVFP4_CB_K{k}",
         weight_bits=0, group_size=SUPERBLOCK,
@@ -1127,6 +1128,7 @@ def _make_nvfp4_cb_spec(k: int) -> FormatSpec:
         weight_element_dtype=f"nvfp4_cb_k{k}",
         act_bits=4, act_dtype_name="fp4_e2m1", act_group_size=FP4_GROUP,
         family="nvfp4_cb", min_capability_sm=100,
+        producer_eligible=producer_eligible,
         autoround_config=(
             lambda k=k: dict(bits=0, group_size=SUPERBLOCK, data_type="nvfp4_cb",
                              cb_k=k, sym=True, act_bits=4,
@@ -1173,8 +1175,15 @@ def _make_fp8_cb_spec(k: int, *, producer_eligible: bool) -> FormatSpec:
     )
 
 
-for _k in NVFP4_PRODUCT_RUNGS:               # 2.000 .. 3.500 bpw in 0.125 steps
-    register_format(_make_nvfp4_cb_spec(_k))
+for _k in NVFP4_ACCEPTED_RUNGS:
+    # The public reader and producer domain is K1..K25 (v2 body
+    # 0.40625..3.40625 bpw). Wider direct-codec research has no registry id.
+    register_format(
+        _make_nvfp4_cb_spec(
+            _k,
+            producer_eligible=_k in NVFP4_PRODUCT_RUNGS,
+        )
+    )
 for _k in FP8_ACCEPTED_RUNGS:
     # Registry membership is a reader/reporting guarantee, not a producer
     # menu. Historical off-law K28..K48 rungs remain resolvable while only the

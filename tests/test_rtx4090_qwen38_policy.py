@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 import prismaquant.validate_rtx4090_fp8_cb as rtx_validator
-from prismaquant.cb_layout import FP8_ACCEPTED_RUNGS, FP8_PRODUCT_RUNGS
+from prismaquant.cb_layout import (
+    FP8_ACCEPTED_RUNGS,
+    FP8_PRODUCT_RUNGS,
+    NVFP4_ACCEPTED_RUNGS,
+    NVFP4_PRODUCT_RUNGS,
+)
 from prismaquant.format_registry import get_format
 from prismaquant.export_native_compressed import FP8_E4M3_SCHEME
 from prismaquant.rtx4090_qwen38_policy import (
@@ -50,12 +55,15 @@ CURRENT = (
 
 def _runtime_contract(*, qualified: bool = True) -> dict:
     contract = json.loads(CURRENT.read_text(encoding="utf-8"))
-    contract["schema"] = "gridbook.runtime-contract.v10"
-    contract["contract_version"] = 10
+    contract["schema"] = "gridbook.runtime-contract.v11"
+    contract["contract_version"] = 11
     for entry in contract["formats"]:
         if entry["family"] == "FP8_CB_K":
             entry["rungs"] = list(FP8_ACCEPTED_RUNGS)
             entry["producer_rungs"] = list(FP8_PRODUCT_RUNGS)
+        elif entry["family"] == "NVFP4_CB_K":
+            entry["rungs"] = list(NVFP4_ACCEPTED_RUNGS)
+            entry["producer_rungs"] = list(NVFP4_PRODUCT_RUNGS)
         else:
             entry["producer_rungs"] = list(entry["rungs"])
     qualification = "device_qualified" if qualified else "compile_only"
@@ -351,7 +359,7 @@ def test_artifact_subset_still_qualifies_the_complete_producer_ladder():
     assert repeated["rungs"] == list(FP8_PRODUCT_RUNGS)
 
 
-def test_strict_route_status_is_exact_v10_evidence_not_generic_override_state(
+def test_strict_route_status_is_exact_v11_evidence_not_generic_override_state(
     tmp_path,
 ):
     assignment = {
@@ -485,7 +493,7 @@ def test_runtime_attestation_replay_rejects_missing_ladder_rung(missing_rung):
         rtx_validator._validate_runtime_attestation(attestation)
 
 
-def test_export_preflight_requires_model_assignment_and_qualified_v10(
+def test_export_preflight_requires_model_assignment_and_qualified_v11(
     tmp_path, monkeypatch
 ):
     (tmp_path / "config.json").write_text(json.dumps(_model_config()))
@@ -806,7 +814,7 @@ def test_manifest_rejects_nvfp4_activation_provenance(mutation):
         )
 
 
-def test_strict_serve_launcher_selects_the_v10_environment_projection():
+def test_strict_serve_launcher_selects_the_v11_environment_projection():
     launcher = (
         REPO / "scripts" / "serve_qwen38_rtx4090_fp8_cb.sh"
     ).read_text(encoding="utf-8")

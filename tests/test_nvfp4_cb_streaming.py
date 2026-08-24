@@ -423,6 +423,89 @@ def test_streaming_byte_identical_dense_and_stacked(workdir):
 
 
 @pytest.mark.parametrize(
+    ("format_name", "expected_type_size", "expected_book_shapes"),
+    [
+        ("NVFP4_CB_K1", 13, [(1, 4), (2, 4)]),
+        ("NVFP4_CB_K25", 109, [(4096, 4), (8192, 4)]),
+    ],
+    ids=["k1", "k25"],
+)
+def test_public_endpoint_resident_and_streaming_exports_are_byte_identical(
+    workdir,
+    format_name,
+    expected_type_size,
+    expected_book_shapes,
+):
+    torch.manual_seed(101)
+    qname = "model.layers.0.self_attn.q_proj"
+    suffix = format_name.lower()
+    mdl = workdir / f"model-{suffix}"
+    _write_model(mdl, {
+        f"{qname}.weight": (torch.randn(8, 256) * 0.3).to(torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / f"{suffix}.json"
+    _assign(assignment, {qname: format_name})
+    col_weights = {qname: torch.rand(256) + 0.05}
+    resident_dir = workdir / f"{suffix}-resident"
+    streaming_dir = workdir / f"{suffix}-streaming"
+
+    export_nvfp4_cb(
+        mdl, assignment, resident_dir, col_weights, device="cpu"
+    )
+    export_nvfp4_cb_streaming(
+        mdl, assignment, streaming_dir, col_weights, device="cpu"
+    )
+    resident = load_file(str(resident_dir / "model.safetensors"))
+    streaming = load_file(str(streaming_dir / "model.safetensors"))
+    assert _tensors_equal(resident, streaming)
+    resident_config = json.loads(
+        (resident_dir / "quant_config.json").read_text()
+    )
+    streaming_config = json.loads(
+        (streaming_dir / "quant_config.json").read_text()
+    )
+    assert resident_config["config_groups"] == streaming_config["config_groups"]
+    assert next(iter(resident_config["config_groups"].values()))["scheme"][
+        "type_size"
+    ] == expected_type_size
+    resident_books = load_file(str(
+        resident_dir / resident_config["codebook_file"]
+    ))
+    streaming_books = load_file(str(
+        streaming_dir / streaming_config["codebook_file"]
+    ))
+    assert _tensors_equal(resident_books, streaming_books)
+    assert sorted(tuple(tensor.shape) for tensor in resident_books.values()) == (
+        expected_book_shapes
+    )
+
+
+@pytest.mark.parametrize(
+    "exporter",
+    [export_nvfp4_cb, export_nvfp4_cb_streaming],
+    ids=["batch", "streaming"],
+)
+def test_unsupported_k32_is_refused_by_both_export_transactions(
+    workdir, exporter,
+):
+    """The uint32 wire endpoint remains decodable but is not producible."""
+    qname = "model.layers.0.self_attn.q_proj"
+    mdl = workdir / "model-k32"
+    _write_model(mdl, {
+        f"{qname}.weight": torch.zeros(8, 256, dtype=torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / "k32.json"
+    _assign(assignment, {qname: "NVFP4_CB_K32"})
+    col_weights = {qname: torch.ones(256)}
+    out = workdir / f"k32-{exporter.__name__}"
+    with pytest.raises(ValueError, match="unsupported format string"):
+        exporter(mdl, assignment, out, col_weights, device="cpu")
+    assert not (out / "quant_config.json").exists()
+
+
+@pytest.mark.parametrize(
     "exporter",
     [export_nvfp4_cb, export_nvfp4_cb_streaming],
     ids=["batch", "streaming"],

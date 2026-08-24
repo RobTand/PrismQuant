@@ -45,7 +45,7 @@ and AURA is opt-in (`COST_MODE=aura`, `:314-336`, `:825-956`);
 
 | Path | What it is | Status |
 |---|---|---|
-| `lanes/nvfp4-cb/STANDARDS.md` | The producer lane's normative format/kernel/cost contract: rung ladders, scale coding, kernel standards, the split-aware floored RD cost law, the served-A/B rule. Runtime behavior is owned by the external Gridbook repository and its packaged contract. | CURRENT — production exports default to two-tier/v2; v1 is explicit legacy read compatibility |
+| `lanes/nvfp4-cb/STANDARDS.md` | The producer lane's normative format/kernel/cost contract: NVFP4 K1..K25 and FP8 step-four ladders, scale coding, kernel standards, the split-aware floored RD cost law, and the served-A/B rule. Runtime behavior is owned by the external Gridbook repository and its packaged contract. | CURRENT — production exports default to two-tier/v2; v1 is explicit legacy read compatibility; newly widened NVFP4 bands remain external-contract and measurement gated |
 | `lanes/nvfp4-cb/LAYOUT.md` | The on-disk byte/container contract a third-party plugin implements against: production fp4 `type_size = 4k+9` (explicit legacy v1 `4k+16`), fp8 `4k` plus FP32 row scales, superblock 256, and exact FP16 product-codebook sidecars. The public spec. | CURRENT |
 | `lanes/nvfp4-cb/two-tier-scale-spec.md` | The v2 scale-coding spec: per-256 E8M0 super + per-16 4-bit sub composing exactly onto E4M3; reduces fp4 scale cost 0.500 → 0.28125 bpw. | CURRENT and implemented |
 | `lanes/nvfp4-cb/encode_tiers.md` | Measured speed/accuracy curve of the CB encoder tiers (`fast`/`balanced`/`max`, default `balanced`, `nvfp4_cb_formats.py:129-130`) plus the 27B-scale launch/volume fix. | CURRENT |
