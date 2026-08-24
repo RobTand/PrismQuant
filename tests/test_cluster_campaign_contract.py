@@ -40,6 +40,8 @@ def _host(
             "port": 22,
             "user": "campaign_runner",
         }
+    gpu_name = "NVIDIA GB10" if not local else "NVIDIA GeForce RTX 4090"
+    compute_capability = [12, 1] if not local else [8, 9]
     return {
         "id": host_id,
         "transport": transport,
@@ -53,9 +55,9 @@ def _host(
         "expected": {
             "hostname": f"rtx4090-{suffix}",
             "gpu": {
-                "name": "NVIDIA GeForce RTX 4090",
+                "name": gpu_name,
                 "uuid": f"GPU-{suffix.upper()}-0123456789",
-                "compute_capability": [8, 9],
+                "compute_capability": compute_capability,
                 "device_count": 1,
             },
             "image_digest": image_digest,
@@ -226,6 +228,18 @@ def test_parallel_stage_is_a_barrier_and_ready_order_is_deterministic() -> None:
     assert [(item.stage, item.host_id) for item in next_stage] == [
         ("prepare_calibration", "alpha")
     ]
+
+
+def test_coordinator_may_be_the_ssh_host() -> None:
+    body = _manifest_body()
+    body["coordinator"] = "zeta"
+    manifest = seal_campaign_manifest(body)
+    state = initial_campaign_state(manifest)
+    state = _finish_frontier(manifest, state)
+
+    assert [(item.stage, item.host_id) for item in next_ready_assignments(
+        manifest, state,
+    )] == [("prepare_calibration", "zeta")]
 
 
 def test_parallel_completion_order_produces_identical_state() -> None:

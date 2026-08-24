@@ -24,6 +24,9 @@ CAMPAIGN_MANIFEST_SCHEMA = "prismaquant.cluster_campaign.manifest.v1"
 CAMPAIGN_STATE_SCHEMA = "prismaquant.cluster_campaign.state.v1"
 STAGE_RECEIPT_SCHEMA = "prismaquant.cluster_campaign.stage_receipt.v1"
 
+# These identify the artifact's target lane, not the hardware that executes a
+# validation campaign. In particular, the reviewed RTX 4090 producer is
+# exercised on GB10 ([12, 1]) before physical Ada qualification.
 RTX4090_GPU_NAME = "NVIDIA GeForce RTX 4090"
 RTX4090_COMPUTE_CAPABILITY = (8, 9)
 
@@ -388,11 +391,10 @@ def _normalize_gpu(value: object, *, where: str) -> dict[str, object]:
             maximum=99,
         ),
     ]
+    # This is the exact execution device admitted by host preflight. It need
+    # not equal the artifact target: GB10 is the validation host for the RTX
+    # 4090 lane, while physical sm89 remains a later qualification gate.
     name = _string(raw["name"], where=f"{where}.name")
-    if name != RTX4090_GPU_NAME:
-        _fail(f"{where}.name must identify exactly one physical RTX 4090")
-    if tuple(normalized_capability) != RTX4090_COMPUTE_CAPABILITY:
-        _fail(f"{where}.compute_capability must be exactly [8, 9]")
     device_count = _integer(
         raw["device_count"], where=f"{where}.device_count", minimum=1, maximum=1
     )
@@ -506,9 +508,6 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
         _fail("hosts must contain exactly one local and one ssh transport")
     if coordinator not in host_ids:
         _fail("coordinator does not reference a campaign host")
-    coordinator_host = hosts[host_ids.index(coordinator)]
-    if coordinator_host["transport"]["kind"] != "local":  # type: ignore[index]
-        _fail("coordinator must be the sole local host")
     hosts.sort(key=lambda item: str(item["id"]))
     return {
         "schema": CAMPAIGN_MANIFEST_SCHEMA,
