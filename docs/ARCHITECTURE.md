@@ -1,7 +1,20 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-24 · `audit/math-reunderwrite-2026-08-21` · working-tree revision based on
-`e370e1d` — stamps follow, newest first, each recording its own branch and date. Re-stamped
+As of: 2026-08-24 · `codex/rtx5060-fp4-gridbook-pilot-20260824` · working-tree revision based on
+`bb82d2b` — stamps follow, newest first, each recording its own branch and date. Re-stamped
+(2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **validation-only SM120
+candidate registration and the dense full-ladder AQUA scaffold**. The new
+`qwen38_sm120_cb_validation_only` profile extends `nvfp4_cb`, binds exact platform `sm_120`,
+and closes admission to NVFP4-CB K1..K25, FP8-CB K4..K48 step 4, plus deliberate native
+NVFP4/FP8_E4M3/BF16 terminals. It has no `producer_policy`: candidate v11 is compile-only and
+unpinned, so this is neither a device-qualified claim nor a release identity. The dense
+anchored driver defaults to that explicit profile (with a CLI override), stamps it into plan
+and allocator provenance, and exposes both complete public producer ladders. Its FP8 panel now
+spans K4/K28/K48 around a K24 anchor and validates off-panel at K8/K20/K36/K44; the campaign is
+lattice-only and AQUA sees both executed activation contracts with no manual family preference.
+The immutable release pin plus exact device-qualified route contract remain the fail-closed
+shipping gate. No new device or served measurement is claimed, and the final integration
+commit is deliberately not predicted. Previously re-stamped
 (2026-08-24, `audit/math-reunderwrite-2026-08-21`) for the **final implemented, still
 unqualified strict RTX 4090 FP8-Gridbook candidate and its categorically unreleasable GB10
 structural-validation producer**. FP8-CB has two different authorities:
@@ -870,7 +883,7 @@ by measurement, not by the cost model (§2).
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
 | Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | NVFP4, FP8_DYNAMIC/E4M3, FP8_SOURCE, BF16 | production default |
-| CB ("gridbook") | historical mixed `nvfp4_cb`, or strict FP8-only `fp8_cb` checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. An attested sm120 target may register NVFP4 and FP8, after which AQUA chooses among those activation contracts without a manual family preference. The strict Ada profile is lattice-only, sets `CB_ACTIVATION_SCOPE=none`, and adds only delegated `FP8_E4M3` and BF16 | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. `qwen38_rtx4090_fp8_cb` is an opt-in candidate and refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells for all twelve producer rungs and a physical 4090 closes the graph/device gate. `qwen38_rtx4090_fp8_cb_validation_only` consumes exact compile-only cells solely to build/structurally validate an explicitly unreleasable artifact on GB10 |
+| CB ("gridbook") | historical mixed `nvfp4_cb`, or a hardware-scoped CB checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. `qwen38_sm120_cb_validation_only` structurally registers both public ladders plus native NVFP4/FP8_E4M3/BF16 on exact `sm_120`, after which AQUA compares those activation contracts without a manual family preference. Both hardware-scoped campaigns are lattice-only | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. The strict `qwen38_rtx4090_fp8_cb` candidate still refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells and a physical 4090 closes the graph/device gate. The SM120 profile has no producer policy and is validation scaffolding only: candidate v11 is compile-only/unpinned, so the immutable release pin and exact device-qualified route contract remain mandatory before any artifact can ship |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
 
 Lane detail, defaults and proven results: §9. Export codecs: §6. Pipeline defaults: §3.3.
@@ -2203,16 +2216,18 @@ Three dense-specific differences are structural rather than cosmetic:
   menu into lower- and higher-rate classes and requires the expert menu to be a *strict
   subset* of the nonexpert one; a dense model has nothing to split, and declaring a fake
   expert menu would put a menu in the artifact no unit can take. `DensePlan` derives both
-  ladders from `format_registry` narrowed by the serving profile's production format rule
+  ladders from `format_registry` narrowed by the explicitly selected serving profile's
+  production format rule
   (which used to drop the research-only signed `NVFP4_CB_S13..S16`; that family was
-  **deleted 2026-08-17**, so there is no signed rung left to drop) and then, for `fp8_cb`
-  only, by `_serving_backed_family` (the `k % 4 == 0` fused mid-M law). `nvfp4_cb` declares
-  no fused rung at any version, so its whole ladder rides the documented fallback route —
-  a speed property, not a correctness one, and it restricts nothing. **Read that narrowly:**
-  `fused_mid_m` is one lane for one batch-size regime, never a whole-unit verdict; NVFP4-CB
-  decode is native and default-on (§9.2). Module constants are
-  asserted against what was derived, so a runtime pin bump refuses instead of allocating
-  onto rungs the artifact cannot serve.
+  **deleted 2026-08-17**, so there is no signed rung left to drop). It does **not** narrow
+  either family by `_serving_backed_family`: fused mid-M is a performance route for one
+  batch regime, not format admission, and its historical K28..K48 subset had incorrectly
+  hidden public FP8 producer K4..K24 from AQUA. The selected profile and module constants
+  must agree exactly or plan derivation refuses. `--target-profile` defaults to
+  `qwen38_sm120_cb_validation_only`, and that identity plus exact `target_platform=sm_120`
+  travel in `DensePlan`, the render arm, plan report, and allocator invocation. This proves
+  structural candidate registration only; it does not replace the external release/device
+  gate (§9.2).
 * **One basis.** Learned codebooks are a measured null on Qwen dense (holdout ~1.00 across
   K28–K43), so the campaign runs `CB_CODEBOOK_SOURCE_SCOPE=none` and there is no learned
   segment. `_normalize_source_map` refuses "a global source scalar or K-range inference",
@@ -2240,11 +2255,14 @@ Three dense-specific differences are structural rather than cosmetic:
   kept, so the pre-AQUA allocation stays reproducible as the A/B arm; **AQUA-on-CB is a
   candidate until that served KL/PPL A/B at matched bpp lands, not a result.**
 
-The economics on Qwen3.8-27B: 496 body units × 19 rungs is 9,424 full-menu cells; the
-anchored plan renders 992 anchors + 840 panel + 288 validation = **2,120 cells, 22.5%** —
-and transiently, so ~0 GB is retained. The stock `COST_MODE=aura` path would instead have
-built a *retained* format-menu cache at a measured 45.5 GB/rung (arm-b: 91 GB for two
-rungs), i.e. ~865 GB for this ladder, for a cache the exporter never reads.
+The current menu is 37 rungs (NVFP4 K1..K25 plus FP8 K4..K48 step 4). On the known
+496-body-unit Qwen3.8 census that is **18,352** full-menu cells and 992 per-unit family
+anchors. Panel and validation counts are derived from the live role census rather than copied
+from the earlier six-rung FP8 campaign: per role the driver measures 10 units × (7 NVFP4 + 3
+FP8 panel rungs) and four disjoint units × (5 NVFP4 + 4 FP8 validation rungs). The plan report
+records the exact resulting union and fraction before GPU work. All renders remain transient.
+The stock `COST_MODE=aura` path would retain roughly 45.5 GB per rung on this model — about
+1.68 TB for the public menu — for a cache the exporter never reads.
 
 A validation cell holds out up to **two** axes, and only one of them is ever vacuous. At
 the segment's **anchor** the fit reproduces the measurement by construction — the
@@ -2270,14 +2288,16 @@ experts at all. Instead each cell carries `held_out_axes` (`["unit","rung"]` or
 A pooled statistic cannot distinguish a fit validated off the panel from one validated
 only on it; that is the difference the split makes visible.
 
-Current tables. Dense campaign v2: NVFP4-CB panel K1/K2/K11/K12/K23/K24/K25,
+Current tables. Dense campaign v3: NVFP4-CB panel K1/K2/K11/K12/K23/K24/K25,
 with validation at K3/K10/K14/K22 and K25 on held-out units. Its shape basis is
 `(rung, parity, below-K12 hinge, above-K24 shoulder)`, so the historical
 K12..K24 line is not silently extrapolated to either endpoint. K25 is the only
 public rung above K24, so its term is a measured one-point shoulder, not a
-claimed high-band slope. FP8-CB remains at K32/K44,
-straddling the anchor; FP8-CB gives up a panel rung to afford them, since only six of its
-rungs are on-law. DSv4: NVFP4-CB at **K13/K17** — it previously had **no** validation at
+claimed high-band slope. FP8-CB uses a K24 anchor, a K4/K28/K48 panel spanning the full
+producer ladder, and off-panel validation at K8/K20/K36/K44. Its shape basis is only `rung`
+because every producer rung is divisible by four; the four held-out cells challenge the
+straight-line proposal on both sides without laundering the anchor into validation. DSv4:
+NVFP4-CB at **K13/K17** — it previously had **no** validation at
 all, leaving 233,275 of 334,454 legal DP cells (**69.7%**) priced by a fit nothing
 checked; the total is the inventory's own census, 233,275 NVFP4 + 66,048 routed FP8 +
 1,806 dense FP8 + 33,325 exact source terminals — and
@@ -5272,7 +5292,7 @@ Spark-proven target, and the physically unqualified RTX 4090 candidate.
 flowchart LR
   subgraph CONT["artifact containers"]
     A1["compressed-tensors<br/>NVFP4 / FP8_DYNAMIC / FP8_SOURCE / BF16<br/>export_native_compressed.py"]
-    A2["codebook (CB)<br/>NVFP4 reader/producer: K1..K25 (new bands contract-gated)<br/>K26..K32: direct codec/lattice research only<br/>FP8 reader: K4/K8/K12/K16/K20/K24 + every K28..K48<br/>new FP8 producer: K4..K48 step 4<br/>strict Ada fp8_cb: lattice FP8-CB + FP8_E4M3 + BF16 only<br/>CB_ACTIVATION_SCOPE=none"]
+    A2["codebook (CB)<br/>NVFP4 reader/producer: K1..K25 (new bands contract-gated)<br/>K26..K32: direct codec/lattice research only<br/>FP8 reader: K4/K8/K12/K16/K20/K24 + every K28..K48<br/>new FP8 producer: K4..K48 step 4<br/>SM89: lattice FP8-CB + FP8_E4M3 + BF16 only<br/>SM120 validation profile: both producer ladders + native terminals"]
     A3["GGUF<br/>Q2_K..Q8_0 + IQ family<br/>export_gguf.py"]
   end
 
@@ -5286,6 +5306,7 @@ flowchart LR
   subgraph HW["hardware"]
     H1["NVIDIA GB10 DGX Spark<br/>Blackwell sm_121, 128 GB unified memory<br/>~121 GB usable serving budget"]
     H3["NVIDIA GeForce RTX 4090<br/>Ada sm_89, 24 GiB<br/>strict 18,000,000,000-byte artifact + 4 GiB FP8 KV<br/>PENDING physical correctness / graph / memory / performance"]
+    H4["NVIDIA sm_120 discrete target class<br/>candidate registration only<br/>v11 compile_only + unpinned<br/>NO device-qualified or shipping claim"]
     H2["Strix Halo<br/>CANCELED / UNSUPPORTED<br/>prototype removed after hardware access was lost;<br/>no qualified Gridbook backend"]
   end
 
@@ -5297,6 +5318,7 @@ flowchart LR
   R1 -->|"Spark-proven -- shipped rdtand artifacts"| H1
   R2 -->|"Spark-proven -- 295B-class at ~2.9 bpp on ONE Spark"| H1
   R2 -.->|"v11 sm89 routes are compile_only; strict export refuses"| H3
+  R2 -.->|"validation-only profile; release/device gate still closed"| H4
   R3 -->|"Spark-proven -- 295B-class at 2.8 bpp; the KL harness for this lane"| H1
   R4 -->|"smoke-verified on the 0.19.2 venv only, never KL-measured"| H1
 
@@ -5308,6 +5330,7 @@ flowchart LR
   classDef unsupported stroke:#c0392b,stroke-width:2px,stroke-dasharray:4
   class H1 proven
   class H3 pending
+  class H4 pending
   class H2 unsupported
 ```
 
@@ -5566,6 +5589,15 @@ K26..K32 have no public contract identity. Released Gridbook 0.8.11/v4 remains
 a historical reader input and cannot attest this producer expansion. Therefore
 the wider local registry is scaffolding only until the exact external pin also
 publishes those rungs and device-qualifies the requested structure/regime cells.
+
+`qwen38_sm120_cb_validation_only` is the matching producer-side registration
+scaffold: exact `target_platform=sm_120`, both public producer ladders, and only
+native NVFP4/FP8_E4M3/BF16 terminals. It deliberately declares no
+`producer_policy`. The profile therefore proves a closed candidate set and lets
+the dense AQUA campaign compare both registered activation contracts; it cannot
+stamp route qualification, become an exporter ship policy, or stand in for an
+immutable Gridbook pin. The release/device-qualified contract gate remains the
+only path from this validation identity to a shippable one.
 
 The current v11 implementation's sm89 dense FP8-CB decode/batch rows cover all
 twelve producer rungs but carry qualification `compile_only`. A no-device

@@ -7,7 +7,11 @@ and format standards"); runtime boundary updated 2026-08-02 for Gridbook
 strict Ada candidate boundary was refreshed 2026-08-24 without promoting the
 tracked runtime. The NVFP4 producer scaffold was expanded the same day to
 K1..K25; widths above the public ceiling remain direct-codec/kernel research
-only. This page is the contract production runs build against.
+only. The same revision adds `qwen38_sm120_cb_validation_only`, a closed
+candidate-registration profile for the dense full-ladder campaign. It is
+explicitly validation-only: no producer policy, release pin, device
+qualification, or shipping claim follows from it. This page is the contract
+production runs build against.
 Changes to it require a served A/B, not a preference.
 
 The separately versioned, exact-commit-pinned Gridbook runtime follows this
@@ -71,9 +75,14 @@ repository does not duplicate those tables.
 
 Target registration, not a hand-written family preference, controls AQUA's
 choice. SM89/RTX40 registers no NVFP4 or NVFP4-CB activation contract and is
-FP8-only. An exact attested sm120 target may register both NVFP4 K1..K25 and
-FP8; AQUA then compares the registered candidates in its normal currency. It
-must not bias one family manually, and K26..K32 are never registered.
+FP8-only. `qwen38_sm120_cb_validation_only` registers NVFP4-CB K1..K25,
+FP8-CB K4..K48 step 4, and native NVFP4/FP8_E4M3/BF16 under exact
+`target_platform=sm_120`; AQUA then compares the registered candidates in its
+normal currency. It must not bias one family manually, and K26..K32 are never
+registered. That profile is structural validation scaffolding, not an
+attestation: candidate v11 is compile-only and unpinned, the profile has no
+`producer_policy`, and release tooling remains fail-closed until the immutable
+consumer pin and exact device-qualified route contract advance together.
 
 The widened NVFP4 registry is producer scaffolding, not a runtime claim. A
 new artifact using K1..K11 or K25 requires a Gridbook v11 contract whose
@@ -157,8 +166,13 @@ gates to pass, followed by advancing the immutable external pin.
   are only ever proposals under it. (Measured on the 27B full-menu run:
   3.2% of tensors fall back.)
 - The old dense K12..K24 rung/parity interpolation is not endpoint evidence.
-  The widened dense campaign schema uses a below-K12 hinge and an above-K24
+  Dense campaign v3 uses a below-K12 hinge and an above-K24
   endpoint shoulder, measures K1/K25 in its panel, and validates K25 transfer
   on held-out units. Because K25 is the only public rung above K24, this is not
   described as a fitted high-band slope. No cost payload produced under the
   former campaign schema may be restamped or extrapolated onto K1..K11 or K25.
+- The same campaign exposes the complete FP8 producer ladder rather than the
+  historical fused-mid-M subset: K24 anchor; K4/K28/K48 panel; off-panel
+  K8/K20/K36/K44 validation. Fused-mid-M eligibility is performance metadata
+  for one batch regime, not candidate admission. Learned books remain out of
+  this dense campaign; every cell is lattice.

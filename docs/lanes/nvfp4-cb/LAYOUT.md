@@ -53,6 +53,14 @@ strict artifact attestation for raw learned-v2 results, and sets
 E4M3, but no NVFP4 static-activation scalar/metadata or FP4 codebook family may
 appear in its config, sidecar, tensor census, or delegated terminals.
 
+The separate `qwen38_sm120_cb_validation_only` profile closes candidate
+registration to both public producer ladders plus native
+NVFP4/FP8_E4M3/BF16 terminals and remains lattice-only. This changes no byte
+layout. It has no producer policy and carries no release or device-qualified
+claim: candidate Gridbook v11 is compile-only and unpinned, so an immutable
+consumer release and exact device-qualified routes remain mandatory before
+these structurally legal bytes can become a shippable SM120 artifact.
+
 **Hard constraint:** `in_features % 256 == 0` (the 256-weight superblock is both
 byte-exact and the vector-tiling unit). Linears that fail it are shipped BF16.
 

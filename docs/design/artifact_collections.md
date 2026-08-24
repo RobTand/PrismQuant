@@ -1,7 +1,7 @@
 # Artifact collections: probe once, solve and export many
 
 Status: **CURRENT foundation, not pipeline-wired** (branch
-`codex/rtx5060-fp4-gridbook-pilot-20260824`, based on `5cfa928`).  The live
+`codex/rtx5060-fp4-gridbook-pilot-20260824`, based on `bb82d2b`).  The live
 implementation is `prismaquant/artifact_collection.py`; the read-only bridge
 for existing exports is `prismaquant/artifact_collection_legacy.py`.  This
 foundation changes no format menu, allocator default, export codec, runtime
@@ -162,7 +162,7 @@ width-16 table can therefore fill 65,536 physical rows only by deterministic
 duplicate fill. K32 is still useful for a low-level uint32 packing boundary
 test, not as a shippable format.
 
-The sidecar grows much earlier.  A BF16 product dictionary occupies
+The sidecar grows much earlier.  An FP16 sidecar product dictionary occupies
 `2 * (4*2^ceil(K/2) + 4*2^floor(K/2))` bytes: 65,536 at K24, 98,304 at K25,
 and 131,072 at K26. The present GB10 full-dictionary staging budget is 101,376
 bytes (`gridbook/csrc/cb_gemv_v2.cu`), making K25 the last rung compatible with

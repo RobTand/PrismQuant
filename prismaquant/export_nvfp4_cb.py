@@ -33,10 +33,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import pickle
 import re
 from collections import Counter, defaultdict
+from functools import wraps
 from pathlib import Path
 
 import torch
@@ -115,6 +117,27 @@ from prismaquant.routed_moe_codebooks import (
 EXPORTABLE_FORMATS = CB_FORMAT_NAMES | frozenset(
     {"NVFP4", "FP8_E4M3", "FP8_SOURCE", "BF16"}
 )
+
+
+def _preflight_assignment_before_output_transaction(function):
+    """Canonicalize an assignment before an exporter opens its staging root.
+
+    The exporter deliberately reloads the assignment inside the transaction as
+    part of its ordinary render path.  This outer preflight exists so an
+    unsupported public format spelling fails without creating a destination or
+    a preserved ``.tmp-*`` sibling.
+    """
+    signature = inspect.signature(function)
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        load_assignment(bound.arguments["layer_config_path"])
+        return function(*args, **kwargs)
+
+    return wrapped
+
 
 def _git_commit() -> str:
     from prismaquant.aura_cost import _git_commit as _aura_git_commit
@@ -623,6 +646,7 @@ def _write_cb_containers(
     return names, tensor_sha256
 
 
+@_preflight_assignment_before_output_transaction
 @transactional_directory_output(
     source_parameter="model_dir",
     output_parameter="out_dir",

@@ -5,7 +5,10 @@
   "runtime": "vllm+gridbook_plugin",
   "description": "NVFP4-CB / FP8-CB codebook container, served by the separately released Gridbook plugin pinned in prismaquant/gridbook_runtime/gridbook_runtime_pin.json. PrismaQuant does not vendor the runtime. Load/generation validation is endpoint-driven and has separate eager and graph receipts because Gridbook is installed in an exact-pinned serving container rather than imported into the build environment.",
   "serving_profiles": [
-    "nvfp4_cb"
+    "nvfp4_cb",
+    "qwen38_rtx4090_fp8_cb",
+    "qwen38_rtx4090_fp8_cb_validation_only",
+    "qwen38_sm120_cb_validation_only"
   ],
   "endpoint": {
     "kind": "openai",

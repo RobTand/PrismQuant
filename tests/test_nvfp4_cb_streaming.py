@@ -486,23 +486,30 @@ def test_public_endpoint_resident_and_streaming_exports_are_byte_identical(
     [export_nvfp4_cb, export_nvfp4_cb_streaming],
     ids=["batch", "streaming"],
 )
-def test_unsupported_k32_is_refused_by_both_export_transactions(
-    workdir, exporter,
+@pytest.mark.parametrize(
+    "format_name",
+    ["NVFP4_CB_K26", "NVFP4_CB_K32"],
+    ids=["k26", "k32"],
+)
+def test_unsupported_nvfp4_rungs_are_refused_before_output_transaction(
+    workdir, exporter, format_name,
 ):
-    """The uint32 wire endpoint remains decodable but is not producible."""
+    """Research codec rungs have no producer transaction or filesystem trace."""
     qname = "model.layers.0.self_attn.q_proj"
-    mdl = workdir / "model-k32"
+    suffix = format_name.lower()
+    mdl = workdir / f"model-{suffix}"
     _write_model(mdl, {
         f"{qname}.weight": torch.zeros(8, 256, dtype=torch.bfloat16),
         "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
     })
-    assignment = workdir / "k32.json"
-    _assign(assignment, {qname: "NVFP4_CB_K32"})
+    assignment = workdir / f"{suffix}.json"
+    _assign(assignment, {qname: format_name})
     col_weights = {qname: torch.ones(256)}
-    out = workdir / f"k32-{exporter.__name__}"
+    out = workdir / f"{suffix}-{exporter.__name__}"
     with pytest.raises(ValueError, match="unsupported format string"):
         exporter(mdl, assignment, out, col_weights, device="cpu")
-    assert not (out / "quant_config.json").exists()
+    assert not out.exists()
+    assert list(workdir.glob(f".{out.name}.tmp-*")) == []
 
 
 @pytest.mark.parametrize(

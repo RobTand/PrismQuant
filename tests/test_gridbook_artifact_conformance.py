@@ -27,17 +27,23 @@ pytestmark = pytest.mark.skipif(
 
 _ASSIGNMENT = {
     "model.layers.0.mlp.gate_proj": {
+        "data_type": "nvfp4_cb", "cb_k": 1,
+    },
+    "model.layers.1.mlp.gate_proj": {
         "data_type": "nvfp4_cb", "cb_k": 12,
     },
-    # A second fp4 rung at a different k. This leaf carried the SIGNED family
+    # A third fp4 rung at a different k. This leaf carried the SIGNED family
     # until the producer deleted it (2026-08-17: n_sub=1 can never satisfy
     # gridbook's native-FP4 predicate and no allocation ever chose it); the
     # runtime contract still lists signed as decodable, but this test exports
     # through the producer, so it can only exercise what the producer emits.
-    "model.layers.1.mlp.up_proj": {
+    "model.layers.2.mlp.up_proj": {
         "data_type": "nvfp4_cb", "cb_k": 13,
     },
-    "model.layers.2.mlp.down_proj": {
+    "model.layers.3.mlp.down_proj": {
+        "data_type": "nvfp4_cb", "cb_k": 25,
+    },
+    "model.layers.4.mlp.down_proj": {
         "data_type": "fp8_cb", "cb_k": 28,
     },
 }

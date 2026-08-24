@@ -117,6 +117,7 @@ from prismaquant.export_nvfp4_cb import (
     _git_commit,
     _parse_cb_format,
     _parse_producer_cb_format,
+    _preflight_assignment_before_output_transaction,
     _role_of,
     _to_device,
     _try_resolve_direct_packed_expert,
@@ -2669,6 +2670,7 @@ def _reject_disabled_reuse_before_output_transaction(function):
 
 
 @_reject_disabled_reuse_before_output_transaction
+@_preflight_assignment_before_output_transaction
 @transactional_directory_output(
     source_parameter="model_dir",
     output_parameter="out_dir",
