@@ -43,11 +43,13 @@ import json
 import os
 import pickle
 import re
+import tempfile
 import time
 import types
+from collections.abc import Mapping
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from prismaquant.incremental_shards import (
     annotate_incremental_shard as annotate_probe_shard,
@@ -968,7 +970,7 @@ def _expected_probe_shard_meta(args, *,
                                linear_include: str,
                                shard_idx: int,
                                activation_cache_dir: str) -> dict[str, Any]:
-    return {
+    meta = {
         "model": args.model,
         "dataset": args.dataset,
         "nsamples": args.nsamples,
@@ -989,6 +991,131 @@ def _expected_probe_shard_meta(args, *,
         # in a flag-on run would silently ship marginal-less entries.
         "emit_marginals": _marginals_enabled(),
     }
+    sample_parallel = getattr(args, "sample_parallel_contract", None)
+    if sample_parallel is not None:
+        meta["sample_parallel"] = dict(sample_parallel)
+    sample_importance = getattr(args, "sample_parallel_importance", None)
+    if sample_importance is not None:
+        meta["sample_parallel_importance"] = dict(sample_importance)
+    activation_scope = getattr(args, "sample_parallel_activation_scope", None)
+    if activation_scope is not None:
+        meta["sample_parallel_activation_scope"] = dict(activation_scope)
+    execution_identity = getattr(
+        args, "sample_parallel_execution_identity", None
+    )
+    if execution_identity is not None:
+        meta["sample_parallel_execution_identity"] = dict(execution_identity)
+    qname_census = getattr(args, "sample_parallel_qname_census", None)
+    if qname_census is not None:
+        meta["sample_parallel_qname_census"] = dict(qname_census)
+    return meta
+
+
+def _validate_sample_activation_directory_cover(
+    directory: Path,
+    expected_qnames: set[str],
+    *,
+    require_complete: bool,
+) -> None:
+    """Refuse stale or unsafe worker-cache entries before GPU work."""
+    if not directory.exists():
+        if require_complete:
+            raise ValueError("sample activation-cache directory is absent")
+        return
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("sample activation-cache path is not a regular directory")
+    expected_files = {
+        re.sub(r"[^A-Za-z0-9_-]", "__", name) + ".pt"
+        for name in expected_qnames
+    }
+    entries = list(directory.iterdir())
+    observed = {path.name for path in entries}
+    if any(path.is_symlink() or not path.is_file() for path in entries):
+        raise ValueError("sample activation cache contains an unsafe entry")
+    if not observed.issubset(expected_files) or (
+        require_complete and observed != expected_files
+    ):
+        raise ValueError(
+            "sample activation-cache filename cover differs from the "
+            "authoritative qname census"
+        )
+
+
+def _validate_sample_activation_blob(
+    path: Path,
+    *,
+    qname: str,
+    expected_width: int,
+    partition_contract: Mapping[str, object],
+    rows_limit: int,
+    execution_identity_sha256: str,
+) -> None:
+    """Replay one worker activation blob's closed row-selection contract."""
+    from prismaquant.sample_parallel_probe import activation_cache_shard_stamp
+    from prismaquant.sample_parallel_probe_contract import (
+        activation_row_priorities as _activation_row_priorities,
+    )
+
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"sample activation blob is not a regular file: {path}")
+    blob = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(blob, dict) or set(blob) != {
+        "inputs", "name", "row_indices", "row_priorities",
+        "sample_parallel_activation",
+    }:
+        raise ValueError(f"sample activation blob fields differ for {qname}")
+    local_samples = partition_contract.get("local_samples")
+    seqlen = partition_contract.get("seqlen")
+    if type(local_samples) is not int or type(seqlen) is not int:
+        raise ValueError("sample activation partition dimensions are malformed")
+    candidate_rows = local_samples * seqlen
+    expected_stamp = activation_cache_shard_stamp(
+        partition_contract,
+        qname=qname,
+        rows_limit=rows_limit,
+        candidate_rows=candidate_rows,
+        execution_identity_sha256=execution_identity_sha256,
+    )
+    inputs = blob.get("inputs")
+    rows = blob.get("row_indices")
+    priorities = blob.get("row_priorities")
+    if (
+        blob.get("name") != qname
+        or blob.get("sample_parallel_activation") != expected_stamp
+        or not isinstance(inputs, torch.Tensor)
+        or inputs.dtype != torch.float32
+        or inputs.ndim != 2
+        or int(inputs.shape[1]) != int(expected_width)
+        or not bool(torch.isfinite(inputs).all().item())
+        or not isinstance(rows, torch.Tensor)
+        or rows.dtype != torch.int64
+        or rows.ndim != 1
+        or not isinstance(priorities, torch.Tensor)
+        or priorities.dtype != torch.int64
+        or priorities.ndim != 1
+        or int(inputs.shape[0]) != min(rows_limit, candidate_rows)
+        or int(rows.numel()) != int(inputs.shape[0])
+        or int(priorities.numel()) != int(inputs.shape[0])
+    ):
+        raise ValueError(f"sample activation tensor contract differs for {qname}")
+    all_local = torch.arange(candidate_rows, dtype=torch.int64)
+    all_global = all_local + int(partition_contract["sample_start"]) * seqlen
+    all_priorities = _activation_row_priorities(
+        str(partition_contract["global_calibration_hash"]),
+        qname,
+        all_global,
+    )
+    order = torch.topk(
+        all_priorities,
+        min(rows_limit, candidate_rows),
+        largest=False,
+        sorted=True,
+    ).indices
+    if (
+        not torch.equal(rows, all_local.index_select(0, order))
+        or not torch.equal(priorities, all_priorities.index_select(0, order))
+    ):
+        raise ValueError(f"sample activation priority rows differ for {qname}")
 
 
 def probe_shard_is_reusable(path: Path, expected_meta: dict[str, Any]) -> bool:
@@ -1007,6 +1134,82 @@ def probe_shard_is_reusable(path: Path, expected_meta: dict[str, Any]) -> bool:
     probe_meta.update(meta.get("incremental_shard", {}))
     for key, expected in expected_meta.items():
         if probe_meta.get(key) != expected:
+            return False
+    sample_partition = expected_meta.get("sample_parallel")
+    sample_census = expected_meta.get("sample_parallel_qname_census")
+    if isinstance(sample_partition, dict) and isinstance(sample_census, dict):
+        try:
+            raw_pattern = str(expected_meta["linear_include"])
+            pattern = re.compile(
+                raw_pattern[3:] if raw_pattern.startswith("re:")
+                else raw_pattern
+            )
+            raw_exclude = str(expected_meta.get("linear_exclude", ""))
+            exclude = (
+                re.compile(raw_exclude[3:] if raw_exclude.startswith("re:")
+                           else raw_exclude)
+                if raw_exclude else None
+            )
+            probe_entries = sample_census["probe_qname_manifest"]["entries"]
+            expected_stats = {
+                str(name) for name in probe_entries
+                if pattern.search(str(name))
+                and (exclude is None or not exclude.search(str(name)))
+            }
+            if set(data["stats"]) != expected_stats:
+                return False
+            local_samples = int(sample_partition["local_samples"])
+            sample_seqlen = int(sample_partition["seqlen"])
+            from prismaquant.sample_parallel_probe_merge import (
+                validate_sample_parallel_stat_row,
+            )
+            for name in expected_stats:
+                entry = probe_entries[name]
+                stats = data["stats"][name]
+                shape = tuple(int(dim) for dim in entry["shape"])
+                token_rule = entry["token_rows_per_sample"]
+                per_sample = {
+                    "seqlen": sample_seqlen,
+                    "seqlen_minus_1": sample_seqlen - 1,
+                    "seqlen_minus_2": sample_seqlen - 2,
+                }.get(token_rule, -1)
+                if not isinstance(stats, dict):
+                    return False
+                validate_sample_parallel_stat_row(
+                    stats,
+                    qname=name,
+                    expected_tokens=local_samples * per_sample,
+                    expected_shape=shape,
+                    require_marginals=bool(expected_meta["emit_marginals"]),
+                )
+
+            activation_entries = sample_census[
+                "activation_qname_manifest"
+            ]["entries"]
+            expected_activation = {
+                str(name) for name in activation_entries
+                if pattern.search(str(name))
+                and (exclude is None or not exclude.search(str(name)))
+            }
+            activation_dir = Path(str(expected_meta["activation_cache_dir"]))
+            rows_limit = int(expected_meta["activation_rows_limit"])
+            for name in expected_activation:
+                activation_path = activation_dir / (
+                    re.sub(r"[^A-Za-z0-9_-]", "__", name) + ".pt"
+                )
+                shape = tuple(int(dim) for dim in activation_entries[name]["shape"])
+                _validate_sample_activation_blob(
+                    activation_path,
+                    qname=name,
+                    expected_width=shape[1],
+                    partition_contract=sample_partition,
+                    rows_limit=rows_limit,
+                    execution_identity_sha256=str(
+                        expected_meta["sample_parallel_execution_identity"]
+                        ["identity_sha256"]
+                    ),
+                )
+        except (KeyError, TypeError, ValueError, OSError, RuntimeError):
             return False
     return True
 
@@ -1027,6 +1230,14 @@ _CONTENT_META_KEYS: tuple[str, ...] = (
     # flag-on run — it would contribute entries with no marginals and
     # nothing downstream would notice.
     "emit_marginals",
+    # A different sample partition has the same qname scope but different
+    # sufficient statistics. It may only meet its siblings in the dedicated
+    # raw-stat sample merger, never in LPS-invariant first-seen reuse.
+    "sample_parallel",
+    "sample_parallel_importance",
+    "sample_parallel_activation_scope",
+    "sample_parallel_execution_identity",
+    "sample_parallel_qname_census",
 )
 
 
@@ -1045,6 +1256,46 @@ def _content_meta_compatible(raw_meta: dict[str, Any],
     return all(probe_meta.get(k) == anchor.get(k) for k in _CONTENT_META_KEYS)
 
 
+def _cached_value_exact_equal(left: object, right: object) -> bool:
+    """Bit/exact structural equality for duplicate cached stat rows."""
+    if isinstance(left, torch.Tensor) or isinstance(right, torch.Tensor):
+        return (
+            isinstance(left, torch.Tensor)
+            and isinstance(right, torch.Tensor)
+            and left.dtype == right.dtype
+            and tuple(left.shape) == tuple(right.shape)
+            and torch.equal(left.detach().to("cpu"), right.detach().to("cpu"))
+        )
+    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+        return (
+            isinstance(left, np.ndarray)
+            and isinstance(right, np.ndarray)
+            and left.dtype == right.dtype
+            and left.shape == right.shape
+            and np.array_equal(left, right)
+        )
+    if isinstance(left, dict) or isinstance(right, dict):
+        return (
+            isinstance(left, dict)
+            and isinstance(right, dict)
+            and set(left) == set(right)
+            and all(
+                _cached_value_exact_equal(left[key], right[key])
+                for key in left
+            )
+        )
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        return (
+            type(left) is type(right)
+            and len(left) == len(right)  # type: ignore[arg-type]
+            and all(
+                _cached_value_exact_equal(a, b)
+                for a, b in zip(left, right, strict=True)  # type: ignore[arg-type]
+            )
+        )
+    return type(left) is type(right) and left == right
+
+
 def scan_cached_linear_stats(
     shard_dir: Path,
     content_meta_anchor: dict[str, Any],
@@ -1058,8 +1309,9 @@ def scan_cached_linear_stats(
     Used for LPS-invariant shard reuse: Fisher stats are intrinsic to
     each Linear, so a shard at lps=5 (L0-L4) and a shard at lps=3
     (L0-L2) share identical numbers for L0-L2, even though neither
-    pickle directly equals the other. We pool them at the Linear level
-    and synthesize new shards by filtering on regex.
+    pickle directly equals the other. We pool them at the Linear level only
+    when every duplicate qname is bit/exactly identical, then synthesize new
+    shards by filtering on regex.
     """
     pooled: dict[str, dict[str, Any]] = {}
     if not shard_dir.exists():
@@ -1079,6 +1331,13 @@ def scan_cached_linear_stats(
         if not isinstance(stats, dict):
             continue
         for name, s in stats.items():
+            if name in pooled and not _cached_value_exact_equal(pooled[name], s):
+                print(
+                    "[incremental] cached Linear pool has divergent duplicate "
+                    f"qname {name!r}; refusing all synthesized reuse",
+                    flush=True,
+                )
+                return {}
             if name not in pooled:
                 pooled[name] = s
     return pooled
@@ -1120,6 +1379,44 @@ def synthesize_shard_from_linear_cache(
         selected[name] = stats
     if not selected:
         return False
+    sample_census = expected_meta.get("sample_parallel_qname_census")
+    sample_partition = expected_meta.get("sample_parallel")
+    if isinstance(sample_census, dict) and isinstance(sample_partition, dict):
+        try:
+            manifest_entries = sample_census["probe_qname_manifest"]["entries"]
+            expected_names = {
+                str(name) for name in manifest_entries
+                if inc.search(str(name))
+                and (exc is None or not exc.search(str(name)))
+            }
+            if set(selected) != expected_names:
+                return False
+            local_samples = int(sample_partition["local_samples"])
+            sample_seqlen = int(sample_partition["seqlen"])
+            for name, stats in selected.items():
+                entry = manifest_entries[name]
+                shape = tuple(int(dim) for dim in entry["shape"])
+                token_rule = entry["token_rows_per_sample"]
+                per_sample = (
+                    sample_seqlen
+                    if token_rule == "seqlen"
+                    else sample_seqlen - 1
+                    if token_rule == "seqlen_minus_1"
+                    else sample_seqlen - 2
+                    if token_rule == "seqlen_minus_2"
+                    else -1
+                )
+                if (
+                    not isinstance(stats, dict)
+                    or stats.get("out_features") != shape[0]
+                    or stats.get("in_features") != shape[1]
+                    or stats.get("n_params") != shape[0] * shape[1]
+                    or stats.get("n_tokens_seen")
+                    != local_samples * per_sample
+                ):
+                    return False
+        except (KeyError, TypeError, ValueError):
+            return False
     # Layer-completeness gate. "Any Linear matches" is NOT shard
     # coverage: after a mid-run LAYERS_PER_SHARD change, the pooled
     # cache can cover a strict subset of this shard's layers (Laguna
@@ -1161,7 +1458,9 @@ def synthesize_shard_from_linear_cache(
     return True
 
 
-def merge_probe_pickles(paths: list[Path], output_path: Path):
+def merge_probe_pickles(
+    paths: list[Path], output_path: Path, *, write_output: bool = True,
+):
     merged = None
     merged_stats = {}
     merged_router_counts = {}
@@ -1228,9 +1527,11 @@ def merge_probe_pickles(paths: list[Path], output_path: Path):
         merged_meta["domain"] = domain_env
     merged["meta"] = merged_meta
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as f:
-        pickle.dump(merged, f)
+    if write_output:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "wb") as f:
+            pickle.dump(merged, f)
+    return merged
 
 
 def load_num_hidden_layers(model_path: str) -> int:
@@ -1368,6 +1669,16 @@ def _compute_precompute_key(model_path: str, dataset_name: str,
 _PROBE_CTX_CACHE: dict = {}
 
 
+def _persistent_probe_context_enabled(
+    sample_parallel_contract: dict[str, object] | None,
+) -> bool:
+    """Legacy warm model reuse is forbidden on the source-attested lane."""
+    return (
+        os.environ.get("PRISMAQUANT_PROBE_CTX_CACHE") == "1"
+        and sample_parallel_contract is None
+    )
+
+
 # v22 Fix A: lazy weight-stats cache.
 #
 # w_max_abs and w_norm_sq are invariants of each Linear's weight. The
@@ -1446,6 +1757,94 @@ class GlobalPrecompute:
     # Reusable forward-state derivable from ids + model; recomputed on demand.
 
 
+_PRECOMPUTE_CACHE_SCHEMA = "prismaquant.incremental_probe.precompute_cache.v1"
+_PRECOMPUTE_CACHE_KEYS = frozenset({
+    "schema", "activations_cpu", "grad_at_tail", "ids_cpu",
+    "resident_stats", "resident_h_full", "resident_g2_per_token",
+    "resident_act_snaps", "resident_act_row_indices", "expert_info",
+    "router_counts", "router_totals", "router_active_counts",
+    "expert_route_stats", "shared_pass_state", "meta",
+})
+_SAMPLE_PRECOMPUTE_RESIDENT_STAT_KEYS = frozenset({
+    "h_trace_raw", "h_w2_sum_raw", "w_max_abs", "w_norm_sq",
+    "n_params", "in_features", "out_features", "n_tokens_seen",
+    "route_prob", "router_path", "expert_id",
+    "fisher_row", "fisher_col", "g_sq_sum", "act_sq_sum",
+    "act_absmax",
+})
+_SAMPLE_PRECOMPUTE_RESIDENT_FLOAT_FIELDS = (
+    "h_trace_raw", "h_w2_sum_raw", "w_max_abs", "w_norm_sq",
+)
+_SAMPLE_PRECOMPUTE_RESIDENT_INT_FIELDS = (
+    "n_params", "in_features", "out_features", "n_tokens_seen",
+)
+_SAMPLE_PRECOMPUTE_RESIDENT_MARGINAL_FIELDS = (
+    "fisher_row", "fisher_col", "g_sq_sum", "act_sq_sum",
+    "act_absmax",
+)
+
+
+def _scored_lm_head_logits(
+    lm_head: nn.Linear,
+    hidden: torch.Tensor,
+    *,
+    start: int,
+    scored_tokens: int,
+) -> torch.Tensor:
+    """Invoke the terminal Linear on shifted-token rows only (never T pad)."""
+    begin = int(start)
+    width = int(scored_tokens)
+    if hidden.ndim != 3 or begin < 0 or width < 1 or begin + width > hidden.size(1):
+        raise ValueError("lm_head scored-token slice is outside hidden states")
+    return lm_head(hidden[:, begin:begin + width, :]).float()
+
+
+def _validate_sample_parallel_publication_state(
+    *,
+    model: str,
+    qname_census: Mapping[str, object],
+    producer_snapshot_root: str,
+    execution_identity: Mapping[str, object],
+) -> None:
+    """Replay source and runtime identity immediately before publication."""
+    from prismaquant.sample_parallel_probe import (
+        validate_local_producer_snapshot,
+        validate_worker_local_source_census,
+    )
+
+    validate_worker_local_source_census(model, qname_census)
+    validate_local_producer_snapshot(
+        producer_snapshot_root,
+        expected_closure_sha256=execution_identity[
+            "producer_snapshot_sha256"
+        ],
+        expected_commit=execution_identity["producer_snapshot_commit"],
+        expected_tree=execution_identity["producer_snapshot_tree"],
+    )
+
+
+def _publish_sample_parallel_importance_stats(
+    output: str | Path,
+    *,
+    partition_contract: Mapping[str, object],
+    execution_identity_sha256: str,
+    ce_sum: float,
+    ce_count: int,
+    publication_postflight: Callable[[], None],
+) -> None:
+    """Publish stage-1 CE only after the same final source/runtime replay."""
+    from prismaquant.sample_parallel_probe import write_local_importance_stats
+
+    publication_postflight()
+    write_local_importance_stats(
+        output,
+        partition_contract=partition_contract,
+        execution_identity_sha256=execution_identity_sha256,
+        ce_sum=ce_sum,
+        ce_count=ce_count,
+    )
+
+
 def _compute_global_precompute(
     ctx: StreamingContext,
     *,
@@ -1457,6 +1856,11 @@ def _compute_global_precompute(
     resident_include_union: str,
     resident_exclude: str,
     activation_cache_dir: str | None,
+    sample_parallel_contract: dict[str, object] | None = None,
+    sample_importance_stats_output: str | None = None,
+    sample_importance_execution_sha256: str | None = None,
+    sample_publication_postflight: Callable[[], None] | None = None,
+    body_global_ce_mean: float | None = None,
 ) -> GlobalPrecompute:
     """Run Phase-1 (streaming forward, cache activations on CPU) and
     Phase-2 (chunked CE backward through lm_head). Install resident
@@ -1489,6 +1893,11 @@ def _compute_global_precompute(
 
     # ---- Phase 1: streaming forward, cache activations on CPU ----
     phase1_expert_info = discover_moe_structure(model, profile=_profile)
+    if sample_parallel_contract is not None and phase1_expert_info:
+        raise RuntimeError(
+            "sample-parallel v1 is dense-only; routed expert Fisher/cache "
+            "rows cannot be assigned exact global sample/token identities"
+        )
     phase1_router_names = sorted(discover_moe_routers(
         model, profile=_profile))
     phase1_tracker = RouterTracker(
@@ -1634,7 +2043,15 @@ def _compute_global_precompute(
     resident_act_rows: dict[str, int] = defaultdict(int)
     resident_act_token_offsets: dict[str, int] = defaultdict(int)
     resident_input_rows_limit = 256
-    _resident_cache_dir = Path(activation_cache_dir) if activation_cache_dir else None
+    # v1 intentionally omits resident/MTP activation blobs from the strict
+    # merge cover.  lm_head is terminal BF16 for the target campaign, and its
+    # chunk-major phase-2 calls do not expose a direct sample/token row map to
+    # the generic hook. Body dense Linears retain the exact cache lane below.
+    _resident_cache_dir = (
+        Path(activation_cache_dir)
+        if activation_cache_dir and sample_parallel_contract is None
+        else None
+    )
     if _resident_cache_dir is not None:
         _resident_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1764,22 +2181,60 @@ def _compute_global_precompute(
     grad_buf = torch.zeros_like(norm_out_d)
     chunk_T = 256
     N, T, _ = norm_out_d.shape
-    if importance_weighting:
+    if importance_weighting and body_global_ce_mean is None:
         total_ce, total_count = 0.0, 0
         for start in range(0, T - 1, chunk_T):
             end = min(start + chunk_T, T)
+            cut = end - 1 - start if end >= T else end - start
+            if cut <= 0:
+                continue
             with torch.no_grad():
-                preds = model.lm_head(norm_out_d[:, start:end, :]).float()
-                cut = end - 1 - start if end >= T else end - start
-                if cut <= 0:
-                    continue
-                preds = preds[:, :cut, :]
+                preds = _scored_lm_head_logits(
+                    model.lm_head, norm_out_d,
+                    start=start, scored_tokens=cut,
+                )
                 tgt = ids[:, start + 1:start + 1 + cut]
                 lp_c = F.log_softmax(preds.reshape(-1, preds.size(-1)), dim=-1)
                 tok_ce = -lp_c.gather(1, tgt.reshape(-1, 1)).squeeze(1)
                 total_ce += float(tok_ce.sum().item())
                 total_count += int(tok_ce.numel())
         ce_mean = total_ce / max(total_count, 1)
+        if sample_importance_stats_output is not None:
+            if sample_parallel_contract is None:
+                raise RuntimeError(
+                    "sample importance collection lacks a partition contract"
+                )
+            for handle in resident_handles:
+                handle.remove()
+            resident_handles.clear()
+            resident_saved_inputs.clear()
+            if sample_publication_postflight is None:
+                raise RuntimeError(
+                    "sample importance publication lacks source/runtime "
+                    "postflight validation"
+                )
+            _publish_sample_parallel_importance_stats(
+                sample_importance_stats_output,
+                partition_contract=sample_parallel_contract,
+                execution_identity_sha256=str(
+                    sample_importance_execution_sha256
+                ),
+                ce_sum=total_ce,
+                ce_count=total_count,
+                publication_postflight=sample_publication_postflight,
+            )
+            print(
+                "[incremental/global] wrote sample-parallel local CE "
+                f"summary to {sample_importance_stats_output}; phase1 will "
+                "be rerun after the global scalar barrier "
+                "(duplicate_phase1_forward_v1)",
+                flush=True,
+            )
+            raise SystemExit(0)
+    elif importance_weighting:
+        ce_mean = float(body_global_ce_mean)
+        if not np.isfinite(ce_mean) or ce_mean <= 0.0:
+            raise RuntimeError("global importance CE mean must be finite and positive")
     else:
         ce_mean = None
 
@@ -1788,7 +2243,10 @@ def _compute_global_precompute(
         cut = end - 1 - start if end >= T else end - start
         if cut <= 0:
             continue
-        preds = model.lm_head(norm_out_d[:, start:end, :]).float()[:, :cut, :]
+        preds = _scored_lm_head_logits(
+            model.lm_head, norm_out_d,
+            start=start, scored_tokens=cut,
+        )
         tgt = ids[:, start + 1:start + 1 + cut]
         lp_c = F.log_softmax(preds.reshape(-1, preds.size(-1)), dim=-1)
         tok_ce = -lp_c.gather(1, tgt.reshape(-1, 1)).squeeze(1)
@@ -1847,7 +2305,8 @@ def _save_precompute_cache(path: Path, pre: GlobalPrecompute,
     format; this file is on the order of (num_layers+1) * act_size,
     typically hundreds of MB for 122B with N=4 T=256."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
+    payload = {
+        "schema": _PRECOMPUTE_CACHE_SCHEMA,
         "activations_cpu": pre.activations_cpu,
         "grad_at_tail": pre.grad_at_tail,
         "ids_cpu": pre.ids.detach().cpu(),
@@ -1870,11 +2329,341 @@ def _save_precompute_cache(path: Path, pre: GlobalPrecompute,
         # raises `KeyError: <source layer idx>` inside attention.
         "shared_pass_state": pre.shared_pass_state,
         "meta": meta,
-    }, str(path))
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            torch.save(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _precompute_tensors_are_finite(value: object) -> bool:
+    if isinstance(value, torch.Tensor):
+        return (
+            value.layout == torch.strided
+            and (
+                not torch.is_floating_point(value)
+                or bool(torch.isfinite(value).all().item())
+            )
+        )
+    if isinstance(value, np.ndarray):
+        return value.dtype.kind not in "fc" or bool(np.isfinite(value).all())
+    if isinstance(value, Mapping):
+        return all(
+            _precompute_tensors_are_finite(item) for item in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return all(_precompute_tensors_are_finite(item) for item in value)
+    if isinstance(value, (float, np.floating)):
+        return bool(np.isfinite(value))
+    return True
+
+
+def _sample_precompute_close(
+    observed: object,
+    expected: object,
+) -> bool:
+    return bool(np.allclose(
+        np.asarray(observed, dtype=np.float64),
+        np.asarray(expected, dtype=np.float64),
+        rtol=1e-5,
+        atol=1e-6,
+    ))
+
+
+def _validate_sample_precompute_resident_payload(
+    data: Mapping[str, object],
+    ids: torch.Tensor,
+    activations: list[torch.Tensor],
+    expected_meta: Mapping[str, Any],
+) -> None:
+    """Close the sample-v1 phase-2 resident-Fisher cache contract.
+
+    The qualified dense Qwen lane has one resident probed Linear: ``lm_head``.
+    MTP is sourced and probed separately, while every decoder Linear is
+    phase-3/layer scoped.  A resumable cache must therefore reproduce the
+    exact lm-head raw accumulator rather than merely naming an arbitrary
+    finite subset of the broader probe census.
+    """
+    from prismaquant.sample_parallel_probe import (
+        LM_HEAD_STATS_ONLY,
+        validate_qname_census,
+    )
+
+    sample_contract = expected_meta.get("sample_parallel")
+    census_raw = expected_meta.get("sample_parallel_qname_census")
+    if not isinstance(sample_contract, Mapping):
+        raise ValueError("sample precompute partition contract differs")
+    if not isinstance(census_raw, Mapping):
+        raise ValueError("sample precompute lacks qname census binding")
+    try:
+        census = validate_qname_census(census_raw)
+    except Exception as exc:
+        raise ValueError("sample precompute qname census differs") from exc
+
+    n_samples, seqlen = (int(ids.shape[0]), int(ids.shape[1]))
+    if (
+        type(sample_contract.get("local_samples")) is not int
+        or sample_contract.get("local_samples") != n_samples
+        or type(sample_contract.get("seqlen")) is not int
+        or sample_contract.get("seqlen") != seqlen
+        or seqlen < 2
+    ):
+        raise ValueError("sample precompute partition geometry differs")
+    expected_tokens = n_samples * (seqlen - 1)
+
+    probe_entries = census["probe_qname_manifest"]["entries"]
+    resident_entries = {
+        str(name): entry
+        for name, entry in probe_entries.items()
+        if entry["disposition"] == LM_HEAD_STATS_ONLY
+    }
+    # This cache contract is deliberately lane-specific.  A future profile
+    # with another terminal resident module must define its own cover rather
+    # than becoming silently reusable under the Qwen sample-v1 identity.
+    if set(resident_entries) != {"lm_head"}:
+        raise ValueError("sample precompute resident qname census differs")
+    expected_qnames = set(resident_entries)
+
+    resident_maps = (
+        "resident_stats", "resident_h_full", "resident_g2_per_token",
+    )
+    for field in resident_maps:
+        if set(data[field]) != expected_qnames:
+            raise ValueError(
+                f"sample precompute exact resident cover differs in {field}"
+            )
+    for field in ("resident_act_snaps", "resident_act_row_indices"):
+        if data[field]:
+            raise ValueError(
+                f"sample precompute resident activation map {field} is nonempty"
+            )
+    if data.get("shared_pass_state") is not None:
+        raise ValueError("sample precompute Qwen shared pass state is nonempty")
+
+    for qname, entry in resident_entries.items():
+        shape = entry.get("shape")
+        if (
+            not isinstance(shape, list)
+            or len(shape) != 2
+            or any(type(value) is not int or value < 1 for value in shape)
+        ):
+            raise ValueError(
+                f"sample precompute source geometry differs for {qname}"
+            )
+        out_features, in_features = int(shape[0]), int(shape[1])
+        row = data["resident_stats"][qname]
+        if (
+            not isinstance(row, dict)
+            or set(row) != _SAMPLE_PRECOMPUTE_RESIDENT_STAT_KEYS
+        ):
+            raise ValueError(
+                f"sample precompute raw resident stat schema differs for {qname}"
+            )
+        for field in _SAMPLE_PRECOMPUTE_RESIDENT_FLOAT_FIELDS:
+            value = row[field]
+            if type(value) is not float or not np.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"sample precompute raw resident {field} differs for {qname}"
+                )
+        expected_ints = {
+            "n_params": out_features * in_features,
+            "in_features": in_features,
+            "out_features": out_features,
+            "n_tokens_seen": expected_tokens,
+        }
+        for field in _SAMPLE_PRECOMPUTE_RESIDENT_INT_FIELDS:
+            value = row[field]
+            if type(value) is not int or value != expected_ints[field]:
+                raise ValueError(
+                    f"sample precompute raw resident {field} differs for {qname}"
+                )
+        if any(row[field] is not None for field in (
+            "route_prob", "router_path", "expert_id",
+        )):
+            raise ValueError(
+                f"sample precompute resident routed markers differ for {qname}"
+            )
+
+        marginals: dict[str, np.ndarray] = {}
+        for field in _SAMPLE_PRECOMPUTE_RESIDENT_MARGINAL_FIELDS:
+            value = row[field]
+            expected_length = (
+                out_features
+                if field in {"fisher_row", "g_sq_sum"}
+                else in_features
+            )
+            if (
+                not isinstance(value, np.ndarray)
+                or value.dtype != np.dtype(np.float32)
+                or value.shape != (expected_length,)
+                or not bool(np.isfinite(value).all())
+                or bool((value < 0.0).any())
+            ):
+                raise ValueError(
+                    f"sample precompute resident marginal {field} differs "
+                    f"for {qname}"
+                )
+            marginals[field] = value
+
+        h_full = data["resident_h_full"][qname]
+        g2 = data["resident_g2_per_token"][qname]
+        if (
+            not isinstance(h_full, torch.Tensor)
+            or h_full.layout != torch.strided
+            or h_full.dtype != torch.float32
+            or h_full.device.type != "cpu"
+            or tuple(h_full.shape) != (out_features, in_features)
+            or not bool(torch.isfinite(h_full).all().item())
+            or bool((h_full < 0.0).any().item())
+        ):
+            raise ValueError(
+                f"sample precompute resident h_full differs for {qname}"
+            )
+        if (
+            not isinstance(g2, torch.Tensor)
+            or g2.layout != torch.strided
+            or g2.dtype != torch.float32
+            or g2.device.type != "cpu"
+            or tuple(g2.shape) != (expected_tokens,)
+            or not bool(torch.isfinite(g2).all().item())
+            or bool((g2 < 0.0).any().item())
+        ):
+            raise ValueError(
+                f"sample precompute resident g2-per-token differs for {qname}"
+            )
+
+        h_numpy = h_full.numpy()
+        trace = row["h_trace_raw"]
+        if not all((
+            _sample_precompute_close(marginals["fisher_row"].sum(), trace),
+            _sample_precompute_close(marginals["fisher_col"].sum(), trace),
+            _sample_precompute_close(h_numpy.sum(), trace),
+            _sample_precompute_close(
+                h_numpy.sum(axis=1), marginals["fisher_row"]
+            ),
+            _sample_precompute_close(
+                h_numpy.sum(axis=0), marginals["fisher_col"]
+            ),
+            _sample_precompute_close(
+                g2.sum().item(), marginals["g_sq_sum"].sum()
+            ),
+        )):
+            raise ValueError(
+                f"sample precompute resident Fisher consistency differs for {qname}"
+            )
+
+    activation_entries = census["activation_qname_manifest"]["entries"]
+    layer_indices = {
+        int(match.group(1))
+        for name in activation_entries
+        if (match := re.search(
+            r"(?:^|[.])layers[.](\d+)(?:[.]|$)", str(name)
+        ))
+    }
+    if (
+        not layer_indices
+        or layer_indices != set(range(max(layer_indices) + 1))
+        or len(activations) != max(layer_indices) + 2
+    ):
+        raise ValueError("sample precompute layer activation cover differs")
+
+
+def _validate_precompute_cache_payload(
+    data: object,
+    expected_meta: Mapping[str, Any],
+    *,
+    sample_calibration: torch.Tensor | None,
+) -> tuple[dict[str, object], torch.Tensor]:
+    if (
+        not isinstance(data, dict)
+        or set(data) != _PRECOMPUTE_CACHE_KEYS
+        or data.get("schema") != _PRECOMPUTE_CACHE_SCHEMA
+        or not isinstance(data.get("meta"), dict)
+        or data["meta"] != dict(expected_meta)
+    ):
+        raise ValueError("precompute cache schema/meta differs")
+    ids = data.get("ids_cpu")
+    activations = data.get("activations_cpu")
+    grad = data.get("grad_at_tail")
+    if (
+        not isinstance(ids, torch.Tensor)
+        or ids.dtype != torch.int64
+        or ids.ndim != 2
+        or not isinstance(activations, list)
+        or not activations
+        or any(
+            not isinstance(value, torch.Tensor)
+            or value.ndim != 3
+            or not torch.is_floating_point(value)
+            or tuple(value.shape[:2]) != tuple(ids.shape)
+            or not bool(torch.isfinite(value).all().item())
+            for value in activations
+        )
+        or len({tuple(value.shape) for value in activations}) != 1
+        or not isinstance(grad, torch.Tensor)
+        or not torch.is_floating_point(grad)
+        or tuple(grad.shape) != tuple(activations[-1].shape)
+        or not bool(torch.isfinite(grad).all().item())
+    ):
+        raise ValueError("precompute cache activation/gradient geometry differs")
+    mapping_fields = (
+        "resident_stats", "resident_h_full", "resident_g2_per_token",
+        "resident_act_snaps", "resident_act_row_indices", "expert_info",
+        "router_counts", "router_totals", "router_active_counts",
+        "expert_route_stats",
+    )
+    if any(not isinstance(data.get(name), dict) for name in mapping_fields):
+        raise ValueError("precompute cache resident/routed containers differ")
+    if not _precompute_tensors_are_finite(data):
+        raise ValueError("precompute cache contains a non-finite tensor/value")
+
+    sample_contract = expected_meta.get("sample_parallel")
+    if sample_contract is not None:
+        expected_ids = (
+            sample_calibration.detach().to("cpu")
+            if isinstance(sample_calibration, torch.Tensor) else None
+        )
+        if (
+            not isinstance(sample_contract, Mapping)
+            or expected_ids is None
+            or expected_ids.dtype != torch.int64
+            or tuple(ids.shape) != tuple(expected_ids.shape)
+            or not torch.equal(ids, expected_ids)
+            or calibration_data_hash(ids)
+            != sample_contract.get("local_calibration_hash")
+        ):
+            raise ValueError("sample precompute ids differ")
+        for map_name in (
+            "expert_info", "router_counts", "router_totals",
+            "router_active_counts", "expert_route_stats",
+        ):
+            if data[map_name]:
+                raise ValueError(
+                    f"sample precompute routed map {map_name!r} is nonempty"
+                )
+        _validate_sample_precompute_resident_payload(
+            data, ids, activations, expected_meta
+        )
+    return data, ids
 
 
 def _load_precompute_cache(path: Path, expected_meta: dict[str, Any],
-                           device: torch.device) -> GlobalPrecompute | None:
+                           device: torch.device,
+                           sample_calibration: torch.Tensor | None = None,
+                           ) -> GlobalPrecompute | None:
     """Load cached precompute if meta matches; return None otherwise."""
     if not path.exists():
         return None
@@ -1884,27 +2673,47 @@ def _load_precompute_cache(path: Path, expected_meta: dict[str, Any],
         print(f"[incremental/global] cache load failed ({e}); recomputing",
               flush=True)
         return None
-    cached_meta = data.get("meta") or {}
-    for key, expected in expected_meta.items():
-        if cached_meta.get(key) != expected:
-            print(f"[incremental/global] cache meta mismatch on {key!r}: "
-                  f"cached={cached_meta.get(key)!r} expected={expected!r}; "
-                  "recomputing", flush=True)
-            return None
+    try:
+        data, ids_cpu = _validate_precompute_cache_payload(
+            data,
+            expected_meta,
+            sample_calibration=sample_calibration,
+        )
+    except Exception as exc:
+        print(
+            f"[incremental/global] cache validation failed ({exc}); "
+            "recomputing",
+            flush=True,
+        )
+        return None
+    sample_contract = expected_meta.get("sample_parallel")
     return GlobalPrecompute(
         activations_cpu=data["activations_cpu"],
         grad_at_tail=data["grad_at_tail"],
-        ids=data["ids_cpu"].to(device),
+        ids=ids_cpu.to(device),
         resident_stats=data["resident_stats"],
         resident_h_full=data["resident_h_full"],
         resident_g2_per_token=data.get("resident_g2_per_token", {}),
         resident_act_snaps=data["resident_act_snaps"],
         resident_act_row_indices=data.get("resident_act_row_indices", {}),
-        expert_info=data.get("expert_info", {}),
-        router_counts={},
-        router_totals={},
-        router_active_counts={},
-        expert_route_stats={},
+        expert_info=(
+            data["expert_info"] if sample_contract is not None
+            else data.get("expert_info", {})
+        ),
+        router_counts=(
+            data["router_counts"] if sample_contract is not None else {}
+        ),
+        router_totals=(
+            data["router_totals"] if sample_contract is not None else {}
+        ),
+        router_active_counts=(
+            data["router_active_counts"]
+            if sample_contract is not None else {}
+        ),
+        expert_route_stats=(
+            data["expert_route_stats"]
+            if sample_contract is not None else {}
+        ),
         # Restore the phase-1 cross-layer shared state (Gemma4
         # `shared_kv_states`); `None` for every architecture that declares no
         # per-pass shared kwargs, and for caches written before this key
@@ -1946,6 +2755,8 @@ def _run_body_streaming_shard(
     minimax_fast_moe_chunk_size: int = 32,
     activation_rows_limit: int = 256,
     precomputed: GlobalPrecompute | None = None,
+    sample_parallel_contract: dict[str, object] | None = None,
+    sample_parallel_execution_identity_sha256: str | None = None,
 ):
     if precomputed is None:
         raise ValueError(
@@ -1974,6 +2785,14 @@ def _run_body_streaming_shard(
     ]
     all_tracked = [n for n in all_linears
                    if inc.search(n) and not exc.search(n)]
+    if sample_parallel_contract is not None:
+        routed = sorted(set(all_tracked) & set(precomputed.expert_info))
+        if routed:
+            raise RuntimeError(
+                "sample-parallel v1 activation capture is dense-only; "
+                "routed expert qnames lack exact sample/token row origins: "
+                f"{routed[:4]}"
+            )
     layer_linear_names: list[list[str]] = []
     for L in range(num_layers):
         pref = f"{layers_prefix}{L}."
@@ -2097,12 +2916,26 @@ def _run_body_streaming_shard(
     # Linears; resident snaps were populated during Phase-2 hooks above).
     activation_snaps: dict[str, list[torch.Tensor]] = defaultdict(list)
     activation_row_indices: dict[str, list[torch.Tensor]] = defaultdict(list)
+    activation_row_priorities: dict[str, list[torch.Tensor]] = defaultdict(list)
+    activation_candidate_rows: dict[str, int] = defaultdict(int)
     activation_rows: dict[str, int] = defaultdict(int)
     activation_token_offsets: dict[str, int] = defaultdict(int)
     input_rows_limit = max(1, int(activation_rows_limit))
     cache_dir = Path(activation_cache_dir) if activation_cache_dir else None
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
+    activation_priority_plan = None
+    if sample_parallel_contract is not None and cache_dir is not None:
+        from prismaquant.sample_parallel_probe import (
+            ActivationPriorityPlanCache,
+        )
+
+        # Layer-scoped deterministic selection metadata.  It lives beside the
+        # existing activation accumulators, never owns activations/weights,
+        # and is cleared at the existing per-layer flush below.
+        activation_priority_plan = ActivationPriorityPlanCache(
+            sample_parallel_contract
+        )
     act_fname_sub = re.compile(r"[^A-Za-z0-9_-]")
 
     # v22 Fix C: async + batched activation cache writes.
@@ -2131,6 +2964,8 @@ def _run_body_streaming_shard(
     def flush_activation_snapshots(
         snaps_by_name: dict[str, list[torch.Tensor]],
         indices_by_name: dict[str, list[torch.Tensor]] | None = None,
+        priorities_by_name: dict[str, list[torch.Tensor]] | None = None,
+        candidate_rows_by_name: dict[str, int] | None = None,
     ):
         if cache_dir is None:
             return
@@ -2146,9 +2981,12 @@ def _run_body_streaming_shard(
             # #43: PRISMAQUANT_ACT_CACHE_FP32 keeps activations at FP32
             # for better Hessian numerical stability in the cost step.
             # 2× storage cost; recommended when disk is plentiful.
-            cache_dtype = (torch.float32
-                           if os.environ.get("PRISMAQUANT_ACT_CACHE_FP32", "1") != "0"
-                           else torch.bfloat16)
+            cache_dtype = (
+                torch.float32
+                if sample_parallel_contract is not None
+                or os.environ.get("PRISMAQUANT_ACT_CACHE_FP32", "1") != "0"
+                else torch.bfloat16
+            )
             X = torch.cat(snaps, dim=0).to(
                 "cpu", dtype=cache_dtype
             ).contiguous()
@@ -2157,11 +2995,47 @@ def _run_body_streaming_shard(
                 index_parts = indices_by_name.pop(name, [])
                 if index_parts:
                     row_indices = torch.cat(index_parts, dim=0).to(
-                        torch.long
+                        "cpu", dtype=torch.long
+                    ).contiguous()
+            row_priorities = None
+            if priorities_by_name is not None:
+                priority_parts = priorities_by_name.pop(name, [])
+                if priority_parts:
+                    row_priorities = torch.cat(priority_parts, dim=0).to(
+                        "cpu", dtype=torch.long
                     ).contiguous()
             payload = {"inputs": X, "name": name}
             if row_indices is not None and row_indices.numel() == X.shape[0]:
                 payload["row_indices"] = row_indices
+            if sample_parallel_contract is not None:
+                if sample_parallel_execution_identity_sha256 is None:
+                    raise RuntimeError(
+                        "sample-parallel activation lacks execution identity"
+                    )
+                if (
+                    row_indices is None
+                    or row_priorities is None
+                    or row_priorities.numel() != X.shape[0]
+                    or candidate_rows_by_name is None
+                ):
+                    raise RuntimeError(
+                        f"sample-parallel activation provenance incomplete for {name}"
+                    )
+                from prismaquant.sample_parallel_probe import (
+                    activation_cache_shard_stamp,
+                )
+                payload["row_priorities"] = row_priorities
+                payload["sample_parallel_activation"] = (
+                    activation_cache_shard_stamp(
+                        sample_parallel_contract,
+                        qname=name,
+                        rows_limit=input_rows_limit,
+                        candidate_rows=int(candidate_rows_by_name.pop(name, 0)),
+                        execution_identity_sha256=(
+                            sample_parallel_execution_identity_sha256
+                        ),
+                    )
+                )
             fname = act_fname_sub.sub("__", name) + ".pt"
             target = cache_dir / fname
             if _act_pool is not None:
@@ -2418,11 +3292,77 @@ def _run_body_streaming_shard(
                     x = inp[0] if isinstance(inp, tuple) else inp
                     saved_inputs[name] = x.detach()
                     if cache_dir is not None:
-                        need = input_rows_limit - activation_rows[name]
                         flat = x.detach().reshape(-1, x.size(-1))
                         base = int(activation_token_offsets[name])
                         activation_token_offsets[name] += int(flat.size(0))
-                        if need > 0:
+                        if sample_parallel_contract is not None:
+                            prior_x = (
+                                activation_snaps[name][0]
+                                if activation_snaps[name] else None
+                            )
+                            prior_rows = (
+                                activation_row_indices[name][0]
+                                if activation_row_indices[name] else None
+                            )
+                            prior_priorities = (
+                                activation_row_priorities[name][0]
+                                if activation_row_priorities[name] else None
+                            )
+                            if (
+                                activation_priority_plan is not None
+                                and prior_x is None
+                                and base == 0
+                                and int(flat.size(0))
+                                == activation_priority_plan.candidate_rows
+                            ):
+                                # The ordinary dense Linear call exposes the
+                                # complete local sample/token grid at once.
+                                # Resolve top-R once per fused group; sibling
+                                # q/k/v and gate/up hooks reuse these exact
+                                # device tensors and only gather their own X.
+                                rows, priorities = (
+                                    activation_priority_plan.top_rows(
+                                        name,
+                                        device=flat.device,
+                                        rows_limit=input_rows_limit,
+                                    )
+                                )
+                                selected = flat.index_select(0, rows)
+                            else:
+                                from prismaquant.sample_parallel_probe import (
+                                    merge_activation_priority_reservoir,
+                                )
+
+                                local_rows = torch.arange(
+                                    flat.size(0), device=flat.device,
+                                    dtype=torch.long,
+                                ) + base
+                                selected, rows, priorities = (
+                                    merge_activation_priority_reservoir(
+                                        prior_inputs=prior_x,
+                                        prior_local_rows=prior_rows,
+                                        prior_priorities=prior_priorities,
+                                        new_inputs=flat,
+                                        new_local_rows=local_rows,
+                                        qname=name,
+                                        partition_contract=(
+                                            sample_parallel_contract
+                                        ),
+                                        rows_limit=input_rows_limit,
+                                        priority_plan_cache=(
+                                            activation_priority_plan
+                                        ),
+                                    )
+                                )
+                            activation_snaps[name] = [selected.detach()]
+                            activation_row_indices[name] = [rows]
+                            activation_row_priorities[name] = [priorities]
+                            activation_candidate_rows[name] += int(flat.size(0))
+                            activation_rows[name] = int(selected.size(0))
+                        else:
+                            need = input_rows_limit - activation_rows[name]
+                            if need <= 0:
+                                return
                             if flat.size(0) > need:
                                 idx = torch.randperm(flat.size(0), device=flat.device)[:need]
                                 flat = flat.index_select(0, idx)
@@ -2692,6 +3632,12 @@ def _run_body_streaming_shard(
                 marginal_accumulator=packed_marginal_acc,
                 profile=_shard_profile,
             ) if layer_in_scope else {}
+            if sample_parallel_contract is not None and packed_meta:
+                raise RuntimeError(
+                    "sample-parallel v1 activation capture is dense-only; "
+                    "packed expert activation rows lack exact sample/token "
+                    "origins"
+                )
             layer_prefix = f"{layers_prefix}{L}."
             layer_packed_handles: list = []
             for key, md in packed_meta.items():
@@ -2989,8 +3935,18 @@ def _run_body_streaming_shard(
             # Holding every target expert's sampled inputs until shard
             # finalization adds several GB of avoidable host pressure on
             # MiniMax's 256-expert layers.
-            flush_activation_snapshots(activation_snaps, activation_row_indices)
+            flush_activation_snapshots(
+                activation_snaps,
+                activation_row_indices,
+                activation_row_priorities,
+                activation_candidate_rows,
+            )
             flush_activation_snapshots(packed_act_snaps)
+            if activation_priority_plan is not None:
+                # q/k/v and gate/up have all observed the same cached plan by
+                # this point.  Release it with the layer's activation blobs so
+                # priority metadata cannot accumulate across the sweep.
+                activation_priority_plan.clear()
 
             phase_pressure_trim_bytes += int(ctx.unload(L) or 0)
             # The `del` drops all per-layer refs; CPython ref counting
@@ -3073,11 +4029,21 @@ def _run_body_streaming_shard(
 
     # Flush activation snapshots.
     if cache_dir is not None:
-        flush_activation_snapshots(activation_snaps, activation_row_indices)
+        flush_activation_snapshots(
+            activation_snaps,
+            activation_row_indices,
+            activation_row_priorities,
+            activation_candidate_rows,
+        )
         flush_activation_snapshots(packed_act_snaps)
-        cache_dtype = (torch.float32
-                       if os.environ.get("PRISMAQUANT_ACT_CACHE_FP32", "1") != "0"
-                       else torch.bfloat16)
+        if activation_priority_plan is not None:
+            activation_priority_plan.clear()
+        cache_dtype = (
+            torch.float32
+            if sample_parallel_contract is not None
+            or os.environ.get("PRISMAQUANT_ACT_CACHE_FP32", "1") != "0"
+            else torch.bfloat16
+        )
         for name, snaps in resident_act_snaps.items():
             if not snaps:
                 continue
@@ -3175,6 +4141,33 @@ def _run_body_streaming_shard(
 # no phase-3 reverse over body is needed since MTP gradients don't propagate
 # back into the body.
 # ---------------------------------------------------------------------------
+def _load_mtp_source_for_probe(
+    mtp_profile,
+    inner_mtp: nn.Module,
+    model_path: str,
+    *,
+    sample_parallel: bool,
+) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
+    """Load MTP weights, closing source/module coverage before any forward."""
+    raw = mtp_profile.read_mtp_source_state_dict(model_path)
+    if not raw:
+        if sample_parallel:
+            raise RuntimeError(
+                f"sample-parallel profile '{mtp_profile.name}' declares MTP "
+                "but the checkpoint has no source tensors under "
+                f"{mtp_profile.mtp_source_prefix()!r}"
+            )
+        return {}, [], []
+    missing, extra = mtp_profile.load_mtp_state_dict(inner_mtp, raw)
+    if sample_parallel and (missing or extra):
+        raise RuntimeError(
+            "sample-parallel MTP source/module coverage failure: "
+            f"unmatched_source={missing[:8]} "
+            f"module_params_unset={extra[:8]}"
+        )
+    return raw, list(missing), list(extra)
+
+
 def _run_mtp_streaming_shard(
     ctx: StreamingContext,
     *,
@@ -3192,6 +4185,7 @@ def _run_mtp_streaming_shard(
     prefetch_lookahead: int = 3,
     activation_rows_limit: int = 256,
     precomputed: GlobalPrecompute | None = None,
+    sample_parallel_contract: dict[str, object] | None = None,
 ):
     # Lazy import to avoid depending on transformers subpath at module load.
     from .model_profiles import profile_from_model as _profile_from_model
@@ -3245,7 +4239,12 @@ def _run_mtp_streaming_shard(
     mtp_wrapper.to(device=device, dtype=dtype)
     mtp_wrapper.eval()
 
-    raw = mtp_profile.read_mtp_source_state_dict(model_path)
+    raw, missing, extra = _load_mtp_source_for_probe(
+        mtp_profile,
+        inner_mtp,
+        model_path,
+        sample_parallel=sample_parallel_contract is not None,
+    )
     if not raw:
         # No MTP weights in source — write empty pickle to satisfy the
         # schedule and return. Mirrors the text-only visual fallback.
@@ -3277,7 +4276,6 @@ def _run_mtp_streaming_shard(
         print(f"[incremental/mtp] no MTP weights; wrote empty shard "
               f"pickle to {output_path}", flush=True)
         return
-    missing, extra = mtp_profile.load_mtp_state_dict(inner_mtp, raw)
     loaded = len(raw) - len(missing)
     print(f"[incremental/mtp] loaded {loaded}/{len(raw)} mtp weights "
           f"(missing={len(missing)}, module_params_unset={len(extra)})",
@@ -3296,10 +4294,19 @@ def _run_mtp_streaming_shard(
     print(f"[incremental/mtp] tracking {len(tracked)} MTP Linears", flush=True)
 
     expert_info_all = discover_moe_structure(mtp_wrapper, profile=mtp_profile)
+    if sample_parallel_contract is not None and expert_info_all:
+        raise RuntimeError(
+            "sample-parallel v1 rejects routed/packed MTP modules; MTP must "
+            "be the complete dense terminal-BF16 Linear census"
+        )
     expert_info = {k: v for k, v in expert_info_all.items() if k in tracked}
     top_k = read_top_k(mtp_wrapper, default=2)
 
-    cache_dir = Path(activation_cache_dir) if activation_cache_dir else None
+    cache_dir = (
+        Path(activation_cache_dir)
+        if activation_cache_dir and sample_parallel_contract is None
+        else None
+    )
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
     detail_dir = Path(h_detail_dir) if h_detail_dir else None
@@ -3456,6 +4463,56 @@ def main():
                          "give different sample subsets from the same dataset, "
                          "useful for multi-probe robust-Fisher experiments. "
                          "Default 42 reproduces historical behavior.")
+    ap.add_argument(
+        "--global-calibration-tensor", default=None,
+        help="Immutable tokenized calibration artifact produced by "
+             "`python -m prismaquant.sample_parallel_probe "
+             "prepare-calibration`. Every sample-parallel worker loads this "
+             "same global tensor once and selects its declared partition.",
+    )
+    ap.add_argument(
+        "--sample-partition-index", type=int, default=None,
+        help="Zero-based partition from --global-calibration-tensor. This "
+             "mode requires the complete body plus MTP/head qname scope; "
+             "only the calibration sample axis may differ between workers.",
+    )
+    ap.add_argument(
+        "--sample-run-contract", default=None,
+        help="Closed source-censused execution contract produced by "
+             "`sample_parallel_probe prepare-run-contract`. Required with "
+             "sample parallelism; arbitrary shared metadata is not accepted.",
+    )
+    ap.add_argument(
+        "--sample-cover", default=None,
+        help="Digest-bound exact sample cover produced by "
+             "`sample_parallel_probe build-cover`. Required with sample "
+             "parallelism and checked against this worker's selected "
+             "calibration partition before any model/GPU setup.",
+    )
+    ap.add_argument(
+        "--producer-snapshot-root",
+        default=os.environ.get("PRISMAQUANT_PRODUCER_SNAPSHOT_ROOT"),
+        help="Mounted immutable PrismaQuant runtime snapshot root; required "
+             "and completely re-verified in sample-parallel mode.",
+    )
+    ap.add_argument(
+        "--container-image-digest",
+        default=os.environ.get("PRISMAQUANT_PRODUCER_IMAGE_DIGEST"),
+        help="Local pinned producer image digest (sha256:<64-hex>); required "
+             "and matched to the run contract in sample-parallel mode.",
+    )
+    ap.add_argument(
+        "--sample-importance-stats-output", default=None,
+        help="Stage 1 of exact importance weighting: write this partition's "
+             "raw CE sum/count receipt and exit before Fisher backward. The "
+             "v1 apply stage reruns phase 1 after the scalar barrier.",
+    )
+    ap.add_argument(
+        "--sample-global-importance-receipt", default=None,
+        help="Stage 2 of exact importance weighting: receipt emitted by "
+             "`sample_parallel_probe merge-importance`; its global CE mean "
+             "is used for every body token before backward.",
+    )
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--device-map", default=None)
     ap.add_argument("--dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
@@ -3573,15 +4630,37 @@ def main():
     ap.add_argument("--mm-max-text-len", type=int, default=128,
                     help="Max text tokens per multimodal calibration sample.")
     args = ap.parse_args()
+    if (args.global_calibration_tensor is None) != (
+        args.sample_partition_index is None
+    ):
+        ap.error(
+            "--global-calibration-tensor and --sample-partition-index must "
+            "be supplied together"
+        )
+    if (args.global_calibration_tensor is None) != (
+        args.sample_run_contract is None
+    ):
+        ap.error(
+            "--sample-run-contract is required exactly when sample-parallel "
+            "calibration flags are supplied"
+        )
+    if (args.global_calibration_tensor is None) != (args.sample_cover is None):
+        ap.error(
+            "--sample-cover is required exactly when sample-parallel "
+            "calibration flags are supplied"
+        )
+    args.sample_parallel_contract = None
+    args.sample_parallel_importance = None
+    args.sample_parallel_activation_scope = None
+    args.sample_parallel_execution_identity = None
+    args.sample_parallel_qname_census = None
+    args.sample_parallel_importance_execution_sha256 = None
     # The marginal switch is read deep inside the hooks (and by shard
     # subprocesses), so the CLI flag lands on the env var the same way
     # allocator.py publishes --threads. Unset leaves the env default.
     if args.emit_marginals is not None:
         os.environ["PRISMAQUANT_PROBE_MARGINALS"] = (
             "1" if args.emit_marginals else "0")
-    from prismaquant.gpu_guard import require_cuda_hot_path
-    require_cuda_hot_path("incremental_probe", args.device)
-
     # MINOR-M33 (closed): KV-sharing models are probed normally now — the
     # reverse sweep seeds each producing layer's backward with the cotangent its
     # consumers accumulated on the borrowed K/V, so k_proj/v_proj h_trace is the
@@ -3597,6 +4676,238 @@ def main():
     end = n_layers if args.end_layer is None else min(args.end_layer, n_layers)
     if start >= end:
         raise SystemExit(f"empty layer range: start={start} end={end}")
+
+    # Sample parallelism is deliberately orthogonal to the existing qname
+    # shards: every worker owns the complete model scope and differs only in
+    # the exact calibration samples it sees. Load the immutable global tensor
+    # once here, validate its semantic identity, then retain only the local
+    # contiguous slice for the GPU pass.
+    sample_parallel_calib: torch.Tensor | None = None
+    if args.global_calibration_tensor is not None:
+        from prismaquant.sample_parallel_probe import (
+            _load_json_mapping,
+            activation_scope_receipt,
+            importance_execution_identity_sha256,
+            load_calibration_partition,
+            load_global_importance_receipt,
+            load_local_importance_stats,
+            validate_run_contract,
+            validate_local_producer_snapshot,
+            validate_worker_local_source_census,
+        )
+        from prismaquant.sample_parallel_probe_merge import (
+            validate_worker_sample_cover,
+        )
+
+        try:
+            run_contract = validate_run_contract(
+                _load_json_mapping(args.sample_run_contract)
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"sample-parallel run contract is invalid: {exc}"
+            ) from exc
+        execution_identity = run_contract["execution_identity"]
+        qname_census = run_contract["qname_census"]
+        if not args.producer_snapshot_root:
+            raise SystemExit(
+                "sample-parallel worker requires --producer-snapshot-root"
+            )
+        try:
+            producer_snapshot = validate_local_producer_snapshot(
+                args.producer_snapshot_root,
+                expected_closure_sha256=execution_identity[
+                    "producer_snapshot_sha256"
+                ],
+                expected_commit=execution_identity[
+                    "producer_snapshot_commit"
+                ],
+                expected_tree=execution_identity["producer_snapshot_tree"],
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"sample-parallel producer snapshot preflight failed: {exc}"
+            ) from exc
+        # A run contract produced on one host cannot authorize another host's
+        # bytes merely because the model path string agrees.  Revalidate this
+        # worker's own identity-cache fingerprints and compare only the stable
+        # content/census projection before calibration, CE, precompute, or
+        # shard reuse can be admitted.
+        try:
+            validate_worker_local_source_census(args.model, qname_census)
+        except Exception as exc:
+            raise SystemExit(
+                f"sample-parallel worker source preflight failed: {exc}"
+            ) from exc
+        if Path(args.output).exists():
+            raise SystemExit(
+                f"sample-parallel probe output already exists; refusing "
+                f"overwrite: {args.output}"
+            )
+        sample_parallel_calib, contract = load_calibration_partition(
+            args.global_calibration_tensor,
+            partition_index=int(args.sample_partition_index),
+        )
+        try:
+            validate_worker_sample_cover(
+                _load_json_mapping(args.sample_cover),
+                run_contract=run_contract,
+                partition_contract=contract,
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"sample-parallel worker cover preflight failed: {exc}"
+            ) from exc
+        if int(contract["seqlen"]) != int(args.seqlen):
+            raise SystemExit(
+                "sample-parallel calibration seqlen differs from --seqlen"
+            )
+        if str(contract.get("dataset", "")) != str(args.dataset):
+            raise SystemExit(
+                "sample-parallel calibration dataset differs from --dataset"
+            )
+        if str(contract.get("model", "")) != str(args.model):
+            raise SystemExit(
+                "sample-parallel calibration model differs from --model"
+            )
+        if int(contract.get("calib_seed", -1)) != int(args.calib_seed):
+            raise SystemExit(
+                "sample-parallel calibration seed differs from --calib-seed"
+            )
+        expected_execution = {
+            "model": args.model,
+            "dataset": args.dataset,
+            "calib_seed": int(args.calib_seed),
+            "dtype": args.dtype,
+            "calibration_modality": args.calibration_modality,
+            "importance_weighting": bool(args.importance_weighting),
+            "activation_rows_limit": int(args.activation_rows_limit),
+            "emit_marginals": bool(_marginals_enabled()),
+            "h_detail": False,
+            "probe_schedule": "unified_full_body_mtp_lm_head_text_only_v1",
+            "include_visual": False,
+            "producer_snapshot_sha256": producer_snapshot[
+                "closure_sha256"
+            ],
+            "producer_snapshot_commit": producer_snapshot["commit"],
+            "producer_snapshot_tree": producer_snapshot["tree"],
+            "container_image_digest": args.container_image_digest,
+        }
+        for key, expected in expected_execution.items():
+            if execution_identity.get(key) != expected:
+                raise SystemExit(
+                    f"sample-parallel execution identity {key!r} differs: "
+                    f"contract={execution_identity.get(key)!r}, cli={expected!r}"
+                )
+        importance_execution_sha = importance_execution_identity_sha256(
+            execution_identity, qname_census
+        )
+        if start != 0 or end != n_layers:
+            raise SystemExit(
+                "sample-parallel workers must process the complete body "
+                "qname scope (start-layer=0, end-layer=all)"
+            )
+        if not args.unified_sweep:
+            raise SystemExit(
+                "sample-parallel v1 requires --unified-sweep so every worker "
+                "uses the closed full-body execution schedule"
+            )
+        if args.include_visual:
+            raise SystemExit(
+                "sample-parallel v1 requires --no-include-visual; visual "
+                "Linears are excluded by the text-only source census"
+            )
+        if not args.include_mtp or not args.include_lm_head:
+            raise SystemExit(
+                "sample-parallel workers must include MTP and lm_head; "
+                "qname partitioning is not allowed on this lane"
+            )
+        if args.calibration_modality != "text-only":
+            raise SystemExit(
+                "sample-parallel incremental probe currently requires "
+                "text-only calibration; multimodal sampling has a separate "
+                "data contract"
+            )
+        if args.h_detail_dir is not None:
+            raise SystemExit(
+                "sample-parallel v1 is dense-only and requires --h-detail-dir "
+                "to be omitted; routed/per-qname g2 index merging is not "
+                "part of this exact lane"
+            )
+        collect_path = args.sample_importance_stats_output
+        apply_path = args.sample_global_importance_receipt
+        if args.importance_weighting and bool(collect_path) == bool(apply_path):
+            raise SystemExit(
+                "importance-weighted sample workers require exactly one of "
+                "--sample-importance-stats-output (stage 1) or "
+                "--sample-global-importance-receipt (stage 2)"
+            )
+        if not args.importance_weighting and (collect_path or apply_path):
+            raise SystemExit(
+                "sample importance receipts are invalid with "
+                "--no-importance-weighting"
+            )
+        if apply_path:
+            receipt = load_global_importance_receipt(
+                apply_path,
+                partition_contract=contract,
+                execution_identity_sha256=importance_execution_sha,
+            )
+            # Carry the complete, digest-validated global/local CE receipt.
+            # Projection here would erase artifact-SHA and duplicate-forward
+            # provenance before the strict cross-host merge can audit it.
+            args.sample_parallel_importance = dict(receipt)
+        elif collect_path and Path(collect_path).exists():
+            load_local_importance_stats(
+                collect_path,
+                partition_contract=contract,
+                execution_identity_sha256=importance_execution_sha,
+            )
+            print(
+                "[incremental/global] reusable local CE summary already "
+                f"exists at {collect_path}; no GPU work required",
+                flush=True,
+            )
+            return
+        args.nsamples = int(contract["local_samples"])
+        args.sample_parallel_contract = contract
+        args.sample_parallel_activation_scope = activation_scope_receipt()
+        args.sample_parallel_execution_identity = dict(execution_identity)
+        args.sample_parallel_qname_census = dict(qname_census)
+        args.sample_parallel_importance_execution_sha256 = (
+            importance_execution_sha
+        )
+        try:
+            _validate_sample_activation_directory_cover(
+                Path(args.activation_cache_dir),
+                set(str(name) for name in qname_census[
+                    "activation_qname_manifest"
+                ]["entries"]),
+                require_complete=False,
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"sample-parallel activation-cache preflight failed: {exc}"
+            ) from exc
+        print(
+            "[incremental] sample-parallel partition "
+            f"{contract['partition_index']}/{contract['partition_count']}: "
+            f"samples [{contract['sample_start']},{contract['sample_stop']}) "
+            f"local_hash={contract['local_calibration_hash']} "
+            f"global_hash={contract['global_calibration_hash']}",
+            flush=True,
+        )
+    elif (
+        args.sample_importance_stats_output
+        or args.sample_global_importance_receipt
+    ):
+        raise SystemExit(
+            "sample importance flags require --global-calibration-tensor "
+            "and --sample-partition-index"
+        )
+
+    from prismaquant.gpu_guard import require_cuda_hot_path
+    require_cuda_hot_path("incremental_probe", args.device)
 
     # Resolve --layers-per-shard: int literal or "auto" (hardware-adaptive).
     lps_arg = str(args.layers_per_shard).strip()
@@ -3686,7 +4997,7 @@ def main():
 
     ctx: StreamingContext | None = None
     tokenizer = None
-    calib: torch.Tensor | None = None
+    calib: torch.Tensor | None = sample_parallel_calib
     resolved_prefetch_lookahead: int | None = None
 
     # Module-level cache: when set, the StreamingContext + tokenizer are
@@ -3695,7 +5006,9 @@ def main():
     # This is what makes the in-process multi-chunk driver fast — the
     # 244 GB BF16 source streaming offload setup + LayerCache survive
     # across chunks, so chunk_01..N hit warm caches.
-    use_persistent = os.environ.get("PRISMAQUANT_PROBE_CTX_CACHE") == "1"
+    use_persistent = _persistent_probe_context_enabled(
+        args.sample_parallel_contract
+    )
 
     def _ensure_ready():
         nonlocal ctx, tokenizer, calib
@@ -3729,9 +5042,13 @@ def main():
                           flush=True)
                 _print_mem_snapshot("chunk start (post-reset)")
         if ctx is None:
-            from transformers import AutoTokenizer
             staged = stage_text_only(args.model)
-            tokenizer = AutoTokenizer.from_pretrained(staged, trust_remote_code=True)
+            if sample_parallel_calib is None:
+                from transformers import AutoTokenizer
+
+                tokenizer = AutoTokenizer.from_pretrained(
+                    staged, trust_remote_code=True
+                )
             offload_folder = str(work_dir / "streaming_offload")
             ctx = _build_streaming_context(
                 args.model,
@@ -3810,6 +5127,26 @@ def main():
         # cache built with the flag off must not be reused with it on.
         emit_marginals=_marginals_enabled(),
     )
+    if args.sample_parallel_contract is not None:
+        precompute_meta["sample_parallel"] = dict(
+            args.sample_parallel_contract
+        )
+    if args.sample_parallel_importance is not None:
+        precompute_meta["sample_parallel_importance"] = dict(
+            args.sample_parallel_importance
+        )
+    if args.sample_parallel_activation_scope is not None:
+        precompute_meta["sample_parallel_activation_scope"] = dict(
+            args.sample_parallel_activation_scope
+        )
+    if args.sample_parallel_execution_identity is not None:
+        precompute_meta["sample_parallel_execution_identity"] = dict(
+            args.sample_parallel_execution_identity
+        )
+    if args.sample_parallel_qname_census is not None:
+        precompute_meta["sample_parallel_qname_census"] = dict(
+            args.sample_parallel_qname_census
+        )
 
     def _ensure_precompute() -> GlobalPrecompute:
         """Load Phase-1/Phase-2 artifacts from the on-disk cache if the
@@ -3817,8 +5154,19 @@ def main():
         nonlocal precomputed
         if precomputed is not None:
             return precomputed
-        cached = _load_precompute_cache(
-            precompute_cache_path, precompute_meta, device)
+        cached = (
+            None
+            if args.sample_importance_stats_output is not None
+            else _load_precompute_cache(
+                precompute_cache_path,
+                precompute_meta,
+                device,
+                sample_calibration=(
+                    calib if args.sample_parallel_contract is not None
+                    else None
+                ),
+            )
+        )
         if cached is not None:
             print(f"[incremental/global] reused precompute cache at "
                   f"{precompute_cache_path}", flush=True)
@@ -3840,12 +5188,47 @@ def main():
             resident_include_union=resident_include_union,
             resident_exclude=linear_exclude,
             activation_cache_dir=args.activation_cache_dir,
+            sample_parallel_contract=args.sample_parallel_contract,
+            sample_importance_stats_output=(
+                args.sample_importance_stats_output
+                if args.sample_parallel_contract is not None else None
+            ),
+            sample_importance_execution_sha256=(
+                args.sample_parallel_importance_execution_sha256
+                if args.sample_parallel_contract is not None else None
+            ),
+            sample_publication_postflight=(
+                lambda: _validate_sample_parallel_publication_state(
+                    model=args.model,
+                    qname_census=args.sample_parallel_qname_census,
+                    producer_snapshot_root=args.producer_snapshot_root,
+                    execution_identity=(
+                        args.sample_parallel_execution_identity
+                    ),
+                )
+                if args.sample_parallel_contract is not None else None
+            ),
+            body_global_ce_mean=(
+                float(args.sample_parallel_importance["body_global_ce_mean"])
+                if args.sample_parallel_importance is not None else None
+            ),
         )
         _save_precompute_cache(
             precompute_cache_path, precomputed, precompute_meta)
         print(f"[incremental/global] wrote precompute cache to "
               f"{precompute_cache_path}", flush=True)
         return precomputed
+
+    if args.sample_importance_stats_output is not None:
+        # Stage 1 is a scalar-reduction barrier, not a probe-shard pass. Force
+        # it before any ordinary qname/LPS reuse checks; _compute exits after
+        # atomically writing the local CE summary.
+        try:
+            _ensure_precompute()
+        finally:
+            if ctx is not None and not use_persistent:
+                ctx.shutdown()
+        raise AssertionError("sample importance collection did not exit")
 
     # Linear-level reuse cache (LPS-invariant): union of per-Linear
     # Fisher stats from all existing shards that share the same
@@ -3871,6 +5254,22 @@ def main():
         "activation_rows_limit": int(args.activation_rows_limit),
         "router_coverage_version": _ROUTER_COVERAGE_VERSION,
         "emit_marginals": _marginals_enabled(),
+        "sample_parallel": (
+            dict(args.sample_parallel_contract)
+            if args.sample_parallel_contract is not None else None
+        ),
+        "sample_parallel_importance": (
+            dict(args.sample_parallel_importance)
+            if args.sample_parallel_importance is not None else None
+        ),
+        "sample_parallel_activation_scope": (
+            dict(args.sample_parallel_activation_scope)
+            if args.sample_parallel_activation_scope is not None else None
+        ),
+        "sample_parallel_execution_identity": (
+            dict(args.sample_parallel_execution_identity)
+            if args.sample_parallel_execution_identity is not None else None
+        ),
     }
     linear_cache = scan_cached_linear_stats(shard_dir, content_meta_anchor)
     if linear_cache:
@@ -3970,6 +5369,14 @@ def main():
                     minimax_fast_moe_chunk_size=args.minimax_fast_moe_chunk_size,
                     activation_rows_limit=args.activation_rows_limit,
                     precomputed=pre,
+                    sample_parallel_contract=args.sample_parallel_contract,
+                    sample_parallel_execution_identity_sha256=(
+                        args.sample_parallel_execution_identity[
+                            "identity_sha256"
+                        ]
+                        if args.sample_parallel_execution_identity is not None
+                        else None
+                    ),
                 )
             elif kind == "mtp":
                 pre = _ensure_precompute()
@@ -3989,6 +5396,7 @@ def main():
                     prefetch_lookahead=_prefetch_lookahead(),
                     activation_rows_limit=args.activation_rows_limit,
                     precomputed=pre,
+                    sample_parallel_contract=args.sample_parallel_contract,
                 )
             elif kind == "lm_head":
                 # The lm_head Fisher is collected naturally during the
@@ -4013,6 +5421,7 @@ def main():
                     model_path=args.model,
                     prefetch_lookahead=_prefetch_lookahead(),
                     precomputed=pre,
+                    sample_parallel_contract=args.sample_parallel_contract,
                 )
             else:
                 # visual blocks are stripped by text-only staging, so the
@@ -4174,13 +5583,14 @@ def main():
     all_pickles = list(shard_paths)
     if visual_probe_path is not None and visual_probe_path.exists():
         all_pickles.append(visual_probe_path)
-    merge_probe_pickles(all_pickles, Path(args.output))
+    _merged = merge_probe_pickles(
+        all_pickles, Path(args.output), write_output=False
+    )
     # Body-coverage gate: a merged probe missing whole layers poisons
     # every downstream stage silently (cost skips them, the allocator
     # allocates around them, the export passes them through). Fail
     # fast here instead.
-    with open(args.output, "rb") as _cf:
-        _cov = pickle.load(_cf)
+    _cov = _merged
     _body_prefix = schedule[0].layer_prefix if len(schedule) else None
     if _body_prefix:
         _expected_cov = set()
@@ -4207,8 +5617,6 @@ def main():
     # requested modality. Written under the top-level `meta` dict so a
     # simple `pickle.load(...)['meta']['calibration_modality']` lookup
     # works.
-    with open(args.output, "rb") as _f:
-        _merged = pickle.load(_f)
     _meta = dict(_merged.get("meta", {}))
     _meta["calibration_modality"] = args.calibration_modality
     # Estimator provenance: packed-expert h_trace is the per-token
@@ -4216,9 +5624,136 @@ def main():
     # sum-then-square 5-50x inflated values and are refused by
     # prepare_cost_context unless explicitly allowed).
     _meta["packed_fisher_estimator"] = "per_token_v2"
+    _meta["emit_marginals"] = _marginals_enabled()
+    _meta["activation_rows_limit"] = int(args.activation_rows_limit)
+    if args.sample_parallel_contract is not None:
+        # Promote the partition contract to one canonical top-level location.
+        # The per-qname shards also carry it under incremental_shard for
+        # resume safety; the cross-worker merger reads this copy without
+        # depending on the internal layer-shard grouping.
+        if calibration_data_hash(calib) != args.sample_parallel_contract[
+            "local_calibration_hash"
+        ]:
+            raise SystemExit(
+                "sample-parallel local calibration hash changed during probe"
+            )
+        _meta["sample_parallel"] = dict(args.sample_parallel_contract)
+        if args.sample_parallel_importance is not None:
+            _meta["sample_parallel_importance"] = dict(
+                args.sample_parallel_importance
+            )
+        _meta["sample_parallel_activation_scope"] = dict(
+            args.sample_parallel_activation_scope
+        )
+        _meta["sample_parallel_execution_identity"] = dict(
+            args.sample_parallel_execution_identity
+        )
+        probe_entries = args.sample_parallel_qname_census[
+            "probe_qname_manifest"
+        ]["entries"]
+        observed_qnames = set(str(name) for name in _merged.get("stats", {}))
+        expected_qnames = set(str(name) for name in probe_entries)
+        if observed_qnames != expected_qnames:
+            raise SystemExit(
+                "sample-parallel worker probe differs from the authoritative "
+                f"source qname census: missing={sorted(expected_qnames-observed_qnames)[:8]} "
+                f"unexpected={sorted(observed_qnames-expected_qnames)[:8]}"
+            )
+        try:
+            from prismaquant.sample_parallel_probe import token_rows_per_sample
+            from prismaquant.sample_parallel_probe_merge import (
+                validate_sample_parallel_stat_row,
+            )
+
+            for name in sorted(expected_qnames):
+                entry = probe_entries[name]
+                validate_sample_parallel_stat_row(
+                    _merged["stats"][name],
+                    qname=name,
+                    expected_tokens=(
+                        int(args.sample_parallel_contract["local_samples"])
+                        * token_rows_per_sample(
+                            str(entry["token_rows_per_sample"]),
+                            int(args.sample_parallel_contract["seqlen"]),
+                        )
+                    ),
+                    expected_shape=tuple(
+                        int(value) for value in entry["shape"]
+                    ),
+                    require_marginals=bool(_marginals_enabled()),
+                )
+        except Exception as exc:
+            raise SystemExit(
+                f"sample-parallel worker stat postflight failed: {exc}"
+            ) from exc
+        for map_name in (
+            "router_counts", "router_totals", "router_active_counts",
+            "expert_route_stats", "expert_info",
+        ):
+            if _merged.get(map_name):
+                raise SystemExit(
+                    f"sample-parallel v1 rejects routed/packed map {map_name!r}"
+                )
+        expected_activation = set(
+            args.sample_parallel_qname_census[
+                "activation_qname_manifest"
+            ]["entries"]
+        )
+        try:
+            activation_entries = args.sample_parallel_qname_census[
+                "activation_qname_manifest"
+            ]["entries"]
+            activation_dir = Path(args.activation_cache_dir)
+            _validate_sample_activation_directory_cover(
+                activation_dir,
+                expected_activation,
+                require_complete=True,
+            )
+            for name in sorted(expected_activation):
+                _validate_sample_activation_blob(
+                    activation_dir / (
+                        re.sub(r"[^A-Za-z0-9_-]", "__", name) + ".pt"
+                    ),
+                    qname=name,
+                    expected_width=int(activation_entries[name]["shape"][1]),
+                    partition_contract=args.sample_parallel_contract,
+                    rows_limit=int(args.activation_rows_limit),
+                    execution_identity_sha256=str(
+                        args.sample_parallel_execution_identity[
+                            "identity_sha256"
+                        ]
+                    ),
+                )
+        except Exception as exc:
+            raise SystemExit(
+                f"sample-parallel worker activation postflight failed: {exc}"
+            ) from exc
+        # Close the source/runtime TOCTOU window immediately before the only
+        # durable worker publication.  The source identity-cache verifier
+        # replays mutation-sensitive shard fingerprints; the runtime verifier
+        # re-hashes the complete immutable source-snapshot ledger.
+        try:
+            _validate_sample_parallel_publication_state(
+                model=args.model,
+                qname_census=args.sample_parallel_qname_census,
+                producer_snapshot_root=args.producer_snapshot_root,
+                execution_identity=args.sample_parallel_execution_identity,
+            )
+        except Exception as exc:
+            raise SystemExit(
+                "sample-parallel source/runtime changed before publication: "
+                f"{exc}"
+            ) from exc
     _merged["meta"] = _meta
-    with open(args.output, "wb") as _f:
-        pickle.dump(_merged, _f)
+    output_payload = pickle.dumps(_merged, protocol=pickle.HIGHEST_PROTOCOL)
+    if args.sample_parallel_contract is not None:
+        from prismaquant.sample_parallel_probe import (
+            _atomic_write_bytes_no_clobber,
+        )
+        _atomic_write_bytes_no_clobber(Path(args.output), output_payload)
+    else:
+        from prismaquant.cost_stage_checkpoint import atomic_write_bytes
+        atomic_write_bytes(Path(args.output), output_payload)
     print(f"[incremental] wrote merged probe to {args.output} "
           f"(calibration_modality={args.calibration_modality})", flush=True)
 

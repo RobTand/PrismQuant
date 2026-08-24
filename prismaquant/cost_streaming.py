@@ -29,6 +29,13 @@ STREAMED_MODEL_IDENTITY_SCHEMA = "prismaquant.streamed_model.identity.v1"
 STREAMED_MODEL_IDENTITY_CACHE_SCHEMA = (
     "prismaquant.streamed_model.identity_cache.v1"
 )
+STREAMED_MODEL_PORTABLE_CONTENT_SCHEMA = (
+    "prismaquant.streamed_model.portable_content.v1"
+)
+_STREAMED_MODEL_CONFIG_PROVENANCE_FIELDS = frozenset({
+    "_name_or_path",
+    "transformers_version",
+})
 
 
 @dataclass
@@ -53,7 +60,18 @@ class StreamedCausalLM:
     boundary/isolated-layer methods for its streamed adjoint.
     """
 
-    def __init__(self, context, profile, *, prefetch_lookahead: int = 2):
+    def __init__(
+        self,
+        context,
+        profile,
+        *,
+        prefetch_lookahead: int = 2,
+        require_prefetched_residency: bool = False,
+    ):
+        if type(require_prefetched_residency) is not bool:
+            raise TypeError(
+                "require_prefetched_residency must be a bool"
+            )
         self.context = context
         self.model = context.model
         self.base_model = context.base_model
@@ -64,6 +82,7 @@ class StreamedCausalLM:
         self.dtype = context.dtype
         self.profile = profile
         self.prefetch_lookahead = max(0, int(prefetch_lookahead))
+        self.require_prefetched_residency = require_prefetched_residency
         self._pinned_layer: int | None = None
 
     def layer_index_for_qname(self, qname: str) -> int:
@@ -174,7 +193,10 @@ class StreamedCausalLM:
             self.context.schedule_prefetch(depth)
         for layer in range(self.num_layers):
             if self._pinned_layer != layer:
-                self.context.install(layer)
+                self.context.install(
+                    layer,
+                    require_prefetched=self.require_prefetched_residency,
+                )
             self.context.schedule_prefetch(layer + self.prefetch_lookahead)
             try:
                 with torch.no_grad():
@@ -205,6 +227,21 @@ class StreamedCausalLM:
     ) -> torch.Tensor:
         return self._finish(hidden)
 
+    def schedule_reverse_prefetch(self, layer: int):
+        """Prefetch the next layer in this runner's reverse traversal.
+
+        This is the reverse-direction twin of the forward loops' explicit
+        ``schedule_prefetch(layer + lookahead)`` call.  Residency remains
+        owned by the existing :class:`StreamingContext` / ``LayerCache``;
+        this method only supplies the traversal direction so reverse AURA
+        can overlap the next source-layer read with the current layer's
+        render and backward work.
+        """
+        target = int(layer) - self.prefetch_lookahead
+        if self.prefetch_lookahead <= 0 or target < 0:
+            return None
+        return self.context.schedule_prefetch(target)
+
     def __call__(self, input_ids: torch.Tensor, **_kwargs: Any):
         """Run an end-to-end no-cache forward while streaming body layers."""
         ids, position_ids, hidden, position_embeddings, attention_mask = (
@@ -223,7 +260,10 @@ class StreamedCausalLM:
             self.context.schedule_prefetch(depth)
         for layer in range(self.num_layers):
             if self._pinned_layer != layer:
-                self.context.install(layer)
+                self.context.install(
+                    layer,
+                    require_prefetched=self.require_prefetched_residency,
+                )
             self.context.schedule_prefetch(layer + self.prefetch_lookahead)
             try:
                 hidden = self._call(
@@ -250,6 +290,7 @@ def build_streamed_causal_lm(
     prefetch_workers: int | str | None = None,
     prefetch_min_available_gb: float | str | None = None,
     prefetch_lookahead: int = 2,
+    require_prefetched_residency: bool = False,
 ) -> StreamedCausalLM:
     """Build the repository's existing streaming context and wrap it."""
     from prismaquant.streaming_model import _build_streaming_context
@@ -272,7 +313,10 @@ def build_streamed_causal_lm(
             max(0, context.max_cache_slots - 1),
         )
     return StreamedCausalLM(
-        context, profile, prefetch_lookahead=effective_lookahead
+        context,
+        profile,
+        prefetch_lookahead=effective_lookahead,
+        require_prefetched_residency=require_prefetched_residency,
     )
 
 
@@ -611,6 +655,129 @@ def validate_streamed_model_identity(
     return canonical
 
 
+def canonical_streamed_model_semantic_config(
+    config: object,
+    *,
+    where: str = "streamed model config",
+) -> dict[str, object]:
+    """Return config semantics without host/runtime provenance fields.
+
+    ``PretrainedConfig.to_dict()`` records the path it was loaded from and the
+    installed Transformers version.  A text-only staging directory therefore
+    makes two executions of the same checkpoint byte-distinct.  Those values
+    remain in the v1 host-local identity for backward compatibility, but they
+    cannot participate in a cross-host content join.  Strip them recursively
+    so composed configs cannot reintroduce the same provenance below the top
+    level.
+    """
+    from prismaquant.cost_stage_checkpoint import canonical_json
+
+    canonical = canonical_json(config, where=where)
+    if not isinstance(canonical, dict):
+        raise RuntimeError(f"{where} must be a JSON mapping")
+
+    def _strip(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                str(key): _strip(item)
+                for key, item in value.items()
+                if key not in _STREAMED_MODEL_CONFIG_PROVENANCE_FIELDS
+            }
+        if isinstance(value, list):
+            return [_strip(item) for item in value]
+        return value
+
+    stripped = _strip(canonical)
+    assert isinstance(stripped, dict)
+    return stripped
+
+
+def portable_streamed_model_content_identity(
+    identity: object,
+    *,
+    where: str = "streamed model portable content identity",
+) -> dict[str, object]:
+    """Derive one path-neutral digest from a complete v1 local identity.
+
+    The serialized v1 ``content_sha256`` intentionally remains unchanged: it
+    binds absolute shard paths and the exact runtime config stored in an
+    identity cache.  This additive projection is derivable from old caches and
+    is the value suitable for comparing independently built caches on separate
+    hosts.  Local cache validation must still happen before callers use it.
+    """
+    from collections.abc import Mapping
+    from prismaquant.cost_stage_checkpoint import canonical_json_sha256
+
+    canonical = validate_streamed_model_identity(identity, where=where)
+    config = canonical_streamed_model_semantic_config(
+        canonical.get("config"), where=f"{where} config",
+    )
+
+    def _string_map(value: object, *, field: str) -> dict[str, str]:
+        if not isinstance(value, Mapping) or not value:
+            raise RuntimeError(f"{where} requires nonempty {field}")
+        result: dict[str, str] = {}
+        for raw_key, raw_value in value.items():
+            if (
+                not isinstance(raw_key, str)
+                or not raw_key
+                or not isinstance(raw_value, str)
+                or not raw_value
+            ):
+                raise RuntimeError(f"{where} {field} is malformed")
+            result[raw_key] = raw_value
+        return dict(sorted(result.items()))
+
+    weight_map = _string_map(canonical.get("weight_map"), field="weight_map")
+    checkpoint_weight_map = _string_map(
+        canonical.get("checkpoint_weight_map"),
+        field="checkpoint_weight_map",
+    )
+    raw_shards = canonical.get("shards")
+    assert isinstance(raw_shards, list)  # validated above
+    shards: list[dict[str, object]] = []
+    seen_names: set[str] = set()
+    for index, raw in enumerate(raw_shards):
+        if not isinstance(raw, Mapping):
+            raise RuntimeError(f"{where} shard {index} is malformed")
+        path = raw.get("path")
+        size = raw.get("size")
+        sha256 = str(raw.get("sha256", "")).lower()
+        if not isinstance(path, str) or not path:
+            raise RuntimeError(f"{where} shard {index} has no path")
+        name = Path(path).name
+        if (
+            not name
+            or name in seen_names
+            or type(size) is not int
+            or int(size) < 1
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        ):
+            raise RuntimeError(
+                f"{where} shard {index} has no unique basename/size/content"
+            )
+        seen_names.add(name)
+        shards.append({"name": name, "size": int(size), "sha256": sha256})
+    shards.sort(key=lambda row: str(row["name"]))
+
+    body = {
+        "schema": STREAMED_MODEL_PORTABLE_CONTENT_SCHEMA,
+        "source_identity_schema": STREAMED_MODEL_IDENTITY_SCHEMA,
+        "config": config,
+        "weight_map": weight_map,
+        "checkpoint_weight_map": checkpoint_weight_map,
+        "shards": shards,
+    }
+    return {
+        "schema": STREAMED_MODEL_PORTABLE_CONTENT_SCHEMA,
+        "portable_content_sha256": canonical_json_sha256(
+            body, where=where,
+        ),
+        "checkpoint_shards": len(shards),
+        "checkpoint_tensors": len(checkpoint_weight_map),
+    }
+
+
 def compact_streamed_model_identity(
     identity: object,
     *,
@@ -722,6 +889,53 @@ def validate_cached_streamed_model_identity(
                 "streamed model identity tensor-to-shard map differs from the "
                 "current source checkpoint index"
             )
+
+    # The shard/index fingerprints above do not cover config.json.  Recreate
+    # the same text-only Transformers config used by the streaming runner and
+    # compare its semantic JSON to the config carried by the cached content
+    # identity.  `_name_or_path` is host-local provenance and
+    # `transformers_version` belongs to the separately pinned runtime image;
+    # neither is model semantics.  All other fields must agree exactly, so a
+    # same-shape change such as rope scaling cannot reuse old source hashes.
+    try:
+        from transformers import AutoConfig
+
+        from prismaquant.sensitivity_probe import stage_text_only
+
+        config_path = Path(source) / "config.json"
+        config_before = _streamed_identity_stat_fingerprint(config_path)
+        staged = stage_text_only(source)
+        live_config = canonical_streamed_model_semantic_config(
+            AutoConfig.from_pretrained(
+                staged, trust_remote_code=True, local_files_only=True,
+            ).to_dict(),
+            where="live streamed model config",
+        )
+        cached_config = canonical_streamed_model_semantic_config(
+            identity.get("config"), where="cached streamed model config",
+        )
+        if not isinstance(live_config, dict) or not isinstance(
+            cached_config, dict
+        ):
+            raise TypeError("streamed model config is not a mapping")
+        config_after = _streamed_identity_stat_fingerprint(config_path)
+    except Exception as exc:
+        raise RuntimeError(
+            "streamed model identity cannot validate the live source config"
+        ) from exc
+    if config_before != config_after:
+        raise RuntimeError(
+            "streamed model identity source config changed while validating"
+        )
+    if live_config != cached_config:
+        changed = sorted(
+            key for key in set(live_config) | set(cached_config)
+            if live_config.get(key) != cached_config.get(key)
+        )
+        raise RuntimeError(
+            "streamed model identity live config differs from its cached "
+            f"content identity: changed={changed[:12]}"
+        )
 
     for path_key, expected in fingerprint_by_path.items():
         path = Path(path_key)

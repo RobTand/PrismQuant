@@ -10,10 +10,15 @@ has run. The only sm89 evidence in this report is a no-device cross-compile
 whose receipt explicitly caps its claim at `compile_only`.
 
 The PrismaQuant changes were developed in a working tree based on
-`e370e1d7183c683c6ddab4bef82dc1dc1cf06200`; the Gridbook changes were developed
-in a separate working tree based on
-`edfb3bca38aa1faae627dab82caef76e6b1743a2`. Those base revisions identify the
-starting points, not integration commits or release pins.
+`e370e1d7183c683c6ddab4bef82dc1dc1cf06200`. The Gridbook change was first
+developed from `edfb3bca38aa1faae627dab82caef76e6b1743a2`, then rebased as one
+reviewed commit, `63e019f31b57c13b0fe9697441f5084eb194440a`, whose exact parent is
+the shipped Gridbook v0.9.0 commit
+`d8cef3fba5fd99f12ba99efccbb52188d449ed6d`. That integration preserves the
+v0.9.0 TP/EP contract subtrees and leaves the v10 runtime-contract bytes at
+SHA-256 `4ecb851e50fa8c16d860969925b13cad31f4e1b979ba6fec21534035487efa6b`.
+It is a SHA-pinned candidate, not another v0.9.0 release, wheel, tag, or
+PrismaQuant runtime-pin advancement.
 
 ## Implemented contract
 
@@ -27,7 +32,8 @@ starting points, not integration commits or release pins.
 | Gridbook boundary | `gridbook.runtime-contract.v10` separates reader `rungs` from `producer_rungs`. `gridbook.lane-eligibility.v2` resolves exact platform/family/structure/regime/rung cells. Even when an artifact selects a legal subset, the candidate runtime must carry external flag-free `sm_89` `device_qualified`/`backed` dense decode and batch cells for the complete twelve-rung producer ladder. Strict route provenance is derived from that supplied candidate-v10 attestation, not the historical generic serving pin, and its schema cannot carry generic override/non-native/fallback dispositions. PrismaQuant does not vendor or import Gridbook. The v0.9.0 TP and EP contract subtrees and runtime behavior are preserved. |
 | Graph gate | The graph arm requires vLLM compilation mode 3, explicit Inductor, `FULL_AND_PIECEWISE`, capture sizes `[1,2,4,8,16,32,64]`, **7/7 PIECEWISE and 7/7 FULL** completion, and one direct `torch.compile` wrapper with `fullgraph=True` and `dynamic=False`. Positive fresh compilation and all-capture markers are required; compiler, eager, graph, or partial-capture fallback refuses the receipt. |
 | vLLM boundary | The strict launcher requires a separate closed vLLM pin naming the official upstream Git URL, one exact 40-hex commit, exact installed version, and installed `RECORD` SHA-256. Server-side collection requires matching PEP 610 VCS provenance and RECORD-bound `direct_url.json` plus fullgraph-wrapper bytes; manifest validation and shipcard replay require the same pin. No candidate vLLM pin is committed, so an immutable image alone cannot open release. Generic serving evidence is unchanged. |
-| Build path | The operator launcher uses validated-surrogate selection with `PRODUCTION_CACHE=1`, `PRODUCTION_RECACHE=0`, resident prefetch required, and streamed BF16 AURA. One absolute AURA checkpoint directory owns `PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE`; source preflight revalidates that identity. `CB_IMATRIX_SOURCE=probe` supplies one full-corpus calibration/value identity to cost, frontier KL, and export. The official wrapper is accepted only after the nested dense text model and complete source census validate, then uses the established flattened text-only staging path. |
+| Build path | The operator launcher uses validated-surrogate selection with `PRODUCTION_CACHE=1`, `PRODUCTION_RECACHE=0`, resident prefetch required, and streamed BF16 AURA. The burn plan, checkpoint identity, and runner all bind exactly two existing source `LayerCache` slots, effective lookahead one, and explicit `require_prefetched_residency=true`. That opt-in policy fail-closes forward capture and reverse AURA to resident or completed-prefetch layers; reverse schedules the next lower layer before current render/backward work, and missing required residency refuses before synchronous source I/O. Generic streamed runners retain the false default, and no parallel cache is added. One absolute AURA checkpoint directory owns `PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE`; source preflight revalidates that identity. `CB_IMATRIX_SOURCE=probe` supplies one full-corpus calibration/value identity to cost, frontier KL, and export. The official wrapper is accepted only after the nested dense text model and complete source census validate, then uses the established flattened text-only staging path. |
+| Two-host probe and burn | The sample-parallel probe is an exact map/reduce contract over disjoint complete-sample partitions. A global CE barrier precedes Fisher work; raw Fisher traces and both marginals merge before one global normalization. Activation selection is independently replayed over the full priority domain and enters the existing activation-cache path. Cross-host equality uses path-neutral checkpoint/config/shard content while each host still validates its own paths and live files. The merged bundle, execution attestation, and probe-derived imatrix are closed before CUDA. Allocate validates the complete bundle, passes the already captured probe bytes through a sealed inherited memfd, and rechecks them after the allocator exits. The burn then stripes whole layers 0--31 and 32--63 across the two hosts and renders four formats per Linear, not twelve. `PRISMAQUANT_CB_COMPILE_FAIL_CLOSED=1` upgrades live CB scoring to full-graph Inductor with compiler suppression disabled and exact one-dispatch-per-call proof. Receipts distinguish live CUDA calls from units restored through AURA's already checksummed, deserialized, strict-settings/producer/source-bound envelopes. They explicitly stamp LDLQ atom execution `not_applicable` because this lattice campaign has LDLQ off. Generic CB runs retain their compatibility fallback. |
 | Learned-v2 | All twelve producer rungs default to their committed lattice. A rung promotes to a learned table only when one `prismaquant.fp8_cbl_promotion_receipt.v1` result certificate passes both holdouts and binds the complete source/tensor-map identity, training calibration, derived imatrix values, role census, exact candidate FP16 table digests, and all rung decisions. There is no inferred learned/lattice crossover. |
 | Release evidence and publication | Strict artifacts gain a mandatory `rtx4090.fp8_cb` shipcard slot derived again from on-disk policy. A physical eager arm and a physical graph arm are independent from quality and matched-performance evidence; a Spark or cross-compile cannot fill the strict slot. Any mutable slot failure, frozen-snapshot replay failure, or whole-tree size failure is non-forceable: `--force-unverified` and `--confirm-name` cannot stamp or publish it. The strict publisher folds whole-container, upload-block, and per-tensor hashes into its existing held-FD freeze pass, then replays the frozen manifest/ledger/index from that receipt without a second weight scan; generic publication behavior and the post-upload held-FD replay remain unchanged. |
 
@@ -57,7 +63,12 @@ copy/content pass, neither of which this unforked runtime supports.
 | Evidence | Result | Provenance and limit |
 |---|---|---|
 | PrismaQuant CPU regression selection | **466 passed, 13 skipped** | Implementation-session output reported before the final documentation rerun. No standalone log or complete selector was retained, so this count is supporting evidence, not an immutable receipt. Skips were GPU-dependent. |
+| Final PrismaQuant integration selector | **979 passed, 4 skipped; 11 subtests passed** | Post-audit selector covered every touched probe, measurement, anchored-cost, strict compile-proof, streamed-prefetch, burn, source-identity, allocator, DSV4 AURA compatibility, RTX 4090 artifact/policy/graph/shipcard/validation-only, Gridbook-boundary/execution, format-registry, and documentation suite. Durable log: `/home/rob/dq-runs/qwen38-27b-rtx4090-fp8cb-18gb-vonly-20260824/validation/cpu-final-postfix-precommit-v2.log`; SHA-256 `f8289d2d8bb90625fedaa90c7739f985857c3ad5b05fc9a56480e380f65b8f96`. No GPU was exposed. |
+| Canonical extensionless-dataset launch fix | **52 passed, 1 skipped** | The first immutable Sparklina `prepare-calibration` smoke refused before model load because the host JSONL was correctly mounted at canonical `/dataset`, but the generic loader inferred local files only from suffix and attempted the absent Hugging Face `datasets` package. Failure log: `/home/rob/dq-runs/qwen38-27b-rtx4090-fp8cb-18gb-vonly-20260824/validation/canonical-dataset-first-smoke-failed.log`; SHA-256 `f8accef513f7dff9d521e7e978f64397fceb9f685b5ae5723ec2d9ab22639869`. The loader now content-sniffs only existing extensionless regular files while preserving known alternate-format behavior; focused loader/sample-runbook/docs log: `/home/rob/dq-runs/qwen38-27b-rtx4090-fp8cb-18gb-vonly-20260824/validation/canonical-dataset-fix.log`; SHA-256 `b8379191513758135aa2c426c085617a176c31efd9bd106bae9d92158d085a7b`. |
+| Separate frozen DSv4 W8A16 diagnostic | **2 failed, 983 passed, 4 skipped; 11 subtests passed** | A deliberately broader diagnostic also selected `tests/test_dsv4_w8a16_export_handoff.py`. Its two closure tests refused because four reviewed source hashes are already stale at this branch's pre-change `HEAD`: three untouched files and `nvfp4_cb_formats.py` all disagree before this working-tree change. The RTX4090 work does not authorize re-freezing that independent exporter. Failure log: `/home/rob/dq-runs/qwen38-27b-rtx4090-fp8cb-18gb-vonly-20260824/validation/cpu-final-postfix-precommit.log`; SHA-256 `e2d25c4e3f631c234a81f69e1eb6449ef1994a1b1f0670df6e84c24f804b01d8`. No GPU was exposed. |
+| Exact runbook audit | **201 passed, 1 skipped** | All concatenated Bash fences pass `bash -n`; all 12 documented sample/burn command argument sets parse against the live CLI; the incremental-probe options, snapshot/bootstrap parsers, canonical container paths, non-root writable caches, RepoDigest authority, barriers, transfers, compile flags, and FP8-only menu align. No GPU was exposed. |
 | Gridbook CPU proof selection | **539 passed, 36 skipped** | Agent-reported proof output. No standalone log or complete selector was retained, so this count is supporting evidence only. It does not qualify a GPU route. |
+| Gridbook v0.9.0 rebase proof | **410 passed, 35 skipped** | Focused tests in the preserved isolated worktree `/home/rob/dq-runs/gridbook-4090-rebase.LKc9XC`; ancestry proves candidate `63e019f` is exactly one commit over v0.9.0 `d8cef3f`, the 5060/NVFP4 branch was not changed, and `git diff --check` passed. This is CPU structural/contract evidence, not an installed-wheel or physical-device qualification. |
 | Learned-v2 repeat on GB10 | **pass**, exact four-table digest repeat; peak CUDA allocation 33,676,288 bytes | Physical NVIDIA GB10, compute capability 12.1, PyTorch 2.13.0+cu130, CUDA 13.0, immutable image `eugr/spark-vllm@sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869`. This proves same-build/same-device learned-v2 repeatability only; it is not Ada or serving evidence. |
 | Explicit sm89 Gridbook preflight | **pass at `compile_only`** | Container received no GPU devices. It compiled explicit `-gencode=arch=compute_89,code=sm_89` SASS, found the required Gridbook extension symbols, and found vLLM's `dynamic_per_token_scaled_fp8_quant` and `cutlass_scaled_mm` ABI without executing them. The receipt expressly excludes device correctness, device performance, `torch_compile`, and `vllm_cudagraph`. |
 
@@ -116,6 +127,32 @@ than hidden:
 The retry added only the read-only driver library; it did not expose a GPU,
 allocate a tensor, invoke an operator, query a device capability, or run vLLM
 graph compilation.
+
+## Deferred AMD FP8-CB serving constraints
+
+AMD implementation remains out of scope for this campaign, but the follow-up
+must retain this dated design constraint.  With Gridbook's four-way FP8 product
+codebook, the byte-resident LUT is `8 * 2**(K/4)` bytes: K40 is 8 KiB, K44 is
+16 KiB, and K48 is 32 KiB.  Materialising the LUT as BF16 doubles those figures.
+RDNA 3.5 and RDNA4 expose 128 KiB LDS per WGP but at most 64 KiB to one
+workgroup; large allocations also reduce workgroup residency and divergent
+gathers can suffer LDS bank conflicts.
+
+The provisional producer/serving policy for the later AMD work is therefore:
+
+- RDNA 3.5: K4--K40 are the default candidate range; K44 requires an FP8-byte
+  LDS table with conversion after lookup or a measured equivalent; K48 is
+  non-default.
+- RDNA4: K4--K44 are the default candidate range; K48 requires a separately
+  tuned and measured lane.
+- The portable artifact format continues to admit K48.  These are performant
+  serving-profile limits, not wire-format restrictions, and must be replaced
+  by shape-specific LDS/occupancy/bank-conflict measurements on the owned AMD
+  systems before any AMD production default ships.
+
+This is consistent with the repository's historical Strix result, which saw a
+performance cliff above K40 when the BF16-materialised LUT stopped being
+comfortably LDS-resident (`docs/ARCHITECTURE.md`, Strix historical snapshot).
 
 ## Evidence boundary and remaining release gates
 

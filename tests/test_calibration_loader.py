@@ -36,6 +36,24 @@ def test_local_jsonl_calibration_does_not_require_datasets(monkeypatch, tmp_path
     assert calib.shape == (1, 8)
 
 
+def test_extensionless_bind_mounted_jsonl_stays_local(monkeypatch, tmp_path):
+    path = tmp_path / "dataset"
+    path.write_text(json.dumps({"text": "abcdefghijklmnopqrstuvwxyz"}) + "\n")
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "datasets":
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    calib = load_calibration(_ToyTokenizer(), str(path), n_samples=1, seqlen=8)
+
+    assert calib.shape == (1, 8)
+
+
 class _PackedExperts(nn.Module):
     def __init__(self):
         super().__init__()

@@ -836,6 +836,7 @@ class _StreamedReceiptBinding:
     costs: Mapping[str, object]
     formats_by_qname: Mapping[str, object]
     purposes_by_qname: Mapping[str, object]
+    unmeasured_formats_by_qname: Mapping[str, object]
     arm_identity_sha256: str
     payload_identity_sha256: str
 
@@ -852,9 +853,12 @@ def _streamed_receipt_binding(
         raise AnchoredCostError("streamed AURA payload has no provenance")
     renderer = provenance.get("production_anchor_renderer")
     purposes = provenance.get("production_anchor_render_purposes")
+    unmeasured = provenance.get(
+        "production_anchor_unmeasured_formats_by_qname"
+    )
     cb_identity = provenance.get("cb_render_identity")
     if not all(isinstance(value, Mapping) for value in (
-        renderer, purposes, cb_identity,
+        renderer, purposes, unmeasured, cb_identity,
     )):
         raise AnchoredCostError(
             "streamed AURA lacks identity-bound production renderer/plan"
@@ -871,6 +875,7 @@ def _streamed_receipt_binding(
         costs=costs,
         formats_by_qname=renderer_formats,
         purposes_by_qname=purposes,
+        unmeasured_formats_by_qname=unmeasured,
         arm_identity_sha256=canonical_json_sha256(
             arm_identity, where="streamed production render arm identity",
         ),
@@ -878,6 +883,7 @@ def _streamed_receipt_binding(
             {
                 "production_anchor_renderer": renderer,
                 "production_anchor_render_purposes": purposes,
+                "production_anchor_unmeasured_formats_by_qname": unmeasured,
                 "cb_render_identity": cb_identity,
             },
             where="streamed production render payload identity",
@@ -1656,17 +1662,13 @@ def merge_streamed_cb_anchor_aura_shards(
     payloads: Sequence[Mapping[str, object]],
     *,
     col_weights: Mapping[str, object],
-    expected_qnames: Sequence[str] | None = None,
-    expected_formats_by_qname: Mapping[str, Sequence[str]] | None = None,
+    expected_qnames: Sequence[str],
+    expected_formats_by_qname: Mapping[str, Sequence[str]],
     expected_purposes_by_qname: Mapping[
         str, Mapping[str, Sequence[str]]
-    ] | None = None,
-    expected_unmeasured_formats_by_qname: (
-        Mapping[str, Sequence[str]] | None
-    ) = None,
-    expected_legal_cb_formats_by_qname: (
-        Mapping[str, Sequence[str]] | None
-    ) = None,
+    ],
+    expected_unmeasured_formats_by_qname: Mapping[str, Sequence[str]],
+    expected_legal_cb_formats_by_qname: Mapping[str, Sequence[str]],
 ) -> dict[str, object]:
     """Reconstruct one global anchored-AURA payload from disjoint qnames.
 
@@ -1681,7 +1683,10 @@ def merge_streamed_cb_anchor_aura_shards(
     disjoint cover, and one worker can install a decoder layer once for all of
     that layer's anchor/panel/validation renders.
     """
-    from prismaquant.production_weight_cache import merge_cb_render_identities
+    from prismaquant.production_weight_cache import (
+        merge_cb_render_identities,
+        validate_cb_render_identity_metadata,
+    )
 
     if not payloads:
         raise AnchoredCostError("streamed CB shard merge needs at least one shard")
@@ -1708,6 +1713,9 @@ def merge_streamed_cb_anchor_aura_shards(
         "cb_cost_provenance_schema",
         "cb_anchored_plugin",
         "full_menu_materialized",
+        "production_anchor_no_full_menu_materialization",
+        "production_anchor_cost_currency",
+        "weight_mse_diagnostic_is_cost_input",
     )
     required_renderer_shared = (
         "schema",
@@ -1727,6 +1735,142 @@ def merge_streamed_cb_anchor_aura_shards(
         if not isinstance(value, Mapping):
             raise AnchoredCostError(f"{where} is not a mapping")
         return value
+
+    def _canonical_formats(
+        value: object, *, where: str, nonempty: bool = True,
+    ) -> tuple[str, ...]:
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            raise AnchoredCostError(f"{where} is not a format sequence")
+        result = tuple(
+            fr.canonical_format_name(str(format_name))
+            for format_name in value
+        )
+        if (nonempty and not result) or len(result) != len(set(result)):
+            raise AnchoredCostError(
+                f"{where} is empty or contains canonical duplicates"
+            )
+        return result
+
+    expected_sequence = tuple(str(name) for name in expected_qnames)
+    expected_qname_set = set(expected_sequence)
+    if not expected_sequence or len(expected_sequence) != len(expected_qname_set):
+        raise AnchoredCostError(
+            "streamed CB shard merge expected qname plan is empty or has "
+            "duplicates"
+        )
+    for label, plan in (
+        ("full sparse formats", expected_formats_by_qname),
+        ("render purposes", expected_purposes_by_qname),
+        ("unmeasured terminals", expected_unmeasured_formats_by_qname),
+        ("legal CB formats", expected_legal_cb_formats_by_qname),
+    ):
+        if not isinstance(plan, Mapping) or set(map(str, plan)) != (
+            expected_qname_set
+        ):
+            raise AnchoredCostError(
+                f"streamed CB shard merge expected {label} plan does not "
+                "exactly cover expected qnames"
+            )
+
+    def _canonical_format_plan(
+        value: Mapping[str, Sequence[str]],
+    ) -> dict[str, tuple[str, ...]]:
+        return {
+            str(name): _canonical_formats(
+                formats, where=f"declared format plan for {name}"
+            )
+            for name, formats in sorted(value.items())
+        }
+
+    def _canonical_cb_format_set_plan(
+        value: Mapping[str, Sequence[str]],
+    ) -> dict[str, tuple[str, ...]]:
+        """Canonicalize an unordered legal-CB domain like its identity does."""
+        return {
+            str(name): tuple(sorted({
+                fr.canonical_format_name(str(format_name))
+                for format_name in formats
+            }))
+            for name, formats in sorted(value.items())
+        }
+
+    expected_full_formats = _canonical_format_plan(
+        expected_formats_by_qname
+    )
+    expected_unmeasured = _canonical_format_plan(
+        expected_unmeasured_formats_by_qname
+    )
+    expected_rendered: dict[str, tuple[str, ...]] = {}
+    for qname in sorted(expected_qname_set):
+        full = expected_full_formats[qname]
+        terminal = expected_unmeasured[qname]
+        if len(terminal) != 1 or not set(terminal).issubset(full):
+            raise AnchoredCostError(
+                f"streamed CB shard merge {qname} must declare exactly one "
+                "unmeasured terminal inside its full sparse format plan"
+            )
+        terminal_set = set(terminal)
+        rendered = tuple(
+            format_name for format_name in full
+            if format_name not in terminal_set
+        )
+        if not rendered or set(rendered) & terminal_set or (
+            set(rendered) | terminal_set != set(full)
+        ):
+            raise AnchoredCostError(
+                f"streamed CB shard merge {qname} full sparse plan is not "
+                "the exact disjoint union of rendered formats and terminal"
+            )
+        expected_rendered[qname] = rendered
+
+    def _canonical_purposes(value):
+        if not isinstance(value, Mapping):
+            raise AnchoredCostError("render-purpose plan is not a mapping")
+        result: dict[str, dict[str, tuple[str, ...]]] = {}
+        for raw_name, raw_rows in sorted(value.items()):
+            if not isinstance(raw_rows, Mapping):
+                raise AnchoredCostError(
+                    f"render-purpose plan for {raw_name} is not a mapping"
+                )
+            rows: dict[str, tuple[str, ...]] = {}
+            for raw_format, raw_purposes in sorted(raw_rows.items()):
+                if not isinstance(raw_purposes, Sequence) or isinstance(
+                    raw_purposes, (str, bytes)
+                ):
+                    raise AnchoredCostError(
+                        f"render-purpose declaration for "
+                        f"{raw_name}@{raw_format} is malformed"
+                    )
+                purposes = tuple(str(purpose) for purpose in raw_purposes)
+                if (
+                    not purposes or len(purposes) != len(set(purposes))
+                    or not set(purposes).issubset({
+                        "anchor", "panel", "validation",
+                    })
+                ):
+                    raise AnchoredCostError(
+                        f"render-purpose declaration for "
+                        f"{raw_name}@{raw_format} is invalid"
+                    )
+                format_name = fr.canonical_format_name(str(raw_format))
+                if format_name in rows:
+                    raise AnchoredCostError(
+                        f"render-purpose declaration for {raw_name} repeats "
+                        f"canonical format {format_name}"
+                    )
+                rows[format_name] = tuple(sorted(purposes))
+            result[str(raw_name)] = rows
+        return result
+
+    expected_purposes = _canonical_purposes(
+        expected_purposes_by_qname
+    )
+    for qname, rows in expected_purposes.items():
+        if set(rows) != set(expected_rendered[qname]):
+            raise AnchoredCostError(
+                f"streamed CB shard merge {qname} declared purposes do not "
+                "exactly cover the rendered subset of the full sparse plan"
+            )
 
     def _payload_sort_key(payload: Mapping[str, object]) -> tuple[str, ...]:
         costs = payload.get("costs")
@@ -1754,6 +1898,22 @@ def merge_streamed_cb_anchor_aura_shards(
         key: copy.deepcopy(first_renderer.get(key))
         for key in required_renderer_shared
     }
+    if provenance_reference["full_menu_materialized"] is not False or (
+        provenance_reference[
+            "production_anchor_no_full_menu_materialization"
+        ] is not True
+    ):
+        raise AnchoredCostError(
+            "streamed CB shards do not declare sparse transient rendering"
+        )
+    if provenance_reference["production_anchor_cost_currency"] != (
+        "aura_only"
+    ) or provenance_reference["weight_mse_diagnostic_is_cost_input"] is not (
+        False
+    ):
+        raise AnchoredCostError(
+            "streamed CB shards do not declare AURA-only cost currency"
+        )
 
     merged_costs: dict[str, object] = {}
     merged_stats: dict[str, object] = {}
@@ -1767,16 +1927,17 @@ def merge_streamed_cb_anchor_aura_shards(
     format_union: set[str] = set()
 
     sum_fields = (
-        "n_linear_chunks",
         "dw_rendered_rows",
         "dw_production_anchor_rows",
         "dw_rtn_fallback_rows",
+        "weight_mse_diagnostic_rows",
         "production_anchor_expected_renders",
         "production_anchor_rendered_this_invocation",
         "production_anchor_restored_renders",
         "production_anchor_union_render_count",
     )
     sums = {key: 0 for key in sum_fields}
+    shard_linear_chunks: list[int] = []
     maximum_live = 0
     purpose_counts: Counter[str] = Counter()
 
@@ -1863,6 +2024,73 @@ def merge_streamed_cb_anchor_aura_shards(
             raise AnchoredCostError(
                 f"streamed CB shard {index} source-weight identity differs"
             )
+        if renderer.get("cb_render_identity") != sparse:
+            raise AnchoredCostError(
+                f"streamed CB shard {index} renderer/sparse CB identity differs"
+            )
+        if provenance.get(
+            "production_anchor_sparse_serialized_payload"
+        ) != sparse.get("cb_serialized_payload") or provenance.get(
+            "cb_serialized_payload"
+        ) != expanded.get("cb_serialized_payload"):
+            raise AnchoredCostError(
+                f"streamed CB shard {index} serialized CB identity differs"
+            )
+        try:
+            sparse_context = validate_cb_render_identity_metadata(
+                sparse,
+                col_weights=col_weights,  # type: ignore[arg-type]
+                where=f"streamed CB shard {index} sparse identity",
+            )
+            expanded_context = validate_cb_render_identity_metadata(
+                expanded,
+                col_weights=col_weights,  # type: ignore[arg-type]
+                where=f"streamed CB shard {index} expanded identity",
+            )
+        except (TypeError, ValueError) as exc:
+            raise AnchoredCostError(str(exc)) from None
+        if sparse_context != expanded_context:
+            raise AnchoredCostError(
+                f"streamed CB shard {index} sparse/expanded context differs"
+            )
+        if getattr(sparse_context, "minchain", False) and sparse.get(
+            "cb_minchain_cells"
+        ) != expanded.get("cb_minchain_cells"):
+            raise AnchoredCostError(
+                f"streamed CB shard {index} sparse/expanded "
+                "cb_minchain_cells differs"
+            )
+        for field in (
+            "render_contract",
+            "col_weights_schema",
+            "col_weights_qnames",
+            "col_weights_entries",
+            "col_weights_shapes",
+            "col_weights_content_sha256",
+            "col_weights_sha256",
+            "source_weights_schema",
+            "source_weights_complete",
+            "source_weights_shapes",
+            "source_weights_content_sha256",
+            "source_weights_sha256",
+        ):
+            if sparse.get(field) != expanded.get(field):
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} sparse/expanded {field} differs"
+                )
+        expected_source_records = {
+            str(name): {
+                "shape": copy.deepcopy(sparse["source_weights_shapes"][name]),
+                "sha256": str(
+                    sparse["source_weights_content_sha256"][name]
+                ),
+            }
+            for name in sparse_scope
+        }
+        if dict(source_records) != expected_source_records:
+            raise AnchoredCostError(
+                f"streamed CB shard {index} renderer/source CB identity differs"
+            )
         scope = set(map(str, costs))
         scoped_sets = {
             "stats": set(map(str, stats)),
@@ -1889,6 +2117,247 @@ def merge_streamed_cb_anchor_aura_shards(
         if not scope:
             raise AnchoredCostError(f"streamed CB shard {index} is empty")
 
+        shard_rendered_count = 0
+        shard_diagnostic_rows = 0
+        shard_purpose_counts: Counter[str] = Counter()
+        shard_format_union: set[str] = set()
+        for qname in sorted(scope):
+            cost_row = _mapping(
+                costs[qname],
+                where=f"streamed CB shard {index} costs for {qname}",
+            )
+            purpose_row = _mapping(
+                purposes[qname],
+                where=f"streamed CB shard {index} purposes for {qname}",
+            )
+            rendered = _canonical_formats(
+                renderer_formats[qname],
+                where=(
+                    f"streamed CB shard {index} rendered formats for {qname}"
+                ),
+            )
+            unmeasured_row = _canonical_formats(
+                unmeasured[qname],
+                where=(
+                    f"streamed CB shard {index} unmeasured terminal for {qname}"
+                ),
+            )
+            if len(unmeasured_row) != 1:
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} {qname} must have exactly one "
+                    "unmeasured terminal"
+                )
+            cost_formats = tuple(
+                fr.canonical_format_name(str(format_name))
+                for format_name in cost_row
+            )
+            if len(cost_formats) != len(set(cost_formats)) or set(
+                cost_formats
+            ) != set(rendered):
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} measured/rendered formats "
+                    f"differ for {qname}"
+                )
+            purpose_formats = {
+                fr.canonical_format_name(str(format_name))
+                for format_name in purpose_row
+            }
+            if len(purpose_formats) != len(purpose_row) or purpose_formats != (
+                set(rendered)
+            ):
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} measured/purpose formats "
+                    f"differ for {qname}"
+                )
+            if set(rendered) & set(unmeasured_row):
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} rendered/unmeasured formats "
+                    f"overlap for {qname}"
+                )
+            sparse_formats = set(_canonical_formats(
+                sparse_scope[qname],
+                where=f"streamed CB shard {index} sparse formats for {qname}",
+            ))
+            expanded_formats = set(_canonical_formats(
+                expanded_scope[qname],
+                where=f"streamed CB shard {index} legal formats for {qname}",
+            ))
+            rendered_cb = {
+                format_name for format_name in rendered
+                if fr.get_format(format_name).family in {"nvfp4_cb", "fp8_cb"}
+            }
+            if sparse_formats != rendered_cb or not sparse_formats.issubset(
+                expanded_formats
+            ) or set(unmeasured_row) & expanded_formats:
+                raise AnchoredCostError(
+                    f"streamed CB shard {index} measured/sparse/expanded "
+                    f"format surfaces differ for {qname}"
+                )
+            purpose_values_by_format: dict[str, tuple[str, ...]] = {}
+            for raw_format, raw_purposes in purpose_row.items():
+                format_name = fr.canonical_format_name(str(raw_format))
+                if not isinstance(raw_purposes, Sequence) or isinstance(
+                    raw_purposes, (str, bytes)
+                ):
+                    raise AnchoredCostError(
+                        f"streamed CB shard {index} purposes are malformed "
+                        f"for {qname}@{format_name}"
+                    )
+                purpose_values = tuple(str(value) for value in raw_purposes)
+                if not purpose_values or len(purpose_values) != len(
+                    set(purpose_values)
+                ) or not set(purpose_values).issubset(
+                    {"anchor", "panel", "validation"}
+                ):
+                    raise AnchoredCostError(
+                        f"streamed CB shard {index} purposes are invalid "
+                        f"for {qname}@{format_name}"
+                    )
+                purpose_values_by_format[format_name] = purpose_values
+                shard_purpose_counts.update(purpose_values)
+            for raw_format, raw_row in cost_row.items():
+                format_name = fr.canonical_format_name(str(raw_format))
+                if not isinstance(raw_row, Mapping) or (
+                    raw_row.get("dw_source") != "production_render"
+                    or raw_row.get("production_anchor_measured") is not True
+                ):
+                    raise AnchoredCostError(
+                        f"streamed CB shard {index} has an unmeasured cost "
+                        f"row for {qname}@{format_name}"
+                    )
+                for scalar_name in (
+                    "predicted_dloss", "predicted_dloss_stderr",
+                ):
+                    try:
+                        scalar_value = float(raw_row[scalar_name])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise AnchoredCostError(
+                            f"streamed CB shard {index} "
+                            f"{qname}@{format_name} {scalar_name} is absent "
+                            "or nonnumeric"
+                        ) from exc
+                    if not math.isfinite(scalar_value) or scalar_value < 0.0:
+                        raise AnchoredCostError(
+                            f"streamed CB shard {index} "
+                            f"{qname}@{format_name} {scalar_name} must be "
+                            "finite and nonnegative"
+                        )
+                diagnostic = raw_row.get("weight_mse_diagnostic")
+                has_diagnostic = "weight_mse_diagnostic" in raw_row
+                is_panel = "panel" in purpose_values_by_format[format_name]
+                if has_diagnostic != is_panel:
+                    raise AnchoredCostError(
+                        f"streamed CB shard {index} {qname}@{format_name} "
+                        "must carry a weight-MSE diagnostic iff it is a "
+                        "fitting-panel cell"
+                    )
+                if has_diagnostic:
+                    try:
+                        diagnostic_value = float(diagnostic)
+                    except (TypeError, ValueError) as exc:
+                        raise AnchoredCostError(
+                            f"streamed CB shard {index} "
+                            f"{qname}@{format_name} weight-MSE diagnostic "
+                            "is not numeric"
+                        ) from exc
+                    if not math.isfinite(diagnostic_value) or (
+                        diagnostic_value < 0.0
+                    ):
+                        raise AnchoredCostError(
+                            f"streamed CB shard {index} "
+                            f"{qname}@{format_name} weight-MSE diagnostic "
+                            "must be finite and nonnegative"
+                        )
+                    if raw_row.get(
+                        "weight_mse_diagnostic_normalization"
+                    ) != "mean_per_weight" or raw_row.get(
+                        "weight_mse_is_cost_input"
+                    ) is not False:
+                        raise AnchoredCostError(
+                            f"streamed CB shard {index} "
+                            f"{qname}@{format_name} weight-MSE diagnostic "
+                            "contract differs"
+                        )
+                    shard_diagnostic_rows += 1
+            shard_rendered_count += len(rendered)
+            shard_format_union.update(rendered)
+            shard_format_union.update(unmeasured_row)
+
+        payload_formats = _canonical_formats(
+            payload.get("formats", ()),
+            where=f"streamed CB shard {index} top-level formats",
+        )
+        if set(payload_formats) != shard_format_union:
+            raise AnchoredCostError(
+                f"streamed CB shard {index} top-level format union differs"
+            )
+        if int(renderer.get("requested_entries", -1)) != shard_rendered_count:
+            raise AnchoredCostError(
+                f"streamed CB shard {index} renderer request count differs"
+            )
+        expected_renders = int(provenance.get(
+            "production_anchor_expected_renders", -1
+        ))
+        union_renders = int(provenance.get(
+            "production_anchor_union_render_count", -1
+        ))
+        rendered_now = int(provenance.get(
+            "production_anchor_rendered_this_invocation", -1
+        ))
+        restored = int(provenance.get(
+            "production_anchor_restored_renders", -1
+        ))
+        if (
+            expected_renders != shard_rendered_count
+            or union_renders != shard_rendered_count
+            or rendered_now < 0
+            or restored < 0
+            or rendered_now + restored != shard_rendered_count
+        ):
+            raise AnchoredCostError(
+                f"streamed CB shard {index} render counters differ from plan"
+            )
+        if (
+            int(provenance.get("dw_rendered_rows", -1)) != 0
+            or int(provenance.get("dw_rtn_fallback_rows", -1)) != 0
+            or int(provenance.get("dw_production_anchor_rows", -1))
+            != shard_rendered_count
+            or int(provenance.get("weight_mse_diagnostic_rows", -1))
+            != shard_diagnostic_rows
+        ):
+            raise AnchoredCostError(
+                f"streamed CB shard {index} measured/diagnostic row counters "
+                "differ from cost cells"
+            )
+        raw_counts = provenance.get("production_anchor_purpose_counts")
+        purpose_names = ("anchor", "panel", "validation")
+        observed_counts = (
+            {
+                name: int(raw_counts.get(name, 0))
+                for name in purpose_names
+            }
+            if isinstance(raw_counts, Mapping)
+            else None
+        )
+        expected_counts = {
+            name: int(shard_purpose_counts.get(name, 0))
+            for name in purpose_names
+        }
+        if (
+            observed_counts != expected_counts
+            or not isinstance(raw_counts, Mapping)
+            or set(map(str, raw_counts)) - set(purpose_names)
+        ):
+            raise AnchoredCostError(
+                f"streamed CB shard {index} purpose counts differ from plan"
+            )
+        chunks = int(provenance.get("n_linear_chunks", 0) or 0)
+        if chunks < 1:
+            raise AnchoredCostError(
+                f"streamed CB shard {index} has no linear chunks"
+            )
+        shard_linear_chunks.append(chunks)
+
         merged_costs.update(copy.deepcopy(dict(costs)))
         merged_stats.update(copy.deepcopy(dict(stats)))
         merged_renderer_formats.update(copy.deepcopy(dict(renderer_formats)))
@@ -1908,90 +2377,43 @@ def merge_streamed_cb_anchor_aura_shards(
             maximum_live,
             int(provenance.get("production_anchor_max_live_rendered", 0) or 0),
         )
-        raw_counts = provenance.get("production_anchor_purpose_counts", {})
-        if not isinstance(raw_counts, Mapping):
-            raise AnchoredCostError(
-                f"streamed CB shard {index} purpose counts are malformed"
-            )
-        purpose_counts.update({
-            str(key): int(value) for key, value in raw_counts.items()
-        })
+        purpose_counts.update(shard_purpose_counts)
 
     observed_qnames = set(merged_costs)
-    if expected_qnames is not None:
-        expected_sequence = tuple(str(name) for name in expected_qnames)
-        expected = set(expected_sequence)
-        if len(expected_sequence) != len(expected):
-            raise AnchoredCostError(
-                "streamed CB shard merge expected qname plan has duplicates"
-            )
-        if observed_qnames != expected:
-            raise AnchoredCostError(
-                "streamed CB shard merge is not the declared exact cover: "
-                f"missing={sorted(expected - observed_qnames)[:8]} "
-                f"unexpected={sorted(observed_qnames - expected)[:8]}"
-            )
-
-    def _canonical_format_plan(
-        value: Mapping[str, Sequence[str]],
-    ) -> dict[str, tuple[str, ...]]:
-        return {
-            str(name): tuple(
-                fr.canonical_format_name(str(format_name))
-                for format_name in formats
-            )
-            for name, formats in sorted(value.items())
-        }
-
-    def _canonical_cb_format_set_plan(
-        value: Mapping[str, Sequence[str]],
-    ) -> dict[str, tuple[str, ...]]:
-        """Canonicalize an unordered legal-CB domain like its identity does."""
-        return {
-            str(name): tuple(sorted({
-                fr.canonical_format_name(str(format_name))
-                for format_name in formats
-            }))
-            for name, formats in sorted(value.items())
-        }
+    if observed_qnames != expected_qname_set:
+        raise AnchoredCostError(
+            "streamed CB shard merge is not the declared exact cover: "
+            f"missing={sorted(expected_qname_set - observed_qnames)[:8]} "
+            f"unexpected={sorted(observed_qnames - expected_qname_set)[:8]}"
+        )
 
     observed_formats = _canonical_format_plan(merged_renderer_formats)
     observed_unmeasured = _canonical_format_plan(merged_unmeasured)
     # Validate the two non-CB plan surfaces here and the legal CB surface
     # immediately after the identity union below.
-    if expected_formats_by_qname is not None and observed_formats != (
-        _canonical_format_plan(expected_formats_by_qname)
-    ):
+    if observed_formats != expected_rendered:
         raise AnchoredCostError(
             "streamed CB shard merge rendered format plan differs from the "
             "declared global plan"
         )
-    if expected_unmeasured_formats_by_qname is not None and observed_unmeasured != (
-        _canonical_format_plan(expected_unmeasured_formats_by_qname)
-    ):
+    if observed_unmeasured != expected_unmeasured:
         raise AnchoredCostError(
             "streamed CB shard merge unmeasured terminal plan differs from "
             "the declared global plan"
         )
-    if expected_purposes_by_qname is not None:
-        def _canonical_purposes(value):
-            return {
-                str(name): {
-                    fr.canonical_format_name(str(format_name)): tuple(
-                        str(purpose) for purpose in purposes
-                    )
-                    for format_name, purposes in sorted(rows.items())
-                }
-                for name, rows in sorted(value.items())
-            }
-
-        if _canonical_purposes(merged_purposes) != _canonical_purposes(
-            expected_purposes_by_qname
-        ):
-            raise AnchoredCostError(
-                "streamed CB shard merge render-purpose plan differs from "
-                "the declared global plan"
-            )
+    observed_purposes = _canonical_purposes(merged_purposes)
+    if observed_purposes != expected_purposes:
+        raise AnchoredCostError(
+            "streamed CB shard merge render-purpose plan differs from "
+            "the declared global plan"
+        )
+    canonical_merged_purposes = {
+        qname: {
+            format_name: list(purposes)
+            for format_name, purposes in sorted(rows.items())
+        }
+        for qname, rows in sorted(observed_purposes.items())
+    }
 
     try:
         merged_sparse = merge_cb_render_identities(
@@ -2008,17 +2430,16 @@ def merge_streamed_cb_anchor_aura_shards(
         raise AnchoredCostError(str(exc)) from None
     if merged_sparse is None or merged_expanded is None:
         raise AnchoredCostError("streamed CB shard merge produced no CB identity")
-    if expected_legal_cb_formats_by_qname is not None:
-        observed_legal = _canonical_cb_format_set_plan(
-            merged_expanded["cb_formats_by_qname"]
+    observed_legal = _canonical_cb_format_set_plan(
+        merged_expanded["cb_formats_by_qname"]
+    )
+    if observed_legal != _canonical_cb_format_set_plan(
+        expected_legal_cb_formats_by_qname
+    ):
+        raise AnchoredCostError(
+            "streamed CB shard merge legal CB plan differs from the "
+            "declared global plan"
         )
-        if observed_legal != _canonical_cb_format_set_plan(
-            expected_legal_cb_formats_by_qname
-        ):
-            raise AnchoredCostError(
-                "streamed CB shard merge legal CB plan differs from the "
-                "declared global plan"
-            )
 
     merged_renderer = copy.deepcopy(dict(first_renderer))
     merged_renderer.update({
@@ -2041,6 +2462,10 @@ def merge_streamed_cb_anchor_aura_shards(
 
     merged_provenance = copy.deepcopy(dict(first_provenance))
     global_plan_identity = {
+        "full_sparse_formats_by_qname": {
+            name: list(formats)
+            for name, formats in sorted(expected_full_formats.items())
+        },
         "rendered_formats_by_qname": {
             name: list(formats)
             for name, formats in sorted(observed_formats.items())
@@ -2050,7 +2475,7 @@ def merge_streamed_cb_anchor_aura_shards(
                 format_name: list(purposes)
                 for format_name, purposes in sorted(rows.items())
             }
-            for name, rows in sorted(merged_purposes.items())
+            for name, rows in sorted(canonical_merged_purposes.items())
         },
         "unmeasured_formats_by_qname": {
             name: list(formats)
@@ -2066,11 +2491,21 @@ def merge_streamed_cb_anchor_aura_shards(
     )
     merged_provenance.update({
         **sums,
-        "n_linear_chunks": sums["n_linear_chunks"],
+        # Workers report this field, but this API has no authoritative stripe
+        # chunk plan against which to validate it.  Preserve the legacy sum
+        # while labeling it explicitly as unverified and non-executed.
+        "n_linear_chunks": sum(shard_linear_chunks),
+        "n_linear_chunks_semantics": (
+            "sum_unverified_worker_reported_planned_chunks_"
+            "not_execution_count"
+        ),
         "production_anchor_max_live_rendered": maximum_live,
-        "production_anchor_purpose_counts": dict(sorted(purpose_counts.items())),
+        "production_anchor_purpose_counts": {
+            name: int(purpose_counts.get(name, 0))
+            for name in ("anchor", "panel", "validation")
+        },
         "production_anchor_renderer": merged_renderer,
-        "production_anchor_render_purposes": dict(sorted(merged_purposes.items())),
+        "production_anchor_render_purposes": canonical_merged_purposes,
         "production_anchor_unmeasured_formats_by_qname": dict(
             sorted(merged_unmeasured.items())
         ),
@@ -2090,6 +2525,18 @@ def merge_streamed_cb_anchor_aura_shards(
             "exact_disjoint_cover": True,
             "receipt_identity_reconstructed_globally": True,
             "partition_axis": "whole_qnames",
+            "shard_unverified_worker_reported_planned_chunks": list(
+                shard_linear_chunks
+            ),
+            "n_linear_chunks_aggregation": (
+                "sum_unverified_worker_reported_planned_chunks"
+            ),
+            "total_unverified_worker_reported_planned_chunks": sum(
+                shard_linear_chunks
+            ),
+            "max_unverified_worker_reported_planned_chunks": max(
+                shard_linear_chunks
+            ),
             "global_cell_plan": global_plan_identity,
         },
     })

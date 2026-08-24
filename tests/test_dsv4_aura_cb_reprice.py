@@ -158,6 +158,9 @@ def _streamed_payload(requests, costs, plugin):
                 "retention": "one_layer_in_memory",
             },
             "production_anchor_render_purposes": purposes,
+            "production_anchor_unmeasured_formats_by_qname": {
+                qname: ["BF16"] for qname in formats
+            },
             "cb_render_identity": {
                 "schema": "test-cb-render-identity.v1",
                 "outputs_materialized": False,

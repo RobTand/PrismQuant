@@ -1465,6 +1465,7 @@ def run_allocator_once(
     output_dir: str | Path,
     environment_updates: Mapping[str, str] | None = None,
     invocation_provenance: Mapping[str, object] | None = None,
+    pass_fds: Sequence[int] = (),
     resume: bool = False,
 ) -> Path:
     """Invoke one allocator or reuse its exact identity-bound completion.
@@ -1518,8 +1519,15 @@ def run_allocator_once(
         str(name): str(value)
         for name, value in (environment_updates or {}).items()
     })
+    inherited_fds = tuple(int(value) for value in pass_fds)
+    if (
+        any(value < 0 for value in inherited_fds)
+        or len(set(inherited_fds)) != len(inherited_fds)
+    ):
+        raise AnchoredCostError("allocator pass_fds are invalid")
     completed = subprocess.run(
-        [str(value) for value in command], check=False, env=environment
+        [str(value) for value in command], check=False, env=environment,
+        pass_fds=inherited_fds,
     )
     if completed.returncode != 0:
         raise AnchoredCostError(

@@ -32,20 +32,26 @@ class _FakeStreamingContext:
         self.active: set[int] = set()
         self.max_active = 0
         self.install_calls = 0
+        self.install_require_prefetched: list[bool] = []
+        self.events: list[tuple[str, int]] = []
 
-    def install(self, layer):
+    def install(self, layer, *, require_prefetched=False):
         self.install_calls += 1
+        self.install_require_prefetched.append(bool(require_prefetched))
+        self.events.append(("install", int(layer)))
         self.active.add(int(layer))
         self.layers[int(layer)]._fixture_stream_resident = True
         self.max_active = max(self.max_active, len(self.active))
         return "fixture"
 
     def unload(self, layer):
+        self.events.append(("unload", int(layer)))
         self.active.discard(int(layer))
         self.layers[int(layer)]._fixture_stream_resident = False
         return 0
 
-    def schedule_prefetch(self, _layer):
+    def schedule_prefetch(self, layer):
+        self.events.append(("prefetch", int(layer)))
         return None
 
     def shutdown(self):
@@ -155,6 +161,80 @@ def _dense_runner(state):
         layer._fixture_requires_stream_residency = True
     context = _FakeStreamingContext(model)
     return model, context, StreamedCausalLM(context, DefaultProfile())
+
+
+def test_streamed_aura_schedules_next_reverse_layer_before_compute():
+    torch.manual_seed(114)
+    seed_model = _DenseTinyLM().eval()
+    state = {
+        name: tensor.detach().clone()
+        for name, tensor in seed_model.state_dict().items()
+    }
+    model = _DenseTinyLM(state).eval()
+    for layer in model.model.layers:
+        layer._fixture_requires_stream_residency = True
+    context = _FakeStreamingContext(model)
+    runner = StreamedCausalLM(
+        context,
+        DefaultProfile(),
+        prefetch_lookahead=1,
+        require_prefetched_residency=True,
+    )
+    capture_boundaries = runner.capture_boundaries
+
+    def capture_then_start_reverse_audit(input_ids):
+        batch = capture_boundaries(input_ids)
+        context.events.clear()
+        return batch
+
+    isolated_layer = runner.isolated_layer
+
+    def audited_isolated_layer(batch, layer, hidden, *, pass_state):
+        context.events.append(("compute", int(layer)))
+        return isolated_layer(
+            batch, layer, hidden, pass_state=pass_state
+        )
+
+    runner.capture_boundaries = capture_then_start_reverse_audit
+    runner.isolated_layer = audited_isolated_layer
+    aura.compute_aura_cost_streamed(
+        runner,
+        torch.tensor([[1, 2, 3, 4]]),
+        ["NVFP4"],
+        n_probes=1,
+        min_free_gib=0.0,
+        production_cache=_RenderedCache(model, "NVFP4"),
+        require_production_cache=True,
+        dw_dtype="float32",
+        profile=DefaultProfile(),
+    )
+
+    assert context.events == [
+        ("install", 1),
+        ("prefetch", 0),
+        ("compute", 1),
+        ("unload", 1),
+        ("install", 0),
+        ("compute", 0),
+        ("unload", 0),
+    ]
+    assert context.install_require_prefetched == [True, True, True, True]
+
+
+def test_streamed_causal_lm_forward_uses_explicit_residency_contract():
+    torch.manual_seed(115)
+    model = _DenseTinyLM().eval()
+    context = _FakeStreamingContext(model)
+    runner = StreamedCausalLM(
+        context,
+        DefaultProfile(),
+        prefetch_lookahead=1,
+        require_prefetched_residency=True,
+    )
+
+    runner(torch.tensor([[1, 2, 3, 4]]))
+
+    assert context.install_require_prefetched == [True, True]
 
 
 def test_streamed_aura_cost_rows_are_exactly_resident_rows():

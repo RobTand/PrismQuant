@@ -504,7 +504,21 @@ class StreamingContext:
             self._inflight[L] = fut
             return fut
 
-    def ensure_loaded(self, L: int) -> tuple[dict[str, torch.Tensor], str]:
+    def ensure_loaded(
+        self,
+        L: int,
+        *,
+        require_prefetched: bool = False,
+    ) -> tuple[dict[str, torch.Tensor], str]:
+        """Return one resident layer, optionally refusing a cold source read.
+
+        ``require_prefetched`` is the fail-closed production mode for a
+        traversal that has already established its prefetch schedule.  A hot
+        cache entry is accepted; an in-flight prefetch is awaited.  If neither
+        produces a resident entry, fail before calling the synchronous shard
+        loader so a broken schedule cannot silently turn a GPU-bound campaign
+        into serialized NVMe I/O.
+        """
         cached = self.layer_cache.get(L)
         if cached is not None:
             return cached, "hot"
@@ -515,6 +529,11 @@ class StreamingContext:
             cached = self.layer_cache.get(L)
             if cached is not None:
                 return cached, "wait"
+        if require_prefetched:
+            raise RuntimeError(
+                f"streamed layer {L} is not resident after its required "
+                "prefetch; refusing synchronous cold source read"
+            )
         # v20 fix #1: pre-evict to make room for the synchronous read.
         # Cold path can't skip (the consumer needs this layer now), so
         # prepare_for_load best-efforts; if effective_max < layer size,
@@ -528,8 +547,10 @@ class StreamingContext:
         self.layer_cache.put(L, tensors)
         return tensors, "cold"
 
-    def install(self, L: int):
-        tensors, src = self.ensure_loaded(L)
+    def install(self, L: int, *, require_prefetched: bool = False):
+        tensors, src = self.ensure_loaded(
+            L, require_prefetched=require_prefetched,
+        )
         _fast_install(self.install_resolvers[L], tensors, self.device, model=self.model)
         # v20 step 3+4: value-aware retention. The historical
         # one-way-stream assumption (discard immediately after install)

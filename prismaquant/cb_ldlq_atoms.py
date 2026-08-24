@@ -19,6 +19,14 @@ from typing import Mapping, Sequence
 
 import torch
 
+from .cb_compile_contract import (
+    ATOM_BATCHED_CHUNK_BEST,
+    ATOM_CHUNK_BEST,
+    CBCompileContractError,
+    cb_compile_fail_closed,
+    compile_cb_callable,
+    refuse_cb_compile_fallback,
+)
 from .cb_layout import FP4_GROUP, VEC_DIM
 
 
@@ -406,16 +414,32 @@ def _atom_compiled(fn):
     """Compile `fn` once, lazily, when the gate is on; else return it unchanged."""
     if not _atom_compile_on():
         return fn
-    got = _ATOM_COMPILED.get(fn)
+    strict = cb_compile_fail_closed()
+    key = (fn, strict)
+    got = _ATOM_COMPILED.get(key)
     if got is None:
         import torch as _t
         try:
             _t._dynamo.config.cache_size_limit = max(
                 getattr(_t._dynamo.config, "cache_size_limit", 8), 64)
-        except Exception:
-            pass
-        got = _t.compile(fn, dynamic=True)
-        _ATOM_COMPILED[fn] = got
+        except Exception as exc:
+            if strict:
+                raise CBCompileContractError(
+                    "strict CB atom compile could not raise the Dynamo cache limit"
+                ) from exc
+        if strict:
+            helper = {
+                "_atom_chunk_best": ATOM_CHUNK_BEST,
+                "_batched_chunk_best": ATOM_BATCHED_CHUNK_BEST,
+            }.get(getattr(fn, "__name__", ""))
+            if helper is None:
+                raise CBCompileContractError(
+                    f"strict CB atom compile does not recognize {fn!r}"
+                )
+            got = compile_cb_callable(fn, helper=helper, dynamic=True)
+        else:
+            got = _t.compile(fn, dynamic=True)
+        _ATOM_COMPILED[key] = got
     return got
 
 
@@ -488,7 +512,13 @@ def _fused_route(target: torch.Tensor) -> bool:
     therefore always takes the eager route.  This costs nothing in
     production: every hot path here is GPU-or-bust by design.
     """
-    return _atom_compile_on() and bool(target.is_cuda)
+    enabled = _atom_compile_on()
+    if enabled and cb_compile_fail_closed() and not bool(target.is_cuda):
+        refuse_cb_compile_fallback(
+            ATOM_BATCHED_CHUNK_BEST if target.ndim == 3 else ATOM_CHUNK_BEST,
+            reason="index-producing CB atom compile is CUDA-only",
+        )
+    return enabled and bool(target.is_cuda)
 
 
 def _fused_candidate_planes(target: torch.Tensor) -> int:

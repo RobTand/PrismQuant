@@ -2374,7 +2374,17 @@ def compute_aura_cost_streamed(
     batch.activations_cpu[-1] = torch.empty(0)
 
     for layer in reversed(range(runner.num_layers)):
-        runner.context.install(layer)
+        runner.context.install(
+            layer,
+            require_prefetched=runner.require_prefetched_residency,
+        )
+        # Forward boundary capture leaves the final lookahead window hot.
+        # Keep that pipeline moving in the direction of this traversal: the
+        # existing StreamingContext/LayerCache loads the next reverse layer
+        # while the current layer performs its expensive anchor render and
+        # adjoint probes.  Without this call, every layer after the retained
+        # tail window falls through ensure_loaded()'s synchronous cold path.
+        runner.schedule_reverse_prefetch(layer)
         pending = [
             name for name in names_by_layer.get(layer, [])
             if name not in completed_checkpoint_units
