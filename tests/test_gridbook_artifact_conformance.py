@@ -25,12 +25,12 @@ pytestmark = pytest.mark.skipif(
     reason="run by the pinned Gridbook compatibility CI job",
 )
 
-_ASSIGNMENT = {
+_PINNED_ASSIGNMENT = {
     "model.layers.0.mlp.gate_proj": {
-        "data_type": "nvfp4_cb", "cb_k": 1,
+        "data_type": "nvfp4_cb", "cb_k": 12,
     },
     "model.layers.1.mlp.gate_proj": {
-        "data_type": "nvfp4_cb", "cb_k": 12,
+        "data_type": "nvfp4_cb", "cb_k": 13,
     },
     # A third fp4 rung at a different k. This leaf carried the SIGNED family
     # until the producer deleted it (2026-08-17: n_sub=1 can never satisfy
@@ -38,25 +38,60 @@ _ASSIGNMENT = {
     # runtime contract still lists signed as decodable, but this test exports
     # through the producer, so it can only exercise what the producer emits.
     "model.layers.2.mlp.up_proj": {
-        "data_type": "nvfp4_cb", "cb_k": 13,
+        "data_type": "nvfp4_cb", "cb_k": 16,
     },
     "model.layers.3.mlp.down_proj": {
-        "data_type": "nvfp4_cb", "cb_k": 25,
+        "data_type": "nvfp4_cb", "cb_k": 24,
     },
     "model.layers.4.mlp.down_proj": {
         "data_type": "fp8_cb", "cb_k": 28,
     },
 }
 
+_CANDIDATE_ENDPOINTS = {
+    "model.layers.0.mlp.gate_proj": {
+        "data_type": "nvfp4_cb", "cb_k": 1,
+    },
+    "model.layers.3.mlp.down_proj": {
+        "data_type": "nvfp4_cb", "cb_k": 25,
+    },
+}
 
-def _write_tiny_model(path: Path) -> dict[str, torch.Tensor]:
+
+def _assignment_for_contract(contract: dict) -> dict[str, dict]:
+    """Exercise new endpoints only after the installed reader declares them.
+
+    The immutable release-pin CI must validate bytes the pin actually accepts;
+    it cannot assert candidate K1/K25 support against Gridbook 0.8.11/v4.  The
+    same fixture automatically promotes to the expanded endpoint seam when a
+    candidate checkout or future released pin publishes both rungs.
+    """
+
+    assignment = {
+        qname: dict(entry) for qname, entry in _PINNED_ASSIGNMENT.items()
+    }
+    nvfp4 = next(
+        row for row in contract["formats"] if row["family"] == "NVFP4_CB_K"
+    )
+    if {1, 25} <= set(nvfp4["rungs"]):
+        assignment.update({
+            qname: dict(entry)
+            for qname, entry in _CANDIDATE_ENDPOINTS.items()
+        })
+    return assignment
+
+
+def _write_tiny_model(
+    path: Path,
+    assignment: dict[str, dict],
+) -> dict[str, torch.Tensor]:
     path.mkdir(parents=True)
     generator = torch.Generator().manual_seed(20260801)
     tensors = {
         qname + ".weight": (
             torch.randn(16, 256, generator=generator) * 0.25
         ).to(torch.bfloat16)
-        for qname in _ASSIGNMENT
+        for qname in assignment
     }
     tensors["model.norm.weight"] = torch.ones(256, dtype=torch.bfloat16)
     save_file(tensors, str(path / "model.safetensors"))
@@ -69,15 +104,17 @@ def _write_tiny_model(path: Path) -> dict[str, torch.Tensor]:
 
 @pytest.fixture(scope="module")
 def tiny_artifacts(tmp_path_factory):
+    from gridbook.runtime_contract import load_runtime_contract
     from prismaquant.export_nvfp4_cb import export_nvfp4_cb
 
     root = tmp_path_factory.mktemp("gridbook-artifact-contract")
     source = root / "source"
-    weights = _write_tiny_model(source)
+    selected_assignment = _assignment_for_contract(load_runtime_contract())
+    weights = _write_tiny_model(source, selected_assignment)
     assignment = root / "assignment.json"
-    assignment.write_text(json.dumps(_ASSIGNMENT))
+    assignment.write_text(json.dumps(selected_assignment))
     col_weights = {
-        qname: torch.linspace(0.5, 1.5, 256) for qname in _ASSIGNMENT
+        qname: torch.linspace(0.5, 1.5, 256) for qname in selected_assignment
     }
 
     outputs = {}
@@ -94,7 +131,7 @@ def tiny_artifacts(tmp_path_factory):
             allow_unstamped_research=True,
         )
         outputs[coding] = out
-    return weights, outputs
+    return weights, outputs, selected_assignment
 
 
 def _family_entry(contract: dict, format_name: str) -> dict:
@@ -217,9 +254,19 @@ def test_tiny_export_is_gridbook_config_sidecar_and_decode_compatible(
     from gridbook.runtime_contract import load_runtime_contract
     from prismaquant import nvfp4_cb_formats as producer
 
-    weights, outputs = tiny_artifacts
+    weights, outputs, selected_assignment = tiny_artifacts
     out = outputs[coding]
     contract = load_runtime_contract()
+    nvfp4 = _family_entry(contract, "NVFP4_CB_K1")
+    selected_nvfp4_rungs = {
+        int(entry["cb_k"])
+        for entry in selected_assignment.values()
+        if entry["data_type"] == "nvfp4_cb"
+    }
+    if {1, 25} <= set(nvfp4["rungs"]):
+        assert {1, 25} <= selected_nvfp4_rungs
+    else:
+        assert not ({1, 25} & selected_nvfp4_rungs)
     pointer = json.loads((out / "config.json").read_text())["quantization_config"]
     assert pointer["quant_method"] == contract["quant_method"]["canonical"]
     quant_config = json.loads((out / pointer["config_file"]).read_text())
