@@ -307,6 +307,103 @@ def test_qname_manifests_are_derived_from_strict_source_census(
     }
 
 
+def test_qname_census_accepts_exact_staged_text_wrapper_namespace(
+    monkeypatch, tmp_path,
+):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    expected = {
+        "model.layers.0.q_proj.weight": {
+            "dtype": "BF16", "shape": [2, 3],
+        },
+        "lm_head.weight": {"dtype": "BF16", "shape": [2, 3]},
+        "mtp.fc.weight": {"dtype": "BF16", "shape": [2, 6]},
+    }
+    observed = {
+        "model.language_model.layers.0.q_proj.weight": expected[
+            "model.layers.0.q_proj.weight"
+        ],
+        "lm_head.weight": expected["lm_head.weight"],
+        "mtp.fc.weight": expected["mtp.fc.weight"],
+    }
+    linears = {
+        name.removesuffix(".weight"): name for name in expected
+    }
+    raw_weight_map = {name: "model.safetensors" for name in observed}
+    import prismaquant.rtx4090_artifact_census as census_module
+    import prismaquant.rtx4090_qwen38_policy as policy_module
+
+    monkeypatch.setattr(
+        policy_module, "validate_qwen38_dense_config",
+        lambda *_a, **_k: {"source_layout": "flattened_text"},
+    )
+    monkeypatch.setattr(
+        census_module, "expected_qwen38_source_layout",
+        lambda *_a, **_k: (expected, linears),
+    )
+    monkeypatch.setattr(
+        census_module, "scan_indexed_safetensors",
+        lambda *_a, **_k: (observed, raw_weight_map),
+    )
+    source_config_sha = producer._canonical_sha256(
+        {}, where="test source config"
+    )
+    weight_map_sha = producer._canonical_sha256(
+        raw_weight_map, where="test raw source weight map"
+    )
+    shard_manifest = [{
+        "name": "model.safetensors", "size": 1, "sha256": "9" * 64,
+    }]
+    model_body = {
+        "schema": producer.SOURCE_MODEL_CONTENT_SCHEMA,
+        "derivation": "test_v1", "upstream_content_sha256": None,
+        "upstream_portable_content_sha256": None,
+        "content_sha256": producer._canonical_sha256({
+            "source_config_sha256": source_config_sha,
+            "checkpoint_weight_map_sha256": weight_map_sha,
+            "shards": shard_manifest,
+        }, where="test model content"),
+        "resolved_commit": None,
+        "checkpoint_tensors": 3, "checkpoint_shards": 1,
+        "checkpoint_weight_map_sha256": weight_map_sha,
+        "shards": shard_manifest,
+    }
+    monkeypatch.setattr(
+        producer, "_source_model_content_identity",
+        lambda *_a, **_k: {
+            **model_body,
+            "identity_sha256": producer._canonical_sha256(
+                model_body, where="test model content"
+            ),
+        },
+    )
+
+    census = build_rtx4090_qname_census(model)
+
+    source = census["source_census"]
+    assert source["source_layout"] == "flattened_text"
+    assert source["source_weight_map_sha256"] == weight_map_sha
+    assert source["linear_entries"]["model.layers.0.q_proj"][
+        "source_tensor"
+    ] == "model.layers.0.q_proj.weight"
+
+
+def test_staged_text_tensor_view_refuses_mixed_body_namespaces():
+    with pytest.raises(SampleParallelProbeError, match="mixes model"):
+        producer._canonical_staged_text_tensor_view(
+            {
+                "model.layers.0.q_proj.weight": {
+                    "dtype": "BF16", "shape": [2, 3],
+                },
+                "model.language_model.layers.1.q_proj.weight": {
+                    "dtype": "BF16", "shape": [2, 3],
+                },
+            },
+            source_layout="flattened_text",
+        )
+
+
 def test_prepare_artifact_binds_every_local_slice(monkeypatch, tmp_path):
     ids = torch.arange(24, dtype=torch.long).reshape(6, 4)
 
