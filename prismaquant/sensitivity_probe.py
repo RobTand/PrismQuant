@@ -2389,7 +2389,9 @@ class FisherAccumulator:
 def load_calibration(tokenizer, source: str, n_samples: int,
                      seqlen: int, *, calib_seed: int = 42) -> torch.Tensor:
     """Load calibration from a HuggingFace dataset id, a local .jsonl, or
-    a local .txt file. JSONL rows can have either {"text": ...} or
+    a local .txt file. Extensionless regular files are content-sniffed so a
+    bind-mounted JSONL at a canonical container path such as ``/dataset``
+    remains local. JSONL rows can have either {"text": ...} or
     {"messages": [...]} for chat-style data.
     """
     import os
@@ -2415,8 +2417,39 @@ def load_calibration(tokenizer, source: str, n_samples: int,
             "(e.g. ultrachat_200k)"
         )
 
+    local_kind: str | None = None
+    if source.endswith(".jsonl") and os.path.isfile(source):
+        local_kind = "jsonl"
+    elif source.endswith(".txt") and os.path.isfile(source):
+        local_kind = "txt"
+    elif (
+        os.path.isfile(source)
+        and not os.path.splitext(os.path.basename(source))[1]
+    ):
+        # Docker commonly mounts one host file at a path-neutral canonical
+        # name.  Do not reinterpret that existing regular file as a Hub
+        # dataset merely because the container target has no suffix.  Sniff
+        # only extensionless files; known alternate local formats retain the
+        # generic datasets-loader behavior they had before this contract.
+        first_nonempty = ""
+        with open(source) as handle:
+            for line in handle:
+                if line.strip():
+                    first_nonempty = line
+                    break
+        try:
+            first_value = json.loads(first_nonempty)
+        except (json.JSONDecodeError, TypeError):
+            first_value = None
+        local_kind = (
+            "jsonl"
+            if isinstance(first_value, dict)
+            and ("text" in first_value or "messages" in first_value)
+            else "txt"
+        )
+
     texts: list[str] = []
-    if source.endswith(".jsonl") and os.path.exists(source):
+    if local_kind == "jsonl":
         with open(source) as f:
             for line in f:
                 if not line.strip():
@@ -2441,7 +2474,7 @@ def load_calibration(tokenizer, source: str, n_samples: int,
                             texts.append("\n\n".join(parts))
                 elif "text" in obj:
                     texts.append(obj["text"])
-    elif source.endswith(".txt") and os.path.exists(source):
+    elif local_kind == "txt":
         with open(source) as f:
             texts = [ln.strip() for ln in f if ln.strip()]
     elif source == "ultrachat_200k":

@@ -241,7 +241,9 @@ then made and checked non-writable. Repeat that verification on every host.
 
 Host layouts may differ, but all value-bearing commands use the same canonical
 container paths. On each host set the four `_HOST` inputs below, while retaining
-the literal container names. `SP_RUN_HOST` must be one shared tree, or its
+the literal container names. The calibration loader content-sniffs the
+extensionless regular file mounted at canonical `/dataset`, so this bind cannot
+fall through to a Hugging Face dataset lookup. `SP_RUN_HOST` must be one shared tree, or its
 published barrier artifacts must be transferred byte-for-byte to the other host
 before the next stage. Worker state remains private:
 
