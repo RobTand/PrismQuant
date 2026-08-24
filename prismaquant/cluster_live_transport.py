@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-import errno
 import hashlib
 import json
 import math
@@ -19,14 +18,12 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
-import shutil
 import subprocess
 import time
 from typing import Any, Literal, Protocol, TypeAlias
 
 from prismaquant.cluster_transport import (
     JobReceipt,
-    LocalTransport,
     RunRequest,
     SSHTransport,
     TelemetrySnapshot,
@@ -34,6 +31,8 @@ from prismaquant.cluster_transport import (
     build_tree_manifest,
     canonical_json_bytes,
     verify_tree_manifest,
+    _rename_noreplace,
+    _require_no_symlink_components,
 )
 
 
@@ -801,6 +800,15 @@ class VerifiedRsyncSSHTransfer:
             completed_ns=time.time_ns(),
         )
 
+    def inspect_artifact(self, absolute_host_path: str) -> TreeManifest:
+        """Return the destination host's canonical manifest for one artifact."""
+        source = _safe_remote_path(
+            absolute_host_path, where="absolute_host_path"
+        )
+        return self._remote_manifest_result(
+            self._remote_action("manifest", {"source": source})
+        )
+
     def download(
         self,
         remote_source: str,
@@ -810,19 +818,36 @@ class VerifiedRsyncSSHTransfer:
         destination_path = Path(destination)
         if not destination_path.is_absolute() or ".." in destination_path.parts:
             raise ValueError("destination must be an absolute traversal-free path")
+        _require_no_symlink_components(
+            destination_path.parent, where="download destination parent"
+        )
+        if not destination_path.parent.is_dir():
+            raise ValueError("download destination parent must be a directory")
+        manifest = self.inspect_artifact(source)
         try:
             destination_path.lstat()
         except FileNotFoundError:
             pass
         else:
-            raise FileExistsError(
-                errno.EEXIST,
-                "destination exists; refusing overwrite",
-                destination_path,
+            try:
+                verify_tree_manifest(destination_path, manifest)
+            except Exception as exc:
+                raise ClusterLiveTransportError(
+                    "download destination exists but differs from remote manifest"
+                ) from exc
+            return RsyncTransferReceipt(
+                direction="download",
+                source=source,
+                destination=str(destination_path),
+                manifest_sha256=manifest.identity_sha256,
+                total_bytes=manifest.total_bytes,
+                entry_count=len(manifest.entries),
+                content_stage=str(
+                    self.local_stage_root / manifest.identity_sha256 / "payload"
+                ),
+                already_present=True,
+                completed_ns=time.time_ns(),
             )
-        manifest = self._remote_manifest_result(
-            self._remote_action("manifest", {"source": source})
-        )
         self.local_stage_root.mkdir(parents=True, exist_ok=True)
         # Building an empty manifest is also the symlink/traversal check for
         # every existing component of the local staging root.
@@ -850,12 +875,32 @@ class VerifiedRsyncSSHTransfer:
                 local += "/"
             self._run_rsync(remote, local)
         verify_tree_manifest(staged_payload, manifest)
-        LocalTransport(self.local_stage_root / ".copy-state").copy_verified(
-            staged_payload,
-            destination_path,
-            expected_manifest=manifest,
-        )
-        shutil.rmtree(stage)
+        already_present = False
+        try:
+            _rename_noreplace(staged_payload, destination_path)
+        except FileExistsError:
+            # A concurrent exact publisher is safe to adopt; any differing
+            # destination remains a hard no-clobber failure.  The verified
+            # content stage is retained in this rare race for explicit reuse.
+            try:
+                verify_tree_manifest(destination_path, manifest)
+            except Exception as exc:
+                raise ClusterLiveTransportError(
+                    "download destination raced with different content"
+                ) from exc
+            already_present = True
+        else:
+            stage.rmdir()
+            stage_parent_fd = os.open(self.local_stage_root, os.O_RDONLY)
+            try:
+                os.fsync(stage_parent_fd)
+            finally:
+                os.close(stage_parent_fd)
+        destination_parent_fd = os.open(destination_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(destination_parent_fd)
+        finally:
+            os.close(destination_parent_fd)
         return RsyncTransferReceipt(
             direction="download",
             source=source,
@@ -864,6 +909,6 @@ class VerifiedRsyncSSHTransfer:
             total_bytes=manifest.total_bytes,
             entry_count=len(manifest.entries),
             content_stage=str(staged_payload),
-            already_present=False,
+            already_present=already_present,
             completed_ns=time.time_ns(),
         )

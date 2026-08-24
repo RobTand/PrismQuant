@@ -21,6 +21,7 @@ from prismaquant.cluster_live_transport import (
 from prismaquant.cluster_transport import (
     GpuSample,
     JobReceipt,
+    LocalTransport,
     RunRequest,
     SSHTransport,
     TelemetrySnapshot,
@@ -375,7 +376,9 @@ def test_upload_uses_content_stage_rsync_and_remote_destination_manifest(tmp_pat
         assert request == json.loads(base64.b64decode(kwargs["input"].strip()))
 
 
-def test_download_verifies_remote_manifest_local_stage_and_no_clobber(tmp_path):
+def test_download_atomically_publishes_stage_without_second_full_copy(
+    tmp_path, monkeypatch
+):
     pretend_remote = tmp_path / "pretend-remote"
     (pretend_remote / "nested").mkdir(parents=True)
     (pretend_remote / "nested/data").write_bytes(b"download")
@@ -402,6 +405,11 @@ def test_download_verifies_remote_manifest_local_stage_and_no_clobber(tmp_path):
         rsync_run_impl=rsync,
     )
 
+    def forbidden_second_copy(*args, **kwargs):
+        raise AssertionError("verified download must rename, not duplicate, its stage")
+
+    monkeypatch.setattr(LocalTransport, "copy_verified", forbidden_second_copy)
+
     result = transfer.download("/srv/pq/source", destination)
 
     assert result.direction == "download"
@@ -412,10 +420,17 @@ def test_download_verifies_remote_manifest_local_stage_and_no_clobber(tmp_path):
     assert kwargs["shell"] is False
     assert argv[-2] == "sparky:/srv/pq/source/"
     assert expected.identity_sha256 in argv[-1]
+    assert transfer.inspect_artifact("/srv/pq/source") == expected
     before = (destination / "nested/data").read_bytes()
-    with pytest.raises(FileExistsError):
-        transfer.download("/srv/pq/source", destination)
+    reused = transfer.download("/srv/pq/source", destination)
+    assert reused.already_present is True
+    assert len(rsync.calls) == 1
     assert (destination / "nested/data").read_bytes() == before
+    (destination / "nested/data").write_bytes(b"different")
+    with pytest.raises(ClusterLiveTransportError, match="exists but differs"):
+        transfer.download("/srv/pq/source", destination)
+    assert (destination / "nested/data").read_bytes() == b"different"
+    assert len(rsync.calls) == 1
 
 
 def test_upload_rsync_failure_never_requests_remote_publish(tmp_path):
