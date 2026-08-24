@@ -369,6 +369,17 @@ _PUBLISHED_FILES = frozenset({
 #     destination or preserved `.tmp-*` tree. The decorator neither rewrites
 #     the assignment nor touches tensor data, source discovery, or W8A16
 #     passthrough emission.
+# RE-FROZEN 2026-08-24 (strict compiled CB scoring from the refreshed RTX4090
+# parent), after reviewing the only changed closure file against THIS legacy
+# handoff:
+#   nvfp4_cb_formats.py -- imports the closed compiled-helper contract and
+#     routes CB VQ/scale-scoring reductions through it when strict campaign
+#     compilation is requested. The W8A16 handoff copies published source-FP8
+#     element/scale planes verbatim and never enters those CB scoring helpers;
+#     no wire, tensor-name, source-discovery, or passthrough branch changed.
+#     Keeping this frozen reproduction gate green is legacy compatibility, not
+#     maintained target eligibility: hardware-scoped production profiles must
+#     admit W8A16 separately, and the SM120 profile explicitly denies it.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
         "e83ec16206bee87844ed85ce9485df6a28c2d196b4314a98b56b33602203ddf6"
@@ -377,7 +388,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "3aa767bba9e689d50234730846a1671088ec0b16278d18aa6fa2693815294412"
     ),
     "prismaquant/nvfp4_cb_formats.py": (
-        "4ba07e811a6f1f2a853ad8967544bfb6663ea2374188e6c3bae6633c3a27e277"
+        "9f886165d4495f8e93615ac3804b41d87a69c8c4526833c196817366147d23d1"
     ),
     "prismaquant/dspark_source_metadata.py": (
         "94fac4b16922f381cffe989d7b9b1d00f211bb93d9479dfde30eb0c02ef167f7"

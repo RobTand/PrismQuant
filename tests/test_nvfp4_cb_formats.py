@@ -14,6 +14,7 @@ from prismaquant import nvfp4_cb_formats as cb
 from prismaquant.cb_layout import (
     ACCEPTED_CB_FORMAT_NAMES,
     FP8_ACCEPTED_RUNGS,
+    FP8_PRODUCT_RUNGS,
     PRODUCT_CB_FORMAT_NAMES,
     bit_split,
 )
@@ -23,7 +24,7 @@ from prismaquant.nvfp4_cb_footprint import (
 )
 
 _NVFP4_KS = list(range(1, 26))
-_FP8_KS = [28, 32, 36, 40, 44, 48]
+_FP8_KS = list(FP8_PRODUCT_RUNGS)
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
 
