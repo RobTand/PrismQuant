@@ -37,6 +37,11 @@
 # MTP is folded into the incremental probe + cost as a built-in shard;
 # mtp.* tensors are measured in the same pass as the body and land in
 # the same probe/cost pickles. No separate MTP stages.
+#
+# LM_HEAD_FORMAT=BF16 is the historical default. A measured non-BF16 value
+# (the native production rung is FP8_E4M3) is fixed outside body bpp/DP but
+# inside exact artifact-byte accounting. ALLOW_PINNED=lm_head remains the
+# separate research mode in which the allocator chooses the head format.
 
 set -euo pipefail
 
@@ -496,6 +501,103 @@ PY
 # CALIBRATION_MODALITY=multimodal.
 : "${MM_DATASET:=synthetic}"
 : "${MTP_FORMAT:=BF16}"
+# Fixed output-head format. BF16 is byte-for-byte historical behavior.
+# FP8_E4M3 is the native compressed-tensors production rung validated by the
+# terminal-head experiment; unlike ALLOW_PINNED=lm_head it is auxiliary to the
+# body DP/bpp and contributes only to the exact whole-artifact byte ledger.
+: "${LM_HEAD_FORMAT:=BF16}"
+
+# Resolve the head policy once so allocator, production-cache fill, and export
+# cannot disagree about a profile pin. The Python helper also lifts every
+# source/live alias of one structural head (e.g. DeepSeek's head/lm_head pair)
+# while leaving unrelated profile pins intact.
+if ! LM_HEAD_POLICY_TEXT="$(
+  PQ_MODEL_PATH="$MODEL_PATH" \
+  PQ_ALLOW_PINNED="$ALLOW_PINNED" \
+  PQ_LM_HEAD_FORMAT="$LM_HEAD_FORMAT" \
+  PQ_BODY_FORMATS="$FORMATS" \
+  python3 - <<'PY'
+import os
+import sys
+
+from prismaquant import format_registry as fr
+from prismaquant.fixed_head import (
+    allow_pinned_lifts_lm_head,
+    remaining_profile_pins,
+)
+from prismaquant.model_profiles import detect_profile
+
+profile = detect_profile(os.environ["PQ_MODEL_PATH"])
+try:
+    canonical = fr.get_format(os.environ["PQ_LM_HEAD_FORMAT"]).name
+except Exception as exc:
+    print(f"[pipeline] ERROR: invalid LM_HEAD_FORMAT: {exc}", file=sys.stderr)
+    raise SystemExit(2) from None
+allow = os.environ.get("PQ_ALLOW_PINNED", "")
+dp_unpinned = allow_pinned_lifts_lm_head(profile, allow)
+fixed_quantized = canonical != "BF16"
+if fixed_quantized and dp_unpinned:
+    print(
+        "[pipeline] ERROR: LM_HEAD_FORMAT fixes lm_head outside the body DP, "
+        "while ALLOW_PINNED asks the DP to choose it. Drop ALLOW_PINNED for "
+        "the fixed production recipe, or leave LM_HEAD_FORMAT=BF16 for the "
+        "research/DP path.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+formats = []
+seen = set()
+for raw in os.environ["PQ_BODY_FORMATS"].split(","):
+    value = raw.strip()
+    if not value:
+        continue
+    fmt = fr.get_format(value).name
+    if fmt not in seen:
+        seen.add(fmt)
+        formats.append(value)
+if fixed_quantized and canonical not in seen:
+    formats.append(canonical)
+
+print(canonical)
+print("1" if fixed_quantized else "0")
+print("1" if dp_unpinned else "0")
+print("1" if fixed_quantized or dp_unpinned else "0")
+print(",".join(formats))
+for pin in remaining_profile_pins(
+    profile,
+    allow_pinned=allow,
+    fixed_lm_head_quantized=fixed_quantized,
+):
+    print(pin)
+PY
+)"; then
+  echo "[pipeline] ERROR: failed to resolve fixed/unpinned lm_head policy." >&2
+  exit 2
+fi
+mapfile -t LM_HEAD_POLICY_LINES <<<"$LM_HEAD_POLICY_TEXT"
+if (( ${#LM_HEAD_POLICY_LINES[@]} < 5 )); then
+  echo "[pipeline] ERROR: lm_head policy resolver returned an incomplete result." >&2
+  exit 2
+fi
+LM_HEAD_FORMAT_CANONICAL="${LM_HEAD_POLICY_LINES[0]}"
+LM_HEAD_FIXED_QUANTIZED="${LM_HEAD_POLICY_LINES[1]}"
+LM_HEAD_DP_UNPINNED="${LM_HEAD_POLICY_LINES[2]}"
+LM_HEAD_RENDER_ACTIVE="${LM_HEAD_POLICY_LINES[3]}"
+COST_FORMATS="${LM_HEAD_POLICY_LINES[4]}"
+REMAINING_PROFILE_PINS=("${LM_HEAD_POLICY_LINES[@]:5}")
+
+LM_HEAD_BASE_COST_ARGS=(--no-include-lm-head)
+if [[ "$LM_HEAD_RENDER_ACTIVE" == "1" ]]; then
+  LM_HEAD_BASE_COST_ARGS=(--include-lm-head)
+fi
+LM_HEAD_AURA_ARGS=()
+if [[ "$LM_HEAD_DP_UNPINNED" == "1" ]]; then
+  LM_HEAD_AURA_ARGS=(--include-lm-head)
+fi
+PRODUCTION_CACHE_PIN_ARGS=(--skip-qnames "${REMAINING_PROFILE_PINS[@]}")
+EXPORT_PIN_ARGS=(--ignore "${REMAINING_PROFILE_PINS[@]}")
+
 # Production-cache export path. Enabled by default so export packs the same
 # rendered weights that KL/polish paths measure. Re-cache is enabled by default
 # after the Qwen3.5-0.8B and Qwen3-4B smoke ladder cleared vLLM eager/graph
@@ -881,6 +983,8 @@ echo "  FORMATS=$FORMATS  TARGET_BITS=$TARGET_BITS"
 echo "  TARGET_DISK_GB=${TARGET_DISK_GB:-<unset>}  EXPORT_CONTAINER=$EXPORT_CONTAINER"
 echo "  TARGET_PROFILE=${TARGET_PROFILE:-<unset, spec-resolved>} -> $TARGET_PROFILE_RESOLVED (default $TARGET_PROFILE_DEFAULT)"
 echo "  ALLOW_PINNED=${ALLOW_PINNED:-<none>}"
+echo "  LM_HEAD_FORMAT=$LM_HEAD_FORMAT -> $LM_HEAD_FORMAT_CANONICAL  fixed_quantized=$LM_HEAD_FIXED_QUANTIZED dp_unpinned=$LM_HEAD_DP_UNPINNED"
+echo "  COST_FORMATS=$COST_FORMATS  remaining_profile_pins=${REMAINING_PROFILE_PINS[*]:-<none>}"
 echo "  NSAMPLES=$NSAMPLES SEQLEN=$SEQLEN LAYERS_PER_SHARD=$LAYERS_PER_SHARD"
 echo "  PREFETCH_LOOKAHEAD=$PREFETCH_LOOKAHEAD PREFETCH_WORKERS=$PREFETCH_WORKERS"
 echo "  ACTIVATION_ROWS_LIMIT=$ACTIVATION_ROWS_LIMIT"
@@ -967,9 +1071,13 @@ STAGE_SETTINGS_ENV=(
   "NSAMPLES=$NSAMPLES"
   "SEQLEN=$SEQLEN"
   "FORMATS=$FORMATS"
+  "COST_FORMATS=$COST_FORMATS"
   "TARGET_BITS=$TARGET_BITS"
   "CALIBRATION_MODALITY=$CALIBRATION_MODALITY"
   "ALLOW_PINNED=$ALLOW_PINNED"
+  "LM_HEAD_FORMAT=$LM_HEAD_FORMAT_CANONICAL"
+  "LM_HEAD_RENDER_ACTIVE=$LM_HEAD_RENDER_ACTIVE"
+  "LM_HEAD_DP_UNPINNED=$LM_HEAD_DP_UNPINNED"
   "ACTIVATION_ROWS_LIMIT=$ACTIVATION_ROWS_LIMIT"
   "COST_MODE=$COST_MODE"
   "SELECTION_MODE=$SELECTION_MODE"
@@ -1292,14 +1400,14 @@ if [[ "$BASE_COST_REUSABLE" == "0" ]]; then
     --cost-mode "$COST_MODE" \
     --probe "${PROBE_PATH}" \
     --activation-cache-dir "${WORK_DIR}/act" \
-    --formats "$FORMATS" \
+    --formats "$COST_FORMATS" \
     --output "${BASE_COST_PATH}" \
     --work-dir "${WORK_DIR}/work" \
     --device "$DEVICE" --dtype bf16 \
     --mode batched --chunk-size 256 \
     --layers-per-shard "$LAYERS_PER_SHARD" \
     --skip-missing-activations \
-    --no-include-lm-head \
+    "${LM_HEAD_BASE_COST_ARGS[@]}" \
     --swap-grow-limit-mb "${SWAP_GROW_LIMIT_MB:-2048}" \
     2>&1 | tee "${WORK_DIR}/logs/cost.log"
 else
@@ -1324,8 +1432,10 @@ if [[ "$COST_MODE" == "production-render-score" || "$COST_MODE" == "production-r
     python3 -m prismaquant.build_production_cache \
       --model "$MODEL_PATH" \
       --output "$PRODUCTION_RENDER_COST_CACHE_PATH" \
-      --formats "$FORMATS" \
+      --formats "$COST_FORMATS" \
       --render-scope format-menu \
+      --activation-cache-dir "${WORK_DIR}/act" \
+      "${PRODUCTION_CACHE_PIN_ARGS[@]}" \
       "${COST_CACHE_COL_WEIGHT_ARGS[@]+"${COST_CACHE_COL_WEIGHT_ARGS[@]}"}" \
       --n-calib-samples "$PRODUCTION_RENDER_COST_NSAMPLES" \
       --calib-seqlen "$PRODUCTION_RENDER_COST_SEQLEN" \
@@ -1360,7 +1470,7 @@ if [[ "$COST_MODE" == "production-render-score" || "$COST_MODE" == "production-r
       --production-cache "$PRODUCTION_RENDER_COST_CACHE_PATH" \
       --baseline-cost "$BASE_COST_PATH" \
       --output "$COST_PATH" \
-      --formats "$FORMATS" \
+      --formats "$COST_FORMATS" \
       --score-field "$PRODUCTION_RENDER_COST_SCORE_FIELD" \
       "${PROD_RENDER_COST_ARGS[@]}" \
       2>&1 | tee "${WORK_DIR}/logs/production_render_cost.log"
@@ -1376,7 +1486,7 @@ if [[ "$COST_MODE" == "aura" ]]; then
   # format-menu cache supplies the cost's rendered dW, the frontier's
   # measured bytes, and the exported bytes (principle #8) — the regen-27b
   # prodcache_menu.pkl pattern.
-  AURA_CACHE_FORMATS="$(python3 - "$FORMATS" <<'PY'
+  AURA_CACHE_FORMATS="$(python3 - "$COST_FORMATS" <<'PY'
 import sys
 from prismaquant import format_registry as fr
 
@@ -1403,6 +1513,8 @@ PY
       --model "$MODEL_PATH" \
       --output "$PRODUCTION_RENDER_COST_CACHE_PATH" \
       --formats "$AURA_CACHE_FORMATS" \
+      --activation-cache-dir "${WORK_DIR}/act" \
+      "${PRODUCTION_CACHE_PIN_ARGS[@]}" \
       --dataset "$DATASET" \
       --n-calib-samples "$NSAMPLES" \
       --calib-seqlen "$SEQLEN" \
@@ -1429,7 +1541,7 @@ PY
       --model "$MODEL_PATH" \
       --cost-mode "$COST_MODE" \
       --output "$AURA_COST_RAW" \
-      --formats "$FORMATS" \
+      --formats "$COST_FORMATS" \
       --production-cache "$PRODUCTION_RENDER_COST_CACHE_PATH" \
       --require-production-cache \
       --n-probes "$AURA_COST_NPROBES" \
@@ -1445,6 +1557,7 @@ PY
       --min-free-gib "$AURA_COST_MIN_FREE_GIB" \
       --accurate-chunk-bytes \
       --allow-packed-expert-omission \
+      "${LM_HEAD_AURA_ARGS[@]+"${LM_HEAD_AURA_ARGS[@]}"}" \
       2>&1 | tee "${WORK_DIR}/logs/aura_cost.log"
   else
     echo "[pipeline] [2c/4] AURA cost exists, skipping"
@@ -1670,6 +1783,7 @@ python3 -m prismaquant.allocator \
   --pareto-targets "$PARETO_TARGETS" \
   --visual-format "$VISUAL_FORMAT" \
   --visual-sensitivity "$VISUAL_SENSITIVITY" \
+  --lm-head-format "$LM_HEAD_FORMAT_CANONICAL" \
   --mtp-format "$MTP_FORMAT" \
   --layer-config "${WORK_DIR}/artifacts/layer_config.json" \
   --pareto-csv "${WORK_DIR}/artifacts/pareto.csv" \
@@ -1697,7 +1811,7 @@ if [[ "$PRODUCTION_CACHE" != "0" && "$PRODUCTION_CACHE" != "false" && "$PRODUCTI
       exit 2
     fi
     if [[ "$CACHE_FORMATS" == "auto" ]]; then
-      CACHE_FORMATS="$(python3 - "$FORMATS" <<'PY'
+      CACHE_FORMATS="$(python3 - "$COST_FORMATS" <<'PY'
 import sys
 from prismaquant import format_registry as fr
 
@@ -1737,6 +1851,8 @@ PY
         --model "$MODEL_PATH" \
         --output "$PROD_CACHE_RAW" \
         --formats "$CACHE_FORMATS" \
+        --activation-cache-dir "${WORK_DIR}/act" \
+        "${PRODUCTION_CACHE_PIN_ARGS[@]}" \
         --dataset "$DATASET" \
         --n-calib-samples "$NSAMPLES" \
         --calib-seqlen "$SEQLEN" \
@@ -1951,6 +2067,8 @@ PY
           --model "$MODEL_PATH" \
           --output "$PROD_CACHE_RECACHED" \
           --formats "$CACHE_FORMATS" \
+          --activation-cache-dir "${WORK_DIR}/act" \
+          "${PRODUCTION_CACHE_PIN_ARGS[@]}" \
           --dataset "$DATASET" \
           --n-calib-samples "$NSAMPLES" \
           --calib-seqlen "$SEQLEN" \
@@ -2000,6 +2118,8 @@ PY
         --model "$MODEL_PATH" \
         --output "$PROD_CACHE_RAW" \
         --formats "$CACHE_FORMATS" \
+        --activation-cache-dir "${WORK_DIR}/act" \
+        "${PRODUCTION_CACHE_PIN_ARGS[@]}" \
         --dataset "$DATASET" \
         --n-calib-samples "$NSAMPLES" \
         --calib-seqlen "$SEQLEN" \
@@ -2425,6 +2545,7 @@ EXPORT_ARGS=(
   --device "$EXPORT_DEVICE"
   --shard-bytes "$EXPORT_SHARD_BYTES"
   --activation-cache-dir "${WORK_DIR}/act"
+  "${EXPORT_PIN_ARGS[@]}"
 )
 case "$EXPORT_GPTQ" in
   0|false|False|FALSE|no|No|NO) EXPORT_ARGS+=(--no-gptq) ;;

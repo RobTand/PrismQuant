@@ -49,6 +49,9 @@ from prismaquant.calibration_data import (
 )
 from prismaquant.gpu_guard import require_cuda_hot_path
 from prismaquant.model_profiles import detect_profile_with_warning
+from prismaquant.mtp_production_cache import (
+    fill_profile_mtp_production_cache,
+)
 from prismaquant.perturbed_x_cache import calibration_data_hash
 from prismaquant.production_recache import _load_assignment
 from prismaquant.production_weight_cache import (
@@ -233,6 +236,21 @@ def validate_render_assignment_cache_coverage(cache, render_assignment) -> None:
         )
 
 
+def _filter_assignment_to_include_qnames(
+    render_assignment,
+    include_qnames: Sequence[str] | None,
+) -> dict[str, str]:
+    """Project assignment coverage onto the exact rendered stripe."""
+    if include_qnames is None:
+        return dict(render_assignment or {})
+    allowed = {str(qname) for qname in include_qnames}
+    return {
+        str(qname): fmt
+        for qname, fmt in (render_assignment or {}).items()
+        if str(qname) in allowed
+    }
+
+
 def _load_cache_calibration(tokenizer, args) -> torch.Tensor:
     if args.dataset:
         return load_calibration(
@@ -387,11 +405,37 @@ def _run_streaming(args, formats, levers, dtype) -> int:
             if format_plan is not None else None
         ),
     )
+    if render_assignment is not None:
+        profile = detect_profile_with_warning(
+            args.model,
+            entrypoint="build-prod-cache/mtp",
+        )
+        fill_profile_mtp_production_cache(
+            cache,
+            args.model,
+            profile=profile,
+            activation_cache_dir=args.activation_cache_dir,
+            formats=formats,
+            render_assignment=render_assignment,
+            cache_dir=args.cache_dir,
+            device=device,
+            dtype=dtype,
+            max_act_rows=args.max_act_rows,
+            h_detail_dir=args.h_detail_dir,
+            include_qnames=include_qnames,
+            col_weights=col_weights,
+            cb_serialization_context=cb_serialization_context,
+        )
     elapsed = time.monotonic() - t0
 
     try:
         if render_assignment is not None:
-            validate_render_assignment_cache_coverage(cache, render_assignment)
+            coverage_assignment = _filter_assignment_to_include_qnames(
+                render_assignment, include_qnames,
+            )
+            validate_render_assignment_cache_coverage(
+                cache, coverage_assignment,
+            )
         else:
             artifacts = cache.metadata.get("transient_render_artifacts", {})
             expected = int(cache.metadata.get("requested_entries", -1))
@@ -653,9 +697,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument(
         "--activation-cache-dir",
         default=None,
-        help="Probe activation cache directory (streaming mode). Supplies the "
-        "per-Linear and per-experts-module input rows that the render passes "
-        "consume in place of a fresh calibration forward.",
+        help="Probe activation cache directory. Streaming body renders consume "
+        "its per-Linear and per-experts-module rows in place of a fresh "
+        "calibration forward. Resident format-menu builds also use its MTP "
+        "rows to append profile-synthesized mtp.* Linears; an explicit "
+        "non-BF16 mtp.* assignment requires it.",
     )
     p.add_argument(
         "--col-weights",
@@ -785,6 +831,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{skipped if len(skipped) <= 5 else skipped[:5] + ['...']}",
                 flush=True,
             )
+        include_qnames = None
         if args.include_qnames_file:
             include_path = Path(args.include_qnames_file)
             allowed = {
@@ -794,6 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             before = len(qnames)
             qnames = [q for q in qnames if q in allowed]
+            include_qnames = sorted(allowed)
             print(
                 f"[build-prod-cache] include-qnames-file={include_path} "
                 f"kept {len(qnames)}/{before} qnames",
@@ -855,6 +903,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         if cache.metadata is None:
             cache.metadata = {}
         cache.metadata["calib_hash"] = calibration_data_hash(calib_ids)
+        # Transformers suppresses the Qwen MTP sidecar, so it is absent from
+        # the resident CausalLM graph above. Synthesize the profile module and
+        # append its exact production renders from the probe's existing MTP
+        # activation rows. Concrete non-BF16 MTP assignments fail closed when
+        # any module/source/row/cache pair is missing; body-only legacy menu
+        # builds remain unchanged when no activation cache was supplied.
+        fill_profile_mtp_production_cache(
+            cache,
+            args.model,
+            profile=profile,
+            activation_cache_dir=args.activation_cache_dir,
+            formats=formats,
+            render_assignment=(render_assignment or recache_assignment),
+            cache_dir=args.cache_dir,
+            device=device,
+            dtype=dtype,
+            max_act_rows=args.max_act_rows,
+            h_detail_dir=args.h_detail_dir,
+            include_qnames=include_qnames,
+            col_weights=col_weights,
+            cb_serialization_context=cb_serialization_context,
+        )
         # Render packed-MoE experts through the SAME deliberate path. They are
         # 3-D packed tensors, not nn.Linear, so fill_production_weight_cache
         # skips them; without this they would be RTN'd by omission at export
@@ -918,8 +988,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # through to RTN at hook time.
         try:
             if render_assignment is not None:
+                coverage_assignment = _filter_assignment_to_include_qnames(
+                    render_assignment, include_qnames,
+                )
                 validate_render_assignment_cache_coverage(
-                    cache, render_assignment)
+                    cache, coverage_assignment)
             else:
                 cache.validate_coverage(qnames, formats)
             print("[build-prod-cache] coverage check passed", flush=True)

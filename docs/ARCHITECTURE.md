@@ -1,7 +1,21 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-21 · `merge/proven-rescues` — stamps follow, newest first, each recording
-its own branch and date. Re-stamped (2026-08-21, `merge/proven-rescues`) for the
+As of: 2026-08-23 · `audit/math-reunderwrite-2026-08-21` · working-tree revision based on
+`ed5c096` — stamps follow, newest first, each recording its own branch and date. Re-stamped
+(2026-08-23, `audit/math-reunderwrite-2026-08-21`) for the **fixed output-head policy,
+profile-synthesized MTP production renders, and exact striped cache union**. `LM_HEAD_FORMAT`
+now defaults to historical BF16; an explicit non-BF16 head is a measured fixed auxiliary
+assignment outside the body DP/bpp and inside exact artifact bytes, while
+`ALLOW_PINNED=lm_head` remains the mutually exclusive research/DP path. Every persisted
+cost/cache stage binds the resolved head policy. `build_production_cache` now appends
+profile-built `mtp.*` Linears from the probe activation rows into the one
+`ProductionWeightCache`, with exact source/module/activation coverage and qname-allowlist
+filtering. `production_cache_stripes.py` emits deterministic layer-local qname stripes, and
+`union_production_cache.py` publishes, verifies, and atomically unions portable disjoint
+cache bundles under exact source/calibration/code/settings/render coverage; this native-only
+set union is not the archived surrogate-driven smart union. The final integration commit is
+deliberately not predicted in this provenance stamp. Previously re-stamped (2026-08-21,
+`merge/proven-rescues`) for the
 **Gridbook 0.8.11 PRODUCER pin**: the producer pin
 (`gridbook_runtime_pin.json`) advanced 0.8.5/v3 → 0.8.11/v4 at commit
 `187c721`, in lockstep with the serving pin, and a new test
@@ -812,8 +826,12 @@ Lane detail, defaults and proven results: §9. Export codecs: §6. Pipeline defa
 
 ### 1.2 Shipped artifact family
 
-bpp is over **quantizable** parameters only (excludes `lm_head`, MTP/visual sidecars, pinned
-Linears) and labels are **not** comparable across accounting eras (§12). conf-KL =
+bpp is over **quantizable body** parameters only (excludes `lm_head`, MTP/visual sidecars,
+and profile-pinned Linears) and labels are **not** comparable across accounting eras (§12).
+A fixed quantized `lm_head` stays outside that body denominator and the body's predicted
+Δloss, but its measured auxiliary Δloss and exact serialized payload are carried separately and
+its bytes count toward every whole-artifact budget (`allocator.py` `aux_fixed_*` fields).
+conf-KL =
 confident-position KL-vs-BF16; ALL-KL = all positions. Comparative lane deltas belong to §9;
 the numbers below are each artifact's own readout.
 
@@ -996,10 +1014,22 @@ flowchart TD
   FR --> VAK
   VAK --> SVF
 
-  PCACHE["[4/4] D. build_production_cache / production_recache<br/>ProductionWeightCache -- the one rendered-weight store<br/>levers: gptq, static_act_order, joint_scale_opt"]
+  PCACHE["[4/4] D. build_production_cache / production_recache<br/>ProductionWeightCache -- the one rendered-weight store<br/>body + profile-synthesized MTP; levers: gptq, static_act_order, joint_scale_opt"]
+
+  subgraph XUNION["optional exact multi-host cache build -- native materialized renders only"]
+    SPLAN["production_cache_stripes<br/>probe-shaped LPT over whole decoder layers<br/>plus indivisible lm_head / MTP groups"]
+    SCACHE["independent build_production_cache workers<br/>one --include-qnames-file and cache bundle per stripe"]
+    SUNION["union_production_cache<br/>manifest -> verify-shard -> union -> verify<br/>exact disjoint set union; no candidate selection"]
+    SPLAN --> SCACHE --> SUNION
+  end
 
   SVF --> PCACHE
   ALLOC -->|"SELECTION_MODE=surrogate"| PCACHE
+  PROBE -. "qname shapes" .-> SPLAN
+  ALLOC -. "assignment coverage" .-> SCACHE
+  SRC -. "same checkpoint identity" .-> SCACHE
+  ACT -. "MTP activation rows" .-> PCACHE
+  ACT -. "same calibration rows" .-> SCACHE
   CBL -. "exact learned tensors" .-> PCACHE
 
   EXPCT["export_native_compressed -- :1665-1699"]
@@ -1007,6 +1037,7 @@ flowchart TD
   EXPGG["convert_hf_to_gguf.py skeleton -> export_gguf<br/>(:1461-1493)"]
 
   PCACHE --> EXPCT
+  SUNION --> EXPCT
   ALLOC -->|"EXPORT_CONTAINER=nvfp4_cb, PRODUCTION_CACHE=0"| EXPCB
   ALLOC -->|"EXPORT_CONTAINER=gguf, PRODUCTION_CACHE=0"| EXPGG
   CBL -. "same tensors; no retraining" .-> VAK
@@ -1040,7 +1071,7 @@ flowchart TD
 
   classDef optin stroke:#c07800,stroke-width:2px,stroke-dasharray:4
   classDef manual stroke:#c0392b,stroke-width:2px
-  class AUR,CBH,FR,VAK,SVF,DAP0,DAP1,DAP3,DAART optin
+  class AUR,CBH,FR,VAK,SVF,DAP0,DAP1,DAP3,DAART,SPLAN,SCACHE,SUNION optin
   class VNE,VQM,GOLD,NOSMOKE manual
 ```
 
@@ -1073,22 +1104,23 @@ which is what the rows touched since are keyed on.
 | # | Stage | Script | Artifact(s) | Reuse guard | Mode/lane gate |
 |---|---|---|---|---|---|
 | **1/4** | Sensitivity probe — per-Linear empirical Fisher `h_trace`, body + MTP in one pass; tied heads materialized and excluded, KV-sharing cotangents grafted (§7.5) | `prismaquant.incremental_probe` (`544-560`) | `artifacts/probe.pkl`; activations → `act/`; shards → `work/`; `logs/probe.log` | settings-hash `probe` (`703`); reuse also re-checks stored `calibration_modality` | — |
-| **2/4** | Baseline per-(Linear,format) RTN cost | `prismaquant.incremental_measure_quant_cost` (`645-658`) | `artifacts/cost.pkl` (`COST_MODE=local`) or `artifacts/cost_baseline.pkl` (`314-380`); `logs/cost.log` | settings-hash `base-cost` (`768`) + cost-mode provenance when it IS the allocator table (`769-777`) | — |
+| **2/4** | Baseline per-(Linear,format) RTN cost. The measured menu is derived `COST_FORMATS`; `lm_head` is included only for a fixed non-BF16 or DP-unpinned head | `prismaquant.incremental_measure_quant_cost --[no-]include-lm-head` | `artifacts/cost.pkl` (`COST_MODE=local`) or `artifacts/cost_baseline.pkl`; `logs/cost.log` | settings-hash `base-cost`, including all three resolved head-policy axes and `COST_FORMATS` | — |
 | **2a-CB** | imatrix column-weight harvest | `harvest_cb_col_weights` — ONE shell function, four call sites (`[2/4] pre-cost`, `[2b/4] cost-cache`, `[2d-CB]`, `[4/4]`) → `export_gguf.build_imatrix_from_act_cache` + `moe_imatrix.synthesize_packed_expert_col_weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | CB lane; called by whichever stage needs the vector first |
 | **pre-2-CBL** | Train/verify the immutable value-bearing dense learned-codebook bundle | `ensure_cb_learned_bundle` → `prismaquant.build_cb_learned_bundle` → streaming source reader + certified `learn_pool` | `artifacts/cb_learned_bundle.pqcb` | settings-hash `cb-learned-bundle` includes the col-weight file SHA-256; existing files are fully revalidated | CB lane, learned scope only; runs before the first cost/cache/KL render |
-| **2b/4** | Format-menu production render for allocator cost. Materialized mode retains render shards; streamed CB mode synchronously renders each full-menu pair, checkpoints the consumer acknowledgement, then discards the tensor (§5.4) | `build_production_cache --render-scope format-menu` (`672-686`); transient lifetime is implemented by `streaming_production_cache.py` through the existing `ProductionWeightCache` | `artifacts/production_render_score_cache.pkl`; `…_weight_cache/` contains tensors only for materialized mode, while transient CB pairs retain identity/digest/consumer sidecars but no rendered-weight shard | settings-hash `render-cost-cache` (`837`) | `production-render-score`; transient mode is CB-only and must cover the complete requested menu |
+| **2b/4** | Format-menu production render for allocator cost. Materialized mode retains render shards; streamed CB mode synchronously renders each full-menu pair, checkpoints the consumer acknowledgement, then discards the tensor (§5.4). The probe activation directory enables profile-synthesized MTP append; remaining profile pins are skipped | `build_production_cache --render-scope format-menu --activation-cache-dir act/` using derived `COST_FORMATS`; transient lifetime is implemented by `streaming_production_cache.py` through the existing `ProductionWeightCache` | `artifacts/production_render_score_cache.pkl`; `…_weight_cache/` contains tensors only for materialized mode, while transient CB pairs retain identity/digest/consumer sidecars but no rendered-weight shard | settings-hash `render-cost-cache`, including the resolved head policy | `production-render-score`; transient mode is CB-only and must cover the complete requested menu |
 | **2c/4** | Synthesize allocator cost from render scores | `prismaquant.production_render_cost` (`704-711`) | `artifacts/cost.pkl` | settings-hash `render-cost` (`858`) + cost-mode provenance (`859`) | `production-render-score` |
-| **2b/4** | Format-menu render for AURA dW. A materialized cache exposes dW later; the streamed CB lifetime exposes each canonical render to the synchronous cost consumer and discards it only after that row is durably acknowledged (§5.4) | `build_production_cache … --render-scope format-menu` (`857-871`) | frontier cache under validated-surrogate, else `production_render_score_cache.pkl` (`366-378`); transient CB mode retains pair attestations rather than loser weight shards | settings-hash `aura-dw-cache` (`913`) | `aura`; `exit 2` if the menu is BF16-only; every requested candidate must be consumed |
-| **2c/4** | AURA downstream-KL-adjoint cost | `prismaquant.aura_cost` (`881-900`) | `artifacts/cost_aura.pkl` | settings-hash `aura-cost` (`939`) | `aura` |
+| **2b/4** | Format-menu render for AURA dW. A materialized cache exposes dW later; the streamed CB lifetime exposes each canonical render to the synchronous cost consumer and discards it only after that row is durably acknowledged (§5.4). It uses the same activation-cache/MTP and remaining-pin policy as the cost cache | `build_production_cache … --render-scope format-menu --activation-cache-dir act/` | frontier cache under validated-surrogate, else `production_render_score_cache.pkl`; transient CB mode retains pair attestations rather than loser weight shards | settings-hash `aura-dw-cache`, including the resolved head policy | `aura`; `exit 2` if the menu is BF16-only; every requested candidate must be consumed |
+| **2c/4** | AURA downstream-KL-adjoint cost. A fixed head remains auxiliary and is omitted; only `ALLOW_PINNED=lm_head` asks AURA to price the head inside the research DP | `prismaquant.aura_cost` with `--include-lm-head` only in DP-unpinned mode | `artifacts/cost_aura.pkl` | settings-hash `aura-cost`, including the resolved head policy | `aura` |
 | **2d/4** | Hybrid finalize: empirical profile-declared routed-expert unit-KL + sidecar backfill | `prismaquant.expert_empirical_cost --merge-base --backfill-base` (with the shared `--col-weights` on weighted cached-menu lanes) or inline backfill (`run-pipeline.sh`, AURA `[2d]`) | `artifacts/cost.pkl` | settings-hash `aura-hybrid-cost` + cost-mode provenance | `aura` |
 | **2d-CB** | CB hybrid: replace routed-expert rows with empirical unit-KL | `harvest_cb_col_weights "[2d-CB]"` → `expert_empirical_cost --replace-experts --col-weights` | `artifacts/cost_local_raw.pkl`, `artifacts/cost.pkl`, `cb_col_weights.pkl` | settings-hash `cb-hybrid-cost` + the in-payload merge probe; col-weights `cb-col-weights` | CB lane, `CB_EXPERT_EMPIRICAL=1` |
 | **2b/4 cw** | Cost-cache col-weights (weighted lanes only) | `harvest_cb_col_weights "[2b/4] cost-cache"` → `build_production_cache --col-weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | `COST_RENDER=cached-menu` on a CB/GGUF lane (§4.7) |
 | **P0–P3** | Platform-agnostic anchored-AURA mechanism: format-blind streamed adjoint; plugin-mapped production anchors per legal `(unit,family,equivalence_class)`; within-segment shape fit; recomputed hull; one byte-budget DP (§4.3) | frozen DSv4 shim `tools/run_aura_cb_reprice.sh` → `prismaquant.dsv4_aura_cb_reprice`; generic mechanism `prismaquant.anchored_cost`; CB mapping plugin on `format_registry` + `model_profiles` | identity-bound scalar checkpoints; the driver atomically emits an exportable artifacts directory containing the AURA-stamped `layer_config.json`, matching `selection.json`, allocator `pareto.knees.json`, and the exact platform render inputs (`cb_col_weights.pkl` on CB) | qname-keyed atomic resume bound to model/menu/arm/plugin/calibration/format-plan/render-input identity | generic evaluate/price/allocate mechanism with a machine-specific map plugin; DSv4 remains the acceptance vehicle; never a full-menu render campaign |
-| **3/4** | Allocator — multi-choice knapsack over per-Linear formats (§4) | `prismaquant.allocator` (`1076-1090`) | `artifacts/layer_config.json`, `artifacts/pareto.csv`, `artifacts/pareto_assignments/` (validated-surrogate only, `1056-1061`); `logs/allocator.log` | **none — always runs** | — |
-| **4/4 A** | Frontier format-menu cache | `build_production_cache … --render-scope format-menu --render-packed-experts` | `artifacts/production_weight_cache_frontier_raw.pkl` + `…_frontier/` | settings-hash `frontier-cache` (`1206`) | validated-surrogate; `exit 2` if `PRODUCTION_CACHE=0` |
+| **3/4** | Allocator — multi-choice knapsack over per-Linear body formats plus explicit fixed auxiliary head/MTP/visual assignments (§4) | `prismaquant.allocator --lm-head-format "$LM_HEAD_FORMAT_CANONICAL"` | `artifacts/layer_config.json`, `artifacts/pareto.csv`, `artifacts/pareto_assignments/` (validated-surrogate only); `logs/allocator.log` | **none — always runs** | fixed non-BF16 head and `ALLOW_PINNED=lm_head` are mutually exclusive |
+| **4/4 A** | Frontier format-menu cache, including profile-synthesized MTP when the menu requests it | `build_production_cache … --render-scope format-menu --render-packed-experts --activation-cache-dir act/` | `artifacts/production_weight_cache_frontier_raw.pkl` + `…_frontier/` | settings-hash `frontier-cache`, including the resolved head policy | validated-surrogate; `exit 2` if `PRODUCTION_CACHE=0` |
 | **4/4 B** | Measured held-out KL per Pareto point | `prismaquant.validate_assignments_kl` (`1243-1248` per-point, `1272-1277` batched) | `artifacts/validated_frontier_kl.json` + `…_parts/*.json` (merged `1250-1269`) | settings-hash `frontier-kl-point` per point (`1294`) | validated-surrogate |
 | **4/4 C** | Frontier point selection | `prismaquant.select_validated_frontier` (`1281-1288`) | overwrites `artifacts/layer_config.json`; `layer_config_validated_assignment.json`; `validated_frontier_selection.json` | none | validated-surrogate |
-| **4/4 D** | Production cache build / recache for the selected assignment | `production_recache` (`1331-1346`, `1399-1414`) or `build_production_cache --recache-layer-config` (`1379-1396`, `1423-1438`) | `production_weight_cache_frontier_<digest>_recached.pkl` (`1328`), `production_weight_cache_recached.pkl` / `…_raw.pkl` (`1102-1103`) | settings-hash `production-cache-recached` (`1404`), `frontier-recache` (`1360`), `production-cache-raw` (`1452`) | `PRODUCTION_CACHE=1` |
+| **4/4 D** | Production cache build / recache for the selected assignment, including exact non-BF16 `mtp.*` renders synthesized through the profile from `act/` | `production_recache` or `build_production_cache --recache-layer-config --activation-cache-dir act/`; all direct builder calls receive the remaining profile pins | `production_weight_cache_frontier_<digest>_recached.pkl`, `production_weight_cache_recached.pkl` / `…_raw.pkl` and their shard directories | settings-hash `production-cache-recached`, `frontier-recache`, `production-cache-raw`, including the resolved head policy | `PRODUCTION_CACHE=1`; explicit quantized MTP fails closed without exact source/module/activation coverage |
+| **4/4 D×N (manual)** | Exact multi-host cache striping and set union. Plan whole-layer/auxiliary qname groups, run independent allowlisted cache builds, manifest and verify each portable bundle, union, then verify again after transfer | `prismaquant.production_cache_stripes`; `build_production_cache --include-qnames-file`; `prismaquant.union_production_cache {manifest,verify-shard,union,verify}` | `stripe-plan.json`, `stripe-NN.qnames.txt`, per-worker cache bundles, final `production_weight_cache.pkl` + content-addressed `weights/` + `union_manifest.json` | campaign identity binds source, calibration, full producer code, settings, render semantics, and assignment or stripe-plan coverage | operator workflow, not a `run-pipeline.sh` default; native materialized formats only (§5.4) |
 | **3c** | AURA additivity report — `residual = measured_end_KL − Σ predicted_dloss`, stamped into `cost.pkl` `provenance["additivity"]` (§4.3) | `prismaquant.aura_additivity_gate` (+ optional `validate_assignments_kl` under `AURA_ADDITIVITY_GATE=measure`) | `artifacts/aura_additivity.json`, `aura_additivity_kl.json` (measure only); `logs/aura_additivity*.log` | none — non-blocking report, skip-if-exists on the KL half | `COST_MODE=aura`, `AURA_ADDITIVITY_GATE≠0` |
 | **4/4 E-gguf** | GGUF skeleton + export + llama.cpp smoke | `convert_hf_to_gguf.py` (`1461-1464`), `prismaquant.export_gguf` (`1469-1493`), `llama-completion` (`1500-1516`) | `artifacts/skeleton.gguf`, `exported.gguf` | settings-hash `gguf-skeleton` (`1488`); export always runs | GGUF lane; **exits 0** |
 | **4/4 E-cb** | CB col-weights + codebook export | `harvest_cb_col_weights "[4/4]"`, `export_nvfp4_cb[_streaming]` | `exported_nvfp4_cb/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`) + `.pqcb` codebook sidecar | settings-hash `cb-col-weights`; export always runs | CB lane; no in-lane serving smoke; **exits 0** |
@@ -1158,6 +1190,10 @@ PRODUCTION_RENDER_COST_SCORE_FIELD=weight_mse (M6, §4.2)
 TARGET_DISK_GB=<unset>  EXPORT_CONTAINER=compressed-tensors
 TARGET_PROFILE=<unset, spec-resolved>  TARGET_PROFILE_DEFAULT=vllm_packed_moe
 ALLOW_PINNED=<none>  (forwards allocator --allow-pinned; see §4.5)
+LM_HEAD_FORMAT=BF16  (fixed auxiliary policy; FP8_E4M3 is the approved native
+                     compressed-tensors quantized-head rung, §4.5)
+COST_FORMATS=<canonical FORMATS plus LM_HEAD_FORMAT when that fixed value is
+                     non-BF16; no duplicate when the rung is already present>
 SELECTION_MODE=surrogate, or validated-surrogate under a TARGET_DISK_GB card
 EXPORT_PRODUCTION_CACHE_PREFETCH=require (native lane, D8)
 MTP_FORMAT=BF16  PRODUCTION_CACHE=1  PRODUCTION_RECACHE=1
@@ -1191,6 +1227,33 @@ PRISMAQUANT_CB_MINCHAIN=0  (opt-in monotone packed-expert rung chain)
 AURA_ADDITIVITY_GATE=measure
 PRISMAQUANT_GGUF_IMATRIX=1  DEVICE=cuda  EXPORT_DEVICE=cuda
 ```
+
+**The output-head policy has three resolved stage-identity axes.**
+`LM_HEAD_FORMAT` is canonicalized once; `LM_HEAD_RENDER_ACTIVE=1` when either a fixed
+non-BF16 head or the research DP-unpin needs head rows; and `LM_HEAD_DP_UNPINNED=1` only when
+`ALLOW_PINNED` structurally names the profile's output head. `run-pipeline.sh` adds those
+three values to `STAGE_SETTINGS_ENV`; `pipeline.py:_HEAD_SETTINGS` includes them in
+`base-cost`, `render-cost-cache`, `render-cost`, `aura-dw-cache`, `aura-cost`,
+`aura-hybrid-cost`, `frontier-cache`, `frontier-recache`, `production-cache-recached`, and
+`production-cache-raw`. Cost-bearing stages use derived `COST_FORMATS`, so changing a fixed
+head rung cannot reuse a body-only cost/cache artifact merely because `FORMATS` stayed the
+same. `CACHE_FORMATS` and `AURA_CACHE_FORMATS` are derived from that expanded menu where
+their stages need it. These are identity inputs, not new independent operator knobs.
+
+BF16 preserves the old pin exactly. A non-BF16 `LM_HEAD_FORMAT` and an
+`ALLOW_PINNED` token that lifts the head are a hard conflict: the first fixes a measured
+auxiliary rung outside the body DP/bpp, while the second asks the research DP to choose one.
+The pipeline includes the head in the baseline cost and render census whenever either mode is
+active, but AURA includes it only for the DP-unpinned mode; fixed-head predicted loss is
+reported as `aux_fixed_predicted_dloss` / `total_predicted_dloss_with_aux`, not folded into
+the body objective. The fixed path requires an untied head plus exact probe and cost rows and
+a candidate legal for the selected serving profile. The exporter lifts every alias of that
+one structural head from profile pins while retaining unrelated pins; explicit `--ignore`
+still wins. This policy quantizes no embedding by implication. The native production rung is
+`FP8_E4M3`; CB head formats remain unservable (§9.2). A materialized format-menu cache may
+render additional legal menu rungs for the active head even though the fixed assignment uses
+only one; that is bounded cache/render overhead, not assignment or accounting drift
+(`fixed_head.py`, `allocator.py`, `run-pipeline.sh`, `export_native_compressed.py`).
 
 **One default in this section is not a shell default.** `--emit-marginals` /
 `PRISMAQUANT_PROBE_MARGINALS` is **ON by default in the probe module itself**
@@ -1416,7 +1479,7 @@ is refused without the allocator flag; an unstamped table cannot be blessed by t
 | `PRODUCTION_CACHE_LEVERS` ∋ `hadamard_duquant` | `361-366` | same |
 | `MULTI_SHOT_PASSES` ∉ {unset, 1} | `367-373` | `archive/multi_shot_2026-05-19` |
 | `ALLOC_PROPAGATED_SENSITIVITY_REPORT` non-empty | `374-380` | `archive/l3_propagated_2026-07-30` |
-| `PRODUCTION_CACHE_UNION` truthy | `381-387` | `archive/union_cache_2026-07-30` |
+| `PRODUCTION_CACHE_UNION` truthy (the archived surrogate-driven **smart-union candidate selector**, not the exact set union in §5.4) | `381-387` | `archive/union_cache_2026-07-30` |
 | `MSE_PROMOTION` truthy | `388-394` | `archive/mse_promotion_2026-07-30` |
 
 **A twelfth `exit 2` gate that is *not* an archived mode.** `COST_MODE=production-render-score`
@@ -1434,6 +1497,13 @@ Four of these landed with the 2026-07-30 re-vet (R17, R4, R18 ×2). Each error s
 The archive directory names are load-bearing for the orchestrator: moving or renaming one
 breaks its gate. Lessons: §11.
 
+The word *union* is overloaded historically, but the mechanisms are not. The archived shell
+flag selected which candidates deserved rendering from an `output_mse` percentile. The live
+`prismaquant.union_production_cache` CLI makes no quality decision: it accepts only already
+rendered, disjoint keys under exact expected coverage and performs their verified set union.
+It is therefore a manual cache-build transport/reconciliation tool, not a restored pipeline
+mode (`union_production_cache.py`; §5.4).
+
 A twelfth refusal lives outside `run-pipeline.sh`: `export_native_compressed.main()` calls
 `_refuse_archived_block_output_match()`, which `SystemExit`s if
 `PRISMAQUANT_BLOCK_OUTPUT_MATCH` is set truthy (`archive/block_output_match_2026-07-30`,
@@ -1450,6 +1520,12 @@ guard at all, six more each holding their own opinion of their key set), and it 
 thing `pipeline.py` was already positioned to fix: it receives the settings and it is the only
 place where "what does this artifact depend on?" can be reviewed as a table rather than
 rediscovered per call site. Re-vet **R5**, adjudicated in favour of Lens 2's narrow promotion.
+
+`_HEAD_SETTINGS = (LM_HEAD_FORMAT, LM_HEAD_RENDER_ACTIVE, LM_HEAD_DP_UNPINNED)` is part of that
+load-bearing table, not descriptive spec metadata. Those axes cover every persisted cost,
+AURA, frontier, and production-cache artifact that can contain or depend on `lm_head`; the
+cost-stage `FORMATS` key is sourced from derived `COST_FORMATS`. A head-policy change therefore
+invalidates reuse before any pickle is opened (`pipeline.py:STAGE_SETTINGS_KEYS`, §3.3).
 
 Everything else in the file remains **descriptive**: it also writes and `--validate`s a spec
 JSON declaring 14 artifacts, 3 gates and 9 base stages plus render-mechanism stages generated
@@ -2146,20 +2222,37 @@ and `validation_harness` are unchanged.
 
 ### 4.5 Solver
 
-**Profile pins, and `ALLOW_PINNED` (2026-08-14).** `ModelProfile.is_pinned_name`
-force-excludes names like `lm_head` from the DP budget and ships them at source dtype.
-`allocator --allow-pinned <substrings>` lifts that for named units so the DP places them
-by budget-value instead; it enforces its own preconditions (a cost row and probe
-`n_params` for the name) and refuses rather than pricing an unpriced unit at zero.
-Until now the flag was reachable only by driving the allocator by hand, so
-`run-pipeline.sh` now forwards `ALLOW_PINNED` (default empty = historical behaviour,
-byte-identical). It matters at card scale: on Qwen3.8-27B a BF16 `lm_head` spans
-2.543 GB, **20% of a 13.0 GB whole-artifact budget**. Shipping a quantized pinned name
-additionally needs render + packing + serving support for that unit — `lm_head` has it
-on the native lane, and `embed_tokens` only on the Gridbook lane via the
-`quantized_embedding` declaration (§6.2). Note the measured counter-example: a CB rung
-on `lm_head` exports cleanly and then **fails at load** — no Gridbook method claims
-`ParallelLMHead`, so the head must ride the delegated stock-CT path (§9.2).
+**Profile pins, fixed `lm_head`, and `ALLOW_PINNED` (2026-08-23).**
+`ModelProfile.is_pinned_name` historically force-excludes names like `lm_head` from the DP
+budget and ships them at source dtype. That BF16 behavior remains the default. There are now
+two explicit ways to lift only the structural output-head aliases while leaving every other
+profile pin intact (`fixed_head.py`):
+
+- `allocator --lm-head-format FP8_E4M3` is the production fixed-auxiliary policy. The
+  allocator requires an untied head, a probe row, the corresponding measured cost row, and a
+  candidate legal for the target serving profile. It fixes that candidate before the body
+  solve; the head is excluded from body bpp, activation-fair pricing, body
+  `predicted_dloss`, and the DP decision, but its exact payload and measured loss remain in
+  `aux_fixed_assignment_payload_bits_total`, `aux_fixed_params`,
+  `aux_fixed_predicted_dloss`, and `total_predicted_dloss_with_aux`. Whole-artifact byte
+  selection therefore cannot hide it.
+- `allocator --allow-pinned lm_head` remains the independent research mode: the head enters
+  the ordinary multi-choice DP and is priced by budget-value. It too requires real probe/cost
+  rows. A non-BF16 fixed head and this DP-unpin are a hard conflict; an output head that is a
+  tied embedding cannot be fixed quantized because there is no independent source tensor and
+  the embedding-side perturbation is not measured by the head cost (§7.5).
+
+The allocator stamps `lm_head_format` and `lm_head_mode = profile_pinned_bf16|fixed|dp` in
+its metadata. `run-pipeline.sh` uses the same resolved policy to expand `COST_FORMATS`, choose
+the head probe/cost census, filter production-cache profile pins, and pass the exporter's
+remaining `--ignore` names. `export_native_compressed` trusts that allocator metadata for
+only the head aliases; an explicit operator `--ignore` remains highest precedence. It matters
+at card scale: on Qwen3.8-27B a BF16 `lm_head` spans 2.543 GB, **20% of a 13.0 GB
+whole-artifact budget**. The approved quantized head is `FP8_E4M3` on the native
+compressed-tensors lane; no token embedding is quantized by this policy. A CB rung on
+`lm_head` still exports cleanly and then **fails at load** — no Gridbook method claims
+`ParallelLMHead` — so a CB artifact must delegate a quantized head to the stock CT path
+(§6.2, §9.2; `allocator.py`, `run-pipeline.sh`, `export_native_compressed.py`).
 
 `allocator_solver.py`. Multi-choice knapsack DP over average-bits-per-parameter bins,
 numpy-vectorized (`solve_allocation :427-520`); the baseline per Linear is its cheapest
@@ -2661,6 +2754,30 @@ surrogate, the KL validation, and the exported bytes must be the *same* renderin
 carries a rendering confound. Levers are recorded on the cache (`:165`, `:835-858`), which is
 what makes M19 (§6.1) possible.
 
+**Profile-synthesized MTP is an append scope of that same cache.** Transformers does not
+instantiate the Qwen3.5/3.6 MTP sidecar, so the ordinary resident body walk cannot discover
+`mtp.*`. `mtp_production_cache.fill_profile_mtp_production_cache` asks the resolved
+`ModelProfile` to build the module, reads the exact `mtp_source_prefix()` tensors, loads them
+through the profile's packed-expert-aware loader, and reuses
+`streaming_production_cache._render_dense_layer`; it does not introduce another renderer or
+residency mechanism. The probe's existing activation rows supply GPTQ/JSO inputs. Profile,
+source tensor, module-name, activation-row/width, requested-pair, and resulting cache coverage
+are all checked exactly before the append can succeed. An explicit non-BF16 MTP assignment
+therefore requires `--activation-cache-dir` and fails closed rather than degrading to RTN or
+BF16.
+
+Compatibility is deliberate. Assignment scope appends only its concrete non-BF16 `mtp.*`
+pairs. Format-menu scope without an activation-cache directory retains the historical
+body-only behavior; with that directory it appends every live MTP Linear for every requested
+non-BF16 menu format. `--include-qnames-file` filters both the body walk and the synthesized
+append: a stripe with no `mtp.*` names creates no MTP entries, and the MTP-owning stripe
+creates only the listed names. The cache updates the ordinary `requested_entries`,
+`render_scores`, failures, activation maxima, and backing shards, plus an exact
+`prismaquant.production_weight_cache.mtp_render.v1` receipt binding qnames, formats by qname,
+source prefix/count, activation row counts, and row limit. CB MTP renders are refused until
+their identity-bound CB pair contract can be merged; the supported production-cache append
+is the native materialized lane (`mtp_production_cache.py`, `build_production_cache.py`).
+
 **A streamed CB format menu is a lifetime mode of that same cache, not a second cache.**
 `build_production_cache --streaming --render-scope format-menu` routes the complete requested
 CB menu through `streaming_production_cache.py`; there is no disk-budget candidate filter.
@@ -2687,6 +2804,51 @@ that commitment; a mismatch is a hard failure. Thus streamed menu scoring bounds
 disk residency while the surrogate, selected-assignment KL, and export still share one
 bit-identical rendering. Assignment-scoped cache builds and materialized format-menu/frontier
 builds retain their existing shard semantics.
+
+**Exact multi-host striping is a plan plus a fail-closed set union, not tensor
+parallelism.** `production_cache_stripes.py` reads positive-size qnames from `probe.pkl`, keeps
+each decoder layer whole, makes `mtp.*` and `lm_head` separate indivisible auxiliary groups,
+and asserts that the profile's fused-sibling and packed-expert serving units cannot cross a
+group boundary. It balances those groups deterministically with longest-processing-time
+binning over `n_params × max(in_features, 1)`, preserving layer-local source prefetch. The
+output schema `prismaquant.production_cache_stripe_plan.v1` contains the probe digest,
+model/profile, requested formats, work/parameter counts, and SHA-256-bound
+`stripe-NN.qnames.txt` files. Workers run ordinary, independent
+`build_production_cache --include-qnames-file ...` calls into distinct disk-backed cache
+bundles; no worker shares a cache directory or tensor file.
+
+`union_production_cache.py` owns the portable reconciliation workflow:
+
+```
+python -m prismaquant.union_production_cache manifest ... (--assignment A | --stripe-plan P)
+python -m prismaquant.union_production_cache verify-shard ... (--assignment A | --stripe-plan P)
+python -m prismaquant.union_production_cache union ... (--assignment A | --stripe-plan P)
+python -m prismaquant.union_production_cache verify ... (--assignment A | --stripe-plan P)
+```
+
+Every subcommand requires exactly one coverage authority. `--assignment` means the exact
+non-BF16 pairs in the selected layer config. `--stripe-plan` SHA-verifies every qname file and
+means the exact Cartesian product of all planned qnames and formats; its semantic plan digest
+is part of coverage. A worker manifest may cover only its disjoint subset, but the final union
+must equal the complete expected key set with no extras. Each shard manifest SHA-binds its
+pickle and every backing tensor and binds a path-independent source-checkpoint identity,
+calibration hash, full producer commit and source hash, explicit settings payload, render
+levers/scope/retention/streaming state, requested formats, mechanism order, and assignment or
+stripe-plan identity. Missing/tampered/out-of-bundle/symlinked/shared files, in-memory or
+non-materialized caches, render failures, overlaps, activation-max overlap, identity drift,
+and unknown differing metadata all refuse. Resident caches and streaming caches are both
+eligible only when their rendered weights are materialized; transient consumed-and-evicted CB
+menus are not.
+
+The merge has explicit rules for `requested_entries`, render scores, packed-expert coverage,
+activation maxima, and the MTP receipt. It deliberately refuses all CB keys because their pair
+identity sidecars do not yet have a union rule. The publisher copies verified tensors into a
+temporary bundle under content/key-addressed names, fsyncs, verifies complete coverage, and
+atomically publishes `production_weight_cache.pkl`, `weights/`, and `union_manifest.json`
+without overwriting an existing output. `verify` must be run again after transfer. This is an
+operator-selected native cache-build path and is not wired as a `run-pipeline.sh` default
+(`production_cache_stripes.py`, `union_production_cache.py`,
+`tests/test_production_cache_stripes.py`, `tests/test_union_production_cache.py`).
 
 Render mechanisms are a registry with declared ordering semantics, not a lever string parsed in
 spelling order (`render_score.py:188-260`): each `RenderMechanismSpec` declares `operation`,
@@ -2914,6 +3076,17 @@ wrapped in that `mtp` parent, equal the allocator's recipe names (`mtp.fc.*`, `m
 which is why the recipe filter here stays `mtp.` regardless of the source prefix.
 `validate_mtp_assignment_coverage` `:9195-9222` **hard-fails** when the source has tensors under
 `mtp_source_prefix()`, the profile `has_mtp()`, and the recipe has no `mtp.*` entries.
+
+That export-time synthesis is now mirrored by a production-cache producer, not postponed until
+packing. `build_production_cache` invokes `fill_profile_mtp_production_cache` after the body
+fill in both resident and streaming-assignment modes. A non-BF16 MTP recipe must therefore be
+present in the attached `ProductionWeightCache`; the exporter cache-fingerprint gate treats
+missing `mtp.*` pairs like any other missing assignment pair and points the operator back to
+the same layer config plus the probe `--activation-cache-dir`. Source/module/activation
+coverage and `--include-qnames-file` stripe ownership are §5.4. BF16 `MTP_FORMAT` remains the
+default and preserves legacy body-only cache behavior when no activation directory is supplied
+(`mtp_production_cache.py`, `build_production_cache.py`,
+`export_native_compressed.py:_production_cache_expected_keys`).
 
 **DeepSeek-V4 DSpark has two explicit producer modes.** The release-default mode is a
 source-format metadata overlay, not a second quantization pass. The released Flash checkpoint
@@ -3160,6 +3333,7 @@ silently corrupts.
 | Incomplete fused groups → BF16 + `ignore` | `allocator.py:1482`; ignore back-fill `:7643-7700` | the fused loader expects all siblings; a missing `v_proj` breaks the merged Linear |
 | Packed `config_groups` use vLLM **canonical** scheme names | `:7980-7994` | no scheme binds to FusedMoE; `w2_input_global_scale` never registers; `load_weights` KeyError |
 | Multi-format menu must not resolve to `DefaultProfile` | `validate_default_profile_format_menu` `allocator.py:961-988`, called `:1550-1554` | silently produces the fused-coherence bug class above |
+| A fixed quantized output head is independent, measured, and served by the selected native scheme | `allocator --lm-head-format` refuses tied heads, missing probe/cost rows, and unavailable candidates; `fixed_head.remaining_profile_pins` lifts only head aliases; allocator metadata controls export pinning; production rung `FP8_E4M3` | treating the fixed head as a body-DP item corrupts bpp/Δloss accounting; retaining its profile pin silently ships BF16 bytes; treating it as an embedding routes the wrong operation; a CB head has no `ParallelLMHead` method and fails load |
 | Final serving promotion is a no-op | `validate_final_serving_promotion_noop` `allocator.py:1046-1063`, called `:2669` | a late promotion means the DP priced an assignment that is not the one shipped |
 | Passthrough integrity (BF16/FP8_SOURCE only if the source already is) | `allocator_candidates.py:24-27`, `:112-120`; export judges it against the *same* `_scan_source_dtype_manifest` vocabulary (§6.3) | synthesising BF16 from a dequantised FP8 source burns 8 bpp for nothing |
 | A candidate's exact per-unit payload never exceeds its known source-format payload | scaled owners derive from `SOURCE_PASSTHROUGH_CONTRACTS`, plain owners from their safetensors dtype; exact integer-byte gate `_source_bpp_applicability`; common byte authority in `footprint.py`; complete eliminations persisted under `format_applicability.json:source_bpp_legality` | without the gate, a quality-favoured rung can spend more bytes than the representation it replaces while still appearing in a compression frontier; an unknown source owner could hide the same error behind a guessed bpp |
@@ -4611,13 +4785,16 @@ bodies one architecture at a time, only after a release of green equivalence.
 `TARGET_PROFILE=<id>` on the run invocation — leak L1 means the spec field alone does not take
 effect.
 
-**Tier C — commonly also needed.** MTP (today: edit `mtp_module.py` itself, see L2; or the
-hy_v3 route — `has_mtp → False` plus `passthrough_prefixes` and out-of-band CB encoding
-scripts); streaming overrides (`checkpoint_to_live_name` for flat naming, `init_rotaries` for
-multi-layer-type rope, `head_resident_extra_prefixes`); cross-layer forward state; vendored
-modeling. Then run the conformance validator (§8.6), which nothing else does, and the
-discovery walker (§8.8) on a meta load — an unclaimed matmul-fed parameter at intake is a
-`wo_a` waiting to ship.
+**Tier C — commonly also needed.** MTP is profile-owned: implement `has_mtp()`,
+`build_mtp_module(text_config)`, `mtp_source_prefix()`, and, only when the checkpoint layout
+needs it, the source-reader/loader overrides. Probe, cost, native production cache, and export
+all use that one contract; `prismaquant/mtp_module.py` no longer exists (L2). Architectures
+whose MTP remains source-passthrough use the hy_v3 route — `has_mtp → False` plus
+`passthrough_prefixes` and out-of-band CB encoding scripts. Common remaining work is streaming
+overrides (`checkpoint_to_live_name` for flat naming, `init_rotaries` for multi-layer-type
+rope, `head_resident_extra_prefixes`), cross-layer forward state, and vendored modeling. Then
+run the conformance validator (§8.6), which nothing else does, and the discovery walker (§8.8)
+on a meta load — an unclaimed matmul-fed parameter at intake is a `wo_a` waiting to ship.
 
 **Tier D — the gridbook CB lane (§9.2) adds per-arch work.** (6) `default_serving_profile:
 "nvfp4_cb"` in the spec **and** `TARGET_PROFILE=nvfp4_cb` (gated `run-pipeline.sh:124-125`),
@@ -5803,7 +5980,7 @@ walls live under `docs/archive/`; code walls under repo-root `archive/`.
 | The three-level cost cascade (L1→L2→L3) | **Retired from the spine 2026-07-30 (R4).** L2 beat additive L1 by −1.5% while AURA beat L1 by −38.5%; pairwise residuals are +5–12% diffuse with 3/1180 pairs significant and the apparent non-additivity is a bf16 artifact; L3-polish-of-many does not compose. One faithful cost + real-KL selection replaced all three (§2.2, §4.4). | `archive/l3_propagated_2026-07-30/` |
 | `COST_MODE=production-render-staged` | Rendered NVFP4 first, promoted only the top-30% error tail — so every Linear outside the tail carried an `unavailable` cost the DP could not consider. On 27B its last-token-KL screen improved (0.0232 vs 0.0280) while **direct WikiText PPL regressed 10.83 vs 8.33**; the result doc says "Do not ship". The canonical screen-vs-gold inversion. | `archive/production_render_staged_2026-07-30/` |
 | `MSE_PROMOTION` post-frontier rewrite | Re-ranked the *already measured-KL-selected* point by local `output_mse_per_bit`. On 35B it beat the strategic baseline but lost to both the shipped 4.75 and the 5.16 kneedle. A post-allocator rewrite cannot beat a better cost inside the DP (AURA). No shipped run carries `layer_config_before_mse_promotion.json`. | `archive/mse_promotion_2026-07-30/` |
-| `PRODUCTION_CACHE_UNION` smart-union cache | Saved ~40% of the frontier render by offering an FP8 rung only above a percentile of the NVFP4 `output_mse` surrogate — a render-budget heuristic deciding the allocator's candidate set (principle 1). Never used by a shipped artifact. | `archive/union_cache_2026-07-30/` |
+| `PRODUCTION_CACHE_UNION` smart-union cache | Saved ~40% of the frontier render by offering an FP8 rung only above a percentile of the NVFP4 `output_mse` surrogate — a render-budget heuristic deciding the allocator's candidate set (principle 1). Never used by a shipped artifact. This archived selector is unrelated to §5.4's live exact set union, which never chooses or prunes candidates. | `archive/union_cache_2026-07-30/` |
 | Block-output match (quality lever #12) | **Unreachable, not unmeasured.** The production-cache pack `continue`s first, so on the shipping recipe no dense NVFP4 Linear ever reached the branch (0 hits in two real export logs). Had it run it would have re-derived NVFP4 scales outside `_export_match_render_scale_rule` and discarded the render's `joint_mse` scales (the −6.6% M19 defect). Its `{0.95,1.0,1.05}` gain search is subsumed by JSO; its "~0.05–0.10 PPL" was a pre-JSO expectation. | `archive/block_output_match_2026-07-30/` |
 | Orphan modules and tools (4 + 6) | Zero references tree-wide; three belong to threads with recorded verdicts (damp-sweep OFF-final, xlayer null, export-config collapse subsumed). `_fast_kernel_guard` is the exception — an orphan that is a **missing caller**, booked as debt in §12 rather than declared dead. | `archive/orphans_2026-07-30/` |
 | MXFP8 in the default menu | E8M0 pow2 scale wastes ~√2 of a binade (+13.8% output MSE over 410 Gemma Linears); exact-scale FP8 Pareto-dominates. Registry entry retained. | de-menued (§5.1) |

@@ -86,6 +86,15 @@ _CB_SERIALIZATION_SETTINGS: tuple[str, ...] = (
     "PRISMAQUANT_CB_ENCODE_TIER",
 )
 
+# A head policy changes both the qname census rendered into a menu cache and
+# whether AURA measures that row or the hybrid cost backfills it. Keep these
+# axes on every persisted cost/cache stage that can contain lm_head.
+_HEAD_SETTINGS: tuple[str, ...] = (
+    "LM_HEAD_FORMAT",
+    "LM_HEAD_RENDER_ACTIVE",
+    "LM_HEAD_DP_UNPINNED",
+)
+
 
 def _key_pairs(*specs: str) -> tuple[tuple[str, str], ...]:
     """``"NS<-PRODUCTION_RENDER_COST_NSAMPLES"`` -> ``("NS", "PRODUCTION_…")``."""
@@ -110,25 +119,28 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     # (the cost stage reads the probe's activation cache, whose modality the
     # probe guard already pins).
     "base-cost": _key_pairs(
-        "MODEL_PATH", "DATASET", "NSAMPLES", "SEQLEN", "FORMATS",
+        "MODEL_PATH", "DATASET", "NSAMPLES", "SEQLEN",
+        "FORMATS<-COST_FORMATS", *_HEAD_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
     # production-render-score: the rendered format-menu cache the score reads.
     "render-cost-cache": _key_pairs(
-        "MODEL_PATH", "DATASET", "FORMATS",
+        "MODEL_PATH", "DATASET", "FORMATS<-COST_FORMATS",
         "NS<-PRODUCTION_RENDER_COST_NSAMPLES",
         "SL<-PRODUCTION_RENDER_COST_SEQLEN",
         "SEED<-PRODUCTION_RENDER_COST_SEED",
+        *_HEAD_SETTINGS,
         *_RENDER_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
     # …and the allocator cost table synthesized from it. Cheap to rebuild, so
     # it carries the score field and the require-flags too.
     "render-cost": _key_pairs(
-        "MODEL_PATH", "FORMATS", "COST_MODE",
+        "MODEL_PATH", "FORMATS<-COST_FORMATS", "COST_MODE",
         "SCORE_FIELD<-PRODUCTION_RENDER_COST_SCORE_FIELD",
         "REQUIRE_SCORES<-PRODUCTION_RENDER_COST_REQUIRE_SCORES",
         "REQUIRE_OUTPUT<-PRODUCTION_RENDER_COST_REQUIRE_OUTPUT",
+        *_HEAD_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
     # AURA dW cache. FORMATS is the derived non-BF16 menu (AURA_CACHE_FORMATS);
@@ -138,22 +150,25 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
         "MODEL_PATH", "DATASET",
         "FORMATS<-AURA_CACHE_FORMATS",
         "NS<-NSAMPLES", "SL<-SEQLEN", "SELECTION_MODE",
+        *_HEAD_SETTINGS,
         *_RENDER_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
     "aura-cost": _key_pairs(
-        "MODEL_PATH", "DATASET", "FORMATS", "COST_MODE",
+        "MODEL_PATH", "DATASET", "FORMATS<-COST_FORMATS", "COST_MODE",
         "NPROBES<-AURA_COST_NPROBES",
         "NS<-AURA_COST_NSAMPLES",
         "SL<-AURA_COST_SEQLEN",
         "SEED<-AURA_COST_CALIB_SEED",
         "DTYPE<-AURA_COST_DTYPE",
+        *_HEAD_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
     "aura-hybrid-cost": _key_pairs(
-        "MODEL_PATH", "DATASET", "FORMATS", "COST_MODE",
+        "MODEL_PATH", "DATASET", "FORMATS<-COST_FORMATS", "COST_MODE",
         "EXPERT_NS<-AURA_EXPERT_NSAMPLES",
         "EXPERT_SL<-AURA_EXPERT_SEQLEN",
+        *_HEAD_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
     # --- CB lane -----------------------------------------------------------
@@ -179,17 +194,20 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "frontier-cache": _key_pairs(
         "MODEL_PATH", "DATASET", "NSAMPLES", "SEQLEN",
         "FORMATS<-CACHE_FORMATS",
+        *_HEAD_SETTINGS,
         *_RENDER_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
     "frontier-recache": _key_pairs(
         "MODEL_PATH", "DATASET", "NSAMPLES", "SEQLEN",
+        *_HEAD_SETTINGS,
         *_RENDER_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
     "production-cache-recached": _key_pairs(
         "MODEL_PATH", "DATASET", "NSAMPLES", "SEQLEN", "FORMATS", "TARGET_BITS",
         "ASSIGNMENT_DIGEST",
+        *_HEAD_SETTINGS,
         *_RENDER_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
@@ -197,6 +215,7 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
         "MODEL_PATH", "DATASET", "NSAMPLES", "SEQLEN",
         "FORMATS<-CACHE_FORMATS", "ASSIGNMENT_DIGEST",
         "RENDER_SCOPE<-PRODUCTION_CACHE_RENDER_SCOPE",
+        *_HEAD_SETTINGS,
         *_RENDER_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),

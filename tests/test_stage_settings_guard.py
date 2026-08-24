@@ -158,6 +158,8 @@ def test_unsupplied_declared_key_is_a_hard_stop(tmp_path):
 def test_late_override_resolves_a_missing_key(tmp_path):
     doc = _document(MODEL_PATH="m", DATASET="d", NSAMPLES="8", SEQLEN="512",
                     FORMATS="NVFP4", TARGET_BITS="4.75",
+                    LM_HEAD_FORMAT="BF16", LM_HEAD_RENDER_ACTIVE="0",
+                    LM_HEAD_DP_UNPINNED="0",
                     PRISMAQUANT_NVFP4_SCALE_RULE="", PRISMAQUANT_GPTQ_DAMP_SWEEP="0",
                     PRISMAQUANT_GPTQ_DAMP="", PRISMAQUANT_ACT_CLIP_QUANTILE="0.999",
                     PRODUCTION_CACHE_LEVERS="gptq", PRODUCTION_CACHE_DISABLE_LEVERS="",

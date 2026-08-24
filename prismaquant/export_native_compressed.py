@@ -2035,6 +2035,37 @@ def _allocator_target_profile_for_audit(profile) -> str | None:
     return resolve_target_profile(profile, requested)
 
 
+def _bf16_passthrough_for_assignment(
+    explicit_ignore: Sequence[str] | None,
+    profile,
+    allocator_meta: Mapping[str, object] | None,
+) -> set[str]:
+    """Resolve profile pins without undoing an explicit head assignment.
+
+    Old layer configs carry no head metadata and retain the historical profile
+    pin. New allocator configs stamp ``lm_head_mode``: ``fixed`` means the
+    measured ``lm_head_format`` is auxiliary to body bpp, while ``dp`` means
+    ``--allow-pinned lm_head`` selected it. In either case the assignment — not
+    the exporter's default pin — is authoritative for that one head. An
+    explicit ``--ignore`` remains the highest-precedence operator override.
+    """
+    if explicit_ignore is not None:
+        return {str(name) for name in explicit_ignore}
+
+    from .fixed_head import remaining_profile_pins
+
+    meta = dict(allocator_meta or {})
+    mode = str(meta.get("lm_head_mode") or "")
+    fmt = str(meta.get("lm_head_format") or "BF16")
+    lift_head = mode == "dp" or (
+        mode == "fixed" and _canonical_export_format(fmt) != "BF16"
+    )
+    return set(remaining_profile_pins(
+        profile,
+        fixed_lm_head_quantized=lift_head,
+    ))
+
+
 def _bf16_upgrade_audit(
     src_model: str,
     assignment: dict[str, str],
@@ -8204,7 +8235,9 @@ def _main_impl(argv: Sequence[str] | None = None):
                     help="Module qnames to keep at bf16 even if the "
                          "allocator assigned another format. Default: the "
                          "active model profile's pinned_names (typically "
-                         "lm_head/head for current vLLM serving targets). "
+                         "lm_head/head for current vLLM serving targets), "
+                         "except when allocator metadata explicitly stamps "
+                         "a fixed or DP-unpinned lm_head assignment. "
                          "Pass --ignore with no values to disable profile "
                          "pinning for a runtime that supports quantized heads.")
     ap.add_argument("--activation-cache-dir", default=None,
@@ -8374,17 +8407,17 @@ def _main_impl(argv: Sequence[str] | None = None):
                            if str(k[0]).startswith("mtp.")]
             mtp_hint = ""
             if mtp_missing:
-                # No producer renders mtp.* into ProductionWeightCache yet
-                # (build_production_cache/production_recache never see the
-                # MTP sidecar). Fail HERE at attach time with the contract,
-                # not hours later in _materialize_tensors_inmemory.
+                # Fail at attach time with the producer contract, not hours
+                # later in _materialize_tensors_inmemory. The shared cache
+                # builder can synthesize profile MTP now, but it needs the
+                # probe activation cache and the concrete non-BF16 assignment.
                 mtp_hint = (
                     f" {len(mtp_missing)} of these are MTP sidecar entries "
-                    f"(e.g. {mtp_missing[0][0]}): no producer renders mtp.* "
-                    "into the production cache today — non-BF16 MTP with an "
-                    "attached cache is an unsupported configuration. Set "
-                    "MTP_FORMAT=BF16, or add MTP coverage to "
-                    "build_production_cache before exporting."
+                    f"(e.g. {mtp_missing[0][0]}). Rebuild with the current "
+                    "build_production_cache, the same --render-layer-config, "
+                    "and --activation-cache-dir from the probe so its "
+                    "profile-synthesized MTP producer can render them; or "
+                    "set MTP_FORMAT=BF16."
                 )
             raise RuntimeError(
                 "[export-stream] production-weight-cache missing recipe "
@@ -8565,10 +8598,10 @@ def _main_impl(argv: Sequence[str] | None = None):
     print(f"[export-stream] recipe: {len(assignment)} entries  mix={dict(fmts)}",
           flush=True)
 
-    bf16_passthrough = set(
-        args.ignore
-        if args.ignore is not None
-        else profile.pinned_names()
+    bf16_passthrough = _bf16_passthrough_for_assignment(
+        args.ignore,
+        profile,
+        _allocator_meta,
     )
     config_assignment, config_bf16_passthrough, fp8_source_overrides = (
         _fp8_source_config_overlay(

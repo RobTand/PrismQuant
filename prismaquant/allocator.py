@@ -124,6 +124,11 @@ from .allocator_candidates import (
     serialized_candidate_payload,
     summarize_applicability_masks,
 )
+from .fixed_head import (
+    allow_pinned_lifts_lm_head,
+    is_lm_head_name,
+    parse_allow_pinned,
+)
 from .nvfp4_cb_footprint import (
     CB_ASSIGNMENT_IDENTITIES_FIELD,
     CB_TENSOR_IDENTITY_FIELD,
@@ -1362,10 +1367,9 @@ def tied_lm_head_dp_exclusions(
 
     if not lm_head_is_tied_alias(model_path, profile=model_profile):
         return []
-    head = model_profile.lm_head_name()
     excluded = {
         name for name in (set(stats) | set(costs))
-        if name == head or name.endswith("." + head)
+        if is_lm_head_name(name, model_profile)
     }
     return sorted(excluded - set(allocation_excluded))
 
@@ -1679,8 +1683,11 @@ def main():
                          "search ceiling, full ratchet trace) beside "
                          "--pareto-csv. Needs the source model path (probe "
                          "meta.model / --model-override) to size the "
-                         "non-quantizable floor (lm_head/embed/norms). Unpin "
-                         "lm_head (--allow-pinned lm_head) to lower the floor.")
+                         "non-quantizable floor (lm_head/embed/norms). A "
+                         "measured fixed head (--lm-head-format FP8_E4M3) "
+                         "lowers the floor without putting head parameters "
+                         "into reported body bpp; --allow-pinned lm_head is "
+                         "the separate research/DP path.")
     ap.add_argument(
         "--artifact-overhead-reserve-bytes",
         type=int,
@@ -1971,6 +1978,21 @@ def main():
                     help="Uniform format for MTP Linears. BF16 is the "
                          "production default until MTP speculative-decode "
                          "acceptance is validated for quantized MTP weights.")
+    ap.add_argument(
+        "--lm-head-format",
+        choices=_format_cli_choices(),
+        default="BF16",
+        help=(
+            "Fixed auxiliary format for the language-model output head. "
+            "BF16 preserves the historical profile pin. A non-BF16 value "
+            "removes only lm_head from the DP, records its exact serialized "
+            "payload inside whole-artifact accounting, and excludes its "
+            "parameters from reported body bpp. Use --allow-pinned lm_head "
+            "instead for the independent research path where the DP chooses "
+            "the head format; a non-BF16 fixed value and that research "
+            "override are mutually exclusive."
+        ),
+    )
     ap.add_argument("--bit-attribution-json", default=None,
                     help="Optional path: write a read-only 'where did the "
                          "budget go' report bucketing the final body "
@@ -2243,16 +2265,48 @@ def main():
     # accumulator). See clip_probe_fisher_outliers.
     clip_probe_fisher_outliers(stats, probe.get("meta", {}))
 
-    allow_pinned = [s.strip() for s in (args.allow_pinned or "").split(",") if s.strip()]
+    allow_pinned = list(parse_allow_pinned(args.allow_pinned))
+    lm_head_format_canonical = fr.get_format(args.lm_head_format).name
+    lm_head_dp_unpinned = allow_pinned_lifts_lm_head(
+        model_profile, allow_pinned
+    )
+    if lm_head_dp_unpinned and lm_head_format_canonical != "BF16":
+        raise SystemExit(
+            "[alloc] ERROR: --lm-head-format fixes lm_head outside the body "
+            "DP, while --allow-pinned lm_head asks the DP to choose it. "
+            "These modes are mutually exclusive. Drop --allow-pinned for "
+            f"the fixed {lm_head_format_canonical} production recipe, or "
+            "leave --lm-head-format=BF16 for the research/DP path."
+        )
+    fixed_lm_head_quantized = (
+        not lm_head_dp_unpinned and lm_head_format_canonical != "BF16"
+    )
     allocation_excluded = []
     for name in sorted(set(stats) | set(costs)):
         if model_profile.is_pinned_name(name):
+            if fixed_lm_head_quantized and is_lm_head_name(
+                name, model_profile
+            ):
+                # Retain the row until the fixed-auxiliary pass below. It is
+                # removed before the body DP and priced exactly there.
+                continue
             if any(tok in name for tok in allow_pinned):
                 continue  # opt-in: let the allocator choose this name's format
             allocation_excluded.append(name)
     tied_head_added = tied_lm_head_dp_exclusions(
         stats, costs, model_profile, probe_model_path, allocation_excluded)
     allocation_excluded.extend(tied_head_added)
+    fixed_tied_heads = [
+        name for name in tied_head_added
+        if fixed_lm_head_quantized and is_lm_head_name(name, model_profile)
+    ]
+    if fixed_tied_heads:
+        raise SystemExit(
+            "[alloc] ERROR: a fixed quantized lm_head cannot share storage "
+            "with the non-quantizable input embedding; quantizing it would "
+            f"also quantize the embedding ({fixed_tied_heads}). Keep "
+            "--lm-head-format=BF16 for tied embeddings."
+        )
     if tied_head_added:
         print(
             "[alloc] tied LM head (shares storage with the non-quantizable "
@@ -2262,6 +2316,13 @@ def main():
         print(f"[alloc] --allow-pinned active for {allow_pinned}: these "
               "profile-pinned names enter the DP budget (allocator chooses "
               "their format by cost-per-byte)", flush=True)
+    if fixed_lm_head_quantized:
+        print(
+            f"[alloc] --lm-head-format={lm_head_format_canonical}: lm_head "
+            "is a fixed auxiliary assignment (outside body bpp/DP, inside "
+            "exact artifact bytes)",
+            flush=True,
+        )
     # vLLM fused-load invariant: a fused-sibling group missing a member (e.g.
     # Gemma4 k_eq_v full-attention layers synthesize v=k and ship no v_proj /
     # v_scale) cannot be partially quantized — the present members must ship
@@ -2300,6 +2361,7 @@ def main():
     cb_cost_render_identity = None
     cb_requested_names = [spec.name for spec in specs]
     cb_requested_names.extend((
+        lm_head_format_canonical,
         fr.get_format(args.mtp_format).name,
         fr.get_format(args.visual_format).name,
     ))
@@ -2477,6 +2539,10 @@ def main():
     mtp_format_canonical = fr.get_format(args.mtp_format).name
     visual_format_canonical = fr.get_format(args.visual_format).name
     rank_specs = {s.name: s for s in specs_sorted}
+    rank_specs.setdefault(
+        lm_head_format_canonical,
+        fr.get_format(lm_head_format_canonical),
+    )
     rank_specs.setdefault(mtp_format_canonical, fr.get_format(mtp_format_canonical))
     rank_specs.setdefault(visual_format_canonical, fr.get_format(visual_format_canonical))
     rank_specs_sorted, _rank_serialized_rates = _sort_specs_by_serialized_rate(
@@ -2618,8 +2684,25 @@ def main():
     # different scales. See activation_fair_pricing for the functional form,
     # the fail-closed policy, and the PRISMAQUANT_ACTIVATION_FAIR_PRICING
     # kill switch (this call raises AssertionError on a mixed scale).
+    activation_pricing_stats = (
+        {
+            name: entry for name, entry in stats.items()
+            if not is_lm_head_name(name, model_profile)
+        }
+        if fixed_lm_head_quantized else stats
+    )
+    activation_pricing_costs = (
+        {
+            name: entry for name, entry in costs.items()
+            if not is_lm_head_name(name, model_profile)
+        }
+        if fixed_lm_head_quantized else costs
+    )
     activation_pricing = calibrate_activation_fair_pricing(
-        stats, costs, specs_sorted)
+        activation_pricing_stats,
+        activation_pricing_costs,
+        specs_sorted,
+    )
     if activation_pricing.enabled:
         print(
             "[alloc] activation-fair pricing: "
@@ -2676,6 +2759,104 @@ def main():
     fixed_format_assignment: dict[str, str] = {}
     fixed_stats: dict[str, dict] = {}
     fixed_chosen_candidates: dict[str, Candidate] = {}
+    fixed_lm_head_names: set[str] = set()
+    fixed_lm_head_cost_pricing = (
+        "direct_terminal_measurement_no_body_activation_transfer"
+        if fixed_lm_head_quantized else None
+    )
+
+    if fixed_lm_head_quantized:
+        head_probe_names = sorted(
+            name for name in stats
+            if is_lm_head_name(name, model_profile)
+        )
+        if not head_probe_names:
+            raise SystemExit(
+                f"[alloc] --lm-head-format={lm_head_format_canonical} was "
+                "requested, but the probe has no lm_head row. Re-run the "
+                "probe with --include-lm-head."
+            )
+        head_names_without_costs = [
+            name for name in head_probe_names if name not in costs
+        ]
+        if head_names_without_costs:
+            raise SystemExit(
+                f"[alloc] --lm-head-format={lm_head_format_canonical} was "
+                f"requested, but the cost pickle lacks {len(head_names_without_costs)} "
+                f"lm_head row(s): {head_names_without_costs[:8]}. Re-run "
+                "cost measurement with --include-lm-head."
+            )
+        head_stats = {name: stats[name] for name in head_probe_names}
+        head_costs = {name: costs[name] for name in head_probe_names}
+        head_candidates = build_candidates(
+            head_stats,
+            head_costs,
+            [fr.get_format(lm_head_format_canonical)],
+            calibrated_gains,
+            source_manifest=source_manifest,
+            target_profile=target_profile,
+            mask_records=candidate_mask_records,
+            cb_serialization_context=cb_serialization_context,
+            # The fixed head is selected from direct terminal-head evidence.
+            # The body family transfer fits a measured/output-space scale for
+            # ordinary internal Linears and must not multiply that terminal
+            # measurement a second time.  Passing None preserves the row's
+            # own predicted_dloss/cost_source precedence while making the
+            # absence of body activation transfer explicit.
+            activation_pricing=None,
+        )
+        missing_head_candidates = [
+            name for name in head_probe_names
+            if _find_candidate_for_format(
+                head_candidates,
+                name,
+                lm_head_format_canonical,
+            ) is None
+        ]
+        if missing_head_candidates:
+            raise SystemExit(
+                f"[alloc] --lm-head-format={lm_head_format_canonical} "
+                "requires a measured, serveable candidate for every head, "
+                f"but {len(missing_head_candidates)} are missing: "
+                f"{missing_head_candidates[:8]}. Rebuild the head cost for "
+                "this format and verify the target serving profile supports "
+                "quantized lm_head."
+            )
+        fixed_lm_head_names = set(head_probe_names)
+        fixed_format_assignment.update({
+            name: lm_head_format_canonical for name in head_probe_names
+        })
+        fixed_stats.update(head_stats)
+        fixed_chosen_candidates.update({
+            name: candidate
+            for name in head_probe_names
+            if (
+                candidate := _find_candidate_for_format(
+                    head_candidates,
+                    name,
+                    lm_head_format_canonical,
+                )
+            ) is not None
+        })
+        stats = {
+            name: value for name, value in stats.items()
+            if name not in fixed_lm_head_names
+        }
+        costs = {
+            name: value for name, value in costs.items()
+            if name not in fixed_lm_head_names
+        }
+        candidates = {
+            name: value for name, value in candidates.items()
+            if name not in fixed_lm_head_names
+        }
+        print(
+            f"[alloc] --lm-head-format={lm_head_format_canonical}: fixed "
+            f"{len(fixed_lm_head_names)} lm_head Linear(s) before DP as "
+            "auxiliary to body bpp/\u0394loss accounting",
+            flush=True,
+        )
+
     mtp_names_without_costs = sorted(
         n for n in stats if _is_mtp_linear(n) and n not in costs
     )
@@ -2727,11 +2908,11 @@ def main():
                 f"that candidate. Sample: {sample}. Re-run cost measurement "
                 "with --include-mtp for the requested MTP format."
             )
-        fixed_format_assignment = {
+        fixed_format_assignment.update({
             name: mtp_format_canonical for name in mtp_names
-        }
-        fixed_stats = {name: stats[name] for name in mtp_names}
-        fixed_chosen_candidates = {
+        })
+        fixed_stats.update({name: stats[name] for name in mtp_names})
+        mtp_chosen_candidates = {
             name: _find_candidate_for_format(
                 mtp_candidates,
                 name,
@@ -2739,12 +2920,12 @@ def main():
             )
             for name in mtp_names
         }
-        fixed_chosen_candidates = {
-            name: cand for name, cand in fixed_chosen_candidates.items()
+        fixed_chosen_candidates.update({
+            name: cand for name, cand in mtp_chosen_candidates.items()
             if cand is not None
-        }
-        if fixed_format_assignment:
-            fixed_names = set(fixed_format_assignment)
+        })
+        if mtp_names:
+            fixed_names = set(mtp_names)
             stats = {
                 name: value for name, value in stats.items()
                 if name not in fixed_names
@@ -2759,7 +2940,7 @@ def main():
             }
             print(
                 f"[alloc] --mtp-format={mtp_format_canonical}: fixed "
-                f"{len(fixed_format_assignment)} MTP Linears before DP "
+                f"{len(mtp_names)} MTP Linears before DP "
                 "as auxiliary to body bpp/Δloss accounting",
                 flush=True,
             )
@@ -3027,11 +3208,19 @@ def main():
         "pre_aggregation_candidate_availability": pre_aggregation_availability,
         "post_aggregation_candidate_availability": post_aggregation_availability,
         "fixed_format_assignment": {
+            "lm_head_format": lm_head_format_canonical,
+            "lm_head_mode": (
+                "dp" if lm_head_dp_unpinned
+                else "fixed" if fixed_lm_head_quantized
+                else "profile_pinned_bf16"
+            ),
+            "lm_head_cost_pricing": fixed_lm_head_cost_pricing,
             "mtp_format": mtp_format_canonical,
             "visual_format": visual_format_canonical,
             "linears": len(fixed_format_assignment),
             "linears_by_kind": dict(Counter(
-                "mtp" if _is_mtp_linear(name)
+                "lm_head" if name in fixed_lm_head_names
+                else "mtp" if _is_mtp_linear(name)
                 else "visual" if _is_visual_linear(name)
                 else "other"
                 for name in fixed_format_assignment
@@ -4206,7 +4395,13 @@ def main():
             "ratchet_objective": _RATCHET_OBJECTIVE,
             "feasible": bool(sel["feasible"]),
             "below_floor": bool(sel["below_floor"]),
-            "lm_head_unpinned": bool(allow_pinned),
+            "lm_head_unpinned": bool(lm_head_dp_unpinned),
+            "lm_head_format": lm_head_format_canonical,
+            "lm_head_mode": (
+                "dp" if lm_head_dp_unpinned
+                else "fixed" if fixed_lm_head_quantized
+                else "profile_pinned_bf16"
+            ),
             # Present only when the swept grid failed and rungs below it were
             # probed; ``menu_floor_target_bits`` is what "the cheapest
             # allocation" is measured against from here on.
@@ -4257,8 +4452,10 @@ def main():
             raise SystemExit(
                 f"[alloc] --target-disk-gb={args.target_disk_gb:.3f} is below the "
                 f"floor: the cheapest allocation is {cheapest_gb:.3f}GB. Raise the "
-                f"budget, unpin lm_head (--allow-pinned lm_head), or widen the "
-                f"format menu. Selection written to {sel_path}." + floor_caveat)
+                "budget, fix lm_head to a smaller measured format "
+                "(--lm-head-format FP8_E4M3), unpin it for a research DP "
+                "(--allow-pinned lm_head), or widen the format menu. "
+                f"Selection written to {sel_path}." + floor_caveat)
 
         # Among allocations whose conservative selection upper bound fits the
         # card, ship the
@@ -4753,6 +4950,24 @@ def main():
             flush=True,
         )
 
+    if fixed_lm_head_names:
+        head_fmts = {
+            assignment_expanded[name]
+            for name in fixed_lm_head_names
+            if name in assignment_expanded
+        }
+        if head_fmts != {lm_head_format_canonical}:
+            raise AssertionError(
+                "lm_head assignment drifted after fixed-format accounting: "
+                f"expected {[lm_head_format_canonical]}, got "
+                f"{sorted(head_fmts)}"
+            )
+        print(
+            f"[alloc] --lm-head-format={lm_head_format_canonical}: assigned "
+            f"{len(fixed_lm_head_names)} lm_head Linear(s) uniformly",
+            flush=True,
+        )
+
     # Passthrough-integrity belt-and-suspenders. The filter in
     # build_candidates drops mismatched FP8_SOURCE / BF16 per-Linear
     # candidate, but downstream aggregation + promotion (fused
@@ -4797,7 +5012,11 @@ def main():
     final_body_assignment = {
         name: fmt
         for name, fmt in assignment_expanded.items()
-        if not _is_visual_linear(name) and not _is_mtp_linear(name)
+        if (
+            not _is_visual_linear(name)
+            and not _is_mtp_linear(name)
+            and name not in fixed_lm_head_names
+        )
     }
     final_body_payload = _assignment_payload_totals(
         final_body_assignment,
@@ -4887,6 +5106,13 @@ def main():
         "target_profile": target_profile,
         "target_profile_requested": args.target_profile,
         "target_profile_default": str(args.target_profile_default or "research"),
+        "lm_head_format": lm_head_format_canonical,
+        "lm_head_mode": (
+            "dp" if lm_head_dp_unpinned
+            else "fixed" if fixed_lm_head_quantized
+            else "profile_pinned_bf16"
+        ),
+        "lm_head_cost_pricing": fixed_lm_head_cost_pricing,
         "target_bits": float(args.target_bits),
         "achieved_bits": final_body_achieved,
         "achieved_bits_scope": (

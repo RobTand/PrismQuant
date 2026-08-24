@@ -203,3 +203,141 @@ def test_allocator_excludes_fixed_quantized_mtp_from_body_budget(tmp_path):
 
     layer_config = json.loads(layer_config_path.read_text())
     assert layer_config["mtp.layers.0.mlp.down_proj"]["data_type"] == "nv_fp"
+
+
+def test_allocator_preserves_fixed_fp8_head_with_fixed_nvfp4_mtp(
+    tmp_path,
+):
+    """Fixed head and MTP accumulate without entering the body-bpp budget."""
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps({
+        "model_type": "qwen3",
+        "architectures": ["Qwen3ForCausalLM"],
+        "tie_word_embeddings": False,
+    }))
+
+    body_names = (
+        "model.layers.0.mlp.down_proj",
+        "model.layers.1.mlp.down_proj",
+    )
+    head = "lm_head"
+    mtp = "mtp.layers.0.mlp.down_proj"
+    stats = {
+        name: {
+            "h_trace": 1.0,
+            "n_params": 128 * 128,
+            "in_features": 128,
+            "out_features": 128,
+        }
+        for name in (*body_names, head, mtp)
+    }
+    costs = {
+        body: {
+            # These two rows fit a non-trivial FP-family activation transfer
+            # (measured/weight-only = 4x).  The fixed terminal head below
+            # must retain its direct price of 3.0 rather than inherit it.
+            "FP8_E4M3": {
+                "weight_mse": 1.0,
+                "output_mse": 4.0,
+                "output_mse_measured": True,
+            },
+            "BF16": {"predicted_dloss": 0.0},
+        }
+        for body in body_names
+    }
+    costs.update({
+        head: {
+            "FP8_E4M3": {"predicted_dloss": 3.0},
+            "BF16": {"predicted_dloss": 0.0},
+        },
+        mtp: {
+            "NVFP4": {"predicted_dloss": 7.0},
+            "BF16": {"predicted_dloss": 0.0},
+        },
+    })
+    probe_path = tmp_path / "probe.pkl"
+    cost_path = tmp_path / "cost.pkl"
+    with open(probe_path, "wb") as f:
+        pickle.dump({"stats": stats, "meta": {"model": str(model_dir)}}, f)
+    with open(cost_path, "wb") as f:
+        pickle.dump({
+            "costs": costs,
+            "formats": ["NVFP4", "FP8_E4M3", "BF16"],
+        }, f)
+
+    pareto_path = tmp_path / "pareto.csv"
+    layer_config_path = tmp_path / "layer_config.json"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "prismaquant.allocator",
+            "--probe",
+            str(probe_path),
+            "--costs",
+            str(cost_path),
+            "--model-override",
+            str(model_dir),
+            "--target-profile",
+            "research",
+            "--formats",
+            "FP8_E4M3,BF16",
+            "--lm-head-format",
+            "FP8_E4M3",
+            "--mtp-format",
+            "NVFP4",
+            "--target-bits",
+            "10.5",
+            "--pareto-targets",
+            "10.5",
+            "--bit-precision",
+            "0.1",
+            "--layer-config",
+            str(layer_config_path),
+            "--pareto-csv",
+            str(pareto_path),
+        ],
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+
+    with open(pareto_path, newline="") as f:
+        row = next(csv.DictReader(f))
+    # Only the two body FP8 tensors enter achieved_bits: 8 data bits plus a
+    # per-output-channel FP32 scale (8.25 bpp at this synthetic shape).
+    assert float(row["achieved_bits"]) == 8.25
+    assert float(row["predicted_dloss"]) == 4.0
+    assert float(row["aux_fixed_predicted_dloss"]) == 10.0
+    assert float(row["total_predicted_dloss_with_aux"]) == 14.0
+    # Head FP8 is 135,168 bits; text-calibration-inaccessible MTP is emitted
+    # as weight-only NVFP4 and is 73,760 bits at [128, 128].
+    assert float(row["aux_fixed_assignment_payload_bits_total"]) == 208928.0
+    assert int(row["aux_fixed_params"]) == 2 * 128 * 128
+
+    layer_config = json.loads(layer_config_path.read_text())
+    meta = layer_config["__prismaquant__"]
+    assert layer_config[head]["data_type"] == "fp8_e4m3"
+    assert layer_config[head]["bits"] == 8
+    assert layer_config[mtp]["data_type"] == "nv_fp"
+    assert layer_config[mtp]["bits"] == 4
+    assert meta["lm_head_format"] == "FP8_E4M3"
+    assert meta["lm_head_mode"] == "fixed"
+    assert meta["lm_head_cost_pricing"] == (
+        "direct_terminal_measurement_no_body_activation_transfer"
+    )
+    assert meta["body_assignment_quantizable_params"] == 2 * 128 * 128
+    assert meta["body_assignment_payload_bits_total"] == 270336.0
+    assert meta["assignment_payload_bits_total"] == 479264.0
+
+    applicability = json.loads(
+        (tmp_path / "format_applicability.json").read_text()
+    )
+    pricing = applicability["activation_fair_pricing"]
+    assert pricing["enabled"] is True
+    assert pricing["families"]["fp"]["penalty"] == 4.0
+    fixed = applicability["fixed_format_assignment"]
+    assert fixed["linears_by_kind"] == {"lm_head": 1, "mtp": 1}
+    assert fixed["lm_head_cost_pricing"] == (
+        "direct_terminal_measurement_no_body_activation_transfer"
+    )
