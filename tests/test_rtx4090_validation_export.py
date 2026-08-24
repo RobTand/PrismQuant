@@ -152,4 +152,3 @@ def test_shell_wrapper_is_direct_and_never_calls_stock_pipeline():
     assert "run-pipeline.sh" not in script
     assert "LAYER_CONFIG" in script
     assert "CB_COL_WEIGHTS" in script
-
