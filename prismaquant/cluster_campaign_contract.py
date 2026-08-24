@@ -130,6 +130,14 @@ _INPUT_KEYS = frozenset(
 _SAMPLE_KEYS = frozenset(
     {"nsamples", "seqlen", "calib_seed", "activation_rows_limit"}
 )
+_FIXED_SAMPLE_PARALLEL = MappingProxyType(
+    {
+        "nsamples": 32,
+        "seqlen": 1024,
+        "calib_seed": 42,
+        "activation_rows_limit": 1024,
+    }
+)
 _HOST_KEYS = frozenset({"id", "transport", "roots", "expected"})
 _ROOT_KEYS = frozenset(CANONICAL_CONTAINER_PATHS)
 _EXPECTED_KEYS = frozenset(
@@ -287,13 +295,12 @@ def _normalize_inputs(value: object) -> dict[str, object]:
         keys=_SAMPLE_KEYS,
         where="inputs.sample_parallel",
     )
-    nsamples = _integer(
-        sample["nsamples"], where="inputs.sample_parallel.nsamples", minimum=2
-    )
-    if nsamples % 2:
-        _fail("inputs.sample_parallel.nsamples must divide exactly over two hosts")
     normalized_sample = {
-        "nsamples": nsamples,
+        "nsamples": _integer(
+            sample["nsamples"],
+            where="inputs.sample_parallel.nsamples",
+            minimum=2,
+        ),
         "seqlen": _integer(
             sample["seqlen"],
             where="inputs.sample_parallel.seqlen",
@@ -310,6 +317,11 @@ def _normalize_inputs(value: object) -> dict[str, object]:
             minimum=1,
         ),
     }
+    if normalized_sample != dict(_FIXED_SAMPLE_PARALLEL):
+        _fail(
+            "inputs.sample_parallel must equal the fixed RTX4090 burn "
+            f"contract {dict(_FIXED_SAMPLE_PARALLEL)}"
+        )
     return {
         "model_content_sha256": _sha256(
             raw["model_content_sha256"], where="inputs.model_content_sha256"

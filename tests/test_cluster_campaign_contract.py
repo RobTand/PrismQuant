@@ -89,8 +89,8 @@ def _manifest_body(*, reverse_hosts: bool = False) -> dict[str, object]:
             "model_content_sha256": "5" * 64,
             "dataset_sha256": "6" * 64,
             "sample_parallel": {
-                "nsamples": 128,
-                "seqlen": 2048,
+                "nsamples": 32,
+                "seqlen": 1024,
                 "calib_seed": 42,
                 "activation_rows_limit": 1024,
             },
@@ -189,6 +189,22 @@ def test_manifest_rejects_overlapping_writable_roots() -> None:
         "/srv/prismaquant-alpha/work/state"
     )
     with pytest.raises(ClusterCampaignContractError, match="overlaps"):
+        seal_campaign_manifest(body)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("nsamples", 64),
+        ("seqlen", 2048),
+        ("calib_seed", 7),
+        ("activation_rows_limit", 512),
+    ],
+)
+def test_manifest_rejects_sample_contract_drift(field: str, value: int) -> None:
+    body = _manifest_body()
+    body["inputs"]["sample_parallel"][field] = value
+    with pytest.raises(ClusterCampaignContractError, match="fixed RTX4090"):
         seal_campaign_manifest(body)
 
 
