@@ -676,6 +676,43 @@ def test_derive_col_weights_output_race_preserves_competing_file(
     assert output.read_bytes() == b"competing-writer"
 
 
+def test_allocator_cost_resume_reuses_only_exact_regular_bytes(tmp_path):
+    import prismaquant.rtx4090_fp8_burn as burn
+
+    output = tmp_path / "allocator-cost.pkl"
+    payload = {"costs": {"model.layers.0.proj": {"BF16": 1.0}}}
+    burn._publish_or_reuse_allocator_cost(output, payload, resume=False)
+    exact = output.read_bytes()
+
+    burn._publish_or_reuse_allocator_cost(output, payload, resume=True)
+    assert output.read_bytes() == exact
+    with pytest.raises(RTX4090FP8BurnError, match="output exists"):
+        burn._publish_or_reuse_allocator_cost(output, payload, resume=False)
+    with pytest.raises(RTX4090FP8BurnError, match="differs from the exact"):
+        burn._publish_or_reuse_allocator_cost(
+            output, {"costs": {"different": {}}}, resume=True,
+        )
+    assert output.read_bytes() == exact
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_allocator_cost_resume_refuses_symlink(tmp_path, dangling):
+    import prismaquant.rtx4090_fp8_burn as burn
+
+    target = tmp_path / "target.pkl"
+    if not dangling:
+        target.write_bytes(b"not-the-cost")
+    output = tmp_path / "allocator-cost.pkl"
+    output.symlink_to(target)
+    with pytest.raises(
+        RTX4090FP8BurnError, match="not a readable regular file",
+    ):
+        burn._publish_or_reuse_allocator_cost(
+            output, {"costs": {}}, resume=True,
+        )
+    assert output.is_symlink()
+
+
 def test_allocate_uses_exact_sealed_bundle_probe_through_child(
     monkeypatch, tmp_path,
 ):

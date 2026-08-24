@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import pickle
 import re
+import stat
 import sys
 from typing import Any
 
@@ -281,6 +282,53 @@ def _sha256_file(path: str | Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _publish_or_reuse_allocator_cost(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    resume: bool,
+) -> None:
+    """Publish one allocator cost payload or validate its exact resume byte.
+
+    Allocation intentionally writes the derived cost table before launching
+    the allocator. A crash in that window must be resumable without asking an
+    operator to remove the already committed input. Reuse is allowed only
+    under ``--resume`` and only when the existing regular file is byte-for-byte
+    identical to the payload re-derived from the validated campaign inputs.
+    """
+    encoded = pickle.dumps(dict(payload), protocol=pickle.HIGHEST_PROTOCOL)
+    if not os.path.lexists(path):
+        atomic_write_bytes(path, encoded)
+        return
+    if not resume:
+        raise RTX4090FP8BurnError(f"allocator cost output exists: {path}")
+
+    flags = os.O_RDONLY | int(getattr(os, "O_NOFOLLOW", 0))
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise RTX4090FP8BurnError(
+            f"allocator cost resume input is not a readable regular file: {path}"
+        ) from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise RTX4090FP8BurnError(
+                f"allocator cost resume input is not a regular file: {path}"
+            )
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        existing = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if existing != encoded:
+        raise RTX4090FP8BurnError(
+            "allocator cost resume input differs from the exact cost payload "
+            f"re-derived from the campaign: {path}"
+        )
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -3122,10 +3170,8 @@ def allocate(args: argparse.Namespace) -> Path:
     _validate_merged_campaign_provenance(merged, plan)
     cost_payload = _allocator_cost(merged, plan)
     cost_path = Path(args.cost_output)
-    if cost_path.exists():
-        raise RTX4090FP8BurnError(f"allocator cost output exists: {cost_path}")
-    atomic_write_bytes(
-        cost_path, pickle.dumps(cost_payload, protocol=pickle.HIGHEST_PROTOCOL)
+    _publish_or_reuse_allocator_cost(
+        cost_path, cost_payload, resume=bool(args.resume),
     )
     output_dir = Path(args.output_dir)
     with _sealed_allocator_probe(
