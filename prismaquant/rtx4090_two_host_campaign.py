@@ -21,13 +21,14 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import socket
 import subprocess
 import sys
 import tempfile
-from typing import Any, Callable, Mapping, Protocol, Sequence
+import time
+from typing import Callable, Mapping, Protocol, Sequence
 
 from prismaquant.cluster_campaign_contract import (
     CANONICAL_CONTAINER_PATHS,
@@ -45,6 +46,8 @@ from prismaquant.cluster_transport import (
     JobReceipt,
     RunRequest,
     TelemetrySnapshot,
+    TreeManifest,
+    build_tree_manifest,
     summarize_utilization,
 )
 
@@ -62,7 +65,11 @@ STATE_FILE = "campaign-state.json"
 PLAN_FILE = "command-plan.json"
 MANIFEST_FILE = "campaign-manifest.json"
 RECEIPT_DIR = "receipts"
+ATTEMPT_TELEMETRY_DIR = "attempt-telemetry"
 LOCK_FILE = "campaign.lock"
+ATTEMPT_TELEMETRY_SCHEMA = (
+    "prismaquant.rtx4090_two_host_campaign.attempt_telemetry.v1"
+)
 
 _HOST_ENV = (
     ("LANG", "C.UTF-8"),
@@ -93,6 +100,7 @@ _EXECUTION_RECEIPT_KEYS = frozenset({
     "stage",
     "host_id",
     "assignment_index",
+    "attempt_index",
     "command_identity_sha256",
     "request_sha256",
     "dependency_receipt_sha256s",
@@ -101,6 +109,23 @@ _EXECUTION_RECEIPT_KEYS = frozenset({
     "telemetry",
     "telemetry_sha256",
     "telemetry_summary",
+    "output_artifacts",
+    "identity_sha256",
+})
+_OUTPUT_ARTIFACT_KEYS = frozenset({
+    "container_path",
+    "host_path",
+    "expected_kind",
+    "manifest",
+    "manifest_sha256",
+})
+_ATTEMPT_TELEMETRY_KEYS = frozenset({
+    "schema",
+    "campaign_identity_sha256",
+    "work_id",
+    "attempt_index",
+    "request_sha256",
+    "samples",
     "identity_sha256",
 })
 _BOOTSTRAP_SCRIPT = r"""
@@ -124,18 +149,30 @@ class RTX4090TwoHostCampaignError(RuntimeError):
 
 
 class CampaignTransport(Protocol):
-    """Execution seam required by :class:`CampaignCoordinator`.
+    """Durable execution seam used for launch, adoption, and monitoring."""
 
-    The shared transports intentionally expose lower-level ``start/status``
-    operations.  A live adapter must combine those with periodic telemetry and
-    return ``(JobReceipt, samples)`` here.  Merely offering blocking ``run`` is
-    insufficient because it cannot prove utilization over the job interval.
-    """
-
-    def run_with_telemetry(
-        self, request: RunRequest,
-    ) -> tuple[object, Sequence[object]]:
+    def start(self, request: RunRequest) -> object:
         ...
+
+    def status(self, job_id: str) -> object:
+        ...
+
+    def sample_telemetry(self) -> object:
+        ...
+
+
+class ArtifactInspector(Protocol):
+    """Host-specific authority for one absolute output file or tree."""
+
+    def inspect_artifact(self, absolute_path: str) -> object:
+        ...
+
+
+class LocalArtifactInspector:
+    """No-follow local implementation of :class:`ArtifactInspector`."""
+
+    def inspect_artifact(self, absolute_path: str) -> TreeManifest:
+        return build_tree_manifest(absolute_path)
 
 
 @dataclass(frozen=True)
@@ -221,6 +258,104 @@ def _safe_mount_source(value: object, *, field: str) -> str:
             f"host root {field} cannot be represented by Docker --mount"
         )
     return text
+
+
+def _host_output_path(
+    host: Mapping[str, object], container_path: str,
+) -> tuple[str, str]:
+    """Map one fixed mutable container output to its host-local pathname."""
+
+    candidate = PurePosixPath(container_path)
+    if not candidate.is_absolute() or str(candidate) != container_path:
+        raise RTX4090TwoHostCampaignError(
+            f"declared output is not a normalized absolute path: {container_path!r}"
+        )
+    roots = host["roots"]
+    assert isinstance(roots, Mapping)
+    for root_field in ("run_root", "worker_state_root"):
+        container_root = PurePosixPath(CANONICAL_CONTAINER_PATHS[root_field])
+        prefix = container_root.parts
+        if candidate.parts[: len(prefix)] != prefix:
+            continue
+        relative = candidate.parts[len(prefix):]
+        if not relative or any(part in {"", ".", ".."} for part in relative):
+            raise RTX4090TwoHostCampaignError(
+                f"declared output must be below {container_root}: {container_path}"
+            )
+        host_root = PurePosixPath(str(roots[root_field]))
+        resolved = host_root.joinpath(*relative)
+        if resolved.parts[: len(host_root.parts)] != host_root.parts:
+            raise RTX4090TwoHostCampaignError(
+                f"declared output escapes host root: {container_path}"
+            )
+        return resolved.as_posix(), root_field
+    raise RTX4090TwoHostCampaignError(
+        "declared outputs may exist only below /run or /worker-state: "
+        f"{container_path}"
+    )
+
+
+def _expected_output_kind(container_path: str) -> str:
+    name = PurePosixPath(container_path).name
+    return "directory" if name in {"act", "activation_cache"} else "file"
+
+
+def _normalize_tree_manifest(value: object, *, where: str) -> TreeManifest:
+    try:
+        manifest = (
+            value
+            if isinstance(value, TreeManifest)
+            else TreeManifest.from_payload(value)
+        )
+    except (TypeError, ValueError) as exc:
+        raise RTX4090TwoHostCampaignError(
+            f"{where} returned an invalid file/tree manifest"
+        ) from exc
+    return manifest
+
+
+def _inspect_command_outputs(
+    command: CampaignCommand,
+    host: Mapping[str, object],
+    inspector: ArtifactInspector | None,
+) -> list[dict[str, object]]:
+    if not command.outputs:
+        return []
+    if inspector is None:
+        raise RTX4090TwoHostCampaignError(
+            f"no artifact inspector for output-bearing host {command.host_id!r}"
+        )
+    rows: list[dict[str, object]] = []
+    seen_host_paths: set[str] = set()
+    for container_path in command.outputs:
+        host_path, _ = _host_output_path(host, container_path)
+        if host_path in seen_host_paths:
+            raise RTX4090TwoHostCampaignError(
+                f"command {command.work_id} declares a duplicate output"
+            )
+        seen_host_paths.add(host_path)
+        try:
+            raw_manifest = inspector.inspect_artifact(host_path)
+        except Exception as exc:
+            raise RTX4090TwoHostCampaignError(
+                f"declared output is absent or unverifiable: {host_path}"
+            ) from exc
+        manifest = _normalize_tree_manifest(
+            raw_manifest, where=f"output {container_path}"
+        )
+        expected_kind = _expected_output_kind(container_path)
+        if manifest.root_kind != expected_kind:
+            raise RTX4090TwoHostCampaignError(
+                f"declared output {container_path} must be a {expected_kind}"
+            )
+        rows.append({
+            "container_path": container_path,
+            "host_path": host_path,
+            "expected_kind": expected_kind,
+            "manifest": manifest.to_payload(),
+            "manifest_sha256": manifest.identity_sha256,
+        })
+    return rows
 
 
 def _container_environment(
@@ -569,6 +704,45 @@ def _json_bytes(value: Mapping[str, object]) -> bytes:
     ).encode("utf-8") + b"\n"
 
 
+def _strict_json_mapping(path: Path, *, where: str) -> dict[str, object]:
+    def unique_object(
+        pairs: list[tuple[str, object]],
+    ) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise RTX4090TwoHostCampaignError(
+                    f"{where} contains duplicate JSON member {key!r}"
+                )
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> object:
+        raise RTX4090TwoHostCampaignError(
+            f"{where} contains non-JSON constant {value}"
+        )
+
+    try:
+        payload = path.read_bytes()
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except RTX4090TwoHostCampaignError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RTX4090TwoHostCampaignError(f"{where} is unreadable") from exc
+    if not isinstance(value, Mapping):
+        raise RTX4090TwoHostCampaignError(f"{where} is not an object")
+    normalized = dict(value)
+    if payload != _json_bytes(normalized):
+        raise RTX4090TwoHostCampaignError(
+            f"{where} is not canonically encoded JSON"
+        )
+    return normalized
+
+
 def _write_exact_no_clobber(path: Path, value: Mapping[str, object]) -> None:
     payload = _json_bytes(value)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -647,7 +821,12 @@ def _plain(value: object) -> object:
     )
 
 
-def _normalize_job_receipt(value: object, request: RunRequest) -> dict[str, object]:
+def _normalize_job_receipt(
+    value: object,
+    request: RunRequest,
+    *,
+    require_succeeded: bool = True,
+) -> dict[str, object]:
     plain = _plain(value)
     try:
         receipt = JobReceipt.from_payload(plain)
@@ -660,7 +839,9 @@ def _normalize_job_receipt(value: object, request: RunRequest) -> dict[str, obje
         raise RTX4090TwoHostCampaignError("transport receipt job id differs")
     if result.get("request_sha256") != request.request_sha256:
         raise RTX4090TwoHostCampaignError("transport receipt request digest differs")
-    if result.get("state") != "succeeded" or result.get("returncode") != 0:
+    if require_succeeded and (
+        result.get("state") != "succeeded" or result.get("returncode") != 0
+    ):
         raise RTX4090TwoHostCampaignError(
             f"transport job {request.job_id} did not succeed"
         )
@@ -741,7 +922,8 @@ def _normalize_telemetry(
 def _stage_receipt(
     manifest: Mapping[str, object], command: CampaignCommand,
     request: RunRequest, job_receipt: object, telemetry: Sequence[object],
-    dependency_receipt_sha256s: Sequence[str],
+    dependency_receipt_sha256s: Sequence[str], *, attempt_index: int,
+    artifact_inspector: ArtifactInspector | None,
 ) -> dict[str, object]:
     job = _normalize_job_receipt(job_receipt, request)
     host = _host_by_id(manifest, command.host_id)
@@ -749,8 +931,18 @@ def _stage_receipt(
     assert isinstance(expected, Mapping)
     expected_gpu = expected["gpu"]
     assert isinstance(expected_gpu, Mapping)
+    policy = manifest["policy"]
+    assert isinstance(policy, Mapping)
+    telemetry_policy = policy["telemetry"]
+    assert isinstance(telemetry_policy, Mapping)
+    require_positive = command.gpu_bearing and bool(
+        telemetry_policy["require_positive_gpu_utilization"]
+    )
     samples, telemetry_summary = _normalize_telemetry(
-        telemetry, required=command.gpu_bearing, expected_gpu=expected_gpu,
+        telemetry, required=require_positive, expected_gpu=expected_gpu,
+    )
+    output_artifacts = _inspect_command_outputs(
+        command, host, artifact_inspector,
     )
     body: dict[str, object] = {
         "schema": EXECUTION_RECEIPT_SCHEMA,
@@ -761,6 +953,7 @@ def _stage_receipt(
         "stage": command.stage,
         "host_id": command.host_id,
         "assignment_index": command.assignment_index,
+        "attempt_index": attempt_index,
         "command_identity_sha256": command.identity_sha256,
         "request_sha256": request.request_sha256,
         "dependency_receipt_sha256s": list(dependency_receipt_sha256s),
@@ -769,6 +962,7 @@ def _stage_receipt(
         "telemetry": samples,
         "telemetry_sha256": canonical_sha256(samples),
         "telemetry_summary": telemetry_summary,
+        "output_artifacts": output_artifacts,
     }
     return {**body, "identity_sha256": canonical_sha256(body)}
 
@@ -780,6 +974,8 @@ class CampaignCoordinator:
         state_dir: str | Path,
         *,
         transports: Mapping[str, CampaignTransport] | None = None,
+        artifact_inspectors: Mapping[str, ArtifactInspector] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         self.manifest = validate_campaign_manifest(manifest)
         self.state_dir = Path(state_dir)
@@ -790,6 +986,20 @@ class CampaignCoordinator:
         if self.state_dir.is_symlink():
             raise RTX4090TwoHostCampaignError("campaign state directory is a symlink")
         self.transports = dict(transports or {})
+        self.artifact_inspectors = dict(artifact_inspectors or {})
+        if not callable(sleep):
+            raise TypeError("sleep must be callable")
+        self._sleep = sleep
+        policy = self.manifest["policy"]
+        assert isinstance(policy, Mapping)
+        retry_policy = policy["retry"]
+        telemetry_policy = policy["telemetry"]
+        assert isinstance(retry_policy, Mapping)
+        assert isinstance(telemetry_policy, Mapping)
+        self._max_attempts = int(retry_policy["max_attempts"])
+        self._telemetry_interval_seconds = (
+            int(telemetry_policy["interval_milliseconds"]) / 1000.0
+        )
         self.commands = {
             command.work_id: command
             for command in (
@@ -848,25 +1058,41 @@ class CampaignCoordinator:
     def load_state(self) -> dict[str, object]:
         if not self.state_path.is_file():
             raise RTX4090TwoHostCampaignError("campaign state is absent; use run")
-        try:
-            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise RTX4090TwoHostCampaignError("campaign state is unreadable") from exc
-        if not isinstance(raw, Mapping):
-            raise RTX4090TwoHostCampaignError("campaign state is not an object")
+        raw = _strict_json_mapping(
+            self.state_path, where="campaign state",
+        )
         return validate_campaign_state(raw, self.manifest)
 
-    def _request(self, command: CampaignCommand, *, resume: bool) -> RunRequest:
+    def _request(
+        self, command: CampaignCommand, *, attempt_index: int,
+    ) -> RunRequest:
+        if (
+            isinstance(attempt_index, bool)
+            or not isinstance(attempt_index, int)
+            or not 0 <= attempt_index < self._max_attempts
+        ):
+            raise RTX4090TwoHostCampaignError(
+                "attempt index is outside the fixed bounded retry policy"
+            )
         argv = (
             command.resume_argv
-            if resume and command.resume_argv is not None
+            if attempt_index > 0 and command.resume_argv is not None
             else command.argv
         )
         campaign_prefix = str(self.manifest["identity_sha256"])[:16]
+        host_token = command.host_id
         job_id = (
             f"pq-{campaign_prefix}-{command.assignment_index:02d}-"
-            f"{command.stage}-{command.host_id}"
+            f"{command.stage}-{host_token}-attempt-{attempt_index:02d}"
         )
+        if len(job_id) > 128:
+            host_token = "host-" + hashlib.sha256(
+                command.host_id.encode("utf-8")
+            ).hexdigest()[:16]
+            job_id = (
+                f"pq-{campaign_prefix}-{command.assignment_index:02d}-"
+                f"{command.stage}-{host_token}-attempt-{attempt_index:02d}"
+            )
         return RunRequest(
             job_id=job_id,
             argv=argv,
@@ -876,8 +1102,193 @@ class CampaignCoordinator:
             inherit_env=False,
         )
 
+    def _attempt_telemetry_path(self, request: RunRequest) -> Path:
+        return (
+            self.state_dir / ATTEMPT_TELEMETRY_DIR /
+            f"{request.job_id}.json"
+        )
+
+    def _attempt_telemetry_payload(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        samples: Sequence[Mapping[str, object]],
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "schema": ATTEMPT_TELEMETRY_SCHEMA,
+            "campaign_identity_sha256": self.manifest["identity_sha256"],
+            "work_id": command.work_id,
+            "attempt_index": attempt_index,
+            "request_sha256": request.request_sha256,
+            "samples": [dict(sample) for sample in samples],
+        }
+        return {**body, "identity_sha256": canonical_sha256(body)}
+
+    def _load_attempt_telemetry(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+    ) -> list[dict[str, object]]:
+        path = self._attempt_telemetry_path(request)
+        if not path.exists():
+            empty = self._attempt_telemetry_payload(
+                command, request, attempt_index, (),
+            )
+            _write_exact_no_clobber(path, empty)
+        raw = _strict_json_mapping(
+            path, where=f"attempt telemetry for {command.work_id}",
+        )
+        if set(raw) != _ATTEMPT_TELEMETRY_KEYS:
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry fields differ for {command.work_id}"
+            )
+        body = dict(raw)
+        identity = body.pop("identity_sha256", None)
+        if identity != canonical_sha256(body):
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry digest differs for {command.work_id}"
+            )
+        exact = {
+            "schema": ATTEMPT_TELEMETRY_SCHEMA,
+            "campaign_identity_sha256": self.manifest["identity_sha256"],
+            "work_id": command.work_id,
+            "attempt_index": attempt_index,
+            "request_sha256": request.request_sha256,
+        }
+        for key, expected_value in exact.items():
+            if raw.get(key) != expected_value:
+                raise RTX4090TwoHostCampaignError(
+                    f"attempt telemetry {key} differs for {command.work_id}"
+                )
+        samples = raw["samples"]
+        if not isinstance(samples, list):
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry samples are malformed for {command.work_id}"
+            )
+        host = _host_by_id(self.manifest, command.host_id)
+        expected = host["expected"]
+        assert isinstance(expected, Mapping)
+        expected_gpu = expected["gpu"]
+        assert isinstance(expected_gpu, Mapping)
+        normalized, _ = _normalize_telemetry(
+            samples, required=False, expected_gpu=expected_gpu,
+        )
+        if samples != normalized:
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry is noncanonical for {command.work_id}"
+            )
+        return normalized
+
+    def _append_attempt_telemetry(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        sample: object,
+    ) -> list[dict[str, object]]:
+        samples = self._load_attempt_telemetry(
+            command, request, attempt_index,
+        )
+        host = _host_by_id(self.manifest, command.host_id)
+        expected = host["expected"]
+        assert isinstance(expected, Mapping)
+        expected_gpu = expected["gpu"]
+        assert isinstance(expected_gpu, Mapping)
+        normalized, _ = _normalize_telemetry(
+            [*samples, sample], required=False, expected_gpu=expected_gpu,
+        )
+        payload = self._attempt_telemetry_payload(
+            command, request, attempt_index, normalized,
+        )
+        _replace_state(self._attempt_telemetry_path(request), payload)
+        return normalized
+
+    @staticmethod
+    def _exact_transport_receipt(
+        value: object, request: RunRequest,
+    ) -> dict[str, object]:
+        return _normalize_job_receipt(
+            value, request, require_succeeded=False,
+        )
+
+    def _adopt_or_start(
+        self, transport: CampaignTransport, request: RunRequest,
+    ) -> dict[str, object]:
+        try:
+            existing = transport.status(request.job_id)
+        except Exception:
+            try:
+                started = transport.start(request)
+            except Exception:
+                # Start can lose its response or reject an already claimed ID.
+                # One exact status re-read is the only safe way to adopt it.
+                try:
+                    adopted = transport.status(request.job_id)
+                except Exception as status_error:
+                    raise RTX4090TwoHostCampaignError(
+                        f"cannot safely adopt or start transport job "
+                        f"{request.job_id}"
+                    ) from status_error
+                return self._exact_transport_receipt(adopted, request)
+            return self._exact_transport_receipt(started, request)
+        return self._exact_transport_receipt(existing, request)
+
+    def _monitor_attempt(
+        self,
+        command: CampaignCommand,
+        transport: CampaignTransport,
+        request: RunRequest,
+        attempt_index: int,
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        raw_cadence = getattr(
+            transport, "cadence_seconds", self._telemetry_interval_seconds,
+        )
+        if isinstance(raw_cadence, bool):
+            raise RTX4090TwoHostCampaignError(
+                "transport telemetry cadence differs from campaign policy"
+            )
+        try:
+            cadence_seconds = float(raw_cadence)
+        except (TypeError, ValueError) as exc:
+            raise RTX4090TwoHostCampaignError(
+                "transport telemetry cadence is invalid"
+            ) from exc
+        if cadence_seconds != self._telemetry_interval_seconds:
+            raise RTX4090TwoHostCampaignError(
+                "transport telemetry cadence differs from campaign policy"
+            )
+        samples = (
+            self._load_attempt_telemetry(command, request, attempt_index)
+            if command.gpu_bearing else []
+        )
+        receipt = self._adopt_or_start(transport, request)
+        while receipt["state"] == "running":
+            if command.gpu_bearing:
+                try:
+                    sample = transport.sample_telemetry()
+                except Exception as exc:
+                    raise RTX4090TwoHostCampaignError(
+                        f"live telemetry failed for {request.job_id}"
+                    ) from exc
+                samples = self._append_attempt_telemetry(
+                    command, request, attempt_index, sample,
+                )
+            try:
+                current = transport.status(request.job_id)
+            except Exception as exc:
+                raise RTX4090TwoHostCampaignError(
+                    f"status failed for running job {request.job_id}; "
+                    "refusing a colliding retry"
+                ) from exc
+            receipt = self._exact_transport_receipt(current, request)
+            if receipt["state"] == "running":
+                self._sleep(cadence_seconds)
+        return receipt, samples
+
     def _execute(
-        self, assignment: StageAssignment, *, resume: bool,
+        self, assignment: StageAssignment, *,
         dependency_receipt_sha256s: Sequence[str],
     ) -> tuple[StageAssignment, dict[str, object]]:
         command = self.commands[assignment.work_id]
@@ -886,18 +1297,39 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError(
                 f"no telemetry-capable transport for host {assignment.host_id!r}"
             )
-        runner = getattr(transport, "run_with_telemetry", None)
-        if not callable(runner):
+        inspector = self.artifact_inspectors.get(assignment.host_id)
+        if command.outputs and inspector is None:
             raise RTX4090TwoHostCampaignError(
-                "live transport lacks run_with_telemetry; refusing an "
-                "unmeasured GPU campaign"
+                f"no artifact inspector for output-bearing host "
+                f"{assignment.host_id!r}"
             )
-        request = self._request(command, resume=resume)
-        job, samples = runner(request)
-        return assignment, _stage_receipt(
-            self.manifest, command, request, job, samples,
-            dependency_receipt_sha256s,
-        )
+        last_failure: BaseException | None = None
+        for attempt_index in range(self._max_attempts):
+            request = self._request(command, attempt_index=attempt_index)
+            job, samples = self._monitor_attempt(
+                command, transport, request, attempt_index,
+            )
+            if job["state"] != "succeeded":
+                last_failure = RTX4090TwoHostCampaignError(
+                    f"transport job {request.job_id} ended in {job['state']}"
+                )
+                continue
+            try:
+                receipt = _stage_receipt(
+                    self.manifest, command, request, job, samples,
+                    dependency_receipt_sha256s,
+                    attempt_index=attempt_index,
+                    artifact_inspector=inspector,
+                )
+            except RTX4090TwoHostCampaignError as exc:
+                last_failure = exc
+                continue
+            return assignment, receipt
+        assert last_failure is not None
+        raise RTX4090TwoHostCampaignError(
+            f"assignment {assignment.work_id} exhausted "
+            f"{self._max_attempts} deterministic attempt(s): {last_failure}"
+        ) from last_failure
 
     @staticmethod
     def _dependency_receipts(
@@ -911,6 +1343,70 @@ class CampaignCoordinator:
             for row in rows
             if isinstance(row, Mapping) and row.get("stage") in dependencies
         ))
+
+    def _validate_output_artifacts(
+        self,
+        receipt: Mapping[str, object],
+        command: CampaignCommand,
+        host: Mapping[str, object],
+    ) -> None:
+        stored = receipt.get("output_artifacts")
+        if not isinstance(stored, list) or len(stored) != len(command.outputs):
+            raise RTX4090TwoHostCampaignError(
+                f"execution output ledger is malformed for {command.work_id}"
+            )
+        normalized: list[dict[str, object]] = []
+        for index, (raw_row, container_path) in enumerate(
+            zip(stored, command.outputs, strict=True)
+        ):
+            if not isinstance(raw_row, Mapping) or set(raw_row) != _OUTPUT_ARTIFACT_KEYS:
+                raise RTX4090TwoHostCampaignError(
+                    f"execution output ledger row {index} differs for "
+                    f"{command.work_id}"
+                )
+            row = dict(raw_row)
+            host_path, _ = _host_output_path(host, container_path)
+            expected_kind = _expected_output_kind(container_path)
+            if (
+                row.get("container_path") != container_path
+                or row.get("host_path") != host_path
+                or row.get("expected_kind") != expected_kind
+            ):
+                raise RTX4090TwoHostCampaignError(
+                    f"execution output path binding differs for {command.work_id}"
+                )
+            manifest = _normalize_tree_manifest(
+                row.get("manifest"),
+                where=f"stored output {container_path}",
+            )
+            if (
+                manifest.root_kind != expected_kind
+                or row.get("manifest") != manifest.to_payload()
+                or row.get("manifest_sha256") != manifest.identity_sha256
+            ):
+                raise RTX4090TwoHostCampaignError(
+                    f"execution output manifest differs for {command.work_id}"
+                )
+            normalized.append({
+                "container_path": container_path,
+                "host_path": host_path,
+                "expected_kind": expected_kind,
+                "manifest": manifest.to_payload(),
+                "manifest_sha256": manifest.identity_sha256,
+            })
+        if stored != normalized:
+            raise RTX4090TwoHostCampaignError(
+                f"execution output ledger is noncanonical for {command.work_id}"
+            )
+        current = _inspect_command_outputs(
+            command,
+            host,
+            self.artifact_inspectors.get(command.host_id),
+        )
+        if current != normalized:
+            raise RTX4090TwoHostCampaignError(
+                f"declared output content drifted for {command.work_id}"
+            )
 
     def _validate_receipt(
         self,
@@ -953,15 +1449,17 @@ class CampaignCoordinator:
                 raise RTX4090TwoHostCampaignError(
                     f"execution receipt {key} differs for {assignment.work_id}"
                 )
-        request_candidates = (
-            self._request(command, resume=False),
-            self._request(command, resume=True),
-        )
-        request = next((
-            item for item in request_candidates
-            if item.request_sha256 == receipt.get("request_sha256")
-        ), None)
-        if request is None:
+        attempt_index = receipt.get("attempt_index")
+        if (
+            isinstance(attempt_index, bool)
+            or not isinstance(attempt_index, int)
+            or not 0 <= attempt_index < self._max_attempts
+        ):
+            raise RTX4090TwoHostCampaignError(
+                f"execution receipt attempt differs for {assignment.work_id}"
+            )
+        request = self._request(command, attempt_index=attempt_index)
+        if request.request_sha256 != receipt.get("request_sha256"):
             raise RTX4090TwoHostCampaignError(
                 f"execution receipt request differs for {assignment.work_id}"
             )
@@ -974,6 +1472,10 @@ class CampaignCoordinator:
         assert isinstance(expected, Mapping)
         expected_gpu = expected["gpu"]
         assert isinstance(expected_gpu, Mapping)
+        policy = self.manifest["policy"]
+        assert isinstance(policy, Mapping)
+        telemetry_policy = policy["telemetry"]
+        assert isinstance(telemetry_policy, Mapping)
         telemetry = receipt["telemetry"]
         if not isinstance(telemetry, list):
             raise RTX4090TwoHostCampaignError(
@@ -981,7 +1483,10 @@ class CampaignCoordinator:
             )
         samples, summary = _normalize_telemetry(
             telemetry,
-            required=command.gpu_bearing,
+            required=(
+                command.gpu_bearing
+                and bool(telemetry_policy["require_positive_gpu_utilization"])
+            ),
             expected_gpu=expected_gpu,
         )
         if (
@@ -992,18 +1497,16 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError(
                 f"execution telemetry differs for {assignment.work_id}"
             )
+        self._validate_output_artifacts(receipt, command, host)
         return receipt
 
     def _read_receipt(
         self, assignment: StageAssignment, state: Mapping[str, object],
     ) -> dict[str, object]:
         path = self.state_dir / RECEIPT_DIR / f"{assignment.work_id}.json"
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RTX4090TwoHostCampaignError(
-                f"execution receipt is unreadable: {path}"
-            ) from exc
+        raw = _strict_json_mapping(
+            path, where=f"execution receipt {assignment.work_id}",
+        )
         return self._validate_receipt(raw, assignment, state)
 
     def advance(
@@ -1031,14 +1534,12 @@ class CampaignCoordinator:
             _replace_state(self.state_path, current)
         if not pending:
             return current
-        results: list[tuple[StageAssignment, dict[str, object]]] = []
         failures: list[BaseException] = []
         with ThreadPoolExecutor(max_workers=len(pending)) as pool:
             futures = {
                 pool.submit(
                     self._execute,
                     assignment,
-                    resume=resume,
                     dependency_receipt_sha256s=self._dependency_receipts(
                         current, assignment.stage,
                     ),
@@ -1047,19 +1548,20 @@ class CampaignCoordinator:
             }
             for future in as_completed(futures):
                 try:
-                    results.append(future.result())
+                    assignment, receipt = future.result()
                 except BaseException as exc:  # retain successful peer progress
                     failures.append(exc)
-        for assignment, receipt in sorted(
-            results, key=lambda item: item[0].assignment_index,
-        ):
-            receipt_path = self.state_dir / RECEIPT_DIR / f"{assignment.work_id}.json"
-            _write_exact_no_clobber(receipt_path, receipt)
-            current = complete_assignment(
-                self.manifest, current, assignment,
-                str(receipt["identity_sha256"]),
-            )
-            _replace_state(self.state_path, current)
+                    continue
+                receipt_path = (
+                    self.state_dir / RECEIPT_DIR /
+                    f"{assignment.work_id}.json"
+                )
+                _write_exact_no_clobber(receipt_path, receipt)
+                current = complete_assignment(
+                    self.manifest, current, assignment,
+                    str(receipt["identity_sha256"]),
+                )
+                _replace_state(self.state_path, current)
         if failures:
             raise RTX4090TwoHostCampaignError(
                 f"campaign barrier had {len(failures)} failed assignment(s): "
@@ -1094,12 +1596,10 @@ class CampaignCoordinator:
         plan_path = self.state_dir / PLAN_FILE
         try:
             manifest_bytes = manifest_path.read_bytes()
-            plan_bytes = plan_path.read_bytes()
             stored_manifest = parse_campaign_manifest(
                 manifest_bytes.decode("utf-8")
             )
-            raw_plan = json.loads(plan_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
             raise RTX4090TwoHostCampaignError(
                 "stored campaign manifest/plan is unreadable"
             ) from exc
@@ -1109,13 +1609,9 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError(
                 "stored campaign manifest bytes are noncanonical"
             )
-        if not isinstance(raw_plan, Mapping):
-            raise RTX4090TwoHostCampaignError("stored command plan is malformed")
+        raw_plan = _strict_json_mapping(plan_path, where="stored command plan")
         expected_plan = validate_command_plan(raw_plan, self.manifest)
-        if plan_bytes != _json_bytes(expected_plan):
-            raise RTX4090TwoHostCampaignError(
-                "stored command plan bytes are noncanonical"
-            )
+        assert raw_plan == expected_plan
         state = self.load_state()
         completions = state["completions"]
         assert isinstance(completions, list)
@@ -1246,12 +1742,16 @@ def _parser() -> argparse.ArgumentParser:
 
 
 TransportFactory = Callable[[Mapping[str, object]], Mapping[str, CampaignTransport]]
+ArtifactInspectorFactory = Callable[
+    [Mapping[str, object]], Mapping[str, ArtifactInspector]
+]
 
 
 def main(
     argv: Sequence[str] | None = None,
     *,
     transport_factory: TransportFactory | None = None,
+    artifact_inspector_factory: ArtifactInspectorFactory | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     if args.command == "worker-preflight":
@@ -1263,8 +1763,15 @@ def main(
         print(args.output)
         return 0
     transports = transport_factory(manifest) if transport_factory is not None else {}
+    artifact_inspectors = (
+        artifact_inspector_factory(manifest)
+        if artifact_inspector_factory is not None else {}
+    )
     coordinator = CampaignCoordinator(
-        manifest, args.state_dir, transports=transports,
+        manifest,
+        args.state_dir,
+        transports=transports,
+        artifact_inspectors=artifact_inspectors,
     )
     if args.command == "run":
         result = coordinator.run_to_completion(resume=False)

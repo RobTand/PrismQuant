@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+import re
 import threading
+import time
 
 import pytest
 
@@ -10,10 +13,18 @@ from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
     seal_campaign_manifest,
 )
-from prismaquant.cluster_transport import GpuSample, JobReceipt, TelemetrySnapshot
+from prismaquant.cluster_transport import (
+    GpuSample,
+    JobReceipt,
+    ManifestEntry,
+    RunRequest,
+    TelemetrySnapshot,
+    TreeManifest,
+)
 from prismaquant.rtx4090_two_host_campaign import (
     CampaignCoordinator,
     RTX4090TwoHostCampaignError,
+    _host_output_path,
     build_command_plan,
     main,
 )
@@ -87,6 +98,22 @@ def _manifest() -> dict[str, object]:
                 "activation_rows_limit": 1024,
             },
         },
+        "policy": {
+            "retry": {"max_attempts": 2},
+            "telemetry": {
+                "interval_milliseconds": 1000,
+                "require_positive_gpu_utilization": True,
+            },
+            "resources": {
+                "coordinator_min_free_bytes": 100 * 1024**3,
+                "worker_min_free_bytes": 40 * 1024**3,
+                "min_mem_available_bytes": 64 * 1024**3,
+            },
+            "outputs": {
+                "owner": "coordinator",
+                "transfer_mode": "sha256_no_clobber",
+            },
+        },
         "hosts": [
             _host(
                 "zeta",
@@ -117,14 +144,24 @@ class _FakeTransport:
         *,
         fail_once_stage: str | None = None,
         omit_telemetry_stage: str | None = None,
+        interrupt_telemetry_once_stage: str | None = None,
     ) -> None:
         self.expected = expected
         self.fail_once_stage = fail_once_stage
         self.omit_telemetry_stage = omit_telemetry_stage
-        self.calls: list[object] = []
+        self.interrupt_telemetry_once_stage = interrupt_telemetry_once_stage
+        self.start_calls: list[object] = []
+        self.status_calls: list[str] = []
+        self.jobs: dict[str, dict[str, object]] = {}
         self._counter = 0
-        self._failed = False
+        self._telemetry_counter = 0
+        self._interrupted = False
+        self._active_job_id: str | None = None
         self._lock = threading.Lock()
+
+    @property
+    def calls(self) -> list[object]:
+        return self.start_calls
 
     @staticmethod
     def _stage(job_id: str) -> str:
@@ -150,62 +187,183 @@ class _FakeTransport:
                 return stage
         raise AssertionError(f"unknown fixed-stage job id {job_id}")
 
-    def run_with_telemetry(self, request):
-        stage = self._stage(request.job_id)
-        with self._lock:
-            self.calls.append(request)
-            self._counter += 1
-            ordinal = self._counter
-            should_fail = (
-                stage == self.fail_once_stage and not self._failed
-            )
-            if should_fail:
-                self._failed = True
-        if should_fail:
-            raise RuntimeError(f"injected {stage} failure")
-        receipt = JobReceipt(
+    @staticmethod
+    def _attempt(job_id: str) -> int:
+        match = re.search(r"-attempt-(\d+)$", job_id)
+        assert match is not None
+        return int(match.group(1))
+
+    @staticmethod
+    def _receipt(
+        request, *, state: str, ordinal: int,
+    ) -> JobReceipt:
+        running = state == "running"
+        return JobReceipt(
             job_id=request.job_id,
             request_sha256=request.request_sha256,
-            state="succeeded",
+            state=state,
             started_ns=ordinal * 10 + 1,
-            finished_ns=ordinal * 10 + 9,
-            returncode=0,
+            finished_ns=None if running else ordinal * 10 + 9,
+            returncode=(None if running or state == "transport_error"
+                        else (0 if state == "succeeded" else 9)),
             pid=1000 + ordinal,
-            stdout=b"ok\n",
-            stderr=b"",
+            stdout=b"" if running else b"ok\n",
+            stderr=b"" if state in {"running", "succeeded"} else b"failed\n",
             transport="fake",
         )
-        gpu_stages = {
-            "coordinator_source_identity",
-            "worker_source_identity",
-            "sample_ce",
-            "sample_fisher",
-            "measure_burn",
-        }
-        if stage not in gpu_stages or stage == self.omit_telemetry_stage:
-            return receipt, ()
-        gpu = self.expected["gpu"]
-        samples = tuple(
-            TelemetrySnapshot(
-                captured_ns=ordinal * 100 + offset,
-                host_mem_available_bytes=24_000_000_000 - offset,
-                gpus=(GpuSample(
-                    timestamp=f"2026-08-24T00:00:0{offset}Z",
-                    index=0,
-                    name=str(gpu["name"]),
-                    uuid=str(gpu["uuid"]),
-                    pci_bus_id="00000000:01:00.0",
-                    gpu_utilization_pct=0.0 if offset == 1 else 75.0,
-                    memory_utilization_pct=25.0,
-                    memory_used_mib=4096.0,
-                    memory_total_mib=24576.0,
-                    temperature_c=55.0,
-                    power_w=200.0,
-                ),),
+
+    def preload(self, request, *, state: str = "succeeded") -> None:
+        with self._lock:
+            self._counter += 1
+            ordinal = self._counter
+            self.jobs[request.job_id] = {
+                "request": request,
+                "ordinal": ordinal,
+                "polls": 0,
+                "final_state": state,
+                "receipt": self._receipt(
+                    request, state=state, ordinal=ordinal,
+                ),
+            }
+
+    def start(self, request):
+        with self._lock:
+            if request.job_id in self.jobs:
+                raise RuntimeError("duplicate fake job id")
+            self.start_calls.append(request)
+            self._counter += 1
+            ordinal = self._counter
+            stage = self._stage(request.job_id)
+            final_state = (
+                "failed"
+                if stage == self.fail_once_stage
+                and self._attempt(request.job_id) == 0
+                else "succeeded"
             )
-            for offset in (1, 2)
+            running = self._receipt(
+                request, state="running", ordinal=ordinal,
+            )
+            self.jobs[request.job_id] = {
+                "request": request,
+                "ordinal": ordinal,
+                "polls": 0,
+                "final_state": final_state,
+                "receipt": running,
+            }
+            self._active_job_id = request.job_id
+            return running
+
+    def status(self, job_id: str):
+        with self._lock:
+            self.status_calls.append(job_id)
+            if job_id not in self.jobs:
+                raise RuntimeError("unknown fake job")
+            job = self.jobs[job_id]
+            receipt = job["receipt"]
+            assert isinstance(receipt, JobReceipt)
+            if receipt.state != "running":
+                return receipt
+            job["polls"] = int(job["polls"]) + 1
+            if int(job["polls"]) <= 1:
+                self._active_job_id = job_id
+                return receipt
+            request = job["request"]
+            final = self._receipt(
+                request,
+                state=str(job["final_state"]),
+                ordinal=int(job["ordinal"]),
+            )
+            job["receipt"] = final
+            return final
+
+    def sample_telemetry(self):
+        with self._lock:
+            assert self._active_job_id is not None
+            stage = self._stage(self._active_job_id)
+            job = self.jobs[self._active_job_id]
+            sample_number = int(job.get("sample_number", 0)) + 1
+            job["sample_number"] = sample_number
+            if (
+                stage == self.interrupt_telemetry_once_stage
+                and sample_number == 2
+                and not self._interrupted
+            ):
+                self._interrupted = True
+                raise RuntimeError("injected telemetry interruption")
+            self._telemetry_counter += 1
+            captured_ns = self._telemetry_counter * 100
+        gpu = self.expected["gpu"]
+        utilization = (
+            0.0
+            if stage == self.omit_telemetry_stage
+            else (75.0 if sample_number % 2 else 0.0)
         )
-        return receipt, samples
+        return TelemetrySnapshot(
+            captured_ns=captured_ns,
+            host_mem_available_bytes=24_000_000_000 - captured_ns,
+            gpus=(GpuSample(
+                timestamp=f"2026-08-24T00:00:{sample_number:02d}Z",
+                index=0,
+                name=str(gpu["name"]),
+                uuid=str(gpu["uuid"]),
+                pci_bus_id="00000000:01:00.0",
+                gpu_utilization_pct=utilization,
+                memory_utilization_pct=25.0,
+                memory_used_mib=4096.0,
+                memory_total_mib=24576.0,
+                temperature_c=55.0,
+                power_w=200.0,
+            ),),
+        )
+
+
+class _FakeArtifactInspector:
+    def __init__(self) -> None:
+        self.missing: set[str] = set()
+        self.revisions: dict[str, int] = {}
+
+    def inspect_artifact(self, absolute_path: str) -> TreeManifest:
+        if absolute_path in self.missing:
+            raise FileNotFoundError(absolute_path)
+        revision = self.revisions.get(absolute_path, 0)
+        digest = hashlib.sha256(
+            f"{absolute_path}:{revision}".encode("utf-8")
+        ).hexdigest()
+        name = Path(absolute_path).name
+        if name in {"act", "activation_cache"}:
+            return TreeManifest(
+                root_kind="directory",
+                entries=(ManifestEntry("content.bin", "file", 1, digest),),
+            )
+        return TreeManifest(
+            root_kind="file",
+            entries=(ManifestEntry("payload", "file", 1, digest),),
+        )
+
+
+class _BlockingTransport(_FakeTransport):
+    def __init__(
+        self,
+        expected: dict[str, object],
+        blocked: threading.Event,
+        release: threading.Event,
+    ) -> None:
+        super().__init__(expected)
+        self.blocked = blocked
+        self.release = release
+        self._did_block = False
+
+    def status(self, job_id: str):
+        if (
+            job_id in self.jobs
+            and self._stage(job_id) == "host_preflight"
+            and not self._did_block
+        ):
+            self._did_block = True
+            self.blocked.set()
+            if not self.release.wait(timeout=5):
+                raise RuntimeError("test did not release blocked transport")
+        return super().status(job_id)
 
 
 def _transports(
@@ -215,6 +373,30 @@ def _transports(
         str(host["id"]): _FakeTransport(host["expected"], **kwargs)
         for host in manifest["hosts"]
     }
+
+
+def _inspectors(
+    manifest: dict[str, object],
+) -> dict[str, _FakeArtifactInspector]:
+    return {
+        str(host["id"]): _FakeArtifactInspector()
+        for host in manifest["hosts"]
+    }
+
+
+def _coordinator(
+    manifest: dict[str, object],
+    state_dir: Path,
+    transports: dict[str, _FakeTransport],
+    inspectors: dict[str, _FakeArtifactInspector] | None = None,
+) -> CampaignCoordinator:
+    return CampaignCoordinator(
+        manifest,
+        state_dir,
+        transports=transports,
+        artifact_inspectors=inspectors or _inspectors(manifest),
+        sleep=lambda _: None,
+    )
 
 
 def test_plan_is_closed_and_maps_hosts_to_partitions_and_stripes_0_and_1() -> None:
@@ -252,13 +434,37 @@ def test_plan_is_closed_and_maps_hosts_to_partitions_and_stripes_0_and_1() -> No
     assert all("shell" not in row for row in commands)
 
 
+def test_attempt_job_ids_remain_valid_for_maximum_length_host_ids(
+    tmp_path: Path,
+) -> None:
+    body = json.loads(json.dumps(_manifest()))
+    body.pop("identity_sha256")
+    replacements = {"alpha": "a" * 128, "zeta": "z" * 128}
+    for host in body["hosts"]:
+        host["id"] = replacements[host["id"]]
+    body["coordinator"] = replacements[body["coordinator"]]
+    manifest = seal_campaign_manifest(body)
+    coordinator = CampaignCoordinator(manifest, tmp_path / "state")
+
+    requests = [
+        coordinator._request(command, attempt_index=attempt)
+        for command in coordinator.commands.values()
+        for attempt in range(2)
+    ]
+
+    assert all(len(request.job_id) <= 128 for request in requests)
+    assert all("-host-" in request.job_id for request in requests)
+    assert len({request.job_id for request in requests}) == len(requests)
+
+
 def test_fake_transport_completes_all_barriers_and_records_kpi_receipts(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest()
     transports = _transports(manifest)
-    coordinator = CampaignCoordinator(
-        manifest, tmp_path / "state", transports=transports,
+    inspectors = _inspectors(manifest)
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports, inspectors,
     )
 
     result = coordinator.run_to_completion(resume=False)
@@ -281,66 +487,301 @@ def test_fake_transport_completes_all_barriers_and_records_kpi_receipts(
         "active_fraction_gt_90": 0.0,
     }
     assert len(receipt["dependency_receipt_sha256s"]) == 1
+    assert receipt["attempt_index"] == 0
+    assert [row["container_path"] for row in receipt["output_artifacts"]] == [
+        "/run/worker-0/probe.pkl",
+        "/run/worker-0/act",
+    ]
+    assert receipt["output_artifacts"][1]["expected_kind"] == "directory"
     assert coordinator.verify() == result
 
 
-def test_resume_preserves_successful_peer_and_uses_only_fixed_resume_flags(
+def test_failed_attempt_uses_bounded_new_id_and_only_retry_resume_flags(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest()
-    first = _transports(manifest)
-    first["zeta"].fail_once_stage = "sample_fisher"
-    coordinator = CampaignCoordinator(
-        manifest, tmp_path / "state", transports=first,
+    transports = _transports(manifest)
+    transports["alpha"].fail_once_stage = "measure_burn"
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports,
     )
-    with pytest.raises(RTX4090TwoHostCampaignError, match="failed assignment"):
-        coordinator.run_to_completion(resume=False)
 
-    state = coordinator.load_state()
-    completed_fisher = [
-        row["host_id"] for row in state["completions"]
-        if row["stage"] == "sample_fisher"
+    result = coordinator.run_to_completion(resume=False)
+
+    assert result["complete"] is True
+    requests = [
+        request for transport in transports.values()
+        for request in transport.start_calls
     ]
-    assert len(completed_fisher) == 1
+    measure = [
+        request for request in requests if "-measure_burn-alpha-" in request.job_id
+    ]
+    assert [request.job_id.rsplit("-", 1)[1] for request in measure] == [
+        "00", "01",
+    ]
+    assert "--resume" not in measure[0].argv
+    assert "--resume" in measure[1].argv
+    allocate = next(
+        request for request in requests if "-allocate-" in request.job_id
+    )
+    assert "--resume" not in allocate.argv
+    assert all(request.inherit_env is False for request in requests)
+    receipt = json.loads(
+        (tmp_path / "state" / "receipts" / "measure_burn:alpha.json")
+        .read_text(encoding="utf-8")
+    )
+    assert receipt["attempt_index"] == 1
 
-    second = _transports(manifest)
-    resumed = CampaignCoordinator(
-        manifest, tmp_path / "state", transports=second,
+
+def test_restart_adopts_running_job_and_uses_durable_live_telemetry(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    transports["zeta"].interrupt_telemetry_once_stage = (
+        "coordinator_source_identity"
+    )
+    inspectors = _inspectors(manifest)
+    first = _coordinator(
+        manifest, tmp_path / "state", transports, inspectors,
+    )
+
+    with pytest.raises(RTX4090TwoHostCampaignError, match="live telemetry"):
+        first.run_to_completion(resume=False)
+
+    matching_starts = [
+        request for request in transports["zeta"].start_calls
+        if "-coordinator_source_identity-" in request.job_id
+    ]
+    assert len(matching_starts) == 1
+    telemetry_paths = sorted(
+        (tmp_path / "state" / "attempt-telemetry").glob(
+            "*coordinator_source_identity*.json"
+        )
+    )
+    assert len(telemetry_paths) == 1
+    journal = json.loads(telemetry_paths[0].read_text(encoding="utf-8"))
+    assert len(journal["samples"]) == 1
+    assert journal["samples"][0]["gpus"][0]["gpu_utilization_pct"] == 75.0
+
+    resumed = _coordinator(
+        manifest, tmp_path / "state", transports, inspectors,
     )
     result = resumed.run_to_completion(resume=True)
+
     assert result["complete"] is True
-    resumed_job_ids = [
-        request.job_id
-        for transport in second.values()
-        for request in transport.calls
-    ]
-    assert not any(
-        f"-sample_fisher-{completed_fisher[0]}" in job_id
-        for job_id in resumed_job_ids
+    assert len([
+        request for request in transports["zeta"].start_calls
+        if "-coordinator_source_identity-" in request.job_id
+    ]) == 1
+    receipt = json.loads(
+        (tmp_path / "state" / "receipts" /
+         "coordinator_source_identity:zeta.json").read_text(encoding="utf-8")
     )
-    resumed_requests = [
-        request
-        for transport in second.values()
-        for request in transport.calls
-    ]
-    measure = [request for request in resumed_requests if "-measure_burn-" in request.job_id]
+    assert len(receipt["telemetry"]) == 1
+    assert receipt["telemetry_summary"]["live_cuda_observed"] is True
     allocate = next(
-        request for request in resumed_requests if "-allocate-" in request.job_id
+        request for request in transports["zeta"].start_calls
+        if "-allocate-" in request.job_id
     )
-    assert len(measure) == 2
-    assert all("--resume" in request.argv for request in measure)
-    assert "--resume" in allocate.argv
-    assert all(request.inherit_env is False for request in resumed_requests)
+    assert allocate.job_id.endswith("-attempt-00")
+    assert "--resume" not in allocate.argv
+
+
+def test_existing_job_with_different_request_identity_is_never_adopted(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports,
+    )
+    state = coordinator.initialize()
+    command = coordinator.commands["host_preflight:alpha"]
+    expected = coordinator._request(command, attempt_index=0)
+    foreign = RunRequest(
+        job_id=expected.job_id,
+        argv=("/bin/false",),
+        cwd="/",
+        env=expected.env,
+        inherit_env=False,
+    )
+    transports["alpha"].preload(foreign)
+
+    with pytest.raises(RTX4090TwoHostCampaignError, match="failed assignment"):
+        coordinator.advance(state, resume=True)
+
+    assert all(
+        request.job_id != expected.job_id
+        for request in transports["alpha"].start_calls
+    )
+    persisted = coordinator.load_state()
+    assert any(
+        row["work_id"] == "host_preflight:zeta"
+        for row in persisted["completions"]
+    )
+
+
+def test_missing_output_exhausts_attempts_without_completing_stage(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    inspectors = _inspectors(manifest)
+    missing = "/srv/zeta/campaign-run/calibration.pt"
+    inspectors["zeta"].missing.add(missing)
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports, inspectors,
+    )
+
+    with pytest.raises(RTX4090TwoHostCampaignError, match="absent or unverifiable"):
+        coordinator.run_to_completion(resume=False)
+
+    requests = [
+        request for request in transports["zeta"].start_calls
+        if "-prepare_calibration-" in request.job_id
+    ]
+    assert len(requests) == 2
+    assert len({request.job_id for request in requests}) == 2
+    assert not any(
+        row["work_id"] == "prepare_calibration:zeta"
+        for row in coordinator.load_state()["completions"]
+    )
+
+
+def test_output_ledger_is_revalidated_and_refuses_content_drift(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    inspectors = _inspectors(manifest)
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports, inspectors,
+    )
+    coordinator.run_to_completion(resume=False)
+    path = "/srv/alpha/campaign-run/worker-0/probe.pkl"
+    inspectors["alpha"].revisions[path] = 1
+
+    with pytest.raises(RTX4090TwoHostCampaignError, match="content drifted"):
+        coordinator.verify()
+
+
+@pytest.mark.parametrize("unsafe", [
+    "/run/../outside",
+    "/worker-state/../../outside",
+    "/model/not-an-output",
+    "run/relative",
+])
+def test_output_path_resolution_refuses_traversal_and_readonly_roots(
+    unsafe: str,
+) -> None:
+    manifest = _manifest()
+    host = next(host for host in manifest["hosts"] if host["id"] == "alpha")
+    with pytest.raises(RTX4090TwoHostCampaignError, match="output|escapes"):
+        _host_output_path(host, unsafe)
+
+
+def test_parallel_peer_receipt_and_state_are_persisted_before_barrier_returns(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    blocked = threading.Event()
+    release = threading.Event()
+    zeta = next(host for host in manifest["hosts"] if host["id"] == "zeta")
+    transports["zeta"] = _BlockingTransport(
+        zeta["expected"], blocked, release,
+    )
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports,
+    )
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            outcome["result"] = coordinator.run_to_completion(resume=False)
+        except BaseException as exc:  # surfaced in the test thread
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert blocked.wait(timeout=5)
+    alpha_receipt = (
+        tmp_path / "state" / "receipts" / "host_preflight:alpha.json"
+    )
+    deadline = time.monotonic() + 5
+    persisted = coordinator.load_state()
+    while time.monotonic() < deadline:
+        alpha_completed = any(
+            row["work_id"] == "host_preflight:alpha"
+            for row in persisted["completions"]
+        )
+        if alpha_receipt.exists() and alpha_completed:
+            break
+        time.sleep(0.01)
+        persisted = coordinator.load_state()
+    assert alpha_receipt.is_file()
+    assert any(
+        row["work_id"] == "host_preflight:alpha"
+        for row in persisted["completions"]
+    )
+    assert not any(
+        row["work_id"] == "host_preflight:zeta"
+        for row in persisted["completions"]
+    )
+
+    release.set()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["result"]["complete"] is True
+
+
+def test_state_and_receipt_json_reads_reject_duplicate_members(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    coordinator.initialize()
+    state_path = tmp_path / "state" / "campaign-state.json"
+    state_text = state_path.read_text(encoding="utf-8")
+    state_path.write_text(
+        state_text.replace(
+            '  "schema":', '  "schema": "duplicate",\n  "schema":', 1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RTX4090TwoHostCampaignError, match="duplicate JSON"):
+        coordinator.load_state()
+
+    second = _coordinator(
+        manifest, tmp_path / "second", _transports(manifest),
+    )
+    second.run_to_completion(resume=False)
+    receipt_path = (
+        tmp_path / "second" / "receipts" / "host_preflight:alpha.json"
+    )
+    receipt_text = receipt_path.read_text(encoding="utf-8")
+    receipt_path.write_text(
+        receipt_text.replace(
+            '  "schema":', '  "schema": "duplicate",\n  "schema":', 1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RTX4090TwoHostCampaignError, match="duplicate JSON"):
+        second.verify()
 
 
 def test_gpu_stage_without_positive_utilization_is_refused(tmp_path: Path) -> None:
     manifest = _manifest()
     transports = _transports(manifest, omit_telemetry_stage="sample_ce")
-    coordinator = CampaignCoordinator(
-        manifest, tmp_path / "state", transports=transports,
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports,
     )
 
-    with pytest.raises(RTX4090TwoHostCampaignError, match="utilization telemetry"):
+    with pytest.raises(RTX4090TwoHostCampaignError, match="positive utilization"):
         coordinator.run_to_completion(resume=False)
 
 
@@ -348,8 +789,8 @@ def test_verify_refuses_missing_or_tampered_execution_receipt(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest()
-    coordinator = CampaignCoordinator(
-        manifest, tmp_path / "state", transports=_transports(manifest),
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
     )
     coordinator.run_to_completion(resume=False)
     path = tmp_path / "state" / "receipts" / "measure_burn:alpha.json"
