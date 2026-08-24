@@ -10,6 +10,23 @@ def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def test_sample_parallel_runbook_is_fail_closed_and_cross_host_portable():
+    doc = _read("docs/design/sample_parallel_probe.md")
+    assert "set -euo pipefail" in doc
+    assert "SP_IMAGE_DIGEST=\"${SP_IMAGE_REF##*@}\"" in doc
+    assert "{{range .RepoDigests}}{{println .}}{{end}}" in doc
+    assert "SP_IMAGE_ID" not in doc
+    assert "--entrypoint /bin/bash \"$SP_IMAGE_REF\"" in doc
+    assert "--user \"$SP_HOST_UID:$SP_HOST_GID\"" in doc
+    assert "--workdir /worker-state/tmp" in doc
+    assert "--expected-closure-sha256 \"$SP_CLOSURE\" >/dev/null || return 1" in doc
+    assert "PRISMAQUANT_CB_ENCODE_COMPILE=1" in doc
+    assert "PRISMAQUANT_CB_ATOM_COMPILE=1" in doc
+    assert "PRISMAQUANT_CB_COMPILE_FAIL_CLOSED=1" in doc
+    for mount in ("/model", "/dataset", "/run", "/worker-state"):
+        assert mount in doc
+
+
 def test_runtime_flags_doc_owns_policy_without_mirroring_gridbook_flags():
     doc = _read("docs/design/runtime_flags.md")
     assert "There is deliberately no hand-maintained exhaustive flag list" in doc

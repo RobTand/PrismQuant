@@ -73,6 +73,16 @@ from pathlib import Path
 
 import torch
 
+from .cb_compile_contract import (
+    ENCODE_SCORE_ARGMIN,
+    ENCODE_SCORE_MIN,
+    ENCODE_SCORE_MIN_BATCHED,
+    ENCODE_SCORE_MINARGMIN_BATCHED,
+    ENCODE_VQ_ARGMIN,
+    cb_compile_fail_closed,
+    compile_cb_callable,
+    refuse_cb_compile_fallback,
+)
 from .cb_layout import (
     CODEWORDS_PER_SUPERBLOCK,
     FP4_GROUP,
@@ -239,6 +249,13 @@ def _vq_dist_argmin_compiled():
     return torch.compile(_vq_dist_argmin_eager, dynamic=True)
 
 
+@lru_cache(maxsize=None)
+def _vq_dist_argmin_compiled_strict():
+    return compile_cb_callable(
+        _vq_dist_argmin_eager, helper=ENCODE_VQ_ARGMIN, dynamic=True,
+    )
+
+
 def _vq_dist_argmin(term2: torch.Tensor, term1: torch.Tensor) -> torch.Tensor:
     """Fused distance + argmin.
 
@@ -250,7 +267,17 @@ def _vq_dist_argmin(term2: torch.Tensor, term1: torch.Tensor) -> torch.Tensor:
     first-occurrence tie rule, so the chosen codewords are unchanged."""
     if _compiled_encode_route(term1):
         _raise_encode_recompile_limit()
-        return _vq_dist_argmin_compiled()(term2, term1)
+        compiled = (
+            _vq_dist_argmin_compiled_strict()
+            if cb_compile_fail_closed()
+            else _vq_dist_argmin_compiled()
+        )
+        return compiled(term2, term1)
+    if _encode_compile_on() and cb_compile_fail_closed():
+        refuse_cb_compile_fallback(
+            ENCODE_VQ_ARGMIN,
+            reason="index-producing CB compile is CUDA-only",
+        )
     return _vq_dist_argmin_eager(term2, term1)
 
 
@@ -793,8 +820,22 @@ def _score_min_compiled():
 
 
 @lru_cache(maxsize=None)
+def _score_min_compiled_strict():
+    return compile_cb_callable(
+        _score_min_eager, helper=ENCODE_SCORE_MIN, dynamic=True,
+    )
+
+
+@lru_cache(maxsize=None)
 def _score_argmin_compiled():
     return torch.compile(_score_argmin_eager, dynamic=True)
+
+
+@lru_cache(maxsize=None)
+def _score_argmin_compiled_strict():
+    return compile_cb_callable(
+        _score_argmin_eager, helper=ENCODE_SCORE_ARGMIN, dynamic=True,
+    )
 
 
 def _encode_compile_on() -> bool:
@@ -840,6 +881,9 @@ def _raise_encode_recompile_limit() -> None:
 
 def _score_min(A, B, s):
     if _encode_compile_on():
+        if cb_compile_fail_closed():
+            _raise_encode_recompile_limit()
+            return _score_min_compiled_strict()(A, B, s)
         try:
             _raise_encode_recompile_limit()
             return _score_min_compiled()(A, B, s)
@@ -895,14 +939,42 @@ def _score_min_batched_compiled():
 
 
 @lru_cache(maxsize=None)
+def _score_min_batched_compiled_strict():
+    return compile_cb_callable(
+        _score_min_batched_eager,
+        helper=ENCODE_SCORE_MIN_BATCHED,
+        dynamic=True,
+    )
+
+
+@lru_cache(maxsize=None)
 def _score_minargmin_batched_compiled():
     return torch.compile(_score_minargmin_batched_eager, dynamic=True)
+
+
+@lru_cache(maxsize=None)
+def _score_minargmin_batched_compiled_strict():
+    return compile_cb_callable(
+        _score_minargmin_batched_eager,
+        helper=ENCODE_SCORE_MINARGMIN_BATCHED,
+        dynamic=True,
+    )
 
 
 def _score_minargmin_batched(A, B, s):
     if _compiled_encode_route(B):
         _raise_encode_recompile_limit()
-        return _score_minargmin_batched_compiled()(A, B, s)
+        compiled = (
+            _score_minargmin_batched_compiled_strict()
+            if cb_compile_fail_closed()
+            else _score_minargmin_batched_compiled()
+        )
+        return compiled(A, B, s)
+    if _encode_compile_on() and cb_compile_fail_closed():
+        refuse_cb_compile_fallback(
+            ENCODE_SCORE_MINARGMIN_BATCHED,
+            reason="index-producing CB compile is CUDA-only",
+        )
     vs, is_ = [], []
     for i in range(s.shape[-1]):
         v, ix = _score_argmin_eager(A, B, s[:, i:i + 1])
@@ -913,6 +985,9 @@ def _score_minargmin_batched(A, B, s):
 
 def _score_min_batched(A, B, s):
     if _encode_compile_on():
+        if cb_compile_fail_closed():
+            _raise_encode_recompile_limit()
+            return _score_min_batched_compiled_strict()(A, B, s)
         try:
             _raise_encode_recompile_limit()
             return _score_min_batched_compiled()(A, B, s)
@@ -929,7 +1004,17 @@ def _score_min_batched(A, B, s):
 def _score_argmin(A, B, s):
     if _compiled_encode_route(B):
         _raise_encode_recompile_limit()
-        return _score_argmin_compiled()(A, B, s)
+        compiled = (
+            _score_argmin_compiled_strict()
+            if cb_compile_fail_closed()
+            else _score_argmin_compiled()
+        )
+        return compiled(A, B, s)
+    if _encode_compile_on() and cb_compile_fail_closed():
+        refuse_cb_compile_fallback(
+            ENCODE_SCORE_ARGMIN,
+            reason="index-producing CB compile is CUDA-only",
+        )
     return _score_argmin_eager(A, B, s)
 
 
