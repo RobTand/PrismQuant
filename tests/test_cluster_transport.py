@@ -5,12 +5,16 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
+import time
 
 import pytest
 
+import prismaquant.cluster_transport as cluster_transport
 from prismaquant.cluster_transport import (
     ClusterTransportError,
     GpuSample,
+    HELPER_ENVELOPE_SCHEMA,
     HELPER_RESPONSE_SCHEMA,
     JobConflictError,
     JobReceipt,
@@ -192,6 +196,12 @@ def test_local_start_uses_detached_fixed_worker_argv_and_shell_false(tmp_path):
         tmp_path / "state",
         popen_impl=fake_popen,
         pid_alive=lambda pid: pid == 1234,
+        process_identity_reader=lambda pid: {
+            "schema": "prismaquant.cluster_transport.process_identity.v1",
+            "pid": pid,
+            "boot_id": "fixture",
+            "start_ticks": 1,
+        },
     )
     request = RunRequest("detached", ("/bin/echo", "not on worker argv"))
 
@@ -209,6 +219,39 @@ def test_local_start_uses_detached_fixed_worker_argv_and_shell_false(tmp_path):
         transport.start(request)
 
 
+def test_real_detached_local_worker_publishes_and_is_adopted(tmp_path) -> None:
+    transport = LocalTransport(tmp_path / "state")
+    request = RunRequest(
+        "real-detached-worker",
+        (
+            sys.executable,
+            "-P",
+            "-B",
+            "-s",
+            "-c",
+            "import sys; sys.stdout.write('detached-ok\\n')",
+        ),
+        env=(("LANG", "C.UTF-8"),),
+        timeout_seconds=10.0,
+    )
+
+    running = transport.start(request)
+    assert running.state == "running"
+    deadline = time.monotonic() + 10.0
+    while True:
+        receipt = transport.status(request.job_id)
+        if receipt.state != "running":
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail("real detached worker did not publish a terminal receipt")
+        time.sleep(0.02)
+
+    assert receipt.state == "succeeded"
+    assert receipt.returncode == 0
+    assert receipt.stdout == b"detached-ok\n"
+    assert transport.status(request.job_id) == receipt
+
+
 def test_local_status_binds_request_identity_and_fails_closed_on_dead_pid(tmp_path):
     class FakeProcess:
         pid = 987654
@@ -217,6 +260,12 @@ def test_local_status_binds_request_identity_and_fails_closed_on_dead_pid(tmp_pa
         tmp_path / "state",
         popen_impl=lambda *args, **kwargs: FakeProcess(),
         pid_alive=lambda pid: False,
+        process_identity_reader=lambda pid: {
+            "schema": "prismaquant.cluster_transport.process_identity.v1",
+            "pid": pid,
+            "boot_id": "fixture",
+            "start_ticks": 1,
+        },
     )
     request = RunRequest("dead-worker", ("/bin/work",))
     running = transport.start(request)
@@ -234,6 +283,100 @@ def test_local_status_binds_request_identity_and_fails_closed_on_dead_pid(tmp_pa
     receipt_path.write_bytes(canonical_json_bytes(tampered))
     with pytest.raises(ClusterTransportError, match="identity mismatch"):
         transport.status(request.job_id)
+
+
+def test_local_status_rejects_live_pid_reuse_by_boot_scoped_identity(tmp_path):
+    class FakeProcess:
+        pid = 4321
+
+    reads = 0
+
+    def identity(pid):
+        nonlocal reads
+        reads += 1
+        return {
+            "schema": "prismaquant.cluster_transport.process_identity.v1",
+            "pid": pid,
+            "boot_id": "fixture",
+            "start_ticks": reads,
+        }
+
+    transport = LocalTransport(
+        tmp_path / "state",
+        popen_impl=lambda *args, **kwargs: FakeProcess(),
+        pid_alive=lambda _pid: True,
+        process_identity_reader=identity,
+    )
+    request = RunRequest("reused-worker-pid", ("/bin/work",))
+
+    assert transport.start(request).state == "running"
+    failed = transport.status(request.job_id)
+
+    assert failed.state == "transport_error"
+    assert b"identity is not alive" in failed.stderr
+
+
+@pytest.mark.parametrize("process_state", ["Z", "X", "x"])
+def test_linux_process_identity_rejects_zombie_and_dead_states(
+    monkeypatch: pytest.MonkeyPatch,
+    process_state: str,
+) -> None:
+    pid = 4321
+    boot_id = "01234567-89ab-cdef-0123-456789abcdef"
+    # Fields after ``comm`` begin with state (proc field 3); starttime is
+    # field 22 and therefore index 19 in this suffix.
+    stat_payload = f"{pid} (detached worker) {process_state} " + " ".join(
+        ["1"] * 19
+    )
+
+    def read_text(path: Path, *, encoding: str) -> str:
+        assert encoding == "ascii"
+        if path == Path("/proc/sys/kernel/random/boot_id"):
+            return boot_id + "\n"
+        if path == Path(f"/proc/{pid}/stat"):
+            return stat_payload
+        raise AssertionError(path)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(ProcessLookupError):
+        cluster_transport._linux_process_identity(pid)
+
+
+def test_local_status_terminates_a_zombie_identity_even_when_kill_zero_is_live(
+    tmp_path: Path,
+) -> None:
+    class FakeProcess:
+        pid = 2468
+
+    reads = 0
+
+    def identity(pid: int) -> dict[str, object]:
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            raise ProcessLookupError(pid)
+        return {
+            "schema": "prismaquant.cluster_transport.process_identity.v1",
+            "pid": pid,
+            "boot_id": "fixture",
+            "start_ticks": 1,
+        }
+
+    transport = LocalTransport(
+        tmp_path / "state",
+        popen_impl=lambda *args, **kwargs: FakeProcess(),
+        pid_alive=lambda _pid: True,
+        process_identity_reader=identity,
+    )
+    request = RunRequest("zombie-worker", ("/bin/work",))
+
+    assert transport.start(request).state == "running"
+    failed = transport.status(request.job_id)
+
+    assert failed.state == "transport_error"
+    assert b"identity is not alive" in failed.stderr
+    assert transport.status(request.job_id) == failed
 
 
 def test_ssh_request_is_stdin_only_canonical_base64_and_shell_free(tmp_path):
@@ -318,6 +461,37 @@ def test_ssh_start_and_status_are_explicit_helper_actions():
         payloads.append(envelope["payload"])
     assert actions == ["start", "status"]
     assert payloads[1] == {"job_id": "remote-job"}
+
+
+def test_remote_helper_uses_explicit_campaign_state_root(tmp_path: Path) -> None:
+    state_root = tmp_path / "sealed-worker-state" / "transport"
+    request = RunRequest("rooted-helper", ("/bin/true",))
+    envelope = {
+        "schema": HELPER_ENVELOPE_SCHEMA,
+        "action": "run",
+        "payload": request.to_payload(),
+    }
+    helper = Path(__file__).parents[1] / "prismaquant/cluster_transport.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable, "-P", "-B", "-s", str(helper),
+            "--remote-helper", "--remote-helper-state-root", str(state_root),
+        ],
+        input=base64.b64encode(canonical_json_bytes(envelope)) + b"\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        shell=False,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode()
+    response = json.loads(completed.stdout)
+    assert response["kind"] == "job_receipt"
+    assert JobReceipt.from_payload(response["payload"]).succeeded
+    assert (state_root / "jobs/rooted-helper/request.json").is_file()
+    assert (state_root / "jobs/rooted-helper/receipt.json").is_file()
 
 
 @pytest.mark.parametrize(

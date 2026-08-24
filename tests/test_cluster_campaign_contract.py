@@ -79,6 +79,18 @@ def _manifest_body(*, reverse_hosts: bool = False) -> dict[str, object]:
         "schema": CAMPAIGN_MANIFEST_SCHEMA,
         "campaign_id": "qwen38-27b-fp8-burn-001",
         "coordinator": "alpha",
+        "artifact_target": {
+            "gpu_name": "NVIDIA GeForce RTX 4090",
+            "compute_capability": [8, 9],
+            "artifact_max_bytes": 18_000_000_000,
+            "disposition": "validation_only",
+            "source_dtype": "bf16",
+            "physical_formats": [
+                "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+            ],
+            "terminal_format": "BF16",
+            "allocation_objective": "context_first",
+        },
         "producer": {
             "commit": "1" * 40,
             "tree": "2" * 40,
@@ -145,6 +157,18 @@ def test_manifest_is_strictly_validated_and_host_order_is_canonical() -> None:
 
     assert manifest == reversed_manifest
     assert [host["id"] for host in manifest["hosts"]] == ["alpha", "zeta"]
+    assert manifest["artifact_target"] == {
+        "gpu_name": "NVIDIA GeForce RTX 4090",
+        "compute_capability": [8, 9],
+        "artifact_max_bytes": 18_000_000_000,
+        "disposition": "validation_only",
+        "source_dtype": "bf16",
+        "physical_formats": [
+            "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+        ],
+        "terminal_format": "BF16",
+        "allocation_objective": "context_first",
+    }
     assert validate_campaign_manifest(manifest) == manifest
     assert parse_campaign_manifest(json.dumps(manifest)) == manifest
 
@@ -157,6 +181,25 @@ def test_manifest_is_strictly_validated_and_host_order_is_canonical() -> None:
     )
     with pytest.raises(ClusterCampaignContractError, match="duplicate JSON member"):
         parse_campaign_manifest(duplicate_json)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("artifact_max_bytes", 10_000_000_000),
+        ("disposition", "release"),
+        ("source_dtype", "fp8"),
+        ("physical_formats", ["FP8_CB_K4", "NVFP4_CB_K25"]),
+    ),
+)
+def test_manifest_rejects_artifact_target_or_render_law_drift(
+    field: str, value: object,
+) -> None:
+    body = _manifest_body()
+    body["artifact_target"][field] = value
+
+    with pytest.raises(ClusterCampaignContractError, match="fixed RTX4090"):
+        seal_campaign_manifest(body)
 
 
 def test_manifest_rejects_duplicate_hosts_and_identity_aliases() -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from dataclasses import replace
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 
@@ -12,6 +12,8 @@ import pytest
 import prismaquant.cluster_live_runtime as live_runtime
 from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
+    CANONICAL_CONTAINER_PATHS,
+    STAGE_DAG,
     seal_campaign_manifest,
 )
 from prismaquant.cluster_live_runtime import (
@@ -37,6 +39,7 @@ from prismaquant.cluster_transport import (
     canonical_json_sha256,
     verify_tree_manifest,
 )
+from prismaquant.rtx4090_two_host_campaign import build_command_plan
 
 
 def _host(
@@ -89,6 +92,18 @@ def _manifest(tmp_path: Path, *, coordinator: str = "zeta") -> dict[str, object]
             "schema": CAMPAIGN_MANIFEST_SCHEMA,
             "campaign_id": "qwen38-27b-two-host-live-test",
             "coordinator": coordinator,
+            "artifact_target": {
+                "gpu_name": "NVIDIA GeForce RTX 4090",
+                "compute_capability": [8, 9],
+                "artifact_max_bytes": 18_000_000_000,
+                "disposition": "validation_only",
+                "source_dtype": "bf16",
+                "physical_formats": [
+                    "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+                ],
+                "terminal_format": "BF16",
+                "allocation_objective": "context_first",
+            },
             "producer": {
                 "commit": "1" * 40,
                 "tree": "2" * 40,
@@ -210,6 +225,14 @@ def _install_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
         "VerifiedRsyncSSHTransfer",
         FakeVerifiedTransfer,
     )
+    monkeypatch.setattr(
+        live_runtime,
+        "_verify_endpoint_identities",
+        lambda local, remote, _ssh, **_kwargs: {
+            str(local["id"]): {"fixture": "local-endpoint"},
+            str(remote["id"]): {"fixture": "remote-endpoint"},
+        },
+    )
 
 
 def _build_fake_runtime(
@@ -256,6 +279,14 @@ def test_factory_builds_one_transport_per_manifest_host_and_fixed_skeleton(
         initialize_remote,
     )
     monkeypatch.setattr(live_runtime, "bootstrap_ssh_helper", bootstrap)
+    monkeypatch.setattr(
+        live_runtime,
+        "_verify_endpoint_identities",
+        lambda local, remote, _ssh, **_kwargs: {
+            str(local["id"]): {"fixture": "local-endpoint"},
+            str(remote["id"]): {"fixture": "remote-endpoint"},
+        },
+    )
 
     fake_run = lambda *args, **kwargs: None
     runtime = build_live_campaign_runtime(
@@ -286,7 +317,15 @@ def test_factory_builds_one_transport_per_manifest_host_and_fixed_skeleton(
     assert isinstance(runtime.artifact_inspectors["alpha"], LocalArtifactInspector)
     assert runtime.artifact_inspectors["zeta"] is runtime.transfer
     assert runtime.ssh_transport.remote_helper_path.startswith(
-        str(tmp_path / "remote" / "worker-state" / "cluster-runtime")
+        str(tmp_path / "remote" / ".prismaquant-cluster-control")
+    )
+    assert runtime.ssh_transport.remote_state_root == str(
+        tmp_path / "remote" / ".prismaquant-cluster-control"
+        / manifest["identity_sha256"] / "transport"
+    )
+    assert runtime.ssh_transport.remote_state_root in runtime.ssh_transport.command_argv[-1]
+    assert not Path(runtime.ssh_transport.remote_state_root).is_relative_to(
+        tmp_path / "remote" / "worker-state"
     )
 
     local_receipt = runtime.directory_receipts["alpha"]
@@ -297,6 +336,114 @@ def test_factory_builds_one_transport_per_manifest_host_and_fixed_skeleton(
     assert str(tmp_path / "local" / "snapshot").rsplit("/", 1)[0] in (
         local_receipt.directories
     )
+    assert all(
+        not directory.startswith(str(tmp_path / "local" / "worker-state") + "/")
+        or "/cluster-runtime/" not in directory
+        for directory in local_receipt.directories
+    )
+
+
+def test_read_only_open_does_not_create_or_bootstrap_hosts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        live_runtime,
+        "_initialize_remote_directory_skeleton",
+        lambda *_args, **_kwargs: pytest.fail("read-only open initialized remote"),
+    )
+    monkeypatch.setattr(
+        live_runtime,
+        "bootstrap_ssh_helper",
+        lambda *_args, **_kwargs: pytest.fail("read-only open bootstrapped helper"),
+    )
+    runtime = build_live_campaign_runtime(
+        _manifest(tmp_path), initialize=False,
+    )
+
+    assert runtime.helper_bootstrap_receipt is None
+    assert not (tmp_path / "local" / "run").exists()
+    assert not (tmp_path / "remote" / "run").exists()
+
+
+def test_endpoint_identity_is_checked_before_any_runtime_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest(tmp_path)
+    monkeypatch.setattr(
+        live_runtime,
+        "_create_local_directory_skeleton",
+        lambda *_args, **_kwargs: pytest.fail("local directories mutated"),
+    )
+    monkeypatch.setattr(
+        live_runtime,
+        "_initialize_remote_directory_skeleton",
+        lambda *_args, **_kwargs: pytest.fail("remote directories mutated"),
+    )
+    monkeypatch.setattr(
+        live_runtime,
+        "bootstrap_ssh_helper",
+        lambda *_args, **_kwargs: pytest.fail("remote helper mutated"),
+    )
+
+    def reject(*_args, **_kwargs):
+        raise ClusterLiveRuntimeError("read-only endpoint identity differs")
+
+    with pytest.raises(ClusterLiveRuntimeError, match="identity differs"):
+        build_live_campaign_runtime(
+            manifest,
+            endpoint_verifier=reject,
+        )
+
+    assert not (tmp_path / "local" / "run").exists()
+    assert not (tmp_path / "remote" / "run").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "colliding_name", "message"),
+    (
+        (
+            "worker_state_root",
+            ".prismaquant-cluster-control",
+            "runtime control root overlaps declared worker_state_root",
+        ),
+        (
+            "run_root",
+            ".prismaquant-transfer-stage",
+            "run transfer root overlaps declared run_root",
+        ),
+    ),
+)
+def test_derived_control_roots_cannot_overlap_declared_writable_mounts(
+    tmp_path: Path,
+    field: str,
+    colliding_name: str,
+    message: str,
+) -> None:
+    raw = _manifest(tmp_path)
+    raw.pop("identity_sha256")
+    local = next(
+        host for host in raw["hosts"]
+        if host["transport"]["kind"] == "local"
+    )
+    local["roots"][field] = str(tmp_path / "local" / colliding_name)
+    manifest = seal_campaign_manifest(raw)
+    endpoint_called = False
+
+    def endpoint(*_args, **_kwargs):
+        nonlocal endpoint_called
+        endpoint_called = True
+        return {}
+
+    with pytest.raises(ClusterLiveRuntimeError, match=message):
+        build_live_campaign_runtime(
+            manifest,
+            endpoint_verifier=endpoint,
+        )
+
+    assert endpoint_called is False
+    assert not (tmp_path / "local" / colliding_name).exists()
 
 
 def test_remote_directory_request_uses_stdin_not_manifest_shell_fragments() -> None:
@@ -415,12 +562,25 @@ def test_remote_coordinator_stage_barriers_route_all_artifacts_and_reuse_exact(
         body = {key: value for key, value in payload.items() if key != "identity_sha256"}
         assert payload["identity_sha256"] == canonical_json_sha256(body)
         receipts.append(receipt)
+        assert runtime.validate_barrier_receipt(
+            stage, receipt.to_payload(),
+        ) == receipt
         for item in receipt.transfers:
             assert build_tree_manifest(Path(item.route.source_path)) == build_tree_manifest(
                 Path(item.route.destination_path)
             )
 
-    assert len(runtime.transfer.calls) == sum(expected_counts)
+    assert len(runtime.snapshot_transfer.calls) == 1
+    assert len(runtime.transfer.calls) == sum(expected_counts) - 1
+    assert runtime.snapshot_transfer.remote_stage_root.startswith(
+        str(tmp_path / "remote")
+    )
+    assert runtime.transfer.remote_stage_root.startswith(
+        str(tmp_path / "remote" / ".prismaquant-transfer-stage")
+    )
+    assert not runtime.transfer.remote_stage_root.startswith(
+        str(tmp_path / "remote" / "run") + "/"
+    )
     assert [item.transfer.direction for item in receipts[0].transfers] == ["upload"]
     assert {item.transfer.direction for item in receipts[1].transfers} == {"download"}
     assert [item.transfer.direction for item in receipts[2].transfers] == ["upload"]
@@ -461,6 +621,101 @@ def test_route_catalog_reverses_directions_when_coordinator_is_local(
     assert runtime.route_specs_for_stage("merge_importance")[0].name == "worker_1_ce"
 
 
+@pytest.mark.parametrize("coordinator", ["alpha", "zeta"])
+def test_every_fixed_command_input_is_local_or_arrives_at_a_prior_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    coordinator: str,
+) -> None:
+    runtime = _build_fake_runtime(
+        tmp_path, monkeypatch, coordinator=coordinator,
+    )
+    plan = build_command_plan(runtime.manifest)
+    commands_by_stage: dict[str, list[dict[str, object]]] = {}
+    for command in plan["commands"]:
+        assert isinstance(command, dict)
+        commands_by_stage.setdefault(str(command["stage"]), []).append(command)
+
+    hosts = {
+        str(host["id"]): host for host in runtime.manifest["hosts"]
+    }
+    available: dict[str, dict[str, str]] = {}
+    for host_id, host in hosts.items():
+        kind = str(host["transport"]["kind"])
+        available[host_id] = {
+            "/model": "directory",
+            "/dataset": "file",
+        }
+        if kind == "local":
+            available[host_id]["/pq"] = "directory"
+
+    def container_path(host_id: str, absolute_host_path: str) -> str:
+        host = hosts[host_id]
+        roots = host["roots"]
+        for field, canonical_root in CANONICAL_CONTAINER_PATHS.items():
+            root = PurePosixPath(str(roots[field]))
+            candidate = PurePosixPath(absolute_host_path)
+            try:
+                relative = candidate.relative_to(root)
+            except ValueError:
+                continue
+            if relative == PurePosixPath("."):
+                return canonical_root
+            return (PurePosixPath(canonical_root) / relative).as_posix()
+        raise AssertionError(
+            f"route path {absolute_host_path!r} is outside host {host_id!r} roots"
+        )
+
+    def is_available(host_id: str, required: str) -> bool:
+        required_path = PurePosixPath(required)
+        for present, kind in available[host_id].items():
+            present_path = PurePosixPath(present)
+            if required_path == present_path:
+                return True
+            if kind == "directory":
+                try:
+                    required_path.relative_to(present_path)
+                except ValueError:
+                    continue
+                return True
+        return False
+
+    assert runtime.barrier_stages == tuple(
+        spec.stage for spec in STAGE_DAG
+        if runtime.route_specs_for_stage(spec.stage)
+    )
+    for spec in STAGE_DAG:
+        for route in runtime.route_specs_for_stage(spec.stage):
+            source = container_path(route.source_host_id, route.source_path)
+            assert is_available(route.source_host_id, source) or any(
+                PurePosixPath(present).is_relative_to(PurePosixPath(source))
+                for present in available[route.source_host_id]
+            ), f"route source is not produced before {spec.stage}: {route.name}"
+            destination = container_path(
+                route.destination_host_id, route.destination_path,
+            )
+            available[route.destination_host_id][destination] = (
+                "directory" if route.name in _DIRECTORY_ROUTES else "file"
+            )
+
+        commands = commands_by_stage[spec.stage]
+        for command in commands:
+            host_id = str(command["host_id"])
+            for required in command["inputs"]:
+                assert is_available(host_id, str(required)), (
+                    f"{command['work_id']} lacks declared input {required}"
+                )
+        for command in commands:
+            host_id = str(command["host_id"])
+            for output in command["outputs"]:
+                path = str(output)
+                available[host_id][path] = (
+                    "directory"
+                    if PurePosixPath(path).name in {"act", "activation_cache"}
+                    else "file"
+                )
+
+
 def test_barrier_fails_closed_on_divergent_existing_destination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -498,4 +753,3 @@ def test_barrier_rejects_receipt_that_does_not_bind_exact_route(
 
     with pytest.raises(ClusterLiveRuntimeError, match="receipt differs"):
         runtime.synchronize_before_stage("host_preflight")
-

@@ -19,6 +19,7 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -51,6 +52,9 @@ REMOTE_DIRECTORY_REQUEST_SCHEMA = (
 )
 REMOTE_DIRECTORY_RESPONSE_SCHEMA = (
     "prismaquant.cluster_live_runtime.remote_directory_response.v1"
+)
+ENDPOINT_IDENTITY_RECEIPT_SCHEMA = (
+    "prismaquant.cluster_live_runtime.endpoint_identity_receipt.v1"
 )
 ARTIFACT_ROUTE_SCHEMA = "prismaquant.cluster_live_runtime.artifact_route.v1"
 ARTIFACT_TRANSFER_RECEIPT_SCHEMA = (
@@ -251,6 +255,66 @@ def _safe_absolute_path(raw: str, *, where: str) -> str:
     return path.as_posix()
 
 
+def _paths_overlap(left: PurePosixPath, right: PurePosixPath) -> bool:
+    """Return whether either normalized absolute path contains the other."""
+
+    return left == right or left.is_relative_to(right) or right.is_relative_to(left)
+
+
+def _derived_control_paths(
+    host: Mapping[str, object], campaign_identity: str,
+) -> tuple[PurePosixPath, PurePosixPath, PurePosixPath]:
+    """Derive isolated runtime/transfer roots and reject namespace collisions.
+
+    The manifest permits arbitrary safe absolute root names. Merely choosing
+    dot-prefixed sibling names is therefore insufficient: a legal declared
+    root can itself use one of those names. Prove that every application-owned
+    control path is disjoint from every container-visible/input root before
+    either endpoint is mutated.
+    """
+
+    roots = host["roots"]
+    if not isinstance(roots, Mapping):
+        raise ClusterLiveRuntimeError("host roots are not an object")
+    declared = {
+        field: PurePosixPath(str(roots[field]))
+        for field in (
+            "model_root", "dataset_path", "snapshot_root", "run_root",
+            "worker_state_root",
+        )
+    }
+    state_parent = declared["worker_state_root"].parent
+    run_parent = declared["run_root"].parent
+    snapshot_parent = declared["snapshot_root"].parent
+    if any(
+        path.as_posix() == "/"
+        for path in (state_parent, run_parent, snapshot_parent)
+    ):
+        raise ClusterLiveRuntimeError(
+            "campaign roots need non-root parents for isolated control staging"
+        )
+    derived = (
+        state_parent / ".prismaquant-cluster-control" / campaign_identity,
+        run_parent / ".prismaquant-transfer-stage" / campaign_identity / "run",
+        snapshot_parent / ".prismaquant-transfer-stage" / campaign_identity
+        / "snapshot",
+    )
+    labels = ("runtime control", "run transfer", "snapshot transfer")
+    for label, candidate in zip(labels, derived, strict=True):
+        for field, root in declared.items():
+            if _paths_overlap(candidate, root):
+                raise ClusterLiveRuntimeError(
+                    f"derived {label} root overlaps declared {field}"
+                )
+    for index, candidate in enumerate(derived):
+        for other_index in range(index):
+            if _paths_overlap(candidate, derived[other_index]):
+                raise ClusterLiveRuntimeError(
+                    f"derived {labels[index]} and {labels[other_index]} roots overlap"
+                )
+    return derived
+
+
 def _mkdir_no_symlinks(path: Path) -> None:
     """Create one absolute directory without traversing a symlink component."""
 
@@ -369,6 +433,43 @@ except Exception as exc:
 '''.strip()
 
 
+_ENDPOINT_IDENTITY_PROGRAM = r'''
+import csv, json, os, socket, subprocess, sys
+
+OUT = "prismaquant.cluster_live_runtime.endpoint_identity_probe.v1"
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+try:
+    completed = subprocess.run(
+        ["nvidia-smi", "--query-gpu=index,name,uuid,compute_cap",
+         "--format=csv,noheader,nounits"],
+        check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        shell=False, timeout=30.0,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("nvidia-smi identity query failed")
+    rows = []
+    for row in csv.reader(completed.stdout.decode("utf-8").splitlines(),
+                          skipinitialspace=True):
+        if not row or all(not cell.strip() for cell in row):
+            continue
+        if len(row) != 4:
+            raise ValueError("nvidia-smi identity row has wrong width")
+        rows.append({"index": int(row[0].strip()), "name": row[1].strip(),
+                     "uuid": row[2].strip(),
+                     "compute_capability": row[3].strip()})
+    response = {"schema": OUT, "hostname": socket.gethostname(),
+                "uid": os.getuid(), "gid": os.getgid(), "gpus": rows}
+    sys.stdout.buffer.write(canonical(response))
+except Exception as exc:
+    sys.stderr.write(type(exc).__name__ + ": " + str(exc))
+    raise SystemExit(2)
+'''.strip()
+
+
 def _duplicate_refusing_object(
     pairs: list[tuple[str, object]],
 ) -> dict[str, object]:
@@ -391,6 +492,112 @@ def _fixed_remote_program_argv(
         f"exec {ssh.remote_python_path} -P -B -s -c {shlex.quote(program)}"
     )
     return tuple(command)
+
+
+def _endpoint_probe_receipt(
+    completed: Any, host: Mapping[str, object],
+) -> dict[str, object]:
+    stdout = (
+        completed.stdout
+        if isinstance(completed.stdout, bytes)
+        else str(completed.stdout or "").encode()
+    )
+    stderr = (
+        completed.stderr
+        if isinstance(completed.stderr, bytes)
+        else str(completed.stderr or "").encode()
+    )
+    if int(completed.returncode) != 0:
+        raise ClusterLiveRuntimeError(
+            "read-only endpoint identity probe failed: "
+            + stderr.decode("utf-8", errors="replace")
+        )
+    payload = stdout.strip()
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_duplicate_refusing_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ClusterLiveRuntimeError(
+            "endpoint identity probe returned invalid JSON"
+        ) from exc
+    if canonical_json_bytes(value) != payload or not isinstance(value, Mapping):
+        raise ClusterLiveRuntimeError(
+            "endpoint identity probe response is not canonical"
+        )
+    expected = host["expected"]
+    assert isinstance(expected, Mapping)
+    expected_gpu = expected["gpu"]
+    assert isinstance(expected_gpu, Mapping)
+    gpus = value.get("gpus")
+    expected_capability = ".".join(
+        str(item) for item in expected_gpu["compute_capability"]
+    )
+    exact_gpu = (
+        len(gpus) == 1
+        and isinstance(gpus[0], Mapping)
+        and set(gpus[0]) == {
+            "index", "name", "uuid", "compute_capability",
+        }
+        and type(gpus[0].get("index")) is int
+        and int(gpus[0]["index"]) >= 0
+        and gpus[0].get("name") == expected_gpu["name"]
+        and gpus[0].get("uuid") == expected_gpu["uuid"]
+        and gpus[0].get("compute_capability") == expected_capability
+    ) if isinstance(gpus, list) else False
+    if (
+        set(value) != {"schema", "hostname", "uid", "gid", "gpus"}
+        or value.get("schema")
+        != "prismaquant.cluster_live_runtime.endpoint_identity_probe.v1"
+        or value.get("hostname") != expected["hostname"]
+        or value.get("uid") != expected["uid"]
+        or value.get("gid") != expected["gid"]
+        or not isinstance(gpus, list)
+        or len(gpus) != expected_gpu["device_count"]
+        or not exact_gpu
+    ):
+        raise ClusterLiveRuntimeError(
+            f"read-only endpoint identity differs for host {host['id']!r}"
+        )
+    body: dict[str, object] = {
+        "schema": ENDPOINT_IDENTITY_RECEIPT_SCHEMA,
+        "host_id": host["id"],
+        "host_identity": dict(value),
+    }
+    return {**body, "identity_sha256": canonical_json_sha256(body)}
+
+
+def _verify_endpoint_identities(
+    local_host: Mapping[str, object],
+    ssh_host: Mapping[str, object],
+    ssh_transport: SSHTransport,
+    *,
+    local_run_impl: Callable[..., Any] = subprocess.run,
+    ssh_run_impl: Callable[..., Any] = subprocess.run,
+) -> Mapping[str, Mapping[str, object]]:
+    """Verify both manifest endpoints read-only before creating any path."""
+
+    local = local_run_impl(
+        [sys.executable, "-P", "-B", "-s", "-c", _ENDPOINT_IDENTITY_PROGRAM],
+        capture_output=True,
+        check=False,
+        shell=False,
+        timeout=60.0,
+    )
+    remote = ssh_run_impl(
+        list(_fixed_remote_program_argv(
+            ssh_transport, _ENDPOINT_IDENTITY_PROGRAM,
+        )),
+        capture_output=True,
+        check=False,
+        shell=False,
+        timeout=60.0,
+    )
+    return {
+        str(local_host["id"]): _endpoint_probe_receipt(local, local_host),
+        str(ssh_host["id"]): _endpoint_probe_receipt(remote, ssh_host),
+    }
 
 
 def _initialize_remote_directory_skeleton(
@@ -465,6 +672,7 @@ class _ManifestSSHTransport(SSHTransport):
         *,
         port: int,
         remote_helper_path: str,
+        remote_state_root: str | None = None,
         remote_python_path: str = "/usr/bin/python3",
         ssh_binary: str = "ssh",
         run_impl: Callable[..., Any] = subprocess.run,
@@ -473,6 +681,13 @@ class _ManifestSSHTransport(SSHTransport):
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("SSH port must be an integer from 1 through 65535")
         self.port = port
+        self.remote_state_root = (
+            None
+            if remote_state_root is None
+            else _safe_absolute_path(
+                remote_state_root, where="remote transport state root",
+            )
+        )
         super().__init__(
             host,
             remote_helper_path=remote_helper_path,
@@ -485,6 +700,11 @@ class _ManifestSSHTransport(SSHTransport):
     @property
     def command_argv(self) -> tuple[str, ...]:
         command = list(super().command_argv)
+        if self.remote_state_root is not None:
+            command[-1] += (
+                " --remote-helper-state-root "
+                + shlex.quote(self.remote_state_root)
+            )
         separator = command.index("--")
         command[separator:separator] = ["-p", str(self.port)]
         return tuple(command)
@@ -501,7 +721,9 @@ def _directory_receipt(
     run_root = PurePosixPath(str(roots["run_root"]))
     state_root = PurePosixPath(str(roots["worker_state_root"]))
     snapshot_parent = PurePosixPath(str(roots["snapshot_root"])).parent
-    runtime_root = state_root / "cluster-runtime" / campaign_identity_sha256
+    runtime_root, run_transfer_root, snapshot_transfer_root = (
+        _derived_control_paths(host, campaign_identity_sha256)
+    )
     directories = {
         run_root.as_posix(),
         (run_root / "coordinator").as_posix(),
@@ -517,10 +739,10 @@ def _directory_receipt(
         runtime_root.as_posix(),
         (runtime_root / "transport").as_posix(),
         (runtime_root / "helper").as_posix(),
-        (runtime_root / "transfer-stage").as_posix(),
+        run_transfer_root.as_posix(),
+        snapshot_transfer_root.as_posix(),
     }
-    if snapshot_parent.as_posix() != "/":
-        directories.add(snapshot_parent.as_posix())
+    directories.add(snapshot_parent.as_posix())
     return DirectorySkeletonReceipt(
         campaign_identity_sha256=campaign_identity_sha256,
         host_id=str(host["id"]),
@@ -529,13 +751,13 @@ def _directory_receipt(
 
 
 def _runtime_root(host: Mapping[str, object], campaign_identity: str) -> PurePosixPath:
-    roots = host["roots"]
-    assert isinstance(roots, Mapping)
-    return (
-        PurePosixPath(str(roots["worker_state_root"]))
-        / "cluster-runtime"
-        / campaign_identity
-    )
+    return _derived_control_paths(host, campaign_identity)[0]
+
+
+def _run_transfer_root(
+    host: Mapping[str, object], campaign_identity: str,
+) -> PurePosixPath:
+    return _derived_control_paths(host, campaign_identity)[1]
 
 
 def _run_artifact(host: Mapping[str, object], relative: str) -> str:
@@ -667,8 +889,10 @@ class LiveCampaignRuntime:
         transports: Mapping[str, TelemetryJobAdapter],
         artifact_inspectors: Mapping[str, ArtifactInspector],
         transfer: VerifiedRsyncSSHTransfer,
-        helper_bootstrap_receipt: HelperBootstrapReceipt,
+        snapshot_transfer: VerifiedRsyncSSHTransfer,
+        helper_bootstrap_receipt: HelperBootstrapReceipt | None,
         directory_receipts: Mapping[str, DirectorySkeletonReceipt],
+        endpoint_identity_receipts: Mapping[str, Mapping[str, object]],
     ) -> None:
         normalized = validate_campaign_manifest(manifest)
         self.manifest = MappingProxyType(normalized)
@@ -677,8 +901,13 @@ class LiveCampaignRuntime:
         self.transports = MappingProxyType(dict(transports))
         self.artifact_inspectors = MappingProxyType(dict(artifact_inspectors))
         self.transfer = transfer
+        self.snapshot_transfer = snapshot_transfer
         self.helper_bootstrap_receipt = helper_bootstrap_receipt
         self.directory_receipts = MappingProxyType(dict(directory_receipts))
+        self.endpoint_identity_receipts = MappingProxyType({
+            key: MappingProxyType(dict(value))
+            for key, value in endpoint_identity_receipts.items()
+        })
         self._routes = _build_routes(normalized)
 
         host_ids = {str(host["id"]) for host in normalized["hosts"]}  # type: ignore[index]
@@ -686,6 +915,10 @@ class LiveCampaignRuntime:
             set(self.transports) != host_ids
             or set(self.artifact_inspectors) != host_ids
             or set(self.directory_receipts) != host_ids
+            or (
+                self.endpoint_identity_receipts
+                and set(self.endpoint_identity_receipts) != host_ids
+            )
         ):
             raise ClusterLiveRuntimeError(
                 "runtime maps must contain exactly the two manifest hosts"
@@ -701,6 +934,14 @@ class LiveCampaignRuntime:
         if stage not in _STAGES:
             raise ClusterLiveRuntimeError(f"unknown campaign stage {stage!r}")
         return self._routes.get(stage, ())
+
+    @property
+    def barrier_stages(self) -> tuple[str, ...]:
+        """Return routed stages in fixed DAG order without exposing internals."""
+
+        return tuple(
+            spec.stage for spec in STAGE_DAG if spec.stage in self._routes
+        )
 
     def _manifest_for(self, host_id: str, path: str) -> TreeManifest:
         try:
@@ -722,15 +963,20 @@ class LiveCampaignRuntime:
         source_kind = host_kind[route.source_host_id]
         destination_kind = host_kind[route.destination_host_id]
         before = self._manifest_for(route.source_host_id, route.source_path)
+        backend = (
+            self.snapshot_transfer
+            if route.name == "immutable_snapshot"
+            else self.transfer
+        )
         try:
             if (source_kind, destination_kind) == ("local", "ssh"):
-                transfer = self.transfer.upload(
+                transfer = backend.upload(
                     route.source_path,
                     route.destination_path,
                 )
                 expected_direction = "upload"
             elif (source_kind, destination_kind) == ("ssh", "local"):
-                transfer = self.transfer.download(
+                transfer = backend.download(
                     route.source_path,
                     route.destination_path,
                 )
@@ -799,6 +1045,128 @@ class LiveCampaignRuntime:
             transfers=transfers,
         )
 
+    def validate_barrier_receipt(
+        self,
+        stage: str,
+        raw: Mapping[str, object],
+    ) -> ArtifactBarrierReceipt:
+        """Validate a durable barrier receipt and both current endpoint trees."""
+
+        routes = self.route_specs_for_stage(stage)
+        if not routes:
+            raise ClusterLiveRuntimeError(
+                f"stage {stage!r} has no cross-host artifact barrier"
+            )
+        expected_top = {
+            "schema", "campaign_identity_sha256", "stage", "transfers",
+            "identity_sha256",
+        }
+        if set(raw) != expected_top:
+            raise ClusterLiveRuntimeError("artifact barrier receipt fields differ")
+        rows = raw.get("transfers")
+        if (
+            raw.get("schema") != ARTIFACT_BARRIER_RECEIPT_SCHEMA
+            or raw.get("campaign_identity_sha256")
+            != self.campaign_identity_sha256
+            or raw.get("stage") != stage
+            or not isinstance(rows, list)
+            or len(rows) != len(routes)
+        ):
+            raise ClusterLiveRuntimeError("artifact barrier receipt binding differs")
+        transfer_keys = {
+            "schema", "campaign_identity_sha256", "route",
+            "route_identity_sha256", "manifest_sha256", "total_bytes",
+            "entry_count", "direction", "source", "destination",
+            "content_stage", "already_present", "completed_ns",
+            "transfer_identity_sha256", "identity_sha256",
+        }
+        transfers: list[ArtifactTransferReceipt] = []
+        for route, row in zip(routes, rows, strict=True):
+            if not isinstance(row, Mapping) or set(row) != transfer_keys:
+                raise ClusterLiveRuntimeError(
+                    f"artifact transfer receipt fields differ for {route.name!r}"
+                )
+            direction = (
+                "upload"
+                if self.manifest_host_kind(route.source_host_id) == "local"
+                else "download"
+            )
+            if (
+                _SHA256.fullmatch(str(row.get("manifest_sha256", ""))) is None
+                or type(row.get("total_bytes")) is not int
+                or int(row["total_bytes"]) < 0
+                or type(row.get("entry_count")) is not int
+                or int(row["entry_count"]) < 1
+                or type(row.get("completed_ns")) is not int
+                or int(row["completed_ns"]) <= 0
+                or type(row.get("already_present")) is not bool
+                or row.get("direction") != direction
+                or row.get("source") != route.source_path
+                or row.get("destination") != route.destination_path
+                or not isinstance(row.get("content_stage"), str)
+            ):
+                raise ClusterLiveRuntimeError(
+                    f"artifact transfer receipt types differ for {route.name!r}"
+                )
+            try:
+                content_stage = _safe_absolute_path(
+                    str(row["content_stage"]), where="transfer content stage",
+                )
+                transfer = RsyncTransferReceipt(
+                    direction=direction,
+                    source=route.source_path,
+                    destination=route.destination_path,
+                    manifest_sha256=str(row["manifest_sha256"]),
+                    total_bytes=int(row["total_bytes"]),
+                    entry_count=int(row["entry_count"]),
+                    content_stage=content_stage,
+                    already_present=row["already_present"],  # type: ignore[arg-type]
+                    completed_ns=int(row["completed_ns"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ClusterLiveRuntimeError(
+                    f"artifact transfer receipt is malformed for {route.name!r}"
+                ) from exc
+            receipt = ArtifactTransferReceipt(
+                campaign_identity_sha256=self.campaign_identity_sha256,
+                route=route,
+                transfer=transfer,
+            )
+            if dict(row) != receipt.to_payload():
+                raise ClusterLiveRuntimeError(
+                    f"artifact transfer receipt differs for {route.name!r}"
+                )
+            source = self._manifest_for(route.source_host_id, route.source_path)
+            destination = self._manifest_for(
+                route.destination_host_id, route.destination_path,
+            )
+            if (
+                source != destination
+                or source.identity_sha256 != transfer.manifest_sha256
+                or source.total_bytes != transfer.total_bytes
+                or len(source.entries) != transfer.entry_count
+            ):
+                raise ClusterLiveRuntimeError(
+                    f"artifact barrier content drifted for {route.name!r}"
+                )
+            transfers.append(receipt)
+        receipt = ArtifactBarrierReceipt(
+            campaign_identity_sha256=self.campaign_identity_sha256,
+            stage=stage,
+            transfers=tuple(transfers),
+        )
+        if dict(raw) != receipt.to_payload():
+            raise ClusterLiveRuntimeError("artifact barrier receipt digest differs")
+        return receipt
+
+    def manifest_host_kind(self, host_id: str) -> str:
+        for host in self.manifest["hosts"]:  # type: ignore[index]
+            if isinstance(host, Mapping) and host.get("id") == host_id:
+                transport = host["transport"]
+                assert isinstance(transport, Mapping)
+                return str(transport["kind"])
+        raise ClusterLiveRuntimeError(f"manifest has no host {host_id!r}")
+
 
 def build_live_campaign_runtime(
     manifest: Mapping[str, object],
@@ -812,8 +1180,16 @@ def build_live_campaign_runtime(
     remote_python_path: str = "/usr/bin/python3",
     connect_timeout_seconds: int = 5,
     transfer_timeout_seconds: float = 3600.0,
+    initialize: bool = True,
+    endpoint_verifier: Callable[..., Mapping[str, Mapping[str, object]]] | None = None,
 ) -> LiveCampaignRuntime:
-    """Build exactly one local and one SSH live transport from ``manifest``."""
+    """Build exactly one local and one SSH live transport from ``manifest``.
+
+    ``initialize=False`` is the read-only open path used by ``verify``.  It
+    constructs deterministic endpoints and inspectors but does not create
+    directories or install the remote helper; subsequent inspection still
+    verifies the helper's exact source digest before trusting it.
+    """
 
     normalized = validate_campaign_manifest(manifest)
     campaign_identity = str(normalized["identity_sha256"])
@@ -833,8 +1209,8 @@ def build_live_campaign_runtime(
         )
         for host in hosts
     }
-    _create_local_directory_skeleton(receipts[str(local_host["id"])])
-
+    if type(initialize) is not bool:
+        raise TypeError("initialize must be a boolean")
     local_runtime_root = _runtime_root(local_host, campaign_identity)
     remote_runtime_root = _runtime_root(ssh_host, campaign_identity)
     local_transport = LocalTransport(
@@ -851,27 +1227,68 @@ def build_live_campaign_runtime(
         target,
         port=int(ssh_config["port"]),
         remote_helper_path=(remote_runtime_root / "helper" / "cluster_transport.py").as_posix(),
+        remote_state_root=(remote_runtime_root / "transport").as_posix(),
         remote_python_path=remote_python_path,
         ssh_binary=ssh_binary,
         run_impl=ssh_run_impl,
         connect_timeout_seconds=connect_timeout_seconds,
     )
-    _initialize_remote_directory_skeleton(
-        ssh_transport,
-        receipts[str(ssh_host["id"])],
-        run_impl=ssh_run_impl,
-    )
-    helper_receipt = bootstrap_ssh_helper(
-        ssh_transport,
-        run_impl=ssh_run_impl,
-    )
+    endpoint_receipts: Mapping[str, Mapping[str, object]] = {}
+    if initialize:
+        active_endpoint_verifier = endpoint_verifier or _verify_endpoint_identities
+        endpoint_receipts = active_endpoint_verifier(
+            local_host,
+            ssh_host,
+            ssh_transport,
+            local_run_impl=local_run_impl,
+            ssh_run_impl=ssh_run_impl,
+        )
+        if set(endpoint_receipts) != {
+            str(local_host["id"]), str(ssh_host["id"]),
+        }:
+            raise ClusterLiveRuntimeError(
+                "endpoint verifier omitted a manifest host"
+            )
+        _create_local_directory_skeleton(receipts[str(local_host["id"])])
+    helper_receipt = None
+    if initialize:
+        _initialize_remote_directory_skeleton(
+            ssh_transport,
+            receipts[str(ssh_host["id"])],
+            run_impl=ssh_run_impl,
+        )
+        helper_receipt = bootstrap_ssh_helper(
+            ssh_transport,
+            run_impl=ssh_run_impl,
+        )
 
+    local_roots = local_host["roots"]
+    remote_roots = ssh_host["roots"]
+    assert isinstance(local_roots, Mapping)
+    assert isinstance(remote_roots, Mapping)
     transfer = VerifiedRsyncSSHTransfer(
         ssh_transport,
-        remote_stage_root=(remote_runtime_root / "transfer-stage").as_posix(),
-        local_stage_root=Path(
-            (local_runtime_root / "transfer-stage").as_posix()
-        ),
+        remote_stage_root=_run_transfer_root(
+            ssh_host, campaign_identity,
+        ).as_posix(),
+        local_stage_root=Path(_run_transfer_root(
+            local_host, campaign_identity,
+        ).as_posix()),
+        ssh_run_impl=ssh_run_impl,
+        rsync_run_impl=rsync_run_impl,
+        rsync_binary=rsync_binary,
+        timeout_seconds=transfer_timeout_seconds,
+    )
+    local_snapshot_stage = _derived_control_paths(
+        local_host, campaign_identity,
+    )[2]
+    remote_snapshot_stage = _derived_control_paths(
+        ssh_host, campaign_identity,
+    )[2]
+    snapshot_transfer = VerifiedRsyncSSHTransfer(
+        ssh_transport,
+        remote_stage_root=remote_snapshot_stage.as_posix(),
+        local_stage_root=Path(local_snapshot_stage.as_posix()),
         ssh_run_impl=ssh_run_impl,
         rsync_run_impl=rsync_run_impl,
         rsync_binary=rsync_binary,
@@ -904,8 +1321,10 @@ def build_live_campaign_runtime(
         transports=adapters,
         artifact_inspectors=inspectors,
         transfer=transfer,
+        snapshot_transfer=snapshot_transfer,
         helper_bootstrap_receipt=helper_receipt,
         directory_receipts=receipts,
+        endpoint_identity_receipts=endpoint_receipts,
     )
 
 
@@ -914,6 +1333,7 @@ __all__ = [
     "ARTIFACT_ROUTE_SCHEMA",
     "ARTIFACT_TRANSFER_RECEIPT_SCHEMA",
     "DIRECTORY_SKELETON_RECEIPT_SCHEMA",
+    "ENDPOINT_IDENTITY_RECEIPT_SCHEMA",
     "ArtifactBarrierReceipt",
     "ArtifactInspector",
     "ArtifactRouteSpec",

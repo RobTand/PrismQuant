@@ -16,14 +16,19 @@ from prismaquant.cluster_campaign_contract import (
 )
 from prismaquant.cluster_host_admission import (
     ClusterHostAdmissionError,
+    GPU_START_GUARD_RECEIPT_SCHEMA,
     HOST_ADMISSION_RECEIPT_SCHEMA,
+    HOST_PRE_ADMISSION_RECEIPT_SCHEMA,
     MODEL_IDENTITY_RECEIPT_SCHEMA,
     HostAdmissionRuntime,
     acquire_gpu_lease,
     admit_host,
     adopt_gpu_lease,
     build_host_action_request,
+    guard_gpu_start,
+    guarded_container_launch,
     inspect_gpu_lease,
+    pre_admit_host,
     release_gpu_lease,
 )
 from prismaquant.cluster_transport import RunRequest
@@ -85,6 +90,18 @@ def _body(
         "schema": CAMPAIGN_MANIFEST_SCHEMA,
         "campaign_id": campaign_id,
         "coordinator": "alpha",
+        "artifact_target": {
+            "gpu_name": "NVIDIA GeForce RTX 4090",
+            "compute_capability": [8, 9],
+            "artifact_max_bytes": 18_000_000_000,
+            "disposition": "validation_only",
+            "source_dtype": "bf16",
+            "physical_formats": [
+                "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+            ],
+            "terminal_format": "BF16",
+            "allocation_objective": "context_first",
+        },
         "producer": {
             "commit": "1" * 40,
             "tree": "2" * 40,
@@ -165,8 +182,15 @@ class _Completed:
 
 
 class _NvidiaRunner:
-    def __init__(self, *, compute_apps: bytes = b"", gpu_rows: bytes | None = None):
+    def __init__(
+        self,
+        *,
+        compute_apps: bytes = b"",
+        gpu_rows: bytes | None = None,
+        campaign_containers: bytes = b"",
+    ):
         self.compute_apps = compute_apps
+        self.campaign_containers = campaign_containers
         self.gpu_rows = gpu_rows or (
             b"0, NVIDIA GeForce RTX 4090, GPU-ALPHA-0123456789, 8.9\n"
         )
@@ -178,6 +202,8 @@ class _NvidiaRunner:
             return _Completed(stdout=self.gpu_rows)
         if any(item.startswith("--query-compute-apps=") for item in argv):
             return _Completed(stdout=self.compute_apps)
+        if argv[:2] == ("docker", "ps"):
+            return _Completed(stdout=self.campaign_containers)
         raise AssertionError(f"unexpected fixed command: {argv}")
 
 
@@ -224,9 +250,53 @@ def test_durable_gpu_lease_is_adoptable_and_excludes_competing_campaign(
     released = release_gpu_lease(first, "alpha", lease_root=lease_root)
     assert released["disposition"] == "released"
     assert inspect_gpu_lease(GPU_UUID, lease_root=lease_root)["disposition"] == "absent"
-    assert release_gpu_lease(
+    repeated = release_gpu_lease(
         first, "alpha", lease_root=lease_root,
-    )["disposition"] == "already_absent"
+    )
+    assert repeated["disposition"] == "already_absent"
+    assert repeated["lease"] == released["lease"] == acquired["lease"]
+    with pytest.raises(
+        ClusterHostAdmissionError, match="already released.*reacquisition",
+    ):
+        acquire_gpu_lease(first, "alpha", lease_root=lease_root)
+
+    never_held = release_gpu_lease(
+        first, "zeta", lease_root=lease_root,
+    )
+    assert never_held["disposition"] == "already_absent"
+    assert never_held["lease"] is None
+
+
+def test_release_retry_proves_post_unlink_receipt_crash_with_exact_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prismaquant.cluster_host_admission as admission
+
+    lease_root = tmp_path / "leases"
+    manifest = _manifest(tmp_path)
+    acquired = acquire_gpu_lease(manifest, "alpha", lease_root=lease_root)
+    original_fsync_directory = admission._fsync_directory
+    fsync_calls = 0
+
+    def fail_after_unlink(path: Path) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("injected post-unlink receipt crash")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(admission, "_fsync_directory", fail_after_unlink)
+    with pytest.raises(ClusterHostAdmissionError, match="cannot release"):
+        release_gpu_lease(manifest, "alpha", lease_root=lease_root)
+
+    monkeypatch.setattr(admission, "_fsync_directory", original_fsync_directory)
+    recovered = release_gpu_lease(
+        manifest, "alpha", lease_root=lease_root,
+    )
+
+    assert recovered["disposition"] == "already_absent"
+    assert recovered["lease"] == acquired["lease"]
 
 
 def test_corrupt_or_noncanonical_lease_fails_closed(tmp_path: Path) -> None:
@@ -280,6 +350,405 @@ def test_host_admission_binds_gpu_resources_dataset_model_and_lease(
     assert [call[1].split("=")[0] for call in runner.calls] == [
         "--query-gpu", "--query-compute-apps",
     ]
+
+
+def test_pre_admission_defers_model_cache_but_guard_rechecks_idle_gpu(
+    tmp_path: Path,
+) -> None:
+    dataset = b'{"text":"calibration"}\n'
+    _prepare_alpha_files(tmp_path, dataset)
+    cache = tmp_path / "alpha" / "worker-state" / "source-identity-cache.json"
+    cache.unlink()
+    manifest = _manifest(
+        tmp_path, dataset_sha256=hashlib.sha256(dataset).hexdigest(),
+    )
+    lease_root = tmp_path / "leases"
+    runner = _NvidiaRunner()
+
+    admitted = pre_admit_host(
+        manifest,
+        "alpha",
+        lease_root=lease_root,
+        runtime=_runtime(runner=runner),
+    )
+    assert admitted["schema"] == HOST_PRE_ADMISSION_RECEIPT_SCHEMA
+    assert admitted["lease"]["disposition"] == "acquired"
+    assert not cache.exists()
+
+    guarded = guard_gpu_start(
+        manifest,
+        "alpha",
+        lease_root=lease_root,
+        runtime=_runtime(runner=runner),
+    )
+    assert guarded["schema"] == GPU_START_GUARD_RECEIPT_SCHEMA
+    assert guarded["lease"]["disposition"] == "adopted"
+
+    busy = _NvidiaRunner(
+        compute_apps=b"GPU-ALPHA-0123456789, 4242, python3\n",
+    )
+    with pytest.raises(ClusterHostAdmissionError, match="compute-apps is nonempty"):
+        guard_gpu_start(
+            manifest,
+            "alpha",
+            lease_root=lease_root,
+            runtime=_runtime(runner=busy),
+        )
+
+
+def test_guard_refuses_a_labeled_orphan_even_when_gpu_is_still_idle(
+    tmp_path: Path,
+) -> None:
+    dataset = b'{"text":"calibration"}\n'
+    _prepare_alpha_files(tmp_path, dataset)
+    manifest = _manifest(
+        tmp_path, dataset_sha256=hashlib.sha256(dataset).hexdigest(),
+    )
+    lease_root = tmp_path / "leases"
+    acquire_gpu_lease(manifest, "alpha", lease_root=lease_root)
+    runner = _NvidiaRunner(campaign_containers=b"0123456789ab\n")
+
+    with pytest.raises(ClusterHostAdmissionError, match="still running"):
+        guard_gpu_start(
+            manifest,
+            "alpha",
+            lease_root=lease_root,
+            runtime=_runtime(runner=runner),
+        )
+
+
+def test_guarded_launch_carries_the_lease_lock_into_fixed_foreground_docker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prismaquant.cluster_host_admission as admission
+
+    manifest = _manifest(tmp_path)
+    lease_root = tmp_path / "leases"
+    acquire_gpu_lease(manifest, "alpha", lease_root=lease_root)
+    runner = _NvidiaRunner()
+    campaign_label = f"io.prismaquant.campaign={manifest['identity_sha256']}"
+    command = (
+        "docker", "run", "--rm",
+        "--label", campaign_label,
+        "--label", "io.prismaquant.host=alpha",
+        "--label", "io.prismaquant.work=sample_ce:alpha",
+        "eugr/spark-vllm@sha256:" + "4" * 64,
+    )
+    observed = {}
+
+    monkeypatch.setattr(
+        admission.os,
+        "set_inheritable",
+        lambda descriptor, value: observed.update(
+            descriptor=descriptor, inheritable=value,
+        ),
+    )
+
+    def control(argv, **kwargs):
+        observed.setdefault("control", []).append((tuple(argv), dict(kwargs)))
+        if argv[:2] == ["docker", "inspect"]:
+            return _Completed(returncode=1, stderr=b"No such object")
+        if argv[:3] == ["docker", "ps", "-a"]:
+            return _Completed(stdout=b"")
+        raise AssertionError(argv)
+
+    class Process:
+        pid = 4242
+
+        def __init__(self, argv, **kwargs):
+            observed.update(argv=tuple(argv), kwargs=dict(kwargs))
+            cid_path = Path(argv[argv.index("--cidfile") + 1])
+            cid_path.write_text("a" * 64 + "\n", encoding="ascii")
+
+        def wait(self, *, timeout):
+            observed["wait_timeout"] = timeout
+            return 0
+
+    def popen(argv, **kwargs):
+        return Process(argv, **kwargs)
+
+    result = guarded_container_launch(
+        manifest,
+        "alpha",
+        command,
+        work_id="sample_ce:alpha",
+        timeout_seconds=86400.0,
+        lease_root=lease_root,
+        runtime=_runtime(runner=runner),
+        popen_impl=popen,
+        run_impl=control,
+    )
+
+    assert result == 0
+    assert observed["descriptor"] >= 0
+    assert observed["inheritable"] is True
+    assert observed["argv"][:3] == command[:3]
+    assert observed["argv"][3] == "--cidfile"
+    assert observed["argv"][5] == "--name"
+    assert observed["argv"][7:] == command[3:]
+    assert observed["kwargs"] == {
+        "shell": False,
+        "close_fds": True,
+        "pass_fds": (observed["descriptor"],),
+        "start_new_session": True,
+    }
+    assert observed["wait_timeout"] == 86400.0
+    assert not Path(observed["argv"][4]).exists()
+    assert [call[0] for call in runner.calls] == [
+        "nvidia-smi", "nvidia-smi", "docker",
+    ]
+
+
+def test_guarded_launch_timeout_stops_exact_cid_and_retires_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prismaquant.cluster_host_admission as admission
+
+    manifest = _manifest(tmp_path)
+    lease_root = tmp_path / "leases"
+    acquire_gpu_lease(manifest, "alpha", lease_root=lease_root)
+    work_id = "measure_burn:alpha"
+    cid = "b" * 64
+    command = (
+        "docker", "run", "--rm",
+        "--label", f"io.prismaquant.campaign={manifest['identity_sha256']}",
+        "--label", "io.prismaquant.host=alpha",
+        "--label", f"io.prismaquant.work={work_id}",
+        "eugr/spark-vllm@sha256:" + "4" * 64,
+    )
+    state = {"active": False, "control": [], "signals": []}
+
+    def inspect_payload():
+        return json.dumps([{
+            "Config": {"Labels": {
+                "io.prismaquant.campaign": manifest["identity_sha256"],
+                "io.prismaquant.host": "alpha",
+                "io.prismaquant.work": work_id,
+            }},
+            "State": {"Running": True},
+        }]).encode()
+
+    def control(argv, **kwargs):
+        del kwargs
+        argv = tuple(argv)
+        state["control"].append(argv)
+        if argv[:2] == ("docker", "inspect"):
+            return (
+                _Completed(stdout=inspect_payload())
+                if state["active"] else _Completed(returncode=1)
+            )
+        if argv[:3] == ("docker", "ps", "-a"):
+            return _Completed(stdout=b"")
+        if argv[:2] == ("docker", "stop"):
+            assert argv[-1] == cid
+            state["active"] = False
+            return _Completed()
+        raise AssertionError(argv)
+
+    class Process:
+        pid = 5252
+
+        def __init__(self, argv):
+            cid_path = Path(argv[argv.index("--cidfile") + 1])
+            cid_path.write_text(cid + "\n", encoding="ascii")
+            state["active"] = True
+            self.waits = 0
+
+        def wait(self, *, timeout):
+            self.waits += 1
+            if self.waits == 1:
+                raise admission.subprocess.TimeoutExpired("docker", timeout)
+            return -15
+
+    monkeypatch.setattr(
+        admission.os,
+        "killpg",
+        lambda pid, sig: state["signals"].append((pid, sig)),
+    )
+
+    result = guarded_container_launch(
+        manifest,
+        "alpha",
+        command,
+        work_id=work_id,
+        timeout_seconds=1.0,
+        lease_root=lease_root,
+        runtime=_runtime(runner=_NvidiaRunner()),
+        popen_impl=lambda argv, **_kwargs: Process(argv),
+        run_impl=control,
+    )
+
+    assert result == 124
+    assert any(call[:2] == ("docker", "stop") for call in state["control"])
+    assert state["signals"]
+    assert not list(lease_root.rglob("*.cid"))
+
+
+def test_guarded_launch_reconciles_exact_owned_orphan_before_idle_gate(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    lease_root = tmp_path / "leases"
+    acquire_gpu_lease(manifest, "alpha", lease_root=lease_root)
+    work_id = "measure_burn:alpha"
+    stale_cid = "c" * 64
+    work_key = hashlib.sha256(work_id.encode("utf-8")).hexdigest()
+    supervision = (
+        lease_root / "container-supervision" / manifest["identity_sha256"]
+        / "alpha"
+    )
+    supervision.mkdir(parents=True, mode=0o700)
+    (supervision / f"{work_key}.cid").write_text(
+        stale_cid + "\n", encoding="ascii",
+    )
+    command = (
+        "docker", "run", "--rm",
+        "--label", f"io.prismaquant.campaign={manifest['identity_sha256']}",
+        "--label", "io.prismaquant.host=alpha",
+        "--label", f"io.prismaquant.work={work_id}",
+        "eugr/spark-vllm@sha256:" + "4" * 64,
+    )
+    state = {"active": True, "idle_checks": [], "stopped": []}
+
+    class DynamicRunner(_NvidiaRunner):
+        def __call__(self, argv: tuple[str, ...]) -> _Completed:
+            if any(item.startswith("--query-compute-apps=") for item in argv):
+                state["idle_checks"].append(state["active"])
+                return _Completed(
+                    stdout=(
+                        b"GPU-ALPHA-0123456789, 4242, python3\n"
+                        if state["active"] else b""
+                    )
+                )
+            if argv[:2] == ("docker", "ps"):
+                return _Completed(
+                    stdout=(stale_cid[:12] + "\n").encode()
+                    if state["active"] else _Completed().stdout
+                )
+            return super().__call__(argv)
+
+    def inspect_payload():
+        return json.dumps([{
+            "Config": {"Labels": {
+                "io.prismaquant.campaign": manifest["identity_sha256"],
+                "io.prismaquant.host": "alpha",
+                "io.prismaquant.work": work_id,
+            }},
+            "State": {"Running": True},
+        }]).encode()
+
+    def control(argv, **_kwargs):
+        argv = tuple(argv)
+        if argv[:2] == ("docker", "inspect"):
+            return (
+                _Completed(stdout=inspect_payload())
+                if state["active"] else _Completed(returncode=1)
+            )
+        if argv[:3] == ("docker", "ps", "-a"):
+            return _Completed(stdout=b"")
+        if argv[:2] == ("docker", "stop"):
+            state["stopped"].append(argv[-1])
+            state["active"] = False
+            return _Completed()
+        raise AssertionError(argv)
+
+    class Process:
+        pid = 6262
+
+        def __init__(self, argv):
+            Path(argv[argv.index("--cidfile") + 1]).write_text(
+                "d" * 64 + "\n", encoding="ascii",
+            )
+
+        def wait(self, *, timeout):
+            assert timeout == 10.0
+            return 0
+
+    result = guarded_container_launch(
+        manifest,
+        "alpha",
+        command,
+        work_id=work_id,
+        timeout_seconds=10.0,
+        lease_root=lease_root,
+        runtime=_runtime(runner=DynamicRunner()),
+        popen_impl=lambda argv, **_kwargs: Process(argv),
+        run_impl=control,
+    )
+
+    assert result == 0
+    assert state["stopped"] == [stale_cid]
+    assert state["idle_checks"] == [False]
+
+
+def test_guarded_launch_requires_ownership_labels_before_the_image(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    lease_root = tmp_path / "leases"
+    acquire_gpu_lease(manifest, "alpha", lease_root=lease_root)
+    work_id = "sample_ce:alpha"
+    command = (
+        "docker", "run", "--rm",
+        "--label", "foreign.a=1",
+        "--label", "foreign.b=2",
+        "--label", "foreign.c=3",
+        "eugr/spark-vllm@sha256:" + "4" * 64,
+        f"io.prismaquant.campaign={manifest['identity_sha256']}",
+        "io.prismaquant.host=alpha",
+        f"io.prismaquant.work={work_id}",
+    )
+
+    with pytest.raises(
+        ClusterHostAdmissionError, match="fixed foreground container shape",
+    ):
+        guarded_container_launch(
+            manifest,
+            "alpha",
+            command,
+            work_id=work_id,
+            timeout_seconds=10.0,
+            lease_root=lease_root,
+            runtime=_runtime(runner=_NvidiaRunner()),
+            popen_impl=lambda *_args, **_kwargs: pytest.fail(
+                "malformed Docker command launched"
+            ),
+        )
+
+
+def test_guarded_launch_rejects_label_alias_override_before_image(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    lease_root = tmp_path / "leases"
+    acquire_gpu_lease(manifest, "alpha", lease_root=lease_root)
+    work_id = "sample_ce:alpha"
+    command = (
+        "docker", "run", "--rm",
+        "--label", f"io.prismaquant.campaign={manifest['identity_sha256']}",
+        "--label", "io.prismaquant.host=alpha",
+        "--label", f"io.prismaquant.work={work_id}",
+        "-l", "io.prismaquant.campaign=foreign",
+        "eugr/spark-vllm@sha256:" + "4" * 64,
+    )
+
+    with pytest.raises(
+        ClusterHostAdmissionError, match="fixed foreground container shape",
+    ):
+        guarded_container_launch(
+            manifest,
+            "alpha",
+            command,
+            work_id=work_id,
+            timeout_seconds=10.0,
+            lease_root=lease_root,
+            runtime=_runtime(runner=_NvidiaRunner()),
+            popen_impl=lambda *_args, **_kwargs: pytest.fail(
+                "label-alias Docker command launched"
+            ),
+        )
 
 
 def test_nonempty_compute_apps_refuses_before_lease(tmp_path: Path) -> None:
@@ -399,7 +868,9 @@ def test_trusted_model_reader_reuses_complete_streamed_identity_contract(
     assert result == _model_receipt()
 
 
-@pytest.mark.parametrize("action", ["admit", "inspect", "adopt", "release"])
+@pytest.mark.parametrize(
+    "action", ["pre-admit", "admit", "guard", "inspect", "adopt", "release"],
+)
 def test_host_action_request_is_fixed_safe_and_transport_roundtrippable(
     tmp_path: Path, action: str,
 ) -> None:
@@ -415,6 +886,7 @@ def test_host_action_request_is_fixed_safe_and_transport_roundtrippable(
     )
     assert request.cwd == "/"
     assert request.inherit_env is False
+    assert request.timeout_seconds == 300.0
     assert dict(request.env)["PYTHONSAFEPATH"] == "1"
     assert json.loads(request.stdin) == manifest
     assert RunRequest.from_payload(request.to_payload()) == request

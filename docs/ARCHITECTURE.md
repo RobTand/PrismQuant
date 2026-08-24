@@ -3,6 +3,49 @@
 As of: 2026-08-24 · `codex/rtx5060-fp4-gridbook-pilot-20260824` · working-tree revision including
 RTX4090 parent `c351587` — stamps follow, newest first, each recording its own branch and date.
 Re-stamped
+(2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **self-contained live
+two-host campaign application**. `prismaquant.rtx4090_two_host_campaign run|resume|verify`
+now constructs the exact local-plus-SSH topology itself; no agent, shell runbook, or operator
+dispatches workers or advances barriers. The live builder first requires its own imported module
+and full snapshot verifier to resolve inside the manifest's local snapshot, then re-hashes that
+snapshot against the sealed commit/tree/closure; a live-worktree controller is refused. The live
+runtime first checks both endpoint identities with a fixed read-only program, before it creates a
+directory or installs code. Before even that probe, it rejects a derived control/transfer root
+that overlaps any declared host root and rejects controller state with a symlink ancestor or a
+lexical/resolved overlap with any local declared or derived control/transfer root. It then creates campaign-private directory trees, installs the
+digest-verified stdlib-only SSH helper, roots helper/job state in a sibling control tree outside
+every container-writable mount, and stages each no-clobber publication beside rather than inside
+its destination root (including the immutable snapshot's separate parent-local staging tree).
+Before the state machine starts, the application transfers and revalidates the immutable snapshot,
+rechecks both exact host/GPU identities, GPU idleness, dataset bytes, disk/RAM minima, and acquires
+a host-wide per-GPU campaign lease. Fresh or exactly revalidated host-local streamed-model caches
+then prove the manifest's
+path-neutral portable content digest before CE/Fisher/burn may proceed. Every routed artifact
+barrier, pre-admission, and model-admission receipt is bound into the fixed process request and
+execution receipt. The same manifest separately fixes the output target at RTX4090/sm89,
+validation-only, BF16 source, context-first 18,000,000,000 bytes, four physical formats
+(FP8-CB K4/K16/K48 plus FP8_E4M3), and a BF16 terminal; GB10 host identity cannot be relabeled as
+device qualification. Every new container start gets a fresh durable lease/idleness/orphan guard and
+then repeats that gate under a lock inherited by the foreground Docker client; only the fixed GPU
+stages receive `--gpus all`, while CPU stages force `NVIDIA_VISIBLE_DEVICES=void`. A private
+name/CID supervisor stops, kills, and removes only the exact labeled container at an inner stage
+deadline, with bounded cleanup time reserved inside the transport deadline. An existing job is
+adoptable only with its exact prior guard. Failed
+attempt guards remain audit evidence and are accepted only for a legal bounded attempt ID. Leases
+are released only after the
+complete campaign and application receipts re-verify; failures retain them for explicit resume.
+Release first fsyncs an exact hard-linked lease tombstone, so only a retry with a prior terminal
+release failure can recover the post-unlink/pre-receipt crash window; fresh absence and
+same-manifest reacquisition after release are refused.
+`status` remains a local read-only state query, and `verify` performs no directory creation or
+helper installation. Boot-scoped detached-process identities, explicit zombie/dead rejection, and
+finite per-stage timeouts reject PID reuse or immortal stale work. Indexed host-action retries let `resume` finish partial admission without mutating prior
+terminal evidence. CPU integration covers the complete 21-assignment lifecycle, bounded retry and
+adoption, route completeness for either coordinator placement, barrier drift, positive GPU
+utilization evidence (with one explicit byte-proven source-cache-reuse waiver), guard journals,
+and release ordering. The physical two-Spark burn remains
+unrun at this stamp, so no GPU-utilization or numerical result is claimed. The final integration
+commit is deliberately not predicted. Previously re-stamped
 (2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **maintained SM120/RTX50
 W8A16 exclusion**. The shared registry retains W8A16 assignment compatibility, while generic
 source-model container profiles retain source-FP8 wire compatibility for already-published
@@ -1229,7 +1272,7 @@ which is what the rows touched since are keyed on.
 | # | Stage | Script | Artifact(s) | Reuse guard | Mode/lane gate |
 |---|---|---|---|---|---|
 | **1/4** | Sensitivity probe — per-Linear empirical Fisher `h_trace`, body + MTP in one pass; tied heads materialized and excluded, KV-sharing cotangents grafted (§7.5) | `prismaquant.incremental_probe` (`544-560`) | `artifacts/probe.pkl`; activations → `act/`; shards → `work/`; `logs/probe.log` | settings-hash `probe` (`703`); reuse also re-checks stored `calibration_modality` | — |
-| **1/4×N (manual)** | Exact sample-axis probe map/reduce. Every worker processes the complete dense text qname census over one canonical contiguous sample partition. Stage 1 publishes raw shifted-token CE; a global scalar barrier closes the cover; stage 2 reruns phase 1 with that global mean, then the strict reducer finalizes raw Fisher/marginals once and publishes the deterministic dense-body activation union (§4.1) | `prismaquant.sample_parallel_probe` + `prismaquant.incremental_probe` + `prismaquant.sample_parallel_probe_merge` | immutable calibration/run contract and digest-bound sample cover; per-worker CE/probe/cache shards; global CE receipt; ordinary merged `probe.pkl` + `act/` | committed read-only source snapshot + host-verified immutable registry RepoDigest; source/config/header/content identity; exact sample cover replayed before GPU setup; duplicate-key-free trusted JSON; marginal-to-trace and independently replayed global top-R/fused-row checks; no-follow same-byte probe and committed-identity lazy activation consumption; no-clobber output | opt-in operator workflow; no `torch.distributed`, qname/layer partitioning, alternate cache, serving-runtime change, h-detail, visual, routed, or packed path |
+| **1/4×2 (coordinated)** | Exact sample-axis probe map/reduce. Every worker processes the complete dense text qname census over one canonical contiguous sample partition. Stage 1 publishes raw shifted-token CE; a global scalar barrier closes the cover; stage 2 reruns phase 1 with that global mean, then the strict reducer finalizes raw Fisher/marginals once and publishes the deterministic dense-body activation union (§4.1) | `prismaquant.rtx4090_two_host_campaign` → `prismaquant.sample_parallel_probe` + `prismaquant.incremental_probe` + `prismaquant.sample_parallel_probe_merge` | sealed two-host manifest/state/command plan; immutable calibration/run contract and digest-bound sample cover; per-worker CE/probe/cache shards; global CE receipt; ordinary merged `probe.pkl` + `act/`; per-stage process/transfer/telemetry receipts | deterministic fixed DAG and partition assignment; committed read-only source snapshot + host-verified immutable registry RepoDigest; content-addressed barriers; source/config/header/content identity; exact sample cover replayed before GPU setup; duplicate-key-free trusted JSON; marginal-to-trace and independently replayed global top-R/fused-row checks; no-follow same-byte probe and committed-identity lazy activation consumption; no-clobber output | opt-in self-contained application workflow; no agent/operator scheduling, `torch.distributed`, qname/layer partitioning, alternate cache, serving-runtime change, h-detail, visual, routed, or packed path |
 | **2/4** | Baseline per-(Linear,format) RTN cost. The measured menu is derived `COST_FORMATS`; `lm_head` is included only for a fixed non-BF16 or DP-unpinned head | `prismaquant.incremental_measure_quant_cost --[no-]include-lm-head` | `artifacts/cost.pkl` (`COST_MODE=local`) or `artifacts/cost_baseline.pkl`; `logs/cost.log` | settings-hash `base-cost`, including all three resolved head-policy axes and `COST_FORMATS` | — |
 | **2a-CB** | imatrix column-weight harvest | `harvest_cb_col_weights` — ONE shell function, four call sites (`[2/4] pre-cost`, `[2b/4] cost-cache`, `[2d-CB]`, `[4/4]`) → `export_gguf.build_imatrix_from_act_cache` + `moe_imatrix.synthesize_packed_expert_col_weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | CB lane; called by whichever stage needs the vector first |
 | **pre-2-CBL** | Train/verify the immutable value-bearing codebook bundle. Historical trainer v1 keeps its measured rung policy. Trainer v2 derives the existing probe imatrix and emits lattice for every FP8 producer rung unless an independently validated per-rung promotion receipt authorizes the exact learned candidate | `ensure_cb_learned_bundle` → `prismaquant.build_cb_learned_bundle` → streaming source reader; v2 additionally uses `cb_imatrix` + `cb_learned_promotion` | `artifacts/cb_learned_bundle.pqcb`; optional external `prismaquant.fp8_cbl_promotion_receipt.v1` input is embedded and digest-bound | settings-hash `cb-learned-bundle` includes the calibration/imatrix input identity; bundle load revalidates complete source, role, candidate-table, and receipt bindings | CB lane, learned scope only; runs before the first cost/cache/KL render. V2 without a valid receipt is all-lattice, never a guessed learned/lattice crossover |
@@ -1241,7 +1284,7 @@ which is what the rows touched since are keyed on.
 | **2d-CB** | CB hybrid: replace routed-expert rows with empirical unit-KL | `harvest_cb_col_weights "[2d-CB]"` → `expert_empirical_cost --replace-experts --col-weights` | `artifacts/cost_local_raw.pkl`, `artifacts/cost.pkl`, `cb_col_weights.pkl` | settings-hash `cb-hybrid-cost` + the in-payload merge probe; col-weights `cb-col-weights` | CB lane, `CB_EXPERT_EMPIRICAL=1` |
 | **2b/4 cw** | Cost-cache col-weights (weighted lanes only) | `harvest_cb_col_weights "[2b/4] cost-cache"` → `build_production_cache --col-weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | `COST_RENDER=cached-menu` on a CB/GGUF lane (§4.7) |
 | **P0–P3** | Platform-agnostic anchored-AURA mechanism: format-blind streamed adjoint; plugin-mapped production anchors per legal `(unit,family,equivalence_class)`; within-segment shape fit; recomputed hull; one byte-budget DP (§4.3) | frozen DSv4 shim `tools/run_aura_cb_reprice.sh` → `prismaquant.dsv4_aura_cb_reprice`; generic mechanism `prismaquant.anchored_cost`; CB mapping plugin on `format_registry` + `model_profiles` | identity-bound scalar checkpoints; the driver atomically emits an exportable artifacts directory containing the AURA-stamped `layer_config.json`, matching `selection.json`, allocator `pareto.knees.json`, and the exact platform render inputs (`cb_col_weights.pkl` on CB) | qname-keyed atomic resume bound to model/menu/arm/plugin/calibration/format-plan/render-input identity | generic evaluate/price/allocate mechanism with a machine-specific map plugin; DSv4 remains the acceptance vehicle; never a full-menu render campaign |
-| **RTX4090 sparse P1–P3 ×2 (manual)** | Strict 18 GB specialization of anchored AURA: derive the exact bundle-captured probe imatrix, attest one snapshot/image execution, split whole layers across two hosts, render only lattice K4/K16/K48 plus native FP8 per body Linear, reconstruct one exact global payload, fit the lattice rung law, byte-preserve direct rows, impute nine CB rungs, add the BF16 source terminal, and solve once (§4.3) | `prismaquant.rtx4090_fp8_burn` + `prismaquant.cb_anchored_cost` | durable no-clobber FP32 column weights; immutable execution attestation and two-stripe plan; 496×4 measured AURA cells; one mixed measured/imputed/source-terminal allocator table | complete disjoint qname/format/purpose/renderer/source/imatrix/snapshot/image/arm identity; worker chunk counters remain explicitly unverified planning metadata | Qwen3.8 strict FP8-only validation-artifact campaign; no NVFP4 and no twelve-rung physical render sweep |
+| **RTX4090 sparse P1–P3 ×2 (coordinated)** | Strict 18 GB specialization of anchored AURA: derive the exact bundle-captured probe imatrix, attest one snapshot/image execution, split whole layers across two hosts, render only lattice K4/K16/K48 plus native FP8 per body Linear, reconstruct one exact global payload, fit the lattice rung law, byte-preserve direct rows, impute nine CB rungs, add the BF16 source terminal, and solve once (§4.3) | `prismaquant.rtx4090_two_host_campaign` → `prismaquant.rtx4090_fp8_burn` + `prismaquant.cb_anchored_cost` | durable no-clobber FP32 column weights; immutable execution attestation and two-stripe plan; 496×4 measured AURA cells; one mixed measured/imputed/source-terminal allocator table; raw and summarized per-host utilization | complete disjoint qname/format/purpose/renderer/source/imatrix/snapshot/image/arm identity; deterministic host/stripe assignment and barriers; byte-verified transfer between independent run trees; worker chunk counters remain explicitly unverified planning metadata | Qwen3.8 strict FP8-only validation-artifact campaign; no agent/operator scheduling, NVFP4, or twelve-rung physical render sweep |
 | **3/4** | Allocator — multi-choice knapsack over per-Linear body formats plus explicit fixed auxiliary head/MTP/visual assignments (§4) | `prismaquant.allocator --lm-head-format "$LM_HEAD_FORMAT_CANONICAL"` | `artifacts/layer_config.json`, `artifacts/pareto.csv`, `artifacts/pareto_assignments/` (validated-surrogate only); `logs/allocator.log` | **none — always runs** | fixed non-BF16 head and `ALLOW_PINNED=lm_head` are mutually exclusive |
 | **4/4 A** | Frontier format-menu cache, including profile-synthesized MTP when the menu requests it | `build_production_cache … --render-scope format-menu --render-packed-experts --activation-cache-dir act/` | `artifacts/production_weight_cache_frontier_raw.pkl` + `…_frontier/` | settings-hash `frontier-cache`, including the resolved head policy | validated-surrogate; `exit 2` if `PRODUCTION_CACHE=0` |
 | **4/4 B** | Measured held-out KL per Pareto point | `prismaquant.validate_assignments_kl` (`1243-1248` per-point, `1272-1277` batched) | `artifacts/validated_frontier_kl.json` + `…_parts/*.json` (merged `1250-1269`) | settings-hash `frontier-kl-point` per point (`1294`) | validated-surrogate |
@@ -1793,19 +1836,61 @@ complete model schedule with `--unified-sweep --no-include-visual`. Partial laye
 user-authored qname lists, h-detail, visual modules, and routed or packed statistics/caches fail
 closed.
 
-The operator runbook is strict about that boundary: it executes the snapshot verifier from the
-exact pinned Git object rather than the candidate it judges, materializes a clean committed
-snapshot, removes and checks all write bits, verifies the exact pinned registry RepoDigest on the
-host, and launches by that digest-qualified reference. Docker's backend-dependent local image ID
-is not a cross-host authority. Both hosts mount their possibly different absolute host roots at
-the same canonical `/model`, `/dataset`, `/run`, and `/worker-state` paths; snapshot/model/dataset
-are read-only. The container runs as the invoking non-root host UID/GID, with writable home,
-temporary, and compiler caches confined to the private worker-state mount; the two reviewed Spark
-hosts expose their NVIDIA device nodes to that user. The same container re-verifies the snapshot,
+The application-owned two-host coordinator is strict about that boundary.
+`cluster_campaign_contract.py` seals exactly two host identities, stable partition/stripe
+ownership, immutable producer/input identities, and the fixed stage DAG; a reducer is not ready
+until both exact map receipts exist. `cluster_transport.py` carries argv as canonical JSON rather
+than shell text, implements the same durable job semantics locally and over a fixed SSH helper,
+binds detached workers to boot ID plus process start ticks, fails closed on lost or PID-reused
+workers, and records the raw GPU/host-memory samples used for
+mean/p50/p95 and >0/>50/>90 utilization summaries. Barrier trees reject links, traversal, special
+files, and digest drift before atomic no-clobber publication. The two `/run` paths are independent
+host-local filesystems: a matching pathname is never treated as evidence of shared bytes.
+
+`rtx4090_two_host_application.py` is the live composition boundary. Its runtime verifies both
+manifest endpoint identities with a fixed read-only probe before any directory/helper/snapshot
+mutation. Derived control/transfer namespaces must be disjoint from every declared root, and the
+controller state path is checked for symlink ancestors plus resolved writable-mount overlap before
+runtime construction; declared model/dataset/snapshot roots and derived control/transfer roots are
+equally excluded. It then synchronizes the snapshot before either host command can import PrismaQuant,
+and its builder proves the controller itself
+was imported from that fully verified local snapshot. It pre-admits both hosts and acquires durable GPU
+leases, then supplies every state-machine frontier with exact stored barrier/admission digests.
+The two worker-source stages establish the portable live-model identity before the first sample
+probe. Each new container start gets a request-bound durable idleness/lease/orphan guard; the
+bare-host launch wrapper repeats the gate while holding a lock inherited by foreground Docker.
+The wrapper injects a private deterministic name/CID, supervises a shorter inner stage deadline,
+and proves that exact manifest/host/work-labeled container stopped and was removed before timeout
+returns; the outer transport reserves fixed cleanup time. CPU stages force
+`NVIDIA_VISIBLE_DEVICES=void` in addition to omitting `--gpus`.
+Adoption requires the prior exact guard. Exact guard journals from failed attempts remain valid
+only when their request belongs to the sealed bounded-attempt catalog. Only a fully reverified
+campaign releases leases, publishing an exact fsynced lease tombstone before unlink so a proven
+post-unlink retry is resumable but fresh absence is not. Run and snapshot transfers stage beside their respective destinations,
+avoiding a cross-filesystem final rename, while SSH helper/job state lives in a sibling control
+tree that is never mounted into a campaign container. `status` does not construct this live
+boundary, and read-only `verify` does not initialize it.
+
+`rtx4090_two_host_campaign.py` maps each typed assignment to one fixed Docker argv; the manifest
+contains no command or shell fragment. Every stage has a finite fixed timeout. It executes the
+snapshot verifier from the exact pinned
+runtime, verifies the pinned registry RepoDigest on each host, and launches by that
+digest-qualified reference. Docker's backend-dependent local image ID is not a cross-host
+authority. Both hosts mount their possibly different absolute host roots at the same canonical
+`/model`, `/dataset`, `/run`, and `/worker-state` paths; snapshot/model/dataset are read-only. The
+container runs as the invoking non-root host UID/GID, with writable home, temporary, and compiler
+caches confined to the private worker-state mount. Only source-identity, CE, Fisher, and burn
+stages receive GPU devices; CPU-only Docker stages force the NVIDIA runtime's explicit `void`
+device set and cannot incidentally enter CUDA. An exact
+`validated_reuse` source-identity receipt may waive positive utilization because that path
+validates and returns before CUDA, but fresh source builds and numerical GPU stages may not. The
+same container re-verifies the snapshot,
 removes `PYTHONPATH`, enables safe-path/no-user-site/no-bytecode modes, sets both required CB
 compilation switches, and invokes the producer only through the snapshot-owned
-`prismaquant_source_bootstrap.py run-module`. Bare live-tree `python -m` commands are not a valid
-campaign launch.
+`prismaquant_source_bootstrap.py run-module`. Bare live-tree `python -m` commands and an agent or
+operator acting as the barrier scheduler are not valid campaign launches. The reviewed shell
+runbook remains explanatory archaeology, not the operational control plane
+(`docs/design/deterministic_two_host_campaign.md`, `docs/design/sample_parallel_probe.md`).
 
 The digest-bound sample cover is a required worker input, not merely merge-side metadata.
 Before model/GPU readiness, each worker strictly decodes the cover and run contract (duplicate
@@ -2372,6 +2457,17 @@ full-corpus imatrix/column-weight values, source checkpoint identity, producer s
 execution attestation, dataset, and complete 496-Linear body census. The balanced two-host plan
 keeps whole decoder layers intact: layers 0–31 and 32–63, 248 Linears per host. That gives
 exactly 992 physical renders per host and 1,984 globally—not a twelve-rung sweep.
+
+`prismaquant.rtx4090_two_host_campaign` owns the complete probe-to-allocation schedule around that
+numerical producer. Its sealed state has three parallel map frontiers only—CE, Fisher, and burn—
+and persists each successful peer before reporting a failed barrier. Resume accepts an existing
+stage only through the exact command/dependency/host/producer/telemetry receipt; it cannot infer a
+transition from a log tail or an agent's judgment. The target remains RTX 4090/sm89, while the
+manifest's expected GPU fields describe the hardware actually executing the campaign. This is
+why a validation burn may admit two exact GB10/sm121 hosts without claiming physical Ada runtime
+qualification. The artifact coordinator can be either host independently of which host runs the
+control process; for the reviewed Spark pair it belongs on the host with enough local space for
+both worker products and the merged bundle.
 
 The burn's `derive-col-weights` entry point first validates the committed sample merge bundle
 as one object, consumes the exact captured in-memory probe that was hashed, derives the ordinary

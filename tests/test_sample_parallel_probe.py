@@ -171,6 +171,15 @@ def test_prepare_worker_source_cache_creates_then_exactly_reuses(
         cost_streaming, "compact_streamed_model_identity",
         lambda value, **_kwargs: {"content_sha256": value["content_sha256"]},
     )
+    monkeypatch.setattr(
+        cost_streaming, "portable_streamed_model_content_identity",
+        lambda value, **_kwargs: {
+            "schema": "prismaquant.streamed_model.portable_content.v1",
+            "portable_content_sha256": "b" * 64,
+            "checkpoint_shards": 1,
+            "checkpoint_tensors": 1,
+        },
+    )
 
     created = prepare_worker_source_cache(
         model=model.resolve(), output=output.resolve(),
@@ -179,6 +188,7 @@ def test_prepare_worker_source_cache_creates_then_exactly_reuses(
     assert created["schema"] == WORKER_SOURCE_CACHE_RECEIPT_SCHEMA
     assert created["disposition"] == "created"
     assert created["identity"] == {"content_sha256": "a" * 64}
+    assert created["portable_identity"]["portable_content_sha256"] == "b" * 64
     assert output.read_bytes() == b"host-local-cache\n"
     assert events.count("shutdown") == 1
     assert events[0][0] == "runner"

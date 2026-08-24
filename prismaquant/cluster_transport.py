@@ -101,6 +101,43 @@ def _process_is_alive(pid: int) -> bool:
     return True
 
 
+def _linux_process_identity(pid: int) -> Mapping[str, object]:
+    """Return a boot-scoped PID identity that rejects PID reuse."""
+
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise ValueError("process identity PID must be positive")
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="ascii",
+        ).strip()
+        stat_payload = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    except OSError as exc:
+        raise ProcessLookupError(pid) from exc
+    closing = stat_payload.rfind(")")
+    if closing < 0:
+        raise ValueError("process stat has no command terminator")
+    fields = stat_payload[closing + 2:].split()
+    if len(fields) <= 19:
+        raise ValueError("process stat is incomplete")
+    # ``kill(pid, 0)`` succeeds for a zombie until its parent reaps it.  Such
+    # a worker can never replace the durable running receipt, so treating it
+    # as live would strand the job forever.  Linux documents ``Z`` as zombie
+    # and ``X``/``x`` as dead (the latter spellings are rare but possible).
+    if fields[0] in {"Z", "X", "x"}:
+        raise ProcessLookupError(pid)
+    start_ticks = int(fields[19])
+    if start_ticks <= 0 or not re.fullmatch(
+        r"[0-9a-fA-F-]{36}", boot_id,
+    ):
+        raise ValueError("process identity fields are invalid")
+    return {
+        "schema": "prismaquant.cluster_transport.process_identity.v1",
+        "pid": pid,
+        "boot_id": boot_id.lower(),
+        "start_ticks": start_ticks,
+    }
+
+
 def _reject_duplicate_members(
     pairs: list[tuple[str, object]],
 ) -> dict[str, object]:
@@ -1232,6 +1269,9 @@ class LocalTransport:
         nvidia_smi_binary: str = "nvidia-smi",
         transport_name: str = "local",
         pid_alive: Callable[[int], bool] = _process_is_alive,
+        process_identity_reader: Callable[[int], Mapping[str, object]] = (
+            _linux_process_identity
+        ),
     ) -> None:
         root = Path(state_root)
         if not root.is_absolute():
@@ -1249,6 +1289,9 @@ class LocalTransport:
         self._nvidia_smi_binary = nvidia_smi_binary
         self.transport_name = transport_name
         self._pid_alive = pid_alive
+        if not callable(process_identity_reader):
+            raise TypeError("process_identity_reader must be callable")
+        self._process_identity_reader = process_identity_reader
 
     @property
     def _jobs_root(self) -> Path:
@@ -1381,6 +1424,21 @@ class LocalTransport:
                 close_fds=True,
             )
             launched = replace(running, pid=int(worker.pid))
+            process_identity = dict(
+                self._process_identity_reader(launched.pid)
+            )
+            if (
+                process_identity.get("pid") != launched.pid
+                or process_identity.get("schema")
+                != "prismaquant.cluster_transport.process_identity.v1"
+            ):
+                raise ValueError("detached worker process identity differs")
+            _atomic_write(
+                job_root / "worker-identity.json",
+                canonical_json_bytes(
+                    process_identity, where="worker process identity",
+                ),
+            )
             self._write_receipt(job_root, launched)
             _atomic_write(job_root / "launched", b"ready\n")
         except Exception as exc:
@@ -1425,7 +1483,23 @@ class LocalTransport:
         if receipt.state != "running":
             return receipt
         if receipt.pid is not None and self._pid_alive(receipt.pid):
-            return receipt
+            try:
+                expected_process = _read_canonical(
+                    job_root / "worker-identity.json",
+                    where=f"job {validated_job_id!r} worker identity",
+                )
+                live_process = dict(self._process_identity_reader(receipt.pid))
+            except (
+                ClusterTransportError,
+                OSError,
+                ProcessLookupError,
+                TypeError,
+                ValueError,
+            ):
+                pass
+            else:
+                if expected_process == live_process:
+                    return receipt
 
         # A worker writes its final receipt before it exits.  Re-read after the
         # liveness check so a just-completed worker wins the race.  A receipt
@@ -1446,7 +1520,7 @@ class LocalTransport:
         detail = (
             "detached worker PID is missing"
             if refreshed.pid is None
-            else f"detached worker PID {refreshed.pid} is not alive"
+            else f"detached worker PID {refreshed.pid} identity is not alive"
         )
         failed = replace(
             refreshed,
@@ -1709,7 +1783,7 @@ def _helper_response(kind: str, payload: object) -> bytes:
     )
 
 
-def _remote_helper() -> int:
+def _remote_helper(state_root: str | None = None) -> int:
     try:
         encoded = sys.stdin.buffer.read().strip()
         canonical = base64.b64decode(encoded, validate=True)
@@ -1719,9 +1793,14 @@ def _remote_helper() -> int:
         if set(envelope) != {"schema", "action", "payload"}:
             raise ValueError("helper envelope has invalid fields")
         action, payload = str(envelope["action"]), envelope["payload"]
-        transport = LocalTransport(
-            _default_helper_state_root(), transport_name="remote"
+        helper_state_root = (
+            _default_helper_state_root()
+            if state_root is None
+            else Path(_validate_remote_executable(
+                state_root, where="remote helper state root",
+            ))
         )
+        transport = LocalTransport(helper_state_root, transport_name="remote")
         if action in {"run", "start"}:
             request = RunRequest.from_payload(payload)
             receipt = transport.run(request) if action == "run" else transport.start(request)
@@ -1776,13 +1855,16 @@ def _local_worker(state_root: str, job_id: str, transport_name: str) -> int:
 def _main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--remote-helper", action="store_true")
+    parser.add_argument("--remote-helper-state-root")
     parser.add_argument("--local-worker", nargs=3, metavar=("ROOT", "JOB_ID", "TRANSPORT"))
     args = parser.parse_args(argv)
     if args.remote_helper:
         if args.local_worker is not None:
             raise SystemExit("helper modes are mutually exclusive")
-        return _remote_helper()
+        return _remote_helper(args.remote_helper_state_root)
     if args.local_worker is not None:
+        if args.remote_helper_state_root is not None:
+            raise SystemExit("remote helper state root requires remote-helper mode")
         return _local_worker(*args.local_worker)
     raise SystemExit("one helper mode is required")
 

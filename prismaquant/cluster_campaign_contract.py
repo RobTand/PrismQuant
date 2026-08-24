@@ -119,14 +119,24 @@ if len(_STAGE_BY_NAME) != len(STAGE_DAG):  # pragma: no cover - static guard
 
 _MANIFEST_BODY_KEYS = frozenset(
     {
-        "schema", "campaign_id", "coordinator", "producer", "inputs",
-        "policy", "hosts",
+        "schema", "campaign_id", "coordinator", "artifact_target",
+        "producer", "inputs", "policy", "hosts",
     }
 )
 _MANIFEST_KEYS = _MANIFEST_BODY_KEYS | {"identity_sha256"}
 _PRODUCER_KEYS = frozenset(
     {"commit", "tree", "snapshot_sha256", "image_digest"}
 )
+_ARTIFACT_TARGET_KEYS = frozenset({
+    "gpu_name",
+    "compute_capability",
+    "artifact_max_bytes",
+    "disposition",
+    "source_dtype",
+    "physical_formats",
+    "terminal_format",
+    "allocation_objective",
+})
 _INPUT_KEYS = frozenset(
     {"model_content_sha256", "dataset_sha256", "sample_parallel"}
 )
@@ -210,6 +220,19 @@ _PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 _IMAGE_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+FIXED_ARTIFACT_TARGET = MappingProxyType({
+    "gpu_name": RTX4090_GPU_NAME,
+    "compute_capability": RTX4090_COMPUTE_CAPABILITY,
+    "artifact_max_bytes": 18_000_000_000,
+    "disposition": "validation_only",
+    "source_dtype": "bf16",
+    "physical_formats": (
+        "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+    ),
+    "terminal_format": "BF16",
+    "allocation_objective": "context_first",
+})
 
 
 def _fail(message: str) -> None:
@@ -325,6 +348,65 @@ def _normalize_producer(value: object) -> dict[str, object]:
             pattern=_IMAGE_DIGEST_RE,
         ),
     }
+
+
+def _normalize_artifact_target(value: object) -> dict[str, object]:
+    raw = _exact_mapping(
+        value, keys=_ARTIFACT_TARGET_KEYS, where="artifact_target",
+    )
+    capability = raw["compute_capability"]
+    formats = raw["physical_formats"]
+    if type(capability) is not list or len(capability) != 2:
+        _fail("artifact_target.compute_capability must be a two-integer list")
+    if type(formats) is not list:
+        _fail("artifact_target.physical_formats must be a list")
+    normalized = {
+        "gpu_name": _string(raw["gpu_name"], where="artifact_target.gpu_name"),
+        "compute_capability": [
+            _integer(
+                capability[index],
+                where=f"artifact_target.compute_capability[{index}]",
+                minimum=0,
+                maximum=99,
+            )
+            for index in range(2)
+        ],
+        "artifact_max_bytes": _integer(
+            raw["artifact_max_bytes"],
+            where="artifact_target.artifact_max_bytes",
+            minimum=1,
+        ),
+        "disposition": _string(
+            raw["disposition"], where="artifact_target.disposition",
+        ),
+        "source_dtype": _string(
+            raw["source_dtype"], where="artifact_target.source_dtype",
+        ),
+        "physical_formats": [
+            _string(item, where=f"artifact_target.physical_formats[{index}]")
+            for index, item in enumerate(formats)
+        ],
+        "terminal_format": _string(
+            raw["terminal_format"], where="artifact_target.terminal_format",
+        ),
+        "allocation_objective": _string(
+            raw["allocation_objective"],
+            where="artifact_target.allocation_objective",
+        ),
+    }
+    fixed = {
+        **dict(FIXED_ARTIFACT_TARGET),
+        "compute_capability": list(
+            FIXED_ARTIFACT_TARGET["compute_capability"]
+        ),
+        "physical_formats": list(FIXED_ARTIFACT_TARGET["physical_formats"]),
+    }
+    if normalized != fixed:
+        _fail(
+            "artifact_target must equal the fixed RTX4090 validation target "
+            f"{fixed}"
+        )
+    return normalized
 
 
 def _normalize_inputs(value: object) -> dict[str, object]:
@@ -582,6 +664,7 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
     coordinator = _string(
         raw["coordinator"], where="coordinator", pattern=_ID_RE
     )
+    artifact_target = _normalize_artifact_target(raw["artifact_target"])
     producer = _normalize_producer(raw["producer"])
     inputs = _normalize_inputs(raw["inputs"])
     policy = _normalize_policy(raw["policy"])
@@ -617,6 +700,7 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
         "schema": CAMPAIGN_MANIFEST_SCHEMA,
         "campaign_id": campaign_id,
         "coordinator": coordinator,
+        "artifact_target": artifact_target,
         "producer": producer,
         "inputs": inputs,
         "policy": policy,
@@ -976,6 +1060,7 @@ __all__ = [
     "CAMPAIGN_STATE_SCHEMA",
     "CANONICAL_CONTAINER_PATHS",
     "ClusterCampaignContractError",
+    "FIXED_ARTIFACT_TARGET",
     "FIXED_CAMPAIGN_POLICY",
     "RTX4090_COMPUTE_CAPABILITY",
     "RTX4090_GPU_NAME",

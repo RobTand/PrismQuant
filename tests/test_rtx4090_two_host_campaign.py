@@ -25,9 +25,27 @@ from prismaquant.rtx4090_two_host_campaign import (
     CampaignCoordinator,
     RTX4090TwoHostCampaignError,
     _host_output_path,
+    _stage_receipt,
     build_command_plan,
     main,
 )
+from prismaquant.rtx4090_qwen38_policy import (
+    RTX4090_CONTEXT_FIRST_TARGET_BYTES,
+    RTX4090_QWEN38_FORMAT_MENU,
+)
+
+
+def test_sealed_artifact_target_matches_the_numerical_burn_policy() -> None:
+    target = _manifest()["artifact_target"]
+
+    assert target["artifact_max_bytes"] == RTX4090_CONTEXT_FIRST_TARGET_BYTES
+    assert target["physical_formats"] == [
+        RTX4090_QWEN38_FORMAT_MENU[0],
+        RTX4090_QWEN38_FORMAT_MENU[3],
+        RTX4090_QWEN38_FORMAT_MENU[-3],
+        RTX4090_QWEN38_FORMAT_MENU[-2],
+    ]
+    assert target["terminal_format"] == RTX4090_QWEN38_FORMAT_MENU[-1]
 
 
 def _host(
@@ -82,6 +100,18 @@ def _manifest() -> dict[str, object]:
         "schema": CAMPAIGN_MANIFEST_SCHEMA,
         "campaign_id": "qwen38-27b-bf16-two-host-burn",
         "coordinator": "zeta",
+        "artifact_target": {
+            "gpu_name": "NVIDIA GeForce RTX 4090",
+            "compute_capability": [8, 9],
+            "artifact_max_bytes": 18_000_000_000,
+            "disposition": "validation_only",
+            "source_dtype": "bf16",
+            "physical_formats": [
+                "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+            ],
+            "terminal_format": "BF16",
+            "allocation_objective": "context_first",
+        },
         "producer": {
             "commit": "1" * 40,
             "tree": "2" * 40,
@@ -389,12 +419,14 @@ def _coordinator(
     state_dir: Path,
     transports: dict[str, _FakeTransport],
     inspectors: dict[str, _FakeArtifactInspector] | None = None,
+    stage_preconditioner=None,
 ) -> CampaignCoordinator:
     return CampaignCoordinator(
         manifest,
         state_dir,
         transports=transports,
         artifact_inspectors=inspectors or _inspectors(manifest),
+        stage_preconditioner=stage_preconditioner,
         sleep=lambda _: None,
     )
 
@@ -431,7 +463,114 @@ def test_plan_is_closed_and_maps_hosts_to_partitions_and_stripes_0_and_1() -> No
     assert "type=bind,src=/srv/zeta/model,dst=/model,readonly" in prepare["argv"]
     assert "type=bind,src=/srv/zeta/campaign-run,dst=/run" in prepare["argv"]
     assert "PRISMAQUANT_CB_COMPILE_FAIL_CLOSED=1" in prepare["argv"]
+    fisher = next(
+        row for row in commands
+        if row["stage"] == "sample_fisher" and row["host_id"] == "alpha"
+    )
+    assert set(fisher["inputs"]) >= {
+        "/model", "/dataset", "/pq", "/run/calibration.pt",
+        "/run/run-contract.json", "/run/cover.json", "/run/global-ce.json",
+    }
     assert all("shell" not in row for row in commands)
+
+
+def test_only_gpu_stages_receive_devices_and_all_containers_use_launch_gate(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    gpu = coordinator.commands["sample_ce:alpha"]
+    cpu = coordinator.commands["allocate:zeta"]
+    for command in (gpu, cpu):
+        assert command.argv[:4] == ("python3", "-P", "-B", "-s")
+        assert "prismaquant.cluster_host_admission" in command.argv
+        assert "guarded-launch" in command.argv
+        assert f"io.prismaquant.campaign={manifest['identity_sha256']}" in (
+            command.argv
+        )
+        request = coordinator._request(command, attempt_index=0)
+        assert json.loads(request.stdin) == manifest
+        assert request.timeout_seconds is not None
+        timeout_index = command.argv.index("--timeout-seconds")
+        inner_timeout = float(command.argv[timeout_index + 1])
+        assert request.timeout_seconds - inner_timeout == 600.0
+        work_index = command.argv.index("--work-id")
+        assert command.argv[work_index + 1] == command.work_id
+        assert dict(request.env)["PQ_CAMPAIGN_START_GUARD"] == "1"
+    assert "--gpus" in gpu.argv
+    assert "--gpus" not in cpu.argv
+    assert "NVIDIA_VISIBLE_DEVICES=void" not in gpu.argv
+    assert "NVIDIA_VISIBLE_DEVICES=void" in cpu.argv
+
+
+def test_stage_preconditions_are_bound_and_revalidated_during_verify(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    version = {"sample_ce": "v1"}
+
+    def precondition(stage: str, *, verify_only: bool):
+        del verify_only
+        marker = version.get(stage, "stable")
+        return (hashlib.sha256(f"{stage}:{marker}".encode()).hexdigest(),)
+
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        _transports(manifest),
+        stage_preconditioner=precondition,
+    )
+    coordinator.run_to_completion(resume=False)
+    receipt = json.loads(
+        (tmp_path / "state/receipts/sample_ce:alpha.json").read_text()
+    )
+    assert receipt["precondition_receipt_sha256s"] == [
+        hashlib.sha256(b"sample_ce:v1").hexdigest()
+    ]
+
+    version["sample_ce"] = "v2"
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="precondition_receipt_sha256s differs",
+    ):
+        coordinator.verify()
+
+
+def test_existing_transport_job_requires_a_valid_durable_launch_guard(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = CampaignCoordinator(manifest, tmp_path / "state")
+    command = coordinator.commands["worker_source_identity:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    receipt = JobReceipt(
+        job_id=request.job_id,
+        request_sha256=request.request_sha256,
+        state="succeeded",
+        started_ns=1,
+        finished_ns=2,
+        returncode=0,
+        pid=123,
+        stdout=b"ok\n",
+        stderr=b"",
+        transport="existing",
+    )
+
+    class ExistingWithoutGuard:
+        def status(self, job_id):
+            assert job_id == request.job_id
+            return receipt
+
+        def start(self, _request):  # pragma: no cover - adoption only
+            raise AssertionError("existing job must not be restarted")
+
+        def validate_existing_guard(self, _request):
+            raise RuntimeError("guard receipt absent")
+
+    with pytest.raises(RTX4090TwoHostCampaignError, match="no valid launch guard"):
+        coordinator._adopt_or_start(ExistingWithoutGuard(), request)
 
 
 def test_attempt_job_ids_remain_valid_for_maximum_length_host_ids(
@@ -785,6 +924,80 @@ def test_gpu_stage_without_positive_utilization_is_refused(tmp_path: Path) -> No
         coordinator.run_to_completion(resume=False)
 
 
+def test_validated_source_cache_reuse_is_the_only_zero_activity_waiver(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    command = coordinator.commands["worker_source_identity:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    source = {
+        "schema": (
+            "prismaquant.sample_parallel_probe."
+            "worker_source_cache_receipt.v1"
+        ),
+        "disposition": "validated_reuse",
+        "model": "/model",
+        "cache": "/worker-state/source-identity-cache.json",
+        "cache_sha256": "a" * 64,
+        "identity": {"schema": "fixture-identity"},
+        "portable_identity": {
+            "schema": "prismaquant.streamed_model.portable_content.v1",
+            "portable_content_sha256": manifest["inputs"][
+                "model_content_sha256"
+            ],
+        },
+    }
+
+    def job(payload: dict[str, object]) -> JobReceipt:
+        return JobReceipt(
+            job_id=request.job_id,
+            request_sha256=request.request_sha256,
+            state="succeeded",
+            started_ns=1,
+            finished_ns=2,
+            returncode=0,
+            pid=123,
+            stdout=json.dumps(payload, sort_keys=True).encode() + b"\n",
+            stderr=b"",
+            transport="fake",
+        )
+
+    receipt = _stage_receipt(
+        manifest,
+        command,
+        request,
+        job(source),
+        (),
+        (),
+        (),
+        attempt_index=0,
+        artifact_inspector=_FakeArtifactInspector(),
+    )
+
+    assert receipt["gpu_activity_requirement"] == (
+        "waived_validated_source_cache_reuse"
+    )
+    assert receipt["telemetry"] == []
+    assert receipt["telemetry_summary"]["live_cuda_observed"] is False
+
+    fresh = {**source, "disposition": "created"}
+    with pytest.raises(RTX4090TwoHostCampaignError, match="no utilization"):
+        _stage_receipt(
+            manifest,
+            command,
+            request,
+            job(fresh),
+            (),
+            (),
+            (),
+            attempt_index=0,
+            artifact_inspector=_FakeArtifactInspector(),
+        )
+
+
 def test_verify_refuses_missing_or_tampered_execution_receipt(
     tmp_path: Path,
 ) -> None:
@@ -806,8 +1019,9 @@ def test_verify_refuses_missing_or_tampered_execution_receipt(
         coordinator.verify()
 
 
-def test_cli_plan_is_deterministic_and_live_run_is_fail_closed(
+def test_cli_plan_is_deterministic_and_live_run_uses_default_application(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manifest = _manifest()
     manifest_path = tmp_path / "manifest.json"
@@ -824,8 +1038,31 @@ def test_cli_plan_is_deterministic_and_live_run_is_fail_closed(
     ]) == 0
     assert output.read_bytes() == first
 
-    with pytest.raises(RTX4090TwoHostCampaignError, match="no telemetry-capable"):
-        main([
-            "run", "--manifest", str(manifest_path),
-            "--state-dir", str(tmp_path / "live-state"),
-        ])
+    import prismaquant.rtx4090_two_host_application as live_application
+
+    observed: dict[str, object] = {}
+
+    class _Application:
+        def run_to_completion(self, *, resume: bool):
+            observed["resume"] = resume
+            return {"complete": True}
+
+    def build(application_manifest, state_dir, *, initialize):
+        observed.update({
+            "manifest": application_manifest,
+            "state_dir": state_dir,
+            "initialize": initialize,
+        })
+        return _Application()
+
+    monkeypatch.setattr(live_application, "build_live_campaign_application", build)
+    assert main([
+        "run", "--manifest", str(manifest_path),
+        "--state-dir", str(tmp_path / "live-state"),
+    ]) == 0
+    assert observed == {
+        "manifest": manifest,
+        "state_dir": str(tmp_path / "live-state"),
+        "initialize": True,
+        "resume": False,
+    }

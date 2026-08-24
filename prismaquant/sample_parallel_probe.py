@@ -490,6 +490,7 @@ def prepare_worker_source_cache(
         build_streamed_causal_lm,
         build_streamed_model_identity,
         compact_streamed_model_identity,
+        portable_streamed_model_content_identity,
         validate_cached_streamed_model_identity,
     )
     from prismaquant.gpu_guard import require_cuda_hot_path
@@ -525,6 +526,9 @@ def prepare_worker_source_cache(
         compact = compact_streamed_model_identity(
             identity, where="sample-parallel worker source cache"
         )
+        portable = portable_streamed_model_content_identity(
+            identity, where="sample-parallel worker portable source cache"
+        )
         return {
             "schema": WORKER_SOURCE_CACHE_RECEIPT_SCHEMA,
             "disposition": disposition,
@@ -532,6 +536,7 @@ def prepare_worker_source_cache(
             "cache": str(destination),
             "cache_sha256": _sha256_file(destination),
             "identity": compact,
+            "portable_identity": portable,
         }
 
     if destination.exists():

@@ -48,6 +48,7 @@ from prismaquant.cluster_transport import (
     TelemetrySnapshot,
     TreeManifest,
     build_tree_manifest,
+    canonical_json_bytes,
     summarize_utilization,
 )
 
@@ -70,6 +71,9 @@ LOCK_FILE = "campaign.lock"
 ATTEMPT_TELEMETRY_SCHEMA = (
     "prismaquant.rtx4090_two_host_campaign.attempt_telemetry.v1"
 )
+WORKER_SOURCE_CACHE_RECEIPT_SCHEMA = (
+    "prismaquant.sample_parallel_probe.worker_source_cache_receipt.v1"
+)
 
 _HOST_ENV = (
     ("LANG", "C.UTF-8"),
@@ -88,6 +92,25 @@ _GPU_STAGES = frozenset({
     "measure_burn",
 })
 _RESUMABLE_FLAG_STAGES = frozenset({"measure_burn", "allocate"})
+_STAGE_TIMEOUT_SECONDS = {
+    "host_preflight": 600.0,
+    "prepare_calibration": 7200.0,
+    "coordinator_source_identity": 21600.0,
+    "prepare_run_contract": 3600.0,
+    "build_sample_cover": 3600.0,
+    "worker_source_identity": 21600.0,
+    "sample_ce": 86400.0,
+    "merge_importance": 7200.0,
+    "sample_fisher": 86400.0,
+    "merge_sample_probe": 21600.0,
+    "derive_col_weights": 21600.0,
+    "attest_execution": 3600.0,
+    "prepare_burn": 21600.0,
+    "measure_burn": 604800.0,
+    "merge_burn": 21600.0,
+    "allocate": 172800.0,
+}
+_CONTAINER_CLEANUP_GRACE_SECONDS = 600.0
 _STAGE_DEPENDENCIES = {
     spec.stage: frozenset(spec.dependencies) for spec in STAGE_DAG
 }
@@ -104,8 +127,10 @@ _EXECUTION_RECEIPT_KEYS = frozenset({
     "command_identity_sha256",
     "request_sha256",
     "dependency_receipt_sha256s",
+    "precondition_receipt_sha256s",
     "job",
     "gpu_bearing",
+    "gpu_activity_requirement",
     "telemetry",
     "telemetry_sha256",
     "telemetry_summary",
@@ -165,6 +190,15 @@ class ArtifactInspector(Protocol):
     """Host-specific authority for one absolute output file or tree."""
 
     def inspect_artifact(self, absolute_path: str) -> object:
+        ...
+
+
+class StagePreconditioner(Protocol):
+    """Persist or verify non-process receipts required before one stage."""
+
+    def __call__(
+        self, stage: str, *, verify_only: bool,
+    ) -> Sequence[str]:
         ...
 
 
@@ -390,7 +424,7 @@ def _container_environment(
 
 def _docker_argv(
     manifest: Mapping[str, object], host: Mapping[str, object],
-    *, module: str, module_argv: Sequence[str],
+    *, work_id: str, module: str, module_argv: Sequence[str], enable_gpu: bool,
 ) -> tuple[str, ...]:
     roots = host["roots"]
     expected = host["expected"]
@@ -406,11 +440,23 @@ def _docker_argv(
         ("worker_state_root", "/worker-state", False),
     )
     argv: list[str] = [
-        "docker", "run", "--rm", "--gpus", "all", "--ipc=host",
-        "--uts=host",
+        "docker", "run", "--rm",
+        "--label", f"io.prismaquant.campaign={manifest['identity_sha256']}",
+        "--label", f"io.prismaquant.host={host['id']}",
+        "--label", f"io.prismaquant.work={work_id}",
+    ]
+    if enable_gpu:
+        argv.extend(("--gpus", "all"))
+    else:
+        # The pinned image declares NVIDIA_VISIBLE_DEVICES=all.  Override it
+        # explicitly so CPU-only stages stay GPU-blind even when the host's
+        # Docker default runtime is NVIDIA rather than runc.
+        argv.extend(("--env", "NVIDIA_VISIBLE_DEVICES=void"))
+    argv.extend((
+        "--ipc=host", "--uts=host",
         "--user", f"{expected['uid']}:{expected['gid']}",
         "--workdir", "/worker-state/tmp",
-    ]
+    ))
     for field, destination, readonly in mounts:
         source = _safe_mount_source(roots[field], field=field)
         spec = f"type=bind,src={source},dst={destination}"
@@ -463,6 +509,25 @@ def _preflight_argv(
     )
 
 
+def _guarded_launch_argv(
+    host: Mapping[str, object], docker_argv: Sequence[str],
+    *, work_id: str, timeout_seconds: float,
+) -> tuple[str, ...]:
+    roots = host["roots"]
+    assert isinstance(roots, Mapping)
+    snapshot = _safe_mount_source(roots["snapshot_root"], field="snapshot_root")
+    return (
+        "python3", "-P", "-B", "-s",
+        f"{snapshot}/tools/prismaquant_source_bootstrap.py",
+        "run-module", "--source-root", snapshot,
+        "prismaquant.cluster_host_admission", "guarded-launch",
+        "--host-id", str(host["id"]),
+        "--work-id", work_id,
+        "--timeout-seconds", str(float(timeout_seconds)),
+        "--", *map(str, docker_argv),
+    )
+
+
 def _stage_module_argv(
     stage: str, index: int,
 ) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
@@ -489,7 +554,10 @@ def _stage_module_argv(
             "__IMAGE_DIGEST__", "--source-identity-cache",
             "/run/coordinator/source-identity-cache.json", "--output",
             "/run/run-contract.json",
-        ), ("/run/coordinator/source-identity-cache.json",), ("/run/run-contract.json",)
+        ), (
+            "/model", "/dataset", "/pq",
+            "/run/coordinator/source-identity-cache.json",
+        ), ("/run/run-contract.json",)
     if stage == "build_sample_cover":
         return "prismaquant.sample_parallel_probe", (
             "build-cover", "--calibration-manifest", "/run/calibration.json",
@@ -517,7 +585,10 @@ def _stage_module_argv(
     if stage == "sample_ce":
         return "prismaquant.incremental_probe", (
             *common_probe, "--sample-importance-stats-output", f"{worker}/ce.json",
-        ), ("/run/calibration.pt", "/run/run-contract.json", "/run/cover.json"), (
+        ), (
+            "/model", "/dataset", "/pq", "/run/calibration.pt",
+            "/run/run-contract.json", "/run/cover.json",
+        ), (
             f"{worker}/ce.json",
         )
     if stage == "merge_importance":
@@ -528,21 +599,33 @@ def _stage_module_argv(
     if stage == "sample_fisher":
         return "prismaquant.incremental_probe", (
             *common_probe, "--sample-global-importance-receipt", "/run/global-ce.json",
-        ), ("/run/global-ce.json",), (f"{worker}/probe.pkl", f"{worker}/act")
+        ), (
+            "/model", "/dataset", "/pq", "/run/calibration.pt",
+            "/run/run-contract.json", "/run/cover.json",
+            "/run/global-ce.json",
+        ), (f"{worker}/probe.pkl", f"{worker}/act")
     if stage == "merge_sample_probe":
         return "prismaquant.sample_parallel_probe", (
             "merge", "--cover", "/run/cover.json", "--probe-shards",
             "/run/worker-0/probe.pkl", "/run/worker-1/probe.pkl",
             "--activation-cache", "0=/run/worker-0/act", "1=/run/worker-1/act",
             "--output-bundle", "/run/merged", "--max-rows", "1024",
-        ), ("/run/cover.json", "/run/worker-0/probe.pkl", "/run/worker-1/probe.pkl"), (
+        ), (
+            "/run/cover.json",
+            "/run/worker-0/probe.pkl", "/run/worker-1/probe.pkl",
+            "/run/worker-0/act", "/run/worker-1/act",
+        ), (
             "/run/merged/probe.pkl", "/run/merged/activation_cache", "/run/merged/commit.json",
         )
     if stage == "derive_col_weights":
         return "prismaquant.rtx4090_fp8_burn", (
             "derive-col-weights", "--sample-merge-bundle", "/run/merged",
             "--output", "/run/cb_col_weights.pkl",
-        ), ("/run/merged",), ("/run/cb_col_weights.pkl",)
+        ), (
+            "/run/merged/probe.pkl",
+            "/run/merged/activation_cache",
+            "/run/merged/commit.json",
+        ), ("/run/cb_col_weights.pkl",)
     if stage == "attest_execution":
         return "prismaquant.rtx4090_fp8_burn", (
             "attest-execution", "--sample-run-contract", "/run/run-contract.json",
@@ -565,7 +648,13 @@ def _stage_module_argv(
             "--activation-cache-dir", "/run/merged/activation_cache", "--output-dir",
             "/run/burn/plan", "--n-calib-samples", "32", "--calib-seqlen", "1024",
             "--calib-seed", "42",
-        ), ("/run/merged", "/run/cb_col_weights.pkl"), (
+        ), (
+            "/model", "/dataset", "/pq",
+            "/run/coordinator/source-identity-cache.json",
+            "/run/merged/probe.pkl", "/run/merged/activation_cache",
+            "/run/merged/commit.json", "/run/cb_col_weights.pkl",
+            "/run/burn/execution-attestation.json",
+        ), (
             "/run/burn/plan/campaign-plan.json", "/run/burn/plan/stripe-00.qnames.txt",
             "/run/burn/plan/stripe-01.qnames.txt",
         )
@@ -580,7 +669,14 @@ def _stage_module_argv(
             "/run/burn/plan/campaign-plan.json", "--stripe", str(index),
             "--checkpoint-dir", f"/worker-state/burn-stripe-{index}", "--output",
             f"/run/burn/stripe-{index}.pkl",
-        ), ("/run/burn/plan/campaign-plan.json", "/run/merged"), (
+        ), (
+            "/model", "/dataset", "/pq",
+            "/worker-state/source-identity-cache.json",
+            "/run/merged/probe.pkl", "/run/merged/activation_cache",
+            "/run/merged/commit.json", "/run/cb_col_weights.pkl",
+            "/run/burn/execution-attestation.json",
+            "/run/burn/plan/campaign-plan.json",
+        ), (
             f"/run/burn/stripe-{index}.pkl",
         )
     if stage == "merge_burn":
@@ -589,7 +685,11 @@ def _stage_module_argv(
             "--producer-snapshot", SNAPSHOT_MANIFEST, "--col-weights",
             "/run/cb_col_weights.pkl", "--shards", "/run/burn/stripe-0.pkl",
             "/run/burn/stripe-1.pkl", "--output", "/run/burn/aura-merged.pkl",
-        ), ("/run/burn/stripe-0.pkl", "/run/burn/stripe-1.pkl"), (
+        ), (
+            "/pq", "/run/burn/plan/campaign-plan.json",
+            "/run/cb_col_weights.pkl",
+            "/run/burn/stripe-0.pkl", "/run/burn/stripe-1.pkl",
+        ), (
             "/run/burn/aura-merged.pkl",
         )
     if stage == "allocate":
@@ -602,7 +702,12 @@ def _stage_module_argv(
             "/run/cb_col_weights.pkl", "--merged", "/run/burn/aura-merged.pkl",
             "--cost-output", "/run/burn/allocator-cost.pkl", "--output-dir",
             "/run/burn/allocation", "--threads", "16",
-        ), ("/run/burn/aura-merged.pkl", "/run/merged"), (
+        ), (
+            "/model", "/pq", "/run/burn/plan/campaign-plan.json",
+            "/run/merged/probe.pkl", "/run/merged/activation_cache",
+            "/run/merged/commit.json", "/run/cb_col_weights.pkl",
+            "/run/burn/aura-merged.pkl",
+        ), (
             "/run/burn/allocator-cost.pkl", "/run/burn/allocation/layer_config.json",
         )
     raise RTX4090TwoHostCampaignError(f"unsupported fixed campaign stage {stage!r}")
@@ -633,12 +738,31 @@ def build_stage_command(
         str(producer["image_digest"]) if value == "__IMAGE_DIGEST__" else value
         for value in raw_module_argv
     )
-    argv = _docker_argv(normalized, host, module=module, module_argv=module_argv)
+    gpu_bearing = assignment.stage in _GPU_STAGES
+    docker_argv = _docker_argv(
+        normalized, host, work_id=assignment.work_id,
+        module=module, module_argv=module_argv,
+        enable_gpu=gpu_bearing,
+    )
+    stage_timeout = _STAGE_TIMEOUT_SECONDS[assignment.stage]
+    argv = _guarded_launch_argv(
+        host,
+        docker_argv,
+        work_id=assignment.work_id,
+        timeout_seconds=stage_timeout,
+    )
     resume_argv = None
     if assignment.stage in _RESUMABLE_FLAG_STAGES:
         resume_module_argv = (*module_argv, "--resume")
-        resume_argv = _docker_argv(
-            normalized, host, module=module, module_argv=resume_module_argv,
+        resume_argv = _guarded_launch_argv(
+            host,
+            _docker_argv(
+                normalized, host, work_id=assignment.work_id,
+                module=module, module_argv=resume_module_argv,
+                enable_gpu=gpu_bearing,
+            ),
+            work_id=assignment.work_id,
+            timeout_seconds=stage_timeout,
         )
     return CampaignCommand(
         work_id=assignment.work_id, stage=assignment.stage,
@@ -646,7 +770,7 @@ def build_stage_command(
         worker_index=worker_index,
         module=module, module_argv=module_argv, argv=argv,
         resume_argv=resume_argv, env=_HOST_ENV, inputs=inputs, outputs=outputs,
-        gpu_bearing=assignment.stage in _GPU_STAGES,
+        gpu_bearing=gpu_bearing,
     )
 
 
@@ -919,10 +1043,101 @@ def _normalize_telemetry(
     return result, summary
 
 
+def _strict_stdout_json(payload: bytes) -> Mapping[str, object] | None:
+    """Parse the one-line machine receipt used for a telemetry waiver."""
+
+    if not payload.endswith(b"\n") or payload.count(b"\n") != 1:
+        return None
+
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            payload[:-1].decode("utf-8"),
+            object_pairs_hook=unique,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-JSON constant {value}")
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    return value if isinstance(value, Mapping) else None
+
+
+def _gpu_activity_requirement(
+    manifest: Mapping[str, object],
+    command: CampaignCommand,
+    normalized_job: Mapping[str, object],
+) -> str:
+    """Derive the utilization rule from fixed work and byte-exact output.
+
+    Source-identity cache validation deliberately returns before CUDA when an
+    already-published cache validates exactly.  That is useful resumability,
+    not missing GPU work.  Only that sealed disposition may waive positive
+    utilization; a fresh source build and every numerical GPU stage retain the
+    campaign's positive-activity requirement.
+    """
+
+    if not command.gpu_bearing:
+        return "not_applicable"
+    policy = manifest["policy"]
+    assert isinstance(policy, Mapping)
+    telemetry_policy = policy["telemetry"]
+    assert isinstance(telemetry_policy, Mapping)
+    if not bool(telemetry_policy["require_positive_gpu_utilization"]):
+        return "telemetry_policy_disabled"
+    if command.stage not in {
+        "coordinator_source_identity", "worker_source_identity",
+    }:
+        return "positive_utilization_required"
+    try:
+        output = JobReceipt.from_payload(normalized_job).stdout
+    except (TypeError, ValueError):
+        return "positive_utilization_required"
+    receipt = _strict_stdout_json(output)
+    if receipt is None or set(receipt) != {
+        "schema", "disposition", "model", "cache", "cache_sha256",
+        "identity", "portable_identity",
+    }:
+        return "positive_utilization_required"
+    portable = receipt.get("portable_identity")
+    inputs = manifest["inputs"]
+    assert isinstance(inputs, Mapping)
+    if (
+        receipt.get("schema") != WORKER_SOURCE_CACHE_RECEIPT_SCHEMA
+        or receipt.get("disposition") != "validated_reuse"
+        or receipt.get("model") != "/model"
+        or not isinstance(receipt.get("cache"), str)
+        or _HEX64.fullmatch(str(receipt.get("cache_sha256"))) is None
+        or not isinstance(receipt.get("identity"), Mapping)
+        or not isinstance(portable, Mapping)
+        or portable.get("schema")
+        != "prismaquant.streamed_model.portable_content.v1"
+        or portable.get("portable_content_sha256")
+        != inputs["model_content_sha256"]
+    ):
+        return "positive_utilization_required"
+    expected_cache = (
+        "/run/coordinator/source-identity-cache.json"
+        if command.stage == "coordinator_source_identity"
+        else "/worker-state/source-identity-cache.json"
+    )
+    if receipt["cache"] != expected_cache:
+        return "positive_utilization_required"
+    return "waived_validated_source_cache_reuse"
+
+
 def _stage_receipt(
     manifest: Mapping[str, object], command: CampaignCommand,
     request: RunRequest, job_receipt: object, telemetry: Sequence[object],
-    dependency_receipt_sha256s: Sequence[str], *, attempt_index: int,
+    dependency_receipt_sha256s: Sequence[str],
+    precondition_receipt_sha256s: Sequence[str], *, attempt_index: int,
     artifact_inspector: ArtifactInspector | None,
 ) -> dict[str, object]:
     job = _normalize_job_receipt(job_receipt, request)
@@ -931,15 +1146,13 @@ def _stage_receipt(
     assert isinstance(expected, Mapping)
     expected_gpu = expected["gpu"]
     assert isinstance(expected_gpu, Mapping)
-    policy = manifest["policy"]
-    assert isinstance(policy, Mapping)
-    telemetry_policy = policy["telemetry"]
-    assert isinstance(telemetry_policy, Mapping)
-    require_positive = command.gpu_bearing and bool(
-        telemetry_policy["require_positive_gpu_utilization"]
+    activity_requirement = _gpu_activity_requirement(
+        manifest, command, job,
     )
     samples, telemetry_summary = _normalize_telemetry(
-        telemetry, required=require_positive, expected_gpu=expected_gpu,
+        telemetry,
+        required=activity_requirement == "positive_utilization_required",
+        expected_gpu=expected_gpu,
     )
     output_artifacts = _inspect_command_outputs(
         command, host, artifact_inspector,
@@ -957,8 +1170,10 @@ def _stage_receipt(
         "command_identity_sha256": command.identity_sha256,
         "request_sha256": request.request_sha256,
         "dependency_receipt_sha256s": list(dependency_receipt_sha256s),
+        "precondition_receipt_sha256s": list(precondition_receipt_sha256s),
         "job": job,
         "gpu_bearing": command.gpu_bearing,
+        "gpu_activity_requirement": activity_requirement,
         "telemetry": samples,
         "telemetry_sha256": canonical_sha256(samples),
         "telemetry_summary": telemetry_summary,
@@ -975,6 +1190,7 @@ class CampaignCoordinator:
         *,
         transports: Mapping[str, CampaignTransport] | None = None,
         artifact_inspectors: Mapping[str, ArtifactInspector] | None = None,
+        stage_preconditioner: StagePreconditioner | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self.manifest = validate_campaign_manifest(manifest)
@@ -987,6 +1203,7 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError("campaign state directory is a symlink")
         self.transports = dict(transports or {})
         self.artifact_inspectors = dict(artifact_inspectors or {})
+        self.stage_preconditioner = stage_preconditioner
         if not callable(sleep):
             raise TypeError("sleep must be callable")
         self._sleep = sleep
@@ -1011,6 +1228,12 @@ class CampaignCoordinator:
     @property
     def state_path(self) -> Path:
         return self.state_dir / STATE_FILE
+
+    @property
+    def max_attempts(self) -> int:
+        """Return the sealed, bounded attempt count used by every command."""
+
+        return self._max_attempts
 
     @contextmanager
     def _exclusive_lock(self):
@@ -1065,6 +1288,7 @@ class CampaignCoordinator:
 
     def _request(
         self, command: CampaignCommand, *, attempt_index: int,
+        precondition_receipt_sha256s: Sequence[str] = (),
     ) -> RunRequest:
         if (
             isinstance(attempt_index, bool)
@@ -1093,14 +1317,70 @@ class CampaignCoordinator:
                 f"pq-{campaign_prefix}-{command.assignment_index:02d}-"
                 f"{command.stage}-{host_token}-attempt-{attempt_index:02d}"
             )
+        preconditions = self._normalize_precondition_sha256s(
+            precondition_receipt_sha256s,
+        )
+        request_env = dict(command.env)
+        request_env["PQ_CAMPAIGN_PRECONDITIONS_SHA256"] = canonical_sha256(
+            list(preconditions)
+        )
+        request_env["PQ_CAMPAIGN_GPU_BEARING"] = (
+            "1" if command.gpu_bearing else "0"
+        )
+        request_env["PQ_CAMPAIGN_START_GUARD"] = (
+            "1" if command.module is not None else "0"
+        )
         return RunRequest(
             job_id=job_id,
             argv=argv,
             cwd="/",
-            env=command.env,
-            timeout_seconds=None,
+            env=tuple(sorted(request_env.items())),
+            timeout_seconds=(
+                _STAGE_TIMEOUT_SECONDS[command.stage]
+                + (
+                    _CONTAINER_CLEANUP_GRACE_SECONDS
+                    if command.module is not None else 0.0
+                )
+            ),
+            stdin=(
+                canonical_json_bytes(self.manifest)
+                if command.module is not None else b""
+            ),
             inherit_env=False,
         )
+
+    @staticmethod
+    def _normalize_precondition_sha256s(
+        values: Sequence[str],
+    ) -> tuple[str, ...]:
+        if isinstance(values, (str, bytes)):
+            raise RTX4090TwoHostCampaignError(
+                "stage preconditions must be a digest sequence"
+            )
+        normalized = tuple(str(value) for value in values)
+        if (
+            normalized != tuple(sorted(set(normalized)))
+            or any(_HEX64.fullmatch(value) is None for value in normalized)
+        ):
+            raise RTX4090TwoHostCampaignError(
+                "stage precondition digests must be sorted unique SHA-256 values"
+            )
+        return normalized
+
+    def _stage_preconditions(
+        self, stage: str, *, verify_only: bool,
+    ) -> tuple[str, ...]:
+        if self.stage_preconditioner is None:
+            return ()
+        try:
+            values = self.stage_preconditioner(
+                stage, verify_only=verify_only,
+            )
+        except Exception as exc:
+            raise RTX4090TwoHostCampaignError(
+                f"stage preconditions failed for {stage}: {exc}"
+            ) from exc
+        return self._normalize_precondition_sha256s(values)
 
     def _attempt_telemetry_path(self, request: RunRequest) -> Path:
         return (
@@ -1231,8 +1511,27 @@ class CampaignCoordinator:
                         f"cannot safely adopt or start transport job "
                         f"{request.job_id}"
                     ) from status_error
+                guard_validator = getattr(
+                    transport, "validate_existing_guard", None,
+                )
+                if callable(guard_validator):
+                    try:
+                        guard_validator(request)
+                    except Exception as exc:
+                        raise RTX4090TwoHostCampaignError(
+                            f"adopted job {request.job_id} has no valid "
+                            "launch guard"
+                        ) from exc
                 return self._exact_transport_receipt(adopted, request)
             return self._exact_transport_receipt(started, request)
+        guard_validator = getattr(transport, "validate_existing_guard", None)
+        if callable(guard_validator):
+            try:
+                guard_validator(request)
+            except Exception as exc:
+                raise RTX4090TwoHostCampaignError(
+                    f"adopted job {request.job_id} has no valid launch guard"
+                ) from exc
         return self._exact_transport_receipt(existing, request)
 
     def _monitor_attempt(
@@ -1290,6 +1589,7 @@ class CampaignCoordinator:
     def _execute(
         self, assignment: StageAssignment, *,
         dependency_receipt_sha256s: Sequence[str],
+        precondition_receipt_sha256s: Sequence[str],
     ) -> tuple[StageAssignment, dict[str, object]]:
         command = self.commands[assignment.work_id]
         transport = self.transports.get(assignment.host_id)
@@ -1305,7 +1605,11 @@ class CampaignCoordinator:
             )
         last_failure: BaseException | None = None
         for attempt_index in range(self._max_attempts):
-            request = self._request(command, attempt_index=attempt_index)
+            request = self._request(
+                command,
+                attempt_index=attempt_index,
+                precondition_receipt_sha256s=precondition_receipt_sha256s,
+            )
             job, samples = self._monitor_attempt(
                 command, transport, request, attempt_index,
             )
@@ -1318,6 +1622,7 @@ class CampaignCoordinator:
                 receipt = _stage_receipt(
                     self.manifest, command, request, job, samples,
                     dependency_receipt_sha256s,
+                    precondition_receipt_sha256s,
                     attempt_index=attempt_index,
                     artifact_inspector=inspector,
                 )
@@ -1413,6 +1718,7 @@ class CampaignCoordinator:
         raw: object,
         assignment: StageAssignment,
         state: Mapping[str, object],
+        precondition_receipt_sha256s: Sequence[str],
     ) -> dict[str, object]:
         if not isinstance(raw, Mapping) or set(raw) != _EXECUTION_RECEIPT_KEYS:
             raise RTX4090TwoHostCampaignError(
@@ -1443,6 +1749,11 @@ class CampaignCoordinator:
             "dependency_receipt_sha256s": list(
                 self._dependency_receipts(state, assignment.stage)
             ),
+            "precondition_receipt_sha256s": list(
+                self._normalize_precondition_sha256s(
+                    precondition_receipt_sha256s,
+                )
+            ),
         }
         for key, expected in exact.items():
             if receipt.get(key) != expected:
@@ -1458,7 +1769,11 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError(
                 f"execution receipt attempt differs for {assignment.work_id}"
             )
-        request = self._request(command, attempt_index=attempt_index)
+        request = self._request(
+            command,
+            attempt_index=attempt_index,
+            precondition_receipt_sha256s=precondition_receipt_sha256s,
+        )
         if request.request_sha256 != receipt.get("request_sha256"):
             raise RTX4090TwoHostCampaignError(
                 f"execution receipt request differs for {assignment.work_id}"
@@ -1468,14 +1783,18 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError(
                 f"execution job receipt is noncanonical for {assignment.work_id}"
             )
+        activity_requirement = _gpu_activity_requirement(
+            self.manifest, command, normalized_job,
+        )
+        if receipt.get("gpu_activity_requirement") != activity_requirement:
+            raise RTX4090TwoHostCampaignError(
+                "execution GPU activity requirement differs for "
+                f"{assignment.work_id}"
+            )
         expected = host["expected"]
         assert isinstance(expected, Mapping)
         expected_gpu = expected["gpu"]
         assert isinstance(expected_gpu, Mapping)
-        policy = self.manifest["policy"]
-        assert isinstance(policy, Mapping)
-        telemetry_policy = policy["telemetry"]
-        assert isinstance(telemetry_policy, Mapping)
         telemetry = receipt["telemetry"]
         if not isinstance(telemetry, list):
             raise RTX4090TwoHostCampaignError(
@@ -1483,10 +1802,7 @@ class CampaignCoordinator:
             )
         samples, summary = _normalize_telemetry(
             telemetry,
-            required=(
-                command.gpu_bearing
-                and bool(telemetry_policy["require_positive_gpu_utilization"])
-            ),
+            required=activity_requirement == "positive_utilization_required",
             expected_gpu=expected_gpu,
         )
         if (
@@ -1502,12 +1818,15 @@ class CampaignCoordinator:
 
     def _read_receipt(
         self, assignment: StageAssignment, state: Mapping[str, object],
+        precondition_receipt_sha256s: Sequence[str],
     ) -> dict[str, object]:
         path = self.state_dir / RECEIPT_DIR / f"{assignment.work_id}.json"
         raw = _strict_json_mapping(
             path, where=f"execution receipt {assignment.work_id}",
         )
-        return self._validate_receipt(raw, assignment, state)
+        return self._validate_receipt(
+            raw, assignment, state, precondition_receipt_sha256s,
+        )
 
     def advance(
         self, state: Mapping[str, object], *, resume: bool,
@@ -1515,6 +1834,12 @@ class CampaignCoordinator:
         ready = next_ready_assignments(self.manifest, state)
         if not ready:
             return dict(state)
+        stage = ready[0].stage
+        if any(assignment.stage != stage for assignment in ready):
+            raise RTX4090TwoHostCampaignError(
+                "campaign frontier unexpectedly spans multiple stages"
+            )
+        preconditions = self._stage_preconditions(stage, verify_only=False)
         current = dict(state)
         pending: list[StageAssignment] = []
         for assignment in ready:
@@ -1524,7 +1849,9 @@ class CampaignCoordinator:
             if not receipt_path.exists():
                 pending.append(assignment)
                 continue
-            receipt = self._read_receipt(assignment, current)
+            receipt = self._read_receipt(
+                assignment, current, preconditions,
+            )
             current = complete_assignment(
                 self.manifest,
                 current,
@@ -1543,6 +1870,7 @@ class CampaignCoordinator:
                     dependency_receipt_sha256s=self._dependency_receipts(
                         current, assignment.stage,
                     ),
+                    precondition_receipt_sha256s=preconditions,
                 ): assignment
                 for assignment in pending
             }
@@ -1630,6 +1958,7 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError(
                 "execution receipt files differ from durable state completions"
             )
+        preconditions_by_stage: dict[str, tuple[str, ...]] = {}
         for path in paths:
             work_id = path.stem
             assignment = assignment_by_work_id.get(work_id)
@@ -1637,7 +1966,15 @@ class CampaignCoordinator:
                 raise RTX4090TwoHostCampaignError(
                     f"execution receipt is outside the fixed DAG: {path}"
                 )
-            receipt = self._read_receipt(assignment, state)
+            preconditions = preconditions_by_stage.get(assignment.stage)
+            if preconditions is None:
+                preconditions = self._stage_preconditions(
+                    assignment.stage, verify_only=True,
+                )
+                preconditions_by_stage[assignment.stage] = preconditions
+            receipt = self._read_receipt(
+                assignment, state, preconditions,
+            )
             completion = completion_by_work_id[work_id]
             if completion.get("receipt_sha256") != receipt["identity_sha256"]:
                 raise RTX4090TwoHostCampaignError(
@@ -1761,6 +2098,34 @@ def main(
     if args.command == "plan":
         _write_exact_no_clobber(Path(args.output), build_command_plan(manifest))
         print(args.output)
+        return 0
+    if transport_factory is None and artifact_inspector_factory is None:
+        if args.command == "status":
+            result = CampaignCoordinator(manifest, args.state_dir).status()
+        else:
+            from prismaquant.rtx4090_two_host_application import (
+                build_live_campaign_application,
+            )
+
+            try:
+                application = build_live_campaign_application(
+                    manifest,
+                    args.state_dir,
+                    initialize=args.command in {"run", "resume"},
+                )
+                if args.command == "run":
+                    result = application.run_to_completion(resume=False)
+                elif args.command == "resume":
+                    result = application.run_to_completion(resume=True)
+                else:
+                    result = application.verify()
+            except RTX4090TwoHostCampaignError:
+                raise
+            except Exception as exc:
+                raise RTX4090TwoHostCampaignError(
+                    f"live campaign application failed: {exc}"
+                ) from exc
+        print(json.dumps(result, sort_keys=True))
         return 0
     transports = transport_factory(manifest) if transport_factory is not None else {}
     artifact_inspectors = (
