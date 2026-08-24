@@ -629,6 +629,101 @@ def _payload(index: int, *, cover=None):
     }
 
 
+def _producer_mtp_row(
+    seed: int,
+    *,
+    emit_dense_marginals: bool = True,
+) -> dict:
+    """Build one MTP row through the real dense Fisher producer."""
+    import torch.nn as nn
+
+    from prismaquant.sensitivity_probe import FisherAccumulator
+
+    with torch.random.fork_rng(devices=[]):
+        # Every sample-parallel worker has identical source weights; only its
+        # disjoint calibration samples differ.
+        torch.manual_seed(7)
+        wrapper = nn.Module()
+        mtp = nn.Module()
+        mtp.add_module("fc", nn.Linear(3, 2, bias=False))
+        wrapper.add_module("mtp", mtp)
+
+    accumulator = FisherAccumulator(
+        wrapper,
+        ["mtp.fc"],
+        {},
+        hook_packed_experts=False,
+        emit_dense_marginals=emit_dense_marginals,
+    )
+    generator = torch.Generator().manual_seed(seed + 100)
+    try:
+        # Two local samples at seqlen=4 produce exactly 2 * (T - 2) rows,
+        # matching the sample-parallel MTP token-cover fixture.
+        for _ in range(2):
+            inputs = torch.randn(
+                1, 2, 3, generator=generator, requires_grad=True,
+            )
+            cotangent = torch.randn(1, 2, 2, generator=generator)
+            (wrapper.mtp.fc(inputs) * cotangent).sum().backward()
+            wrapper.zero_grad(set_to_none=True)
+        accumulator.finalize(tracker=None, global_tokens=8)
+        return copy.deepcopy(accumulator.stats["mtp.fc"])
+    finally:
+        accumulator.remove_hooks()
+
+
+def test_dense_marginal_opt_in_preserves_legacy_fisher_payload():
+    legacy = _producer_mtp_row(41, emit_dense_marginals=False)
+    marginal = _producer_mtp_row(41, emit_dense_marginals=True)
+    marginal_fields = set(merge_module._DENSE_MARGINAL_FIELDS)
+
+    assert not (set(legacy) & marginal_fields)
+    assert set(marginal) == set(legacy) | marginal_fields
+    for field in set(legacy) - {"h_trace_raw", "h_trace"}:
+        assert marginal[field] == legacy[field]
+    np.testing.assert_allclose(
+        marginal["h_trace_raw"], legacy["h_trace_raw"], rtol=1e-6,
+    )
+    np.testing.assert_allclose(
+        marginal["h_trace"], legacy["h_trace"], rtol=1e-6,
+    )
+
+
+@pytest.mark.parametrize(
+    ("sample_contract", "marginals_env", "expected"),
+    [
+        (None, "1", False),
+        ({}, "1", True),
+        ({}, "0", False),
+    ],
+)
+def test_mtp_accumulator_marginals_are_sample_parallel_only(
+    monkeypatch, sample_contract, marginals_env, expected,
+):
+    import torch.nn as nn
+
+    from prismaquant import incremental_probe as incremental
+
+    monkeypatch.setenv("PRISMAQUANT_PROBE_MARGINALS", marginals_env)
+    wrapper = nn.Module()
+    mtp = nn.Module()
+    mtp.add_module("fc", nn.Linear(3, 2, bias=False))
+    wrapper.add_module("mtp", mtp)
+    accumulator = incremental._build_mtp_fisher_accumulator(
+        wrapper,
+        ["mtp.fc"],
+        {},
+        None,
+        input_rows_limit=4,
+        detail_dir=None,
+        sample_parallel_contract=sample_contract,
+    )
+    try:
+        assert accumulator.emit_dense_marginals is expected
+    finally:
+        accumulator.remove_hooks()
+
+
 def test_probe_merge_is_order_invariant_and_refinalizes_global_raw_stats():
     cover = _cover()
     shards = [_payload(0), _payload(1)]
@@ -1393,6 +1488,140 @@ def _publish_valid_activation_bundle(
         destination, expected_cover=cover
     )
     return cover, destination
+
+
+def test_real_mtp_producer_row_closes_resume_postflight_merge_and_bundle(
+    tmp_path,
+):
+    from prismaquant import incremental_probe as incremental
+    from prismaquant.sample_parallel_probe_merge import (
+        validate_sample_parallel_stat_row,
+    )
+
+    cover = _cover()
+    mtp_rows = [_producer_mtp_row(31), _producer_mtp_row(32)]
+    for index, row in enumerate(mtp_rows):
+        validate_sample_parallel_stat_row(
+            row,
+            qname="mtp.fc",
+            expected_tokens=4,
+            expected_shape=(2, 3),
+            require_marginals=True,
+        )
+        assert row["n_tokens_seen"] == 4
+        assert set(merge_module._DENSE_MARGINAL_FIELDS) <= set(row)
+        np.testing.assert_allclose(
+            row["fisher_row"].sum(), row["h_trace_raw"], rtol=1e-5,
+        )
+        np.testing.assert_allclose(
+            row["fisher_col"].sum(), row["h_trace_raw"], rtol=1e-5,
+        )
+
+        # Exercise the exact resume gate that rejected/recomputed the live MTP
+        # shard: no activation entry is expected for terminal-BF16 MTP.
+        expected_meta = {
+            "linear_include": r"^mtp\.fc$",
+            "linear_exclude": "",
+            "sample_parallel": copy.deepcopy(cover["shards"][index]),
+            "sample_parallel_qname_census": copy.deepcopy(
+                cover["qname_census"]
+            ),
+            "emit_marginals": True,
+            "activation_cache_dir": str(tmp_path / f"unused-act-{index}"),
+            "activation_rows_limit": 1024,
+        }
+        shard_path = tmp_path / f"probe_shard_mtp_{index}.pkl"
+        shard_path.write_bytes(pickle.dumps({
+            "stats": {"mtp.fc": copy.deepcopy(row)},
+            "meta": copy.deepcopy(expected_meta),
+        }, protocol=pickle.HIGHEST_PROTOCOL))
+        assert incremental.probe_shard_is_reusable(
+            shard_path, expected_meta,
+        )
+
+    # The live bad shard was rejected by direct resume, but it can also enter
+    # the LPS-invariant per-Linear pool.  Synthesis must replay the same closed
+    # row validator rather than trusting the shard's `emit_marginals` stamp.
+    stale_dir = tmp_path / "stale-linear-cache"
+    stale_dir.mkdir()
+    stale_row = copy.deepcopy(mtp_rows[0])
+    for field in merge_module._DENSE_MARGINAL_FIELDS:
+        stale_row.pop(field)
+    stale_meta = {
+        "linear_include": r"^mtp\.fc$",
+        "linear_exclude": "",
+        "sample_parallel": copy.deepcopy(cover["shards"][0]),
+        "sample_parallel_qname_census": copy.deepcopy(
+            cover["qname_census"]
+        ),
+        "emit_marginals": True,
+        "activation_cache_dir": str(tmp_path / "unused-stale-act"),
+        "activation_rows_limit": 1024,
+    }
+    (stale_dir / "probe_shard_001.pkl").write_bytes(pickle.dumps({
+        "stats": {"mtp.fc": stale_row},
+        "meta": copy.deepcopy(stale_meta),
+    }, protocol=pickle.HIGHEST_PROTOCOL))
+    stale_cache = incremental.scan_cached_linear_stats(
+        stale_dir, stale_meta,
+    )
+    assert set(stale_cache) == {"mtp.fc"}
+    synthesized = tmp_path / "stale-synthesized-mtp.pkl"
+    assert not incremental.synthesize_shard_from_linear_cache(
+        linear_include=r"^mtp\.fc$",
+        linear_exclude="",
+        cache=stale_cache,
+        expected_meta=stale_meta,
+        output_path=synthesized,
+    )
+    assert not synthesized.exists()
+
+    payloads = [_payload(0, cover=cover), _payload(1, cover=cover)]
+    for payload, row in zip(payloads, mtp_rows, strict=True):
+        payload["stats"]["mtp.fc"] = copy.deepcopy(row)
+    merged = merge_sample_parallel_probe_payloads(
+        payloads, expected_cover=cover,
+    )
+    merged_mtp = merged["stats"]["mtp.fc"]
+    for field in ("fisher_row", "fisher_col", "g_sq_sum", "act_sq_sum"):
+        np.testing.assert_array_equal(
+            merged_mtp[field], mtp_rows[0][field] + mtp_rows[1][field],
+        )
+    np.testing.assert_array_equal(
+        merged_mtp["act_absmax"],
+        np.maximum(mtp_rows[0]["act_absmax"], mtp_rows[1]["act_absmax"]),
+    )
+
+    caches = [tmp_path / "real-first", tmp_path / "real-second"]
+    for index, cache in enumerate(caches):
+        inputs = torch.arange(
+            index * 24, (index + 1) * 24, dtype=torch.float32,
+        ).reshape(8, 3)
+        _write_activation(
+            cache,
+            BODY_QNAMES[0],
+            inputs,
+            None,
+            partition_index=index,
+            cover=cover,
+        )
+    destination = tmp_path / "real-mtp-bundle"
+    producer.publish_sample_parallel_merge_bundle(
+        merged,
+        {0: caches[0], 1: caches[1]},
+        destination,
+        expected_cover=cover,
+        max_rows=1024,
+    )
+    validated = producer.validate_sample_parallel_merge_bundle(
+        destination,
+        expected_cover=cover,
+        capture_consumables=True,
+    )
+    validated_mtp = validated["_validated_probe_payload"]["stats"]["mtp.fc"]
+    np.testing.assert_array_equal(
+        validated_mtp["fisher_row"], merged_mtp["fisher_row"],
+    )
 
 
 def test_burn_col_weights_use_captured_validated_bundle_probe_after_replace(

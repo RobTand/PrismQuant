@@ -1760,6 +1760,11 @@ class RouterTracker:
 # ---------------------------------------------------------------------------
 # Fisher accumulator with activation snapshot cache
 # ---------------------------------------------------------------------------
+_DENSE_FISHER_MARGINAL_KEYS = (
+    "fisher_row", "fisher_col", "g_sq_sum", "act_sq_sum", "act_absmax",
+)
+
+
 class FisherAccumulator:
     def __init__(self, model: nn.Module, tracked: list[str],
                  expert_info: dict[str, tuple[str, str]],
@@ -1767,7 +1772,8 @@ class FisherAccumulator:
                  input_rows: int = 256,
                  hook_packed_experts: bool = True,
                  h_detail_dir: Path | None = None,
-                 model_profile=None):
+                 model_profile=None,
+                 emit_dense_marginals: bool = False):
         self.stats: dict[str, dict] = {}
         self._saved_inputs: dict[str, torch.Tensor] = {}
         self._fwd_handles, self._bwd_handles = [], []
@@ -1826,6 +1832,14 @@ class FisherAccumulator:
         # Python scalar `stats[name]["h_trace_raw"]` once at finalize().
         self._gpu_h_trace: dict[str, torch.Tensor] = {}
         self._gpu_h_w2_sum: dict[str, torch.Tensor] = {}
+        # Optional dense per-channel Fisher marginals.  The ordinary
+        # sensitivity backend does not need these, so keep the path strictly
+        # opt-in.  Sample-parallel MTP does need them: its terminal-BF16 rows
+        # participate in the same closed dense schema as body/lm_head rows.
+        # Accumulate on the producing device and drain only in finalize() so
+        # enabling the contract cannot add CPU synchronization to each hook.
+        self.emit_dense_marginals = bool(emit_dense_marginals)
+        self._gpu_dense_marginals: dict[str, list[torch.Tensor]] = {}
         # Linears we never want Fisher signal for (always BF16 in our
         # serving stack, so accumulating the full per-weight matrix is
         # dead work). Populated in install_hooks() based on a regex; the
@@ -2032,6 +2046,95 @@ class FisherAccumulator:
                     self._fwd_handles.append(
                         experts_mod.register_forward_hook(_exp_fwd))
 
+    @staticmethod
+    def _dense_marginal_chunk(
+        gy2_sq: torch.Tensor,
+        x2_sq: torch.Tensor,
+        x2: torch.Tensor,
+        chunk_h: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        """Return the closed dense-schema marginals for one hook call."""
+        if x2.size(0) == 0:
+            act_absmax = torch.zeros(
+                x2.size(1), dtype=torch.float32, device=x2.device,
+            )
+        else:
+            act_absmax = torch.maximum(
+                x2.amax(dim=0).abs(), x2.amin(dim=0).abs(),
+            ).to(torch.float32)
+        return [
+            chunk_h.sum(dim=1, dtype=torch.float32),
+            chunk_h.sum(dim=0, dtype=torch.float32),
+            gy2_sq.sum(dim=0, dtype=torch.float32),
+            x2_sq.sum(dim=0, dtype=torch.float32),
+            act_absmax,
+        ]
+
+    def _accumulate_dense_marginals(
+        self,
+        name: str,
+        values: list[torch.Tensor],
+    ) -> None:
+        current = self._gpu_dense_marginals.get(name)
+        if current is None:
+            self._gpu_dense_marginals[name] = [
+                value.detach().clone() for value in values
+            ]
+            return
+        for key, dst, src in zip(
+            _DENSE_FISHER_MARGINAL_KEYS, current, values, strict=True,
+        ):
+            if key == "act_absmax":
+                torch.maximum(dst, src, out=dst)
+            else:
+                dst.add_(src)
+
+    def _flush_dense_marginals(self) -> None:
+        """Drain opt-in dense marginals once per device at finalization."""
+        if not self.emit_dense_marginals:
+            return
+
+        # A tracked Linear whose hook never fires must still carry the exact
+        # schema.  Zeros are identities for all sums and for max(|x|).
+        for name in self.tracked:
+            entry = self.stats.get(name)
+            if entry is None or "out_features" not in entry:
+                continue
+            out_features = int(entry["out_features"])
+            in_features = int(entry["in_features"])
+            entry.update({
+                "fisher_row": np.zeros(out_features, dtype=np.float32),
+                "fisher_col": np.zeros(in_features, dtype=np.float32),
+                "g_sq_sum": np.zeros(out_features, dtype=np.float32),
+                "act_sq_sum": np.zeros(in_features, dtype=np.float32),
+                "act_absmax": np.zeros(in_features, dtype=np.float32),
+            })
+
+        # A sensitivity model can span devices.  Batch all vectors resident on
+        # the same device into one transfer without assuming a single GPU.
+        by_device: dict[torch.device, list[tuple[str, list[torch.Tensor]]]] = (
+            defaultdict(list)
+        )
+        for name, values in self._gpu_dense_marginals.items():
+            by_device[values[0].device].append((name, values))
+        for device_entries in by_device.values():
+            host = torch.cat([
+                value.reshape(-1)
+                for _, values in device_entries
+                for value in values
+            ]).to("cpu")
+            offset = 0
+            for name, values in device_entries:
+                entry = self.stats.get(name)
+                for key, value in zip(
+                    _DENSE_FISHER_MARGINAL_KEYS, values, strict=True,
+                ):
+                    length = int(value.numel())
+                    if entry is not None:
+                        entry[key] = host[offset:offset + length].numpy().copy()
+                    offset += length
+        self._gpu_dense_marginals.clear()
+
     def _make_fwd(self, name: str):
         def hook(module, inp, out):
             x = inp[0] if isinstance(inp, tuple) else inp
@@ -2203,19 +2306,33 @@ class FisherAccumulator:
             gy_norm_sq = gy2_sq.sum(dim=1)      # (T,)  = ‖gy_t‖²
             x_norm_sq = x2_sq.sum(dim=1)        # (T,)  = ‖x_t‖²
             per_token_grad_norm_sq = gy_norm_sq * x_norm_sq  # (T,) = ‖∇_t‖²_F
-            # Trace = Σ_t ‖∇_t‖²_F. Accumulate on GPU (0-dim tensor) to
-            # avoid the CUDA→CPU sync that .item() would force per call.
-            # Flushed to the Python scalar at finalize().
-            gpu_trace = self._gpu_h_trace.get(name)
-            if gpu_trace is None:
-                gpu_trace = torch.zeros((), dtype=torch.float32,
-                                        device=per_token_grad_norm_sq.device)
-                self._gpu_h_trace[name] = gpu_trace
-            gpu_trace.add_(per_token_grad_norm_sq.sum())
             # Per-weight diagonal accumulator: h_full[i,j] = Σ_t gy²_{t,i}·x²_{t,j}
             # Compute the matmul once, reuse for both the accumulator and the
             # weight-aware scalar proxy. (Earlier draft computed it twice.)
             chunk_h = gy2_sq.t() @ x2_sq        # (out, in)
+            if self.emit_dense_marginals:
+                self._accumulate_dense_marginals(
+                    name,
+                    self._dense_marginal_chunk(
+                        gy2_sq, x2_sq, x2, chunk_h,
+                    ),
+                )
+            # Trace = Σ_t ‖∇_t‖²_F.  In marginal mode use the same
+            # chunk_h reduction as fisher_row/fisher_col, matching the
+            # incremental producer's closed-schema wiring identity.  The
+            # ordinary path retains its existing per-token reduction exactly.
+            trace_chunk = (
+                chunk_h.sum(dtype=torch.float32)
+                if self.emit_dense_marginals
+                else per_token_grad_norm_sq.sum()
+            )
+            gpu_trace = self._gpu_h_trace.get(name)
+            if gpu_trace is None:
+                gpu_trace = torch.zeros(
+                    (), dtype=torch.float32, device=trace_chunk.device,
+                )
+                self._gpu_h_trace[name] = gpu_trace
+            gpu_trace.add_(trace_chunk)
             acc = self._h_full.get(name)
             if acc is None:
                 # Deferred allocation for disk-offloaded Linears (CPU-resident
@@ -2259,6 +2376,7 @@ class FisherAccumulator:
         for nm, gpu_t in self._gpu_h_w2_sum.items():
             if nm in self.stats:
                 self.stats[nm]["h_w2_sum_raw"] += float(gpu_t.item())
+        self._flush_dense_marginals()
         # Flush packed-expert grad-norm accumulator into stats h_trace_raw.
         # The packed accumulator key matches the stats key by construction
         # (full param name `<experts_qname>.<param_name>`).

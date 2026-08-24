@@ -1383,6 +1383,10 @@ def synthesize_shard_from_linear_cache(
     sample_partition = expected_meta.get("sample_parallel")
     if isinstance(sample_census, dict) and isinstance(sample_partition, dict):
         try:
+            from prismaquant.sample_parallel_probe_merge import (
+                validate_sample_parallel_stat_row,
+            )
+
             manifest_entries = sample_census["probe_qname_manifest"]["entries"]
             expected_names = {
                 str(name) for name in manifest_entries
@@ -1406,15 +1410,15 @@ def synthesize_shard_from_linear_cache(
                     if token_rule == "seqlen_minus_2"
                     else -1
                 )
-                if (
-                    not isinstance(stats, dict)
-                    or stats.get("out_features") != shape[0]
-                    or stats.get("in_features") != shape[1]
-                    or stats.get("n_params") != shape[0] * shape[1]
-                    or stats.get("n_tokens_seen")
-                    != local_samples * per_sample
-                ):
+                if not isinstance(stats, dict):
                     return False
+                validate_sample_parallel_stat_row(
+                    stats,
+                    qname=name,
+                    expected_tokens=local_samples * per_sample,
+                    expected_shape=shape,
+                    require_marginals=bool(expected_meta["emit_marginals"]),
+                )
         except (KeyError, TypeError, ValueError):
             return False
     # Layer-completeness gate. "Any Linear matches" is NOT shard
@@ -4168,6 +4172,35 @@ def _load_mtp_source_for_probe(
     return raw, list(missing), list(extra)
 
 
+def _build_mtp_fisher_accumulator(
+    mtp_wrapper: nn.Module,
+    tracked: list[str],
+    expert_info: dict[str, tuple[str, str]],
+    cache_dir: Path | None,
+    *,
+    input_rows_limit: int,
+    detail_dir: Path | None,
+    sample_parallel_contract: dict[str, object] | None,
+) -> FisherAccumulator:
+    """Construct the MTP collector with its execution-contract features.
+
+    Dense marginals are intentionally narrower than the global environment
+    default here: only sample-parallel MTP rows enter the all-qname closed
+    schema.  Ordinary MTP probing retains the accumulator's legacy payload.
+    """
+    return FisherAccumulator(
+        mtp_wrapper,
+        tracked,
+        expert_info,
+        cache_dir,
+        input_rows=input_rows_limit,
+        h_detail_dir=detail_dir,
+        emit_dense_marginals=(
+            sample_parallel_contract is not None and _marginals_enabled()
+        ),
+    )
+
+
 def _run_mtp_streaming_shard(
     ctx: StreamingContext,
     *,
@@ -4311,13 +4344,14 @@ def _run_mtp_streaming_shard(
         cache_dir.mkdir(parents=True, exist_ok=True)
     detail_dir = Path(h_detail_dir) if h_detail_dir else None
     input_rows_limit = max(1, int(activation_rows_limit))
-    acc = FisherAccumulator(
+    acc = _build_mtp_fisher_accumulator(
         mtp_wrapper,
         tracked,
         expert_info,
         cache_dir,
-        input_rows=input_rows_limit,
-        h_detail_dir=detail_dir,
+        input_rows_limit=input_rows_limit,
+        detail_dir=detail_dir,
+        sample_parallel_contract=sample_parallel_contract,
     )
 
     # lm_head lives on the body model (resident).
