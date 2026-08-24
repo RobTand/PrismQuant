@@ -517,6 +517,47 @@ def test_unsupported_nvfp4_rungs_are_refused_before_output_transaction(
     [export_nvfp4_cb, export_nvfp4_cb_streaming],
     ids=["batch", "streaming"],
 )
+@pytest.mark.parametrize(
+    "format_name",
+    ["FP8_SOURCE", "FP8_BLOCK_UE8M0_SOURCE"],
+)
+def test_sm120_w8a16_is_refused_before_output_transaction(
+    workdir, exporter, format_name,
+):
+    """Compatibility readers do not make W8A16 materializable for RTX50."""
+    qname = "model.layers.0.self_attn.q_proj"
+    mdl = workdir / f"model-{format_name.lower()}"
+    _write_model(mdl, {
+        f"{qname}.weight": torch.zeros(8, 256, dtype=torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / f"{format_name.lower()}.json"
+    _assign(assignment, {
+        qname: format_name,
+        "__prismaquant__": {
+            "schema": "prismaquant.layer_config_meta.v1",
+            "target_profile": "qwen38_sm120_cb_validation_only",
+        },
+    })
+    out = workdir / f"{format_name.lower()}-{exporter.__name__}"
+
+    with pytest.raises(ValueError, match="target profile.*refuses assignment"):
+        exporter(
+            mdl,
+            assignment,
+            out,
+            {qname: torch.ones(256)},
+            device="cpu",
+        )
+    assert not out.exists()
+    assert list(workdir.glob(f".{out.name}.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
+    "exporter",
+    [export_nvfp4_cb, export_nvfp4_cb_streaming],
+    ids=["batch", "streaming"],
+)
 def test_cb_exporters_emit_gated_ldlq_bytes(
     workdir, exporter, monkeypatch,
 ):
@@ -1666,10 +1707,21 @@ def _emitted_bytes(out: Path, name: str) -> bytes:
     return _source_bytes(out, name)
 
 
-def _export_dsv4(workdir, out_name="out", **model_kwargs):
+def _export_dsv4(
+    workdir,
+    out_name="out",
+    *,
+    target_profile: str | None = None,
+    **model_kwargs,
+):
     mdl = workdir / "src"
     tensors = _dsv4_source_model(mdl, **model_kwargs)
     assignment, col_weights = _dsv4_recipe(**model_kwargs)
+    if target_profile is not None:
+        assignment["__prismaquant__"] = {
+            "schema": "prismaquant.layer_config_meta.v1",
+            "target_profile": target_profile,
+        }
     path = workdir / f"{out_name}.json"
     _assign(path, assignment)
     out = workdir / out_name
@@ -1717,6 +1769,18 @@ def test_source_passthrough_streams_checkpoint_bytes_verbatim(workdir):
     assert header["layers.1.ffn.experts.0.w1.scale"]["dtype"] == "F8_E8M0"
     assert header["layers.0.attn.wq_a.weight"]["dtype"] == "F8_E4M3"
     assert header["layers.0.attn.wq_a.scale"]["dtype"] == "F8_E8M0"
+
+
+def test_generic_profile_keeps_published_source_materialization_compatible(
+    workdir,
+):
+    """The new SM120 deny must not globally disable DSv4 source artifacts."""
+    _mdl, _out, _tensors, counts = _export_dsv4(
+        workdir,
+        target_profile="nvfp4_cb",
+    )
+    assert counts["MXFP4_SOURCE"] == _SOURCE_EXPERTS * 3
+    assert counts["FP8_BLOCK_UE8M0_SOURCE"] == 1
 
 
 def test_ue8m0_block_scale_is_not_widened_like_fp8_source(workdir):

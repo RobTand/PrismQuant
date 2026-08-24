@@ -60,6 +60,12 @@ layout. It has no producer policy and carries no release or device-qualified
 claim: candidate Gridbook v11 is compile-only and unpinned, so an immutable
 consumer release and exact device-qualified routes remain mandatory before
 these structurally legal bytes can become a shippable SM120 artifact.
+It also explicitly denies the shared registry's W8A16/source-FP8 compatibility
+set. Those legacy wire/assignment readers remain available for published
+source-model artifacts, but no such format may enter this profile's new RTX50
+cost menu, assignment, or release decision. Both materializers read the
+allocator's stamped target profile during outer preflight and refuse any denied
+format before creating the destination transaction or a `.tmp-*` sibling.
 
 **Hard constraint:** `in_features % 256 == 0` (the 256-weight superblock is both
 byte-exact and the vector-tiling unit). Linears that fail it are shipped BF16.

@@ -1,7 +1,20 @@
 # PrismaQuant Architecture
 
 As of: 2026-08-24 · `codex/rtx5060-fp4-gridbook-pilot-20260824` · working-tree revision based on
-`bb82d2b` — stamps follow, newest first, each recording its own branch and date. Re-stamped
+`55602f9` — stamps follow, newest first, each recording its own branch and date. Re-stamped
+(2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **maintained SM120/RTX50
+W8A16 exclusion**. The shared registry retains W8A16 assignment compatibility, while generic
+source-model container profiles retain source-FP8 wire compatibility for already-published
+artifacts; neither is target-performance eligibility. `qwen38_sm120_cb_validation_only` now
+carries an explicit deny for `format_registry.W8A16_COMPAT_FORMAT_NAMES` on top of its closed
+allow-list, and the dense
+Qwen3.8 campaign refuses any non-BF16 body source before plan construction, allocation, or GPU
+work. Both CB materializers read the allocator's stamped target profile and reject a denied
+assignment before opening the destination transaction, so a hand-edited W8A16 recipe cannot
+bypass chooser legality. New SM120 candidates therefore remain exactly both public CB ladders
+plus native NVFP4/FP8_E4M3/BF16; source-FP8 and other W8A16 formats cannot enter its chooser or future
+release decision. The generic DSv4/MiniMax compatibility producers and readers are deliberately
+unchanged. No device or served performance claim follows from this policy. Previously re-stamped
 (2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **validation-only SM120
 candidate registration and the dense full-ladder AQUA scaffold**. The new
 `qwen38_sm120_cb_validation_only` profile extends `nvfp4_cb`, binds exact platform `sm_120`,
@@ -882,8 +895,8 @@ by measurement, not by the cost model (§2).
 
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
-| Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | NVFP4, FP8_DYNAMIC/E4M3, FP8_SOURCE, BF16 | production default |
-| CB ("gridbook") | historical mixed `nvfp4_cb`, or a hardware-scoped CB checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. `qwen38_sm120_cb_validation_only` structurally registers both public ladders plus native NVFP4/FP8_E4M3/BF16 on exact `sm_120`, after which AQUA compares those activation contracts without a manual family preference. Both hardware-scoped campaigns are lattice-only | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. The strict `qwen38_rtx4090_fp8_cb` candidate still refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells and a physical 4090 closes the graph/device gate. The SM120 profile has no producer policy and is validation scaffolding only: candidate v11 is compile-only/unpinned, so the immutable release pin and exact device-qualified route contract remain mandatory before any artifact can ship |
+| Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | maintained: NVFP4, FP8_DYNAMIC/E4M3, BF16; FP8_SOURCE remains a source-artifact compatibility codec | production default for the maintained W4A4/W8A8/BF16 menu; W8A16/source FP8 is not SM120 performance eligibility |
+| CB ("gridbook") | historical mixed `nvfp4_cb`, or a hardware-scoped CB checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. `qwen38_sm120_cb_validation_only` structurally registers both public ladders plus native NVFP4/FP8_E4M3/BF16 on exact `sm_120`, explicitly denies W8A16/source-FP8 compatibility carriers, and lets AQUA compare the admitted activation contracts without a manual family preference. Both hardware-scoped campaigns are lattice-only | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. Generic readers retain published source-model compatibility, but that inventory does not make W8A16 a maintained RTX50 candidate. The strict `qwen38_rtx4090_fp8_cb` candidate still refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells and a physical 4090 closes the graph/device gate. The SM120 profile has no producer policy and is validation scaffolding only: candidate v11 is compile-only/unpinned, so the immutable release pin and exact device-qualified route contract remain mandatory before any artifact can ship |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
 
 Lane detail, defaults and proven results: §9. Export codecs: §6. Pipeline defaults: §3.3.
@@ -2822,7 +2835,7 @@ pricing and emulation. Registry-vs-callable consistency is pinned by
 | `NVFP4` | `:667-677` | 4 / 16 / fp8 e4m3, A4 g16 | 4.5 | Production, in the default menu (§3.3) |
 | `FP8_E4M3` | `:750-762` | 8 / per-channel / fp32, A8 per-token | 8 + 32/in_f | Production (`FP8_DYNAMIC`), in the default menu |
 | `BF16` | `:798-808` | 16 / — | 16 | Production, **passthrough only**, in the default menu |
-| `FP8_SOURCE` | `:825-837` | 8 / block (128,128) / fp32 | 8.00195 | Production, **passthrough only**, verbatim copy |
+| `FP8_SOURCE` | `:825-837` | 8 / block (128,128) / fp32 | 8.00195 | Source-artifact compatibility, **passthrough only**, verbatim copy; excluded from maintained SM120 production/chooser profiles |
 | `MXFP8_E4M3` | `:720-728` | 8 / 32 / e8m0 | 8.25 | Registered, profile-allowed, **de-menued** |
 | `NVFP4A16`, `MXFP4`, `MXFP6_E3M2/E2M3`, `MXFP8A16`, `MXFP8_E5M2`, `FP8_E5M2`, `INT8_W8A16`, `INT4_W4A16_g128` | `:678-795` | — | — | Research / registry-only |
 | GGUF k-quants + IQ | `:884-902` | `_make_gguf_spec :864` | 2.0625–8.5 | GGUF lane (§9.3) |
@@ -2835,7 +2848,9 @@ both, the allocator never picks it.
 
 `FP8_SOURCE`'s `quantize_dequantize` is identity (`:835`): the bf16 view *is* the lossless
 dequant of the source E4M3, so cost is exactly zero. Legal on dense Linears under
-`vllm_packed_moe`, **illegal on packed experts** (absent from the expert allow-list — §6.4).
+the generic `vllm_packed_moe` compatibility profile, **illegal on packed experts** (absent
+from the expert allow-list — §6.4), and explicitly denied by the maintained SM120 profile.
+Registry/read compatibility is intentionally broader than target performance eligibility.
 CB candidates deliberately use a different byte authority: the versioned
 `CBSerializationContext` in `nvfp4_cb_footprint.py` prices the exact FP4 layout,
 FP8 per-row FP32 scales, and deduplicated sidecar identity. Candidate
@@ -5291,8 +5306,8 @@ Spark-proven target, and the physically unqualified RTX 4090 candidate.
 ```mermaid
 flowchart LR
   subgraph CONT["artifact containers"]
-    A1["compressed-tensors<br/>NVFP4 / FP8_DYNAMIC / FP8_SOURCE / BF16<br/>export_native_compressed.py"]
-    A2["codebook (CB)<br/>NVFP4 reader/producer: K1..K25 (new bands contract-gated)<br/>K26..K32: direct codec/lattice research only<br/>FP8 reader: K4/K8/K12/K16/K20/K24 + every K28..K48<br/>new FP8 producer: K4..K48 step 4<br/>SM89: lattice FP8-CB + FP8_E4M3 + BF16 only<br/>SM120 validation profile: both producer ladders + native terminals"]
+    A1["compressed-tensors<br/>maintained: NVFP4 / FP8_DYNAMIC / BF16<br/>FP8_SOURCE: source-artifact compatibility<br/>export_native_compressed.py"]
+    A2["codebook (CB)<br/>NVFP4 reader/producer: K1..K25 (new bands contract-gated)<br/>K26..K32: direct codec/lattice research only<br/>FP8 reader: K4/K8/K12/K16/K20/K24 + every K28..K48<br/>new FP8 producer: K4..K48 step 4<br/>SM89: lattice FP8-CB + FP8_E4M3 + BF16 only<br/>SM120 validation: both producer ladders + native terminals; no W8A16/source FP8"]
     A3["GGUF<br/>Q2_K..Q8_0 + IQ family<br/>export_gguf.py"]
   end
 
@@ -5592,8 +5607,16 @@ publishes those rungs and device-qualifies the requested structure/regime cells.
 
 `qwen38_sm120_cb_validation_only` is the matching producer-side registration
 scaffold: exact `target_platform=sm_120`, both public producer ladders, and only
-native NVFP4/FP8_E4M3/BF16 terminals. It deliberately declares no
-`producer_policy`. The profile therefore proves a closed candidate set and lets
+native NVFP4/FP8_E4M3/BF16 terminals. Its format rule also explicitly denies
+`format_registry.W8A16_COMPAT_FORMAT_NAMES`: the generic profile still knows
+how to read/reproduce published source-FP8 artifacts, but those compatibility
+routes cannot enter a new RTX50 cost menu, assignment, or release decision.
+The dense driver independently requires a complete BF16 body-source census
+before it writes the format plan. Both resident and streaming CB exporters
+read the assignment's reserved `target_profile` metadata (or the explicit
+`PRISMAQUANT_TARGET_PROFILE` override) during their outer preflight and refuse
+profile-denied formats before creating a destination or `.tmp-*` sibling. It
+deliberately declares no `producer_policy`. The profile therefore proves a closed candidate set and lets
 the dense AQUA campaign compare both registered activation contracts; it cannot
 stamp route qualification, become an exporter ship policy, or stand in for an
 immutable Gridbook pin. The release/device-qualified contract gate remains the

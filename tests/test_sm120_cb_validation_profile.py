@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from prismaquant import format_registry as fr
 from prismaquant.cb_layout import (
     FP8_PRODUCT_RUNGS,
@@ -12,6 +14,7 @@ from prismaquant.cb_layout import (
 from prismaquant.dense_anchored_cb import (
     ANCHOR_FORMATS,
     DEFAULT_TARGET_PROFILE,
+    DenseCampaignError,
     FP8_CB_LADDER,
     NVFP4_CB_LADDER,
     PANEL_RUNGS,
@@ -19,6 +22,7 @@ from prismaquant.dense_anchored_cb import (
     _allocator_command,
     _build_parser,
     _derive_dense_plan,
+    _require_bf16_body_source_manifest,
 )
 from prismaquant.lane_spec import load_lane_spec
 from prismaquant.serving_profiles import (
@@ -89,6 +93,65 @@ def test_sm120_refuses_reader_only_off_law_and_direct_research_widths():
         "MXFP8_UE8M0_G32",
     ):
         assert not check_serving_format(SM120_PROFILE, None, name).legal, name
+
+
+def test_sm120_explicitly_denies_w8a16_while_compatibility_readers_remain():
+    assert fr.W8A16_COMPAT_FORMAT_NAMES == frozenset({
+        "MXFP8A16",
+        "INT8_W8A16",
+        "FP8_SOURCE",
+        "FP8_BLOCK_UE8M0_SOURCE",
+    })
+    assert fr.W8A16_COMPAT_FORMAT_NAMES == frozenset(
+        spec.name for spec in fr.list_formats()
+        if spec.weight_bits == 8 and not spec.act_quant_changes_input
+    )
+    profile = load_serving_profile(SM120_PROFILE)
+    rule = next(
+        rule for rule in profile.format_rules
+        if rule.id == "qwen38_sm120_validation_product_menu"
+    )
+    assert fr.W8A16_COMPAT_FORMAT_NAMES <= set(rule.deny_formats)
+    for name in fr.W8A16_COMPAT_FORMAT_NAMES:
+        assert fr.get_format(name).name == name
+        assert not check_serving_format(SM120_PROFILE, None, name).legal
+
+    # The generic mixed-container identity stays broad enough to read and
+    # reproduce already-published source-FP8 artifacts.  Target maintenance
+    # eligibility comes from the exact SM120 profile, not registry deletion.
+    for name in ("FP8_SOURCE", "FP8_BLOCK_UE8M0_SOURCE"):
+        assert fr.format_is_producer_eligible(name)
+        assert check_serving_format("nvfp4_cb", None, name).legal
+
+
+def test_sm120_rejects_aliases_and_other_a16_or_mx_research_formats():
+    for name in (
+        "NVFP4A16",
+        "MXFP8A16",
+        "INT8_W8A16",
+        "INT4_W4A16_g128",
+        "MXFP8",
+        "MXFP8_E4M3",
+        "MXFP8_E5M2",
+        "FP8_E5M2",
+    ):
+        assert not check_serving_format(SM120_PROFILE, None, name).legal, name
+
+
+def test_dense_sm120_campaign_requires_a_complete_bf16_source_body():
+    body = ("model.layers.0.mlp.down_proj", "model.layers.1.mlp.down_proj")
+    assert _require_bf16_body_source_manifest(
+        body,
+        {name: "bf16" for name in body},
+    ) == {name: "bf16" for name in body}
+
+    with pytest.raises(DenseCampaignError, match="source census misses"):
+        _require_bf16_body_source_manifest(body, {body[0]: "bf16"})
+    with pytest.raises(DenseCampaignError, match="one bf16 source class"):
+        _require_bf16_body_source_manifest(
+            body,
+            {body[0]: "bf16", body[1]: "fp8_ue8m0"},
+        )
 
 
 def test_dense_plan_binds_selected_profile_and_complete_public_ladders():

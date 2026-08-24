@@ -582,6 +582,36 @@ def _panel_policy(roles: Mapping[str, str]) -> CBPanelPolicy:
     )
 
 
+def _require_bf16_body_source_manifest(
+    body: Sequence[str],
+    source_census: Mapping[str, str],
+) -> dict[str, str]:
+    """Bind this SM120 campaign to its single maintained source class.
+
+    The generic registry deliberately retains source-FP8/W8A16 compatibility
+    for already-published source-quantized artifacts.  This dense Qwen3.8
+    campaign is a different product line: its body source is BF16, and admitting
+    any source-FP8 unit would silently reopen the legacy W8A16 lane that the
+    target profile excludes.  Refuse before the plan, allocator, or GPU work.
+    """
+
+    missing_source = sorted(set(body) - set(source_census))
+    if missing_source:
+        raise DenseCampaignError(
+            f"source census misses body units: {missing_source[:8]}"
+        )
+    off_source = sorted(
+        qname for qname in body if str(source_census[qname]) != "bf16"
+    )
+    if off_source:
+        raise DenseCampaignError(
+            "this driver declares one bf16 source class; found "
+            f"{len(off_source)} others, sample="
+            f"{[(q, source_census[q]) for q in off_source[:4]]}"
+        )
+    return {qname: source_census[qname] for qname in body}
+
+
 def prepare_campaign(args: argparse.Namespace) -> PreparedCampaign:
     """Every CPU identity/legality check, before any GPU work."""
     work_dir = _safe_work_dir(args.work_dir)
@@ -602,21 +632,7 @@ def prepare_campaign(args: argparse.Namespace) -> PreparedCampaign:
         raise DenseCampaignError("target-profile must be a non-empty identity")
 
     source_census = _scan_source_dtype_manifest(args.model, profile)
-    missing_source = sorted(set(body) - set(source_census))
-    if missing_source:
-        raise DenseCampaignError(
-            f"source census misses body units: {missing_source[:8]}"
-        )
-    off_source = sorted(
-        qname for qname in body if str(source_census[qname]) != "bf16"
-    )
-    if off_source:
-        raise DenseCampaignError(
-            "this driver declares one bf16 source class; found "
-            f"{len(off_source)} others, sample="
-            f"{[(q, source_census[q]) for q in off_source[:4]]}"
-        )
-    source_manifest = {qname: source_census[qname] for qname in body}
+    source_manifest = _require_bf16_body_source_manifest(body, source_census)
 
     cb_context = cb_serialization_context_from_env(
         require_explicit=True, where="dense anchored CB AURA campaign"

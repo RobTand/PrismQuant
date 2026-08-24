@@ -6,7 +6,7 @@
   "extends": [
     "nvfp4_cb"
   ],
-  "description": "VALIDATION-ONLY dense Qwen3.8 SM120 candidate-registration profile. It closes the candidate surface to the public NVFP4-CB K1..K25 and FP8-CB K4..K48 step-4 producer ladders plus the deliberate native NVFP4, dynamic-FP8, and BF16 terminals. It has no producer_policy and makes no device-qualified or release claim: the tracked Gridbook pin is still v0.8.11/v4, while candidate v11 is compile_only and unpinned. A release artifact must continue to fail closed until an immutable Gridbook release publishes the exact target contract and device-qualified routes.",
+  "description": "VALIDATION-ONLY dense Qwen3.8 SM120 candidate-registration profile. It closes the candidate surface to the public NVFP4-CB K1..K25 and FP8-CB K4..K48 step-4 producer ladders plus the deliberate native NVFP4, dynamic-FP8, and BF16 terminals. The shared registry/readers retain W8A16 assignment compatibility, and generic source-model profiles retain source-FP8 wire compatibility for published artifacts, but neither is maintained RTX50 performance eligibility. It has no producer_policy and makes no device-qualified or release claim: the tracked Gridbook pin is still v0.8.11/v4, while candidate v11 is compile_only and unpinned. A release artifact must continue to fail closed until an immutable Gridbook release publishes the exact target contract and device-qualified routes.",
   "format_rules": [
     {
       "id": "qwen38_sm120_validation_product_menu",
@@ -19,8 +19,11 @@
         "FP8_E4M3",
         "BF16"
       ],
+      "deny_formats_from": [
+        "prismaquant.format_registry:W8A16_COMPAT_FORMAT_NAMES"
+      ],
       "reason": "sm120_validation_menu",
-      "detail": "The validation campaign registers both complete public producer CB ladders so AQUA can compare their executed activation contracts across the overlap; it encodes no manual family preference. Native NVFP4, dynamic FP8 (canonical FP8_E4M3), and BF16 are the only deliberate terminals. Historical off-law FP8-CB reader ids, FP8/source carriers, MX formats, and research-only direct NVFP4 widths K26..K32 are outside this closed producer profile. This is structural candidate registration only, not evidence that a released runtime serves any admitted format on SM120."
+      "detail": "The validation campaign registers both complete public producer CB ladders so AQUA can compare their executed activation contracts across the overlap; it encodes no manual family preference. Native NVFP4, dynamic FP8 (canonical FP8_E4M3), and BF16 are the only deliberate terminals. Historical off-law FP8-CB reader ids, W8A16/source-FP8 compatibility carriers, other MX formats, and research-only direct NVFP4 widths K26..K32 are outside this closed producer profile. The explicit W8A16 deny is a maintenance/performance policy for new SM120 artifacts, not a deletion of legacy readers. This is structural candidate registration only, not evidence that a released runtime serves any admitted format on SM120."
     }
   ]
 }

@@ -14,6 +14,13 @@ qualification, or shipping claim follows from it. This page is the contract
 production runs build against.
 Changes to it require a served A/B, not a preference.
 
+For the new SM120/RTX50 line, W8A16 and source-FP8 carriers are not maintained
+candidate or release formats: no eligible native target-performance route is
+registered for them. Generic registry and container
+support remains so already-published source-model artifacts can still be read
+and reproduced; that compatibility surface must not be confused with the exact
+SM120 chooser menu.
+
 The separately versioned, exact-commit-pinned Gridbook runtime follows this
 contract. Dense and MoE fused-FP4 prefill are disabled unless their respective
 opt-in environment variables are set. Kernel-only speedups do not promote a
@@ -31,7 +38,8 @@ repository does not duplicate those tables.
 | FP8_CB (e4m3 grid) | producer: K4–K48 in steps of 4; reader: every K28–K48 plus the low producer rungs | 0.5–6.0 index bpw + `32/in_features` scale bpw | per-output-row fp32 tensor | product, ceil-first uneven splits |
 | NVFP4 (vanilla) | — | 4.5 bpw | group-16 E4M3 | menu member; Blackwell-only serving |
 | FP8_DYNAMIC | — | 8 bpw | per-channel | menu member |
-| BF16 / FP8_SOURCE | — | 16 / ~8 | — | passthrough-only (source dtype) |
+| BF16 | — | 16 | — | maintained unquantized terminal |
+| FP8_SOURCE / FP8_BLOCK_UE8M0_SOURCE | — | ~8 | — | source-passthrough compatibility for published source-model artifacts; excluded from maintained SM120 production/chooser profiles |
 
 - Codeword layout: 32 k-bit codewords per 256-weight superblock, LSB-first;
   sub-index bit split is **ceil-first** (`_bit_split`), sub-0 at the LSBs.
@@ -62,8 +70,9 @@ repository does not duplicate those tables.
   Full mode: spec-reserved, unimplemented.
 - MTP sidecars: CB-quantized, rung by the canon throughput selector
   (`mtp_rung_selection.py`). Vision towers (VLMs): vanilla NVFP4.
-- Standard production menu = both product K-ladders (FP8 obeys K%4) + NVFP4 +
-  FP8_DYNAMIC + BF16 (+FP8_SOURCE where the source is fp8). Target hardware:
+- Standard maintained SM120 production menu = both product K-ladders (FP8
+  obeys K%4) + NVFP4 + FP8_DYNAMIC + BF16. Source-FP8/W8A16 is a legacy
+  compatibility surface, not an RTX50 candidate. Target hardware:
   Blackwell (GB10 sm_121 / RTX 5090 sm_120). The separate strict
   `qwen38_rtx4090_fp8_cb` campaign removes both NVFP4 families and is closed
   to lattice FP8-CB (`CB_ACTIVATION_SCOPE=none`) plus delegated FP8/BF16. It
@@ -79,7 +88,13 @@ FP8-only. `qwen38_sm120_cb_validation_only` registers NVFP4-CB K1..K25,
 FP8-CB K4..K48 step 4, and native NVFP4/FP8_E4M3/BF16 under exact
 `target_platform=sm_120`; AQUA then compares the registered candidates in its
 normal currency. It must not bias one family manually, and K26..K32 are never
-registered. That profile is structural validation scaffolding, not an
+registered. The profile also carries an explicit deny sourced from
+`format_registry.W8A16_COMPAT_FORMAT_NAMES`, so a future broadening of an
+inherited generic container allow-list cannot silently readmit W8A16/source
+FP8. The resident and streaming exporters re-check the target profile stamped
+inside `layer_config.json` before opening an output transaction; a hand-edited
+source-FP8 assignment therefore cannot bypass the chooser gate or leave a temp
+artifact behind. That profile is structural validation scaffolding, not an
 attestation: candidate v11 is compile-only and unpinned, the profile has no
 `producer_policy`, and release tooling remains fail-closed until the immutable
 consumer pin and exact device-qualified route contract advance together.

@@ -35,6 +35,7 @@ import argparse
 import hashlib
 import inspect
 import json
+import os
 import pickle
 import re
 from collections import Counter, defaultdict
@@ -58,7 +59,7 @@ from prismaquant.cb_export_config import (
     codebook_tensor_names as _codebook_tensor_names,
     codebook_tensors as _codebook_tensors,
 )
-from prismaquant.layer_config import load_assignment
+from prismaquant.layer_config import load_assignment, read_layer_config_metadata
 from prismaquant.shard_layout import (
     DEFAULT_SHARD_BYTES,
     container_names,
@@ -120,12 +121,14 @@ EXPORTABLE_FORMATS = CB_FORMAT_NAMES | frozenset(
 
 
 def _preflight_assignment_before_output_transaction(function):
-    """Canonicalize an assignment before an exporter opens its staging root.
+    """Validate assignment syntax and target policy before staging output.
 
     The exporter deliberately reloads the assignment inside the transaction as
     part of its ordinary render path.  This outer preflight exists so an
-    unsupported public format spelling fails without creating a destination or
-    a preserved ``.tmp-*`` sibling.
+    unsupported public format spelling or a format denied by the allocator's
+    stamped target profile fails without creating a destination or a preserved
+    ``.tmp-*`` sibling.  The explicit environment override matches the native
+    exporter; unstamped legacy recipes retain their historical generic path.
     """
     signature = inspect.signature(function)
 
@@ -133,7 +136,33 @@ def _preflight_assignment_before_output_transaction(function):
     def wrapped(*args, **kwargs):
         bound = signature.bind(*args, **kwargs)
         bound.apply_defaults()
-        load_assignment(bound.arguments["layer_config_path"])
+        layer_config_path = bound.arguments["layer_config_path"]
+        assignment = load_assignment(layer_config_path)
+        metadata = read_layer_config_metadata(layer_config_path)
+        target_profile = str(
+            os.environ.get("PRISMAQUANT_TARGET_PROFILE")
+            or metadata.get("target_profile")
+            or ""
+        ).strip()
+        if target_profile:
+            from prismaquant.serving_profiles import check_serving_format
+
+            refused = []
+            for qname, fmt in assignment.items():
+                decision = check_serving_format(target_profile, qname, fmt)
+                if not decision.legal:
+                    refused.append({
+                        "qname": qname,
+                        "format": fmt,
+                        "reason": decision.reason,
+                        "rule": decision.rule,
+                    })
+            if refused:
+                raise ValueError(
+                    f"{function.__name__}: target profile {target_profile!r} "
+                    "refuses assignment format(s) before output transaction: "
+                    f"{refused[:8]}"
+                )
         return function(*args, **kwargs)
 
     return wrapped

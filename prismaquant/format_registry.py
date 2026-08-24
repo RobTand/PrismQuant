@@ -200,6 +200,20 @@ FORMAT_ALIASES: dict[str, str] = {
     "FP8_DYNAMIC": "FP8_E4M3",
 }
 
+# Formats whose registry descriptor is weight-8 / activation-16, plus the two
+# source-FP8 compatibility spellings that must stay readable for published
+# artifacts.  This is a classification, NOT a global producer ban: dedicated
+# source-model campaigns still reproduce those artifacts.  Hardware-scoped
+# producer profiles (notably SM120/RTX50) use this set as an explicit deny so
+# an old/fallback W8A16 route cannot re-enter a maintained candidate menu merely
+# because the generic compatibility registry knows how to read its assignment.
+W8A16_COMPAT_FORMAT_NAMES = frozenset({
+    "MXFP8A16",
+    "INT8_W8A16",
+    "FP8_SOURCE",
+    "FP8_BLOCK_UE8M0_SOURCE",
+})
+
 
 def register_format(spec: FormatSpec) -> FormatSpec:
     REGISTRY[spec.name] = spec

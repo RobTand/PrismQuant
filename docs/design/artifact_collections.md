@@ -1,7 +1,7 @@
 # Artifact collections: probe once, solve and export many
 
 Status: **CURRENT foundation, not pipeline-wired** (branch
-`codex/rtx5060-fp4-gridbook-pilot-20260824`, based on `bb82d2b`).  The live
+`codex/rtx5060-fp4-gridbook-pilot-20260824`, based on `55602f9`).  The live
 implementation is `prismaquant/artifact_collection.py`; the read-only bridge
 for existing exports is `prismaquant/artifact_collection_legacy.py`.  This
 foundation changes no format menu, allocator default, export codec, runtime
@@ -152,6 +152,21 @@ production default, while a learned candidate must earn its extra asset,
 training, and runtime complexity under the same target and qualification
 contract. Learned NVFP4 remains receipt-gated and refused today.
 
+The same separation applies to W8A16/source FP8. The generic schema may census
+or reference a compatibility candidate for an already-published source-model
+artifact without making it a maintained candidate for a new target. The
+Qwen3.8 SM120/RTX50 collection is BF16-sourced and its exact serving profile
+explicitly denies `W8A16_COMPAT_FORMAT_NAMES`; its catalog-to-assignment and
+materialization steps must therefore intersect both source applicability and
+that profile before recording an accepted Solve/Export/ReleaseDecision. The
+current resident and streaming CB materializers already enforce the assignment
+half when `layer_config.json` carries its allocator-stamped `target_profile`:
+they refuse a denied format before opening an output transaction. Target v1 is
+not pipeline-wired and does not yet perform the catalog intersection itself, so
+free-form `exclusions` are not format authority and no collection record may
+claim the earlier gate has run without its own receipt. Legacy readers remain
+broad; maintained performance eligibility is target-specific and fail-closed.
+
 The range study retains a **direct-codec/kernel research span through K32** but
 recommends a public artifact catalog of **K1–K25**. With two four-value-vector
 product subtables, the index split is `(ceil(K/2), floor(K/2))`; K1 is therefore
@@ -260,7 +275,7 @@ named collection of physically qualified shoulders:
 | artifact alias | target tier | whole-package target | publication intent |
 |---|---:|---:|---|
 | `vram-8-stretch` | 8 GiB | 6.0–6.5 GB | Experimental small-context reach build; ship only if full GPU-only residency and eager/graph, KV, KL, PPL, and performance gates pass on real 5050/5060 hardware. Otherwise publish a smaller model, not a nominally fitting 27B. |
-| `vram-12-compact` | 12 GiB | at most 10.0 GB | Primary compact 27B build, leaving roughly 3 GiB for runtime, activations, and a modest KV cache after exact resident/cold-load measurement. |
+| `vram-12-compact` | 12 GiB | at most 10.0 GB | Primary compact 27B build, leaving about 2.7 GiB for runtime, activations, and a modest KV cache after exact resident/cold-load measurement. |
 | `vram-16-balanced` | 16 GiB | at most 13.0 GB | Primary broad-reach quality build; the current 12.98 GB oracle is the first regression target, not automatic qualification. |
 | `vram-24-quality` | 24 GiB | 19–20 GB | Higher-quality build with materially larger runtime/context headroom than a capacity-filling export. |
 | `vram-32-max-quality` | 32 GiB | approximately 23–25 GB | Stop at measured quality saturation rather than filling VRAM for its own sake. |
