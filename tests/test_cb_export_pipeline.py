@@ -208,6 +208,16 @@ def test_gpu_streaming_export_pipeline_identity(
 
     serial_card = load_shipcard(serial / "shipcard.json")
     pipelined_card = load_shipcard(pipelined / "shipcard.json")
+    # Read-traffic provenance names the staging root whose safetensors headers
+    # were inspected.  Like the shipcard's publication-path refusal record,
+    # that path must differ between two independent transactions even when the
+    # measured traffic and every value-bearing byte are identical.
+    serial_read_source = serial_card["build"]["read_gb_per_token"].pop("source")
+    pipelined_read_source = (
+        pipelined_card["build"]["read_gb_per_token"].pop("source")
+    )
+    assert ".serial.tmp-" in serial_read_source
+    assert ".pipelined.tmp-" in pipelined_read_source
     for key in ("model_sha", "artifact_bytes", "reserved_file_bytes", "build", "slots"):
         assert serial_card[key] == pipelined_card[key]
     assert serial_card["model_dir"] == str(serial)
