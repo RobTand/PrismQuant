@@ -190,6 +190,14 @@ class _Completed:
     stderr: bytes = b""
 
 
+def _write_private_cid(path: Path, cid: str) -> None:
+    descriptor = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+    )
+    with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+        handle.write(cid + "\n")
+
+
 class _NvidiaRunner:
     def __init__(
         self,
@@ -468,7 +476,7 @@ def test_guarded_launch_carries_the_lease_lock_into_fixed_foreground_docker(
         def __init__(self, argv, **kwargs):
             observed.update(argv=tuple(argv), kwargs=dict(kwargs))
             cid_path = Path(argv[argv.index("--cidfile") + 1])
-            cid_path.write_text("a" * 64 + "\n", encoding="ascii")
+            _write_private_cid(cid_path, "a" * 64)
 
         def wait(self, *, timeout):
             observed["wait_timeout"] = timeout
@@ -625,7 +633,7 @@ def test_guarded_launch_timeout_stops_exact_cid_and_retires_it(
 
         def __init__(self, argv):
             cid_path = Path(argv[argv.index("--cidfile") + 1])
-            cid_path.write_text(cid + "\n", encoding="ascii")
+            _write_private_cid(cid_path, cid)
             state["active"] = True
             self.waits = 0
 
@@ -668,14 +676,13 @@ def test_guarded_launch_reconciles_exact_owned_orphan_before_idle_gate(
     work_id = "measure_burn:alpha"
     stale_cid = "c" * 64
     work_key = hashlib.sha256(work_id.encode("utf-8")).hexdigest()
-    supervision = (
-        lease_root / "container-supervision" / manifest["identity_sha256"]
-        / "alpha"
-    )
-    supervision.mkdir(parents=True, mode=0o700)
-    (supervision / f"{work_key}.cid").write_text(
-        stale_cid + "\n", encoding="ascii",
-    )
+    supervision = lease_root
+    for component in (
+        "container-supervision", manifest["identity_sha256"], "alpha",
+    ):
+        supervision /= component
+        supervision.mkdir(mode=0o700)
+    _write_private_cid(supervision / f"{work_key}.cid", stale_cid)
     command = (
         "docker", "run", "--rm",
         "--label", f"io.prismaquant.campaign={manifest['identity_sha256']}",
@@ -731,8 +738,8 @@ def test_guarded_launch_reconciles_exact_owned_orphan_before_idle_gate(
         pid = 6262
 
         def __init__(self, argv):
-            Path(argv[argv.index("--cidfile") + 1]).write_text(
-                "d" * 64 + "\n", encoding="ascii",
+            _write_private_cid(
+                Path(argv[argv.index("--cidfile") + 1]), "d" * 64,
             )
 
         def wait(self, *, timeout):
