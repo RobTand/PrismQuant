@@ -18,16 +18,21 @@ close.
   the default; learned-v2 books require complete measured promotion receipts.
 - **Self-contained deterministic two-host campaign.** The
   `prismaquant.rtx4090_two_host_campaign` application owns the sealed
-  21-assignment Qwen3.8-27B schedule through local/SSH transport, exact host
+  23-assignment Qwen3.8-27B schedule through local/SSH transport, exact host
   admission, immutable runtime snapshots, GPU leases, content-addressed barriers,
   bounded idempotent retries, resume, verification, and per-attempt GPU
-  utilization telemetry. Agents may author or diagnose a manifest but are not
+  utilization telemetry. The final GPU stage exports the selected assignment;
+  a GPU-blind stage verifies the complete structural package and seals an
+  unreleasable receipt. Agents may author or diagnose a manifest but are not
   runtime schedulers or barriers.
-- **Artifact-collection data-model foundation.** New content-addressed records
-  separate model/probe/candidate/cost identity from target-specific solve,
-  export, qualification, market, and release evidence, enabling one expensive
-  probe to feed many future artifact targets. This foundation is deliberately
-  not yet wired into the production pipeline.
+- **Typed artifact-collection control plane.** Strict content-addressed
+  UnitLedger, ModelSnapshot, ProbeCampaign, CostSnapshot, Solve, Export,
+  QualificationEvidence, DeviceQualification, MarketSnapshot, and
+  ReleaseDecision records let one expensive probe feed many targets. The
+  closed-graph verifier reconciles exhaustive units/costs/assignments,
+  cost-derived and shared-resource bytes, file/tensor/codebook inventories,
+  exact device/runtime evidence, collection lineage, and exhaustive release
+  decisions. Live pipeline producer adapters remain open.
 
 ### Changed
 
@@ -36,11 +41,17 @@ close.
   excluding W8A16/source-FP8 compatibility formats. The strict RTX 4090
   profile remains FP8-only. Neither profile expresses a manual FP4-versus-FP8
   preference; AQUA prices the activation contract it observes.
+- SM120 candidate exports now require the exact packaged Gridbook 0.9.1
+  candidate contract and policy before writing. They are stamped
+  `UNRELEASABLE_VALIDATION_ONLY`; shipcard and publisher gates categorically
+  refuse missing, malformed, mutated, or cross-policy provenance even under
+  force flags.
 
 ### Release status
 
-- The new SM89 and SM120 Gridbook v11 route cells are currently compile-only
-  and the candidate runtime is unpinned. The RTX 4090 artifact path still
+- The new SM89 and SM120 Gridbook v11 route cells are currently compile-only.
+  The exact untagged candidate has a separate validation pin; the released
+  production Gridbook pin is unchanged. The RTX 4090 artifact path still
   requires a physical RTX 4090 correctness, graph, memory, and performance
   receipt; the SM120 path still requires exact-device qualification on the
   intended RTX 50-series class. DGX Spark execution is structural validation,

@@ -2,6 +2,20 @@
 
 As of: 2026-08-24 · `codex/rtx5060-fp4-gridbook-pilot-20260824` · integration in progress —
 stamps follow, newest first, each recording its own branch, parent, and date. Re-stamped
+(2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **typed,
+probe-once/export-many artifact-collection control plane**. Strict semantic records now span
+the nonempty source UnitLedger and ModelSnapshot through ProbeCampaign, exhaustive
+unit-by-candidate CostSnapshot, cost-backed Solve, exact file/tensor/codebook Export,
+per-check QualificationEvidence, Target-bound DeviceQualification, source-separated
+MarketSnapshot, and exhaustive collection-bound ReleaseDecision
+(`prismaquant/artifact_collection_records.py`). The pure closed-graph verifier rejects missing
+owned records, lineage drift, probe/cost holes, caller-underreported local/shared/fixed bytes,
+nonportable or incomplete inventories, runtime/device/workload/placement evidence replay,
+vacuous qualification, and unqualified or relabeled releases. The CLI verifies an explicit
+closed record set without following locators or mutating state
+(`prismaquant/artifact_collection_cli.py`). This is offline scaffolding: live pipeline producer
+adapters and physical device qualification remain open, and no format, route, artifact, tag, or
+release is promoted by these schemas. Previously re-stamped
 (2026-08-24, `codex/campaign-artifact-tail-20260824`) for the **deterministic allocation-to-
 artifact campaign tail**. The sealed manifest advances to v2 and embeds the complete canonical
 Gridbook v11 candidate contract plus its producer-attestation digest, so export never discovers a
