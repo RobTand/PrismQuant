@@ -25,7 +25,10 @@ if "site-packages" not in where and "dist-packages" not in where:
 # Serving-constraint specs: read from the installed package's JSON.
 from prismaquant import serving_profiles as sp  # noqa: E402
 
-for name in ("vllm_packed_moe", "vllm_qwen3_5_packed_moe", "gguf", "research"):
+profile_names = sp.serving_profile_names()
+if not profile_names:
+    sys.exit("no serving profiles discovered from the installed package")
+for name in profile_names:
     profile = sp.load_serving_profile(name)
     if profile is None:
         sys.exit(f"serving profile {name!r} did not load from the install")
@@ -118,6 +121,23 @@ shipcard = subprocess.run(
 if shipcard.returncode != 0:
     sys.exit(f"installed shipcard CLI failed:\n{shipcard.stderr}")
 print("  shipcard CLI OK")
+
+# The deterministic two-host application is a public, packaged orchestration
+# surface.  Its help path must stay importable from the wheel without relying
+# on a checkout or an agent-owned launcher.
+campaign = subprocess.run(
+    [
+        sys.executable,
+        "-m",
+        "prismaquant.rtx4090_two_host_campaign",
+        "--help",
+    ],
+    capture_output=True,
+    text=True,
+)
+if campaign.returncode != 0:
+    sys.exit(f"installed two-host campaign CLI failed:\n{campaign.stderr}")
+print("  two-host campaign CLI OK")
 
 # The CLI entry point every downstream user touches first.
 r = subprocess.run([sys.executable, "-m", "prismaquant.allocator", "--help"],

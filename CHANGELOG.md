@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+This tree carries `0.17.0rc1` package metadata for release rehearsal. It has
+not been tagged or published, and the new hardware-specific Gridbook profiles
+below remain validation-only until their exact-device qualification gates
+close.
+
+### Added
+
+- **Expanded Gridbook codebook contracts.** NVFP4-CB now has a public
+  reader/producer ladder of K1 through K25, while FP8-CB new producers use
+  exactly K4 through K48 in steps of four and the reader retains its wider
+  historical compatibility domain. The v11 consumer distinguishes reader and
+  producer rungs and resolves closed-world lane eligibility by exact platform,
+  family, structure, regime, rung, and predicates. Lattice codebooks remain
+  the default; learned-v2 books require complete measured promotion receipts.
+- **Self-contained deterministic two-host campaign.** The
+  `prismaquant.rtx4090_two_host_campaign` application owns the sealed
+  21-assignment Qwen3.8-27B schedule through local/SSH transport, exact host
+  admission, immutable runtime snapshots, GPU leases, content-addressed barriers,
+  bounded idempotent retries, resume, verification, and per-attempt GPU
+  utilization telemetry. Agents may author or diagnose a manifest but are not
+  runtime schedulers or barriers.
+- **Artifact-collection data-model foundation.** New content-addressed records
+  separate model/probe/candidate/cost identity from target-specific solve,
+  export, qualification, market, and release evidence, enabling one expensive
+  probe to feed many future artifact targets. This foundation is deliberately
+  not yet wired into the production pipeline.
+
+### Changed
+
+- The SM120 validation profile admits both complete public CB ladders plus
+  native NVFP4, FP8 E4M3, and BF16 for AQUA comparison, while explicitly
+  excluding W8A16/source-FP8 compatibility formats. The strict RTX 4090
+  profile remains FP8-only. Neither profile expresses a manual FP4-versus-FP8
+  preference; AQUA prices the activation contract it observes.
+
+### Release status
+
+- The new SM89 and SM120 Gridbook v11 route cells are currently compile-only
+  and the candidate runtime is unpinned. The RTX 4090 artifact path still
+  requires a physical RTX 4090 correctness, graph, memory, and performance
+  receipt; the SM120 path still requires exact-device qualification on the
+  intended RTX 50-series class. DGX Spark execution is structural validation,
+  never a substitute for either target-device receipt. No new codebook rung or
+  hardware profile is promoted to released support by this release candidate.
+
 ## 0.16.2 — 2026-08-22
 
 ### Fixed

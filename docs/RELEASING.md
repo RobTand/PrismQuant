@@ -80,12 +80,13 @@ nothing in this pipeline needs one.
   about to be published under the wrong name.
 - **The wheel works non-editably** (`.github/scripts/check_installed.py`): run
   from a temp directory with no `PYTHONPATH`, so `import prismaquant` cannot
-  fall back to the checkout. The install must resolve from site-packages, all
-  four serving profiles must load out of the installed JSON, the
-  model-structure spec directory must be present inside the package, IQ and CB
+  fall back to the checkout. The install must resolve from site-packages, every
+  serving profile returned by `serving_profile_names()` must load out of the
+  installed JSON, the model-structure spec directory must be present inside
+  the package, IQ and CB
   tables must load, the Gridbook helper must parse its adjacent pin from an
   arbitrary working directory, `run-pipeline.sh` must be there, and the
-  allocator and shipcard CLIs must run.
+  allocator, shipcard, and deterministic two-host campaign CLIs must run.
 - **The tag commit is on `main`.** The workflow fetches full history and refuses
   a tag cut from an unmerged release branch.
 
