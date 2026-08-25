@@ -380,9 +380,30 @@ _PUBLISHED_FILES = frozenset({
 #     Keeping this frozen reproduction gate green is legacy compatibility, not
 #     maintained target eligibility: hardware-scoped production profiles must
 #     admit W8A16 separately, and the SM120 profile explicitly denies it.
+# RE-FROZEN 2026-08-24 (target-bound Gridbook export policy), after reviewing
+# both changed regions against THIS legacy handoff rather than accepting a new
+# digest mechanically:
+#   export_nvfp4_cb_streaming.py -- (1) the generic CB route gate now takes its
+#     target profile from the layer-config stamp (or the explicit environment)
+#     instead of always assuming ``nvfp4_cb``. The approved W8A16 assignment has
+#     no CB or stock-CT target, so the gate receives an empty unit set and no
+#     tensor codec, source discovery, or passthrough byte path changes. With no
+#     target-profile stamp the same ``nvfp4_cb`` default is retained; a future
+#     stamped legacy replay may change only the route-provenance identity to
+#     name its actual target. (2) the exact SM120 validation-only policy is
+#     prepared before the ordinary/RTX4090 producer policies and adds stamps
+#     and a final manifest check only when layer metadata names
+#     ``qwen38_sm120_cb_validation_only`` together with its exact policy and
+#     candidate contract. This handoff's DSv4 W8A16 layer metadata names no
+#     such target, so preparation returns None and every added branch is inert.
+#     Conversely, tests/test_nvfp4_cb_streaming.py pins that W8A16 is refused
+#     before an output transaction when SM120 metadata does select the policy.
+#     The maintained RTX40/RTX50 profiles therefore remain CB-only; preserving
+#     this digest is reproduction support for the historical DSv4 lane, not
+#     readmission of W8A16 to either current hardware target.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
-        "e83ec16206bee87844ed85ce9485df6a28c2d196b4314a98b56b33602203ddf6"
+        "1e4461c3ab8f9f697fa00aca63987d10395fce714b41d89249a36b10bbeae588"
     ),
     "prismaquant/cb_export_config.py": (
         "3aa767bba9e689d50234730846a1671088ec0b16278d18aa6fa2693815294412"
