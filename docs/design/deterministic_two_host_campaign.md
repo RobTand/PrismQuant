@@ -166,7 +166,11 @@ lease. Model-content admission follows the two fixed
 `worker_source_identity` assignments: each host validates its live checkpoint
 and publishes the same path-neutral portable content digest from its own
 freshly created or exactly revalidated cache. This avoids requiring a cache that the campaign has not produced
-yet without weakening the model identity gate.
+yet without weakening the model identity gate. The cache itself remains bound
+to the container's canonical `/model` source and shard paths. Bare-host model
+admission supplies that one explicit cached root and rebinds only its prefix to
+the manifest's host-absolute model root; it preserves every cached digest and
+mutation-sensitive stat field and refuses a shard outside the canonical root.
 
 Each transition durably records the manifest digest, stage and assignment,
 dependency receipt digests, fixed command digest, host identity, start/end

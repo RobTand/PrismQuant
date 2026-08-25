@@ -850,8 +850,12 @@ def test_trusted_model_reader_reuses_complete_streamed_identity_contract(
     calls: list[tuple[object, ...]] = []
     identity = {"schema": "prismaquant.streamed_model.identity.v1"}
 
-    def validate(model, cache, *, require_complete_checkpoint):
-        calls.append((model, cache, require_complete_checkpoint))
+    def validate(
+        model, cache, *, require_complete_checkpoint, cached_source_model,
+    ):
+        calls.append((
+            model, cache, require_complete_checkpoint, cached_source_model,
+        ))
         return identity
 
     monkeypatch.setattr(streaming, "validate_cached_streamed_model_identity", validate)
@@ -869,7 +873,9 @@ def test_trusted_model_reader_reuses_complete_streamed_identity_contract(
         tmp_path / "model", tmp_path / "cache.json",
     )
 
-    assert calls == [(tmp_path / "model", tmp_path / "cache.json", True)]
+    assert calls == [(
+        tmp_path / "model", tmp_path / "cache.json", True, "/model",
+    )]
     assert result == _model_receipt()
 
 

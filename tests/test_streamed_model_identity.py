@@ -169,6 +169,95 @@ def test_streamed_identity_covers_index_passthrough_and_validates_by_stat(
         cost_streaming.validate_cached_streamed_model_identity(source, cache)
 
 
+def test_cached_streamed_identity_rebinds_canonical_container_model_root(
+    tmp_path, monkeypatch,
+):
+    source, _body, _sidecar, _checkpoint_map, runner = _fixture(tmp_path)
+    cache = tmp_path / "streamed_model_identity.json"
+    host_identity = cost_streaming.build_streamed_model_identity(
+        runner, str(source), identity_cache_path=cache,
+    )
+    host_portable = cost_streaming.portable_streamed_model_content_identity(
+        host_identity,
+    )
+
+    payload = json.loads(cache.read_text())
+    payload["source"] = "/model"
+    identity = payload["identity"]
+    identity["source"] = "/model"
+    for row in payload["fingerprints"]:
+        row["path"] = f"/model/{Path(row['path']).name}"
+    for row in identity["shards"]:
+        row["path"] = f"/model/{Path(row['path']).name}"
+    value_bearing = {
+        "config": identity["config"],
+        "weight_map": identity["weight_map"],
+        "shards": identity["shards"],
+        "checkpoint_weight_map": identity["checkpoint_weight_map"],
+    }
+    identity["content_sha256"] = canonical_json_sha256(
+        value_bearing, where="canonical container identity fixture",
+    )
+    cache.write_text(json.dumps(payload))
+    expected_identity = json.loads(json.dumps(identity))
+
+    monkeypatch.setattr(
+        cost_streaming,
+        "_file_sha256",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("mount-path rebind unexpectedly rehashed source bytes")
+        ),
+    )
+    validated = cost_streaming.validate_cached_streamed_model_identity(
+        source, cache, cached_source_model="/model",
+    )
+    assert validated == expected_identity
+    assert {row["path"] for row in validated["shards"]} == {
+        "/model/model-00001-of-00002.safetensors",
+        "/model/model-00002-of-00002.safetensors",
+    }
+    assert cost_streaming.portable_streamed_model_content_identity(
+        validated,
+    ) == host_portable
+
+    # The alias is explicit. Ordinary validation cannot silently reinterpret
+    # a cache produced for another source root.
+    with pytest.raises(RuntimeError, match="does not bind source"):
+        cost_streaming.validate_cached_streamed_model_identity(source, cache)
+
+
+def test_cached_streamed_identity_rebind_refuses_path_outside_canonical_root(
+    tmp_path,
+):
+    source, _body, _sidecar, _checkpoint_map, runner = _fixture(tmp_path)
+    cache = tmp_path / "streamed_model_identity.json"
+    cost_streaming.build_streamed_model_identity(
+        runner, str(source), identity_cache_path=cache,
+    )
+    payload = json.loads(cache.read_text())
+    payload["source"] = "/model"
+    identity = payload["identity"]
+    identity["source"] = "/model"
+    for row in payload["fingerprints"]:
+        row["path"] = f"/model/{Path(row['path']).name}"
+    for row in identity["shards"]:
+        row["path"] = f"/model/{Path(row['path']).name}"
+    payload["fingerprints"][0]["path"] = "/outside/model.safetensors"
+    identity["shards"][0]["path"] = "/outside/model.safetensors"
+    identity["content_sha256"] = canonical_json_sha256({
+        "config": identity["config"],
+        "weight_map": identity["weight_map"],
+        "shards": identity["shards"],
+        "checkpoint_weight_map": identity["checkpoint_weight_map"],
+    }, where="escaped canonical container identity fixture")
+    cache.write_text(json.dumps(payload))
+
+    with pytest.raises(RuntimeError, match="escapes cached streamed model"):
+        cost_streaming.validate_cached_streamed_model_identity(
+            source, cache, cached_source_model="/model",
+        )
+
+
 def test_streamed_identity_upgrades_partial_cache_without_rehashing_body(
     tmp_path, monkeypatch,
 ):

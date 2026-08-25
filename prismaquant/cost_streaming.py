@@ -814,6 +814,7 @@ def validate_cached_streamed_model_identity(
     identity_cache_path: str | Path,
     *,
     require_complete_checkpoint: bool = True,
+    cached_source_model: str | Path | None = None,
 ) -> dict[str, object]:
     """Validate a cached full-checkpoint identity without rereading weights.
 
@@ -823,11 +824,59 @@ def validate_cached_streamed_model_identity(
     the decoder shards loaded by a calibration runner) and binds the complete
     tensor-to-shard map.  This is the cheap, fail-closed handoff used before a
     large streaming export.
+
+    ``cached_source_model`` admits one explicit mount-path rebind.  This is
+    used when an immutable container produced the cache from a read-only model
+    mounted at a canonical path (for example ``/model``), while a trusted host
+    validator sees the same inodes through their host-absolute root.  Only the
+    path prefix changes: the cached identity, per-shard content digests,
+    tensor map, and mutation-sensitive stat fingerprints remain authoritative
+    and are returned byte-for-byte unchanged.
     """
     source = str(source_model)
+    cached_source = (
+        source if cached_source_model is None else str(cached_source_model)
+    )
+    source_root = Path(source).resolve()
+    cached_source_root = (
+        None if cached_source_model is None else Path(cached_source)
+    )
+    if cached_source_root is not None:
+        if (
+            not cached_source_root.is_absolute()
+            or cached_source_root == Path("/")
+            or ".." in cached_source_root.parts
+            or str(cached_source_root) != cached_source
+        ):
+            raise RuntimeError(
+                "cached streamed model source root must be one normalized "
+                "non-root absolute path"
+            )
+
+    def _live_path(cached_path: str, *, where: str) -> Path:
+        path = Path(cached_path)
+        if not path.is_absolute() or ".." in path.parts:
+            raise RuntimeError(f"{where} is not an absolute normalized path")
+        if cached_source_root is None:
+            return path.resolve()
+        try:
+            relative = path.relative_to(cached_source_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{where} escapes cached streamed model source root"
+            ) from exc
+        if not relative.parts:
+            raise RuntimeError(f"{where} names the model root, not a shard")
+        rebound = (source_root / relative).resolve()
+        try:
+            rebound.relative_to(source_root)
+        except ValueError as exc:  # pragma: no cover - resolve hardening
+            raise RuntimeError(f"{where} escapes live model source root") from exc
+        return rebound
+
     cache_path = Path(identity_cache_path)
     cached, identity = _read_streamed_model_identity_cache(
-        cache_path, source_model=source
+        cache_path, source_model=cached_source
     )
     fingerprints = cached.get("fingerprints")
     if not isinstance(fingerprints, list) or not fingerprints:
@@ -840,7 +889,8 @@ def validate_cached_streamed_model_identity(
             raise RuntimeError(
                 f"streamed model identity cache fingerprint {index} is malformed"
             )
-        path = str(Path(row["path"]).resolve())
+        path = str(Path(row["path"]))
+        _live_path(path, where=f"streamed model fingerprint {index}")
         if path in fingerprint_by_path:
             raise RuntimeError(
                 f"streamed model identity cache repeats shard path {path}"
@@ -855,7 +905,8 @@ def validate_cached_streamed_model_identity(
             raise RuntimeError(
                 f"streamed model identity shard {index} has no exact path"
             )
-        path = str(Path(row["path"]).resolve())
+        path = str(Path(row["path"]))
+        _live_path(path, where=f"streamed model identity shard {index}")
         if path in shard_by_path:
             raise RuntimeError(
                 f"streamed model identity repeats shard path {path}"
@@ -875,9 +926,13 @@ def validate_cached_streamed_model_identity(
                 "safetensors checkpoint"
             )
         expected_paths = {str(path.resolve()) for path in checkpoint_paths}
-        if set(shard_by_path) != expected_paths:
-            missing = sorted(expected_paths - set(shard_by_path))
-            extra = sorted(set(shard_by_path) - expected_paths)
+        rebound_paths = {
+            str(_live_path(path, where="streamed model identity shard"))
+            for path in shard_by_path
+        }
+        if rebound_paths != expected_paths:
+            missing = sorted(expected_paths - rebound_paths)
+            extra = sorted(rebound_paths - expected_paths)
             raise RuntimeError(
                 "streamed model identity does not cover the complete source "
                 f"checkpoint: missing={missing[:8]}, extra={extra[:8]}"
@@ -938,13 +993,14 @@ def validate_cached_streamed_model_identity(
         )
 
     for path_key, expected in fingerprint_by_path.items():
-        path = Path(path_key)
+        path = _live_path(path_key, where="streamed model fingerprint")
         if not path.is_file():
             raise RuntimeError(
                 f"streamed model identity source shard is missing: {path}"
             )
         observed = _streamed_identity_stat_fingerprint(path)
-        if observed != expected:
+        rebound_observed = {**observed, "path": path_key}
+        if rebound_observed != expected:
             raise RuntimeError(
                 "streamed model identity source shard stat drifted; refusing "
                 f"cached content SHA for {path}"

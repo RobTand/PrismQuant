@@ -2,6 +2,18 @@
 
 As of: 2026-08-24 · `codex/rtx5060-fp4-gridbook-pilot-20260824` · integration in progress —
 stamps follow, newest first, each recording its own branch, parent, and date. Re-stamped
+(2026-08-24, `codex/campaign-live-preflight-fix-20260824`, based on `4a975e5`) for the
+**container-to-host source-identity admission boundary**. Worker source caches retain their
+immutable container identity rooted at canonical `/model`; bare-host admission now supplies that
+explicit cached root while validating the same files through the manifest's host-absolute model
+root. The rebind changes only the trusted path prefix: cached content SHA-256 values, shard rows,
+tensor maps, and mutation-sensitive device/inode/size/mtime/ctime fingerprints remain unchanged,
+while any cached path outside `/model` refuses. The default cache validator remains exact-path
+bound, so no generic caller gains implicit aliasing. A prior physical campaign cache validates to
+the unchanged portable model digest
+`6a7d9f66d85062bdb9990b556950a197044776142ccabb43e30b0f7756d846cb`
+without rereading weight bytes. No campaign state or GPU work was created by this fix. Previously
+re-stamped
 (2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **typed,
 probe-once/export-many artifact-collection control plane**. Strict semantic records now span
 the nonempty source UnitLedger and ModelSnapshot through ProbeCampaign, exhaustive

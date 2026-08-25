@@ -34,6 +34,7 @@ import sys
 from typing import Literal, Protocol
 
 from prismaquant.cluster_campaign_contract import (
+    CANONICAL_CONTAINER_PATHS,
     canonical_sha256,
     parse_campaign_manifest,
     validate_campaign_manifest,
@@ -255,6 +256,7 @@ def _trusted_model_identity(model_root: Path, cache_path: Path) -> dict[str, obj
             model_root,
             cache_path,
             require_complete_checkpoint=True,
+            cached_source_model=CANONICAL_CONTAINER_PATHS["model_root"],
         )
         compact = compact_streamed_model_identity(
             identity, where="cluster host-admission source model",
