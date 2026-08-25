@@ -1,11 +1,14 @@
 # Artifact collections: probe once, solve and export many
 
-Status: **CURRENT foundation, not pipeline-wired** (branch
-`codex/rtx5060-fp4-gridbook-pilot-20260824`, based on `55602f9`).  The live
-implementation is `prismaquant/artifact_collection.py`; the read-only bridge
-for existing exports is `prismaquant/artifact_collection_legacy.py`.  This
-foundation changes no format menu, allocator default, export codec, runtime
-contract, or ship gate.
+Status: **CURRENT typed control plane, not pipeline-wired** (branch
+`codex/rtx5060-fp4-gridbook-pilot-20260824`).  The envelope, candidate,
+target, contract, and receipt layer is `prismaquant/artifact_collection.py`;
+the value-bearing records and closed-graph verifier are
+`prismaquant/artifact_collection_records.py`; the read-only bridge for
+existing exports is `prismaquant/artifact_collection_legacy.py`.  Run
+`python -m prismaquant.artifact_collection_cli verify RECORD.json ...` to
+verify a complete record set offline.  This control plane changes no format
+menu, allocator default, export codec, runtime contract, or ship gate.
 
 ## 1. Purpose
 
@@ -23,20 +26,25 @@ mix together:
 3. location (where those bytes happen to be mounted or published); and
 4. evidence (an immutable receipt that an operation occurred).
 
-The first implementation slice deliberately stops before pipeline wiring.  It
-provides strict, content-addressed records, candidate and target schemas,
-stage receipts, collection manifests, exact shared-resource accounting, and a
-legacy artifact census.
+The implementation deliberately stops before pipeline wiring.  It provides
+strict, content-addressed records from source census through release decision,
+closed-set graph reconciliation, exact shared-resource and whole-package byte
+accounting, stage receipts, collection manifests, and a legacy artifact
+census.  Producers still need adapters that turn live pipeline outputs into
+these immutable records.
 
 ## 2. Record topology
 
 ```text
-model snapshot ──┐
-probe campaign ──┼── collection contract ── target A ── solve/export/qualify receipts
-candidate catalog┤                         ├─ target B ── solve/export/qualify receipts
-cost snapshot ───┘                         └─ target N ── solve/export/qualify receipts
-                                                   │
-                                      regenerable collection manifest
+source + unit ledger ─ model snapshot ─ probe campaign ─ cost snapshot
+                                                │              │
+candidate catalog ──────────────────────────────┴──────────────┤
+target A/B/N ───────────────── collection contract ────────────┤
+                                                               v
+                                      solve ─ export ─ evidence ─ qualification
+                                                               │
+market snapshot ───────────────────────── release decision <───┘
+                         receipts ─ collection manifest
 ```
 
 The model, probe, catalog, and cost objects are common references.  Variants
@@ -47,39 +55,47 @@ output, and all receipts require inputs and evidence.  Stage completion can
 therefore be derived by a future DAG evaluator rather than written into a
 mutable `status` field (`make_stage_receipt`, `make_collection_manifest`).
 
-The v1 foundation defines these semantic records:
+The v1 control plane defines these semantic records:
 
 | Record | Identity-bearing responsibility |
 |---|---|
 | candidate | Complete numerical, basis, render, scale, activation, container, and runtime semantics |
 | candidate catalog | Explicit set of candidate references; gaps and cross-family overlaps are legal |
-| target profile | Exact artifact-byte ceiling, usable VRAM, accounting rule, device/workload references, placement, exclusions |
+| target profile | Exact artifact-byte ceiling and scope, usable VRAM, fixed resources, accounting rule, device/workload/placement, exclusions, required qualification checks |
 | collection contract | One common measurement base plus a sorted set of named target variants |
+| unit ledger / model snapshot | Exhaustive assign-or-exclude source census, source-content digest and parameter total, model profile, and producer tree |
+| probe campaign | Exact calibration/token/probe identities, measured features, and exhaustive covered/missing units |
+| cost snapshot | Exhaustive unit-by-candidate measured/derived/unavailable matrix with local bytes and derivation anchors |
+| solve | Exact exhaustive assignments, cost-derived local bytes, candidate-derived shared resources, target-derived fixed resources, and byte breakdown |
+| export | Solve identity plus portable file/tensor/codebook inventory, runtime identity, exact byte scope, and whole-package bytes |
+| qualification evidence | One check outcome bound to the exact export, runtime, device, workload, and placement |
+| device qualification | Target-required nonempty check set, evidence references, and derived accepted/rejected verdict |
+| market snapshot | Canonical UTC observation time and source-separated raw receipts, scope, method, and observations |
+| release decision | Exact collection and market refs plus an exhaustive included/rejected partition of collection variants |
 | stage receipt | Immutable accepted/rejected evidence for measure, solve, validate, export, qualify, or publish |
 | collection manifest | Regenerable index of one contract and its receipt set |
 | legacy export audit | Separate assignment, physical-tensor, recorded-byte, and observed-byte censuses |
 
-ModelSnapshot, ProbeCampaign, CostSnapshot, Assignment, Export, and Device
-Qualification remain referenced opaque records in this slice.  Their strict
-payload validators are the next control-plane layer; their references already
-bind schema, semantic ID, content SHA-256, and byte size, so they can be added
-without changing collection identity rules.
+Unknown artifact-collection schemas are refused rather than treated as opaque
+validated data. External byte contracts may remain references, while every
+reference to a control-plane-owned schema must resolve inside the graph's
+closed record set.
 
-### 2.1 Complete planned DAG payloads
+### 2.1 Enforced DAG payloads
 
-The opaque v1 references are not unspecified.  Their future typed payloads
-have the following minimum identities and reconciliation rules:
+The typed payloads enforce the following minimum identities and reconciliation
+rules:
 
 | Entity | Required identity | Required reconciliation |
 |---|---|---|
-| ModelSnapshot | portable source binding; model-profile contract; immutable unit-ledger blob; assignment-required and excluded unit-set digests; producer source-tree digest | unit IDs/qnames unique; required and excluded sets disjoint and exhaustive; shapes and parameter totals reconcile to checkpoint headers |
+| ModelSnapshot | portable source binding; model-profile contract; immutable unit ledger; source parameter count; required/excluded digests; producer tree | nonempty unique unit IDs/qnames; every unit assign/exclude; shape products and totals reconcile; source content digest equals ledger model digest |
 | ProbeCampaign | ModelSnapshot ref; exact probe blob; calibration/token-content identity; measured feature set; covered/missing unit sets; merge receipt; producer | covered units resolve in ModelSnapshot; missing required units explicit; candidate reuse requires `required_probe_features` to be a subset of measured features |
-| CostSnapshot | model/probe/catalog refs; observation blob; named metric contracts; cell coverage; measured/derived/unavailable counts; accounting-rule ref; producer | every cell resolves to an applicable unit/candidate pair; values finite under one currency; derived cells retain anchors; candidate-local bytes never masquerade as whole-artifact bytes |
-| Assignment/Solve | model/probe/catalog/cost/target refs; exact unit→candidate records; optimized/fixed partitions; solver/search-space identity; predicted metrics; exact byte breakdown | every required unit assigned once; fixed and optimized sets disjoint/exhaustive; optimized choices have cost cells; all choices are applicable; accounting rule and target ceiling agree |
-| Export | Solve ref; assignment digest; producer; exact file/tensor/codebook inventory; runtime artifact identity; named byte measurements | assignment agrees with Solve; inventories have no missing or extra members; content hashes verify; Target is checked against its exact named byte scope |
-| DeviceQualification | Export and Target refs; runtime-contract ref; exact device/workload/placement; required check IDs; immutable evidence blobs; verdict | every check binds the same artifact; required set exact; device and placement satisfy Target; evidence from one device class cannot qualify another |
+| CostSnapshot | model/probe/catalog refs; observation blob; metric contracts; exhaustive cell coverage; provenance counts; accounting rule | every required unit/candidate pair has one cell; usable cells require probe features and coverage, finite metrics, and `local_bytes`; derived cells retain unique anchors |
+| Assignment/Solve | model/probe/catalog/cost/target refs; exact unit→candidate rows; solver identity; predicted metrics; exact byte breakdown | every required unit assigned once; local bytes equal its usable cost cell; shared resources equal its candidate; fixed resources equal Target; accounting and ceiling agree |
+| Export | Solve ref; assignment digest; exact portable file/tensor/codebook inventory; runtime identity; named byte measurement | canonical relative paths only; tensors cover the whole ledger and primary qnames; codebooks equal selected basis assets; runtime equals selected candidate contracts; byte scope/ceiling equal Target |
+| QualificationEvidence / DeviceQualification | exact export/runtime/device/workload/placement; check ID/outcome/measurement; Target; nonempty required checks | evidence cannot replay across any binding; required IDs equal Target; verdict derives only from exact evidence outcomes |
 | MarketSnapshot | source-content refs for survey observations; observation date; normalized device IDs; counts/shares plus scope and collection method | raw observations remain separate by source; Hugging Face users are not presented as installed-base counts; Steam shares are not converted into absolute units |
-| ReleaseDecision | MarketSnapshot ref; candidate Target/Export/Qualification refs; policy identity; included and rejected variants with reasons | no unqualified artifact is included; artifact aliases remain outside scientific identity; one release decision cannot mutate upstream evidence |
+| ReleaseDecision | CollectionContract and MarketSnapshot refs; policy identity; included/rejected rows | variants exactly partition the bound contract; included solve lineage matches it; no rejected qualification is included; aliases remain outside upstream scientific identity |
 
 The release view is therefore a traversal over immutable records, not a ninth
 mutable mega-manifest.  A target can be added by producing Target and Solve
@@ -117,7 +133,9 @@ not enter scientific identities.
 All recognized payloads and the envelope itself are closed objects: unknown
 identity-bearing fields fail validation.  JSON duplicate keys, non-finite
 numbers, malformed hashes, Boolean-as-integer byte counts, tampering, and
-duplicate references also fail.  `write_record` publishes via a no-clobber
+duplicate references also fail. Cross-record verification additionally
+rejects semantic-reference equivocation, one physical digest with inconsistent
+sizes, missing owned records, and duplicate records. `write_record` publishes via a no-clobber
 hard-link operation; it will not replace a file or symlink that already
 exists.
 
@@ -207,17 +225,18 @@ Accordingly:
 
 ## 5. Byte accounting
 
-An assignment maps a unit ID to a candidate ID and declares local bytes plus
-shared-resource claims.  `assignment_byte_breakdown` sums local bytes and
-deduplicates shared resources by physical content SHA-256.  It rejects a
-reused digest with inconsistent sizes and duplicate unit IDs.
+An assignment maps a unit ID to a candidate ID. Its `local_bytes` must equal
+the selected usable CostSnapshot cell, its shared resources must equal the
+Candidate, and Solve fixed resources must equal Target. The recomputed
+`assignment_byte_breakdown` deduplicates shared resources by physical SHA-256.
 
-This primitive is intentionally smaller than the final whole-artifact
-accountant.  The same `accounting_rule` reference must flow from target to
-solve to export, where the implementation must add fixed model data,
-container overhead, tokenizer/config files, and packaging files under one
-named scope.  Candidate-local byte estimates must never substitute for the
-final recursive package measurement.
+Export then carries a complete portable file inventory. Its byte measurement
+must equal the sum of every file, use Target's exact named scope, and stay
+under Target's ceiling. Tensor units and primary qnames reconcile to the whole
+source ledger, while codebooks and runtime identity reconcile to selected
+candidates. This is the authoritative record model; a pipeline adapter still
+must hash and stat the real filesystem to populate it. Candidate-local bytes
+never substitute for the final recursive package measurement.
 
 ### 5.1 Hardware tiers and export shoulders
 
@@ -331,21 +350,19 @@ CB-only targets, matrix modules, and physical tensors are separately named.
 
 ## 7. Next implementation layers
 
-The foundation is ready for the following work without deciding the NVFP4
-rung range:
+The schema and graph verifier now exist. Remaining work is integration:
 
-1. strict ModelSnapshot and UnitLedger payloads derived from `model_walk`;
-2. a ProbeCampaign adapter that publishes feature coverage and a portable
-   source binding;
-3. a CostSnapshot adapter with measured/derived/unavailable cell provenance;
-4. an Assignment/Solve record that maps every required unit to a candidate
-   ID and invokes one whole-artifact accounting rule;
-5. Export and DeviceQualification records that bind exact file hashes,
-   artifact identity, runtime contract, workload, placement, and hardware;
-6. a release-policy evaluator that derives publishability by traversing
-   accepted receipts; and
-7. only then, catalog population for the desired NVFP4 lattice and learned
-   candidates and physical qualification on the target RTX 50-series tiers.
+1. derive UnitLedger/ModelSnapshot from `model_walk` and checkpoint headers;
+2. publish ProbeCampaign and exhaustive CostSnapshot records from the live
+   probe/reducer and cost pipeline;
+3. make AQUA emit Solve records and exporters emit filesystem-derived Export
+   records rather than reconstructing either after the fact;
+4. turn physical device runs into typed QualificationEvidence and exact
+   DeviceQualification records;
+5. ingest dated market receipts without changing scientific identities; and
+6. have release policy create an exhaustive ReleaseDecision and require the
+   closed-graph verifier before publication.
 
-Until those adapters land, these records are an offline control-plane API,
-not a claim that any new rung, artifact size, or device route is supported.
+Until those adapters and exact hardware qualifications land, this remains an
+offline control-plane API, not a claim that any new rung, artifact size, or
+device route is supported.

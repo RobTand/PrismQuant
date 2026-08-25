@@ -12,6 +12,7 @@ References bind both the semantic identity and the exact portable content.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -32,8 +33,26 @@ MANIFEST_SCHEMA = "prismaquant.artifact_collection.manifest.v1"
 REFERENCE_SCHEMA = "prismaquant.artifact_collection.reference.v1"
 BYTE_BREAKDOWN_SCHEMA = "prismaquant.artifact_collection.byte_breakdown.v1"
 LEGACY_AUDIT_SCHEMA = "prismaquant.artifact_collection.legacy_export_audit.v1"
+UNIT_LEDGER_SCHEMA = "prismaquant.artifact_collection.unit_ledger.v1"
+MODEL_SNAPSHOT_SCHEMA = "prismaquant.artifact_collection.model_snapshot.v1"
+PROBE_CAMPAIGN_SCHEMA = "prismaquant.artifact_collection.probe_campaign.v1"
+COST_SNAPSHOT_SCHEMA = "prismaquant.artifact_collection.cost_snapshot.v1"
+SOLVE_SCHEMA = "prismaquant.artifact_collection.solve.v1"
+EXPORT_SCHEMA = "prismaquant.artifact_collection.export.v1"
+DEVICE_QUALIFICATION_SCHEMA = (
+    "prismaquant.artifact_collection.device_qualification.v1"
+)
+QUALIFICATION_EVIDENCE_SCHEMA = (
+    "prismaquant.artifact_collection.qualification_evidence.v1"
+)
+MARKET_SNAPSHOT_SCHEMA = "prismaquant.artifact_collection.market_snapshot.v1"
+RELEASE_DECISION_SCHEMA = "prismaquant.artifact_collection.release_decision.v1"
+AUXILIARY_SCHEMA = "prismaquant.artifact_collection.auxiliary.v1"
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_VALIDATING_RECORDS: ContextVar[frozenset[tuple[str, str]]] = ContextVar(
+    "artifact_collection_validating_records", default=frozenset()
+)
 _STAGES = frozenset({
     "measure",
     "solve",
@@ -232,6 +251,12 @@ def verify_record(record: Mapping[str, object]) -> dict[str, object]:
         _validate_locators(value["locators"], where="record.locators")
     _reject_reference_equivocation(payload, where="record.payload")
     validator = _PAYLOAD_VALIDATORS.get(schema)
+    if validator is None:
+        from prismaquant.artifact_collection_records import (
+            PAYLOAD_VALIDATORS as RECORD_PAYLOAD_VALIDATORS,
+        )
+
+        validator = RECORD_PAYLOAD_VALIDATORS.get(schema)
     if validator is None and schema == LEGACY_AUDIT_SCHEMA:
         # Lazy import avoids making the generic control plane depend on a
         # legacy adapter at module-import time while keeping load_record strict.
@@ -240,8 +265,16 @@ def verify_record(record: Mapping[str, object]) -> dict[str, object]:
         )
 
         validator = validate_legacy_audit_payload
-    if validator is not None:
-        validator(payload)
+    if validator is None:
+        _fail("record.schema", f"unsupported artifact-collection schema {schema!r}")
+    validation_key = (schema, observed)
+    active = _VALIDATING_RECORDS.get()
+    if validation_key not in active:
+        token = _VALIDATING_RECORDS.set(active | {validation_key})
+        try:
+            validator(payload)
+        finally:
+            _VALIDATING_RECORDS.reset(token)
     canonical_record: dict[str, object] = {
         "schema": schema,
         "payload": payload,
@@ -538,6 +571,8 @@ def make_candidate_catalog(
         [reference_for_record(candidate) for candidate in candidates],
         key=_reference_sort_key,
     )
+    if not references:
+        _fail("candidate_catalog.candidates", "must not be empty")
     record = seal_record(CATALOG_SCHEMA, {"candidates": references}, locators=locators)
     return verify_record(record)
 
@@ -545,6 +580,8 @@ def make_candidate_catalog(
 def _validate_catalog(payload: Mapping[str, object]) -> None:
     _exact_keys(payload, {"candidates"}, where="candidate_catalog.payload")
     candidates = _sorted_unique_references(payload["candidates"], where="candidate_catalog.candidates")
+    if not candidates:
+        _fail("candidate_catalog.candidates", "must not be empty")
     for index, reference in enumerate(candidates):
         if reference["subject_schema"] != CANDIDATE_SCHEMA:
             _fail(f"candidate_catalog.candidates[{index}]", "does not reference a candidate")
@@ -553,17 +590,23 @@ def _validate_catalog(payload: Mapping[str, object]) -> None:
 def make_target_profile(
     *,
     artifact_byte_ceiling: int,
+    artifact_byte_scope: str,
     usable_vram_bytes: int,
     accounting_rule: Mapping[str, object],
     device_profile: Mapping[str, object],
     workload: Mapping[str, object],
     placement_constraints: Mapping[str, object],
+    fixed_resources: Sequence[Mapping[str, object]],
     exclusions: Sequence[str],
+    required_qualification_checks: Sequence[str],
     locators: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, object]:
     payload = {
         "artifact_byte_ceiling": _nonnegative_int(
             artifact_byte_ceiling, where="target.artifact_byte_ceiling", positive=True
+        ),
+        "artifact_byte_scope": _text(
+            artifact_byte_scope, where="target.artifact_byte_scope"
         ),
         "usable_vram_bytes": _nonnegative_int(
             usable_vram_bytes, where="target.usable_vram_bytes", positive=True
@@ -574,8 +617,21 @@ def make_target_profile(
         "placement_constraints": _canonical_object(
             placement_constraints, where="target.placement_constraints"
         ),
+        "fixed_resources": sorted(
+            [
+                _validate_reference(item, where="target.fixed_resources")
+                for item in fixed_resources
+            ],
+            key=_reference_sort_key,
+        ),
         "exclusions": _canonical_texts(exclusions, where="target.exclusions"),
+        "required_qualification_checks": _canonical_texts(
+            required_qualification_checks,
+            where="target.required_qualification_checks",
+        ),
     }
+    if not payload["required_qualification_checks"]:
+        _fail("target.required_qualification_checks", "must not be empty")
     record = seal_record(TARGET_SCHEMA, payload, locators=locators)
     return verify_record(record)
 
@@ -583,20 +639,31 @@ def make_target_profile(
 def _validate_target(payload: Mapping[str, object]) -> None:
     expected = {
         "artifact_byte_ceiling",
+        "artifact_byte_scope",
         "usable_vram_bytes",
         "accounting_rule",
         "device_profile",
         "workload",
         "placement_constraints",
+        "fixed_resources",
         "exclusions",
+        "required_qualification_checks",
     }
     _exact_keys(payload, expected, where="target.payload")
     _nonnegative_int(payload["artifact_byte_ceiling"], where="target.artifact_byte_ceiling", positive=True)
+    _text(payload["artifact_byte_scope"], where="target.artifact_byte_scope")
     _nonnegative_int(payload["usable_vram_bytes"], where="target.usable_vram_bytes", positive=True)
     for field in ("accounting_rule", "device_profile", "workload"):
         _validate_reference(payload[field], where=f"target.{field}")
     _canonical_object(payload["placement_constraints"], where="target.placement_constraints")
+    _sorted_unique_references(payload["fixed_resources"], where="target.fixed_resources")
     _sorted_unique_texts(payload["exclusions"], where="target.exclusions")
+    required_checks = _sorted_unique_texts(
+        payload["required_qualification_checks"],
+        where="target.required_qualification_checks",
+    )
+    if not required_checks:
+        _fail("target.required_qualification_checks", "must not be empty")
 
 
 def make_collection_contract(
@@ -667,8 +734,25 @@ def _validate_contract(payload: Mapping[str, object]) -> None:
         "variants",
     }
     _exact_keys(payload, expected, where="collection.payload")
-    for field in expected - {"variants"}:
-        _validate_reference(payload[field], where=f"collection.{field}")
+    reference_schemas = {
+        "model_snapshot": MODEL_SNAPSHOT_SCHEMA,
+        "probe_campaign": PROBE_CAMPAIGN_SCHEMA,
+        "candidate_catalog": CATALOG_SCHEMA,
+        "cost_snapshot": COST_SNAPSHOT_SCHEMA,
+        "accounting_rule": None,
+    }
+    for field, expected_schema in reference_schemas.items():
+        reference = _validate_reference(
+            payload[field], where=f"collection.{field}"
+        )
+        if (
+            expected_schema is not None
+            and reference["subject_schema"] != expected_schema
+        ):
+            _fail(
+                f"collection.{field}",
+                f"does not reference {expected_schema}",
+            )
     variants = payload["variants"]
     if isinstance(variants, (str, bytes)) or not isinstance(variants, Sequence) or not variants:
         _fail("collection.variants", "expected a nonempty array")

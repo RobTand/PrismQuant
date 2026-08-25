@@ -8,6 +8,10 @@ import pytest
 from prismaquant.artifact_collection import (
     ArtifactCollectionError,
     CANDIDATE_SCHEMA,
+    CATALOG_SCHEMA,
+    COST_SNAPSHOT_SCHEMA,
+    MODEL_SNAPSHOT_SCHEMA,
+    PROBE_CAMPAIGN_SCHEMA,
     TARGET_SCHEMA,
     assignment_byte_breakdown,
     load_record,
@@ -19,10 +23,10 @@ from prismaquant.artifact_collection import (
     make_stage_receipt,
     make_target_profile,
     reference_for_record,
-    seal_record,
     verify_record,
     write_record,
 )
+from prismaquant.artifact_collection_records import make_auxiliary
 
 
 def _digest(label: str) -> str:
@@ -65,13 +69,13 @@ def _candidate(
 
 def test_semantic_id_is_key_order_and_locator_independent():
     subject = _digest("subject")
-    first = seal_record(
-        "fixture.record.v1",
+    first = make_auxiliary(
+        "fixture.record",
         {"z": 2, "a": {"right": 1, "left": 0}},
         locators={subject: ["/mnt/a/object.json"]},
     )
-    second = seal_record(
-        "fixture.record.v1",
+    second = make_auxiliary(
+        "fixture.record",
         {"a": {"left": 0, "right": 1}, "z": 2},
         locators={subject: ["hf://org/repo/object.json"]},
     )
@@ -166,21 +170,27 @@ def test_collection_contract_sorts_variants_and_reuses_one_probe():
     common = _reference("common")
     target_8 = make_target_profile(
         artifact_byte_ceiling=5_500_000_000,
+        artifact_byte_scope="recursive_package_bytes",
         usable_vram_bytes=8 << 30,
         accounting_rule=common,
         device_profile=_reference("rtx-5060"),
         workload=_reference("chat-8k"),
         placement_constraints={"placement": "gpu_only"},
+        fixed_resources=[],
         exclusions=[],
+        required_qualification_checks=["structural_inventory"],
     )
     target_16 = make_target_profile(
         artifact_byte_ceiling=13_000_000_000,
+        artifact_byte_scope="recursive_package_bytes",
         usable_vram_bytes=16 << 30,
         accounting_rule=common,
         device_profile=_reference("rtx-5080"),
         workload=_reference("chat-8k"),
         placement_constraints={"placement": "gpu_only"},
+        fixed_resources=[],
         exclusions=[],
+        required_qualification_checks=["structural_inventory"],
     )
     variants = {
         "16gb-balanced": {
@@ -193,18 +203,18 @@ def test_collection_contract_sorts_variants_and_reuses_one_probe():
         },
     }
     contract = make_collection_contract(
-        model_snapshot=_reference("model"),
-        probe_campaign=_reference("probe-once"),
-        candidate_catalog=_reference("catalog"),
-        cost_snapshot=_reference("costs"),
+        model_snapshot=_reference("model", schema=MODEL_SNAPSHOT_SCHEMA),
+        probe_campaign=_reference("probe-once", schema=PROBE_CAMPAIGN_SCHEMA),
+        candidate_catalog=_reference("catalog", schema=CATALOG_SCHEMA),
+        cost_snapshot=_reference("costs", schema=COST_SNAPSHOT_SCHEMA),
         accounting_rule=common,
         variants=variants,
     )
     reversed_contract = make_collection_contract(
-        model_snapshot=_reference("model"),
-        probe_campaign=_reference("probe-once"),
-        candidate_catalog=_reference("catalog"),
-        cost_snapshot=_reference("costs"),
+        model_snapshot=_reference("model", schema=MODEL_SNAPSHOT_SCHEMA),
+        probe_campaign=_reference("probe-once", schema=PROBE_CAMPAIGN_SCHEMA),
+        candidate_catalog=_reference("catalog", schema=CATALOG_SCHEMA),
+        cost_snapshot=_reference("costs", schema=COST_SNAPSHOT_SCHEMA),
         accounting_rule=common,
         variants=dict(reversed(list(variants.items()))),
     )
@@ -219,18 +229,21 @@ def test_receipts_are_immutable_evidence_not_mutable_status():
     common = _reference("common")
     target = make_target_profile(
         artifact_byte_ceiling=13_000_000_000,
+        artifact_byte_scope="recursive_package_bytes",
         usable_vram_bytes=16 << 30,
         accounting_rule=common,
         device_profile=_reference("rtx-5080"),
         workload=_reference("chat-8k"),
         placement_constraints={"placement": "gpu_only"},
+        fixed_resources=[],
         exclusions=[],
+        required_qualification_checks=["structural_inventory"],
     )
     contract = make_collection_contract(
-        model_snapshot=_reference("model"),
-        probe_campaign=_reference("probe"),
-        candidate_catalog=_reference("catalog"),
-        cost_snapshot=_reference("costs"),
+        model_snapshot=_reference("model", schema=MODEL_SNAPSHOT_SCHEMA),
+        probe_campaign=_reference("probe", schema=PROBE_CAMPAIGN_SCHEMA),
+        candidate_catalog=_reference("catalog", schema=CATALOG_SCHEMA),
+        cost_snapshot=_reference("costs", schema=COST_SNAPSHOT_SCHEMA),
         accounting_rule=common,
         variants={
             "16gb-balanced": {
@@ -259,9 +272,9 @@ def test_receipts_are_immutable_evidence_not_mutable_status():
 
 
 def test_strict_envelope_refuses_tamper_unknown_fields_and_nonfinite_values():
-    record = seal_record("fixture.record.v1", {"value": 1})
+    record = make_auxiliary("fixture.record", {"value": 1})
     tampered = json.loads(json.dumps(record))
-    tampered["payload"]["value"] = 2
+    tampered["payload"]["data"]["value"] = 2
     with pytest.raises(ArtifactCollectionError, match="payload_sha256"):
         verify_record(tampered)
 
@@ -270,7 +283,7 @@ def test_strict_envelope_refuses_tamper_unknown_fields_and_nonfinite_values():
         verify_record(extra)
 
     with pytest.raises(ArtifactCollectionError, match="finite canonical JSON"):
-        seal_record("fixture.record.v1", {"value": float("nan")})
+        make_auxiliary("fixture.record", {"value": float("nan")})
 
 
 def test_loader_refuses_duplicate_json_members_and_nonfinite_values(tmp_path):
@@ -295,27 +308,33 @@ def test_target_rejects_bool_or_zero_byte_limits():
     with pytest.raises(ArtifactCollectionError, match="expected an integer"):
         make_target_profile(
             artifact_byte_ceiling=True,
+            artifact_byte_scope="recursive_package_bytes",
             usable_vram_bytes=1,
             accounting_rule=common,
             device_profile=common,
             workload=common,
             placement_constraints={"placement": "gpu_only"},
+            fixed_resources=[],
             exclusions=[],
+            required_qualification_checks=["structural_inventory"],
         )
     with pytest.raises(ArtifactCollectionError, match="positive"):
         make_target_profile(
             artifact_byte_ceiling=0,
+            artifact_byte_scope="recursive_package_bytes",
             usable_vram_bytes=1,
             accounting_rule=common,
             device_profile=common,
             workload=common,
             placement_constraints={"placement": "gpu_only"},
+            fixed_resources=[],
             exclusions=[],
+            required_qualification_checks=["structural_inventory"],
         )
 
 
 def test_record_publication_is_round_trip_and_no_clobber(tmp_path):
-    record = seal_record("fixture.record.v1", {"value": 1})
+    record = make_auxiliary("fixture.record", {"value": 1})
     destination = tmp_path / "record.json"
     write_record(destination, record)
     assert load_record(destination) == record
@@ -330,8 +349,8 @@ def test_record_publication_is_round_trip_and_no_clobber(tmp_path):
 
 def test_locator_overlay_is_not_written_and_reference_matches_published_bytes(tmp_path):
     subject = _digest("located-subject")
-    record = seal_record(
-        "fixture.located.v1",
+    record = make_auxiliary(
+        "fixture.located",
         {"value": 1},
         locators={subject: ["/staging/record.json"]},
     )
@@ -374,12 +393,15 @@ def test_collection_rejects_target_with_a_different_accounting_rule():
     common = _reference("accounting-a")
     target = make_target_profile(
         artifact_byte_ceiling=1,
+        artifact_byte_scope="recursive_package_bytes",
         usable_vram_bytes=1,
         accounting_rule=_reference("accounting-b"),
         device_profile=_reference("device"),
         workload=_reference("workload"),
         placement_constraints={"placement": "gpu_only"},
+        fixed_resources=[],
         exclusions=[],
+        required_qualification_checks=["structural_inventory"],
     )
     with pytest.raises(ArtifactCollectionError, match="differs from the collection"):
         make_collection_contract(
@@ -420,18 +442,21 @@ def test_manifest_refuses_receipt_for_another_contract_or_unknown_variant():
     common = _reference("common")
     target = make_target_profile(
         artifact_byte_ceiling=1,
+        artifact_byte_scope="recursive_package_bytes",
         usable_vram_bytes=1,
         accounting_rule=common,
         device_profile=_reference("device"),
         workload=_reference("workload"),
         placement_constraints={"placement": "gpu_only"},
+        fixed_resources=[],
         exclusions=[],
+        required_qualification_checks=["structural_inventory"],
     )
     contract = make_collection_contract(
-        model_snapshot=_reference("model"),
-        probe_campaign=_reference("probe"),
-        candidate_catalog=_reference("catalog"),
-        cost_snapshot=_reference("cost"),
+        model_snapshot=_reference("model", schema=MODEL_SNAPSHOT_SCHEMA),
+        probe_campaign=_reference("probe", schema=PROBE_CAMPAIGN_SCHEMA),
+        candidate_catalog=_reference("catalog", schema=CATALOG_SCHEMA),
+        cost_snapshot=_reference("cost", schema=COST_SNAPSHOT_SCHEMA),
         accounting_rule=common,
         variants={
             "known": {
