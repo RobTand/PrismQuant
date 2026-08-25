@@ -69,16 +69,21 @@ fit absorbs the constants; that is why calibration is mandatory, not optional.
    picks **the highest-fidelity rung that passes the memory gate** and records
    `regime: degenerate`. This is the formula's own verdict, not a shortcut
    around it.
- 7. Emit the rung choice + a provenance JSON: constants, fit points, regime,
-    menu, per-rung `T(b)` estimates. The continuous cross-check records WHICH
-    solver answered in `continuous_bstar_lambertw_status` (`"scipy"` /
-    `"newton_continuation"` / `"fixed_point"` / `"none"`): since the
-    2026-08-21 re-underwrite the closed form is computed in log space
-    (`log_M = ln((1+a_inf)/β) − g_over_c`) so `exp` can no longer overflow
-    silently on large `(t+d0)/c` — the pre-fix code lost scipy for ratios
-    ≳1022 (Hy3's recorded constants sit at ~1260) and masked it with the
-    fixed-point answer; a Newton continuation of `W₋₁` on `s − ln s = L`
-    covers sub-representable arguments exactly.
+7. Emit the rung choice + a provenance JSON: constants, fit points, regime,
+   menu, per-rung `T(b)` estimates. The continuous cross-check records WHICH
+   solver answered in `continuous_bstar_lambertw_status`:
+   `"scipy_lambertw"` when scipy evaluated `W₋₁` directly,
+   `"log_space_continuation"` when the Newton continuation answered below
+   float64 range, or one of the refusals `"scipy_absent"`,
+   `"invalid_fit_constants"`, `"no_real_solution"`,
+   `"continuation_did_not_converge"`; the separate `continuous_method` field
+   is `"fixed_point"` when the iteration-only cross-check produced a value,
+   else null. Since the 2026-08-21 re-underwrite the closed form is computed
+   in log space (`log_M = ln((1+a_inf)/β) − g_over_c`) so `exp` can no longer
+   overflow silently on large `(t+d0)/c` — the pre-fix code lost scipy for
+   ratios ≳1022 (Hy3's recorded constants sit at ~1260) and masked it with
+   the fixed-point answer; a Newton continuation of `W₋₁` on `s − ln s = L`
+   covers sub-representable arguments exactly.
 
 ## 4. `k > 1` and the future regime
 

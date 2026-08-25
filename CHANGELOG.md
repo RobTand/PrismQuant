@@ -2,11 +2,13 @@
 
 ## Unreleased
 
+## 0.16.2 — 2026-08-22
+
 ### Fixed
 
 - **MTP Lambert-W closed form no longer silently disables itself**
   (`mtp_rung_selection.py`): `exp(g_over_c)` overflowed for
-  `(t+d0)/c ≳ 1022.6` — ~41% of the plausible parameter range, including the
+  `(t+d0)/c ≳ 1022.6` — an illustrative ~41% of the parameter range the audit treated as plausible, including the
   recorded Hy3 constants (~1260) — and the bare-`None` fallback was
   indistinguishable from "no scipy" / "no real solution", so the fixed-point
   answer shipped without anyone knowing the closed form had died. The closed
