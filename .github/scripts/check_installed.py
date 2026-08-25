@@ -61,7 +61,10 @@ print("  run-pipeline.sh OK")
 # encode raises FileNotFoundError; without CB lattices the package silently
 # regenerates them, which is expensive and can be nondeterministic on CUDA.
 from prismaquant.gguf_iq_formats import _tables as iq_tables  # noqa: E402
-from prismaquant.nvfp4_cb_formats import _lattice_file  # noqa: E402
+from prismaquant.nvfp4_cb_formats import (  # noqa: E402
+    _lattice_file,
+    _production_lattice_keys,
+)
 
 iq = iq_tables("cpu")
 required_iq = {
@@ -73,9 +76,17 @@ if set(iq) != required_iq:
 print(f"  IQ tables OK: {len(iq)}")
 
 lattices = _lattice_file()
-if len(lattices) != 20:
-    sys.exit(f"installed CB lattice table count is {len(lattices)}, expected 20")
-print(f"  CB lattices OK: {len(lattices)}")
+required_lattices = _production_lattice_keys()
+missing_lattices = sorted(required_lattices.difference(lattices))
+if missing_lattices:
+    sys.exit(
+        "installed CB lattice asset is missing producer tables: "
+        + ", ".join(missing_lattices)
+    )
+print(
+    f"  CB lattices OK: {len(required_lattices)} producer tables "
+    f"({len(lattices) - len(required_lattices)} additional research tables)"
+)
 
 # The exact external-runtime contract must work from site-packages and from an
 # arbitrary CWD. It is moved into the package, never copied from scripts/.
