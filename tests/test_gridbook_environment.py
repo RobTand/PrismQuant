@@ -28,6 +28,7 @@ EXECUTION = (
     "PRISMAQUANT_CB_DECODE_CONTRACT",
     "PRISMAQUANT_CB_FP8_SCHED",
     "PRISMAQUANT_CB_FP4V2_SCHED",
+    "PRISMAQUANT_CB_FP4V2_DENSE_R2",
     "PRISMAQUANT_CB_W2_SCHED",
     "PRISMAQUANT_CB_W2_ROWS",
     "PRISMAQUANT_CB_W2_WARPS",
@@ -46,17 +47,22 @@ RETIRED = (
     "PRISMAQUANT_CB_EXPAND",
     "PRISMAQUANT_CB_PREFILL",
 )
-DIAGNOSTIC = ("PRISMAQUANT_DEBUG_PREFIXES",)
+DIAGNOSTIC = (
+    "PRISMAQUANT_DEBUG_PREFIXES",
+    "PRISMAQUANT_CB_BF16_SWIZZLE",
+)
 
 CANONICAL = {
     "CUDACXX": None,
     "CXX": None,
     "GRIDBOOK_MXFP8_DENSE": None,
     "PRISMAQUANT_CB_BF16_SM120": "0",
+    "PRISMAQUANT_CB_BF16_SWIZZLE": None,
     "PRISMAQUANT_CB_DECODE": None,
     "PRISMAQUANT_CB_DECODE_CONTRACT": "v1",
     "PRISMAQUANT_CB_EXPAND": None,
     "PRISMAQUANT_CB_EXT_DIR": None,
+    "PRISMAQUANT_CB_FP4V2_DENSE_R2": "0",
     "PRISMAQUANT_CB_FP4V2_SCHED": None,
     "PRISMAQUANT_CB_FP4_FUSED_MIDM": "0",
     "PRISMAQUANT_CB_FP8_GEMV_V2": "0",
@@ -121,6 +127,30 @@ def test_canonical_gold_snapshot_is_complete_and_exact():
     assert CANONICAL["PRISMAQUANT_CB_FUSED_FP4"] is None
     assert CANONICAL["PRISMAQUANT_CB_FUSED_FP4_MOE"] is None
     assert CANONICAL["PRISMAQUANT_CB_PREFILL_EXPERT_CHUNK"] is None
+
+
+def test_candidate_runtime_knobs_have_exact_classification_and_domains():
+    by_name = {
+        item.name: item for item in envmod.GRIDBOOK_ENVIRONMENT_REGISTRY
+    }
+    assert by_name["PRISMAQUANT_CB_FP4V2_DENSE_R2"] == (
+        envmod.GridbookEnvironmentVariable(
+            name="PRISMAQUANT_CB_FP4V2_DENSE_R2",
+            category=envmod.CATEGORY_EXECUTION,
+            canonical_gold_value="0",
+            gridbook_default="disabled",
+            accepted_domain="strict boolean: unset, 0, or 1",
+        )
+    )
+    assert by_name["PRISMAQUANT_CB_BF16_SWIZZLE"] == (
+        envmod.GridbookEnvironmentVariable(
+            name="PRISMAQUANT_CB_BF16_SWIZZLE",
+            category=envmod.CATEGORY_DIAGNOSTIC,
+            canonical_gold_value=None,
+            gridbook_default="auto",
+            accepted_domain="enum: unset, auto, 1, or 8",
+        )
+    )
 
 
 def test_apply_clears_poisoned_state_before_setting_canonical_values():
@@ -212,6 +242,35 @@ def test_source_scanner_surfaces_a_new_environment_identifier(tmp_path: Path):
         envmod.require_gridbook_source_compatible(tmp_path)
 
 
+def test_candidate_runtime_identifiers_are_registered_ahead_of_pin(tmp_path: Path):
+    package = tmp_path / "gridbook"
+    package.mkdir()
+    (package / "lane_select.py").write_text(
+        "\n".join((
+            'getenv("PRISMAQUANT_CB_FP4V2_DENSE_R2");',
+            'getenv("PRISMAQUANT_CB_BF16_SWIZZLE");',
+        )),
+        encoding="utf-8",
+    )
+    report = envmod.scan_gridbook_source_environment(tmp_path)
+    candidates = {
+        "PRISMAQUANT_CB_FP4V2_DENSE_R2",
+        "PRISMAQUANT_CB_BF16_SWIZZLE",
+    }
+    assert candidates <= set(report.registered_environment)
+    assert candidates.isdisjoint(report.unknown_identifiers)
+
+    # Candidate registration deliberately leads the 0.8.11 pin: neither name
+    # becomes required source until the immutable runtime pin advances.
+    empty_root = tmp_path / "empty"
+    (empty_root / "gridbook").mkdir(parents=True)
+    (empty_root / "gridbook" / "lane_select.py").write_text(
+        "# pinned-release fixture\n", encoding="utf-8"
+    )
+    empty_report = envmod.scan_gridbook_source_environment(empty_root)
+    assert candidates.isdisjoint(empty_report.missing_expected_identifiers)
+
+
 def test_released_source_environment_scan_is_closed_when_checkout_is_present():
     root = _gridbook_source_root()
     commit = subprocess.run(
@@ -229,11 +288,17 @@ def test_released_source_environment_scan_is_closed_when_checkout_is_present():
     assert report.classified_non_environment == tuple(sorted(
         envmod.GRIDBOOK_SOURCE_NON_ENVIRONMENT_IDENTIFIERS
     ))
-    # Two retired switches no longer occur in runtime source.  Every other
-    # registry member is visibly accounted for by the source scan.
+    # Two retired switches no longer occur in runtime source.  The two
+    # candidate inputs are registered ahead of the next pin and therefore are
+    # also absent from the exact 0.8.11 source.
     assert set(envmod.GRIDBOOK_ENVIRONMENT_ALLOWLIST) - set(
         report.registered_environment
-    ) == {"PRISMAQUANT_CB_DECODE", "PRISMAQUANT_CB_EXPAND"}
+    ) == {
+        "PRISMAQUANT_CB_BF16_SWIZZLE",
+        "PRISMAQUANT_CB_DECODE",
+        "PRISMAQUANT_CB_EXPAND",
+        "PRISMAQUANT_CB_FP4V2_DENSE_R2",
+    }
 
 
 def test_released_source_domains_explain_every_required_unset_default():

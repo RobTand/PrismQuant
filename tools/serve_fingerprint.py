@@ -202,15 +202,11 @@ SERVER_ENV_ALLOWLIST = (
     *_gridbook_environment_allowlist(),
 )
 
-# Candidate-v10 inputs belong to the strict Ada campaign, not to the shared
-# historical manifest contract.  Keeping the projection profile-specific
-# preserves byte-for-byte replay of existing Gridbook release evidence while
-# proving that neither v10 diagnostic selector entered the RTX 4090 server.
-RTX4090_SERVER_ENV_ALLOWLIST = (
-    *SERVER_ENV_ALLOWLIST,
-    "PRISMAQUANT_CB_BF16_SWIZZLE",
-    "PRISMAQUANT_CB_FP4V2_DENSE_R2",
-)
+# The two candidate-runtime inputs first appeared here as an Ada-only census
+# extension.  They now live in the authoritative registry so every closed
+# Gridbook serve proves their value or absence.  Keep the named projection for
+# CLI/profile stability; its contents intentionally equal the shared list.
+RTX4090_SERVER_ENV_ALLOWLIST = tuple(SERVER_ENV_ALLOWLIST)
 
 #: The extensions whose residency moves the numbers (§7.4).
 EXTENSION_PATTERN = re.compile(

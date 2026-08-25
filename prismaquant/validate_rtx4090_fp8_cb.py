@@ -576,8 +576,8 @@ def rtx4090_serve_environment(runtime_pin: Mapping[str, Any]) -> dict[str, str]:
 
 def rtx4090_serve_environment_allowlist() -> tuple[str, ...]:
     # Keep the validator and the stdlib-only in-container collector on one
-    # exact projection.  In particular this includes v11's two additional
-    # source-level selectors, both of which must be absent on this FP8 lane.
+    # exact projection.  The shared registry includes both candidate source
+    # inputs: R2 is pinned off and the BF16 diagnostic pin must be absent.
     from tools.serve_fingerprint import RTX4090_SERVER_ENV_ALLOWLIST
 
     return tuple(RTX4090_SERVER_ENV_ALLOWLIST)

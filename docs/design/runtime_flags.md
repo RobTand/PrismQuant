@@ -317,7 +317,11 @@ drift (for example the dense CUDA GEMV crossover and fused-FP4 promotion
 status), so it has been removed. Consult the `docs/PLUGIN.md` shipped by the
 exact Gridbook commit in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`. A serve record
 must fingerprint that commit and its actual environment; a PrismaQuant document
-is never authority for a runtime default.
+is never authority for a runtime default. The closed census may register a
+candidate-source name ahead of a pin so an unknown input cannot evade
+attestation; that registration is not support or a default claim, and its
+accepted domain remains grounded in the candidate Gridbook source until the
+runtime pin is reviewed and advanced.
 
 ## 8. GGUF lane (`docs/lanes/gguf.md`)
 

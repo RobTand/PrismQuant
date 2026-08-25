@@ -92,6 +92,13 @@ def _var(
 # evidence was measured on, precisely so a runtime-default change cannot move
 # the gold lane's executed kernels without a reviewed decision.  Re-baselining
 # gold onto the 0.8.9+ auto dispatch is such a decision; a pin bump is not.
+#
+# 2026-08-24: two candidate-runtime identifiers are registered ahead of a pin
+# advance so a source scan can classify the current Gridbook candidate without
+# weakening the closed environment.  PRISMAQUANT_CB_FP4V2_DENSE_R2 is an
+# opt-in execution arm and gold pins its strict off spelling.  The BF16
+# swizzle selector is a diagnostic A/B override and gold requires it absent.
+# Neither name is required in the pinned 0.8.11 source until the pin advances.
 GRIDBOOK_ENVIRONMENT_REGISTRY = (
     _var(
         "GRIDBOOK_MXFP8_DENSE", CATEGORY_EXECUTION, None, "disabled",
@@ -176,6 +183,10 @@ GRIDBOOK_ENVIRONMENT_REGISTRY = (
         "unset for single-buffer or db for the double-buffer A/B arm",
     ),
     _var(
+        "PRISMAQUANT_CB_FP4V2_DENSE_R2", CATEGORY_EXECUTION, "0", "disabled",
+        "strict boolean: unset, 0, or 1",
+    ),
+    _var(
         "PRISMAQUANT_CB_W2_SCHED", CATEGORY_EXECUTION, None,
         "shape-tuned warp schedule",
         "unset for the tuned schedule, legacy, or rowpack",
@@ -232,6 +243,10 @@ GRIDBOOK_ENVIRONMENT_REGISTRY = (
     _var(
         "PRISMAQUANT_DEBUG_PREFIXES", CATEGORY_DIAGNOSTIC, None, "disabled",
         "must be absent for the canonical non-debug serve",
+    ),
+    _var(
+        "PRISMAQUANT_CB_BF16_SWIZZLE", CATEGORY_DIAGNOSTIC, None, "auto",
+        "enum: unset, auto, 1, or 8",
     ),
 )
 
@@ -377,6 +392,11 @@ GRIDBOOK_SOURCE_NON_ENVIRONMENT_IDENTIFIERS = MappingProxyType({
     "VLLM_TEST_FORCE_FP8_MARLIN": "external vLLM test flag mentioned in prose",
 })
 
+# Required identifiers describe the exact pinned 0.8.11 release.  A registry
+# member may deliberately lead this set while a candidate runtime is being
+# audited: it is then classified when present, but its absence from the pinned
+# release is not source drift.  Move such a name into this set only with the
+# pin advance that makes it part of the required release namespace.
 _GRIDBOOK_EXPECTED_SOURCE_IDENTIFIERS = frozenset({
     "CUDACXX",
     "CXX",

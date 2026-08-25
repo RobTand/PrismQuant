@@ -15,6 +15,7 @@ import tools.serve_fingerprint as fingerprint
 from prismaquant.validate_rtx4090_fp8_cb import (
     RTX4090FP8CBValidationError,
     create_rtx4090_artifact_content_receipt,
+    rtx4090_serve_environment,
     rtx4090_serve_environment_allowlist,
     validate_rtx4090_artifact_content_receipt,
     validate_rtx4090_artifact_content_receipt_portable,
@@ -91,15 +92,22 @@ def _direct_url(*, repository=fingerprint.VLLM_REPOSITORY, commit=_VLLM_COMMIT):
     }
 
 
-def test_rtx4090_environment_projection_is_profile_specific():
-    additions = {
+def test_rtx4090_environment_projection_inherits_candidate_registry_inputs():
+    candidates = {
         "PRISMAQUANT_CB_BF16_SWIZZLE",
         "PRISMAQUANT_CB_FP4V2_DENSE_R2",
     }
-    assert additions.isdisjoint(fingerprint.SERVER_ENV_ALLOWLIST)
-    assert set(rtx4090_serve_environment_allowlist()) == (
-        set(fingerprint.SERVER_ENV_ALLOWLIST) | additions
+    assert candidates <= set(fingerprint.SERVER_ENV_ALLOWLIST)
+    assert rtx4090_serve_environment_allowlist() == (
+        fingerprint.SERVER_ENV_ALLOWLIST
     )
+    expected = rtx4090_serve_environment({
+        "commit": "a" * 40,
+        "version": "0.9.1",
+        "wheel_sha256": "b" * 64,
+    })
+    assert expected["PRISMAQUANT_CB_FP4V2_DENSE_R2"] == "0"
+    assert "PRISMAQUANT_CB_BF16_SWIZZLE" not in expected
 
 
 def test_wrapper_contract_requires_one_literal_fullgraph_call():
