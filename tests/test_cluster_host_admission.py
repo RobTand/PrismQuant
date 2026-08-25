@@ -4,7 +4,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -504,6 +508,69 @@ def test_guarded_launch_carries_the_lease_lock_into_fixed_foreground_docker(
     assert [call[0] for call in runner.calls] == [
         "nvidia-smi", "nvidia-smi", "docker",
     ]
+
+
+def test_guarded_launch_privatizes_cid_under_collaborative_parent_umask(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    lease_root = tmp_path / "leases"
+    acquire_gpu_lease(manifest, "alpha", lease_root=lease_root)
+    work_id = "sample_ce:alpha"
+    command = (
+        "docker", "run", "--rm",
+        "--label", f"io.prismaquant.campaign={manifest['identity_sha256']}",
+        "--label", "io.prismaquant.host=alpha",
+        "--label", f"io.prismaquant.work={work_id}",
+        "eugr/spark-vllm@sha256:" + "4" * 64,
+    )
+    observed: dict[str, object] = {}
+
+    def control(argv, **_kwargs):
+        argv = tuple(argv)
+        if argv[:2] == ("docker", "inspect"):
+            cid_paths = tuple(lease_root.rglob("*.cid"))
+            if cid_paths:
+                assert len(cid_paths) == 1
+                observed["cid_mode"] = stat.S_IMODE(
+                    cid_paths[0].lstat().st_mode,
+                )
+            return _Completed(returncode=1, stderr=b"No such object")
+        if argv[:3] == ("docker", "ps", "-a"):
+            return _Completed(stdout=b"")
+        raise AssertionError(argv)
+
+    def real_child(argv, **kwargs):
+        cid_path = Path(argv[argv.index("--cidfile") + 1])
+        script = (
+            "from pathlib import Path; import sys; "
+            "Path(sys.argv[1]).write_text('a' * 64 + '\\n', "
+            "encoding='ascii')"
+        )
+        return subprocess.Popen(
+            [sys.executable, "-c", script, str(cid_path)],
+            **kwargs,
+        )
+
+    previous_umask = os.umask(0o002)
+    try:
+        result = guarded_container_launch(
+            manifest,
+            "alpha",
+            command,
+            work_id=work_id,
+            timeout_seconds=10.0,
+            lease_root=lease_root,
+            runtime=_runtime(runner=_NvidiaRunner()),
+            popen_impl=real_child,
+            run_impl=control,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert result == 0
+    assert observed["cid_mode"] == 0o600
+    assert not tuple(lease_root.rglob("*.cid"))
 
 
 def test_guarded_launch_timeout_stops_exact_cid_and_retires_it(
