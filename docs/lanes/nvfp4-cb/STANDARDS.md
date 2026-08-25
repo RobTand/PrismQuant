@@ -98,8 +98,8 @@ source-FP8 assignment therefore cannot bypass the chooser gate or leave a temp
 artifact behind. Metadata selecting the profile also requires exact producer
 policy `qwen38_sm120_cb_validation_only` and an explicitly supplied contract
 matching the packaged untagged Gridbook 0.9.1 candidate: commit
-`580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
-`a63371455b94ba62514f3e6eb96bb599fe0cadc1`,
+`d7827c507c2869184803f53314e589fc2dacbdb6`, tree
+`7371475656a11b57408b47508a4dd22937fe5c3f`,
 `gridbook.runtime-contract.v11` version 11,
 `gridbook.lane-eligibility.v2`, canonical JSON SHA-256
 `15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`,

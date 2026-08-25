@@ -58,8 +58,8 @@ registration to both public producer ladders plus native
 NVFP4/FP8_E4M3/BF16 terminals and remains lattice-only. This changes no byte
 layout. It now binds exact producer policy `qwen38_sm120_cb_validation_only`
 to a packaged candidate pin for untagged Gridbook 0.9.1 commit
-`580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
-`a63371455b94ba62514f3e6eb96bb599fe0cadc1`. The explicit input contract must
+`d7827c507c2869184803f53314e589fc2dacbdb6`, tree
+`7371475656a11b57408b47508a4dd22937fe5c3f`. The explicit input contract must
 be `gridbook.runtime-contract.v11` version 11 with
 `gridbook.lane-eligibility.v2` and canonical JSON SHA-256
 `15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`

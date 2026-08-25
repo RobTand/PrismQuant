@@ -2,6 +2,16 @@
 
 As of: 2026-08-24 · `codex/rtx5060-fp4-gridbook-pilot-20260824` · integration in progress —
 stamps follow, newest first, each recording its own branch, parent, and date. Re-stamped
+(2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **final
+untagged Gridbook 0.9.1 candidate identity**. Commit
+`d7827c507c2869184803f53314e589fc2dacbdb6`, tree
+`7371475656a11b57408b47508a4dd22937fe5c3f`, adds only the staged installed-wheel
+source locator regression to the prior candidate: runtime source and runtime-contract bytes are
+unchanged. The fresh wheel/sdist audit, installed-package provenance check, targeted staged gate,
+and full staged CPU harness pass. PrismaQuant's separate SM120 candidate pin now names that exact
+commit/tree while retaining the same contract hashes and categorical `compile_only`/
+`UNRELEASABLE_VALIDATION_ONLY` ceiling. No tag, publication, physical SM120 execution, or release
+claim follows from this test-only advance. Previously re-stamped
 (2026-08-24, `codex/campaign-live-preflight-fix-20260824`, based on `4a975e5`) for the
 **container-to-host source-identity admission boundary**. Worker source caches retain their
 immutable container identity rooted at canonical `/model`; bare-host admission now supplies that
@@ -50,8 +60,8 @@ predicted. Previously re-stamped
 **exact, categorically unreleasable SM120 validation producer**. The
 `qwen38_sm120_cb_validation_only` profile now binds the producer policy with the same id. Its
 separate packaged candidate pin binds untagged Gridbook 0.9.1 commit
-`580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
-`a63371455b94ba62514f3e6eb96bb599fe0cadc1`, runtime-contract schema/version
+`d7827c507c2869184803f53314e589fc2dacbdb6`, tree
+`7371475656a11b57408b47508a4dd22937fe5c3f`, runtime-contract schema/version
 `gridbook.runtime-contract.v11`/11, lane schema `gridbook.lane-eligibility.v2`, canonical JSON
 SHA-256 `15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`, and source-file
 SHA-256 `585d5563cc69913937ab4c4a3b0cc6428a5c072d6a49b57ed03f8c28b8699b0d`. This is an exact
@@ -6033,8 +6043,8 @@ fails closed.
 
 The candidate identity is split deliberately from the production release pin.
 `gridbook_sm120_validation_candidate_pin.json` binds untagged Gridbook 0.9.1,
-commit `580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
-`a63371455b94ba62514f3e6eb96bb599fe0cadc1`, and the packaged
+commit `d7827c507c2869184803f53314e589fc2dacbdb6`, tree
+`7371475656a11b57408b47508a4dd22937fe5c3f`, and the packaged
 `gridbook_runtime_contract.0.9.1-candidate.json`. That contract is
 `gridbook.runtime-contract.v11` version 11 with
 `gridbook.lane-eligibility.v2`; its canonical JSON SHA-256 is

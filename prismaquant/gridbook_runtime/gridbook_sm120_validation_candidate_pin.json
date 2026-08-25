@@ -6,8 +6,8 @@
   "runtime_qualification_ceiling": "compile_only",
   "gridbook": {
     "version": "0.9.1",
-    "commit": "580dd3e31962522aeddcdb1f6595ec22656c7bb3",
-    "tree": "a63371455b94ba62514f3e6eb96bb599fe0cadc1",
+    "commit": "d7827c507c2869184803f53314e589fc2dacbdb6",
+    "tree": "7371475656a11b57408b47508a4dd22937fe5c3f",
     "version_is_release": false,
     "release_tag": null
   },
