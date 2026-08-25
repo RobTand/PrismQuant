@@ -1357,6 +1357,14 @@ def guarded_container_launch(
             close_fds=True,
             pass_fds=(descriptor,),
             start_new_session=True,
+            # Docker's client creates --cidfile using the inherited process
+            # umask.  Developer hosts commonly use 0002, which would make
+            # this ownership token group-writable (0664) and therefore fail
+            # the supervisor's strict _read_cid validation after an otherwise
+            # successful container exits.  Apply a child-only private umask;
+            # subprocess.Popen performs this before exec without changing the
+            # long-lived campaign controller's process-wide umask.
+            umask=0o077,
         )
         timed_out = False
         try:

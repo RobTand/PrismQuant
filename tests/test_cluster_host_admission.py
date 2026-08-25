@@ -497,6 +497,7 @@ def test_guarded_launch_carries_the_lease_lock_into_fixed_foreground_docker(
         "close_fds": True,
         "pass_fds": (observed["descriptor"],),
         "start_new_session": True,
+        "umask": 0o077,
     }
     assert observed["wait_timeout"] == 86400.0
     assert not Path(observed["argv"][4]).exists()
