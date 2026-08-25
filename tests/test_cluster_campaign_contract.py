@@ -11,6 +11,7 @@ from prismaquant.cluster_campaign_contract import (
     STAGE_DAG,
     ClusterCampaignContractError,
     StageAssignment,
+    bind_gridbook_runtime_contract,
     canonical_sha256,
     complete_assignment,
     initial_campaign_state,
@@ -100,6 +101,10 @@ def _manifest_body(*, reverse_hosts: bool = False) -> dict[str, object]:
         "inputs": {
             "model_content_sha256": "5" * 64,
             "dataset_sha256": "6" * 64,
+            "gridbook_runtime_contract": bind_gridbook_runtime_contract({
+                "schema": "gridbook.runtime-contract.v11",
+                "test_fixture": True,
+            }),
             "sample_parallel": {
                 "nsamples": 32,
                 "seqlen": 1024,
@@ -181,6 +186,25 @@ def test_manifest_is_strictly_validated_and_host_order_is_canonical() -> None:
     )
     with pytest.raises(ClusterCampaignContractError, match="duplicate JSON member"):
         parse_campaign_manifest(duplicate_json)
+
+
+def test_manifest_binds_embedded_gridbook_runtime_contract() -> None:
+    body = _manifest_body()
+    contract_input = body["inputs"]["gridbook_runtime_contract"]
+    contract_input["payload"]["test_fixture"] = False
+
+    with pytest.raises(
+        ClusterCampaignContractError,
+        match="runtime_contract_sha256 differs",
+    ):
+        seal_campaign_manifest(body)
+
+    wrong_schema = _manifest_body()
+    wrong_schema["inputs"]["gridbook_runtime_contract"] = (
+        bind_gridbook_runtime_contract({"schema": "gridbook.runtime-contract.v10"})
+    )
+    with pytest.raises(ClusterCampaignContractError, match="Gridbook v11"):
+        seal_campaign_manifest(wrong_schema)
 
 
 @pytest.mark.parametrize(
@@ -300,7 +324,7 @@ def test_fixed_dag_traversal_completes_every_assignment_once() -> None:
             )
 
     assert observed_stages == [item.stage for item in STAGE_DAG]
-    assert len(state["completions"]) == 21
+    assert len(state["completions"]) == 23
     assert next_ready_assignments(manifest, state) == ()
     assert validate_campaign_state(state, manifest) == state
 

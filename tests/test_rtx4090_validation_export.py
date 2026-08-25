@@ -1,6 +1,8 @@
 """CPU-only contract for the direct validation-only export handoff."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from pathlib import Path
 import pickle
@@ -8,6 +10,13 @@ import pickle
 import pytest
 
 import prismaquant.rtx4090_validation_export as direct
+from prismaquant.rtx4090_qwen38_policy import (
+    RTX4090_VALIDATION_ONLY_DISPOSITION,
+)
+from prismaquant.validate_rtx4090_fp8_cb_validation_only import (
+    VALIDATION_ONLY_PACKAGE_RECEIPT_SCHEMA,
+    build_validation_only_package_receipt,
+)
 
 
 def _handoff(tmp_path: Path) -> dict:
@@ -152,3 +161,111 @@ def test_shell_wrapper_is_direct_and_never_calls_stock_pipeline():
     assert "run-pipeline.sh" not in script
     assert "LAYER_CONFIG" in script
     assert "CB_COL_WEIGHTS" in script
+
+
+def test_manifest_embedded_runtime_contract_is_canonical_and_no_clobber(tmp_path):
+    contract = {
+        "schema": "gridbook.runtime-contract.v11",
+        "nested": {"b": 2, "a": 1},
+    }
+    payload = json.dumps(
+        contract, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")
+    encoded = base64.b64encode(payload).decode("ascii")
+    digest = hashlib.sha256(payload).hexdigest()
+    output = tmp_path / "runtime-contract.json"
+
+    assert direct.materialize_runtime_contract_payload(
+        payload_base64=encoded,
+        expected_sha256=digest,
+        output_path=output,
+    ) == output
+    assert output.read_bytes() == payload
+    direct.materialize_runtime_contract_payload(
+        payload_base64=encoded,
+        expected_sha256=digest,
+        output_path=output,
+    )
+
+    with pytest.raises(
+        direct.RTX4090DirectValidationExportError,
+        match="digest differs",
+    ):
+        direct.materialize_runtime_contract_payload(
+            payload_base64=encoded,
+            expected_sha256="f" * 64,
+            output_path=tmp_path / "other.json",
+        )
+
+
+def test_direct_export_runs_exporter_in_verified_process(monkeypatch, tmp_path):
+    observed = {}
+    import prismaquant.export_nvfp4_cb_streaming as exporter
+
+    def fake_main(argv):
+        observed["argv"] = list(argv)
+        observed["scope"] = __import__("os").environ["CB_CODEBOOK_SOURCE_SCOPE"]
+
+    monkeypatch.setattr(exporter, "main", fake_main)
+    monkeypatch.setenv("CB_CODEBOOK_SOURCE_SCOPE", "prior")
+    direct.run_direct_validation_export(_handoff(tmp_path))
+
+    assert observed["argv"][0] == "--model-dir"
+    assert observed["scope"] == "none"
+    assert __import__("os").environ["CB_CODEBOOK_SOURCE_SCOPE"] == "prior"
+
+
+def test_resume_requires_assignment_and_render_identity_match(monkeypatch, tmp_path):
+    artifact = tmp_path / "exported"
+    artifact.mkdir()
+    render_identity = {"schema": "render.v1", "source": "abc"}
+    assignment = {"model.layers.0.mlp.down_proj": "FP8_CB_K20"}
+    assignment_sha256 = direct._assignment_sha256(assignment)
+    render_sha256 = hashlib.sha256(
+        direct._runtime_contract_bytes(render_identity)
+    ).hexdigest()
+    (artifact / "quant_config.json").write_text(json.dumps({
+        "provenance": {
+            "assignment_sha256": assignment_sha256,
+            "cb_render_identity": render_identity,
+        },
+    }), encoding="utf-8")
+    handoff = {
+        **_handoff(tmp_path),
+        "assignment_sha256": assignment_sha256,
+        "render_identity_sha256": render_sha256,
+    }
+    monkeypatch.setattr(
+        "prismaquant.validate_rtx4090_fp8_cb_validation_only."
+        "validate_rtx4090_validation_only_artifact",
+        lambda *_args, **_kwargs: {"release_eligible": False},
+    )
+
+    assert direct.validate_existing_direct_export(handoff) == {
+        "release_eligible": False,
+    }
+    handoff["assignment_sha256"] = "0" * 64
+    with pytest.raises(
+        direct.RTX4090DirectValidationExportError,
+        match="assignment differs",
+    ):
+        direct.validate_existing_direct_export(handoff)
+
+
+def test_validation_only_package_receipt_stays_unreleasable():
+    receipt = build_validation_only_package_receipt({
+        "policy_id": "validation-only",
+        "artifact_bytes": 123,
+        "model_sha": "a" * 64,
+        "source_census": {"schema": "source-census.v1"},
+        "runtime_contract_sha256": "b" * 64,
+        "artifact_disposition": RTX4090_VALIDATION_ONLY_DISPOSITION,
+        "release_eligible": False,
+        "serving_evidence_emitted": False,
+    })
+
+    assert receipt["schema"] == VALIDATION_ONLY_PACKAGE_RECEIPT_SCHEMA
+    assert receipt["release_eligible"] is False
+    assert receipt["serving_evidence_emitted"] is False
+    assert receipt["runtime_contract_sha256"] == "b" * 64
+    assert len(receipt["identity_sha256"]) == 64

@@ -11,18 +11,22 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Literal
 
-from prismaquant.cost_stage_checkpoint import canonical_json_sha256
+from prismaquant.cost_stage_checkpoint import canonical_json, canonical_json_sha256
 
 
-CAMPAIGN_MANIFEST_SCHEMA = "prismaquant.cluster_campaign.manifest.v1"
+CAMPAIGN_MANIFEST_SCHEMA = "prismaquant.cluster_campaign.manifest.v2"
 CAMPAIGN_STATE_SCHEMA = "prismaquant.cluster_campaign.state.v1"
 STAGE_RECEIPT_SCHEMA = "prismaquant.cluster_campaign.stage_receipt.v1"
+GRIDBOOK_RUNTIME_CONTRACT_INPUT_SCHEMA = (
+    "prismaquant.cluster_campaign.gridbook_runtime_contract_input.v1"
+)
 
 # These identify the artifact's target lane, not the hardware that executes a
 # validation campaign. In particular, the reviewed RTX 4090 producer is
@@ -79,7 +83,7 @@ def _chain_stage(
     )
 
 
-# The order is part of the public v1 contract.  Parallelism exists only inside
+# The order is part of the public manifest-v2 contract. Parallelism exists only inside
 # all-host stages; the explicit dependency at every boundary keeps recovery
 # and orchestration deterministic.
 STAGE_DAG: tuple[StageSpec, ...] = (
@@ -111,6 +115,14 @@ STAGE_DAG: tuple[StageSpec, ...] = (
     _chain_stage("measure_burn", "all_hosts", "prepare_burn"),
     _chain_stage("merge_burn", "coordinator", "measure_burn"),
     _chain_stage("allocate", "coordinator", "merge_burn"),
+    _chain_stage(
+        "export_validation_artifact", "coordinator", "allocate",
+    ),
+    _chain_stage(
+        "qualify_validation_artifact",
+        "coordinator",
+        "export_validation_artifact",
+    ),
 )
 
 _STAGE_BY_NAME = {item.stage: item for item in STAGE_DAG}
@@ -137,12 +149,18 @@ _ARTIFACT_TARGET_KEYS = frozenset({
     "terminal_format",
     "allocation_objective",
 })
-_INPUT_KEYS = frozenset(
-    {"model_content_sha256", "dataset_sha256", "sample_parallel"}
-)
+_INPUT_KEYS = frozenset({
+    "model_content_sha256",
+    "dataset_sha256",
+    "sample_parallel",
+    "gridbook_runtime_contract",
+})
 _SAMPLE_KEYS = frozenset(
     {"nsamples", "seqlen", "calib_seed", "activation_rows_limit"}
 )
+_GRIDBOOK_RUNTIME_CONTRACT_INPUT_KEYS = frozenset({
+    "schema", "runtime_contract_sha256", "payload",
+})
 _POLICY_KEYS = frozenset({"retry", "telemetry", "resources", "outputs"})
 _RETRY_KEYS = frozenset({"max_attempts"})
 _TELEMETRY_KEYS = frozenset(
@@ -305,6 +323,48 @@ def canonical_sha256(value: object) -> str:
         ) from exc
 
 
+def gridbook_runtime_contract_sha256(value: object) -> str:
+    """Return the digest Gridbook producer attestations use for a contract."""
+
+    try:
+        canonical = canonical_json(
+            value, where="Gridbook runtime contract input",
+        )
+        encoded = json.dumps(
+            canonical,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ClusterCampaignContractError(
+            "Gridbook runtime contract input is not canonical JSON data"
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def bind_gridbook_runtime_contract(value: Mapping[str, object]) -> dict[str, object]:
+    """Embed one immutable external Gridbook contract in a campaign manifest."""
+
+    if not isinstance(value, Mapping):
+        _fail("Gridbook runtime contract input must be an object")
+    try:
+        payload = canonical_json(
+            dict(value), where="Gridbook runtime contract input",
+        )
+    except (TypeError, ValueError) as exc:
+        raise ClusterCampaignContractError(
+            "Gridbook runtime contract input is not canonical JSON data"
+        ) from exc
+    assert isinstance(payload, dict)
+    return {
+        "schema": GRIDBOOK_RUNTIME_CONTRACT_INPUT_SCHEMA,
+        "runtime_contract_sha256": gridbook_runtime_contract_sha256(payload),
+        "payload": payload,
+    }
+
+
 def _safe_absolute_path(value: object, *, where: str) -> str:
     raw = _string(value, where=where)
     if not raw.startswith("/") or raw == "/":
@@ -443,6 +503,38 @@ def _normalize_inputs(value: object) -> dict[str, object]:
             "inputs.sample_parallel must equal the fixed RTX4090 burn "
             f"contract {dict(_FIXED_SAMPLE_PARALLEL)}"
         )
+    contract_input = _exact_mapping(
+        raw["gridbook_runtime_contract"],
+        keys=_GRIDBOOK_RUNTIME_CONTRACT_INPUT_KEYS,
+        where="inputs.gridbook_runtime_contract",
+    )
+    if contract_input["schema"] != GRIDBOOK_RUNTIME_CONTRACT_INPUT_SCHEMA:
+        _fail("inputs.gridbook_runtime_contract.schema is unsupported")
+    try:
+        contract_payload = canonical_json(
+            contract_input["payload"],
+            where="inputs.gridbook_runtime_contract.payload",
+        )
+    except (TypeError, ValueError) as exc:
+        raise ClusterCampaignContractError(
+            "inputs.gridbook_runtime_contract.payload is not canonical JSON data"
+        ) from exc
+    if not isinstance(contract_payload, dict):
+        _fail("inputs.gridbook_runtime_contract.payload must be an object")
+    if contract_payload.get("schema") != "gridbook.runtime-contract.v11":
+        _fail(
+            "inputs.gridbook_runtime_contract.payload must be a Gridbook v11 "
+            "runtime contract"
+        )
+    contract_sha256 = _sha256(
+        contract_input["runtime_contract_sha256"],
+        where="inputs.gridbook_runtime_contract.runtime_contract_sha256",
+    )
+    if contract_sha256 != gridbook_runtime_contract_sha256(contract_payload):
+        _fail(
+            "inputs.gridbook_runtime_contract.runtime_contract_sha256 differs "
+            "from its canonical payload"
+        )
     return {
         "model_content_sha256": _sha256(
             raw["model_content_sha256"], where="inputs.model_content_sha256"
@@ -451,6 +543,11 @@ def _normalize_inputs(value: object) -> dict[str, object]:
             raw["dataset_sha256"], where="inputs.dataset_sha256"
         ),
         "sample_parallel": normalized_sample,
+        "gridbook_runtime_contract": {
+            "schema": GRIDBOOK_RUNTIME_CONTRACT_INPUT_SCHEMA,
+            "runtime_contract_sha256": contract_sha256,
+            "payload": contract_payload,
+        },
     }
 
 
@@ -1062,15 +1159,18 @@ __all__ = [
     "ClusterCampaignContractError",
     "FIXED_ARTIFACT_TARGET",
     "FIXED_CAMPAIGN_POLICY",
+    "GRIDBOOK_RUNTIME_CONTRACT_INPUT_SCHEMA",
     "RTX4090_COMPUTE_CAPABILITY",
     "RTX4090_GPU_NAME",
     "STAGE_DAG",
     "STAGE_RECEIPT_SCHEMA",
     "StageAssignment",
     "StageSpec",
+    "bind_gridbook_runtime_contract",
     "canonical_sha256",
     "complete_assignment",
     "initial_campaign_state",
+    "gridbook_runtime_contract_sha256",
     "next_ready_assignments",
     "parse_campaign_manifest",
     "seal_campaign_manifest",

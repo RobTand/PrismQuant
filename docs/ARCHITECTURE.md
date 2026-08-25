@@ -1,9 +1,27 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-24 · `codex/sm120-validation-release-guard-20260824` · based on integration
-revision `bb30b91` — stamps follow, newest first, each recording its own branch and date.
-Re-stamped (2026-08-24, `codex/sm120-validation-release-guard-20260824`) for the **exact,
-categorically unreleasable SM120 validation producer**. The
+As of: 2026-08-24 · `codex/rtx5060-fp4-gridbook-pilot-20260824` · integration in progress —
+stamps follow, newest first, each recording its own branch, parent, and date. Re-stamped
+(2026-08-24, `codex/campaign-artifact-tail-20260824`) for the **deterministic allocation-to-
+artifact campaign tail**. The sealed manifest advances to v2 and embeds the complete canonical
+Gridbook v11 candidate contract plus its producer-attestation digest, so export never discovers a
+mutable Gridbook worktree or image-installed contract. The fixed DAG now has 23 assignments and
+continues after allocation with one coordinator-owned GPU stage that invokes the existing
+selected-assignment streaming exporter inside the already verified snapshot process. It
+materializes the embedded contract under `/run` with exact no-clobber bytes, consumes the
+allocation's value-bound column weights and `cb_render_identity`, emits ~1 GiB shards, and is
+resumable only by replaying the exact assignment/render/contract and complete validation-only
+artifact. A following GPU-blind stage replays the finalized source/tensor/value census and writes
+a sealed local package receipt. Both the artifact and receipt remain categorically
+`UNRELEASABLE_VALIDATION_ONLY`: the application does not publish, fill serving evidence, promote
+device qualification, tag, or claim RTX4090 support. Export telemetry ends before the
+coordinator's full-tree inspection, and structural package qualification is separately CPU-only,
+so render utilization remains an honest GPU-stage KPI. CPU integration covers the complete
+23-assignment lifecycle; the physical two-Spark run remains unexecuted and no numerical,
+utilization, or artifact result is claimed. The final integration commit is deliberately not
+predicted. Previously re-stamped
+(2026-08-24, `codex/sm120-validation-release-guard-20260824`, based on `bb30b91`) for the
+**exact, categorically unreleasable SM120 validation producer**. The
 `qwen38_sm120_cb_validation_only` profile now binds the producer policy with the same id. Its
 separate packaged candidate pin binds untagged Gridbook 0.9.1 commit
 `580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
@@ -67,7 +85,7 @@ same-manifest reacquisition after release are refused.
 `status` remains a local read-only state query, and `verify` performs no directory creation or
 helper installation. Boot-scoped detached-process identities, explicit zombie/dead rejection, and
 finite per-stage timeouts reject PID reuse or immortal stale work. Indexed host-action retries let `resume` finish partial admission without mutating prior
-terminal evidence. CPU integration covers the complete 21-assignment lifecycle, bounded retry and
+terminal evidence. CPU integration covers the then-complete 21-assignment lifecycle, bounded retry and
 adoption, route completeness for either coordinator placement, barrier drift, positive GPU
 utilization evidence (with one explicit byte-proven source-cache-reuse waiver), guard journals,
 and release ordering. The physical two-Spark burn remains
@@ -1312,7 +1330,7 @@ which is what the rows touched since are keyed on.
 | **2d-CB** | CB hybrid: replace routed-expert rows with empirical unit-KL | `harvest_cb_col_weights "[2d-CB]"` → `expert_empirical_cost --replace-experts --col-weights` | `artifacts/cost_local_raw.pkl`, `artifacts/cost.pkl`, `cb_col_weights.pkl` | settings-hash `cb-hybrid-cost` + the in-payload merge probe; col-weights `cb-col-weights` | CB lane, `CB_EXPERT_EMPIRICAL=1` |
 | **2b/4 cw** | Cost-cache col-weights (weighted lanes only) | `harvest_cb_col_weights "[2b/4] cost-cache"` → `build_production_cache --col-weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | `COST_RENDER=cached-menu` on a CB/GGUF lane (§4.7) |
 | **P0–P3** | Platform-agnostic anchored-AURA mechanism: format-blind streamed adjoint; plugin-mapped production anchors per legal `(unit,family,equivalence_class)`; within-segment shape fit; recomputed hull; one byte-budget DP (§4.3) | frozen DSv4 shim `tools/run_aura_cb_reprice.sh` → `prismaquant.dsv4_aura_cb_reprice`; generic mechanism `prismaquant.anchored_cost`; CB mapping plugin on `format_registry` + `model_profiles` | identity-bound scalar checkpoints; the driver atomically emits an exportable artifacts directory containing the AURA-stamped `layer_config.json`, matching `selection.json`, allocator `pareto.knees.json`, and the exact platform render inputs (`cb_col_weights.pkl` on CB) | qname-keyed atomic resume bound to model/menu/arm/plugin/calibration/format-plan/render-input identity | generic evaluate/price/allocate mechanism with a machine-specific map plugin; DSv4 remains the acceptance vehicle; never a full-menu render campaign |
-| **RTX4090 sparse P1–P3 ×2 (coordinated)** | Strict 18 GB specialization of anchored AURA: derive the exact bundle-captured probe imatrix, attest one snapshot/image execution, split whole layers across two hosts, render only lattice K4/K16/K48 plus native FP8 per body Linear, reconstruct one exact global payload, fit the lattice rung law, byte-preserve direct rows, impute nine CB rungs, add the BF16 source terminal, and solve once (§4.3) | `prismaquant.rtx4090_two_host_campaign` → `prismaquant.rtx4090_fp8_burn` + `prismaquant.cb_anchored_cost` | durable no-clobber FP32 column weights; immutable execution attestation and two-stripe plan; 496×4 measured AURA cells; one mixed measured/imputed/source-terminal allocator table; raw and summarized per-host utilization | complete disjoint qname/format/purpose/renderer/source/imatrix/snapshot/image/arm identity; deterministic host/stripe assignment and barriers; byte-verified transfer between independent run trees; worker chunk counters remain explicitly unverified planning metadata | Qwen3.8 strict FP8-only validation-artifact campaign; no agent/operator scheduling, NVFP4, or twelve-rung physical render sweep |
+| **RTX4090 sparse P1–P3 ×2 + artifact tail (coordinated)** | Strict 18 GB specialization of anchored AURA: derive the exact bundle-captured probe imatrix, attest one snapshot/image execution, split whole layers across two hosts, render only lattice K4/K16/K48 plus native FP8 per body Linear, reconstruct one exact global payload, fit the lattice rung law, byte-preserve direct rows, impute nine CB rungs, add the BF16 source terminal, solve once, then selected-assignment export and structural package qualification (§4.3) | `prismaquant.rtx4090_two_host_campaign` → `prismaquant.rtx4090_fp8_burn` + `prismaquant.cb_anchored_cost` → `prismaquant.rtx4090_validation_export` → `prismaquant.validate_rtx4090_fp8_cb_validation_only` | durable no-clobber FP32 column weights; immutable execution attestation and two-stripe plan; 496×4 measured AURA cells; one mixed measured/imputed/source-terminal allocator table; ~1 GiB-sharded validation artifact; sealed unreleasable package receipt; raw and summarized per-host utilization | complete disjoint qname/format/purpose/renderer/source/imatrix/snapshot/image/arm identity; manifest-embedded Gridbook contract; deterministic host/stripe assignment and barriers; byte-verified transfer between independent run trees; transactional export and exact resume replay; worker chunk counters remain explicitly unverified planning metadata | Qwen3.8 strict FP8-only validation-artifact campaign; no agent/operator scheduling, NVFP4, twelve-rung physical render sweep, publication, device promotion, tag, or RTX4090 support claim |
 | **3/4** | Allocator — multi-choice knapsack over per-Linear body formats plus explicit fixed auxiliary head/MTP/visual assignments (§4) | `prismaquant.allocator --lm-head-format "$LM_HEAD_FORMAT_CANONICAL"` | `artifacts/layer_config.json`, `artifacts/pareto.csv`, `artifacts/pareto_assignments/` (validated-surrogate only); `logs/allocator.log` | **none — always runs** | fixed non-BF16 head and `ALLOW_PINNED=lm_head` are mutually exclusive |
 | **4/4 A** | Frontier format-menu cache, including profile-synthesized MTP when the menu requests it | `build_production_cache … --render-scope format-menu --render-packed-experts --activation-cache-dir act/` | `artifacts/production_weight_cache_frontier_raw.pkl` + `…_frontier/` | settings-hash `frontier-cache`, including the resolved head policy | validated-surrogate; `exit 2` if `PRODUCTION_CACHE=0` |
 | **4/4 B** | Measured held-out KL per Pareto point | `prismaquant.validate_assignments_kl` (`1243-1248` per-point, `1272-1277` batched) | `artifacts/validated_frontier_kl.json` + `…_parts/*.json` (merged `1250-1269`) | settings-hash `frontier-kl-point` per point (`1294`) | validated-surrogate |
@@ -1324,7 +1342,7 @@ which is what the rows touched since are keyed on.
 | **4/4 E-cb** | CB col-weights + codebook export | `harvest_cb_col_weights "[4/4]"`, `export_nvfp4_cb[_streaming]` | `exported_nvfp4_cb/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`) + `.pqcb` codebook sidecar | settings-hash `cb-col-weights`; export always runs | CB lane; no in-lane serving smoke; **exits 0** |
 | **RTX4090 strict build (operator campaign)** | Run the ordinary per-Linear pipeline under the dense Qwen3.8 context-first policy, prove the exact 1,199-tensor/615-Linear source census, then replay config ownership and finalized artifact headers/sidecar before publication | `scripts/run_qwen38_rtx4090_fp8_cb_18gb.sh` → `run-pipeline.sh` + `rtx4090_qwen38_policy` + `rtx4090_artifact_census` | strict top-level `format: fp8_cb` lattice artifact, exact policy/runtime-contract/source-identity stamps, complete tensor-format assignment, and strict `rtx4090.fp8_cb` shipcard slot | no special cache: streamed AURA, the existing activation cache, probe-derived full-corpus imatrix, `ProductionWeightCache`, prefetch, allocator, and CB exporter remain authoritative and identity-bound | opt-in `TARGET_PROFILE=qwen38_rtx4090_fp8_cb`; exact menu FP8-CB K4..K48 step 4 + `FP8_E4M3` + BF16, `CB_CODEBOOK_SOURCE_SCOPE=none`, `CB_ACTIVATION_SCOPE=none`, fixed BF16 `lm_head`/MTP, and a non-forceable complete-publication ceiling of 18,000,000,000 bytes; currently refuses because the available sm89 lane-v2 rows are compile-only |
 | **RTX4090 validation-only GB10 build** | Exercise the exact strict serializer, source/artifact census, top-level `fp8_cb` manifest, and complete FP8-only assignment under Gridbook v11 compile-only SM89 structural cells | `scripts/run_qwen38_rtx4090_fp8_cb_validation_only_gb10.sh` → the same launcher/pipeline with `RTX4090_BUILD_DISPOSITION=validation_only` → `validate_rtx4090_fp8_cb_validation_only` | artifact stamped `UNRELEASABLE_VALIDATION_ONLY`, `runtime_qualification_ceiling=compile_only`, `build_host=dgx_spark_gb10`; no serving receipt | exactly the strict build's streamed AURA, activation cache, imatrix, `ProductionWeightCache`, required resident prefetch, allocator, and CB exporter; no parallel cache | launcher requires one visible GB10 at CC 12.1; assignments/config groups/tensor formats admit only FP8-CB K4..K48 step 4, delegated `FP8_E4M3`, and BF16. Shipcard, publisher, and strict RTX4090 validator always refuse it regardless of filled slots or force flags |
-| **RTX4090 validation-only direct export** | Consume a completed allocator assignment plus its exact value-bound column weights and original source; rerender only selected FP8-CB units, copy required source/BF16 tensors, then structurally validate | `scripts/export_qwen38_rtx4090_fp8_cb_validation_only.sh` → `prismaquant.rtx4090_validation_export` → existing `export_nvfp4_cb_streaming` → `validate_rtx4090_fp8_cb_validation_only` | the same top-level `fp8_cb`, `UNRELEASABLE_VALIDATION_ONLY` artifact; no retained-menu cache or serving receipt | no cache build: exporter streams the source and invokes the existing weighted renderer only for the selected assignment; `cb_render_identity` binds the exact supplied col-weights values and complete decoded-source identity | requires the allocator's assignment-bound whole-artifact budget stamp at a positive ceiling no greater than 18,000,000,000 bytes; refuses source namespace exclusions and every non-policy/NVFP4 format. It never calls `run-pipeline.sh`, and release/graph gates remain unchanged |
+| **RTX4090 validation-only direct export** | Consume a completed allocator assignment plus its exact value-bound column weights and original source; rerender only selected FP8-CB units, copy required source/BF16 tensors, then structurally validate | fixed two-host DAG tail or `scripts/export_qwen38_rtx4090_fp8_cb_validation_only.sh` → `prismaquant.rtx4090_validation_export` → existing `export_nvfp4_cb_streaming` → `validate_rtx4090_fp8_cb_validation_only` | the same top-level `fp8_cb`, `UNRELEASABLE_VALIDATION_ONLY` artifact; no retained-menu cache or serving receipt. The DAG writes a separate sealed local package receipt | no cache build: exporter streams the source and invokes the existing weighted renderer only for the selected assignment; `cb_render_identity` binds the exact supplied col-weights values and complete decoded-source identity. The DAG executes the exporter in the already verified snapshot process, not a nested ambient package | requires the allocator's assignment-bound whole-artifact budget stamp at a positive ceiling no greater than 18,000,000,000 bytes; refuses source namespace exclusions and every non-policy/NVFP4 format. It never calls `run-pipeline.sh`, and release/graph gates remain unchanged |
 | **4/4 E** | compressed-tensors export (§6) | `prismaquant.export_native_compressed` (`1665-1699`) | `exported/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`); `logs/export.log` | **none — always runs** | default lane |
 
 The strict launcher keeps validated-surrogate selection on the production
@@ -1900,15 +1918,18 @@ tree that is never mounted into a campaign container. `status` does not construc
 boundary, and read-only `verify` does not initialize it.
 
 `rtx4090_two_host_campaign.py` maps each typed assignment to one fixed Docker argv; the manifest
-contains no command or shell fragment. Every stage has a finite fixed timeout. It executes the
+contains no command or shell fragment. Manifest v2 additionally embeds the canonical external
+Gridbook candidate contract and its exact producer-attestation digest; no runtime path is supplied
+for discovery. Every stage has a finite fixed timeout. It executes the
 snapshot verifier from the exact pinned
 runtime, verifies the pinned registry RepoDigest on each host, and launches by that
 digest-qualified reference. Docker's backend-dependent local image ID is not a cross-host
 authority. Both hosts mount their possibly different absolute host roots at the same canonical
 `/model`, `/dataset`, `/run`, and `/worker-state` paths; snapshot/model/dataset are read-only. The
 container runs as the invoking non-root host UID/GID, with writable home, temporary, and compiler
-caches confined to the private worker-state mount. Only source-identity, CE, Fisher, and burn
-stages receive GPU devices; CPU-only Docker stages force the NVIDIA runtime's explicit `void`
+caches confined to the private worker-state mount. Only source-identity, CE, Fisher, burn, and the
+selected-assignment export stage receive GPU devices; CPU-only Docker stages—including final
+structural package qualification—force the NVIDIA runtime's explicit `void`
 device set and cannot incidentally enter CUDA. An exact
 `validated_reuse` source-identity receipt may waive positive utilization because that path
 validates and returns before CUDA, but fresh source builds and numerical GPU stages may not. The
@@ -2543,6 +2564,26 @@ do not weaken or replace the existing physical RTX 4090
 eager and mandatory full-graph serving gates; validation on GB10 remains explicitly
 `UNRELEASABLE_VALIDATION_ONLY` (`cb_compile_contract.py`,
 `rtx4090_cb_compile_proof.py`, `cb_anchored_cost.py`, `rtx4090_fp8_burn.py`, §7.1, §9.2).
+
+Allocation is no longer a terminal handoff to an agent or stage-by-stage operator. Manifest v2
+embeds the candidate Gridbook contract as canonical JSON with the same SHA-256 convention the
+producer policy stamps. `export_validation_artifact` materializes those exact bytes under the
+coordinator run root, preflights the selected assignment, whole-artifact budget, source-complete
+render identity and column-weight values, then calls `export_nvfp4_cb_streaming.main` inside the
+already snapshot-verified process. It does not spawn a child that could resolve an ambient
+site-packaged PrismaQuant. The output transaction emits `/run/validation-artifact` in ~1 GiB
+shards. Resume accepts a previously published directory only if its internal assignment SHA,
+`cb_render_identity`, compile-only runtime attestation, complete source/tensor/value census, and
+validation-only disposition all replay; a divergent directory is never overwritten.
+
+`qualify_validation_artifact` is a separate CPU-only stage. It replays the dedicated structural
+validator and writes `validation-package-receipt.json` with an identity-bound result and explicit
+`release_eligible=false` / `serving_evidence_emitted=false`. Keeping this after the GPU process
+also keeps final content hashing out of the export utilization window. The fixed DAG contains no
+publisher, shipcard fill, served gate, hardware promotion, tag, or upload transition, so the GB10
+candidate remains useful validation output without becoming an RTX4090 support claim
+(`cluster_campaign_contract.py`, `rtx4090_two_host_campaign.py`,
+`rtx4090_validation_export.py`, `validate_rtx4090_fp8_cb_validation_only.py`).
 
 #### Dense CB sibling driver, and where AQUA enters the anchored lane
 

@@ -178,6 +178,79 @@ def canonical_json_sha256(value: object, *, where: str = "value") -> str:
     return hashlib.sha256(canonical_json_bytes(value, where=where)).hexdigest()
 
 
+def write_exact_bytes_no_clobber(path: str | Path, payload: bytes) -> None:
+    """Durably publish bytes, accepting only an identical regular-file prior."""
+
+    destination = Path(path)
+    if not isinstance(payload, bytes):
+        raise ClusterTransportError("no-clobber payload must be bytes")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    def existing_matches() -> bool:
+        try:
+            before = destination.lstat()
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(before.st_mode):
+            raise ClusterTransportError(
+                f"existing no-clobber destination is not a regular file: "
+                f"{destination}"
+            )
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(destination, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+                or opened.st_size != before.st_size
+            ):
+                raise ClusterTransportError(
+                    f"existing no-clobber destination changed: {destination}"
+                )
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks) == payload
+        finally:
+            os.close(descriptor)
+
+    if destination.exists():
+        if existing_matches():
+            return
+        raise ClusterTransportError(
+            f"existing no-clobber destination differs: {destination}"
+        )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError as exc:
+            if not existing_matches():
+                raise ClusterTransportError(
+                    f"racing no-clobber destination differs: {destination}"
+                ) from exc
+        directory = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _require_job_id(value: object, *, where: str = "job_id") -> str:
     if not isinstance(value, str):
         raise ValueError(f"{where} must be a string")

@@ -10,17 +10,24 @@ cache, frontier selection, or stock pipeline stage is rerun.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from collections.abc import Mapping
+from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
 import pickle
-import subprocess
 import sys
 from typing import Any
 
 import torch
 
+from .cluster_transport import (
+    ClusterTransportError,
+    write_exact_bytes_no_clobber,
+)
 from .layer_config import load_assignment
 from .nvfp4_cb_footprint import (
     whole_artifact_budget_from_assignment_payload,
@@ -57,6 +64,89 @@ def _load_json_object(path: Path, *, where: str) -> dict[str, Any]:
     return payload
 
 
+def _runtime_contract_bytes(value: Mapping[str, Any]) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise RTX4090DirectValidationExportError(
+            "Gridbook runtime contract is not canonical JSON data"
+        ) from exc
+
+
+def _write_exact_no_clobber(path: Path, payload: bytes) -> None:
+    """Durably publish exact bytes, accepting only an identical prior file."""
+
+    try:
+        write_exact_bytes_no_clobber(path, payload)
+    except ClusterTransportError as exc:
+        raise RTX4090DirectValidationExportError(
+            f"campaign input cannot be published exactly: {path}: {exc}"
+        ) from exc
+
+
+def materialize_runtime_contract_payload(
+    *,
+    payload_base64: str,
+    expected_sha256: str,
+    output_path: str | Path,
+) -> Path:
+    """Decode the manifest-embedded contract and publish its exact bytes."""
+
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in expected_sha256)
+    ):
+        raise RTX4090DirectValidationExportError(
+            "runtime contract SHA-256 is invalid"
+        )
+    try:
+        encoded = payload_base64.encode("ascii")
+        payload = base64.b64decode(encoded, validate=True)
+        contract = json.loads(payload.decode("utf-8"))
+    except (
+        UnicodeEncodeError,
+        UnicodeDecodeError,
+        binascii.Error,
+        json.JSONDecodeError,
+    ) as exc:
+        raise RTX4090DirectValidationExportError(
+            "manifest-embedded Gridbook runtime contract is invalid"
+        ) from exc
+    if not isinstance(contract, Mapping):
+        raise RTX4090DirectValidationExportError(
+            "manifest-embedded Gridbook runtime contract must be an object"
+        )
+    canonical = _runtime_contract_bytes(contract)
+    if payload != canonical:
+        raise RTX4090DirectValidationExportError(
+            "manifest-embedded Gridbook runtime contract is not canonical"
+        )
+    if hashlib.sha256(canonical).hexdigest() != expected_sha256:
+        raise RTX4090DirectValidationExportError(
+            "manifest-embedded Gridbook runtime contract digest differs"
+        )
+    output = Path(output_path)
+    _write_exact_no_clobber(output, canonical)
+    return output
+
+
+def _assignment_sha256(assignment: Mapping[str, str]) -> str:
+    return hashlib.sha256(json.dumps(
+        dict(sorted(assignment.items())),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+
 def preflight_direct_validation_export(
     *,
     model_dir: str | Path,
@@ -64,6 +154,7 @@ def preflight_direct_validation_export(
     col_weights: str | Path,
     runtime_contract: str | Path,
     out_dir: str | Path,
+    allow_existing_output: bool = False,
 ) -> dict[str, Any]:
     """Validate the completed handoff before constructing a GPU command."""
 
@@ -82,7 +173,7 @@ def preflight_direct_validation_export(
             raise RTX4090DirectValidationExportError(
                 f"{label} must be an existing regular file: {path}"
             )
-    if output.exists():
+    if output.exists() and not allow_existing_output:
         raise RTX4090DirectValidationExportError(
             f"direct export output must not already exist: {output}"
         )
@@ -172,7 +263,11 @@ def preflight_direct_validation_export(
         "out_dir": str(output),
         "budget_bytes": budget_bytes,
         "assignment_units": len(assignment),
+        "assignment_sha256": _assignment_sha256(assignment),
         "selected_fp8_cb_units": len(selected_cb),
+        "render_identity_sha256": hashlib.sha256(
+            _runtime_contract_bytes(dict(render_identity))
+        ).hexdigest(),
         "runtime_contract_sha256": attestation["runtime_contract_sha256"],
     }
 
@@ -228,29 +323,151 @@ def build_direct_validation_export_command(
     return command, environment
 
 
+@contextmanager
+def _temporary_environment(values: Mapping[str, str]):
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def run_direct_validation_export(
+    handoff: Mapping[str, Any], *, shard_bytes: int = DEFAULT_SHARD_BYTES,
+) -> None:
+    """Run the existing exporter inside the already verified source process."""
+
+    command, environment = build_direct_validation_export_command(
+        handoff, shard_bytes=shard_bytes,
+    )
+    from .export_nvfp4_cb_streaming import main as exporter_main
+
+    print("[rtx4090-direct-validation] selected-assignment streaming export")
+    print("[rtx4090-direct-validation] " + " ".join(command))
+    with _temporary_environment(environment):
+        exporter_main(command[3:])
+
+
+def validate_existing_direct_export(
+    handoff: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Resume only an artifact that matches the exact allocation handoff."""
+
+    from .validate_rtx4090_fp8_cb_validation_only import (
+        validate_rtx4090_validation_only_artifact,
+    )
+
+    root = Path(str(handoff["out_dir"]))
+    quant = _load_json_object(
+        root / "quant_config.json", where="existing direct-export quant_config",
+    )
+    provenance = quant.get("provenance")
+    if not isinstance(provenance, Mapping):
+        raise RTX4090DirectValidationExportError(
+            "existing direct-export provenance is absent"
+        )
+    render_identity = provenance.get("cb_render_identity")
+    if not isinstance(render_identity, Mapping):
+        raise RTX4090DirectValidationExportError(
+            "existing direct-export render identity is absent"
+        )
+    if provenance.get("assignment_sha256") != handoff.get("assignment_sha256"):
+        raise RTX4090DirectValidationExportError(
+            "existing direct-export assignment differs from the handoff"
+        )
+    observed_render_sha256 = hashlib.sha256(
+        _runtime_contract_bytes(dict(render_identity))
+    ).hexdigest()
+    if observed_render_sha256 != handoff.get("render_identity_sha256"):
+        raise RTX4090DirectValidationExportError(
+            "existing direct-export render identity differs from the handoff"
+        )
+    return validate_rtx4090_validation_only_artifact(
+        root, runtime_contract=str(handoff["runtime_contract"]),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--layer-config", required=True)
     parser.add_argument("--col-weights", required=True)
-    parser.add_argument("--runtime-contract", required=True)
+    contract = parser.add_mutually_exclusive_group(required=True)
+    contract.add_argument("--runtime-contract")
+    contract.add_argument("--runtime-contract-payload-base64")
+    parser.add_argument("--runtime-contract-sha256")
+    parser.add_argument("--runtime-contract-output")
     parser.add_argument("--out", required=True)
     parser.add_argument("--shard-bytes", type=int, default=DEFAULT_SHARD_BYTES)
+    parser.add_argument(
+        "--export-only",
+        action="store_true",
+        help="stop after the transactional export; a later fixed campaign "
+             "stage owns structural qualification",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="adopt only an existing artifact that validates against the exact "
+             "allocation/render/runtime handoff",
+    )
     args = parser.parse_args(argv)
+
+    if args.runtime_contract_payload_base64 is not None:
+        if not args.runtime_contract_sha256 or not args.runtime_contract_output:
+            parser.error(
+                "--runtime-contract-payload-base64 requires both "
+                "--runtime-contract-sha256 and --runtime-contract-output"
+            )
+        runtime_contract = materialize_runtime_contract_payload(
+            payload_base64=args.runtime_contract_payload_base64,
+            expected_sha256=args.runtime_contract_sha256,
+            output_path=args.runtime_contract_output,
+        )
+    else:
+        if args.runtime_contract_sha256 or args.runtime_contract_output:
+            parser.error(
+                "runtime contract digest/output flags require the embedded "
+                "payload form"
+            )
+        runtime_contract = Path(args.runtime_contract)
 
     handoff = preflight_direct_validation_export(
         model_dir=args.model_dir,
         layer_config=args.layer_config,
         col_weights=args.col_weights,
-        runtime_contract=args.runtime_contract,
+        runtime_contract=runtime_contract,
         out_dir=args.out,
+        allow_existing_output=args.resume,
     )
-    command, environment = build_direct_validation_export_command(
-        handoff, shard_bytes=args.shard_bytes
-    )
-    print("[rtx4090-direct-validation] selected-assignment streaming export")
-    print("[rtx4090-direct-validation] " + " ".join(command))
-    subprocess.run(command, check=True, env=environment)
+    if (
+        args.runtime_contract_sha256 is not None
+        and handoff["runtime_contract_sha256"]
+        != args.runtime_contract_sha256
+    ):
+        raise RTX4090DirectValidationExportError(
+            "producer policy runtime contract digest differs from the "
+            "manifest-embedded contract"
+        )
+    output = Path(args.out)
+    if output.exists():
+        if not args.resume:
+            raise RTX4090DirectValidationExportError(
+                f"direct export output must not already exist: {output}"
+            )
+        result = validate_existing_direct_export(handoff)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    run_direct_validation_export(handoff, shard_bytes=args.shard_bytes)
+    if args.export_only:
+        print(json.dumps(handoff, indent=2, sort_keys=True))
+        return 0
 
     from .validate_rtx4090_fp8_cb_validation_only import (
         validate_rtx4090_validation_only_artifact,

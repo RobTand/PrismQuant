@@ -10,6 +10,7 @@ import prismaquant.rtx4090_two_host_application as application_module
 
 from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
+    bind_gridbook_runtime_contract,
     canonical_sha256,
     seal_campaign_manifest,
 )
@@ -101,6 +102,10 @@ def _manifest(tmp_path: Path) -> dict[str, object]:
         "inputs": {
             "model_content_sha256": "5" * 64,
             "dataset_sha256": "6" * 64,
+            "gridbook_runtime_contract": bind_gridbook_runtime_contract({
+                "schema": "gridbook.runtime-contract.v11",
+                "test_fixture": True,
+            }),
             "sample_parallel": {
                 "nsamples": 32,
                 "seqlen": 1024,
@@ -606,12 +611,12 @@ def test_application_owns_admission_guards_model_gate_and_lease_release(
     result = application.run_to_completion(resume=False)
 
     assert result["complete"] is True
-    assert application.coordinator.status()["completed_assignments"] == 21
+    assert application.coordinator.status()["completed_assignments"] == 23
     application.verify()
     root = state_dir / APPLICATION_RECEIPT_DIR
     # Every container launch is guarded; only the two bare-host preflights are
-    # exempt from the 21-assignment schedule.
-    assert len(list((root / GUARD_DIR).glob("*.check-*.json"))) == 19
+    # exempt from the 23-assignment schedule.
+    assert len(list((root / GUARD_DIR).glob("*.check-*.json"))) == 21
     assert len(list((root / LEASE_RELEASE_DIR).glob("*.json"))) == 2
     assert all(
         receipt["precondition_receipt_sha256s"]
@@ -812,7 +817,7 @@ def test_failed_execution_attempt_keeps_a_valid_extra_start_guard(
         path for path in guard_root.glob("*.json")
         if ".check-" not in path.name
     ]
-    assert len(journals) == 20
+    assert len(journals) == 22
     receipt = json.loads(
         (state_dir / "receipts" / "measure_burn:alpha.json").read_text()
     )

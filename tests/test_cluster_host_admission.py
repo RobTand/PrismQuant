@@ -11,6 +11,7 @@ import pytest
 
 from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
+    bind_gridbook_runtime_contract,
     canonical_sha256,
     seal_campaign_manifest,
 )
@@ -111,6 +112,10 @@ def _body(
         "inputs": {
             "model_content_sha256": model_sha256,
             "dataset_sha256": dataset_sha256,
+            "gridbook_runtime_contract": bind_gridbook_runtime_contract({
+                "schema": "gridbook.runtime-contract.v11",
+                "test_fixture": True,
+            }),
             "sample_parallel": {
                 "nsamples": 32,
                 "seqlen": 1024,

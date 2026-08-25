@@ -14,6 +14,7 @@ state machine without launching a process.
 from __future__ import annotations
 
 import argparse
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
@@ -53,7 +54,7 @@ from prismaquant.cluster_transport import (
 )
 
 
-COMMAND_PLAN_SCHEMA = "prismaquant.rtx4090_two_host_campaign.command_plan.v1"
+COMMAND_PLAN_SCHEMA = "prismaquant.rtx4090_two_host_campaign.command_plan.v2"
 COMMAND_SCHEMA = "prismaquant.rtx4090_two_host_campaign.command.v1"
 EXECUTION_RECEIPT_SCHEMA = (
     "prismaquant.rtx4090_two_host_campaign.execution_receipt.v1"
@@ -90,8 +91,11 @@ _GPU_STAGES = frozenset({
     "sample_ce",
     "sample_fisher",
     "measure_burn",
+    "export_validation_artifact",
 })
-_RESUMABLE_FLAG_STAGES = frozenset({"measure_burn", "allocate"})
+_RESUMABLE_FLAG_STAGES = frozenset({
+    "measure_burn", "allocate", "export_validation_artifact",
+})
 _STAGE_TIMEOUT_SECONDS = {
     "host_preflight": 600.0,
     "prepare_calibration": 7200.0,
@@ -109,6 +113,8 @@ _STAGE_TIMEOUT_SECONDS = {
     "measure_burn": 604800.0,
     "merge_burn": 21600.0,
     "allocate": 172800.0,
+    "export_validation_artifact": 604800.0,
+    "qualify_validation_artifact": 86400.0,
 }
 _CONTAINER_CLEANUP_GRACE_SECONDS = 600.0
 _STAGE_DEPENDENCIES = {
@@ -331,7 +337,11 @@ def _host_output_path(
 
 def _expected_output_kind(container_path: str) -> str:
     name = PurePosixPath(container_path).name
-    return "directory" if name in {"act", "activation_cache"} else "file"
+    return (
+        "directory"
+        if name in {"act", "activation_cache", "validation-artifact"}
+        else "file"
+    )
 
 
 def _normalize_tree_manifest(value: object, *, where: str) -> TreeManifest:
@@ -529,7 +539,7 @@ def _guarded_launch_argv(
 
 
 def _stage_module_argv(
-    stage: str, index: int,
+    manifest: Mapping[str, object], stage: str, index: int,
 ) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     worker = f"/run/worker-{index}"
     if stage == "prepare_calibration":
@@ -710,6 +720,49 @@ def _stage_module_argv(
         ), (
             "/run/burn/allocator-cost.pkl", "/run/burn/allocation/layer_config.json",
         )
+    if stage == "export_validation_artifact":
+        inputs = manifest["inputs"]
+        assert isinstance(inputs, Mapping)
+        contract_input = inputs["gridbook_runtime_contract"]
+        assert isinstance(contract_input, Mapping)
+        contract_payload = json.dumps(
+            contract_input["payload"],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        contract_base64 = base64.b64encode(contract_payload).decode("ascii")
+        return "prismaquant.rtx4090_validation_export", (
+            "--model-dir", "/model",
+            "--layer-config", "/run/burn/allocation/layer_config.json",
+            "--col-weights", "/run/cb_col_weights.pkl",
+            "--runtime-contract-payload-base64", contract_base64,
+            "--runtime-contract-sha256",
+            str(contract_input["runtime_contract_sha256"]),
+            "--runtime-contract-output",
+            "/run/burn/gridbook-runtime-contract.json",
+            "--out", "/run/validation-artifact",
+            "--shard-bytes", "1073741824",
+            "--export-only",
+        ), (
+            "/model", "/pq", "/run/burn/allocation/layer_config.json",
+            "/run/cb_col_weights.pkl",
+        ), (
+            "/run/burn/gridbook-runtime-contract.json",
+            "/run/validation-artifact",
+        )
+    if stage == "qualify_validation_artifact":
+        return "prismaquant.validate_rtx4090_fp8_cb_validation_only", (
+            "/run/validation-artifact",
+            "--runtime-contract", "/run/burn/gridbook-runtime-contract.json",
+            "--receipt", "/run/burn/validation-package-receipt.json",
+        ), (
+            "/run/validation-artifact",
+            "/run/burn/gridbook-runtime-contract.json",
+        ), (
+            "/run/burn/validation-package-receipt.json",
+        )
     raise RTX4090TwoHostCampaignError(f"unsupported fixed campaign stage {stage!r}")
 
 
@@ -732,7 +785,7 @@ def build_stage_command(
             inputs=(), outputs=(), gpu_bearing=False,
         )
     module, raw_module_argv, inputs, outputs = _stage_module_argv(
-        assignment.stage, worker_index,
+        normalized, assignment.stage, worker_index,
     )
     module_argv = tuple(
         str(producer["image_digest"]) if value == "__IMAGE_DIGEST__" else value

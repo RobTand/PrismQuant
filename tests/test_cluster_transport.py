@@ -31,6 +31,7 @@ from prismaquant.cluster_transport import (
     parse_nvidia_smi_csv,
     summarize_utilization,
     verify_tree_manifest,
+    write_exact_bytes_no_clobber,
 )
 
 
@@ -51,6 +52,16 @@ class RecordingRunner:
 
 def completed(returncode=0, stdout=b"", stderr=b""):
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+
+
+def test_exact_no_clobber_writer_is_idempotent_but_rejects_drift(tmp_path):
+    output = tmp_path / "receipt.json"
+    write_exact_bytes_no_clobber(output, b"exact\n")
+    write_exact_bytes_no_clobber(output, b"exact\n")
+    assert output.read_bytes() == b"exact\n"
+
+    with pytest.raises(ClusterTransportError, match="differs"):
+        write_exact_bytes_no_clobber(output, b"different\n")
 
 
 def helper_job_response(receipt: JobReceipt) -> bytes:

@@ -25,6 +25,9 @@ One versioned manifest declares:
 - host-local absolute roots for the model, dataset, run tree, private worker
   state, and immutable runtime snapshots;
 - the full producer commit/tree/closure and registry RepoDigest;
+- the complete canonical Gridbook v11 candidate runtime contract and its
+  producer-attestation SHA-256, embedded directly rather than discovered from
+  a worktree, mutable path, or image install;
 - an artifact target separate from execution hardware: RTX 4090/sm89,
   validation-only, BF16 source, context-first 18,000,000,000-byte ceiling,
   physical FP8-CB K4/K16/K48 plus FP8_E4M3, and a BF16 terminal;
@@ -74,9 +77,16 @@ host admission + immutable snapshot/image verification
                     burn merge
                          |
                      allocation
+                         |
+       selected-assignment streaming export [GPU]
+                         |
+       structural qualification + package receipt [CPU]
 ```
 
-Only the CE, Fisher, and burn map pairs may run concurrently. A reducer cannot
+Only the CE, Fisher, and burn map pairs may run concurrently. The final export
+runs once on the declared coordinator because it owns the complete assignment
+and output tree; it reuses the existing streaming Gridbook exporter rather than
+introducing a distributed cache or serializer. A reducer cannot
 start until both exact inputs are present and independently validated. Worker
 source caches, compiler state, probe work shards, and burn checkpoints stay
 host-private and are never transferred.
@@ -205,6 +215,19 @@ barrier input, or ambiguous output state fails closed. Recovery consists of a
 code fix or a newly reviewed explicit input, not an agent choosing which file
 to delete or which stage to skip.
 
+The transactional export is the final GPU-bearing stage. It materializes the
+manifest-embedded Gridbook contract under `/run` with exact no-clobber bytes,
+replays the allocation's whole-artifact budget and value-bearing
+`cb_render_identity`, and renders only selected FP8-CB entries through
+`export_nvfp4_cb_streaming`; delegated FP8/BF16 tensors follow that existing
+exporter's paths. A retry may adopt an already published output only after the
+artifact's assignment, render identity, compile-only contract, complete census,
+and unreleasable policy stamp all replay. The following GPU-blind stage hashes
+and structurally validates the finalized artifact and writes a sealed local
+package receipt. That receipt explicitly records `release_eligible=false` and
+`serving_evidence_emitted=false`; no campaign transition invokes the publisher,
+fills a shipcard slot, promotes hardware qualification, or creates a tag.
+
 ## Utilization Evidence
 
 GPU telemetry is part of the result rather than an informal observation.
@@ -239,6 +262,9 @@ be declared before the comparison run rather than invented afterward.
 The initial graph reuses the existing `sample_parallel_probe`,
 `incremental_probe`, and `rtx4090_fp8_burn` producers. It adds no alternate
 weight cache, activation cache, numerical reducer, renderer, or allocator. The
-burn ends at a layer assignment; export and serving qualification remain later
-explicit stages. The same orchestration contract can schedule an NVFP4 burn
-once that producer exists, without an agent or a new cluster control plane.
+burn feeds the existing selected-assignment streaming exporter, then the
+dedicated validation-only structural validator packages a local candidate.
+Physical RTX4090 serving qualification remains a later, separately authorized
+hardware gate and cannot be inferred from this GB10 run. The same orchestration
+contract can schedule an NVFP4 burn once that producer exists, without an agent
+or a new cluster control plane.

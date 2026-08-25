@@ -14,6 +14,7 @@ from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
     CANONICAL_CONTAINER_PATHS,
     STAGE_DAG,
+    bind_gridbook_runtime_contract,
     seal_campaign_manifest,
 )
 from prismaquant.cluster_live_runtime import (
@@ -113,6 +114,10 @@ def _manifest(tmp_path: Path, *, coordinator: str = "zeta") -> dict[str, object]
             "inputs": {
                 "model_content_sha256": "5" * 64,
                 "dataset_sha256": "6" * 64,
+                "gridbook_runtime_contract": bind_gridbook_runtime_contract({
+                    "schema": "gridbook.runtime-contract.v11",
+                    "test_fixture": True,
+                }),
                 "sample_parallel": {
                     "nsamples": 32,
                     "seqlen": 1024,

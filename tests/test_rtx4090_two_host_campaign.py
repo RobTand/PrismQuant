@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 
 from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
+    bind_gridbook_runtime_contract,
     seal_campaign_manifest,
 )
 from prismaquant.cluster_transport import (
@@ -121,6 +123,10 @@ def _manifest() -> dict[str, object]:
         "inputs": {
             "model_content_sha256": "5" * 64,
             "dataset_sha256": "6" * 64,
+            "gridbook_runtime_contract": bind_gridbook_runtime_contract({
+                "schema": "gridbook.runtime-contract.v11",
+                "test_fixture": True,
+            }),
             "sample_parallel": {
                 "nsamples": 32,
                 "seqlen": 1024,
@@ -212,6 +218,8 @@ class _FakeTransport:
             "measure_burn",
             "merge_burn",
             "allocate",
+            "export_validation_artifact",
+            "qualify_validation_artifact",
         ):
             if f"-{stage}-" in job_id:
                 return stage
@@ -360,7 +368,7 @@ class _FakeArtifactInspector:
             f"{absolute_path}:{revision}".encode("utf-8")
         ).hexdigest()
         name = Path(absolute_path).name
-        if name in {"act", "activation_cache"}:
+        if name in {"act", "activation_cache", "validation-artifact"}:
             return TreeManifest(
                 root_kind="directory",
                 entries=(ManifestEntry("content.bin", "file", 1, digest),),
@@ -436,7 +444,7 @@ def test_plan_is_closed_and_maps_hosts_to_partitions_and_stripes_0_and_1() -> No
     plan = build_command_plan(manifest)
     commands = plan["commands"]
     assert isinstance(commands, list)
-    assert len(commands) == 21
+    assert len(commands) == 23
 
     ce = sorted(
         (row for row in commands if row["stage"] == "sample_ce"),
@@ -455,7 +463,13 @@ def test_plan_is_closed_and_maps_hosts_to_partitions_and_stripes_0_and_1() -> No
 
     coordinator_rows = [
         row for row in commands
-        if row["stage"] in {"prepare_calibration", "prepare_burn", "allocate"}
+        if row["stage"] in {
+            "prepare_calibration",
+            "prepare_burn",
+            "allocate",
+            "export_validation_artifact",
+            "qualify_validation_artifact",
+        }
     ]
     assert {row["host_id"] for row in coordinator_rows} == {"zeta"}
     prepare = next(row for row in commands if row["stage"] == "prepare_burn")
@@ -472,6 +486,30 @@ def test_plan_is_closed_and_maps_hosts_to_partitions_and_stripes_0_and_1() -> No
         "/run/run-contract.json", "/run/cover.json", "/run/global-ce.json",
     }
     assert all("shell" not in row for row in commands)
+    export = next(
+        row for row in commands
+        if row["stage"] == "export_validation_artifact"
+    )
+    assert export["gpu_bearing"] is True
+    assert export["outputs"] == [
+        "/run/burn/gridbook-runtime-contract.json",
+        "/run/validation-artifact",
+    ]
+    encoded = _argument(
+        export["module_argv"], "--runtime-contract-payload-base64",
+    )
+    assert json.loads(base64.b64decode(encoded)) == {
+        "schema": "gridbook.runtime-contract.v11",
+        "test_fixture": True,
+    }
+    qualify = next(
+        row for row in commands
+        if row["stage"] == "qualify_validation_artifact"
+    )
+    assert qualify["gpu_bearing"] is False
+    assert qualify["outputs"] == [
+        "/run/burn/validation-package-receipt.json",
+    ]
 
 
 def test_only_gpu_stages_receive_devices_and_all_containers_use_launch_gate(
@@ -609,8 +647,8 @@ def test_fake_transport_completes_all_barriers_and_records_kpi_receipts(
     result = coordinator.run_to_completion(resume=False)
 
     assert result["complete"] is True
-    assert result["completed_assignments"] == 21
-    assert sum(len(transport.calls) for transport in transports.values()) == 21
+    assert result["completed_assignments"] == 23
+    assert sum(len(transport.calls) for transport in transports.values()) == 23
     receipt_path = tmp_path / "state" / "receipts" / "sample_fisher:alpha.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     summary = receipt["telemetry_summary"]
@@ -670,6 +708,27 @@ def test_failed_attempt_uses_bounded_new_id_and_only_retry_resume_flags(
         .read_text(encoding="utf-8")
     )
     assert receipt["attempt_index"] == 1
+
+
+def test_validation_export_retry_uses_exact_resume_contract(tmp_path: Path) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    transports["zeta"].fail_once_stage = "export_validation_artifact"
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports,
+    )
+
+    result = coordinator.run_to_completion(resume=False)
+
+    assert result["complete"] is True
+    exports = [
+        request for request in transports["zeta"].start_calls
+        if "-export_validation_artifact-" in request.job_id
+    ]
+    assert len(exports) == 2
+    assert "--resume" not in exports[0].argv
+    assert "--resume" in exports[1].argv
+    assert exports[0].argv == exports[1].argv[:-1]
 
 
 def test_restart_adopts_running_job_and_uses_durable_live_telemetry(

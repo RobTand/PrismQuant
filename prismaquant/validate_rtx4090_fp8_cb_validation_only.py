@@ -23,6 +23,11 @@ from .rtx4090_qwen38_policy import (
 from .shipcard import compute_model_sha
 
 
+VALIDATION_ONLY_PACKAGE_RECEIPT_SCHEMA = (
+    "prismaquant.rtx4090_validation_only_package_receipt.v1"
+)
+
+
 class RTX4090ValidationOnlyArtifactError(RuntimeError):
     """The artifact is not the closed compile-only validation artifact."""
 
@@ -68,23 +73,89 @@ def validate_rtx4090_validation_only_artifact(
         )
     except Exception as exc:
         raise RTX4090ValidationOnlyArtifactError(str(exc)) from exc
+    from .cluster_campaign_contract import gridbook_runtime_contract_sha256
+
     return {
         **result,
         "model_sha": compute_model_sha(root),
+        "runtime_contract_sha256": gridbook_runtime_contract_sha256(contract),
         "artifact_disposition": RTX4090_VALIDATION_ONLY_DISPOSITION,
         "release_eligible": False,
         "serving_evidence_emitted": False,
     }
 
 
+def build_validation_only_package_receipt(
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal the local structural qualification without creating ship evidence."""
+
+    if (
+        result.get("artifact_disposition")
+        != RTX4090_VALIDATION_ONLY_DISPOSITION
+        or result.get("release_eligible") is not False
+        or result.get("serving_evidence_emitted") is not False
+    ):
+        raise RTX4090ValidationOnlyArtifactError(
+            "validation-only package result has an unsafe disposition"
+        )
+    source_census = result.get("source_census")
+    runtime_contract_sha256 = result.get("runtime_contract_sha256")
+    if not isinstance(source_census, Mapping):
+        raise RTX4090ValidationOnlyArtifactError(
+            "validation-only package result has no finalized source census"
+        )
+    if (
+        not isinstance(runtime_contract_sha256, str)
+        or len(runtime_contract_sha256) != 64
+        or any(
+            char not in "0123456789abcdef"
+            for char in runtime_contract_sha256
+        )
+    ):
+        raise RTX4090ValidationOnlyArtifactError(
+            "validation-only package result has no runtime contract identity"
+        )
+    from .cluster_campaign_contract import canonical_sha256
+
+    body: dict[str, Any] = {
+        "schema": VALIDATION_ONLY_PACKAGE_RECEIPT_SCHEMA,
+        "artifact_disposition": RTX4090_VALIDATION_ONLY_DISPOSITION,
+        "release_eligible": False,
+        "serving_evidence_emitted": False,
+        "runtime_contract_sha256": runtime_contract_sha256,
+        "validation": dict(result),
+    }
+    return {**body, "identity_sha256": canonical_sha256(body)}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model_dir")
     parser.add_argument("--runtime-contract", required=True)
+    parser.add_argument(
+        "--receipt",
+        help="durably write the sealed validation-only package receipt",
+    )
     args = parser.parse_args(argv)
     result = validate_rtx4090_validation_only_artifact(
         args.model_dir, runtime_contract=args.runtime_contract
     )
+    if args.receipt:
+        from .cluster_transport import write_exact_bytes_no_clobber
+
+        receipt = build_validation_only_package_receipt(result)
+        payload = (
+            json.dumps(
+                receipt,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+        write_exact_bytes_no_clobber(Path(args.receipt), payload)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
