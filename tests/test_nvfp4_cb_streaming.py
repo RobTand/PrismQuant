@@ -41,6 +41,12 @@ from prismaquant.cb_export_config import (  # noqa: E402
     parse_quantized_embedding_declaration,
 )
 from prismaquant.model_profiles import detect_profile  # noqa: E402
+from prismaquant.gridbook_validation_only_policy import (  # noqa: E402
+    SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
+    SM120_VALIDATION_POLICY_ID,
+    VALIDATION_ONLY_DISPOSITION,
+    validate_sm120_validation_only_quant_config,
+)
 from prismaquant.shipcard import (  # noqa: E402
     CB_REQUIRED_SLOTS,
     GOLD_SLOTS,
@@ -551,6 +557,127 @@ def test_sm120_w8a16_is_refused_before_output_transaction(
         )
     assert not out.exists()
     assert list(workdir.glob(f".{out.name}.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
+    "exporter",
+    [export_nvfp4_cb, export_nvfp4_cb_streaming],
+    ids=["batch", "streaming"],
+)
+@pytest.mark.parametrize(
+    ("producer_policy", "contract_mode", "message"),
+    (
+        (None, "none", "requires producer_policy"),
+        ("some_other_policy", "exact", "requires producer_policy"),
+        (
+            SM120_VALIDATION_POLICY_ID,
+            "none",
+            "requires an explicit exact",
+        ),
+        (
+            SM120_VALIDATION_POLICY_ID,
+            "tampered",
+            "differs from exact candidate",
+        ),
+    ),
+)
+def test_both_cb_exporters_fail_closed_on_sm120_policy_contract_preflight(
+    workdir,
+    exporter,
+    producer_policy,
+    contract_mode,
+    message,
+):
+    qname = "model.layers.0.self_attn.q_proj"
+    mdl = workdir / f"model-{exporter.__name__}-{contract_mode}"
+    _write_model(mdl, {
+        f"{qname}.weight": torch.zeros(8, 256, dtype=torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / (
+        f"assignment-{exporter.__name__}-{contract_mode}.json"
+    )
+    _assign(assignment, {
+        qname: "NVFP4_CB_K16",
+        "__prismaquant__": {
+            "schema": "prismaquant.layer_config_meta.v1",
+            "target_profile": "qwen38_sm120_cb_validation_only",
+        },
+    })
+    if contract_mode == "exact":
+        runtime_contract = SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
+    elif contract_mode == "tampered":
+        runtime_contract = json.loads(
+            SM120_VALIDATION_CANDIDATE_CONTRACT_PATH.read_text()
+        )
+        runtime_contract["contract_version"] = 12
+    else:
+        runtime_contract = None
+    out = workdir / f"out-{exporter.__name__}-{contract_mode}"
+
+    with pytest.raises(ValueError, match=message):
+        exporter(
+            mdl,
+            assignment,
+            out,
+            {qname: torch.ones(256)},
+            device="cpu",
+            producer_policy=producer_policy,
+            producer_runtime_contract=runtime_contract,
+        )
+    assert not out.exists()
+    assert list(workdir.glob(f".{out.name}.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
+    "exporter",
+    [export_nvfp4_cb, export_nvfp4_cb_streaming],
+    ids=["batch", "streaming"],
+)
+def test_both_cb_exporters_stamp_and_finalize_exact_sm120_policy(
+    workdir,
+    exporter,
+):
+    qname = "model.layers.0.self_attn.q_proj"
+    mdl = workdir / f"model-{exporter.__name__}"
+    _write_model(mdl, {
+        f"{qname}.weight": torch.zeros(8, 256, dtype=torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / f"assignment-{exporter.__name__}.json"
+    _assign(assignment, {
+        qname: "NVFP4_CB_K16",
+        "__prismaquant__": {
+            "schema": "prismaquant.layer_config_meta.v1",
+            "target_profile": "qwen38_sm120_cb_validation_only",
+        },
+    })
+    out = workdir / f"out-{exporter.__name__}"
+
+    assert exporter(
+        mdl,
+        assignment,
+        out,
+        {qname: torch.ones(256)},
+        device="cpu",
+        producer_policy=SM120_VALIDATION_POLICY_ID,
+        producer_runtime_contract=SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
+    )["NVFP4_CB_K16"] == 1
+
+    quant = json.loads((out / "quant_config.json").read_text())
+    validate_sm120_validation_only_quant_config(quant)
+    assert quant["provenance"]["artifact_inventory"]["schema"] == (
+        "prismaquant.cb_export_artifact_inventory.v1"
+    )
+    card = load_shipcard(out / "shipcard.json")
+    assert card["build"]["producer_policy"] == SM120_VALIDATION_POLICY_ID
+    assert card["build"]["artifact_disposition"] == (
+        VALIDATION_ONLY_DISPOSITION
+    )
+    assert any(
+        VALIDATION_ONLY_DISPOSITION in problem
+        for problem in verify(card, model_dir=out, required=())
+    )
 
 
 @pytest.mark.parametrize(

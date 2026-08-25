@@ -1386,6 +1386,30 @@ def build_shipcard(
                     assignment=assignment,
                     where="shipcard strict RTX4090 route status",
                 )
+            elif route_status.get("schema") == (
+                "prismaquant.gridbook_validation_only_route_status.v1"
+            ):
+                from .gridbook_validation_only_policy import (
+                    sm120_validation_only_route_status_summary,
+                )
+
+                policy = provenance.get("producer_policy")
+                assignment = provenance.get("tensor_formats")
+                if not isinstance(policy, Mapping) or not isinstance(
+                    assignment, Mapping
+                ):
+                    raise ValueError(
+                        "validation-only route status has no exact "
+                        "policy/assignment binding"
+                    )
+                card["cb_route_status"] = (
+                    sm120_validation_only_route_status_summary(
+                        route_status,
+                        producer_policy=policy,
+                        assignment=assignment,
+                        where="shipcard SM120 validation-only route status",
+                    )
+                )
             else:
                 # local: the generic gate reaches the serving-lane resolution
                 # stack, and shipcard is imported very early.
@@ -1475,20 +1499,15 @@ def open_cb_export_shipcard(
     }
     policy_stamp = provenance.get("producer_policy")
     if isinstance(policy_stamp, Mapping):
-        from .rtx4090_qwen38_policy import (
-            is_rtx4090_validation_only_policy,
+        from .gridbook_validation_only_policy import (
+            validation_only_policy_build_fields,
         )
 
-        if is_rtx4090_validation_only_policy(policy_stamp):
+        validation_fields = validation_only_policy_build_fields(policy_stamp)
+        if validation_fields is not None:
             # The on-disk stamp remains authoritative. Carry the disposition
             # into the card as well so card-only verification cannot pass.
-            build.update({
-                "producer_policy": str(policy_stamp["id"]),
-                "serving_profile": str(policy_stamp["serving_profile"]),
-                "artifact_disposition": str(
-                    policy_stamp["artifact_disposition"]
-                ),
-            })
+            build.update(validation_fields)
     collisions = sorted(set(build_extra or {}) & set(build))
     if collisions:
         raise ValueError(
@@ -1674,12 +1693,11 @@ def verify(
 
     slots = card.get("slots") or {}
     is_gridbook_cb = _is_gridbook_card(card, model_dir=model_dir)
-    if _is_rtx4090_validation_only_artifact(card, model_dir):
-        problems.append(
-            "RTX4090 FP8-CB artifact is stamped "
-            "UNRELEASABLE_VALIDATION_ONLY: compile_only SM89 evidence can "
-            "never satisfy a shipcard, publication, or physical RTX4090 gate"
-        )
+    validation_only_problem = _validation_only_artifact_problem(
+        card, model_dir
+    )
+    if validation_only_problem is not None:
+        problems.append(validation_only_problem)
     if is_gridbook_cb and card.get("reserved_file_bytes") != SHIPCARD_RESERVED_BYTES:
         problems.append(
             "shipcard reserved_file_bytes is not the fixed "
@@ -4147,33 +4165,55 @@ def _is_rtx4090_fp8_cb_artifact(
     ) == "qwen38_27b_rtx4090_fp8_cb"
 
 
-def _is_rtx4090_validation_only_artifact(
+def _validation_only_artifact_problem(
     card: Mapping[str, Any],
     model_dir: str | os.PathLike | None,
-) -> bool:
-    """Read the immutable producer stamp that categorically forbids release."""
+) -> str | None:
+    """Return the non-forceable refusal derived from quant-config authority."""
+
+    from .gridbook_validation_only_policy import (
+        inspect_validation_only_quant_config,
+        validation_only_build_hint,
+    )
 
     build = card.get("build")
-    if isinstance(build, Mapping) and build.get(
-        "artifact_disposition"
-    ) == "UNRELEASABLE_VALIDATION_ONLY":
-        return True
+    build_hint = validation_only_build_hint(build)
     if model_dir is None:
-        return False
+        return (
+            "artifact is stamped UNRELEASABLE_VALIDATION_ONLY and can never "
+            "satisfy shipcard or publication"
+            if build_hint else None
+        )
     quant_path = Path(model_dir) / "quant_config.json"
     try:
         payload = json.loads(quant_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return False
-    provenance = payload.get("provenance") if isinstance(
-        payload, Mapping
-    ) else None
-    policy = provenance.get("producer_policy") if isinstance(
-        provenance, Mapping
-    ) else None
-    from .rtx4090_qwen38_policy import is_rtx4090_validation_only_policy
-
-    return is_rtx4090_validation_only_policy(policy)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        if build_hint:
+            return (
+                "UNRELEASABLE_VALIDATION_ONLY artifact has no readable "
+                f"quant-config authority: {exc!r}"
+            )
+        return None
+    inspection = inspect_validation_only_quant_config(payload)
+    if inspection.required:
+        state = (
+            "exact stamp verified"
+            if inspection.valid
+            else inspection.detail
+        )
+        profile = inspection.serving_profile or "unknown validation profile"
+        return (
+            f"{profile} is UNRELEASABLE_VALIDATION_ONLY ({state}); "
+            "compile_only candidate evidence can never satisfy shipcard, "
+            "publication, or physical device qualification"
+        )
+    if build_hint:
+        return (
+            "artifact card declares UNRELEASABLE_VALIDATION_ONLY but its "
+            "quant-config authority lacks the required validation-only stamp; "
+            "release remains categorically refused"
+        )
+    return None
 
 
 def required_slots(

@@ -9,9 +9,10 @@ tracked runtime. The NVFP4 producer scaffold was expanded the same day to
 K1..K25; widths above the public ceiling remain direct-codec/kernel research
 only. The same revision adds `qwen38_sm120_cb_validation_only`, a closed
 candidate-registration profile for the dense full-ladder campaign. It is
-explicitly validation-only: no producer policy, release pin, device
-qualification, or shipping claim follows from it. This page is the contract
-production runs build against.
+now paired with the exact producer policy of the same id and a separately
+packaged Gridbook candidate pin, but remains categorically validation-only: no
+release pin, device qualification, or shipping claim follows from it. This page
+is the contract production runs build against.
 Changes to it require a served A/B, not a preference.
 
 For the new SM120/RTX50 line, W8A16 and source-FP8 carriers are not maintained
@@ -94,10 +95,24 @@ inherited generic container allow-list cannot silently readmit W8A16/source
 FP8. The resident and streaming exporters re-check the target profile stamped
 inside `layer_config.json` before opening an output transaction; a hand-edited
 source-FP8 assignment therefore cannot bypass the chooser gate or leave a temp
-artifact behind. That profile is structural validation scaffolding, not an
-attestation: candidate v11 is compile-only and unpinned, the profile has no
-`producer_policy`, and release tooling remains fail-closed until the immutable
-consumer pin and exact device-qualified route contract advance together.
+artifact behind. Metadata selecting the profile also requires exact producer
+policy `qwen38_sm120_cb_validation_only` and an explicitly supplied contract
+matching the packaged untagged Gridbook 0.9.1 candidate: commit
+`580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
+`a63371455b94ba62514f3e6eb96bb599fe0cadc1`,
+`gridbook.runtime-contract.v11` version 11,
+`gridbook.lane-eligibility.v2`, canonical JSON SHA-256
+`15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`,
+and literal file SHA-256
+`585d5563cc69913937ab4c4a3b0cc6428a5c072d6a49b57ed03f8c28b8699b0d`.
+Both exporters stamp the exact policy and assignment-bound route census into
+`quant_config.json` before finalization, then replay them afterward; missing,
+mutated, or cross-policy inputs refuse. Every resulting artifact has disposition
+`UNRELEASABLE_VALIDATION_ONLY`, a `compile_only` qualification ceiling, and no
+release eligibility. Shipcard and publisher refusal is categorical, including
+under force flags and for a malformed or removed required stamp. The candidate
+pin is not a release tag and does not advance the production runtime pin; a
+future releasable artifact requires a distinct policy and fresh export.
 
 The widened NVFP4 registry is producer scaffolding, not a runtime claim. A
 new artifact using K1..K11 or K25 requires a Gridbook v11 contract whose
@@ -105,7 +120,9 @@ NVFP4 `rungs` and `producer_rungs` both attest K1..K25, plus device-qualified
 route cells for the target structure and regime. K26..K32 are unsupported and
 must not appear in a contract cell. Released Gridbook 0.8.11/v4
 cannot provide producer-rung attestation, so release tooling must fail closed
-until the external pin advances.
+until an external release pin with device-qualified routes advances. The exact
+0.9.1 candidate pin above is only deterministic validation authority and cannot
+satisfy that release gate.
 
 ## Runtime/kernel standard (owned by Gridbook)
 

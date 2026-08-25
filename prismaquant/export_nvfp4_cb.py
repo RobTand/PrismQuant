@@ -163,6 +163,23 @@ def _preflight_assignment_before_output_transaction(function):
                     "refuses assignment format(s) before output transaction: "
                     f"{refused[:8]}"
                 )
+        # The allocator's layer metadata, not a mutable environment override,
+        # creates the validation-only obligation.  Run this outside the
+        # transactional wrapper shared by both CB exporters so a missing,
+        # cross-policy, or wrong-contract input cannot create even a staging
+        # directory.  The exporter replays it inside to obtain the exact stamp.
+        from prismaquant.gridbook_validation_only_policy import (
+            prepare_gridbook_validation_only_export_policy,
+        )
+
+        prepare_gridbook_validation_only_export_policy(
+            layer_config_path=layer_config_path,
+            producer_policy=bound.arguments.get("producer_policy"),
+            runtime_contract=bound.arguments.get(
+                "producer_runtime_contract"
+            ),
+            where=function.__name__,
+        )
         return function(*args, **kwargs)
 
     return wrapped
@@ -770,16 +787,29 @@ def export_nvfp4_cb(
         )
 
     assignment = load_assignment(layer_config_path)
+    from prismaquant.gridbook_validation_only_policy import (
+        prepare_gridbook_validation_only_export_policy,
+    )
     from prismaquant.rtx4090_qwen38_policy import (
         prepare_rtx4090_export_policy,
     )
 
-    _strict_producer = prepare_rtx4090_export_policy(
-        model_dir=model_dir,
-        assignment=assignment,
+    _validation_only_producer = prepare_gridbook_validation_only_export_policy(
+        layer_config_path=layer_config_path,
         producer_policy=producer_policy,
         runtime_contract=producer_runtime_contract,
         where="export_nvfp4_cb",
+    )
+    _strict_producer = (
+        None
+        if _validation_only_producer is not None
+        else prepare_rtx4090_export_policy(
+            model_dir=model_dir,
+            assignment=assignment,
+            producer_policy=producer_policy,
+            runtime_contract=producer_runtime_contract,
+            where="export_nvfp4_cb",
+        )
     )
     _recipe_payload = json.loads(Path(layer_config_path).read_text())
     _recipe_cb_context_stamp, _recipe_cb_tensor_stamps = (
@@ -1421,6 +1451,19 @@ def export_nvfp4_cb(
         cb_route_status_provenance = rtx4090_route_status_stamp(
             _strict_producer[1], assignment
         )
+    elif _validation_only_producer is not None:
+        # This exact policy does not promote compile-only cells through the
+        # generic release gate.  It records the structural ceiling and
+        # candidate identity in a distinct, permanently unreleasable schema.
+        from prismaquant.gridbook_validation_only_policy import (
+            sm120_validation_only_route_status_stamp,
+        )
+
+        cb_route_status_provenance = (
+            sm120_validation_only_route_status_stamp(
+                _validation_only_producer[1], assignment
+            )
+        )
     else:
         route_target_profile = str(
             os.environ.get("PRISMAQUANT_TARGET_PROFILE")
@@ -1990,6 +2033,23 @@ def export_nvfp4_cb(
                 "col_weights_sha256"
             ]
         )
+    if _validation_only_producer is not None:
+        _validation_runtime_contract, _validation_policy_stamp = (
+            _validation_only_producer
+        )
+        quant_config["provenance"]["producer_policy"] = (
+            _validation_policy_stamp
+        )
+        from prismaquant.gridbook_validation_only_policy import (
+            sm120_validation_only_route_status_stamp,
+        )
+
+        cb_route_status_provenance = (
+            sm120_validation_only_route_status_stamp(
+                _validation_policy_stamp,
+                quant_config["provenance"]["tensor_formats"],
+            )
+        )
 
     # --- Write safetensors (params only) + the codebook sidecar + configs. ---
     published_containers, _tensor_sha256 = _write_cb_containers(
@@ -2097,6 +2157,16 @@ def export_nvfp4_cb(
             else None
         ),
     )
+    if _validation_only_producer is not None:
+        from prismaquant.gridbook_validation_only_policy import (
+            validate_sm120_validation_only_quant_config,
+        )
+
+        validate_sm120_validation_only_quant_config(
+            quant_config,
+            runtime_contract=_validation_runtime_contract,
+            where="export_nvfp4_cb finalized SM120 validation-only manifest",
+        )
     if _strict_producer is not None:
         from prismaquant.rtx4090_qwen38_policy import (
             is_rtx4090_validation_only_policy,

@@ -2972,16 +2972,29 @@ def export_nvfp4_cb_streaming(
                 assignment, expert_groups, profile
             )
         )
+    from prismaquant.gridbook_validation_only_policy import (
+        prepare_gridbook_validation_only_export_policy,
+    )
     from prismaquant.rtx4090_qwen38_policy import (
         prepare_rtx4090_export_policy,
     )
 
-    _strict_producer = prepare_rtx4090_export_policy(
-        model_dir=model_dir,
-        assignment=assignment,
+    _validation_only_producer = prepare_gridbook_validation_only_export_policy(
+        layer_config_path=layer_config_path,
         producer_policy=producer_policy,
         runtime_contract=producer_runtime_contract,
         where="export_nvfp4_cb_streaming",
+    )
+    _strict_producer = (
+        None
+        if _validation_only_producer is not None
+        else prepare_rtx4090_export_policy(
+            model_dir=model_dir,
+            assignment=assignment,
+            producer_policy=producer_policy,
+            runtime_contract=producer_runtime_contract,
+            where="export_nvfp4_cb_streaming",
+        )
     )
     # Namespace exclusion is validated against the COLLAPSED assignment, i.e.
     # the units as the allocator actually decided them, so a per-expert entry
@@ -3877,6 +3890,16 @@ def export_nvfp4_cb_streaming(
 
         cb_route_status_provenance = rtx4090_route_status_stamp(
             _strict_producer[1], assignment
+        )
+    elif _validation_only_producer is not None:
+        from prismaquant.gridbook_validation_only_policy import (
+            sm120_validation_only_route_status_stamp,
+        )
+
+        cb_route_status_provenance = (
+            sm120_validation_only_route_status_stamp(
+                _validation_only_producer[1], assignment
+            )
         )
     else:
         route_target_profile = str(
@@ -5363,6 +5386,23 @@ def export_nvfp4_cb_streaming(
                 "col_weights_sha256"
             ]
         )
+    if _validation_only_producer is not None:
+        _validation_runtime_contract, _validation_policy_stamp = (
+            _validation_only_producer
+        )
+        quant_config["provenance"]["producer_policy"] = (
+            _validation_policy_stamp
+        )
+        from prismaquant.gridbook_validation_only_policy import (
+            sm120_validation_only_route_status_stamp,
+        )
+
+        cb_route_status_provenance = (
+            sm120_validation_only_route_status_stamp(
+                _validation_policy_stamp,
+                quant_config["provenance"]["tensor_formats"],
+            )
+        )
     # Source DSpark is a metadata-only overlay. Quantized DSpark is a distinct
     # producer mode: physical tensor bases stay ``mtp.*`` while the CB groups
     # above were named in the construction namespace. Never apply the source
@@ -5652,6 +5692,19 @@ def export_nvfp4_cb_streaming(
             else None
         ),
     )
+    if _validation_only_producer is not None:
+        from prismaquant.gridbook_validation_only_policy import (
+            validate_sm120_validation_only_quant_config,
+        )
+
+        validate_sm120_validation_only_quant_config(
+            quant_config,
+            runtime_contract=_validation_runtime_contract,
+            where=(
+                "export_nvfp4_cb_streaming finalized SM120 "
+                "validation-only manifest"
+            ),
+        )
     if _strict_producer is not None:
         from prismaquant.rtx4090_qwen38_policy import (
             is_rtx4090_validation_only_policy,

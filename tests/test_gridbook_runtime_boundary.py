@@ -23,6 +23,13 @@ from prismaquant.gridbook_serving_runtime_pin import (
     GRIDBOOK_SERVING_RUNTIME_COMMIT_PENDING,
     GRIDBOOK_SERVING_RUNTIME_WHEEL_SHA256_PENDING,
 )
+from prismaquant.gridbook_validation_only_policy import (
+    SM120_CANDIDATE_GRIDBOOK_COMMIT,
+    SM120_CANDIDATE_GRIDBOOK_VERSION,
+    SM120_VALIDATION_CANDIDATE_PIN_PATH,
+    VALIDATION_ONLY_DISPOSITION,
+    load_sm120_validation_candidate_pin,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -31,6 +38,7 @@ HELPER = ASSET_DIR / "gridbook_runtime.sh"
 PIN = ASSET_DIR / "gridbook_runtime_pin.json"
 SERVING_HELPER = ASSET_DIR / "gridbook_serving_runtime.sh"
 SERVING_PIN = ASSET_DIR / "gridbook_serving_runtime_pin.json"
+VALIDATION_CANDIDATE_PIN = SM120_VALIDATION_CANDIDATE_PIN_PATH
 LIVE_SCRIPTS = (
     "canary_ladder.sh",
     "serve_dsv4_cb_validate.sh",
@@ -63,13 +71,13 @@ def _bash(script: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_gridbook_pins_separate_immutable_producer_from_current_serving():
+def test_gridbook_pins_separate_release_authority_from_validation_candidate():
     pins = [
         path
         for root in (REPO / "prismaquant", REPO / "scripts")
         for path in root.rglob("*gridbook*pin*.json")
     ]
-    assert set(pins) == {PIN, SERVING_PIN}
+    assert set(pins) == {PIN, SERVING_PIN, VALIDATION_CANDIDATE_PIN}
     payload = json.loads(PIN.read_text(encoding="utf-8"))
     assert set(payload) == {
         "schema", "repository", "commit", "version", "version_is_release",
@@ -119,6 +127,22 @@ def test_gridbook_pins_separate_immutable_producer_from_current_serving():
     assert serving["commit"] != GRIDBOOK_SERVING_RUNTIME_COMMIT_PENDING
     assert serving["wheel_sha256"] != GRIDBOOK_SERVING_RUNTIME_WHEEL_SHA256_PENDING
     assert serving["version_is_release"] is True
+
+    # The third pin is intentionally not part of the producer/serving release
+    # pair below.  It authorizes only deterministic SM120 validation exports,
+    # and its schema carries a categorical, compile-only disposition instead
+    # of repository-install or wheel-release authority.
+    candidate = load_sm120_validation_candidate_pin()
+    assert candidate["gridbook"]["commit"] == (
+        SM120_CANDIDATE_GRIDBOOK_COMMIT
+    )
+    assert candidate["gridbook"]["version"] == (
+        SM120_CANDIDATE_GRIDBOOK_VERSION
+    )
+    assert candidate["gridbook"]["version_is_release"] is False
+    assert candidate["gridbook"]["release_tag"] is None
+    assert candidate["artifact_disposition"] == VALIDATION_ONLY_DISPOSITION
+    assert candidate["runtime_qualification_ceiling"] == "compile_only"
 
 
 def test_producer_and_serving_pins_name_the_same_gridbook_release():

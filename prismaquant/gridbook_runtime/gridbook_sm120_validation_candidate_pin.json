@@ -1,0 +1,21 @@
+{
+  "schema": "prismaquant.gridbook_validation_candidate_pin.v1",
+  "id": "gridbook_0_9_1_sm120_validation_candidate",
+  "target_platform": "sm_120",
+  "artifact_disposition": "UNRELEASABLE_VALIDATION_ONLY",
+  "runtime_qualification_ceiling": "compile_only",
+  "gridbook": {
+    "version": "0.9.1",
+    "commit": "580dd3e31962522aeddcdb1f6595ec22656c7bb3",
+    "tree": "a63371455b94ba62514f3e6eb96bb599fe0cadc1",
+    "version_is_release": false,
+    "release_tag": null
+  },
+  "runtime_contract": {
+    "schema": "gridbook.runtime-contract.v11",
+    "contract_version": 11,
+    "lane_eligibility_schema": "gridbook.lane-eligibility.v2",
+    "canonical_json_sha256": "15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c",
+    "file_sha256": "585d5563cc69913937ab4c4a3b0cc6428a5c072d6a49b57ed03f8c28b8699b0d"
+  }
+}

@@ -63,7 +63,11 @@ from prismaquant.rtx4090_qwen38_policy import (  # noqa: E402
     RTX4090_CONTEXT_FIRST_ARTIFACT_CEILING_BYTES,
     RTX4090_QWEN38_POLICY_ID as RTX4090_FP8_CB_POLICY_ID,
     RTX4090_QWEN38_SERVING_PROFILE as RTX4090_FP8_CB_SERVING_PROFILE,
-    is_rtx4090_validation_only_policy,
+)
+from prismaquant.gridbook_validation_only_policy import (  # noqa: E402
+    VALIDATION_ONLY_DISPOSITION,
+    inspect_validation_only_quant_config,
+    validation_only_build_hint,
 )
 
 REPO_TYPES = ("model", "dataset", "space")
@@ -231,20 +235,51 @@ def _is_rtx4090_fp8_cb_publication(
     return False
 
 
-def _is_rtx4090_validation_only_publication(root: Path) -> bool:
-    """Detect the immutable compile-only stamp before any override path."""
+def _validation_only_publication_problem(root: Path) -> str | None:
+    """Re-derive the categorical refusal from the quant-config authority.
+
+    The shipcard echo is deliberately only a fail-closed hint.  It prevents a
+    removed or malformed required policy stamp from turning a known
+    validation artifact into a force-publishable one; a valid refusal is
+    always established by replaying the quant-config policy itself.
+    """
+
+    card_hint = False
+    try:
+        card = json.loads(
+            (root / SHIPCARD_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        card = None
+    if isinstance(card, Mapping):
+        build = card.get("build")
+        card_hint = validation_only_build_hint(build)
 
     try:
         quant = json.loads(
             (root / "quant_config.json").read_text(encoding="utf-8")
         )
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return False
-    provenance = quant.get("provenance") if isinstance(quant, Mapping) else None
-    policy = provenance.get("producer_policy") if isinstance(
-        provenance, Mapping
-    ) else None
-    return is_rtx4090_validation_only_policy(policy)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        if card_hint:
+            return (
+                f"{VALIDATION_ONLY_DISPOSITION} artifact has no readable "
+                f"quant-config authority ({exc!r})"
+            )
+        return None
+    if isinstance(quant, Mapping):
+        inspection = inspect_validation_only_quant_config(quant)
+        if inspection.required:
+            profile = inspection.serving_profile or "validation-only profile"
+            state = "exact stamp verified" if inspection.valid else (
+                inspection.detail
+            )
+            return f"{profile} is {VALIDATION_ONLY_DISPOSITION} ({state})"
+    if card_hint:
+        return (
+            f"shipcard declares {VALIDATION_ONLY_DISPOSITION}, but the "
+            "quant-config authority lacks its required exact policy stamp"
+        )
+    return None
 
 
 def _rtx4090_publication_size_problem(
@@ -1691,6 +1726,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     shipcard_path = _shipcard_path(artifact_dir, args.shipcard)
+    validation_only_problem = _validation_only_publication_problem(
+        artifact_dir
+    )
+    if validation_only_problem is not None:
+        print(
+            "[publish] REFUSED: "
+            f"{validation_only_problem}; compile_only validation artifacts "
+            "can never be uploaded, even with --force-unverified and "
+            "--confirm-name",
+            file=sys.stderr,
+        )
+        return 1
     canonical_problem = _canonical_shipcard_problem(
         artifact_dir,
         shipcard_path,
@@ -1698,15 +1745,6 @@ def main(argv: list[str] | None = None) -> int:
     if canonical_problem is not None:
         print(f"[publish] ERROR: {canonical_problem}", file=sys.stderr)
         return 2
-    if _is_rtx4090_validation_only_publication(artifact_dir):
-        print(
-            "[publish] REFUSED: artifact is stamped "
-            "UNRELEASABLE_VALIDATION_ONLY; compile_only SM89 structural "
-            "artifacts can never be uploaded, even with --force-unverified "
-            "and --confirm-name",
-            file=sys.stderr,
-        )
-        return 1
     card, problems = check_shipcard(artifact_dir, shipcard_path)
     if card is None:
         print(

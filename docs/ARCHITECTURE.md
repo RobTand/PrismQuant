@@ -1,7 +1,25 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-24 · `codex/gridbook-env-contract-20260824` · based on integration revision
-`3830cdc` — stamps follow, newest first, each recording its own branch and date. Re-stamped
+As of: 2026-08-24 · `codex/sm120-validation-release-guard-20260824` · based on integration
+revision `bb30b91` — stamps follow, newest first, each recording its own branch and date.
+Re-stamped (2026-08-24, `codex/sm120-validation-release-guard-20260824`) for the **exact,
+categorically unreleasable SM120 validation producer**. The
+`qwen38_sm120_cb_validation_only` profile now binds the producer policy with the same id. Its
+separate packaged candidate pin binds untagged Gridbook 0.9.1 commit
+`580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
+`a63371455b94ba62514f3e6eb96bb599fe0cadc1`, runtime-contract schema/version
+`gridbook.runtime-contract.v11`/11, lane schema `gridbook.lane-eligibility.v2`, canonical JSON
+SHA-256 `15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`, and source-file
+SHA-256 `585d5563cc69913937ab4c4a3b0cc6428a5c072d6a49b57ed03f8c28b8699b0d`. This is an exact
+candidate identity, not a release tag or an advance of the production Gridbook pin. When
+allocator metadata selects that profile, both CB exporters require the exact policy id and an
+explicit contract matching the packaged candidate before opening an output transaction. They
+stamp the policy and assignment-bound route census into `quant_config.json` before manifest
+finalization and replay it afterward; omission, mutation, or cross-policy reuse refuses. Every
+such artifact is permanently marked `UNRELEASABLE_VALIDATION_ONLY` with a `compile_only`
+qualification ceiling. Shipcard verification and the publisher categorically refuse it,
+including under force flags and when a required stamp is missing or malformed. No device
+qualification, release, tag, or served-performance claim is added. Previously re-stamped
 (2026-08-24, `codex/gridbook-env-contract-20260824`) for the **forward-closed Gridbook
 candidate environment**. `GRIDBOOK_ENVIRONMENT_REGISTRY` now classifies
 `PRISMAQUANT_CB_FP4V2_DENSE_R2` as an execution selector (strict unset/`0`/`1`, canonical
@@ -72,8 +90,9 @@ unchanged. No device or served performance claim follows from this policy. Previ
 candidate registration and the dense full-ladder AQUA scaffold**. The new
 `qwen38_sm120_cb_validation_only` profile extends `nvfp4_cb`, binds exact platform `sm_120`,
 and closes admission to NVFP4-CB K1..K25, FP8-CB K4..K48 step 4, plus deliberate native
-NVFP4/FP8_E4M3/BF16 terminals. It has no `producer_policy`: candidate v11 is compile-only and
-unpinned, so this is neither a device-qualified claim nor a release identity. The dense
+NVFP4/FP8_E4M3/BF16 terminals. That registration revision alone established no producer or
+release identity; the newer stamp above supersedes it with an exact, compile-only,
+validation-only producer policy while still making no device-qualified or release claim. The dense
 anchored driver defaults to that explicit profile (with a CLI override), stamps it into plan
 and allocator provenance, and exposes both complete public producer ladders. Its FP8 panel now
 spans K4/K28/K48 around a K24 anchor and validates off-panel at K8/K20/K36/K44; the campaign is
@@ -984,7 +1003,7 @@ by measurement, not by the cost model (§2).
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
 | Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | maintained: NVFP4, FP8_DYNAMIC/E4M3, BF16; FP8_SOURCE remains a source-artifact compatibility codec | production default for the maintained W4A4/W8A8/BF16 menu; W8A16/source FP8 is not SM120 performance eligibility |
-| CB ("gridbook") | historical mixed `nvfp4_cb`, or a hardware-scoped CB checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. `qwen38_sm120_cb_validation_only` structurally registers both public ladders plus native NVFP4/FP8_E4M3/BF16 on exact `sm_120`, explicitly denies W8A16/source-FP8 compatibility carriers, and lets AQUA compare the admitted activation contracts without a manual family preference. Both hardware-scoped campaigns are lattice-only | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. Generic readers retain published source-model compatibility, but that inventory does not make W8A16 a maintained RTX50 candidate. The strict `qwen38_rtx4090_fp8_cb` candidate still refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells and a physical 4090 closes the graph/device gate. The SM120 profile has no producer policy and is validation scaffolding only: candidate v11 is compile-only/unpinned, so the immutable release pin and exact device-qualified route contract remain mandatory before any artifact can ship |
+| CB ("gridbook") | historical mixed `nvfp4_cb`, or a hardware-scoped CB checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. `qwen38_sm120_cb_validation_only` structurally registers both public ladders plus native NVFP4/FP8_E4M3/BF16 on exact `sm_120`, explicitly denies W8A16/source-FP8 compatibility carriers, and lets AQUA compare the admitted activation contracts without a manual family preference. Both hardware-scoped campaigns are lattice-only | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. Generic readers retain published source-model compatibility, but that inventory does not make W8A16 a maintained RTX50 candidate. The strict `qwen38_rtx4090_fp8_cb` candidate still refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells and a physical 4090 closes the graph/device gate. The SM120 profile binds exact producer policy `qwen38_sm120_cb_validation_only` to the packaged untagged Gridbook 0.9.1 candidate contract. Its `UNRELEASABLE_VALIDATION_ONLY` disposition and `compile_only` ceiling are categorical: neither an immutable release pin, later device evidence, nor a publisher force flag can promote an artifact built under that policy; a future releasable policy must be distinct |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
 
 Lane detail, defaults and proven results: §9. Export codecs: §6. Pipeline defaults: §3.3.
@@ -5633,7 +5652,7 @@ flowchart LR
   subgraph HW["hardware"]
     H1["NVIDIA GB10 DGX Spark<br/>Blackwell sm_121, 128 GB unified memory<br/>~121 GB usable serving budget"]
     H3["NVIDIA GeForce RTX 4090<br/>Ada sm_89, 24 GiB<br/>strict 18,000,000,000-byte artifact + 4 GiB FP8 KV<br/>PENDING physical correctness / graph / memory / performance"]
-    H4["NVIDIA sm_120 discrete target class<br/>candidate registration only<br/>v11 compile_only + unpinned<br/>NO device-qualified or shipping claim"]
+    H4["NVIDIA sm_120 discrete target class<br/>exact untagged 0.9.1 candidate pin<br/>v11 compile_only + UNRELEASABLE_VALIDATION_ONLY<br/>NO device-qualified or shipping claim"]
     H2["Strix Halo<br/>CANCELED / UNSUPPORTED<br/>prototype removed after hardware access was lost;<br/>no qualified Gridbook backend"]
   end
 
@@ -5645,7 +5664,7 @@ flowchart LR
   R1 -->|"Spark-proven -- shipped rdtand artifacts"| H1
   R2 -->|"Spark-proven -- 295B-class at ~2.9 bpp on ONE Spark"| H1
   R2 -.->|"v11 sm89 routes are compile_only; strict export refuses"| H3
-  R2 -.->|"validation-only profile; release/device gate still closed"| H4
+  R2 -.->|"exact validation-only policy; shipcard/publisher always refuse"| H4
   R3 -->|"Spark-proven -- 295B-class at 2.8 bpp; the KL harness for this lane"| H1
   R4 -->|"smoke-verified on the 0.19.2 venv only, never KL-measured"| H1
 
@@ -5900,8 +5919,8 @@ alias or loader table. Its producer codec remains an intentionally independent i
 the artifact ABI; CI
 compares every packing/layout field and every rung so incompatibility fails at the boundary.
 
-**Candidate contract v11 and the strict sm89 lane (implemented, not pinned or
-released).** V11 makes the reader/producer distinction explicit instead of
+**Candidate contract v11: exact SM120 validation pin; no release promotion.**
+V11 makes the reader/producer distinction explicit instead of
 overloading one rung range. For FP8-CB, `formats[].rungs` is the reader domain
 K4/K8/K12/K16/K20/K24 plus every K28..K48, while
 `formats[].producer_rungs` is exactly K4..K48 step 4. PrismaQuant validates
@@ -5920,26 +5939,52 @@ endpoint evidence under §7.
 For NVFP4-CB, a compatible v11 contract must declare both `rungs` and
 `producer_rungs` as every integer K1..K25; every lane cell must be a subset.
 K26..K32 have no public contract identity. Released Gridbook 0.8.11/v4 remains
-a historical reader input and cannot attest this producer expansion. Therefore
-the wider local registry is scaffolding only until the exact external pin also
-publishes those rungs and device-qualifies the requested structure/regime cells.
+a historical reader input and cannot attest this producer expansion. The
+separate exact SM120 candidate pin below attests K1..K25 only for deterministic
+validation export; its compile-only cells cannot satisfy a production route
+gate, and it does not advance the released runtime pin.
 
-`qwen38_sm120_cb_validation_only` is the matching producer-side registration
-scaffold: exact `target_platform=sm_120`, both public producer ladders, and only
-native NVFP4/FP8_E4M3/BF16 terminals. Its format rule also explicitly denies
+`qwen38_sm120_cb_validation_only` is the matching producer-side validation
+policy and serving profile: exact `target_platform=sm_120`, both public producer
+ladders, and only native NVFP4/FP8_E4M3/BF16 terminals. Its format rule also explicitly denies
 `format_registry.W8A16_COMPAT_FORMAT_NAMES`: the generic profile still knows
 how to read/reproduce published source-FP8 artifacts, but those compatibility
 routes cannot enter a new RTX50 cost menu, assignment, or release decision.
 The dense driver independently requires a complete BF16 body-source census
 before it writes the format plan. Both resident and streaming CB exporters
-read the assignment's reserved `target_profile` metadata (or the explicit
-`PRISMAQUANT_TARGET_PROFILE` override) during their outer preflight and refuse
-profile-denied formats before creating a destination or `.tmp-*` sibling. It
-deliberately declares no `producer_policy`. The profile therefore proves a closed candidate set and lets
-the dense AQUA campaign compare both registered activation contracts; it cannot
-stamp route qualification, become an exporter ship policy, or stand in for an
-immutable Gridbook pin. The release/device-qualified contract gate remains the
-only path from this validation identity to a shippable one.
+read the assignment's reserved `target_profile` metadata during their outer
+preflight and refuse profile-denied formats before creating a destination or
+`.tmp-*` sibling. Metadata selecting this profile creates a non-optional
+producer obligation: callers must provide policy id
+`qwen38_sm120_cb_validation_only` and an explicit runtime contract exactly equal
+to the packaged validation candidate. An environment profile override cannot
+erase that obligation, and the policy cannot be replayed onto different layer
+metadata. Before finalization both exporters stamp the exact policy and an
+assignment-bound route census into `quant_config.json`; after finalization they
+revalidate the complete stamp so removal, mutation, or cross-policy replay
+fails closed.
+
+The candidate identity is split deliberately from the production release pin.
+`gridbook_sm120_validation_candidate_pin.json` binds untagged Gridbook 0.9.1,
+commit `580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
+`a63371455b94ba62514f3e6eb96bb599fe0cadc1`, and the packaged
+`gridbook_runtime_contract.0.9.1-candidate.json`. That contract is
+`gridbook.runtime-contract.v11` version 11 with
+`gridbook.lane-eligibility.v2`; its canonical JSON SHA-256 is
+`15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`
+and its literal file SHA-256 is
+`585d5563cc69913937ab4c4a3b0cc6428a5c072d6a49b57ed03f8c28b8699b0d`.
+Every exact-sm120 cell has qualification `compile_only`; the route census may
+faithfully report `backed` or `fallback`, but never converts either into device
+support or release eligibility. The policy consequently stamps
+`artifact_disposition=UNRELEASABLE_VALIDATION_ONLY`,
+`runtime_qualification_ceiling=compile_only`, and `release_eligible=false`.
+Shipcard verification and publication re-derive that categorical refusal from
+the quant config; force flags cannot waive it, and missing or malformed required
+stamps are refused rather than treated as an ordinary artifact. The pin does
+not assert a release tag, device qualification, or served performance, and an
+artifact built under this policy can never be promoted in place. A future
+shippable SM120 artifact requires a distinct release policy and fresh export.
 
 The current v11 implementation's sm89 dense FP8-CB decode/batch rows cover all
 twelve producer rungs but carry qualification `compile_only`. A no-device
@@ -5947,7 +5992,8 @@ cross-compile produced explicit sm89 SASS and checked the extension/vLLM ABI;
 it did not execute a kernel or graph and therefore does not advance those rows
 to `device_qualified`. The tracked PrismaQuant producer/serving pin remains the
 released Gridbook 0.8.11/v4 record described above. No v11 release, wheel, or
-pin advance is claimed here, and `qwen38_rtx4090_fp8_cb` remains structurally
+production-pin advance is claimed here; the separate SM120 candidate pin is
+validation authority only. `qwen38_rtx4090_fp8_cb` remains structurally
 unable to export until an immutable external release plus physical RTX 4090
 evidence closes that boundary. Evidence and hashes:
 `docs/results/rtx4090_fp8_gridbook_implementation_2026-08-24.md`.

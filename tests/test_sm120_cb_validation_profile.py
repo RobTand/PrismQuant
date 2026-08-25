@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +27,26 @@ from prismaquant.dense_anchored_cb import (
     _require_bf16_body_source_manifest,
 )
 from prismaquant.lane_spec import load_lane_spec
+from prismaquant.gridbook_validation_only_policy import (
+    GRIDBOOK_VALIDATION_ONLY_POLICY_SCHEMA,
+    SM120_CANDIDATE_GRIDBOOK_COMMIT,
+    SM120_CANDIDATE_GRIDBOOK_TREE,
+    SM120_CANDIDATE_GRIDBOOK_VERSION,
+    SM120_CANDIDATE_RUNTIME_CONTRACT_CANONICAL_SHA256,
+    SM120_CANDIDATE_RUNTIME_CONTRACT_FILE_SHA256,
+    SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
+    SM120_VALIDATION_POLICY_ID,
+    VALIDATION_ONLY_DISPOSITION,
+    GridbookValidationOnlyPolicyError,
+    canonical_json_sha256,
+    inspect_validation_only_quant_config,
+    load_sm120_validation_candidate_pin,
+    prepare_gridbook_validation_only_export_policy,
+    require_sm120_validation_runtime_contract,
+    sm120_validation_only_policy_stamp,
+    sm120_validation_only_route_status_stamp,
+    validate_sm120_validation_only_quant_config,
+)
 from prismaquant.serving_profiles import (
     check_serving_format,
     load_serving_profile,
@@ -63,7 +85,7 @@ def test_sm89_is_closed_fp8_only_and_sm120_registers_both_public_ladders():
     assert sm89.target_platform == "sm_89"
     assert sm120.target_platform == "sm_120"
     assert SM120_PROFILE in serving_profile_names()
-    assert sm120.producer_policy is None
+    assert sm120.producer_policy == SM120_VALIDATION_POLICY_ID
     assert sm120.export_lane is not None
     assert require_profile_export_lane(SM120_PROFILE, "nvfp4_cb") == "nvfp4_cb"
 
@@ -245,4 +267,196 @@ def test_aqua_activation_identity_covers_both_families_without_profile_bias():
     )
     payload = json.loads(profile_path.read_text(encoding="utf-8"))
     assert "manual family preference" in payload["format_rules"][0]["detail"]
-    assert "producer_policy" not in payload
+    assert payload["producer_policy"] == SM120_VALIDATION_POLICY_ID
+
+
+def _sm120_quant_config() -> dict:
+    assignment = {
+        "model.layers.0.self_attn.q_proj": "NVFP4_CB_K1",
+        "model.layers.0.self_attn.k_proj": "FP8_CB_K48",
+        "model.norm": "BF16",
+    }
+    policy = sm120_validation_only_policy_stamp(
+        SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
+    )
+    route = sm120_validation_only_route_status_stamp(policy, assignment)
+    return {
+        "quant_method": "gridbook",
+        "format": "nvfp4_cb",
+        "provenance": {
+            "producer_policy": policy,
+            "tensor_formats": assignment,
+            "cb_route_status": route,
+        },
+    }
+
+
+def test_sm120_candidate_pin_and_contract_have_one_exact_untagged_identity(
+    tmp_path,
+):
+    pin = load_sm120_validation_candidate_pin()
+    raw = SM120_VALIDATION_CANDIDATE_CONTRACT_PATH.read_bytes()
+    contract, attestation = require_sm120_validation_runtime_contract(
+        SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
+    )
+
+    assert pin["gridbook"] == {
+        "version": SM120_CANDIDATE_GRIDBOOK_VERSION,
+        "commit": SM120_CANDIDATE_GRIDBOOK_COMMIT,
+        "tree": SM120_CANDIDATE_GRIDBOOK_TREE,
+        "version_is_release": False,
+        "release_tag": None,
+    }
+    assert contract["schema"] == "gridbook.runtime-contract.v11"
+    assert contract["contract_version"] == 11
+    assert contract["lane_eligibility"]["schema"] == (
+        "gridbook.lane-eligibility.v2"
+    )
+    assert canonical_json_sha256(contract) == (
+        SM120_CANDIDATE_RUNTIME_CONTRACT_CANONICAL_SHA256
+    )
+    assert hashlib.sha256(raw).hexdigest() == (
+        SM120_CANDIDATE_RUNTIME_CONTRACT_FILE_SHA256
+    )
+    assert attestation["target_platform"] == "sm_120"
+    assert attestation["qualification_ceiling"] == "compile_only"
+    assert attestation["producer_rungs"] == {
+        "NVFP4_CB_K": list(NVFP4_PRODUCT_RUNGS),
+        "FP8_CB_K": list(FP8_PRODUCT_RUNGS),
+    }
+    assert set(attestation["route_statuses"]) == {"backed", "fallback"}
+
+    tampered_pin = copy.deepcopy(pin)
+    tampered_pin["gridbook"]["version_is_release"] = True
+    path = tmp_path / "tampered-candidate-pin.json"
+    path.write_text(json.dumps(tampered_pin))
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match="differs from the reviewed exact",
+    ):
+        load_sm120_validation_candidate_pin(path)
+
+
+def test_sm120_policy_requires_profile_policy_and_explicit_exact_contract(
+    tmp_path,
+):
+    recipe = tmp_path / "layer_config.json"
+    recipe.write_text(json.dumps({
+        "model.layers.0.self_attn.q_proj": "NVFP4_CB_K16",
+        "__prismaquant__": {
+            "schema": "prismaquant.layer_config_meta.v1",
+            "target_profile": SM120_PROFILE,
+        },
+    }))
+
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match="requires producer_policy",
+    ):
+        prepare_gridbook_validation_only_export_policy(
+            layer_config_path=recipe,
+            producer_policy=None,
+            runtime_contract=None,
+            where="test",
+        )
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match="explicit exact",
+    ):
+        prepare_gridbook_validation_only_export_policy(
+            layer_config_path=recipe,
+            producer_policy=SM120_VALIDATION_POLICY_ID,
+            runtime_contract=None,
+            where="test",
+        )
+
+    contract, stamp = prepare_gridbook_validation_only_export_policy(
+        layer_config_path=recipe,
+        producer_policy=SM120_VALIDATION_POLICY_ID,
+        runtime_contract=SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
+        where="test",
+    )
+    assert contract["contract_version"] == 11
+    assert stamp["schema"] == GRIDBOOK_VALIDATION_ONLY_POLICY_SCHEMA
+    assert stamp["artifact_disposition"] == VALIDATION_ONLY_DISPOSITION
+    assert stamp["runtime_qualification_ceiling"] == "compile_only"
+
+    tampered = copy.deepcopy(contract)
+    tampered["abi_features"]["routed_moe_per_role_codebook_lut"] = 2
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match="differs from exact candidate",
+    ):
+        prepare_gridbook_validation_only_export_policy(
+            layer_config_path=recipe,
+            producer_policy=SM120_VALIDATION_POLICY_ID,
+            runtime_contract=tampered,
+            where="test",
+        )
+
+
+def test_sm120_policy_cannot_be_replayed_on_another_profile(tmp_path):
+    recipe = tmp_path / "layer_config.json"
+    recipe.write_text(json.dumps({
+        "model.layers.0.self_attn.q_proj": "NVFP4_CB_K16",
+        "__prismaquant__": {
+            "schema": "prismaquant.layer_config_meta.v1",
+            "target_profile": "nvfp4_cb",
+        },
+    }))
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match="cannot be replayed",
+    ):
+        prepare_gridbook_validation_only_export_policy(
+            layer_config_path=recipe,
+            producer_policy=SM120_VALIDATION_POLICY_ID,
+            runtime_contract=SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
+            where="test",
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "remove_policy",
+        "tamper_commit",
+        "cross_policy_replay",
+        "remove_route",
+        "tamper_route_contract",
+    ),
+)
+def test_sm120_final_quant_config_refuses_stamp_removal_tamper_and_replay(
+    mutation,
+):
+    quant = _sm120_quant_config()
+    validate_sm120_validation_only_quant_config(quant)
+
+    provenance = quant["provenance"]
+    if mutation == "remove_policy":
+        del provenance["producer_policy"]
+    elif mutation == "tamper_commit":
+        provenance["producer_policy"]["candidate_runtime"]["gridbook"][
+            "commit"
+        ] = "0" * 40
+    elif mutation == "cross_policy_replay":
+        provenance["producer_policy"] = {
+            "schema": (
+                "prismaquant.rtx4090_qwen38_fp8_validation_only_policy.v1"
+            ),
+            "id": "qwen38_27b_rtx4090_fp8_cb_validation_only",
+            "artifact_disposition": VALIDATION_ONLY_DISPOSITION,
+        }
+    elif mutation == "remove_route":
+        del provenance["cb_route_status"]
+    else:
+        provenance["cb_route_status"]["runtime_attestation"][
+            "runtime_contract_canonical_json_sha256"
+        ] = "0" * 64
+
+    with pytest.raises(GridbookValidationOnlyPolicyError):
+        validate_sm120_validation_only_quant_config(quant)
+    inspection = inspect_validation_only_quant_config(quant)
+    assert inspection.required
+    assert not inspection.valid
+    assert "malformed" in inspection.detail

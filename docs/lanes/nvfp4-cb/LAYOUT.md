@@ -56,16 +56,30 @@ appear in its config, sidecar, tensor census, or delegated terminals.
 The separate `qwen38_sm120_cb_validation_only` profile closes candidate
 registration to both public producer ladders plus native
 NVFP4/FP8_E4M3/BF16 terminals and remains lattice-only. This changes no byte
-layout. It has no producer policy and carries no release or device-qualified
-claim: candidate Gridbook v11 is compile-only and unpinned, so an immutable
-consumer release and exact device-qualified routes remain mandatory before
-these structurally legal bytes can become a shippable SM120 artifact.
+layout. It now binds exact producer policy `qwen38_sm120_cb_validation_only`
+to a packaged candidate pin for untagged Gridbook 0.9.1 commit
+`580dd3e31962522aeddcdb1f6595ec22656c7bb3`, tree
+`a63371455b94ba62514f3e6eb96bb599fe0cadc1`. The explicit input contract must
+be `gridbook.runtime-contract.v11` version 11 with
+`gridbook.lane-eligibility.v2` and canonical JSON SHA-256
+`15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`
+(literal file SHA-256
+`585d5563cc69913937ab4c4a3b0cc6428a5c072d6a49b57ed03f8c28b8699b0d`).
+This candidate binding is not a release pin or tag: every route has a
+`compile_only` ceiling and every produced artifact is stamped
+`UNRELEASABLE_VALIDATION_ONLY`.
 It also explicitly denies the shared registry's W8A16/source-FP8 compatibility
 set. Those legacy wire/assignment readers remain available for published
 source-model artifacts, but no such format may enter this profile's new RTX50
 cost menu, assignment, or release decision. Both materializers read the
-allocator's stamped target profile during outer preflight and refuse any denied
-format before creating the destination transaction or a `.tmp-*` sibling.
+allocator's stamped target profile during outer preflight. When it selects this
+profile, they require the matching policy plus that explicit exact contract,
+refuse any mismatch or denied format before creating the destination transaction
+or a `.tmp-*` sibling, stamp the policy into `quant_config.json` before
+finalization, and replay it afterward. Shipcard verification and publication
+categorically refuse the result even under force flags; removing or corrupting
+the required stamp also refuses. These exact validation bytes cannot be promoted
+in place into a shippable artifact.
 
 **Hard constraint:** `in_features % 256 == 0` (the 256-weight superblock is both
 byte-exact and the vector-tiling unit). Linears that fail it are shipped BF16.
