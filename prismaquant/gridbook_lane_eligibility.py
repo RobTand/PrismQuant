@@ -45,12 +45,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .gridbook_execution_contract import (
+    GRIDBOOK_LANE_ELIGIBILITY_V2_SCHEMA,
+    QUALIFICATION_DEVICE_QUALIFIED,
+    GridbookExecutionContract,
+    GridbookExecutionContractError,
+    parse_gridbook_execution_contract,
+)
+
 
 #: Schema of the eligibility table PrismaQuant consumes. Gridbook publishes it
 #: inside its packaged ``runtime_contract.json`` under the ``lane_eligibility``
 #: key; ``docs/design/gridbook_lane_eligibility_contract.md`` is the normative
 #: specification handed to that repository.
-LANE_ELIGIBILITY_SCHEMA = "gridbook.lane-eligibility.v1"
+LANE_ELIGIBILITY_V1_SCHEMA = "gridbook.lane-eligibility.v1"
+# Historical public name: keep it pinned to v1 so released-pin fixtures and
+# downstream consumers do not silently change schema when v2 is added.
+LANE_ELIGIBILITY_SCHEMA = LANE_ELIGIBILITY_V1_SCHEMA
 
 #: Schema of the provenance payload this module produces.
 ROUTE_ATTESTATION_SCHEMA = "prismaquant.cb_route_attestation.v1"
@@ -235,6 +246,7 @@ class EligibilityTable:
     regimes: tuple[str, ...] = ()
     rules: tuple[EligibilityRule, ...] = ()
     absent_reason: str = ""
+    execution_contract: GridbookExecutionContract | None = None
 
     def regimes_for(self, structure: str) -> tuple[str, ...]:
         return tuple(
@@ -253,6 +265,17 @@ class EligibilityTable:
         }
         if not self.present:
             payload["reason"] = self.absent_reason
+        elif self.execution_contract is not None:
+            payload["regimes"] = list(self.regimes)
+            payload["platforms"] = [
+                platform.id for platform in self.execution_contract.platforms
+            ]
+            payload["cell_ids"] = [
+                cell.id for cell in self.execution_contract.cells
+            ]
+            payload["required_producer_qualification"] = (
+                QUALIFICATION_DEVICE_QUALIFIED
+            )
         else:
             payload["regimes"] = list(self.regimes)
             payload["rule_ids"] = [rule.id for rule in self.rules]
@@ -269,15 +292,24 @@ class RegimeRoute:
     rule_id: str | None
     requires_serve_flags: tuple[str, ...] = ()
     detail: str = ""
+    platform: str | None = None
+    qualification: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "regime": self.regime,
             "route_status": self.route_status,
             "rule_id": self.rule_id,
             "requires_serve_flags": list(self.requires_serve_flags),
             "detail": self.detail,
         }
+        # Preserve the released v1 payload byte-for-shape: these fields exist
+        # only when a v2 execution cell supplied them.
+        if self.platform is not None:
+            payload["platform"] = self.platform
+        if self.qualification is not None:
+            payload["qualification"] = self.qualification
+        return payload
 
 
 @dataclass(frozen=True)
@@ -323,6 +355,8 @@ class UnitRoute:
 def resolve_unit_route(
     facts: UnitStructuralFacts,
     table: EligibilityTable,
+    *,
+    target_platform: str | None = None,
 ) -> UnitRoute:
     """Resolve one unit's route status against the pinned eligibility table.
 
@@ -331,6 +365,12 @@ def resolve_unit_route(
     """
     if not table.present:
         return UnitRoute(facts=facts, route_status=ROUTE_STATUS_UNATTESTED)
+    if table.execution_contract is not None:
+        return _resolve_v2_unit_route(
+            facts,
+            table,
+            target_platform=target_platform,
+        )
 
     regimes: list[RegimeRoute] = []
     for regime in table.regimes_for(facts.structure):
@@ -384,6 +424,169 @@ def resolve_unit_route(
     else:
         status = ROUTE_STATUS_BACKED
 
+    return UnitRoute(
+        facts=facts,
+        route_status=status,
+        regimes=tuple(regimes),
+        requires_serve_flags=flags,
+    )
+
+
+def _resolve_v2_unit_route(
+    facts: UnitStructuralFacts,
+    table: EligibilityTable,
+    *,
+    target_platform: str | None,
+) -> UnitRoute:
+    """Resolve v2 cells for one exact declared producer platform.
+
+    The table is closed-world.  There is no capability inheritance, family or
+    structure coercion, nearest rung, regime default, or JSON-order tie break.
+    Producer/release routing requires ``device_qualified``; a compile-only
+    winner is returned as an explicitly diagnosed unbacked regime so the gate
+    can make that refusal categorical and non-forceable.
+    """
+
+    execution = table.execution_contract
+    if execution is None:  # pragma: no cover - guarded by caller
+        raise AssertionError("v2 resolver requires an execution contract")
+    declared_platforms = {platform.id for platform in execution.platforms}
+    if not target_platform:
+        return _v2_unbacked_unit(
+            facts,
+            table,
+            detail=(
+                "the target serving profile declares no exact Gridbook "
+                "platform id; v2 routes cannot be inferred from GPU names or "
+                "minimum capabilities"
+            ),
+        )
+    if target_platform not in declared_platforms:
+        return _v2_unbacked_unit(
+            facts,
+            table,
+            platform=target_platform,
+            detail=(
+                f"exact platform {target_platform!r} is not declared by the "
+                "packaged v2 table; newer platforms never inherit older cells"
+            ),
+        )
+
+    regimes: list[RegimeRoute] = []
+    cell_facts = {
+        "role_split": facts.role_split,
+        "in_features": facts.in_features,
+        "out_features": facts.out_features,
+    }
+    for regime in table.regimes:
+        matches = [
+            cell for cell in execution.cells
+            if cell.platform == target_platform
+            and cell.family == facts.payload_family
+            and cell.structure == facts.structure
+            and cell.regime == regime
+            and facts.k is not None
+            and facts.k in cell.rungs
+            and cell.matches(cell_facts)
+        ]
+        if not matches:
+            regimes.append(RegimeRoute(
+                regime=regime,
+                route_status=ROUTE_STATUS_UNBACKED,
+                rule_id=None,
+                platform=target_platform,
+                detail=(
+                    "closed-world v2 table has no exact platform/family/"
+                    "structure/regime/rung/predicate cell for this unit"
+                ),
+            ))
+            continue
+        winning_rank = max(
+            _REGIME_RANK[cell.route_status] for cell in matches
+        )
+        strongest = [
+            cell for cell in matches
+            if _REGIME_RANK[cell.route_status] == winning_rank
+        ]
+        if len(strongest) != 1:
+            raise GridbookLaneEligibilityError(
+                "ambiguous strongest v2 route cells "
+                f"{[cell.id for cell in strongest]} for "
+                f"{target_platform}/{facts.structure}/{regime}/"
+                f"{facts.payload_family} K{facts.k}; equal-ranked overlaps "
+                "are forbidden rather than resolved by JSON order"
+            )
+        winner = strongest[0]
+        if winner.qualification != QUALIFICATION_DEVICE_QUALIFIED:
+            regimes.append(RegimeRoute(
+                regime=regime,
+                route_status=ROUTE_STATUS_UNBACKED,
+                rule_id=winner.id,
+                platform=target_platform,
+                qualification=winner.qualification,
+                requires_serve_flags=winner.requires_serve_flags,
+                detail=(
+                    f"v2 winner {winner.id!r} is qualification="
+                    f"{winner.qualification!r}; producer/release routing "
+                    f"requires {QUALIFICATION_DEVICE_QUALIFIED!r}"
+                ),
+            ))
+            continue
+        regimes.append(RegimeRoute(
+            regime=regime,
+            route_status=winner.route_status,
+            rule_id=winner.id,
+            platform=target_platform,
+            qualification=winner.qualification,
+            requires_serve_flags=winner.requires_serve_flags,
+        ))
+
+    return _roll_up_unit_route(facts, regimes)
+
+
+def _v2_unbacked_unit(
+    facts: UnitStructuralFacts,
+    table: EligibilityTable,
+    *,
+    detail: str,
+    platform: str | None = None,
+) -> UnitRoute:
+    return _roll_up_unit_route(facts, [
+        RegimeRoute(
+            regime=regime,
+            route_status=ROUTE_STATUS_UNBACKED,
+            rule_id=None,
+            platform=platform,
+            detail=detail,
+        )
+        for regime in table.regimes
+    ])
+
+
+def _roll_up_unit_route(
+    facts: UnitStructuralFacts,
+    regimes: Sequence[RegimeRoute],
+) -> UnitRoute:
+    backed = [
+        route for route in regimes
+        if route.route_status in {
+            ROUTE_STATUS_BACKED,
+            ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
+        }
+    ]
+    dead = [
+        route for route in regimes
+        if route.route_status == ROUTE_STATUS_UNBACKED
+    ]
+    flags = tuple(sorted({
+        flag for route in backed for flag in route.requires_serve_flags
+    }))
+    if not backed or dead:
+        status = ROUTE_STATUS_UNBACKED
+    elif flags:
+        status = ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+    else:
+        status = ROUTE_STATUS_BACKED
     return UnitRoute(
         facts=facts,
         route_status=status,
@@ -518,7 +721,7 @@ def load_eligibility_table(
             ),
         )
 
-    return _parse_table(block, version or "", commit, sha)
+    return _parse_table(block, contract, version or "", commit, sha)
 
 
 def load_published_formats(
@@ -610,20 +813,41 @@ def unit_structural_facts(
     )
 
 
-def _parse_table(block: Any, version: str, commit: str, sha: str
+def _parse_table(block: Any, contract: Mapping[str, Any], version: str,
+                 commit: str, sha: str
                  ) -> EligibilityTable:
     where = "runtime_contract.lane_eligibility"
     if not isinstance(block, Mapping):
         raise GridbookLaneEligibilityError(f"{where} must be a JSON object")
+    schema = block.get("schema")
+    if schema == GRIDBOOK_LANE_ELIGIBILITY_V2_SCHEMA:
+        try:
+            execution = parse_gridbook_execution_contract(
+                contract,
+                where="runtime_contract",
+            )
+        except GridbookExecutionContractError as exc:
+            raise GridbookLaneEligibilityError(str(exc)) from exc
+        return EligibilityTable(
+            present=True,
+            runtime_version=version,
+            runtime_commit=commit,
+            contract_sha256=sha,
+            schema=str(schema),
+            regimes=tuple(str(regime) for regime in block["regimes"]),
+            execution_contract=execution,
+        )
+    if schema != LANE_ELIGIBILITY_V1_SCHEMA:
+        raise GridbookLaneEligibilityError(
+            f"{where}.schema must be one of "
+            f"{[LANE_ELIGIBILITY_V1_SCHEMA, GRIDBOOK_LANE_ELIGIBILITY_V2_SCHEMA]}, "
+            f"got {schema!r}"
+        )
     _require_keys(
         block, where,
         required={"schema", "regimes", "lanes"},
         optional={"detail"},
     )
-    if block["schema"] != LANE_ELIGIBILITY_SCHEMA:
-        raise GridbookLaneEligibilityError(
-            f"{where}.schema must be {LANE_ELIGIBILITY_SCHEMA!r}, got "
-            f"{block['schema']!r}")
     regimes = tuple(str(r) for r in block["regimes"])
     if not regimes or len(set(regimes)) != len(regimes):
         raise GridbookLaneEligibilityError(
@@ -723,7 +947,9 @@ def _sha256(path: Path) -> str:
 
 
 __all__ = [
+    "LANE_ELIGIBILITY_V1_SCHEMA",
     "LANE_ELIGIBILITY_SCHEMA",
+    "GRIDBOOK_LANE_ELIGIBILITY_V2_SCHEMA",
     "ROUTE_ATTESTATION_SCHEMA",
     "CONTRACT_INDEX_SCHEMA",
     "ROUTE_STATUS_BACKED",

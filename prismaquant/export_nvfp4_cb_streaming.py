@@ -123,7 +123,11 @@ from prismaquant.export_nvfp4_cb import (
     _try_resolve_direct_packed_expert,
     _try_resolve_skeleton,
 )
-from prismaquant.layer_config import canonicalize_assignment, load_assignment
+from prismaquant.layer_config import (
+    canonicalize_assignment,
+    load_assignment,
+    read_layer_config_metadata,
+)
 from prismaquant.model_profiles import detect_profile
 from prismaquant.routed_moe_codebooks import (
     ROUTED_BOOK_KEYING_ROLE,
@@ -3875,6 +3879,13 @@ def export_nvfp4_cb_streaming(
             _strict_producer[1], assignment
         )
     else:
+        route_target_profile = str(
+            os.environ.get("PRISMAQUANT_TARGET_PROFILE")
+            or read_layer_config_metadata(layer_config_path).get(
+                "target_profile"
+            )
+            or "nvfp4_cb"
+        ).strip()
         cb_route_status_provenance = gate_cb_export_units(
             assignment=assignment,
             quantized_targets=(*cb_targets, *stock_targets),
@@ -3885,6 +3896,7 @@ def export_nvfp4_cb_streaming(
             shape_of=_target_shape,
             allow_unbacked_route=allow_unbacked_route,
             non_native_target=non_native_target,
+            target_profile=route_target_profile,
             exporter="export_nvfp4_cb_streaming",
         )
     from prismaquant.nvfp4_cb_footprint import _ldlq_for_format

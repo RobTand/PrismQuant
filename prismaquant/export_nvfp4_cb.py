@@ -1422,6 +1422,13 @@ def export_nvfp4_cb(
             _strict_producer[1], assignment
         )
     else:
+        route_target_profile = str(
+            os.environ.get("PRISMAQUANT_TARGET_PROFILE")
+            or read_layer_config_metadata(layer_config_path).get(
+                "target_profile"
+            )
+            or "nvfp4_cb"
+        ).strip()
         cb_route_status_provenance = gate_cb_export_units(
             assignment=assignment,
             quantized_targets=(*cb_targets, *stock_targets),
@@ -1432,6 +1439,7 @@ def export_nvfp4_cb(
             shape_of=_route_gate_shape,
             allow_unbacked_route=allow_unbacked_route,
             non_native_target=non_native_target,
+            target_profile=route_target_profile,
             exporter="export_nvfp4_cb",
         )
 

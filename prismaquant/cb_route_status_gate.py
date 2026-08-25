@@ -29,6 +29,10 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
+from .gridbook_execution_contract import (
+    QUALIFICATION_COMPILE_ONLY,
+    QUALIFICATION_DEVICE_QUALIFIED,
+)
 from .gridbook_lane_eligibility import (
     ROUTE_ATTESTATION_SCHEMA,
     ROUTE_STATUS_BACKED,
@@ -103,7 +107,24 @@ def evaluate_cb_route_status(
     if non_native_target is None:
         non_native_target = os.environ.get(NON_NATIVE_TARGET_ENV) or None
 
-    routes = [resolve_unit_route(facts, table) for facts in units]
+    target_platform: str | None = None
+    if table.execution_contract is not None:
+        from .serving_profiles import load_serving_profile
+
+        # Platform identity comes from the named, versioned serving profile.
+        # It is never inferred from the host GPU and never treated as a
+        # minimum capability. Unknown profiles remain a loud configuration
+        # error through load_serving_profile's existing fail-closed behavior.
+        target_platform = load_serving_profile(target_profile).target_platform
+
+    routes = [
+        resolve_unit_route(
+            facts,
+            table,
+            target_platform=target_platform,
+        )
+        for facts in units
+    ]
     attestation = table.provenance()
 
     base: dict[str, Any] = {
@@ -114,6 +135,11 @@ def evaluate_cb_route_status(
         "declared_non_native_target": non_native_target,
         "override": _override_record(override_reason),
     }
+    if table.execution_contract is not None:
+        base.update({
+            "target_platform": target_platform,
+            "required_qualification": QUALIFICATION_DEVICE_QUALIFIED,
+        })
 
     if not table.present:
         # DELIBERATE SHAPE: no backed/fallback/unbacked counters exist here.
@@ -136,6 +162,13 @@ def evaluate_cb_route_status(
             provenance=base, refused=False, warnings=(warning,))
 
     unbacked = [r for r in routes if r.route_status == ROUTE_STATUS_UNBACKED]
+    compile_only = [
+        route for route in routes
+        if any(
+            regime.qualification == QUALIFICATION_COMPILE_ONLY
+            for regime in route.regimes
+        )
+    ]
     fallback = [r for r in routes if r.fallback_regimes]
     flagged = [
         r for r in routes
@@ -168,6 +201,13 @@ def evaluate_cb_route_status(
         "unbacked_units": sorted(r.facts.qname for r in unbacked),
         "by_unit": [route.as_dict() for route in routes],
     })
+    if table.execution_contract is not None:
+        base.update({
+            "units_compile_only": len(compile_only),
+            "compile_only_units": sorted(
+                route.facts.qname for route in compile_only
+            ),
+        })
 
     warnings: list[str] = []
     if fallback:
@@ -185,6 +225,28 @@ def evaluate_cb_route_status(
             f"flag(s) {sorted({f for r in flagged for f in r.requires_serve_flags})}"
             "; the flags are part of the serving contract and travel with the "
             "artifact, not a tuning hint."
+        )
+
+    if compile_only:
+        # Compile-only is structural cross-compile evidence, not an unbacked
+        # production route that an experiment may elect to waive. The strict
+        # validation-only producer has its own immutable unreleasable policy;
+        # this generic producer/release gate must never turn that evidence into
+        # a releasable claim through either legacy escape hatch.
+        base["unbacked_disposition"] = "compile_only_refused"
+        reason = (
+            f"CB export refused: {len(compile_only)} of {len(routes)} selected "
+            "unit(s) resolve through compile_only Gridbook v2 cells. "
+            "Producer/release routing requires exact device_qualified cells "
+            "for every regime. This qualification refusal cannot be waived "
+            f"by {ROUTE_OVERRIDE_ENV} or {NON_NATIVE_TARGET_ENV}.\n"
+            f"{_unbacked_detail(compile_only)}"
+        )
+        return RouteGateVerdict(
+            provenance=base,
+            refused=True,
+            refusal_reason=reason,
+            warnings=tuple(warnings),
         )
 
     if not unbacked:
@@ -255,6 +317,7 @@ def gate_cb_export_units(
     shape_of,
     allow_unbacked_route: str | None = None,
     non_native_target: str | None = None,
+    target_profile: str = "nvfp4_cb",
     exporter: str = "export_nvfp4_cb",
 ) -> dict[str, Any]:
     """Run the route-status gate over one export's selected units.
@@ -302,6 +365,7 @@ def gate_cb_export_units(
 
     verdict = evaluate_cb_route_status(
         facts,
+        target_profile=target_profile,
         override_reason=allow_unbacked_route,
         non_native_target=non_native_target,
     )
@@ -332,6 +396,8 @@ def shipcard_route_summary(provenance: Mapping[str, Any]) -> dict[str, Any]:
         summary["detail"] = provenance.get("unattested_detail", "")
         return summary
     for key in (
+        "target_platform",
+        "required_qualification",
         "units_by_route_status",
         "units_backed",
         "units_backed_with_serve_flag",
@@ -340,6 +406,8 @@ def shipcard_route_summary(provenance: Mapping[str, Any]) -> dict[str, Any]:
         "requires_serve_flags",
         "by_regime",
         "unbacked_disposition",
+        "units_compile_only",
+        "compile_only_units",
     ):
         if key in provenance:
             summary[key] = provenance[key]

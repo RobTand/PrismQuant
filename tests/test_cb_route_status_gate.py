@@ -36,7 +36,17 @@ from prismaquant.cb_route_status_gate import (
     require_cb_route_status,
     shipcard_route_summary,
 )
+from prismaquant.cb_layout import (
+    FP8_ACCEPTED_RUNGS,
+    FP8_PRODUCT_RUNGS,
+    NVFP4_ACCEPTED_RUNGS,
+    NVFP4_PRODUCT_RUNGS,
+)
+from prismaquant.gridbook_format_contract import (
+    GRIDBOOK_PRODUCER_RUNGS_CONTRACT_SCHEMA,
+)
 from prismaquant.gridbook_lane_eligibility import (
+    GRIDBOOK_LANE_ELIGIBILITY_V2_SCHEMA,
     LANE_ELIGIBILITY_SCHEMA,
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
@@ -152,6 +162,55 @@ def _facts(qname, fmt, *, routed=True, role_split=False,
     )
 
 
+def _v2_contract(*, qualification="compile_only") -> dict:
+    """Minimal self-contained v11/v2 contract for the export-gate tests."""
+    contract = json.loads(
+        (ASSET_DIR / "gridbook_runtime_contract.0.8.11.json").read_text())
+    contract["schema"] = GRIDBOOK_PRODUCER_RUNGS_CONTRACT_SCHEMA
+    contract["contract_version"] = 11
+    for entry in contract["formats"]:
+        if entry["family"] == "FP8_CB_K":
+            entry["rungs"] = list(FP8_ACCEPTED_RUNGS)
+            entry["producer_rungs"] = list(FP8_PRODUCT_RUNGS)
+        elif entry["family"] == "NVFP4_CB_K":
+            entry["rungs"] = list(NVFP4_ACCEPTED_RUNGS)
+            entry["producer_rungs"] = list(NVFP4_PRODUCT_RUNGS)
+        else:
+            entry["producer_rungs"] = list(entry["rungs"])
+    contract["lane_eligibility"] = {
+        "schema": GRIDBOOK_LANE_ELIGIBILITY_V2_SCHEMA,
+        "platforms": {"sm_120": {"compute_capability": [12, 0]}},
+        "regimes": ["decode", "batch"],
+        "structures": ["dense", "routed_moe"],
+        "cells": [
+            {
+                "id": f"fp8_dense_sm120_{regime}",
+                "platform": "sm_120",
+                "family": "FP8_CB_K",
+                "structure": "dense",
+                "regime": regime,
+                "rungs": [28],
+                "route_status": "backed",
+                "qualification": qualification,
+                "requires_serve_flags": [],
+                "predicates": [],
+            }
+            for regime in ("decode", "batch")
+        ],
+    }
+    return contract
+
+
+def _write_v2_table(tmp_path: Path, *, qualification="compile_only",
+                    mutate=None):
+    contract = _v2_contract(qualification=qualification)
+    if mutate is not None:
+        mutate(contract)
+    path = tmp_path / "runtime_contract.v11.json"
+    path.write_text(json.dumps(contract))
+    return load_eligibility_table("v11-test", contract_path=path)
+
+
 # ---------------------------------------------------------------------------
 # 1. Schema validation
 # ---------------------------------------------------------------------------
@@ -206,6 +265,18 @@ def test_a_wrong_schema_is_refused(tmp_path):
     path.write_text(json.dumps(contract))
     with pytest.raises(GridbookLaneEligibilityError, match="schema"):
         load_eligibility_table("x", contract_path=path)
+
+
+def test_v2_execution_cells_are_loaded_instead_of_misparsed_as_v1(tmp_path):
+    table = _write_v2_table(tmp_path)
+    assert table.present
+    assert table.schema == GRIDBOOK_LANE_ELIGIBILITY_V2_SCHEMA
+    assert table.rules == ()
+    assert table.execution_contract is not None
+    assert table.provenance()["platforms"] == ["sm_120"]
+    assert table.provenance()["required_producer_qualification"] == (
+        "device_qualified"
+    )
 
 
 def test_family_facts_are_derived_from_the_published_format_table():
@@ -324,6 +395,123 @@ def test_a_mixed_selection_counts_every_disposition(attested_table):
     assert verdict.provenance["units_with_announced_fallback"] == 2
     assert verdict.provenance["units_backed"] == 3
     assert verdict.provenance["units_backed_with_serve_flag"] == 1
+
+
+def test_v1_route_payload_shape_is_unchanged(attested_table):
+    route = resolve_unit_route(
+        _facts("l0.experts", "FP8_CB_K28"), attested_table
+    )
+    assert route.regimes
+    for regime in route.as_dict()["regime_routes"]:
+        assert "platform" not in regime
+        assert "qualification" not in regime
+    attestation = attested_table.provenance()
+    assert "platforms" not in attestation
+    assert "cell_ids" not in attestation
+    assert "required_producer_qualification" not in attestation
+
+
+def test_v2_compile_only_is_a_non_forceable_release_refusal(tmp_path):
+    table = _write_v2_table(tmp_path, qualification="compile_only")
+    verdict = evaluate_cb_route_status(
+        [_facts("attn.o_proj", "FP8_CB_K28", routed=False)],
+        table=table,
+        target_profile="qwen38_sm120_cb_validation_only",
+        override_reason="do not let this waive qualification",
+        non_native_target="also-not-a-qualification-waiver",
+    )
+    assert verdict.refused
+    assert verdict.provenance["target_platform"] == "sm_120"
+    assert verdict.provenance["required_qualification"] == "device_qualified"
+    assert verdict.provenance["units_compile_only"] == 1
+    assert verdict.provenance["unbacked_disposition"] == (
+        "compile_only_refused"
+    )
+    assert "cannot be waived" in verdict.refusal_reason
+    for regime in verdict.provenance["by_unit"][0]["regime_routes"]:
+        assert regime["platform"] == "sm_120"
+        assert regime["qualification"] == "compile_only"
+
+
+def test_v2_device_qualified_exact_profile_structure_regimes_and_rung_pass(
+        tmp_path):
+    table = _write_v2_table(tmp_path, qualification="device_qualified")
+    verdict = evaluate_cb_route_status(
+        [_facts("attn.o_proj", "FP8_CB_K28", routed=False)],
+        table=table,
+        target_profile="qwen38_sm120_cb_validation_only",
+    )
+    assert not verdict.refused
+    assert verdict.provenance["units_backed"] == 1
+    assert verdict.provenance["units_compile_only"] == 0
+    assert verdict.provenance["by_regime"] == {
+        "batch": {"backed": 1},
+        "decode": {"backed": 1},
+    }
+
+
+@pytest.mark.parametrize(
+    ("target_profile", "facts"),
+    [
+        (
+            "qwen38_rtx4090_fp8_cb_validation_only",
+            lambda: _facts("attn.o_proj", "FP8_CB_K28", routed=False),
+        ),
+        (
+            "qwen38_sm120_cb_validation_only",
+            lambda: _facts("l0.experts", "FP8_CB_K28", routed=True),
+        ),
+        (
+            "qwen38_sm120_cb_validation_only",
+            lambda: _facts("attn.o_proj", "FP8_CB_K32", routed=False),
+        ),
+        (
+            "qwen38_sm120_cb_validation_only",
+            lambda: _facts("attn.o_proj", "NVFP4_CB_K16", routed=False),
+        ),
+        (
+            "nvfp4_cb",
+            lambda: _facts("attn.o_proj", "FP8_CB_K28", routed=False),
+        ),
+    ],
+    ids=[
+        "exact-platform",
+        "exact-structure",
+        "exact-rung",
+        "exact-family",
+        "no-inference",
+    ],
+)
+def test_v2_missing_exact_route_dimension_fails_closed(
+        tmp_path, target_profile, facts):
+    table = _write_v2_table(tmp_path, qualification="device_qualified")
+    verdict = evaluate_cb_route_status(
+        [facts()], table=table, target_profile=target_profile
+    )
+    assert verdict.refused
+    assert verdict.provenance["units_unbacked"] == 1
+
+
+def test_v2_requires_every_declared_regime(tmp_path):
+    def remove_batch(contract):
+        contract["lane_eligibility"]["cells"] = [
+            cell for cell in contract["lane_eligibility"]["cells"]
+            if cell["regime"] != "batch"
+        ]
+
+    table = _write_v2_table(
+        tmp_path,
+        qualification="device_qualified",
+        mutate=remove_batch,
+    )
+    verdict = evaluate_cb_route_status(
+        [_facts("attn.o_proj", "FP8_CB_K28", routed=False)],
+        table=table,
+        target_profile="qwen38_sm120_cb_validation_only",
+    )
+    assert verdict.refused
+    assert verdict.provenance["by_regime"]["decode"] == {"backed": 1}
+    assert verdict.provenance["by_regime"]["batch"] == {"unbacked": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +720,12 @@ def test_gate_cb_export_units_maps_stack_shapes_and_role_split(attested_table,
     monkeypatch.setattr(
         gate, "evaluate_cb_route_status",
         lambda facts, **kw: gate.RouteGateVerdict(
-            provenance={"seen": [f.as_dict() for f in facts]}, refused=False))
+            provenance={
+                "seen": [f.as_dict() for f in facts],
+                "target_profile": kw["target_profile"],
+            },
+            refused=False,
+        ))
     shapes = {
         "l22.experts": (256, 1408, 2048),
         "attn.o_proj": (2048, 2048),
@@ -543,6 +736,7 @@ def test_gate_cb_export_units_maps_stack_shapes_and_role_split(attested_table,
         routed_units={"l22.experts"},
         role_split_units={"l22.experts"},
         shape_of=shapes.__getitem__,
+        target_profile="qwen38_sm120_cb_validation_only",
     )
     seen = {row["qname"]: row for row in provenance["seen"]}
     assert seen["l22.experts"]["structure"] == "routed_moe"
@@ -551,6 +745,7 @@ def test_gate_cb_export_units_maps_stack_shapes_and_role_split(attested_table,
     assert seen["l22.experts"]["out_features"] == 1408
     assert seen["attn.o_proj"]["structure"] == "dense"
     assert seen["attn.o_proj"]["out_features"] == 2048
+    assert provenance["target_profile"] == "qwen38_sm120_cb_validation_only"
 
 
 def test_both_cb_exporters_run_the_gate_before_writing_bytes():
@@ -574,6 +769,7 @@ def test_both_cb_exporters_run_the_gate_before_writing_bytes():
         # And both must accept the two stamped dispositions.
         assert "allow_unbacked_route" in src
         assert "non_native_target" in src
+        assert "target_profile=route_target_profile" in src
         # The census must reach the artifact, not just stderr.
         assert "cb_route_status" in src
 
