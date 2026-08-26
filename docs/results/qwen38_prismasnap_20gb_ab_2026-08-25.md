@@ -1,7 +1,13 @@
 # Qwen3.8-27B PrismaSnap 20 GB A/B — 2026-08-25
 
-Status: **RUNNING**.  This ledger records the frozen comparison before results
-exist.  Do not cite the small-model SnapQuant percentages as this run's result.
+Status: **PAUSED — descoped 2026-08-26** (Rob): the full 27B A/B is not funded
+now; the ship requirement is fold harmlessness plus the ordinary pipeline
+gates, and the fixed fold gate itself was found to sit below the 27B BF16
+perturbation floor — see
+`qwen38_prismasnap_fold_gate_floor_2026-08-26.md` for the diagnosis, the
+derived-threshold decision, and the null-floor receipts.  The thresholds
+below stay frozen unchanged for whenever this measurement is funded.  Do not
+cite the small-model SnapQuant percentages as this run's result.
 
 ## Fixed control
 
