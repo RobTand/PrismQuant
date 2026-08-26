@@ -7,7 +7,7 @@ is either a rule set it points at, a lane record, or history.
 backs it; every normative statement carries a `file:line` or commit hash, and when a
 doc and the code disagree the doc is wrong — fix it or flag it, never propagate it.
 
-As of 2026-08-24 (tree reorganised in `87c749e`). Status tags: **CURRENT** =
+As of 2026-08-25 (tree reorganised in `87c749e`). Status tags: **CURRENT** =
 describes the live system · **HISTORICAL** = dated record, true when written, not
 guidance · **ARCHIVED** = superseded narrative, kept for provenance.
 
@@ -23,6 +23,7 @@ explicit/legacy spelling (`docs/ARCHITECTURE.md` §3.3–§4.3);
 
 | Path | What it is | Status |
 |---|---|---|
+| `design/prismasnap.md` | Normative contract for the optional, purely additive PrismaSnap BF16 source-preparation lane: canonical measured-fast `stage,polish` semantics, exact dense seams, content-bound lifecycle and two-Spark campaign collation, served fold-fidelity admission, native-only lane boundary, and ordered dense-then-MoE promotion gates. | CURRENT candidate contract — implementation and contract tests exist, but the Qwen3.8-27B text-only strict-20-GB served A/B is still running; no 27B, MoE, 20% improvement, or Qwen3.8-125B release claim yet |
 | `design/artifact_collections.md` | Content-addressed, format-agnostic control plane for probe-once/export-many collections: explicit candidate and target records, immutable stage receipts, shared-resource accounting, and a legacy Qwen artifact census. | CURRENT foundation — schemas and tests ship offline; ModelSnapshot/Probe/Cost/Solve/Export/Qualification adapters and pipeline wiring remain open |
 | `design/sample_parallel_probe.md` | Exact opt-in sample-axis map/reduce for the incremental probe: immutable calibration/run identity, the two-stage global-CE barrier, complete-model raw sufficient-stat reduction, and deterministic dense-body activation-cache union. It reuses the streamed model and existing activation-cache path and changes no serving runtime. | CURRENT implementation contract; CPU-tested producer lane, not yet GPU-launched or release-qualified |
 | `design/model_coverage_ledgers.md` | Requirement discovery by traversal: one walk over the loaded model tree plus a traced forward discovers every parameter->op edge; each node is claimed at discovery (decide / pin+reason / exclude+reason) and an unclaimed node fails the walk. All consumers (probe, cost, footprint, read-bytes, routes) derive from the one enumeration; four stamped views reconcile against the checkpoint header. Adopted after the `wo_a` finding. The walker landed 2026-08-21 (`prismaquant/model_walk.py` + `ModelProfile.walk_claim_rules()`, ARCHITECTURE.md §8.8); intake walks are usable, but export-gate wiring and consumer migration onto the edge list are still open. | CURRENT |
@@ -86,6 +87,7 @@ before citing anything.
 
 | Path | What it is | Status / superseded by |
 |---|---|---|
+| `results/qwen38_prismasnap_20gb_ab_2026-08-25.md` | Frozen running ledger for the first apples-to-apples PrismaSnap production gate: Qwen3.8-27B text-only/no-vision, strict decimal 20 GB, control identities/metrics, exact two-Spark protocol, and evidence paths. | RUNNING — protocol and thresholds only; result section is pending and makes no promotion or 20% improvement claim |
 | `results/gridbook_0p8p5_w8a16_gate_2026-08-12.md` | Exact Gridbook 0.8.5 installed-wheel GB10/sm121 gate: immutable commit, wheel, image, command, 91-pass/0-skip JUnit, and raw evidence paths for block-FP8 W8A16. | CURRENT route-existence, residency, and operator evidence; not full-artifact serving, performance, KL, or PPL evidence |
 | `results/qwen3_30b_a3b_profile_census_2026-08-03.md` | Contract/vLLM-qualified Qwen3-30B-A3B selection, complete safetensors census, unified `qwen3` producer bridge, and verified probe capture points. | CURRENT profile-onboarding evidence; not a quantization or serving result |
 | `results/aura_4b_dense_frontier_2026-06-05.md` | Dense 4.5→8.0 bpp AURA RD sweep on Qwen3-4B, fp32 vs bf16; frontier clean and log-linear, kneedle unstable (fp32 5.00 in 454/1000 bootstraps). | HISTORICAL — its conclusion won: selection moved off kneedle to a byte-budget + saturation-B* rule |

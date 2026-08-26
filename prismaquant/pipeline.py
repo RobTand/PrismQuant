@@ -9,9 +9,9 @@ of the production flow, not an executor (re-vet R23: no python port).
 """
 from __future__ import annotations
 
-import math
 import argparse
 import json
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +27,190 @@ APPROVED_RESOURCE_OWNERS: dict[str, frozenset[str]] = {
     # implemented anywhere in the tree and were deleted with re-vet R5/D10.
     "streaming_model_weights": frozenset({"LayerCache"}),
 }
+
+
+# ``validate_assignments_kl --assignment-materialization=hooks`` keeps the
+# source model and every Pareto assignment's rendered weights in one process.
+# That is fast on small dense checkpoints, but it is not a safe production
+# plan once the checkpoint reaches the 35B class (and routed-MoE models hit the
+# same limit earlier because their packed expert state is especially wide).
+# Keep the threshold decimal, matching public model-size names.
+FRONTIER_HOOKS_MAX_PARAMETERS = 35_000_000_000
+
+
+def _model_config_for_frontier_policy(model_path: str | Path) -> Mapping[str, Any]:
+    path = Path(model_path) / "config.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read model config {path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"model config {path} is not a JSON object")
+    return payload
+
+
+def _config_declares_moe(value: object) -> bool:
+    """Conservatively identify routed-expert model configuration.
+
+    Model families do not share one expert-count spelling.  A positive or
+    otherwise non-empty configuration field containing ``expert`` is enough
+    to require the memory-fit path; false positives only choose the safer
+    materializer, while a false negative can OOM-kill a production host.
+    Architecture/model-type names containing ``moe`` are an independent
+    signal for configs whose expert details live in a nested text config.
+    """
+
+    if isinstance(value, Mapping):
+        for raw_key, item in value.items():
+            key = str(raw_key).lower()
+            if key in {"architectures", "model_type"}:
+                names = item if isinstance(item, list) else [item]
+                if any("moe" in str(name).lower() for name in names):
+                    return True
+            if "expert" in key:
+                if isinstance(item, bool):
+                    if item:
+                        return True
+                elif isinstance(item, (int, float)):
+                    if item > 0:
+                        return True
+                elif isinstance(item, str):
+                    if item.strip() and item.strip().lower() not in {
+                        "none",
+                        "null",
+                        "false",
+                        "0",
+                    }:
+                        return True
+                elif item:
+                    return True
+            if _config_declares_moe(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_config_declares_moe(item) for item in value)
+    return False
+
+
+def _safe_model_member(root: Path, relative: str) -> Path:
+    if not relative or Path(relative).is_absolute():
+        raise ValueError(f"unsafe safetensors shard path {relative!r}")
+    base = root.resolve(strict=True)
+    path = (base / relative).resolve(strict=True)
+    if path != base and base not in path.parents:
+        raise ValueError(f"safetensors shard escapes model root: {relative!r}")
+    if not path.is_file():
+        raise ValueError(f"safetensors shard is not a file: {path}")
+    return path
+
+
+def _safetensors_shards(model_path: str | Path) -> tuple[Path, ...]:
+    root = Path(model_path)
+    index_path = root / "model.safetensors.index.json"
+    if index_path.is_file():
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"cannot read safetensors index {index_path}: {exc}"
+            ) from exc
+        weight_map = index.get("weight_map") if isinstance(index, Mapping) else None
+        if not isinstance(weight_map, Mapping) or not weight_map:
+            raise ValueError(f"safetensors index has no weight_map: {index_path}")
+        names = sorted({str(name) for name in weight_map.values()})
+        return tuple(_safe_model_member(root, name) for name in names)
+
+    shards = tuple(sorted(root.glob("*.safetensors")))
+    if not shards:
+        raise ValueError(f"model has no safetensors shards: {root}")
+    return tuple(_safe_model_member(root, shard.name) for shard in shards)
+
+
+def _safetensors_parameter_count(model_path: str | Path) -> int:
+    """Count checkpoint parameters from headers without opening tensor data."""
+
+    total = 0
+    for shard in _safetensors_shards(model_path):
+        try:
+            with shard.open("rb") as handle:
+                header_size = int.from_bytes(handle.read(8), "little")
+                if not 0 < header_size <= 512 * 1024 * 1024:
+                    raise ValueError(
+                        f"implausible safetensors header size {header_size}"
+                    )
+                raw_header = handle.read(header_size)
+            if len(raw_header) != header_size:
+                raise ValueError("truncated safetensors header")
+            header = json.loads(raw_header)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(f"cannot inspect safetensors shard {shard}: {exc}") from exc
+        if not isinstance(header, Mapping):
+            raise ValueError(f"safetensors header is not an object: {shard}")
+        for name, metadata in header.items():
+            if name == "__metadata__":
+                continue
+            if not isinstance(metadata, Mapping):
+                raise ValueError(f"malformed tensor metadata for {name!r} in {shard}")
+            shape = metadata.get("shape")
+            if (
+                not isinstance(shape, list)
+                or any(type(dim) is not int or dim < 0 for dim in shape)
+            ):
+                raise ValueError(f"malformed tensor shape for {name!r} in {shard}")
+            total += math.prod(shape)
+    if total <= 0:
+        raise ValueError("safetensors headers contain no positive-size parameters")
+    return total
+
+
+def frontier_materialization_policy(model_path: str | Path) -> dict[str, Any]:
+    """Return the fail-closed hooks/inplace policy for one source checkpoint."""
+
+    config = _model_config_for_frontier_policy(model_path)
+    is_moe = _config_declares_moe(config)
+    parameters = _safetensors_parameter_count(model_path)
+    reasons: list[str] = []
+    if is_moe:
+        reasons.append("model config declares routed experts")
+    if parameters >= FRONTIER_HOOKS_MAX_PARAMETERS:
+        reasons.append(
+            f"checkpoint has {parameters:,} parameters "
+            f"(threshold {FRONTIER_HOOKS_MAX_PARAMETERS:,})"
+        )
+    return {
+        "model_path": str(Path(model_path).resolve(strict=False)),
+        "parameters": parameters,
+        "is_moe": is_moe,
+        "requires_inplace": bool(reasons),
+        "reasons": reasons,
+    }
+
+
+def check_frontier_materialization(model_path: str | Path, mode: str) -> tuple[int, str]:
+    """Validate one requested frontier materializer without touching weights."""
+
+    normalized = str(mode).strip().lower()
+    if normalized not in {"hooks", "inplace"}:
+        return 2, "VALIDATED_FRONTIER_MATERIALIZATION must be hooks or inplace"
+    if normalized == "inplace":
+        return 0, "validated-frontier materialization=inplace (memory-fit path)"
+    try:
+        policy = frontier_materialization_policy(model_path)
+    except (OSError, ValueError) as exc:
+        return 2, (
+            "cannot prove that hooks materialization is safe; use "
+            f"VALIDATED_FRONTIER_MATERIALIZATION=inplace: {exc}"
+        )
+    if policy["requires_inplace"]:
+        return 2, (
+            "hooks materialization is refused for this production model; use "
+            "VALIDATED_FRONTIER_MATERIALIZATION=inplace: "
+            + "; ".join(str(reason) for reason in policy["reasons"])
+        )
+    return 0, (
+        "validated-frontier materialization=hooks admitted for proven dense "
+        f"checkpoint below 35B ({int(policy['parameters']):,} parameters)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +362,12 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
         "MODEL_PATH", "DATASET", "FORMATS<-COST_FORMATS", "COST_MODE",
         "EXPERT_NS<-AURA_EXPERT_NSAMPLES",
         "EXPERT_SL<-AURA_EXPERT_SEQLEN",
+        # When streamed AURA is enabled, the empirical routed-expert tail is
+        # streamed and resumed too.  Its checkpoint path is the deterministic
+        # ``expert-empirical-cost`` child of AURA_COST_CHECKPOINT_DIR, so these
+        # two inputs fully bind that resume identity without a second knob.
+        "AURA_COST_STREAMING",
+        "AURA_COST_CHECKPOINT_DIR",
         *_HEAD_SETTINGS,
         *_CB_SERIALIZATION_SETTINGS,
     ),
@@ -1524,6 +1714,20 @@ def main(argv: list[str] | None = None) -> int:
         help="List registered opt-in pipeline components and exit.",
     )
     ap.add_argument(
+        "--check-frontier-materialization",
+        metavar="MODEL_PATH",
+        help=(
+            "Fail closed when hooks materialization is requested for a MoE, "
+            "a checkpoint with at least 35B parameters, or a model whose "
+            "header-only classification cannot be proven."
+        ),
+    )
+    ap.add_argument(
+        "--frontier-materialization",
+        metavar="MODE",
+        help="Requested validated-frontier materializer: hooks or inplace.",
+    )
+    ap.add_argument(
         "--setting",
         action="append",
         default=[],
@@ -1549,6 +1753,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--artifact", metavar="PATH", default=None)
     ap.add_argument("--stage", metavar="ID", default=None)
     args = ap.parse_args(argv)
+
+    if args.check_frontier_materialization:
+        if args.frontier_materialization is None:
+            print(
+                "[pipeline] ERROR: --check-frontier-materialization needs "
+                "--frontier-materialization"
+            )
+            return 2
+        code, message = check_frontier_materialization(
+            args.check_frontier_materialization,
+            args.frontier_materialization,
+        )
+        prefix = "[pipeline]" if code == 0 else "[pipeline] ERROR:"
+        print(f"{prefix} {message}")
+        return code
 
     if args.check_stage_settings:
         if not (args.stage_settings and args.artifact and args.stage):

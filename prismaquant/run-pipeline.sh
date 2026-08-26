@@ -90,6 +90,13 @@ set -euo pipefail
 # 1024 is the analogy-to-GGUF starting point pending a CB-specific
 # measurement (docs/lanes/nvfp4-cb/format-pipeline.md open-Q 6).
 : "${EXPORT_CONTAINER:=compressed-tensors}"
+python -m prismaquant.prismasnap_contract --model "$MODEL_PATH"
+if [[ ( -e "${MODEL_PATH}/prismasnap_provenance.json" \
+        || -L "${MODEL_PATH}/prismasnap_provenance.json" ) \
+      && "$EXPORT_CONTAINER" != "compressed-tensors" ]]; then
+  echo "[pipeline] ERROR: PrismaSnap-prepared sources are admitted only to the measured native compressed-tensors lane; EXPORT_CONTAINER=${EXPORT_CONTAINER} is unvalidated." >&2
+  exit 2
+fi
 if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
   # Producer identity must be fixed before allocation: candidate bytes and the
   # final export must describe the same layout and shared sidecars.
@@ -821,6 +828,23 @@ fi
 # per point) and merges the per-point JSONs — the run_m4_validate_inplace
 # pattern that fits 35B.
 : "${VALIDATED_FRONTIER_MATERIALIZATION:=hooks}"
+case "$VALIDATED_FRONTIER_MATERIALIZATION" in
+  hooks|inplace) ;;
+  *)
+    echo "[pipeline] ERROR: VALIDATED_FRONTIER_MATERIALIZATION must be hooks or inplace" >&2
+    exit 2
+    ;;
+esac
+if [[ "$SELECTION_MODE" == "validated-surrogate" ]]; then
+  # Header-only, pre-GPU policy gate. Hooks keeps the source model and every
+  # Pareto render co-resident, so it is admitted only for a checkpoint proven
+  # dense and below 35B. Unknown classifications fail closed; inplace does not
+  # need a size classification because it pages one assignment per process.
+  python3 -m prismaquant.pipeline \
+    --check-frontier-materialization "$MODEL_PATH" \
+    --frontier-materialization "$VALIDATED_FRONTIER_MATERIALIZATION" \
+    || exit $?
+fi
 # COST_MODE=aura settings (defaults = the recipes that produced the regen-27b
 # and 35B arm-E wins; see .claude/prismaquant-handover + memory notes).
 : "${AURA_COST_NPROBES:=32}"
@@ -1645,6 +1669,7 @@ if [[ "$COST_MODE" == "aura" ]]; then
     --n-linear-chunks "$AURA_COST_LINEAR_CHUNKS"
     --probe-microbatch "$AURA_COST_PROBE_MICROBATCH"
   )
+  AURA_EXPERT_EXECUTION_ARGS=()
   case "$AURA_COST_STREAMING" in
     1|true|True|TRUE|yes|Yes|YES|on|On|ON)
       AURA_COST_STREAMING=1
@@ -1655,6 +1680,15 @@ if [[ "$COST_MODE" == "aura" ]]; then
       AURA_EXECUTION_ARGS=(
         --streaming
         --checkpoint-dir "$AURA_COST_CHECKPOINT_DIR"
+        --resume
+      )
+      # The two checkpoint schemas both own manifest.json, so the empirical
+      # routed-expert tail gets a deterministic child directory rather than
+      # colliding with the smooth AURA adjoint's root. expert_empirical_cost
+      # binds this resume to its own source/config/calibration identity.
+      AURA_EXPERT_EXECUTION_ARGS=(
+        --streaming
+        --checkpoint-dir "${AURA_COST_CHECKPOINT_DIR%/}/expert-empirical-cost"
         --resume
       )
       ;;
@@ -1778,6 +1812,7 @@ PY
         --merge-base "$AURA_COST_RAW" \
         --backfill-base "$BASE_COST_PATH" \
         "${COST_CACHE_COL_WEIGHT_ARGS[@]+"${COST_CACHE_COL_WEIGHT_ARGS[@]}"}" \
+        "${AURA_EXPERT_EXECUTION_ARGS[@]+"${AURA_EXPERT_EXECUTION_ARGS[@]}"}" \
         2>&1 | tee "${WORK_DIR}/logs/expert_empirical_cost.log"
     else
       echo "[pipeline] [2d/4] no routed experts omitted; finalizing AURA cost (sidecar backfill) ..."

@@ -84,6 +84,7 @@ from prismaquant.shard_layout import (
     tensor_payload_identity,
     write_shard_index,
 )
+from prismaquant.prismasnap_contract import refuse_prismasnap_lane_before_output
 from prismaquant.allocator_candidates import (
     ROUTE_PENDING_PASSTHROUGH_FORMATS,
     SOURCE_PASSTHROUGH_CONTRACTS,
@@ -2669,6 +2670,7 @@ def _reject_disabled_reuse_before_output_transaction(function):
     return wrapped
 
 
+@refuse_prismasnap_lane_before_output(lane="Gridbook/codebook")
 @_reject_disabled_reuse_before_output_transaction
 @_preflight_assignment_before_output_transaction
 @transactional_directory_output(
@@ -6273,6 +6275,11 @@ def main(argv=None) -> None:
         "(default: 32; any mismatch aborts)",
     )
     args = ap.parse_args(argv)
+    from .prismasnap_contract import refuse_prismasnap_for_unvalidated_lane
+
+    refuse_prismasnap_for_unvalidated_lane(
+        args.model_dir, lane="Gridbook/codebook"
+    )
     from prismaquant.gpu_guard import require_cuda_hot_path
     require_cuda_hot_path("export_nvfp4_cb_streaming")
     reuse_prior = args.reuse_prior or os.environ.get(

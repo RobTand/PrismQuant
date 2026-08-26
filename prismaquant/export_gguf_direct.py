@@ -48,6 +48,7 @@ from safetensors import safe_open
 from prismaquant.gguf_formats import GGUF_BLOCK_BYTES, gguf_pack
 from prismaquant.layer_config import load_assignment
 from prismaquant.model_profiles import detect_profile
+from prismaquant.prismasnap_contract import refuse_prismasnap_for_unvalidated_lane
 
 _EXPERT_RE = re.compile(
     r"^(model\.layers\.\d+\.mlp)\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$"
@@ -183,6 +184,9 @@ def export_gguf_direct(
     exclude: tuple[str, ...] = (),
     imatrix: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, int]:
+    refuse_prismasnap_for_unvalidated_lane(
+        model_dir, lane="direct GGUF/vLLM-GGUF export"
+    )
     if imatrix is not None and not imatrix:
         raise ValueError(
             "imatrix requested but empty — act-cache dir missing or "

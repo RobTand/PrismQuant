@@ -134,7 +134,14 @@ def detect_profile(model_path: str) -> ModelProfile:
             archs = list(cfg.get("architectures") or [])
         except (json.JSONDecodeError, OSError):
             pass
-    return _resolve(model_type, archs)
+    profile = _resolve(model_type, archs)
+    # Config-only resolution chooses the architecture family and serving
+    # entrypoint. Keep the concrete checkpoint root as separate private intake
+    # evidence: some staged text-only checkpoints intentionally retain their
+    # wrapper-named safetensors index, even though their config declares the
+    # native causal class. Profiles that do not need that evidence ignore it.
+    profile._declare_model_path(model_path)
+    return profile
 
 
 def detect_profile_with_warning(

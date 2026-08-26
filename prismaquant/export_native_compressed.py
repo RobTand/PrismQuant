@@ -359,6 +359,7 @@ def _select_nvfp4_group_scales(
     *,
     scale_rule: str | None = None,
     global_real: torch.Tensor | None = None,
+    joint_scale_levels: tuple[float, ...] | None = None,
 ) -> torch.Tensor:
     """Return per-block real NVFP4 scales for ``grouped[..., group_size]``.
 
@@ -384,7 +385,11 @@ def _select_nvfp4_group_scales(
     if rule == NVFP4_SCALE_RULE_JOINT_MSE:
         return _nvfp4_best_max_to_level_scale(
             grouped,
-            _NVFP4_JOINT_SCALE_LEVELS,
+            (
+                _NVFP4_JOINT_SCALE_LEVELS
+                if joint_scale_levels is None
+                else joint_scale_levels
+            ),
             global_real=global_real,
         )
     raise AssertionError(f"unhandled NVFP4 scale rule: {rule!r}")
@@ -409,20 +414,35 @@ def _select_nvfp4_pack_scales_and_global(
     *,
     global_real_override: torch.Tensor | None = None,
     scale_rule: str | None = None,
+    snapped_scale_scoring: bool | None = None,
+    joint_scale_levels: tuple[float, ...] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if not _nvfp4_snapped_scale_scoring_enabled():
+    score_snapped = (
+        _nvfp4_snapped_scale_scoring_enabled()
+        if snapped_scale_scoring is None
+        else bool(snapped_scale_scoring)
+    )
+    if not score_snapped:
         # Pre-2026-06-12 behavior (byte-stable with shipped artifacts):
         # scales scored under the RAW real scale; the tensor global is
         # derived once from the chosen scales (or taken verbatim from the
         # fused-sibling override) without re-scoring.
-        scale = _select_nvfp4_group_scales(grouped, scale_rule=scale_rule)
+        scale = _select_nvfp4_group_scales(
+            grouped,
+            scale_rule=scale_rule,
+            joint_scale_levels=joint_scale_levels,
+        )
         if global_real_override is not None:
             global_real = global_real_override.to(
                 grouped.device, dtype=torch.float32).clamp_min(1e-12)
         else:
             global_real = (scale.amax() / FP8_E4M3_MAX).clamp_min(1e-12)
         return scale, global_real
-    scale = _select_nvfp4_group_scales(grouped, scale_rule=scale_rule)
+    scale = _select_nvfp4_group_scales(
+        grouped,
+        scale_rule=scale_rule,
+        joint_scale_levels=joint_scale_levels,
+    )
     if global_real_override is not None:
         global_real = global_real_override.to(
             grouped.device,
@@ -432,6 +452,7 @@ def _select_nvfp4_pack_scales_and_global(
             grouped,
             scale_rule=scale_rule,
             global_real=global_real,
+            joint_scale_levels=joint_scale_levels,
         )
         return scale, global_real
 
@@ -441,6 +462,7 @@ def _select_nvfp4_pack_scales_and_global(
             grouped,
             scale_rule=scale_rule,
             global_real=global_real,
+            joint_scale_levels=joint_scale_levels,
         )
         next_global = (
             snapped_scale.amax() / FP8_E4M3_MAX
@@ -3432,6 +3454,85 @@ def _rtn_dequant_nvfp4(
         scale_real=s_g_real,
     )
     return codec.dequant.reshape(rows, cols)
+
+
+def render_nvfp4_dequant(
+    weight: torch.Tensor,
+    *,
+    group_size: int = 16,
+    global_real_override: torch.Tensor | None = None,
+    scale_rule: str = NVFP4_SCALE_RULE_STATIC_6,
+    snapped_scale_scoring: bool = False,
+    joint_scale_levels: tuple[float, ...] = (6.0, 4.0),
+) -> torch.Tensor:
+    """Render a 2-D weight through the exact production NVFP4 codec.
+
+    Unlike the historical private RTN helper, every scale-plane choice is an
+    explicit argument.  Offline selectors such as PrismaSnap must be
+    reproducible from their receipt and therefore cannot inherit either
+    ``PRISMAQUANT_NVFP4_SCALE_RULE`` or the research-only snapped-scale
+    scoring switch from the process environment.  Existing exporter call
+    sites continue to use their unchanged environment/default behavior.
+    """
+    if weight.ndim != 2:
+        raise ValueError(
+            "production NVFP4 dequant render requires a rank-2 weight; "
+            f"got shape={tuple(weight.shape)}"
+        )
+    rows, cols = weight.shape
+    if cols % int(group_size) != 0:
+        raise ValueError(f"NVFP4 group_size={group_size} ∤ {cols}")
+    grouped = weight.float().reshape(
+        rows, cols // int(group_size), int(group_size)
+    )
+    scale_real, global_real = _select_nvfp4_pack_scales_and_global(
+        grouped,
+        global_real_override=global_real_override,
+        scale_rule=resolve_nvfp4_scale_rule(scale_rule),
+        snapped_scale_scoring=snapped_scale_scoring,
+        joint_scale_levels=joint_scale_levels,
+    )
+    codec = _nvfp4_quantize_grouped_codec(
+        grouped,
+        global_real=global_real,
+        scale_real=scale_real,
+        scale_rule=resolve_nvfp4_scale_rule(scale_rule),
+    )
+    return codec.dequant.reshape(rows, cols)
+
+
+def nvfp4_global_real(
+    weight: torch.Tensor,
+    *,
+    group_size: int = 16,
+    scale_rule: str = NVFP4_SCALE_RULE_STATIC_6,
+    snapped_scale_scoring: bool = False,
+    joint_scale_levels: tuple[float, ...] = (6.0, 4.0),
+) -> torch.Tensor:
+    """Return the explicit production-codec global multiplier for a weight.
+
+    This is the companion to :func:`render_nvfp4_dequant` used when vLLM
+    fuses sibling projections into one runtime parameter and therefore makes
+    them share the maximum of their natural globals.
+    """
+    if weight.ndim != 2:
+        raise ValueError(
+            "production NVFP4 global calculation requires a rank-2 weight; "
+            f"got shape={tuple(weight.shape)}"
+        )
+    rows, cols = weight.shape
+    if cols % int(group_size) != 0:
+        raise ValueError(f"NVFP4 group_size={group_size} ∤ {cols}")
+    grouped = weight.float().reshape(
+        rows, cols // int(group_size), int(group_size)
+    )
+    _scale_real, global_real = _select_nvfp4_pack_scales_and_global(
+        grouped,
+        scale_rule=resolve_nvfp4_scale_rule(scale_rule),
+        snapped_scale_scoring=snapped_scale_scoring,
+        joint_scale_levels=joint_scale_levels,
+    )
+    return global_real
 
 
 def quantize_dequantize_nvfp4_packed(
@@ -8159,6 +8260,13 @@ def main(argv: Sequence[str] | None = None):
         # Preserve the complete parser's native --help/missing-argument errors.
         return _main_impl(parse_argv)
 
+    # Refuse a stale/tampered or merely MATERIALIZED PrismaSnap source before
+    # opening the export transaction or doing any GPU render work.  Ordinary
+    # unsnapped sources remain a no-op in this preflight.
+    from .prismasnap_contract import require_verified_prismasnap_if_present
+
+    require_verified_prismasnap_if_present(known.model)
+
     requested_output = Path(known.output)
     with transactional_export_directory(
         known.model,
@@ -9312,6 +9420,50 @@ def _copy_tokenizer(src_model: str, out_dir: Path) -> None:
     # both but copying is harmless).
     for py in src.glob("*.py"):
         shutil.copy2(py, out_dir / py.name)
+
+    # PrismaSnap is an additive source-preparation pass.  Its compact,
+    # self-digested provenance must survive the otherwise unchanged native
+    # exporter so the final shipcard's model hash binds the treatment.  The
+    # absent-source path performs no write and remains byte-for-byte identical
+    # to every pre-PrismaSnap export.
+    snap_path = src / "prismasnap_provenance.json"
+    if os.path.lexists(snap_path):
+        if snap_path.is_symlink() or not snap_path.is_file():
+            raise RuntimeError(
+                f"PrismaSnap provenance is not a regular file: {snap_path}"
+            )
+        try:
+            snap = json.loads(snap_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(
+                f"PrismaSnap provenance is unreadable: {snap_path}"
+            ) from exc
+        if (
+            not isinstance(snap, dict)
+            or snap.get("schema") != "prismaquant.prismasnap.provenance.v1"
+        ):
+            raise RuntimeError(
+                f"PrismaSnap provenance has an unsupported contract: {snap_path}"
+            )
+        from .prismasnap_validation import (
+            validate_prismasnap_checkpoint,
+            validate_prismasnap_provenance_payload,
+        )
+
+        # Export can run for hours.  Replay the index/shard content identity
+        # immediately before the provenance is copied into the staged output;
+        # a source mutation after preflight must abort the transaction.
+        validate_prismasnap_checkpoint(src, require_verified=True)
+
+        validate_prismasnap_provenance_payload(
+            snap,
+            require_verified=True,
+            where=f"native export PrismaSnap provenance {snap_path}",
+        )
+        # This receipt describes the BF16 *source* tree, not the compressed
+        # output shards.  Preserve it under an unambiguous name so the final
+        # artifact never claims its own bytes are the materialized checkpoint.
+        shutil.copy2(snap_path, out_dir / "source_prismasnap_provenance.json")
 
 
 def _source_has_prefixed_weights(src_model: str, prefix: str) -> bool:

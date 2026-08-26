@@ -249,6 +249,52 @@ def test_aura_streaming_identity_path_is_explicit_and_stage_bound():
     assert "AURA_COST_CHECKPOINT_DIR" in aura_cost_sources
 
 
+def test_aura_streaming_also_streams_and_resumes_empirical_expert_tail():
+    from prismaquant.pipeline import STAGE_SETTINGS_KEYS
+
+    script = _run_pipeline_script()
+    expert_block = script.split("AURA_EXPERT_EXECUTION_ARGS=(", 1)[1].split(
+        "# [2b]", 1
+    )[0]
+    invocation = script.split(
+        "python3 -m prismaquant.expert_empirical_cost", 1
+    )[1].split('tee "${WORK_DIR}/logs/expert_empirical_cost.log"', 1)[0]
+
+    assert "--streaming" in expert_block
+    assert (
+        '--checkpoint-dir "${AURA_COST_CHECKPOINT_DIR%/}/'
+        'expert-empirical-cost"'
+    ) in expert_block
+    assert "--resume" in expert_block
+    assert "AURA_EXPERT_EXECUTION_ARGS" in invocation
+    hybrid_sources = {
+        source for _manifest, source in STAGE_SETTINGS_KEYS["aura-hybrid-cost"]
+    }
+    assert "AURA_COST_STREAMING" in hybrid_sources
+    assert "AURA_COST_CHECKPOINT_DIR" in hybrid_sources
+
+
+def test_large_or_moe_validated_frontier_has_pre_gpu_inplace_gate():
+    script = _run_pipeline_script()
+    gate = script.split(
+        'if [[ "$SELECTION_MODE" == "validated-surrogate" ]]', 1
+    )[1].split("# COST_MODE=aura settings", 1)[0]
+
+    assert "--check-frontier-materialization" in gate
+    assert '--frontier-materialization "$VALIDATED_FRONTIER_MATERIALIZATION"' in gate
+    assert "|| exit $?" in gate
+
+
+def test_prismasnap_source_is_additive_native_only_and_non_native_fails_closed():
+    script = _run_pipeline_script()
+    gate = script.split(': "${EXPORT_CONTAINER:=compressed-tensors}"', 1)[1].split(
+        'if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]', 1
+    )[0]
+    assert "prismasnap_provenance.json" in gate
+    assert '!= "compressed-tensors"' in gate
+    assert "exit 2" in gate
+
+
 def test_learned_cb_pipeline_builds_immutable_bundle_before_production_stages():
     script = _run_pipeline_script()
 

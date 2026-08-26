@@ -63,6 +63,16 @@ class ModelProfile(ABC):
         # keeps every profile's pre-declaration behavior byte-identical.
         self._declared_model_type: str | None = None
         self._declared_architectures: tuple[str, ...] = ()
+        # Set only by path-based detection. Config-only detection and profiles
+        # constructed by hand intentionally leave it empty. This is private
+        # intake context, not a new public profile accessor: a family may use
+        # an on-disk census to disambiguate two source layouts that share the
+        # same HF config declaration.
+        self._declared_model_path: Path | None = None
+
+    def _declare_model_path(self, model_path: str | Path) -> None:
+        """Attach path-only checkpoint evidence after config resolution."""
+        self._declared_model_path = Path(model_path)
 
     def declare_config(
         self,
@@ -96,6 +106,40 @@ class ModelProfile(ABC):
 
     def declared_architectures(self) -> tuple[str, ...]:
         return self._declared_architectures
+
+    def rms_norm_parameter_offset(self) -> float | None:
+        """Offset from stored parameter to the effective RMSNorm gamma.
+
+        This defaults to unknown rather than assuming literal gamma.  A
+        profile must explicitly return ``0.0`` for direct gamma or, for
+        families such as Qwen3.5/Qwen3.8 that execute
+        ``gamma = 1 + weight``, return ``1.0``.  Offline function-preserving
+        source transforms fail closed when the profile has not declared the
+        encoding; they never infer it from parameter values.
+        """
+        return None
+
+    def prismasnap_moe_layer_contract(
+        self,
+        layer_index: int,
+    ) -> dict[str, object] | None:
+        """Profile-owned graph/layout declaration for research PrismaSnap MoE.
+
+        Returning ``None`` is the safe default: a generic MoE name vocabulary
+        is not enough to prove an exact source transform.  An implementing
+        profile must declare the norm and MLP roots, the typed E-way router
+        and scalar shared-output gates, routed packed and per-expert
+        alternatives, expert axes, and shared-expert seams.  The planner
+        validates that closed declaration
+        against the checkpoint tensor census and refuses unknown graph state.
+
+        This accessor is intentionally separate from the production model
+        structure spec.  MoE PrismaSnap remains an opt-in research lane until
+        a real model clears fold-fidelity and served-KL gates; merely adding a
+        profile declaration cannot promote it.
+        """
+        del layer_index
+        return None
 
     # ------------------------------------------------------------
     # Identity + match

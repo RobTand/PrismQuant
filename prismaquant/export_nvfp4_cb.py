@@ -88,6 +88,7 @@ from prismaquant.nvfp4_cb_footprint import (
     validate_cb_assignment_serialization_stamps,
     validate_cb_serialization_context_stamp,
 )
+from prismaquant.prismasnap_contract import refuse_prismasnap_lane_before_output
 from prismaquant.nvfp4_activation_contract import (
     NVFP4_ACTIVATION_CONTRACT_SCHEMA,
     NVFP4_ACTIVATION_EXECUTION,
@@ -675,6 +676,7 @@ def _write_cb_containers(
     return names, tensor_sha256
 
 
+@refuse_prismasnap_lane_before_output(lane="Gridbook/codebook")
 @_preflight_assignment_before_output_transaction
 @transactional_directory_output(
     source_parameter="model_dir",
@@ -2199,6 +2201,11 @@ def main(argv: list[str] | None = None) -> None:
              "producer policy (never inferred from the current v4 pin)",
     )
     args = ap.parse_args(argv)
+    from .prismasnap_contract import refuse_prismasnap_for_unvalidated_lane
+
+    refuse_prismasnap_for_unvalidated_lane(
+        args.model_dir, lane="Gridbook/codebook"
+    )
     from prismaquant.gpu_guard import require_cuda_hot_path
     require_cuda_hot_path("export_nvfp4_cb")
 

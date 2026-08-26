@@ -1,8 +1,31 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-24 · `codex/rtx5060-fp4-gridbook-pilot-20260824` · working-tree revision including
-RTX4090 parent `c351587` — stamps follow, newest first, each recording its own branch and date.
-Re-stamped
+As of: 2026-08-25 · `claude/snapquant-productionalization` · working-tree revision over
+parent `7160dc2` — stamps follow, newest first, each recording its own branch and date.
+Re-stamped (2026-08-25, `claude/snapquant-productionalization`) for the **candidate PrismaSnap
+additive BF16 source-preparation lane**. PrismaSnap is outside the four-stage quantization
+pipeline: an unmarked source takes the historical path unchanged, while a marked source must
+carry a content-replayed `VERIFIED` receipt before the existing probe, AURA, per-Linear
+allocator, `ProductionWeightCache`, recache, native compressed-tensors exporter, and validation
+stack may consume it. Production planning fixes the measured-fast `stage,polish` search,
+requires CUDA plus an attested container and complete source/probe/producer identity, and
+materializes ordinary BF16 safetensors without a serving transform. The version-2 cluster
+campaign runner can close an explicit local/SSH dependency graph without an agent: two Spark
+workers build disjoint layer plans and shard parts, exact-union merges reject overlaps or gaps,
+and the low-space campaign requires same-filesystem hardlink collation after the remote part is
+content-verified on the coordinator. Materialization alone is not admission; original-BF16 to
+snapped-BF16 served all-position KL must be at most `5e-4`, with source, calibration, evaluator,
+serve-stack, index, and shard identities replayed before the atomic `VERIFIED` transition.
+The pipeline GGUF branch and direct-GGUF API, plus both Gridbook/codebook exporters, reject any
+PrismaSnap marker; the native exporter replays
+the verified source immediately before copying its receipt under the unambiguous
+`source_prismasnap_provenance.json` name. The first production gate is the still-running,
+text-only/no-vision Qwen3.8-27B strict-decimal-20-GB A/B; its requested 20% KL improvement is an
+acceptance threshold, **not a result**. The MoE planner and release-layout gate are second and
+remain experimental; Qwen3.5-family native/wrapper namespace resolution and explicit RMSNorm
+parameter-offset metadata are prerequisites, not a Qwen3.8-125B-A3B promotion. No completed
+27B result, MoE result, release readiness, or serving-performance claim follows from this stamp,
+and the final integration commit is deliberately not predicted. Previously re-stamped
 (2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **maintained SM120/RTX50
 W8A16 exclusion**. The shared registry retains W8A16 assignment compatibility, while generic
 source-model container profiles retain source-FP8 wire compatibility for already-published
@@ -1066,12 +1089,134 @@ imply a root-level copy and there is none. One bash script, four numbered phases
 `prismaquant/pipeline.py` is a *declarative* spec layer invoked once at the top; it executes
 nothing (§3.6).
 
+### 3.0 Optional PrismaSnap BF16 source preparation
+
+**PrismaSnap is purely additive to this graph.** It is an offline BF16 checkpoint-to-checkpoint
+pre-pass, not a format, allocator, cache, export layout, kernel, or runtime adapter. An original
+source with no `prismasnap_provenance.json` enters the four numbered phases exactly as it did
+before this feature. A snapped source is still an ordinary HF BF16 checkpoint; once admitted,
+the same probe, AURA objective, per-Linear allocator, `ProductionWeightCache`, recache, native
+exporter, and serving validators run with no PrismaSnap scheduler or serve-time operation
+(`prismasnap.py` module contract; `prismasnap_contract.require_verified_prismasnap_if_present`).
+
+The candidate release treatment is the measured-fast `stage,polish` algorithm, not Fable's
+original sequential greedy implementation. `PrismaSnapSearchConfig` is versioned data and
+production accepts only its canonical value: group size 16; alpha candidates
+`[0,.125,.25,.375,.5]`; at most four fixed-global rounds; round-one staging of the top half of
+predicted gains; then true-render polish over the top-eight-gain and near-maximum groups, capped
+at 16 groups per seam. Each logical tensor keeps its own static-6 NVFP4 global, candidate folds
+are rounded to fp32 for the objective, and materialization replays the prototype's sequential
+BF16 rounding after every transform. A full true-render no-op comparison is the hard upper
+bound. Fused-sibling globals, one-final-cast materialization, a different codec objective, and
+the slower greedy search are different algorithms, not aliases for production v1
+(`prismasnap.PrismaSnapSearchConfig.as_dict`, `search_diagonal_scale`,
+`prismasnap_checkpoint.plan_dense_checkpoint`).
+
+The application lifecycle is
+`PREPARED → PLANNED → MATERIALIZED → VERIFIED → COMMITTED`:
+
+- **PREPARED** validates the original config/index/shard closure, complete tensor census and
+  BF16 transform domain, profile, probe bytes and calibration/source binding, producer source
+  closure, CUDA device, and attested container rootfs before a production plan may start.
+- **PLANNED** is an atomic, self-digested plan plus float64 scale vectors. It binds three exact
+  dense seams per claimed layer, the complete safetensors tensor metadata, transform order,
+  search semantics, and the fp64 algebra gate (`≤1e-10`).
+- **MATERIALIZED** is the atomically published BF16 checkpoint. Per-shard receipts prove the
+  source/output bytes, tensor shapes/dtypes, changed-tensor count, exact source-shard cover,
+  checkpoint weight-map digest, index digest, and whole shard-content identity. It is explicitly
+  not a numerical verdict.
+- **VERIFIED** is the only state admitted downstream. `attest-fold-fidelity` replays the original
+  source identity, teacher payload and calibration windows, BF16 teacher/student launch
+  contracts, both serve fingerprints, all-position metric coherence, and current checkpoint
+  bytes; original-BF16 → snapped-BF16 forward KL must be `≤5e-4`.
+- **COMMITTED** is the fail-closed handoff of that verified source to the unchanged native
+  pipeline/export transaction. `PLANNED`, `MATERIALIZED`, and `VERIFIED` are serialized receipt
+  states; `PREPARED` and `COMMITTED` name validated transition boundaries rather than additional
+  mutable JSON states (`prismasnap_checkpoint.py`, `prismasnap_validation.attest_fold_fidelity`).
+
+Multi-Spark operation is deterministic application code, not an agent protocol.
+`cluster_campaign.manifest.v2` declares local/SSH hosts, exact argv arrays, dependencies,
+working directories, closed environments, expected receipt hashes, timeouts, retry bounds, and
+maximum parallelism. Workers execute with `shell=False`; host-local locks, PID/start-time/owner
+checks, fsynced self-hashed compare-and-swap state, sealed-stage receipts, and dependency barriers
+make restart decisions mechanical and ambiguous ownership a refusal
+(`cluster_campaign.run_campaign_v2`). For the two-Spark dense campaign, workers plan disjoint
+layer sets, `merge-plans --resume` accepts only their exact layer union, workers materialize
+disjoint original shard sets, and `merge-checkpoint-parts --resume` accepts only an exact
+non-overlapping source-shard union. The remote part is transferred as an explicit
+content-addressed campaign stage. The strict low-space collation arm passes
+`--require-hardlinks`: every admitted part shard must already be on the coordinator filesystem,
+and the staging and committed trees must retain the same device/inode binding or fail. This
+avoids another full-checkpoint copy; the general-purpose CLI's durable-copy mode is not the
+27B low-space campaign contract (`prismasnap_checkpoint.merge_plans`,
+`merge_checkpoint_parts`; `tools/prismasnap.py`).
+
+Planning and transform materialization are CUDA-only in production and bind the attested Docker
+rootfs plus producer commit/source bytes; source identity binds semantic config, sorted weight
+map, every shard size/hash, and a portable content digest; the probe receipt binds its own bytes,
+calibration hash/dataset/sample count/sequence length/modality, original model path, BF16 dtype,
+streaming-GPU device map, and execution device. Plan construction streams only the tensors for
+one layer and materialization streams one shard at a time. Part transfer and hardlink collation
+are explicit offline checkpoint-lifecycle I/O, separate from the GPU-bound search/transform and
+the ordinary GPU-bound quantization hot path (`prismasnap_checkpoint._require_production_execution`,
+`_validate_source_identity`, `_validate_probe_source_contract`).
+
+Admission is deliberately narrow. `run-pipeline.sh` validates any marker before work and then
+admits it only when `EXPORT_CONTAINER=compressed-tensors`; the native exporter re-hashes the
+verified BF16 input before opening its transaction and again before preserving the source receipt
+as `source_prismasnap_provenance.json`. The pipeline GGUF branch and direct-GGUF API, plus both
+Gridbook/codebook exporters, reject the mere presence of a PrismaSnap marker before output. The measured candidate
+menu is therefore native `{NVFP4, FP8_DYNAMIC, BF16}` only
+(`run-pipeline.sh:92-99`; `export_native_compressed.main`;
+`prismasnap_contract.refuse_prismasnap_for_unvalidated_lane`).
+
+Promotion remains ordered and evidence-gated. First is the Qwen3.8-27B text-only/no-vision,
+strict decimal 20,000,000,000-byte arm against the existing unsnapped control, with the same
+16×512 diverse-v1 probe, assignment/accounting semantics, production cache behavior, and gold
+8×512 served protocol. The requested ≥20% all-position and confident-position KL reduction is
+still a threshold, not a measured result (`docs/results/qwen38_prismasnap_20gb_ab_2026-08-25.md`,
+status **RUNNING**). `plan_dense_checkpoint` currently refuses a non-dense profile. MoE is the
+second experimental gate and must separately prove router/shared-gate compensation, packed
+expert axes and per-expert importance, route stability, partial-source disk lifecycle, and the
+released tensor layout. The Qwen3.5-family profile's native-causal versus wrapper source census
+and explicit RMSNorm stored-parameter offset are prerequisites for that work, not evidence that
+Qwen3.8-125B-A3B is admitted (`model_profiles/qwen3_5.py`,
+`ModelProfile.rms_norm_parameter_offset`; `docs/design/prismasnap.md`).
+
 **DIAGRAM-1 — Pipeline dataflow:** source checkpoint to three artifact containers, with the
 four `COST_MODE`s, the opt-in validated-frontier loop, and the manual (echoed-only) ship gate.
 
 ```mermaid
 flowchart TD
-  SRC["source checkpoint<br/>HF safetensors"]
+  ORIG["original BF16 source checkpoint<br/>HF safetensors"]
+  SRC["ordinary pipeline source<br/>unmarked BF16, or COMMITTED verified PrismaSnap BF16"]
+  ORIG -->|"no PrismaSnap marker: historical path"| SRC
+
+  subgraph PSNAP["optional additive PrismaSnap source preparation -- before [1/4]"]
+    PSPREP["PREPARED<br/>source config/index/shards + full tensor headers<br/>probe/calibration + producer/container identity"]
+    PSPLAN0["Sparky plan-dense<br/>disjoint layers; CUDA measured-fast stage,polish"]
+    PSPLAN1["Sparklina plan-dense<br/>disjoint layers; CUDA measured-fast stage,polish"]
+    PSMERGE["PLANNED<br/>merge-plans --resume<br/>exact layer union + 3 seams/layer"]
+    PSPART0["Sparky materialize-part<br/>disjoint original shards"]
+    PSPART1["Sparklina materialize-part<br/>disjoint original shards"]
+    PSTRANSFER["content-verified remote-part transfer<br/>explicit campaign stage"]
+    PSCOLLATE["MATERIALIZED<br/>merge-checkpoint-parts --resume --require-hardlinks<br/>exact shard union; same-filesystem/inode proof"]
+    PSKL["served original-BF16 → snapped-BF16<br/>all-position fold KL ≤ 5e-4"]
+    PSVER["VERIFIED<br/>source/calibration/serve/index/shard replay"]
+    PSCOMMIT["COMMITTED<br/>atomic native-pipeline handoff"]
+    PSPREP --> PSPLAN0
+    PSPREP --> PSPLAN1
+    PSPLAN0 --> PSMERGE
+    PSPLAN1 --> PSMERGE
+    PSMERGE --> PSPART0
+    PSMERGE --> PSPART1
+    PSPART0 --> PSCOLLATE
+    PSPART1 --> PSTRANSFER --> PSCOLLATE
+    PSCOLLATE --> PSKL --> PSVER --> PSCOMMIT
+  end
+
+  ORIG -. "candidate pre-pass" .-> PSPREP
+  PSCOMMIT --> SRC
   PROBE["[1/4] incremental_probe -- run-pipeline.sh:544-560<br/>per-Linear empirical Fisher h_trace<br/>artifacts/probe.pkl"]
   ACT["activation cache<br/>WORK_DIR/act"]
   CBL["learned-CB pre-render gate (scope fp8)<br/>immutable value-bearing CB_CODEBOOK_BUNDLE<br/>trained once before cost/cache/KL/export"]
@@ -1196,19 +1341,23 @@ flowchart TD
 
   classDef optin stroke:#c07800,stroke-width:2px,stroke-dasharray:4
   classDef manual stroke:#c0392b,stroke-width:2px
-  class AUR,CBH,FR,VAK,SVF,DAP0,DAP1,DAP3,DAART,SPLAN,SCACHE,SUNION optin
+  class PSPREP,PSPLAN0,PSPLAN1,PSMERGE,PSPART0,PSPART1,PSTRANSFER,PSCOLLATE,PSKL,PSVER,PSCOMMIT,AUR,CBH,FR,VAK,SVF,DAP0,DAP1,DAP3,DAART,SPLAN,SCACHE,SUNION optin
   class VNE,VQM,GOLD,NOSMOKE manual
 ```
 
 ### 3.1 Pre-flight gates
 
-In order, all failing `exit 2`: required `MODEL_PATH`/`WORK_DIR` (`43-44`); GGUF lane
-consistency (`97-110`); CB lane consistency (`119-132`); GPU-or-bust — both `DEVICE` and
-`EXPORT_DEVICE` must match `cuda*` and an inline `python3` asserts `torch.cuda.is_available()`
-(`134-145`); the archived-lever gates of §3.5 (`233-248`, `337-340`, `387-406`); `COST_MODE`
-dispatch, unknown mode rejected (`314-385`); work-dir creation (`408`); `SELECTION_MODE`
-legality (`410-416`); `MSE_PROMOTION` legality — requires validated-surrogate and a production
-cache (`417-429`); spec write/validate (`462-481`).
+In current order, all failing closed: required `MODEL_PATH`/`WORK_DIR` (`48-49`); optional
+PrismaSnap marker replay plus native-only admission (`93-99`); architecture lane and
+serving-profile resolution (`357-388`); GGUF and CB lane consistency (`508-551`);
+GPU-or-bust — both `DEVICE` and `EXPORT_DEVICE` must match `cuda*` and inline Python asserts
+`torch.cuda.is_available()` (`554-565`); the archived-lever gates of §3.5 (`737-1077`);
+`COST_MODE` dispatch and unknown-mode refusal (`391-507`, `972-1013`); work-dir creation
+(`1081`); `SELECTION_MODE` legality (`1083-1089`); and declarative spec write/validate
+(`1128-1147`). The PrismaSnap check is deliberately before profile resolution, GPU setup,
+work-dir creation, cache work, or export: a corrupt, merely `MATERIALIZED`, or non-native marked
+source cannot consume an expensive stage before refusal
+(`prismasnap_contract.require_verified_prismasnap_if_present`).
 
 The two lane gates encode one contract, and since re-vet **R3** they say so directly (§4.7):
 the GGUF and CB exporters requantize the bf16 skeleton with **imatrix-weighted** renders, so
@@ -1228,6 +1377,9 @@ which is what the rows touched since are keyed on.
 
 | # | Stage | Script | Artifact(s) | Reuse guard | Mode/lane gate |
 |---|---|---|---|---|---|
+| **PREPARED → PLANNED (optional, pre-pipeline; ×2)** | Validate the original BF16/source/probe/producer/container closure, discover exactly three dense seams per claimed layer, run the canonical CUDA `stage,polish` search, then exact-union the two disjoint layer plans | `tools/prismasnap.py plan-dense --resume`; `merge-plans --resume`; autonomous dependency/retry/barrier execution by `tools/run_cluster_campaign.py` / `prismaquant.cluster_campaign` | one self-digested plan directory per Spark; merged `plan.json` + `scales.safetensors`; campaign manifest/state/logs/sealed receipts | exact argv and producer closure; full source identity + tensor-header census; probe bytes/calibration/execution identity; canonical search; host locks and receipt hashes; merged layer cover must be disjoint, complete, and carry exactly three semantically valid seams per layer | opt-in candidate source-prep only; production requires CUDA and attested container; current planner is dense-only and excludes vision/MTP seams |
+| **PLANNED → MATERIALIZED (optional, pre-pipeline; ×2)** | Stream disjoint original shard sets through the merged transform program, transfer the remote part by explicit receipt, then exact-union on the coordinator. The strict 27B low-space arm requires hardlinks and proves device/inode identity in staging and after commit | `tools/prismasnap.py materialize-part --resume`; `merge-checkpoint-parts --resume --require-hardlinks` | two `part.json` directories with per-shard receipts; atomically committed BF16 HF checkpoint + `prismasnap_provenance.json` state `MATERIALIZED` | plan/source/header identity; exact disjoint source-shard cover; source/output hash, size, tensor shape/dtype and transform census per shard; same-filesystem hardlink proof; fsynced no-clobber staging and committed-tree replay | still outside `run-pipeline.sh`; `MATERIALIZED` is not downstream admission |
+| **MATERIALIZED → VERIFIED → COMMITTED (optional, pre-pipeline)** | Serve snapped BF16 against the original BF16 teacher, attest all-position fold KL, atomically replace provenance with the verified receipt, then hand the ordinary checkpoint to the unchanged native pipeline | `tools/measure_vllm_full_kl.py`; `tools/prismasnap.py attest-fold-fidelity`; admission by `python -m prismaquant.prismasnap_contract --model "$MODEL_PATH"` | student result + teacher metadata/payload; `prismasnap_provenance.json` state `VERIFIED`; native output copy `source_prismasnap_provenance.json` | BF16/no-quantization/no-spec-decode launch contracts; teacher/source/calibration windows and corpus; both serve fingerprints; coherent metrics; current index/weight-map/every-shard identity; forward KL `≤5e-4` | native compressed-tensors `{NVFP4, FP8_DYNAMIC, BF16}` only; GGUF and Gridbook/codebook refuse any marker; an absent marker is the historical no-op path |
 | **1/4** | Sensitivity probe — per-Linear empirical Fisher `h_trace`, body + MTP in one pass; tied heads materialized and excluded, KV-sharing cotangents grafted (§7.5) | `prismaquant.incremental_probe` (`544-560`) | `artifacts/probe.pkl`; activations → `act/`; shards → `work/`; `logs/probe.log` | settings-hash `probe` (`703`); reuse also re-checks stored `calibration_modality` | — |
 | **1/4×N (manual)** | Exact sample-axis probe map/reduce. Every worker processes the complete dense text qname census over one canonical contiguous sample partition. Stage 1 publishes raw shifted-token CE; a global scalar barrier closes the cover; stage 2 reruns phase 1 with that global mean, then the strict reducer finalizes raw Fisher/marginals once and publishes the deterministic dense-body activation union (§4.1) | `prismaquant.sample_parallel_probe` + `prismaquant.incremental_probe` + `prismaquant.sample_parallel_probe_merge` | immutable calibration/run contract and digest-bound sample cover; per-worker CE/probe/cache shards; global CE receipt; ordinary merged `probe.pkl` + `act/` | committed read-only source snapshot + host-verified immutable registry RepoDigest; source/config/header/content identity; exact sample cover replayed before GPU setup; duplicate-key-free trusted JSON; marginal-to-trace and independently replayed global top-R/fused-row checks; no-follow same-byte probe and committed-identity lazy activation consumption; no-clobber output | opt-in operator workflow; no `torch.distributed`, qname/layer partitioning, alternate cache, serving-runtime change, h-detail, visual, routed, or packed path |
 | **2/4** | Baseline per-(Linear,format) RTN cost. The measured menu is derived `COST_FORMATS`; `lm_head` is included only for a fixed non-BF16 or DP-unpinned head | `prismaquant.incremental_measure_quant_cost --[no-]include-lm-head` | `artifacts/cost.pkl` (`COST_MODE=local`) or `artifacts/cost_baseline.pkl`; `logs/cost.log` | settings-hash `base-cost`, including all three resolved head-policy axes and `COST_FORMATS` | — |
@@ -3905,6 +4057,8 @@ re-render, it is the render the gate declined to keep.
 
 | Stage | Tool | Run by the pipeline? | Verdict? |
 |---|---|---|---|
+| PrismaSnap BF16 fold fidelity | `tools/measure_vllm_full_kl.py` → `tools/prismasnap.py attest-fold-fidelity` | no — optional pre-pipeline candidate workflow | **blocking for a marked source**: original-BF16 → snapped-BF16 all-position forward KL `≤5e-4`, with BF16/no-spec-decode launch contracts and source, teacher payload, calibration, serve-fingerprint, index, weight-map, and shard-content replay; atomically transitions `MATERIALIZED` to `VERIFIED` |
+| PrismaSnap source admission | `python -m prismaquant.prismasnap_contract --model "$MODEL_PATH"`; exporter-local replay/refusal helpers | yes, but only when the source carries the marker | binary: verified content is admitted only to native compressed-tensors; missing marker is a no-op; malformed/unverified marker and every marked GGUF/Gridbook source refuse before expensive work/output |
 | Candidate real-KL (selection) | `validate_assignments_kl.py` | yes, only under `SELECTION_MODE=validated-surrogate` (`run-pipeline.sh:1223-1278`) | ranks, does not gate |
 | Artifact survey (PPL/MMLU/end-KL) | `validation_harness.py` | no | **no thresholds at all** |
 | vLLM load + greedy smoke | `validate_native_export.py` | **echoed only** (`run-pipeline.sh:1704-1705`) | binary |
@@ -3917,10 +4071,14 @@ re-render, it is the render the gate declined to keep.
 | Ship record | `exported/shipcard.json` (opened by the exporter) → `python -m prismaquant.shipcard_cli verify` | opened by every export | **refuses** until every serve-lane slot is closed |
 | **Publication** | `tools/publish_artifact.py` | no — operator-run | **BLOCKING**: refuses to upload (or even print the upload command) unless `shipcard.verify` passes |
 
-Nothing in the pipeline blocks on a quality number — and it should not: `vllm` is not
+Nothing in the ordinary quantization pipeline blocks on an artifact-quality number — and it
+should not: `vllm` is not
 importable in the build venv, so embedding a serve inside `run-pipeline.sh` would make the
-build tool own the serving stack. The boundary is physical, so the contract is a **record**,
-not CI.
+build tool own the serving stack. PrismaSnap's `≤5e-4` check is different in kind: it is a
+prerequisite source-integrity/fold-fidelity transition completed before `run-pipeline.sh`, not a
+quantized-artifact promotion result. Once its `VERIFIED` record exists, the build pipeline only
+replays that record and the current source bytes. The ordinary build/serve boundary remains
+physical, so its contract is a **record**, not CI.
 
 **The bar is defined once, per lane** (`prismaquant/lane_specs/*.json` + `lane_spec.py`, re-vet
 **R16**). Each lane declares its `{serve command/scripts, endpoint, gate set, KL evaluator}`,
@@ -5169,12 +5327,33 @@ maps it names, the rest inheriting the base block. Selection input is what the c
 declared: `registry._resolve` hands every profile its `model_type`/`architectures` via
 `ModelProfile.declare_config`, and `structure_spec()` applies `spec.for_config(...)` **only**
 when the spec declares variants — every other spec is returned untouched, and a profile
-constructed by hand declares nothing and keeps its historical derivation. `qwen3_5_dense.json`
-is the only spec with variants today. A profile that specializes naming must also specialize
-`vllm_architecture_class()` (`qwen3_5_dense.py`), or the two sources of the map disagree and a
-build host with vLLM installed would emit different names than one without. `source_tensor_name`
-is unaffected — the checkpoint legitimately spells both classes `model.language_model.*`, which
-is exactly what the text-only class's mapper exists to strip.
+constructed by hand declares nothing and keeps its historical derivation. Both
+`qwen3_5_dense.json` and `qwen3_5.json` now carry variants. A profile that specializes naming
+must also specialize `vllm_architecture_class()` (`qwen3_5_dense.py`, `qwen3_5.py`), or the two
+sources of the map disagree and a build host with vLLM installed would emit different names
+than one without.
+
+The MoE case needs one more distinction: serving namespace and source namespace are independent
+facts. An official native-causal Qwen3.5-family checkpoint uses `model.layers.*` in its index
+and vLLM tree, while the multimodal wrapper uses `model.language_model.layers.*` on disk and
+`language_model.model.layers.*` in vLLM. Internal `stage_text_only` can legitimately declare the
+causal serving class while retaining a symlinked wrapper-named source index. Path-based
+`detect_profile` therefore records the checkpoint root as private intake evidence;
+`Qwen3_5Profile._checkpoint_source_layout` censuses the actual index for source lookup while the
+exact declared architecture continues to select the vLLM class. Mixed, absent, or unknown
+namespace evidence fails closed rather than inheriting the wrapper default
+(`model_profiles/registry.py:detect_profile`; `model_profiles/qwen3_5.py`). This lands namespace
+intake for the future MoE PrismaSnap gate; it does not implement that gate or assert the layout
+of an unreleased checkpoint.
+
+Offline function-preserving folds also need the stored RMSNorm parameter convention, which is
+not inferable safely from values. `ModelProfile.rms_norm_parameter_offset()` therefore defaults
+to `None`; a transform must refuse that profile unless it explicitly returns `0.0` for literal
+gamma or the architecture's declared offset. Qwen3.5/Qwen3.8 returns `1.0`, matching execution
+with effective `gamma = 1 + weight`, so its materialized update is
+`weight' = (weight + 1)d - 1` (`model_profiles/base.py`, `qwen3_5.py`;
+`prismasnap_checkpoint._discover_dense_layer_graph`). This accessor is source-algebra metadata,
+not a quantization or serving default.
 
 The adapter is `model_profiles/vllm_registry.py`: `vllm_class_for_architecture` (`:25-102`)
 tries four registry APIs plus internal-table fallbacks and degrades to `None` when vLLM is
@@ -6414,12 +6593,26 @@ decision rather than operator policy. Strix Halo enters this lane first, serving
 
 ## 10. Hardware & environment
 
-One NVIDIA GB10 / DGX Spark ("sparky"), Blackwell sm_121, **128 GB unified memory** shared
-physically between CPU and GPU, ~121 GB usable, 1.8 TB NVMe. Two consequences that catch every
-newcomer: "move it to CPU to spare the GPU" is a **no-op** for memory pressure, and a
-production run gets the box — concurrent heavy agents or downloads starve the launch-bound cost
-loop. Every production hot path must be GPU-bound; `prismaquant/gpu_guard.py:7`
-(`require_cuda_hot_path`) refuses to run otherwise (though seven stages never call it — §12 D9).
+The primary build hardware is now two NVIDIA GB10 / DGX Sparks, **Sparky** and **Sparklina**,
+each Blackwell sm_121 with **128 GB unified memory** shared physically between CPU and GPU
+(~121 GB usable). Sparky has the historically documented 1.8 TB NVMe; campaign manifests bind
+each host's own absolute work root rather than assuming identical free space. Two consequences
+that catch every newcomer: "move it to CPU to spare the GPU" is a **no-op** for memory pressure,
+and a production run owns each assigned box — concurrent serves, heavy agents, or downloads
+starve the launch-bound loop. Every production hot path must be GPU-bound;
+`prismaquant/gpu_guard.py:7` (`require_cuda_hot_path`) refuses to run otherwise (though seven
+stages never call it — §12 D9).
+
+The current PrismaSnap candidate uses both Sparks for source preparation. The two
+hosts are peers only for explicitly manifest-partitioned planning/materialization: neither may
+infer work from the other's progress. Both plans must bind the same portable source, probe,
+canonical search, producer source closure, and attested container-rootfs identity; the
+coordinator then verifies exact layer/shard covers and all transferred content. The final
+low-space merge runs where both part directories reside on one filesystem and requires
+hardlinks. Those orchestration and transfer stages are offline lifecycle work; after the
+verified BF16 checkpoint is committed, the ordinary production pipeline retains its existing
+GPU-resident cache/prefetch contracts (§3.0; `prismaquant.cluster_campaign`,
+`prismasnap_checkpoint.merge_checkpoint_parts`).
 
 The strict Qwen3.8 FP8-CB campaign adds a second target, not a second qualified
 machine: one physical 24 GiB RTX 4090/sm89. GB10 can exercise architecture-independent code and
