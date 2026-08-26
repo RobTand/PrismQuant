@@ -1,8 +1,15 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-25 · `codex/prismasnap-bf16-v2-20260825` · working-tree revision over
-parent `aaa44eac7adb1d7f191cf25794d0524a53b602dc` — stamps follow, newest first, each
-recording its own branch and date. Re-stamped (2026-08-25,
+As of: 2026-08-26 · `claude/snapquant-productionalization` — stamps follow, newest
+first, each recording its own branch and date. Re-stamped (2026-08-26,
+`claude/snapquant-productionalization`) for the **model-calibrated PrismaSnap fold
+threshold**: the served fold gate is no longer the fixed `5e-4` alone but
+`max(5e-4, 2.0 × measured null perturbation floor)` when the attestor receives a
+saturation-licensed null-floor receipt, content-hashed into
+`fold_fidelity.threshold_derivation` (the fixed constant, calibrated at 0.6B, sits
+below the measured 27B BF16 perturbation floor; evidence and decision in
+`docs/results/qwen38_prismasnap_fold_gate_floor_2026-08-26.md`). The realized v2
+machinery is merged with the MoE plan family on one mainline. Re-stamped (2026-08-25,
 `codex/prismasnap-bf16-v2-20260825`) for the **cast-aware BF16-realized PrismaSnap v2
 plan transition**. The nominal fast `stage,polish` v1 search remains the immutable parent,
 but it is no longer executed directly by the repaired arm. `realize-bf16` accepts only one
@@ -36,8 +43,15 @@ campaign runner can close an explicit local/SSH dependency graph without an agen
 workers build disjoint layer plans and shard parts, exact-union merges reject overlaps or gaps,
 and the low-space campaign requires same-filesystem hardlink collation after the remote part is
 content-verified on the coordinator. Materialization alone is not admission; original-BF16 to
-snapped-BF16 served all-position KL must be at most `5e-4`, with source, calibration, evaluator,
-serve-stack, index, and shard identities replayed before the atomic `VERIFIED` transition.
+snapped-BF16 served all-position KL must be at most the attested fold threshold — the plan's
+`5e-4` by default, or `max(5e-4, 2.0 × the model's measured null perturbation floor)` when the
+attestor is given a saturation-licensed null-floor receipt (2026-08-26: the fixed `5e-4`,
+calibrated at 0.6B, sits below the 27B BF16 perturbation floor of ~5–6.6e-4, so the threshold
+is now derived per model; see `docs/results/qwen38_prismasnap_fold_gate_floor_2026-08-26.md`).
+The receipt requires at least two independent matched-mass null arms agreeing within 3×, is
+content-hashed into `fold_fidelity.threshold_derivation`, and is re-validated on every
+provenance read. Source, calibration, evaluator, serve-stack, index, and shard identities are
+replayed before the atomic `VERIFIED` transition.
 The pipeline GGUF branch and direct-GGUF API, plus both Gridbook/codebook exporters, reject any
 PrismaSnap marker; the native exporter replays
 the verified source immediately before copying its receipt under the unambiguous
@@ -1165,7 +1179,9 @@ The application lifecycle is
 - **VERIFIED** is the only state admitted downstream. `attest-fold-fidelity` replays the original
   source identity, teacher payload and calibration windows, BF16 teacher/student launch
   contracts, both serve fingerprints, all-position metric coherence, and current checkpoint
-  bytes; original-BF16 → snapped-BF16 forward KL must be `≤5e-4`.
+  bytes; original-BF16 → snapped-BF16 forward KL must be at most the attested threshold:
+  the plan's `5e-4`, or `max(5e-4, 2.0 × measured null floor)` under a saturation-licensed
+  `--null-floor-receipt` whose content hash is stamped into the verified provenance.
 - **COMMITTED** is the fail-closed handoff of that verified source to the unchanged native
   pipeline/export transaction. `PLANNED`, `REALIZED`, `MATERIALIZED`, and `VERIFIED` are
   serialized receipt states; `PREPARED` and `COMMITTED` name validated transition boundaries rather than additional
@@ -1239,7 +1255,7 @@ flowchart TD
     PSPART1["Sparklina materialize-part<br/>disjoint original shards"]
     PSTRANSFER["content-verified remote-part transfer<br/>explicit campaign stage"]
     PSCOLLATE["MATERIALIZED<br/>merge-checkpoint-parts --resume --require-hardlinks<br/>exact shard union; same-filesystem/inode proof"]
-    PSKL["served original-BF16 → snapped-BF16<br/>all-position fold KL ≤ 5e-4"]
+    PSKL["served original-BF16 → snapped-BF16<br/>all-position fold KL ≤ max(5e-4, 2× null floor)"]
     PSVER["VERIFIED<br/>source/calibration/serve/index/shard replay"]
     PSCOMMIT["COMMITTED<br/>atomic native-pipeline handoff"]
     PSPREP --> PSPLAN0

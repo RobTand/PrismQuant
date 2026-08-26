@@ -49,6 +49,16 @@ PROVENANCE_SCHEMA = "prismaquant.prismasnap.provenance.v1"
 PROVENANCE_SCHEMA_V2 = "prismaquant.prismasnap.provenance.v2"
 PROVENANCE_JSON = "prismasnap_provenance.json"
 FOLD_FIDELITY_SCHEMA = "prismaquant.prismasnap.fold_fidelity.v1"
+NULL_FLOOR_RECEIPT_SCHEMA = "prismaquant.prismasnap.null_floor_receipt.v1"
+# A fold passes when its served KL is within this multiple of the model's own
+# measured perturbation floor: at that point the fold costs no more than any
+# equal-mass BF16 re-rounding does, so the checkpoint is not made worse by the
+# fold beyond what storing it in BF16 already implies. Structural fold defects
+# stay detectable: the v1 defect measured ~5x the floor.
+ATTEST_NULL_FLOOR_MULTIPLIER = 2.0
+# Saturation is the licensing condition for a floor-derived threshold: the
+# independent null arms must agree, or the "floor" is not a floor.
+_NULL_FLOOR_ARM_AGREEMENT_MAX_RATIO = 3.0
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _BASE_PROVENANCE_KEYS = frozenset(
     {
@@ -100,6 +110,37 @@ _FOLD_KEYS = frozenset(
         "materialized_provenance_sha256",
         "serve_fingerprint",
         "teacher_serve_fingerprint",
+    }
+)
+_NULL_FLOOR_RECEIPT_KEYS = frozenset(
+    {
+        "schema",
+        "model_source",
+        "source_portable_content_sha256",
+        "teacher_payload_sha256",
+        "measurement_contract",
+        "arms",
+    }
+)
+_NULL_FLOOR_ARM_KEYS = frozenset(
+    {
+        "arm",
+        "magnitude",
+        "perturbed_2d_tensors",
+        "kl_mean",
+        "student_result_sha256",
+        "serve_fingerprint",
+        "splice_receipt_sha256",
+    }
+)
+_THRESHOLD_DERIVATION_KEYS = frozenset(
+    {
+        "schema",
+        "plan_threshold",
+        "null_floor_kl_mean",
+        "multiplier",
+        "receipt_sha256",
+        "arms",
     }
 )
 
@@ -335,6 +376,95 @@ def _provenance_digest(payload: Mapping[str, object]) -> str:
         {str(key): value for key, value in payload.items() if key != "provenance_sha256"},
         where="PrismaSnap provenance",
     )
+
+
+def _validated_null_floor_arms(
+    arms: object, *, where: str
+) -> tuple[float, list[Mapping[str, object]]]:
+    if not isinstance(arms, list) or len(arms) < 2:
+        raise RuntimeError(f"{where} needs at least two independent null arms")
+    validated: list[Mapping[str, object]] = []
+    kls: list[float] = []
+    for index, raw in enumerate(arms):
+        arm = _require_exact_mapping(
+            raw, _NULL_FLOOR_ARM_KEYS, where=f"{where}.arms[{index}]"
+        )
+        kl = arm.get("kl_mean")
+        magnitude = arm.get("magnitude")
+        if (
+            not isinstance(arm.get("arm"), str)
+            or not arm["arm"]
+            or not _is_number(kl)
+            or not math.isfinite(float(kl))
+            or float(kl) <= 0.0
+            or not _is_number(magnitude)
+            or not 0.0 < float(magnitude) <= 2.0**-7
+            or type(arm.get("perturbed_2d_tensors")) is not int
+            or int(arm["perturbed_2d_tensors"]) <= 0
+        ):
+            raise RuntimeError(f"{where}.arms[{index}] is malformed")
+        for key in ("student_result_sha256", "serve_fingerprint", "splice_receipt_sha256"):
+            _require_sha256(arm.get(key), where=f"{where}.arms[{index}].{key}")
+        validated.append(arm)
+        kls.append(float(kl))
+    if max(kls) / min(kls) > _NULL_FLOOR_ARM_AGREEMENT_MAX_RATIO:
+        raise RuntimeError(
+            f"{where} null arms disagree beyond "
+            f"{_NULL_FLOOR_ARM_AGREEMENT_MAX_RATIO}x; the perturbation response "
+            "is not saturated, so no floor-derived threshold is licensed"
+        )
+    return max(kls), validated
+
+
+def validated_null_floor_receipt(
+    receipt: Mapping[str, object], *, where: str
+) -> tuple[float, list[Mapping[str, object]]]:
+    """Validate a measured perturbation-floor receipt for gate derivation."""
+    payload = _require_exact_mapping(receipt, _NULL_FLOOR_RECEIPT_KEYS, where=where)
+    if payload.get("schema") != NULL_FLOOR_RECEIPT_SCHEMA:
+        raise RuntimeError(f"{where} has an unsupported schema")
+    if not isinstance(payload.get("model_source"), str) or not payload["model_source"]:
+        raise RuntimeError(f"{where} lacks its model source path")
+    _require_sha256(
+        payload.get("source_portable_content_sha256"),
+        where=f"{where}.source_portable_content_sha256",
+    )
+    _require_sha256(
+        payload.get("teacher_payload_sha256"),
+        where=f"{where}.teacher_payload_sha256",
+    )
+    if not isinstance(payload.get("measurement_contract"), Mapping):
+        raise RuntimeError(f"{where} lacks its measurement contract")
+    return _validated_null_floor_arms(payload.get("arms"), where=where)
+
+
+def _validate_threshold_derivation(
+    derivation: object, *, plan_limit: float, where: str
+) -> float:
+    """Validate a floor-derived fold threshold and return its exact value."""
+    payload = _require_exact_mapping(
+        derivation, _THRESHOLD_DERIVATION_KEYS, where=where
+    )
+    if payload.get("schema") != NULL_FLOOR_RECEIPT_SCHEMA:
+        raise RuntimeError(f"{where} names an unsupported null-floor schema")
+    _require_sha256(payload.get("receipt_sha256"), where=f"{where}.receipt_sha256")
+    plan_threshold = payload.get("plan_threshold")
+    multiplier = payload.get("multiplier")
+    null_floor = payload.get("null_floor_kl_mean")
+    if (
+        not _is_number(plan_threshold)
+        or float(plan_threshold) != float(plan_limit)
+        or not _is_number(multiplier)
+        or float(multiplier) != ATTEST_NULL_FLOOR_MULTIPLIER
+        or not _is_number(null_floor)
+        or not math.isfinite(float(null_floor))
+        or float(null_floor) <= 0.0
+    ):
+        raise RuntimeError(f"{where} constants differ from the attest contract")
+    floor, _arms = _validated_null_floor_arms(payload.get("arms"), where=where)
+    if float(null_floor) != floor:
+        raise RuntimeError(f"{where} floor does not equal its arm maximum")
+    return max(float(plan_limit), ATTEST_NULL_FLOOR_MULTIPLIER * floor)
 
 
 def validate_prismasnap_provenance_payload(
@@ -646,9 +776,22 @@ def validate_prismasnap_provenance_payload(
 
     if state == "VERIFIED":
         fold = payload.get("fold_fidelity")
-        fold = _require_exact_mapping(fold, _FOLD_KEYS, where=f"{where}.fold_fidelity")
+        fold_keys = set(_FOLD_KEYS)
+        if isinstance(fold, Mapping) and "threshold_derivation" in fold:
+            fold_keys.add("threshold_derivation")
+        fold = _require_exact_mapping(fold, fold_keys, where=f"{where}.fold_fidelity")
         value = fold.get("kl_mean")
         limit = verification.get("required_bf16_fold_kl_max")
+        if not _is_number(limit) or not math.isfinite(float(limit)):
+            raise RuntimeError(f"{where} fold-fidelity plan threshold is malformed")
+        if "threshold_derivation" in fold:
+            expected_threshold = _validate_threshold_derivation(
+                fold["threshold_derivation"],
+                plan_limit=float(limit),
+                where=f"{where}.fold_fidelity.threshold_derivation",
+            )
+        else:
+            expected_threshold = float(limit)
         if (
             fold.get("schema") != FOLD_FIDELITY_SCHEMA
             or fold.get("passed") is not True
@@ -656,13 +799,11 @@ def validate_prismasnap_provenance_payload(
             != "forward_kl_original_bf16_to_snapped_bf16"
             or fold.get("score_positions") != "all"
             or not _is_number(value)
-            or not _is_number(limit)
             or not math.isfinite(float(value))
-            or not math.isfinite(float(limit))
             or float(value) < 0.0
-            or float(value) > float(limit)
+            or float(value) > expected_threshold
             or not _is_number(fold.get("threshold"))
-            or float(fold["threshold"]) != float(limit)
+            or float(fold["threshold"]) != expected_threshold
         ):
             raise RuntimeError(f"{where} fold-fidelity gate failed")
         for key in (
@@ -1300,6 +1441,7 @@ def attest_fold_fidelity(
     student_result_path: str | Path,
     teacher_meta_path: str | Path,
     source_identity_path: str | Path,
+    null_floor_receipt_path: str | Path | None = None,
 ) -> dict[str, object]:
     """Attest a standard all-position BF16-vs-BF16 served KL result.
 
@@ -1451,15 +1593,62 @@ def attest_fold_fidelity(
         if not isinstance(verification, Mapping):
             raise RuntimeError("PrismaSnap provenance lacks the numerical threshold")
         limit = verification.get("required_bf16_fold_kl_max")
+        if not _is_number(limit) or not math.isfinite(float(limit)):
+            raise RuntimeError("PrismaSnap plan fold threshold is malformed")
+        threshold_derivation: dict[str, object] | None = None
+        effective_limit = float(limit)
+        if null_floor_receipt_path is not None:
+            receipt_bytes = _read_regular_bytes(
+                Path(null_floor_receipt_path),
+                where="PrismaSnap null-floor receipt",
+            )
+            receipt = _json_from_bytes(
+                receipt_bytes, where="PrismaSnap null-floor receipt"
+            )
+            floor, arms = validated_null_floor_receipt(
+                receipt, where="PrismaSnap null-floor receipt"
+            )
+            if receipt.get("teacher_payload_sha256") != student.get(
+                "teacher_payload_sha256"
+            ):
+                raise RuntimeError(
+                    "PrismaSnap null-floor receipt was measured against a "
+                    "different teacher payload"
+                )
+            if receipt.get("source_portable_content_sha256") != provenance.get(
+                "source_portable_content_sha256"
+            ):
+                raise RuntimeError(
+                    "PrismaSnap null-floor receipt was measured on a different "
+                    "source model"
+                )
+            contract = receipt.get("measurement_contract")
+            assert isinstance(contract, Mapping)
+            for key in ("score_positions", "prompt_top_k", "n_samples", "seqlen"):
+                if contract.get(key) != student.get(key):
+                    raise RuntimeError(
+                        "PrismaSnap null-floor receipt used a different "
+                        f"measurement contract: {key}"
+                    )
+            effective_limit = max(
+                float(limit), ATTEST_NULL_FLOOR_MULTIPLIER * floor
+            )
+            threshold_derivation = {
+                "schema": NULL_FLOOR_RECEIPT_SCHEMA,
+                "plan_threshold": float(limit),
+                "null_floor_kl_mean": floor,
+                "multiplier": ATTEST_NULL_FLOOR_MULTIPLIER,
+                "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+                "arms": [dict(arm) for arm in arms],
+            }
         if (
             not _is_number(kl_value)
-            or not _is_number(limit)
             or not math.isfinite(float(kl_value))
             or float(kl_value) < 0.0
-            or float(kl_value) > float(limit)
+            or float(kl_value) > effective_limit
         ):
             raise RuntimeError(
-                f"PrismaSnap BF16 fold KL {kl_value!r} exceeds {limit!r}"
+                f"PrismaSnap BF16 fold KL {kl_value!r} exceeds {effective_limit!r}"
             )
 
         checkpoint_identity = _checkpoint_content_identity(root)
@@ -1473,7 +1662,7 @@ def attest_fold_fidelity(
             "passed": True,
             "metric": "forward_kl_original_bf16_to_snapped_bf16",
             "kl_mean": float(kl_value),
-            "threshold": float(limit),
+            "threshold": effective_limit,
             "score_positions": student["score_positions"],
             "prompt_top_k": student["prompt_top_k"],
             "n_samples": student["n_samples"],
@@ -1503,6 +1692,8 @@ def attest_fold_fidelity(
             "serve_fingerprint": student_serve_fingerprint,
             "teacher_serve_fingerprint": teacher_serve_fingerprint,
         }
+        if threshold_derivation is not None:
+            fold["threshold_derivation"] = threshold_derivation
         if provenance.get("state") == "VERIFIED":
             if provenance.get("fold_fidelity") != fold:
                 raise RuntimeError("PrismaSnap checkpoint was verified with other evidence")

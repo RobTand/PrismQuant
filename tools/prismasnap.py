@@ -223,6 +223,14 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="full streamed-model identity for the original BF16 source",
     )
+    attest.add_argument(
+        "--null-floor-receipt",
+        default=None,
+        help=(
+            "measured perturbation-floor receipt; derives the fold threshold "
+            "as max(plan threshold, 2x the measured null floor)"
+        ),
+    )
 
     inspect = sub.add_parser("inspect", help="verify and summarize a plan")
     inspect.add_argument("--plan", required=True)
@@ -344,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
             args.student_result,
             args.teacher_meta,
             args.source_identity,
+            null_floor_receipt_path=args.null_floor_receipt,
         )
         _print(
             {

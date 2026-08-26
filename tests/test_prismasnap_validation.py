@@ -365,3 +365,140 @@ def test_fold_attestation_rejects_changed_original_source_bytes(tmp_path: Path) 
     source_shard.write_bytes(source_shard.read_bytes() + b"tamper")
     with pytest.raises(RuntimeError, match="size changed|content changed"):
         attest_fold_fidelity(checkpoint, student, teacher, source_identity)
+
+
+def _null_floor_receipt(
+    tmp_path: Path,
+    student: Path,
+    checkpoint: Path,
+    *,
+    kls: tuple[float, float] = (6.0e-4, 6.5e-4),
+    teacher_payload_sha256: str | None = None,
+) -> Path:
+    student_payload = json.loads(student.read_text(encoding="utf-8"))
+    provenance = json.loads(
+        (checkpoint / "prismasnap_provenance.json").read_text(encoding="utf-8")
+    )
+    receipt = {
+        "schema": "prismaquant.prismasnap.null_floor_receipt.v1",
+        "model_source": provenance["source_model"],
+        "source_portable_content_sha256": provenance[
+            "source_portable_content_sha256"
+        ],
+        "teacher_payload_sha256": (
+            teacher_payload_sha256
+            if teacher_payload_sha256 is not None
+            else student_payload["teacher_payload_sha256"]
+        ),
+        "measurement_contract": {
+            key: student_payload[key]
+            for key in ("score_positions", "prompt_top_k", "n_samples", "seqlen")
+        },
+        "arms": [
+            {
+                "arm": name,
+                "magnitude": magnitude,
+                "perturbed_2d_tensors": 496,
+                "kl_mean": value,
+                "student_result_sha256": "3" * 64,
+                "serve_fingerprint": "4" * 64,
+                "splice_receipt_sha256": "5" * 64,
+            }
+            for name, magnitude, value in (
+                ("half_ulp", 2.0**-8, kls[0]),
+                ("full_ulp", 2.0**-7, kls[1]),
+            )
+        ],
+    }
+    path = tmp_path / "null_floor_receipt.json"
+    _write_json(path, receipt)
+    return path
+
+
+def test_null_floor_receipt_derives_fold_threshold(tmp_path: Path) -> None:
+    checkpoint, student, teacher, source_identity = _fixture(tmp_path, kl=6.2e-4)
+    with pytest.raises(RuntimeError, match="exceeds"):
+        attest_fold_fidelity(checkpoint, student, teacher, source_identity)
+    receipt = _null_floor_receipt(tmp_path, student, checkpoint)
+    result = attest_fold_fidelity(
+        checkpoint,
+        student,
+        teacher,
+        source_identity,
+        null_floor_receipt_path=receipt,
+    )
+    assert result["state"] == "VERIFIED"
+    fold = result["fold_fidelity"]
+    assert fold["threshold"] == max(5e-4, 2.0 * 6.5e-4)
+    derivation = fold["threshold_derivation"]
+    assert derivation["null_floor_kl_mean"] == 6.5e-4
+    assert derivation["plan_threshold"] == 5e-4
+    validate_prismasnap_provenance_payload(
+        result, require_verified=True, where="test"
+    )
+    require_verified_prismasnap_if_present(checkpoint)
+    assert (
+        attest_fold_fidelity(
+            checkpoint,
+            student,
+            teacher,
+            source_identity,
+            null_floor_receipt_path=receipt,
+        )
+        == result
+    )
+
+
+def test_null_floor_receipt_requires_saturation_agreement(tmp_path: Path) -> None:
+    checkpoint, student, teacher, source_identity = _fixture(tmp_path, kl=6.2e-4)
+    receipt = _null_floor_receipt(
+        tmp_path, student, checkpoint, kls=(1.0e-4, 6.5e-4)
+    )
+    with pytest.raises(RuntimeError, match="not saturated"):
+        attest_fold_fidelity(
+            checkpoint,
+            student,
+            teacher,
+            source_identity,
+            null_floor_receipt_path=receipt,
+        )
+
+
+def test_null_floor_receipt_binds_teacher_payload(tmp_path: Path) -> None:
+    checkpoint, student, teacher, source_identity = _fixture(tmp_path, kl=6.2e-4)
+    receipt = _null_floor_receipt(
+        tmp_path, student, checkpoint, teacher_payload_sha256="6" * 64
+    )
+    with pytest.raises(RuntimeError, match="different teacher payload"):
+        attest_fold_fidelity(
+            checkpoint,
+            student,
+            teacher,
+            source_identity,
+            null_floor_receipt_path=receipt,
+        )
+
+
+def test_null_floor_derivation_cannot_be_edited_after_verification(
+    tmp_path: Path,
+) -> None:
+    checkpoint, student, teacher, source_identity = _fixture(tmp_path, kl=6.2e-4)
+    receipt = _null_floor_receipt(tmp_path, student, checkpoint)
+    result = attest_fold_fidelity(
+        checkpoint,
+        student,
+        teacher,
+        source_identity,
+        null_floor_receipt_path=receipt,
+    )
+    payload = dict(result)
+    fold = dict(payload["fold_fidelity"])
+    derivation = dict(fold["threshold_derivation"])
+    derivation["null_floor_kl_mean"] = 5.0e-3
+    fold["threshold_derivation"] = derivation
+    payload["fold_fidelity"] = fold
+    payload["provenance_sha256"] = validation._provenance_digest(payload)
+    with pytest.raises(RuntimeError, match="floor does not equal its arm maximum"):
+        validate_prismasnap_provenance_payload(
+            payload, require_verified=True, where="test"
+        )
