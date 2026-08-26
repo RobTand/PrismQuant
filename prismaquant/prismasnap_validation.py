@@ -27,10 +27,26 @@ from .cost_streaming import (
     portable_streamed_model_content_identity,
     validate_streamed_model_identity,
 )
-from .prismasnap import PRISMASNAP_ALGORITHM, PrismaSnapSearchConfig
+from .prismasnap import (
+    PRISMASNAP_ALGORITHM,
+    PRISMASNAP_BF16_REALIZATION_POLICY,
+    PRISMASNAP_BF16_REALIZED_ALGORITHM,
+    PrismaSnapSearchConfig,
+)
+from .prismasnap_checkpoint import (
+    BF16_REALIZATION_SCHEMA,
+    PLAN_SET_SCHEMA,
+    _BF16_DERIVATION_KEYS,
+    _BF16_DERIVATION_PARENT_KEYS,
+    _BF16_DERIVATION_SOURCE_KEYS,
+    _BF16_REALIZED_NORM_KEYS,
+    _BF16_REALIZED_UPDOWN_KEYS,
+    _derivation_digest,
+)
 
 
 PROVENANCE_SCHEMA = "prismaquant.prismasnap.provenance.v1"
+PROVENANCE_SCHEMA_V2 = "prismaquant.prismasnap.provenance.v2"
 PROVENANCE_JSON = "prismasnap_provenance.json"
 FOLD_FIDELITY_SCHEMA = "prismaquant.prismasnap.fold_fidelity.v1"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -116,6 +132,158 @@ def _is_number(value: object) -> bool:
     return type(value) in {int, float}
 
 
+def _validate_bf16_derivation(value: object, *, where: str) -> None:
+    derivation = _require_exact_mapping(value, _BF16_DERIVATION_KEYS, where=where)
+    if (
+        derivation.get("schema") != BF16_REALIZATION_SCHEMA
+        or derivation.get("policy") != PRISMASNAP_BF16_REALIZATION_POLICY
+        or derivation.get("nominal_search_stats_semantics")
+        != "copied_parent_v1_nominal_search_not_executed"
+        or derivation.get("realized_execution_metrics_semantics")
+        != "exact_static6_nvfp4_on_executed_bf16_consumer_weights"
+        or derivation.get("derivation_sha256") != _derivation_digest(derivation)
+    ):
+        raise RuntimeError(f"{where} contract failed")
+    parent = _require_exact_mapping(
+        derivation.get("parent"),
+        _BF16_DERIVATION_PARENT_KEYS,
+        where=f"{where}.parent",
+    )
+    if (
+        parent.get("schema") != PLAN_SET_SCHEMA
+        or parent.get("algorithm") != PRISMASNAP_ALGORITHM
+        or not isinstance(parent.get("producer"), Mapping)
+    ):
+        raise RuntimeError(f"{where} parent is not merged v1")
+    _require_sha256(parent.get("plan_sha256"), where=f"{where}.parent.plan")
+    _require_sha256(parent.get("scales_sha256"), where=f"{where}.parent.scales")
+    source = _require_exact_mapping(
+        derivation.get("source"),
+        _BF16_DERIVATION_SOURCE_KEYS,
+        where=f"{where}.source",
+    )
+    _require_sha256(
+        source.get("local_content_sha256"), where=f"{where}.source.local"
+    )
+    _require_sha256(
+        source.get("portable_content_sha256"), where=f"{where}.source.portable"
+    )
+    seams = derivation.get("seams")
+    if not isinstance(seams, list) or not seams:
+        raise RuntimeError(f"{where} has no seam execution records")
+    seen: set[tuple[int, str]] = set()
+    for ordinal, raw in enumerate(seams):
+        if not isinstance(raw, Mapping):
+            raise RuntimeError(f"{where}.seams[{ordinal}] is malformed")
+        kind = raw.get("kind")
+        keys = (
+            _BF16_REALIZED_NORM_KEYS
+            if kind in {"input_norm", "post_attention_norm"}
+            else _BF16_REALIZED_UPDOWN_KEYS
+        )
+        row = _require_exact_mapping(raw, keys, where=f"{where}.seams[{ordinal}]")
+        layer = row.get("layer")
+        if type(layer) is not int or layer < 0 or kind not in {
+            "input_norm",
+            "post_attention_norm",
+            "up_down",
+        }:
+            raise RuntimeError(f"{where}.seams[{ordinal}] key is malformed")
+        key = (layer, str(kind))
+        if key in seen:
+            raise RuntimeError(f"{where} repeats a seam")
+        seen.add(key)
+        _require_sha256(row.get("graph_sha256"), where=f"{where} graph")
+        for name in (
+            "nominal_vector_sha256",
+            "executed_vector_sha256",
+        ):
+            _require_sha256(row.get(name), where=f"{where}.{name}")
+        channels = row.get("channels")
+        executed_channels = row.get("executed_realized_channels")
+        executed_groups = row.get("executed_groups_moved")
+        group_size = PrismaSnapSearchConfig().group_size
+        if (
+            type(channels) is not int
+            or channels <= 0
+            or channels % group_size != 0
+            or type(executed_channels) is not int
+            or executed_channels < 0
+            or executed_channels > channels
+            or type(executed_groups) is not int
+            or executed_groups < 0
+            or executed_groups > channels // group_size
+        ):
+            raise RuntimeError(f"{where} execution census is malformed")
+        if kind == "up_down":
+            if (
+                executed_channels != 0
+                or executed_groups != 0
+                or row.get("policy_reason")
+                != "disabled_for_bf16_fold_fidelity_v2"
+            ):
+                raise RuntimeError(f"{where} up/down was not forced to identity")
+            continue
+        _require_sha256(
+            row.get("projected_norm_sha256"), where=f"{where} projected norm"
+        )
+        count_names = (
+            "candidate_realized_channels",
+            "source_zero_channels",
+            "projected_zero_channels",
+            "sign_mismatch_channels",
+            "nonfinite_channels",
+            "reapplication_mismatch_channels",
+        )
+        if any(
+            type(row.get(name)) is not int
+            or int(row[name]) < 0
+            or int(row[name]) > channels
+            for name in count_names
+        ):
+            raise RuntimeError(f"{where} projection reason counts are malformed")
+        baseline = row.get("objective_baseline")
+        realized = row.get("objective_realized")
+        improvement = row.get("objective_improvement_fraction")
+        accepted = row.get("objective_accepted")
+        if (
+            not _is_number(baseline)
+            or not math.isfinite(float(baseline))
+            or float(baseline) < 0.0
+            or not _is_number(realized)
+            or not math.isfinite(float(realized))
+            or float(realized) < 0.0
+            or float(realized) > float(baseline)
+            or not _is_number(improvement)
+            or not math.isfinite(float(improvement))
+            or type(accepted) is not bool
+            or (accepted and not float(realized) < float(baseline))
+            or (not accepted and float(realized) != float(baseline))
+            or row.get("objective_fallback_reason")
+            != (None if accepted else "no_strict_realized_bf16_improvement")
+            or row.get("projected_norm_materialization") != "replace_bf16"
+            or row.get("consumer_inverse_materialization")
+            != "divide_then_round_bf16"
+        ):
+            raise RuntimeError(f"{where} realized objective is malformed")
+        expected_improvement = (
+            0.0
+            if float(baseline) == 0.0
+            else (float(baseline) - float(realized)) / float(baseline)
+        )
+        if not math.isclose(
+            float(improvement), expected_improvement, rel_tol=1e-12, abs_tol=1e-15
+        ):
+            raise RuntimeError(f"{where} realized objective is incoherent")
+        if accepted and (
+            executed_channels != row.get("candidate_realized_channels")
+            or executed_groups <= 0
+        ):
+            raise RuntimeError(f"{where} accepted execution census differs")
+        if not accepted and (executed_channels != 0 or executed_groups != 0):
+            raise RuntimeError(f"{where} fallback did not execute identity")
+
+
 def _read_regular_bytes(path: Path, *, where: str) -> bytes:
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f"{where} is not a regular file: {path}")
@@ -177,12 +345,15 @@ def validate_prismasnap_provenance_payload(
 ) -> None:
     state = payload.get("state")
     expected_keys = set(_BASE_PROVENANCE_KEYS)
+    schema = payload.get("schema")
+    if schema == PROVENANCE_SCHEMA_V2:
+        expected_keys.add("derivation")
     if "collation" in payload:
         expected_keys.add("collation")
     if state == "VERIFIED":
         expected_keys.add("fold_fidelity")
     _require_exact_mapping(payload, expected_keys, where=where)
-    if payload.get("schema") != PROVENANCE_SCHEMA:
+    if schema not in {PROVENANCE_SCHEMA, PROVENANCE_SCHEMA_V2}:
         raise RuntimeError(f"{where} has an unsupported schema")
     allowed = {"VERIFIED"} if require_verified else {"MATERIALIZED", "VERIFIED"}
     if state not in allowed:
@@ -195,7 +366,12 @@ def validate_prismasnap_provenance_payload(
         or payload.get("serve_time_changes") is not False
     ):
         raise RuntimeError(f"{where} additive-source contract failed")
-    if payload.get("algorithm") != PRISMASNAP_ALGORITHM:
+    expected_algorithm = (
+        PRISMASNAP_BF16_REALIZED_ALGORITHM
+        if schema == PROVENANCE_SCHEMA_V2
+        else PRISMASNAP_ALGORITHM
+    )
+    if payload.get("algorithm") != expected_algorithm:
         raise RuntimeError(f"{where} names an unrecognized algorithm")
     for key in (
         "source_portable_content_sha256",
@@ -205,6 +381,21 @@ def validate_prismasnap_provenance_payload(
         "scales_sha256",
     ):
         _require_sha256(payload.get(key), where=f"{where}.{key}")
+    if schema == PROVENANCE_SCHEMA_V2:
+        _validate_bf16_derivation(
+            payload.get("derivation"), where=f"{where}.derivation"
+        )
+        derivation = payload["derivation"]
+        assert isinstance(derivation, Mapping)
+        derivation_source = derivation["source"]
+        assert isinstance(derivation_source, Mapping)
+        if (
+            derivation_source.get("local_content_sha256")
+            != payload.get("source_local_content_sha256")
+            or derivation_source.get("portable_content_sha256")
+            != payload.get("source_portable_content_sha256")
+        ):
+            raise RuntimeError(f"{where} derivation source binding differs")
     if not isinstance(payload.get("source_model"), str) or not payload["source_model"]:
         raise RuntimeError(f"{where} has no source model path")
 
@@ -303,10 +494,18 @@ def validate_prismasnap_provenance_payload(
         or coverage.get("seams") != 3 * len(body_layers)
     ):
         raise RuntimeError(f"{where} dense body coverage is not exact")
-    transformed = _require_positive_int(
-        coverage.get("transformed_tensors"),
-        where=f"{where}.coverage.transformed_tensors",
-    )
+    raw_transformed = coverage.get("transformed_tensors")
+    if schema == PROVENANCE_SCHEMA_V2:
+        if type(raw_transformed) is not int or raw_transformed < 0:
+            raise RuntimeError(
+                f"{where}.coverage.transformed_tensors must be nonnegative"
+            )
+        transformed = raw_transformed
+    else:
+        transformed = _require_positive_int(
+            raw_transformed,
+            where=f"{where}.coverage.transformed_tensors",
+        )
     if coverage.get("materialized_changed_tensors") != transformed:
         raise RuntimeError(f"{where} transformed-tensor census differs")
 
@@ -380,6 +579,47 @@ def validate_prismasnap_provenance_payload(
         for layer, kinds in kinds_by_layer.items()
     ):
         raise RuntimeError(f"{where} seam graph coverage is not one exact trio per layer")
+    if schema == PROVENANCE_SCHEMA_V2:
+        derivation = payload["derivation"]
+        assert isinstance(derivation, Mapping)
+        realized_seams = derivation["seams"]
+        assert isinstance(realized_seams, list)
+        realized_by_key = {
+            (int(row["layer"]), str(row["kind"]), str(row["graph_sha256"])): row
+            for row in realized_seams
+            if isinstance(row, Mapping)
+        }
+        summary_by_key = {
+            (int(row["layer"]), str(row["kind"]), str(row["graph_sha256"])): row
+            for row in summaries
+            if isinstance(row, Mapping)
+        }
+        if (
+            set(realized_by_key) != set(summary_by_key)
+            or len(realized_by_key) != len(realized_seams)
+            or len(summary_by_key) != len(summaries)
+        ):
+            raise RuntimeError(f"{where} realized/nominal seam bindings differ")
+        group_size = PrismaSnapSearchConfig().group_size
+        for key, realized_row in realized_by_key.items():
+            summary_row = summary_by_key[key]
+            kind = str(realized_row["kind"])
+            expected_improvement = (
+                0.0
+                if kind == "up_down"
+                else float(realized_row["objective_improvement_fraction"])
+            )
+            if (
+                summary_row["groups"]
+                != int(realized_row["channels"]) // group_size
+                or summary_row["groups_moved"]
+                != realized_row["executed_groups_moved"]
+                or float(summary_row["improvement_fraction"])
+                != expected_improvement
+            ):
+                raise RuntimeError(
+                    f"{where} realized seam summary differs from execution"
+                )
 
     output = _require_exact_mapping(
         payload.get("output"),

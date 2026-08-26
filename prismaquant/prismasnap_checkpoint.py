@@ -2,7 +2,7 @@
 
 The runtime state machine is intentionally boring and agent-free:
 
-``PREPARED -> PLANNED -> MATERIALIZED -> VERIFIED -> COMMITTED``.
+``PREPARED -> PLANNED-v1 -> REALIZED-v2 -> MATERIALIZED -> VERIFIED -> COMMITTED``.
 
 Every transition is content-bound.  Outputs are written to a sibling
 ``.prismasnap-incomplete`` directory, each shard is atomically published with
@@ -38,15 +38,20 @@ from .cost_streaming import (
 from .model_profiles import detect_profile
 from .prismasnap import (
     PRISMASNAP_ALGORITHM,
+    PRISMASNAP_BF16_REALIZATION_POLICY,
+    PRISMASNAP_BF16_REALIZED_ALGORITHM,
     PrismaSnapConsumer,
     PrismaSnapSearchConfig,
     apply_diagonal_transform,
+    measured_render_objective,
     search_diagonal_scale,
 )
 
 
 PLAN_SCHEMA = "prismaquant.prismasnap.plan.v1"
 PLAN_SET_SCHEMA = "prismaquant.prismasnap.plan_set.v1"
+BF16_REALIZED_PLAN_SCHEMA = "prismaquant.prismasnap.plan.bf16_realized.v2"
+BF16_REALIZATION_SCHEMA = "prismaquant.prismasnap.bf16_realization.v2"
 TENSOR_METADATA_SCHEMA = "prismaquant.prismasnap.tensor_metadata.v1"
 TENSOR_METADATA_MANIFEST_SCHEMA = (
     "prismaquant.prismasnap.tensor_metadata_manifest.v1"
@@ -55,6 +60,7 @@ LEGACY_TEXT_PROBE_BINDING_SCHEMA = (
     "prismaquant.prismasnap.legacy_text_probe_binding.v1"
 )
 PROVENANCE_SCHEMA = "prismaquant.prismasnap.provenance.v1"
+PROVENANCE_SCHEMA_V2 = "prismaquant.prismasnap.provenance.v2"
 SHARD_RECEIPT_SCHEMA = "prismaquant.prismasnap.materialized_shard.v1"
 PART_SCHEMA = "prismaquant.prismasnap.checkpoint_part.v1"
 PLAN_MERGE_STATE_SCHEMA = "prismaquant.prismasnap.plan_merge_state.v1"
@@ -66,6 +72,7 @@ PLAN_JSON = "plan.json"
 PLAN_SCALES = "scales.safetensors"
 PROVENANCE_JSON = "prismasnap_provenance.json"
 PLAN_MERGE_STATE_JSON = "plan_merge_state.json"
+BF16_REALIZATION_STATE_JSON = "bf16_realization_state.json"
 PART_MERGE_STATE_JSON = "part_merge_state.json"
 PART_MERGE_RECEIPTS_DIR = ".prismasnap-collation-receipts"
 PROBE_BINDING_SUFFIX = ".prismasnap-binding.json"
@@ -95,6 +102,7 @@ _PLAN_KEYS = frozenset(
     }
 )
 _PLAN_SET_KEYS = _PLAN_KEYS | {"workers"}
+_BF16_REALIZED_PLAN_KEYS = _PLAN_SET_KEYS | {"derivation"}
 _MODEL_KEYS = frozenset(
     {"hidden_size", "layer_count", "planned_layers", "excluded_prefixes"}
 )
@@ -222,6 +230,69 @@ _SHARD_RECEIPT_KEYS = frozenset(
         "output_sha256",
         "tensor_count",
         "changed_tensors",
+    }
+)
+
+_BF16_DERIVATION_KEYS = frozenset(
+    {
+        "schema",
+        "policy",
+        "parent",
+        "source",
+        "nominal_search_stats_semantics",
+        "realized_execution_metrics_semantics",
+        "seams",
+        "derivation_sha256",
+    }
+)
+_BF16_DERIVATION_PARENT_KEYS = frozenset(
+    {"schema", "algorithm", "plan_sha256", "scales_sha256", "producer"}
+)
+_BF16_DERIVATION_SOURCE_KEYS = frozenset(
+    {"local_content_sha256", "portable_content_sha256"}
+)
+_BF16_REALIZED_NORM_KEYS = frozenset(
+    {
+        "layer",
+        "kind",
+        "graph_sha256",
+        "nominal_vector",
+        "nominal_vector_sha256",
+        "executed_vector",
+        "executed_vector_sha256",
+        "projected_norm_vector",
+        "projected_norm_sha256",
+        "channels",
+        "candidate_realized_channels",
+        "executed_realized_channels",
+        "executed_groups_moved",
+        "source_zero_channels",
+        "projected_zero_channels",
+        "sign_mismatch_channels",
+        "nonfinite_channels",
+        "reapplication_mismatch_channels",
+        "objective_baseline",
+        "objective_realized",
+        "objective_improvement_fraction",
+        "objective_accepted",
+        "objective_fallback_reason",
+        "projected_norm_materialization",
+        "consumer_inverse_materialization",
+    }
+)
+_BF16_REALIZED_UPDOWN_KEYS = frozenset(
+    {
+        "layer",
+        "kind",
+        "graph_sha256",
+        "nominal_vector",
+        "nominal_vector_sha256",
+        "executed_vector",
+        "executed_vector_sha256",
+        "channels",
+        "executed_realized_channels",
+        "executed_groups_moved",
+        "policy_reason",
     }
 )
 
@@ -372,6 +443,30 @@ def _validate_sealed_state(
 def _plan_digest(payload: Mapping[str, object]) -> str:
     unsigned = {str(key): value for key, value in payload.items() if key != "plan_sha256"}
     return canonical_json_sha256(unsigned, where="PrismaSnap plan")
+
+
+def _derivation_digest(payload: Mapping[str, object]) -> str:
+    unsigned = {
+        str(key): value
+        for key, value in payload.items()
+        if key != "derivation_sha256"
+    }
+    return canonical_json_sha256(
+        unsigned, where="PrismaSnap BF16 realization derivation"
+    )
+
+
+def _tensor_payload_sha256(value: torch.Tensor, *, where: str) -> str:
+    contiguous = value.detach().to(device="cpu").contiguous()
+    raw = contiguous.view(torch.uint8).numpy().tobytes(order="C")
+    return canonical_json_sha256(
+        {
+            "shape": list(contiguous.shape),
+            "dtype": str(contiguous.dtype),
+            "bytes_sha256": hashlib.sha256(raw).hexdigest(),
+        },
+        where=where,
+    )
 
 
 def _producer_identity() -> dict[str, object]:
@@ -2113,7 +2208,7 @@ def _validate_seam_stats(
         raise RuntimeError(f"{where} violates the measured search contract")
 
 
-def _validate_dense_plan_semantics(
+def _validate_v1_dense_plan_semantics(
     plan: Mapping[str, object], scales: Mapping[str, torch.Tensor]
 ) -> None:
     schema = plan.get("schema")
@@ -2466,17 +2561,399 @@ def _validate_dense_plan_semantics(
             raise RuntimeError("PrismaSnap merged plan workers do not cover planned layers")
 
 
+def _v1_transforms_from_seams(
+    seams: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    transforms: list[dict[str, object]] = []
+    for row in seams:
+        kind = str(row["kind"])
+        if kind in {"input_norm", "post_attention_norm"}:
+            transforms.append(
+                {
+                    "tensor": row["norm"],
+                    "vector": row["vector"],
+                    "operation": "affine_multiply",
+                    "axis": 0,
+                    "order": 0,
+                    "parameter_offset": row["norm_parameter_offset"],
+                }
+            )
+            transforms.extend(
+                {
+                    "tensor": name,
+                    "vector": row["vector"],
+                    "operation": "divide",
+                    "axis": 1,
+                    "order": 0,
+                }
+                for name in row["consumers"]  # type: ignore[index]
+            )
+        elif kind == "up_down":
+            transforms.extend(
+                [
+                    {
+                        "tensor": row["up"],
+                        "vector": row["vector"],
+                        "operation": "multiply",
+                        "axis": 0,
+                        "order": 1,
+                    },
+                    {
+                        "tensor": row["down"],
+                        "vector": row["vector"],
+                        "operation": "divide",
+                        "axis": 1,
+                        "order": 0,
+                    },
+                ]
+            )
+        else:  # pragma: no cover - callers validate kinds before this helper
+            raise RuntimeError(f"unsupported PrismaSnap seam kind {kind!r}")
+    return sorted(
+        transforms, key=lambda item: (str(item["tensor"]), int(item["order"]))
+    )
+
+
+def _validate_bf16_realized_plan_semantics(
+    plan: Mapping[str, object], scales: Mapping[str, torch.Tensor]
+) -> None:
+    _require_exact_keys(
+        plan, _BF16_REALIZED_PLAN_KEYS, where="PrismaSnap BF16-realized plan"
+    )
+    if (
+        plan.get("schema") != BF16_REALIZED_PLAN_SCHEMA
+        or plan.get("state") != "PLANNED"
+        or plan.get("algorithm") != PRISMASNAP_BF16_REALIZED_ALGORITHM
+        or not isinstance(plan.get("producer"), Mapping)
+        or plan.get("search") != PrismaSnapSearchConfig().as_dict()
+    ):
+        raise RuntimeError("PrismaSnap BF16-realized plan top-level contract is malformed")
+    derivation = plan.get("derivation")
+    if not isinstance(derivation, Mapping):
+        raise RuntimeError("PrismaSnap BF16-realized plan lacks its derivation")
+    _require_exact_keys(
+        derivation,
+        _BF16_DERIVATION_KEYS,
+        where="PrismaSnap BF16 realization derivation",
+    )
+    if (
+        derivation.get("schema") != BF16_REALIZATION_SCHEMA
+        or derivation.get("policy") != PRISMASNAP_BF16_REALIZATION_POLICY
+        or derivation.get("nominal_search_stats_semantics")
+        != "copied_parent_v1_nominal_search_not_executed"
+        or derivation.get("realized_execution_metrics_semantics")
+        != "exact_static6_nvfp4_on_executed_bf16_consumer_weights"
+        or _require_sha256(
+            derivation.get("derivation_sha256"),
+            where="PrismaSnap BF16 realization derivation.sha256",
+        )
+        != _derivation_digest(derivation)
+    ):
+        raise RuntimeError("PrismaSnap BF16 realization derivation is malformed")
+    parent = derivation.get("parent")
+    if not isinstance(parent, Mapping):
+        raise RuntimeError("PrismaSnap BF16 realization parent binding is malformed")
+    _require_exact_keys(
+        parent,
+        _BF16_DERIVATION_PARENT_KEYS,
+        where="PrismaSnap BF16 realization parent",
+    )
+    if (
+        parent.get("schema") != PLAN_SET_SCHEMA
+        or parent.get("algorithm") != PRISMASNAP_ALGORITHM
+        or not isinstance(parent.get("producer"), Mapping)
+    ):
+        raise RuntimeError("PrismaSnap BF16 realization requires a merged v1 parent")
+    _require_sha256(
+        parent.get("plan_sha256"), where="PrismaSnap BF16 parent plan"
+    )
+    _require_sha256(
+        parent.get("scales_sha256"), where="PrismaSnap BF16 parent scales"
+    )
+    source_binding = derivation.get("source")
+    if not isinstance(source_binding, Mapping):
+        raise RuntimeError("PrismaSnap BF16 realization source binding is malformed")
+    _require_exact_keys(
+        source_binding,
+        _BF16_DERIVATION_SOURCE_KEYS,
+        where="PrismaSnap BF16 realization source",
+    )
+    source = plan.get("source")
+    if not isinstance(source, Mapping):
+        raise RuntimeError("PrismaSnap BF16-realized plan source is malformed")
+    identity = source.get("identity")
+    portable = source.get("portable_identity")
+    if (
+        not isinstance(identity, Mapping)
+        or not isinstance(portable, Mapping)
+        or source_binding.get("local_content_sha256")
+        != identity.get("content_sha256")
+        or source_binding.get("portable_content_sha256")
+        != portable.get("portable_content_sha256")
+    ):
+        raise RuntimeError("PrismaSnap BF16 realization source binding differs")
+
+    raw_seams = plan.get("seams")
+    if not isinstance(raw_seams, list) or any(
+        not isinstance(row, Mapping) for row in raw_seams
+    ):
+        raise RuntimeError("PrismaSnap BF16-realized seams are malformed")
+    seams = [row for row in raw_seams if isinstance(row, Mapping)]
+    nominal_names = {str(row["vector"]) for row in seams}
+    nominal_scales = {name: scales[name] for name in nominal_names if name in scales}
+    if set(nominal_scales) != nominal_names:
+        raise RuntimeError("PrismaSnap BF16-realized plan lacks nominal parent vectors")
+    parent_view = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"derivation"}
+    }
+    parent_view.update(
+        {
+            "schema": PLAN_SET_SCHEMA,
+            "algorithm": PRISMASNAP_ALGORITHM,
+            "producer": parent["producer"],
+            "scales": {
+                "file": PLAN_SCALES,
+                "sha256": parent["scales_sha256"],
+                "vectors": len(nominal_scales),
+            },
+            "transforms": _v1_transforms_from_seams(seams),
+            "plan_sha256": parent["plan_sha256"],
+        }
+    )
+    _validate_v1_dense_plan_semantics(parent_view, nominal_scales)
+    if _plan_digest(parent_view) != parent["plan_sha256"]:
+        raise RuntimeError(
+            "PrismaSnap BF16 realization copied parent fields do not reconstruct "
+            "the bound parent plan digest"
+        )
+
+    execution_rows = derivation.get("seams")
+    if not isinstance(execution_rows, list) or len(execution_rows) != len(seams):
+        raise RuntimeError("PrismaSnap BF16 realization seam census differs")
+    expected_execution_order = [
+        (int(row["layer"]), str(row["kind"])) for row in seams
+    ]
+    actual_execution_order = [
+        (raw.get("layer"), raw.get("kind"))
+        for raw in execution_rows
+        if isinstance(raw, Mapping)
+    ]
+    if actual_execution_order != expected_execution_order:
+        raise RuntimeError("PrismaSnap BF16 realization seam order is noncanonical")
+    by_key: dict[tuple[int, str], Mapping[str, object]] = {}
+    expected_scale_names = set(nominal_names)
+    expected_transforms: list[dict[str, object]] = []
+    seam_by_key = {(int(row["layer"]), str(row["kind"])): row for row in seams}
+    for ordinal, raw in enumerate(execution_rows):
+        if not isinstance(raw, Mapping):
+            raise RuntimeError("PrismaSnap BF16 realization seam row is malformed")
+        layer = raw.get("layer")
+        kind = raw.get("kind")
+        if type(layer) is not int or not isinstance(kind, str):
+            raise RuntimeError("PrismaSnap BF16 realization seam key is malformed")
+        key = (layer, kind)
+        seam = seam_by_key.get(key)
+        if seam is None or key in by_key:
+            raise RuntimeError("PrismaSnap BF16 realization seam coverage differs")
+        by_key[key] = raw
+        if raw.get("graph_sha256") != seam.get("graph_sha256"):
+            raise RuntimeError("PrismaSnap BF16 realization graph binding differs")
+        nominal_name = str(seam["vector"])
+        if raw.get("nominal_vector") != nominal_name:
+            raise RuntimeError("PrismaSnap BF16 realization nominal vector differs")
+        nominal = nominal_scales[nominal_name]
+        if raw.get("nominal_vector_sha256") != _tensor_payload_sha256(
+            nominal, where=f"PrismaSnap nominal vector {nominal_name}"
+        ):
+            raise RuntimeError("PrismaSnap BF16 nominal vector digest differs")
+        executed_name = f"{nominal_name}__executed"
+        if raw.get("executed_vector") != executed_name or executed_name not in scales:
+            raise RuntimeError("PrismaSnap BF16 executed vector binding differs")
+        executed = scales[executed_name]
+        if (
+            executed.ndim != 1
+            or executed.dtype != torch.float64
+            or executed.shape != nominal.shape
+            or not bool(torch.isfinite(executed).all().item())
+            or bool((executed <= 0).any().item())
+            or raw.get("executed_vector_sha256")
+            != _tensor_payload_sha256(
+                executed, where=f"PrismaSnap executed vector {executed_name}"
+            )
+        ):
+            raise RuntimeError("PrismaSnap BF16 executed vector contract failed")
+        expected_scale_names.add(executed_name)
+        channels = int(nominal.numel())
+        if raw.get("channels") != channels:
+            raise RuntimeError("PrismaSnap BF16 realization channel census differs")
+        group_size = int(plan["search"]["group_size"])  # type: ignore[index]
+        executed_groups_moved = int(
+            (executed.view(-1, group_size) != 1.0).any(dim=1).sum().item()
+        )
+        if raw.get("executed_groups_moved") != executed_groups_moved:
+            raise RuntimeError("PrismaSnap BF16 executed group census differs")
+
+        if kind in {"input_norm", "post_attention_norm"}:
+            _require_exact_keys(
+                raw,
+                _BF16_REALIZED_NORM_KEYS,
+                where=f"PrismaSnap BF16 norm realization[{ordinal}]",
+            )
+            projected_name = f"{nominal_name}__projected_norm"
+            if (
+                raw.get("projected_norm_vector") != projected_name
+                or projected_name not in scales
+            ):
+                raise RuntimeError("PrismaSnap projected norm binding differs")
+            projected = scales[projected_name]
+            if (
+                projected.ndim != 1
+                or projected.dtype != torch.bfloat16
+                or projected.shape != nominal.shape
+                or not bool(torch.isfinite(projected).all().item())
+                or raw.get("projected_norm_sha256")
+                != _tensor_payload_sha256(
+                    projected, where=f"PrismaSnap projected norm {projected_name}"
+                )
+            ):
+                raise RuntimeError("PrismaSnap projected norm payload differs")
+            expected_scale_names.add(projected_name)
+            counts = (
+                "candidate_realized_channels",
+                "executed_realized_channels",
+                "source_zero_channels",
+                "projected_zero_channels",
+                "sign_mismatch_channels",
+                "nonfinite_channels",
+                "reapplication_mismatch_channels",
+            )
+            if any(
+                type(raw.get(name)) is not int
+                or int(raw[name]) < 0
+                or int(raw[name]) > channels
+                for name in counts
+            ):
+                raise RuntimeError("PrismaSnap BF16 realization counts are malformed")
+            baseline = _finite_number(
+                raw.get("objective_baseline"),
+                where="PrismaSnap BF16 objective baseline",
+            )
+            realized = _finite_number(
+                raw.get("objective_realized"),
+                where="PrismaSnap BF16 realized objective",
+            )
+            improvement = _finite_number(
+                raw.get("objective_improvement_fraction"),
+                where="PrismaSnap BF16 objective improvement",
+            )
+            accepted = raw.get("objective_accepted")
+            expected_improvement = (
+                0.0 if baseline == 0.0 else (baseline - realized) / baseline
+            )
+            if (
+                baseline < 0.0
+                or realized < 0.0
+                or realized > baseline
+                or not math.isclose(
+                    improvement, expected_improvement, rel_tol=1e-12, abs_tol=1e-15
+                )
+                or type(accepted) is not bool
+                or (accepted and not realized < baseline)
+                or (not accepted and realized != baseline)
+                or raw.get("objective_fallback_reason")
+                != (None if accepted else "no_strict_realized_bf16_improvement")
+                or raw.get("projected_norm_materialization") != "replace_bf16"
+                or raw.get("consumer_inverse_materialization")
+                != "divide_then_round_bf16"
+            ):
+                raise RuntimeError("PrismaSnap BF16 realized objective contract failed")
+            if accepted:
+                if (
+                    raw.get("executed_realized_channels")
+                    != raw.get("candidate_realized_channels")
+                    or executed_groups_moved <= 0
+                ):
+                    raise RuntimeError("PrismaSnap BF16 accepted channel count differs")
+            elif (
+                raw.get("executed_realized_channels") != 0
+                or not torch.equal(executed, torch.ones_like(executed))
+            ):
+                raise RuntimeError("PrismaSnap BF16 fallback did not execute identity")
+            if accepted:
+                expected_transforms.append(
+                    {
+                        "tensor": seam["norm"],
+                        "vector": projected_name,
+                        "operation": "replace_bf16",
+                        "axis": 0,
+                        "order": 0,
+                    }
+                )
+                expected_transforms.extend(
+                    {
+                        "tensor": name,
+                        "vector": executed_name,
+                        "operation": "divide",
+                        "axis": 1,
+                        "order": 0,
+                    }
+                    for name in seam["consumers"]  # type: ignore[index]
+                )
+        elif kind == "up_down":
+            _require_exact_keys(
+                raw,
+                _BF16_REALIZED_UPDOWN_KEYS,
+                where=f"PrismaSnap BF16 up/down realization[{ordinal}]",
+            )
+            if (
+                raw.get("executed_realized_channels") != 0
+                or raw.get("executed_groups_moved") != 0
+                or raw.get("policy_reason")
+                != "disabled_for_bf16_fold_fidelity_v2"
+                or not torch.equal(executed, torch.ones_like(executed))
+            ):
+                raise RuntimeError("PrismaSnap BF16 up/down execution is not identity")
+        else:
+            raise RuntimeError("PrismaSnap BF16 realization has unsupported seam kind")
+    if set(by_key) != set(seam_by_key):
+        raise RuntimeError("PrismaSnap BF16 realization seam union is incomplete")
+    scales_meta = plan.get("scales")
+    if (
+        not isinstance(scales_meta, Mapping)
+        or scales_meta.get("vectors") != len(expected_scale_names)
+        or set(scales) != expected_scale_names
+    ):
+        raise RuntimeError("PrismaSnap BF16 realization scale census differs")
+    expected_transforms.sort(
+        key=lambda item: (str(item["tensor"]), int(item["order"]))
+    )
+    if plan.get("transforms") != expected_transforms:
+        raise RuntimeError("PrismaSnap BF16 transform program is not derivation-bound")
+
+
+def _validate_dense_plan_semantics(
+    plan: Mapping[str, object], scales: Mapping[str, torch.Tensor]
+) -> None:
+    if plan.get("schema") == BF16_REALIZED_PLAN_SCHEMA:
+        _validate_bf16_realized_plan_semantics(plan, scales)
+    else:
+        _validate_v1_dense_plan_semantics(plan, scales)
+
+
 def load_plan(plan_dir: str | Path) -> tuple[dict[str, object], dict[str, torch.Tensor]]:
     root = Path(plan_dir).resolve(strict=True)
     plan = _load_json(root / PLAN_JSON, where="PrismaSnap plan")
     from . import prismasnap_moe_checkpoint as moe_checkpoint
 
     dense_schema = plan.get("schema") in {PLAN_SCHEMA, PLAN_SET_SCHEMA}
+    realized_schema = plan.get("schema") == BF16_REALIZED_PLAN_SCHEMA
     moe_schema = plan.get("schema") in {
         moe_checkpoint.MOE_PLAN_SCHEMA,
         moe_checkpoint.MOE_PLAN_SET_SCHEMA,
     }
-    if not dense_schema and not moe_schema:
+    if not dense_schema and not realized_schema and not moe_schema:
         raise RuntimeError(f"unsupported PrismaSnap plan schema {plan.get('schema')!r}")
     if plan.get("state") != "PLANNED":
         raise RuntimeError("PrismaSnap plan is not in PLANNED state")
@@ -2489,29 +2966,30 @@ def load_plan(plan_dir: str | Path) -> tuple[dict[str, object], dict[str, torch.
     if _sha256_file(scale_path) != scales_meta.get("sha256"):
         raise RuntimeError("PrismaSnap plan scale content digest mismatch")
     scales = load_file(str(scale_path), device="cpu")
-    expected_vectors = (
-        {
-            str(row["vector"])
-            for row in plan.get("seams", [])
-            if isinstance(row, dict) and isinstance(row.get("vector"), str)
-        }
-        if dense_schema
-        else moe_checkpoint.plan_scale_vector_names(plan)
-    )
-    if set(scales) != expected_vectors:
-        raise RuntimeError("PrismaSnap plan scale-vector census mismatch")
-    for name, value in scales.items():
-        allowed_ranks = {1} if dense_schema else {1, 2}
-        if value.ndim not in allowed_ranks or value.dtype != torch.float64 or value.numel() == 0:
-            raise RuntimeError(
-                f"PrismaSnap scale vector {name!r} must be nonempty float64 "
-                f"rank {sorted(allowed_ranks)}"
-            )
-        if not bool(torch.isfinite(value).all().item()) or bool((value <= 0).any().item()):
-            raise RuntimeError(
-                f"PrismaSnap scale vector {name!r} must be finite and positive"
-            )
-    if dense_schema:
+    if not realized_schema:
+        expected_vectors = (
+            {
+                str(row["vector"])
+                for row in plan.get("seams", [])
+                if isinstance(row, dict) and isinstance(row.get("vector"), str)
+            }
+            if dense_schema
+            else moe_checkpoint.plan_scale_vector_names(plan)
+        )
+        if set(scales) != expected_vectors:
+            raise RuntimeError("PrismaSnap plan scale-vector census mismatch")
+        for name, value in scales.items():
+            allowed_ranks = {1} if dense_schema else {1, 2}
+            if value.ndim not in allowed_ranks or value.dtype != torch.float64 or value.numel() == 0:
+                raise RuntimeError(
+                    f"PrismaSnap scale vector {name!r} must be nonempty float64 "
+                    f"rank {sorted(allowed_ranks)}"
+                )
+            if not bool(torch.isfinite(value).all().item()) or bool((value <= 0).any().item()):
+                raise RuntimeError(
+                    f"PrismaSnap scale vector {name!r} must be finite and positive"
+                )
+    if dense_schema or realized_schema:
         _validate_dense_plan_semantics(plan, scales)
     else:
         moe_checkpoint.validate_moe_plan_semantics(plan, scales)
@@ -2531,6 +3009,11 @@ def merge_plans(
     plans = [row[0] for row in loaded]
     from . import prismasnap_moe_checkpoint as moe_checkpoint
 
+    if any(plan.get("schema") == BF16_REALIZED_PLAN_SCHEMA for plan in plans):
+        raise RuntimeError(
+            "PrismaSnap BF16-realized plans are already full merged derivations "
+            "and cannot enter the v1 worker-plan merge"
+        )
     dense_family = all(
         plan.get("schema") in {PLAN_SCHEMA, PLAN_SET_SCHEMA} for plan in plans
     )
@@ -2843,10 +3326,535 @@ def merge_plans(
     return merged
 
 
+def _project_bf16_norm_and_realize_inverse(
+    source_parameter: torch.Tensor,
+    nominal_scale: torch.Tensor,
+    *,
+    parameter_offset: float,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, int]]:
+    """Project a nominal norm fold and derive its safe executed inverse.
+
+    Norm bytes and consumer inverses are deliberately different payloads.  A
+    consumer ratio is admitted only when its effective source/projected gamma
+    quotient is finite and positive and multiplying by that quotient rounds
+    back to the selected BF16 norm byte.  Materialization nevertheless writes
+    the projected BF16 payload directly, avoiding quotient/product tie drift.
+    """
+    if (
+        source_parameter.ndim != 1
+        or source_parameter.dtype != torch.bfloat16
+        or nominal_scale.ndim != 1
+        or nominal_scale.numel() != source_parameter.numel()
+    ):
+        raise RuntimeError("PrismaSnap BF16 norm projection shape/dtype differs")
+    if not math.isfinite(parameter_offset):
+        raise RuntimeError("PrismaSnap BF16 norm projection offset is non-finite")
+    nominal = nominal_scale.to(
+        device=source_parameter.device, dtype=torch.float64
+    )
+    if (
+        not bool(torch.isfinite(nominal).all().item())
+        or bool((nominal <= 0).any().item())
+    ):
+        raise RuntimeError("PrismaSnap nominal norm scale is not finite and positive")
+    source = source_parameter.contiguous()
+    offset_fp32 = torch.as_tensor(
+        parameter_offset, device=source.device, dtype=torch.float32
+    )
+    # RMSNorm executes its stored BF16 parameter through a float32 effective
+    # gamma.  Preserve that cast/add boundary before the nominal fp64 fold.
+    gamma = (source.to(torch.float32) + offset_fp32).to(torch.float64)
+    candidate_fp64 = gamma * nominal - parameter_offset
+    candidate = candidate_fp64.to(torch.bfloat16)
+    projected_gamma = (
+        candidate.to(torch.float32) + offset_fp32
+    ).to(torch.float64)
+
+    source_zero = gamma == 0
+    projected_zero = projected_gamma == 0
+    finite = (
+        torch.isfinite(gamma)
+        & torch.isfinite(candidate_fp64)
+        & torch.isfinite(candidate.to(torch.float32))
+        & torch.isfinite(projected_gamma)
+    )
+    sign_match = torch.signbit(gamma) == torch.signbit(projected_gamma)
+    valid = (~source_zero) & (~projected_zero) & finite & sign_match
+    ratio = torch.ones_like(gamma)
+    ratio[valid] = projected_gamma[valid] / gamma[valid]
+    ratio_valid = torch.isfinite(ratio) & (ratio > 0)
+    valid &= ratio_valid
+
+    reapplied = (gamma * ratio - parameter_offset).to(torch.bfloat16)
+    reapplication_match = reapplied.view(torch.int16) == candidate.view(torch.int16)
+    reapplication_mismatch = valid & (~reapplication_match)
+    valid &= reapplication_match
+    ratio = torch.where(valid, ratio, torch.ones_like(ratio))
+    selected = torch.where(valid, candidate, source).to(torch.bfloat16).contiguous()
+    selected_reapplied = (gamma * ratio - parameter_offset).to(torch.bfloat16)
+    if not torch.equal(selected_reapplied, selected):
+        raise RuntimeError(
+            "PrismaSnap executed norm ratio does not replay the selected BF16 bytes"
+        )
+    if (
+        not bool(torch.isfinite(ratio).all().item())
+        or bool((ratio <= 0).any().item())
+        or not bool(torch.isfinite(selected.to(torch.float32)).all().item())
+    ):
+        raise RuntimeError("PrismaSnap BF16 realization produced an unsafe payload")
+    counts = {
+        "channels": int(source.numel()),
+        "candidate_realized_channels": int(valid.sum().item()),
+        "source_zero_channels": int(source_zero.sum().item()),
+        "projected_zero_channels": int(((~source_zero) & projected_zero).sum().item()),
+        "sign_mismatch_channels": int(
+            ((~source_zero) & (~projected_zero) & finite & (~sign_match)).sum().item()
+        ),
+        "nonfinite_channels": int((~finite).sum().item()),
+        "reapplication_mismatch_channels": int(
+            reapplication_mismatch.sum().item()
+        ),
+    }
+    return selected, ratio.contiguous(), counts
+
+
+def _search_config_from_plan(search: object) -> PrismaSnapSearchConfig:
+    value = _validate_search_contract(search)
+    return PrismaSnapSearchConfig(
+        group_size=int(value["group_size"]),
+        alphas=tuple(float(item) for item in value["alphas"]),  # type: ignore[arg-type]
+        max_rounds=int(value["max_rounds"]),
+        stage="stage" in value["variant"],  # type: ignore[operator]
+        polish="polish" in value["variant"],  # type: ignore[operator]
+        polish_top=int(value["polish_top"]),
+        polish_pool=int(value["polish_pool"]),
+        scale_rule=str(value["nvfp4_scale_rule"]),
+        snapped_scale_scoring=bool(value["nvfp4_snapped_scale_scoring"]),
+        joint_scale_levels=tuple(
+            float(item) for item in value["nvfp4_joint_scale_levels"]  # type: ignore[arg-type]
+        ),
+    )
+
+
+def _exact_executed_norm_objective(
+    weights: Sequence[tuple[str, torch.Tensor, torch.Tensor]],
+    executed_inverse: torch.Tensor,
+    *,
+    config: PrismaSnapSearchConfig,
+) -> tuple[float, float]:
+    identity = torch.ones_like(executed_inverse, dtype=torch.float64)
+    baseline_consumers: list[PrismaSnapConsumer] = []
+    realized_consumers: list[PrismaSnapConsumer] = []
+    for name, source_weight, importance in weights:
+        if source_weight.dtype != torch.bfloat16 or source_weight.ndim != 2:
+            raise RuntimeError(f"PrismaSnap BF16 objective source is invalid: {name}")
+        baseline_consumers.append(
+            PrismaSnapConsumer(
+                name=name,
+                weight=source_weight,
+                importance=importance,
+                mode="stationary",
+            )
+        )
+        realized_weight = (
+            source_weight.to(torch.float64)
+            / executed_inverse.to(
+                device=source_weight.device, dtype=torch.float64
+            ).view(1, -1)
+        ).to(torch.bfloat16)
+        realized_importance = (
+            importance.to(torch.float64)
+            * executed_inverse.to(
+                device=importance.device, dtype=torch.float64
+            ).square()
+        ).to(torch.float32)
+        realized_consumers.append(
+            PrismaSnapConsumer(
+                name=name,
+                weight=realized_weight,
+                importance=realized_importance,
+                mode="stationary",
+            )
+        )
+    return (
+        measured_render_objective(baseline_consumers, identity, config),
+        measured_render_objective(realized_consumers, identity, config),
+    )
+
+
+def _verify_embedded_source_content(
+    source: _Checkpoint, plan: Mapping[str, object]
+) -> None:
+    source_meta = plan.get("source")
+    if not isinstance(source_meta, Mapping):
+        raise RuntimeError("PrismaSnap plan lacks source metadata")
+    identity = validate_streamed_model_identity(
+        source_meta.get("identity"), where="PrismaSnap BF16 realization source"
+    )
+    by_name = {Path(str(row["path"])).name: row for row in identity["shards"]}
+    if set(by_name) != set(source.shards):
+        raise RuntimeError("PrismaSnap BF16 realization source shard census differs")
+    for name in source.shards:
+        path = source.root / name
+        before = source._fingerprint(path)
+        row = by_name[name]
+        if int(row["size"]) != before[2] or _sha256_file(path) != row["sha256"]:
+            raise RuntimeError(f"PrismaSnap BF16 realization source changed: {path}")
+        source.record_verified_shard(name, before)
+
+
+def realize_bf16_plan(
+    source_dir: str | Path,
+    parent_plan_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    device: str = "cuda",
+    resume: bool = False,
+    production: bool = False,
+) -> dict[str, object]:
+    """Derive a cast-aware executable v2 plan from one merged v1 plan."""
+    if production:
+        _require_production_execution(device)
+    execution_device = torch.device(device)
+    if execution_device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("PrismaSnap BF16 realization requested unavailable CUDA")
+    parent, parent_scales = load_plan(parent_plan_dir)
+    if (
+        parent.get("schema") != PLAN_SET_SCHEMA
+        or parent.get("algorithm") != PRISMASNAP_ALGORITHM
+    ):
+        raise RuntimeError("PrismaSnap BF16 realization requires one merged v1 plan")
+    model = parent.get("model")
+    if not isinstance(model, Mapping) or model.get("planned_layers") != list(
+        range(int(model.get("layer_count", -1)))
+    ):
+        raise RuntimeError("PrismaSnap BF16 realization requires full layer coverage")
+    if parent.get("search") != PrismaSnapSearchConfig().as_dict():
+        raise RuntimeError(
+            "PrismaSnap BF16 realization requires the canonical measured-fast "
+            "stage,polish/static-6 parent"
+        )
+    source = _Checkpoint(Path(source_dir))
+    _validate_materialization_plan(
+        parent,
+        source,
+        parent_scales,
+        require_current_producer=False,
+    )
+    _verify_embedded_source_content(source, parent)
+    producer = _producer_identity()
+    search_config = _search_config_from_plan(parent.get("search"))
+    probe = parent.get("probe")
+    if not isinstance(probe, Mapping) or not isinstance(probe.get("path"), str):
+        raise RuntimeError("PrismaSnap merged v1 plan lacks its probe path")
+    probe_path = Path(str(probe["path"]))
+    stats, probe_meta, probe_sha256 = _load_probe(probe_path)
+    if probe_sha256 != probe.get("sha256"):
+        raise RuntimeError("PrismaSnap BF16 realization probe bytes changed")
+    _validate_probe_source_contract(probe_meta, source)
+    profile = detect_profile(str(source.root))
+    if profile.name != parent.get("profile"):
+        raise RuntimeError("PrismaSnap BF16 realization profile differs from parent")
+    source_to_probe: dict[str, str] = {}
+    for qname in stats:
+        source_name = _source_weight_key(profile, qname)
+        if source_name in source_to_probe:
+            raise RuntimeError("PrismaSnap probe maps two Linears to one source tensor")
+        source_to_probe[source_name] = qname
+
+    parent_binding = {
+        "schema": PLAN_SET_SCHEMA,
+        "algorithm": PRISMASNAP_ALGORITHM,
+        "plan_sha256": parent["plan_sha256"],
+        "scales_sha256": parent["scales"]["sha256"],
+        "producer": parent["producer"],
+    }
+    source_binding = {
+        "local_content_sha256": parent["source"]["identity"]["content_sha256"],
+        "portable_content_sha256": parent["source"]["portable_identity"][
+            "portable_content_sha256"
+        ],
+    }
+
+    def expected_binding(candidate: Mapping[str, object]) -> bool:
+        derivation = candidate.get("derivation")
+        return (
+            candidate.get("schema") == BF16_REALIZED_PLAN_SCHEMA
+            and candidate.get("algorithm") == PRISMASNAP_BF16_REALIZED_ALGORITHM
+            and candidate.get("producer") == producer
+            and isinstance(derivation, Mapping)
+            and derivation.get("parent") == parent_binding
+            and derivation.get("source") == source_binding
+        )
+
+    output = Path(output_dir)
+    staging = output.with_name(output.name + ".prismasnap-realize-incomplete")
+    if os.path.lexists(output):
+        if not resume or output.is_symlink() or not output.is_dir():
+            raise RuntimeError(f"PrismaSnap BF16-realized plan output exists: {output}")
+        existing, _ = load_plan(output)
+        if not expected_binding(existing):
+            raise RuntimeError("PrismaSnap BF16-realized output belongs to other inputs")
+        return existing
+    state = _sealed_state(
+        {
+            "schema": "prismaquant.prismasnap.bf16_realization_state.v1",
+            "state": "REALIZING",
+            "parent_plan_sha256": parent["plan_sha256"],
+            "parent_scales_sha256": parent["scales"]["sha256"],
+            "source_local_content_sha256": source_binding["local_content_sha256"],
+            "producer_source_sha256": producer["source_sha256"],
+        }
+    )
+    state_path = staging / BF16_REALIZATION_STATE_JSON
+    if os.path.lexists(staging):
+        if not resume or staging.is_symlink() or not staging.is_dir():
+            raise RuntimeError(f"stale PrismaSnap BF16 realization state: {staging}")
+        _discard_interrupted_atomic_write(state_path, resume=True)
+        _discard_interrupted_atomic_write(staging / PLAN_JSON, resume=True)
+        if os.path.lexists(state_path):
+            observed = _load_json(state_path, where="PrismaSnap BF16 realization state")
+            _validate_sealed_state(
+                observed, state, where="PrismaSnap BF16 realization state"
+            )
+        if (staging / PLAN_JSON).is_file() and (staging / PLAN_SCALES).is_file():
+            existing, _ = load_plan(staging)
+            if not expected_binding(existing):
+                raise RuntimeError("PrismaSnap staged BF16 plan belongs to other inputs")
+            if os.path.lexists(state_path):
+                state_path.unlink()
+            _fsync_dir(staging)
+            os.replace(staging, output)
+            _fsync_dir(output.parent)
+            return existing
+        allowed = {
+            BF16_REALIZATION_STATE_JSON,
+            PLAN_SCALES,
+            f".{PLAN_SCALES}.tmp",
+        }
+        entries = list(staging.iterdir())
+        if any(item.name not in allowed or item.is_symlink() for item in entries):
+            raise RuntimeError("PrismaSnap BF16 realization staging is unsafe")
+        for item in entries:
+            if item.name != BF16_REALIZATION_STATE_JSON:
+                item.unlink()
+        if not os.path.lexists(state_path):
+            if entries:
+                raise RuntimeError("PrismaSnap BF16 realization staging lacks state")
+            _atomic_json(state_path, state)
+    else:
+        staging.mkdir(parents=True, exist_ok=False)
+        _atomic_json(state_path, state)
+        _fsync_dir(staging)
+
+    combined_scales: dict[str, torch.Tensor] = {
+        name: value.detach().cpu().contiguous()
+        for name, value in parent_scales.items()
+    }
+    execution_rows: list[dict[str, object]] = []
+    transforms: list[dict[str, object]] = []
+    raw_seams = parent.get("seams")
+    if not isinstance(raw_seams, list):
+        raise RuntimeError("PrismaSnap parent seams are malformed")
+    for ordinal, raw in enumerate(raw_seams, start=1):
+        if not isinstance(raw, Mapping):
+            raise RuntimeError("PrismaSnap parent seam is malformed")
+        layer = int(raw["layer"])
+        kind = str(raw["kind"])
+        nominal_name = str(raw["vector"])
+        nominal = parent_scales[nominal_name].to(
+            device=execution_device, dtype=torch.float64
+        )
+        executed_name = f"{nominal_name}__executed"
+        print(
+            f"[prismasnap-realize-bf16] seam {ordinal}/{len(raw_seams)} "
+            f"layer={layer} kind={kind}",
+            flush=True,
+        )
+        if kind in {"input_norm", "post_attention_norm"}:
+            norm_name = str(raw["norm"])
+            source_norm = source.load(norm_name, execution_device)
+            projected, executed, counts = _project_bf16_norm_and_realize_inverse(
+                source_norm,
+                nominal,
+                parameter_offset=float(raw["norm_parameter_offset"]),
+            )
+            objective_inputs: list[tuple[str, torch.Tensor, torch.Tensor]] = []
+            for consumer_name in raw["consumers"]:
+                source_name = str(consumer_name)
+                qname = source_to_probe.get(source_name)
+                if qname is None:
+                    raise RuntimeError(
+                        f"PrismaSnap BF16 objective lacks probe row for {source_name}"
+                    )
+                objective_inputs.append(
+                    (
+                        qname,
+                        source.load(source_name, execution_device),
+                        _importance(stats[qname], execution_device),
+                    )
+                )
+            baseline, realized = _exact_executed_norm_objective(
+                objective_inputs, executed, config=search_config
+            )
+            accepted = realized < baseline
+            if not accepted:
+                projected = source_norm.contiguous()
+                executed = torch.ones_like(executed)
+                realized = baseline
+            projected_name = f"{nominal_name}__projected_norm"
+            combined_scales[executed_name] = executed.cpu().contiguous()
+            combined_scales[projected_name] = projected.cpu().contiguous()
+            improvement = 0.0 if baseline == 0.0 else (baseline - realized) / baseline
+            executed_groups_moved = int(
+                (executed.view(-1, search_config.group_size) != 1.0)
+                .any(dim=1)
+                .sum()
+                .item()
+            )
+            execution_rows.append(
+                {
+                    "layer": layer,
+                    "kind": kind,
+                    "graph_sha256": raw["graph_sha256"],
+                    "nominal_vector": nominal_name,
+                    "nominal_vector_sha256": _tensor_payload_sha256(
+                        combined_scales[nominal_name],
+                        where=f"PrismaSnap nominal vector {nominal_name}",
+                    ),
+                    "executed_vector": executed_name,
+                    "executed_vector_sha256": _tensor_payload_sha256(
+                        combined_scales[executed_name],
+                        where=f"PrismaSnap executed vector {executed_name}",
+                    ),
+                    "projected_norm_vector": projected_name,
+                    "projected_norm_sha256": _tensor_payload_sha256(
+                        combined_scales[projected_name],
+                        where=f"PrismaSnap projected norm {projected_name}",
+                    ),
+                    **counts,
+                    "executed_realized_channels": (
+                        counts["candidate_realized_channels"] if accepted else 0
+                    ),
+                    "executed_groups_moved": executed_groups_moved,
+                    "objective_baseline": baseline,
+                    "objective_realized": realized,
+                    "objective_improvement_fraction": improvement,
+                    "objective_accepted": accepted,
+                    "objective_fallback_reason": (
+                        None if accepted else "no_strict_realized_bf16_improvement"
+                    ),
+                    "projected_norm_materialization": "replace_bf16",
+                    "consumer_inverse_materialization": "divide_then_round_bf16",
+                }
+            )
+            if accepted:
+                transforms.append(
+                    {
+                        "tensor": norm_name,
+                        "vector": projected_name,
+                        "operation": "replace_bf16",
+                        "axis": 0,
+                        "order": 0,
+                    }
+                )
+                transforms.extend(
+                    {
+                        "tensor": str(name),
+                        "vector": executed_name,
+                        "operation": "divide",
+                        "axis": 1,
+                        "order": 0,
+                    }
+                    for name in raw["consumers"]
+                )
+        elif kind == "up_down":
+            executed = torch.ones_like(nominal)
+            combined_scales[executed_name] = executed.cpu().contiguous()
+            execution_rows.append(
+                {
+                    "layer": layer,
+                    "kind": kind,
+                    "graph_sha256": raw["graph_sha256"],
+                    "nominal_vector": nominal_name,
+                    "nominal_vector_sha256": _tensor_payload_sha256(
+                        combined_scales[nominal_name],
+                        where=f"PrismaSnap nominal vector {nominal_name}",
+                    ),
+                    "executed_vector": executed_name,
+                    "executed_vector_sha256": _tensor_payload_sha256(
+                        combined_scales[executed_name],
+                        where=f"PrismaSnap executed vector {executed_name}",
+                    ),
+                    "channels": int(nominal.numel()),
+                    "executed_realized_channels": 0,
+                    "executed_groups_moved": 0,
+                    "policy_reason": "disabled_for_bf16_fold_fidelity_v2",
+                }
+            )
+        else:
+            raise RuntimeError(f"unsupported PrismaSnap parent seam kind {kind!r}")
+    source.verify_stable()
+    if _producer_identity() != producer:
+        raise RuntimeError("PrismaSnap producer changed during BF16 realization")
+
+    scale_temporary = staging / f".{PLAN_SCALES}.tmp"
+    save_file(
+        {name: value.contiguous() for name, value in sorted(combined_scales.items())},
+        str(scale_temporary),
+        metadata={"format": "pt", "algorithm": PRISMASNAP_BF16_REALIZED_ALGORITHM},
+    )
+    with scale_temporary.open("rb") as handle:
+        os.fsync(handle.fileno())
+    os.replace(scale_temporary, staging / PLAN_SCALES)
+    _fsync_dir(staging)
+    derivation: dict[str, object] = {
+        "schema": BF16_REALIZATION_SCHEMA,
+        "policy": PRISMASNAP_BF16_REALIZATION_POLICY,
+        "parent": parent_binding,
+        "source": source_binding,
+        "nominal_search_stats_semantics": (
+            "copied_parent_v1_nominal_search_not_executed"
+        ),
+        "realized_execution_metrics_semantics": (
+            "exact_static6_nvfp4_on_executed_bf16_consumer_weights"
+        ),
+        "seams": execution_rows,
+    }
+    derivation["derivation_sha256"] = _derivation_digest(derivation)
+    plan: dict[str, object] = {
+        **parent,
+        "schema": BF16_REALIZED_PLAN_SCHEMA,
+        "algorithm": PRISMASNAP_BF16_REALIZED_ALGORITHM,
+        "producer": producer,
+        "scales": {
+            "file": PLAN_SCALES,
+            "sha256": _sha256_file(staging / PLAN_SCALES),
+            "vectors": len(combined_scales),
+        },
+        "transforms": sorted(
+            transforms, key=lambda item: (str(item["tensor"]), int(item["order"]))
+        ),
+        "derivation": derivation,
+    }
+    plan["plan_sha256"] = _plan_digest(plan)
+    _atomic_json(staging / PLAN_JSON, plan)
+    loaded, _ = load_plan(staging)
+    if loaded != plan or not expected_binding(loaded):
+        raise RuntimeError("PrismaSnap BF16-realized staged plan changed")
+    state_path.unlink()
+    _fsync_dir(staging)
+    os.replace(staging, output)
+    _fsync_dir(output.parent)
+    return plan
+
+
 def _validate_materialization_plan(
     plan: Mapping[str, object],
     source: _Checkpoint,
     scales: Mapping[str, torch.Tensor],
+    *,
+    require_current_producer: bool = True,
 ) -> None:
     from . import prismasnap_moe_checkpoint as moe_checkpoint
 
@@ -2896,7 +3904,9 @@ def _validate_materialization_plan(
             )
     _validate_config_semantics(source.root, identity)
     producer = plan.get("producer")
-    if not isinstance(producer, dict) or producer != _producer_identity():
+    if not isinstance(producer, dict) or (
+        require_current_producer and producer != _producer_identity()
+    ):
         raise RuntimeError(
             "PrismaSnap materializer implementation/container identity differs "
             "from the planning runtime"
@@ -2908,9 +3918,11 @@ def _validate_materialization_plan(
         or search.get("materialization_rounding")
         != "sequential_bf16_per_transform"
     ):
-        raise RuntimeError("PrismaSnap plan does not carry the measured v1 treatment")
+        raise RuntimeError("PrismaSnap plan does not carry its bound v1 search treatment")
     raw_transforms = plan.get("transforms")
-    if not isinstance(raw_transforms, list) or not raw_transforms:
+    if not isinstance(raw_transforms, list) or (
+        not raw_transforms and plan.get("schema") != BF16_REALIZED_PLAN_SCHEMA
+    ):
         raise RuntimeError("PrismaSnap plan has no transform program")
     per_tensor_orders: dict[str, list[int]] = defaultdict(list)
     seen: set[tuple[str, int]] = set()
@@ -2929,7 +3941,12 @@ def _validate_materialization_plan(
             raise RuntimeError("PrismaSnap plan transform references an unknown tensor")
         if not isinstance(vector_name, str) or vector_name not in scales:
             raise RuntimeError("PrismaSnap plan transform references an unknown vector")
-        if operation not in {"multiply", "divide", "affine_multiply"}:
+        if operation not in {
+            "multiply",
+            "divide",
+            "affine_multiply",
+            "replace_bf16",
+        }:
             raise RuntimeError("PrismaSnap plan transform operation is unsupported")
         axis = raw.get("axis")
         order = raw.get("order")
@@ -2957,9 +3974,11 @@ def _validate_materialization_plan(
                 raise RuntimeError(
                     f"PrismaSnap transform/vector shape mismatch: {tensor_name}"
                 )
-            if operation == "affine_multiply" and len(shape) != 1:
+            if operation in {"affine_multiply", "replace_bf16"} and len(shape) != 1:
                 raise RuntimeError("PrismaSnap affine norm transform must be rank 1")
-            if operation != "affine_multiply" and len(shape) != 2:
+            if operation == "replace_bf16" and scales[vector_name].dtype != torch.bfloat16:
+                raise RuntimeError("PrismaSnap replacement norm payload must be BF16")
+            if operation not in {"affine_multiply", "replace_bf16"} and len(shape) != 2:
                 raise RuntimeError("PrismaSnap weight transform must be rank 2")
     for tensor_name, orders in per_tensor_orders.items():
         if sorted(orders) != list(range(len(orders))):
@@ -3205,6 +4224,20 @@ def _materialize_selected_shards(
                                 transform,
                                 output_dtype=source_dtype,
                             )
+                        elif transform["operation"] == "replace_bf16":
+                            if (
+                                value.ndim != 1
+                                or int(transform["axis"]) != 0
+                                or vector.dtype != torch.bfloat16
+                                or tuple(vector.shape) != tuple(value.shape)
+                            ):
+                                raise RuntimeError(
+                                    "PrismaSnap projected BF16 norm replacement "
+                                    "does not match the source tensor"
+                                )
+                            value = vector.to(
+                                device=execution_device, dtype=source_dtype
+                            ).contiguous()
                         else:
                             value = apply_diagonal_transform(
                                 value,
@@ -3302,8 +4335,18 @@ def _build_provenance(
         moe_checkpoint.MOE_PLAN_SCHEMA,
         moe_checkpoint.MOE_PLAN_SET_SCHEMA,
     }
+    is_bf16_realized = plan.get("schema") == BF16_REALIZED_PLAN_SCHEMA
+    realized_by_key: dict[tuple[int, str], Mapping[str, object]] = {}
+    if is_bf16_realized:
+        realized_by_key = {
+            (int(row["layer"]), str(row["kind"])): row
+            for row in plan["derivation"]["seams"]
+        }
 
-    def summary(row: Mapping[str, object]) -> dict[str, object]:
+    seam_summary: list[dict[str, object]] = []
+    for row in plan["seams"]:
+        layer = int(row["layer"])
+        kind = str(row["kind"])
         raw_stats = row["stats"]
         stats_rows = raw_stats if isinstance(raw_stats, list) else [raw_stats]
         if not stats_rows or any(not isinstance(value, Mapping) for value in stats_rows):
@@ -3312,9 +4355,9 @@ def _build_provenance(
         moved = sum(int(value["groups_moved"]) for value in stats_rows)
         baseline = sum(float(value["error_baseline"]) for value in stats_rows)
         final = sum(float(value["error_final"]) for value in stats_rows)
-        return {
-            "layer": int(row["layer"]),
-            "kind": str(row["kind"]),
+        summary = {
+            "layer": layer,
+            "kind": kind,
             "graph_sha256": str(row["graph_sha256"]),
             "groups": groups,
             "groups_moved": moved,
@@ -3322,11 +4365,20 @@ def _build_provenance(
                 0.0 if baseline == 0.0 else (baseline - final) / baseline
             ),
         }
-
-    seam_summary = [summary(row) for row in plan["seams"]]
+        if is_bf16_realized:
+            executed = realized_by_key[(layer, kind)]
+            summary["groups_moved"] = int(executed["executed_groups_moved"])
+            summary["improvement_fraction"] = (
+                0.0
+                if kind == "up_down"
+                else float(executed["objective_improvement_fraction"])
+            )
+        seam_summary.append(summary)
     provenance: dict[str, object] = {
         "schema": (
-            moe_checkpoint.MOE_PROVENANCE_SCHEMA if is_moe else PROVENANCE_SCHEMA
+            moe_checkpoint.MOE_PROVENANCE_SCHEMA
+            if is_moe
+            else PROVENANCE_SCHEMA_V2 if is_bf16_realized else PROVENANCE_SCHEMA
         ),
         # Algebra/census verification is complete here.  Numerical fold
         # fidelity is a separate served-BF16 gate; only its attestor may
@@ -3335,7 +4387,7 @@ def _build_provenance(
         "algorithm": (
             moe_checkpoint.PRISMASNAP_MOE_ALGORITHM
             if is_moe
-            else PRISMASNAP_ALGORITHM
+            else plan["algorithm"]
         ),
         "purely_additive_source_preparation": True,
         "serve_time_changes": False,
@@ -3373,6 +4425,8 @@ def _build_provenance(
     if is_moe:
         provenance["promotion"] = moe_checkpoint.PRISMASNAP_MOE_PROMOTION
         provenance["real_moe_fold_kl_evidence"] = None
+    if is_bf16_realized:
+        provenance["derivation"] = plan["derivation"]
     provenance["provenance_sha256"] = canonical_json_sha256(
         provenance, where="PrismaSnap provenance"
     )
@@ -3390,7 +4444,7 @@ def _validate_provenance_digest(
     }
     from . import prismasnap_moe_checkpoint as moe_checkpoint
 
-    dense = payload.get("schema") == PROVENANCE_SCHEMA
+    dense = payload.get("schema") in {PROVENANCE_SCHEMA, PROVENANCE_SCHEMA_V2}
     moe = payload.get("schema") == moe_checkpoint.MOE_PROVENANCE_SCHEMA
     valid_state = (
         payload.get("state") in {"MATERIALIZED", "VERIFIED"}

@@ -9440,7 +9440,11 @@ def _copy_tokenizer(src_model: str, out_dir: Path) -> None:
             ) from exc
         if (
             not isinstance(snap, dict)
-            or snap.get("schema") != "prismaquant.prismasnap.provenance.v1"
+            or snap.get("schema")
+            not in {
+                "prismaquant.prismasnap.provenance.v1",
+                "prismaquant.prismasnap.provenance.v2",
+            }
         ):
             raise RuntimeError(
                 f"PrismaSnap provenance has an unsupported contract: {snap_path}"

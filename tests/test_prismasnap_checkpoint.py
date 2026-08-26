@@ -445,7 +445,9 @@ def test_merge_plans_resume_recovers_commit_and_rejects_order_equivocation(
         checkpoint.merge_plans([right, left], output, resume=True)
 
 
-def _tiny_planned_checkpoint(tmp_path: Path) -> dict[str, object]:
+def _tiny_planned_checkpoint(
+    tmp_path: Path, *, layer_count: int = 1
+) -> dict[str, object]:
     source = tmp_path / "source"
     source.mkdir()
     config: dict[str, object] = {
@@ -453,7 +455,7 @@ def _tiny_planned_checkpoint(tmp_path: Path) -> dict[str, object]:
         "architectures": ["Qwen3_5ForCausalLM"],
         "hidden_size": 16,
         "intermediate_size": 32,
-        "num_hidden_layers": 1,
+        "num_hidden_layers": layer_count,
         "num_attention_heads": 2,
         "num_key_value_heads": 1,
         "head_dim": 8,
@@ -465,18 +467,23 @@ def _tiny_planned_checkpoint(tmp_path: Path) -> dict[str, object]:
     assert profile.name == "qwen3_5_dense"
 
     recipe_shapes = {
-        "model.layers.0.input_layernorm.weight": (16,),
-        "model.layers.0.post_attention_layernorm.weight": (16,),
-        "model.layers.0.self_attn.q_proj.weight": (16, 16),
-        "model.layers.0.self_attn.k_proj.weight": (16, 16),
-        "model.layers.0.self_attn.v_proj.weight": (16, 16),
-        "model.layers.0.mlp.gate_proj.weight": (32, 16),
-        "model.layers.0.mlp.up_proj.weight": (32, 16),
-        "model.layers.0.mlp.down_proj.weight": (16, 32),
         "model.embed_tokens.weight": (32, 16),
         "model.norm.weight": (16,),
         "lm_head.weight": (32, 16),
     }
+    for layer in range(layer_count):
+        recipe_shapes.update(
+            {
+                f"model.layers.{layer}.input_layernorm.weight": (16,),
+                f"model.layers.{layer}.post_attention_layernorm.weight": (16,),
+                f"model.layers.{layer}.self_attn.q_proj.weight": (16, 16),
+                f"model.layers.{layer}.self_attn.k_proj.weight": (16, 16),
+                f"model.layers.{layer}.self_attn.v_proj.weight": (16, 16),
+                f"model.layers.{layer}.mlp.gate_proj.weight": (32, 16),
+                f"model.layers.{layer}.mlp.up_proj.weight": (32, 16),
+                f"model.layers.{layer}.mlp.down_proj.weight": (16, 32),
+            }
+        )
     generator = torch.Generator().manual_seed(314159)
     source_tensors: dict[str, torch.Tensor] = {}
     for recipe_name, shape in recipe_shapes.items():
@@ -546,31 +553,32 @@ def _tiny_planned_checkpoint(tmp_path: Path) -> dict[str, object]:
     input_importance = np.linspace(0.5, 1.5, 16, dtype=np.float32)
     post_importance = np.linspace(1.5, 0.5, 16, dtype=np.float32)
     stats: dict[str, dict[str, object]] = {}
-    for leaf in ("q_proj", "k_proj", "v_proj"):
-        stats[f"model.layers.0.self_attn.{leaf}"] = {
-            "act_sq_sum": input_importance.copy(),
-            "in_features": 16,
+    for layer in range(layer_count):
+        for leaf in ("q_proj", "k_proj", "v_proj"):
+            stats[f"model.layers.{layer}.self_attn.{leaf}"] = {
+                "act_sq_sum": input_importance.copy(),
+                "in_features": 16,
+                "out_features": 16,
+            }
+        for leaf in ("gate_proj", "up_proj"):
+            stats[f"model.layers.{layer}.mlp.{leaf}"] = {
+                "act_sq_sum": post_importance.copy(),
+                "in_features": 16,
+                "out_features": 32,
+            }
+        stats[f"model.layers.{layer}.mlp.down_proj"] = {
+            "act_sq_sum": np.linspace(0.25, 2.0, 32, dtype=np.float32),
+            "in_features": 32,
             "out_features": 16,
         }
-    for leaf in ("gate_proj", "up_proj"):
-        stats[f"model.layers.0.mlp.{leaf}"] = {
-            "act_sq_sum": post_importance.copy(),
-            "in_features": 16,
-            "out_features": 32,
-        }
-    stats["model.layers.0.mlp.down_proj"] = {
-        "act_sq_sum": np.linspace(0.25, 2.0, 32, dtype=np.float32),
-        "in_features": 32,
-        "out_features": 16,
-    }
     probe = {
         "stats": stats,
         "meta": {
             "model": str(source.resolve()),
             "calib_hash": "synthetic-calibration",
             "dataset": "synthetic",
-            "nsamples": 1,
-            "seqlen": 16,
+            "nsamples": 2,
+            "seqlen": 512,
             "dtype": "bf16",
             "device_map": "streaming-layerwise",
             "execution_device": "cuda:0",
@@ -631,6 +639,282 @@ def test_dense_plan_binds_full_headers_and_measured_consumer_order(
         "k_proj",
         "v_proj",
     ]
+
+
+def test_bf16_projection_offset_one_handles_zero_and_collapsed_gamma() -> None:
+    source = torch.tensor(
+        [-1.0, -0.99609375, 0.0], dtype=torch.bfloat16
+    )
+    nominal = torch.tensor([4.0, 0.01, 1.25], dtype=torch.float64)
+    projected, executed, counts = (
+        checkpoint._project_bf16_norm_and_realize_inverse(
+            source, nominal, parameter_offset=1.0
+        )
+    )
+    assert torch.equal(
+        projected,
+        torch.tensor([-1.0, -0.99609375, 0.25], dtype=torch.bfloat16),
+    )
+    assert torch.equal(
+        executed, torch.tensor([1.0, 1.0, 1.25], dtype=torch.float64)
+    )
+    assert counts == {
+        "channels": 3,
+        "candidate_realized_channels": 1,
+        "source_zero_channels": 1,
+        "projected_zero_channels": 1,
+        "sign_mismatch_channels": 0,
+        "nonfinite_channels": 0,
+        "reapplication_mismatch_channels": 0,
+    }
+    replay = ((source.to(torch.float64) + 1.0) * executed - 1.0).to(
+        torch.bfloat16
+    )
+    assert torch.equal(replay, projected)
+
+
+def test_bf16_realized_plan_binds_parent_executes_identity_updown_and_materializes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRISMAQUANT_CONTAINER_ROOTFS_SHA256", "a" * 64)
+    fixture = _tiny_planned_checkpoint(tmp_path, layer_count=2)
+    search = PrismaSnapSearchConfig()
+    left = checkpoint.plan_dense_checkpoint(
+        fixture["source"],
+        fixture["probe_path"],
+        fixture["identity_path"],
+        tmp_path / "v2-left",
+        device="cpu",
+        layers=[0],
+        search_config=search,
+    )
+    right = checkpoint.plan_dense_checkpoint(
+        fixture["source"],
+        fixture["probe_path"],
+        fixture["identity_path"],
+        tmp_path / "v2-right",
+        device="cpu",
+        layers=[1],
+        search_config=search,
+    )
+    merged_dir = tmp_path / "v2-parent"
+    parent = checkpoint.merge_plans(
+        [tmp_path / "v2-left", tmp_path / "v2-right"], merged_dir
+    )
+    assert left["model"]["planned_layers"] == [0]
+    assert right["model"]["planned_layers"] == [1]
+
+    realized_dir = tmp_path / "v2-realized"
+    realized = checkpoint.realize_bf16_plan(
+        fixture["source"], merged_dir, realized_dir, device="cpu", resume=True
+    )
+    assert realized["schema"] == checkpoint.BF16_REALIZED_PLAN_SCHEMA
+    assert realized["algorithm"] == checkpoint.PRISMASNAP_BF16_REALIZED_ALGORITHM
+    assert realized["derivation"]["parent"]["plan_sha256"] == parent[
+        "plan_sha256"
+    ]
+    assert all(
+        row["executed_realized_channels"] == 0
+        for row in realized["derivation"]["seams"]
+        if row["kind"] == "up_down"
+    )
+    loaded, scales = checkpoint.load_plan(realized_dir)
+    assert loaded == realized
+    accepted = [
+        row
+        for row in realized["derivation"]["seams"]
+        if row["kind"] != "up_down" and row["objective_accepted"]
+    ]
+    assert accepted, "synthetic default search must exercise one accepted v2 seam"
+    transforms_by_vector: dict[str, list[dict[str, object]]] = {}
+    for transform in realized["transforms"]:
+        transforms_by_vector.setdefault(transform["vector"], []).append(transform)
+    for row in realized["derivation"]["seams"]:
+        if row["kind"] == "up_down":
+            assert row["executed_groups_moved"] == 0
+            assert torch.equal(
+                scales[row["executed_vector"]],
+                torch.ones_like(scales[row["executed_vector"]]),
+            )
+            assert row["executed_vector"] not in transforms_by_vector
+        elif row["objective_accepted"]:
+            seam = next(
+                seam
+                for seam in realized["seams"]
+                if (seam["layer"], seam["kind"]) == (row["layer"], row["kind"])
+            )
+            assert row["executed_groups_moved"] > 0
+            assert transforms_by_vector[row["projected_norm_vector"]] == [
+                {
+                    "tensor": seam["norm"],
+                    "vector": row["projected_norm_vector"],
+                    "operation": "replace_bf16",
+                    "axis": 0,
+                    "order": 0,
+                }
+            ]
+            assert {
+                transform["tensor"]
+                for transform in transforms_by_vector[row["executed_vector"]]
+            } == set(seam["consumers"])
+        else:
+            assert row["executed_groups_moved"] == 0
+            assert row["executed_vector"] not in transforms_by_vector
+            assert row["projected_norm_vector"] not in transforms_by_vector
+    assert checkpoint.realize_bf16_plan(
+        fixture["source"], merged_dir, realized_dir, device="cpu", resume=True
+    ) == realized
+
+    output = tmp_path / "v2-materialized"
+    provenance = checkpoint.materialize_checkpoint(
+        fixture["source"], realized_dir, output, device="cpu"
+    )
+    assert provenance["schema"] == checkpoint.PROVENANCE_SCHEMA_V2
+    assert provenance["algorithm"] == checkpoint.PRISMASNAP_BF16_REALIZED_ALGORITHM
+    assert provenance["derivation"] == realized["derivation"]
+    execution_by_key = {
+        (row["layer"], row["kind"]): row
+        for row in realized["derivation"]["seams"]
+    }
+    for summary in provenance["seam_summary"]:
+        execution = execution_by_key[(summary["layer"], summary["kind"])]
+        assert summary["groups_moved"] == execution["executed_groups_moved"]
+        assert summary["improvement_fraction"] == (
+            0.0
+            if summary["kind"] == "up_down"
+            else execution["objective_improvement_fraction"]
+        )
+    changed_consumer = False
+    seams_by_key = {
+        (row["layer"], row["kind"]): row for row in realized["seams"]
+    }
+    for row in accepted:
+        seam = seams_by_key[(row["layer"], row["kind"])]
+        norm_name = seam["norm"]
+        norm_owner = fixture["weight_map"][norm_name]
+        with safe_open(str(output / norm_owner), framework="pt") as handle:
+            assert torch.equal(
+                handle.get_tensor(norm_name), scales[row["projected_norm_vector"]]
+            )
+        inverse = scales[row["executed_vector"]]
+        for consumer_name in seam["consumers"]:
+            expected = (
+                fixture["source_tensors"][consumer_name].to(torch.float64)
+                / inverse.view(1, -1)
+            ).to(torch.bfloat16)
+            owner = fixture["weight_map"][consumer_name]
+            with safe_open(str(output / owner), framework="pt") as handle:
+                observed = handle.get_tensor(consumer_name)
+            assert torch.equal(observed, expected)
+            changed_consumer |= not torch.equal(
+                observed, fixture["source_tensors"][consumer_name]
+            )
+    assert changed_consumer
+    from prismaquant.prismasnap_validation import (
+        validate_prismasnap_provenance_payload,
+    )
+
+    validate_prismasnap_provenance_payload(
+        provenance, require_verified=False, where="test BF16-realized provenance"
+    )
+    misleading = json.loads(json.dumps(provenance))
+    updown_summary = next(
+        row for row in misleading["seam_summary"] if row["kind"] == "up_down"
+    )
+    updown_summary["groups_moved"] = 1
+    misleading["provenance_sha256"] = checkpoint.canonical_json_sha256(
+        {
+            key: value
+            for key, value in misleading.items()
+            if key != "provenance_sha256"
+        },
+        where="test misleading BF16-realized provenance",
+    )
+    with pytest.raises(RuntimeError, match="summary differs from execution"):
+        validate_prismasnap_provenance_payload(
+            misleading,
+            require_verified=False,
+            where="test misleading BF16-realized provenance",
+        )
+
+    shard_names = sorted(set(fixture["weight_map"].values()))
+    part_a = tmp_path / "v2-part-a"
+    part_b = tmp_path / "v2-part-b"
+    checkpoint.materialize_checkpoint_part(
+        fixture["source"],
+        realized_dir,
+        part_a,
+        [shard_names[0]],
+        device="cpu",
+    )
+    checkpoint.materialize_checkpoint_part(
+        fixture["source"],
+        realized_dir,
+        part_b,
+        [shard_names[1]],
+        device="cpu",
+    )
+    collated = checkpoint.merge_checkpoint_parts(
+        fixture["source"],
+        realized_dir,
+        [part_a, part_b],
+        tmp_path / "v2-collated",
+    )
+    assert collated["schema"] == checkpoint.PROVENANCE_SCHEMA_V2
+    assert collated["derivation"] == realized["derivation"]
+    validate_prismasnap_provenance_payload(
+        collated, require_verified=False, where="test BF16-realized collation"
+    )
+
+    monkeypatch.setattr(
+        checkpoint,
+        "_exact_executed_norm_objective",
+        lambda *_args, **_kwargs: (1.0, 1.0),
+    )
+    identity_plan_dir = tmp_path / "v2-realized-all-identity"
+    identity_plan = checkpoint.realize_bf16_plan(
+        fixture["source"],
+        merged_dir,
+        identity_plan_dir,
+        device="cpu",
+        resume=True,
+    )
+    assert identity_plan["transforms"] == []
+    assert all(
+        row["executed_groups_moved"] == 0
+        for row in identity_plan["derivation"]["seams"]
+    )
+    identity_output = tmp_path / "v2-materialized-all-identity"
+    identity_provenance = checkpoint.materialize_checkpoint(
+        fixture["source"], identity_plan_dir, identity_output, device="cpu"
+    )
+    assert identity_provenance["coverage"]["transformed_tensors"] == 0
+    assert identity_provenance["coverage"]["materialized_changed_tensors"] == 0
+    validate_prismasnap_provenance_payload(
+        identity_provenance,
+        require_verified=False,
+        where="test all-identity BF16-realized provenance",
+    )
+    for tensor_name, expected in fixture["source_tensors"].items():
+        with safe_open(
+            str(identity_output / fixture["weight_map"][tensor_name]),
+            framework="pt",
+        ) as handle:
+            assert torch.equal(handle.get_tensor(tensor_name), expected)
+
+    tampered = tmp_path / "v2-tampered-parent"
+    shutil.copytree(realized_dir, tampered)
+    manifest_path = tampered / checkpoint.PLAN_JSON
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["derivation"]["parent"]["plan_sha256"] = "0" * 64
+    manifest["derivation"]["derivation_sha256"] = checkpoint._derivation_digest(
+        manifest["derivation"]
+    )
+    manifest["plan_sha256"] = checkpoint._plan_digest(manifest)
+    _json(manifest_path, manifest)
+    with pytest.raises(RuntimeError, match="reconstruct the bound parent"):
+        checkpoint.load_plan(tampered)
 
 
 def test_external_tensor_metadata_manifest_bypasses_worker_full_header_scan(

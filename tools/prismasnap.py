@@ -19,6 +19,7 @@ from prismaquant.prismasnap_checkpoint import (  # noqa: E402
     merge_checkpoint_parts,
     merge_plans,
     plan_dense_checkpoint,
+    realize_bf16_plan,
     scan_tensor_metadata_manifest,
 )
 from prismaquant.prismasnap_validation import attest_fold_fidelity
@@ -162,6 +163,16 @@ def main(argv: list[str] | None = None) -> int:
     merge.add_argument("--output", required=True)
     merge.add_argument("--resume", action="store_true")
 
+    realize = sub.add_parser(
+        "realize-bf16",
+        help="derive a cast-aware executable v2 plan from a full merged v1 plan",
+    )
+    realize.add_argument("--source", required=True)
+    realize.add_argument("--plan", required=True)
+    realize.add_argument("--output", required=True)
+    realize.add_argument("--device", default="cuda")
+    realize.add_argument("--resume", action="store_true")
+
     materialize = sub.add_parser(
         "materialize", help="stream and atomically commit a snapped checkpoint"
     )
@@ -269,6 +280,27 @@ def main(argv: list[str] | None = None) -> int:
                 "plan_sha256": result["plan_sha256"],
                 "layers": result["model"]["planned_layers"],
                 "workers": result["workers"],
+            }
+        )
+        return 0
+    if args.command == "realize-bf16":
+        result = realize_bf16_plan(
+            args.source,
+            args.plan,
+            args.output,
+            device=args.device,
+            resume=args.resume,
+            production=True,
+        )
+        _print(
+            {
+                "plan": str(Path(args.output).resolve()),
+                "plan_sha256": result["plan_sha256"],
+                "parent_plan_sha256": result["derivation"]["parent"][
+                    "plan_sha256"
+                ],
+                "layers": result["model"]["planned_layers"],
+                "seams": len(result["seams"]),
             }
         )
         return 0

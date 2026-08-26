@@ -27,6 +27,12 @@ from .export_native_compressed import (
 
 
 PRISMASNAP_ALGORITHM = "prismasnap.diagonal_scale_fold.v1"
+PRISMASNAP_BF16_REALIZED_ALGORITHM = (
+    "prismasnap.diagonal_scale_fold.bf16_realized.v2"
+)
+PRISMASNAP_BF16_REALIZATION_POLICY = (
+    "prismasnap.bf16_projected_norm_realized_inverse.v1"
+)
 TransformMode = Literal["column_inverse", "row", "stationary"]
 MaterializeMode = Literal["multiply", "divide", "affine_multiply"]
 

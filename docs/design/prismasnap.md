@@ -14,8 +14,8 @@ probe, AURA cost, per-Linear allocator, `ProductionWeightCache`, recache,
 compressed-tensors export, and validation stages without another PrismaSnap
 decision.
 
-The v1 release arm reproduces Fable's fast `stage,polish` treatment, not the
-original sequential greedy search.  Its value-bearing receipt fixes:
+The nominal v1 search reproduces Fable's fast `stage,polish` treatment, not
+the original sequential greedy search.  Its value-bearing receipt fixes:
 
 - group size 16 and α candidates `0,.125,.25,.375,.5`;
 - at most four fixed-global rounds, first-round top-half staging, and
@@ -26,7 +26,55 @@ original sequential greedy search.  Its value-bearing receipt fixes:
 - a true-render no-op upper bound.
 
 Fused-sibling scoring and one-final-cast materialization are different,
-unmeasured algorithms and are not production-v1 aliases.
+unmeasured algorithms and are not aliases for that search.
+
+### BF16-realized v2 execution
+
+The first 27B served fold-fidelity run exposed a distinction the nominal v1
+objective did not encode: Qwen's offset-one RMSNorm can round a small effective
+gamma to zero when the nominal fold is cast to BF16.  Applying that nominal
+scale to consumer columns is then not the inverse of the bytes the norm
+actually executes.  Pre-cast fp64 algebra therefore remains a useful graph
+gate, but is not an executed-BF16 fidelity proof.
+
+Evidence is preserved under
+`/home/rob/dq-runs/prismasnap-qwen38-27b-20gb-20260825/fold-fidelity/`:
+the v1 snapped-BF16 arm measured all-position KL `0.002956950685081059`
+(`student.json`) against the `5e-4` gate, while the identical source-vs-source
+replay was exactly zero (`source_aa.json`).  This is a failed prerequisite,
+not a quantized-quality result; no v1 checkpoint from that run is admissible.
+
+`realize-bf16` is a deterministic derived-plan transition over one complete
+merged v1 plan and its original BF16 source.  It does not search again.  For
+each input/post-norm seam it stores three different, content-bound payloads:
+
+- the parent nominal float64 scale (for audit, never silently relabelled as
+  executed);
+- the selected projected BF16 norm bytes, which materialization writes
+  directly with `replace_bf16`; and
+- a positive float64 consumer inverse derived from the quotient of projected
+  and source effective gammas.
+
+A channel executes identity when its source gamma is zero, its projected gamma
+is zero, either value is non-finite, signs differ, or quotient reapplication
+does not reproduce the selected BF16 norm bit-exactly.  The norm still uses the
+direct projected payload so a quotient/product BF16 tie can never change it.
+The transition then recomputes the full static-6 NVFP4 objective on the actual
+`BF16(W / s_real)` consumer weights with importance multiplied by
+`s_real**2`.  A seam with no strict improvement falls back entirely to the
+source norm and identity inverse.  Dense up/down executes identity in v2; its
+small nominal gain is retained only in the parent-search record.  Rejected
+norm seams and all up/down seams emit no materialization transforms, so the
+changed-tensor census describes intended executed byte changes rather than
+identity rewrites.
+
+The v2 plan schema/algorithm, projected-payload hashes, per-channel reason
+counts, exact realized objective, parent plan/scales/producer identities, and
+source identities are all self-hashed.  v1 plans remain readable for audit and
+as the sole admitted parent of this transition; a v2 plan cannot enter the v1
+worker-plan merge.  Materialized v2 provenance reports executed groups and
+executed objective improvement; nominal parent movement remains only under the
+explicitly labelled parent seam records.
 
 ## Dense exact seams
 
@@ -57,6 +105,7 @@ additive exact-source operation and is refused.
 source identity + probe
   -> plan-dense (partial layer plans allowed)
   -> merge-plans (exact layer union)
+  -> realize-bf16 (merged v1 + original BF16 -> executable v2 plan)
   -> materialize or materialize-part
   -> merge-checkpoint-parts (exact shard union)
   -> MATERIALIZED BF16 checkpoint
@@ -73,6 +122,16 @@ shape/dtype, and the exact transform count.  Merge operations require disjoint
 exact covers.  Every long transition has no-clobber staging, fsynced receipts,
 identical-argv `--resume`, bounded campaign retries, and committed-output
 revalidation.
+
+The executable v2 transition is:
+
+```bash
+python tools/prismasnap.py realize-bf16 \
+  --source /original-bf16 \
+  --plan /merged-v1-plan \
+  --output /bf16-realized-v2-plan \
+  --device cuda --resume
+```
 
 `prismaquant.cluster_campaign` is the non-agent coordinator.  A strict,
 self-hashed manifest declares hosts, argv, dependencies, timeouts, retry

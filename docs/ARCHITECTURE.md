@@ -1,8 +1,30 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-25 · `claude/snapquant-productionalization` · working-tree revision over
-parent `7160dc2` — stamps follow, newest first, each recording its own branch and date.
-Re-stamped (2026-08-25, `claude/snapquant-productionalization`) for the **candidate PrismaSnap
+As of: 2026-08-25 · `codex/prismasnap-bf16-v2-20260825` · working-tree revision over
+parent `aaa44eac7adb1d7f191cf25794d0524a53b602dc` — stamps follow, newest first, each
+recording its own branch and date. Re-stamped (2026-08-25,
+`codex/prismasnap-bf16-v2-20260825`) for the **cast-aware BF16-realized PrismaSnap v2
+plan transition**. The nominal fast `stage,polish` v1 search remains the immutable parent,
+but it is no longer executed directly by the repaired arm. `realize-bf16` accepts only one
+complete merged v1 plan plus its content-verified original BF16 source and emits a distinct
+v2 schema/algorithm. For each input/post-norm seam it preserves the nominal float64 scale,
+stores the selected projected BF16 norm bytes, and derives a separate positive consumer
+inverse from projected/source effective gamma. Zero or collapsed gamma, non-finite values,
+sign disagreement, or a non-bit-exact quotient replay executes identity for that channel;
+materialization writes the projected BF16 norm directly rather than recreating it from the
+quotient. The transition re-scores exact `BF16(W / s_real)` under the static-6 NVFP4 full
+render objective with `importance * s_real**2`, falling an entire seam back to identity on no
+strict improvement. Dense up/down is identity in v2. Parent plan/scales/producer, source,
+nominal vectors, projected norm payloads, executed vectors, reason counts, and realized
+objectives are cryptographically bound; provenance v2 carries that derivation through parts,
+collation, served fold attestation, native export admission, and the unchanged downstream
+pipeline. Legacy v1 plans/provenance remain readable, but v2 cannot re-enter worker-plan merge.
+The reason for the transition is measured and preserved at
+`/home/rob/dq-runs/prismasnap-qwen38-27b-20gb-20260825/fold-fidelity/`: direct v1 snapped-BF16
+KL was `0.002956950685081059` while source-vs-source was exactly zero, so the v1 checkpoint
+failed the `5e-4` prerequisite and remains unverified. No repaired 27B fold result, quantized
+A/B result, or release promotion is claimed by this stamp. Previously re-stamped (2026-08-25,
+`claude/snapquant-productionalization`) for the **candidate PrismaSnap
 additive BF16 source-preparation lane**. PrismaSnap is outside the four-stage quantization
 pipeline: an unmarked source takes the historical path unchanged, while a marked source must
 carry a content-replayed `VERIFIED` receipt before the existing probe, AURA, per-Linear
@@ -1099,21 +1121,31 @@ the same probe, AURA objective, per-Linear allocator, `ProductionWeightCache`, r
 exporter, and serving validators run with no PrismaSnap scheduler or serve-time operation
 (`prismasnap.py` module contract; `prismasnap_contract.require_verified_prismasnap_if_present`).
 
-The candidate release treatment is the measured-fast `stage,polish` algorithm, not Fable's
+The candidate's nominal search is the measured-fast `stage,polish` algorithm, not Fable's
 original sequential greedy implementation. `PrismaSnapSearchConfig` is versioned data and
 production accepts only its canonical value: group size 16; alpha candidates
 `[0,.125,.25,.375,.5]`; at most four fixed-global rounds; round-one staging of the top half of
 predicted gains; then true-render polish over the top-eight-gain and near-maximum groups, capped
 at 16 groups per seam. Each logical tensor keeps its own static-6 NVFP4 global, candidate folds
-are rounded to fp32 for the objective, and materialization replays the prototype's sequential
-BF16 rounding after every transform. A full true-render no-op comparison is the hard upper
-bound. Fused-sibling globals, one-final-cast materialization, a different codec objective, and
-the slower greedy search are different algorithms, not aliases for production v1
+are rounded to fp32 for the nominal objective. A full true-render no-op comparison is the hard
+upper bound. Fused-sibling globals, one-final-cast materialization, a different codec objective,
+and the slower greedy search are different algorithms, not aliases for nominal v1
 (`prismasnap.PrismaSnapSearchConfig.as_dict`, `search_diagonal_scale`,
 `prismasnap_checkpoint.plan_dense_checkpoint`).
 
+Before materialization, `realize-bf16` derives the executable v2 plan. Offset-one norm bytes are
+projected once to BF16 and stored directly; consumer columns use a separate positive realized
+inverse, unsafe channels execute identity, and the exact executed-BF16 static-6 objective must
+strictly beat the original seam or the seam becomes identity. Up/down is identity. The v2
+validator reconstructs every copied parent field and requires its canonical digest to equal the
+bound merged-v1 plan digest; it separately hashes every nominal, executed, and projected vector
+(`prismasnap_checkpoint.realize_bf16_plan`, `_validate_bf16_realized_plan_semantics`). Rejected
+norm seams and all up/down seams omit identity transforms; changed-tensor coverage and v2 seam
+summaries therefore report executed movement/objective gain while the parent records retain the
+explicitly nominal search statistics.
+
 The application lifecycle is
-`PREPARED → PLANNED → MATERIALIZED → VERIFIED → COMMITTED`:
+`PREPARED → PLANNED-v1 → REALIZED-v2 → MATERIALIZED → VERIFIED → COMMITTED`:
 
 - **PREPARED** validates the original config/index/shard closure, complete tensor census and
   BF16 transform domain, profile, probe bytes and calibration/source binding, producer source
@@ -1121,6 +1153,11 @@ The application lifecycle is
 - **PLANNED** is an atomic, self-digested plan plus float64 scale vectors. It binds three exact
   dense seams per claimed layer, the complete safetensors tensor metadata, transform order,
   search semantics, and the fp64 algebra gate (`≤1e-10`).
+- **REALIZED** is the derived executable plan. It binds its complete merged-v1 parent and
+  original source, preserves nominal statistics as nominal, stores direct BF16 norm payloads
+  plus separate realized consumer inverses, records per-channel refusal reasons, and gates each
+  norm seam on its exact executed-BF16 render objective. Production derives it on CUDA with
+  `tools/prismasnap.py realize-bf16 --resume`.
 - **MATERIALIZED** is the atomically published BF16 checkpoint. Per-shard receipts prove the
   source/output bytes, tensor shapes/dtypes, changed-tensor count, exact source-shard cover,
   checkpoint weight-map digest, index digest, and whole shard-content identity. It is explicitly
@@ -1130,8 +1167,8 @@ The application lifecycle is
   contracts, both serve fingerprints, all-position metric coherence, and current checkpoint
   bytes; original-BF16 → snapped-BF16 forward KL must be `≤5e-4`.
 - **COMMITTED** is the fail-closed handoff of that verified source to the unchanged native
-  pipeline/export transaction. `PLANNED`, `MATERIALIZED`, and `VERIFIED` are serialized receipt
-  states; `PREPARED` and `COMMITTED` name validated transition boundaries rather than additional
+  pipeline/export transaction. `PLANNED`, `REALIZED`, `MATERIALIZED`, and `VERIFIED` are
+  serialized receipt states; `PREPARED` and `COMMITTED` name validated transition boundaries rather than additional
   mutable JSON states (`prismasnap_checkpoint.py`, `prismasnap_validation.attest_fold_fidelity`).
 
 Multi-Spark operation is deterministic application code, not an agent protocol.
@@ -1196,7 +1233,8 @@ flowchart TD
     PSPREP["PREPARED<br/>source config/index/shards + full tensor headers<br/>probe/calibration + producer/container identity"]
     PSPLAN0["Sparky plan-dense<br/>disjoint layers; CUDA measured-fast stage,polish"]
     PSPLAN1["Sparklina plan-dense<br/>disjoint layers; CUDA measured-fast stage,polish"]
-    PSMERGE["PLANNED<br/>merge-plans --resume<br/>exact layer union + 3 seams/layer"]
+    PSMERGE["PLANNED-v1<br/>merge-plans --resume<br/>exact layer union + 3 seams/layer"]
+    PSREAL["REALIZED-v2<br/>realize-bf16 --resume<br/>direct BF16 norms + realized inverses<br/>executed objective / identity fallback"]
     PSPART0["Sparky materialize-part<br/>disjoint original shards"]
     PSPART1["Sparklina materialize-part<br/>disjoint original shards"]
     PSTRANSFER["content-verified remote-part transfer<br/>explicit campaign stage"]
@@ -1208,8 +1246,9 @@ flowchart TD
     PSPREP --> PSPLAN1
     PSPLAN0 --> PSMERGE
     PSPLAN1 --> PSMERGE
-    PSMERGE --> PSPART0
-    PSMERGE --> PSPART1
+    PSMERGE --> PSREAL
+    PSREAL --> PSPART0
+    PSREAL --> PSPART1
     PSPART0 --> PSCOLLATE
     PSPART1 --> PSTRANSFER --> PSCOLLATE
     PSCOLLATE --> PSKL --> PSVER --> PSCOMMIT
