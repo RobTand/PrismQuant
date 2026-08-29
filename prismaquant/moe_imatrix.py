@@ -96,25 +96,30 @@ def _weight_map(model_path: Path) -> dict[str, str]:
     raise FileNotFoundError(f"no safetensors index under {model_path}")
 
 
-_WEIGHT_BLOCK_CACHE: dict[str, tuple[int, int] | None] = {}
+_WEIGHT_BLOCK_CACHE: dict[str, tuple[int, int]] = {}
 
 
-def _weight_block_size(model_path: Path) -> tuple[int, int] | None:
-    """The checkpoint's declared FP8 block tiling, or None if undeclared."""
+def _weight_block_size(model_path: Path) -> tuple[int, int]:
+    """The checkpoint's declared FP8 block tiling.
+
+    One checkpoint, one contract: this defers to the streaming loader's
+    `_declared_weight_block_size`, which REFUSES a checkpoint that pairs
+    fp8 weights with scale tensors but declares no `weight_block_size`
+    rather than inferring the grid from the scale-plane shape. Inference
+    is unsafe even when it divides exactly -- a 200-row weight against a
+    2-row scale plane divides exactly at 100 and is equally a 128-block
+    tiling with a partial trailing block, and the two dequants differ on
+    every row from 128 up. Two mechanisms that disagree about one
+    checkpoint is the defect this avoids; the packed-expert replay and
+    the streaming load must read the same grid.
+
+    Cached per path because `_load_tensors` asks once per FP8 tensor.
+    """
+    from .layer_streaming import _declared_weight_block_size
+
     key = str(model_path)
     if key not in _WEIGHT_BLOCK_CACHE:
-        blocks = None
-        cfg_path = Path(model_path) / "config.json"
-        if cfg_path.exists():
-            cfg = json.loads(cfg_path.read_text())
-            for holder in (cfg, cfg.get("text_config") or {}):
-                qc = holder.get("quantization_config") or {}
-                raw = qc.get("weight_block_size")
-                if (isinstance(raw, (list, tuple)) and len(raw) == 2
-                        and all(isinstance(v, int) and v > 0 for v in raw)):
-                    blocks = (int(raw[0]), int(raw[1]))
-                    break
-        _WEIGHT_BLOCK_CACHE[key] = blocks
+        _WEIGHT_BLOCK_CACHE[key] = _declared_weight_block_size(key)
     return _WEIGHT_BLOCK_CACHE[key]
 
 
@@ -154,27 +159,14 @@ def _load_tensors(
                             scale = sf.get_tensor(scale_key)
                     o, i = tensor.shape
                     so, si = scale.shape
-                    blocks = _weight_block_size(model_path)
-                    if blocks is not None:
-                        b0, b1 = blocks
-                        if (-(-o // b0), -(-i // b1)) != (so, si):
-                            raise ValueError(
-                                f"{k}: scale plane {so}x{si} does not tile "
-                                f"weight {o}x{i} at the checkpoint's declared "
-                                f"weight_block_size {blocks}"
-                            )
-                    elif o % so == 0 and i % si == 0:
-                        # No declared block size: exact division is the only
-                        # unambiguous inference. A partial trailing block
-                        # cannot be detected without the declaration, so a
-                        # non-divisible shape refuses below.
-                        b0, b1 = o // so, i // si
-                    else:
+                    # Raises when the checkpoint declares no block size --
+                    # the grid is read from the checkpoint, never guessed.
+                    b0, b1 = _weight_block_size(model_path)
+                    if (-(-o // b0), -(-i // b1)) != (so, si):
                         raise ValueError(
-                            f"{k}: weight {o}x{i} is not tiled evenly by its "
-                            f"scale plane {so}x{si} and the checkpoint "
-                            "declares no weight_block_size; refusing to guess "
-                            "where the partial trailing block falls"
+                            f"{k}: scale plane {so}x{si} does not tile "
+                            f"weight {o}x{i} at the checkpoint's declared "
+                            f"weight_block_size {(b0, b1)}"
                         )
                     tensor = (
                         tensor.to(torch.float32)
