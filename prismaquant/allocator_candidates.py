@@ -38,6 +38,7 @@ from .footprint import (
     format_tensor_payload_breakdown,
     plain_source_dtype_tensor_payload_breakdown,
 )
+from . import trellis_menu
 from .serving_profiles import (
     SERVING_LANE_SCHEMA,
     check_serving_format,
@@ -1777,6 +1778,8 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      mask_records: list[dict] | None = None,
                      cb_serialization_context: CBSerializationContext | None = None,
                      activation_pricing: ActivationFairPricing | None = None,
+                     cost_mode: str | None = None,
+                     trellis_provenance: dict | None = None,
                      ) -> dict[str, list[Candidate]]:
     """Build runtime-legal format candidates for every measured Linear.
 
@@ -2017,6 +2020,21 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
             "activation path is the identity (BF16, FP8_SOURCE, NVFP4A16, "
             "MXFP8A16) in the format menu."
         )
+    # Continuous trellis rate surface (opt-in, research). Unset
+    # PRISMAQUANT_TRELLIS_SURFACE returns `out` unchanged and this run is
+    # byte-identical to one built before the seam existed. The rungs it adds
+    # are ordinary multi-choice candidates priced in exact serialized bytes;
+    # the DP, the fused/packed aggregation and the byte budget need no change.
+    out = trellis_menu.augment_candidates(
+        out,
+        stats,
+        cost_mode=(
+            cost_mode
+            if cost_mode is not None
+            else os.environ.get("COST_MODE", "aura")
+        ),
+        provenance_out=trellis_provenance,
+    )
     return out
 
 

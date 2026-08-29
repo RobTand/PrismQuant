@@ -497,6 +497,29 @@ def quality_candidate_format_names() -> tuple[str, ...]:
     )
 
 
+def all_legal_trellis_format_names() -> tuple[str, ...]:
+    """Every ``TCQ_<grid>_R<q256>`` name the family contracts admit.
+
+    A serving-profile ``allow_formats_from`` needs a closed enum, and the
+    trellis rate axis is dense rather than enumerable by hand: the wire's
+    resolution is ``SUPERBLOCK_WEIGHTS/columns`` q256, so the *addressable*
+    names are every integer q256 in each family's mathematical bounds. This
+    grants no producer, render, or serving authority -- it is the vocabulary a
+    profile rule can be written against, nothing more.
+    """
+
+    names: list[str] = []
+    for family in FAMILIES.values():
+        low, high = family.mathematical_q256_bounds
+        names.extend(family.format_name(rate) for rate in range(low, high + 1))
+    return tuple(names)
+
+
+#: Materialized once; ``serving_profiles`` resolves ``module:ATTR`` references
+#: at profile-load time and must see a concrete sequence, not a callable.
+ALL_LEGAL_TRELLIS_FORMAT_NAMES: tuple[str, ...] = all_legal_trellis_format_names()
+
+
 def _schedule_values(schedule: Sequence[int]) -> tuple[int, ...]:
     if isinstance(schedule, (str, bytes, bytearray)):
         raise TrellisFormatError("trellis schedule must be an integer sequence")

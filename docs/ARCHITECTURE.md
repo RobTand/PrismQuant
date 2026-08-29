@@ -1,7 +1,24 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-28 · `claude/trellis-continuous-surface` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-28,
+As of: 2026-08-29 · `claude/trellis-continuous-surface` — stamps follow, newest
+first, each recording its own branch and date. Re-stamped (2026-08-29,
+`claude/trellis-continuous-surface`) for the **opt-in continuous trellis rate
+surface** (§4.9): `prismaquant/trellis_menu.py` is now the one seam through
+which the previously islanded trellis modules reach
+`allocator_candidates.build_candidates`, behind
+`PRISMAQUANT_TRELLIS_SURFACE=<manifest.json>` whose unset default returns the
+menu object unchanged. Rungs are named by the shape-free closed
+`TCQ_{E2M1,E4M3}_R<q256>` vocabulary so fused-sibling and packed-expert
+promotion — which intersects member menus by format name — still finds a common
+format; the per-tensor recipe digest rides `serialized_identity`. New profile
+`serving_profile_specs/trellis_research_sm121.json` declares
+`target_platform: sm_121` for the one reason it exists: `_capability_gate`
+returns legal without comparing anything when a profile declares no platform,
+and six of ten specs declare none. Export refuses a `TCQ_*` assignment with a
+pointed message — there is no render mechanism and no runtime attestation, so
+this is allocation-time reach only.
+
+Re-stamped (2026-08-28,
 `claude/trellis-continuous-surface`) for the **PrismaSnap source-dtype
 contract** (§3.0): the BF16-realization lane now accepts a native-FP8 source as
 well as BF16, dequantizing through the checkpoint's declared block grid and
@@ -3339,6 +3356,83 @@ the ordinary §2.4 ladder: rank agreement against measured `output_mse` on a
 small model, allocation churn against a shipped `cost.pkl` inside the known ~3%
 noise, and — for AQUA — a served W4A4-vs-W4A8 A/B. §12 D30 carries the honest
 gaps.
+
+### 4.9 The continuous trellis rate surface — opt-in, allocation-time only (2026-08-29)
+
+`prismaquant/trellis_{formats,footprint,allocator,rate_surface}.py` (3701 LoC,
+69 tests) address and exactly price the Gridbook rate-256 tail-biting trellis
+families. Until 2026-08-29 nothing in the pipeline imported them: no
+`run-pipeline.sh` stage, no format menu, no exporter. `prismaquant/trellis_menu.py`
+is now the ONE seam that does, and it is off by default.
+
+**The flag.** `PRISMAQUANT_TRELLIS_SURFACE=<manifest.json>`. Unset,
+`augment_candidates` returns its input object unchanged, so a run without the
+flag executes exactly the path it executed before the seam existed — the
+`PRISMAQUANT_FISHER_CAP_MULTIPLIER` precedent (§ P6). The seam lives INSIDE
+`allocator_candidates.build_candidates` (before its `return out`), not beside
+it, so trellis rungs pass the same legality, aggregation and byte accounting
+every other candidate does.
+
+**Why a manifest, not a `FORMATS` enum entry.** A trellis rung is
+`(family, body_rate_q256, layout, schedule, alphabets)`, and the wire carries
+one 4-bit rate code per input column shared across rows, so the rate resolution
+is `SUPERBLOCK_WEIGHTS/columns` q256 — 0.25 q256 on a 1024-column Linear,
+effectively continuous. What makes a rung *cost* something is a measured
+anchor, and anchors are per-campaign data. The manifest names them; the module
+fits a monotone piecewise-linear surface in `(q256, log2 dloss)` between
+BRACKETING anchors only and densifies it. Every densified rung gets a real
+per-column schedule and therefore an EXACT byte footprint: the rate is
+interpolated, the bytes never are.
+
+**The name the DP sees is shape-free, and that is load-bearing.** Candidates
+carry `fmt = TCQ_{E2M1,E4M3}_R<q256>` (the closed 2546-name vocabulary
+`trellis_formats.ALL_LEGAL_TRELLIS_FORMAT_NAMES`, round-tripped by
+`parse_trellis_format_name`). `TrellisAllocatorCandidate.allocator_key` is NOT
+used: it embeds the pre-render recipe digest, which hashes the SHAPE, so q_proj
+and k_proj would share no format at any rung and `aggregate_fused_siblings` /
+`aggregate_packed_serving_groups` — which intersect member menus BY FORMAT NAME
+— would silently collapse every fused and packed group back to individual rows.
+The per-tensor recipe digest still travels, on `Candidate.serialized_identity`,
+which is where per-member layout identity belongs.
+
+**Three refusals, each closing a specific hole.**
+
+1. *A profile that declares no `target_platform`.* `trellis_allocator._capability_gate`
+   (`:578-586`) returns **legal** when the platform is `None` — deliberately,
+   because admission is then the experiment's responsibility. Six of the ten
+   serving-profile specs take that branch, `research` among them. Allocating
+   against a gate that cannot compare anything is worse than no gate: it looks
+   like a check. So the manifest must name a profile declaring an exact
+   platform. `serving_profile_specs/trellis_research_sm121.json` is that
+   profile — `target_platform: sm_121`, `emulation_only: true`, no export lane,
+   and deliberately **no `format_rules`**: naming 2546 TCQ rungs in an allow
+   list would assert they are `format_registry` entries, and they are not (a
+   trellis rung has no `FormatSpec` and no RTN `quantize_dequantize`, because
+   nothing renders one).
+2. *An objective the run is not pricing in.* The manifest declares `cost_mode`
+   and `currency`; a mismatch with the run refuses. One DP prices in one
+   currency.
+3. *An unstated activation contract.* The manifest must declare the contract
+   its dloss numbers were measured under, and it is stamped on the provenance
+   payload. The hull anchors were priced **W\*A16** while both families' native
+   `_scaled_mm` routes are **A=W** (W8A8 for E4M3, W4A4 for E2M1). Rendering
+   identity without execution identity priced a real A-side at zero once
+   already (NVFP4_CB, 2026-08-17); the stamp is what stops a future A=W lane
+   inheriting a W\*A16 loss.
+
+**Export fails closed, and says why.** `export_native_compressed` refuses any
+`TCQ_*` assignment with a pointed message rather than the generic
+"absent from FORMAT_SCHEME" one, because the generic message blames the serving
+profile's export lane and that is the wrong diagnosis. No lane bound is
+missing: `ProductionWeightCache` renders no trellis wire, so there are no bytes
+to pack, and the producer Gridbook pin publishes no executed-activation-contract
+table for these families, so an exported artifact could not state its own
+activation contract (§ P14). **This is allocation-time reach only** — the
+surface lets the DP see the continuum, report where bytes would go, and price
+the choice in exact serialized bytes. Promoting it to an artifact needs a
+render mechanism and a runtime attestation first; both are open (§12).
+
+Gate: `tests/test_trellis_menu.py` (13), on top of the surface's own 69.
 
 ## 5. Formats & render
 

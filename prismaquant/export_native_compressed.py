@@ -90,6 +90,7 @@ from .allocator_candidates import (
 from .fp8_dynamic import fp8_dynamic_weight_qdq
 from .mx_formats import e8m0_to_scale, mxfp8_e4m3_qdq
 from .serving_profiles import resolve_target_profile
+from .trellis_formats import parse_trellis_format_name
 from .layer_config import (
     canonicalize_assignment as _canonicalize_assignment,
     canonicalize_format,
@@ -1653,6 +1654,32 @@ def _coerce_runtime_legal_assignment(
                     f"{qname}: format {fmt_canonical} ships via the GGUF "
                     f"container (prismaquant.export_gguf / "
                     f"EXPORT_CONTAINER=gguf), not compressed-tensors"
+                )
+            if parse_trellis_format_name(fmt_canonical) is not None:
+                # A trellis rung reached export. The generic message below
+                # would blame the serving profile's export lane, which is the
+                # wrong diagnosis: no lane bound is missing, the RENDER is.
+                # PRISMAQUANT_TRELLIS_SURFACE is allocation-time reach only --
+                # ProductionWeightCache has no trellis mechanism, so there are
+                # no rendered bytes to pack, and the producer Gridbook pin
+                # publishes no executed-activation-contract table for these
+                # families, so even a rendered wire could not be priced
+                # honestly against what the runtime would execute
+                # (principles 8 and 14).
+                raise ValueError(
+                    f"{qname}: format {fmt_canonical} is a Gridbook trellis "
+                    f"rung from the research rate surface "
+                    f"(PRISMAQUANT_TRELLIS_SURFACE). It has no export path "
+                    f"and this is deliberate, not a missing feature: "
+                    f"ProductionWeightCache renders no trellis wire, so "
+                    f"there are no bytes to pack, and the producer Gridbook "
+                    f"pin publishes no executed-activation-contract table "
+                    f"for TCQ_E2M1/TCQ_E4M3, so an exported artifact could "
+                    f"not state what its own activation contract is. The "
+                    f"surface is an ALLOCATION-TIME report about where bytes "
+                    f"would go; promoting it to an artifact needs a render "
+                    f"mechanism and a runtime attestation first. Re-solve "
+                    f"without PRISMAQUANT_TRELLIS_SURFACE to export."
                 )
             raise ValueError(
                 f"{qname}: format {fmt_canonical} has no compressed-tensors "
