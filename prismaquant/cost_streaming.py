@@ -461,6 +461,14 @@ def build_streamed_model_identity(
 
     config = getattr(runner.model, "config", None)
     config_dict = config.to_dict() if hasattr(config, "to_dict") else {}
+    if "_name_or_path" in config_dict:
+        # The multi-shard staging workaround loads the model from a fresh
+        # mkdtemp copy each launch, so the loaded config's _name_or_path is
+        # a random per-launch path; keying the identity on it makes every
+        # relaunch refuse its own journal ("identity mismatch ... refusing
+        # reuse or recompute"). The shard digests below are the real
+        # identity — pin the path field to the caller's canonical source.
+        config_dict["_name_or_path"] = str(source_model)
     mapping = {
         str(live): str(checkpoint)
         for live, checkpoint in sorted(runner.context.weight_ckpt.items())
