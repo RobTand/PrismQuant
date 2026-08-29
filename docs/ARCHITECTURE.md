@@ -1,7 +1,23 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `review/pr86` — stamps follow, newest first, each recording
-its own branch and date. Re-stamped (2026-08-29, `review/pr86`) for the
+As of: 2026-08-29 · `claude/aqua-render-conditioned-act-cost` — stamps follow,
+newest first, each recording its own branch and date. Re-stamped (2026-08-29,
+`claude/aqua-render-conditioned-act-cost`) for the **render-conditioned A-side**
+(§4.1, §4.3): `PRISMAQUANT_AQUA_ACT_WEIGHT_BASIS` / `--act-weight-basis` opts the
+AQUA activation term onto the format's rendered `W_hat_f` instead of the source
+`W`, absorbing the `dW.dx` contribution the source form drops. Unset it is a
+byte-identical no-op (evidenced by a captured pre-change fixture hash); the two
+rendered bases (`rtn` in process, `compensated` from a `ProductionWeightCache`)
+never substitute for one another, a missing production render is a counted hole
+and zero coverage refuses. The stage's provenance now also stamps which variance
+path each run took and names, explicitly, what every basis still drops. **Research,
+and -- on the basis measured -- smaller than the term it refines:** on a 24-unit
+fixture the **`rtn`** basis moved `E_a` by a median 0.05%, left the ranking
+exactly intact (Spearman 1.000) and changed no allocation, while the A-side
+itself moved up to 12/24 units. The **`compensated`** delta is UNMEASURED and
+does not inherit that null: GPTQ's `dW` is deliberately biased, which is exactly
+where `W_hat**2` can diverge from `W**2` most. No served A/B on either.
+Previously re-stamped (2026-08-29, `review/pr86`) for the
 **codebook lane's namespace contract** (§6.2): delegated (stock-CT) and
 source-passthrough group targets now ship in the CANONICAL namespace rather
 than the full live-tree spelling, mirroring the pinned consumer's
@@ -508,6 +524,30 @@ W-side to 0.07%, which produced a Pareto byte-identical to the weight-only one.
 (`1dbf146`; the two differ by 3.23% of Linears at 5.0–5.5 bpp). It is **still
 research** — there is no served KL/PPL A/B against the weight-only arm at
 matched bpp, and that A/B is the promotion gate.
+
+The weight the activation term is reduced over is a **choice**, and since
+2026-08-29 an explicit one. By default it is the *source* `W`, which is what
+makes the stage separable (no render, layers onto any W-side).
+`PRISMAQUANT_AQUA_ACT_WEIGHT_BASIS` / `--act-weight-basis` opts into the
+render-conditioned form over the format's rendered `W_hat_f`: the local error
+decomposes as `W_hat x_hat - W x = dW.x + W_hat.dx`, so evaluating the
+activation term on `W_hat_f` absorbs the `dW.dx` contribution the source form
+drops. Two rendered bases, and neither is ever a fallback for the other (a
+silent basis mix is the rendering confound of principle 8): `rtn` renders in
+process through the registry's own `quantize_dequantize`, `compensated` reads
+the GPTQ+JSO tensors from a `ProductionWeightCache` and refuses without one. A
+(unit, format) the cache lacks is a counted hole, and zero coverage refuses.
+Unset, the lever is a byte-identical no-op. **Also research, and -- on the `rtn`
+basis -- weaker than the term it refines:** on a 24-unit fixture the `rtn` basis
+moved `E_a` by a median 0.05% (NVFP4 span 0.955-1.019x), left the unit ranking
+exactly intact (Spearman 1.000, 0 rank moves) and produced identical allocations
+at every budget tested, while the A-side *itself* moved up to 12/24 units. That
+null is scoped to `rtn`. The `compensated` basis was exercised only for
+correctness (a planted cache, packed and dense), never measured against the
+source basis, and GPTQ's biased `dW` is precisely where the two could part. What stays dropped on every
+basis, and is stamped in the artifact's provenance: the `dW.x` / `W_hat.dx`
+cross-correlation, downstream nonlinear interactions, and MoE routing
+interactions.
 
 **It covers routed MoE experts as of 2026-08-20, not just the dense trunk.**
 Until then the A-side reached only `nn.Linear` units, because per-channel
@@ -2063,7 +2103,8 @@ Three dense-specific differences are structural rather than cosmetic:
   between pricing and the DP. It needs **no render** — `activation_dloss` reads the dense
   `W[o,j]^2`, the card's `g_sq_sum` and the format's activation grid — so it layers onto a
   production-rendered W-side with no rendering confound, and `--act-dir` makes its
-  `act_var` measured rather than modelled. The weight-only anchored payload is written and
+  `act_var` measured rather than modelled. On its default basis; `--act-weight-basis
+  rtn|compensated` trades that separability for the render-conditioned form (§4.1). The weight-only anchored payload is written and
   kept, so the pre-AQUA allocation stays reproducible as the A/B arm; **AQUA-on-CB is a
   candidate until that served KL/PPL A/B at matched bpp lands, not a result.**
 

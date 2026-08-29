@@ -122,6 +122,50 @@ class RegistryFormatPlugin:
             err = (w.float() - q.float()) ** 2
         return err.cpu().numpy()
 
+    def render(self, weight) -> "torch.Tensor":
+        """``W_hat = QDQ(W)`` -- the tensor this format would actually install.
+
+        Same rendering as :meth:`weight_error` computes its error against; this
+        just hands back the rendered tensor instead of the squared difference,
+        because the render-conditioned A-side needs ``W_hat`` itself (it is
+        ``sum_j W_hat[o,j]^2 * nu[j]``, not a difference).
+
+        RENDER BASIS. This is the registry's own RTN render -- ``FormatSpec``'s
+        ``quantize_dequantize``, chunked through :meth:`_row_chunked_qdq` when
+        that is proven bitwise-identical to the unchunked call and unchunked
+        otherwise. It is emphatically NOT the GPTQ+JSO production render; a
+        caller that wants that reads ``ProductionWeightCache``. Mixing the two
+        silently would be the rendering confound the one-cache rule forbids,
+        which is why the basis is a caller's explicit choice, never a fallback
+        this method takes on its own.
+
+        A passthrough format renders exactly its input (lossless by
+        construction), so it returns the weight unchanged rather than a
+        round-tripped copy that would carry float noise into a
+        passthrough-vs-quantized comparison.
+
+        Accepts a device tensor and keeps it on the device: the caller uploads
+        a unit's weight once and prices every candidate format off it, and an
+        ``np.asarray`` here would drag it back to the host per format.
+        """
+        w = (weight if torch.is_tensor(weight)
+             else torch.as_tensor(np.asarray(weight)))
+        w = w.to(device=self.device, dtype=torch.bfloat16)
+        if self.descriptor.passthrough or self.spec.name == "BF16":
+            return w
+        qdq = self._row_chunked_qdq(w)
+        with torch.no_grad():
+            if qdq is None:
+                # No proven-safe chunked render for this format: render whole,
+                # which is the reference behaviour rather than a degradation.
+                return self.spec.quantize_dequantize(w)
+            rows_per_chunk = max(1, int((256 << 20) // max(1, int(w.shape[1]) * 4)))
+            out = torch.empty_like(w)
+            for lo in range(0, int(w.shape[0]), rows_per_chunk):
+                hi = min(lo + rows_per_chunk, int(w.shape[0]))
+                out[lo:hi] = qdq(w[lo:hi]).to(w.dtype)
+            return out
+
     # ------------------------------------------------- reduced (chunked) cost
 
     def weight_cost_reduced(self, unit: SensitivityUnit,

@@ -19,10 +19,16 @@ branches must NOT receive the term:
 Getting any of those wrong is silent: the allocation still solves, it just
 solves the wrong problem. So each branch is pinned separately.
 
-The last test is the one the whole design rests on: the A-side is independent of
-the render basis. If that were false, an A-side priced off the card could not be
-added to a production-rendered weight cost, and the stage would be a rendering
-confound rather than a cost completion.
+The last test is the one the whole design rests on: on its DEFAULT basis the
+A-side is independent of the render. If that were false, an A-side priced off
+the card could not be added to a production-rendered weight cost, and the stage
+would be a rendering confound rather than a cost completion.
+
+Since 2026-08-29 that independence is a property of the default, not of the
+quantity: ``PRISMAQUANT_AQUA_ACT_WEIGHT_BASIS`` opts into evaluating the term on
+the format's rendered ``W_hat_f`` (which absorbs the ``dW dx`` contribution) and
+gives up the separability in exchange. Unset, everything below is unchanged --
+`tests/test_aqua_render_conditioned_act_cost.py` pins both halves.
 """
 from __future__ import annotations
 
@@ -179,13 +185,18 @@ def test_price_activation_only_follows_the_explicit_predicate(fmt,
 
 
 def test_the_a_side_does_not_depend_on_the_weights_being_rendered():
-    """THE claim the whole stage rests on.
+    """THE claim the whole stage rests on, ON ITS DEFAULT BASIS.
 
-    ``activation_dloss`` reads the DENSE weight, ``g_sq_sum`` and the format's
-    activation grid. No render enters it. That is what makes it legitimate to
-    price the A-side off a shared card and add it to a cost whose W-side was
-    built with the full GPTQ+JSO production recipe: the two halves are measured
-    on different bases only because the A-side HAS no basis.
+    By default ``activation_dloss`` reads the DENSE weight, ``g_sq_sum`` and the
+    format's activation grid. No render enters it. That is what makes it
+    legitimate to price the A-side off a shared card and add it to a cost whose
+    W-side was built with the full GPTQ+JSO production recipe: the two halves
+    are measured on different bases only because the A-side HAS no basis.
+
+    (``price_activation_only(..., rendered_weight=...)`` is the opt-in that
+    gives this up on purpose; see
+    `tests/test_aqua_render_conditioned_act_cost.py`. Nothing here passes it,
+    so the default is what is under test.)
 
     Pinned by pricing the same unit against two very different weight matrices
     that share a scale, and asserting the A-side tracks the weights it is given

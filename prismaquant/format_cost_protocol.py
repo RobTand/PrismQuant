@@ -417,23 +417,42 @@ def expert_act_sigma(unit: SensitivityUnit) -> np.ndarray | None:
 def price_activation_only(unit: SensitivityUnit, weight: np.ndarray,
                           plugin: FormatCostPlugin, *,
                           gain: float = 1.0,
-                          act_var: np.ndarray | None = None) -> float | None:
-    """The A-side price of one (unit, format), with NO weight rendering.
+                          act_var: np.ndarray | None = None,
+                          rendered_weight=None) -> float | None:
+    """The A-side price of one (unit, format).
 
     Split out of :func:`price` so there is exactly one implementation of "how
     much does quantizing this layer's activations cost", and so the A-side can
-    be computed on its own. That separability is a fact about the quantity, not
-    a convenience: ``activation_dloss`` reads the DENSE weight (as ``W[o,j]^2``),
-    ``g_sq_sum``, and the format's activation grid. The render basis never
-    enters it. So an A-side priced against an RTN render and one priced against
-    the production render are the SAME number, and a consumer holding a
-    production weight cost can add this term to it without re-rendering
-    anything.
+    be computed on its own.
 
-    That is also why the term matters more than its size on an RTN basis
-    suggests. GPTQ/JSO shrink the W-side substantially and do nothing whatever
-    to the A-side, so the better the render, the more of a W4A4 format's true
-    cost lives here.
+    TWO WEIGHT BASES, AND THE CHOICE IS THE CALLER'S
+    ------------------------------------------------
+    By default the term is evaluated on the SOURCE weight ``W``: no render is
+    needed, so an A-side priced next to an RTN render and one priced next to
+    the production render are the same number, and a consumer holding a
+    production weight cost can add this term to it without re-rendering
+    anything. That is what makes the A-side shippable as its own stage.
+
+    ``rendered_weight`` opts into the render-conditioned form. Pass the
+    format's own rendered tensor ``W_hat_f`` and the term becomes
+    ``sum_o g_sq[o] sum_j W_hat_f[o,j]^2 nu_j`` instead. The local decomposition
+    is::
+
+        W_hat x_hat - W x  =  dW x  +  W_hat dx
+
+    so evaluating the activation term on ``W_hat_f`` rather than on ``W``
+    absorbs the ``dW dx`` contribution into it, which the source-weight form
+    drops. WHAT STAYS DROPPED, either way: the cross-correlation between
+    ``dW x`` and ``W_hat dx`` (the W-side and A-side are summed as if
+    independent), every downstream NONLINEAR interaction, and, on a routed MoE,
+    the routing interaction -- a perturbed input can change which expert a token
+    goes to, and no second-moment term sees a route flip. This is a screening
+    surrogate on both bases; the served A/B is the result.
+
+    The A-side also matters more than its size on an RTN basis suggests:
+    GPTQ/JSO shrink the W-side substantially and do nothing whatever to the
+    A-side, so the better the render, the more of a W4A4 format's true cost
+    lives here.
 
     Returns ``None`` -- never 0.0 -- when the format leaves activations alone
     (nothing to price) or when the card cannot price them (a hole). Callers that
@@ -475,7 +494,13 @@ def price_activation_only(unit: SensitivityUnit, weight: np.ndarray,
         var = analytic_act_quant_variance(unit, desc)
     if var is None:
         return None
-    return activation_dloss(unit, weight, var, gain)
+    # `weight` still selects the variance model above (it never reads W), and
+    # only the reduction switches basis. Passing the rendered tensor to the
+    # variance fit would be meaningless -- nu is a property of the INPUT
+    # distribution and the format's activation grid, not of the weights.
+    return activation_dloss(
+        unit, weight if rendered_weight is None else rendered_weight,
+        var, gain)
 
 
 def uniform_act_quant_variance(unit: SensitivityUnit, act_bits: int,

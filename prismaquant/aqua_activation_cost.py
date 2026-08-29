@@ -31,7 +31,7 @@ the lane's ``served_activation_quantization.executes`` (glob patterns over
 format names) and refuses to guess it.
 
 This stage exists as its own step, rather than inside the cost stage, because
-the A-side is genuinely separable:
+the A-side is genuinely separable ON ITS DEFAULT BASIS:
 
   * It needs NO render. ``activation_dloss`` reads the DENSE weight (as
     ``W[o,j]^2``), the card's ``g_sq_sum``, and the format's activation grid.
@@ -40,6 +40,30 @@ the A-side is genuinely separable:
   * It therefore costs one streaming pass over the checkpoint and a row-blocked
     ``W^2 @ var`` per unit -- minutes, not the hours a render costs -- and it can
     be recomputed against any existing cost artifact without rebuilding it.
+
+RENDER-CONDITIONED A-SIDE (OPT-IN, RESEARCH)
+--------------------------------------------
+``PRISMAQUANT_AQUA_ACT_WEIGHT_BASIS`` (or ``--act-weight-basis``) swaps ``W``
+for the format's own rendered ``W_hat_f`` in that reduction. Unset it is a
+byte-identical no-op and every bullet above still holds.
+
+Why it is worth having despite costing the separability: the local error of a
+quantized Linear decomposes as ``W_hat x_hat - W x = dW x + W_hat dx``, so the
+activation term belongs on ``W_hat_f``, not on ``W``. Evaluating it there
+absorbs the ``dW dx`` contribution. What stays dropped on BOTH bases: the
+cross-correlation between ``dW x`` and ``W_hat dx``, every downstream nonlinear
+interaction, and the routing interaction on a routed MoE (a perturbed input can
+change which expert a token sees, and no second-moment term sees a route flip).
+
+Two bases are offered and neither is ever a fallback for the other, because a
+silent basis mix is the rendering confound the one-cache rule exists to prevent:
+
+  * ``rtn`` -- the registry's own ``quantize_dequantize``, in process, no cache.
+  * ``compensated`` -- the GPTQ+JSO tensors from a ``ProductionWeightCache``,
+    i.e. the bytes the export will actually ship. Requires ``--production-cache``
+    and refuses without it. A (unit, format) the cache does not hold is a HOLE,
+    counted per format and reported; it is never quietly re-rendered on the
+    other basis.
 
 That separability is also the reason the term matters MORE than its size on an
 RTN basis suggests: GPTQ and JSO shrink the W-side substantially and do nothing
@@ -263,6 +287,109 @@ def measured_act_var(spec, x_cpu, device: str):
     return per_channel.double().cpu().numpy()
 
 
+#: Env lever for the render-conditioned A-side. Unset (or empty) keeps the
+#: source-weight basis, which is a byte-identical no-op.
+ACT_WEIGHT_BASIS_ENV = "PRISMAQUANT_AQUA_ACT_WEIGHT_BASIS"
+
+#: The default: evaluate the A-side on the SOURCE weight. Deliberately NOT a
+#: ``RenderBasis`` member, because it is the absence of a render rather than a
+#: kind of one -- and conflating the two is what would let a caller believe an
+#: unrendered term had a basis.
+ACT_WEIGHT_BASIS_SOURCE = "source"
+
+
+def _act_weight_bases() -> tuple[str, ...]:
+    """Accepted basis spellings.
+
+    ``rtn``/``compensated`` are ``RenderBasis``'s own vocabulary, reused rather
+    than respelled so a basis means the same thing here as on a card.
+    """
+    from .sensitivity_card import RenderBasis
+    return (ACT_WEIGHT_BASIS_SOURCE, RenderBasis.RTN.value,
+            RenderBasis.COMPENSATED.value)
+
+
+def resolve_act_weight_basis(explicit: str | None = None) -> str:
+    """Which weight the A-side reduction runs on. Default: the source weight.
+
+    Off unless ``PRISMAQUANT_AQUA_ACT_WEIGHT_BASIS`` is set (or ``explicit`` is
+    passed); when off this is a byte-identical no-op and returns
+    ``"source"`` -- today's behaviour, the shipped default, and the only basis
+    on which the A-side is render-independent.
+
+    A malformed value is a hard error, never a silent fall back to the default:
+    a typo that quietly reverted the lever would report a render-conditioned
+    provenance for a source-weight number.
+    """
+    if explicit is None:
+        raw = os.environ.get(ACT_WEIGHT_BASIS_ENV)
+        if raw is None or not str(raw).strip():
+            return ACT_WEIGHT_BASIS_SOURCE
+        explicit = raw
+    basis = str(explicit).strip().lower()
+    bases = _act_weight_bases()
+    if basis not in bases:
+        raise SystemExit(
+            f"REFUSE: {ACT_WEIGHT_BASIS_ENV} / --act-weight-basis must be one "
+            f"of {list(bases)}, got {explicit!r}. "
+            f"{ACT_WEIGHT_BASIS_SOURCE!r} evaluates the A-side on the source "
+            f"weight (the default, render-independent); 'rtn' and "
+            f"'compensated' evaluate it on the format's rendered W_hat and are "
+            f"research levers.")
+    if basis != ACT_WEIGHT_BASIS_SOURCE:
+        log(f"render-conditioned A-side ACTIVE (research lever, "
+            f"{ACT_WEIGHT_BASIS_ENV}={basis}): the activation term is "
+            f"evaluated on W_hat_f, not on the source W. This absorbs the "
+            f"dW.dx contribution; the dW x / W_hat dx cross-correlation, "
+            f"downstream nonlinearities and routing interactions remain "
+            f"dropped.")
+    return basis
+
+
+def rendered_weight_for_basis(basis: str, *, name: str, fmt: str, unit,
+                              weight, plugin, render_cache):
+    """``W_hat_f`` for one (unit, format) on ``basis``, or None when absent.
+
+    Returns ``None`` ONLY for a ``compensated`` cache miss -- the caller turns
+    that into a hole. It never substitutes one basis for the other: an
+    unavailable production render is a reported gap, not a licence to price the
+    RTN one under the production label.
+
+    ``float32`` on the way out, matching the source path: the reduction squares
+    it, and a bfloat16 array is not something the host fallback in
+    ``_weighted_row_sum`` can even view as numpy.
+    """
+    import torch
+
+    from .sensitivity_card import RenderBasis
+
+    if basis == RenderBasis.RTN.value:
+        n_e = unit.n_experts
+        if n_e is None:
+            return plugin.render(weight).to(torch.float32)
+        # A packed [E, M, N] unit is ONE decision unit but E rendered matrices:
+        # the exporter renders each expert as its own tensor (a per-tensor
+        # scale is derived per expert, not once across the pack), so a single
+        # collapsed render would be a different rendering from the shipped one.
+        return torch.stack(
+            [plugin.render(weight[e]).to(torch.float32) for e in range(n_e)],
+            dim=0)
+
+    if basis != RenderBasis.COMPENSATED.value:
+        raise AssertionError(f"unhandled act weight basis {basis!r}")
+
+    got = render_cache.get(name, fmt)
+    if got is None:
+        return None
+    if tuple(got.shape) != tuple(weight.shape):
+        raise RuntimeError(
+            f"{name}/{fmt}: the production cache holds a tensor of shape "
+            f"{tuple(got.shape)} but the source weight is "
+            f"{tuple(weight.shape)}. Those are different tensors, and pricing "
+            f"the A-side on the wrong one would be silent -- refusing.")
+    return got.to(dtype=torch.float32)
+
+
 def resolve_executed_activation_formats(*, lane_id: str | None,
                                         executes_all: bool = False):
     """The formats whose activation grid the SERVING LANE executes.
@@ -314,6 +441,8 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
                            act_dir: str | None = None,
                            profile=None,
                            executed_activation_formats=None,
+                           act_weight_basis: str | None = None,
+                           render_cache=None,
                            ) -> tuple[dict, dict, dict]:
     """``{unit: {format: act_dloss}}`` plus a report of what could not be priced.
 
@@ -337,7 +466,30 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
     exact BF16 bridge and quantizes no activations at all -- and cost the
     DSv4-Flash 92 GB body the majority of its codebook rung (K16 -> K12) buying
     FP8 promotions to escape a cost of zero.
+
+    ``act_weight_basis`` selects the weight the reduction runs on -- ``None``
+    reads ``PRISMAQUANT_AQUA_ACT_WEIGHT_BASIS`` and defaults to the source
+    weight, which is a byte-identical no-op. ``render_cache`` is a
+    ``ProductionWeightCache`` and is REQUIRED by (and only by) the
+    ``compensated`` basis.
     """
+    basis = resolve_act_weight_basis(act_weight_basis)
+    from .sensitivity_card import RenderBasis
+    if basis == RenderBasis.COMPENSATED.value and render_cache is None:
+        raise SystemExit(
+            "REFUSE: the 'compensated' A-side basis prices the activation term "
+            "on the GPTQ+JSO tensors the export will ship, so it needs the "
+            "ProductionWeightCache that holds them (--production-cache). "
+            "Falling back to the in-process RTN render would report a "
+            "production basis for a number that never saw the production "
+            "recipe -- pass the cache, or ask for --act-weight-basis rtn.")
+    if basis != RenderBasis.COMPENSATED.value and render_cache is not None:
+        raise SystemExit(
+            f"REFUSE: a production weight cache was supplied but the A-side "
+            f"basis is {basis!r}, which never reads it. Silently ignoring it "
+            f"would stamp a source/rtn number next to a production cache path "
+            f"in provenance. Pass --act-weight-basis "
+            f"{RenderBasis.COMPENSATED.value}, or drop the cache.")
     if executed_activation_formats is None:
         raise SystemExit(
             "REFUSE: executed_activation_formats is required. The A-side price "
@@ -430,6 +582,12 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
     t0 = time.time()
     done = 0
     var_source = collections.Counter()
+    # Per-format render accounting for the opt-in bases. Hits and misses are
+    # counted separately from `holes` because a miss has one specific cause
+    # (the cache does not hold this (unit, format)) that the caller must be
+    # able to see without parsing hole strings.
+    render_hits: collections.Counter = collections.Counter()
+    render_misses: collections.Counter = collections.Counter()
     for shard in sorted(by_shard):
         with safe_open(os.path.join(model_path, shard),
                        framework="pt", device="cpu") as handle:
@@ -523,6 +681,22 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
                         not_executed.add(fmt)
                         del plugin
                         continue
+                    # W_hat_f, when a render-conditioned basis was asked for.
+                    # Acquired BEFORE the variance so a cache miss costs
+                    # nothing: a miss is a hole either way.
+                    w_hat = None
+                    if basis != ACT_WEIGHT_BASIS_SOURCE:
+                        w_hat = rendered_weight_for_basis(
+                            basis, name=name, fmt=fmt, unit=unit,
+                            weight=w_np, plugin=plugin,
+                            render_cache=render_cache)
+                        if w_hat is None:
+                            render_misses[fmt] += 1
+                            holes[fmt].append(
+                                f"{name}: no {basis} render in the cache")
+                            del plugin
+                            continue
+                        render_hits[fmt] += 1
                     v = None
                     if x_cpu is not None:
                         v = measured_act_var(plugin.spec, x_cpu, device)
@@ -532,12 +706,13 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
                         var_source["modelled"] += 1
                     else:
                         var_source["modelled_per_expert"] += 1
-                    a = price_activation_only(unit, w_np, plugin, act_var=v)
+                    a = price_activation_only(unit, w_np, plugin, act_var=v,
+                                              rendered_weight=w_hat)
                     if a is None:
                         holes[fmt].append(name)
                     else:
                         row[fmt] = float(a)
-                    del plugin
+                    del plugin, w_hat
                 if row:
                     table[name] = row
                 del w_np, x_cpu
@@ -561,12 +736,58 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
         log(f"formats that quantize activations but THIS LANE DOES NOT EXECUTE "
             f"(correctly unpriced -- served A-side is exactly zero): "
             f"{sorted(not_executed)}")
+    if basis != ACT_WEIGHT_BASIS_SOURCE:
+        log(f"A-side weight basis {basis!r}: rendered {sum(render_hits.values())} "
+            f"(unit, format) pairs, {sum(render_misses.values())} missing "
+            f"({dict(render_misses)})")
+        # Refuse rather than write a no-op, for the same reason 0/N resolution
+        # refuses: an artifact whose act_dloss rows are simply absent is
+        # indistinguishable from a real one and reads as 0.0 (free) to the DP.
+        # Zero rendered pairs is the unambiguous case; no coverage threshold is
+        # invented here (principle 2).
+        if not sum(render_hits.values()):
+            raise SystemExit(
+                f"REFUSE: --act-weight-basis {basis} rendered 0 (unit, format) "
+                f"pairs, so no A-side was priced on that basis at all. For "
+                f"'compensated' this normally means the production cache holds "
+                f"another assignment's formats (or another model's names); "
+                f"check its coverage before re-running.")
     for fmt, names_ in sorted(holes.items()):
         log(f"HOLE: {fmt} quantizes activations but {len(names_)} units could "
             f"not be priced; those rows keep a weight-only cost. "
             f"e.g. {names_[:3]}")
-    return (table, {k: v for k, v in holes.items()},
-            {"act_var_source": dict(var_source)})
+    meta = {
+        "act_var_source": dict(var_source),
+        # The A-side has two independent approximations and both are stamped,
+        # because "we replayed the real quantizer" and "we fitted a Gaussian"
+        # are different claims and only one of them is a measurement.
+        "act_var_paths": {
+            "measured": "the format's own activation QDQ replayed on the "
+                        "layer's real cached input rows (no distributional "
+                        "assumption)",
+            "modelled": "APPROXIMATION: the format's own QDQ over independent "
+                        "per-channel Gaussians fitted to act_sq_sum/act_absmax "
+                        "-- exact marginals, no joint, so it cannot represent "
+                        "how outliers co-occur across the channels that share "
+                        "one block scale, nor a clipping tail the second "
+                        "moment averages away",
+            "modelled_per_expert": "APPROXIMATION: the same fit, one per "
+                                   "routed expert",
+        },
+        "act_weight_basis": basis,
+        "act_weight_basis_is_render_conditioned":
+            basis != ACT_WEIGHT_BASIS_SOURCE,
+        "act_weight_basis_dropped_terms": (
+            "the dW.x / W_hat.dx cross-correlation, downstream nonlinear "
+            "interactions, and MoE routing interactions (a route flip is "
+            "invisible to any second-moment term)"
+            + ("" if basis != ACT_WEIGHT_BASIS_SOURCE
+               else "; plus the dW.dx contribution, which only the "
+                    "render-conditioned bases absorb")),
+        "render_hits": dict(render_hits),
+        "render_misses": dict(render_misses),
+    }
+    return (table, {k: v for k, v in holes.items()}, meta)
 
 
 def merge_act_dloss(costs: dict, table: dict) -> dict:
@@ -626,6 +847,25 @@ def main() -> int:
                          "Linear's real input rows instead of modelled from a "
                          "per-channel Gaussian fit; units with no cached rows "
                          "fall back to the model and are counted separately.")
+    ap.add_argument(
+        "--act-weight-basis", default=None,
+        help="which weight the activation term is reduced over: 'source' "
+             "(default, and what PRISMAQUANT_AQUA_ACT_WEIGHT_BASIS selects "
+             "when unset -- render-independent), 'rtn' (the registry's own "
+             "quantize_dequantize) or 'compensated' (the GPTQ+JSO tensors from "
+             "--production-cache, i.e. the bytes the export ships). The "
+             "rendered bases absorb the dW.dx term the source basis drops; "
+             "both are RESEARCH levers with no served A/B.")
+    ap.add_argument(
+        "--production-cache", default=None,
+        help="ProductionWeightCache pickle. Required by, and only read by, "
+             "--act-weight-basis compensated.")
+    ap.add_argument(
+        "--production-cache-dir-override", default=None,
+        help="relocate a disk-streamed production cache, as the exporter does.")
+    ap.add_argument(
+        "--production-cache-lru-gb", type=float, default=0.0,
+        help="bound the cache's resident tensors (GiB); 0 disables the LRU.")
     args = ap.parse_args()
 
     from .sensitivity_card import SensitivityCard
@@ -662,10 +902,22 @@ def main() -> int:
         lane_id=args.serving_lane,
         executes_all=args.lane_executes_all_activation_grids,
     )
+    render_cache = None
+    if args.production_cache:
+        with open(args.production_cache, "rb") as fh:
+            render_cache = pickle.load(fh)
+        if args.production_cache_dir_override:
+            render_cache.relocate(args.production_cache_dir_override)
+        if args.production_cache_lru_gb and args.production_cache_lru_gb > 0:
+            render_cache.enable_lru(
+                int(float(args.production_cache_lru_gb) * 1024 ** 3))
+        log(f"production weight cache: {len(render_cache)} entries from "
+            f"{args.production_cache}")
     table, holes, meta = activation_dloss_table(
         card, args.model_path, formats, device=args.device,
         names=[n for n in costs], act_dir=args.act_dir, profile=profile,
-        executed_activation_formats=executed)
+        executed_activation_formats=executed,
+        act_weight_basis=args.act_weight_basis, render_cache=render_cache)
     report = merge_act_dloss(costs, table)
     log(f"merge: {report}")
     # Belt and braces on the silent-no-op: resolution can succeed while every
@@ -687,6 +939,8 @@ def main() -> int:
         "holes": {k: len(v) for k, v in holes.items()},
         "merge_report": report,
         "act_dir": os.path.abspath(args.act_dir) if args.act_dir else None,
+        "production_cache_path": (os.path.abspath(args.production_cache)
+                                  if args.production_cache else None),
         **meta,
     }
     blob["provenance"] = prov
