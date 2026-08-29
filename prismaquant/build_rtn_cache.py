@@ -102,6 +102,33 @@ def stage_multimodal(model_path: str):
     if not needs_staging:
         return model_path, None
 
+    # A family with no <Arch>ForCausalLM auto-route (e.g. glm5_next on
+    # transformers 5.16) cannot survive the text-only flatten below: the
+    # flattened text config resolves no model class and the arch rewrite
+    # names a class that does not exist. Keep the composite config intact
+    # for those profiles — the streaming loader builds the multimodal
+    # skeleton from it (streaming_model._build_streaming_context).
+    keep_composite = False
+    if "vision_config" in cfg or "text_config" in cfg:
+        from .model_profiles import detect_profile
+        try:
+            keep_composite = detect_profile(
+                model_path).requires_multimodal_skeleton()
+        except Exception:
+            keep_composite = False
+
+    if keep_composite:
+        # No-op, mirroring sensitivity_probe.stage_multimodal (the probe
+        # path): the streamed loader needs quantization_config intact —
+        # layer_streaming._declared_weight_block_size refuses fp8 scale
+        # pairs without weight_block_size — and the multimodal skeleton
+        # needs the composite config and real architectures. The streaming
+        # context does its own verbatim staging downstream.
+        print("[stage] profile requires the multimodal skeleton; passing "
+              "the checkpoint through unstaged (streamed loader owns fp8 "
+              "dequant and skeleton construction)")
+        return model_path, None
+
     # Strip quantization_config (e.g. fp8) so the model loads as raw tensors
     if "quantization_config" in cfg:
         qc = cfg.pop("quantization_config")

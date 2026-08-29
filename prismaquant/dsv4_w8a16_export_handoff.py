@@ -380,9 +380,47 @@ _PUBLISHED_FILES = frozenset({
 #     Keeping this frozen reproduction gate green is legacy compatibility, not
 #     maintained target eligibility: hardware-scoped production profiles must
 #     admit W8A16 separately, and the SM120 profile explicitly denies it.
+#
+# RE-FROZEN 2026-08-28 for three `93d340a` changes, each reviewed against THIS
+# handoff rather than merely re-hashed.  All three are inert on the DSv4 W8A16
+# lane; DeepSeek-v4 overrides none of the new accessors and inherits their
+# fail-closed defaults.
+#   export_nvfp4_cb_streaming.py -- adds the PrismaSnap lane refusals
+#     (`@refuse_prismasnap_lane_before_output(lane="Gridbook/codebook")` and
+#     the `main()` precheck).  Both fire only when the source directory carries
+#     PrismaSnap provenance.  A DSv4 W8A16 source is never Snap-prepared
+#     (PrismaSnap refuses non-BF16 sources outright), so both are inert here
+#     and the emitted bytes are unchanged.
+#   model_profiles/base.py -- adds `_declared_model_path` private intake plus
+#     two accessors, `rms_norm_parameter_offset()` and
+#     `prismasnap_moe_layer_contract()`, each defaulting to `None`.  `None` is
+#     the fail-closed value: an offline source transform refuses rather than
+#     inferring a gamma encoding or an MoE graph.  DeepSeek-v4 declares
+#     neither, and this lane performs no offline transform.
+#   model_profiles/registry.py -- attaches the resolved checkpoint root to the
+#     profile as private intake evidence.  The sole consumer is
+#     `qwen3_5.py:155`; DeepSeek-v4 never reads it.
+#
+# Every digest above is a HEAD blob, so the closure is exact at HEAD.  FOUR of
+# the fifteen additionally differ in the working tree and are deliberately NOT
+# stamped to their worktree bytes; the gate hashes the worktree, so it refuses
+# until each lands and is reviewed:
+#   base.py, registry.py -- re-stamped ABOVE for `93d340a` only.  The worktree
+#     has since changed them again (base.py: `concat_merge_groups`,
+#     `runtime_loads_source_fp8`, `requires_multimodal_skeleton`; registry.py:
+#     two profile registrations).  Those newer edits are NOT covered by the
+#     review recorded above and need their own before the next stamp.
+#   layer_streaming.py, production_weight_cache.py -- unchanged since their
+#     last freeze at HEAD; the worktree edits need real review rather than a
+#     re-hash, because DSv4 W8A16 executes both paths: the default-ON threaded
+#     gather in the streamed read, and `fill_packed_expert_cache_entries` for
+#     packed experts.
+# Sequencing: because these four span several commits, the re-stamp covering
+# them belongs in the LAST commit that touches any of them, or the gate is red
+# at every intermediate commit.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
-        "e83ec16206bee87844ed85ce9485df6a28c2d196b4314a98b56b33602203ddf6"
+        "0714e841ebe0c1960186bbc20deeb367bd4737d0475d198bd653e9a400a5c54f"
     ),
     "prismaquant/cb_export_config.py": (
         "3aa767bba9e689d50234730846a1671088ec0b16278d18aa6fa2693815294412"
@@ -397,10 +435,10 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "fb20303ed1b017a5a7f3a035d5ef43880822d775e252c28a08f32a67f8104c95"
     ),
     "prismaquant/model_profiles/base.py": (
-        "69fcddeb8c5de48756bc47b053782f2ddd9e2773c68176248f679e8f5fbd0e5c"
+        "f9a89bfa4aa19447bb30346e95bbb0ea1da054d18faebbddbeefd4f8534187e6"
     ),
     "prismaquant/model_profiles/registry.py": (
-        "2fb8bcc01fbfd3b89870d387d335f804b05378f9853f223469c619e7ab766b90"
+        "3b88ee0d37521dd0a6c0a9a905af02d4109b4ccdec1e7a4c41a4b817f496f2be"
     ),
     "prismaquant/model_profiles/deepseek_v4.py": (
         "6368f5657fbfb3b77a886e9bc0c589885d9240c49fdb77635d4bf2a74164b6f6"

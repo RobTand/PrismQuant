@@ -307,6 +307,21 @@ def fill_profile_mtp_production_cache(
     if not assignment_scope and not menu_formats:
         return 0
 
+    # Profile capability is checked BEFORE the activation cache, so a model
+    # that declares no MTP is a no-op regardless of what `act/` looks like.
+    # The reverse order aborted the whole cache build for Gemma4/LFM2/MiniMax/
+    # DSv4/GLM — none of which have MTP — whenever `act/` had been pruned to
+    # reclaim disk mid-run, which the >=10%-free rule makes routine.
+    has_mtp = bool(profile is not None and profile.has_mtp())
+    if not has_mtp:
+        if explicit or allowlisted_mtp:
+            profile_name = getattr(profile, "name", "<none>")
+            raise RuntimeError(
+                f"assignment requests quantized mtp.* units but profile "
+                f"'{profile_name}' does not declare MTP"
+            )
+        return 0
+
     if activation_cache_dir is None:
         if explicit or allowlisted_mtp:
             raise RuntimeError(
@@ -320,16 +335,6 @@ def fill_profile_mtp_production_cache(
         raise RuntimeError(
             f"MTP activation cache directory does not exist: {activation_path}"
         )
-
-    has_mtp = bool(profile is not None and profile.has_mtp())
-    if not has_mtp:
-        if explicit or allowlisted_mtp:
-            profile_name = getattr(profile, "name", "<none>")
-            raise RuntimeError(
-                f"assignment requests quantized mtp.* units but profile "
-                f"'{profile_name}' does not declare MTP"
-            )
-        return 0
 
     device_t = torch.device(device)
     wrapper, live_linears, source_tensor_count = _load_exact_mtp_wrapper(

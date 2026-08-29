@@ -54,11 +54,13 @@ from __future__ import annotations
 
 import argparse
 import gc
+import resource
 import json
 import math
 import os
 import re
 import shutil
+import sys
 import time
 from contextlib import contextmanager
 from collections import Counter, defaultdict
@@ -2650,6 +2652,121 @@ def _inline_expert_render_levers() -> dict[str, object]:
         "static_act_order": bool(_ACT_AWARE_FLAGS.get("static_act_order", False)),
         "joint_scale_opt": bool(_ACT_AWARE_FLAGS.get("joint_scale_opt", False)),
     }
+
+
+def _dump_live_cuda_tensors(where: str, min_mb: float = 200.0) -> None:
+    """Diagnostic (PRISMAQUANT_EXPORT_MEM_DUMP=1): aggregate every live CUDA
+    tensor above ``min_mb`` by (shape, dtype) and print one referrer summary
+    per group — the direct attribution for a cuda_alloc ramp that survives
+    gc.collect()+empty_cache() (a live reference is not garbage; only its
+    holder's name finds it)."""
+    groups: dict[tuple, list] = {}
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) and obj.is_cuda and not obj.is_meta:
+                nbytes = obj.numel() * obj.element_size()
+                if nbytes >= min_mb * 1024 * 1024:
+                    groups.setdefault(
+                        (tuple(obj.shape), str(obj.dtype)), []).append(obj)
+        except Exception:
+            continue
+    total = sum(
+        t.numel() * t.element_size() for ts in groups.values() for t in ts)
+    print(f"[mem-dump] {where}: cuda_alloc="
+          f"{torch.cuda.memory_allocated()/1024**3:.1f}G, "
+          f"{sum(len(v) for v in groups.values())} tensors >= {min_mb:.0f}MB "
+          f"({total/1024**3:.1f}G python-visible)", flush=True)
+    import types as _types
+    own_ids = {id(groups)} | {id(ts) for ts in groups.values()}
+
+    def _chase_iterator(it, depth: int = 0) -> str:
+        """Name the frame/generator that keeps an iterator alive."""
+        if depth > 4:
+            return "?"
+        for r in gc.get_referrers(it):
+            if id(r) in own_ids or isinstance(r, type):
+                continue
+            if isinstance(r, _types.FrameType):
+                owner = ""
+                for r2 in gc.get_referrers(r):
+                    if isinstance(r2, _types.GeneratorType):
+                        owner = " (suspended generator)"
+                        break
+                return (f"frame {r.f_code.co_filename.rsplit('/', 1)[-1]}:"
+                        f"{r.f_lineno} {r.f_code.co_name}{owner}")
+            if isinstance(r, _types.GeneratorType):
+                fr = r.gi_frame
+                return (f"generator {r.gi_code.co_name}"
+                        f":{fr.f_lineno if fr else 'done'}")
+            if type(r).__name__ in (
+                    "enumerate", "list_iterator", "tuple_iterator",
+                    "zip", "map", "filter", "chain", "islice",
+                    "dict_itemiterator", "dict_valueiterator"):
+                return f"{type(r).__name__} <- {_chase_iterator(r, depth+1)}"
+            if isinstance(r, (list, tuple, dict)):
+                return f"{type(r).__name__}(n={len(r)}) <- " + _chase_iterator(
+                    r, depth + 1)
+        return "no-gc-referrer"
+
+    def _describe(r, depth: int = 0) -> str:
+        if isinstance(r, dict):
+            holder = ""
+            if depth < 2:
+                for r2 in gc.get_referrers(r):
+                    if id(r2) in own_ids or isinstance(
+                            r2, (_types.FrameType, type)):
+                        continue
+                    holder = f" held-by {_describe(r2, depth + 1)}"
+                    break
+            return f"dict(n={len(r)}){holder}"
+        if isinstance(r, (list, tuple)):
+            holder = ""
+            if depth < 2:
+                for r2 in gc.get_referrers(r):
+                    if id(r2) in own_ids or isinstance(
+                            r2, (_types.FrameType, type)):
+                        continue
+                    holder = f" held-by {_describe(r2, depth + 1)}"
+                    break
+            return f"{type(r).__name__}[{len(r)}]{holder}"
+        if isinstance(r, _types.FrameType):
+            return (f"frame {r.f_code.co_name}:"
+                    f"{[k for k, v in r.f_locals.items()][:6]}")
+        return type(r).__name__
+    for (shape, dtype), ts in sorted(
+            groups.items(),
+            key=lambda kv: -sum(t.numel() * t.element_size()
+                                for t in kv[1])):
+        gb = sum(t.numel() * t.element_size() for t in ts) / 1024**3
+        ptrs = sorted({t.untyped_storage().data_ptr() for t in ts})
+        for i, t in enumerate(ts):
+            refs: list[str] = []
+            for r in gc.get_referrers(t):
+                if id(r) in own_ids or isinstance(r, type):
+                    continue
+                if isinstance(r, _types.FrameType):
+                    names = [k for k, v in r.f_locals.items() if v is t]
+                    refs.append(
+                        f"frame {r.f_code.co_filename.rsplit('/', 1)[-1]}:"
+                        f"{r.f_lineno} {r.f_code.co_name} locals{names}")
+                elif isinstance(r, dict):
+                    keys = [str(k) for k, v in r.items() if v is t][:2]
+                    refs.append(f"dict keys{keys} {_describe(r)}")
+                elif isinstance(r, (list, tuple)):
+                    refs.append(
+                        f"{type(r).__name__}[{len(r)}] <- "
+                        f"{_chase_iterator(r)}")
+                else:
+                    refs.append(
+                        f"{_describe(r)} <- {_chase_iterator(r)}")
+                if len(refs) >= 3:
+                    break
+            print(f"[mem-dump]   [{i}] {list(shape)} {dtype} = "
+                  f"{t.numel()*t.element_size()/1024**3:.2f}G "
+                  f"storage@{hex(t.untyped_storage().data_ptr())} "
+                  f"refs: {refs}", flush=True)
+        print(f"[mem-dump]   group {list(shape)} {dtype}: {len(ts)} tensors "
+              f"{gb:.2f}G across {len(ptrs)} storages", flush=True)
 
 
 def _inline_render_packed_expert_module(
@@ -6100,7 +6217,21 @@ def _fp8_source_config_overlay(
 
     config_assignment = dict(assignment)
     overrides: set[str] = set()
+    # Packed-expert parents in the assignment (e.g.
+    # `model.layers.10.mlp.experts.gate_up_proj`) own their per-expert
+    # leaves: the packed emit writes those bytes in the allocated format,
+    # so a per-expert source-FP8 leaf (`...mlp.experts.7.up_proj`) must
+    # NOT be re-described as FP8_SOURCE — the config would contradict the
+    # emitted bytes (GLM-5.3: 168 such entries double-covered the NVFP4
+    # experts with the FP8 scheme).
+    packed_expert_prefixes = tuple(
+        {k.rsplit(".", 1)[0] + "." for k in assignment
+         if ".mlp.experts." in k or k.endswith(".mlp.experts")})
+    _per_expert_leaf = re.compile(r"\.experts\.[0-9]+\.")
     for recipe_key in sorted(source_recipe_keys):
+        if (_per_expert_leaf.search(recipe_key)
+                and recipe_key.startswith(packed_expert_prefixes)):
+            continue
         recipe_fmt = config_assignment.get(recipe_key)
         fmt = (
             _canonical_export_format(recipe_fmt)
@@ -6144,6 +6275,7 @@ def materialize_tensors_streaming(
     from transformers import AutoConfig, AutoModelForCausalLM
 
     from .layer_streaming import (
+        _build_concat_merger,
         _build_expert_packer,
         _build_fp8_scale_inv_map,
         _build_install_resolver,
@@ -6156,9 +6288,13 @@ def materialize_tensors_streaming(
         _resolve_base_prefix,
         _unload,
     )
-    from .sensitivity_probe import stage_text_only
+    from .sensitivity_probe import stage_multimodal, stage_text_only
     # Canonical rotary init (profile-driven multi-layer-type dispatch).
-    from .streaming_model import _init_rotary_inplace
+    from .streaming_model import (
+        _init_rotary_inplace,
+        _mask_cuda_queries_during_meta_init,
+        _skeleton_config_and_class,
+    )
 
     # ----- 1. Meta skeleton + manual head materialization -----
     # Pure `init_empty_weights` path — avoids accelerate's
@@ -6171,14 +6307,33 @@ def materialize_tensors_streaming(
     #       state_dict — computed from config),
     #   (d) leave decoder layers on meta until the per-layer loop
     #       streams them in.
-    staged = stage_text_only(model_path)
+    # A family with no `<Arch>ForCausalLM` auto-route (glm5_next on
+    # transformers 5.16) cannot build a text-only skeleton at all; the
+    # profile declares that fact and the export inherits the same flip
+    # `_build_streaming_context` applies for probe/cost streaming. The
+    # visual tower stays on meta either way — export ships it via the
+    # source-passthrough merge, never through the body walk.
+    multimodal_skeleton = bool(profile.requires_multimodal_skeleton())
+    if multimodal_skeleton:
+        print("[export-stream] profile has no text-only skeleton route; "
+              "using the multimodal construction", flush=True)
+        staged = stage_multimodal(model_path)
+    else:
+        staged = stage_text_only(model_path)
     config = AutoConfig.from_pretrained(staged, trust_remote_code=True)
+    config, model_cls = _skeleton_config_and_class(
+        config, multimodal=multimodal_skeleton,
+        log_prefix="[export-stream]")
     # _init_weights is globally no-op'd by prismaquant.__init__'s
     # _polyfill_transformers (wasted work + transformers-5.x compat
     # landmine on remote modeling files).
-    with init_empty_weights():
-        model = AutoModelForCausalLM.from_config(
-            config, trust_remote_code=True)
+    with _mask_cuda_queries_during_meta_init("[export-stream]"):
+        with init_empty_weights():
+            if model_cls is AutoModelForCausalLM:
+                model = AutoModelForCausalLM.from_config(
+                    config, trust_remote_code=True)
+            else:
+                model = model_cls._from_config(config)
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
@@ -6187,7 +6342,8 @@ def materialize_tensors_streaming(
     num_layers = len(layers)
     layers_prefix = f"{base_prefix}.layers." if base_prefix else "layers."
 
-    weight_shard, weight_ckpt = _build_weight_map(model_path)
+    weight_shard, weight_ckpt = _build_weight_map(
+        model_path, multimodal=multimodal_skeleton)
     source_dtype_by_name = _build_source_dtype_map(weight_shard, weight_ckpt)
     # Per-expert -> packed-3D bridge for checkpoints that ship MoE experts
     # unfused while the live module is packed (driven by the model profile;
@@ -6195,6 +6351,44 @@ def materialize_tensors_streaming(
     # with the streaming probe/cost path — a raw checkpoint exports without
     # an out-of-band pre-pack.
     expert_packer = _build_expert_packer(model, weight_ckpt)
+    # Sibling bridge for checkpoints that store one live parameter as several
+    # source tensors (transformers' `Concatenate(dim=...)` merges, declared as
+    # the profile spec's `concat_merges`). Same reason as the expert packer:
+    # the exporter must load exactly what the streaming probe/cost path loads.
+    concat_merger = _build_concat_merger(model, weight_ckpt)
+    # Emit-side inverse of `concat_merges`: the live module holds ONE
+    # merged tensor (glm5_next `self_attn.conv1d` <- q/k/v_conv1d) whose
+    # key never existed in the source checkpoint. Emitting the merged
+    # spelling would ship a key the serving runtime's loader does not
+    # know and drop the three it expects, so the 3e passthrough skips the
+    # merged live param and copies the SOURCE tensors verbatim instead.
+    concat_groups = tuple(profile.concat_merge_groups())
+    _src_tensor_index: dict[str, Path] | None = None
+
+    def _read_source_tensor_verbatim(ckpt_key: str) -> torch.Tensor:
+        nonlocal _src_tensor_index
+        from safetensors import safe_open
+        if _src_tensor_index is None:
+            _src_tensor_index = {}
+            src_root = Path(model_path)
+            index_path = src_root / "model.safetensors.index.json"
+            if index_path.exists():
+                with open(index_path) as fh:
+                    for key, shard in json.load(fh)["weight_map"].items():
+                        _src_tensor_index[key] = src_root / shard
+            else:
+                for shard in sorted(src_root.glob("*.safetensors")):
+                    with safe_open(str(shard), framework="pt") as sf:
+                        for key in sf.keys():
+                            _src_tensor_index[key] = shard
+        shard_path = _src_tensor_index.get(ckpt_key)
+        if shard_path is None:
+            raise KeyError(
+                f"[export-stream] concat-merge source tensor {ckpt_key!r} "
+                f"not present in the source checkpoint — the profile's "
+                f"concat_merges declaration disagrees with the shards.")
+        with safe_open(str(shard_path), framework="pt") as sf:
+            return sf.get_tensor(ckpt_key)
     # Native-FP8 dequant map, keyed by live weight-qname. Passed to
     # every `_read_layer_to_device` / `_materialize` call so fp8 source
     # weights land on the module as TRUE dequanted bf16 — not raw fp8
@@ -6434,7 +6628,8 @@ def materialize_tensors_streaming(
         load_t0 = time.time()
         tensors = _read_layer_to_device(
             f"{layers_prefix}{L}.", weight_shard, weight_ckpt, dtype, device,
-            fp8_scale_inv_map=fp8_scale_inv_map, pack_experts=expert_packer)
+            fp8_scale_inv_map=fp8_scale_inv_map, pack_experts=expert_packer,
+            merge_concat=concat_merger)
         resolver = _build_install_resolver(model, layer_qname)
         _fast_install(resolver, tensors, device, model=model)
         load_s = time.time() - load_t0
@@ -6562,7 +6757,15 @@ def materialize_tensors_streaming(
                         f"fp8_e4m3fn at {weight_ckpt_key}, got "
                         f"{w_fp8.dtype}")
                 out[f"{emit_full}.weight"] = w_fp8.cpu().contiguous()
-                out[f"{emit_full}.weight_scale"] = w_scale.to(
+                # Runtime-pinned modules (e.g. GLM MLA attention
+                # projections) are dequantized by the serving runtime at
+                # load, keyed on the SOURCE scale name
+                # (`weight_scale_inv`); everything else serves through
+                # compressed-tensors and gets the CT name.
+                scale_key = ("weight_scale_inv"
+                             if profile.runtime_loads_source_fp8(full)
+                             else "weight_scale")
+                out[f"{emit_full}.{scale_key}"] = w_scale.to(
                     torch.float32).cpu().contiguous()
                 if mod.bias is not None and not mod.bias.is_meta:
                     out[f"{emit_full}.bias"], _ = _passthrough_tensor(
@@ -6772,6 +6975,14 @@ def materialize_tensors_streaming(
                     if not _ALLOW_PACKED_EXPERT_RTN:
                         cached_3d = _read_cached_packed_expert(
                             full, fmt, device=device, cache=active_cache)
+                        if cached_3d is not None and active_cache is not None:
+                            # The transient inline render is read exactly once
+                            # per packed param — drop the CPU fp32 entry now
+                            # (18G for a GLM-class gate_up stack) instead of
+                            # holding it until layer teardown.
+                            _k = active_cache.resolve_key(full, fmt)
+                            if _k is not None:
+                                active_cache.weights.pop(_k, None)
                     if cached_3d is None:
                         if _INLINE_EXPERT_GPTQ and not _ALLOW_PACKED_EXPERT_RTN:
                             raise RuntimeError(
@@ -6839,7 +7050,16 @@ def materialize_tensors_streaming(
                 # re-derived under the export-entry default (static_6)
                 # cannot recover its codes.
                 with _temporary_export_nvfp4_scale_rule(packed_render_rule):
-                    for pi, (proj_name, sub_packed) in enumerate(proj_split):
+                    # Index-based on purpose: `enumerate` caches its last
+                    # yielded result tuple internally (CPython reuse), and a
+                    # surviving enumerate pinned the (proj_name, 9G-view)
+                    # tuple — and through it an 18G fp32 stack — across
+                    # layers (mem-dump attribution, GLM-5.3 probe runs).
+                    # Never pass tensor-bearing tuples through enumerate in
+                    # this function's scope.
+                    for pi in range(len(proj_split)):
+                        proj_name = proj_split[pi][0]
+                        sub_packed = proj_split[pi][1]
                         cached_sub = (
                             cached_split[pi][1]
                             if cached_split is not None else None
@@ -6885,6 +7105,14 @@ def materialize_tensors_streaming(
                 del packed_param, packed_param_src, proj_split
                 if cached_3d is not None:
                     del cached_3d, cached_split
+                # The inner-loop locals are function-scoped and survive this
+                # module (and this LAYER) otherwise: `sub_packed` views the
+                # 18G fp32 `packed_param` promotion, `cached_sub` views the
+                # 18G fp32 `cached_3d` — together they pinned 36G through the
+                # NEXT layer's render peak on GLM-5.3 (mem-dump attribution,
+                # probe runs 1-2; the steady-state OOM of export attempts
+                # 4-5 on the 118G unified pool).
+                sub_packed = cached_sub = expert_2d = None
 
         # 3e. Remaining layer-scoped params (norms, conv1d, biases on
         # passthrough-only modules) and persistent buffers.
@@ -6895,6 +7123,22 @@ def materialize_tensors_streaming(
             if any(full.startswith(c + ".") or full == c for c in covered):
                 continue
             if param.is_meta:
+                continue
+            concat_split = False
+            for target_suffix, source_suffixes, _dim in concat_groups:
+                if not (full == target_suffix
+                        or full.endswith("." + target_suffix)):
+                    continue
+                stem = full[: -len(target_suffix)]
+                for src_suffix in source_suffixes:
+                    live_src = stem + src_suffix
+                    ckpt_key = profile.export_tensor_name(
+                        profile.live_to_recipe_name(live_src))
+                    out[live_src] = _read_source_tensor_verbatim(ckpt_key)
+                    hist[("layer_concat_source", "verbatim")] += 1
+                concat_split = True
+                break
+            if concat_split:
                 continue
             out[full], label = _passthrough_tensor(
                 full, param, source_dtype_by_name)
@@ -6918,20 +7162,51 @@ def materialize_tensors_streaming(
         # Free this layer's inline expert renders (the 3-D dequant stacks) so
         # peak stays ~one layer's stack even across the whole sweep.
         del tensors, resolver, joint_globals, _inline_expert_caches
-        # Aggressive GPU cleanup — we've already `.cpu()`'d every
-        # quantized output into `out`, so the per-layer GPU working
-        # set (fp32 weight copies, grouped/packed intermediates) can
-        # be released immediately. Keeps per-layer peak bounded.
+        # The per-Linear walk's loop locals survive the layer iteration:
+        # `active_cache` in particular still references the layer's transient
+        # expert cache (27G CPU fp32 on GLM-5.3) until the NEXT layer's packed
+        # emit reassigns it — i.e. after that layer's full render peak. That
+        # exact residue OOM-killed export attempt 3 at layer 4 on the 118G
+        # unified pool. Drop it, then collect cycles BEFORE empty_cache so
+        # freed CUDA blocks actually return to the pool, every layer.
+        active_cache = None
+        gc.collect()
         if device.type == "cuda":
             torch.cuda.synchronize()  # ensure outputs are CPU-resident
             torch.cuda.empty_cache()
-        if L % 4 == 0:
-            gc.collect()
-        if L % 4 == 0 or L == num_layers - 1:
-            elapsed = time.time() - layer_t0
-            print(f"[export-stream] layer {L:02d}  linears={linear_count} "
-                  f"packed={packed_count}  load={load_s:.2f}s  "
-                  f"total={elapsed:.2f}s  out_keys={len(out)}", flush=True)
+        if os.environ.get("PRISMAQUANT_EXPORT_MEM_DUMP", "0") == "1":
+            _dump_live_cuda_tensors(f"post-cleanup layer {L:02d}")
+        # Every layer, unconditionally: a 306B layer can take minutes of
+        # GPU render, and a silent multi-minute phase is an observability
+        # defect on first-live-use exports.
+        elapsed = time.time() - layer_t0
+        done_n = L + 1
+        sweep_rate = (time.time() - t_layers) / max(done_n, 1)
+        eta_min = sweep_rate * (num_layers - done_n) / 60.0
+        # Memory attribution per layer: rss (process anon), cuda_alloc
+        # (live tensors), cuda_reserved (allocator pool). A layer-over-layer
+        # ramp in alloc = a real reference leak; in reserved-only =
+        # fragmentation; in rss-only = CPU-side. On the 118G unified pool a
+        # silent ~14G/layer ramp is fatal by layer 6 — attribute, don't guess.
+        try:
+            rss_gb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                      / 1024 / 1024)
+            with open("/proc/self/statm") as f:
+                cur_rss_gb = (int(f.read().split()[1])
+                              * os.sysconf("SC_PAGE_SIZE") / 1024**3)
+        except Exception:
+            rss_gb = cur_rss_gb = float("nan")
+        if device.type == "cuda":
+            mem_note = (f"  rss={cur_rss_gb:.1f}G(max {rss_gb:.1f}) "
+                        f"cuda_alloc={torch.cuda.memory_allocated()/1024**3:.1f}G "
+                        f"reserved={torch.cuda.memory_reserved()/1024**3:.1f}G")
+        else:
+            mem_note = f"  rss={cur_rss_gb:.1f}G(max {rss_gb:.1f})"
+        print(f"[export-stream] layer {L:02d}  linears={linear_count} "
+              f"packed={packed_count}  load={load_s:.2f}s  "
+              f"total={elapsed:.2f}s  out_keys={len(out)}  "
+              f"({done_n}/{num_layers}, {sweep_rate:.1f}s/layer, "
+              f"ETA {eta_min:.1f} min){mem_note}", flush=True)
         # v25: save layer cache BEFORE tensor_sink consumes the dict.
         # Use a tmp + rename to keep the cache file atomic — a kill in
         # the middle of torch.save leaves a .tmp behind which we'll
@@ -6944,6 +7219,14 @@ def materialize_tensors_streaming(
         if tensor_sink is not None:
             tensor_sink(out)
             out = {}
+        _stop_after = os.environ.get("PRISMAQUANT_EXPORT_STOP_AFTER_LAYER")
+        if _stop_after is not None and L >= int(_stop_after):
+            # Diagnostic runs only: exit AFTER the layer cache save + sink
+            # flush so the rendered layer is resumable. Artifact INCOMPLETE.
+            print(f"[export-stream] PRISMAQUANT_EXPORT_STOP_AFTER_LAYER="
+                  f"{_stop_after}: stopping after layer {L:02d} "
+                  f"(diagnostic run — artifact INCOMPLETE)", flush=True)
+            sys.exit(0)
 
     print(f"[export-stream] layer sweep: {time.time()-t_layers:.1f}s "
           f"(cache_hits={cache_hits}/{num_layers})",
@@ -7154,7 +7437,11 @@ def _materialize_tensors_inmemory(
             # M2: re-derive under the render's RECORDED NVFP4 scale rule
             # (same wrap as the streaming packed-expert path).
             with _temporary_export_nvfp4_scale_rule(packed_render_rule):
-                for pi, (proj_name, sub_packed) in enumerate(proj_split):
+                # Index-based on purpose — see the streaming emit: enumerate's
+                # result-tuple reuse pins tensor-bearing tuples across layers.
+                for pi in range(len(proj_split)):
+                    proj_name = proj_split[pi][0]
+                    sub_packed = proj_split[pi][1]
                     cached_sub = (
                         cached_split[pi][1]
                         if cached_split is not None else None
@@ -7187,6 +7474,9 @@ def _materialize_tensors_inmemory(
                     cached_3d=cached_3d,
                 ),
             )] += 1
+            # Same loop-local pinning class as the streaming emit: drop the
+            # views so the fp32 stacks free with their owners.
+            sub_packed = cached_sub = None
 
     for name, p in model.named_parameters():
         if any(name.startswith(c + ".") or name == c for c in covered):
@@ -7596,6 +7886,13 @@ def build_quantization_config(
     for name, fmt in sorted(assignment.items()):
         fmt = _canonical_export_format(fmt)
         vllm_name = profile.to_vllm_internal_name(name)
+        if fmt == "FP8_SOURCE" and profile.runtime_loads_source_fp8(name):
+            # The pinned runtime dequantizes these modules itself at load
+            # (source-style keys, module built without a quant config), so
+            # they are BF16 in the serving model — not CT-schemed. A
+            # config_groups entry here would double-describe them.
+            ignore.append(vllm_name)
+            continue
         if fmt == "BF16":
             ignore.append(vllm_name)
             # Packed MoE tensors in BF16 are emitted as per-expert
@@ -7752,6 +8049,25 @@ def build_quantization_config(
         return (
             f"re:^{escaped}[.][0-9]+[.]({proj_options})$"
         )
+
+    def _targets_name_experts(names: list[str]) -> bool:
+        """True when any target names a per-expert Linear.
+
+        `by_fmt` holds a mix of plain vLLM module names and pre-formed
+        regexes, and by the time this runs every per-expert entry is a
+        regex: the loop above moves plain `...experts.<eid>.<proj>` names
+        out of `by_fmt` into `packed_fused_states`, then re-adds them via
+        `_per_expert_regex_for`, whose literal dots are bracket-escaped
+        (`layers[.]0[.]mlp[.]experts[.][0-9]+`). So a bare `".experts."`
+        test matches nothing on any packed-MoE artifact. Undo the escape
+        before testing, and accept either form.
+        """
+        for name in names:
+            probe = name[len("re:"):] if name.startswith("re:") else name
+            probe = probe.replace("[.]", ".")
+            if ".experts." in probe or probe.endswith(".experts"):
+                return True
+        return False
 
     for fused_qname, states in packed_fused_states.items():
         if len(states) > 1:
@@ -7962,14 +8278,23 @@ def build_quantization_config(
         need_canon = ondisk != canon and bool(canon)
         canon_opts = "|".join(sorted(canon)) or "gate_proj|up_proj|down_proj"
         expert_regexes = []
-        for getter in (profile.per_expert_moe_regex, profile.per_expert_mtp_regex):
-            r = getter()
-            if r is None:
-                continue
-            if need_canon:
-                body = r[len("re:"):] if r.startswith("re:") else r
-                r = f"re:{_constrain_per_expert_projection_regex(body, canon_opts)}"
-            expert_regexes.append(r)
+        # Only attach the safety-net when the catch-all group actually
+        # holds packed/per-expert units. When the largest group is a
+        # non-expert format (GLM-5.3: FP8_SOURCE dense half vs NVFP4
+        # experts), the net would claim every per-expert Linear for the
+        # WRONG scheme — vLLM's get_moe_method probes `experts.0.X_proj`
+        # and a match here overrides the experts' real group.
+        catchall_has_experts = _targets_name_experts(by_fmt[catchall])
+        if catchall_has_experts:
+            for getter in (profile.per_expert_moe_regex,
+                           profile.per_expert_mtp_regex):
+                r = getter()
+                if r is None:
+                    continue
+                if need_canon:
+                    body = r[len("re:"):] if r.startswith("re:") else r
+                    r = f"re:{_constrain_per_expert_projection_regex(body, canon_opts)}"
+                expert_regexes.append(r)
         scheme["targets"] = _build_target_list(by_fmt[catchall]) + expert_regexes
         config_groups[f"group_{idx}"] = scheme
 
@@ -8750,7 +9075,17 @@ def _main_impl(argv: Sequence[str] | None = None):
     def _rename_body_batch(
         batch: dict[str, torch.Tensor],
     ) -> dict[str, torch.Tensor]:
-        return {profile.export_tensor_name(k): v for k, v in batch.items()}
+        # Body-walk keys are LIVE module qnames. `export_tensor_name`
+        # speaks the RECIPE namespace, so normalize first — a no-op for
+        # every family whose live skeleton already uses recipe names
+        # (`live_to_recipe_name` is idempotent prefix/segment rewriting),
+        # and the only correct spelling on multimodal-forced skeletons
+        # (glm5_next: `model.language_model.` + `.forget_gate.` segments
+        # exist live but not in the recipe or the checkpoint).
+        return {
+            profile.export_tensor_name(profile.live_to_recipe_name(k)): v
+            for k, v in batch.items()
+        }
 
     writer = IncrementalSafetensorsWriter(out_dir, args.shard_bytes)
     sample_recipe_key = "model.layers.0.self_attn.q_proj.weight"
