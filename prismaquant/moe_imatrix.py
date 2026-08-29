@@ -96,6 +96,28 @@ def _weight_map(model_path: Path) -> dict[str, str]:
     raise FileNotFoundError(f"no safetensors index under {model_path}")
 
 
+_WEIGHT_BLOCK_CACHE: dict[str, tuple[int, int] | None] = {}
+
+
+def _weight_block_size(model_path: Path) -> tuple[int, int] | None:
+    """The checkpoint's declared FP8 block tiling, or None if undeclared."""
+    key = str(model_path)
+    if key not in _WEIGHT_BLOCK_CACHE:
+        blocks = None
+        cfg_path = Path(model_path) / "config.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            for holder in (cfg, cfg.get("text_config") or {}):
+                qc = holder.get("quantization_config") or {}
+                raw = qc.get("weight_block_size")
+                if (isinstance(raw, (list, tuple)) and len(raw) == 2
+                        and all(isinstance(v, int) and v > 0 for v in raw)):
+                    blocks = (int(raw[0]), int(raw[1]))
+                    break
+        _WEIGHT_BLOCK_CACHE[key] = blocks
+    return _WEIGHT_BLOCK_CACHE[key]
+
+
 def _load_tensors(
     model_path: Path,
     weight_map: dict[str, str],
@@ -111,10 +133,54 @@ def _load_tensors(
             for k in ks:
                 tensor = f.get_tensor(k)
                 if str(tensor.dtype).startswith("torch.float8"):
-                    raise ValueError(
-                        f"{k}: packed-expert replay cannot decode an FP8 "
-                        "checkpoint tensor without its serialized scale "
-                        "contract; refusing approximate routing/calibration"
+                    # Serialized scale contract: block-wise FP8 checkpoints
+                    # (fmt e4m3) carry a `<name>_scale_inv` companion whose
+                    # shape tiles the weight; dequantize exactly with it.
+                    # The refusal stands for tensors without the companion.
+                    scale_key = k + "_scale_inv"
+                    if scale_key not in weight_map:
+                        raise ValueError(
+                            f"{k}: packed-expert replay cannot decode an FP8 "
+                            "checkpoint tensor without its serialized scale "
+                            "contract; refusing approximate routing/calibration"
+                        )
+                    sshard = weight_map[scale_key]
+                    if sshard == shard:
+                        scale = f.get_tensor(scale_key)
+                    else:
+                        with safe_open(
+                            str(model_path / sshard), framework="pt"
+                        ) as sf:
+                            scale = sf.get_tensor(scale_key)
+                    o, i = tensor.shape
+                    so, si = scale.shape
+                    blocks = _weight_block_size(model_path)
+                    if blocks is not None:
+                        b0, b1 = blocks
+                        if (-(-o // b0), -(-i // b1)) != (so, si):
+                            raise ValueError(
+                                f"{k}: scale plane {so}x{si} does not tile "
+                                f"weight {o}x{i} at the checkpoint's declared "
+                                f"weight_block_size {blocks}"
+                            )
+                    elif o % so == 0 and i % si == 0:
+                        # No declared block size: exact division is the only
+                        # unambiguous inference. A partial trailing block
+                        # cannot be detected without the declaration, so a
+                        # non-divisible shape refuses below.
+                        b0, b1 = o // so, i // si
+                    else:
+                        raise ValueError(
+                            f"{k}: weight {o}x{i} is not tiled evenly by its "
+                            f"scale plane {so}x{si} and the checkpoint "
+                            "declares no weight_block_size; refusing to guess "
+                            "where the partial trailing block falls"
+                        )
+                    tensor = (
+                        tensor.to(torch.float32)
+                        * scale.to(torch.float32)
+                        .repeat_interleave(b0, 0)[:o]
+                        .repeat_interleave(b1, 1)[:i]
                     )
                 out[k] = tensor if dtype is None else tensor.to(dtype)
     return out

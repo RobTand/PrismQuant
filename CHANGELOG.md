@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Fixed
+
+- **FP8-source MoE checkpoints now build end to end** — first wrapped-VLM
+  MoE with an FP8 source through the codebook container
+  (Qwen3.6-35B-A3B-FP8, fmt e4m3, block-wise `weight_scale_inv`). Two
+  independent defect families, both previously fail-closed with named
+  errors:
+  - `moe_imatrix._load_tensors` refused every float8 tensor instead of
+    fulfilling the serialized scale contract it named: it now loads the
+    `<name>_scale_inv` companion and dequantizes exactly — using the
+    checkpoint's declared `weight_block_size` when present (partial
+    trailing blocks handled exactly), exact-division inference when not,
+    and refusal when neither is unambiguous. The original refusal stands
+    for tensors lacking the companion. Tests: contract round-trip,
+    declared-block partial-trailing exactness, undeclared-ambiguous
+    refusal.
+  - `export_nvfp4_cb_streaming`: for a wrapped source the group planner's
+    regex-matched key lands in the LIVE module-tree namespace
+    (`language_model.model.*`) — neither the recipe spelling
+    `_resolve_target` looks up (the planner's own documented contract)
+    nor the checkpoint spelling emission bridges — so the coverage gate
+    KeyErrors on uniform groups and 30,720 consumed per-expert sources
+    ship verbatim into `ignore`. Live-spelled keys are now normalized to
+    the RECIPE spelling derived from the group's own member tensors;
+    recipe- and checkpoint-keyed groups (DSv4-class sources) are left
+    exactly as planned (`test_nvfp4_cb_streaming` passes in full).
+    Packed expert stack tensors are named by their group's checkpoint
+    prefix via a member-derived recipe-to-checkpoint bridge (a
+    recipe-spelled stack falls through gridbook's top-level loader to the
+    arch loader and dies). Delegated (stock-CT) config-group targets are
+    tower-relative in THIS container — measured on gridbook 0.8.11 +
+    pristine vLLM 0.27.1, where live-tree spellings leave the module
+    unquantized and gridbook refuses fail-closed at load. The vanilla
+    compressed-tensors container (`export_native_compressed`) is
+    untouched: its shipped wrapper artifacts correctly keep live-tree
+    targets, which vanilla vLLM matches.
+
 ## 0.16.2 — 2026-08-22
 
 ### Fixed
