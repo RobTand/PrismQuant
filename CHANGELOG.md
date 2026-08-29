@@ -4,9 +4,69 @@
 
 ### Fixed
 
+- **FP8-source MoE checkpoints now build end to end** — first wrapped-VLM
+  MoE with an FP8 source through the codebook container
+  (Qwen3.6-35B-A3B-FP8, fmt e4m3, block-wise `weight_scale_inv`). Two
+  independent defect families, both previously fail-closed with named
+  errors:
+  - `moe_imatrix._load_tensors` refused every float8 tensor instead of
+    fulfilling the serialized scale contract it named: it now loads the
+    `<name>_scale_inv` companion and dequantizes exactly on the
+    checkpoint's declared `weight_block_size` (partial trailing blocks
+    handled exactly), read through the streaming loader's
+    `_declared_weight_block_size` so the packed-expert replay and the
+    layer-streaming load cannot disagree about one checkpoint. An
+    undeclared block size REFUSES rather than inferring the grid by
+    division: a 200-row weight over a 2-row scale plane divides exactly
+    at 100 and is equally a 128-block tiling with a partial trailing
+    block, and the two dequants differ on every row from 128 up. The
+    original refusal stands for tensors lacking the companion. Tests:
+    contract round-trip, declared-block partial-trailing exactness,
+    undeclared refusal, non-tiling (transposed) scale-plane refusal.
+  - `export_nvfp4_cb_streaming`: for a wrapped source the group planner's
+    regex-matched key lands in the LIVE module-tree namespace
+    (`language_model.model.*`) — neither the recipe spelling
+    `_resolve_target` looks up (the planner's own documented contract)
+    nor the checkpoint spelling emission bridges — so the coverage gate
+    KeyErrors on uniform groups and 30,720 consumed per-expert sources
+    ship verbatim into `ignore`. Live-spelled keys are now normalized to
+    the RECIPE spelling derived from the group's own member tensors;
+    recipe- and checkpoint-keyed groups (DSv4-class sources) are left
+    exactly as planned (`test_nvfp4_cb_streaming` passes in full), and a
+    collision on the normalized key or on the recipe-to-checkpoint bridge
+    refuses rather than silently declining to normalize.
+    Packed expert stack tensors are named by their group's checkpoint
+    prefix via a member-derived recipe-to-checkpoint bridge (a
+    recipe-spelled stack falls through gridbook's top-level loader to the
+    arch loader and dies). Delegated (stock-CT) and source-passthrough
+    config-group targets now ship in the CANONICAL namespace in THIS
+    container — the profile's vLLM-internal rename with the wrapper
+    canonicalized (`language_model.model.` to `model.`,
+    `language_model.<rest>` to `model.<rest>`), mirroring the pinned
+    consumer's `gridbook/config.py::_canonical_prefix` /
+    `_candidate_bases`, which try a serving prefix as given *and* in
+    canonical form. A canonical target resolves from every namespace
+    vintage; a full live-tree target resolves only from its own, which is
+    what left the delegated Linears unquantized until gridbook refused
+    them fail-closed at load (measured on gridbook 0.8.11/0.9.0 +
+    pristine vLLM 0.27.1). The vanilla compressed-tensors container
+    (`export_native_compressed`) is untouched: its shipped wrapper
+    artifacts correctly keep live-tree targets, which vanilla vLLM
+    matches. `docs/ARCHITECTURE.md` §6.2 records the three namespaces and
+    which consumer each emission speaks to.
+
+    Scope note: FP8 sources whose scales are stored as `.scale` siblings
+    rather than `<name>_scale_inv` (DSv4-class, handled elsewhere by the
+    profile's `fp8_scale_pairs`) still hit the packed-expert replay's
+    original refusal — unchanged, and not covered by this fix.
+
+## 0.16.2 — 2026-08-22
+
+### Fixed
+
 - **MTP Lambert-W closed form no longer silently disables itself**
   (`mtp_rung_selection.py`): `exp(g_over_c)` overflowed for
-  `(t+d0)/c ≳ 1022.6` — ~41% of the plausible parameter range, including the
+  `(t+d0)/c ≳ 1022.6` — an illustrative ~41% of the parameter range the audit treated as plausible, including the
   recorded Hy3 constants (~1260) — and the bare-`None` fallback was
   indistinguishable from "no scipy" / "no real solution", so the fixed-point
   answer shipped without anyone knowing the closed form had died. The closed

@@ -96,6 +96,33 @@ def _weight_map(model_path: Path) -> dict[str, str]:
     raise FileNotFoundError(f"no safetensors index under {model_path}")
 
 
+_WEIGHT_BLOCK_CACHE: dict[str, tuple[int, int]] = {}
+
+
+def _weight_block_size(model_path: Path) -> tuple[int, int]:
+    """The checkpoint's declared FP8 block tiling.
+
+    One checkpoint, one contract: this defers to the streaming loader's
+    `_declared_weight_block_size`, which REFUSES a checkpoint that pairs
+    fp8 weights with scale tensors but declares no `weight_block_size`
+    rather than inferring the grid from the scale-plane shape. Inference
+    is unsafe even when it divides exactly -- a 200-row weight against a
+    2-row scale plane divides exactly at 100 and is equally a 128-block
+    tiling with a partial trailing block, and the two dequants differ on
+    every row from 128 up. Two mechanisms that disagree about one
+    checkpoint is the defect this avoids; the packed-expert replay and
+    the streaming load must read the same grid.
+
+    Cached per path because `_load_tensors` asks once per FP8 tensor.
+    """
+    from .layer_streaming import _declared_weight_block_size
+
+    key = str(model_path)
+    if key not in _WEIGHT_BLOCK_CACHE:
+        _WEIGHT_BLOCK_CACHE[key] = _declared_weight_block_size(key)
+    return _WEIGHT_BLOCK_CACHE[key]
+
+
 def _load_tensors(
     model_path: Path,
     weight_map: dict[str, str],
@@ -111,10 +138,41 @@ def _load_tensors(
             for k in ks:
                 tensor = f.get_tensor(k)
                 if str(tensor.dtype).startswith("torch.float8"):
-                    raise ValueError(
-                        f"{k}: packed-expert replay cannot decode an FP8 "
-                        "checkpoint tensor without its serialized scale "
-                        "contract; refusing approximate routing/calibration"
+                    # Serialized scale contract: block-wise FP8 checkpoints
+                    # (fmt e4m3) carry a `<name>_scale_inv` companion whose
+                    # shape tiles the weight; dequantize exactly with it.
+                    # The refusal stands for tensors without the companion.
+                    scale_key = k + "_scale_inv"
+                    if scale_key not in weight_map:
+                        raise ValueError(
+                            f"{k}: packed-expert replay cannot decode an FP8 "
+                            "checkpoint tensor without its serialized scale "
+                            "contract; refusing approximate routing/calibration"
+                        )
+                    sshard = weight_map[scale_key]
+                    if sshard == shard:
+                        scale = f.get_tensor(scale_key)
+                    else:
+                        with safe_open(
+                            str(model_path / sshard), framework="pt"
+                        ) as sf:
+                            scale = sf.get_tensor(scale_key)
+                    o, i = tensor.shape
+                    so, si = scale.shape
+                    # Raises when the checkpoint declares no block size --
+                    # the grid is read from the checkpoint, never guessed.
+                    b0, b1 = _weight_block_size(model_path)
+                    if (-(-o // b0), -(-i // b1)) != (so, si):
+                        raise ValueError(
+                            f"{k}: scale plane {so}x{si} does not tile "
+                            f"weight {o}x{i} at the checkpoint's declared "
+                            f"weight_block_size {(b0, b1)}"
+                        )
+                    tensor = (
+                        tensor.to(torch.float32)
+                        * scale.to(torch.float32)
+                        .repeat_interleave(b0, 0)[:o]
+                        .repeat_interleave(b1, 1)[:i]
                     )
                 out[k] = tensor if dtype is None else tensor.to(dtype)
     return out
