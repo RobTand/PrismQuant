@@ -343,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             resume=args.resume,
             require_hardlinks=args.require_hardlinks,
+            production=True,
         )
         _print(result)
         return 0

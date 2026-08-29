@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
 from pathlib import Path
 import pickle
@@ -17,6 +19,7 @@ import prismaquant.cost_streaming as cost_streaming
 from prismaquant.model_profiles import detect_profile
 from prismaquant.prismasnap import PRISMASNAP_ALGORITHM, PrismaSnapSearchConfig
 import prismaquant.prismasnap_checkpoint as checkpoint
+import prismaquant.prismasnap as prismasnap
 
 
 def _json(path: Path, payload: object) -> None:
@@ -1127,6 +1130,89 @@ def test_production_entrypoints_require_cuda_and_attested_container(
         )
 
 
+def test_merge_checkpoint_parts_is_subject_to_the_production_execution_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defect 2: the collating writer escaped the production contract.
+
+    The merge executes on no device, so the half of the contract that binds it
+    is container attestation, not the CUDA declaration. The gate must precede
+    every other check, including the arity ValueError, so an unattested merge
+    cannot even inspect the parts it was handed -- a single part dir is passed
+    below precisely so a RuntimeError (not ValueError) proves the ordering.
+    """
+
+    monkeypatch.delenv("PRISMAQUANT_CONTAINER_ROOTFS_SHA256", raising=False)
+    with pytest.raises(RuntimeError, match="attested container"):
+        checkpoint.merge_checkpoint_parts(
+            tmp_path / "absent-source",
+            tmp_path / "absent-plan",
+            [tmp_path / "absent-part"],
+            tmp_path / "absent-output",
+            production=True,
+        )
+
+
+def test_merge_checkpoint_parts_takes_no_device() -> None:
+    """The merge must not carry a device it never executes on.
+
+    A `device` here could only be checked as a string, since nothing in the
+    union ever reaches a device -- the assert-instead-of-attest shape principle
+    14 refuses. Its absence from the signature is the fix, so it is asserted.
+    """
+
+    params = inspect.signature(checkpoint.merge_checkpoint_parts).parameters
+    assert "device" not in params
+    assert "production" in params
+
+
+@pytest.mark.parametrize(
+    "perturbed",
+    [
+        "prismaquant/prismasnap_contract.py",
+        "prismaquant/prismasnap_moe_checkpoint.py",
+        "prismaquant/prismasnap_moe.py",
+    ],
+)
+def test_producer_identity_binds_the_moe_plan_stack_and_the_lane_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, perturbed: str
+) -> None:
+    """Defect 3: edits to these three files must invalidate a producer receipt.
+
+    Executes the real gate -- `_validate_materialization_plan`'s
+    `producer != _producer_identity()` -- rather than asserting membership in
+    the file list.
+    """
+
+    fixture = _tiny_checkpoint_parts(tmp_path)
+    parts = list(fixture["parts"])
+    baseline = checkpoint.merge_checkpoint_parts(
+        fixture["source"],
+        fixture["plan_dir"],
+        parts,
+        tmp_path / f"identity-baseline-{Path(perturbed).stem}",
+    )
+    assert baseline["state"] == "MATERIALIZED"
+
+    original = checkpoint._sha256_file
+    target = Path(perturbed).name
+
+    def _perturbed(path):
+        digest = original(path)
+        if Path(path).name == target:
+            return hashlib.sha256(digest.encode("utf-8")).hexdigest()
+        return digest
+
+    monkeypatch.setattr(checkpoint, "_sha256_file", _perturbed)
+    with pytest.raises(RuntimeError, match="implementation/container identity differs"):
+        checkpoint.merge_checkpoint_parts(
+            fixture["source"],
+            fixture["plan_dir"],
+            parts,
+            tmp_path / f"identity-perturbed-{Path(perturbed).stem}",
+        )
+
+
 def _tiny_checkpoint_parts(tmp_path: Path) -> dict[str, object]:
     fixture = _tiny_planned_checkpoint(tmp_path)
     source = fixture["source"]
@@ -1623,3 +1709,170 @@ def test_checkpoint_part_merge_recovers_commit_ready_and_committed_windows(
         resume=True,
     )
     assert committed == commit_ready
+
+
+def _write_fp8_source(root: Path, *, paired: bool = True) -> torch.Tensor:
+    """One indexed shard holding a block-scaled FP8 weight and a BF16 norm.
+
+    Returns the fp64 reference value the checkpoint encodes, so the caller can
+    assert the dequant against arithmetic computed outside the code under test
+    rather than against the code's own output.
+    """
+    rows, cols = 4, 8
+    block = (2, 4)
+    root.mkdir(parents=True, exist_ok=True)
+    codes = torch.arange(1, rows * cols + 1, dtype=torch.float32).reshape(rows, cols)
+    weight = (codes / 64.0).to(torch.float8_e4m3fn)
+    # A distinct scale per block, so a transposed or mis-sized grid cannot
+    # coincidentally reproduce the reference.
+    scale = torch.tensor([[1.0, 2.0], [4.0, 8.0]], dtype=torch.float32)
+    reference = weight.to(torch.float64) * (
+        scale.to(torch.float64)
+        .repeat_interleave(block[0], dim=0)
+        .repeat_interleave(block[1], dim=1)
+    )
+    tensors = {
+        "model.layers.0.attn.q_proj.weight": weight,
+        "model.layers.0.input_layernorm.weight": torch.ones(cols, dtype=torch.bfloat16),
+    }
+    weight_map = {name: "model-00001-of-00001.safetensors" for name in tensors}
+    if paired:
+        tensors["model.layers.0.attn.q_proj.weight_scale_inv"] = scale
+        weight_map["model.layers.0.attn.q_proj.weight_scale_inv"] = (
+            "model-00001-of-00001.safetensors"
+        )
+    save_file(tensors, str(root / "model-00001-of-00001.safetensors"),
+              metadata={"format": "pt"})
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": weight_map})
+    )
+    (root / "config.json").write_text(
+        json.dumps({
+            "model_type": "test",
+            "quantization_config": {
+                "quant_method": "fp8",
+                "weight_block_size": list(block),
+            },
+        })
+    )
+    return reference
+
+
+def test_load_bf16_dequants_a_block_scaled_fp8_source(tmp_path: Path) -> None:
+    """The dequant must reproduce an independently computed reference.
+
+    This is the test that catches a wrong block grid: a transposed or assumed
+    128x128 grid is numel-compatible with the reshape and would mis-scale every
+    block silently, so only comparing against arithmetic done outside the
+    implementation proves anything.
+    """
+    root = tmp_path / "fp8-source"
+    reference = _write_fp8_source(root)
+    source = checkpoint._Checkpoint(root)
+    key = "model.layers.0.attn.q_proj.weight"
+
+    assert source.fp8_scale_key(key) == f"{key}_scale_inv"
+    assert source.dequant_block() == (2, 4)
+
+    loaded = source.load_bf16(key, torch.device("cpu"))
+    assert loaded.dtype == torch.bfloat16
+    torch.testing.assert_close(
+        loaded.to(torch.float64), reference.to(torch.bfloat16).to(torch.float64)
+    )
+
+    # A BF16 tensor is returned untouched, so this path is a byte-identical
+    # no-op on every checkpoint PrismaSnap already supported.
+    norm_key = "model.layers.0.input_layernorm.weight"
+    assert torch.equal(
+        source.load_bf16(norm_key, torch.device("cpu")),
+        source.load(norm_key, torch.device("cpu")),
+    )
+
+
+def test_load_bf16_refuses_fp8_with_no_paired_block_scale(tmp_path: Path) -> None:
+    root = tmp_path / "fp8-unpaired"
+    _write_fp8_source(root, paired=False)
+    source = checkpoint._Checkpoint(root)
+    with pytest.raises(RuntimeError, match="no weight_scale_inv"):
+        source.load_bf16(
+            "model.layers.0.attn.q_proj.weight", torch.device("cpu")
+        )
+
+
+def test_fp8_fold_matches_an_fp64_reference(tmp_path: Path) -> None:
+    """Fold on the dequantized value, in BF16 -- never back into FP8.
+
+    Letting ``apply_diagonal_transform`` restore the source dtype would round
+    the folded value into float8_e4m3fn while its per-block scale stayed put:
+    wrong values, no error. This asserts the folded result against an fp64
+    reference instead, which is the only way to see that.
+    """
+    root = tmp_path / "fp8-fold"
+    reference = _write_fp8_source(root)
+    source = checkpoint._Checkpoint(root)
+    value = source.load_bf16(
+        "model.layers.0.attn.q_proj.weight", torch.device("cpu")
+    )
+    vector = torch.linspace(0.5, 2.0, value.shape[1], dtype=torch.float64)
+
+    folded = prismasnap.apply_diagonal_transform(
+        value, vector, "multiply", 1, output_dtype=torch.bfloat16
+    )
+    assert folded.dtype == torch.bfloat16
+    expected = (reference.to(torch.bfloat16).to(torch.float64) * vector).to(
+        torch.bfloat16
+    )
+    torch.testing.assert_close(folded, expected)
+
+
+def test_uplift_preflight_refuses_before_writing_any_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An FP8-source materialization must fail closed at plan validation.
+
+    The publishability refusals live downstream (``_copy_checkpoint_metadata``
+    rewrites the config, ``_verify_output_census`` the dtype census), and
+    reaching them means having already streamed the whole body. On a 284B FP8
+    source that is hours and a full checkpoint of disk spent on a run that
+    cannot commit. This pins the refusal to the front and proves the output
+    tree -- committed *and* incomplete -- was never created.
+    """
+    fixture = _tiny_planned_checkpoint(tmp_path)
+    monkeypatch.setattr(
+        checkpoint,
+        "_uplifted_source_tensors",
+        lambda plan: {"model.layers.0.mlp.down_proj.weight"},
+    )
+    output = tmp_path / "materialized"
+    with pytest.raises(RuntimeError, match="before any bytes are written"):
+        checkpoint.materialize_checkpoint(
+            fixture["source"], fixture["plan_dir"], output, device="cpu"
+        )
+    assert not output.exists()
+    assert not output.with_name(output.name + ".prismasnap-incomplete").exists()
+
+
+def test_uplift_preflight_is_a_noop_on_a_bf16_census_and_names_operands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate keys off the plan's attested dtype census, and says why.
+
+    A BF16 source must pass untouched -- the preflight is not allowed to be a
+    blanket refusal. When it does fire it has to name the operands and the
+    reason, so the message is actionable rather than "unsupported".
+    """
+    fixture = _tiny_planned_checkpoint(tmp_path)
+    source = checkpoint._Checkpoint(Path(fixture["source"]))
+    assert checkpoint._uplifted_source_tensors(fixture["plan"]) == set()
+    checkpoint._preflight_uplift_publishability(fixture["plan"], source)
+
+    target = sorted(checkpoint._transforms_by_tensor(fixture["plan"]))[0]
+    monkeypatch.setattr(
+        checkpoint, "_uplifted_source_tensors", lambda plan: {target}
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        checkpoint._preflight_uplift_publishability(fixture["plan"], source)
+    message = str(excinfo.value)
+    assert target in message
+    assert "quantization_config" in message
+    assert "owed design work" in message

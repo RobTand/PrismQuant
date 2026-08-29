@@ -305,15 +305,28 @@ class _RenamedProfile:
 
 
 class _MetadataCheckpoint:
-    def __init__(self, metadata: dict[str, tuple[tuple[int, ...], str]]) -> None:
+    def __init__(
+        self,
+        metadata: dict[str, tuple[tuple[int, ...], str]],
+        *,
+        scaled: frozenset[str] = frozenset(),
+    ) -> None:
         self._metadata = metadata
+        # Which weights the index pairs with a block ``weight_scale_inv``.
+        # Membership is the index's, never inferred from a dtype: an FP8
+        # weight with no paired scale is not block-dequantable and must be
+        # refused rather than silently read as if it carried one.
+        self._scaled = scaled
 
     def metadata(self, key: str) -> tuple[tuple[int, ...], str]:
         return self._metadata[key]
 
+    def fp8_scale_key(self, key: str) -> str | None:
+        return f"{key}_scale_inv" if key in self._scaled else None
+
 
 def _renamed_graph_fixture(
-    *, weight_dtype: str = "BF16"
+    *, weight_dtype: str = "BF16", scale_paired: bool = True
 ) -> tuple[dict[str, dict[str, object]], _MetadataCheckpoint]:
     hidden = 16
     intermediate = 32
@@ -355,7 +368,12 @@ def _renamed_graph_fixture(
             (int(row["out_features"]), int(row["in_features"])),
             weight_dtype if qname.endswith("reader_x") else "BF16",
         )
-    return stats, _MetadataCheckpoint(metadata)
+    scaled = frozenset(
+        key
+        for key, (_shape, dtype) in metadata.items()
+        if dtype == "F8_E4M3" and scale_paired
+    )
+    return stats, _MetadataCheckpoint(metadata, scaled=scaled)
 
 
 def test_dense_graph_discovery_uses_activation_equivalence_not_name_allowlist() -> None:
@@ -381,13 +399,50 @@ def test_dense_graph_discovery_uses_activation_equivalence_not_name_allowlist() 
     assert graph["down"].endswith("return_path")
 
 
-def test_dense_graph_discovery_refuses_native_fp8_source_refolding() -> None:
+def _discover(source, stats):
+    return checkpoint._discover_dense_layer_graph(
+        0,
+        hidden_size=16,
+        stats=stats,
+        profile=_RenamedProfile(),
+        checkpoint=source,  # type: ignore[arg-type]
+    )
+
+
+def test_dense_graph_discovery_accepts_a_block_scaled_fp8_source() -> None:
+    """A native-FP8 source is planned, not refused.
+
+    PrismaSnap folds a per-CHANNEL diagonal; an FP8 checkpoint carries a
+    per-BLOCK scale, so the fold cannot be absorbed into the scale and its
+    result is BF16 -- which is what the fold-fidelity gate serves anyway.
+    The plan therefore covers the same seams it would on a BF16 source.
+    """
     stats, source = _renamed_graph_fixture(weight_dtype="F8_E4M3")
-    with pytest.raises(RuntimeError, match="Native FP8 source refolding is refused"):
-        checkpoint._discover_dense_layer_graph(
-            0,
-            hidden_size=16,
-            stats=stats,
-            profile=_RenamedProfile(),
-            checkpoint=source,  # type: ignore[arg-type]
-        )
+    graph = _discover(source, stats)
+    assert graph["source_weights"]["model.layers.0.arbitrary.reader_x"] == (
+        "model.layers.0.arbitrary.reader_x.weight"
+    )
+
+
+def test_dense_graph_discovery_refuses_fp8_without_a_paired_block_scale() -> None:
+    """Per-tensor-scale FP8 is not block-dequantable, so it must fail closed.
+
+    The failure is keyed on the index pairing, not on the dtype: reading an
+    unpaired FP8 tensor as if it carried a block scale is silent corruption.
+    """
+    stats, source = _renamed_graph_fixture(
+        weight_dtype="F8_E4M3", scale_paired=False
+    )
+    with pytest.raises(RuntimeError, match="no weight_scale_inv"):
+        _discover(source, stats)
+
+
+def test_dense_graph_discovery_refuses_an_unliftable_source_dtype() -> None:
+    """Widening to FP8 must not widen to everything.
+
+    A source PrismaSnap cannot lift exactly into BF16 is a source whose fold
+    it could not attest, so the census gate still refuses it by name.
+    """
+    stats, source = _renamed_graph_fixture(weight_dtype="I8")
+    with pytest.raises(RuntimeError, match="cannot lift source dtype"):
+        _discover(source, stats)

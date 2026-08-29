@@ -512,6 +512,53 @@ def _moe_plan_graph_sha256(
     )
 
 
+def _bind_graph_operands_to_live_source(
+    source,
+    *,
+    layer: int,
+    operands: Sequence[str],
+    tensor_rows: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Re-read every planned operand from the live checkpoint, not the census.
+
+    ``tensor_rows`` is a *census*: on the external-manifest path it is a JSON
+    receipt bound to the source identity, and nothing on that path re-opens a
+    single shard header.  The identity itself is index-bound but explicitly
+    residency-blind -- ``_Checkpoint`` is constructed with
+    ``require_all_shards=False`` and ``_validate_source_identity`` skips every
+    shard that is not local.  So a census can describe an operand this worker
+    cannot read, and the failure would surface only inside ``_plan_layer``,
+    after the staging directory exists and earlier layers have been searched.
+
+    The dense twin, ``_discover_dense_layer_graph``, never has this gap: it
+    validates each operand through ``checkpoint.metadata()``, i.e. against the
+    live shard header.  This is the same binding for the MoE graph, and it is
+    what the ``source`` parameter is for.  ``_Checkpoint.metadata`` also
+    enforces index membership, local shard residency, the no-symlink rule, and
+    verified-shard fingerprint stability, so one call closes all of them.
+    """
+
+    if source is None:
+        raise RuntimeError(
+            f"layer {layer}: PrismaSnap MoE graph requires the live source "
+            "checkpoint; a tensor census cannot bind planned operands"
+        )
+    for name in sorted(set(operands)):
+        row = tensor_rows.get(name)
+        if row is None:
+            raise RuntimeError(
+                f"layer {layer}: planned operand is absent from the tensor "
+                f"census: {name}"
+            )
+        shape, dtype = source.metadata(name)
+        if tuple(row["shape"]) != tuple(shape) or row["dtype"] != dtype:
+            raise RuntimeError(
+                f"layer {layer}: live source header differs from the tensor "
+                f"census for {name}: {tuple(shape)}/{dtype} != "
+                f"{tuple(row['shape'])}/{row['dtype']}"
+            )
+
+
 def _layer_source_graph(
     *,
     layer: int,
@@ -811,6 +858,27 @@ def _layer_source_graph(
     norm_offset = profile.rms_norm_parameter_offset()
     if norm_offset is None or not math.isfinite(float(norm_offset)):
         raise RuntimeError(f"layer {layer}: profile has no finite RMSNorm encoding")
+
+    # Bind the selected operand set -- not `recipe_to_source`, which also holds
+    # the speculative per-expert probes rejected by the layout choice above --
+    # to the live checkpoint before this graph can become a plan.
+    planned_operands: list[str] = [input_norm, post_norm, router, *input_source]
+    if routed_layout == "packed_3d":
+        planned_operands.extend((packed_gate_up, packed_down))
+    else:
+        for role in per_roles:
+            planned_operands.extend(str(role[name]) for name in ("gate", "up", "down"))
+    for role in shared_roles:
+        planned_operands.extend(
+            str(role[name]) for name in ("output_gate", "gate", "up", "down")
+        )
+    _bind_graph_operands_to_live_source(
+        source,
+        layer=layer,
+        operands=planned_operands,
+        tensor_rows=tensor_rows,
+    )
+
     graph: dict[str, object] = {
         "layer": layer,
         "input_norm": input_norm,

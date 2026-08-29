@@ -14,6 +14,35 @@ import prismaquant.prismasnap_moe as moe
 import prismaquant.prismasnap_moe_checkpoint as checkpoint
 
 
+class _CensusSource:
+    """Minimal live-source stand-in for ``_layer_source_graph``'s binding leg.
+
+    Derives every header from the same census the graph reads, so an
+    agreeing checkpoint needs no duplicated shape literals.  ``overrides``
+    injects a disagreeing header; ``missing`` injects the residency refusal
+    ``_Checkpoint.metadata`` raises when a shard is not local.
+    """
+
+    def __init__(self, tensor_rows, *, overrides=None, missing=()):
+        self._rows = tensor_rows
+        self._overrides = dict(overrides or {})
+        self._missing = set(missing)
+        self.reads: list[str] = []
+
+    def metadata(self, key: str) -> tuple[tuple[int, ...], str]:
+        self.reads.append(key)
+        if key in self._missing:
+            raise RuntimeError(
+                f"PrismaSnap tensor {key!r} lacks required local shards"
+            )
+        if key in self._overrides:
+            return self._overrides[key]
+        row = self._rows.get(key)
+        if row is None:
+            raise RuntimeError(f"PrismaSnap graph references absent tensor {key!r}")
+        return tuple(int(value) for value in row["shape"]), str(row["dtype"])
+
+
 def _config() -> PrismaSnapSearchConfig:
     return PrismaSnapSearchConfig(
         alphas=(0.0,),
@@ -278,7 +307,7 @@ def test_qwen_profile_graph_accepts_direct_packed_parameters_without_weight() ->
         expected_experts=experts,
         stats=stats,
         profile=profile,
-        source=None,
+        source=_CensusSource(tensor_rows),
         tensor_rows=tensor_rows,
     )
     assert graph["routed_layout"] == "packed_3d"
@@ -345,7 +374,7 @@ def test_per_expert_source_layout_reuses_packed_live_probe_and_rejects_mixing() 
         expected_experts=experts,
         stats=stats,
         profile=profile,
-        source=None,
+        source=_CensusSource(rows),
         tensor_rows=rows,
     )
     assert graph["routed_layout"] == "per_expert_2d"
@@ -367,7 +396,7 @@ def test_per_expert_source_layout_reuses_packed_live_probe_and_rejects_mixing() 
             expected_experts=experts,
             stats=stats,
             profile=profile,
-            source=None,
+            source=_CensusSource(rows),
             tensor_rows=rows,
         )
 
@@ -401,8 +430,116 @@ def test_qwen_packed_graph_fails_closed_on_shape_bias_and_unknown_consumers(
             expected_experts=experts,
             stats=stats,
             profile=profile,
-            source=None,
+            source=_CensusSource(rows),
             tensor_rows=rows,
+        )
+
+
+def _graph_kwargs(profile, stats, rows, hidden, experts, source):
+    return {
+        "layer": 0,
+        "hidden_size": hidden,
+        "expected_experts": experts,
+        "stats": stats,
+        "profile": profile,
+        "source": source,
+        "tensor_rows": rows,
+    }
+
+
+def test_moe_graph_refuses_a_census_that_the_live_source_does_not_confirm() -> None:
+    """Defect 1: `source` is the live-header binding the census cannot supply."""
+
+    profile, stats, tensor_rows, hidden, experts = _packed_qwen_graph_inputs()
+    mlp = profile.source_tensor_name("model.layers.0.mlp")
+
+    # Baseline: an agreeing live source plans, and it really was consulted.
+    agreeing = _CensusSource(tensor_rows)
+    graph = checkpoint._layer_source_graph(
+        **_graph_kwargs(profile, stats, tensor_rows, hidden, experts, agreeing)
+    )
+    planned = {
+        str(graph["input_norm"]),
+        str(graph["post_norm"]),
+        str(graph["router"]),
+        str(graph["packed_gate_up"]),
+        str(graph["packed_down"]),
+        *(str(name) for name in graph["input_consumers"]),
+    }
+    assert planned <= set(agreeing.reads)
+
+    # A census row the live shard header contradicts must refuse.  The census
+    # alone cannot see this: on the external-manifest path nothing re-opens a
+    # shard, so only `source` can price the bytes the plan will actually read.
+    drifted = _CensusSource(
+        tensor_rows,
+        overrides={f"{mlp}.experts.down_proj": ((experts, hidden, 999), "BF16")},
+    )
+    with pytest.raises(RuntimeError, match="live source header differs"):
+        checkpoint._layer_source_graph(
+            **_graph_kwargs(profile, stats, tensor_rows, hidden, experts, drifted)
+        )
+
+    # A planned operand whose shard is not local on this worker must refuse at
+    # graph time, not later inside `_plan_layer` after staging exists.
+    absent = _CensusSource(tensor_rows, missing={f"{mlp}.experts.gate_up_proj"})
+    with pytest.raises(RuntimeError, match="lacks required local shards"):
+        checkpoint._layer_source_graph(
+            **_graph_kwargs(profile, stats, tensor_rows, hidden, experts, absent)
+        )
+
+    # And the parameter may not be optional: a None source is a refusal, never
+    # a census-only bypass.
+    with pytest.raises(RuntimeError, match="requires the live source checkpoint"):
+        checkpoint._layer_source_graph(
+            **_graph_kwargs(profile, stats, tensor_rows, hidden, experts, None)
+        )
+
+
+def test_moe_graph_binds_per_expert_operands_and_not_rejected_probes() -> None:
+    """The bound set is the selected layout, not every name `source_key` saw."""
+
+    profile, stats, tensor_rows, hidden, experts = _packed_qwen_graph_inputs()
+    rows = deepcopy(tensor_rows)
+    mlp_recipe = "model.layers.0.mlp"
+    mlp = profile.source_tensor_name(mlp_recipe)
+    rows.pop(f"{mlp}.experts.gate_up_proj")
+    rows.pop(f"{mlp}.experts.down_proj")
+    for expert in range(experts):
+        for leaf, shape in (
+            ("gate_proj", (32, hidden)),
+            ("up_proj", (32, hidden)),
+            ("down_proj", (hidden, 32)),
+        ):
+            recipe = f"{mlp_recipe}.experts.{expert}.{leaf}.weight"
+            rows[profile.source_tensor_name(recipe)] = {
+                "shape": list(shape),
+                "dtype": "BF16",
+            }
+    source = _CensusSource(rows)
+    graph = checkpoint._layer_source_graph(
+        **_graph_kwargs(profile, stats, rows, hidden, experts, source)
+    )
+    assert graph["routed_layout"] == "per_expert_2d"
+    read = set(source.reads)
+    # Every selected per-expert operand was re-read from the live source.
+    for role in graph["per_expert_roles"]:
+        for key in ("gate", "up", "down"):
+            assert str(role[key]) in read
+    # The packed names `source_key` resolved while probing the layout were
+    # rejected by the layout choice and must not be demanded of the source.
+    assert f"{mlp}.experts.gate_up_proj" not in read
+    assert f"{mlp}.experts.down_proj" not in read
+
+    drifted = _CensusSource(
+        rows,
+        overrides={
+            str(graph["per_expert_roles"][experts - 1]["down"]): ((hidden, 31), "BF16")
+        },
+    )
+    with pytest.raises(RuntimeError, match="live source header differs"):
+        checkpoint._layer_source_graph(
+            **_graph_kwargs(profile, stats, rows, hidden, experts, drifted)
         )
 
 

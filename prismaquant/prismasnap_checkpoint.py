@@ -50,6 +50,15 @@ from .prismasnap import (
 
 PLAN_SCHEMA = "prismaquant.prismasnap.plan.v1"
 PLAN_SET_SCHEMA = "prismaquant.prismasnap.plan_set.v1"
+# The source dtypes PrismaSnap can faithfully lift into the BF16 value it
+# folds. BF16 is the identity case. F8_E4M3 is dequantized through the
+# checkpoint's own declared block scale (``_Checkpoint.load_bf16``); the fold
+# result is BF16 either way, because the fold-fidelity gate serves BF16 and
+# because a per-channel vector cannot be absorbed into a per-block scale.
+# Anything else is refused: a source we cannot lift exactly is a source whose
+# fold we could not attest.
+SUPPORTED_SOURCE_DTYPES = frozenset({"BF16", "F8_E4M3"})
+
 BF16_REALIZED_PLAN_SCHEMA = "prismaquant.prismasnap.plan.bf16_realized.v2"
 BF16_REALIZATION_SCHEMA = "prismaquant.prismasnap.bf16_realization.v2"
 TENSOR_METADATA_SCHEMA = "prismaquant.prismasnap.tensor_metadata.v1"
@@ -509,6 +518,16 @@ def _producer_identity() -> dict[str, object]:
         repository / "prismaquant" / "prismasnap.py",
         repository / "prismaquant" / "prismasnap_checkpoint.py",
         repository / "prismaquant" / "prismasnap_validation.py",
+        # The MoE plan stack shares this module's loader, materializer and
+        # collation paths, and `prismasnap_contract.py` decides whether a
+        # snapped artifact is admitted at all.  Binding them here means an
+        # edit to either cannot change what a receipt means while leaving the
+        # receipt stable -- the same argument the profile bytes are bound for
+        # below.  `_moe_producer_identity` re-adds the two MoE files to its
+        # derived receipt; that stays as the schema-separation marker it is.
+        repository / "prismaquant" / "prismasnap_moe.py",
+        repository / "prismaquant" / "prismasnap_moe_checkpoint.py",
+        repository / "prismaquant" / "prismasnap_contract.py",
         repository / "prismaquant" / "export_native_compressed.py",
         repository / "prismaquant" / "cost_stage_checkpoint.py",
         repository / "prismaquant" / "cost_streaming.py",
@@ -675,6 +694,78 @@ class _Checkpoint:
         if not direct:
             value = value.to(device, non_blocking=True)
         return value.contiguous()
+
+    # --- native-FP8 source support -------------------------------------
+    #
+    # PrismaSnap folds a per-CHANNEL diagonal across a seam. A native-FP8
+    # checkpoint stores a per-BLOCK ``weight_scale_inv``, so the fold vector
+    # is not constant inside a block and cannot be absorbed into the scale.
+    # The fold therefore happens on the dequantized value and its result is
+    # BF16 -- which is what the fold-fidelity gate serves anyway. These
+    # helpers exist so the plan census, the objective and the materializer
+    # all read the SAME dequantized value through one path (principle 8).
+
+    def fp8_scale_key(self, key: str) -> str | None:
+        """The paired ``weight_scale_inv`` key for a block-scaled FP8 weight.
+
+        ``None`` for anything the checkpoint does not pair with a scale --
+        including a weight whose dtype is not FP8. Membership is read from
+        the index, never inferred from a shape.
+        """
+        if not key.endswith(".weight"):
+            return None
+        scale_key = f"{key}_scale_inv"
+        if scale_key not in self.weight_map:
+            return None
+        return scale_key
+
+    def dequant_block(self) -> tuple[int, int]:
+        """The checkpoint-declared FP8 dequant grid, read and never assumed.
+
+        Delegates to the one reader the streaming path already uses. A
+        checkpoint that pairs FP8 weights with scales but declares no
+        ``weight_block_size`` raises there: a guessed 128x128 grid silently
+        mis-scales every block of a checkpoint quantized differently, which
+        is corruption with no error, so it must fail closed.
+        """
+        cached = getattr(self, "_dequant_block", None)
+        if cached is None:
+            from .layer_streaming import _declared_weight_block_size
+
+            cached = _declared_weight_block_size(str(self.root))
+            self._dequant_block = cached
+        return cached
+
+    def load_bf16(self, key: str, device: torch.device) -> torch.Tensor:
+        """Load one source weight as BF16, dequantizing a native-FP8 tensor.
+
+        A BF16 source is returned unchanged, so this is a byte-identical
+        no-op on every checkpoint PrismaSnap already supported.
+        """
+        value = self.load(key, device)
+        if value.dtype != torch.float8_e4m3fn:
+            return value
+        scale_key = self.fp8_scale_key(key)
+        if scale_key is None:
+            raise RuntimeError(
+                f"PrismaSnap source tensor {key!r} is FP8 but the index pairs "
+                "it with no weight_scale_inv; per-tensor-scale FP8 sources are "
+                "not block-dequantable and are refused"
+            )
+        from .layer_streaming import Fp8ScaleInvMap, _apply_fp8_dequant_inplace
+
+        shard = str(self.root / self.weight_map[scale_key])
+        out = {key: value}
+        converted = _apply_fp8_dequant_inplace(
+            out,
+            Fp8ScaleInvMap({key: (shard, scale_key)}, block=self.dequant_block()),
+            device,
+        )
+        if converted != 1 or out[key].dtype != torch.bfloat16:
+            raise RuntimeError(
+                f"PrismaSnap FP8 source dequant did not produce BF16 for {key!r}"
+            )
+        return out[key].contiguous()
 
 
 def _scan_checkpoint_tensor_metadata(source: _Checkpoint) -> dict[str, object]:
@@ -1249,17 +1340,39 @@ def scan_tensor_metadata_manifest(
     return observed
 
 
+def _require_attested_container() -> None:
+    """The producer half of the production contract, independent of any device.
+
+    Split out because it is the only half that means anything to a writer that
+    performs no device execution. A gate asserting "requires CUDA" about a
+    function that never touches a device can only ever be satisfied by the
+    caller's declaration -- there is nothing to declare *about* -- which is the
+    assert-instead-of-attest shape principle 14 exists to refuse.
+    """
+    if not bool(_producer_identity().get("container_attested")):
+        raise RuntimeError(
+            "PrismaSnap production execution requires an attested container rootfs"
+        )
+
+
 def _require_production_execution(device: str) -> None:
+    """The full contract for writers that actually execute on a device.
+
+    Note the CUDA leg here is a *declaration* check by design: it refuses a
+    caller that asks for production work off the GPU. The corresponding fact --
+    that the requested CUDA device exists -- is asserted by each execution path
+    immediately after this gate (`torch.cuda.is_available()`), where a real
+    device is about to be used. Keeping the fact-check there rather than here
+    is what lets the gate's success path stay testable under the mandated
+    `CUDA_VISIBLE_DEVICES=`.
+    """
     try:
         execution_device = torch.device(device)
     except (TypeError, RuntimeError) as exc:
         raise RuntimeError("PrismaSnap production device is malformed") from exc
     if execution_device.type != "cuda":
         raise RuntimeError("PrismaSnap production execution requires CUDA")
-    if not bool(_producer_identity().get("container_attested")):
-        raise RuntimeError(
-            "PrismaSnap production execution requires an attested container rootfs"
-        )
+    _require_attested_container()
 
 
 def _source_weight_key(profile, qname: str) -> str:
@@ -1496,10 +1609,17 @@ def _discover_dense_layer_graph(
                 f"layer {layer_index}: source/probe shape mismatch for {qname}: "
                 f"{shape} != {expected}"
             )
-        if dtype != "BF16":
+        if dtype not in SUPPORTED_SOURCE_DTYPES:
             raise RuntimeError(
-                f"layer {layer_index}: PrismaSnap production source must be BF16; "
-                f"{key} is {dtype}. Native FP8 source refolding is refused."
+                f"layer {layer_index}: PrismaSnap cannot lift source dtype "
+                f"{dtype} into BF16; {key} is unsupported. Supported: "
+                f"{sorted(SUPPORTED_SOURCE_DTYPES)}."
+            )
+        if dtype == "F8_E4M3" and checkpoint.fp8_scale_key(key) is None:
+            raise RuntimeError(
+                f"layer {layer_index}: {key} is FP8 but the index pairs it with "
+                "no weight_scale_inv; per-tensor-scale FP8 is not "
+                "block-dequantable and is refused"
             )
         source_weights[qname] = key
 
@@ -1757,7 +1877,9 @@ def plan_dense_checkpoint(
             )
             qnames = sorted(graph["source_weights"])
             weights = {
-                qname: source.load(str(graph["source_weights"][qname]), execution_device)
+                qname: source.load_bf16(
+                    str(graph["source_weights"][qname]), execution_device
+                )
                 for qname in qnames
             }
             input_norm = source.load(str(graph["input_norm"]), execution_device)
@@ -2396,8 +2518,10 @@ def _validate_v1_dense_plan_semantics(
                 if name not in tensors:
                     raise RuntimeError(f"PrismaSnap seam role references absent tensor {name}")
                 _require_tensor_layer(name, layer, where="PrismaSnap seam role")
-                if tensors[name]["dtype"] != "BF16":
-                    raise RuntimeError(f"PrismaSnap seam role is not BF16: {name}")
+                if tensors[name]["dtype"] not in SUPPORTED_SOURCE_DTYPES:
+                    raise RuntimeError(
+                        f"PrismaSnap seam role has unsupported source dtype: {name}"
+                    )
             vector_size = int(scales[str(row["vector"])].numel())
             norm_shape = tuple(tensors[norm]["shape"])
             if norm_shape != (vector_size,):
@@ -2476,8 +2600,10 @@ def _validate_v1_dense_plan_semantics(
             if name not in tensors:
                 raise RuntimeError(f"PrismaSnap seam role references absent tensor {name}")
             _require_tensor_layer(name, layer, where="PrismaSnap seam role")
-            if tensors[name]["dtype"] != "BF16":
-                raise RuntimeError(f"PrismaSnap seam role is not BF16: {name}")
+            if tensors[name]["dtype"] not in SUPPORTED_SOURCE_DTYPES:
+                raise RuntimeError(
+                    f"PrismaSnap seam role has unsupported source dtype: {name}"
+                )
         gate_shape = tuple(tensors[gate]["shape"])
         up_shape = tuple(tensors[up]["shape"])
         down_shape = tuple(tensors[down]["shape"])
@@ -3690,7 +3816,7 @@ def realize_bf16_plan(
                 objective_inputs.append(
                     (
                         qname,
-                        source.load(source_name, execution_device),
+                        source.load_bf16(source_name, execution_device),
                         _importance(stats[qname], execution_device),
                     )
                 )
@@ -3992,9 +4118,26 @@ def _verify_output_census(
     source: _Checkpoint,
     *,
     compare_source_metadata: bool = True,
+    uplifted: Sequence[str] = (),
 ) -> dict[str, object]:
+    # A BF16-uplifted FP8 operand is the one sanctioned way the output may
+    # differ from the source census: its dtype changes and its scale sibling
+    # is gone. Both differences are stated exactly here -- as a derived
+    # expected census, not as a relaxed comparison -- so every other drift
+    # still fails.
+    uplifted = sorted(set(str(name) for name in uplifted))
+    dropped_scales = {
+        scale
+        for scale in (source.fp8_scale_key(name) for name in uplifted)
+        if scale is not None
+    }
+    expected_weight_map = {
+        key: shard
+        for key, shard in source.weight_map.items()
+        if key not in dropped_scales
+    }
     index = _load_json(root / "model.safetensors.index.json", where="output index")
-    if index.get("weight_map") != source.weight_map:
+    if index.get("weight_map") != expected_weight_map:
         raise RuntimeError("PrismaSnap output index differs from source tensor map")
     shard_entries = [path for path in root.iterdir() if path.suffix == ".safetensors"]
     unsafe = [path.name for path in shard_entries if path.is_symlink() or not path.is_file()]
@@ -4018,17 +4161,23 @@ def _verify_output_census(
                 seen.add(key)
                 shape = tuple(map(int, handle.get_slice(key).get_shape()))
                 dtype = str(handle.get_slice(key).get_dtype())
-                if compare_source_metadata and (shape, dtype) != source.metadata(key):
-                    raise RuntimeError(
-                        f"PrismaSnap output changed shape/dtype for {key}: {shape}/{dtype}"
-                    )
-    if seen != set(source.weight_map):
+                if compare_source_metadata:
+                    source_shape, source_dtype = source.metadata(key)
+                    if key in uplifted:
+                        source_dtype = "BF16"
+                    if (shape, dtype) != (source_shape, source_dtype):
+                        raise RuntimeError(
+                            f"PrismaSnap output changed shape/dtype for {key}: "
+                            f"{shape}/{dtype}"
+                        )
+    if seen != set(expected_weight_map):
         raise RuntimeError("PrismaSnap output tensor census is incomplete")
     return {
         "tensors": len(seen),
         "shards": len(source.shards),
         "checkpoint_weight_map_sha256": canonical_json_sha256(
-            source.weight_map, where="PrismaSnap output checkpoint weight map"
+            expected_weight_map,
+            where="PrismaSnap output checkpoint weight map",
         ),
         "index_sha256": _sha256_file(root / "model.safetensors.index.json"),
     }
@@ -4194,16 +4343,32 @@ def _materialize_selected_shards(
         source.record_verified_shard(shard, source_fingerprint)
         tensors: dict[str, torch.Tensor] = {}
         changed_here = 0
+        uplifted_here: set[str] = set()
         with safe_open(str(source_path), framework="pt") as handle:
             for key in sorted(handle.keys()):
                 value = handle.get_tensor(key)
                 transforms = by_tensor.get(key, [])
                 if transforms:
-                    if str(handle.get_slice(key).get_dtype()) != "BF16":
+                    key_dtype = str(handle.get_slice(key).get_dtype())
+                    if key_dtype not in SUPPORTED_SOURCE_DTYPES:
                         raise RuntimeError(
-                            f"PrismaSnap refuses to refold non-BF16 tensor {key}"
+                            f"PrismaSnap refuses to refold {key_dtype} tensor {key}"
                         )
-                    source_dtype = value.dtype
+                    if key_dtype == "F8_E4M3":
+                        # THE hazard this branch exists to avoid. Folding a
+                        # per-channel vector into an FP8 tensor cannot be
+                        # absorbed by its per-BLOCK weight_scale_inv, and
+                        # letting `output_dtype` default to the source dtype
+                        # would round every fold back into float8_e4m3fn while
+                        # the stored scale stayed put -- wrong values, no
+                        # error. The folded operand is lifted to BF16 once,
+                        # here, and its now-meaningless scale sibling is
+                        # dropped from the output below.
+                        value = source.load_bf16(key, execution_device)
+                        uplifted_here.add(key)
+                        source_dtype = torch.bfloat16
+                    else:
+                        source_dtype = value.dtype
                     value = value.to(execution_device, non_blocking=True)
                     for transform in transforms:
                         vector = scales.get(str(transform["vector"]))
@@ -4256,9 +4421,31 @@ def _materialize_selected_shards(
                     changed_here += 1
                 tensors[key] = value.contiguous()
         source._assert_shard_stable(shard)
+        # A BF16-uplifted operand's weight_scale_inv no longer describes it.
+        # Keeping it would leave a tensor that silently mis-scales the weight
+        # for any consumer that trusts the index; setting it to ones would be
+        # a fabricated value. It is dropped, and the census contract states
+        # exactly that rather than being loosened to "roughly the same keys".
+        dropped_scales = set()
+        for uplifted in sorted(uplifted_here):
+            scale_key = source.fp8_scale_key(uplifted)
+            if scale_key is None:
+                continue
+            if source.weight_map.get(scale_key) != shard:
+                # Shards are written independently, so a scale living in
+                # another shard cannot be dropped from here -- and leaving it
+                # would orphan a scale that mis-describes a BF16 weight.
+                # Refuse rather than half-publish.
+                raise RuntimeError(
+                    f"PrismaSnap uplifted {uplifted} in {shard} but its scale "
+                    f"{scale_key} lives in {source.weight_map.get(scale_key)!r}; "
+                    "cross-shard scale siblings are not supported"
+                )
+            tensors.pop(scale_key, None)
+            dropped_scales.add(scale_key)
         expected_keys = {
             key for key, owner in source.weight_map.items() if owner == shard
-        }
+        } - dropped_scales
         if set(tensors) != expected_keys:
             raise RuntimeError(f"PrismaSnap source shard tensor census changed: {shard}")
         save_file(tensors, str(tmp_shard), metadata={"format": "pt"})
@@ -4284,7 +4471,89 @@ def _materialize_selected_shards(
     return receipts, changed_total
 
 
-def _copy_checkpoint_metadata(source: _Checkpoint, destination: Path) -> None:
+def _uplifted_source_tensors(plan: Mapping[str, object]) -> set[str]:
+    """Every transformed source weight whose recorded source dtype is FP8.
+
+    Read from the plan's own digest-bound ``tensor_metadata`` census rather
+    than from shard receipts or a live dtype sniff: the plan is identical on a
+    resumed run, on a collated run that has no shard receipts of its own, and
+    on the single-pass run -- so every consumer of this set agrees, and the
+    value is one the producer attested rather than one re-derived downstream.
+    """
+    tensors = _validate_tensor_metadata_contract(plan)
+    return {
+        key
+        for key in _transforms_by_tensor(plan)
+        if str(tensors[key]["dtype"]) == "F8_E4M3"
+    }
+
+
+def _preflight_uplift_publishability(
+    plan: Mapping[str, object], source: _Checkpoint
+) -> None:
+    """Refuse an FP8-source materialization before a single byte is written.
+
+    Uplifting a folded FP8 operand to BF16 leaves the output checkpoint
+    *mixed*: the folded tensors are BF16 with no scale, every untouched
+    tensor is still block-scaled FP8. Two consumers read that mix and
+    disagree with it, and neither disagreement is expressible in the source
+    metadata we are allowed to copy:
+
+    * ``config.json`` declares one ``quantization_config`` for the whole
+      checkpoint. The block-scaled FP8 schemas on disk here
+      (``{quant_method, fmt, weight_block_size, scale_fmt}``) carry no
+      per-operand exclusion key, so there is no attested way to say "these
+      operands are BF16" (principle 14). ``_copy_checkpoint_metadata``
+      refuses for this reason.
+    * A profile that overrides ``fp8_scale_pairs`` supplies the scale map
+      from the *profile*, not the index (``layer_streaming`` :301). Dropping
+      an uplifted tensor's scale from the index does not reach such a
+      profile, which would still present the operand as FP8-with-scale and
+      dequant a BF16 tensor against a scale the shard no longer holds.
+
+    Both are real design work, not edge cases. Until they are settled this
+    fails closed *here* -- at plan validation -- rather than after the whole
+    body has been streamed, because on a 284B FP8 source the late refusal
+    costs hours and a full checkpoint's worth of disk.
+    """
+    uplifted = _uplifted_source_tensors(plan)
+    if not uplifted:
+        return
+    from .model_profiles import detect_profile
+
+    profile_override = callable(
+        getattr(detect_profile(str(source.root)), "fp8_scale_pairs", None)
+    )
+    raise RuntimeError(
+        f"PrismaSnap would uplift {len(uplifted)} FP8 operand(s) to BF16 "
+        f"(e.g. {sorted(uplifted)[:3]}), producing a mixed BF16/FP8 "
+        "checkpoint. Refusing before any bytes are written: the source "
+        "quantization_config has no per-operand exclusion key to describe "
+        "the uplift"
+        + (
+            ", and this source's profile overrides fp8_scale_pairs, so the "
+            "scale map does not come from the index we would rewrite"
+            if profile_override
+            else ""
+        )
+        + ". FP8 sources are supported for plan build and fold measurement; "
+        "materializing one is owed design work."
+    )
+
+
+def _copy_checkpoint_metadata(
+    source: _Checkpoint,
+    destination: Path,
+    *,
+    uplifted: Sequence[str] = (),
+) -> None:
+    uplifted = sorted(set(str(name) for name in uplifted))
+    dropped_scales = set()
+    for name in uplifted:
+        scale_key = source.fp8_scale_key(name)
+        if scale_key is not None:
+            dropped_scales.add(scale_key)
+
     skip = set(source.shards) | {"model.safetensors.index.json", PROVENANCE_JSON}
     for path in sorted(source.root.iterdir(), key=lambda item: item.name):
         if path.name in skip or path.name.startswith(".") or not path.is_file():
@@ -4294,12 +4563,54 @@ def _copy_checkpoint_metadata(source: _Checkpoint, destination: Path) -> None:
                 "PrismaSnap source contains an unindexed safetensors payload; "
                 f"refusing to copy ambiguous checkpoint data: {path}"
             )
+        if path.name == "config.json" and uplifted:
+            # The source config still describes these operands as block-scaled
+            # FP8; the bytes on disk are now BF16 with no scale. Copying it
+            # verbatim would publish a checkpoint whose config contradicts its
+            # own tensors -- a claim about how a runtime will read these bytes
+            # that nothing attests (principle 14). Producing the corrected
+            # config means knowing this checkpoint family's quantization_config
+            # schema well enough to exclude exactly the uplifted operands, so
+            # it fails closed here instead of guessing one.
+            config = _load_json(path, where="model config")
+            nested = config.get("text_config")
+            declares_quant = bool(config.get("quantization_config")) or bool(
+                isinstance(nested, Mapping) and nested.get("quantization_config")
+            )
+            if declares_quant:
+                raise RuntimeError(
+                    "PrismaSnap uplifted "
+                    f"{len(uplifted)} FP8 operand(s) to BF16 (e.g. "
+                    f"{uplifted[:3]}) but the source config.json declares a "
+                    "quantization_config that still describes them as "
+                    "block-scaled FP8. Emitting a corrected config for this "
+                    "checkpoint family is not implemented; refusing to publish "
+                    "a checkpoint whose config contradicts its tensors."
+                )
         target = destination / path.name
         _copy_file_durable(path, target)
-    _copy_file_durable(
+
+    index_target = destination / "model.safetensors.index.json"
+    if not dropped_scales:
+        _copy_file_durable(
+            source.root / "model.safetensors.index.json", index_target
+        )
+        return
+    # The index must not advertise a scale tensor the shards no longer hold.
+    index = _load_json(
         source.root / "model.safetensors.index.json",
-        destination / "model.safetensors.index.json",
+        where="PrismaSnap safetensors index",
     )
+    weight_map = dict(index["weight_map"])
+    missing = dropped_scales - set(weight_map)
+    if missing:
+        raise RuntimeError(
+            f"PrismaSnap index lacks dropped scale tensors {sorted(missing)[:8]}"
+        )
+    for scale_key in dropped_scales:
+        weight_map.pop(scale_key)
+    index["weight_map"] = dict(sorted(weight_map.items()))
+    _atomic_json(index_target, index)
 
 
 def _shard_content_identity(receipts: Sequence[Mapping[str, object]]) -> str:
@@ -4492,6 +4803,7 @@ def _validate_materialized_checkpoint_tree(
         root,
         source,
         compare_source_metadata=compare_source_metadata,
+        uplifted=_uplifted_source_tensors(plan),
     )
     output_meta = provenance.get("output")
     if not isinstance(output_meta, Mapping) or any(
@@ -4566,6 +4878,7 @@ def materialize_checkpoint(
         )
     plan, scales = load_plan(plan_dir)
     _validate_materialization_plan(plan, source, scales)
+    _preflight_uplift_publishability(plan, source)
     execution_device = torch.device(device)
     if execution_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("PrismaSnap production materialization requires CUDA")
@@ -4595,9 +4908,13 @@ def materialize_checkpoint(
         execution_device=execution_device,
         resume=resume,
     )
-    _copy_checkpoint_metadata(source, temporary)
+    _copy_checkpoint_metadata(
+        source, temporary, uplifted=_uplifted_source_tensors(plan)
+    )
     _validate_config_semantics(temporary, plan["source"]["identity"])
-    census = _verify_output_census(temporary, source)
+    census = _verify_output_census(
+        temporary, source, uplifted=_uplifted_source_tensors(plan)
+    )
     provenance = _build_provenance(
         plan,
         census=census,
@@ -4635,6 +4952,7 @@ def materialize_checkpoint_part(
         raise RuntimeError("PrismaSnap refuses an already-snapped source")
     plan, scales = load_plan(plan_dir)
     _validate_materialization_plan(plan, source, scales)
+    _preflight_uplift_publishability(plan, source)
     selected = sorted(set(str(name) for name in shards))
     if not selected or not set(selected) < set(source.shards):
         raise ValueError(
@@ -4999,6 +5317,7 @@ def _validate_collated_checkpoint_tree(
         root,
         source,
         compare_source_metadata=False,
+        uplifted=_uplifted_source_tensors(plan),
     )
     expected = _build_collated_provenance(
         plan,
@@ -5024,8 +5343,20 @@ def merge_checkpoint_parts(
     *,
     resume: bool = False,
     require_hardlinks: bool = False,
+    production: bool = False,
 ) -> dict[str, object]:
     """Exact-union independently materialized shard parts into one HF model."""
+    # The union commits the artifact the pipeline consumes, so it is subject to
+    # the producer half of the production contract: it is the last writer of the
+    # tree `materialize_checkpoint_part` staged, and an unattested merge would
+    # launder both parts' receipts.
+    #
+    # It takes no `device`. The union is a shard-header and file operation that
+    # executes on no device at all, so the CUDA leg of the full gate would have
+    # been satisfied purely by whatever string the caller passed -- a claim with
+    # no referent. Attestation is the half that has one.
+    if production:
+        _require_attested_container()
     if len(part_dirs) < 2:
         raise ValueError("PrismaSnap checkpoint merge requires at least two parts")
     source = _Checkpoint(Path(source_dir), require_all_shards=False)
@@ -5304,10 +5635,15 @@ def merge_checkpoint_parts(
         raise RuntimeError("PrismaSnap checkpoint parts changed during collation")
     if _collation_metadata_bindings(source) != metadata_bindings:
         raise RuntimeError("PrismaSnap source metadata changed during collation")
-    _copy_checkpoint_metadata(source, temporary)
+    _copy_checkpoint_metadata(
+        source, temporary, uplifted=_uplifted_source_tensors(plan)
+    )
     _validate_config_semantics(temporary, plan["source"]["identity"])
     census = _verify_output_census(
-        temporary, source, compare_source_metadata=False
+        temporary,
+        source,
+        compare_source_metadata=False,
+        uplifted=_uplifted_source_tensors(plan),
     )
     provenance = _build_collated_provenance(
         plan,
