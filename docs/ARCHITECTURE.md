@@ -2,7 +2,20 @@
 
 As of: 2026-08-29 · `claude/trellis-continuous-surface` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-29,
-`claude/trellis-continuous-surface`) for the **opt-in continuous trellis rate
+`claude/trellis-continuous-surface`) for the **trellis seam correction**
+(§4.9): the seam that landed earlier the same day is now **fail-closed** when
+enabled, and this document's claim that it made trellis rungs "pass the same
+legality, aggregation and byte accounting every other candidate does" is
+**retracted** — it was false on all three counts, written in the same commit as
+the code it described (§ P13, "currency is not truth"). `trellis_menu.
+UNWIRED_LINKS` is the authoritative eight-entry ledger of what is missing and
+is the text of the refusal; `build_trellis_menu` still builds a correctly
+priced menu for research, now using the repo's own `_shape_from_stats` and
+`_stats_indicates_packed_expert` (the hand-rolled 2-tuple underpriced a
+128-expert row **128×**, silently, and the guard meant to catch it read a stats
+key nothing writes). Two of the seam's tests asserted on source text and now
+assert behaviour. Earlier same-day stamp
+(`claude/trellis-continuous-surface`) for the **opt-in continuous trellis rate
 surface** (§4.9): `prismaquant/trellis_menu.py` is now the one seam through
 which the previously islanded trellis modules reach
 `allocator_candidates.build_candidates`, behind
@@ -3365,13 +3378,60 @@ families. Until 2026-08-29 nothing in the pipeline imported them: no
 `run-pipeline.sh` stage, no format menu, no exporter. `prismaquant/trellis_menu.py`
 is now the ONE seam that does, and it is off by default.
 
-**The flag.** `PRISMAQUANT_TRELLIS_SURFACE=<manifest.json>`. Unset,
-`augment_candidates` returns its input object unchanged, so a run without the
-flag executes exactly the path it executed before the seam existed — the
-`PRISMAQUANT_FISHER_CAP_MULTIPLIER` precedent (§ P6). The seam lives INSIDE
-`allocator_candidates.build_candidates` (before its `return out`), not beside
-it, so trellis rungs pass the same legality, aggregation and byte accounting
-every other candidate does.
+**The flag, and what it does today.** `PRISMAQUANT_TRELLIS_SURFACE=<manifest.json>`.
+Unset, `augment_candidates` returns its input object unchanged, so a run
+without the flag executes exactly the path it executed before the seam existed
+— the `PRISMAQUANT_FISHER_CAP_MULTIPLIER` precedent (§ P6). **Set, it refuses.**
+
+> **Correction (2026-08-29, same day).** The first version of this section said
+> the seam's placement inside `allocator_candidates.build_candidates` meant
+> "trellis rungs pass the same legality, aggregation and byte accounting every
+> other candidate does." That was **false on all three counts**, and it is the
+> § P13 "currency is not truth" case in its own doc: the paragraph was written
+> in the same commit as the code and was wrong about it. The seam appends
+> AFTER the per-spec legality loop, so it never runs
+> `check_stats_format_applicability` nor the `_memory_bytes_by_format` write at
+> `allocator_candidates.py:1950`; aggregation drops every rung; byte accounting
+> `KeyError`s. `trellis_menu.UNWIRED_LINKS` is now the authoritative list —
+> eight entries, each with a file:line — and it is the text of the refusal.
+
+The eight, in the order a run would hit them: no TCQ `FormatSpec`
+(`format_registry.py:1267-1272`); the exact assignment-payload filter falling
+through to `fr.get_format` because nothing writes `_memory_bytes_by_format` for
+a TCQ row, which kills the allocator inside the Pareto sweep **before**
+`layer_config.json` and makes the pointed refusals in `layer_config` and the
+exporter unreachable (`allocator.py:3369-3386`); fused-sibling aggregation
+building super-item menus by iterating `FormatSpec` objects
+(`allocator_candidates.py:2464`); the identical packed-expert construction
+(`:2701`); `promote_serving_units`' `format_rank` lookup, which does not crash
+today only because aggregation guarantees a TCQ unit is a lone ungrouped
+Linear (`allocator_solver.py:340-342`); the byte-budget path's own registry
+lookup (`footprint.py:1183`); `build_candidates` being called with neither
+`cost_mode=` nor `trellis_provenance=`, so the currency gate compares against
+`os.environ.get("COST_MODE","aura")` — a variable `run-pipeline.sh` sets with
+`:=` and never exports — and the manifest identity and anchor contract are
+discarded rather than travelling with the assignment (`allocator.py:2756`,
+§§ P12/P14); and the anchors' currency being weighted SSE under an activation
+second moment, an output-MSE proxy and **not** the AURA KL-adjoint the DP ranks
+in (`trellis_rate_surface.py:43-52`).
+
+**Why refuse as a whole rather than wire it halfway.** The eight do not fail
+alike. The registry gaps crash **loudly**; the aggregation gaps are **silent** —
+they drop every rung from every fused and packed group and hand back a
+plausible frontier in which only `o_proj` and `down_proj` could carry one. A
+partial fix that removed the crashes would trade the loud failure for the
+silent one, and the packed-expert case was worse still: a hand-rolled 2-tuple
+shape priced a 128-expert row as one expert (a **128×** underprice, reported as
+"0 unit(s) skipped"), while the guard meant to catch it read a stats key
+nothing writes. Both are fixed — the seam now uses
+`allocator_solver._shape_from_stats` and
+`allocator_candidates._stats_indicates_packed_expert`, and refuses a packed row
+with a counted reason — but the fix is inside `build_trellis_menu`, which is
+research-reachable and cannot reach an artifact.
+
+**So: `build_trellis_menu` builds a correctly priced menu; `augment_candidates`
+refuses.** Enabling the surface means landing the eight links with tests that
+exercise behaviour and then deleting the refusal — not passing a flag.
 
 **Why a manifest, not a `FORMATS` enum entry.** A trellis rung is
 `(family, body_rate_q256, layout, schedule, alphabets)`, and the wire carries
@@ -3432,7 +3492,15 @@ surface lets the DP see the continuum, report where bytes would go, and price
 the choice in exact serialized bytes. Promoting it to an artifact needs a
 render mechanism and a runtime attestation first; both are open (§12).
 
-Gate: `tests/test_trellis_menu.py` (13), on top of the surface's own 69.
+Gate: `tests/test_trellis_menu.py` (15), on top of the surface's own 69.
+Two of the original 13 asserted on **source text** — that the string
+`trellis_menu.augment_candidates` appeared in `build_candidates` — which passes
+whether or not the call does anything, and did pass while the enabled path
+could not produce an assignment at all. They now assert observed behaviour: the
+seam raises `TrellisSeamUnwiredError` naming every entry of `UNWIRED_LINKS`, a
+128-expert row is skipped-with-reason rather than underpriced, and the two
+cheapest ledger entries are re-checked against the code so a stale entry fails
+the suite.
 
 ## 5. Formats & render
 

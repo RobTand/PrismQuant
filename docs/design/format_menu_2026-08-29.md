@@ -4,8 +4,15 @@
 corpus under one metric and reported only where two price brackets agree.
 **Date:** 2026-08-29.
 **Scope warning up front:** every quality number below is measured on a corpus
-of **24 GLM MoE expert tensors** (w1/w2/w3 × 8 layers) under the **routed
-production imatrix**. Dense and attention tensors are not in that corpus. A
+of **24 DeepSeek-V4-Flash MoE expert tensors** (w1/w2/w3 × 8 layers,
+layer stride 4, one sampled expert per layer) under the **routed production
+imatrix**. *(Corrected 2026-08-29: this said "GLM". The corpus is DSv4-Flash --
+`trellis-stage0/stage6_inputs_manifest.json` `source_shard_sha256` names
+`/home/rob/dq-runs/dsv4-flash-0731/source/model-*-of-00048.safetensors`, the
+importance comes from `dsv4-flash-0731/prod-cal-0p8-ropefixed/artifacts/
+cb_col_weights.pkl`, and the sampler is `stage0_mi_dsv4.py`. A corpus-scoped
+verdict labelled with the wrong model is a scope claim that does not inherit
+the artifact it was measured on.)* Dense and attention tensors are not in that corpus. A
 corpus hull is corpus-scoped; see §6.
 
 ---
@@ -493,7 +500,9 @@ column rather than the retired one.
 - **Nothing here is a serving result.** No vLLM KL-vs-BF16, no WikiText PPL on a
   served artifact. Every quality number is corpus SSE under the routed imatrix;
   every speed number is a microbenchmark. Per principle 3 these are screens.
-- **Corpus scope.** 24 GLM MoE expert tensors. Dense and attention tensors are
+- **Corpus scope.** 24 DeepSeek-V4-Flash MoE expert tensors (corrected
+  2026-08-29 from "GLM"; see the scope warning at the top for the
+  manifest evidence). Dense and attention tensors are
   uncovered, and the retirement verdict does not extend to them without a sweep
   that includes them.
 - **Backing.** `FP8_CB_K` rungs are backed on sm120 with a cited preflight row.
@@ -526,10 +535,15 @@ column rather than the retired one.
   So the fp4 retirements were never at risk, and this is now measured rather
   than argued: the exposure the previous paragraph named is real in direction
   and an order of magnitude too small in size. **The 8-bit axis remains open and
-  is the one that can still move** — there is no learned arm in `fp8_ladder.py`
-  at all (`cb_arm_fp8:413-429` passes no `codebook=`), and the fp8 book charge at
-  K48 is 0.031–0.0625 bpw, an order of magnitude larger against the same grid,
-  so it can flip the fp8-CB-owns-the-top verdict in either direction.
+  is the one that can still move** — the fp8 book charge at K48 is
+  0.031–0.0625 bpw (8-bit wire / 16-bit FP16 book, 32768 codeword elements over
+  an 8388608-element tensor), an order of magnitude larger against the same
+  grid, so it can flip the fp8-CB-owns-the-top verdict in either direction.
+  *(Update 2026-08-29: the arm now EXISTS —
+  `fp8_ladder.cb_arm_fp8_learned`, behind `--with-learned-fp8-cb`, default off,
+  charged explicitly under both brackets. It has not been RUN, so every fp8
+  number in this document is still fixed-lattice and this exposure is still
+  open. Landed is not measured.)*
 - **The E4M3 trellis rungs were measured under a known-suboptimal alphabet**
   (§6.2), and that exposure is now **measured, with a split verdict**. The scalar
   alphabet is solved exactly (`e4m3_alphabet_dp`, +9.05 dB median at k=16, full

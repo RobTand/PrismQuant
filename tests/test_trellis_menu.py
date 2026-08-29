@@ -110,7 +110,7 @@ def test_unset_flag_is_a_byte_identical_no_op(monkeypatch):
     units = {UNIT_A: (1024, 512)}
     menu = scalar_menu(units)
     before = {k: list(v) for k, v in menu.items()}
-    out = tm.augment_candidates(menu, stats_for(units), cost_mode=COST_MODE)
+    out = tm.augment_candidates(menu, stats_for(units), cost_mode=COST_MODE)  # noqa: E501 -- the seam, deliberately
     assert out is menu
     assert out == before
 
@@ -119,7 +119,7 @@ def test_flag_adds_rungs_named_by_the_closed_tcq_spelling(tmp_path):
     units = {UNIT_A: (1024, 512)}
     menu = scalar_menu(units)
     prov: dict = {}
-    tm.augment_candidates(
+    tm.build_trellis_menu(
         menu, stats_for(units), cost_mode=COST_MODE,
         manifest_path=write_manifest(tmp_path, units),
         provenance_out=prov,
@@ -154,7 +154,7 @@ def test_fused_siblings_share_format_names_at_equal_rungs(tmp_path):
 
     units = {UNIT_A: (1024, 512), UNIT_B: (256, 512)}
     menu = scalar_menu(units)
-    tm.augment_candidates(
+    tm.build_trellis_menu(
         menu, stats_for(units), cost_mode=COST_MODE,
         manifest_path=write_manifest(tmp_path, units),
     )
@@ -182,7 +182,7 @@ def test_profile_without_target_platform_is_refused(tmp_path):
     menu = scalar_menu(units)
     path = write_manifest(tmp_path, units, target_profile="research")
     with pytest.raises(tm.TrellisMenuError, match="target_platform"):
-        tm.augment_candidates(
+        tm.build_trellis_menu(
             menu, stats_for(units), cost_mode=COST_MODE, manifest_path=path,
         )
 
@@ -192,7 +192,7 @@ def test_cost_mode_mismatch_is_refused(tmp_path):
     menu = scalar_menu(units)
     path = write_manifest(tmp_path, units, cost_mode="production-render-score")
     with pytest.raises(tm.TrellisMenuError, match="one currency"):
-        tm.augment_candidates(
+        tm.build_trellis_menu(
             menu, stats_for(units), cost_mode="aura", manifest_path=path,
         )
 
@@ -209,7 +209,7 @@ def test_single_anchor_is_refused(tmp_path):
     path.write_text(json.dumps(payload))
     menu = scalar_menu(units)
     prov: dict = {}
-    tm.augment_candidates(
+    tm.build_trellis_menu(
         menu, stats_for(units), cost_mode=COST_MODE,
         manifest_path=str(path), provenance_out=prov,
     )
@@ -223,7 +223,7 @@ def test_columns_not_a_superblock_multiple_is_skipped_not_guessed(tmp_path):
     units = {UNIT_A: (1024, 300)}
     menu = scalar_menu(units)
     prov: dict = {}
-    tm.augment_candidates(
+    tm.build_trellis_menu(
         menu, stats_for(units), cost_mode=COST_MODE,
         manifest_path=write_manifest(tmp_path, units), provenance_out=prov,
     )
@@ -234,7 +234,7 @@ def test_unit_absent_from_the_scalar_menu_is_reported(tmp_path):
     units = {UNIT_A: (1024, 512)}
     menu: dict = {}
     prov: dict = {}
-    tm.augment_candidates(
+    tm.build_trellis_menu(
         menu, stats_for(units), cost_mode=COST_MODE,
         manifest_path=write_manifest(tmp_path, units), provenance_out=prov,
     )
@@ -269,16 +269,77 @@ def test_assignment_has_trellis_finds_rungs():
     assert tm.assignment_has_trellis({"x": "NVFP4"}) == []
 
 
-def test_build_candidates_passes_the_flag_through(monkeypatch):
-    """The seam lives inside build_candidates, not beside it."""
+def test_the_production_seam_refuses_when_the_flag_is_set(tmp_path, monkeypatch):
+    """Behaviour, not source text.
 
-    import inspect
+    The previous version of this test asserted that the string
+    ``trellis_menu.augment_candidates`` appeared in ``build_candidates``'s
+    source.  That passes whether or not the call does anything, and it passed
+    while the enabled path could not produce an assignment at all.  This asserts
+    what a caller observes.
+    """
+
     from prismaquant import allocator_candidates as ac
 
-    source = inspect.getsource(ac.build_candidates)
-    assert "trellis_menu.augment_candidates" in source
-    params = inspect.signature(ac.build_candidates).parameters
-    assert "cost_mode" in params and "trellis_provenance" in params
+    units = {UNIT_A: (1024, 512)}
+    manifest = write_manifest(tmp_path, units)
+    monkeypatch.setenv(tm.TRELLIS_SURFACE_ENV, str(manifest))
+    with pytest.raises(tm.TrellisSeamUnwiredError) as exc:
+        tm.augment_candidates(
+            scalar_menu(units), stats_for(units), cost_mode=COST_MODE)
+    message = str(exc.value)
+    # The refusal must name every missing link, or it becomes the same kind of
+    # confident-and-wrong claim it replaced.
+    for where, _what in tm.UNWIRED_LINKS:
+        assert where in message
+    # ...and the seam is still reached from inside build_candidates, so a run
+    # with the flag set fails loudly rather than ignoring it.
+    assert "cost_mode" in inspect.signature(ac.build_candidates).parameters
+
+
+def test_the_unwired_links_are_still_unwired():
+    """The ledger is a claim about the code; check the two cheapest entries.
+
+    If either of these starts passing, the corresponding UNWIRED_LINKS entry is
+    stale and must be deleted along with -- not before -- its refusal.
+    """
+
+    from prismaquant import format_registry as fr
+
+    with pytest.raises(KeyError):
+        fr.get_format("TCQ_E2M1_R640")
+    from prismaquant import allocator_candidates as ac
+
+    aggregation = pathlib.Path(ac.__file__).read_text().count(
+        "for spec in formats:")
+    assert aggregation >= 2, (
+        "fused and packed aggregation still iterate FormatSpec objects; if "
+        "this changed, re-verify links 3 and 4 before deleting them"
+    )
+
+
+def test_a_packed_expert_row_is_refused_not_underpriced(tmp_path):
+    """The 128x underprice, which was silent.
+
+    The seam used to build a 2-tuple shape and read a ``packed_expert`` key
+    nothing writes, so a 128-expert row was priced as a single expert and
+    reported as ``0 unit(s) skipped``.  A rung that looks 128x cheap than it is
+    is the most dangerous shape of wrong: the DP takes it and the frontier
+    looks plausible.
+    """
+
+    units = {UNIT_A: (1024, 512)}
+    stats = stats_for(units)
+    stats[UNIT_A] = dict(stats[UNIT_A], num_experts=128)
+    menu = scalar_menu(units)
+    prov: dict = {}
+    tm.build_trellis_menu(
+        menu, stats, cost_mode=COST_MODE,
+        manifest_path=write_manifest(tmp_path, units),
+        provenance_out=prov,
+    )
+    assert not [c for c in menu[UNIT_A] if c.fmt.startswith("TCQ_")]
+    assert "packed-expert" in prov["units_skipped"][UNIT_A]
 
 
 def test_export_refuses_a_trellis_assignment():

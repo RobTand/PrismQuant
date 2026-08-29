@@ -10,6 +10,19 @@ names a manifest file.  Unset, :func:`augment_candidates` returns its input
 unchanged and the run is byte-identical to one built without this module
 (principle 6, the ``PRISMAQUANT_FISHER_CAP_MULTIPLIER`` precedent).
 
+STATUS: THE MENU IS BUILT, THE SEAM IS NOT WIRED
+------------------------------------------------
+:func:`build_trellis_menu` produces a correctly priced menu.  The production
+seam :func:`augment_candidates` **refuses** when the flag is set, because
+eight links between that menu and a shipped assignment do not exist -- see
+:data:`UNWIRED_LINKS`, which is the refusal message and the re-enable
+checklist.  The first version of this module (40d3e15) claimed the seam's
+placement inside ``build_candidates`` meant trellis rungs "pass the same
+legality, aggregation and byte accounting every other candidate does".  That
+was false on all three counts and is the reason the refusal exists: the
+registry gaps crash loudly, but the aggregation gaps are SILENT, and a partial
+fix would trade the loud failure for the silent one.
+
 WHY A MANIFEST AND NOT A ``FORMATS`` ENUM ENTRY
 ----------------------------------------------
 A trellis rung is not an enum value.  It is ``(family, body_rate_q256,
@@ -65,7 +78,7 @@ import json
 import os
 from pathlib import Path
 
-from .allocator_solver import Candidate
+from .allocator_solver import Candidate, _shape_from_stats
 from .trellis_allocator import TrellisAllocatorCandidate
 from .trellis_formats import (
     ALL_LEGAL_TRELLIS_FORMAT_NAMES,
@@ -97,6 +110,59 @@ DEFAULT_RUNGS_PER_UNIT = 16
 
 class TrellisMenuError(RuntimeError):
     """The surface manifest cannot be admitted to this run."""
+
+
+class TrellisSeamUnwiredError(TrellisMenuError):
+    """The production seam is enabled but the DP cannot honour a TCQ rung."""
+
+
+#: Every link between a built trellis menu and a shipped assignment that does
+#: NOT exist yet, verified at 58eb69d.  This list is the refusal message and
+#: the re-enable checklist; it is also what ``docs/ARCHITECTURE.md`` 4.9 cites
+#: instead of the claim it used to make.  Delete an entry only when a test
+#: exercises the behaviour it names -- not when the code merely looks present.
+UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
+    ("format_registry.py:1267-1272",
+     "no TCQ name is a FormatSpec; fr.get_format('TCQ_E2M1_R640') KeyErrors, "
+     "so every site that resolves an assigned format through the registry "
+     "fails on a selected rung"),
+    ("allocator.py:3369-3386",
+     "the exact assignment-payload filter finds no '_memory_bytes_by_format' "
+     "entry for a TCQ row and falls through to fr.get_format -- the allocator "
+     "dies inside the Pareto sweep, before layer_config.json is written; the "
+     "pointed refusals in layer_config.canonicalize_format and "
+     "export_native_compressed are therefore unreachable"),
+    ("allocator_candidates.py:2464",
+     "fused-sibling aggregation builds each super-item menu by iterating "
+     "FormatSpec objects, so every trellis rung is dropped from every fused "
+     "group (probe: members offered TCQ_E2M1_R640, super item offered only "
+     "BF16/NVFP4)"),
+    ("allocator_candidates.py:2701",
+     "packed-expert aggregation has the identical construction, so no MoE "
+     "expert group can carry a rung either; between the two, on a dense model "
+     "only o_proj and down_proj could ever hold one"),
+    ("allocator_solver.py:340-342",
+     "promote_serving_units' format_rank lookup does not KeyError today only "
+     "because aggregation guarantees a TCQ unit is a lone ungrouped Linear; "
+     "fixing aggregation without it makes that crash live"),
+    ("footprint.py:1183",
+     "the byte-budget (--target-disk-gb) path has its own registry lookup "
+     "that KeyErrors on TCQ independently of the payload filter"),
+    ("allocator.py:2756",
+     "build_candidates is called with neither cost_mode= nor "
+     "trellis_provenance=, so the currency gate below compares against "
+     "os.environ.get('COST_MODE','aura') -- a variable run-pipeline.sh sets "
+     "with := and never exports (:438) -- and the manifest identity, anchor "
+     "currency and anchor activation contract are discarded instead of "
+     "travelling with the assignment (principles 12 and 14)"),
+    ("trellis_rate_surface.py:43-52",
+     "the anchors' currency is weighted SSE under a per-input-channel "
+     "activation second moment -- an output-MSE proxy, explicitly NOT the "
+     "AURA KL-adjoint the production DP ranks in; aura_cost's two dW sources "
+     "(ProductionWeightCache and fr.get_format(...).quantize_dequantize, "
+     ":609-654) both require a registered format, so AURA-priced anchors are "
+     "a dW-supply problem, not an objective change"),
+)
 
 
 @dataclass(frozen=True)
@@ -308,7 +374,7 @@ def _unit_candidates(
     )
 
 
-def augment_candidates(
+def build_trellis_menu(
     candidates: dict[str, list[Candidate]],
     stats: Mapping[str, Mapping[str, object]],
     *,
@@ -361,12 +427,24 @@ def augment_candidates(
         if not stat:
             skipped[unit_name] = "unit absent from probe stats"
             continue
-        shape = (
-            int(stat.get("out_features", 0) or 0),
-            int(stat.get("in_features", 0) or 0),
-        )
-        if shape[0] <= 0 or shape[1] <= 0:
+        # The repo's own shape helper, not a hand-rolled 2-tuple: it returns
+        # (num_experts, out, in) for a packed row, and pricing that row as
+        # (out, in) underprices it by num_experts (128x on DSv4).  A silent
+        # 128x underprice makes a rung look nearly free to the DP and the
+        # seam would report it as "0 unit(s) skipped".
+        shape = _shape_from_stats(dict(stat))
+        if len(shape) < 2 or min(shape) <= 0:
             skipped[unit_name] = f"unusable shape {shape}"
+            continue
+        if _is_packed_expert(stat):
+            # Refuse rather than price num_experts x per-expert bytes: that
+            # pricing would assert a per-expert trellis render coherent with
+            # the packed unit's single-format constraint, which no measurement
+            # supports.  Counted, not silent.
+            skipped[unit_name] = (
+                f"packed-expert row (shape {shape}); no per-expert trellis "
+                f"render exists, and pricing one would be an unmeasured claim"
+            )
             continue
         try:
             records = _unit_candidates(
@@ -375,7 +453,7 @@ def augment_candidates(
                 entry,
                 manifest,
                 qname=unit_name,
-                packed_expert=bool(stat.get("packed_expert")) or None,
+                packed_expert=None,   # refused above; never reached packed
             )
         except (TrellisFormatError, TrellisMenuError, KeyError) as exc:
             skipped[unit_name] = f"{type(exc).__name__}: {exc}"
@@ -452,6 +530,67 @@ def augment_candidates(
     return candidates
 
 
+def _is_packed_expert(stat: Mapping[str, object]) -> bool:
+    """The repo's packed-expert detector, imported late to avoid a cycle.
+
+    ``allocator_candidates`` imports this module, so the import cannot be at
+    module scope.  Reading ``stat["packed_expert"]`` instead -- as this seam
+    did until 2026-08-29 -- tests a key nothing in the probe-stats path ever
+    writes, so the guard was always falsy.
+    """
+
+    from .allocator_candidates import _stats_indicates_packed_expert
+
+    return _stats_indicates_packed_expert(dict(stat))
+
+
+def augment_candidates(
+    candidates: dict[str, list[Candidate]],
+    stats: Mapping[str, Mapping[str, object]],
+    *,
+    cost_mode: str,
+    manifest_path: str | None = None,
+    provenance_out: dict | None = None,
+) -> dict[str, list[Candidate]]:
+    """The production seam: a no-op when unset, a REFUSAL when set.
+
+    Unset, this returns its input object unchanged and the run is
+    byte-identical to one built without this module -- that half is real and
+    is what ships.
+
+    Set, it refuses.  :func:`build_trellis_menu` builds a correctly priced
+    menu, but eight links between that menu and a shipped assignment do not
+    exist (:data:`UNWIRED_LINKS`), and they do not fail the same way: the
+    registry gaps crash loudly inside the Pareto sweep, while the aggregation
+    gaps are SILENT -- they would drop every rung from every fused and packed
+    group and hand back a plausible-looking frontier in which only o_proj and
+    down_proj could carry a rung.  A partial fix that removed only the crashes
+    would convert the loud failures into that silent one, which is why this
+    refuses as a whole rather than being wired halfway (principle 1: the
+    measurement must be right, not the symptom suppressed).
+
+    Enabling the surface therefore means landing those links with tests that
+    exercise behaviour, then deleting this refusal -- not passing a flag.
+    Until then :func:`build_trellis_menu` is reachable directly, for research
+    and for the tests, where a wrong menu cannot reach a shipped artifact.
+    """
+
+    resolved_path = manifest_path or os.environ.get(TRELLIS_SURFACE_ENV)
+    if not resolved_path:
+        return candidates
+
+    links = "\n".join(f"  - {where}: {what}" for where, what in UNWIRED_LINKS)
+    raise TrellisSeamUnwiredError(
+        f"{TRELLIS_SURFACE_ENV}={resolved_path} was set, but the allocator "
+        f"cannot honour a trellis rung end-to-end. Eight links are missing:\n"
+        f"{links}\n"
+        f"Build the menu directly with trellis_menu.build_trellis_menu() for "
+        f"research. Do not remove this refusal to reach a selectable run: the "
+        f"aggregation gaps are silent, so the run would look successful and "
+        f"allocate wrongly."
+    )
+
+
 def assignment_has_trellis(assignment: Mapping[str, str]) -> list[str]:
     """Units in an assignment whose selected format is a trellis rung."""
 
@@ -469,8 +608,11 @@ __all__ = [
     "TRELLIS_SURFACE_ENV",
     "TRELLIS_SURFACE_MANIFEST_SCHEMA",
     "TrellisMenuError",
+    "TrellisSeamUnwiredError",
     "TrellisSurfaceManifest",
     "assignment_has_trellis",
+    "UNWIRED_LINKS",
     "augment_candidates",
+    "build_trellis_menu",
     "load_manifest",
 ]
