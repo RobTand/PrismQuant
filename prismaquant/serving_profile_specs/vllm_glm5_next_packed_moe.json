@@ -1,0 +1,18 @@
+{
+  "schema": "prismaquant.serving_profile.v1",
+  "id": "vllm_glm5_next_packed_moe",
+  "runtime": "vllm",
+  "extends": ["vllm_packed_moe"],
+  "description": "GLM-5.3-Flash (glm5_next) serving constraints for the PR #53906 vLLM build (pinned at 933876c). The PR wires quant_config into exactly three module families: routed experts (FusedMoEFactory, models/glm5next/nvidia/model.py:225,:233), shared experts, and the dense-layer MLP projections. Every other text-model Linear is constructed with quant_config=None (MLA projections at model.py:329 inside Glm5NextMLAAttention; KDA/linear_attn projections and conv1d; hyper-connection mixers; the router has no quantizable parameter at all) - quantized bytes for those families have no executed route in the pinned runtime.",
+  "format_rules": [
+    {
+      "id": "glm5_next_quantized_only_where_pr_wires_quant_config",
+      "when": {
+        "not_regex": "(^|[.])mlp[.](experts|shared_experts)([.]|$)|(^|[.])mlp[.](gate_proj|up_proj|down_proj)([.]|$)"
+      },
+      "deny_formats": ["NVFP4", "MXFP4", "MXFP8_E4M3", "FP8_E4M3"],
+      "reason": "profile_mismatch",
+      "detail": "PR #53906@933876c passes quant_config only to routed experts (model.py:225,:233), shared experts, and dense MLP projections. All other text Linears get quant_config=None (MLA q_a/q_b/kv_a/o_proj at model.py:329; KDA in_proj/out_proj/in_proj_ba/conv1d; hyper-connection mixers; mlp.gate router has no quant parameter), so a quantized rung on any of them has no executed route on the declared target. BF16 and FP8_SOURCE passthroughs stay legal: the pinned units ship verbatim at source precision (body FP8 block-[128,128] + scale_inv, which the PR loads natively; kv_b and KDA o_proj are BF16 source). This mirrors the model profile's pins - defense in depth per principle 9, judged against the pinned runtime, not against taste. Re-derive this rule if the PR revision changes; the pin lives in the artifact's serving-lane provenance."
+    }
+  ]
+}

@@ -50,6 +50,8 @@ from .minimax_m2 import MiniMaxM2Profile
 from .deepseek_v4 import DeepseekV4Profile
 from .hy_v3 import HyV3Profile
 from .laguna import LagunaProfile
+from .qwen4_exp import Qwen4ExpProfile
+from .glm5_next import Glm5NextProfile
 
 
 # Detection order is load-bearing — subsets must precede supersets, and
@@ -70,6 +72,8 @@ _REGISTERED: list[type[ModelProfile]] = [
     DeepseekV4Profile,    # 170
     HyV3Profile,          # 180
     LagunaProfile,        # 190
+    Qwen4ExpProfile,      # 200 — Qwen3.8-Flash-Next; no vLLM class yet
+    Glm5NextProfile,      # 210 — GLM-5.3-Flash; no vLLM class yet
 ]
 
 # Bumped whenever `_REGISTERED` changes, so the derived detection order (which
@@ -122,8 +126,24 @@ def detect_profile(model_path: str) -> ModelProfile:
 
     Reads `config.json`, walks registered profiles, returns the first
     whose `.matches()` returns True. Falls back to `DefaultProfile` if
-    nothing matches."""
-    cfg_path = Path(model_path) / "config.json"
+    nothing matches.
+
+    Raises if `model_path` is not an existing directory. The DefaultProfile
+    fallback is deliberate for a checkpoint whose architecture is not yet
+    registered, but a path that does not exist is not that case -- it is an
+    operator error, and answering it with a profile lets a typo'd MODEL_PATH
+    clear detection and continue on default structure assumptions. Every call
+    site in this tree passes a local staged checkpoint directory, and
+    `run-pipeline.sh` documents MODEL_PATH as "the source HF model directory",
+    so no caller legitimately names a path that is absent. Entrypoints that
+    intentionally tolerate anything go through `detect_profile_with_warning`,
+    which catches this and logs the fallback instead of hiding it."""
+    root = Path(model_path)
+    if not root.is_dir():
+        raise RuntimeError(
+            f"model path is not an existing directory: {model_path}"
+        )
+    cfg_path = root / "config.json"
     model_type = ""
     archs: list[str] = []
     if cfg_path.exists():

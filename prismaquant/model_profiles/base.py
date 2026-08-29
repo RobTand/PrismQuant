@@ -254,6 +254,37 @@ class ModelProfile(ABC):
         return out
 
     # ------------------------------------------------------------
+    # N->1 source concatenations
+    # ------------------------------------------------------------
+    def concat_merge_groups(
+        self,
+    ) -> tuple[tuple[str, tuple[str, ...], int], ...]:
+        """Live-namespace N->1 concatenations this family's loader must apply.
+
+        Returns ``((target_suffix, (source_suffix, ...), dim), ...)``. Each
+        entry says: the live parameter whose name ends in ``target_suffix`` is
+        ``torch.cat`` of the tensors whose names end in ``source_suffixes``, in
+        that exact order, along ``dim``.
+
+        Declared in ``specs/<arch>.json`` under ``concat_merges`` and executed
+        by the streaming loader's concat bridge
+        (``layer_streaming._merge_concat_sources``), which is the only place
+        the tensors exist side by side. Empty for every family whose checkpoint
+        already ships the live layout, which is all of them but glm5_next.
+
+        The order is a fact about the modelling code's own conversion table, so
+        it belongs in the spec next to the rest of the naming contract — never
+        re-derived from tensor shapes at load time.
+        """
+        spec = self.structure_spec()
+        if spec is None:
+            return ()
+        return tuple(
+            (group.target_suffix, tuple(group.source_suffixes), int(group.dim))
+            for group in spec.concat_merges
+        )
+
+    # ------------------------------------------------------------
     # MoE packing
     # ------------------------------------------------------------
     def packed_expert_param_names(self) -> frozenset[str]:
@@ -542,6 +573,21 @@ class ModelProfile(ABC):
             if mapped != checkpoint_name:
                 return mapped
         return self._name_remapper(checkpoint_name)
+
+    def runtime_loads_source_fp8(self, module_name: str) -> bool:
+        """True when the pinned serving runtime loads this Linear's FP8
+        source bytes itself — expecting SOURCE-style keys
+        (``weight`` + ``weight_scale_inv``) and a module constructed
+        without a quant config — instead of serving it through
+        compressed-tensors scheme dispatch.
+
+        The exporter's FP8_SOURCE passthrough must then keep the source
+        scale key name verbatim and exclude the module from
+        ``config_groups`` (it is BF16 in the serving model after the
+        runtime's dequant-on-load). Profiles override with a fact
+        attested from the pinned runtime (principle 14); the default is
+        that no such carve-out exists."""
+        return False
 
     def source_tensor_name(self, model_qname: str) -> str:
         """Rewrite an in-memory HF module qname (from `named_parameters`)
@@ -964,6 +1010,13 @@ class ModelProfile(ABC):
         if spec is not None and spec.stage_text_only_strip_keys is not None:
             return spec.stage_text_only_strip_keys
         return ("vision_config", "audio_config", "speech_config")
+
+    def requires_multimodal_skeleton(self) -> bool:
+        """True when the family has NO `<Arch>ForCausalLM` auto-route at
+        the pinned transformers, so a text-only skeleton is unresolvable
+        and every streaming construction must go through the multimodal
+        path (`_build_streaming_context(..., multimodal=True)`)."""
+        return False
 
     def stage_text_only_promote_inner_model_type(self) -> bool:
         """When lifting `text_config` keys to top-level during

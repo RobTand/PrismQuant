@@ -1,0 +1,246 @@
+{
+  "schema": "prismaquant.model_structure.v1",
+  "id": "glm5_next",
+  "priority": 210,
+  "supported_lanes": ["compressed-tensors", "nvfp4_cb"],
+  "default_serving_profile": "vllm_glm5_next_packed_moe",
+  "match": {
+    "model_type": ["glm5_next", "glm5_next_text"],
+    "architectures": ["Glm5Next*"]
+  },
+  "staging": {
+    "promote_inner_model_type": false
+  },
+  "shard_regexes": {
+    "visual_config_key": "vision_config",
+    "visual_layer_prefix": "model.visual.blocks",
+    "body_layer_prefix": "model.language_model.layers",
+    "lm_head_name": "lm_head",
+    "embedding_name": "model.language_model.embed_tokens"
+  },
+  "naming": {
+    "live_to_recipe": [
+      {
+        "regex": "[.]self_attn[.]forget_gate[.]",
+        "replace": ".self_attn."
+      },
+      {
+        "regex": "[.]attn_hc[.](fn|base|scale)$",
+        "replace": ".hc_attn_\\1"
+      },
+      {
+        "regex": "[.]ffn_hc[.](fn|base|scale)$",
+        "replace": ".hc_ffn_\\1"
+      },
+      {
+        "strip_prefix": "model.language_model.",
+        "add_prefix": "model."
+      }
+    ],
+    "recipe_to_source": [
+      {
+        "regex": "[.]self_attn[.]forget_gate[.]",
+        "replace": ".self_attn."
+      },
+      {
+        "regex": "[.]attn_hc[.](fn|base|scale)$",
+        "replace": ".hc_attn_\\1"
+      },
+      {
+        "regex": "[.]ffn_hc[.](fn|base|scale)$",
+        "replace": ".hc_ffn_\\1"
+      },
+      {
+        "exact": "lm_head",
+        "replace": "lm_head",
+        "stop": true
+      },
+      {
+        "prefix": "lm_head.",
+        "replace": "lm_head.",
+        "stop": true
+      },
+      {
+        "prefix": "model.visual.",
+        "replace": "model.visual.",
+        "stop": true
+      },
+      {
+        "prefix": "model.language_model.",
+        "replace": "model.language_model.",
+        "stop": true
+      },
+      {
+        "prefix": "model.",
+        "replace": "model.language_model."
+      }
+    ],
+    "recipe_to_vllm": []
+  },
+  "fused_groups": [
+    {
+      "target": "mlp.gate_up_proj",
+      "members": ["mlp.gate_proj", "mlp.up_proj"]
+    },
+    {
+      "target": "mlp.shared_experts.gate_up_proj",
+      "members": ["mlp.shared_experts.gate_proj", "mlp.shared_experts.up_proj"]
+    }
+  ],
+  "concat_merges": [
+    {
+      "target": "self_attn.conv1d.weight",
+      "sources": [
+        "self_attn.q_conv1d.weight",
+        "self_attn.k_conv1d.weight",
+        "self_attn.v_conv1d.weight"
+      ],
+      "dim": 0
+    }
+  ],
+  "packed_experts": {
+    "param_names": ["gate_up_proj", "down_proj"],
+    "module_class_names": ["Glm5NextTextExperts"],
+    "split_for_formats": ["*"],
+    "projection_splits": {
+      "gate_up_proj": ["gate_proj", "up_proj"]
+    },
+    "format_groups": [
+      ["gate_up_proj", "down_proj"],
+      ["gate_proj", "up_proj", "down_proj"],
+      ["w1", "w2", "w3"]
+    ]
+  },
+  "moe": {
+    "unpacked_expert_projection_names": ["gate_proj", "up_proj", "down_proj"],
+    "per_expert_regex": "re:^model[.](?:language_model[.])?layers[.][0-9]+[.]mlp[.]experts[.][0-9]+[.](gate|up|down)_proj$"
+  },
+  "probe": {
+    "skip_module_class_names": [
+      "Glm5NextTextTopkRouter",
+      "Glm5NextTextHyperConnection",
+      "Glm5NextTextIndexer"
+    ]
+  },
+  "passthrough_prefixes": [
+    "model.visual.",
+    "model.language_model.layers.45."
+  ],
+
+  "pinned_names": [
+    "lm_head",
+    "self_attn.q_proj",
+    "self_attn.k_proj",
+    "self_attn.v_proj",
+    "self_attn.b_proj",
+    "self_attn.f_a_proj",
+    "self_attn.f_b_proj",
+    "self_attn.g_a_proj",
+    "self_attn.g_b_proj",
+    "self_attn.o_proj",
+    "self_attn.q_a_proj",
+    "self_attn.q_b_proj",
+    "self_attn.kv_a_proj_with_mqa",
+    "self_attn.kv_b_proj",
+    "self_attn.indexer",
+    "self_attn.indexer.wq_b",
+    "self_attn.indexer.wk",
+    "self_attn.indexer.weights_proj",
+    "mlp.gate",
+    "eh_proj"
+  ],
+
+  "_verified_source_layout": {
+    "note": "Provenance for this spec. Every claim below was read off the real checkpoint at /mnt/shared/models/GLM-5.3-Flash (model.safetensors.index.json, 76108 keys, plus safe_open metadata on shards 1/2/3) or off transformers 5.16.1 modeling code. Nothing here is inferred from a sibling architecture.",
+    "checkpoint": "/mnt/shared/models/GLM-5.3-Flash",
+    "transformers": "5.16.1 (/home/rob/dq-runs/venvs/prismaquant-tf516)",
+    "recon_memo": "/home/rob/dq-runs/coordination/glm5next-structure-recon-2026-08-26.md",
+    "layers": {
+      "count": 45,
+      "body_range": "0..44",
+      "mtp_layer_index": 45,
+      "dense_mlp": "0..2 (first_k_dense_replace=3)",
+      "moe": "3..44 body + 45 (MTP)",
+      "kda_linear_attention": "34 layers (layer_types != deepseek_sparse_attention)",
+      "mla_sparse_attention": "3,7,11,15,19,23,27,31,35,39,43 (11 body) + 45 (MTP)"
+    },
+    "fp8_source": {
+      "quant_method": "fp8",
+      "fmt": "e4m3",
+      "activation_scheme": "dynamic",
+      "weight_block_size": [128, 128],
+      "scale_suffix": ".weight_scale_inv",
+      "scale_dtype": "F32",
+      "scale_shape_rule": "ceil(out/128) x ceil(in/128)",
+      "fp8_weight_count": 37338,
+      "fp8_leaves": [
+        "mlp.{gate,up,down}_proj (dense layers 0-2)",
+        "mlp.experts.{i}.{gate,up,down}_proj (43 MoE layers x 288 experts)",
+        "mlp.shared_experts.{gate,up,down}_proj (43 MoE layers)",
+        "self_attn.{q_a_proj,q_b_proj,kv_a_proj_with_mqa,o_proj} (12 MLA layers)"
+      ],
+      "bf16_leaves": [
+        "self_attn.kv_b_proj (12 MLA layers - NO scale sibling)",
+        "self_attn.indexer.{wq_b,wk,weights_proj} (12 MLA layers)",
+        "every KDA projection: self_attn.{q,k,v,b,f_a,f_b,g_a,g_b,o}_proj (34 layers)",
+        "self_attn.{q,k,v}_conv1d.weight (34 layers)",
+        "lm_head, embed_tokens, all norms, mlp.gate (router), hc_*, index_kpool_compress_*",
+        "the entire model.visual.* tower"
+      ],
+      "per_tensor_not_per_leaf": "o_proj is BF16 on the 34 KDA layers and FP8 on the 12 MLA layers. Any leaf-name-keyed source-dtype map is WRONG for this checkpoint; key on the presence of the .weight_scale_inv sibling in the index."
+    },
+    "conversion_mapping": {
+      "source": "transformers/conversion_mapping.py, 'glm5_next' entry",
+      "renames": {
+        "self_attn.{f_a_proj,f_b_proj,dt_bias,A_log}": "self_attn.forget_gate.*",
+        "hc_attn_{fn,base,scale}": "attn_hc.{fn,base,scale}",
+        "hc_ffn_{fn,base,scale}": "ffn_hc.{fn,base,scale}"
+      },
+      "merges": {
+        "mlp.experts.*.{gate_proj,up_proj}.weight": "mlp.experts.gate_up_proj (MergeModulelist dim=0 + Concatenate dim=1)",
+        "mlp.experts.*.down_proj.weight": "mlp.experts.down_proj (MergeModulelist dim=0)",
+        "self_attn.{q,k,v}_conv1d.weight": "self_attn.conv1d.weight (Concatenate dim=0)"
+      },
+      "merge_execution": "The two merges are executed on load by two generic, profile-driven bridges in prismaquant/layer_streaming.py, neither of which names this architecture: the per-expert merges by the packed-expert bridge (_pack_per_expert_into_packed, wired from moe.per_expert_regex + packed_experts.projection_splits), and the q/k/v_conv1d merge by the N->1 concat bridge (_merge_concat_sources, wired from the concat_merges block above). checkpoint_to_live_name is 1:1-or-drop and passes the source keys through unchanged so the bridge can see all three side by side.",
+      "not_renamed": "MLA (q_a_proj, q_b_proj, kv_a_proj_with_mqa, kv_b_proj, o_proj) and indexer (wq_b, wk, weights_proj) already ship live spellings - unlike DSv4, which renames wq_a->q_a_proj."
+    },
+    "serving_restriction": {
+      "note": "Why pinned_names is large. This is a principle-9 GATE INPUT, not a preference: the only vLLM serving path for glm5_next is PR #53906 (ZJY0516/vllm@933876c), and in that model file only routed experts, shared experts and dense MLPs are constructed with a quant_config. Every other Linear is built with quant_config=None, so a compressed-tensors re-export that quantized them would produce bytes the pinned runtime has no route for. Citations are to the PR tree, recorded so a gate can read them; re-attest against the pinned release before export (principle 14).",
+      "source_memo": "/home/rob/dq-runs/coordination/vllm-support-qwen4exp-glm5next-2026-08-26.md",
+      "quantizable_because_quant_config_is_passed": {
+        "routed_experts": "vllm/models/glm5next/nvidia/model.py@933876c:225 self.experts = FusedMoEFactory(... quant_config=quant_config ...) (:233)",
+        "shared_experts": "vllm/models/glm5next/nvidia/model.py@933876c:218 quant_config=quant_config",
+        "dense_mlp": "vllm/models/glm5next/nvidia/model.py@933876c:98 class Glm5NextMLP, gate_up_proj :116 / down_proj :124 both quant_config=quant_config; decoder layer passes it at :348/:356"
+      },
+      "pinned_because_quant_config_is_None": {
+        "mla_projections": "vllm/models/glm5next/nvidia/model.py@933876c:329 quant_config=None,  # MLA projections are BF16 in checkpoint  (inside Glm5NextMLAAttention(...) :319-333). The MLA class itself would honour one (attention.py@933876c:441,449,459,467,475,482) but the decoder layer never gives it one.",
+        "kda_projections": "vllm/models/glm5next/nvidia/kda.py@933876c:157-160 nulls vllm_config.quant_config for the whole module; the later quant_config=self.quant_config passes at :203,:211,:261,:269 all resolve to None",
+        "indexer": "vllm/models/glm5next/nvidia/attention.py@933876c:251 self.wk_weights_proj = MergedColumnParallelLinear(..., quant_config=None) (:255); wq_b at :242 takes one but the enclosing layer is built with None",
+        "router": "vllm/models/glm5next/nvidia/model.py@933876c:181 self.gate = GateLinear(hidden_size, n_routed_experts, out_dtype=self.router_dtype, ...) - no quant_config parameter at all; config moe_router_dtype float32",
+        "vision_tower": "vllm/models/glm5next/nvidia/model.py@933876c:1032-1042 explicit BF16 warning; also covered here by passthrough_prefixes"
+      },
+      "CONTRADICTION_to_resolve_before_export": "The PR's comment at model.py:329 says 'MLA projections are BF16 in checkpoint'. That is FALSE for the checkpoint at /mnt/shared/models/GLM-5.3-Flash: q_a_proj, q_b_proj, kv_a_proj_with_mqa and o_proj all carry .weight_scale_inv on all 12 MLA layers (48 scale keys) and are F8_E4M3 on disk; only kv_b_proj is BF16. Pinning them therefore means FP8_SOURCE passthrough at ~8.002 bpp, NOT BF16 - principle 11 forbids synthesizing BF16 from an FP8 source. Either the PR was written against a different checkpoint revision or it mis-loads these tensors. Resolve on the pinned runtime before pricing an artifact.",
+      "mass_split": {
+        "measured_from": "all 76108 index keys, safetensors headers of every shard, 2026-08-26; a .weight_scale_inv is counted in its weight's bucket",
+        "total_params": 321323031390,
+        "quantizable_params": 305915756544,
+        "quantizable_fraction": 0.9521,
+        "quantizable_source_dtype": "100% F8_E4M3 (BODY routed 304.41e9 + shared 1.06e9 + dense MLP 0.45e9)",
+        "passthrough_params": 7996219424,
+        "passthrough_source_dtype": "fp8 7373586432 / bf16 622632704 / f32 288",
+        "passthrough_note": "layer 45 (nextn/MTP, 288 routed + 1 shared expert = 7272923136 params) + the vision tower. Shipped VERBATIM at source precision via passthrough_prefixes; passthrough in v1 is a SCOPE choice, not a route fact - the PR DOES wire quant_config into Glm5NextMTP's experts (attested at 933876c, Codex-adjudicated 2026-08-26); quantized layer 45 is a legitimate post-v1 follow-up. A naive layers.[0-9]+.mlp regex counts these experts as quantizable and overstates the quantizable set by 7272923136 params.",
+        "pinned_params": 7411055422,
+        "pinned_source_dtype": "fp8 1107296256 / bf16 6303463936 / f32 295230",
+        "immutable_floor_bytes_at_source_precision_GiB": 20.8,
+        "immutable_floor_split_GiB": {"pinned": 12.77, "passthrough": 8.03},
+        "fp8_scale_elements_f32": 19189248,
+        "fp8_scale_elements_f32_on_quantizable": 18671616,
+        "note": "Neither the pinned nor the passthrough bucket can be dropped to BF16 where it is FP8 (principle 11), so 20.80 GiB is a floor, not a budget knob. Whole-artifact weight bytes ~= quantizable_params * bpp / 8 + 20.80 GiB: 181.1 GiB at 4.50 bpp, 190.0 GiB at 4.75 bpp."
+      }
+    },
+    "open_todos": {
+      "fused_groups": "MLP gate/up fusion ATTESTED 2026-08-27 by direct read of the pinned runtime source (vllm-glm5next:pr53906-933876c, models/glm5next/nvidia/model.py:116 Glm5NextMLP.gate_up_proj = MergedColumnParallelLinear; the same class serves dense-layer MLPs and mlp.shared_experts). Both quantizable gate/up families are declared above so union-find promotes them to one format - a split assignment cannot load. KDA q/k/v fusion remains undeclared: the checkpoint's modules_to_not_convert hints (self_attn.qkv_proj 34x, fused_qkvbfg_a_proj 34x) match no index key, and every KDA projection is BF16-source pinned, so promotion over such a group is trivially satisfied.",
+      "mtp": "Layer 45 is the single num_nextn_predict_layers block. transformers 5.16 refuses it outright (modeling_glm5_next.py:1359 _keys_to_ignore_on_load_unexpected = [r'layers\\.45\\.', r'layers\\.\\d+\\.shared_head\\.']). It is body-indexed, not 'mtp.'-prefixed, so the mtp.* sidecar machinery does not apply - hy_v3 precedent: ship it VERBATIM via passthrough_prefixes with has_mtp() False."
+    }
+  }
+}
