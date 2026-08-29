@@ -21,7 +21,7 @@ corpus hull is corpus-scoped; see §6.
 | Can the trellis go below 1.283 bpw? | **No — structurally.** The v1 wire requires ≥1 coded bit per weight. | §2 |
 | Does the trellis have a runtime kernel? | **Yes, and it is landed** (gridbook `1a57b31`, ABI 3). In-tree: **5.37×** the scan-free decoder on E2M1, **2.46×** on E4M3, **5.80×/3.18× work per joule**; 24/24 external golden vectors through the landed path; **rate-insensitive**. Landed as *research ops* — no runtime-contract cell, so every trellis rung is still **unbacked** until a release attests a route (principle 14). | §5 |
 | Is the low-rate FP8 trellis viable for AMD / pre-Blackwell? | **Yes.** Decode + `_scaled_mm` is 2.22× faster than the BF16 matmul it replaces, decode cost included. | §4 |
-| Is the 8-bit trellis competitive with the FP8 books on quality? | **Measured. Crossover ≈5.0 bpw** — trellis +2.3 dB at 4.0, book +7.8 dB at 6.0. Books measured are *fixed lattice*, not learned. | §6 |
+| Is the 8-bit trellis competitive with the FP8 books on quality? | **Measured. Crossover ≈5.0 bpw** — trellis +2.3 dB at 4.0, book +7.8 dB at 6.0. Books measured are *fixed lattice*. Learning the book is now measured on the **4-bit** axis and changes nothing (§7); the **8-bit** learned arm does not exist yet and is the live exposure. | §6 |
 | Does the 8-bit book beat raw FP8? | **Yes.** `fp8_cb@48` = 34.15 dB at 6.008 bpw vs a plain e4m3 cast at 31.57 dB and 8.008 bpw — **+2.57 dB at 75% of the bytes**. | §6.1 |
 | Are the high E4M3 trellis rungs usable? | **Still no, and the cause is now known.** The clipping was a *Lloyd local optimum*, not E4M3: an exact grid DP gains +9.05 dB as a scalar book. But it does **not** transfer to the trellis — +2.45 dB at R6 on the shipping bracket, *negative on every rung of the penalty bracket*, and negative at R2 on both. R6 still sits ~2.7 dB below its own rate-8 bypass. Retirement **weakened, not overturned**; `exact_dp` stays research. | §6.2 |
 
@@ -499,13 +499,37 @@ column rather than the retired one.
 - **Backing.** `FP8_CB_K` rungs are backed on sm120 with a cited preflight row.
   The trellis rungs have a *research-proven kernel as of today* and remain
   **unbacked in gridbook** until it is landed and attested per principle 14.
-- **The learned-CB question is open on BOTH axes.** Every CB arm measured here —
-  4-bit and 8-bit alike — stamps `"codebook": "fixed_lattice"`. The 4-bit sweep
-  never ran `--with-learned-cb` and the 8-bit ladder has no learned arm at all, so
-  "would *learning* the book change the menu?" has no answer. Direction of the
-  exposure: a learned book can only be ≥ a fixed one, so every **CB win** above
-  stands *a fortiori*, and every **trellis win** (the ≤4 bpw band, and the fp4
-  retirements) is the part a learned book could move.
+- **The learned-CB question is CLOSED on the 4-bit axis, still open on the
+  8-bit one** (measured 2026-08-29 on sparklina, `hull_results.learnedcb-20260829
+  .json`, 24/24 tensors, reproduction gate PASS on every tensor against the
+  published cells; analysis `analyze_learned_cb.py`).
+
+  A per-tensor weighted-Lloyd book helps, and the help **decays to nothing
+  exactly where the menu is decided**: mean +0.11…+0.49 dB at K1–K7, collapsing
+  to **+0.008…+0.013 dB at K12–K18** — the production band. It costs almost
+  nothing either (+0.00001…+0.002 bpw as charged, +0.00002…+0.008 bpw under the
+  honest FP16-book bracket, since the driver charges 4 bits/element while
+  production ships 16). Both brackets are reported because charging the book at
+  4 bits/element would hand the learned arm a discount no artifact gets — the
+  mirror-confound this house has installed before.
+
+  Two measured consequences, both under **both** brackets:
+
+  1. **Learned@K never beats fixed@K+1** — 0/17 rungs, losing by −0.26…−0.87 dB.
+     One more index bit is always a better use of the book's bytes than the book.
+  2. **Learned CB never reaches the trellis frontier** — 0/24 tensors at every
+     rung K9–K18, compared at *that tensor's own byte count* against a
+     piecewise-linear frontier over its own measured `tcq_two_tier` +
+     `tcq_two_tier_jso` rungs (no extrapolation). The learned book closes
+     **0.01–0.12 dB of a 0.64–1.00 dB gap**.
+
+  So the fp4 retirements were never at risk, and this is now measured rather
+  than argued: the exposure the previous paragraph named is real in direction
+  and an order of magnitude too small in size. **The 8-bit axis remains open and
+  is the one that can still move** — there is no learned arm in `fp8_ladder.py`
+  at all (`cb_arm_fp8:413-429` passes no `codebook=`), and the fp8 book charge at
+  K48 is 0.031–0.0625 bpw, an order of magnitude larger against the same grid,
+  so it can flip the fp8-CB-owns-the-top verdict in either direction.
 - **The E4M3 trellis rungs were measured under a known-suboptimal alphabet**
   (§6.2), and that exposure is now **measured, with a split verdict**. The scalar
   alphabet is solved exactly (`e4m3_alphabet_dp`, +9.05 dB median at k=16, full
