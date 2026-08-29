@@ -1,7 +1,19 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `claude/trellis-continuous-surface` — stamps follow, newest
+As of: 2026-08-29 · `claude/aura-trellis-dw` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-29,
+`claude/aura-trellis-dw`) for the **AURA-currency trellis anchor design**
+(§4.10, new): the eighth `UNWIRED_LINKS` entry is a dW-supply problem and the
+supply does **not** run through `ProductionWeightCache` —
+`compute_aura_cost_streamed`'s duck-typed `anchor_renderer` reaches the fp32
+subtraction without `fr.get_format`, which the module uses once, in the RTN
+fallback that path cannot reach. A cache render mechanism is an **export**
+requirement instead, and is blocked behind an attestation that does not exist.
+In-process rendering is refused by the encoder's own Stage-6 torch pin, so the
+shape is an offline containerized encode replayed as data;
+`prismaquant/trellis_anchor_dw.py` is that consumer plus a reference producer
+(research, opt-in, unset = byte-identical). It produces no anchor on its own
+and deletes no ledger entry. Earlier same-day stamp (2026-08-29,
 `claude/trellis-continuous-surface`) for the **trellis seam correction**
 (§4.9): the seam that landed earlier the same day is now **fail-closed** when
 enabled, and this document's claim that it made trellis rungs "pass the same
@@ -3512,6 +3524,117 @@ seam raises `TrellisSeamUnwiredError` naming every entry of `UNWIRED_LINKS`, a
 128-expert row is skipped-with-reason rather than underpriced, and the two
 cheapest ledger entries are re-checked against the code so a stale entry fails
 the suite.
+
+### 4.10 What an AURA-priced trellis anchor would cost (2026-08-29)
+
+§4.9's eighth unwired link — the anchors' currency — is the one that is not a
+registry or aggregation gap, and it has a different shape from the other seven.
+This section records what closing it actually requires, so the next attempt
+does not re-derive it.
+
+**The diagnosis, verified.** `aura_cost`'s `predicted_dloss` is
+`0.5 * mean_k (<g_k, dW>)^2`, and the harvest is literally one inner product
+against `dW` (`aura_cost.py:1438`). It never asks what format produced `dW` or
+what objective the render minimized — GPTQ minimizes an activation-weighted
+local objective and AURA prices its `dW` all the same. So an AURA-priced
+trellis anchor is a **dW-supply** problem, not an objective change. The
+encoder's weighted SSE stays the encoder's business; what is missing is a
+`Q_trellis(W) - W` that AURA can project.
+
+**Two dW seams exist, and they are not the same seam.**
+`aura_cost._delta_w` has exactly the two the ledger names — a
+`ProductionWeightCache.get` hit, or `fr.get_format(fmt).quantize_dequantize` —
+and both need a registered `FormatSpec`, which no TCQ rung has. But
+`compute_aura_cost_streamed` also accepts an `anchor_renderer` (`:1858`,
+validated at `:2010-2054`), and that path never touches `_delta_w`: it calls
+the renderer, subtracts in fp32 through `_stored_production_anchor_delta`, and
+binds a per-unit source-weight identity (`require_source_weight_identity=
+anchor_renderer is not None`, `:2246`). `fr.get_format` appears **once** in the
+whole module, at `:641`, inside the RTN fallback the anchor path cannot reach;
+`fr.canonical_format_name` passes an unregistered name through unchanged
+(`format_registry.py:223-234`). The renderer is duck-typed, and the module says
+so in its own comment: *"Compatibility for injected/research renderers"*
+(`:2521`). **A trellis dW can therefore reach AURA with no change to
+`aura_cost.py`, no `FormatSpec`, and no `ProductionWeightCache` entry.**
+
+**A `ProductionWeightCache` mechanism is an EXPORT requirement, not a cost
+one.** Were one built it would owe: a `RenderMechanismSpec` in
+`render_score.py`'s registry with a declared `operation`/`scope`/`phase` and
+before/after constraints (`weighted_vq` is the closest shape — phase 50, gate
+metric `weight_mse`, because the exporter's render IS the deliberate one
+rather than a candidate layered on RTN); a `(qname, fmt_canonical)` key whose
+format resolves through `_format_candidates`; and CB-style render-identity
+sidecars, since principle 8 requires the surrogate, the KL validation and the
+exported bytes to be one rendering. None of that is reachable today because
+export refuses `TCQ_*` outright and the Gridbook pin publishes no
+executed-activation-contract table for these families (§ P14). Building the
+mechanism before the attestation exists would produce bytes no artifact could
+honestly describe.
+
+**In-process rendering is refused by the encoder's own pin.** The trellis
+encoder is not in this repo; it is `stage5_encoder.mixed_tcq_encode_batched`
+under the Stage-6 tree, and `hull_sweep.STAGE6_ENV` pins torch `2.13.0+cu130`,
+device `NVIDIA GB10`, and one container image digest.
+`hull_sweep.env_matches_stage6` returns `blocking_for_encode` on a torch
+mismatch, with the rationale that a torch/triton skew *flips discrete encode
+decisions* and no tolerance absorbs it. The production venv is torch
+`2.11.0+cu130`. So rendering inside the AURA reverse pass is refused by the
+pin, not by policy. Only the *encode* is environment-bound; a `dW` is portable.
+
+**The honest alternative, and what it costs.** Encode offline in the pinned
+container, persist the rendered weight with the identity of the source it was
+encoded from, and replay it into `compute_aura_cost_streamed`.
+`prismaquant/trellis_anchor_dw.py` is the consumer half of that plus a
+reference producer for the store format (research, opt-in via
+`PRISMAQUANT_TRELLIS_ANCHOR_DW`, unset is a byte-identical no-op; nothing in
+the pipeline calls it). It refuses a live weight that does not hash to the
+encode source, a tampered or reshaped shard, an edited or re-signed manifest, a
+byte count the allocator would not charge, a non-trellis format name, and a
+rung `uniform_column_schedule` will not schedule. It also refuses, at write
+**and** at open, a store whose rungs for one qname were encoded against
+different source weights: the multi-rung store is the normal case (see (b)
+below), `source_weight_identity_for` returns one identity per qname, and two
+rungs measured against two different weights are not comparable to each other
+at all. It declares **no** cost currency — that belongs to the AURA run — and
+**no** runtime contract.
+
+What it does **not** do is produce a single anchor. That needs an offline
+encode driver inside the pinned container, and three facts bound its cost.
+(a) The existing hull anchors cannot be reused: `stage6_inputs.safetensors` is
+24 DSv4 routed-expert tensors plus their importance rows, not any target
+model's Linears, so every campaign needs a fresh per-model encode. (b) The rate
+surface needs **at least two** anchors per unit — `trellis_menu` refuses one,
+because one anchor brackets nothing. (c) At bf16 that is ~4 bytes/param of
+store: ~108 GB for a 27B body at two anchors, against 180 GB free and a ~90 GB
+production cache, and it does not fit for a DSv4-class model at all. A
+layer-sharded store consumed and deleted layer-by-layer is the way out, and it
+needs a filesystem handshake between two containers.
+
+**The rate-plan scopes do not match, and the row axis is why.**
+`gridbook.trellis.wire.v1` carries one 4-bit rate code per input column shared
+across every output row — `schedule_scope ==
+"tensor_input_column_shared_across_rows"`, and
+`trellis_footprint.py:476-479` requires `len(schedule) == columns`. That
+expresses a per-superblock rate (columns 0-255 are SB0) but has **no field for
+a per-row rate**. The out-of-repo one-anchor allocator
+(`/home/rob/dq-runs/trellis-oneanchor-20260826/oneanchor_alloc.py`) plans a
+`bool [rows, n_sb]` mask under a wire whose flag is one bit per
+`(row, superblock)`. Those two are not the same wire, and no adapter reconciles
+them: a wire.v2 with a row axis costs ~+0.43% bytes and is the actual fix. The
+uniform rungs the rate surface anchors on are unaffected — a single rate tiles
+to a legal `columns`-length schedule — so this bounds mixed-rate work, not
+anchoring.
+
+**Estimate.** Consumer half plus its gate: landed. Offline encode driver,
+sharded store, cross-container handshake, and one small-model campaign that
+produces two AURA-priced anchors per unit and a manifest `trellis_menu` accepts:
+roughly a week, most of it operational rather than algorithmic. Beyond that,
+the other seven links and the export/attestation work remain untouched.
+
+Gate: `tests/test_trellis_anchor_dw.py` (26). Every guard was mutated
+individually and each one turns a test red; the byte-identity evidence for the
+default path is a digest over `augment_candidates` with the flag unset and
+`_delta_w` across the shipped scalar menu, unchanged across the commit.
 
 ## 5. Formats & render
 
