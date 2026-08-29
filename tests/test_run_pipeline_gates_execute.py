@@ -23,13 +23,24 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SCRIPT = REPO / "prismaquant" / "run-pipeline.sh"
-VENV_BIN = "/home/rob/dq-runs/venvs/prismaquant-cu130/bin"
+# The gate blocks shell out to a bare `python3`, so the interpreter they find
+# has to be one that can `import prismaquant`. Deriving it from sys.executable
+# means that is ALWAYS the interpreter running these tests -- Rob's cu130 venv
+# locally, setup-python's 3.11/3.12 in CI. The previous hardcoded venv path
+# does not exist on a CI runner, so `python3` fell back to /usr/bin/python3,
+# which has no prismaquant; the heredoc died on the import and the outer
+# `if ! ...` turned every failure into the gate's own `exit 2`. That made the
+# FIRED assertions pass for the wrong reason and the PASSED assertions fail,
+# which is exactly the signature these three tests showed in CI while passing
+# locally. A gate test must exercise the gate, not the absence of an import.
+VENV_BIN = str(Path(sys.executable).resolve().parent)
 SCRATCH = REPO / "scratch" / "run_pipeline_gate_tests"  # gitignored; never /tmp
 
 
@@ -105,7 +116,7 @@ def run_block(block: str, env: dict, preamble: str = "") -> int:
     body = "set -euo pipefail\n" + (preamble + "\n" if preamble else "") + block
     full_env = {
         "PATH": f"{VENV_BIN}:/usr/bin:/bin",
-        "HOME": "/home/rob",
+        "HOME": os.environ.get("HOME", str(REPO)),
         "PYTHONPATH": str(REPO),
         "CUDA_VISIBLE_DEVICES": "",
         "LC_ALL": "C",
