@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-21 · `merge/proven-rescues` — stamps follow, newest first, each recording
-its own branch and date. Re-stamped (2026-08-21, `merge/proven-rescues`) for the
+As of: 2026-08-29 · `review/pr86` — stamps follow, newest first, each recording
+its own branch and date. Re-stamped (2026-08-29, `review/pr86`) for the
+**codebook lane's namespace contract** (§6.2): delegated (stock-CT) and
+source-passthrough group targets now ship in the CANONICAL namespace rather
+than the full live-tree spelling, mirroring the pinned consumer's
+`_canonical_prefix`/`_candidate_bases`; live-spelled expert-group keys are
+normalized to the recipe spelling and collisions refuse; packed expert stacks
+are named by their group's checkpoint prefix. Same commit fulfils the FP8
+serialized-scale contract in the packed-expert imatrix replay
+(`moe_imatrix._load_tensors`), reading the dequant grid through the streaming
+loader's `_declared_weight_block_size` so the two paths cannot disagree about
+one checkpoint. Reported and implemented by smb209 (PR #86). Previously
+re-stamped (2026-08-21, `merge/proven-rescues`) for the Re-stamped (2026-08-21, `merge/proven-rescues`) for the
 **Gridbook 0.8.11 PRODUCER pin**: the producer pin
 (`gridbook_runtime_pin.json`) advanced 0.8.5/v3 → 0.8.11/v4 at commit
 `187c721`, in lockstep with the serving pin, and a new test
@@ -2804,6 +2815,42 @@ regex pinned to that layer index** (`_constrain_per_expert_projection_regex` `:7
 `_pin_regex_to_layer` `:7339-7347`, emission `:7779-7800`), with on-disk leaves translated
 through `_vllm_moe_scheme_projection_names` `:4503-4525` so LFM2.5's `w1/w3/w2` are advertised
 as `gate_proj/up_proj/down_proj` (`:7980-7994`).
+
+**Namespaces on the codebook lane (`export_nvfp4_cb_streaming`).** A wrapped
+source puts three spellings of one module in play: the CHECKPOINT
+(`model.language_model.layers.N.*`, the bytes on disk), the LIVE module tree
+(`language_model.model.layers.N.*`, what the skeleton and the group planner
+see), and the RECIPE (`model.layers.N.*`, what the allocator's `layer_config`
+and `_resolve_target` speak). Which one an emission uses is a property of the
+*consumer*, not a style choice:
+
+- **CB group targets** keep the CHECKPOINT spelling (`_cb_target_name`
+  `:5026`, `_base_name` `:3172`) — the names their tensors were written under.
+- **Delegated (stock-CT) and source-passthrough group targets** are emitted in
+  the CANONICAL namespace (`_delegated_target_name` `:5034`): the profile's
+  vLLM-internal rename with the wrapper canonicalized
+  (`language_model.model.` → `model.`, `language_model.<rest>` →
+  `model.<rest>`). This mirrors — and is cited from, not asserted about — the
+  pinned consumer's `gridbook/config.py::_canonical_prefix` /
+  `_candidate_bases`, which try a serving prefix as given *and* in canonical
+  form. A canonical target therefore resolves from every namespace vintage;
+  a full live-tree target resolves only from its own, which on a wrapped
+  Qwen3.5 source left the delegated Linears unquantized until gridbook refused
+  them fail-closed at weight load. Scoped to this container:
+  `export_native_compressed` keeps live-tree targets, which vanilla
+  compressed-tensors matches.
+- **Expert-group keys** are normalized to the RECIPE spelling when the planner
+  matched a live name (`:2960`), derived from the group's own member tensors;
+  recipe- and checkpoint-keyed groups (DSv4-class) are left exactly as
+  planned, and a collision on either the normalized key or the
+  recipe→checkpoint bridge refuses. Packed expert stacks are then *named* by
+  their group's checkpoint prefix, because the packed parent is not a
+  checkpoint leaf and gridbook's top-level loader rename
+  (`moe_toplevel_loader::_hf_mapper_rename`) reuses the model's own
+  `hf_to_vllm_mapper`, i.e. checkpoint prefixes only.
+- Consequence for the contract below: on a wrapped source, per-expert (Tier-2)
+  config files address groups in the RECIPE namespace. Unchanged for
+  DSv4-class sources.
 
 **PROPOSED per-expert CB producer contract (v1; consumer reconciliation
 pending).** `export_nvfp4_cb_streaming --per-expert-config <json>` consumes the

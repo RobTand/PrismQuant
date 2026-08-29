@@ -2972,12 +2972,29 @@ def export_nvfp4_cb_streaming(
         for _prefix, _projs in expert_groups.items():
             _recipe, _ck = _member_prefixes(_projs)
             if _recipe is not None and _ck is not None:
-                _canon_to_ckpt_prefix.setdefault(_recipe, _ck)
+                _prior = _canon_to_ckpt_prefix.setdefault(_recipe, _ck)
+                if _prior != _ck:
+                    raise ValueError(
+                        f"expert group {_prefix!r} maps recipe prefix "
+                        f"{_recipe!r} to checkpoint prefix {_ck!r}, but "
+                        f"{_prior!r} already claims it; the recipe->checkpoint "
+                        "bridge names packed stacks and cannot be ambiguous"
+                    )
             _key = _prefix
-            if (_recipe is not None
-                    and _prefix not in (_recipe, _ck)
-                    and _recipe not in expert_groups
-                    and _recipe not in _rekeyed):
+            if _recipe is not None and _prefix not in (_recipe, _ck):
+                # Live-spelled: normalization is not optional. A group left
+                # under the live key KeyErrors the coverage gate and ships
+                # every consumed per-expert source verbatim into `ignore`
+                # (the "31511 copied tensors, 82 GB" failure), so a taken
+                # recipe key refuses here rather than silently declining to
+                # rekey.
+                if _recipe in expert_groups or _recipe in _rekeyed:
+                    raise ValueError(
+                        f"expert group {_prefix!r} normalizes to recipe "
+                        f"prefix {_recipe!r}, which another group already "
+                        "occupies; two expert groups cannot share one "
+                        "decision-unit prefix"
+                    )
                 _key = _recipe
             _rekeyed[_key] = _projs
         expert_groups = _rekeyed
@@ -5015,20 +5032,38 @@ def export_nvfp4_cb_streaming(
         return physical
 
     def _delegated_target_name(qname: str) -> str:
-        # MEASURED on the serving stack (vLLM 0.27.1 + gridbook 0.8.11,
-        # wrapped Qwen3.5 sources): find_matched_target matches quant-config
-        # targets against the LANGUAGE-TOWER-RELATIVE module path, so
-        # canonical `model.layers.*` spellings match and full live-tree
-        # spellings (`language_model.model.*`) leave the module unquantized —
-        # which gridbook then refuses fail-closed at weight load. Keep the
-        # profile's internal renames but strip the wrapper prefix.
+        # Delegated (stock-CT) groups are claimed in the CANONICAL target
+        # namespace. Not asserted about the consumer — cited from it: the
+        # pinned codebook runtime resolves a serving prefix through
+        # `gridbook/config.py::_candidate_bases`, which tries the prefix as
+        # given AND the canonical form `_canonical_prefix` produces
+        # (`language_model.model.` -> `model.`, `language_model.<rest>` ->
+        # `model.<rest>`). A canonical target therefore matches from every
+        # namespace vintage, while a full live-tree spelling matches only its
+        # own — which on a wrapped Qwen3.5 source left the delegated Linears
+        # unquantized until gridbook refused them fail-closed at weight load
+        # ("resolved to plain bf16 parameter"; measured on vLLM 0.27.1 +
+        # gridbook 0.8.11/0.9.0, PR #86).
+        #
+        # Scoped to this container: `export_native_compressed` keeps live-tree
+        # targets, which vanilla compressed-tensors matches. The namespace a
+        # target must use is a property of the consuming quant method.
+        #
+        # Only the two `language_model.` rules are mirrored. `_canonical_prefix`
+        # also lifts a bare `layers.` (DSv4-class) — left alone here so that
+        # lane's shipped export metadata is unchanged; `_candidate_bases` tries
+        # the as-given spelling first, so it resolves either way.
         name = (
             profile.to_vllm_internal_name(qname)
             if profile is not None
             else qname
         )
+        if name.startswith("language_model.model."):
+            return name[len("language_model."):]
         if name.startswith("language_model."):
-            name = name[len("language_model."):]
+            # e.g. `language_model.lm_head` -> `model.lm_head`; a bare strip
+            # would produce `lm_head`, which matches neither vintage.
+            return "model." + name[len("language_model."):]
         return name
 
     def _decision_unit_id(qname: str) -> str:
