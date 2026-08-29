@@ -32,6 +32,7 @@ from .cb_layout import (
 from .format_registry import canonical_format_name
 from .nvfp4_cb_footprint import (
     CBSerializationContext,
+    _ldlq_for_format,
     _physical_codebook_refs,
     cb_serialization_context_stamp,
     codebook_source_for_format,
@@ -86,6 +87,16 @@ def warm_serialization_context(
     """Project the full byte-affecting encoder context onto one CB format."""
     fmt = canonical_format_name(format_name)
     stamp = cb_serialization_context_stamp(context, formats=[fmt])
+    # Warm state belongs to one format, while the producer context can enable
+    # LDLQ for a family set. Persist only the effective decision for this
+    # encoder so changing an unrelated family's scope does not force a cold
+    # sweep. Keep the per-format scope canonical and omit a kernel identity
+    # that cannot affect this format.
+    format_ldlq = _ldlq_for_format(fmt, context)
+    stamp["ldlq"] = format_ldlq
+    stamp["ldlq_scope"] = "all" if format_ldlq else "none"
+    if not format_ldlq:
+        stamp.pop("ldlq_packed_kernel", None)
     # Lattice physical sidecar names do not affect assignment. Discard the
     # artifact-wide learned bundle details for a lattice family so an NVFP4
     # warm start remains reusable inside a mixed lattice-NV/learned-FP8 run.
@@ -177,6 +188,78 @@ def _record_key(qname: str, format_name: str, source_digest: str) -> str:
         "format": canonical_format_name(format_name),
         "source_digest": str(source_digest).lower(),
     }).encode("utf-8")).hexdigest()
+
+
+def _canonicalize_warm_metadata(
+    metadata: Any,
+    expected: Mapping[str, Any],
+) -> Any:
+    """Project a validated historical aggregate LDLQ stamp onto one format.
+
+    This remains an exact-match check, not a subset matcher. Before replacing
+    the aggregate LDLQ fields with their effective per-format identity, the
+    historical bool, scope, and active packed-kernel stamp must be internally
+    consistent. Every unrelated metadata difference remains a cold fallback.
+    """
+    if not isinstance(metadata, Mapping):
+        return metadata
+    candidate = dict(metadata)
+    raw_context = candidate.get("serialization_context")
+    expected_context = expected.get("serialization_context")
+    if not isinstance(raw_context, Mapping) or not isinstance(
+        expected_context, Mapping
+    ):
+        return candidate
+    raw_serialization = raw_context.get("serialization")
+    if not isinstance(raw_serialization, Mapping):
+        return candidate
+
+    serialization = dict(raw_serialization)
+    raw_ldlq = serialization.get("ldlq")
+    if type(raw_ldlq) is not bool:
+        return candidate
+    raw_scope = serialization.get("ldlq_scope")
+    if "ldlq_scope" not in serialization:
+        # Before family scopes, the bool meant all or none. A historical
+        # active record must still pass the packed-kernel check below.
+        aggregate_scope = "all" if raw_ldlq else "none"
+    elif raw_scope in {"none", "nvfp4", "all"}:
+        aggregate_scope = str(raw_scope)
+        if raw_ldlq != (aggregate_scope != "none"):
+            return candidate
+    else:
+        return candidate
+
+    raw_kernel = serialization.get("ldlq_packed_kernel")
+    if aggregate_scope == "none":
+        if "ldlq_packed_kernel" in serialization:
+            return candidate
+    else:
+        from .nvfp4_cb_formats import packed_ldlq_artifact_stamp
+
+        if (
+            not isinstance(raw_kernel, Mapping)
+            or dict(raw_kernel) != packed_ldlq_artifact_stamp()
+        ):
+            return candidate
+
+    parsed = parse_format_name(str(expected.get("format")))
+    if parsed is None:
+        return candidate
+    family, _k = parsed
+    effective_ldlq = aggregate_scope == "all" or (
+        aggregate_scope == "nvfp4" and family.grid == "fp4"
+    )
+    serialization["ldlq"] = effective_ldlq
+    serialization["ldlq_scope"] = "all" if effective_ldlq else "none"
+    if not effective_ldlq:
+        # Validate an aggregate-scope kernel before discarding it as irrelevant
+        # to this format's warm identity.
+        serialization.pop("ldlq_packed_kernel", None)
+    context = dict(raw_context)
+    context["serialization"] = serialization
+    candidate["serialization_context"] = context
+    return candidate
 
 
 def build_warm_record(
@@ -370,6 +453,7 @@ class CBWarmStateStore:
                     context, fmt, qname=str(qname)
                 ),
             }
+            metadata = _canonicalize_warm_metadata(metadata, expected)
             if metadata != expected:
                 return None
             normalized = _validate_scale_state(
