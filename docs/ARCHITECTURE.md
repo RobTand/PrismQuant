@@ -9,11 +9,15 @@ aggregators build each menu from the MEMBERS' candidate lists rather than from
 `FormatSpec` objects (`_super_menu_format_names`) — the silent gap that dropped
 every rung from every coupled unit; `format_rank` is extended from the
 candidate menu by exact serialized rate so `promote_serving_units` can rank a
-selected rung; exact bytes travel in `_memory_bytes_by_format` written by the
-seam and read by the payload filter, `footprint`, `compute_achieved`,
-`kl_measurement` and bit attribution, each refusing pointedly rather than
-falling back to a closed form (**no TCQ `FormatSpec` is registered, and that is
-the design** — a rung's bytes are not a function of `(name, shape)`); and the
+selected rung; exact bytes travel in `_memory_bytes_by_format`, written by the
+seam and preferred by every byte reader inside the allocator process — the
+payload filter and `footprint` refuse pointedly when it is absent, and
+`compute_achieved` and bit attribution prefer it rather than guessing a closed
+form (**no TCQ `FormatSpec` is registered, and that is the design** — a rung's
+bytes are not a function of `(name, shape)`). That map is **process-local**: it
+is never written back to `probe.pkl`, so the seam's reach is allocation-time
+only and a TCQ assignment handed to a later stage (`kl_measurement`, export)
+fails at the registry lookup — by design, and the next wiring frontier. Finally the
 run's **attested** `COST_MODE` plus the surface provenance (manifest sha256,
 currency, anchor activation contract) now travel into `layer_config.json`'s
 `__prismaquant__` block. The eighth link — the anchors' weighted-SSE currency —
@@ -3443,6 +3447,15 @@ a wiring gap.**
 | `build_candidates` called with neither `cost_mode=` nor `trellis_provenance=` (`allocator.py:2756`) | both are passed. The cost mode is the **attested** one: `cost_data["provenance"]["cost_mode"]` (re-vet R2), never `os.environ` — `run-pipeline.sh` assigns `COST_MODE` with `:=` and never exports it. The provenance (manifest **sha256**, declared currency, the run's objective currency, the anchor activation contract, lane/route status) lands in `layer_config.json`'s `__prismaquant__` block under `trellis_surface`, present only when the seam contributed (§§ P12/P14, § P6). |
 | the anchors' currency is weighted SSE under an activation second moment (`trellis_rate_surface.py:43-52`) | **the one remaining entry**, and the surviving refusal. |
 
+**Reach: allocation-time only, and deliberately.** `_memory_bytes_by_format` is
+written into the in-memory probe stats; nothing rewrites `probe.pkl`, so the
+exact bytes do not survive the allocator process. Every later stage
+(`kl_measurement.assignment_bit_total`, `production_recache`, export) resolves a
+format through the registry first, so a TCQ assignment that escapes into one
+fails at that lookup rather than being priced by a closed form. Wiring the seam
+did not make a trellis rung shippable and was not meant to: an exportable rung
+needs a render and a P14 runtime attestation, neither of which exists.
+
 **Why the last one stays a refusal.** It is not plumbing. The ladder's measured
 anchors are weighted SSE under a per-input-channel activation second moment —
 an output-MSE proxy — while an `aura` run's DP ranks the KL-adjoint. No code
@@ -3497,7 +3510,11 @@ serialized identities, `activation_pricing`, `serving_lane`, all floats by
 scenarios covering both aggregators, `PRISMAQUANT_COST_UCB_Z` at 0 and 1.5,
 calibrated gains, activation fair pricing and the role-split packed profile.
 Golden digest `033adb45e71a51b831f5335047fa56e5fb00dc3137894a983fa0146bf456197d`,
-unchanged after the change.
+unchanged after the change. A passing golden is not yet evidence, so
+`test_the_golden_is_load_bearing` mutates the aggregators' menu-order helper at
+runtime — the same SET of formats in a different DP order, the minimal
+perturbation an order-blind record would miss — and asserts the digest MOVES
+(to `0d7b2edf…`) and returns on restore.
 
 **Why a manifest, not a `FORMATS` enum entry.** A trellis rung is
 `(family, body_rate_q256, layout, schedule, alphabets)`, and the wire carries

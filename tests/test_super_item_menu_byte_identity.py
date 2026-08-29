@@ -38,6 +38,7 @@ import os
 from pathlib import Path
 from unittest import mock
 
+from prismaquant import allocator_candidates as alloc_cand
 from prismaquant import format_registry as fr
 from prismaquant.activation_fair_pricing import (
     REASON_CALIBRATED,
@@ -398,6 +399,36 @@ def test_the_golden_actually_exercises_both_aggregators_and_the_hedge():
     # Role-split really splits: 2 layers x 2 roles = 4 units, not 2.
     split = payload["scenarios"]["packed_role_split_hedged"]["super_items"]
     assert len(split) == 4, sorted(split)
+
+
+def test_the_golden_is_load_bearing():
+    """A passing golden is not evidence until a driver change makes it fail.
+
+    Mutate the aggregators' menu-order helper at runtime -- same SET of
+    formats, different DP order, the minimal perturbation an order-blind
+    record would miss -- and the digest must move.  Restoring it must bring
+    the recorded digest back, so the check is the fixture's, not the run's.
+    """
+    golden = json.loads(GOLDEN_PATH.read_text())
+    assert digest(_build_payload()) == golden["digest"]
+
+    original = alloc_cand._super_menu_format_names
+
+    def reordered(formats, member_menu_intersection):
+        return tuple(sorted(original(formats, member_menu_intersection)))
+
+    with mock.patch.object(
+        alloc_cand, "_super_menu_format_names", reordered
+    ):
+        mutated = digest(_build_payload())
+    assert mutated != golden["digest"], (
+        "reordering every super item's menu did not change the recorded "
+        "payload -- the golden does not pin what it claims to pin"
+    )
+    assert digest(_build_payload()) == golden["digest"], (
+        "the golden did not return to its recorded value after the mutation "
+        "was undone"
+    )
 
 
 def test_passthrough_rows_are_not_swallowed_by_either_aggregator():
