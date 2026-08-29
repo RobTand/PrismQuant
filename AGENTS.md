@@ -70,7 +70,13 @@ Before implementing new functionality, read this file,
    dependencies already installed. For GPU runs, validation, export, and
    large-model experiments, use those working containers first instead of
    assuming the host Python environment is sufficient or rebuilding ad hoc.
-11. **Keep `docs/ARCHITECTURE.md` current in the same commit.** A change to
+11. **Acquire required dependencies and artifacts.** Agents are authorized to
+    download and install task-required files, model checkpoints, CLI tools,
+    libraries, packages, and container images without asking solely for
+    download/install permission. Prefer scoped, user-local, or containerized
+    installs where practical, pin or record versions needed for reproducibility,
+    and continue to use the known-good Docker environments for GPU work.
+12. **Keep `docs/ARCHITECTURE.md` current in the same commit.** A change to
     pipeline defaults, the stage graph, the format menu, the plugin contract,
     serving-lane defaults, or ship gates is incomplete until
     `docs/ARCHITECTURE.md` (and its diagrams, if topology changed) reflects it
@@ -78,12 +84,35 @@ Before implementing new functionality, read this file,
     `tests/test_architecture_doc.py` enforce the mechanical subset. Dated
     results docs and handovers are append-only history, never a substitute.
 
+13. **Measurement is first-class, and telemetry counts as measurement.** Any
+    claim about speed, cost, residency, or "where the time went" is carried by
+    a measurement, never by log-line reasoning. Profile BEFORE the change and
+    AFTER it -- the delta is the claim, and a bench number without a profile
+    does not establish where the time went. Two instruments, both required,
+    because they answer different questions: an **in-process profiler**
+    (`torch.profiler`, py-spy, `/proc/PID/io`, `nsys`) says where time goes
+    *inside* a run; the **Netdata series on both boxes** says whether the box
+    was actually loaded, which no in-process tool can see. Attach the evidence
+    to the finding, and put it in the acceptance criteria of every perf
+    delegation.
+
+    On GB10, **`nvidia_smi.gpu_utilization` is non-diagnostic under load**: it
+    means "at least one kernel is resident", not "the SMs are working", and it
+    reads 96% for a memory-stalled kernel exactly as for a saturated one
+    (measured 2026-08-28: 96% on both sides of a 5.83x throughput change).
+    `utilization.memory` is worse -- a fake hard 0. Read **power against the
+    ~140 W envelope** instead, and rank implementations by **work per joule**;
+    the envelope fraction also estimates remaining headroom, which wall-clock
+    cannot. Do not diagnose a GPU hot path from utilization.
+
 ## Implementation Checklist
 
 Before editing:
 
 - Identify the existing mechanism this change should extend.
 - Decide how the change stays GPU-bound and resident-prefetched.
+- Decide what the before/after measurement is, and which instrument
+  produces it (in-process profiler, Netdata series, or both).
 - Define the vLLM compatibility gate if formats, export metadata, kernels,
   or compressed-tensors layout are touched.
 - Define the KL/bpp/runtime comparison and calibration set.
@@ -91,6 +120,8 @@ Before editing:
 Before finishing:
 
 - Run targeted tests and compile checks for touched modules.
+- Attach before/after profiler evidence for any hot-path or perf change;
+  rank GPU work by work-per-joule, never by utilization.
 - Add or update tests for new policies, format gates, cache residency, or
   validation behavior.
 - Record measured results, commands, and log paths in docs when a claim is

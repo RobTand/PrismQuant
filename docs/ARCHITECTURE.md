@@ -1,8 +1,80 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-26 · `claude/snapquant-productionalization` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-26,
-`claude/snapquant-productionalization`) for the **model-calibrated PrismaSnap fold
+As of: 2026-08-28 · `claude/trellis-continuous-surface` — stamps follow, newest
+first, each recording its own branch and date. Re-stamped (2026-08-28,
+`claude/trellis-continuous-surface`) for the **PrismaSnap source-dtype
+contract** (§3.0): the BF16-realization lane now accepts a native-FP8 source as
+well as BF16, dequantizing through the checkpoint's declared block grid and
+folding in BF16. The prior refusal was guarding a real hazard, not being
+conservative — `apply_diagonal_transform` restores the *source* dtype by
+default, so a naive widening would have rounded every fold back into
+`float8_e4m3fn` against a stale block scale. Uplifted operands drop their
+scale siblings from shard and index. FP8 **materialization** is not yet
+reachable — every liftable FP8 source refuses, up front, at
+`_preflight_uplift_publishability`; the dense lane only, as the MoE plan
+lane remains BF16-gated. Re-stamped (2026-08-28,
+`claude/trellis-continuous-surface`) for the **packed-expert cache render
+identity (SB-1)**: `fill_packed_expert_cache_entries` appended packed-MoE keys
+to `cache.weights` without touching `requested_entries`, `render_scores` or
+`render_gates`, so the exact cache union refused at its first subcommand on
+every packed-MoE model (35B, 122B, 284B, GLM-5.3). Every packed expert is now
+scored honestly — per-expert render scores summed into the one record the cache
+key owns — each packed entry carries a truthful empty-trace gate record naming
+the mechanism that actually ran, the counters are recomputed from the cache so
+the M4 lazy gap-fill loop stays exact, and no exclusion or subtraction is added
+to the union arithmetic (§ exact multi-host striping;
+`tests/test_packed_expert_union_identity.py`). Earlier same-day stamp
+(`claude/trellis-continuous-surface`) for the **PrismaSnap dead-gate repair**:
+`merge_checkpoint_parts` now takes `production` and runs
+`_require_attested_container()` first, so the CLI's `merge-checkpoint-parts`
+(which now passes `production=True`) is held to the same attested-container
+contract as `materialize-part`. It deliberately takes **no** `device`: the
+union executes on no device, so the CUDA leg of `_require_production_execution`
+would have been satisfied by a caller-supplied string with no referent, and
+that leg is now split out for the paths that do execute -- each of which
+asserts `torch.cuda.is_available()` immediately after the gate;
+`_producer_identity` additionally binds `prismasnap_moe.py`,
+`prismasnap_moe_checkpoint.py` and `prismasnap_contract.py`, so an edit to the
+MoE plan stack or the lane-admission contract invalidates a producer receipt;
+and `_layer_source_graph`'s `source` parameter now binds every planned MoE
+operand to the live checkpoint header (`_Checkpoint.metadata`) instead of
+trusting the tensor census alone, matching the dense twin. Earlier stamp
+(2026-08-27,
+`claude/trellis-continuous-surface`) for the **glm5_next export bring-up**: the
+streamed exporter now builds the multimodal skeleton when the profile declares
+`requires_multimodal_skeleton()` (stage_multimodal + declared-arch class, weight
+map `multimodal=True`), the tensor-sink rename composes `live_to_recipe_name`
+before `export_tensor_name`, the 3e layer passthrough ships concat-merge SOURCE
+tensors verbatim instead of the merged live key, per-layer progress lines are
+unconditional with sweep rate/ETA, `fill_packed_expert_cache_entries` probes its
+device from the first non-meta parameter, live↔recipe probe/cost rekeying exists
+as `glm53_stock_reprice rekey-recipe`, and `specs/glm5_next.json` declares the
+MLP gate/up fused groups attested from the pinned PR image (see §Model-profile
+plugin, concat_merges / multimodal-forced export). Earlier same-day stamp
+(`claude/trellis-continuous-surface`) for the **GLM stock anchored campaign +
+streamed non-CB checkpointing**: the streamed AURA durable-checkpoint guard now
+accepts the production-anchor renderer's exact identity as the value-bearing
+render identity, so an anchored run on a CB-free menu checkpoints on the anchor
+identity alone (the fail-closed refusal remains for non-anchored non-CB;
+`tests/test_streamed_cost_checkpoints.py`), `run_streamed_production_anchor_aura`
+exposes `allow_packed_expert_omission` for MoE models whose routed experts are
+priced empirically, the streamed capture/reverse passes emit per-layer rate/ETA
+progress lines, and a new manual campaign row (§ stage table: **GLM stock
+anchored**) wires `prismaquant.glm53_stock_harvest` (GPU batched adjoint over
+the dense plan) → `prismaquant.glm53_stock_reprice campaign` (CPU three-
+provenance merge) for the GLM-5.3-Flash teacher artifact. Re-stamped
+(2026-08-26, `claude/trellis-continuous-surface`) for the **GLM-5.3-Flash /
+Qwen3.8-Flash-Next plugin-contract change**: two new registered profiles (`qwen4_exp` 200,
+`glm5_next` 210 — §8.4), and a new spec key + profile accessor,
+`concat_merges` / `ModelProfile.concat_merge_groups()`, backed by a generic N→1
+source-concatenation bridge in the streaming loader
+(`layer_streaming._merge_concat_sources`, wired into the probe/cost read path and
+the exporter). It closes glm5_next's one hard blocker — the KDA short
+convolution's `{q,k,v}_conv1d → conv1d` `Concatenate(dim=0)`, which a
+1:1-or-drop `checkpoint_to_live_name` cannot express and which would otherwise
+have loaded uninitialised. Both new profiles are enablement scaffolds: no vLLM
+class is importable for either, so neither is export-ready (§8.4). Re-stamped
+(2026-08-26, `claude/snapquant-productionalization`) for the **model-calibrated PrismaSnap fold
 threshold**: the served fold gate is no longer the fixed `5e-4` alone but
 `max(5e-4, 2.0 × measured null perturbation floor)` when the attestor receives a
 saturation-licensed null-floor receipt, content-hashed into
@@ -1135,6 +1207,43 @@ the same probe, AURA objective, per-Linear allocator, `ProductionWeightCache`, r
 exporter, and serving validators run with no PrismaSnap scheduler or serve-time operation
 (`prismasnap.py` module contract; `prismasnap_contract.require_verified_prismasnap_if_present`).
 
+**The source may be BF16 or native FP8; the fold's output is always BF16.**
+`SUPPORTED_SOURCE_DTYPES = {BF16, F8_E4M3}` (`prismasnap_checkpoint.py`). A fold is a
+per-**channel** diagonal, while a native-FP8 checkpoint carries a per-**block**
+`weight_scale_inv`, so the fold is not constant inside a block and cannot be absorbed into the
+scale. An FP8 operand is therefore dequantized once through the checkpoint's own declared grid
+(`_Checkpoint.load_bf16`, delegating to the streaming path's `_declared_weight_block_size` /
+`_apply_fp8_dequant_inplace` — one dequant mechanism, per principle 8) and folded in BF16, which
+is the dtype `attest_fold_fidelity` serves anyway. The materializer forces `output_dtype` to
+BF16 for those operands: letting it default to the source dtype would round each fold back into
+`float8_e4m3fn` while the stored block scale stayed put — wrong values with no error. A BF16
+source takes a byte-identical no-op path. `I8`, per-tensor-scale FP8, and any dtype PrismaSnap
+cannot lift exactly are refused by name; a checkpoint that pairs FP8 weights with scales but
+declares no `weight_block_size` fails closed rather than assuming a 128x128 grid.
+
+An uplifted operand's `weight_scale_inv` no longer describes it, so it is dropped from the
+shard and from the output index, and `_verify_output_census` states that derived census exactly
+rather than relaxing its comparison.
+
+**Completion boundary — FP8 sources support plan build and fold measurement, not
+materialization.** This is not a corner case: it is *every* liftable FP8 source, so no FP8
+checkpoint can currently be materialized. Uplift leaves the output **mixed** — folded operands
+BF16 with no scale, untouched operands still block-scaled FP8 — and two consumers read that mix
+without a way to be told about it. (a) `config.json` declares one `quantization_config` for the
+whole checkpoint, and the block-scaled FP8 schemas in play
+(`{quant_method, fmt, weight_block_size, scale_fmt}`) carry no per-operand exclusion key, so
+there is no attested way to name the uplifted operands (principle 14). (b) A profile that
+overrides `fp8_scale_pairs` supplies the scale map from the *profile*, not the index
+(`layer_streaming.py:301`), so dropping a scale from the index never reaches it — it would
+dequant a BF16 tensor against a scale the shard no longer holds. Both are owed design work.
+`_preflight_uplift_publishability` refuses at plan validation, **before any bytes are written**,
+rather than at the downstream config/census gates that are only reached after the whole body has
+been streamed — on a 284B FP8 source the late refusal costs hours and a full checkpoint of disk.
+
+The widening covers the **dense** lane. `prismasnap_moe_checkpoint.py` still gates every
+operand, router and norm on `dtype == "BF16"`, so an FP8 MoE source is refused at plan
+discovery.
+
 The candidate's nominal search is the measured-fast `stage,polish` algorithm, not Fable's
 original sequential greedy implementation. `PrismaSnapSearchConfig` is versioned data and
 production accepts only its canonical value: group size 16; alpha candidates
@@ -1197,7 +1306,11 @@ make restart decisions mechanical and ambiguous ownership a refusal
 layer sets, `merge-plans --resume` accepts only their exact layer union, workers materialize
 disjoint original shard sets, and `merge-checkpoint-parts --resume` accepts only an exact
 non-overlapping source-shard union. The remote part is transferred as an explicit
-content-addressed campaign stage. The strict low-space collation arm passes
+content-addressed campaign stage. `merge-checkpoint-parts` is the last writer of the tree the
+two `materialize-part` workers staged, so the CLI runs it under the same `production` execution
+gate they use (`_require_production_execution`: CUDA-typed device plus an attested container
+rootfs); an unattested merge would otherwise launder both workers' receipts. The strict
+low-space collation arm passes
 `--require-hardlinks`: every admitted part shard must already be on the coordinator filesystem,
 and the staging and committed trees must retain the same device/inode binding or fail. This
 avoids another full-checkpoint copy; the general-purpose CLI's durable-copy mode is not the
@@ -1433,7 +1546,7 @@ which is what the rows touched since are keyed on.
 | # | Stage | Script | Artifact(s) | Reuse guard | Mode/lane gate |
 |---|---|---|---|---|---|
 | **PREPARED → PLANNED (optional, pre-pipeline; ×2)** | Validate the original BF16/source/probe/producer/container closure, discover exactly three dense seams per claimed layer, run the canonical CUDA `stage,polish` search, then exact-union the two disjoint layer plans | `tools/prismasnap.py plan-dense --resume`; `merge-plans --resume`; autonomous dependency/retry/barrier execution by `tools/run_cluster_campaign.py` / `prismaquant.cluster_campaign` | one self-digested plan directory per Spark; merged `plan.json` + `scales.safetensors`; campaign manifest/state/logs/sealed receipts | exact argv and producer closure; full source identity + tensor-header census; probe bytes/calibration/execution identity; canonical search; host locks and receipt hashes; merged layer cover must be disjoint, complete, and carry exactly three semantically valid seams per layer | opt-in candidate source-prep only; production requires CUDA and attested container; current planner is dense-only and excludes vision/MTP seams |
-| **PLANNED → MATERIALIZED (optional, pre-pipeline; ×2)** | Stream disjoint original shard sets through the merged transform program, transfer the remote part by explicit receipt, then exact-union on the coordinator. The strict 27B low-space arm requires hardlinks and proves device/inode identity in staging and after commit | `tools/prismasnap.py materialize-part --resume`; `merge-checkpoint-parts --resume --require-hardlinks` | two `part.json` directories with per-shard receipts; atomically committed BF16 HF checkpoint + `prismasnap_provenance.json` state `MATERIALIZED` | plan/source/header identity; exact disjoint source-shard cover; source/output hash, size, tensor shape/dtype and transform census per shard; same-filesystem hardlink proof; fsynced no-clobber staging and committed-tree replay | still outside `run-pipeline.sh`; `MATERIALIZED` is not downstream admission |
+| **PLANNED → MATERIALIZED (optional, pre-pipeline; ×2)** | Stream disjoint original shard sets through the merged transform program, transfer the remote part by explicit receipt, then exact-union on the coordinator. The strict 27B low-space arm requires hardlinks and proves device/inode identity in staging and after commit | `tools/prismasnap.py materialize-part --resume`; `merge-checkpoint-parts --resume --require-hardlinks` | two `part.json` directories with per-shard receipts; atomically committed BF16 HF checkpoint + `prismasnap_provenance.json` state `MATERIALIZED` | plan/source/header identity; exact disjoint source-shard cover; source/output hash, size, tensor shape/dtype and transform census per shard; same-filesystem hardlink proof; producer/container attestation on the merge as well as on each part; fsynced no-clobber staging and committed-tree replay | still outside `run-pipeline.sh`; `MATERIALIZED` is not downstream admission |
 | **MATERIALIZED → VERIFIED → COMMITTED (optional, pre-pipeline)** | Serve snapped BF16 against the original BF16 teacher, attest all-position fold KL, atomically replace provenance with the verified receipt, then hand the ordinary checkpoint to the unchanged native pipeline | `tools/measure_vllm_full_kl.py`; `tools/prismasnap.py attest-fold-fidelity`; admission by `python -m prismaquant.prismasnap_contract --model "$MODEL_PATH"` | student result + teacher metadata/payload; `prismasnap_provenance.json` state `VERIFIED`; native output copy `source_prismasnap_provenance.json` | BF16/no-quantization/no-spec-decode launch contracts; teacher/source/calibration windows and corpus; both serve fingerprints; coherent metrics; current index/weight-map/every-shard identity; forward KL `≤5e-4` | native compressed-tensors `{NVFP4, FP8_DYNAMIC, BF16}` only; GGUF and Gridbook/codebook refuse any marker; an absent marker is the historical no-op path |
 | **1/4** | Sensitivity probe — per-Linear empirical Fisher `h_trace`, body + MTP in one pass; tied heads materialized and excluded, KV-sharing cotangents grafted (§7.5) | `prismaquant.incremental_probe` (`544-560`) | `artifacts/probe.pkl`; activations → `act/`; shards → `work/`; `logs/probe.log` | settings-hash `probe` (`703`); reuse also re-checks stored `calibration_modality` | — |
 | **1/4×N (manual)** | Exact sample-axis probe map/reduce. Every worker processes the complete dense text qname census over one canonical contiguous sample partition. Stage 1 publishes raw shifted-token CE; a global scalar barrier closes the cover; stage 2 reruns phase 1 with that global mean, then the strict reducer finalizes raw Fisher/marginals once and publishes the deterministic dense-body activation union (§4.1) | `prismaquant.sample_parallel_probe` + `prismaquant.incremental_probe` + `prismaquant.sample_parallel_probe_merge` | immutable calibration/run contract and digest-bound sample cover; per-worker CE/probe/cache shards; global CE receipt; ordinary merged `probe.pkl` + `act/` | committed read-only source snapshot + host-verified immutable registry RepoDigest; source/config/header/content identity; exact sample cover replayed before GPU setup; duplicate-key-free trusted JSON; marginal-to-trace and independently replayed global top-R/fused-row checks; no-follow same-byte probe and committed-identity lazy activation consumption; no-clobber output | opt-in operator workflow; no `torch.distributed`, qname/layer partitioning, alternate cache, serving-runtime change, h-detail, visual, routed, or packed path |
@@ -1449,6 +1562,7 @@ which is what the rows touched since are keyed on.
 | **2b/4 cw** | Cost-cache col-weights (weighted lanes only) | `harvest_cb_col_weights "[2b/4] cost-cache"` → `build_production_cache --col-weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | `COST_RENDER=cached-menu` on a CB/GGUF lane (§4.7) |
 | **P0–P3** | Platform-agnostic anchored-AURA mechanism: format-blind streamed adjoint; plugin-mapped production anchors per legal `(unit,family,equivalence_class)`; within-segment shape fit; recomputed hull; one byte-budget DP (§4.3) | frozen DSv4 shim `tools/run_aura_cb_reprice.sh` → `prismaquant.dsv4_aura_cb_reprice`; generic mechanism `prismaquant.anchored_cost`; CB mapping plugin on `format_registry` + `model_profiles` | identity-bound scalar checkpoints; the driver atomically emits an exportable artifacts directory containing the AURA-stamped `layer_config.json`, matching `selection.json`, allocator `pareto.knees.json`, and the exact platform render inputs (`cb_col_weights.pkl` on CB) | qname-keyed atomic resume bound to model/menu/arm/plugin/calibration/format-plan/render-input identity | generic evaluate/price/allocate mechanism with a machine-specific map plugin; DSv4 remains the acceptance vehicle; never a full-menu render campaign |
 | **RTX4090 sparse P1–P3 ×2 (manual)** | Strict 18 GB specialization of anchored AURA: derive the exact bundle-captured probe imatrix, attest one snapshot/image execution, split whole layers across two hosts, render only lattice K4/K16/K48 plus native FP8 per body Linear, reconstruct one exact global payload, fit the lattice rung law, byte-preserve direct rows, impute nine CB rungs, add the BF16 source terminal, and solve once (§4.3) | `prismaquant.rtx4090_fp8_burn` + `prismaquant.cb_anchored_cost` | durable no-clobber FP32 column weights; immutable execution attestation and two-stripe plan; 496×4 measured AURA cells; one mixed measured/imputed/source-terminal allocator table | complete disjoint qname/format/purpose/renderer/source/imatrix/snapshot/image/arm identity; worker chunk counters remain explicitly unverified planning metadata | Qwen3.8 strict FP8-only validation-artifact campaign; no NVFP4 and no twelve-rung physical render sweep |
+| **GLM stock anchored (manual)** | Stock-vLLM single-rung specialization of anchored AURA for a non-CB menu: one batched streamed KL-adjoint over the dense plan (135 units × NVFP4, production render gptq+static_act_order+JSO), priced/merged CPU-side with measured packed-expert unit-KL and exact source terminals. Unblocked 2026-08-27: the streamed checkpoint guard accepts the production-anchor renderer identity as the value-bearing render identity on a CB-free menu (`tests/test_streamed_cost_checkpoints.py`), and the anchored renderer's transient per-layer render makes the retained format-menu dW cache moot | `tools/run_glm53_stock_harvest.sh` → `prismaquant.glm53_stock_harvest` (GPU) → `prismaquant.glm53_stock_reprice campaign` (CPU) with the `prismaquant.stock_anchored_cost` map plugin | harvest wrapper pkl (arm identity + exact plan + AURA payload) → `cost_stock_anchored.pkl` (135 anchored + 84 empirical + 69 pinned = 288 units; packed-expert FP8_SOURCE terminals refused `profile_mismatch` and recorded as serving-gap findings) | per-unit identity-bound AURA shards; arm identity binds render levers + costed format + probe calibration (a CB-free renderer identity binds no levers by itself); campaign refuses filtered harvests, plan drift, RTN-fallback rows, foreign calibration | GLM-5.3-Flash teacher-artifact campaign; single costed rung per unit so no shape transfer is expressible; routed experts stay on the empirical unit-KL currency |
 | **3/4** | Allocator — multi-choice knapsack over per-Linear body formats plus explicit fixed auxiliary head/MTP/visual assignments (§4) | `prismaquant.allocator --lm-head-format "$LM_HEAD_FORMAT_CANONICAL"` | `artifacts/layer_config.json`, `artifacts/pareto.csv`, `artifacts/pareto_assignments/` (validated-surrogate only); `logs/allocator.log` | **none — always runs** | fixed non-BF16 head and `ALLOW_PINNED=lm_head` are mutually exclusive |
 | **4/4 A** | Frontier format-menu cache, including profile-synthesized MTP when the menu requests it | `build_production_cache … --render-scope format-menu --render-packed-experts --activation-cache-dir act/` | `artifacts/production_weight_cache_frontier_raw.pkl` + `…_frontier/` | settings-hash `frontier-cache`, including the resolved head policy | validated-surrogate; `exit 2` if `PRODUCTION_CACHE=0` |
 | **4/4 B** | Measured held-out KL per Pareto point | `prismaquant.validate_assignments_kl` (`1243-1248` per-point, `1272-1277` batched) | `artifacts/validated_frontier_kl.json` + `…_parts/*.json` (merged `1250-1269`) | settings-hash `frontier-kl-point` per point (`1294`) | validated-surrogate |
@@ -3364,6 +3478,26 @@ creates only the listed names. The cache updates the ordinary `requested_entries
 source prefix/count, activation row counts, and row limit. CB MTP renders are refused until
 their identity-bound CB pair contract can be merged; the supported production-cache append
 is the native materialized lane (`mtp_production_cache.py`, `build_production_cache.py`).
+
+**The packed-MoE expert append carries the same render-identity contract.**
+`fill_packed_expert_cache_entries` adds 3-D `(experts_qname.pn, fmt)` keys to that same cache,
+and it updates the same metadata the union reads: `requested_entries` **recomputed** from the
+cache rather than incremented (the M4 lazy expert gap-fill calls the append in a loop over
+frontier points with overlapping assignments, and an increment drifts on every rerun), one
+render-score record per packed key, one render-gate record per packed key, and
+`packed_expert_coverage`. Records are replaced by key inside one exact packed scope, never
+appended. The score is **measured, not declared**: every expert in the stack is scored by the
+same scorer the dense path uses, against its own routed rows, and the per-expert records are
+summed into the one record the cache key owns — experts the router never reached are counted
+in `experts_without_activations` rather than averaged into an output metric they have no
+evidence for. The gate record is truthful about a path that runs no progressive gate: an
+**empty trace**, the mechanism that actually executed (batched fixed-damp GPTQ, or the
+untraced per-expert render stack), and the per-expert GPTQ-vs-RTN do-no-harm counts the render
+did measure. No declared exclusion or subtraction is added to the union arithmetic. The
+streaming builder merges rather than overwrites these fields, because its own
+`render_formats_by_qname` plan is dense-only (`production_weight_cache.py`
+`_finalize_packed_expert_cache_metadata`, `streaming_production_cache.py`,
+`tests/test_packed_expert_union_identity.py`).
 
 **A streamed CB format menu is a lifetime mode of that same cache, not a second cache.**
 `build_production_cache --streaming --render-scope format-menu` routes the complete requested
@@ -5288,7 +5422,7 @@ flowchart TD
 
 | Registry | Where | Holds |
 |---|---|---|
-| Model structure | `model_profiles/<arch>.py` (`ModelProfile` subclass) + `model_profiles/specs/<name>.json` (`ModelStructureSpec`, schema `prismaquant.model_structure.v1`, `structure.py:20`) | detection (`match`, `priority`), naming across five name spaces, routed-expert packed/unpacked layout and format groups, pinned/passthrough names, staging, shard regexes, probe skips, `default_serving_profile`, `supported_lanes`/`preferred_lane` |
+| Model structure | `model_profiles/<arch>.py` (`ModelProfile` subclass) + `model_profiles/specs/<name>.json` (`ModelStructureSpec`, schema `prismaquant.model_structure.v1`, `structure.py:20`) | detection (`match`, `priority`), naming across five name spaces, routed-expert packed/unpacked layout and format groups, `concat_merges` (N→1 source concatenations, below), pinned/passthrough names, staging, shard regexes, probe skips, `default_serving_profile`, `supported_lanes`/`preferred_lane` |
 | Serving constraints | `serving_profiles.py` + `serving_profile_specs/<id>.json` (schema `prismaquant.serving_profile.v1`) | per-format allow/deny rules with name conditions, shape rules, runtime shape validators, runtime package requirements; `extends` composition (`serving_profiles.py:557-609`) |
 | Pipeline contract | `pipeline.py` | almost nothing — `target_profile` as a kwarg (`:644`), run metadata (`:688`), CLI passthrough (`:1115`, `:1151`), one `model.structure_graph` stage spec (`:877-884`). Zero architecture names, which is correct: the contract layer should not know models (§3.6) |
 
@@ -5297,7 +5431,7 @@ still precede supersets — `Qwen3_5DenseProfile` before `Qwen3_5Profile` — bu
 encoded in `_REGISTERED`'s literal order plus comments. Original Qwen3 dense and routed-MoE
 now share the contract-aligned `Qwen3Profile`. Priority is a class `int` (**lower is consulted first**, like a sort
 rank), declared both on the Python class and in its spec, so the ordering survives the Python
-body being deleted. Built-ins take 100–190 in the historical order; `ModelProfile.priority`
+body being deleted. Built-ins take 100–210 in the historical order; `ModelProfile.priority`
 defaults to **0**, which is what keeps `register_profile`'s documented insert-at-front override
 true for third parties. `detect_profile` keys on `config.json` `model_type` + `architectures`
 and dispatches through `_resolve`, which walks `detection_order()`; unmatched models fall to
@@ -5306,9 +5440,88 @@ order still reproduces the list literal exactly.
 
 `detection_order()` folds in a second kind of candidate: a **`SpecMatchProfile`**
 (`model_profiles/spec_profile.py`) per `specs/<id>.json` whose `id` no registered Python
-profile claims, matched by its declarative `match` block. All nine shipped specs are claimed by
-a Python profile, so today the live order contains none — landing the reader changed detection
-for exactly zero shipped models, which is the point (see §8.3 Tier A).
+profile claims, matched by its declarative `match` block. All eleven shipped specs are claimed
+by a Python profile, so today the live order contains none — landing the reader changed
+detection for exactly zero shipped models, which is the point (see §8.3 Tier A).
+`qwen4_exp` and `glm5_next` were registered on 2026-08-26; while their specs sat unclaimed,
+`detection_order()` folded in two `SpecMatchProfile`s and
+`tests/test_spec_match_profile.py::test_python_profile_wins_over_a_same_named_spec` was red.
+
+**`concat_merges` — N→1 source concatenations.** A checkpoint may store one live parameter as
+several separate tensors that the modelling code concatenates on load (transformers'
+`Concatenate(dim=…)` conversion entries). `checkpoint_to_live_name` is a 1:1-or-drop contract
+and cannot express a merge, so it passes the sources through unchanged and the merge is
+declared in the spec — `{"target", "sources", "dim"}`, suffix-matched like `fused_groups`,
+source order load-bearing (`structure.py` `ConcatMergeSpec`, accessor
+`ModelProfile.concat_merge_groups()`). The loader bridge `layer_streaming._merge_concat_sources`
+executes it, wired by `_build_concat_merger` into `_read_layer_to_device` on the streaming
+probe/cost path (`streaming_model.py`) and the exporter (`export_native_compressed.py`), so
+every path loads the same bytes. It is the sibling of `_pack_per_expert_into_packed`, and
+carries no architecture names. The merge is cast-free: mixed source dtypes are refused rather
+than promoted, and the assembled shape is checked against the live parameter. This is
+deliberately **not** `fused_groups`: a fused group is a claim about what a serving runtime
+fuses (principle 14), while a concat merge is a fact about the checkpoint's own layout.
+Only `glm5_next` declares one today — its KDA `self_attn.{q,k,v}_conv1d.weight` →
+`self_attn.conv1d.weight` (34 layers × 3 BF16 `[8192,1,4]` sources → `[24576,1,4]`); unbridged,
+the short convolution would have run on uninitialised weights. Gate:
+`tests/test_conv1d_concat_bridge.py`. The exporter carries the **emit-side inverse**
+(2026-08-27): the merged live key never existed in the source checkpoint, so the 3e
+layer-passthrough skips any concat-merge target and copies the SOURCE tensors verbatim
+from the shards under their checkpoint keys — shipping the merged spelling would hand the
+serving runtime's loader a key it does not know while dropping the three it expects. Gate:
+`tests/test_glm53_stock_campaign.py::test_glm5_next_concat_merge_source_keys_roundtrip`.
+
+**Multimodal-forced export skeleton (2026-08-27).** `materialize_tensors_streaming`
+historically hardcoded `stage_text_only` + `AutoModelForCausalLM` — unresolvable for a
+family with no `<Arch>ForCausalLM` auto-route. It now mirrors `_build_streaming_context`'s
+flip: `profile.requires_multimodal_skeleton()` → `stage_multimodal` +
+`_skeleton_config_and_class(multimodal=True)`, with `_build_weight_map(multimodal=…)` to
+match, and the visual tower stays on meta (shipped via the source-passthrough merge, never
+the body walk). Two companion fixes ride with it: the tensor-sink rename composes
+`live_to_recipe_name` before `export_tensor_name` (body-walk keys are LIVE; the composition
+is an idempotent no-op for every text-only-skeleton family), and
+`fill_packed_expert_cache_entries` probes its compute device from the first **non-meta**
+parameter — `next(model.parameters())` returned a meta visual weight on the wrapper and
+silently `.to(meta)`'d the activation snapshot (the same fragile probe still exists in
+`aura_cost.py:1158`, `kl_measurement.py:1078`, `validate_assignments_kl.py:987/:1579`,
+`validation_harness.py:63`; audit before running those stages on a partially-meta skeleton).
+
+**glm5_next streamed-forward wiring (2026-08-26).** The concat bridge was necessary but not
+sufficient: `glm5_next` is also the first architecture here whose decoder stack runs on
+`hc_mult` **parallel residual streams** (manifold-constrained hyper-connections) and whose
+attention schedule declares `deepseek_sparse_attention`. Two existing seams carry it, with no
+new contract:
+
+* `Glm5NextProfile.expand_hidden_for_layers` / `collapse_hidden_after_layers` mirror
+  `Glm5NextTextModel.forward` — expand `[B,T,H] → [B,T,hc_mult,H]` before the loop, collapse
+  with the model's own `hc_head` after it (the DSv4 precedent for the same pair of hooks).
+* `layer_streaming._compute_attention_mask` gained a `deepseek_sparse_attention` entry: those
+  layers consume a **2D boolean padding mask** `[B,S]` — the DSA indexer applies causality and
+  padding itself — and it is never optional, so an all-ones mask is substituted when the
+  recurrent helper yields `None`, exactly as upstream does "to guarantee the mask to exist for
+  the indexer". `linear_attention` keeps the existing recurrent shim.
+
+Neither is checkable by inspection: a wrong mask is a plausible tensor and a wrong collapse is
+a plausible mean. Gate: `tests/test_glm5_next_streamed_forward_parity.py` compares
+`StreamedCausalLM` logits against `Glm5NextForConditionalGeneration` on a tiny random config,
+on CPU. It runs the comparison at **1024 tokens as well as 12**, because the short cases cannot
+see this architecture's failure modes: the KDA scan is *chunked* with recurrent state crossing
+chunk boundaries, the short convolution carries a 4-wide window across the same boundaries, and
+the DSA indexer only begins sparsifying past `index_topk`. None of the three is exercised at 12
+tokens — an injected mask defect that blinds the past beyond position 512 leaves the 12-token
+logits **bit-identical** and moves the 1024-token logits by 1.15. The long case is also run with
+each layer type in isolation, so a future failure names its suspect (KDA state, conv window, or
+DSA long-range masking) rather than just reporting disagreement. Two related facts the streamed
+loop depends on and asserts rather than assumes:
+`glm5_next` is NoPE (`qk_rope_head_dim = 0`, no standalone rotary, upstream passes
+`position_embeddings=None`), and cross-layer top-k sharing is **not** threaded — correct only
+while every DSA layer declares `indexer_types == "full"`, which the GLM-5.3-Flash checkpoint
+does and the forward-fidelity gate re-checks per checkpoint. transformers 5.16 ships no
+`Glm5NextForCausalLM`, so the streamed skeleton is built through the **multimodal** path;
+the profile declares this via `requires_multimodal_skeleton()` and
+`_build_streaming_context` flips itself, so probe/cost/validation call sites need no
+per-family threading (`multimodal=True` explicit still works). The path yields the `model.language_model` base
+prefix and root `lm_head` the spec already describes.
 
 `_resolve` also **refuses to hand back a profile whose vendored-modelling override is known
 dead** (`_refuse_dead_vendored_override`, added by #19 / `29f3cff`). Its `except Exception:
@@ -5525,6 +5738,8 @@ artifacts exported before the rename.
 | deepseek_v4 | `deepseek_v4.py` | 170 | ✅ | `vllm_packed_moe` **(added R22)** | CT, **nvfp4_cb** (CT) | declared by the exact Gridbook producer pin (0.8.5/v3 commit `e992e59` when this row was written; 0.8.11/v4 commit `187c721` since 2026-08-21); streaming CB export, W8A16 source passthrough, top-level loader, and routed per-role LUT ABI are wired and the installed-wheel GPU route gate passed on 0.8.5; full-artifact served parity remains a post-export gate | `has_mtp → False`; three source-quantized DSpark stages are declared by the header-validated physical→construction overlay (§6.3), with no tensor rewrite. The experimental hybrid sidecar emits 27 physical K12 CB targets plus four physical W8A16 bases (`main_proj` and three grouped-BMM `wo_a`) with exact construction declarations. It remains non-shipping until the separately pinned Gridbook 0.8.6/v4 consumer is immutable and the sidecar clears load, memory, acceptance, and paired endpoint/throughput-evidence gates. |
 | hy_v3 | `hy_v3.py` | 180 | ✅ | `gguf` (overridden, L1) | CT, nvfp4_cb, **gguf** (gguf) | declared by pinned Gridbook contract | `has_mtp → False`; MTP passthrough + out-of-band CB scripts |
 | laguna (poolside S/XS 2.x) | `laguna.py` | 190 | ✅ | `nvfp4_cb` (overridden, L1) | CT, **nvfp4_cb** (nvfp4_cb) | declared by pinned Gridbook contract; drafter still separate | `has_mtp → False` |
+| qwen4_exp (Qwen3.8-Flash-Next 177B) | `qwen4_exp.py` | 200 | ✅ | ⚠ **spec declares none** | ⚠ **spec declares none** → accessor default CT | ⚠ none | `has_mtp → False`; `mtp_source_prefix "mtp."` + `mtp.` in `passthrough_prefixes` |
+| glm5_next (GLM-5.3-Flash 314B) | `glm5_next.py` | 210 | ✅ | `vllm_packed_moe` | CT, nvfp4_cb (CT) | ⚠ none | `has_mtp → False`; body-indexed nextn at layer 45, passthrough (hy_v3 route) |
 | default | `default.py` | — (terminal) | n/a by design | — | CT (default) | n/a | none |
 
 `prio` = detection priority, lower first (§8.1); the same number is declared on the Python class
@@ -5534,6 +5749,30 @@ six CB producer profiles with Gridbook's packaged contract; GGUF has one. Over-d
 failure the field exists to prevent: an undeclared lane does not fail loudly, it serves
 uninitialised expert memory. `require_lane_supported(profile, EXPORT_CONTAINER)`
 (`serving_profiles.py`) runs in `run-pipeline.sh` before profile resolution and export.
+
+The two 2026-08-26 additions are **enablement scaffolds, not export-ready lanes**. Neither has
+a vLLM class importable from the pinned serving stacks, so both return `vllm_architecture_class
+→ None`. `qwen4_exp` still declares `fused_groups` read from HF modelling code (`in_proj_qkvz`,
+`in_proj_ba`, the shared-expert `gate_up_proj`), the hy_v3 precedent. `glm5_next` declares
+**none**, and has nothing it may honestly declare: its KDA attention exposes separate q/k/v
+Linears live, and the only fusion evidence is the checkpoint's own
+`quantization_config.modules_to_not_convert` naming `self_attn.qkv_proj` /
+`self_attn.fused_qkvbfg_a_proj`, names that appear in no index key — a lead about someone's
+serving tree, not a contract (principle 14). The gap is harmless only because every fusable
+attention projection is pinned, so no fused group can be split across formats; that pairing is
+ratcheted in `tests/test_model_profile_conformance.py`
+(`UNATTESTED_FUSED_SOURCE_XFAIL`), which goes red if either half changes.
+`qwen4_exp` declares no `default_serving_profile` and
+no `supported_lanes` **on purpose** — each is a statement about what a serving runtime does, and
+principle 14 refuses an unattested one; they are owed once a class exists to attest them, and
+until then `require_lane_supported` refuses the arch rather than guessing. `glm5_next` declares
+both, and its large `pinned_names` list is a principle-9 gate input recorded against vLLM PR
+#53906 (`ZJY0516/vllm@933876c`), which builds only routed experts, shared experts and dense
+MLPs with a `quant_config`; that citation must be re-attested against a pinned release before
+export. The one contradiction found in recon is recorded in the spec
+(`_verified_source_layout.serving_restriction.CONTRADICTION_to_resolve_before_export`): the PR
+comments that MLA projections are BF16, while the checkpoint ships them FP8 with
+`.weight_scale_inv`.
 
 Gaps beyond the four leaks. **minimax_m2's missing spec is closed** (R22, 2026-07-30): all
 eight overrides (`:69,:86,:91,:101,:104,:110,:133,:137`) are now declared in
