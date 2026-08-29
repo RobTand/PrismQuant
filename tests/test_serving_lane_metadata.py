@@ -121,16 +121,17 @@ def test_the_load_gates_are_declared_per_grid_from_the_family_table():
                if r.id == "cb_fp4_out_features_load_gate")
     fp8 = next(r for r in profile.shape_rules
                if r.id == "cb_fp8_out_features_load_gate")
-    assert set(fp4.formats) == cb_layout.NVFP4_CB_FORMAT_NAMES
+    assert set(fp4.formats) == cb_layout.NVFP4_ACCEPTED_FORMAT_NAMES
     assert set(fp8.formats) == cb_layout.FP8_ACCEPTED_FORMAT_NAMES
     assert fp4.out_features_multiple_of == 8
     assert fp8.out_features_multiple_of == 16
     # Together the two per-grid sets are exactly the CB ladder — no rung
     # falls between the gates.
-    assert (cb_layout.NVFP4_CB_FORMAT_NAMES
-            | cb_layout.FP8_CB_FORMAT_NAMES) == cb_layout.CB_FORMAT_NAMES
-    assert not (cb_layout.NVFP4_CB_FORMAT_NAMES
-                & cb_layout.FP8_CB_FORMAT_NAMES)
+    assert (cb_layout.NVFP4_ACCEPTED_FORMAT_NAMES
+            | cb_layout.FP8_ACCEPTED_FORMAT_NAMES
+            == cb_layout.ACCEPTED_CB_FORMAT_NAMES)
+    assert not (cb_layout.NVFP4_ACCEPTED_FORMAT_NAMES
+                & cb_layout.FP8_ACCEPTED_FORMAT_NAMES)
 
 
 def test_the_load_gates_do_not_touch_the_native_carriers():
@@ -289,9 +290,7 @@ def test_the_fp4_opt_in_fused_mid_m_lane_is_available_not_backed():
                 if l.id == "nvfp4_cb_quality_path")
     assert lane.fused_mid_m_rungs_by_runtime_version == ()
     assert "PRISMAQUANT_CB_FP4_FUSED_MIDM" in lane.detail
-    for fmt in (
-        "NVFP4_CB_K1", "NVFP4_CB_K12", "NVFP4_CB_K24", "NVFP4_CB_K25",
-    ):
+    for fmt in ("NVFP4_CB_K12", "NVFP4_CB_K18", "NVFP4_CB_K24"):
         route = sp.serving_lane_route(_PROFILE, fmt)
         assert not route.fused_mid_m_backed, fmt
         assert route.rungs_source == "lane_declares_no_fused_mid_m_lane"
@@ -388,7 +387,7 @@ def _cb_tables(menu):
 
 
 def test_candidates_carry_the_concrete_serving_lane_route():
-    menu = ["FP8_CB_K36", "NVFP4_CB_K16", "BF16"]
+    menu = ["FP8_CB_K40", "NVFP4_CB_K16", "BF16"]
     stats, costs = _cb_tables(menu)
     cands = build_candidates(
         stats, costs, [fr.get_format(m) for m in menu],
@@ -396,8 +395,8 @@ def test_candidates_carry_the_concrete_serving_lane_route():
         cb_serialization_context=_CB_CONTEXT)
     by_fmt = {c.fmt: c for c in cands["model.layers.0.self_attn.o_proj"]}
     attested = _attested_rungs()
-    assert by_fmt["FP8_CB_K36"].serving_lane.fused_mid_m_backed is (
-        36 in attested)
+    assert by_fmt["FP8_CB_K40"].serving_lane.fused_mid_m_backed is (
+        40 in attested)
     assert by_fmt["NVFP4_CB_K16"].serving_lane.activation_contract == (
         "w4-bf16-bridge")
     assert not by_fmt["NVFP4_CB_K16"].serving_lane.fused_mid_m_backed
@@ -405,21 +404,21 @@ def test_candidates_carry_the_concrete_serving_lane_route():
     # The FP8 route and NVFP4's declared BF16 bridge remain distinct even when
     # a runtime pin attests neither fused path.
     assert (
-        by_fmt["FP8_CB_K36"].serving_lane.route_key()
+        by_fmt["FP8_CB_K40"].serving_lane.route_key()
         != by_fmt["NVFP4_CB_K16"].serving_lane.route_key()
     )
     assert (
         sp.serving_lane_route(
-            _PROFILE, "FP8_CB_K36", runtime_version="0.8.2"
+            _PROFILE, "FP8_CB_K40", runtime_version="0.8.2"
         ).route_key()
         != sp.serving_lane_route(
-            _PROFILE, "FP8_CB_K37", runtime_version="0.8.2"
+            _PROFILE, "FP8_CB_K41", runtime_version="0.8.2"
         ).route_key()
     )
     # The side map injected by build_candidates carries the same route for
     # paths that read stats rather than candidates.
     lanes = stats["model.layers.0.self_attn.o_proj"]["_serving_lane_by_format"]
-    assert lanes["FP8_CB_K36"].fused_mid_m_backed is (36 in attested)
+    assert lanes["FP8_CB_K40"].fused_mid_m_backed is (40 in attested)
 
 
 def test_selection_provenance_splits_backed_rungs_from_the_fallback():
@@ -453,19 +452,19 @@ def test_selection_provenance_reads_the_route_off_the_chosen_candidate():
     """The candidate is the object the DP actually saw, so that is the first
     source; expanded members of aggregated super items (which have no
     candidate of their own) re-resolve from the profile and agree."""
-    menu = ["FP8_CB_K36", "BF16"]
+    menu = ["FP8_CB_K40", "BF16"]
     stats, costs = _cb_tables(menu)
     cands = build_candidates(
         stats, costs, [fr.get_format(m) for m in menu],
         target_profile=_PROFILE,
         cb_serialization_context=_CB_CONTEXT)
-    assignment = {n: "FP8_CB_K36" for n in stats}
-    assignment["model.layers.9.mlp.experts.down_proj"] = "FP8_CB_K36"
+    assignment = {n: "FP8_CB_K40" for n in stats}
+    assignment["model.layers.9.mlp.experts.down_proj"] = "FP8_CB_K40"
     prov = selection_serving_lane_provenance(
         assignment, cands, target_profile=_PROFILE)
-    k36_backed = 36 in _attested_rungs()
-    assert prov["units_on_backed_fused_mid_m_lane"] == (3 if k36_backed else 0)
-    assert prov["units_on_fallback_route"] == (0 if k36_backed else 3)
+    k40_backed = 40 in _attested_rungs()
+    assert prov["units_on_backed_fused_mid_m_lane"] == (3 if k40_backed else 0)
+    assert prov["units_on_fallback_route"] == (0 if k40_backed else 3)
     assert prov["units_without_declared_lane"] == 0
     # Every unit's activation-pricing branch is stamped too — including the
     # expanded member with no candidate, which says so rather than claiming

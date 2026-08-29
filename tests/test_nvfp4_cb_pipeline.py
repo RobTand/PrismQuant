@@ -56,7 +56,7 @@ from prismaquant.production_weight_cache import (
     build_production_cache_cb_render_identity,
     project_cb_render_identity,
 )
-from prismaquant.cb_layout import NVFP4_PRODUCT_RUNGS
+from prismaquant.cb_layout import FP8_PRODUCT_RUNGS, NVFP4_PRODUCT_RUNGS
 
 # The task's canonical mixed menu: two CB families + their native carriers.
 _MIXED_MENU = [
@@ -65,7 +65,7 @@ _MIXED_MENU = [
 ]
 _PRODUCT_CB_RUNGS = (
     [f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS]
-    + [f"FP8_CB_K{k}" for k in range(4, 49, 4)]
+    + [f"FP8_CB_K{k}" for k in FP8_PRODUCT_RUNGS]
 )
 _ALL_CB_RUNGS = list(_PRODUCT_CB_RUNGS)
 _CB_CONTEXT = CBSerializationContext.production()

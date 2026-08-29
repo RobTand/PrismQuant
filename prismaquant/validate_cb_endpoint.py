@@ -1497,7 +1497,10 @@ def _validate_dspark_cb_sidecar_artifact(
                 f"DSpark config group {raw_name!r} is not a canonical CB group"
             )
         family, format_k = parsed_format
-        canonical_format = family.name(format_k)
+        # This is artifact verification, not producer admission. Historical
+        # reader-only wire ids must canonicalize without acquiring producer
+        # authority.
+        canonical_format = family.accepted_name(format_k)
         if raw_format != canonical_format:
             raise CBEndpointValidationError(
                 f"DSpark config group {raw_name!r} format label is not "
@@ -1635,7 +1638,7 @@ def _validate_dspark_cb_sidecar_artifact(
                 )
             continue
         member_family, member_k = parsed
-        canonical = member_family.name(member_k)
+        canonical = member_family.accepted_name(member_k)
         if raw_format != canonical:
             raise CBEndpointValidationError(
                 f"DSpark tensor_formats label at {raw_qname!r} is not "
@@ -2412,7 +2415,7 @@ def _validate_plain_cb_artifact(
                 )
         else:
             family, format_k = parsed
-            if str(format_name) != family.name(format_k):
+            if str(format_name) != family.accepted_name(format_k):
                 raise CBEndpointValidationError(
                     f"{group_name}: format label {format_name!r} is not canonical"
                 )

@@ -811,6 +811,8 @@ def build_cb_scheme(
     scale_coding: str,
     activation_contract: str | None = None,
     codebook_source: str | None = None,
+    routed_learned_bank: bool = False,
+    legacy_w8a16_compatibility: bool = False,
 ) -> dict[str, Any]:
     """Build the canonical scheme for one CB target/group.
 
@@ -824,15 +826,6 @@ def build_cb_scheme(
     mode = str(mode).lower()
     k = int(k)
     family = family_for(grid, mode)
-    parsed = parse_producer_format_name(fmt)
-    if parsed is None or parsed[0] != family or parsed[1] != k:
-        raise ValueError(
-            f"CB producer format/fields disagree: {fmt!r} vs "
-            f"grid={grid!r}, mode={mode!r}, k={k}"
-        )
-    tensors = _validated_codebook_sequence(fmt, codebook)
-    names = _codebook_names_for_count(ref, fmt, len(tensors))
-    coding = scale_coding if grid == "fp4" else SCALE_CODING_V1
     resolved_codebook_source = (
         str(codebook_source).lower()
         if codebook_source is not None
@@ -842,6 +835,43 @@ def build_cb_scheme(
         raise ValueError(
             f"unknown codebook_source {resolved_codebook_source!r}"
         )
+    parsed = parse_producer_format_name(fmt)
+    if (
+        parsed is None
+        and routed_learned_bank
+        and resolved_codebook_source == "learned"
+    ):
+        from prismaquant.routed_moe_codebooks import ROUTED_MOE_CBL_BANK_RUNGS
+
+        accepted = parse_format_name(fmt)
+        if (
+            accepted is not None
+            and accepted[0].grid == "fp8"
+            and accepted[0].mode == "product"
+            and accepted[1] in ROUTED_MOE_CBL_BANK_RUNGS
+        ):
+            parsed = accepted
+    if (
+        parsed is None
+        and legacy_w8a16_compatibility
+        and resolved_codebook_source == "learned"
+        and fmt in {"FP8_CB_K28", "FP8_CB_K36"}
+    ):
+        accepted = parse_format_name(fmt)
+        if (
+            accepted is not None
+            and accepted[0].grid == "fp8"
+            and accepted[0].mode == "product"
+        ):
+            parsed = accepted
+    if parsed is None or parsed[0] != family or parsed[1] != k:
+        raise ValueError(
+            f"CB producer format/fields disagree: {fmt!r} vs "
+            f"grid={grid!r}, mode={mode!r}, k={k}"
+        )
+    tensors = _validated_codebook_sequence(fmt, codebook)
+    names = _codebook_names_for_count(ref, fmt, len(tensors))
+    coding = scale_coding if grid == "fp4" else SCALE_CODING_V1
     scheme: dict[str, Any] = {
         "grid": grid,
         "mode": mode,
@@ -931,6 +961,9 @@ def build_quant_config(
     include_tensor_formats: bool = False,
     tensor_formats: Mapping[str, str] | None = None,
     post_allocation_refinement: Mapping[str, Any] | None = None,
+    routed_learned_bank_groups: Iterable[tuple[str, str]] = (),
+    legacy_w8a16_compatibility_groups: Iterable[tuple[str, str]] = (),
+    legacy_w8a16_compatibility: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the complete producer-owned ``quant_config.json`` payload.
 
@@ -969,6 +1002,128 @@ def build_quant_config(
     requant_targets = dict(requant_targets or {})
     weight_only_stock_targets = set(weight_only_stock_targets)
     cb_group_target_names = dict(cb_group_target_names or {})
+    routed_learned_bank_groups = set(routed_learned_bank_groups)
+    legacy_w8a16_compatibility_groups = set(
+        legacy_w8a16_compatibility_groups
+    )
+    unknown_routed_learned_groups = routed_learned_bank_groups - set(by_group)
+    if unknown_routed_learned_groups:
+        raise ValueError(
+            "routed_learned_bank_groups contains keys absent from by_group: "
+            f"{sorted(unknown_routed_learned_groups)}"
+        )
+    unknown_legacy_groups = legacy_w8a16_compatibility_groups - set(by_group)
+    if unknown_legacy_groups:
+        raise ValueError(
+            "legacy_w8a16_compatibility_groups contains keys absent from "
+            f"by_group: {sorted(unknown_legacy_groups)}"
+        )
+    invalid_legacy_formats = sorted(
+        (ref, fmt)
+        for ref, fmt in legacy_w8a16_compatibility_groups
+        if fmt not in {"FP8_CB_K28", "FP8_CB_K36"}
+    )
+    if invalid_legacy_formats:
+        raise ValueError(
+            "legacy_w8a16_compatibility_groups may name only exact "
+            f"FP8_CB_K28/K36 exceptions: {invalid_legacy_formats}"
+        )
+    if bool(legacy_w8a16_compatibility_groups) != bool(
+        legacy_w8a16_compatibility
+    ):
+        raise ValueError(
+            "legacy W8A16 compatibility groups and artifact stamp must be "
+            "supplied together"
+        )
+    if legacy_w8a16_compatibility is not None:
+        required_stamp_members = {
+            "schema",
+            "handoff_receipt_identity_sha256",
+            "publication_identity_sha256",
+            "assignment_sha256",
+            "layer_config_file_sha256",
+            "output_path",
+            "source_identity_file_sha256",
+            "source_content_sha256",
+            "source_model_identity",
+            "codebook_bundle_file_sha256",
+            "codebook_bundle_content_sha256",
+            "runtime_pin_sha256",
+            "runtime_closure_identity_sha256",
+            "col_weights_content_sha256",
+            "exception_map",
+            "identity_sha256",
+        }
+        identity = legacy_w8a16_compatibility.get("identity_sha256")
+        source_identity = legacy_w8a16_compatibility.get(
+            "source_model_identity"
+        )
+        exception_map = legacy_w8a16_compatibility.get("exception_map")
+        expected_exceptions = {
+            "routed_fp8_cb_k28": ("FP8_CB_K28", 6_144),
+            "dense_fp8_cb_k36": ("FP8_CB_K36", 3),
+        }
+        if (
+            set(legacy_w8a16_compatibility) != required_stamp_members
+            or legacy_w8a16_compatibility.get("schema")
+            != "prismaquant.dsv4_w8a16.legacy_compatibility.v1"
+            or not isinstance(identity, str)
+            or not isinstance(source_identity, Mapping)
+            or source_identity.get("content_sha256")
+            != legacy_w8a16_compatibility.get("source_content_sha256")
+            or not isinstance(exception_map, Mapping)
+            or set(exception_map) != set(expected_exceptions)
+            or any(
+                not isinstance(exception_map.get(name), Mapping)
+                or set(exception_map[name])
+                != {"format", "count", "qnames_sha256"}
+                or exception_map[name].get("format") != expected_format
+                or exception_map[name].get("count") != expected_count
+                or not isinstance(
+                    exception_map[name].get("qnames_sha256"), str
+                )
+                or len(exception_map[name]["qnames_sha256"]) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in exception_map[name]["qnames_sha256"]
+                )
+                for name, (expected_format, expected_count)
+                in expected_exceptions.items()
+            )
+            or any(
+                not isinstance(legacy_w8a16_compatibility.get(field), str)
+                or len(legacy_w8a16_compatibility[field]) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in legacy_w8a16_compatibility[field]
+                )
+                for field in (
+                    "handoff_receipt_identity_sha256",
+                    "publication_identity_sha256",
+                    "assignment_sha256",
+                    "layer_config_file_sha256",
+                    "source_identity_file_sha256",
+                    "source_content_sha256",
+                    "codebook_bundle_file_sha256",
+                    "codebook_bundle_content_sha256",
+                    "runtime_pin_sha256",
+                    "runtime_closure_identity_sha256",
+                    "col_weights_content_sha256",
+                    "identity_sha256",
+                )
+            )
+            or hashlib.sha256(json.dumps(
+                {
+                    key: legacy_w8a16_compatibility[key]
+                    for key in legacy_w8a16_compatibility
+                    if key != "identity_sha256"
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")).hexdigest() != identity
+        ):
+            raise ValueError("legacy W8A16 compatibility stamp is invalid")
     unknown_cb_target_groups = set(cb_group_target_names) - set(by_group)
     if unknown_cb_target_groups:
         raise ValueError(
@@ -1040,6 +1195,10 @@ def build_quant_config(
             # ``codebook_ref`` carried by this specific target group.
             codebook_source=codebook_source_for_format(
                 fmt, serialization_context
+            ),
+            routed_learned_bank=(ref, fmt) in routed_learned_bank_groups,
+            legacy_w8a16_compatibility=(
+                (ref, fmt) in legacy_w8a16_compatibility_groups
             ),
         )
         serialized_target_names = cb_group_target_names.get((ref, fmt))
@@ -1172,6 +1331,10 @@ def build_quant_config(
         provenance["excluded_namespaces"] = excluded
     if cb_render_identity is not None:
         provenance["cb_render_identity"] = cb_render_identity
+    if legacy_w8a16_compatibility is not None:
+        provenance["legacy_w8a16_compatibility"] = dict(
+            legacy_w8a16_compatibility
+        )
     if include_tensor_formats:
         if tensor_formats is None:
             routed_names = (
@@ -1199,6 +1362,10 @@ def build_quant_config(
         **({"codebook_file": codebook_file} if codebook_file else {}),
         "provenance": provenance,
     }
+    if legacy_w8a16_compatibility is not None:
+        quant_config["legacy_w8a16_compatibility"] = dict(
+            legacy_w8a16_compatibility
+        )
     if source_passthrough_units:
         quant_config[SOURCE_PASSTHROUGH_DECLARATION_KEY] = (
             build_source_passthrough_declaration(source_passthrough_units)

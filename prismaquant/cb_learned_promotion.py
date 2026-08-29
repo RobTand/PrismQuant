@@ -15,12 +15,17 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from .cb_imatrix import CB_IMATRIX_FROM_PROBE_SCHEMA
-from .cb_layout import FP8_PRODUCT_RUNGS, codebook_subtable_shapes, family_for
+from .cb_layout import codebook_subtable_shapes, family_for
 
 
 CBL_PROMOTION_RECEIPT_SCHEMA = "prismaquant.fp8_cbl_promotion_receipt.v1"
 CBL_V2_TRAINER_SCHEMA = "prismaquant.fp8_cbl_poolb.v2"
-CBL_STEP4_RUNGS = FP8_PRODUCT_RUNGS
+# Learned-v2 is an explicit research/measurement ladder.  It intentionally
+# retains the historical K4..K48 step-four experiment even when the fresh
+# artifact producer surface is narrower.  Never alias this to
+# ``cb_layout.FP8_PRODUCT_RUNGS``: doing so lets a research receipt widen (or a
+# producer restriction silently truncate) the other authority.
+CBL_STEP4_RUNGS = tuple(range(4, 49, 4))
 CBL_PROMOTION_THRESHOLDS: dict[str, float] = {
     "max_geomean_ratio": 0.98,
     "max_bootstrap_95_upper": 1.0,

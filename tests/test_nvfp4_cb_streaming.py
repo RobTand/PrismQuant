@@ -14,6 +14,7 @@ import os
 import shutil
 import struct
 import weakref
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ from prismaquant.export_nvfp4_cb import (  # noqa: E402
 from prismaquant.export_nvfp4_cb_streaming import (  # noqa: E402
     _LazySkeleton,
     _StreamWriter,
+    _classify_cb_or_source_format,
     export_nvfp4_cb_streaming as _export_nvfp4_cb_streaming,
     main as _cb_stream_main,
 )
@@ -39,6 +41,9 @@ from prismaquant.export_native_compressed import (  # noqa: E402
 )
 from prismaquant.cb_export_config import (  # noqa: E402
     parse_quantized_embedding_declaration,
+)
+from prismaquant.nvfp4_cb_footprint import (  # noqa: E402
+    CBSerializationContext,
 )
 from prismaquant.model_profiles import detect_profile  # noqa: E402
 from prismaquant.gridbook_validation_only_policy import (  # noqa: E402
@@ -69,6 +74,92 @@ def export_nvfp4_cb_streaming(*args, **kwargs):
     """This module's synthetic direct calls are explicit research renders."""
     kwargs.setdefault("allow_unstamped_research", True)
     return _export_nvfp4_cb_streaming(*args, **kwargs)
+
+
+class _ExactCompatibility:
+    def __init__(self, allowed: set[tuple[str, str]]):
+        self.allowed = allowed
+
+    def allows_group(self, qname, fmt, _members):
+        return (qname, fmt) in self.allowed
+
+
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        "NVFP4_CB_K16",
+        "NVFP4_CB_K18",
+        "FP8_CB_K40",
+        "FP8_CB_K44",
+        "FP8_CB_K48",
+    ],
+)
+def test_current_cb_classification_uses_only_current_producers(fmt):
+    kind, parsed = _classify_cb_or_source_format("model.layers.0.x", fmt)
+    assert kind == "cb"
+    assert parsed[2] == int(fmt.rsplit("K", 1)[1])
+
+
+@pytest.mark.parametrize("fmt", ["FP8_CB_K28", "FP8_CB_K36"])
+def test_reader_only_w8_cells_require_exact_legacy_capability(fmt):
+    qname = "model.layers.0.exact"
+    assert _classify_cb_or_source_format(qname, fmt)[0] == "other"
+
+    kind, parsed = _classify_cb_or_source_format(
+        qname,
+        fmt,
+        legacy_w8a16_compatibility=_ExactCompatibility({(qname, fmt)}),
+    )
+    assert kind == "legacy_cb"
+    assert parsed[2] == int(fmt.rsplit("K", 1)[1])
+    assert _classify_cb_or_source_format(
+        "model.layers.0.crossed",
+        fmt,
+        legacy_w8a16_compatibility=_ExactCompatibility({(qname, fmt)}),
+    )[0] == "other"
+
+
+def test_source_passthrough_classification_precedes_cb_source_lookup(monkeypatch):
+    import prismaquant.export_nvfp4_cb_streaming as streaming_module
+
+    monkeypatch.setattr(
+        streaming_module,
+        "codebook_source_for_format",
+        lambda *_args, **_kwargs: pytest.fail("CB source lookup reached"),
+    )
+
+    assert _classify_cb_or_source_format(
+        "model.layers.0.source",
+        "FP8_BLOCK_UE8M0_SOURCE",
+        scoped_bundle_export=True,
+        serialization_context=object(),
+    ) == ("native_source", "FP8_BLOCK_UE8M0_SOURCE")
+    assert _classify_cb_or_source_format(
+        "model.layers.0.source",
+        "FP8_SOURCE",
+        scoped_bundle_export=True,
+        serialization_context=object(),
+    ) == ("normalized_source", "FP8_SOURCE")
+
+
+def test_research_k28_classification_does_not_widen_ordinary_producer():
+    qname = "model.layers.0.mlp.experts.down_proj"
+    context = CBSerializationContext(
+        scale_coding="two_tier",
+        codebook_source="learned",
+        codebook_source_scope="fp8",
+        codebook_source_by_format={"FP8_CB_K28": "learned"},
+    )
+    assert _classify_cb_or_source_format(qname, "FP8_CB_K28")[0] == "other"
+    kind, parsed = _classify_cb_or_source_format(
+        qname,
+        "FP8_CB_K28",
+        scoped_bundle_export=True,
+        serialization_context=context,
+        expert_stack_members={qname: {("down_proj", 0): "member"}},
+    )
+    assert kind == "research_cb"
+    assert parsed[2] == 28
 
 
 def _st_header(path: Path) -> tuple[dict, int]:
@@ -193,6 +284,128 @@ def test_cb_exporters_reject_output_nested_under_source(
 
     assert not output.exists()
     assert _tree_bytes(mdl) == before
+
+
+def test_streaming_refuses_caller_supplied_legacy_w8a16_capability(workdir):
+    mdl = workdir / "legacy-private-model"
+    _write_model(mdl, {"model.norm.weight": torch.ones(4)})
+    assignment = workdir / "legacy-private-assignment.json"
+    _assign(assignment, {})
+    output = workdir / "legacy-private-output"
+
+    with pytest.raises(
+        RuntimeError,
+        match="derived internally, not accepted from a caller",
+    ):
+        export_nvfp4_cb_streaming(
+            mdl,
+            assignment,
+            output,
+            {},
+            device="cpu",
+            _legacy_w8a16_compatibility=object(),
+        )
+
+    assert not output.exists()
+    assert list(workdir.glob(f".{output.name}.tmp-*")) == []
+
+
+@pytest.mark.parametrize("race_kind", ["empty-directory", "symlink"])
+def test_legacy_w8a16_output_substitution_after_replay_is_not_adopted(
+    monkeypatch,
+    workdir,
+    race_kind,
+):
+    import prismaquant.dsv4_w8a16_legacy_compat as compatibility_module
+
+    mdl = workdir / f"legacy-race-model-{race_kind}"
+    _write_model(mdl, {"model.norm.weight": torch.ones(4)})
+    assignment = workdir / f"legacy-race-assignment-{race_kind}.json"
+    _assign(assignment, {})
+    output = workdir / f"legacy-race-output-{race_kind}"
+    col_path = workdir / f"legacy-race-col-{race_kind}.pkl"
+    col_path.write_bytes(b"fixture")
+    bundle_path = workdir / f"legacy-race-bundle-{race_kind}.pqcb"
+    bundle_path.write_bytes(b"fixture")
+    monkeypatch.setenv("CB_CODEBOOK_BUNDLE", str(bundle_path))
+
+    class _ReplayedCompatibility:
+        def read_bound_layer_config(self, _path):
+            return {}, {}
+
+        def open_bound_codebook_bundle(self):
+            return nullcontext(bundle_path)
+
+    def _derive_then_substitute(*_args, **_kwargs):
+        if race_kind == "empty-directory":
+            output.mkdir()
+        else:
+            redirect = workdir / "legacy-race-redirect"
+            redirect.mkdir()
+            output.symlink_to(redirect, target_is_directory=True)
+        return _ReplayedCompatibility()
+
+    monkeypatch.setattr(
+        compatibility_module,
+        "derive_dsv4_w8a16_legacy_compatibility",
+        _derive_then_substitute,
+    )
+    monkeypatch.setattr(
+        "prismaquant.cb_learned_bundle.load_bundle",
+        lambda _path: object(),
+    )
+
+    message = "must remain absent" if race_kind == "empty-directory" else "symlink"
+    with pytest.raises(RuntimeError, match=message):
+        export_nvfp4_cb_streaming(
+            mdl,
+            assignment,
+            output,
+            {},
+            device="cpu",
+            legacy_w8a16_handoff={"fixture": True},
+            legacy_w8a16_col_weights_path=col_path,
+        )
+
+    assert list(workdir.glob(f".{output.name}.tmp-*")) == []
+
+
+def test_legacy_w8a16_handoff_and_column_weights_must_be_paired(
+    monkeypatch,
+    workdir,
+):
+    mdl = workdir / "legacy-pair-model"
+    _write_model(mdl, {"model.norm.weight": torch.ones(4)})
+    assignment = workdir / "legacy-pair-assignment.json"
+    _assign(assignment, {})
+    output = workdir / "legacy-pair-output"
+    col_path = workdir / "legacy-pair-col.pkl"
+    col_path.write_bytes(b"fixture")
+
+    with pytest.raises(RuntimeError, match="requires a W8A16 handoff receipt"):
+        export_nvfp4_cb_streaming(
+            mdl,
+            assignment,
+            output,
+            {},
+            device="cpu",
+            legacy_w8a16_col_weights_path=col_path,
+        )
+    with pytest.raises(
+        RuntimeError,
+        match="requires the exact --legacy-w8a16-col-weights",
+    ):
+        export_nvfp4_cb_streaming(
+            mdl,
+            assignment,
+            output,
+            {},
+            device="cpu",
+            legacy_w8a16_handoff={"fixture": True},
+        )
+
+    assert not output.exists()
+    assert list(workdir.glob(f".{output.name}.tmp-*")) == []
 
 
 def test_streaming_rejects_in_place_sharded_source_before_mutation(workdir):
@@ -431,10 +644,10 @@ def test_streaming_byte_identical_dense_and_stacked(workdir):
 @pytest.mark.parametrize(
     ("format_name", "expected_type_size", "expected_book_shapes"),
     [
-        ("NVFP4_CB_K1", 13, [(1, 4), (2, 4)]),
-        ("NVFP4_CB_K25", 109, [(4096, 4), (8192, 4)]),
+        ("NVFP4_CB_K12", 57, [(64, 4), (64, 4)]),
+        ("NVFP4_CB_K24", 105, [(4096, 4), (4096, 4)]),
     ],
-    ids=["k1", "k25"],
+    ids=["k12", "k24"],
 )
 def test_public_endpoint_resident_and_streaming_exports_are_byte_identical(
     workdir,
@@ -523,6 +736,40 @@ def test_unsupported_nvfp4_rungs_are_refused_before_output_transaction(
     [export_nvfp4_cb, export_nvfp4_cb_streaming],
     ids=["batch", "streaming"],
 )
+@pytest.mark.parametrize("format_name", ["FP8_CB_K28", "FP8_CB_K36"])
+def test_legacy_w8a16_reader_cells_refuse_ordinary_current_export(
+    workdir,
+    exporter,
+    format_name,
+):
+    qname = "model.layers.0.self_attn.q_proj"
+    mdl = workdir / f"ordinary-{format_name.lower()}-model"
+    _write_model(mdl, {
+        f"{qname}.weight": torch.zeros(8, 256, dtype=torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / f"ordinary-{format_name.lower()}.json"
+    _assign(assignment, {qname: format_name})
+    out = workdir / f"ordinary-{format_name.lower()}-{exporter.__name__}"
+
+    with pytest.raises(ValueError, match="reader-only CB format"):
+        exporter(
+            mdl,
+            assignment,
+            out,
+            {qname: torch.ones(256)},
+            device="cpu",
+        )
+
+    assert not out.exists()
+    assert list(workdir.glob(f".{out.name}.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
+    "exporter",
+    [export_nvfp4_cb, export_nvfp4_cb_streaming],
+    ids=["batch", "streaming"],
+)
 @pytest.mark.parametrize(
     "format_name",
     ["FP8_SOURCE", "FP8_BLOCK_UE8M0_SOURCE"],
@@ -579,6 +826,11 @@ def test_sm120_w8a16_is_refused_before_output_transaction(
             "tampered",
             "differs from exact candidate",
         ),
+        (
+            SM120_VALIDATION_POLICY_ID,
+            "exact",
+            "NVFP4_CB_K reader rungs are unknown",
+        ),
     ),
 )
 def test_both_cb_exporters_fail_closed_on_sm120_policy_contract_preflight(
@@ -634,7 +886,7 @@ def test_both_cb_exporters_fail_closed_on_sm120_policy_contract_preflight(
     [export_nvfp4_cb, export_nvfp4_cb_streaming],
     ids=["batch", "streaming"],
 )
-def test_both_cb_exporters_stamp_and_finalize_exact_sm120_policy(
+def test_both_cb_exporters_refuse_the_incompatible_exact_sm120_pin(
     workdir,
     exporter,
 ):
@@ -654,30 +906,19 @@ def test_both_cb_exporters_stamp_and_finalize_exact_sm120_policy(
     })
     out = workdir / f"out-{exporter.__name__}"
 
-    assert exporter(
-        mdl,
-        assignment,
-        out,
-        {qname: torch.ones(256)},
-        device="cpu",
-        producer_policy=SM120_VALIDATION_POLICY_ID,
-        producer_runtime_contract=SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
-    )["NVFP4_CB_K16"] == 1
-
-    quant = json.loads((out / "quant_config.json").read_text())
-    validate_sm120_validation_only_quant_config(quant)
-    assert quant["provenance"]["artifact_inventory"]["schema"] == (
-        "prismaquant.cb_export_artifact_inventory.v1"
-    )
-    card = load_shipcard(out / "shipcard.json")
-    assert card["build"]["producer_policy"] == SM120_VALIDATION_POLICY_ID
-    assert card["build"]["artifact_disposition"] == (
-        VALIDATION_ONLY_DISPOSITION
-    )
-    assert any(
-        VALIDATION_ONLY_DISPOSITION in problem
-        for problem in verify(card, model_dir=out, required=())
-    )
+    with pytest.raises(
+        ValueError, match="NVFP4_CB_K reader rungs are unknown",
+    ):
+        exporter(
+            mdl,
+            assignment,
+            out,
+            {qname: torch.ones(256)},
+            device="cpu",
+            producer_policy=SM120_VALIDATION_POLICY_ID,
+            producer_runtime_contract=SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
+        )
+    assert not out.exists()
 
 
 @pytest.mark.parametrize(
@@ -749,7 +990,7 @@ def test_streaming_warm_fallback_counts_are_artifact_provenance(workdir):
         {f"{qname}.weight": torch.randn(2, 256).to(torch.bfloat16)},
     )
     assignment = workdir / "warm-provenance-assignment.json"
-    _assign(assignment, {qname: "FP8_CB_K28"})
+    _assign(assignment, {qname: "FP8_CB_K40"})
 
     counts = export_nvfp4_cb_streaming(
         mdl,
@@ -1160,7 +1401,7 @@ def test_fp8_cb_resident_and_streaming_exports_are_byte_identical(workdir):
         "quantization_config": {"weight_block_size": [128, 128]},
     }))
     ap = workdir / "a.json"
-    _assign(ap, {qname: "FP8_CB_K36"})
+    _assign(ap, {qname: "FP8_CB_K40"})
     cw = {qname: torch.rand(256) + 0.05}
 
     export_nvfp4_cb(mdl, ap, workdir / "batch", cw, device="cpu")
@@ -1256,7 +1497,7 @@ def test_resident_export_rejects_profile_scaled_per_expert_source(workdir):
     }))
     qname = "model.layers.0.mlp.experts.gate_up_proj"
     ap = workdir / "a.json"
-    _assign(ap, {qname: "FP8_CB_K36"})
+    _assign(ap, {qname: "FP8_CB_K40"})
     with pytest.raises(ValueError, match="profile-scaled FP8/MXFP4"):
         export_nvfp4_cb(
             mdl,

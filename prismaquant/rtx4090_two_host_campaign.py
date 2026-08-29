@@ -25,6 +25,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,9 @@ import time
 from typing import Callable, Mapping, Protocol, Sequence
 
 from prismaquant.cluster_campaign_contract import (
+    CAMPAIGN_MANIFEST_SCHEMA,
     CANONICAL_CONTAINER_PATHS,
+    LEGACY_CAMPAIGN_MANIFEST_SCHEMA,
     STAGE_DAG,
     StageAssignment,
     canonical_sha256,
@@ -44,20 +47,29 @@ from prismaquant.cluster_campaign_contract import (
     validate_campaign_state,
 )
 from prismaquant.cluster_transport import (
+    ClusterTransportError,
+    JobConflictError,
+    JobNotFoundError,
     JobReceipt,
     RunRequest,
+    TelemetryUnavailableError,
     TelemetrySnapshot,
     TreeManifest,
     build_tree_manifest,
     canonical_json_bytes,
+    list_regular_file_children_nofollow,
+    read_regular_file_nofollow,
     summarize_utilization,
 )
 
 
 COMMAND_PLAN_SCHEMA = "prismaquant.rtx4090_two_host_campaign.command_plan.v2"
 COMMAND_SCHEMA = "prismaquant.rtx4090_two_host_campaign.command.v1"
-EXECUTION_RECEIPT_SCHEMA = (
+LEGACY_EXECUTION_RECEIPT_SCHEMA = (
     "prismaquant.rtx4090_two_host_campaign.execution_receipt.v1"
+)
+EXECUTION_RECEIPT_SCHEMA = (
+    "prismaquant.rtx4090_two_host_campaign.execution_receipt.v2"
 )
 STATUS_SCHEMA = "prismaquant.rtx4090_two_host_campaign.status.v1"
 IMAGE_REPOSITORY = "eugr/spark-vllm"
@@ -69,9 +81,30 @@ MANIFEST_FILE = "campaign-manifest.json"
 RECEIPT_DIR = "receipts"
 ATTEMPT_TELEMETRY_DIR = "attempt-telemetry"
 LOCK_FILE = "campaign.lock"
-ATTEMPT_TELEMETRY_SCHEMA = (
+LEGACY_ATTEMPT_TELEMETRY_SCHEMA = (
     "prismaquant.rtx4090_two_host_campaign.attempt_telemetry.v1"
 )
+LEGACY_ATTEMPT_TELEMETRY_V2_SCHEMA = (
+    "prismaquant.rtx4090_two_host_campaign.attempt_telemetry.v2"
+)
+ATTEMPT_TELEMETRY_SCHEMA = (
+    "prismaquant.rtx4090_two_host_campaign.attempt_telemetry.v3"
+)
+ATTEMPT_TELEMETRY_RECORD_SCHEMA = (
+    "prismaquant.rtx4090_two_host_campaign.attempt_telemetry_record.v1"
+)
+_ATTEMPT_START_DISPOSITIONS = frozenset({
+    "started",
+    "adopted_after_start",
+    "existing",
+    "existing_after_conflict",
+    "recovered_ambiguous_start",
+})
+_MISSING_PREFIX_START_DISPOSITIONS = frozenset({
+    "existing",
+    "existing_after_conflict",
+    "recovered_ambiguous_start",
+})
 WORKER_SOURCE_CACHE_RECEIPT_SCHEMA = (
     "prismaquant.sample_parallel_probe.worker_source_cache_receipt.v1"
 )
@@ -120,7 +153,7 @@ _CONTAINER_CLEANUP_GRACE_SECONDS = 600.0
 _STAGE_DEPENDENCIES = {
     spec.stage: frozenset(spec.dependencies) for spec in STAGE_DAG
 }
-_EXECUTION_RECEIPT_KEYS = frozenset({
+_LEGACY_EXECUTION_RECEIPT_KEYS = frozenset({
     "schema",
     "campaign_identity_sha256",
     "host_identity_sha256",
@@ -143,6 +176,9 @@ _EXECUTION_RECEIPT_KEYS = frozenset({
     "output_artifacts",
     "identity_sha256",
 })
+_EXECUTION_RECEIPT_KEYS = _LEGACY_EXECUTION_RECEIPT_KEYS | {
+    "attempt_telemetry_identity_sha256",
+}
 _OUTPUT_ARTIFACT_KEYS = frozenset({
     "container_path",
     "host_path",
@@ -150,13 +186,62 @@ _OUTPUT_ARTIFACT_KEYS = frozenset({
     "manifest",
     "manifest_sha256",
 })
-_ATTEMPT_TELEMETRY_KEYS = frozenset({
+_LEGACY_ATTEMPT_TELEMETRY_KEYS = frozenset({
     "schema",
     "campaign_identity_sha256",
     "work_id",
     "attempt_index",
     "request_sha256",
     "samples",
+    "identity_sha256",
+})
+_LEGACY_ATTEMPT_TELEMETRY_V2_KEYS = _LEGACY_ATTEMPT_TELEMETRY_KEYS | {
+    "sampling_failure_count",
+    "sampling_integrity_failure_count",
+    "consecutive_sampling_failure_count",
+    "maximum_consecutive_sampling_failure_count",
+    "missing_prior_journal",
+}
+_ATTEMPT_TELEMETRY_HEAD_KEYS = frozenset({
+    "schema",
+    "campaign_identity_sha256",
+    "work_id",
+    "attempt_index",
+    "request_sha256",
+    "start_phase",
+    "start_disposition",
+    "next_ordinal",
+    "record_count",
+    "head_record_sha256",
+    "pending_sample_ordinal",
+    "last_sample_captured_ns",
+    "sampling_failure_count",
+    "sampling_integrity_failure_count",
+    "consecutive_sampling_failure_count",
+    "maximum_consecutive_sampling_failure_count",
+    "missing_prior_journal",
+    "identity_sha256",
+})
+_ATTEMPT_TELEMETRY_RECORD_KEYS = frozenset({
+    "schema",
+    "campaign_identity_sha256",
+    "work_id",
+    "attempt_index",
+    "request_sha256",
+    "ordinal",
+    "previous_record_sha256",
+    "outcome",
+    "sample",
+    "identity_sha256",
+})
+_ATTEMPT_TELEMETRY_STATE_KEYS = frozenset({
+    "schema",
+    "samples",
+    "sampling_failure_count",
+    "sampling_integrity_failure_count",
+    "consecutive_sampling_failure_count",
+    "maximum_consecutive_sampling_failure_count",
+    "missing_prior_journal",
     "identity_sha256",
 })
 _BOOTSTRAP_SCRIPT = r"""
@@ -177,6 +262,10 @@ exec env -u PYTHONPATH \
 
 class RTX4090TwoHostCampaignError(RuntimeError):
     """The fixed campaign plan, state, or transport receipt is invalid."""
+
+
+class _AttemptRetryRequired(RTX4090TwoHostCampaignError):
+    """One exact attempt is unusable, but proven absence permits the next."""
 
 
 class CampaignTransport(Protocol):
@@ -900,7 +989,7 @@ def _strict_json_mapping(path: Path, *, where: str) -> dict[str, object]:
         )
 
     try:
-        payload = path.read_bytes()
+        payload = read_regular_file_nofollow(path, where=where)
         value = json.loads(
             payload.decode("utf-8"),
             object_pairs_hook=unique_object,
@@ -908,7 +997,9 @@ def _strict_json_mapping(path: Path, *, where: str) -> dict[str, object]:
         )
     except RTX4090TwoHostCampaignError:
         raise
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (
+        ClusterTransportError, UnicodeDecodeError, json.JSONDecodeError,
+    ) as exc:
         raise RTX4090TwoHostCampaignError(f"{where} is unreadable") from exc
     if not isinstance(value, Mapping):
         raise RTX4090TwoHostCampaignError(f"{where} is not an object")
@@ -923,8 +1014,27 @@ def _strict_json_mapping(path: Path, *, where: str) -> dict[str, object]:
 def _write_exact_no_clobber(path: Path, value: Mapping[str, object]) -> None:
     payload = _json_bytes(value)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        if path.is_file() and path.read_bytes() == payload:
+    try:
+        existing = path.lstat()
+    except FileNotFoundError:
+        existing = None
+    except OSError as exc:
+        raise RTX4090TwoHostCampaignError(
+            f"existing campaign artifact is unreadable: {path}"
+        ) from exc
+    if existing is not None:
+        try:
+            existing_payload = (
+                read_regular_file_nofollow(
+                    path, where="existing campaign artifact",
+                )
+                if stat.S_ISREG(existing.st_mode) else None
+            )
+        except ClusterTransportError as exc:
+            raise RTX4090TwoHostCampaignError(
+                f"existing campaign artifact is unsafe: {path}"
+            ) from exc
+        if existing_payload == payload:
             return
         raise RTX4090TwoHostCampaignError(
             f"existing campaign artifact differs: {path}"
@@ -939,9 +1049,17 @@ def _write_exact_no_clobber(path: Path, value: Mapping[str, object]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         try:
-            os.link(temporary, path)
+            os.link(temporary, path, follow_symlinks=False)
         except FileExistsError as exc:
-            if not path.is_file() or path.read_bytes() != payload:
+            try:
+                raced = read_regular_file_nofollow(
+                    path, where="racing campaign artifact",
+                )
+            except ClusterTransportError as read_error:
+                raise RTX4090TwoHostCampaignError(
+                    f"racing campaign artifact is unsafe: {path}"
+                ) from read_error
+            if raced != payload:
                 raise RTX4090TwoHostCampaignError(
                     f"racing campaign artifact differs: {path}"
                 ) from exc
@@ -1127,6 +1245,9 @@ def _gpu_activity_requirement(
     manifest: Mapping[str, object],
     command: CampaignCommand,
     normalized_job: Mapping[str, object],
+    *,
+    attempt_index: int,
+    legacy_retry_waiver: bool = False,
 ) -> str:
     """Derive the utilization rule from fixed work and byte-exact output.
 
@@ -1148,6 +1269,11 @@ def _gpu_activity_requirement(
     if command.stage not in {
         "coordinator_source_identity", "worker_source_identity",
     }:
+        return "positive_utilization_required"
+    if attempt_index != 0 and not legacy_retry_waiver:
+        # A failed first attempt may have created the cache without producing
+        # acceptable telemetry.  Its retry must not turn that unobserved work
+        # into a zero-utilization validated-reuse waiver.
         return "positive_utilization_required"
     try:
         output = JobReceipt.from_payload(normalized_job).stdout
@@ -1186,26 +1312,258 @@ def _gpu_activity_requirement(
     return "waived_validated_source_cache_reuse"
 
 
-def _stage_receipt(
-    manifest: Mapping[str, object], command: CampaignCommand,
-    request: RunRequest, job_receipt: object, telemetry: Sequence[object],
-    dependency_receipt_sha256s: Sequence[str],
-    precondition_receipt_sha256s: Sequence[str], *, attempt_index: int,
-    artifact_inspector: ArtifactInspector | None,
-) -> dict[str, object]:
-    job = _normalize_job_receipt(job_receipt, request)
+def _nonnegative_telemetry_counter(value: object, *, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RTX4090TwoHostCampaignError(f"{where} is invalid")
+    return value
+
+
+def _normalize_attempt_telemetry_evidence(
+    manifest: Mapping[str, object],
+    command: CampaignCommand,
+    normalized_job: Mapping[str, object],
+    attempt_telemetry: Mapping[str, object] | None,
+    *,
+    activity_requirement: str,
+    allow_legacy_v2: bool = False,
+) -> tuple[list[dict[str, object]], dict[str, object], str | None]:
+    """Bind one final job receipt to its exact durable telemetry journal.
+
+    Transient management-query failures are compatible with acceptance only
+    when the sealed success-ratio and maximum-blind-window policy still holds.
+    Integrity failures and a missing journal for an adopted job always fail the
+    attempt after the child reaches durable terminal state.
+    """
+
+    policy = manifest["policy"]
+    assert isinstance(policy, Mapping)
+    telemetry_policy = policy["telemetry"]
+    assert isinstance(telemetry_policy, Mapping)
+    maximum_gap_limit_ns = (
+        int(telemetry_policy["maximum_observation_gap_milliseconds"])
+        * 1_000_000
+    )
+    minimum_success_percent = int(
+        telemetry_policy["minimum_successful_sample_percent"]
+    )
+
+    if not command.gpu_bearing:
+        if attempt_telemetry is not None:
+            raise RTX4090TwoHostCampaignError(
+                "CPU assignment unexpectedly has an attempt telemetry journal"
+            )
+        host = _host_by_id(manifest, command.host_id)
+        expected = host["expected"]
+        assert isinstance(expected, Mapping)
+        expected_gpu = expected["gpu"]
+        assert isinstance(expected_gpu, Mapping)
+        samples, summary = _normalize_telemetry(
+            (), required=False, expected_gpu=expected_gpu,
+        )
+        return samples, {
+            **summary,
+            "sampling_attempt_count": 0,
+            "successful_sample_count": 0,
+            "sampling_failure_count": 0,
+            "sampling_integrity_failure_count": 0,
+            "outside_job_lifetime_sample_count": 0,
+            "unobservable_gpu_utilization_sample_count": 0,
+            "consecutive_sampling_failure_count": 0,
+            "maximum_consecutive_sampling_failure_count": 0,
+            "successful_sample_percent": None,
+            "maximum_observation_gap_ns": None,
+            "maximum_observation_gap_limit_ns": maximum_gap_limit_ns,
+            "minimum_successful_sample_percent_required": (
+                minimum_success_percent
+            ),
+            "missing_prior_journal": False,
+        }, None
+
+    permitted_schemas = {ATTEMPT_TELEMETRY_SCHEMA}
+    if allow_legacy_v2:
+        permitted_schemas.add(LEGACY_ATTEMPT_TELEMETRY_V2_SCHEMA)
+    if (
+        not isinstance(attempt_telemetry, Mapping)
+        or set(attempt_telemetry) != _ATTEMPT_TELEMETRY_STATE_KEYS
+        or attempt_telemetry.get("schema") not in permitted_schemas
+    ):
+        raise RTX4090TwoHostCampaignError(
+            "GPU assignment requires a current attempt telemetry journal"
+        )
+    journal_identity = attempt_telemetry.get("identity_sha256")
+    if _HEX64.fullmatch(str(journal_identity)) is None:
+        raise RTX4090TwoHostCampaignError(
+            "GPU assignment attempt telemetry identity is malformed"
+        )
+    raw_samples = attempt_telemetry.get("samples")
+    if not isinstance(raw_samples, list):
+        raise RTX4090TwoHostCampaignError(
+            "GPU assignment attempt telemetry samples are malformed"
+        )
+    transient_failures = _nonnegative_telemetry_counter(
+        attempt_telemetry.get("sampling_failure_count"),
+        where="telemetry sampling failure count",
+    )
+    integrity_failures = _nonnegative_telemetry_counter(
+        attempt_telemetry.get("sampling_integrity_failure_count"),
+        where="telemetry sampling integrity failure count",
+    )
+    consecutive_failures = _nonnegative_telemetry_counter(
+        attempt_telemetry.get("consecutive_sampling_failure_count"),
+        where="telemetry consecutive sampling failure count",
+    )
+    maximum_consecutive_failures = _nonnegative_telemetry_counter(
+        attempt_telemetry.get("maximum_consecutive_sampling_failure_count"),
+        where="telemetry maximum consecutive sampling failure count",
+    )
+    missing_prior_journal = attempt_telemetry.get("missing_prior_journal")
+    if not isinstance(missing_prior_journal, bool):
+        raise RTX4090TwoHostCampaignError(
+            "telemetry missing-prior-journal marker is invalid"
+        )
+    total_failures = transient_failures + integrity_failures
+    if (
+        consecutive_failures > maximum_consecutive_failures
+        or maximum_consecutive_failures > total_failures
+        or ((total_failures == 0) != (maximum_consecutive_failures == 0))
+        or (missing_prior_journal and integrity_failures < 1)
+    ):
+        raise RTX4090TwoHostCampaignError(
+            "telemetry sampling counter relationships are invalid"
+        )
+
     host = _host_by_id(manifest, command.host_id)
     expected = host["expected"]
     assert isinstance(expected, Mapping)
     expected_gpu = expected["gpu"]
     assert isinstance(expected_gpu, Mapping)
-    activity_requirement = _gpu_activity_requirement(
-        manifest, command, job,
+    all_samples, _ = _normalize_telemetry(
+        raw_samples,
+        required=False,
+        expected_gpu=expected_gpu,
     )
-    samples, telemetry_summary = _normalize_telemetry(
-        telemetry,
+    started_ns = normalized_job.get("started_ns")
+    finished_ns = normalized_job.get("finished_ns")
+    if (
+        isinstance(started_ns, bool)
+        or not isinstance(started_ns, int)
+        or isinstance(finished_ns, bool)
+        or not isinstance(finished_ns, int)
+        or finished_ns < started_ns
+    ):
+        raise RTX4090TwoHostCampaignError(
+            "final job receipt has an invalid telemetry observation window"
+        )
+    all_captures = [int(sample["captured_ns"]) for sample in all_samples]
+    if any(value < started_ns for value in all_captures):
+        raise RTX4090TwoHostCampaignError(
+            "telemetry sample predates the final job lifetime"
+        )
+    samples = [
+        sample for sample in all_samples
+        if int(sample["captured_ns"]) <= finished_ns
+    ]
+    outside_job_lifetime_sample_count = len(all_samples) - len(samples)
+    samples, summary = _normalize_telemetry(
+        samples,
         required=activity_requirement == "positive_utilization_required",
         expected_gpu=expected_gpu,
+    )
+    observable_samples: list[dict[str, object]] = []
+    for sample in samples:
+        gpus = sample["gpus"]
+        assert isinstance(gpus, list)
+        matching_gpu = next(
+            gpu for gpu in gpus
+            if isinstance(gpu, Mapping)
+            and gpu.get("name") == expected_gpu["name"]
+            and gpu.get("uuid") == expected_gpu["uuid"]
+        )
+        if matching_gpu.get("gpu_utilization_pct") is not None:
+            observable_samples.append(sample)
+    unobservable_gpu_utilization_sample_count = (
+        len(samples) - len(observable_samples)
+    )
+    captures = [
+        int(sample["captured_ns"]) for sample in observable_samples
+    ]
+    observation_points = [started_ns, *captures, finished_ns]
+    maximum_gap_ns = max(
+        (right - left for left, right in zip(
+            observation_points, observation_points[1:],
+        )),
+        default=0,
+    )
+    sampling_attempt_count = len(all_samples) + total_failures
+    successful_sample_count = len(observable_samples)
+    successful_sample_percent = (
+        100.0 * successful_sample_count / sampling_attempt_count
+        if sampling_attempt_count else None
+    )
+    evidence_summary = {
+        **summary,
+        "sampling_attempt_count": sampling_attempt_count,
+        "successful_sample_count": successful_sample_count,
+        "sampling_failure_count": transient_failures,
+        "sampling_integrity_failure_count": integrity_failures,
+        "outside_job_lifetime_sample_count": (
+            outside_job_lifetime_sample_count
+        ),
+        "unobservable_gpu_utilization_sample_count": (
+            unobservable_gpu_utilization_sample_count
+        ),
+        "consecutive_sampling_failure_count": consecutive_failures,
+        "maximum_consecutive_sampling_failure_count": (
+            maximum_consecutive_failures
+        ),
+        "successful_sample_percent": successful_sample_percent,
+        "maximum_observation_gap_ns": maximum_gap_ns,
+        "maximum_observation_gap_limit_ns": maximum_gap_limit_ns,
+        "minimum_successful_sample_percent_required": minimum_success_percent,
+        "missing_prior_journal": missing_prior_journal,
+    }
+    if integrity_failures or missing_prior_journal:
+        raise RTX4090TwoHostCampaignError(
+            "telemetry integrity evidence invalidates the completed attempt"
+        )
+    if activity_requirement == "positive_utilization_required":
+        assert successful_sample_percent is not None
+        if successful_sample_percent < minimum_success_percent:
+            raise RTX4090TwoHostCampaignError(
+                "telemetry successful sample percentage is below policy"
+            )
+        if maximum_gap_ns > maximum_gap_limit_ns:
+            raise RTX4090TwoHostCampaignError(
+                "telemetry maximum observation gap exceeds policy"
+            )
+    return samples, evidence_summary, str(journal_identity)
+
+
+def _stage_receipt(
+    manifest: Mapping[str, object], command: CampaignCommand,
+    request: RunRequest, job_receipt: object,
+    attempt_telemetry: Mapping[str, object] | None,
+    dependency_receipt_sha256s: Sequence[str],
+    precondition_receipt_sha256s: Sequence[str], *, attempt_index: int,
+    artifact_inspector: ArtifactInspector | None,
+) -> dict[str, object]:
+    if manifest.get("schema") != CAMPAIGN_MANIFEST_SCHEMA:
+        raise RTX4090TwoHostCampaignError(
+            "legacy campaign manifests are read-only"
+        )
+    job = _normalize_job_receipt(job_receipt, request)
+    host = _host_by_id(manifest, command.host_id)
+    activity_requirement = _gpu_activity_requirement(
+        manifest, command, job, attempt_index=attempt_index,
+    )
+    samples, telemetry_summary, attempt_telemetry_identity = (
+        _normalize_attempt_telemetry_evidence(
+            manifest,
+            command,
+            job,
+            attempt_telemetry,
+            activity_requirement=activity_requirement,
+        )
     )
     output_artifacts = _inspect_command_outputs(
         command, host, artifact_inspector,
@@ -1230,6 +1588,7 @@ def _stage_receipt(
         "telemetry": samples,
         "telemetry_sha256": canonical_sha256(samples),
         "telemetry_summary": telemetry_summary,
+        "attempt_telemetry_identity_sha256": attempt_telemetry_identity,
         "output_artifacts": output_artifacts,
     }
     return {**body, "identity_sha256": canonical_sha256(body)}
@@ -1316,6 +1675,7 @@ class CampaignCoordinator:
                 os.close(descriptor)
 
     def initialize(self) -> dict[str, object]:
+        self._require_current_manifest("initialize")
         self.state_dir.mkdir(parents=True, exist_ok=True)
         _write_exact_no_clobber(
             self.state_dir / MANIFEST_FILE, self.manifest,
@@ -1323,7 +1683,11 @@ class CampaignCoordinator:
         _write_exact_no_clobber(
             self.state_dir / PLAN_FILE, build_command_plan(self.manifest),
         )
-        if self.state_path.exists():
+        try:
+            self.state_path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
             raise RTX4090TwoHostCampaignError(
                 "campaign state already exists; use resume"
             )
@@ -1332,12 +1696,28 @@ class CampaignCoordinator:
         return state
 
     def load_state(self) -> dict[str, object]:
-        if not self.state_path.is_file():
+        try:
+            state_metadata = self.state_path.lstat()
+        except FileNotFoundError:
             raise RTX4090TwoHostCampaignError("campaign state is absent; use run")
+        except OSError as exc:
+            raise RTX4090TwoHostCampaignError(
+                "campaign state is unreadable"
+            ) from exc
+        if not stat.S_ISREG(state_metadata.st_mode):
+            raise RTX4090TwoHostCampaignError(
+                "campaign state is not a real regular file"
+            )
         raw = _strict_json_mapping(
             self.state_path, where="campaign state",
         )
         return validate_campaign_state(raw, self.manifest)
+
+    def _require_current_manifest(self, operation: str) -> None:
+        if self.manifest["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+            raise RTX4090TwoHostCampaignError(
+                f"legacy campaign manifests are read-only; cannot {operation}"
+            )
 
     def _request(
         self, command: CampaignCommand, *, attempt_index: int,
@@ -1423,6 +1803,8 @@ class CampaignCoordinator:
     def _stage_preconditions(
         self, stage: str, *, verify_only: bool,
     ) -> tuple[str, ...]:
+        if not verify_only:
+            self._require_current_manifest("evaluate mutating stage preconditions")
         if self.stage_preconditioner is None:
             return ()
         try:
@@ -1441,39 +1823,230 @@ class CampaignCoordinator:
             f"{request.job_id}.json"
         )
 
-    def _attempt_telemetry_payload(
+    def _ensure_attempt_telemetry_root(self) -> Path:
+        root = self.state_dir / ATTEMPT_TELEMETRY_DIR
+        try:
+            root.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        if root.is_symlink() or not root.is_dir():
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry root is unsafe"
+            )
+        parent_descriptor = os.open(root.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
+        return root
+
+    def _attempt_telemetry_records_dir(self, request: RunRequest) -> Path:
+        return (
+            self.state_dir / ATTEMPT_TELEMETRY_DIR /
+            f"{request.job_id}.records"
+        )
+
+    def _attempt_telemetry_record_path(
+        self, request: RunRequest, ordinal: int,
+    ) -> Path:
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry record ordinal is invalid"
+            )
+        return self._attempt_telemetry_records_dir(request) / f"{ordinal:020d}.json"
+
+    def _ensure_attempt_telemetry_records_dir(self, request: RunRequest) -> Path:
+        self._ensure_attempt_telemetry_root()
+        root = self._attempt_telemetry_records_dir(request)
+        try:
+            root.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        if root.is_symlink() or not root.is_dir():
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry record root is unsafe"
+            )
+        parent_descriptor = os.open(root.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
+        return root
+
+    @staticmethod
+    def _validate_attempt_telemetry_counters(
+        sampling_failure_count: int,
+        sampling_integrity_failure_count: int,
+        consecutive_sampling_failure_count: int,
+        maximum_consecutive_sampling_failure_count: int,
+        missing_prior_journal: bool,
+    ) -> None:
+        counts = (
+            sampling_failure_count,
+            sampling_integrity_failure_count,
+            consecutive_sampling_failure_count,
+            maximum_consecutive_sampling_failure_count,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in counts
+        ):
+            raise RTX4090TwoHostCampaignError(
+                "telemetry sampling counters are invalid"
+            )
+        failed_attempts = sampling_failure_count + sampling_integrity_failure_count
+        if (
+            consecutive_sampling_failure_count
+            > maximum_consecutive_sampling_failure_count
+            or maximum_consecutive_sampling_failure_count > failed_attempts
+            or ((failed_attempts == 0) != (maximum_consecutive_sampling_failure_count == 0))
+            or not isinstance(missing_prior_journal, bool)
+            or (missing_prior_journal and sampling_integrity_failure_count < 1)
+        ):
+            raise RTX4090TwoHostCampaignError(
+                "telemetry sampling counter relationships are invalid"
+            )
+
+    def _attempt_telemetry_head_payload(
         self,
         command: CampaignCommand,
         request: RunRequest,
         attempt_index: int,
-        samples: Sequence[Mapping[str, object]],
+        *,
+        start_phase: str,
+        start_disposition: str | None,
+        next_ordinal: int,
+        record_count: int,
+        head_record_sha256: str | None,
+        pending_sample_ordinal: int | None,
+        last_sample_captured_ns: int | None,
+        sampling_failure_count: int,
+        sampling_integrity_failure_count: int,
+        consecutive_sampling_failure_count: int,
+        maximum_consecutive_sampling_failure_count: int,
+        missing_prior_journal: bool,
     ) -> dict[str, object]:
+        self._validate_attempt_telemetry_counters(
+            sampling_failure_count,
+            sampling_integrity_failure_count,
+            consecutive_sampling_failure_count,
+            maximum_consecutive_sampling_failure_count,
+            missing_prior_journal,
+        )
+        disposition_phase = start_phase in {"claim_pending", "claimed"}
+        missing_prefix_disposition = (
+            start_disposition in _MISSING_PREFIX_START_DISPOSITIONS
+        )
+        if (
+            start_phase not in {
+                "prepared", "start_invoked", "claim_pending", "claimed",
+            }
+            or (
+                disposition_phase
+                != isinstance(start_disposition, str)
+            )
+            or (
+                isinstance(start_disposition, str)
+                and start_disposition not in _ATTEMPT_START_DISPOSITIONS
+            )
+            or (
+                start_phase == "claim_pending"
+                and not missing_prefix_disposition
+            )
+            or isinstance(next_ordinal, bool)
+            or not isinstance(next_ordinal, int)
+            or next_ordinal < 0
+            or isinstance(record_count, bool)
+            or not isinstance(record_count, int)
+            or record_count != next_ordinal
+            or (
+                (record_count == 0)
+                != (head_record_sha256 is None)
+            )
+            or (
+                head_record_sha256 is not None
+                and _HEX64.fullmatch(head_record_sha256) is None
+            )
+            or (
+                pending_sample_ordinal is not None
+                and (
+                    isinstance(pending_sample_ordinal, bool)
+                    or not isinstance(pending_sample_ordinal, int)
+                    or pending_sample_ordinal != next_ordinal
+                )
+            )
+            or (
+                last_sample_captured_ns is not None
+                and (
+                    isinstance(last_sample_captured_ns, bool)
+                    or not isinstance(last_sample_captured_ns, int)
+                    or last_sample_captured_ns <= 0
+                )
+            )
+            or (
+                start_phase == "claim_pending"
+                and pending_sample_ordinal is None
+                and (
+                    not missing_prior_journal
+                    or sampling_integrity_failure_count < 1
+                    or record_count < 1
+                )
+            )
+            or (
+                start_phase == "claimed"
+                and missing_prefix_disposition
+                and (
+                    not missing_prior_journal
+                    or sampling_integrity_failure_count < 1
+                    or record_count < 1
+                )
+            )
+        ):
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry head fields are invalid"
+            )
         body: dict[str, object] = {
             "schema": ATTEMPT_TELEMETRY_SCHEMA,
             "campaign_identity_sha256": self.manifest["identity_sha256"],
             "work_id": command.work_id,
             "attempt_index": attempt_index,
             "request_sha256": request.request_sha256,
-            "samples": [dict(sample) for sample in samples],
+            "start_phase": start_phase,
+            "start_disposition": start_disposition,
+            "next_ordinal": next_ordinal,
+            "record_count": record_count,
+            "head_record_sha256": head_record_sha256,
+            "pending_sample_ordinal": pending_sample_ordinal,
+            "last_sample_captured_ns": last_sample_captured_ns,
+            "sampling_failure_count": sampling_failure_count,
+            "sampling_integrity_failure_count": sampling_integrity_failure_count,
+            "consecutive_sampling_failure_count": consecutive_sampling_failure_count,
+            "maximum_consecutive_sampling_failure_count": (
+                maximum_consecutive_sampling_failure_count
+            ),
+            "missing_prior_journal": missing_prior_journal,
         }
         return {**body, "identity_sha256": canonical_sha256(body)}
 
-    def _load_attempt_telemetry(
+    def _load_attempt_telemetry_head(
         self,
         command: CampaignCommand,
         request: RunRequest,
         attempt_index: int,
-    ) -> list[dict[str, object]]:
+    ) -> dict[str, object]:
         path = self._attempt_telemetry_path(request)
-        if not path.exists():
-            empty = self._attempt_telemetry_payload(
-                command, request, attempt_index, (),
+        if path.is_symlink():
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry head is a symlink"
             )
-            _write_exact_no_clobber(path, empty)
         raw = _strict_json_mapping(
             path, where=f"attempt telemetry for {command.work_id}",
         )
-        if set(raw) != _ATTEMPT_TELEMETRY_KEYS:
+        if raw.get("schema") != ATTEMPT_TELEMETRY_SCHEMA:
+            raise RTX4090TwoHostCampaignError(
+                "legacy attempt telemetry has no mutable head"
+            )
+        if set(raw) != _ATTEMPT_TELEMETRY_HEAD_KEYS:
             raise RTX4090TwoHostCampaignError(
                 f"attempt telemetry fields differ for {command.work_id}"
             )
@@ -1484,7 +2057,616 @@ class CampaignCoordinator:
                 f"attempt telemetry digest differs for {command.work_id}"
             )
         exact = {
-            "schema": ATTEMPT_TELEMETRY_SCHEMA,
+            "campaign_identity_sha256": self.manifest["identity_sha256"],
+            "work_id": command.work_id,
+            "attempt_index": attempt_index,
+            "request_sha256": request.request_sha256,
+        }
+        for key, expected_value in exact.items():
+            if raw.get(key) != expected_value:
+                raise RTX4090TwoHostCampaignError(
+                    f"attempt telemetry {key} differs for {command.work_id}"
+                )
+        expected = self._attempt_telemetry_head_payload(
+            command,
+            request,
+            attempt_index,
+            start_phase=raw["start_phase"],  # type: ignore[arg-type]
+            start_disposition=raw["start_disposition"],  # type: ignore[arg-type]
+            next_ordinal=raw["next_ordinal"],  # type: ignore[arg-type]
+            record_count=raw["record_count"],  # type: ignore[arg-type]
+            head_record_sha256=raw["head_record_sha256"],  # type: ignore[arg-type]
+            pending_sample_ordinal=raw["pending_sample_ordinal"],  # type: ignore[arg-type]
+            last_sample_captured_ns=raw["last_sample_captured_ns"],  # type: ignore[arg-type]
+            sampling_failure_count=raw["sampling_failure_count"],  # type: ignore[arg-type]
+            sampling_integrity_failure_count=raw[
+                "sampling_integrity_failure_count"
+            ],  # type: ignore[arg-type]
+            consecutive_sampling_failure_count=raw[
+                "consecutive_sampling_failure_count"
+            ],  # type: ignore[arg-type]
+            maximum_consecutive_sampling_failure_count=raw[
+                "maximum_consecutive_sampling_failure_count"
+            ],  # type: ignore[arg-type]
+            missing_prior_journal=raw["missing_prior_journal"],  # type: ignore[arg-type]
+        )
+        if expected != raw:
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry head is noncanonical for {command.work_id}"
+            )
+        return raw
+
+    def _replace_attempt_telemetry_head(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        head: Mapping[str, object],
+        **changes: object,
+    ) -> dict[str, object]:
+        values = {key: head[key] for key in _ATTEMPT_TELEMETRY_HEAD_KEYS if key not in {
+            "schema", "campaign_identity_sha256", "work_id", "attempt_index",
+            "request_sha256", "identity_sha256",
+        }}
+        values.update(changes)
+        payload = self._attempt_telemetry_head_payload(
+            command, request, attempt_index, **values,  # type: ignore[arg-type]
+        )
+        self._ensure_attempt_telemetry_root()
+        _replace_state(self._attempt_telemetry_path(request), payload)
+        return payload
+
+    def _initialize_attempt_telemetry(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+    ) -> None:
+        payload = self._attempt_telemetry_head_payload(
+            command,
+            request,
+            attempt_index,
+            start_phase="prepared",
+            start_disposition=None,
+            next_ordinal=0,
+            record_count=0,
+            head_record_sha256=None,
+            pending_sample_ordinal=None,
+            last_sample_captured_ns=None,
+            sampling_failure_count=0,
+            sampling_integrity_failure_count=0,
+            consecutive_sampling_failure_count=0,
+            maximum_consecutive_sampling_failure_count=0,
+            missing_prior_journal=False,
+        )
+        self._ensure_attempt_telemetry_root()
+        _write_exact_no_clobber(
+            self._attempt_telemetry_path(request), payload,
+        )
+        self._ensure_attempt_telemetry_records_dir(request)
+
+    def _begin_attempt_telemetry_sample(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+    ) -> dict[str, object]:
+        head = self._load_attempt_telemetry_head(command, request, attempt_index)
+        if head["pending_sample_ordinal"] is not None:
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry already has a pending sample"
+            )
+        return self._replace_attempt_telemetry_head(
+            command,
+            request,
+            attempt_index,
+            head,
+            pending_sample_ordinal=head["next_ordinal"],
+        )
+
+    def _attempt_telemetry_record_payload(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        *,
+        ordinal: int,
+        previous_record_sha256: str | None,
+        outcome: str,
+        sample: Mapping[str, object] | None,
+    ) -> dict[str, object]:
+        if outcome not in {"sample", "unavailable", "integrity"}:
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry record outcome is invalid"
+            )
+        if (outcome == "sample") != isinstance(sample, Mapping):
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry record sample is invalid"
+            )
+        if (
+            ordinal == 0 and previous_record_sha256 is not None
+        ) or (
+            ordinal > 0
+            and (
+                not isinstance(previous_record_sha256, str)
+                or _HEX64.fullmatch(previous_record_sha256) is None
+            )
+        ):
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry record predecessor is invalid"
+            )
+        body: dict[str, object] = {
+            "schema": ATTEMPT_TELEMETRY_RECORD_SCHEMA,
+            "campaign_identity_sha256": self.manifest["identity_sha256"],
+            "work_id": command.work_id,
+            "attempt_index": attempt_index,
+            "request_sha256": request.request_sha256,
+            "ordinal": ordinal,
+            "previous_record_sha256": previous_record_sha256,
+            "outcome": outcome,
+            "sample": None if sample is None else dict(sample),
+        }
+        return {**body, "identity_sha256": canonical_sha256(body)}
+
+    def _read_attempt_telemetry_record(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        ordinal: int,
+        previous_record_sha256: str | None,
+    ) -> dict[str, object]:
+        path = self._attempt_telemetry_record_path(request, ordinal)
+        if path.is_symlink():
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry record {ordinal} is a symlink"
+            )
+        raw = _strict_json_mapping(
+            path,
+            where=f"attempt telemetry record {ordinal} for {command.work_id}",
+        )
+        if set(raw) != _ATTEMPT_TELEMETRY_RECORD_KEYS:
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry record {ordinal} fields differ"
+            )
+        expected = self._attempt_telemetry_record_payload(
+            command,
+            request,
+            attempt_index,
+            ordinal=ordinal,
+            previous_record_sha256=previous_record_sha256,
+            outcome=raw.get("outcome"),  # type: ignore[arg-type]
+            sample=raw.get("sample"),  # type: ignore[arg-type]
+        )
+        if raw != expected:
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry record {ordinal} digest or binding differs"
+            )
+        return raw
+
+    def _commit_attempt_telemetry_record(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        head: Mapping[str, object],
+        record: Mapping[str, object],
+        *,
+        missing_prior_journal: bool,
+    ) -> dict[str, object]:
+        outcome = str(record["outcome"])
+        failures = int(head["sampling_failure_count"])
+        integrity = int(head["sampling_integrity_failure_count"])
+        prior_consecutive = int(head["consecutive_sampling_failure_count"])
+        maximum = int(head["maximum_consecutive_sampling_failure_count"])
+        last_capture = head["last_sample_captured_ns"]
+        if outcome == "sample":
+            consecutive = 0
+            sample = record["sample"]
+            assert isinstance(sample, Mapping)
+            last_capture = int(sample["captured_ns"])
+        else:
+            failures += int(outcome == "unavailable")
+            integrity += int(outcome == "integrity")
+            consecutive = prior_consecutive + 1
+            maximum = max(maximum, consecutive)
+        return self._replace_attempt_telemetry_head(
+            command,
+            request,
+            attempt_index,
+            head,
+            next_ordinal=int(head["next_ordinal"]) + 1,
+            record_count=int(head["record_count"]) + 1,
+            head_record_sha256=record["identity_sha256"],
+            pending_sample_ordinal=None,
+            last_sample_captured_ns=last_capture,
+            sampling_failure_count=failures,
+            sampling_integrity_failure_count=integrity,
+            consecutive_sampling_failure_count=consecutive,
+            maximum_consecutive_sampling_failure_count=maximum,
+            missing_prior_journal=(
+                bool(head["missing_prior_journal"])
+                or missing_prior_journal
+            ),
+        )
+
+    def _append_attempt_telemetry_record(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        *,
+        outcome: str,
+        sample: object,
+        require_pending: bool,
+        missing_prior_journal: bool = False,
+    ) -> dict[str, object]:
+        head = self._load_attempt_telemetry_head(command, request, attempt_index)
+        ordinal = int(head["next_ordinal"])
+        pending = head["pending_sample_ordinal"]
+        if require_pending and pending != ordinal:
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry sample was not durably pending"
+            )
+        if not require_pending and pending is not None:
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry has an unresolved pending sample"
+            )
+        if not require_pending:
+            # Every record, including an integrity/unavailable row written
+            # outside a sample operation, first reserves its ordinal in the
+            # head.  A crash after record publication can therefore be
+            # adopted rather than rejected as an orphan forever.
+            head = self._replace_attempt_telemetry_head(
+                command,
+                request,
+                attempt_index,
+                head,
+                pending_sample_ordinal=ordinal,
+            )
+        normalized_sample: Mapping[str, object] | None = None
+        if outcome == "sample":
+            host = _host_by_id(self.manifest, command.host_id)
+            expected = host["expected"]
+            assert isinstance(expected, Mapping)
+            expected_gpu = expected["gpu"]
+            assert isinstance(expected_gpu, Mapping)
+            normalized, _ = _normalize_telemetry(
+                [sample], required=False, expected_gpu=expected_gpu,
+            )
+            normalized_sample = normalized[0]
+            prior_capture = head["last_sample_captured_ns"]
+            if (
+                prior_capture is not None
+                and int(normalized_sample["captured_ns"]) <= int(prior_capture)
+            ):
+                raise RTX4090TwoHostCampaignError(
+                    "attempt telemetry samples are not strictly increasing"
+                )
+        record = self._attempt_telemetry_record_payload(
+            command,
+            request,
+            attempt_index,
+            ordinal=ordinal,
+            previous_record_sha256=head["head_record_sha256"],  # type: ignore[arg-type]
+            outcome=outcome,
+            sample=normalized_sample,
+        )
+        self._ensure_attempt_telemetry_records_dir(request)
+        _write_exact_no_clobber(
+            self._attempt_telemetry_record_path(request, ordinal), record,
+        )
+        return self._commit_attempt_telemetry_record(
+            command,
+            request,
+            attempt_index,
+            head,
+            record,
+            missing_prior_journal=missing_prior_journal,
+        )
+
+    def _recover_attempt_telemetry(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+    ) -> dict[str, object]:
+        """Fail-latch interrupted sample/start write-ahead phases on resume."""
+
+        head = self._load_attempt_telemetry_head(command, request, attempt_index)
+        if head["start_phase"] == "start_invoked":
+            # The process may have crossed start(2) before the coordinator
+            # crashed.  Publish one durable intent that both reserves the
+            # record ordinal and records why that integrity row must latch a
+            # missing prefix.  No claimed state is legal before this row is
+            # committed into the head.
+            head = self._replace_attempt_telemetry_head(
+                command,
+                request,
+                attempt_index,
+                head,
+                start_phase="claim_pending",
+                start_disposition="recovered_ambiguous_start",
+                pending_sample_ordinal=head["next_ordinal"],
+            )
+        pending = head["pending_sample_ordinal"]
+        if pending is not None:
+            ordinal = int(pending)
+            path = self._attempt_telemetry_record_path(request, ordinal)
+            if path.exists():
+                record = self._read_attempt_telemetry_record(
+                    command,
+                    request,
+                    attempt_index,
+                    ordinal,
+                    head["head_record_sha256"],  # type: ignore[arg-type]
+                )
+                head = self._commit_attempt_telemetry_record(
+                    command,
+                    request,
+                    attempt_index,
+                    head,
+                    record,
+                    missing_prior_journal=(
+                        head["start_phase"] == "claim_pending"
+                    ),
+                )
+            else:
+                head = self._append_attempt_telemetry_record(
+                    command,
+                    request,
+                    attempt_index,
+                    outcome="integrity",
+                    sample=None,
+                    require_pending=True,
+                    missing_prior_journal=(
+                        head["start_phase"] == "claim_pending"
+                    ),
+                )
+        elif self._attempt_telemetry_record_path(
+            request, int(head["next_ordinal"]),
+        ).exists():
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry has an uncommitted record without a "
+                "pending write-ahead ordinal"
+            )
+        if head["start_phase"] == "claim_pending":
+            if (
+                not bool(head["missing_prior_journal"])
+                or int(head["sampling_integrity_failure_count"]) < 1
+            ):
+                raise RTX4090TwoHostCampaignError(
+                    "attempt start claim lacks its missing-prefix integrity row"
+                )
+            head = self._replace_attempt_telemetry_head(
+                command,
+                request,
+                attempt_index,
+                head,
+                start_phase="claimed",
+            )
+        return head
+
+    def _mark_attempt_start_invoked(
+        self, command: CampaignCommand, request: RunRequest, attempt_index: int,
+    ) -> None:
+        head = self._load_attempt_telemetry_head(command, request, attempt_index)
+        if head["start_phase"] != "prepared":
+            raise RTX4090TwoHostCampaignError(
+                "attempt start write-ahead phase is not pristine"
+            )
+        self._replace_attempt_telemetry_head(
+            command, request, attempt_index, head,
+            start_phase="start_invoked",
+        )
+
+    def _mark_attempt_start_claimed(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        disposition: str,
+    ) -> None:
+        head = self._load_attempt_telemetry_head(command, request, attempt_index)
+        if head["start_phase"] not in {
+            "prepared", "start_invoked", "claim_pending", "claimed",
+        }:
+            raise RTX4090TwoHostCampaignError(
+                "attempt start write-ahead phase is invalid"
+            )
+        if head["start_phase"] == "claimed":
+            if disposition == "existing":
+                return
+            if head["start_disposition"] != disposition:
+                raise RTX4090TwoHostCampaignError(
+                    "attempt start disposition differs on resume"
+                )
+            return
+        if disposition not in _ATTEMPT_START_DISPOSITIONS:
+            raise RTX4090TwoHostCampaignError(
+                "attempt start disposition is invalid"
+            )
+        if head["start_phase"] == "claim_pending":
+            if head["start_disposition"] != disposition:
+                raise RTX4090TwoHostCampaignError(
+                    "pending attempt start disposition differs on resume"
+                )
+            self._recover_attempt_telemetry(
+                command, request, attempt_index,
+            )
+            return
+        if disposition in _MISSING_PREFIX_START_DISPOSITIONS and not bool(
+            head["missing_prior_journal"]
+        ):
+            head = self._replace_attempt_telemetry_head(
+                command,
+                request,
+                attempt_index,
+                head,
+                start_phase="claim_pending",
+                start_disposition=disposition,
+                pending_sample_ordinal=head["next_ordinal"],
+            )
+            head = self._append_attempt_telemetry_record(
+                command,
+                request,
+                attempt_index,
+                outcome="integrity",
+                sample=None,
+                require_pending=True,
+                missing_prior_journal=True,
+            )
+        self._replace_attempt_telemetry_head(
+            command,
+            request,
+            attempt_index,
+            head,
+            start_phase="claimed",
+            start_disposition=disposition,
+        )
+
+    def _load_attempt_telemetry(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        *,
+        create_if_missing: bool = False,
+    ) -> dict[str, object]:
+        path = self._attempt_telemetry_path(request)
+        if path.is_symlink():
+            raise RTX4090TwoHostCampaignError(
+                "attempt telemetry head is a symlink"
+            )
+        if not path.exists():
+            if not create_if_missing:
+                raise RTX4090TwoHostCampaignError(
+                    f"attempt telemetry is absent for {command.work_id}"
+                )
+            self._initialize_attempt_telemetry(
+                command, request, attempt_index,
+            )
+        raw = _strict_json_mapping(
+            path, where=f"attempt telemetry for {command.work_id}",
+        )
+        schema = raw.get("schema")
+        if schema == ATTEMPT_TELEMETRY_SCHEMA:
+            head = self._load_attempt_telemetry_head(
+                command, request, attempt_index,
+            )
+            samples: list[dict[str, object]] = []
+            transient = 0
+            integrity = 0
+            consecutive = 0
+            maximum = 0
+            previous: str | None = None
+            last_capture: int | None = None
+            for ordinal in range(int(head["record_count"])):
+                record = self._read_attempt_telemetry_record(
+                    command, request, attempt_index, ordinal, previous,
+                )
+                previous = str(record["identity_sha256"])
+                outcome = record["outcome"]
+                if outcome == "sample":
+                    sample = record["sample"]
+                    assert isinstance(sample, Mapping)
+                    raw_capture = sample.get("captured_ns")
+                    if (
+                        isinstance(raw_capture, bool)
+                        or not isinstance(raw_capture, int)
+                        or raw_capture <= 0
+                    ):
+                        raise RTX4090TwoHostCampaignError(
+                            "attempt telemetry record capture is invalid"
+                        )
+                    capture = raw_capture
+                    if last_capture is not None and capture <= last_capture:
+                        raise RTX4090TwoHostCampaignError(
+                            "attempt telemetry samples are not strictly increasing"
+                        )
+                    last_capture = capture
+                    samples.append(dict(sample))
+                    consecutive = 0
+                else:
+                    transient += int(outcome == "unavailable")
+                    integrity += int(outcome == "integrity")
+                    consecutive += 1
+                    maximum = max(maximum, consecutive)
+            record_root = self._attempt_telemetry_records_dir(request)
+            try:
+                actual = {
+                    child.name for child in list_regular_file_children_nofollow(
+                        record_root,
+                        where="attempt telemetry record root",
+                        allow_missing=True,
+                    )
+                }
+            except ClusterTransportError as exc:
+                raise RTX4090TwoHostCampaignError(
+                    "attempt telemetry record root is unsafe"
+                ) from exc
+            expected_names = {
+                f"{ordinal:020d}.json"
+                for ordinal in range(int(head["record_count"]))
+            }
+            if actual != expected_names:
+                raise RTX4090TwoHostCampaignError(
+                    f"attempt telemetry record set differs for {command.work_id}"
+                )
+            host = _host_by_id(self.manifest, command.host_id)
+            expected_host = host["expected"]
+            assert isinstance(expected_host, Mapping)
+            expected_gpu = expected_host["gpu"]
+            assert isinstance(expected_gpu, Mapping)
+            normalized_samples, _ = _normalize_telemetry(
+                samples, required=False, expected_gpu=expected_gpu,
+            )
+            if samples != normalized_samples:
+                raise RTX4090TwoHostCampaignError(
+                    f"attempt telemetry records are noncanonical for {command.work_id}"
+                )
+            if (
+                previous != head["head_record_sha256"]
+                or transient != head["sampling_failure_count"]
+                or integrity != head["sampling_integrity_failure_count"]
+                or consecutive != head["consecutive_sampling_failure_count"]
+                or maximum != head["maximum_consecutive_sampling_failure_count"]
+                or last_capture != head["last_sample_captured_ns"]
+                or head["pending_sample_ordinal"] is not None
+            ):
+                raise RTX4090TwoHostCampaignError(
+                    f"attempt telemetry head/record chain differs for {command.work_id}"
+                )
+            return {
+                "schema": schema,
+                "samples": normalized_samples,
+                "sampling_failure_count": transient,
+                "sampling_integrity_failure_count": integrity,
+                "consecutive_sampling_failure_count": consecutive,
+                "maximum_consecutive_sampling_failure_count": maximum,
+                "missing_prior_journal": bool(head["missing_prior_journal"]),
+                "identity_sha256": str(head["identity_sha256"]),
+            }
+        expected_keys = (
+            _LEGACY_ATTEMPT_TELEMETRY_KEYS
+            if schema == LEGACY_ATTEMPT_TELEMETRY_SCHEMA
+            else _LEGACY_ATTEMPT_TELEMETRY_V2_KEYS
+        )
+        if schema not in {
+            LEGACY_ATTEMPT_TELEMETRY_SCHEMA,
+            LEGACY_ATTEMPT_TELEMETRY_V2_SCHEMA,
+        } or set(raw) != expected_keys:
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry fields differ for {command.work_id}"
+            )
+        body = dict(raw)
+        identity = body.pop("identity_sha256", None)
+        if identity != canonical_sha256(body):
+            raise RTX4090TwoHostCampaignError(
+                f"attempt telemetry digest differs for {command.work_id}"
+            )
+        exact = {
+            "schema": schema,
             "campaign_identity_sha256": self.manifest["identity_sha256"],
             "work_id": command.work_id,
             "attempt_index": attempt_index,
@@ -1512,7 +2694,42 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError(
                 f"attempt telemetry is noncanonical for {command.work_id}"
             )
-        return normalized
+        if schema == LEGACY_ATTEMPT_TELEMETRY_SCHEMA:
+            # A v1 journal did not record sampling failures.  Its prefix is
+            # therefore unknowable under the v2 acceptance contract.  The
+            # durable legacy schema itself deterministically derives this
+            # fail latch on every load; it is never rewritten or promoted.
+            counters = {
+                "sampling_failure_count": 0,
+                "sampling_integrity_failure_count": 1,
+                "consecutive_sampling_failure_count": 1,
+                "maximum_consecutive_sampling_failure_count": 1,
+                "missing_prior_journal": True,
+            }
+        else:
+            counters = {
+                key: raw[key]
+                for key in (
+                    "sampling_failure_count",
+                    "sampling_integrity_failure_count",
+                    "consecutive_sampling_failure_count",
+                    "maximum_consecutive_sampling_failure_count",
+                    "missing_prior_journal",
+                )
+            }
+            self._validate_attempt_telemetry_counters(
+                counters["sampling_failure_count"],
+                counters["sampling_integrity_failure_count"],
+                counters["consecutive_sampling_failure_count"],
+                counters["maximum_consecutive_sampling_failure_count"],
+                counters["missing_prior_journal"],
+            )
+        return {
+            "schema": schema,
+            "samples": normalized,
+            **counters,
+            "identity_sha256": str(identity),
+        }
 
     def _append_attempt_telemetry(
         self,
@@ -1520,23 +2737,42 @@ class CampaignCoordinator:
         request: RunRequest,
         attempt_index: int,
         sample: object,
-    ) -> list[dict[str, object]]:
-        samples = self._load_attempt_telemetry(
+    ) -> dict[str, object]:
+        return self._append_attempt_telemetry_record(
+            command,
+            request,
+            attempt_index,
+            outcome="sample",
+            sample=sample,
+            require_pending=True,
+        )
+
+    def _record_attempt_telemetry_failure(
+        self,
+        command: CampaignCommand,
+        request: RunRequest,
+        attempt_index: int,
+        *,
+        integrity_failure: bool,
+        missing_prior_journal: bool = False,
+    ) -> dict[str, object]:
+        if missing_prior_journal and not integrity_failure:
+            raise RTX4090TwoHostCampaignError(
+                "loaded telemetry missing-prior-journal marker is invalid"
+            )
+        head = self._load_attempt_telemetry_head(
             command, request, attempt_index,
         )
-        host = _host_by_id(self.manifest, command.host_id)
-        expected = host["expected"]
-        assert isinstance(expected, Mapping)
-        expected_gpu = expected["gpu"]
-        assert isinstance(expected_gpu, Mapping)
-        normalized, _ = _normalize_telemetry(
-            [*samples, sample], required=False, expected_gpu=expected_gpu,
+        require_pending = head["pending_sample_ordinal"] is not None
+        return self._append_attempt_telemetry_record(
+            command,
+            request,
+            attempt_index,
+            outcome="integrity" if integrity_failure else "unavailable",
+            sample=None,
+            require_pending=require_pending,
+            missing_prior_journal=missing_prior_journal,
         )
-        payload = self._attempt_telemetry_payload(
-            command, request, attempt_index, normalized,
-        )
-        _replace_state(self._attempt_telemetry_path(request), payload)
-        return normalized
 
     @staticmethod
     def _exact_transport_receipt(
@@ -1547,13 +2783,60 @@ class CampaignCoordinator:
         )
 
     def _adopt_or_start(
-        self, transport: CampaignTransport, request: RunRequest,
-    ) -> dict[str, object]:
+        self,
+        transport: CampaignTransport,
+        request: RunRequest,
+        *,
+        before_start: Callable[[], None] | None = None,
+        on_disposition: Callable[[str], None] | None = None,
+        start_permitted: bool = True,
+    ) -> tuple[dict[str, object], str]:
+        """Return an exact job plus how this coordinator obtained it.
+
+        ``adopted_after_start`` is distinct from an initially existing job:
+        the caller ran ``before_start`` before the ambiguous start, so a
+        request-bound journal created there is valid even when the start reply
+        was lost and the exact job must be recovered by status.
+        """
+
         try:
             existing = transport.status(request.job_id)
-        except Exception:
+        except JobNotFoundError:
+            if not start_permitted:
+                raise RTX4090TwoHostCampaignError(
+                    f"attempt {request.job_id} has unusable prior telemetry "
+                    "but no durable transport state; refusing any retry"
+                )
+            if before_start is not None:
+                before_start()
             try:
                 started = transport.start(request)
+            except JobConflictError:
+                # Exact absence was observed, but this coordinator did not
+                # create the now-claimed child.  Its prefix is therefore not
+                # covered by our freshly published journal.
+                try:
+                    adopted = transport.status(request.job_id)
+                except Exception as status_error:
+                    raise RTX4090TwoHostCampaignError(
+                        f"cannot safely adopt conflicting transport job "
+                        f"{request.job_id}"
+                    ) from status_error
+                guard_validator = getattr(
+                    transport, "validate_existing_guard", None,
+                )
+                if callable(guard_validator):
+                    try:
+                        guard_validator(request)
+                    except Exception as exc:
+                        raise RTX4090TwoHostCampaignError(
+                            f"conflicting job {request.job_id} has no valid "
+                            "launch guard"
+                        ) from exc
+                disposition = "existing_after_conflict"
+                if on_disposition is not None:
+                    on_disposition(disposition)
+                return self._exact_transport_receipt(adopted, request), disposition
             except Exception:
                 # Start can lose its response or reject an already claimed ID.
                 # One exact status re-read is the only safe way to adopt it.
@@ -1575,8 +2858,19 @@ class CampaignCoordinator:
                             f"adopted job {request.job_id} has no valid "
                             "launch guard"
                         ) from exc
-                return self._exact_transport_receipt(adopted, request)
-            return self._exact_transport_receipt(started, request)
+                disposition = "adopted_after_start"
+                if on_disposition is not None:
+                    on_disposition(disposition)
+                return self._exact_transport_receipt(adopted, request), disposition
+            disposition = "started"
+            if on_disposition is not None:
+                on_disposition(disposition)
+            return self._exact_transport_receipt(started, request), disposition
+        except Exception as exc:
+            raise RTX4090TwoHostCampaignError(
+                f"cannot determine whether transport job {request.job_id} "
+                "exists; refusing start"
+            ) from exc
         guard_validator = getattr(transport, "validate_existing_guard", None)
         if callable(guard_validator):
             try:
@@ -1585,7 +2879,10 @@ class CampaignCoordinator:
                 raise RTX4090TwoHostCampaignError(
                     f"adopted job {request.job_id} has no valid launch guard"
                 ) from exc
-        return self._exact_transport_receipt(existing, request)
+        disposition = "existing"
+        if on_disposition is not None:
+            on_disposition(disposition)
+        return self._exact_transport_receipt(existing, request), disposition
 
     def _monitor_attempt(
         self,
@@ -1593,7 +2890,7 @@ class CampaignCoordinator:
         transport: CampaignTransport,
         request: RunRequest,
         attempt_index: int,
-    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+    ) -> tuple[dict[str, object], dict[str, object] | None]:
         raw_cadence = getattr(
             transport, "cadence_seconds", self._telemetry_interval_seconds,
         )
@@ -1611,22 +2908,132 @@ class CampaignCoordinator:
             raise RTX4090TwoHostCampaignError(
                 "transport telemetry cadence differs from campaign policy"
             )
-        samples = (
-            self._load_attempt_telemetry(command, request, attempt_index)
-            if command.gpu_bearing else []
+        telemetry_path = self._attempt_telemetry_path(request)
+        journal_existed_before_adoption = telemetry_path.exists()
+        telemetry_state: dict[str, object] | None = None
+        telemetry_head: dict[str, object] | None = None
+        telemetry_load_error: Exception | None = None
+        if command.gpu_bearing and journal_existed_before_adoption:
+            try:
+                raw_schema = _strict_json_mapping(
+                    telemetry_path,
+                    where=f"attempt telemetry for {command.work_id}",
+                ).get("schema")
+                if raw_schema == ATTEMPT_TELEMETRY_SCHEMA:
+                    telemetry_head = self._recover_attempt_telemetry(
+                        command, request, attempt_index,
+                    )
+                    telemetry_state = self._load_attempt_telemetry(
+                        command, request, attempt_index,
+                    )
+                else:
+                    telemetry_state = self._load_attempt_telemetry(
+                        command, request, attempt_index,
+                    )
+            except Exception as exc:
+                telemetry_load_error = exc
+        pristine_current_journal = (
+            telemetry_head is not None
+            and telemetry_head["schema"] == ATTEMPT_TELEMETRY_SCHEMA
+            and telemetry_head["record_count"] == 0
+            and telemetry_head["pending_sample_ordinal"] is None
+            and telemetry_head["start_phase"] == "prepared"
+            and telemetry_head["sampling_failure_count"] == 0
+            and telemetry_head["sampling_integrity_failure_count"] == 0
+            and telemetry_head["consecutive_sampling_failure_count"] == 0
+            and telemetry_head[
+                "maximum_consecutive_sampling_failure_count"
+            ] == 0
+            and telemetry_head["missing_prior_journal"] is False
         )
-        receipt = self._adopt_or_start(transport, request)
-        while receipt["state"] == "running":
-            if command.gpu_bearing:
-                try:
-                    sample = transport.sample_telemetry()
-                except Exception as exc:
-                    raise RTX4090TwoHostCampaignError(
-                        f"live telemetry failed for {request.job_id}"
-                    ) from exc
-                samples = self._append_attempt_telemetry(
-                    command, request, attempt_index, sample,
+
+        def before_start() -> None:
+            if not telemetry_path.exists():
+                self._initialize_attempt_telemetry(
+                    command, request, attempt_index,
                 )
+            self._mark_attempt_start_invoked(
+                command, request, attempt_index,
+            )
+
+        def on_disposition(value: str) -> None:
+            if not command.gpu_bearing or telemetry_load_error is not None:
+                return
+            if not telemetry_path.exists():
+                self._initialize_attempt_telemetry(
+                    command,
+                    request,
+                    attempt_index,
+                )
+            raw = _strict_json_mapping(
+                telemetry_path,
+                where=f"attempt telemetry for {command.work_id}",
+            )
+            if raw.get("schema") != ATTEMPT_TELEMETRY_SCHEMA:
+                return
+            self._mark_attempt_start_claimed(
+                command, request, attempt_index, value,
+            )
+
+        receipt, disposition = self._adopt_or_start(
+            transport,
+            request,
+            before_start=(before_start if command.gpu_bearing else None),
+            on_disposition=(on_disposition if command.gpu_bearing else None),
+            start_permitted=(
+                not command.gpu_bearing
+                or not journal_existed_before_adoption
+                or pristine_current_journal
+            ),
+        )
+        if command.gpu_bearing:
+            if telemetry_load_error is not None:
+                # A claimed child must still reach durable terminal state
+                # before a later attempt may start.  Malformed evidence is
+                # never overwritten or treated as a clean prefix.
+                while receipt["state"] == "running":
+                    try:
+                        current = transport.status(request.job_id)
+                    except Exception as exc:
+                        raise RTX4090TwoHostCampaignError(
+                            f"status failed for running job {request.job_id}; "
+                            "refusing a colliding retry"
+                        ) from exc
+                    receipt = self._exact_transport_receipt(current, request)
+                    if receipt["state"] == "running":
+                        self._sleep(cadence_seconds)
+                raise _AttemptRetryRequired(
+                    f"attempt {request.job_id} has malformed prior telemetry"
+                ) from telemetry_load_error
+            telemetry_state = self._load_attempt_telemetry(
+                command, request, attempt_index,
+            )
+        else:
+            telemetry_state = None
+        while receipt["state"] == "running":
+            if (
+                command.gpu_bearing
+                and telemetry_state is not None
+                and telemetry_state["schema"] == ATTEMPT_TELEMETRY_SCHEMA
+            ):
+                try:
+                    self._begin_attempt_telemetry_sample(
+                        command, request, attempt_index,
+                    )
+                    sample = transport.sample_telemetry()
+                    telemetry_state = self._append_attempt_telemetry(
+                        command, request, attempt_index, sample,
+                    )
+                except TelemetryUnavailableError:
+                    telemetry_state = self._record_attempt_telemetry_failure(
+                        command, request, attempt_index,
+                        integrity_failure=False,
+                    )
+                except Exception:
+                    telemetry_state = self._record_attempt_telemetry_failure(
+                        command, request, attempt_index,
+                        integrity_failure=True,
+                    )
             try:
                 current = transport.status(request.job_id)
             except Exception as exc:
@@ -1637,13 +3044,18 @@ class CampaignCoordinator:
             receipt = self._exact_transport_receipt(current, request)
             if receipt["state"] == "running":
                 self._sleep(cadence_seconds)
-        return receipt, samples
+        if command.gpu_bearing:
+            telemetry_state = self._load_attempt_telemetry(
+                command, request, attempt_index,
+            )
+        return receipt, telemetry_state
 
     def _execute(
         self, assignment: StageAssignment, *,
         dependency_receipt_sha256s: Sequence[str],
         precondition_receipt_sha256s: Sequence[str],
     ) -> tuple[StageAssignment, dict[str, object]]:
+        self._require_current_manifest("execute")
         command = self.commands[assignment.work_id]
         transport = self.transports.get(assignment.host_id)
         if transport is None:
@@ -1663,9 +3075,13 @@ class CampaignCoordinator:
                 attempt_index=attempt_index,
                 precondition_receipt_sha256s=precondition_receipt_sha256s,
             )
-            job, samples = self._monitor_attempt(
-                command, transport, request, attempt_index,
-            )
+            try:
+                job, attempt_telemetry = self._monitor_attempt(
+                    command, transport, request, attempt_index,
+                )
+            except _AttemptRetryRequired as exc:
+                last_failure = exc
+                continue
             if job["state"] != "succeeded":
                 last_failure = RTX4090TwoHostCampaignError(
                     f"transport job {request.job_id} ended in {job['state']}"
@@ -1673,7 +3089,11 @@ class CampaignCoordinator:
                 continue
             try:
                 receipt = _stage_receipt(
-                    self.manifest, command, request, job, samples,
+                    self.manifest,
+                    command,
+                    request,
+                    job,
+                    attempt_telemetry,
                     dependency_receipt_sha256s,
                     precondition_receipt_sha256s,
                     attempt_index=attempt_index,
@@ -1773,7 +3193,32 @@ class CampaignCoordinator:
         state: Mapping[str, object],
         precondition_receipt_sha256s: Sequence[str],
     ) -> dict[str, object]:
-        if not isinstance(raw, Mapping) or set(raw) != _EXECUTION_RECEIPT_KEYS:
+        if not isinstance(raw, Mapping):
+            raise RTX4090TwoHostCampaignError(
+                f"execution receipt fields differ for {assignment.work_id}"
+            )
+        schema = raw.get("schema")
+        if schema == LEGACY_EXECUTION_RECEIPT_SCHEMA:
+            expected_keys = _LEGACY_EXECUTION_RECEIPT_KEYS
+        elif schema == EXECUTION_RECEIPT_SCHEMA:
+            expected_keys = _EXECUTION_RECEIPT_KEYS
+        else:
+            raise RTX4090TwoHostCampaignError(
+                f"execution receipt schema differs for {assignment.work_id}"
+            )
+        manifest_schema = self.manifest["schema"]
+        if (
+            manifest_schema == LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+            and schema != LEGACY_EXECUTION_RECEIPT_SCHEMA
+        ) or (
+            manifest_schema == CAMPAIGN_MANIFEST_SCHEMA
+            and schema != EXECUTION_RECEIPT_SCHEMA
+        ):
+            raise RTX4090TwoHostCampaignError(
+                "execution receipt schema is incompatible with campaign "
+                f"manifest for {assignment.work_id}"
+            )
+        if set(raw) != expected_keys:
             raise RTX4090TwoHostCampaignError(
                 f"execution receipt fields differ for {assignment.work_id}"
             )
@@ -1787,7 +3232,7 @@ class CampaignCoordinator:
         command = self.commands[assignment.work_id]
         host = _host_by_id(self.manifest, assignment.host_id)
         exact = {
-            "schema": EXECUTION_RECEIPT_SCHEMA,
+            "schema": schema,
             "campaign_identity_sha256": self.manifest["identity_sha256"],
             "host_identity_sha256": canonical_sha256(host),
             "producer_identity_sha256": canonical_sha256(
@@ -1837,31 +3282,74 @@ class CampaignCoordinator:
                 f"execution job receipt is noncanonical for {assignment.work_id}"
             )
         activity_requirement = _gpu_activity_requirement(
-            self.manifest, command, normalized_job,
+            self.manifest,
+            command,
+            normalized_job,
+            attempt_index=attempt_index,
+            legacy_retry_waiver=(
+                schema == LEGACY_EXECUTION_RECEIPT_SCHEMA
+            ),
         )
         if receipt.get("gpu_activity_requirement") != activity_requirement:
             raise RTX4090TwoHostCampaignError(
                 "execution GPU activity requirement differs for "
                 f"{assignment.work_id}"
             )
-        expected = host["expected"]
-        assert isinstance(expected, Mapping)
-        expected_gpu = expected["gpu"]
-        assert isinstance(expected_gpu, Mapping)
-        telemetry = receipt["telemetry"]
-        if not isinstance(telemetry, list):
+        stored_telemetry = receipt["telemetry"]
+        if not isinstance(stored_telemetry, list):
             raise RTX4090TwoHostCampaignError(
                 f"execution telemetry is malformed for {assignment.work_id}"
             )
-        samples, summary = _normalize_telemetry(
-            telemetry,
-            required=activity_requirement == "positive_utilization_required",
-            expected_gpu=expected_gpu,
-        )
+        stored_summary = receipt.get("telemetry_summary")
+        if not isinstance(stored_summary, Mapping):
+            raise RTX4090TwoHostCampaignError(
+                f"execution telemetry summary is malformed for "
+                f"{assignment.work_id}"
+            )
+        if schema == LEGACY_EXECUTION_RECEIPT_SCHEMA:
+            expected = host["expected"]
+            assert isinstance(expected, Mapping)
+            expected_gpu = expected["gpu"]
+            assert isinstance(expected_gpu, Mapping)
+            samples, summary = _normalize_telemetry(
+                stored_telemetry,
+                required=(
+                    activity_requirement == "positive_utilization_required"
+                ),
+                expected_gpu=expected_gpu,
+            )
+        else:
+            attempt_telemetry = (
+                self._load_attempt_telemetry(
+                    command,
+                    request,
+                    attempt_index,
+                    create_if_missing=False,
+                )
+                if command.gpu_bearing else None
+            )
+            samples, summary, journal_identity = (
+                _normalize_attempt_telemetry_evidence(
+                    self.manifest,
+                    command,
+                    normalized_job,
+                    attempt_telemetry,
+                    activity_requirement=activity_requirement,
+                    allow_legacy_v2=True,
+                )
+            )
+            if (
+                receipt.get("attempt_telemetry_identity_sha256")
+                != journal_identity
+            ):
+                raise RTX4090TwoHostCampaignError(
+                    "execution attempt telemetry identity differs for "
+                    f"{assignment.work_id}"
+                )
         if (
-            telemetry != samples
+            stored_telemetry != samples
             or receipt.get("telemetry_sha256") != canonical_sha256(samples)
-            or receipt.get("telemetry_summary") != summary
+            or stored_summary != summary
         ):
             raise RTX4090TwoHostCampaignError(
                 f"execution telemetry differs for {assignment.work_id}"
@@ -1884,6 +3372,7 @@ class CampaignCoordinator:
     def advance(
         self, state: Mapping[str, object], *, resume: bool,
     ) -> dict[str, object]:
+        self._require_current_manifest("advance")
         ready = next_ready_assignments(self.manifest, state)
         if not ready:
             return dict(state)
@@ -1951,6 +3440,7 @@ class CampaignCoordinator:
         return current
 
     def run_to_completion(self, *, resume: bool) -> dict[str, object]:
+        self._require_current_manifest("run or resume")
         with self._exclusive_lock():
             state = self.load_state() if resume else self.initialize()
             while next_ready_assignments(self.manifest, state):
@@ -1976,11 +3466,15 @@ class CampaignCoordinator:
         manifest_path = self.state_dir / MANIFEST_FILE
         plan_path = self.state_dir / PLAN_FILE
         try:
-            manifest_bytes = manifest_path.read_bytes()
+            manifest_bytes = read_regular_file_nofollow(
+                manifest_path, where="stored campaign manifest",
+            )
             stored_manifest = parse_campaign_manifest(
                 manifest_bytes.decode("utf-8")
             )
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+        except (
+            ClusterTransportError, UnicodeDecodeError, ValueError,
+        ) as exc:
             raise RTX4090TwoHostCampaignError(
                 "stored campaign manifest/plan is unreadable"
             ) from exc
@@ -2006,7 +3500,16 @@ class CampaignCoordinator:
             for assignment in _all_assignments(self.manifest)
         }
         receipt_root = self.state_dir / RECEIPT_DIR
-        paths = sorted(receipt_root.glob("*.json")) if receipt_root.exists() else []
+        try:
+            paths = list(list_regular_file_children_nofollow(
+                receipt_root,
+                where="execution receipt directory",
+                allow_missing=True,
+            ))
+        except ClusterTransportError as exc:
+            raise RTX4090TwoHostCampaignError(
+                "execution receipt directory is unsafe"
+            ) from exc
         if {path.stem for path in paths} != set(completion_by_work_id):
             raise RTX4090TwoHostCampaignError(
                 "execution receipt files differ from durable state completions"
@@ -2033,16 +3536,15 @@ class CampaignCoordinator:
                 raise RTX4090TwoHostCampaignError(
                     f"execution receipt is not state-bound: {path}"
                 )
-            if path.read_bytes() != _json_bytes(receipt):
-                raise RTX4090TwoHostCampaignError(
-                    f"execution receipt bytes are noncanonical: {path}"
-                )
         return self.status()
 
 
 def _load_manifest(path: str | Path) -> dict[str, object]:
     try:
-        return parse_campaign_manifest(Path(path).read_text(encoding="utf-8"))
+        payload = read_regular_file_nofollow(
+            Path(path), where="campaign manifest",
+        )
+        return parse_campaign_manifest(payload.decode("utf-8"))
     except Exception as exc:
         raise RTX4090TwoHostCampaignError(
             f"campaign manifest is invalid: {path}"
@@ -2149,6 +3651,10 @@ def main(
         return 0
     manifest = _load_manifest(args.manifest)
     if args.command == "plan":
+        if manifest["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+            raise RTX4090TwoHostCampaignError(
+                "legacy campaign manifests are read-only; cannot write plan"
+            )
         _write_exact_no_clobber(Path(args.output), build_command_plan(manifest))
         print(args.output)
         return 0

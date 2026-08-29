@@ -87,7 +87,7 @@ def _manifest_body(*, reverse_hosts: bool = False) -> dict[str, object]:
             "disposition": "validation_only",
             "source_dtype": "bf16",
             "physical_formats": [
-                "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+                "FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48", "FP8_E4M3",
             ],
             "terminal_format": "BF16",
             "allocation_objective": "context_first",
@@ -116,6 +116,8 @@ def _manifest_body(*, reverse_hosts: bool = False) -> dict[str, object]:
             "retry": {"max_attempts": 2},
             "telemetry": {
                 "interval_milliseconds": 1000,
+                "maximum_observation_gap_milliseconds": 30_000,
+                "minimum_successful_sample_percent": 50,
                 "require_positive_gpu_utilization": True,
             },
             "resources": {
@@ -169,7 +171,7 @@ def test_manifest_is_strictly_validated_and_host_order_is_canonical() -> None:
         "disposition": "validation_only",
         "source_dtype": "bf16",
         "physical_formats": [
-            "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+            "FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48", "FP8_E4M3",
         ],
         "terminal_format": "BF16",
         "allocation_objective": "context_first",
@@ -213,7 +215,7 @@ def test_manifest_binds_embedded_gridbook_runtime_contract() -> None:
         ("artifact_max_bytes", 10_000_000_000),
         ("disposition", "release"),
         ("source_dtype", "fp8"),
-        ("physical_formats", ["FP8_CB_K4", "NVFP4_CB_K25"]),
+        ("physical_formats", ["FP8_CB_K40", "FP8_CB_K28"]),
     ),
 )
 def test_manifest_rejects_artifact_target_or_render_law_drift(
@@ -296,6 +298,8 @@ def test_manifest_rejects_sample_contract_drift(field: str, value: int) -> None:
     [
         ("retry", "max_attempts", 3),
         ("telemetry", "interval_milliseconds", 2000),
+        ("telemetry", "maximum_observation_gap_milliseconds", 31_000),
+        ("telemetry", "minimum_successful_sample_percent", 51),
         ("telemetry", "require_positive_gpu_utilization", False),
         ("resources", "worker_min_free_bytes", 1),
         ("outputs", "transfer_mode", "rsync_exit_only"),
@@ -307,6 +311,30 @@ def test_manifest_rejects_runtime_policy_drift(
     body = _manifest_body()
     body["policy"][section][field] = value
     with pytest.raises(ClusterCampaignContractError, match="fixed two-host"):
+        seal_campaign_manifest(body)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("maximum_observation_gap_milliseconds", True),
+        ("maximum_observation_gap_milliseconds", "30000"),
+        ("maximum_observation_gap_milliseconds", 99),
+        ("maximum_observation_gap_milliseconds", 3_600_001),
+        ("minimum_successful_sample_percent", True),
+        ("minimum_successful_sample_percent", "50"),
+        ("minimum_successful_sample_percent", 0),
+        ("minimum_successful_sample_percent", 101),
+    ],
+)
+def test_manifest_rejects_invalid_telemetry_acceptance_thresholds(
+    field: str,
+    value: object,
+) -> None:
+    body = _manifest_body()
+    body["policy"]["telemetry"][field] = value
+
+    with pytest.raises(ClusterCampaignContractError, match=field):
         seal_campaign_manifest(body)
 
 

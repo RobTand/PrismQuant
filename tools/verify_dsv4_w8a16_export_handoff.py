@@ -47,7 +47,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except W8A16ExportHandoffError as exc:
         raise SystemExit(f"REFUSE: DSv4 W8A16 export handoff failed: {exc}")
-    print(json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False))
+    print(json.dumps(
+        receipt,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ))
     return 0
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import prismaquant.rtx4090_two_host_application as application_module
 
 from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
+    LEGACY_CAMPAIGN_MANIFEST_SCHEMA,
     bind_gridbook_runtime_contract,
     canonical_sha256,
     seal_campaign_manifest,
@@ -19,10 +21,15 @@ from prismaquant.cluster_host_admission import (
     GPU_LEASE_OPERATION_SCHEMA,
     GPU_START_GUARD_RECEIPT_SCHEMA,
     HOST_PRE_ADMISSION_RECEIPT_SCHEMA,
+    build_host_action_request,
 )
 from prismaquant.cluster_transport import (
     GpuSample,
+    HELPER_RESPONSE_SCHEMA,
     JobReceipt,
+    JobNotFoundError,
+    LocalTransport,
+    SSHTransport,
     TelemetrySnapshot,
     build_tree_manifest,
     canonical_json_bytes,
@@ -88,7 +95,7 @@ def _manifest(tmp_path: Path) -> dict[str, object]:
             "disposition": "validation_only",
             "source_dtype": "bf16",
             "physical_formats": [
-                "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+                "FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48", "FP8_E4M3",
             ],
             "terminal_format": "BF16",
             "allocation_objective": "context_first",
@@ -117,6 +124,8 @@ def _manifest(tmp_path: Path) -> dict[str, object]:
             "retry": {"max_attempts": 2},
             "telemetry": {
                 "interval_milliseconds": 1000,
+                "maximum_observation_gap_milliseconds": 30_000,
+                "minimum_successful_sample_percent": 50,
                 "require_positive_gpu_utilization": True,
             },
             "resources": {
@@ -134,6 +143,19 @@ def _manifest(tmp_path: Path) -> dict[str, object]:
             _host(tmp_path / "alpha", "alpha", local=True),
         ],
     })
+
+
+def _legacy_manifest(tmp_path: Path) -> dict[str, object]:
+    body = json.loads(json.dumps(_manifest(tmp_path)))
+    body.pop("identity_sha256")
+    body["schema"] = LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+    body["artifact_target"]["physical_formats"] = [
+        "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+    ]
+    telemetry = body["policy"]["telemetry"]
+    telemetry.pop("maximum_observation_gap_milliseconds")
+    telemetry.pop("minimum_successful_sample_percent")
+    return {**body, "identity_sha256": canonical_sha256(body)}
 
 
 def _sealed(body: dict[str, object]) -> dict[str, object]:
@@ -212,7 +234,12 @@ class _ActionTransport:
 
     def status(self, job_id):
         if job_id not in self.jobs:
-            raise KeyError(job_id)
+            raise JobNotFoundError(job_id)
+        return self.jobs[job_id]
+
+    def inspect(self, job_id):
+        if job_id not in self.jobs:
+            raise JobNotFoundError(job_id)
         return self.jobs[job_id]
 
 
@@ -358,7 +385,7 @@ class _ExecutionTransport:
 
     def status(self, job_id):
         if job_id not in self.jobs:
-            raise KeyError(job_id)
+            raise JobNotFoundError(job_id)
         return self.jobs[job_id]
 
     def start(self, request):
@@ -429,7 +456,7 @@ class _ExecutionTransport:
         )
         gpu = host["expected"]["gpu"]
         return TelemetrySnapshot(
-            captured_ns=10_000 + self.counter,
+            captured_ns=self.counter * 100 + 3,
             host_mem_available_bytes=128 * 1024**3,
             gpus=(GpuSample(
                 timestamp="2026-08-24T00:00:00Z",
@@ -445,6 +472,31 @@ class _ExecutionTransport:
                 power_w=200.0,
             ),),
         )
+
+
+def _runtime(manifest: dict[str, object]) -> SimpleNamespace:
+    actions = {
+        host["id"]: _ActionTransport(manifest, host["id"])
+        for host in manifest["hosts"]
+    }
+    return SimpleNamespace(
+        local_transport=actions["alpha"],
+        ssh_transport=actions["zeta"],
+        transports={
+            host_id: _ExecutionTransport(manifest, host_id)
+            for host_id in actions
+        },
+        artifact_inspectors={host_id: _Inspector() for host_id in actions},
+        barrier_stages=(),
+        route_specs_for_stage=lambda _stage: (),
+    )
+
+
+def _filesystem_snapshot(root: Path) -> dict[Path, bytes | None]:
+    return {
+        path.relative_to(root): (None if path.is_dir() else path.read_bytes())
+        for path in root.rglob("*")
+    }
 
 
 def test_controller_must_execute_from_and_verify_the_local_sealed_snapshot(
@@ -488,6 +540,38 @@ def test_controller_must_execute_from_and_verify_the_local_sealed_snapshot(
             source_file=Path(__file__).resolve(),
             verifier=verifier,
         )
+
+
+def test_snapshot_verifier_import_is_read_only_and_suppresses_bytecode(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    snapshot = tmp_path / "alpha/snapshot"
+    source = snapshot / "prismaquant/rtx4090_two_host_application.py"
+    tool = snapshot / "tools/prismaquant_runtime_snapshot.py"
+    source.parent.mkdir(parents=True)
+    tool.parent.mkdir(parents=True)
+    source.write_text("# exact historical controller\n", encoding="utf-8")
+    tool.write_text(
+        "def verify_snapshot(snapshot, *, expected_commit, expected_tree, "
+        "expected_closure_sha256):\n"
+        "    return {\n"
+        "        'schema': 'prismaquant.runtime_source_snapshot.v1',\n"
+        "        'snapshot': str(snapshot),\n"
+        "        'commit': expected_commit,\n"
+        "        'tree': expected_tree,\n"
+        "        'closure_sha256': expected_closure_sha256,\n"
+        "        'entry_count': 2,\n"
+        "    }\n",
+        encoding="utf-8",
+    )
+    before = _filesystem_snapshot(snapshot)
+
+    receipt = _verify_controller_snapshot(manifest, source_file=source)
+
+    assert receipt["snapshot"] == str(snapshot)
+    assert _filesystem_snapshot(snapshot) == before
+    assert not any(path.name == "__pycache__" for path in snapshot.rglob("*"))
 
 
 def test_controller_state_cannot_live_in_a_container_writable_mount(
@@ -581,6 +665,196 @@ def test_controller_state_rejects_symlinked_ancestor_before_runtime_mutation(
         )
 
 
+def test_builder_legacy_read_only_pins_historical_snapshot_and_ssh_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _legacy_manifest(tmp_path)
+    runtime = _runtime(manifest)
+    local = next(
+        host for host in manifest["hosts"]
+        if host["transport"]["kind"] == "local"
+    )
+    snapshot = Path(local["roots"]["snapshot_root"])
+    historical_application = (
+        snapshot / "prismaquant/rtx4090_two_host_application.py"
+    )
+    historical_helper = snapshot / "prismaquant/cluster_transport.py"
+    historical_application.parent.mkdir(parents=True)
+    historical_application.write_bytes(b"# historical application\n")
+    helper_source = b"# historical transport helper\n"
+    historical_helper.write_bytes(helper_source)
+    events: list[tuple[str, object]] = []
+
+    def verify_snapshot(snapshot_manifest, *, source_file):
+        events.append(("snapshot", (snapshot_manifest, source_file)))
+        return {"verified": True}
+
+    def build_runtime(
+        runtime_manifest,
+        *,
+        initialize,
+        ssh_helper_source,
+    ):
+        events.append((
+            "runtime",
+            (runtime_manifest, initialize, ssh_helper_source),
+        ))
+        return runtime
+
+    monkeypatch.setattr(
+        application_module,
+        "_verify_controller_snapshot",
+        verify_snapshot,
+    )
+    monkeypatch.setattr(
+        application_module,
+        "build_live_campaign_runtime",
+        build_runtime,
+    )
+    state_dir = tmp_path / "controller-state"
+    before = _filesystem_snapshot(tmp_path)
+
+    application = application_module.build_live_campaign_application(
+        manifest,
+        state_dir,
+        initialize=False,
+    )
+
+    assert application.manifest == manifest
+    assert events == [
+        ("snapshot", (manifest, historical_application)),
+        ("runtime", (manifest, False, helper_source)),
+    ]
+    assert _filesystem_snapshot(tmp_path) == before
+
+
+def test_builder_legacy_initialize_refuses_before_any_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _legacy_manifest(tmp_path)
+    monkeypatch.setattr(
+        application_module,
+        "_verify_controller_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("snapshot verification ran"),
+    )
+    monkeypatch.setattr(
+        application_module,
+        "build_live_campaign_runtime",
+        lambda *_args, **_kwargs: pytest.fail("live runtime mutated endpoints"),
+    )
+    before = _filesystem_snapshot(tmp_path)
+
+    with pytest.raises(
+        RTX4090TwoHostApplicationError,
+        match="legacy campaign manifests are read-only",
+    ):
+        application_module.build_live_campaign_application(
+            manifest,
+            tmp_path / "controller-state",
+            initialize=True,
+        )
+
+    assert _filesystem_snapshot(tmp_path) == before
+
+
+def test_legacy_application_mutation_surfaces_refuse_before_receipt_writes(
+    tmp_path: Path,
+) -> None:
+    manifest = _legacy_manifest(tmp_path)
+    state_dir = tmp_path / "controller-state"
+    application = LiveCampaignApplication(
+        manifest, state_dir, runtime=_runtime(manifest),
+    )
+    command = application.coordinator.commands["sample_ce:alpha"]
+    request = application.coordinator._request(command, attempt_index=0)
+    before = _filesystem_snapshot(tmp_path)
+
+    with pytest.raises(
+        RTX4090TwoHostApplicationError,
+        match="legacy campaign manifests are read-only",
+    ):
+        application.record_gpu_start_guard("alpha", request)
+    with pytest.raises(
+        RTX4090TwoHostApplicationError,
+        match="legacy campaign manifests are read-only",
+    ):
+        application.stage_preconditions("sample_ce", verify_only=False)
+
+    assert _filesystem_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_legacy_verify_uses_guard_only_until_complete_then_full_release_replay(
+    tmp_path: Path,
+    complete: bool,
+) -> None:
+    manifest = _legacy_manifest(tmp_path)
+    application = LiveCampaignApplication(
+        manifest, tmp_path / "controller-state", runtime=_runtime(manifest),
+    )
+    application.coordinator.verify = lambda: {"complete": complete}
+    calls: list[tuple[str, object]] = []
+    application.verify_guard_receipts = lambda: calls.append(("guards", None))
+    application.verify_application = lambda *, require_release: calls.append(
+        ("application", require_release)
+    )
+
+    assert application.verify() == {"complete": complete}
+    assert calls == (
+        [("application", True)] if complete else [("guards", None)]
+    )
+
+
+def test_builder_current_read_only_still_verifies_controller_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest(tmp_path)
+    runtime = _runtime(manifest)
+    events: list[tuple[str, object]] = []
+
+    def verify_snapshot(snapshot_manifest):
+        events.append(("snapshot", snapshot_manifest))
+        return {"verified": True}
+
+    def build_runtime(
+        runtime_manifest,
+        *,
+        initialize,
+        ssh_helper_source,
+    ):
+        events.append((
+            "runtime",
+            (runtime_manifest, initialize, ssh_helper_source),
+        ))
+        return runtime
+
+    monkeypatch.setattr(
+        application_module,
+        "_verify_controller_snapshot",
+        verify_snapshot,
+    )
+    monkeypatch.setattr(
+        application_module,
+        "build_live_campaign_runtime",
+        build_runtime,
+    )
+
+    application = application_module.build_live_campaign_application(
+        manifest,
+        tmp_path / "controller-state",
+        initialize=False,
+    )
+
+    assert application.manifest == manifest
+    assert events == [
+        ("snapshot", manifest),
+        ("runtime", (manifest, False, None)),
+    ]
+
+
 def test_application_owns_admission_guards_model_gate_and_lease_release(
     tmp_path: Path,
 ) -> None:
@@ -625,6 +899,172 @@ def test_application_owns_admission_guards_model_gate_and_lease_release(
             for path in (state_dir / "receipts").glob("*.json")
         )
     )
+
+
+@pytest.mark.parametrize("substitution", ("journal", "directory"))
+def test_application_verify_rejects_start_guard_symlink_substitution(
+    tmp_path: Path,
+    substitution: str,
+) -> None:
+    manifest = _manifest(tmp_path)
+    runtime = _runtime(manifest)
+    state_dir = tmp_path / "controller-state"
+    application = LiveCampaignApplication(manifest, state_dir, runtime=runtime)
+    for transport in runtime.transports.values():
+        transport.application = application
+    assert application.run_to_completion(resume=False)["complete"] is True
+    guard_root = state_dir / APPLICATION_RECEIPT_DIR / GUARD_DIR
+    if substitution == "directory":
+        target = guard_root.with_name("gpu-start-guards-target")
+        guard_root.rename(target)
+        guard_root.symlink_to(target.name, target_is_directory=True)
+    else:
+        journal = next(
+            path for path in guard_root.glob("*.json")
+            if ".check-" not in path.name
+        )
+        target = journal.with_suffix(".target")
+        target.write_bytes(journal.read_bytes())
+        journal.unlink()
+        journal.symlink_to(target.name)
+
+    with pytest.raises(RTX4090TwoHostApplicationError):
+        application.verify()
+
+
+def _release_receipt(
+    manifest: dict[str, object],
+    host_id: str,
+    *,
+    disposition: str,
+    attempt_index: int,
+) -> tuple[dict[str, object], object]:
+    request = build_host_action_request(
+        "release",
+        manifest,
+        host_id,
+        operation_token=f"complete-{attempt_index:03d}",
+    )
+    result = _sealed({
+        "schema": GPU_LEASE_OPERATION_SCHEMA,
+        "action": "release",
+        "disposition": disposition,
+        "lease": _expected_lease(manifest, host_id),
+    })
+    job = JobReceipt(
+        job_id=request.job_id,
+        request_sha256=request.request_sha256,
+        state="succeeded",
+        started_ns=10,
+        finished_ns=11,
+        returncode=0,
+        pid=None,
+        stdout=canonical_json_bytes(result) + b"\n",
+        stderr=b"",
+        transport="fixture",
+    )
+    body = {
+        "schema": application_module.HOST_ACTION_RECEIPT_SCHEMA,
+        "campaign_identity_sha256": manifest["identity_sha256"],
+        "host_id": host_id,
+        "action": "release",
+        "operation_token": "complete",
+        "action_attempt_index": attempt_index,
+        "request": request.to_payload(),
+        "request_sha256": request.request_sha256,
+        "job": job.to_payload(),
+        "job_receipt_sha256": job.receipt_sha256,
+        "result": result,
+        "result_sha256": result["identity_sha256"],
+    }
+    return _sealed(body), request
+
+
+@pytest.mark.parametrize("stale_host", ("alpha", "zeta"))
+def test_complete_legacy_verify_never_reconciles_stale_release_job(
+    tmp_path: Path,
+    stale_host: str,
+) -> None:
+    manifest = _legacy_manifest(tmp_path)
+    local = LocalTransport(tmp_path / "local-actions")
+    remote = LocalTransport(tmp_path / "remote-actions", transport_name="remote")
+    remote_actions: list[str] = []
+
+    def ssh_runner(_argv, **kwargs):
+        envelope = json.loads(base64.b64decode(kwargs["input"].strip()))
+        action = envelope["action"]
+        remote_actions.append(action)
+        assert action == "inspect"
+        receipt = remote.inspect(envelope["payload"]["job_id"])
+        response = canonical_json_bytes({
+            "schema": HELPER_RESPONSE_SCHEMA,
+            "kind": "job_receipt",
+            "payload": receipt.to_payload(),
+        })
+        return SimpleNamespace(returncode=0, stdout=response, stderr=b"")
+
+    ssh = SSHTransport(
+        "legacy-peer",
+        remote_helper_path="/safe/cluster_transport.py",
+        run_impl=ssh_runner,
+    )
+    runtime = SimpleNamespace(
+        local_transport=local,
+        ssh_transport=ssh,
+        transports={
+            host_id: _ExecutionTransport(manifest, host_id)
+            for host_id in ("alpha", "zeta")
+        },
+        artifact_inspectors={
+            host_id: _Inspector() for host_id in ("alpha", "zeta")
+        },
+        barrier_stages=(),
+        route_specs_for_stage=lambda _stage: (),
+    )
+    state_dir = tmp_path / "legacy-controller-state"
+    application = LiveCampaignApplication(manifest, state_dir, runtime=runtime)
+    release_root = (
+        state_dir / APPLICATION_RECEIPT_DIR / LEASE_RELEASE_DIR
+    )
+    release_root.mkdir(parents=True)
+    stale_request = None
+    for host_id in ("alpha", "zeta"):
+        is_stale = host_id == stale_host
+        receipt, request = _release_receipt(
+            manifest,
+            host_id,
+            disposition="already_absent" if is_stale else "released",
+            attempt_index=1 if is_stale else 0,
+        )
+        (release_root / f"{host_id}.json").write_bytes(
+            canonical_json_bytes(receipt) + b"\n"
+        )
+        if is_stale:
+            stale_request = build_host_action_request(
+                "release",
+                manifest,
+                host_id,
+                operation_token="complete-000",
+            )
+            transport = local if host_id == "alpha" else remote
+            transport._claim(stale_request)
+    assert stale_request is not None
+    application.coordinator.verify = lambda: {"complete": True}
+    application._pre_admissions = lambda *, verify_only: ()
+    application._model_admissions = lambda *, verify_only: ()
+    application.verify_guard_receipts = lambda: None
+    before = _filesystem_snapshot(tmp_path)
+
+    with pytest.raises(
+        RTX4090TwoHostApplicationError,
+        match="has no exact prior terminal failure",
+    ):
+        application.verify()
+
+    assert _filesystem_snapshot(tmp_path) == before
+    stale_transport = local if stale_host == "alpha" else remote
+    assert stale_transport.inspect(stale_request.job_id).state == "running"
+    assert remote_actions == (["inspect"] if stale_host == "zeta" else [])
 
 
 def test_release_resume_accepts_exact_tombstone_after_prior_failed_attempt(

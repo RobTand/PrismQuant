@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 from dataclasses import replace
+import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
@@ -13,8 +15,10 @@ import prismaquant.cluster_live_runtime as live_runtime
 from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
     CANONICAL_CONTAINER_PATHS,
+    LEGACY_CAMPAIGN_MANIFEST_SCHEMA,
     STAGE_DAG,
     bind_gridbook_runtime_contract,
+    canonical_sha256,
     seal_campaign_manifest,
 )
 from prismaquant.cluster_live_runtime import (
@@ -33,7 +37,11 @@ from prismaquant.cluster_live_transport import (
     RsyncTransferReceipt,
 )
 from prismaquant.cluster_transport import (
+    ClusterTransportError,
+    JobNotFoundError,
+    JobReceipt,
     LocalTransport,
+    RunRequest,
     SSHTransport,
     build_tree_manifest,
     canonical_json_bytes,
@@ -41,6 +49,65 @@ from prismaquant.cluster_transport import (
     verify_tree_manifest,
 )
 from prismaquant.rtx4090_two_host_campaign import build_command_plan
+
+
+_HISTORICAL_HELPER_COMMIT = "6bde48a"
+_HISTORICAL_HELPER_SHA256 = (
+    "9fc47559fba4e0d1d4276a05375b2813dd91403991f61ad60629a8a914b50195"
+)
+
+
+def _historical_helper_source() -> bytes:
+    repo = Path(__file__).parents[1]
+    result = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{_HISTORICAL_HELPER_COMMIT}:prismaquant/cluster_transport.py",
+        ],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        shell=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert hashlib.sha256(result.stdout).hexdigest() == _HISTORICAL_HELPER_SHA256
+    assert b"def inspect(" not in result.stdout
+    return result.stdout
+
+
+def _filesystem_snapshot(root: Path) -> dict[str, tuple[int, bytes | None]]:
+    snapshot: dict[str, tuple[int, bytes | None]] = {}
+    if not root.exists():
+        return snapshot
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        mode = path.lstat().st_mode
+        snapshot[relative] = (mode, path.read_bytes() if path.is_file() else None)
+    return snapshot
+
+
+class _LocalSSHCommandRunner:
+    def __init__(self, *, home: Path):
+        self.home = home
+        self.calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((list(argv), dict(kwargs)))
+        environment = dict(os.environ)
+        environment["HOME"] = str(self.home)
+        return subprocess.run(
+            ["/bin/sh", "-c", argv[-1]],
+            input=kwargs.get("input"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            shell=False,
+            timeout=kwargs.get("timeout", 10),
+            env=environment,
+        )
 
 
 def _host(
@@ -100,7 +167,7 @@ def _manifest(tmp_path: Path, *, coordinator: str = "zeta") -> dict[str, object]
                 "disposition": "validation_only",
                 "source_dtype": "bf16",
                 "physical_formats": [
-                    "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+                    "FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48", "FP8_E4M3",
                 ],
                 "terminal_format": "BF16",
                 "allocation_objective": "context_first",
@@ -129,6 +196,8 @@ def _manifest(tmp_path: Path, *, coordinator: str = "zeta") -> dict[str, object]
                 "retry": {"max_attempts": 2},
                 "telemetry": {
                     "interval_milliseconds": 1000,
+                    "maximum_observation_gap_milliseconds": 30_000,
+                    "minimum_successful_sample_percent": 50,
                     "require_positive_gpu_utilization": True,
                 },
                 "resources": {
@@ -149,6 +218,18 @@ def _manifest(tmp_path: Path, *, coordinator: str = "zeta") -> dict[str, object]
             ],
         }
     )
+
+
+def _legacy_manifest(tmp_path: Path) -> dict[str, object]:
+    body = json.loads(json.dumps(_manifest(tmp_path)))
+    body.pop("identity_sha256")
+    body["schema"] = LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+    body["artifact_target"]["physical_formats"] = [
+        "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+    ]
+    body["policy"]["telemetry"].pop("maximum_observation_gap_milliseconds")
+    body["policy"]["telemetry"].pop("minimum_successful_sample_percent")
+    return {**body, "identity_sha256": canonical_sha256(body)}
 
 
 class FakeVerifiedTransfer:
@@ -371,6 +452,32 @@ def test_read_only_open_does_not_create_or_bootstrap_hosts(
     assert not (tmp_path / "remote" / "run").exists()
 
 
+def test_legacy_runtime_initialize_and_barrier_mutation_refuse_read_only(
+    tmp_path: Path,
+) -> None:
+    manifest = _legacy_manifest(tmp_path)
+    before = {
+        path.relative_to(tmp_path): (None if path.is_dir() else path.read_bytes())
+        for path in tmp_path.rglob("*")
+    }
+    with pytest.raises(
+        ClusterLiveRuntimeError,
+        match="legacy campaign manifests are read-only",
+    ):
+        build_live_campaign_runtime(manifest, initialize=True)
+    assert {
+        path.relative_to(tmp_path): (None if path.is_dir() else path.read_bytes())
+        for path in tmp_path.rglob("*")
+    } == before
+
+    runtime = build_live_campaign_runtime(manifest, initialize=False)
+    with pytest.raises(
+        ClusterLiveRuntimeError,
+        match="legacy campaign manifests are read-only",
+    ):
+        runtime.synchronize_before_stage("host_preflight")
+
+
 def test_endpoint_identity_is_checked_before_any_runtime_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -493,6 +600,96 @@ def test_remote_directory_request_uses_stdin_not_manifest_shell_fragments() -> N
         "-p",
         "2207",
     ]
+
+
+def test_real_historical_helper_inspection_is_identity_gated_and_read_only(
+    tmp_path: Path,
+) -> None:
+    source = _historical_helper_source()
+    helper = tmp_path / "remote" / "cluster_transport.py"
+    helper.parent.mkdir()
+    helper.write_bytes(source)
+    state_root = tmp_path / "remote-state"
+    job_root = state_root / "jobs" / "stale-historical"
+    job_root.mkdir(parents=True)
+    request = RunRequest("stale-historical", ("/bin/true",))
+    running = JobReceipt(
+        job_id=request.job_id,
+        request_sha256=request.request_sha256,
+        state="running",
+        started_ns=1,
+        finished_ns=None,
+        returncode=None,
+        pid=999_999_999,
+        stdout=b"",
+        stderr=b"",
+        transport="remote",
+    )
+    (job_root / "request.json").write_bytes(
+        canonical_json_bytes(request.to_payload())
+    )
+    (job_root / "receipt.json").write_bytes(
+        canonical_json_bytes(running.to_payload())
+    )
+    runner = _LocalSSHCommandRunner(home=tmp_path / "home")
+    transport = _ManifestSSHTransport(
+        "fixture",
+        port=2222,
+        remote_helper_path=str(helper),
+        helper_source=source,
+        remote_state_root=str(state_root),
+        historical_read_only=True,
+        run_impl=runner,
+    )
+    before = _filesystem_snapshot(tmp_path)
+
+    observed = transport.inspect(request.job_id)
+    assert observed.state == "running"
+    assert observed.request_sha256 == request.request_sha256
+    with pytest.raises(JobNotFoundError, match="does not exist"):
+        transport.inspect("missing-historical")
+
+    assert _filesystem_snapshot(tmp_path) == before
+    assert len(runner.calls) == 4
+    assert not (helper.parent / "__pycache__").exists()
+
+
+def test_historical_inspect_refuses_mutated_helper_before_inspector_or_state(
+    tmp_path: Path,
+) -> None:
+    source = _historical_helper_source()
+    helper = tmp_path / "remote" / "cluster_transport.py"
+    helper.parent.mkdir()
+    helper.write_bytes(source)
+    state_root = tmp_path / "remote-state"
+    state_root.mkdir()
+    marker = tmp_path / "historical-helper-executed"
+    runner = _LocalSSHCommandRunner(home=tmp_path / "home")
+    transport = _ManifestSSHTransport(
+        "fixture",
+        port=2222,
+        remote_helper_path=str(helper),
+        helper_source=source,
+        remote_state_root=str(state_root),
+        historical_read_only=True,
+        run_impl=runner,
+    )
+    helper.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+    )
+    before = _filesystem_snapshot(tmp_path)
+
+    with pytest.raises(
+        ClusterTransportError,
+        match="historical SSH helper identity verification failed",
+    ):
+        transport.inspect("must-not-run")
+
+    assert len(runner.calls) == 1
+    assert not marker.exists()
+    assert not (helper.parent / "__pycache__").exists()
+    assert _filesystem_snapshot(tmp_path) == before
 
 
 def test_directory_skeleton_refuses_symlink_and_non_directory_components(

@@ -15,7 +15,11 @@ quantization, cache, or scheduling machinery.
 
 ## Closed Contract
 
-One versioned manifest declares:
+One versioned manifest declares. The current writer uses
+`prismaquant.cluster_campaign.manifest.v3`. The validator also has an explicit
+read-only route for canonical manifest-v2 campaigns and their historical
+receipt-v1 state: it preserves their bytes and identity and refuses to
+initialize, advance, resume, or rewrite them rather than silently upgrading:
 
 - exactly two named hosts and one stable partition/stripe assignment per host;
 - one coordinator host, while the control process may run on either host;
@@ -30,8 +34,14 @@ One versioned manifest declares:
   a worktree, mutable path, or image install;
 - an artifact target separate from execution hardware: RTX 4090/sm89,
   validation-only, BF16 source, context-first 18,000,000,000-byte ceiling,
-  physical FP8-CB K4/K16/K48 plus FP8_E4M3, and a BF16 terminal;
-- calibration, probe, cache, compile, retry, telemetry, and output policy; and
+  physical FP8-CB K40/K44/K48 plus FP8_E4M3, and a BF16 terminal. The
+  read-only manifest-v2 verifier retains its sealed K4/K16/K48 target exactly;
+  schema selection, not the current producer registry, chooses that historical
+  verification constant;
+- calibration, probe, cache, compile, retry, telemetry, and output policy. The
+  telemetry policy is closed at a 1,000 ms poll interval, a 30,000 ms maximum
+  observation gap, at least 50% successful samples, and positive GPU
+  utilization where the stage's activity rule requires it; and
 - minimum free disk and host memory required before admission.
 
 The manifest contains no shell fragments or arbitrary commands. PrismaQuant
@@ -131,6 +141,12 @@ container-writable bind mount; the workload's `worker_state_root` can never
 replace helper code or forge a transport receipt. `status` reads only the
 controller state tree; `verify` may inspect sealed local and remote artifacts
 but does not create directories, reinstall helpers, or launch work.
+Read-only runtime construction does not proactively contact the SSH host to
+attest helper bytes; each remote artifact operation that verification actually
+needs remains digest-bound. A complete manifest-v2 generation must replay the
+full application, release, and lease receipts. An incomplete manifest-v2
+generation has no release receipt and uses the completed-child guard verifier
+after its stored coordinator state and receipts validate.
 
 Derived helper and transfer paths are proven disjoint from every declared host
 root before the endpoint identity probe or any mutation. Controller state is
@@ -192,10 +208,29 @@ client. Thus a lost detached worker cannot cause a retry to overlap its
 surviving client or daemon-side container. A restarted controller may adopt an
 already-created transport job only when that exact request already has a
 valid durable guard; it does not rerun an idleness check after the process has
-started. The CID-bound supervisor uses a shorter inner deadline and proves the
-exact labeled container absent before timeout cleanup returns. CPU stages set
-`NVIDIA_VISIBLE_DEVICES=void`, so neither the image nor a default NVIDIA host
-runtime can silently expose a GPU. Leases are released automatically only after the coordinator result,
+started. Only a typed exact job-absence result licenses `start`; a status
+timeout, unavailable endpoint, corrupt claimed state, or protocol failure
+pauses recovery without creating a journal or attempting a start. A start
+conflict after proven absence is adopted as an existing child with a
+missing-prefix integrity latch. Every new GPU attempt publishes a bounded
+canonical request-bound attempt-telemetry head v3 before `start`, then durably
+advances the head from `prepared` to `start_invoked` before the external start
+call. A disposition that implies an unobserved prefix (`existing`,
+`existing_after_conflict`, or `recovered_ambiguous_start`) first persists a
+`claim_pending` intent and pending record ordinal. The immutable integrity
+record and `missing_prior_journal=true` head commit must both be durable before
+the phase can become `claimed`. Resume completes that sequence from the head,
+from a published-but-uncommitted record, or from the committed head, so no
+crash boundary can produce a clean claimed prefix. If the first
+status probe instead discovers an already
+running GPU job and no journal existed beforehand, the coordinator creates a
+fail-latched missing-prior-journal record, follows that same job to its durable
+terminal state, and rejects the attempt. A journal that disappears across a
+new start is treated the same way. The CID-bound supervisor uses a shorter
+inner deadline and proves the exact labeled container absent before timeout
+cleanup returns. CPU stages set `NVIDIA_VISIBLE_DEVICES=void`, so neither the
+image nor a default NVIDIA host runtime can silently expose a GPU. Leases are
+released automatically only after the coordinator result,
 all outputs, all preconditions, and all guard journals verify. Any failure
 retains the lease so `resume` has one unambiguous owner.
 
@@ -205,6 +240,37 @@ a retry carrying that exact lease and only when the prior exact release request
 has durable terminal-failure evidence; an unproven fresh absence is refused.
 The tombstone also makes one sealed campaign generation single-shot: it cannot
 reacquire the same host/GPU after successful release.
+
+The v3 journal is append-scalable. Its bounded atomic head contains the
+campaign/work/attempt/request bindings, record count, hash-chain tip, counters,
+start phase, and at most one pending sample ordinal. Each observation is one
+immutable no-clobber record linked to its predecessor by SHA-256. The
+coordinator durably writes the pending ordinal before the external telemetry
+query and resolves it to a sample, transient-unavailability, or integrity
+record. Integrity and unavailability rows written outside a sample query use
+the same pending-ordinal protocol. Resume converts an unresolved query into an integrity record; if the
+complete record reached disk before the head update, resume verifies and
+adopts that exact record. One-second polling therefore performs constant-size
+head I/O plus one record write rather than rereading and rewriting the complete
+history. Transport or
+management-query timeouts and unavailability are transient: they increment the
+transient counter and monitoring continues on the same exact child. Bytes or
+protocol state that are present but malformed, including a malformed local
+`nvidia-smi`/`MemAvailable` payload or malformed SSH helper response, are
+integrity failures. They are fail-latched, but the coordinator still monitors
+the exact child to a durable terminal receipt before it can spend another
+attempt. A status failure pauses the coordinator and `resume` must re-adopt the
+same exact job; it never licenses a colliding retry.
+
+All verification artifacts are opened as real regular files with no-follow
+ancestry checks and one held descriptor for lstat/fstat identity, canonical
+decode, and byte comparison. Receipt and guard enumeration rejects symlink or
+non-regular directories and children. `LocalTransport.inspect` and the SSH
+helper's matching `inspect` action return only the already-durable receipt;
+they never convert a stale `running` receipt into `transport_error`. Only
+run/resume calls mutating `status` reconciliation. The remote file-operation
+program likewise executes the exact helper bytes read and hashed through one
+held no-follow descriptor, not a second pathname import.
 
 Retries are bounded by the manifest and reuse only stage implementations with
 an exact validation or resume contract. Host actions use indexed physical job
@@ -234,12 +300,51 @@ fills a shipcard slot, promotes hardware qualification, or creates a tag.
 
 ## Utilization Evidence
 
-GPU telemetry is part of the result rather than an informal observation.
-Sampling begins before each GPU-bearing child and ends after its durable exit.
-Raw samples bind monotonic time, GPU name/UUID, utilization, memory-controller
-utilization when available, power, temperature, and clocks. GB10 has unified
+GPU telemetry is part of the result rather than an informal observation. A
+request-bound journal exists before each new GPU-bearing child; live samples
+are appended while its exact transport receipt remains `running`, and the job
+start and finish timestamps bound the observation window even though they are
+not samples themselves.
+Raw samples bind wall-clock nanoseconds, GPU name/UUID, utilization,
+memory-controller utilization when available, power, and temperature. GB10 has unified
 memory, so the sampler also records host `MemAvailable`; an unavailable VRAM
 field is represented explicitly rather than converted to zero.
+
+A telemetry management query may fail or time out while the detached numerical
+job remains healthy. `TelemetryUnavailableError` is the only recoverable
+sampling class: it is durably counted, does not abandon that child, and does
+not permit another attempt to collide with it. A malformed sample or telemetry
+protocol/integrity exception is counted separately and invalidates the attempt,
+but monitoring still follows the same child to terminal. Missing-journal
+adoption is likewise an unconditional GPU-attempt integrity failure.
+
+Manifest v3 fixes a 1,000 ms sleep after each telemetry/status poll cycle;
+query latency can lengthen the start-to-start period, and the 30-second
+evidence gate still applies to the resulting observable captures. For every attempt whose derived
+activity rule is `positive_utilization_required`, acceptance requires all of:
+
+- at least one in-window canonical sample with GPU utilization above 0%;
+- in-window canonical samples with an observable target-GPU utilization value
+  comprising at least 50% of sampling attempts, where attempts also include
+  terminal-overlap samples, utilization-unobservable samples, and transient or
+  integrity failures;
+  and
+- no observation gap above 30,000 ms, measured from job start to the first
+  in-window sample with observable target-GPU utilization, between adjacent
+  such samples, and from the last such sample to job finish.
+
+If a telemetry query begins while the child is running but returns after its
+terminal timestamp, the sample remains in the identity-bound journal but is
+excluded from receipt telemetry and counted as an unsuccessful terminal-overlap
+observation. An in-window sample with an unavailable target-GPU utilization
+value remains in receipt telemetry for memory, power, and temperature evidence,
+but is also unsuccessful and cannot bridge the maximum-gap calculation.
+
+An integrity failure rejects before those coverage thresholds can rescue the
+attempt. CPU stages have no attempt journal and none of these GPU coverage
+requirements. A GPU attempt with an explicit activity waiver still requires a
+valid, non-missing journal but does not apply the positive-sample, success-ratio,
+or maximum-gap thresholds.
 
 The canonical summary reports per host and stage:
 
@@ -253,8 +358,26 @@ One narrow exception is provenance-bearing rather than performance-bearing:
 an exact host-local source-identity cache may validate and return before CUDA.
 Its byte-exact machine receipt must say `validated_reuse`, bind the expected
 cache path and portable model digest, and is recorded as an explicit activity
-waiver. A fresh cache build and every numerical GPU stage still require at
-least one positive utilization sample.
+waiver only on attempt 0. A retry cannot turn cache bytes created by an
+unaccepted prior attempt into zero-utilization evidence. A fresh cache build,
+every source-cache retry, and every numerical GPU stage therefore retain the
+positive-activity and coverage requirements.
+
+New execution receipts use schema v2 and bind the exact attempt-journal
+identity SHA-256 alongside the normalized samples, their digest, and the
+threshold-bearing summary. Verification replays the complete immutable record
+chain and reproduces the bounded head; it never creates missing telemetry
+evidence. Manifest v2, execution receipt v1, and attempt journals v1/v2 are
+accepted only through read-only historical verification. A v1 receipt
+has its original summary and no journal binding or v3 coverage thresholds, and
+retains the historical ability for an exact source-cache reuse receipt to
+waive activity on a retry. Because a v1 journal did not record sampling
+failures, it is never promoted into a current receipt; discovering one beside a live
+child derives an integrity fail latch, follows that child to terminal, and only
+then permits the next bounded attempt. Attempt journal v2 preserves its
+historical whole-history JSON bytes and is never appended or promoted. All
+newly written attempt journals are v3; execution receipts remain v2 and bind
+the final v3 head identity.
 
 Campaign reporting separates GPU-active stages from calibration transfers,
 barrier waits, startup, and serial reductions. The first reviewed physical
@@ -271,4 +394,6 @@ dedicated validation-only structural validator packages a local candidate.
 Physical RTX4090 serving qualification remains a later, separately authorized
 hardware gate and cannot be inferred from this GB10 run. The same orchestration
 contract can schedule an NVFP4 burn once that producer exists, without an agent
-or a new cluster control plane.
+or a new cluster control plane. Agents may author, review, or repair manifests
+and code, but deterministic scheduling, retry, adoption, barriers, export, and
+verification are application-owned runtime transitions.

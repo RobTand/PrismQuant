@@ -85,8 +85,9 @@ def test_v11_explicitly_attests_exact_reader_and_producer_domains():
     assert fp8.accepted_rungs == FP8_ACCEPTED_RUNGS
     assert fp8.producer_rungs == FP8_PRODUCT_RUNGS
     assert fp8.producer_rungs_attested
-    assert gridbook_contract_attests_producer_format(contract, "FP8_CB_K4")
+    assert gridbook_contract_attests_producer_format(contract, "FP8_CB_K40")
     assert gridbook_contract_attests_producer_format(contract, "fp8_cb_k48")
+    assert not gridbook_contract_attests_producer_format(contract, "FP8_CB_K28")
     assert not gridbook_contract_attests_producer_format(
         contract, "FP8_CB_K29"
     )
@@ -94,8 +95,10 @@ def test_v11_explicitly_attests_exact_reader_and_producer_domains():
     nvfp4 = declarations["NVFP4_CB_K"]
     assert nvfp4.accepted_rungs == NVFP4_ACCEPTED_RUNGS
     assert nvfp4.producer_rungs == NVFP4_PRODUCT_RUNGS
-    assert gridbook_contract_attests_producer_format(contract, "NVFP4_CB_K1")
-    assert gridbook_contract_attests_producer_format(contract, "NVFP4_CB_K25")
+    assert gridbook_contract_attests_producer_format(contract, "NVFP4_CB_K12")
+    assert gridbook_contract_attests_producer_format(contract, "NVFP4_CB_K24")
+    assert not gridbook_contract_attests_producer_format(contract, "NVFP4_CB_K1")
+    assert not gridbook_contract_attests_producer_format(contract, "NVFP4_CB_K25")
     assert not gridbook_contract_attests_producer_format(
         contract, "NVFP4_CB_K26"
     )
@@ -112,15 +115,15 @@ def test_v11_explicitly_attests_exact_reader_and_producer_domains():
     [
         (lambda e: e.pop("producer_rungs"), "producer_rungs is required"),
         (
-            lambda e: e.__setitem__("producer_rungs", [4, 8, 8, 12]),
+            lambda e: e.__setitem__("producer_rungs", [40, 44, 44, 48]),
             "sorted and unique",
         ),
         (
-            lambda e: e.__setitem__("producer_rungs", [4, 8, 52]),
+            lambda e: e.__setitem__("producer_rungs", [40, 44, 52]),
             "outside its reader rungs",
         ),
         (
-            lambda e: e.__setitem__("producer_rungs", [4, 8, "12"]),
+            lambda e: e.__setitem__("producer_rungs", [40, 44, "48"]),
             "positive JSON integers",
         ),
     ],
@@ -149,6 +152,6 @@ def test_schema_and_contract_version_must_move_together():
 
 def test_v11_must_match_prismaquant_product_ladder_exactly():
     contract = _synthetic_v11()
-    _fp8_entry(contract)["producer_rungs"] = [4, 8, 12, 16, 20, 24, 28]
+    _fp8_entry(contract)["producer_rungs"] = [40, 44]
     with pytest.raises(GridbookFormatContractError, match="producer rungs differ"):
         validate_gridbook_cb_rung_contract(contract)

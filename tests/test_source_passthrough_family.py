@@ -327,7 +327,7 @@ def _expert_tables(n_layers=2, n_experts=2):
                 costs[name] = {
                     "NVFP4_CB_K14": {"weight_mse": 1e-3, "output_mse": 2e-3,
                                      "output_mse_measured": True},
-                    "FP8_CB_K36": {"weight_mse": 1e-5, "output_mse": 2e-5,
+                    "FP8_CB_K40": {"weight_mse": 1e-5, "output_mse": 2e-5,
                                    "output_mse_measured": True},
                 }
                 manifest[name] = "mxfp4"
@@ -343,7 +343,7 @@ def test_allocator_synthesizes_a_zero_cost_passthrough_candidate():
         scale_coding="two_tier", codebook_source="lattice",
         scale_sweep=True, encode_tier="balanced")
     specs = [fr.get_format(f) for f in
-             ("NVFP4_CB_K14", "FP8_CB_K36", "MXFP4_SOURCE")]
+             ("NVFP4_CB_K14", "FP8_CB_K40", "MXFP4_SOURCE")]
     masks: list[dict] = []
     cands = build_candidates(
         stats, costs, specs, source_manifest=manifest,
@@ -361,13 +361,13 @@ def test_allocator_synthesizes_a_zero_cost_passthrough_candidate():
         expected = (EXPERT_W2_BYTES if name.endswith("down_proj")
                     else EXPERT_W13_BYTES)
         assert passthrough.memory_bytes == expected
-        # K36 is above the 4.25-bpp source representation and therefore never
+        # K40 is above the 4.25-bpp source representation and therefore never
         # reaches the DP, irrespective of its measured quality.
-        assert "FP8_CB_K36" not in by_fmt
-    k36_masks = [m for m in masks if m["format"] == "FP8_CB_K36"]
-    assert len(k36_masks) == len(stats)
-    assert all(m["reason"] == SOURCE_BPP_EXCEEDED_REASON for m in k36_masks)
-    assert all(m["source_bpp"] == 4.25 for m in k36_masks)
+        assert "FP8_CB_K40" not in by_fmt
+    k40_masks = [m for m in masks if m["format"] == "FP8_CB_K40"]
+    assert len(k40_masks) == len(stats)
+    assert all(m["reason"] == SOURCE_BPP_EXCEEDED_REASON for m in k40_masks)
+    assert all(m["source_bpp"] == 4.25 for m in k40_masks)
 
 
 def test_passthrough_is_not_offered_where_the_source_is_something_else():

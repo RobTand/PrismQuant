@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -12,6 +15,7 @@ from prismaquant.cluster_live_transport import (
     BOOTSTRAP_RECEIPT_SCHEMA,
     ClusterLiveTransportError,
     REMOTE_OP_RESPONSE_SCHEMA,
+    REMOTE_OP_REQUEST_SCHEMA,
     TelemetryJobAdapter,
     VerifiedRsyncSSHTransfer,
     _BOOTSTRAP_PROGRAM,
@@ -19,7 +23,9 @@ from prismaquant.cluster_live_transport import (
     bootstrap_ssh_helper,
 )
 from prismaquant.cluster_transport import (
+    ClusterTransportError,
     GpuSample,
+    JobNotFoundError,
     JobReceipt,
     LocalTransport,
     RunRequest,
@@ -29,6 +35,33 @@ from prismaquant.cluster_transport import (
     canonical_json_bytes,
     verify_tree_manifest,
 )
+
+
+_HISTORICAL_HELPER_COMMIT = "6bde48a"
+_HISTORICAL_HELPER_SHA256 = (
+    "9fc47559fba4e0d1d4276a05375b2813dd91403991f61ad60629a8a914b50195"
+)
+
+
+def _historical_helper_source() -> bytes:
+    repo = Path(__file__).parents[1]
+    result = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{_HISTORICAL_HELPER_COMMIT}:prismaquant/cluster_transport.py",
+        ],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        shell=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert hashlib.sha256(result.stdout).hexdigest() == _HISTORICAL_HELPER_SHA256
+    assert b"def inspect(" not in result.stdout
+    return result.stdout
 
 
 def completed(returncode=0, stdout=b"", stderr=b""):
@@ -264,6 +297,9 @@ def test_helper_bootstrap_uses_fixed_python_and_base64_stdin_only():
 def test_fixed_remote_programs_are_syntax_valid_and_bootstrap_fails_closed():
     compile(_BOOTSTRAP_PROGRAM, "<bootstrap>", "exec")
     compile(_REMOTE_FILE_OP_PROGRAM, "<remote-file-op>", "exec")
+    assert "spec.loader.exec_module" not in _REMOTE_FILE_OP_PROGRAM
+    assert "exec(compile(source" in _REMOTE_FILE_OP_PROGRAM
+    assert "O_NOFOLLOW" in _REMOTE_FILE_OP_PROGRAM
     ssh = SSHTransport(
         "host",
         remote_helper_path="/safe/helper.py",
@@ -273,6 +309,157 @@ def test_fixed_remote_programs_are_syntax_valid_and_bootstrap_fails_closed():
     )
     with pytest.raises(ClusterLiveTransportError, match="different bytes"):
         bootstrap_ssh_helper(ssh)
+
+
+class LocalRemoteCommandRunner:
+    def __init__(self, *, home: Path | None = None):
+        self.home = home
+
+    def __call__(self, argv, **kwargs):
+        environment = dict(os.environ)
+        if self.home is not None:
+            environment["HOME"] = str(self.home)
+        return subprocess.run(
+            ["/bin/sh", "-c", argv[-1]],
+            input=kwargs.get("input"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            shell=False,
+            timeout=kwargs.get("timeout", 10),
+            env=environment,
+        )
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_bootstrapped_helper_is_digest_bound_for_every_later_job_action(
+    tmp_path: Path,
+    historical: bool,
+) -> None:
+    source = (
+        _historical_helper_source()
+        if historical
+        else (
+            Path(__file__).parents[1] / "prismaquant/cluster_transport.py"
+        ).read_bytes()
+    )
+    helper = tmp_path / "remote" / "cluster_transport.py"
+    helper.parent.mkdir()
+    marker = helper.parent / "MALICIOUS_EXECUTED"
+    ssh = SSHTransport(
+        "fixture",
+        remote_helper_path=str(helper),
+        helper_source=source,
+        run_impl=LocalRemoteCommandRunner(home=tmp_path / "home"),
+    )
+
+    bootstrap = bootstrap_ssh_helper(ssh)
+    assert bootstrap.source_sha256 == hashlib.sha256(source).hexdigest()
+    if historical:
+        assert ssh.run(RunRequest("positive-held-bytes", ("/bin/true",))).succeeded
+    else:
+        with pytest.raises(JobNotFoundError):
+            ssh.inspect("positive-held-bytes")
+    helper.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+    )
+    before_names = sorted(path.name for path in helper.parent.iterdir())
+
+    with pytest.raises(ClusterTransportError, match="digest differs"):
+        ssh.inspect("post-bootstrap-substitution")
+
+    assert not marker.exists()
+    assert not (helper.parent / "__pycache__").exists()
+    assert sorted(path.name for path in helper.parent.iterdir()) == before_names
+
+
+def test_bootstrap_reuses_only_the_exact_descriptor_verified_helper(
+    tmp_path: Path,
+) -> None:
+    helper = tmp_path / "remote" / "cluster_transport.py"
+    helper.parent.mkdir()
+    ssh = SSHTransport(
+        "fixture",
+        remote_helper_path=str(helper),
+        run_impl=LocalRemoteCommandRunner(home=tmp_path / "home"),
+    )
+
+    first = bootstrap_ssh_helper(ssh)
+    second = bootstrap_ssh_helper(ssh)
+
+    assert first.already_present is False
+    assert second.already_present is True
+    assert helper.read_bytes() == ssh.helper_install_spec().source
+
+
+@pytest.mark.parametrize("substitution", ["ancestor", "destination", "staging"])
+def test_bootstrap_refuses_symlink_substitution_without_touching_target(
+    tmp_path: Path,
+    substitution: str,
+) -> None:
+    real_parent = tmp_path / "real"
+    real_parent.mkdir()
+    exposed_parent = real_parent
+    if substitution == "ancestor":
+        exposed_parent = tmp_path / "linked"
+        exposed_parent.symlink_to(real_parent, target_is_directory=True)
+    helper = exposed_parent / "cluster_transport.py"
+    target = tmp_path / "symlink-target"
+    target.write_bytes(b"unchanged\n")
+    ssh = SSHTransport(
+        "fixture",
+        remote_helper_path=str(helper),
+        run_impl=LocalRemoteCommandRunner(home=tmp_path / "home"),
+    )
+    spec = ssh.helper_install_spec()
+    if substitution == "destination":
+        helper.symlink_to(target)
+    elif substitution == "staging":
+        staging = real_parent / (
+            ".cluster_transport.py." + spec.source_sha256 + ".tmp"
+        )
+        staging.symlink_to(target)
+
+    with pytest.raises(ClusterLiveTransportError):
+        bootstrap_ssh_helper(ssh)
+
+    assert target.read_bytes() == b"unchanged\n"
+    if substitution != "destination":
+        assert not (real_parent / "cluster_transport.py").exists()
+
+
+def test_remote_file_op_executes_the_exact_held_and_hashed_helper_bytes(
+    tmp_path: Path,
+) -> None:
+    helper = Path(__file__).parents[1] / "prismaquant/cluster_transport.py"
+    source = tmp_path / "payload.bin"
+    source.write_bytes(b"held helper execution\n")
+    request = {
+        "schema": REMOTE_OP_REQUEST_SCHEMA,
+        "action": "manifest",
+        "helper_path": str(helper),
+        "helper_sha256": hashlib.sha256(helper.read_bytes()).hexdigest(),
+        "payload": {"source": str(source)},
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-P", "-B", "-s", "-c", _REMOTE_FILE_OP_PROGRAM],
+        input=base64.b64encode(canonical_json_bytes(request)) + b"\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        shell=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr.decode()
+    response = json.loads(result.stdout)
+    assert response["schema"] == REMOTE_OP_RESPONSE_SCHEMA
+    assert response["kind"] == "manifest"
+    assert response["payload"]["manifest_sha256"] == (
+        build_tree_manifest(source).identity_sha256
+    )
 
 
 class FakeRemoteOperations:

@@ -10,23 +10,43 @@ import time
 
 import pytest
 
+import prismaquant.rtx4090_two_host_campaign as campaign_module
+
 from prismaquant.cluster_campaign_contract import (
     CAMPAIGN_MANIFEST_SCHEMA,
+    CAMPAIGN_STATE_SCHEMA,
+    LEGACY_CAMPAIGN_MANIFEST_SCHEMA,
+    STAGE_RECEIPT_SCHEMA,
+    ClusterCampaignContractError,
+    StageAssignment,
     bind_gridbook_runtime_contract,
+    canonical_sha256,
+    next_ready_assignments,
     seal_campaign_manifest,
 )
 from prismaquant.cluster_transport import (
     GpuSample,
+    JobConflictError,
+    JobNotFoundError,
     JobReceipt,
     ManifestEntry,
     RunRequest,
+    TelemetryUnavailableError,
     TelemetrySnapshot,
     TreeManifest,
 )
 from prismaquant.rtx4090_two_host_campaign import (
+    ATTEMPT_TELEMETRY_SCHEMA,
+    ATTEMPT_TELEMETRY_RECORD_SCHEMA,
     CampaignCoordinator,
+    EXECUTION_RECEIPT_SCHEMA,
+    LEGACY_ATTEMPT_TELEMETRY_SCHEMA,
+    LEGACY_ATTEMPT_TELEMETRY_V2_SCHEMA,
+    LEGACY_EXECUTION_RECEIPT_SCHEMA,
     RTX4090TwoHostCampaignError,
     _host_output_path,
+    _normalize_attempt_telemetry_evidence,
+    _normalize_telemetry,
     _stage_receipt,
     build_command_plan,
     main,
@@ -41,12 +61,7 @@ def test_sealed_artifact_target_matches_the_numerical_burn_policy() -> None:
     target = _manifest()["artifact_target"]
 
     assert target["artifact_max_bytes"] == RTX4090_CONTEXT_FIRST_TARGET_BYTES
-    assert target["physical_formats"] == [
-        RTX4090_QWEN38_FORMAT_MENU[0],
-        RTX4090_QWEN38_FORMAT_MENU[3],
-        RTX4090_QWEN38_FORMAT_MENU[-3],
-        RTX4090_QWEN38_FORMAT_MENU[-2],
-    ]
+    assert target["physical_formats"] == list(RTX4090_QWEN38_FORMAT_MENU[:-1])
     assert target["terminal_format"] == RTX4090_QWEN38_FORMAT_MENU[-1]
 
 
@@ -109,7 +124,7 @@ def _manifest() -> dict[str, object]:
             "disposition": "validation_only",
             "source_dtype": "bf16",
             "physical_formats": [
-                "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+                "FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48", "FP8_E4M3",
             ],
             "terminal_format": "BF16",
             "allocation_objective": "context_first",
@@ -138,6 +153,8 @@ def _manifest() -> dict[str, object]:
             "retry": {"max_attempts": 2},
             "telemetry": {
                 "interval_milliseconds": 1000,
+                "maximum_observation_gap_milliseconds": 30_000,
+                "minimum_successful_sample_percent": 50,
                 "require_positive_gpu_utilization": True,
             },
             "resources": {
@@ -267,7 +284,7 @@ class _FakeTransport:
     def start(self, request):
         with self._lock:
             if request.job_id in self.jobs:
-                raise RuntimeError("duplicate fake job id")
+                raise JobConflictError("duplicate fake job id")
             self.start_calls.append(request)
             self._counter += 1
             ordinal = self._counter
@@ -295,7 +312,7 @@ class _FakeTransport:
         with self._lock:
             self.status_calls.append(job_id)
             if job_id not in self.jobs:
-                raise RuntimeError("unknown fake job")
+                raise JobNotFoundError("unknown fake job")
             job = self.jobs[job_id]
             receipt = job["receipt"]
             assert isinstance(receipt, JobReceipt)
@@ -327,9 +344,13 @@ class _FakeTransport:
                 and not self._interrupted
             ):
                 self._interrupted = True
-                raise RuntimeError("injected telemetry interruption")
+                raise TelemetryUnavailableError(
+                    "injected telemetry interruption"
+                )
             self._telemetry_counter += 1
-            captured_ns = self._telemetry_counter * 100
+            captured_ns = (
+                int(job["ordinal"]) * 10 + 1 + 2 * sample_number
+            )
         gpu = self.expected["gpu"]
         utilization = (
             0.0
@@ -404,6 +425,57 @@ class _BlockingTransport(_FakeTransport):
         return super().status(job_id)
 
 
+class _RestartAfterTelemetryGapTransport(_FakeTransport):
+    def __init__(self, expected: dict[str, object], *, stage: str) -> None:
+        super().__init__(expected)
+        self.stage = stage
+        self.gap_injected = False
+        self._status_interrupt_pending = False
+        self._hold_adoption_status = False
+
+    def sample_telemetry(self):
+        assert self._active_job_id is not None
+        if (
+            self._stage(self._active_job_id) == self.stage
+            and not self.gap_injected
+        ):
+            self.gap_injected = True
+            self._status_interrupt_pending = True
+            raise TelemetryUnavailableError("injected durable telemetry gap")
+        return super().sample_telemetry()
+
+    def status(self, job_id: str):
+        if self._status_interrupt_pending:
+            self._status_interrupt_pending = False
+            self._hold_adoption_status = True
+            raise RuntimeError("injected coordinator status interruption")
+        if self._hold_adoption_status:
+            self._hold_adoption_status = False
+            with self._lock:
+                self.status_calls.append(job_id)
+                receipt = self.jobs[job_id]["receipt"]
+                assert isinstance(receipt, JobReceipt)
+                return receipt
+        return super().status(job_id)
+
+
+class _ConflictAfterConfirmedAbsenceTransport(_FakeTransport):
+    def __init__(self, expected: dict[str, object]) -> None:
+        super().__init__(expected)
+        self._confirmed_absence = False
+
+    def status(self, job_id: str):
+        if not self._confirmed_absence:
+            self._confirmed_absence = True
+            self.status_calls.append(job_id)
+            raise JobNotFoundError("confirmed absent before injected race")
+        return super().status(job_id)
+
+    def start(self, request):
+        super().start(request)
+        raise JobConflictError("injected competing exact start")
+
+
 def _transports(
     manifest: dict[str, object], **kwargs: object,
 ) -> dict[str, _FakeTransport]:
@@ -437,6 +509,328 @@ def _coordinator(
         stage_preconditioner=stage_preconditioner,
         sleep=lambda _: None,
     )
+
+
+def _attempt_telemetry_state(
+    samples: tuple[TelemetrySnapshot, ...] = (),
+    *,
+    sampling_failure_count: int = 0,
+    sampling_integrity_failure_count: int = 0,
+    consecutive_sampling_failure_count: int = 0,
+    maximum_consecutive_sampling_failure_count: int | None = None,
+    missing_prior_journal: bool = False,
+    identity_sha256: str = "a" * 64,
+) -> dict[str, object]:
+    maximum_consecutive = (
+        sampling_failure_count + sampling_integrity_failure_count
+        if maximum_consecutive_sampling_failure_count is None
+        else maximum_consecutive_sampling_failure_count
+    )
+    return {
+        "schema": ATTEMPT_TELEMETRY_SCHEMA,
+        "samples": [sample.to_payload() for sample in samples],
+        "sampling_failure_count": sampling_failure_count,
+        "sampling_integrity_failure_count": sampling_integrity_failure_count,
+        "consecutive_sampling_failure_count": (
+            consecutive_sampling_failure_count
+        ),
+        "maximum_consecutive_sampling_failure_count": maximum_consecutive,
+        "missing_prior_journal": missing_prior_journal,
+        "identity_sha256": identity_sha256,
+    }
+
+
+def _telemetry_sample(
+    manifest: dict[str, object],
+    host_id: str,
+    captured_ns: int,
+    *,
+    utilization: float | None = 75.0,
+) -> TelemetrySnapshot:
+    host = next(host for host in manifest["hosts"] if host["id"] == host_id)
+    gpu = host["expected"]["gpu"]
+    return TelemetrySnapshot(
+        captured_ns=captured_ns,
+        host_mem_available_bytes=24_000_000_000,
+        gpus=(GpuSample(
+            timestamp="2026-08-24T00:00:00Z",
+            index=0,
+            name=str(gpu["name"]),
+            uuid=str(gpu["uuid"]),
+            pci_bus_id="00000000:01:00.0",
+            gpu_utilization_pct=utilization,
+            memory_utilization_pct=25.0,
+            memory_used_mib=4096.0,
+            memory_total_mib=24576.0,
+            temperature_c=55.0,
+            power_w=200.0,
+        ),),
+    )
+
+
+def _write_legacy_attempt_journal(
+    coordinator: CampaignCoordinator,
+    command,
+    request: RunRequest,
+    *,
+    attempt_index: int = 0,
+    samples: tuple[TelemetrySnapshot, ...] = (),
+) -> Path:
+    body = {
+        "schema": LEGACY_ATTEMPT_TELEMETRY_SCHEMA,
+        "campaign_identity_sha256": coordinator.manifest["identity_sha256"],
+        "work_id": command.work_id,
+        "attempt_index": attempt_index,
+        "request_sha256": request.request_sha256,
+        "samples": [sample.to_payload() for sample in samples],
+    }
+    payload = {**body, "identity_sha256": canonical_sha256(body)}
+    path = coordinator._attempt_telemetry_path(request)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _succeeded_job(
+    request: RunRequest,
+    *,
+    started_ns: int,
+    finished_ns: int,
+    stdout: bytes = b"ok\n",
+) -> JobReceipt:
+    return JobReceipt(
+        job_id=request.job_id,
+        request_sha256=request.request_sha256,
+        state="succeeded",
+        started_ns=started_ns,
+        finished_ns=finished_ns,
+        returncode=0,
+        pid=123,
+        stdout=stdout,
+        stderr=b"",
+        transport="fake",
+    )
+
+
+def _direct_gpu_stage_receipt(
+    manifest: dict[str, object],
+    *,
+    started_ns: int,
+    finished_ns: int,
+    samples: tuple[TelemetrySnapshot, ...],
+    sampling_failure_count: int = 0,
+) -> dict[str, object]:
+    coordinator = _coordinator(
+        manifest,
+        Path("/tmp/prismaquant-direct-stage-receipt-fixture"),
+        _transports(manifest),
+    )
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    state = _attempt_telemetry_state(
+        samples,
+        sampling_failure_count=sampling_failure_count,
+    )
+    return _stage_receipt(
+        manifest,
+        command,
+        request,
+        _succeeded_job(
+            request,
+            started_ns=started_ns,
+            finished_ns=finished_ns,
+        ),
+        state,
+        (),
+        (),
+        attempt_index=0,
+        artifact_inspector=_FakeArtifactInspector(),
+    )
+
+
+def _legacy_v2_manifest() -> dict[str, object]:
+    body = json.loads(json.dumps(_manifest()))
+    body.pop("identity_sha256")
+    body["schema"] = LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+    body["artifact_target"]["physical_formats"] = [
+        "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+    ]
+    telemetry = body["policy"]["telemetry"]
+    telemetry.pop("maximum_observation_gap_milliseconds")
+    telemetry.pop("minimum_successful_sample_percent")
+    return {**body, "identity_sha256": canonical_sha256(body)}
+
+
+def _replace_campaign_identity(
+    value: object,
+    *,
+    old_identity: str,
+    new_identity: str,
+) -> object:
+    if isinstance(value, str):
+        return value.replace(old_identity, new_identity)
+    if isinstance(value, list):
+        return [
+            _replace_campaign_identity(
+                item,
+                old_identity=old_identity,
+                new_identity=new_identity,
+            )
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _replace_campaign_identity(
+                item,
+                old_identity=old_identity,
+                new_identity=new_identity,
+            )
+            for key, item in value.items()
+        }
+    return value
+
+
+def _legacy_v2_command_plan(
+    current_manifest: dict[str, object],
+    legacy_manifest: dict[str, object],
+) -> dict[str, object]:
+    current_plan = build_command_plan(current_manifest)
+    old_identity = str(current_manifest["identity_sha256"])
+    new_identity = str(legacy_manifest["identity_sha256"])
+    rebound = _replace_campaign_identity(
+        current_plan,
+        old_identity=old_identity,
+        new_identity=new_identity,
+    )
+    assert isinstance(rebound, dict)
+    rebound.pop("identity_sha256")
+    commands = []
+    for raw_command in rebound["commands"]:
+        command_body = dict(raw_command)
+        command_body.pop("identity_sha256")
+        commands.append({
+            **command_body,
+            "identity_sha256": canonical_sha256(command_body),
+        })
+    rebound["commands"] = commands
+    rebound["campaign_identity_sha256"] = new_identity
+    return {**rebound, "identity_sha256": canonical_sha256(rebound)}
+
+
+def _write_legacy_v2_read_only_fixture(
+    tmp_path: Path,
+    *,
+    precondition_receipt_sha256s: tuple[str, ...] = (),
+) -> tuple[Path, Path]:
+    current_manifest = _manifest()
+    manifest = _legacy_v2_manifest()
+    plan = _legacy_v2_command_plan(current_manifest, manifest)
+    command = next(
+        row for row in plan["commands"]
+        if row["work_id"] == "host_preflight:alpha"
+    )
+    request_env = {name: value for name, value in command["env"]}
+    request_env.update({
+        "PQ_CAMPAIGN_PRECONDITIONS_SHA256": canonical_sha256(
+            list(precondition_receipt_sha256s),
+        ),
+        "PQ_CAMPAIGN_GPU_BEARING": "0",
+        "PQ_CAMPAIGN_START_GUARD": "0",
+    })
+    request = RunRequest(
+        job_id=(
+            f"pq-{str(manifest['identity_sha256'])[:16]}-00-"
+            "host_preflight-alpha-attempt-00"
+        ),
+        argv=tuple(command["argv"]),
+        cwd="/",
+        env=tuple(sorted(request_env.items())),
+        timeout_seconds=600.0,
+        stdin=b"",
+        inherit_env=False,
+    )
+    host = next(host for host in manifest["hosts"] if host["id"] == "alpha")
+    _, telemetry_summary = _normalize_telemetry(
+        (),
+        required=False,
+        expected_gpu=host["expected"]["gpu"],
+    )
+    job = _succeeded_job(
+        request,
+        started_ns=1,
+        finished_ns=2,
+    ).to_payload()
+    receipt_body = {
+        "schema": LEGACY_EXECUTION_RECEIPT_SCHEMA,
+        "campaign_identity_sha256": manifest["identity_sha256"],
+        "host_identity_sha256": canonical_sha256(host),
+        "producer_identity_sha256": canonical_sha256(manifest["producer"]),
+        "work_id": command["work_id"],
+        "stage": command["stage"],
+        "host_id": command["host_id"],
+        "assignment_index": command["assignment_index"],
+        "attempt_index": 0,
+        "command_identity_sha256": command["identity_sha256"],
+        "request_sha256": request.request_sha256,
+        "dependency_receipt_sha256s": [],
+        "precondition_receipt_sha256s": list(
+            precondition_receipt_sha256s,
+        ),
+        "job": job,
+        "gpu_bearing": False,
+        "gpu_activity_requirement": "not_applicable",
+        "telemetry": [],
+        "telemetry_sha256": canonical_sha256([]),
+        "telemetry_summary": telemetry_summary,
+        "output_artifacts": [],
+    }
+    receipt = {
+        **receipt_body,
+        "identity_sha256": canonical_sha256(receipt_body),
+    }
+    completion = {
+        "schema": STAGE_RECEIPT_SCHEMA,
+        "work_id": command["work_id"],
+        "stage": command["stage"],
+        "host_id": command["host_id"],
+        "assignment_index": command["assignment_index"],
+        "campaign_identity_sha256": manifest["identity_sha256"],
+        "host_identity_sha256": canonical_sha256(host),
+        "producer_identity_sha256": canonical_sha256(manifest["producer"]),
+        "receipt_sha256": receipt["identity_sha256"],
+    }
+    state_body = {
+        "schema": CAMPAIGN_STATE_SCHEMA,
+        "campaign_identity_sha256": manifest["identity_sha256"],
+        "completions": [completion],
+    }
+    state = {**state_body, "identity_sha256": canonical_sha256(state_body)}
+    state_dir = tmp_path / "legacy-state"
+    receipt_dir = state_dir / "receipts"
+    receipt_dir.mkdir(parents=True)
+
+    def write(path: Path, payload: dict[str, object]) -> None:
+        path.write_text(
+            json.dumps(payload, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    manifest_path = state_dir / "campaign-manifest.json"
+    write(manifest_path, manifest)
+    write(state_dir / "command-plan.json", plan)
+    write(state_dir / "campaign-state.json", state)
+    write(receipt_dir / "host_preflight:alpha.json", receipt)
+    return manifest_path, state_dir
+
+
+def _filesystem_snapshot(root: Path) -> dict[Path, bytes | None]:
+    return {
+        path.relative_to(root): (None if path.is_dir() else path.read_bytes())
+        for path in root.rglob("*")
+    }
 
 
 def test_plan_is_closed_and_maps_hosts_to_partitions_and_stripes_0_and_1() -> None:
@@ -611,6 +1005,997 @@ def test_existing_transport_job_requires_a_valid_durable_launch_guard(
         coordinator._adopt_or_start(ExistingWithoutGuard(), request)
 
 
+def test_adopted_gpu_job_without_prior_journal_is_fail_latched(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["worker_source_identity:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    transport = transports["alpha"]
+    transport.start(request)
+
+    job, telemetry_state = coordinator._monitor_attempt(
+        command,
+        transport,
+        request,
+        0,
+    )
+
+    assert job["state"] == "succeeded"
+    assert telemetry_state is not None
+    assert telemetry_state["missing_prior_journal"] is True
+    assert telemetry_state["sampling_integrity_failure_count"] == 1
+    assert len(transport.start_calls) == 1
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="telemetry integrity evidence invalidates",
+    ):
+        _stage_receipt(
+            manifest,
+            command,
+            request,
+            job,
+            telemetry_state,
+            (),
+            (),
+            attempt_index=0,
+            artifact_inspector=_FakeArtifactInspector(),
+        )
+
+
+def test_unavailable_initial_status_never_authorizes_start_or_clean_journal(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["worker_source_identity:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    transport = transports["alpha"]
+    transport.preload(request, state="running")
+    original_status = transport.status
+    first_status = True
+
+    def unavailable_once(job_id: str):
+        nonlocal first_status
+        if first_status:
+            first_status = False
+            raise TelemetryUnavailableError("status backend unavailable")
+        return original_status(job_id)
+
+    transport.status = unavailable_once
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="cannot determine whether transport job.*refusing start",
+    ):
+        coordinator._monitor_attempt(command, transport, request, 0)
+
+    assert transport.start_calls == []
+    assert not coordinator._attempt_telemetry_path(request).exists()
+
+
+@pytest.mark.parametrize(
+    "journal_kind",
+    [
+        "valid-v1",
+        "malformed-json",
+        "malformed-current",
+        "current-with-sample",
+        "current-with-failure",
+    ],
+)
+def test_confirmed_absence_with_unusable_prior_journal_hard_blocks_start(
+    tmp_path: Path,
+    journal_kind: str,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / journal_kind,
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    path = coordinator._attempt_telemetry_path(request)
+
+    if journal_kind == "valid-v1":
+        _write_legacy_attempt_journal(coordinator, command, request)
+    elif journal_kind == "malformed-json":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"{malformed journal\n")
+    else:
+        coordinator._initialize_attempt_telemetry(command, request, 0)
+        if journal_kind == "malformed-current":
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["samples"] = {"not": "a list"}
+            body = dict(payload)
+            body.pop("identity_sha256")
+            payload["identity_sha256"] = canonical_sha256(body)
+            path.write_text(
+                json.dumps(payload, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        elif journal_kind == "current-with-sample":
+            coordinator._begin_attempt_telemetry_sample(
+                command,
+                request,
+                0,
+            )
+            coordinator._append_attempt_telemetry(
+                command,
+                request,
+                0,
+                _telemetry_sample(manifest, "alpha", 3),
+            )
+        else:
+            assert journal_kind == "current-with-failure"
+            coordinator._record_attempt_telemetry_failure(
+                command,
+                request,
+                0,
+                integrity_failure=False,
+            )
+    original = path.read_bytes()
+    transport = transports["alpha"]
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match=(
+            "unusable prior telemetry but no durable transport state; "
+            "refusing any retry"
+        ),
+    ):
+        coordinator._monitor_attempt(command, transport, request, 0)
+
+    assert transport.status_calls == [request.job_id]
+    assert transport.start_calls == []
+    assert path.read_bytes() == original
+
+
+def test_confirmed_absence_with_pristine_current_journal_remains_startable(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+    transport = transports["alpha"]
+
+    job, telemetry_state = coordinator._monitor_attempt(
+        command,
+        transport,
+        request,
+        0,
+    )
+
+    assert job["state"] == "succeeded"
+    assert len(transport.start_calls) == 1
+    assert transport.start_calls[0] == request
+    assert transport.status_calls[0] == request.job_id
+    assert telemetry_state is not None
+    assert telemetry_state["schema"] == ATTEMPT_TELEMETRY_SCHEMA
+    assert telemetry_state["missing_prior_journal"] is False
+    assert telemetry_state["sampling_integrity_failure_count"] == 0
+    assert len(telemetry_state["samples"]) == 2
+
+
+def test_confirmed_absence_then_start_conflict_is_adopted_with_fail_latch(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    alpha = next(host for host in manifest["hosts"] if host["id"] == "alpha")
+    transport = _ConflictAfterConfirmedAbsenceTransport(alpha["expected"])
+    transports = _transports(manifest)
+    transports["alpha"] = transport
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["worker_source_identity:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+
+    job, telemetry_state = coordinator._monitor_attempt(
+        command,
+        transport,
+        request,
+        0,
+    )
+
+    assert job["state"] == "succeeded"
+    assert len(transport.start_calls) == 1
+    assert telemetry_state is not None
+    assert telemetry_state["sampling_integrity_failure_count"] == 1
+    assert telemetry_state["missing_prior_journal"] is True
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="telemetry integrity evidence invalidates",
+    ):
+        _stage_receipt(
+            manifest,
+            command,
+            request,
+            job,
+            telemetry_state,
+            (),
+            (),
+            attempt_index=0,
+            artifact_inspector=_FakeArtifactInspector(),
+        )
+
+
+def test_pristine_journal_then_start_conflict_is_unconditionally_fail_latched(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    alpha = next(host for host in manifest["hosts"] if host["id"] == "alpha")
+    transport = _ConflictAfterConfirmedAbsenceTransport(alpha["expected"])
+    transports = _transports(manifest)
+    transports["alpha"] = transport
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+    path = coordinator._attempt_telemetry_path(request)
+    pristine = path.read_bytes()
+
+    job, telemetry_state = coordinator._monitor_attempt(
+        command,
+        transport,
+        request,
+        0,
+    )
+
+    assert job["state"] == "succeeded"
+    assert len(transport.start_calls) == 1
+    assert len(transport.status_calls) >= 3
+    assert telemetry_state is not None
+    assert telemetry_state["sampling_integrity_failure_count"] == 1
+    assert telemetry_state["missing_prior_journal"] is True
+    assert telemetry_state[
+        "maximum_consecutive_sampling_failure_count"
+    ] == 1
+    assert path.read_bytes() != pristine
+
+
+def test_execute_aborts_all_retries_for_absent_job_with_unusable_journal(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    assignment = StageAssignment(
+        work_id=command.work_id,
+        stage=command.stage,
+        host_id=command.host_id,
+        assignment_index=command.assignment_index,
+    )
+    poisoned_request = coordinator._request(command, attempt_index=0)
+    path = _write_legacy_attempt_journal(
+        coordinator,
+        command,
+        poisoned_request,
+    )
+    original = path.read_bytes()
+    next_request = coordinator._request(command, attempt_index=1)
+    transport = transports["alpha"]
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match=(
+            "unusable prior telemetry but no durable transport state; "
+            "refusing any retry"
+        ),
+    ):
+        coordinator._execute(
+            assignment,
+            dependency_receipt_sha256s=(),
+            precondition_receipt_sha256s=(),
+        )
+
+    assert transport.status_calls == [poisoned_request.job_id]
+    assert transport.start_calls == []
+    assert path.read_bytes() == original
+    assert not coordinator._attempt_telemetry_path(next_request).exists()
+
+
+def test_execute_retries_only_after_adopted_malformed_journal_job_is_terminal(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    assignment = StageAssignment(
+        work_id=command.work_id,
+        stage=command.stage,
+        host_id=command.host_id,
+        assignment_index=command.assignment_index,
+    )
+    adopted_request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(
+        command,
+        adopted_request,
+        0,
+    )
+    path = coordinator._attempt_telemetry_path(adopted_request)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["samples"] = {"not": "a list"}
+    body = dict(payload)
+    body.pop("identity_sha256")
+    payload["identity_sha256"] = canonical_sha256(body)
+    path.write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    original = path.read_bytes()
+    transport = transports["alpha"]
+    transport.start(adopted_request)
+
+    returned_assignment, receipt = coordinator._execute(
+        assignment,
+        dependency_receipt_sha256s=(),
+        precondition_receipt_sha256s=(),
+    )
+
+    assert returned_assignment == assignment
+    assert receipt["attempt_index"] == 1
+    assert [request.job_id for request in transport.start_calls] == [
+        adopted_request.job_id,
+        coordinator._request(command, attempt_index=1).job_id,
+    ]
+    adopted_job = transport.jobs[adopted_request.job_id]["receipt"]
+    assert isinstance(adopted_job, JobReceipt)
+    assert adopted_job.state == "succeeded"
+    assert transport.status_calls[:2] == [
+        adopted_request.job_id,
+        adopted_request.job_id,
+    ]
+    assert path.read_bytes() == original
+
+
+def test_v1_attempt_telemetry_journal_loads_as_a_durable_fail_latch(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    sample = _telemetry_sample(manifest, "alpha", 3).to_payload()
+    body = {
+        "schema": LEGACY_ATTEMPT_TELEMETRY_SCHEMA,
+        "campaign_identity_sha256": manifest["identity_sha256"],
+        "work_id": command.work_id,
+        "attempt_index": 0,
+        "request_sha256": request.request_sha256,
+        "samples": [sample],
+    }
+    payload = {**body, "identity_sha256": canonical_sha256(body)}
+    path = coordinator._attempt_telemetry_path(request)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    state = coordinator._load_attempt_telemetry(
+        command,
+        request,
+        0,
+    )
+
+    assert state == {
+        "schema": LEGACY_ATTEMPT_TELEMETRY_SCHEMA,
+        "samples": [sample],
+        "sampling_failure_count": 0,
+        "sampling_integrity_failure_count": 1,
+        "consecutive_sampling_failure_count": 1,
+        "maximum_consecutive_sampling_failure_count": 1,
+        "missing_prior_journal": True,
+        "identity_sha256": payload["identity_sha256"],
+    }
+
+
+def test_v2_attempt_telemetry_journal_remains_read_only_compatible(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    sample = _telemetry_sample(manifest, "alpha", 3).to_payload()
+    body = {
+        "schema": LEGACY_ATTEMPT_TELEMETRY_V2_SCHEMA,
+        "campaign_identity_sha256": manifest["identity_sha256"],
+        "work_id": command.work_id,
+        "attempt_index": 0,
+        "request_sha256": request.request_sha256,
+        "samples": [sample],
+        "sampling_failure_count": 1,
+        "sampling_integrity_failure_count": 0,
+        "consecutive_sampling_failure_count": 1,
+        "maximum_consecutive_sampling_failure_count": 1,
+        "missing_prior_journal": False,
+    }
+    payload = {**body, "identity_sha256": canonical_sha256(body)}
+    path = coordinator._attempt_telemetry_path(request)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    state = coordinator._load_attempt_telemetry(command, request, 0)
+
+    assert state["schema"] == LEGACY_ATTEMPT_TELEMETRY_V2_SCHEMA
+    assert state["samples"] == [sample]
+    assert state["sampling_failure_count"] == 1
+    original = path.read_bytes()
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="legacy attempt telemetry has no mutable head",
+    ):
+        coordinator._begin_attempt_telemetry_sample(command, request, 0)
+    assert path.read_bytes() == original
+    samples, summary, identity = _normalize_attempt_telemetry_evidence(
+        manifest,
+        command,
+        _succeeded_job(
+            request, started_ns=1, finished_ns=4,
+        ).to_payload(),
+        state,
+        activity_requirement="positive_utilization_required",
+        allow_legacy_v2=True,
+    )
+    assert samples == [sample]
+    assert summary["sampling_failure_count"] == 1
+    assert identity == payload["identity_sha256"]
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="requires a current attempt telemetry journal",
+    ):
+        _normalize_attempt_telemetry_evidence(
+            manifest,
+            command,
+            _succeeded_job(
+                request, started_ns=1, finished_ns=4,
+            ).to_payload(),
+            state,
+            activity_requirement="positive_utilization_required",
+        )
+
+
+def test_v3_attempt_journal_keeps_bounded_head_and_immutable_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            coordinator,
+            "_load_attempt_telemetry",
+            lambda *_args, **_kwargs: pytest.fail(
+                "hot append reread the complete observation history"
+            ),
+        )
+        for ordinal in range(128):
+            coordinator._begin_attempt_telemetry_sample(command, request, 0)
+            coordinator._append_attempt_telemetry(
+                command,
+                request,
+                0,
+                _telemetry_sample(manifest, "alpha", ordinal + 1),
+            )
+
+    head_path = coordinator._attempt_telemetry_path(request)
+    head = json.loads(head_path.read_text(encoding="utf-8"))
+    records = sorted(
+        coordinator._attempt_telemetry_records_dir(request).glob("*.json")
+    )
+    state = coordinator._load_attempt_telemetry(command, request, 0)
+
+    assert "samples" not in head
+    assert head["record_count"] == 128
+    assert head["next_ordinal"] == 128
+    assert head_path.stat().st_size < 2_000
+    assert len(records) == 128
+    assert state["samples"][0]["captured_ns"] == 1
+    assert state["samples"][-1]["captured_ns"] == 128
+    first = json.loads(records[0].read_text(encoding="utf-8"))
+    assert first["schema"] == ATTEMPT_TELEMETRY_RECORD_SCHEMA
+    assert first["previous_record_sha256"] is None
+    assert json.loads(records[1].read_text(encoding="utf-8"))[
+        "previous_record_sha256"
+    ] == first["identity_sha256"]
+
+
+def test_pending_sample_is_durably_integrity_latched_on_resume(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+
+    coordinator._begin_attempt_telemetry_sample(command, request, 0)
+    pending = json.loads(
+        coordinator._attempt_telemetry_path(request).read_text(encoding="utf-8")
+    )
+    assert pending["pending_sample_ordinal"] == 0
+
+    recovered = coordinator._recover_attempt_telemetry(command, request, 0)
+    state = coordinator._load_attempt_telemetry(command, request, 0)
+
+    assert recovered["pending_sample_ordinal"] is None
+    assert state["sampling_integrity_failure_count"] == 1
+    assert state["maximum_consecutive_sampling_failure_count"] == 1
+    record = json.loads(
+        coordinator._attempt_telemetry_record_path(request, 0).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["outcome"] == "integrity"
+
+
+def test_record_published_before_head_is_adopted_without_laundering_sample(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+    head = coordinator._begin_attempt_telemetry_sample(command, request, 0)
+    sample = _telemetry_sample(manifest, "alpha", 7).to_payload()
+    record = coordinator._attempt_telemetry_record_payload(
+        command,
+        request,
+        0,
+        ordinal=0,
+        previous_record_sha256=None,
+        outcome="sample",
+        sample=sample,
+    )
+    record_path = coordinator._attempt_telemetry_record_path(request, 0)
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(
+        json.dumps(record, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    assert head["pending_sample_ordinal"] == 0
+
+    recovered = coordinator._recover_attempt_telemetry(command, request, 0)
+    state = coordinator._load_attempt_telemetry(command, request, 0)
+
+    assert recovered["head_record_sha256"] == record["identity_sha256"]
+    assert state["sampling_integrity_failure_count"] == 0
+    assert state["samples"] == [sample]
+
+
+def test_interrupted_start_phase_is_fail_latched_before_adoption(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+    coordinator._mark_attempt_start_invoked(command, request, 0)
+
+    recovered = coordinator._recover_attempt_telemetry(command, request, 0)
+    state = coordinator._load_attempt_telemetry(command, request, 0)
+
+    assert recovered["start_phase"] == "claimed"
+    assert recovered["start_disposition"] == "recovered_ambiguous_start"
+    assert state["sampling_integrity_failure_count"] == 1
+    assert state["missing_prior_journal"] is True
+
+
+class _InjectedStartJournalCrash(RuntimeError):
+    pass
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    (
+        "before_intent",
+        "after_intent",
+        "after_record_publish",
+        "after_head_commit",
+        "after_claim",
+    ),
+)
+def test_missing_prefix_start_claim_recovers_every_wal_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / boundary, _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+    coordinator._mark_attempt_start_invoked(command, request, 0)
+    record_path = coordinator._attempt_telemetry_record_path(request, 0)
+    original_replace = coordinator._replace_attempt_telemetry_head
+    original_write = campaign_module._write_exact_no_clobber
+    original_commit = coordinator._commit_attempt_telemetry_record
+
+    def replace_then_maybe_crash(*args, **changes):
+        phase = changes.get("start_phase")
+        if boundary == "before_intent" and phase == "claim_pending":
+            raise _InjectedStartJournalCrash(boundary)
+        result = original_replace(*args, **changes)
+        if boundary == "after_intent" and phase == "claim_pending":
+            raise _InjectedStartJournalCrash(boundary)
+        if boundary == "after_claim" and phase == "claimed":
+            raise _InjectedStartJournalCrash(boundary)
+        return result
+
+    def write_then_maybe_crash(path, value):
+        original_write(path, value)
+        if boundary == "after_record_publish" and path == record_path:
+            raise _InjectedStartJournalCrash(boundary)
+
+    def commit_then_maybe_crash(*args, **kwargs):
+        result = original_commit(*args, **kwargs)
+        if boundary == "after_head_commit":
+            raise _InjectedStartJournalCrash(boundary)
+        return result
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            coordinator,
+            "_replace_attempt_telemetry_head",
+            replace_then_maybe_crash,
+        )
+        scoped.setattr(
+            campaign_module,
+            "_write_exact_no_clobber",
+            write_then_maybe_crash,
+        )
+        scoped.setattr(
+            coordinator,
+            "_commit_attempt_telemetry_record",
+            commit_then_maybe_crash,
+        )
+        with pytest.raises(_InjectedStartJournalCrash, match=boundary):
+            coordinator._mark_attempt_start_claimed(
+                command,
+                request,
+                0,
+                "existing_after_conflict",
+            )
+
+    intermediate = json.loads(
+        coordinator._attempt_telemetry_path(request).read_text(
+            encoding="utf-8",
+        )
+    )
+    if intermediate["start_phase"] == "claimed":
+        assert intermediate["sampling_integrity_failure_count"] >= 1
+        assert intermediate["missing_prior_journal"] is True
+    else:
+        assert intermediate["start_phase"] in {
+            "start_invoked", "claim_pending",
+        }
+
+    recovered = coordinator._recover_attempt_telemetry(
+        command, request, 0,
+    )
+    state = coordinator._load_attempt_telemetry(command, request, 0)
+
+    assert recovered["start_phase"] == "claimed"
+    assert recovered["start_disposition"] == (
+        "recovered_ambiguous_start"
+        if boundary == "before_intent" else "existing_after_conflict"
+    )
+    assert state["sampling_integrity_failure_count"] == 1
+    assert state["missing_prior_journal"] is True
+    assert len(list(
+        coordinator._attempt_telemetry_records_dir(request).glob("*.json")
+    )) == 1
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    ("existing", "existing_after_conflict", "recovered_ambiguous_start"),
+)
+def test_claimed_missing_prefix_dispositions_require_durable_integrity(
+    tmp_path: Path,
+    disposition: str,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / disposition, _transports(manifest),
+    )
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="attempt telemetry head fields are invalid",
+    ):
+        coordinator._attempt_telemetry_head_payload(
+            command,
+            request,
+            0,
+            start_phase="claimed",
+            start_disposition=disposition,
+            next_ordinal=0,
+            record_count=0,
+            head_record_sha256=None,
+            pending_sample_ordinal=None,
+            last_sample_captured_ns=None,
+            sampling_failure_count=0,
+            sampling_integrity_failure_count=0,
+            consecutive_sampling_failure_count=0,
+            maximum_consecutive_sampling_failure_count=0,
+            missing_prior_journal=False,
+        )
+
+
+def test_attempt_record_hash_chain_refuses_resealed_prefix_tamper(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+    for captured_ns in (3, 4):
+        coordinator._begin_attempt_telemetry_sample(command, request, 0)
+        coordinator._append_attempt_telemetry(
+            command,
+            request,
+            0,
+            _telemetry_sample(manifest, "alpha", captured_ns),
+        )
+    first_path = coordinator._attempt_telemetry_record_path(request, 0)
+    first = json.loads(first_path.read_text(encoding="utf-8"))
+    first["sample"]["captured_ns"] = 2
+    first_body = dict(first)
+    first_body.pop("identity_sha256")
+    first["identity_sha256"] = canonical_sha256(first_body)
+    first_path.write_text(
+        json.dumps(first, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="record 1 digest or binding differs",
+    ):
+        coordinator._load_attempt_telemetry(command, request, 0)
+
+
+def test_v2_execution_receipt_refuses_a_v1_attempt_journal() -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest,
+        Path("/tmp/prismaquant-v1-journal-v2-receipt-fixture"),
+        _transports(manifest),
+    )
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    legacy_state = _attempt_telemetry_state((
+        _telemetry_sample(manifest, "alpha", 5),
+    ))
+    legacy_state["schema"] = LEGACY_ATTEMPT_TELEMETRY_SCHEMA
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="requires a current attempt telemetry journal",
+    ):
+        _stage_receipt(
+            manifest,
+            command,
+            request,
+            _succeeded_job(request, started_ns=1, finished_ns=10),
+            legacy_state,
+            (),
+            (),
+            attempt_index=0,
+            artifact_inspector=_FakeArtifactInspector(),
+        )
+
+
+def test_adopted_live_gpu_job_with_v1_journal_is_fail_latched_to_terminal(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+    )
+    coordinator.initialize()
+    command = coordinator.commands["worker_source_identity:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    _write_legacy_attempt_journal(coordinator, command, request)
+    transport = transports["alpha"]
+    transport.start(request)
+
+    job, telemetry_state = coordinator._monitor_attempt(
+        command,
+        transport,
+        request,
+        0,
+    )
+
+    assert job["state"] == "succeeded"
+    assert len(transport.start_calls) == 1
+    assert telemetry_state is not None
+    assert telemetry_state["schema"] == LEGACY_ATTEMPT_TELEMETRY_SCHEMA
+    assert telemetry_state["sampling_integrity_failure_count"] == 1
+    assert telemetry_state["missing_prior_journal"] is True
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="requires a current attempt telemetry journal",
+    ):
+        _stage_receipt(
+            manifest,
+            command,
+            request,
+            job,
+            telemetry_state,
+            (),
+            (),
+            attempt_index=0,
+            artifact_inspector=_FakeArtifactInspector(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("sampling_failure_count", "1"),
+        ("sampling_failure_count", True),
+        ("sampling_integrity_failure_count", "1"),
+        ("sampling_integrity_failure_count", False),
+        ("consecutive_sampling_failure_count", "0"),
+        ("consecutive_sampling_failure_count", True),
+        ("maximum_consecutive_sampling_failure_count", "0"),
+        ("maximum_consecutive_sampling_failure_count", False),
+    ],
+)
+def test_v2_journal_loader_rejects_string_and_boolean_counters(
+    tmp_path: Path,
+    field: str,
+    invalid_value: object,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / f"state-{field}-{invalid_value!s}",
+        _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+    path = coordinator._attempt_telemetry_path(request)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[field] = invalid_value
+    body = dict(payload)
+    body.pop("identity_sha256")
+    payload["identity_sha256"] = canonical_sha256(body)
+    path.write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="telemetry sampling counters are invalid",
+    ):
+        coordinator._load_attempt_telemetry(command, request, 0)
+
+
+def test_v2_journal_rejects_failures_with_zero_maximum_consecutive_count(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        _transports(manifest),
+    )
+    coordinator.initialize()
+    command = coordinator.commands["sample_ce:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    coordinator._initialize_attempt_telemetry(command, request, 0)
+    path = coordinator._attempt_telemetry_path(request)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["sampling_failure_count"] = 1
+    assert payload["maximum_consecutive_sampling_failure_count"] == 0
+    body = dict(payload)
+    body.pop("identity_sha256")
+    payload["identity_sha256"] = canonical_sha256(body)
+    path.write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="counter relationships are invalid",
+    ):
+        coordinator._load_attempt_telemetry(command, request, 0)
+
+
 def test_attempt_job_ids_remain_valid_for_maximum_length_host_ids(
     tmp_path: Path,
 ) -> None:
@@ -731,7 +2116,7 @@ def test_validation_export_retry_uses_exact_resume_contract(tmp_path: Path) -> N
     assert exports[0].argv == exports[1].argv[:-1]
 
 
-def test_restart_adopts_running_job_and_uses_durable_live_telemetry(
+def test_transient_telemetry_failure_does_not_abandon_running_job(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest()
@@ -740,13 +2125,13 @@ def test_restart_adopts_running_job_and_uses_durable_live_telemetry(
         "coordinator_source_identity"
     )
     inspectors = _inspectors(manifest)
-    first = _coordinator(
+    coordinator = _coordinator(
         manifest, tmp_path / "state", transports, inspectors,
     )
 
-    with pytest.raises(RTX4090TwoHostCampaignError, match="live telemetry"):
-        first.run_to_completion(resume=False)
+    result = coordinator.run_to_completion(resume=False)
 
+    assert result["complete"] is True
     matching_starts = [
         request for request in transports["zeta"].start_calls
         if "-coordinator_source_identity-" in request.job_id
@@ -758,32 +2143,376 @@ def test_restart_adopts_running_job_and_uses_durable_live_telemetry(
         )
     )
     assert len(telemetry_paths) == 1
-    journal = json.loads(telemetry_paths[0].read_text(encoding="utf-8"))
+    command = coordinator.commands["coordinator_source_identity:zeta"]
+    journal = coordinator._load_attempt_telemetry(
+        command, matching_starts[0], 0,
+    )
     assert len(journal["samples"]) == 1
+    assert journal["sampling_failure_count"] == 1
     assert journal["samples"][0]["gpus"][0]["gpu_utilization_pct"] == 75.0
 
-    resumed = _coordinator(
-        manifest, tmp_path / "state", transports, inspectors,
-    )
-    result = resumed.run_to_completion(resume=True)
-
-    assert result["complete"] is True
-    assert len([
-        request for request in transports["zeta"].start_calls
-        if "-coordinator_source_identity-" in request.job_id
-    ]) == 1
     receipt = json.loads(
         (tmp_path / "state" / "receipts" /
          "coordinator_source_identity:zeta.json").read_text(encoding="utf-8")
     )
     assert len(receipt["telemetry"]) == 1
     assert receipt["telemetry_summary"]["live_cuda_observed"] is True
+    assert receipt["telemetry_summary"]["sampling_failure_count"] == 1
     allocate = next(
         request for request in transports["zeta"].start_calls
         if "-allocate-" in request.job_id
     )
     assert allocate.job_id.endswith("-attempt-00")
     assert "--resume" not in allocate.argv
+
+
+def test_restart_adopts_one_job_and_preserves_transient_failure_count(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    zeta = next(host for host in manifest["hosts"] if host["id"] == "zeta")
+    transports["zeta"] = _RestartAfterTelemetryGapTransport(
+        zeta["expected"],
+        stage="coordinator_source_identity",
+    )
+    inspectors = _inspectors(manifest)
+    first = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+        inspectors,
+    )
+
+    with pytest.raises(RTX4090TwoHostCampaignError, match="status failed"):
+        first.run_to_completion(resume=False)
+
+    resumed = _coordinator(
+        manifest,
+        tmp_path / "state",
+        transports,
+        inspectors,
+    )
+    result = resumed.run_to_completion(resume=True)
+
+    assert result["complete"] is True
+    starts = [
+        request for request in transports["zeta"].start_calls
+        if "-coordinator_source_identity-" in request.job_id
+    ]
+    assert len(starts) == 1
+    journal = resumed._load_attempt_telemetry(
+        resumed.commands["coordinator_source_identity:zeta"], starts[0], 0,
+    )
+    assert journal["sampling_failure_count"] == 1
+    assert len(journal["samples"]) == 2
+    receipt = json.loads(
+        (tmp_path / "state" / "receipts" /
+         "coordinator_source_identity:zeta.json").read_text(encoding="utf-8")
+    )
+    assert receipt["attempt_index"] == 0
+    assert receipt["telemetry_summary"]["sampling_failure_count"] == 1
+
+
+def test_telemetry_success_fraction_accepts_exactly_fifty_percent() -> None:
+    manifest = _manifest()
+    receipt = _direct_gpu_stage_receipt(
+        manifest,
+        started_ns=1,
+        finished_ns=20_000_000_001,
+        samples=(
+            _telemetry_sample(manifest, "alpha", 10_000_000_001),
+        ),
+        sampling_failure_count=1,
+    )
+
+    assert receipt["telemetry_summary"]["sampling_attempt_count"] == 2
+    assert receipt["telemetry_summary"]["successful_sample_percent"] == 50.0
+
+
+def test_telemetry_success_fraction_below_fifty_percent_is_refused() -> None:
+    manifest = _manifest()
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="successful sample percentage is below policy",
+    ):
+        _direct_gpu_stage_receipt(
+            manifest,
+            started_ns=1,
+            finished_ns=20_000_000_001,
+            samples=(
+                _telemetry_sample(manifest, "alpha", 10_000_000_001),
+            ),
+            sampling_failure_count=2,
+        )
+
+
+def test_telemetry_gap_accepts_exactly_thirty_seconds_at_job_boundaries() -> None:
+    manifest = _manifest()
+    receipt = _direct_gpu_stage_receipt(
+        manifest,
+        started_ns=1,
+        finished_ns=60_000_000_001,
+        samples=(
+            _telemetry_sample(manifest, "alpha", 30_000_000_001),
+        ),
+    )
+
+    assert (
+        receipt["telemetry_summary"]["maximum_observation_gap_ns"]
+        == 30_000_000_000
+    )
+
+
+def test_telemetry_gap_over_thirty_seconds_at_job_boundary_is_refused() -> None:
+    manifest = _manifest()
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="maximum observation gap exceeds policy",
+    ):
+        _direct_gpu_stage_receipt(
+            manifest,
+            started_ns=1,
+            finished_ns=60_000_000_002,
+            samples=(
+                _telemetry_sample(manifest, "alpha", 30_000_000_001),
+            ),
+        )
+
+
+def test_trailing_only_attempt0_source_reuse_is_accepted_but_not_observed() -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest,
+        Path("/tmp/prismaquant-trailing-source-reuse-fixture"),
+        _transports(manifest),
+    )
+    command = coordinator.commands["worker_source_identity:alpha"]
+    request = coordinator._request(command, attempt_index=0)
+    source = {
+        "schema": (
+            "prismaquant.sample_parallel_probe."
+            "worker_source_cache_receipt.v1"
+        ),
+        "disposition": "validated_reuse",
+        "model": "/model",
+        "cache": "/worker-state/source-identity-cache.json",
+        "cache_sha256": "a" * 64,
+        "identity": {"schema": "fixture-identity"},
+        "portable_identity": {
+            "schema": "prismaquant.streamed_model.portable_content.v1",
+            "portable_content_sha256": manifest["inputs"][
+                "model_content_sha256"
+            ],
+        },
+    }
+    receipt = _stage_receipt(
+        manifest,
+        command,
+        request,
+        _succeeded_job(
+            request,
+            started_ns=1,
+            finished_ns=10,
+            stdout=json.dumps(source, sort_keys=True).encode() + b"\n",
+        ),
+        _attempt_telemetry_state((
+            _telemetry_sample(manifest, "alpha", 11),
+        )),
+        (),
+        (),
+        attempt_index=0,
+        artifact_inspector=_FakeArtifactInspector(),
+    )
+
+    assert receipt["gpu_activity_requirement"] == (
+        "waived_validated_source_cache_reuse"
+    )
+    assert receipt["telemetry"] == []
+    assert receipt["telemetry_summary"][
+        "outside_job_lifetime_sample_count"
+    ] == 1
+    assert receipt["telemetry_summary"]["sampling_attempt_count"] == 1
+    assert receipt["telemetry_summary"]["successful_sample_count"] == 0
+
+
+def test_trailing_only_numerical_telemetry_is_refused_as_unobserved() -> None:
+    manifest = _manifest()
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="no utilization telemetry",
+    ):
+        _direct_gpu_stage_receipt(
+            manifest,
+            started_ns=1,
+            finished_ns=10,
+            samples=(
+                _telemetry_sample(manifest, "alpha", 11),
+            ),
+        )
+
+
+def test_trailing_sample_is_excluded_but_remains_in_sampling_denominator() -> None:
+    manifest = _manifest()
+    receipt = _direct_gpu_stage_receipt(
+        manifest,
+        started_ns=1,
+        finished_ns=10,
+        samples=(
+            _telemetry_sample(manifest, "alpha", 5),
+            _telemetry_sample(manifest, "alpha", 11),
+        ),
+    )
+
+    assert [sample["captured_ns"] for sample in receipt["telemetry"]] == [5]
+    summary = receipt["telemetry_summary"]
+    assert summary["outside_job_lifetime_sample_count"] == 1
+    assert summary["sampling_attempt_count"] == 2
+    assert summary["successful_sample_count"] == 1
+    assert summary["successful_sample_percent"] == 50.0
+
+
+def test_numerical_stage_with_only_na_gpu_utilization_is_refused() -> None:
+    manifest = _manifest()
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="no positive utilization sample",
+    ):
+        _direct_gpu_stage_receipt(
+            manifest,
+            started_ns=1,
+            finished_ns=10,
+            samples=(
+                _telemetry_sample(
+                    manifest,
+                    "alpha",
+                    5,
+                    utilization=None,
+                ),
+            ),
+        )
+
+
+def test_na_utilization_sample_does_not_bridge_observation_gap() -> None:
+    manifest = _manifest()
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="maximum observation gap exceeds policy",
+    ):
+        _direct_gpu_stage_receipt(
+            manifest,
+            started_ns=1,
+            finished_ns=60_000_000_001,
+            samples=(
+                _telemetry_sample(manifest, "alpha", 10_000_000_001),
+                _telemetry_sample(
+                    manifest,
+                    "alpha",
+                    30_000_000_001,
+                    utilization=None,
+                ),
+                _telemetry_sample(manifest, "alpha", 50_000_000_001),
+            ),
+        )
+
+
+@pytest.mark.parametrize("fault", ["generic_exception", "malformed_sample"])
+def test_integrity_sampling_fault_finishes_live_job_then_retries_attempt(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+    transport = transports["alpha"]
+    original_sample = transport.sample_telemetry
+    target_calls = 0
+
+    def sample_with_one_integrity_fault():
+        nonlocal target_calls
+        job_id = transport._active_job_id
+        if job_id is not None and transport._stage(job_id) == "sample_ce":
+            target_calls += 1
+            if target_calls == 2:
+                if fault == "generic_exception":
+                    raise RuntimeError("injected telemetry parser failure")
+                return {"malformed": True}
+        return original_sample()
+
+    transport.sample_telemetry = sample_with_one_integrity_fault
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / fault,
+        transports,
+    )
+
+    result = coordinator.run_to_completion(resume=False)
+
+    assert result["complete"] is True
+    requests = [
+        request for request in transport.start_calls
+        if "-sample_ce-alpha-" in request.job_id
+    ]
+    assert [request.job_id.rsplit("-", 1)[1] for request in requests] == [
+        "00", "01",
+    ]
+    first_job = transport.jobs[requests[0].job_id]["receipt"]
+    assert isinstance(first_job, JobReceipt)
+    assert first_job.state == "succeeded"
+    first_journal = json.loads(
+        coordinator._attempt_telemetry_path(requests[0]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert first_journal["sampling_integrity_failure_count"] == 1
+    receipt = json.loads(
+        (tmp_path / fault / "receipts" / "sample_ce:alpha.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["attempt_index"] == 1
+
+
+def test_wholly_unobserved_gpu_job_still_fails_closed(tmp_path: Path) -> None:
+    manifest = _manifest()
+    transports = _transports(manifest)
+
+    def unavailable_telemetry():
+        raise TelemetryUnavailableError(
+            "injected persistent telemetry failure"
+        )
+
+    transports["zeta"].sample_telemetry = unavailable_telemetry
+    coordinator = _coordinator(
+        manifest, tmp_path / "state", transports,
+    )
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="no utilization telemetry",
+    ):
+        coordinator.run_to_completion(resume=False)
+
+    matching_starts = [
+        request for request in transports["zeta"].start_calls
+        if "-coordinator_source_identity-" in request.job_id
+    ]
+    assert len(matching_starts) == 2
+    telemetry_paths = sorted(
+        (tmp_path / "state" / "attempt-telemetry").glob(
+            "*coordinator_source_identity*.json"
+        )
+    )
+    assert len(telemetry_paths) == 2
+    command = coordinator.commands["coordinator_source_identity:zeta"]
+    for attempt_index, (request, path) in enumerate(
+        zip(matching_starts, telemetry_paths, strict=True)
+    ):
+        assert path == coordinator._attempt_telemetry_path(request)
+        journal = coordinator._load_attempt_telemetry(
+            command, request, attempt_index,
+        )
+        assert journal["samples"] == []
+        assert journal["sampling_failure_count"] == 2
 
 
 def test_existing_job_with_different_request_identity_is_never_adopted(
@@ -1010,10 +2739,13 @@ def test_validated_source_cache_reuse_is_the_only_zero_activity_waiver(
         },
     }
 
-    def job(payload: dict[str, object]) -> JobReceipt:
+    def job(
+        payload: dict[str, object],
+        run_request: RunRequest = request,
+    ) -> JobReceipt:
         return JobReceipt(
-            job_id=request.job_id,
-            request_sha256=request.request_sha256,
+            job_id=run_request.job_id,
+            request_sha256=run_request.request_sha256,
             state="succeeded",
             started_ns=1,
             finished_ns=2,
@@ -1029,7 +2761,7 @@ def test_validated_source_cache_reuse_is_the_only_zero_activity_waiver(
         command,
         request,
         job(source),
-        (),
+        _attempt_telemetry_state(),
         (),
         (),
         attempt_index=0,
@@ -1049,10 +2781,24 @@ def test_validated_source_cache_reuse_is_the_only_zero_activity_waiver(
             command,
             request,
             job(fresh),
-            (),
+            _attempt_telemetry_state(),
             (),
             (),
             attempt_index=0,
+            artifact_inspector=_FakeArtifactInspector(),
+        )
+
+    retry_request = coordinator._request(command, attempt_index=1)
+    with pytest.raises(RTX4090TwoHostCampaignError, match="no utilization"):
+        _stage_receipt(
+            manifest,
+            command,
+            retry_request,
+            job(source, retry_request),
+            _attempt_telemetry_state(identity_sha256="b" * 64),
+            (),
+            (),
+            attempt_index=1,
             artifact_inspector=_FakeArtifactInspector(),
         )
 
@@ -1073,8 +2819,261 @@ def test_verify_refuses_missing_or_tampered_execution_receipt(
     path.write_bytes(original)
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["telemetry_summary"]["live_cuda_observed"] = False
-    path.write_text(json.dumps(raw, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(raw, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
     with pytest.raises(RTX4090TwoHostCampaignError, match="digest differs"):
+        coordinator.verify()
+
+
+def _substitute_identical_symlink(path: Path) -> None:
+    target = path.with_name(f"{path.name}.symlink-target")
+    if path.is_dir():
+        path.rename(target)
+        path.symlink_to(target.name, target_is_directory=True)
+        return
+    target.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(target.name)
+
+
+@pytest.mark.parametrize("legacy", (False, True))
+@pytest.mark.parametrize(
+    "artifact",
+    ("manifest", "plan", "state", "receipt", "receipt_directory"),
+)
+def test_current_and_legacy_verify_reject_stored_symlink_substitution(
+    tmp_path: Path,
+    legacy: bool,
+    artifact: str,
+) -> None:
+    if legacy:
+        manifest_path, state_dir = _write_legacy_v2_read_only_fixture(
+            tmp_path,
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        coordinator = CampaignCoordinator(manifest, state_dir)
+        receipt_path = (
+            state_dir / "receipts" / "host_preflight:alpha.json"
+        )
+    else:
+        manifest = _manifest()
+        state_dir = tmp_path / "current-state"
+        coordinator = _coordinator(
+            manifest, state_dir, _transports(manifest),
+        )
+        coordinator.run_to_completion(resume=False)
+        receipt_path = (
+            state_dir / "receipts" / "measure_burn:alpha.json"
+        )
+    paths = {
+        "manifest": state_dir / "campaign-manifest.json",
+        "plan": state_dir / "command-plan.json",
+        "state": state_dir / "campaign-state.json",
+        "receipt": receipt_path,
+        "receipt_directory": state_dir / "receipts",
+    }
+    _substitute_identical_symlink(paths[artifact])
+
+    with pytest.raises(RTX4090TwoHostCampaignError):
+        coordinator.verify()
+
+
+def test_verify_cli_rejects_symlink_manifest_input_before_open(
+    tmp_path: Path,
+) -> None:
+    manifest_path, state_dir = _write_legacy_v2_read_only_fixture(tmp_path)
+    _substitute_identical_symlink(manifest_path)
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="campaign manifest is invalid",
+    ):
+        main([
+            "verify",
+            "--manifest", str(manifest_path),
+            "--state-dir", str(state_dir),
+        ])
+
+
+def test_manifest_v2_state_and_v1_receipt_verify_end_to_end_read_only(
+    tmp_path: Path,
+) -> None:
+    manifest_path, state_dir = _write_legacy_v2_read_only_fixture(tmp_path)
+    before = _filesystem_snapshot(state_dir)
+
+    assert main(
+        [
+            "verify",
+            "--manifest", str(manifest_path),
+            "--state-dir", str(state_dir),
+        ],
+        transport_factory=lambda _manifest: {},
+        artifact_inspector_factory=lambda _manifest: {},
+    ) == 0
+
+    assert _filesystem_snapshot(state_dir) == before
+
+
+def test_manifest_v2_v1_receipt_binds_nonempty_stage_precondition_end_to_end(
+    tmp_path: Path,
+) -> None:
+    precondition_sha256 = hashlib.sha256(
+        b"legacy-host-preflight-precondition",
+    ).hexdigest()
+    manifest_path, state_dir = _write_legacy_v2_read_only_fixture(
+        tmp_path,
+        precondition_receipt_sha256s=(precondition_sha256,),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    calls: list[tuple[str, bool]] = []
+
+    def stage_preconditioner(stage: str, *, verify_only: bool):
+        calls.append((stage, verify_only))
+        return (precondition_sha256,)
+
+    coordinator = CampaignCoordinator(
+        manifest,
+        state_dir,
+        stage_preconditioner=stage_preconditioner,
+    )
+    before = _filesystem_snapshot(state_dir)
+
+    status = coordinator.verify()
+
+    assert status["completed_assignments"] == 1
+    assert status["complete"] is False
+    assert calls == [("host_preflight", True)]
+    assert _filesystem_snapshot(state_dir) == before
+
+
+def test_manifest_v2_advance_and_execute_are_read_only_and_start_nothing(
+    tmp_path: Path,
+) -> None:
+    manifest_path, state_dir = _write_legacy_v2_read_only_fixture(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    transports = _transports(manifest)
+    coordinator = _coordinator(
+        manifest,
+        state_dir,
+        transports,
+    )
+    state = coordinator.load_state()
+    ready = next_ready_assignments(manifest, state)
+    assert ready
+    before = _filesystem_snapshot(state_dir)
+
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="legacy campaign manifests are read-only; cannot advance",
+    ):
+        coordinator.advance(state, resume=True)
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="legacy campaign manifests are read-only; cannot execute",
+    ):
+        coordinator._execute(
+            ready[0],
+            dependency_receipt_sha256s=(),
+            precondition_receipt_sha256s=(),
+        )
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="legacy campaign manifests are read-only; cannot evaluate",
+    ):
+        coordinator._stage_preconditions("host_preflight", verify_only=False)
+
+    assert sum(
+        len(transport.start_calls) for transport in transports.values()
+    ) == 0
+    assert _filesystem_snapshot(state_dir) == before
+
+
+def test_manifest_v2_cannot_be_resealed_or_planned_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    manifest = _legacy_v2_manifest()
+    manifest_body = dict(manifest)
+    manifest_body.pop("identity_sha256")
+    with pytest.raises(
+        ClusterCampaignContractError,
+        match="must use the current schema",
+    ):
+        seal_campaign_manifest(manifest_body)
+
+    manifest_path = tmp_path / "legacy-manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "must-not-exist.json"
+    before = _filesystem_snapshot(tmp_path)
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="legacy campaign manifests are read-only",
+    ):
+        main([
+            "plan",
+            "--manifest", str(manifest_path),
+            "--output", str(output),
+        ])
+
+    assert not output.exists()
+    assert _filesystem_snapshot(tmp_path) == before
+
+
+def test_v2_execution_receipt_binds_exact_journal_and_refuses_drift_or_absence(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    coordinator = _coordinator(
+        manifest,
+        tmp_path / "state",
+        _transports(manifest),
+    )
+    coordinator.run_to_completion(resume=False)
+    receipt = json.loads(
+        (tmp_path / "state" / "receipts" /
+         "measure_burn:alpha.json").read_text(encoding="utf-8")
+    )
+    assert receipt["schema"] == EXECUTION_RECEIPT_SCHEMA
+    command = coordinator.commands["measure_burn:alpha"]
+    request = coordinator._request(
+        command,
+        attempt_index=receipt["attempt_index"],
+    )
+    journal_path = coordinator._attempt_telemetry_path(request)
+    original = journal_path.read_bytes()
+    journal = json.loads(original)
+    assert (
+        receipt["attempt_telemetry_identity_sha256"]
+        == journal["identity_sha256"]
+    )
+
+    journal["sampling_failure_count"] = 1
+    journal["consecutive_sampling_failure_count"] = 1
+    journal["maximum_consecutive_sampling_failure_count"] = 1
+    body = dict(journal)
+    body.pop("identity_sha256")
+    journal["identity_sha256"] = canonical_sha256(body)
+    journal_path.write_text(
+        json.dumps(journal, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="attempt telemetry head/record chain differs",
+    ):
+        coordinator.verify()
+
+    journal_path.write_bytes(original)
+    assert coordinator.verify()["complete"] is True
+    journal_path.unlink()
+    with pytest.raises(
+        RTX4090TwoHostCampaignError,
+        match="attempt telemetry is absent",
+    ):
         coordinator.verify()
 
 
@@ -1124,4 +3123,51 @@ def test_cli_plan_is_deterministic_and_live_run_uses_default_application(
         "state_dir": str(tmp_path / "live-state"),
         "initialize": True,
         "resume": False,
+    }
+
+
+def test_cli_legacy_verify_routes_through_application_verify_without_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, state_dir = _write_legacy_v2_read_only_fixture(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    import prismaquant.rtx4090_two_host_application as live_application
+
+    observed: dict[str, object] = {"run_calls": 0, "verify_calls": 0}
+
+    class _Application:
+        def run_to_completion(self, *, resume: bool):
+            del resume
+            observed["run_calls"] = int(observed["run_calls"]) + 1
+            pytest.fail("legacy verify must not run the application")
+
+        def verify(self):
+            observed["verify_calls"] = int(observed["verify_calls"]) + 1
+            return {"complete": False}
+
+    def build(application_manifest, application_state_dir, *, initialize):
+        observed.update({
+            "manifest": application_manifest,
+            "state_dir": application_state_dir,
+            "initialize": initialize,
+        })
+        return _Application()
+
+    monkeypatch.setattr(
+        live_application,
+        "build_live_campaign_application",
+        build,
+    )
+
+    assert main([
+        "verify", "--manifest", str(manifest_path),
+        "--state-dir", str(state_dir),
+    ]) == 0
+    assert observed == {
+        "run_calls": 0,
+        "verify_calls": 1,
+        "manifest": manifest,
+        "state_dir": str(state_dir),
+        "initialize": False,
     }

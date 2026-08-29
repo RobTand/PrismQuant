@@ -20,7 +20,7 @@ from tools.make_uniform_assignment import (
 HIDDEN = 512
 INTERMEDIATE = 1024
 # 272 % 16 == 0 (legal for NVFP4's group-16) but 272 % 256 != 0 (illegal for
-# FP8_CB_K36's group-256): the one shape that separates the two endpoints.
+# FP8_CB_K40's group-256): the one shape that separates the two endpoints.
 CB_ILLEGAL_IN = 272
 
 
@@ -164,7 +164,7 @@ def test_tied_lm_head_names_are_omitted(graph, profile):
 
 def test_illegal_member_demotes_the_whole_fused_unit(graph, profile):
     result = build_uniform_assignment(
-        graph, "FP8_CB_K36", profile=profile, target_profile="nvfp4_cb",
+        graph, "FP8_CB_K40", profile=profile, target_profile="nvfp4_cb",
         source_kinds=_bf16_sources(graph))
 
     # up_proj is group-256-illegal; gate_proj alone would have been legal.
@@ -172,8 +172,8 @@ def test_illegal_member_demotes_the_whole_fused_unit(graph, profile):
     assert result.assignment["model.layers.1.mlp.gate_proj"] == "BF16"
     assert "fused:model.layers.1.mlp.gate_up_proj" in result.demoted_units
     # Nothing else demoted.
-    assert result.assignment["model.layers.0.mlp.gate_proj"] == "FP8_CB_K36"
-    assert result.assignment["model.layers.1.mlp.down_proj"] == "FP8_CB_K36"
+    assert result.assignment["model.layers.0.mlp.gate_proj"] == "FP8_CB_K40"
+    assert result.assignment["model.layers.1.mlp.down_proj"] == "FP8_CB_K40"
 
 
 def test_bf16_fallback_is_refused_on_a_non_bf16_source(graph, profile):
@@ -184,18 +184,18 @@ def test_bf16_fallback_is_refused_on_a_non_bf16_source(graph, profile):
         sources[f"model.layers.1.mlp.{leaf}"] = "fp8"
 
     result = build_uniform_assignment(
-        graph, "FP8_CB_K36", profile=profile, target_profile="nvfp4_cb",
+        graph, "FP8_CB_K40", profile=profile, target_profile="nvfp4_cb",
         source_kinds=sources)
 
     for leaf in ("gate_proj", "up_proj"):
         qname = f"model.layers.1.mlp.{leaf}"
         assert qname not in result.assignment
-        assert result.excluded[qname].startswith("illegal_FP8_CB_K36_and_fallback")
+        assert result.excluded[qname].startswith("illegal_FP8_CB_K40_and_fallback")
 
 
 def test_no_fallback_means_the_unit_is_omitted(graph, profile):
     result = build_uniform_assignment(
-        graph, "FP8_CB_K36", profile=profile, target_profile="nvfp4_cb",
+        graph, "FP8_CB_K40", profile=profile, target_profile="nvfp4_cb",
         source_kinds=_bf16_sources(graph), fallback_format=None)
 
     assert "model.layers.1.mlp.gate_proj" not in result.assignment
@@ -231,7 +231,7 @@ def test_reader_only_fp8_cb_rung_cannot_enter_a_uniform_assignment(
 def test_result_passes_the_legality_gate_and_round_trips(graph, profile):
     sources = _bf16_sources(graph)
     result = build_uniform_assignment(
-        graph, "FP8_CB_K36", profile=profile, target_profile="nvfp4_cb",
+        graph, "FP8_CB_K40", profile=profile, target_profile="nvfp4_cb",
         source_kinds=sources)
 
     assert_assignment_legal(result.assignment, graph, profile=profile,
@@ -240,7 +240,7 @@ def test_result_passes_the_legality_gate_and_round_trips(graph, profile):
     payload = layer_config_payload(result, meta={"schema": "test"})
     assert payload["__prismaquant__"] == {"schema": "test"}
     assert payload["model.layers.0.mlp.down_proj"]["data_type"] == "fp8_cb"
-    assert payload["model.layers.0.mlp.down_proj"]["cb_k"] == 36
+    assert payload["model.layers.0.mlp.down_proj"]["cb_k"] == 40
 
 
 def test_legality_gate_rejects_a_mixed_fused_unit(graph, profile):
@@ -259,8 +259,8 @@ def test_legality_gate_rejects_a_mixed_fused_unit(graph, profile):
 def test_legality_gate_rejects_an_illegal_shape(graph, profile):
     sources = _bf16_sources(graph)
     broken = {
-        "model.layers.1.mlp.gate_proj": "FP8_CB_K36",
-        "model.layers.1.mlp.up_proj": "FP8_CB_K36",
+        "model.layers.1.mlp.gate_proj": "FP8_CB_K40",
+        "model.layers.1.mlp.up_proj": "FP8_CB_K40",
     }
     with pytest.raises(AssertionError, match="not legal"):
         assert_assignment_legal(broken, graph, profile=profile,
@@ -278,10 +278,10 @@ def test_legality_gate_rejects_a_synthesized_bf16_over_fp8_source(graph, profile
 
 def test_achieved_bits_counts_only_the_covered_quantizable_params(graph, profile):
     result = build_uniform_assignment(
-        graph, "FP8_CB_K36", profile=profile, target_profile="nvfp4_cb",
+        graph, "FP8_CB_K40", profile=profile, target_profile="nvfp4_cb",
         source_kinds=_bf16_sources(graph))
 
-    # Mixed 4.5 (CB) + 16.0 (the demoted gate_up unit) over covered params only.
+    # Mixed 5.0 (CB) + 16.0 (the demoted gate_up unit) over covered params only.
     covered = sum(result.params_by_format.values())
     assert covered == sum(
         int(t.shape[0]) * int(t.shape[1])

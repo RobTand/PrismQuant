@@ -175,11 +175,11 @@ def test_structured_fp4_d4_high_widths_are_nested_and_deterministic():
 
 def test_missing_production_table_refuses_runtime_synthesis(monkeypatch):
     asset = dict(cb._lattice_file())
-    asset.pop("fp4_d4_k13")
+    asset.pop("fp4_d4_k12")
     monkeypatch.setattr(cb, "_lattice_file", lambda: asset)
     cb._fixed_lattice_cpu.cache_clear()
     with pytest.raises(RuntimeError, match="canonical producer lattice.*missing"):
-        cb.fixed_lattice(13, "fp4", 4)
+        cb.fixed_lattice(12, "fp4", 4)
 
 
 def test_every_historical_asset_table_still_wins_byte_for_byte():

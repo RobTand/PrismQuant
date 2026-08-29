@@ -189,7 +189,7 @@ def _v2_contract(*, qualification="compile_only") -> dict:
                 "family": "FP8_CB_K",
                 "structure": "dense",
                 "regime": regime,
-                "rungs": [28],
+                "rungs": [40],
                 "route_status": "backed",
                 "qualification": qualification,
                 "requires_serve_flags": [],
@@ -414,7 +414,7 @@ def test_v1_route_payload_shape_is_unchanged(attested_table):
 def test_v2_compile_only_is_a_non_forceable_release_refusal(tmp_path):
     table = _write_v2_table(tmp_path, qualification="compile_only")
     verdict = evaluate_cb_route_status(
-        [_facts("attn.o_proj", "FP8_CB_K28", routed=False)],
+        [_facts("attn.o_proj", "FP8_CB_K40", routed=False)],
         table=table,
         target_profile="qwen38_sm120_cb_validation_only",
         override_reason="do not let this waive qualification",
@@ -437,7 +437,7 @@ def test_v2_device_qualified_exact_profile_structure_regimes_and_rung_pass(
         tmp_path):
     table = _write_v2_table(tmp_path, qualification="device_qualified")
     verdict = evaluate_cb_route_status(
-        [_facts("attn.o_proj", "FP8_CB_K28", routed=False)],
+        [_facts("attn.o_proj", "FP8_CB_K40", routed=False)],
         table=table,
         target_profile="qwen38_sm120_cb_validation_only",
     )
@@ -455,15 +455,15 @@ def test_v2_device_qualified_exact_profile_structure_regimes_and_rung_pass(
     [
         (
             "qwen38_rtx4090_fp8_cb_validation_only",
-            lambda: _facts("attn.o_proj", "FP8_CB_K28", routed=False),
+            lambda: _facts("attn.o_proj", "FP8_CB_K40", routed=False),
         ),
         (
             "qwen38_sm120_cb_validation_only",
-            lambda: _facts("l0.experts", "FP8_CB_K28", routed=True),
+            lambda: _facts("l0.experts", "FP8_CB_K40", routed=True),
         ),
         (
             "qwen38_sm120_cb_validation_only",
-            lambda: _facts("attn.o_proj", "FP8_CB_K32", routed=False),
+            lambda: _facts("attn.o_proj", "FP8_CB_K44", routed=False),
         ),
         (
             "qwen38_sm120_cb_validation_only",
@@ -471,7 +471,7 @@ def test_v2_device_qualified_exact_profile_structure_regimes_and_rung_pass(
         ),
         (
             "nvfp4_cb",
-            lambda: _facts("attn.o_proj", "FP8_CB_K28", routed=False),
+            lambda: _facts("attn.o_proj", "FP8_CB_K40", routed=False),
         ),
     ],
     ids=[
@@ -505,7 +505,7 @@ def test_v2_requires_every_declared_regime(tmp_path):
         mutate=remove_batch,
     )
     verdict = evaluate_cb_route_status(
-        [_facts("attn.o_proj", "FP8_CB_K28", routed=False)],
+        [_facts("attn.o_proj", "FP8_CB_K40", routed=False)],
         table=table,
         target_profile="qwen38_sm120_cb_validation_only",
     )

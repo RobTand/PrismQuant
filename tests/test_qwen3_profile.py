@@ -212,7 +212,7 @@ def test_reencode_formats_remain_legal_on_bf16_source(census):
     for fmt, target in (
         ("FP8_E4M3", "vllm_packed_moe"),
         ("MXFP8_E4M3", "vllm_packed_moe"),
-        ("FP8_CB_K28", "nvfp4_cb"),
+        ("FP8_CB_K40", "nvfp4_cb"),
     ):
         verdict = check_format_applicability(
             packed_shape, fmt, source_kind="bf16", target_profile=target,

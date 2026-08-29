@@ -28,7 +28,7 @@ from prismaquant.shipcard import load_shipcard  # noqa: E402
 HIDDEN = 256
 EXPERTS = 4
 CB16 = {"data_type": "nvfp4_cb", "cb_k": 16}
-FP8_28 = {"data_type": "fp8_cb", "cb_k": 28}
+FP8_40 = {"data_type": "fp8_cb", "cb_k": 40}
 MX_SOURCE = {"data_type": "fp4_e2m1", "bits": 4, "group_size": 32}
 RECIPE_PREFIX = "model.layers.0.mlp.experts"
 PHYSICAL_PREFIX = "layers.0.ffn.experts"
@@ -99,8 +99,8 @@ def _col_weights():
 
 def _mixed_format(expert_id, projection):
     if projection in ("gate_proj", "up_proj"):
-        return CB16 if expert_id < 2 else FP8_28
-    return (CB16, FP8_28, MX_SOURCE, MX_SOURCE)[expert_id]
+        return CB16 if expert_id < 2 else FP8_40
+    return (CB16, FP8_40, MX_SOURCE, MX_SOURCE)[expert_id]
 
 
 def _export(root: Path, *, per_expert=None, name="out"):
@@ -143,11 +143,11 @@ def test_mixed_layer_export_round_trip_and_exact_declaration(mixed_export):
             "0": {
                 "w13": [
                     {
-                        "format_wire_id": "FP8_CB_K28",
+                        "format_wire_id": "FP8_CB_K40",
                         "expert_ids": [2, 3],
                         "tensor_prefix": (
                             f"{PHYSICAL_PREFIX}.gate_up_proj."
-                            "format_group_fp8_cb_k28"
+                            "format_group_fp8_cb_k40"
                         ),
                     },
                     {
@@ -161,11 +161,11 @@ def test_mixed_layer_export_round_trip_and_exact_declaration(mixed_export):
                 ],
                 "w2": [
                     {
-                        "format_wire_id": "FP8_CB_K28",
+                        "format_wire_id": "FP8_CB_K40",
                         "expert_ids": [1],
                         "tensor_prefix": (
                             f"{PHYSICAL_PREFIX}.down_proj."
-                            "format_group_fp8_cb_k28"
+                            "format_group_fp8_cb_k40"
                         ),
                     },
                     {
@@ -187,10 +187,10 @@ def test_mixed_layer_export_round_trip_and_exact_declaration(mixed_export):
     }
     # The first dimension is the declaration's ascending expert order.
     assert tensors[
-        f"{PHYSICAL_PREFIX}.gate_up_proj.format_group_fp8_cb_k28.cb_qweight"
+        f"{PHYSICAL_PREFIX}.gate_up_proj.format_group_fp8_cb_k40.cb_qweight"
     ].shape[0] == 2
     assert tensors[
-        f"{PHYSICAL_PREFIX}.down_proj.format_group_fp8_cb_k28.cb_qweight"
+        f"{PHYSICAL_PREFIX}.down_proj.format_group_fp8_cb_k40.cb_qweight"
     ].shape[0] == 1
     codebooks = load_file(str(out / quant_config["codebook_file"]))
     schemes = {

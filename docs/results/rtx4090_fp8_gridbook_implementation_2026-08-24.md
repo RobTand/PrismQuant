@@ -20,6 +20,18 @@ SHA-256 `4ecb851e50fa8c16d860969925b13cad31f4e1b979ba6fec21534035487efa6b`.
 It is a SHA-pinned candidate, not another v0.9.0 release, wheel, tag, or
 PrismaQuant runtime-pin advancement.
 
+### 2026-08-25 producer-domain addendum
+
+The broad rung domains below describe the implementation evidence captured on
+2026-08-24; they are not current artifact-writing authority. PrismaQuant now
+accepts NVFP4 K12..K24 and FP8 K28..K48 for reads, produces NVFP4 K12..K24
+and FP8 K40/K44/K48, and directly measures those three FP8 producer rungs in
+the fresh campaign. Learned-v2 retains its K4..K48 step-four research ladder
+under its own receipt. The sealed untagged Gridbook candidate named in this
+report still declares the superseded broad ladders, so current exact policy
+preflight deliberately rejects it pending a newly committed Gridbook package
+and separately reviewed identity; no pin or historical contract was rewritten.
+
 ## Implemented contract
 
 | Surface | Implemented behavior |

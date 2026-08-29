@@ -85,9 +85,10 @@ class FormatSpec:
     )
     # Reader compatibility is deliberately wider than the producer surface
     # for FP8-CB: old K28..K48 artifacts remain loadable even though new
-    # artifacts may only use K%4.  Kept last to preserve FormatSpec's existing
-    # positional constructor ABI. Menus/assignments must use the explicit
-    # producer APIs instead of treating registry membership as authority.
+    # artifacts may only use K40/K44/K48. Kept last to preserve FormatSpec's
+    # existing positional constructor ABI. Menus/assignments must use the
+    # explicit producer APIs instead of treating registry membership as
+    # authority.
     producer_eligible: bool = True
 
     @property
@@ -1190,8 +1191,8 @@ def _make_fp8_cb_spec(k: int, *, producer_eligible: bool) -> FormatSpec:
 
 
 for _k in NVFP4_ACCEPTED_RUNGS:
-    # The public reader and producer domain is K1..K25 (v2 body
-    # 0.40625..3.40625 bpw). Wider direct-codec research has no registry id.
+    # Released-reader compatibility and the interim producer surface are both
+    # exactly K12..K24. Wider direct-codec research has no registry id.
     register_format(
         _make_nvfp4_cb_spec(
             _k,
@@ -1200,8 +1201,8 @@ for _k in NVFP4_ACCEPTED_RUNGS:
     )
 for _k in FP8_ACCEPTED_RUNGS:
     # Registry membership is a reader/reporting guarantee, not a producer
-    # menu. Historical off-law K28..K48 rungs remain resolvable while only the
-    # exact K4,K8,...,K48 ladder is eligible for a new artifact.
+    # menu. Every historical K28..K48 rung remains resolvable while only the
+    # evidence-backed K40/K44/K48 ladder is eligible for a new artifact.
     register_format(
         _make_fp8_cb_spec(
             _k,

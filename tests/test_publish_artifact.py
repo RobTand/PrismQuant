@@ -38,11 +38,9 @@ from prismaquant.shipcard import (
 )
 from prismaquant.shard_layout import tensor_payload_identity
 from prismaquant.gridbook_validation_only_policy import (
+    GridbookValidationOnlyPolicyError,
     SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
-    VALIDATION_ONLY_DISPOSITION,
     sm120_validation_only_policy_stamp,
-    sm120_validation_only_route_status_stamp,
-    validation_only_policy_build_fields,
 )
 import tools.publish_artifact as publisher
 from tools.publish_artifact import main as publish_cli
@@ -590,84 +588,18 @@ def test_validation_only_rtx4090_artifact_is_never_publishable(
     assert "can never be uploaded" in captured.err
 
 
-def _sm120_validation_only_artifact(tmp_path, name="sm120-validation"):
-    model_dir = _strict_rtx4090_artifact(tmp_path, name=name)
-    assignment = {
-        "model.layers.0.self_attn.q_proj": "NVFP4_CB_K1",
-        "model.layers.0.self_attn.k_proj": "FP8_CB_K48",
-        "model.norm": "BF16",
-    }
-    policy = sm120_validation_only_policy_stamp(
-        SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
-    )
-    quant = {
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-        "provenance": {
-            "producer_policy": policy,
-            "tensor_formats": assignment,
-            "cb_route_status": sm120_validation_only_route_status_stamp(
-                policy, assignment
-            ),
-        },
-    }
-    (model_dir / "quant_config.json").write_text(
-        json.dumps(quant), encoding="utf-8"
-    )
-    card = build_shipcard(
-        model_dir,
-        build=validation_only_policy_build_fields(policy),
-    )
-    write_shipcard(model_dir / "shipcard.json", card)
-    return model_dir
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    ("exact", "remove_stamp", "tamper_policy", "cross_policy_replay"),
-)
-def test_sm120_validation_artifact_is_never_force_publishable(
-    tmp_path,
-    capsys,
-    mutation,
-):
-    model_dir = _sm120_validation_only_artifact(
-        tmp_path, name=f"sm120-{mutation}"
-    )
-    quant_path = model_dir / "quant_config.json"
-    quant = json.loads(quant_path.read_text(encoding="utf-8"))
-    provenance = quant["provenance"]
-    if mutation == "remove_stamp":
-        del provenance["producer_policy"]
-        del provenance["cb_route_status"]
-    elif mutation == "tamper_policy":
-        provenance["producer_policy"]["candidate_runtime"]["gridbook"][
-            "commit"
-        ] = "0" * 40
-    elif mutation == "cross_policy_replay":
-        provenance["producer_policy"] = {
-            "schema": (
-                "prismaquant.rtx4090_qwen38_fp8_validation_only_policy.v1"
-            ),
-            "id": "qwen38_27b_rtx4090_fp8_cb_validation_only",
-            "artifact_disposition": VALIDATION_ONLY_DISPOSITION,
-        }
-    if mutation != "exact":
-        quant_path.write_text(json.dumps(quant), encoding="utf-8")
-
-    assert publish_cli(_argv(
-        model_dir,
-        "--force-unverified",
-        "--confirm-name",
-        model_dir.name,
-    )) == 1
-    captured = capsys.readouterr()
-    assert VALIDATION_ONLY_DISPOSITION in captured.err
-    assert "can never be uploaded" in captured.err
-    assert "frozen snapshot" not in captured.out + captured.err
-    card = load_shipcard(model_dir / "shipcard.json")
-    assert "forced_unverified" not in card
-    assert "forced_unverified_history" not in card
+def test_sm120_validation_artifact_cannot_be_minted_from_sealed_old_pin():
+    # Publication never receives a current SM120 artifact until a newly
+    # committed Gridbook package with a reviewed identity can mint this stamp.
+    # The older generic validation-only artifact above still pins categorical
+    # non-forceability independently of that external blocker.
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match="NVFP4_CB_K reader rungs are unknown to PrismaQuant",
+    ):
+        sm120_validation_only_policy_stamp(
+            SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
+        )
 
 
 @pytest.mark.parametrize("confirm_name", ("strict-ada", "wrong-name"))

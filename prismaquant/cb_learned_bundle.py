@@ -221,13 +221,25 @@ def _trainer_stamp(version: str) -> dict[str, object]:
 
 
 def _canonical_format(format_name: str) -> tuple[str, object, int]:
-    parsed = parse_format_name(str(format_name).strip().upper())
+    raw = str(format_name).strip().upper()
+    parsed = parse_format_name(raw)
     if parsed is None:
-        raise ValueError(f"{format_name!r} is not a producer CB format")
+        # Learned-v2 owns a deliberately separate historical step-four
+        # research ladder.  Its low rungs have no public reader/producer
+        # registry identity, but its value-bearing receipts and bundles must
+        # remain replayable without granting those rungs export authority.
+        match = re.fullmatch(r"FP8_CB_K([0-9]+)", raw)
+        rung = int(match.group(1)) if match is not None else -1
+        if rung not in CBL_STEP4_RUNGS:
+            raise ValueError(
+                f"{format_name!r} is neither an accepted CB wire format nor "
+                "an explicit learned-v2 research rung"
+            )
+        return raw, family_for("fp8", "product"), rung
     family, rung = parsed
-    # Readers and the v1 compatibility trainer retain legacy off-law FP8
-    # bundle compatibility.  Learned-v2 applies an explicit producer-rung
-    # gate before selecting sources.
+    # Readers and the v1 compatibility trainer retain historical FP8 bundle
+    # compatibility. Learned-v2 applies its own explicit research-rung gate
+    # before selecting sources.
     return family.accepted_name(rung), family, int(rung)
 
 
@@ -1385,13 +1397,14 @@ def train_and_save_bundle(
         off_ladder = sorted({
             fmt
             for fmt in supplied_formats
-            if not _canonical_format(fmt)[1].is_producer_rung(
-                _canonical_format(fmt)[2]
+            if (
+                _canonical_format(fmt)[1].grid == "fp8"
+                and _canonical_format(fmt)[2] not in CBL_STEP4_RUNGS
             )
         })
         if off_ladder:
             raise ValueError(
-                "learned-v2 cannot produce legacy off-law rung(s): "
+                "learned-v2 cannot produce off-research-ladder rung(s): "
                 f"{off_ladder}"
             )
     policy_learned = {

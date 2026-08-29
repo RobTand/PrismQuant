@@ -25,6 +25,7 @@ from .cb_learned_bundle import (
 )
 from .cb_imatrix import canonical_imatrix_sha256, imatrix_from_probe_file
 from .cb_learned_promotion import (
+    CBL_STEP4_RUNGS,
     ValidatedCBLPromotionReceipt,
     read_promotion_receipt_payload,
     role_census_for_qnames,
@@ -341,11 +342,21 @@ def _discover_routed_book_plans(
 
 
 def _canonical_cb_formats(formats: Sequence[str]) -> tuple[str, ...]:
-    result = tuple(sorted({
-        fr.get_format(str(name).strip()).name
-        for name in formats
-        if str(name).strip() and is_cb_format(str(name).strip())
-    }))
+    canonical: set[str] = set()
+    for name in formats:
+        raw = str(name).strip().upper()
+        if not raw:
+            continue
+        if is_cb_format(raw):
+            canonical.add(fr.get_format(raw).name)
+            continue
+        match = re.fullmatch(r"FP8_CB_K([0-9]+)", raw)
+        if match is not None and int(match.group(1)) in CBL_STEP4_RUNGS:
+            # This builder is the owner of the learned-v2 research ladder.
+            # Preserve that experiment locally without registering the name
+            # as a fresh artifact producer format.
+            canonical.add(raw)
+    result = tuple(sorted(canonical))
     if not result:
         raise ValueError("learned bundle build was given no CB formats")
     return result

@@ -117,6 +117,7 @@ from prismaquant.export_nvfp4_cb import (
     _git_commit,
     _parse_cb_format,
     _parse_producer_cb_format,
+    _parse_routed_learned_bank_format,
     _preflight_assignment_before_output_transaction,
     _role_of,
     _to_device,
@@ -232,9 +233,66 @@ def _format_group_slug(format_wire_id: str) -> str:
     return _PER_EXPERT_GROUP_DISCRIMINATOR + slug
 
 
-def _per_expert_format_wire_id(format_name: str) -> str:
+def _classify_cb_or_source_format(
+    qname: str,
+    fmt: str,
+    *,
+    legacy_w8a16_compatibility: object = None,
+    expert_stack_members: Mapping[str, object] | None = None,
+    scoped_bundle_export: bool = False,
+    serialization_context: object = None,
+    per_expert_plan_by_target: Mapping[str, object] | None = None,
+) -> tuple[str, object]:
+    """Classify source/CB routes without turning reader ids into producers."""
+
+    canon = canonical_format_name(fmt)
+    if canon in SOURCE_PASSTHROUGH_EXPORT_FORMATS:
+        return (
+            "normalized_source"
+            if source_passthrough_wire(canon).ct_normalized
+            else "native_source",
+            canon,
+        )
+    parsed = _parse_producer_cb_format(fmt)
+    if parsed is not None:
+        return "cb", parsed
+    members_by_target = expert_stack_members or {}
+    if (
+        legacy_w8a16_compatibility is not None
+        and legacy_w8a16_compatibility.allows_group(
+            qname, fmt, members_by_target.get(qname, ()),
+        )
+    ):
+        parsed = _parse_cb_format(fmt)
+        if parsed is None:  # pragma: no cover - exact capability invariant
+            raise RuntimeError(
+                f"legacy W8A16 capability named a non-CB format: {fmt}"
+            )
+        return "legacy_cb", parsed
+    plan_by_target = per_expert_plan_by_target or {}
+    if (
+        scoped_bundle_export
+        and codebook_source_for_format(fmt, serialization_context) == "learned"
+        and (qname in members_by_target or qname in plan_by_target)
+    ):
+        parsed = _parse_routed_learned_bank_format(fmt)
+        if parsed is not None:
+            return "research_cb", parsed
+    return "other", canon
+
+
+def _per_expert_format_wire_id(
+    format_name: str,
+    *,
+    routed_learned_bank: bool = False,
+) -> str:
     canonical = canonical_format_name(format_name)
     if _parse_producer_cb_format(canonical) is not None:
+        return canonical
+    if (
+        routed_learned_bank
+        and _parse_routed_learned_bank_format(canonical) is not None
+    ):
         return canonical
     if canonical == "MXFP4_SOURCE":
         return source_passthrough_wire_id(canonical)
@@ -1811,6 +1869,8 @@ def _split_per_expert_assignment(
     per_expert_assignment,
     expert_groups,
     profile,
+    *,
+    routed_learned_bank: bool = False,
 ):
     """Build one packed target per ``(layer, family, format)``.
 
@@ -1890,7 +1950,10 @@ def _split_per_expert_assignment(
 
             by_format: dict[str, list[int]] = {}
             for expert_id, format_name in formats_by_expert.items():
-                _per_expert_format_wire_id(format_name)  # closed-menu gate
+                _per_expert_format_wire_id(
+                    format_name,
+                    routed_learned_bank=routed_learned_bank,
+                )  # closed-menu gate
                 by_format.setdefault(format_name, []).append(expert_id)
 
             packed_parent = f"{prefix}.{packed_proj}"
@@ -1908,7 +1971,10 @@ def _split_per_expert_assignment(
             family_plans = plans.setdefault(layer, {}).setdefault(family, [])
             mixed = len(by_format) > 1
             for format_name, expert_ids in sorted(by_format.items()):
-                wire_id = _per_expert_format_wire_id(format_name)
+                wire_id = _per_expert_format_wire_id(
+                    format_name,
+                    routed_learned_bank=routed_learned_bank,
+                )
                 source_passthrough = format_name == "MXFP4_SOURCE"
                 target = (
                     f"{packed_parent}.{_format_group_slug(wire_id)}"
@@ -2668,7 +2734,63 @@ def _reject_disabled_reuse_before_output_transaction(function):
                 "exporter-ABI identity for every copied tensor. Re-encode "
                 "into a fresh output directory."
             )
-        return function(*args, **kwargs)
+        supplied_capability = bound.arguments.get(
+            "_legacy_w8a16_compatibility"
+        )
+        supplied_bundle = bound.arguments.get("_legacy_w8a16_bundle")
+        if supplied_capability is not None or supplied_bundle is not None:
+            raise RuntimeError(
+                "legacy W8A16 compatibility is derived internally, not "
+                "accepted from a caller"
+            )
+        handoff_receipt = bound.arguments.get("legacy_w8a16_handoff")
+        if handoff_receipt is not None:
+            col_weights_path = bound.arguments.get(
+                "legacy_w8a16_col_weights_path"
+            )
+            bundle_path = os.environ.get("CB_CODEBOOK_BUNDLE", "").strip()
+            if col_weights_path is None or not bundle_path:
+                raise RuntimeError(
+                    "legacy W8A16 compatibility requires the exact "
+                    "--legacy-w8a16-col-weights file and CB_CODEBOOK_BUNDLE"
+                )
+            from prismaquant.dsv4_w8a16_legacy_compat import (
+                derive_dsv4_w8a16_legacy_compatibility,
+            )
+
+            compatibility = derive_dsv4_w8a16_legacy_compatibility(
+                handoff_receipt,
+                model_dir=bound.arguments["model_dir"],
+                layer_config_path=bound.arguments["layer_config_path"],
+                out_dir=bound.arguments["out_dir"],
+                col_weights=bound.arguments["col_weights"],
+                col_weights_path=col_weights_path,
+                codebook_bundle_path=bundle_path,
+                subset_prefixes=bound.arguments.get("subset_prefixes"),
+                reuse_prior=bound.arguments.get("reuse_prior"),
+                per_expert_config_path=bound.arguments.get(
+                    "per_expert_config_path"
+                ),
+                dspark_cb_sidecar=bool(
+                    bound.arguments.get("dspark_cb_sidecar")
+                ),
+                exclude_namespaces=bound.arguments.get(
+                    "exclude_namespaces"
+                ),
+            )
+            from prismaquant.cb_learned_bundle import load_bundle
+
+            with compatibility.open_bound_codebook_bundle() as snapshot_path:
+                bound.arguments["_legacy_w8a16_compatibility"] = compatibility
+                bound.arguments["_legacy_w8a16_bundle"] = load_bundle(
+                    snapshot_path
+                )
+                return function(*bound.args, **bound.kwargs)
+        elif bound.arguments.get("legacy_w8a16_col_weights_path") is not None:
+            raise RuntimeError(
+                "--legacy-w8a16-col-weights requires a W8A16 handoff receipt"
+            )
+        return function(*bound.args, **bound.kwargs)
 
     return wrapped
 
@@ -2679,6 +2801,7 @@ def _reject_disabled_reuse_before_output_transaction(function):
     source_parameter="model_dir",
     output_parameter="out_dir",
     where="export_nvfp4_cb_streaming",
+    require_absent_parameter="_legacy_w8a16_compatibility",
 )
 def export_nvfp4_cb_streaming(
     model_dir: str | Path,
@@ -2709,6 +2832,10 @@ def export_nvfp4_cb_streaming(
     shard_bytes: int = DEFAULT_SHARD_BYTES,
     producer_policy: str | None = None,
     producer_runtime_contract: Mapping[str, Any] | str | Path | None = None,
+    legacy_w8a16_handoff: Mapping[str, object] | str | Path | None = None,
+    legacy_w8a16_col_weights_path: str | Path | None = None,
+    _legacy_w8a16_compatibility: object = None,
+    _legacy_w8a16_bundle: object = None,
 ) -> dict[str, int]:
     """Streaming counterpart of :func:`export_nvfp4_cb.export_nvfp4_cb`. Same
     signature + container; peak residency ~= one source tensor + codebooks.
@@ -2777,7 +2904,20 @@ def export_nvfp4_cb_streaming(
     """
     model_dir = Path(model_dir)
     out_dir = Path(out_dir)
-    source_model_identity = _source_model_identity_from_env(model_dir)
+    legacy_w8a16_compatibility = _legacy_w8a16_compatibility
+    legacy_w8a16_bundle = _legacy_w8a16_bundle
+    if (
+        bool(legacy_w8a16_handoff) != bool(legacy_w8a16_compatibility)
+        or bool(legacy_w8a16_compatibility) != bool(legacy_w8a16_bundle)
+    ):
+        raise RuntimeError(
+            "legacy W8A16 compatibility was not derived before output staging"
+        )
+    source_model_identity = (
+        dict(legacy_w8a16_compatibility.source_model_identity)
+        if legacy_w8a16_compatibility is not None
+        else _source_model_identity_from_env(model_dir)
+    )
     _require_production_source_model_identity(
         model_dir,
         source_model_identity,
@@ -2809,7 +2949,9 @@ def export_nvfp4_cb_streaming(
     source = str(spec.get("source", "lattice")).lower()
     if source not in ("lattice", "learned"):
         raise ValueError(f"shared_codebook_spec source must be lattice/learned")
-    _env_cb_context = cb_serialization_context_from_env()
+    _env_cb_context = cb_serialization_context_from_env(
+        _bundle_override=legacy_w8a16_bundle,
+    )
     _scoped_bundle_export = (
         effective_codebook_source_scope(_env_cb_context) != "none"
     )
@@ -2830,9 +2972,16 @@ def export_nvfp4_cb_streaming(
             "allow_unstamped_research=True."
         )
 
-    assignment = load_assignment(layer_config_path)
+    if legacy_w8a16_compatibility is not None:
+        _recipe_payload, assignment = (
+            legacy_w8a16_compatibility.read_bound_layer_config(
+                layer_config_path
+            )
+        )
+    else:
+        assignment = load_assignment(layer_config_path)
+        _recipe_payload = json.loads(Path(layer_config_path).read_text())
     _recipe_assignment = dict(assignment)
-    _recipe_payload = json.loads(Path(layer_config_path).read_text())
     _recipe_cb_context_stamp, _recipe_cb_tensor_stamps = (
         cb_serialization_metadata_from_assignment_payload(_recipe_payload)
     )
@@ -2965,6 +3114,9 @@ def export_nvfp4_cb_streaming(
             per_expert_assignment,
             expert_groups,
             profile,
+            routed_learned_bank=(
+                _scoped_bundle_export and source == "learned"
+            ),
         )
     else:
         assignment, expert_stack_members, expert_stack_report = (
@@ -3183,21 +3335,37 @@ def export_nvfp4_cb_streaming(
     native_source_targets: dict[str, str] = {}  # qname -> byte-verbatim format
     stock_targets: dict[str, str] = {}          # qname -> "NVFP4" | "FP8_E4M3"
     requant_targets: dict[str, str] = {}        # qname -> re-encoded native fmt
+    legacy_compatibility_qnames: set[str] = set()
     illegal = []
     for qname, fmt in assignment.items():
         if fmt == "BF16":
             continue
-        parsed = _parse_producer_cb_format(fmt)
-        if parsed is not None:
-            cb_targets[qname] = parsed
+        classification, classified = _classify_cb_or_source_format(
+            qname,
+            fmt,
+            legacy_w8a16_compatibility=legacy_w8a16_compatibility,
+            expert_stack_members=expert_stack_members,
+            scoped_bundle_export=_scoped_bundle_export,
+            serialization_context=_env_cb_context,
+            per_expert_plan_by_target=_per_expert_plan_by_target,
+        )
+        if classification == "normalized_source":
+            source_targets.append(qname)
             continue
-        canon = canonical_format_name(fmt)
-        if canon in SOURCE_PASSTHROUGH_EXPORT_FORMATS:
-            if source_passthrough_wire(canon).ct_normalized:
-                source_targets.append(qname)
-            else:
-                native_source_targets[qname] = canon
+        if classification == "native_source":
+            native_source_targets[qname] = str(classified)
             continue
+        if classification in {"cb", "research_cb", "legacy_cb"}:
+            assert isinstance(classified, tuple)
+            cb_targets[qname] = classified
+            if classification == "legacy_cb":
+                legacy_compatibility_qnames.add(qname)
+            continue
+        if classification != "other":  # pragma: no cover - internal enum
+            raise AssertionError(
+                f"unknown assignment classification {classification!r}"
+            )
+        canon = str(classified)
         if canon in _STOCK_CT_FORMATS:
             stock_targets[qname] = canon
             continue
@@ -3524,9 +3692,14 @@ def export_nvfp4_cb_streaming(
     train_cap = int(spec.get("train_cap", 1 << 20))
     learned_bundle = None
     if _scoped_bundle_export:
-        from prismaquant.cb_learned_bundle import load_bundle_cached
+        if legacy_w8a16_bundle is not None:
+            learned_bundle = legacy_w8a16_bundle
+        else:
+            from prismaquant.cb_learned_bundle import load_bundle_cached
 
-        learned_bundle = load_bundle_cached(_env_cb_context.codebook_bundle_path)
+            learned_bundle = load_bundle_cached(
+                _env_cb_context.codebook_bundle_path
+            )
     codebooks: dict[tuple[str, str], object] = {}
     target_cb: dict[str, tuple] = {}
     by_group: dict[tuple[str, str], list[str]] = {}
@@ -3535,6 +3708,7 @@ def export_nvfp4_cb_streaming(
     ] = {}
     cb_group_target_names: dict[tuple[str, str], tuple[str, ...]] = {}
     role_group_keys: set[tuple[str, str]] = set()
+    legacy_w8a16_group_keys: set[tuple[str, str]] = set()
     # Recipe qname -> pooled stack cell, for routed stacks whose books were
     # burned per (layer, stack, rung).
     pooled_stack_cells: dict[str, str] = {}
@@ -3560,12 +3734,12 @@ def export_nvfp4_cb_streaming(
             and _scoped_bundle_export
             and (target_kind == "experts" or len(target_shape) == 3)
         ):
+            legacy_routed = qname in legacy_compatibility_qnames
             if learned_bundle is None:
                 raise AssertionError("scoped routed CBL has no learned bundle")
-            if (
-                grid != "fp8"
-                or mode != "product"
-                or k not in ROUTED_MOE_CBL_BANK_RUNGS
+            if grid != "fp8" or mode != "product" or (
+                k != 28 if legacy_routed
+                else k not in ROUTED_MOE_CBL_BANK_RUNGS
             ):
                 raise ValueError(
                     f"{qname}/{fmt}: routed learned books are banked only for "
@@ -3610,7 +3784,10 @@ def export_nvfp4_cb_streaming(
                     )
                 codebooks[group_key] = codebook
                 by_group[group_key] = [qname]
-                role_group_keys.add(group_key)
+                (
+                    legacy_w8a16_group_keys
+                    if legacy_routed else role_group_keys
+                ).add(group_key)
                 pooled_stack_cells[qname] = stack_qname
                 target_cb[qname] = (stack_qname, fmt, codebook, "learned")
                 # No per-member `validate_inputs` here, unlike the role branch
@@ -3653,7 +3830,10 @@ def export_nvfp4_cb_streaming(
                     )
                 codebooks[group_key] = codebook
                 by_group[group_key] = [qname]
-                role_group_keys.add(group_key)
+                (
+                    legacy_w8a16_group_keys
+                    if legacy_routed else role_group_keys
+                ).add(group_key)
                 cb_group_target_names[group_key] = (logical_target,)
                 roles.append(RoutedMoECodebookRole(
                     projection=projection,
@@ -3693,6 +3873,8 @@ def export_nvfp4_cb_streaming(
                 else (_role_of(qname) if source_kind == "learned" else "lattice")
             )
         by_group.setdefault((ref, fmt), []).append(qname)
+        if qname in legacy_compatibility_qnames:
+            legacy_w8a16_group_keys.add((ref, fmt))
 
     # --- SPLIT-BOOK SHIP GATE (campaign rule R1). The predicate is structural
     # and producer-side: count the distinct codebooks one fused routed weight's
@@ -3721,7 +3903,10 @@ def export_nvfp4_cb_streaming(
         )
 
     for (ref, fmt), qnames in by_group.items():
-        if (ref, fmt) in role_group_keys:
+        if (ref, fmt) in role_group_keys or (
+            (ref, fmt) in legacy_w8a16_group_keys
+            and any(qname in expert_stack_members for qname in qnames)
+        ):
             continue
         grid, mode, k = cb_targets[qnames[0]]
         source_kind = (
@@ -3863,7 +4048,7 @@ def export_nvfp4_cb_streaming(
         codebook_content_digests=materialized_codebook_digests,
         codebook_bundle_path=(
             _env_cb_context.codebook_bundle_path
-            if _scoped_bundle_export else None
+            if _scoped_bundle_export and legacy_w8a16_bundle is None else None
         ),
     )
     validate_cb_serialization_context_stamp(
@@ -5334,6 +5519,12 @@ def export_nvfp4_cb_streaming(
         quantized_embedding_units=embedding_stock or None,
         by_group=by_group,
         cb_group_target_names=cb_group_target_names,
+        routed_learned_bank_groups=role_group_keys,
+        legacy_w8a16_compatibility_groups=legacy_w8a16_group_keys,
+        legacy_w8a16_compatibility=(
+            legacy_w8a16_compatibility.stamp()
+            if legacy_w8a16_compatibility is not None else None
+        ),
         codebooks=codebooks,
         col_weights=col_weights,
         codebook_tensors_by_name=cb_tensor_blobs,
@@ -6186,6 +6377,12 @@ def main(argv=None) -> None:
         "per (layer, w13/w2 family, format)",
     )
     ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--legacy-w8a16-handoff",
+        default=None,
+        help="canonical receipt for the sealed DSv4 W8A16 compatibility "
+             "export; authorizes only its exact routed K28/dense K36 cells",
+    )
     ap.add_argument("--shard-bytes", type=int, default=DEFAULT_SHARD_BYTES,
                     help="Approx per-shard size in bytes (default 1 GiB), the "
                          "same flag, default, and partition rule as "
@@ -6377,7 +6574,11 @@ def main(argv=None) -> None:
         dspark_cb_sidecar=args.dspark_cb_sidecar,
         shard_bytes=args.shard_bytes,
         producer_policy=args.producer_policy,
-        producer_runtime_contract=args.producer_runtime_contract)
+        producer_runtime_contract=args.producer_runtime_contract,
+        legacy_w8a16_handoff=args.legacy_w8a16_handoff,
+        legacy_w8a16_col_weights_path=(
+            args.col_weights if args.legacy_w8a16_handoff else None
+        ))
     size = sum(p.stat().st_size for p in Path(args.out).glob("*")) / 1e9
     print(f"wrote {args.out} ({size:.3f} GB)")
     for fmt, n in sorted(counts.items()):

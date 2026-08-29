@@ -6,8 +6,8 @@ Covers the three harness modules authored for Phase 0:
   * emu_forward_kl      — whole-model emulated forward KL-vs-BF16 (GPU)
 
 The payload tests cross-check the accounting formulas against the codebook
-tensors the real exporter materializes, including every registered product and
-signed rung.
+tensors the real exporter materializes, including every registered product
+rung.
 """
 
 from __future__ import annotations
@@ -188,13 +188,19 @@ _REGISTERED_CB_FORMATS = (
 @pytest.mark.parametrize(
     ("fmt", "shapes", "sidecar_bytes"),
     [
-        ("NVFP4_CB_K1", ((2, 4), (1, 4)), 24),
-        ("NVFP4_CB_K25", ((8192, 4), (4096, 4)), 98_304),
+        ("NVFP4_CB_K12", ((64, 4), (64, 4)), 1_024),
+        ("NVFP4_CB_K24", ((4096, 4), (4096, 4)), 65_536),
     ],
 )
 def test_nvfp4_endpoint_sidecar_geometry(fmt, shapes, sidecar_bytes):
     assert codebook_subtable_shapes(fmt) == shapes
     assert codebook_sidecar_payload_bytes(fmt) == sidecar_bytes
+
+
+@pytest.mark.parametrize("fmt", ["NVFP4_CB_K1", "NVFP4_CB_K25"])
+def test_direct_nvfp4_research_width_has_no_public_footprint_identity(fmt):
+    with pytest.raises(ValueError, match="is not a CB format"):
+        codebook_subtable_shapes(fmt)
 
 
 @pytest.mark.parametrize("k", [29, 47])

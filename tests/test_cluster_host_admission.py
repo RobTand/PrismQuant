@@ -102,7 +102,7 @@ def _body(
             "disposition": "validation_only",
             "source_dtype": "bf16",
             "physical_formats": [
-                "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+                "FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48", "FP8_E4M3",
             ],
             "terminal_format": "BF16",
             "allocation_objective": "context_first",
@@ -131,6 +131,8 @@ def _body(
             "retry": {"max_attempts": 2},
             "telemetry": {
                 "interval_milliseconds": 1000,
+                "maximum_observation_gap_milliseconds": 30_000,
+                "minimum_successful_sample_percent": 50,
                 "require_positive_gpu_utilization": True,
             },
             "resources": {

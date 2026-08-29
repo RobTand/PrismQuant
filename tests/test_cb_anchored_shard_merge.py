@@ -11,6 +11,7 @@ from prismaquant.cb_anchored_cost import (
     anchors_from_streamed_payload,
     merge_streamed_cb_anchor_aura_shards,
 )
+from prismaquant.cb_layout import FP8_PRODUCT_RUNGS
 from prismaquant.cost_stage_checkpoint import canonical_json_sha256
 from prismaquant.nvfp4_cb_footprint import CBSerializationContext
 from prismaquant.production_weight_cache import (
@@ -162,8 +163,8 @@ def _expected_merge_kwargs(col_weights):
 
 
 def _sparse_fp8_ladder_payload(name, col_weights, context):
-    measured_formats = ("FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48")
-    legal_formats = tuple(f"FP8_CB_K{k}" for k in range(4, 49, 4))
+    measured_formats = tuple(f"FP8_CB_K{k}" for k in FP8_PRODUCT_RUNGS)
+    legal_formats = measured_formats
     payload = _payload(name, col_weights, context)
     sparse = _identity(
         [name], col_weights, context, formats=measured_formats
@@ -211,8 +212,8 @@ def _sparse_fp8_ladder_payload(name, col_weights, context):
     payload["provenance"].update({
         "production_anchor_render_purposes": {
             name: {
-                "FP8_CB_K4": ["panel"],
-                "FP8_CB_K16": ["anchor", "panel"],
+                "FP8_CB_K40": ["panel"],
+                "FP8_CB_K44": ["anchor", "panel"],
                 "FP8_CB_K48": ["panel"],
             }
         },
@@ -330,8 +331,8 @@ def test_streamed_anchor_merge_accepts_numeric_full_fp8_ladder_plan():
         "layer.0.proj": torch.arange(256, dtype=torch.float32),
         "layer.1.proj": torch.arange(256, dtype=torch.float32) + 1,
     }
-    measured_formats = ("FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48")
-    legal_formats = tuple(f"FP8_CB_K{k}" for k in range(4, 49, 4))
+    measured_formats = tuple(f"FP8_CB_K{k}" for k in FP8_PRODUCT_RUNGS)
+    legal_formats = measured_formats
     merged = merge_streamed_cb_anchor_aura_shards(
         [
             _sparse_fp8_ladder_payload(name, col_weights, context)
@@ -344,8 +345,8 @@ def test_streamed_anchor_merge_accepts_numeric_full_fp8_ladder_plan():
         },
         expected_purposes_by_qname={
             name: {
-                "FP8_CB_K4": ("panel",),
-                "FP8_CB_K16": ("anchor", "panel"),
+                "FP8_CB_K40": ("panel",),
+                "FP8_CB_K44": ("anchor", "panel"),
                 "FP8_CB_K48": ("panel",),
             }
             for name in col_weights
@@ -389,8 +390,8 @@ def test_streamed_anchor_merge_canonicalizes_purpose_declaration_order():
     ]
     shards[1]["provenance"]["production_anchor_render_purposes"][
         "layer.1.proj"
-    ]["FP8_CB_K16"] = ["panel", "anchor"]
-    measured_formats = ("FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48")
+    ]["FP8_CB_K44"] = ["panel", "anchor"]
+    measured_formats = tuple(f"FP8_CB_K{k}" for k in FP8_PRODUCT_RUNGS)
     merged = merge_streamed_cb_anchor_aura_shards(
         shards,
         col_weights=col_weights,
@@ -400,8 +401,8 @@ def test_streamed_anchor_merge_canonicalizes_purpose_declaration_order():
         },
         expected_purposes_by_qname={
             name: {
-                "FP8_CB_K4": ("panel",),
-                "FP8_CB_K16": ("panel", "anchor"),
+                "FP8_CB_K40": ("panel",),
+                "FP8_CB_K44": ("panel", "anchor"),
                 "FP8_CB_K48": ("panel",),
             }
             for name in col_weights
@@ -410,7 +411,7 @@ def test_streamed_anchor_merge_canonicalizes_purpose_declaration_order():
             name: ("FP8_E4M3",) for name in col_weights
         },
         expected_legal_cb_formats_by_qname={
-            name: tuple(f"FP8_CB_K{k}" for k in range(4, 49, 4))
+            name: measured_formats
             for name in col_weights
         },
     )
@@ -418,7 +419,7 @@ def test_streamed_anchor_merge_canonicalizes_purpose_declaration_order():
         "production_anchor_render_purposes"
     ]
     assert all(
-        rows["FP8_CB_K16"] == ["anchor", "panel"]
+        rows["FP8_CB_K44"] == ["anchor", "panel"]
         for rows in purposes.values()
     )
 
@@ -578,7 +579,7 @@ def test_streamed_anchor_merge_fail_closes_panel_diagnostic_contract(
     shard = _sparse_fp8_ladder_payload(
         "layer.0.proj", col_weights, context
     )
-    row = shard["costs"]["layer.0.proj"]["FP8_CB_K4"]
+    row = shard["costs"]["layer.0.proj"]["FP8_CB_K40"]
     if mutation == "missing":
         row.pop("weight_mse_diagnostic")
     elif mutation == "negative":
@@ -591,13 +592,13 @@ def test_streamed_anchor_merge_fail_closes_panel_diagnostic_contract(
         "expected_qnames": tuple(col_weights),
         "expected_formats_by_qname": {
             "layer.0.proj": (
-                "FP8_CB_K4", "FP8_CB_K16", "FP8_CB_K48", "FP8_E4M3",
+                "FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48", "FP8_E4M3",
             ),
         },
         "expected_purposes_by_qname": {
             "layer.0.proj": {
-                "FP8_CB_K4": ("panel",),
-                "FP8_CB_K16": ("anchor", "panel"),
+                "FP8_CB_K40": ("panel",),
+                "FP8_CB_K44": ("anchor", "panel"),
                 "FP8_CB_K48": ("panel",),
             },
         },
@@ -606,7 +607,7 @@ def test_streamed_anchor_merge_fail_closes_panel_diagnostic_contract(
         },
         "expected_legal_cb_formats_by_qname": {
             "layer.0.proj": tuple(
-                f"FP8_CB_K{k}" for k in range(4, 49, 4)
+                f"FP8_CB_K{k}" for k in FP8_PRODUCT_RUNGS
             ),
         },
     }

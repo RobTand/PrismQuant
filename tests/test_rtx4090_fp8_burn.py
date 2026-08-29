@@ -39,6 +39,7 @@ from prismaquant.rtx4090_fp8_burn import (
     _allocator_cost,
     _arm_identity,
     _attach_campaign_shard_receipt,
+    _authoritative_linear_source_census,
     _build_parser,
     _cb_context,
     _calibration_contract,
@@ -75,6 +76,11 @@ from prismaquant.rtx4090_cb_compile_proof import (
     AURA_CHECKPOINT_IDENTITY_SCHEMA,
     AURA_CHECKPOINT_MANIFEST_SCHEMA,
     build_campaign_cb_compile_proof,
+)
+from prismaquant.sample_parallel_probe import (
+    BODY_STATS_AND_ACTIVATION,
+    LM_HEAD_STATS_ONLY,
+    MTP_STATS_ONLY,
 )
 
 
@@ -716,7 +722,6 @@ def test_allocator_cost_resume_refuses_symlink(tmp_path, dangling):
 def test_allocate_uses_exact_sealed_bundle_probe_through_child(
     monkeypatch, tmp_path,
 ):
-    import prismaquant.model_profiles as model_profiles
     import prismaquant.rtx4090_fp8_burn as burn
 
     validated_probe = {"stats": {}, "meta": {}}
@@ -742,6 +747,7 @@ def test_allocate_uses_exact_sealed_bundle_probe_through_child(
             },
         },
     }
+    live_census = {"linear_entries": {"authoritative": True}}
     sample_bundle = {
         "commit_identity_sha256": "d" * 64,
         "probe_sha256": probe_sha256,
@@ -749,6 +755,7 @@ def test_allocate_uses_exact_sealed_bundle_probe_through_child(
         "activation_manifest_identity_sha256": activation_identity,
         "_validated_probe_payload": validated_probe,
         "_validated_probe_bytes": validated_probe_bytes,
+        "_validated_source_census_projection": live_census,
     }
     observed = {}
     monkeypatch.setattr(burn, "load_campaign_plan", lambda _path: plan)
@@ -770,6 +777,7 @@ def test_allocate_uses_exact_sealed_bundle_probe_through_child(
 
     def _revalidate(**kwargs):
         observed["census_probe"] = kwargs["validated_probe_payload"]
+        observed["authoritative_census"] = kwargs["authoritative_census"]
 
     monkeypatch.setattr(burn, "_revalidate_live_campaign_census", _revalidate)
     monkeypatch.setattr(
@@ -790,9 +798,6 @@ def test_allocate_uses_exact_sealed_bundle_probe_through_child(
     )
     monkeypatch.setattr(
         burn, "_allocator_cost", lambda *_a: {"costs": {}},
-    )
-    monkeypatch.setattr(
-        model_profiles, "detect_profile", lambda _model: object(),
     )
 
     def _run_allocator_once(**kwargs):
@@ -829,6 +834,7 @@ def test_allocate_uses_exact_sealed_bundle_probe_through_child(
     assert observed["sealed_path"] == f"/proc/self/fd/{ALLOCATOR_PROBE_FD}"
     assert observed["pass_fds"] == (ALLOCATOR_PROBE_FD,)
     assert observed["census_probe"] is validated_probe
+    assert observed["authoritative_census"] is live_census
     assert observed["imatrix_probe"] is validated_probe
     with pytest.raises(OSError):
         os.fstat(ALLOCATOR_PROBE_FD)
@@ -945,8 +951,8 @@ def test_plan_has_exact_full_menu_and_terminal_contract():
     assert FULL_FORMATS[-2:] == (NATIVE_FP8_FORMAT, BF16_FORMAT)
     assert BF16_FORMAT not in MEASURED_FORMATS
     assert MEASURED_FORMATS == (
-        "FP8_CB_K4",
-        "FP8_CB_K16",
+        "FP8_CB_K40",
+        "FP8_CB_K44",
         "FP8_CB_K48",
         NATIVE_FP8_FORMAT,
     )
@@ -964,8 +970,8 @@ def test_plan_has_exact_full_menu_and_terminal_contract():
         purposes = plan["maps"]["purposes_by_qname"][qname]
         assert set(purposes) == set(MEASURED_FORMATS)
         assert purposes == {
-            "FP8_CB_K4": ["panel"],
-            "FP8_CB_K16": ["anchor", "panel"],
+            "FP8_CB_K40": ["panel"],
+            "FP8_CB_K44": ["anchor", "panel"],
             "FP8_CB_K48": ["panel"],
             NATIVE_FP8_FORMAT: ["anchor"],
         }
@@ -1117,9 +1123,28 @@ def _rehash_plan(plan):
     return plan
 
 
-def _live_campaign_fixture(monkeypatch, tmp_path):
-    import prismaquant.allocator_candidates as allocator_candidates
+def _authoritative_census(source_census):
+    entries = {}
+    for name, source_dtype in source_census.items():
+        if name == "lm_head":
+            disposition = LM_HEAD_STATS_ONLY
+        elif name.startswith("mtp."):
+            disposition = MTP_STATS_ONLY
+        else:
+            disposition = BODY_STATS_AND_ACTIVATION
+        entries[name] = {
+            "source_dtype": source_dtype.upper(),
+            "disposition": disposition,
+        }
+    return {
+        "source_census": {
+            "source_linear_count": len(entries),
+            "linear_entries": entries,
+        },
+    }
 
+
+def _live_campaign_fixture(tmp_path):
     plan = _plan()
     source_census = {name: "bf16" for name in plan["body"]["qnames"]}
     source_census.update({"lm_head": "bf16", "mtp.proj": "bf16"})
@@ -1140,21 +1165,117 @@ def _live_campaign_fixture(monkeypatch, tmp_path):
     probe = tmp_path / "live-probe.pkl"
     with probe.open("wb") as handle:
         pickle.dump({"stats": probe_stats, "meta": {}}, handle)
+    return plan, probe, _authoritative_census(source_census)
+
+
+_PREPARE_FAILURE_NON_LINEAR_QNAMES = (
+    "model.embed_tokens",
+    "model.layers.0.input_layernorm",
+    "model.layers.0.linear_attn.conv1d",
+    "model.layers.0.linear_attn.norm",
+    "model.layers.0.post_attention_layernorm",
+    "model.layers.1.input_layernorm",
+    "model.layers.1.linear_attn.conv1d",
+    "model.layers.1.linear_attn.norm",
+)
+
+
+def test_authoritative_linear_census_excludes_prepare_failure_non_linears(
+    monkeypatch, tmp_path,
+):
+    import prismaquant.allocator_candidates as allocator_candidates
+
+    plan, probe, authoritative_census = _live_campaign_fixture(tmp_path)
+    generic_scanner_calls = []
+
+    def _poisoned_generic_scanner(_model, _profile):
+        generic_scanner_calls.append(True)
+        return {
+            **{
+                name: "bf16"
+                for name in plan["body"]["qnames"]
+            },
+            **{
+                name: "bf16"
+                for name in _PREPARE_FAILURE_NON_LINEAR_QNAMES
+            },
+        }
+
     monkeypatch.setattr(
         allocator_candidates,
         "_scan_source_dtype_manifest",
-        lambda _model, _profile: dict(source_census),
+        _poisoned_generic_scanner,
     )
-    return plan, probe
+    source_dtypes, body, fixed = _authoritative_linear_source_census(
+        authoritative_census
+    )
+    assert _authoritative_linear_source_census(
+        authoritative_census["source_census"]
+    ) == (source_dtypes, body, fixed)
+    excluded = set(_PREPARE_FAILURE_NON_LINEAR_QNAMES)
+    assert excluded.isdisjoint(source_dtypes)
+    assert excluded.isdisjoint(body)
+    assert excluded.isdisjoint(fixed)
+    _revalidate_live_campaign_census(
+        authoritative_census=authoritative_census,
+        probe=probe,
+        plan=plan,
+    )
+    assert generic_scanner_calls == []
+
+
+def test_authoritative_linear_census_refuses_missing_probe_linear(tmp_path):
+    plan, _probe, authoritative_census = _live_campaign_fixture(tmp_path)
+    missing = str(plan["body"]["qnames"][0])
+    probe_stats = _stats()
+    probe_stats.pop(missing)
+    probe_stats.update({
+        "lm_head": {
+            "n_params": 100, "in_features": 10, "out_features": 10,
+        },
+        "mtp.proj": {
+            "n_params": 20, "in_features": 5, "out_features": 4,
+        },
+    })
+    with pytest.raises(
+        RTX4090FP8BurnError,
+        match=rf"live probe/source census mismatch: missing body=\['{missing}'\]",
+    ):
+        _revalidate_live_campaign_census(
+            authoritative_census=authoritative_census,
+            probe="unused-probe.pkl",
+            plan=plan,
+            validated_probe_payload={"stats": probe_stats, "meta": {}},
+        )
+
+
+def test_authoritative_linear_census_refuses_source_dtype_drift(tmp_path):
+    plan, probe, authoritative_census = _live_campaign_fixture(tmp_path)
+    changed = copy.deepcopy(authoritative_census)
+    qname = str(plan["body"]["qnames"][0])
+    changed["source_census"]["linear_entries"][qname][
+        "source_dtype"
+    ] = "F16"
+    with pytest.raises(
+        RTX4090FP8BurnError,
+        match=rf"source Linear {qname} has dtype class 'f16'",
+    ):
+        _revalidate_live_campaign_census(
+            authoritative_census=changed,
+            probe=probe,
+            plan=plan,
+        )
 
 
 @pytest.mark.parametrize("surface", ["source", "fixed"])
 def test_live_census_refuses_self_rehashed_plan_provenance(
-    monkeypatch, tmp_path, surface,
+    tmp_path, surface,
 ):
-    plan, probe = _live_campaign_fixture(monkeypatch, tmp_path)
+    plan, probe, authoritative_census = _live_campaign_fixture(tmp_path)
     _revalidate_live_campaign_census(
-        model="model", probe=probe, plan=plan, profile=_Profile(),
+        authoritative_census=authoritative_census,
+        probe=probe,
+        plan=plan,
     )
     changed = copy.deepcopy(plan)
     if surface == "source":
@@ -1168,7 +1289,9 @@ def test_live_census_refuses_self_rehashed_plan_provenance(
     validate_campaign_plan(changed)
     with pytest.raises(RTX4090FP8BurnError, match="differs from the live"):
         _revalidate_live_campaign_census(
-            model="model", probe=probe, plan=changed, profile=_Profile(),
+            authoritative_census=authoritative_census,
+            probe=probe,
+            plan=changed,
         )
 
 
@@ -1500,7 +1623,7 @@ def _rtx_merged_payload():
         for index, name in enumerate(qnames)
     }
     sparse = _rtx_render_identity(
-        qnames, col_weights, formats=MEASURED_FORMATS[:-1]
+        qnames, col_weights, formats=MEASURED_CB_FORMATS
     )
     expanded = _rtx_render_identity(
         qnames, col_weights, formats=CB_FORMATS
@@ -1530,8 +1653,8 @@ def _rtx_merged_payload():
     }
     purposes = {
         name: {
-            "FP8_CB_K4": ["panel"],
-            "FP8_CB_K16": ["anchor", "panel"],
+            "FP8_CB_K40": ["panel"],
+            "FP8_CB_K44": ["anchor", "panel"],
             "FP8_CB_K48": ["panel"],
             NATIVE_FP8_FORMAT: ["anchor"],
         }
@@ -1540,7 +1663,7 @@ def _rtx_merged_payload():
     costs = {}
     for unit_index, name in enumerate(qnames, start=1):
         rows = {}
-        for format_name in MEASURED_FORMATS[:-1]:
+        for format_name in MEASURED_CB_FORMATS:
             rung = int(format_name.rsplit("K", 1)[1])
             value = unit_index * math.exp(-0.02 * rung)
             rows[format_name] = {
@@ -1609,7 +1732,7 @@ def _allocator_plan(merged, qnames):
     }
 
 
-def test_allocator_cost_fits_only_missing_cb_rungs_and_preserves_direct_rows():
+def test_allocator_cost_preserves_every_direct_campaign_rung():
     merged, qnames = _rtx_merged_payload()
     before = {
         name: {
@@ -1628,7 +1751,7 @@ def test_allocator_cost_fits_only_missing_cb_rungs_and_preserves_direct_rows():
 
     assert tuple(result["formats"]) == FULL_FORMATS
     imputed = set(CB_FORMATS) - set(MEASURED_FORMATS)
-    assert len(imputed) == 9
+    assert imputed == set()
     for name in qnames:
         rows = result["costs"][name]
         assert set(rows) == set(FULL_FORMATS)
@@ -1667,7 +1790,7 @@ def test_allocator_cost_fits_only_missing_cb_rungs_and_preserves_direct_rows():
         "anchored_cb_imputed": len(qnames) * len(imputed),
         "source_passthrough_terminal": len(qnames),
     }
-    assert "mixed final table" in meta["cost_semantics"]
+    assert "direct final table" in meta["cost_semantics"]
 
 
 @pytest.mark.parametrize(

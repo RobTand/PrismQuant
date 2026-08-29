@@ -82,38 +82,35 @@ def test_registry_parser_and_packer_share_the_layout_source():
 
 
 def test_fp8_product_and_reader_ladders_are_distinct_and_exact():
-    assert cb_layout.FP8_PRODUCT_RUNGS == tuple(range(4, 49, 4))
-    assert cb_layout.FP8_ACCEPTED_RUNGS == (
-        4, 8, 12, 16, 20, 24,
-        *range(28, 49),
-    )
+    assert cb_layout.FP8_PRODUCT_RUNGS == (40, 44, 48)
+    assert cb_layout.FP8_ACCEPTED_RUNGS == tuple(range(28, 49))
 
     for k in cb_layout.FP8_PRODUCT_RUNGS:
         name = f"FP8_CB_K{k}"
         assert cb_layout.parse_producer_format_name(name) is not None
         assert cb_layout.is_producer_format_name(name)
 
-    # Historical off-law wire ids remain readable/reportable, but must not
-    # appear in a new assignment or export menu.
-    for k in (29, 33, 37, 41, 45, 47):
+    # Historical wire ids remain readable/reportable, but every rung outside
+    # the evidence-backed producer trio must stay out of new artifacts.
+    for k in (28, 29, 32, 36, 41, 45, 47):
         name = f"FP8_CB_K{k}"
         assert cb_layout.parse_format_name(name) is not None
         assert cb_layout.parse_producer_format_name(name) is None
         assert not cb_layout.is_producer_format_name(name)
 
-    for k in (1, 2, 3, 25, 26, 27, 49):
+    for k in (1, 4, 8, 12, 16, 20, 24, 25, 26, 27, 49):
         assert cb_layout.parse_format_name(f"FP8_CB_K{k}") is None
 
 
-def test_nvfp4_public_reader_and_producer_ladders_stop_at_k25():
-    assert cb_layout.NVFP4_PRODUCT_RUNGS == tuple(range(1, 26))
-    assert cb_layout.NVFP4_ACCEPTED_RUNGS == tuple(range(1, 26))
+def test_nvfp4_public_reader_and_interim_producer_ladders_are_k12_k24():
+    assert cb_layout.NVFP4_PRODUCT_RUNGS == tuple(range(12, 25))
+    assert cb_layout.NVFP4_ACCEPTED_RUNGS == tuple(range(12, 25))
     for k in cb_layout.NVFP4_PRODUCT_RUNGS:
         name = f"NVFP4_CB_K{k}"
         assert cb_layout.parse_format_name(name) is not None
         assert cb_layout.parse_producer_format_name(name) is not None
 
-    for k in range(26, 33):
+    for k in (*range(1, 12), *range(25, 33)):
         name = f"NVFP4_CB_K{k}"
         assert cb_layout.parse_format_name(name) is None
         assert cb_layout.parse_producer_format_name(name) is None
@@ -142,7 +139,8 @@ def test_registry_exposes_legacy_readers_but_not_legacy_producers():
 
     assert format_registry.get_format("FP8_CB_K29").name == "FP8_CB_K29"
     assert not format_registry.format_is_producer_eligible("FP8_CB_K29")
-    assert format_registry.format_is_producer_eligible("FP8_CB_K4")
+    assert not format_registry.format_is_producer_eligible("FP8_CB_K4")
+    assert format_registry.format_is_producer_eligible("FP8_CB_K40")
     assert format_registry.format_is_producer_eligible("FP8_CB_K48")
     assert {
         spec.name for spec in format_registry.list_producer_formats("fp8_cb")
@@ -156,7 +154,8 @@ def test_registry_exposes_legacy_readers_but_not_legacy_producers():
             where="test allocator menu",
         )
 
-    assert format_registry.format_is_producer_eligible("NVFP4_CB_K25")
+    assert format_registry.format_is_producer_eligible("NVFP4_CB_K24")
+    assert not format_registry.format_is_producer_eligible("NVFP4_CB_K25")
     assert not format_registry.format_is_producer_eligible("NVFP4_CB_K26")
     assert not format_registry.format_is_producer_eligible("NVFP4_CB_K32")
     assert {
@@ -164,12 +163,10 @@ def test_registry_exposes_legacy_readers_but_not_legacy_producers():
     } == cb_layout.NVFP4_CB_FORMAT_NAMES
     assert {
         spec.name for spec in format_registry.list_formats("nvfp4_cb")
-    } == {
-        f"NVFP4_CB_K{k}" for k in cb_layout.NVFP4_ACCEPTED_RUNGS
-    }
-    with pytest.raises(ValueError, match="reader-only/unsupported.*NVFP4_CB_K26"):
+    } == cb_layout.NVFP4_ACCEPTED_FORMAT_NAMES
+    with pytest.raises(ValueError, match="reader-only/unsupported.*NVFP4_CB_K25"):
         format_registry.require_producer_formats(
-            ["NVFP4_CB_K25", "NVFP4_CB_K26"],
+            ["NVFP4_CB_K24", "NVFP4_CB_K25"],
             where="test allocator menu",
         )
 
@@ -271,7 +268,7 @@ def test_product_menu_and_lattice_generator_derive_from_layout():
     assert {
         width for width, grid, dimension, positive in required
         if (grid, dimension, positive) == ("fp4", 4, False)
-    } == set(range(17))
+    } == {*range(6, 13), 14, 15, 16}
 
     for script in (
         "run_27b_cb_20gb.sh",
@@ -284,15 +281,16 @@ def test_product_menu_and_lattice_generator_derive_from_layout():
         assert "range(28, 49)" not in text
 
 
-def test_bare_k_family_resolution_refuses_the_new_overlap():
+def test_bare_k_family_resolution_uses_only_current_producer_authority():
     from scripts.build_hy3_mtp_cb_inputs import _expert_family_for_k
 
-    assert _expert_family_for_k(1) == "nvfp4_cb"
+    with pytest.raises(ValueError, match="no producer-eligible"):
+        _expert_family_for_k(1)
     assert _expert_family_for_k(40) == "fp8_cb"
-    with pytest.raises(ValueError, match="ambiguous"):
-        _expert_family_for_k(12)
+    assert _expert_family_for_k(12) == "nvfp4_cb"
     assert _expert_family_for_k(12, family="nvfp4_cb") == "nvfp4_cb"
-    assert _expert_family_for_k(12, family="fp8_cb") == "fp8_cb"
+    with pytest.raises(ValueError, match="not a producer rung"):
+        _expert_family_for_k(12, family="fp8_cb")
 
 
 def test_production_serving_profile_cb_allowlist_matches_layout():
@@ -327,6 +325,14 @@ def test_production_serving_profile_cb_allowlist_matches_layout():
     fp8_shape = next(rule for rule in profile.shape_rules
                      if rule.id == "cb_fp8_out_features_load_gate")
     assert set(fp8_shape.formats) == cb_layout.FP8_ACCEPTED_FORMAT_NAMES
+
+    fp4_shape = next(rule for rule in profile.shape_rules
+                     if rule.id == "cb_fp4_out_features_load_gate")
+    assert set(fp4_shape.formats) == cb_layout.NVFP4_ACCEPTED_FORMAT_NAMES
+
+    fp4_lane = next(lane for lane in profile.serving_lanes
+                    if lane.id == "nvfp4_cb_quality_path")
+    assert set(fp4_lane.formats) == cb_layout.NVFP4_ACCEPTED_FORMAT_NAMES
 
     fp8_lane = next(lane for lane in profile.serving_lanes
                     if lane.id == "fp8_cb_fused_mid_m")

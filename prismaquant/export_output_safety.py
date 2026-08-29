@@ -338,6 +338,7 @@ def transactional_export_directory(
     output: str | Path,
     *,
     where: str,
+    require_absent: bool = False,
 ):
     """Build a directory in an owned sibling and publish it after success.
 
@@ -348,11 +349,22 @@ def transactional_export_directory(
     supported: its inode and emptiness must be unchanged at publication time.
     """
     out = validate_fresh_export_directory(source, output, where=where)
-    existing_identity = (
-        _directory_identity(out, where=where)
-        if os.path.lexists(out)
-        else None
-    )
+    if require_absent:
+        if os.path.lexists(out):
+            raise RuntimeError(
+                f"{where}: output destination {out} must remain absent for "
+                "this export"
+            )
+        # Deliberately keep this None after the check.  If any filesystem
+        # entry appears before publication, the exclusive mkdir below must
+        # fail instead of adopting a concurrent empty directory.
+        existing_identity = None
+    else:
+        existing_identity = (
+            _directory_identity(out, where=where)
+            if os.path.lexists(out)
+            else None
+        )
     temp_root, temp_identity = _owned_sibling_temp_root(out, where=where)
     primary_error: BaseException | None = None
     try:
@@ -539,6 +551,7 @@ def transactional_directory_output(
     source_parameter: str,
     output_parameter: str,
     where: str,
+    require_absent_parameter: str | None = None,
 ):
     """Decorate an exporter so its output parameter receives a staging root."""
     def decorate(function):
@@ -550,10 +563,15 @@ def transactional_directory_output(
             bound.apply_defaults()
             source = bound.arguments[source_parameter]
             output = bound.arguments[output_parameter]
+            require_absent = (
+                require_absent_parameter is not None
+                and bound.arguments.get(require_absent_parameter) is not None
+            )
             with transactional_export_directory(
                 source,
                 output,
                 where=where,
+                require_absent=require_absent,
             ) as staged:
                 bound.arguments[output_parameter] = staged
                 return function(*bound.args, **bound.kwargs)

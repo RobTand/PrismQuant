@@ -302,6 +302,6 @@ def test_nvfp4_cb_profile_denies_stock_formats_on_packed_experts():
     v = check_format_applicability(stack, "NVFP4", **kw)
     assert not v.legal and v.reason == "runtime_unsupported"
     assert not check_format_applicability(stack, "FP8_E4M3", **kw).legal
-    assert check_format_applicability(stack, "FP8_CB_K36", **kw).legal
-    assert check_format_applicability(stack, "FP8_CB_K28", **kw).legal
+    assert check_format_applicability(stack, "FP8_CB_K40", **kw).legal
+    assert check_format_applicability(stack, "FP8_CB_K48", **kw).legal
     assert check_format_applicability(dense, "FP8_CB_K44", **kw).legal

@@ -2,7 +2,7 @@
 
 The registry is intentionally a compatibility superset.  This module is the
 campaign boundary that turns that inventory into one narrow artifact contract:
-FP8-CB K4,K8,...,K48 plus dynamic FP8 and BF16, dense Qwen3.8-27B only, with an
+FP8-CB K40/K44/K48 plus dynamic FP8 and BF16, dense Qwen3.8-27B only, with an
 18 GB whole-directory ceiling. Runtime device qualification comes from
 Gridbook v11; compile/CUDA-graph evidence is an independent PrismaQuant gate.
 """
@@ -341,8 +341,8 @@ def _canonical_policy_format(entry: Any, *, where: str) -> str:
     if canonical not in RTX4090_QWEN38_ALLOWED_FORMATS:
         raise RTX4090Qwen38PolicyError(
             f"{where}: {canonical} is forbidden by {RTX4090_QWEN38_POLICY_ID}; "
-            "the only legal formats are FP8_CB_K4,K8,...,K48, FP8_E4M3, "
-            "and BF16 (NVFP4/NVFP4-CB and legacy off-law FP8-CB are refused)"
+            "the only legal formats are FP8_CB_K40,K44,K48, FP8_E4M3, "
+            "and BF16 (NVFP4/NVFP4-CB and reader-only FP8-CB are refused)"
         )
     if canonical.startswith("FP8_CB_K") and not format_is_producer_eligible(
         canonical
@@ -1330,8 +1330,8 @@ def require_rtx4090_runtime_contract(
         )
     # Artifact assignments are deliberately free to select any legal subset,
     # but the candidate runtime qualifies the producer family, not one
-    # allocation outcome.  Requiring the complete on-law ladder here prevents
-    # a sparse assignment (for example K20 only) from blessing a Gridbook
+    # allocation outcome.  Requiring the complete current producer set here
+    # prevents a sparse assignment (for example K40 only) from blessing a Gridbook
     # release whose other advertised producer rungs have no Ada route.
     qualified_rungs = FP8_PRODUCT_RUNGS
     try:

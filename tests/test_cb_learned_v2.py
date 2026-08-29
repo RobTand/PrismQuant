@@ -26,6 +26,14 @@ from prismaquant.cost_stage_checkpoint import canonical_json_sha256
 from prismaquant.cost_streaming import STREAMED_MODEL_IDENTITY_SCHEMA
 
 
+def test_builder_owns_low_step_four_research_names_locally():
+    assert builder._canonical_cb_formats((
+        "fp8_cb_k4", "FP8_CB_K40", "FP8_CB_K4",
+    )) == ("FP8_CB_K4", "FP8_CB_K40")
+    with pytest.raises(ValueError, match="no CB formats"):
+        builder._canonical_cb_formats(("FP8_CB_K27",))
+
+
 def _receipt(
     col_weights: dict[str, torch.Tensor],
     *,
@@ -369,7 +377,7 @@ def test_v2_bundle_embeds_receipt_sampling_provenance_and_exact_tables(tmp_path)
 
 def test_v2_refuses_manual_promotion_or_wrong_imatrix_identity(tmp_path):
     qname, weight, col_weights = _small_inputs()
-    with pytest.raises(ValueError, match="legacy off-law"):
+    with pytest.raises(ValueError, match="off-research-ladder"):
         bundle.train_and_save_bundle(
             tmp_path / "off-law.pqcb",
             weights={qname: weight},

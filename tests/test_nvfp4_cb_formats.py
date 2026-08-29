@@ -15,6 +15,7 @@ from prismaquant.cb_layout import (
     ACCEPTED_CB_FORMAT_NAMES,
     FP8_ACCEPTED_RUNGS,
     FP8_PRODUCT_RUNGS,
+    NVFP4_ACCEPTED_RUNGS,
     PRODUCT_CB_FORMAT_NAMES,
     bit_split,
 )
@@ -23,7 +24,7 @@ from prismaquant.nvfp4_cb_footprint import (
     cb_serialization_context_stamp,
 )
 
-_NVFP4_KS = list(range(1, 26))
+_NVFP4_KS = list(NVFP4_ACCEPTED_RUNGS)
 _FP8_KS = list(FP8_PRODUCT_RUNGS)
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -292,11 +293,11 @@ def test_flat_k_ceiling_raises():
 
 # (i) menu: all rungs register, resolve, sort by effective_bits.
 #
-# Registry/layer-config parsing is the full READER domain: it retains every
-# historical K28..K48 wire id and adds the low K%4 rungs. New producer menus
-# are narrower and are pinned separately below.
+# Registry/layer-config parsing is the full READER domain: NVFP4 K12..K24 and
+# every historical FP8 K28..K48 wire id. New FP8 producer menus are narrower
+# and are pinned separately below.
 _MENU_LADDERS = (
-    ("NVFP4_CB_K", tuple(range(1, 26)), lambda k: k / 8 + 0.5),
+    ("NVFP4_CB_K", NVFP4_ACCEPTED_RUNGS, lambda k: k / 8 + 0.5),
     ("FP8_CB_K", FP8_ACCEPTED_RUNGS, lambda k: k / 8),
 )
 

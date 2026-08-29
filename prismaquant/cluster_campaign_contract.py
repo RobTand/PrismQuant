@@ -21,7 +21,8 @@ from typing import Literal
 from prismaquant.cost_stage_checkpoint import canonical_json, canonical_json_sha256
 
 
-CAMPAIGN_MANIFEST_SCHEMA = "prismaquant.cluster_campaign.manifest.v2"
+LEGACY_CAMPAIGN_MANIFEST_SCHEMA = "prismaquant.cluster_campaign.manifest.v2"
+CAMPAIGN_MANIFEST_SCHEMA = "prismaquant.cluster_campaign.manifest.v3"
 CAMPAIGN_STATE_SCHEMA = "prismaquant.cluster_campaign.state.v1"
 STAGE_RECEIPT_SCHEMA = "prismaquant.cluster_campaign.stage_receipt.v1"
 GRIDBOOK_RUNTIME_CONTRACT_INPUT_SCHEMA = (
@@ -83,7 +84,7 @@ def _chain_stage(
     )
 
 
-# The order is part of the public manifest-v2 contract. Parallelism exists only inside
+# The order is part of the public manifest contract. Parallelism exists only inside
 # all-host stages; the explicit dependency at every boundary keeps recovery
 # and orchestration deterministic.
 STAGE_DAG: tuple[StageSpec, ...] = (
@@ -163,8 +164,16 @@ _GRIDBOOK_RUNTIME_CONTRACT_INPUT_KEYS = frozenset({
 })
 _POLICY_KEYS = frozenset({"retry", "telemetry", "resources", "outputs"})
 _RETRY_KEYS = frozenset({"max_attempts"})
-_TELEMETRY_KEYS = frozenset(
+_LEGACY_TELEMETRY_KEYS = frozenset(
     {"interval_milliseconds", "require_positive_gpu_utilization"}
+)
+_TELEMETRY_KEYS = frozenset(
+    {
+        "interval_milliseconds",
+        "maximum_observation_gap_milliseconds",
+        "minimum_successful_sample_percent",
+        "require_positive_gpu_utilization",
+    }
 )
 _RESOURCE_KEYS = frozenset(
     {
@@ -182,6 +191,26 @@ _FIXED_SAMPLE_PARALLEL = MappingProxyType(
     }
 )
 FIXED_CAMPAIGN_POLICY = MappingProxyType(
+    {
+        "retry": {"max_attempts": 2},
+        "telemetry": {
+            "interval_milliseconds": 1000,
+            "maximum_observation_gap_milliseconds": 30_000,
+            "minimum_successful_sample_percent": 50,
+            "require_positive_gpu_utilization": True,
+        },
+        "resources": {
+            "coordinator_min_free_bytes": 100 * 1024**3,
+            "worker_min_free_bytes": 40 * 1024**3,
+            "min_mem_available_bytes": 64 * 1024**3,
+        },
+        "outputs": {
+            "owner": "coordinator",
+            "transfer_mode": "sha256_no_clobber",
+        },
+    }
+)
+LEGACY_FIXED_CAMPAIGN_POLICY = MappingProxyType(
     {
         "retry": {"max_attempts": 2},
         "telemetry": {
@@ -240,6 +269,23 @@ _GIT_SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 _IMAGE_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 FIXED_ARTIFACT_TARGET = MappingProxyType({
+    "gpu_name": RTX4090_GPU_NAME,
+    "compute_capability": RTX4090_COMPUTE_CAPABILITY,
+    "artifact_max_bytes": 18_000_000_000,
+    "disposition": "validation_only",
+    "source_dtype": "bf16",
+    "physical_formats": (
+        "FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48", "FP8_E4M3",
+    ),
+    "terminal_format": "BF16",
+    "allocation_objective": "context_first",
+})
+
+# Manifest v2 is sealed historical evidence.  Its K4/K16/K48 numerical target
+# must remain byte-exact and verifiable even though those low rungs no longer
+# belong to the fresh producer registry.  This constant is read-only
+# compatibility authority; new manifests can never select it.
+LEGACY_FIXED_ARTIFACT_TARGET = MappingProxyType({
     "gpu_name": RTX4090_GPU_NAME,
     "compute_capability": RTX4090_COMPUTE_CAPABILITY,
     "artifact_max_bytes": 18_000_000_000,
@@ -410,7 +456,9 @@ def _normalize_producer(value: object) -> dict[str, object]:
     }
 
 
-def _normalize_artifact_target(value: object) -> dict[str, object]:
+def _normalize_artifact_target(
+    value: object, *, manifest_schema: str,
+) -> dict[str, object]:
     raw = _exact_mapping(
         value, keys=_ARTIFACT_TARGET_KEYS, where="artifact_target",
     )
@@ -454,12 +502,17 @@ def _normalize_artifact_target(value: object) -> dict[str, object]:
             where="artifact_target.allocation_objective",
         ),
     }
+    expected_target = (
+        LEGACY_FIXED_ARTIFACT_TARGET
+        if manifest_schema == LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+        else FIXED_ARTIFACT_TARGET
+    )
     fixed = {
-        **dict(FIXED_ARTIFACT_TARGET),
+        **dict(expected_target),
         "compute_capability": list(
-            FIXED_ARTIFACT_TARGET["compute_capability"]
+            expected_target["compute_capability"]
         ),
-        "physical_formats": list(FIXED_ARTIFACT_TARGET["physical_formats"]),
+        "physical_formats": list(expected_target["physical_formats"]),
     }
     if normalized != fixed:
         _fail(
@@ -551,11 +604,18 @@ def _normalize_inputs(value: object) -> dict[str, object]:
     }
 
 
-def _normalize_policy(value: object) -> dict[str, object]:
+def _normalize_policy(
+    value: object, *, manifest_schema: str,
+) -> dict[str, object]:
     raw = _exact_mapping(value, keys=_POLICY_KEYS, where="policy")
     retry = _exact_mapping(raw["retry"], keys=_RETRY_KEYS, where="policy.retry")
+    telemetry_keys = (
+        _LEGACY_TELEMETRY_KEYS
+        if manifest_schema == LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+        else _TELEMETRY_KEYS
+    )
     telemetry = _exact_mapping(
-        raw["telemetry"], keys=_TELEMETRY_KEYS, where="policy.telemetry",
+        raw["telemetry"], keys=telemetry_keys, where="policy.telemetry",
     )
     resources = _exact_mapping(
         raw["resources"], keys=_RESOURCE_KEYS, where="policy.resources",
@@ -595,10 +655,30 @@ def _normalize_policy(value: object) -> dict[str, object]:
             ),
         },
     }
-    if normalized != dict(FIXED_CAMPAIGN_POLICY):
+    if manifest_schema == CAMPAIGN_MANIFEST_SCHEMA:
+        normalized["telemetry"].update({
+            "maximum_observation_gap_milliseconds": _integer(
+                telemetry["maximum_observation_gap_milliseconds"],
+                where=(
+                    "policy.telemetry.maximum_observation_gap_milliseconds"
+                ),
+                minimum=100, maximum=3_600_000,
+            ),
+            "minimum_successful_sample_percent": _integer(
+                telemetry["minimum_successful_sample_percent"],
+                where="policy.telemetry.minimum_successful_sample_percent",
+                minimum=1, maximum=100,
+            ),
+        })
+    expected_policy = (
+        LEGACY_FIXED_CAMPAIGN_POLICY
+        if manifest_schema == LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+        else FIXED_CAMPAIGN_POLICY
+    )
+    if normalized != dict(expected_policy):
         _fail(
             "policy must equal the fixed two-host campaign policy "
-            f"{dict(FIXED_CAMPAIGN_POLICY)}"
+            f"{dict(expected_policy)}"
         )
     return normalized
 
@@ -753,7 +833,11 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
     raw = _exact_mapping(
         value, keys=_MANIFEST_BODY_KEYS, where="campaign manifest body"
     )
-    if raw["schema"] != CAMPAIGN_MANIFEST_SCHEMA:
+    schema = raw["schema"]
+    if type(schema) is not str or schema not in {
+        LEGACY_CAMPAIGN_MANIFEST_SCHEMA,
+        CAMPAIGN_MANIFEST_SCHEMA,
+    }:
         _fail("campaign manifest schema is unsupported")
     campaign_id = _string(
         raw["campaign_id"], where="campaign_id", pattern=_ID_RE
@@ -761,10 +845,12 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
     coordinator = _string(
         raw["coordinator"], where="coordinator", pattern=_ID_RE
     )
-    artifact_target = _normalize_artifact_target(raw["artifact_target"])
+    artifact_target = _normalize_artifact_target(
+        raw["artifact_target"], manifest_schema=str(schema),
+    )
     producer = _normalize_producer(raw["producer"])
     inputs = _normalize_inputs(raw["inputs"])
-    policy = _normalize_policy(raw["policy"])
+    policy = _normalize_policy(raw["policy"], manifest_schema=str(schema))
     raw_hosts = raw["hosts"]
     if type(raw_hosts) is not list or len(raw_hosts) != 2:
         _fail("hosts must be a list containing exactly two hosts")
@@ -794,7 +880,7 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
         _fail("coordinator does not reference a campaign host")
     hosts.sort(key=lambda item: str(item["id"]))
     return {
-        "schema": CAMPAIGN_MANIFEST_SCHEMA,
+        "schema": schema,
         "campaign_id": campaign_id,
         "coordinator": coordinator,
         "artifact_target": artifact_target,
@@ -808,6 +894,11 @@ def _normalize_manifest_body(value: object) -> dict[str, object]:
 def seal_campaign_manifest(body: Mapping[str, object]) -> dict[str, object]:
     """Validate a manifest body, canonicalize host order, and add its digest."""
 
+    if (
+        not isinstance(body, Mapping)
+        or body.get("schema") != CAMPAIGN_MANIFEST_SCHEMA
+    ):
+        _fail("new campaign manifests must use the current schema")
     normalized = _normalize_manifest_body(body)
     return {**normalized, "identity_sha256": canonical_sha256(normalized)}
 
@@ -1160,6 +1251,9 @@ __all__ = [
     "FIXED_ARTIFACT_TARGET",
     "FIXED_CAMPAIGN_POLICY",
     "GRIDBOOK_RUNTIME_CONTRACT_INPUT_SCHEMA",
+    "LEGACY_CAMPAIGN_MANIFEST_SCHEMA",
+    "LEGACY_FIXED_ARTIFACT_TARGET",
+    "LEGACY_FIXED_CAMPAIGN_POLICY",
     "RTX4090_COMPUTE_CAPABILITY",
     "RTX4090_GPU_NAME",
     "STAGE_DAG",

@@ -5,10 +5,10 @@ import math
 
 import pytest
 
+from prismaquant.cb_layout import FP8_PRODUCT_RUNGS
 from prismaquant.nvfp4_cb_footprint import CBSerializationContext
 from prismaquant.serving_profiles import gridbook_runtime_version
 from prismaquant.source_class_format_plan import (
-    EXPERT_MENU,
     NONEXPERT_MENU,
     _plan_digest,
     build_source_class_format_plan,
@@ -17,16 +17,15 @@ from prismaquant.source_class_format_plan import (
 )
 
 
-EXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(4, 33, 4))
-NONEXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(4, 49, 4))
-# The DSv4 on-law menus: the fused mid-M rungs nvfp4_cb backs at the pinned
-# runtime, intersected with the byte-exact source-payload ceiling (K33 for a
-# routed expert, K48 for a dense row).
+# The current producer family is K40/K44/K48. The planner schema still
+# requires a strict lower-rate menu declaration, but no maintained source
+# class maps to it: compatible FP8 sources take the complete nonexpert menu,
+# while the old mxfp4/K32-ceiling class must fail closed.
+NONEXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in FP8_PRODUCT_RUNGS)
+EXPERT_FORMATS = NONEXPERT_FORMATS[:-1]
 ON_LAW_PROFILE = "nvfp4_cb"
-ON_LAW_EXPERT_FORMATS = ("FP8_CB_K28", "FP8_CB_K32")
-ON_LAW_NONEXPERT_FORMATS = tuple(
-    f"FP8_CB_K{k}" for k in (28, 32, 36, 40, 44, 48)
-)
+ON_LAW_EXPERT_FORMATS = EXPERT_FORMATS
+ON_LAW_NONEXPERT_FORMATS = NONEXPERT_FORMATS
 CONTEXT = CBSerializationContext.production(codebook_source="lattice")
 
 
@@ -52,29 +51,18 @@ class _Profile:
         return "layer.experts" if self.packed else None
 
 
-def test_source_derived_split_prices_no_illegal_expert_cells_and_keeps_k48():
-    # Both units are ordinary rank-2 rows. The lower-rate unit is also marked
-    # as routed by the fake profile, but the planner never consults that fact:
-    # exact source payload alone selects its menu.
-    expert = "model.layers.0.mlp.experts.7.gate_proj"
+def test_source_derived_split_uses_only_current_producer_rungs():
+    assert FP8_PRODUCT_RUNGS == (40, 44, 48)
     nonexpert = "model.layers.0.self_attn.o_proj"
     plan = build_source_class_format_plan(
-        {
-            expert: _stats((2048, 4096)),
-            nonexpert: _stats((8192, 4096)),
-        },
-        {
-            expert: "mxfp4",
-            nonexpert: "fp8_ue8m0",
-        },
+        {nonexpert: _stats((8192, 4096))},
+        {nonexpert: "fp8_ue8m0"},
         _Profile(),
         expert_formats=EXPERT_FORMATS,
         nonexpert_formats=NONEXPERT_FORMATS,
         cb_serialization_context=CONTEXT,
     )
 
-    assert plan.menu_id_for(expert) == EXPERT_MENU
-    assert plan.formats_for(expert) == EXPERT_FORMATS
     assert plan.menu_id_for(nonexpert) == NONEXPERT_MENU
     assert plan.formats_for(nonexpert) == NONEXPERT_FORMATS
 
@@ -83,41 +71,48 @@ def test_source_derived_split_prices_no_illegal_expert_cells_and_keeps_k48():
         for qname, formats in plan.formats_by_qname().items()
         for fmt in formats
     }
-    assert len(scheduled) == 8 + 12
-    assert not any(
-        qname == expert and int(fmt.rsplit("K", 1)[1]) > 32
-        for qname, fmt in scheduled
-    )
+    assert len(scheduled) == 3
     assert (nonexpert, "FP8_CB_K48") in scheduled
 
 
+def test_mxfp4_expert_with_k32_ceiling_has_no_current_producer_rung():
+    qname = "model.layers.0.mlp.experts.7.gate_proj"
+    with pytest.raises(ValueError, match="matches neither declared menu") as caught:
+        build_source_class_format_plan(
+            {qname: _stats((2048, 4096))},
+            {qname: "mxfp4"},
+            _Profile(),
+            expert_formats=EXPERT_FORMATS,
+            nonexpert_formats=NONEXPERT_FORMATS,
+            cb_serialization_context=CONTEXT,
+        )
+    assert "derives legal family []" in str(caught.value)
+
+
 @pytest.mark.parametrize("group_kind", ["fused", "packed"])
-def test_serving_group_cannot_straddle_source_class_menus(group_kind: str):
-    low = "model.layers.0.role_a"
-    high = "model.layers.0.role_b"
+def test_compatible_current_source_group_stays_one_menu(group_kind: str):
+    left = "model.layers.0.role_a"
+    right = "model.layers.0.role_b"
     profile = _Profile(
         fused=group_kind == "fused",
         packed=group_kind == "packed",
     )
 
-    with pytest.raises(ValueError, match="split one fused/packed") as caught:
-        build_source_class_format_plan(
-            {
-                low: _stats((2048, 4096)),
-                high: _stats((4096, 2048)),
-            },
-            {low: "mxfp4", high: "fp8"},
-            profile,
-            expert_formats=EXPERT_FORMATS,
-            nonexpert_formats=NONEXPERT_FORMATS,
-            cb_serialization_context=CONTEXT,
-        )
+    plan = build_source_class_format_plan(
+        {
+            left: _stats((4096, 2048)),
+            right: _stats((4096, 2048)),
+        },
+        {left: "fp8", right: "fp8"},
+        profile,
+        expert_formats=EXPERT_FORMATS,
+        nonexpert_formats=NONEXPERT_FORMATS,
+        cb_serialization_context=CONTEXT,
+    )
 
-    message = str(caught.value)
-    assert low in message
-    assert high in message
-    assert EXPERT_MENU in message
-    assert NONEXPERT_MENU in message
+    assert plan.formats_for(left) == NONEXPERT_FORMATS
+    assert plan.formats_for(right) == NONEXPERT_FORMATS
+    assert (left, right) in plan.serving_groups
 
 
 def test_nonexpert_menu_cannot_be_demand_or_disk_truncated():
@@ -156,34 +151,30 @@ def test_plan_round_trip_is_identity_bound(tmp_path):
         load_format_plan(path)
 
 
-# --- serving-backed restriction (the DSv4 on-law menu) ---------------------
+# --- serving-backed restriction --------------------------------------------
 #
-# Off-law FP8-CB rungs remain registered for historical reads, but they are no
-# longer legal producer inputs.  This further restriction intersects the full
-# K%4 producer family with the pinned runtime's backed set; it is a serving
-# legality bound, not a demand- or disk-driven truncation.
+# Reader-only FP8-CB rungs remain registered for historical reads, but they
+# are not legal producer inputs. The serving restriction operates only on the
+# current producer family; it must never reintroduce a reader rung.
 
 
 def _on_law_plan(profile=None):
-    expert = "model.layers.0.mlp.experts.7.gate_proj"
     nonexpert = "model.layers.0.self_attn.o_proj"
     plan = build_source_class_format_plan(
-        {expert: _stats((2048, 4096)), nonexpert: _stats((8192, 4096))},
-        {expert: "mxfp4", nonexpert: "fp8_ue8m0"},
+        {nonexpert: _stats((8192, 4096))},
+        {nonexpert: "fp8_ue8m0"},
         profile or _Profile(),
         expert_formats=ON_LAW_EXPERT_FORMATS,
         nonexpert_formats=ON_LAW_NONEXPERT_FORMATS,
         cb_serialization_context=CONTEXT,
         serving_backed_profile=ON_LAW_PROFILE,
     )
-    return expert, nonexpert, plan
+    return nonexpert, plan
 
 
 def test_serving_backed_restriction_admits_exactly_the_on_law_menu():
-    expert, nonexpert, plan = _on_law_plan()
+    nonexpert, plan = _on_law_plan()
 
-    assert plan.menu_id_for(expert) == EXPERT_MENU
-    assert plan.formats_for(expert) == ON_LAW_EXPERT_FORMATS
     assert plan.menu_id_for(nonexpert) == NONEXPERT_MENU
     assert plan.formats_for(nonexpert) == ON_LAW_NONEXPERT_FORMATS
 
@@ -199,26 +190,25 @@ def test_serving_backed_restriction_admits_exactly_the_on_law_menu():
     assert restriction["profile_id"] == ON_LAW_PROFILE
     assert restriction["family"] == "fp8_cb"
     assert restriction["runtime_version"] == gridbook_runtime_version()
-    assert restriction["fused_mid_m_rungs"] == [28, 32, 36, 40, 44, 48]
-    assert "FP8_CB_K4" in restriction["restricted_out"]
-    assert "FP8_CB_K24" in restriction["restricted_out"]
+    assert restriction["fused_mid_m_rungs"] == [40, 44, 48]
+    assert restriction["restricted_out"] == []
 
 
-def test_on_law_menu_without_the_restriction_is_still_refused():
-    # The anti-truncation guard is untouched on every other axis: the SAME
-    # menus that are legal under a declared serving restriction are refused
-    # when the caller declares none.
+def test_current_menu_without_restriction_remains_complete():
+    # The current producer family already equals the backed subset. Declaring
+    # the restriction still changes plan identity, but omitting it does not
+    # make the exact producer menu incomplete.
     qname = "model.layers.0.self_attn.q_proj"
-    with pytest.raises(ValueError, match="complete registered family") as caught:
-        build_source_class_format_plan(
-            {qname: _stats((4096, 4096))},
-            {qname: "fp8"},
-            _Profile(),
-            expert_formats=ON_LAW_EXPERT_FORMATS,
-            nonexpert_formats=ON_LAW_NONEXPERT_FORMATS,
-            cb_serialization_context=CONTEXT,
-        )
-    assert "FP8_CB_K4" in str(caught.value)
+    plan = build_source_class_format_plan(
+        {qname: _stats((4096, 4096))},
+        {qname: "fp8"},
+        _Profile(),
+        expert_formats=ON_LAW_EXPERT_FORMATS,
+        nonexpert_formats=ON_LAW_NONEXPERT_FORMATS,
+        cb_serialization_context=CONTEXT,
+    )
+    assert plan.formats_for(qname) == ON_LAW_NONEXPERT_FORMATS
+    assert plan.serving_backed_restriction is None
 
 
 def test_serving_backed_restriction_still_refuses_truncation():
@@ -259,14 +249,14 @@ def test_serving_backed_restriction_refuses_an_unbacked_family():
 
 
 def test_serving_backed_plan_round_trip_rejects_pin_drift(tmp_path):
-    expert, nonexpert, plan = _on_law_plan()
+    nonexpert, plan = _on_law_plan()
     path = tmp_path / "format_plan.json"
     write_format_plan(plan, path)
 
     loaded = load_format_plan(path)
     assert loaded.identity_sha256 == plan.identity_sha256
     assert loaded.serving_backed_restriction == plan.serving_backed_restriction
-    assert loaded.formats_for(expert) == ON_LAW_EXPERT_FORMATS
+    assert loaded.formats_for(nonexpert) == ON_LAW_NONEXPERT_FORMATS
 
     # A plan written under one backed set must not be reused under another.
     # Re-stamp the digest so the drift check, not the identity check, is what
@@ -286,4 +276,4 @@ def test_serving_backed_plan_round_trip_rejects_pin_drift(tmp_path):
     assert historical.serving_backed_restriction == (
         payload["serving_backed_restriction"]
     )
-    assert historical.formats_for(expert) == ON_LAW_EXPERT_FORMATS
+    assert historical.formats_for(nonexpert) == ON_LAW_NONEXPERT_FORMATS

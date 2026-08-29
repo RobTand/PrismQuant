@@ -33,10 +33,10 @@ if [[ "$GRIDBOOK_PRODUCER_RUNTIME_CONTRACT" != /* \
   exit 2
 fi
 
-# This is the complete strict producer menu: the K%4 ladder and only the two
+# This is the complete strict producer menu: K40/K44/K48 and only the two
 # policy terminals.  Keep it literal so a launch record is independently
 # readable and fail if it ever diverges from the policy module.
-RTX4090_FORMATS="FP8_CB_K4,FP8_CB_K8,FP8_CB_K12,FP8_CB_K16,FP8_CB_K20,FP8_CB_K24,FP8_CB_K28,FP8_CB_K32,FP8_CB_K36,FP8_CB_K40,FP8_CB_K44,FP8_CB_K48,FP8_E4M3,BF16"
+RTX4090_FORMATS="FP8_CB_K40,FP8_CB_K44,FP8_CB_K48,FP8_E4M3,BF16"
 PQ_MODEL_PATH="$MODEL_PATH" \
 PQ_GRIDBOOK_CONTRACT="$GRIDBOOK_PRODUCER_RUNTIME_CONTRACT" \
 PQ_FORMATS="$RTX4090_FORMATS" \

@@ -234,16 +234,12 @@ def test_dense_allocator_uses_plan_profile_and_both_full_ladders(tmp_path):
 def test_dense_measurements_span_full_fp8_ladder_without_vacuous_cells():
     assert NVFP4_CB_LADDER == NVFP4_LADDER
     assert FP8_CB_LADDER == FP8_LADDER
-    assert ANCHOR_FORMATS[("fp8_cb", "lattice")] == "FP8_CB_K24"
-    assert PANEL_RUNGS["fp8_cb"] == (
-        "FP8_CB_K4", "FP8_CB_K28", "FP8_CB_K48",
-    )
-    assert VALIDATION_RUNGS["fp8_cb"] == (
-        "FP8_CB_K8", "FP8_CB_K20", "FP8_CB_K36", "FP8_CB_K44",
-    )
-    assert set(VALIDATION_RUNGS["fp8_cb"]).isdisjoint(
-        PANEL_RUNGS["fp8_cb"]
-    )
+    assert ANCHOR_FORMATS[("fp8_cb", "lattice")] == "FP8_CB_K44"
+    assert PANEL_RUNGS["fp8_cb"] == ("FP8_CB_K40", "FP8_CB_K48")
+    # With only three evidence-backed producer rungs, validation repeats the
+    # two non-anchor widths on held-out units. It must not invent a reader-only
+    # rung merely to preserve rung-disjoint validation.
+    assert VALIDATION_RUNGS["fp8_cb"] == PANEL_RUNGS["fp8_cb"]
     assert ANCHOR_FORMATS[("fp8_cb", "lattice")] not in (
         *PANEL_RUNGS["fp8_cb"], *VALIDATION_RUNGS["fp8_cb"],
     )
@@ -255,7 +251,7 @@ def test_aqua_activation_identity_covers_both_families_without_profile_bias():
     contract = lane.served_activation_quantization
     assert contract is not None
     for name in (
-        "NVFP4_CB_K1", "NVFP4_CB_K25", "FP8_CB_K4", "FP8_CB_K48",
+        "NVFP4_CB_K12", "NVFP4_CB_K24", "FP8_CB_K28", "FP8_CB_K48",
     ):
         assert contract.matches(name)
 
@@ -272,7 +268,7 @@ def test_aqua_activation_identity_covers_both_families_without_profile_bias():
 
 def _sm120_quant_config() -> dict:
     assignment = {
-        "model.layers.0.self_attn.q_proj": "NVFP4_CB_K1",
+        "model.layers.0.self_attn.q_proj": "NVFP4_CB_K12",
         "model.layers.0.self_attn.k_proj": "FP8_CB_K48",
         "model.norm": "BF16",
     }
@@ -296,9 +292,7 @@ def test_sm120_candidate_pin_and_contract_have_one_exact_untagged_identity(
 ):
     pin = load_sm120_validation_candidate_pin()
     raw = SM120_VALIDATION_CANDIDATE_CONTRACT_PATH.read_bytes()
-    contract, attestation = require_sm120_validation_runtime_contract(
-        SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
-    )
+    contract = json.loads(raw)
 
     assert pin["gridbook"] == {
         "version": SM120_CANDIDATE_GRIDBOOK_VERSION,
@@ -318,13 +312,16 @@ def test_sm120_candidate_pin_and_contract_have_one_exact_untagged_identity(
     assert hashlib.sha256(raw).hexdigest() == (
         SM120_CANDIDATE_RUNTIME_CONTRACT_FILE_SHA256
     )
-    assert attestation["target_platform"] == "sm_120"
-    assert attestation["qualification_ceiling"] == "compile_only"
-    assert attestation["producer_rungs"] == {
-        "NVFP4_CB_K": list(NVFP4_PRODUCT_RUNGS),
-        "FP8_CB_K": list(FP8_PRODUCT_RUNGS),
-    }
-    assert set(attestation["route_statuses"]) == {"backed", "fallback"}
+    # The immutable candidate is intentionally not rewritten in this
+    # contraction: its broader NVFP4 K1..K25 declaration is now an explicit
+    # pin blocker until Gridbook supplies a separately reviewed identity.
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match=r"NVFP4_CB_K reader rungs are unknown.*\[1, 2, 3",
+    ):
+        require_sm120_validation_runtime_contract(
+            SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
+        )
 
     tampered_pin = copy.deepcopy(pin)
     tampered_pin["gridbook"]["version_is_release"] = True
@@ -370,27 +367,14 @@ def test_sm120_policy_requires_profile_policy_and_explicit_exact_contract(
             where="test",
         )
 
-    contract, stamp = prepare_gridbook_validation_only_export_policy(
-        layer_config_path=recipe,
-        producer_policy=SM120_VALIDATION_POLICY_ID,
-        runtime_contract=SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
-        where="test",
-    )
-    assert contract["contract_version"] == 11
-    assert stamp["schema"] == GRIDBOOK_VALIDATION_ONLY_POLICY_SCHEMA
-    assert stamp["artifact_disposition"] == VALIDATION_ONLY_DISPOSITION
-    assert stamp["runtime_qualification_ceiling"] == "compile_only"
-
-    tampered = copy.deepcopy(contract)
-    tampered["abi_features"]["routed_moe_per_role_codebook_lut"] = 2
     with pytest.raises(
         GridbookValidationOnlyPolicyError,
-        match="differs from exact candidate",
+        match="NVFP4_CB_K reader rungs are unknown",
     ):
         prepare_gridbook_validation_only_export_policy(
             layer_config_path=recipe,
             producer_policy=SM120_VALIDATION_POLICY_ID,
-            runtime_contract=tampered,
+            runtime_contract=SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
             where="test",
         )
 
@@ -416,47 +400,9 @@ def test_sm120_policy_cannot_be_replayed_on_another_profile(tmp_path):
         )
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    (
-        "remove_policy",
-        "tamper_commit",
-        "cross_policy_replay",
-        "remove_route",
-        "tamper_route_contract",
-    ),
-)
-def test_sm120_final_quant_config_refuses_stamp_removal_tamper_and_replay(
-    mutation,
-):
-    quant = _sm120_quant_config()
-    validate_sm120_validation_only_quant_config(quant)
-
-    provenance = quant["provenance"]
-    if mutation == "remove_policy":
-        del provenance["producer_policy"]
-    elif mutation == "tamper_commit":
-        provenance["producer_policy"]["candidate_runtime"]["gridbook"][
-            "commit"
-        ] = "0" * 40
-    elif mutation == "cross_policy_replay":
-        provenance["producer_policy"] = {
-            "schema": (
-                "prismaquant.rtx4090_qwen38_fp8_validation_only_policy.v1"
-            ),
-            "id": "qwen38_27b_rtx4090_fp8_cb_validation_only",
-            "artifact_disposition": VALIDATION_ONLY_DISPOSITION,
-        }
-    elif mutation == "remove_route":
-        del provenance["cb_route_status"]
-    else:
-        provenance["cb_route_status"]["runtime_attestation"][
-            "runtime_contract_canonical_json_sha256"
-        ] = "0" * 64
-
-    with pytest.raises(GridbookValidationOnlyPolicyError):
-        validate_sm120_validation_only_quant_config(quant)
-    inspection = inspect_validation_only_quant_config(quant)
-    assert inspection.required
-    assert not inspection.valid
-    assert "malformed" in inspection.detail
+def test_sm120_quant_config_cannot_be_minted_from_the_incompatible_pin():
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match="NVFP4_CB_K reader rungs are unknown",
+    ):
+        _sm120_quant_config()

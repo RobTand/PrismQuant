@@ -28,6 +28,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -43,6 +44,7 @@ TREE_MANIFEST_SCHEMA = "prismaquant.cluster_transport.tree_manifest.v1"
 TRANSFER_RECEIPT_SCHEMA = "prismaquant.cluster_transport.transfer_receipt.v1"
 HELPER_ENVELOPE_SCHEMA = "prismaquant.cluster_transport.helper_envelope.v1"
 HELPER_RESPONSE_SCHEMA = "prismaquant.cluster_transport.helper_response.v1"
+HELPER_ERROR_SCHEMA = "prismaquant.cluster_transport.helper_error.v1"
 
 _JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -64,6 +66,177 @@ _NVIDIA_QUERY_FIELDS = (
     "power.draw",
 )
 
+# Fixed, stdlib-only launcher for every SSH job action and detached worker.
+# The mutable helper pathname is never handed to Python as a script.  This
+# launcher executes the held bytes as a registered module, injects one reserved
+# immutable launch context, and replaces historical helpers' direct-path
+# worker spawn before calling their entry point.  The same launcher is then
+# used recursively for ``--local-worker`` so neither current nor sealed source
+# bytes can escape the digest gate.
+_SSH_HELPER_LAUNCHER_PROGRAM = r'''
+import base64, hashlib, os, re, stat, sys, types
+
+SAFE = re.compile(r"[A-Za-z0-9._-]+")
+HEX = re.compile(r"[0-9a-f]{64}")
+
+def open_held_helper(raw):
+    if (not isinstance(raw, str) or not raw.startswith("/")
+            or "\x00" in raw):
+        raise ValueError("unsafe remote helper path")
+    parts = raw.split("/")[1:]
+    if (not parts or any(not part or part in (".", "..")
+                         or SAFE.fullmatch(part) is None for part in parts)):
+        raise ValueError("unsafe remote helper path")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    nonblock = getattr(os, "O_NONBLOCK", 0)
+    if not nofollow or not directory:
+        raise ValueError("descriptor-safe remote helper traversal unavailable")
+    parent_fd = os.open("/", os.O_RDONLY | directory | nofollow | cloexec)
+    try:
+        for component in parts[:-1]:
+            before = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(before.st_mode):
+                raise ValueError("remote helper ancestry is not a real directory")
+            child_fd = os.open(
+                component,
+                os.O_RDONLY | directory | nofollow | cloexec,
+                dir_fd=parent_fd,
+            )
+            opened = os.fstat(child_fd)
+            if (not stat.S_ISDIR(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino)
+                    != (before.st_dev, before.st_ino)):
+                os.close(child_fd)
+                raise ValueError("remote helper ancestry changed while opening")
+            os.close(parent_fd)
+            parent_fd = child_fd
+        before = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("remote helper is not a regular file")
+        helper_fd = os.open(
+            parts[-1],
+            os.O_RDONLY | nofollow | cloexec | nonblock,
+            dir_fd=parent_fd,
+        )
+        opened = os.fstat(helper_fd)
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)):
+            os.close(helper_fd)
+            raise ValueError("remote helper identity changed while opening")
+        return helper_fd, opened
+    finally:
+        os.close(parent_fd)
+
+try:
+    if len(sys.argv) < 6 or HEX.fullmatch(sys.argv[2]) is None:
+        raise ValueError("remote helper launcher arguments are invalid")
+    helper_path = sys.argv[1]
+    expected_digest = sys.argv[2]
+    launcher_source = base64.b64decode(sys.argv[3].encode("ascii"), validate=True)
+    if (HEX.fullmatch(sys.argv[4]) is None
+            or hashlib.sha256(launcher_source).hexdigest() != sys.argv[4]):
+        raise ValueError("remote helper launcher identity is invalid")
+    helper_args = sys.argv[5:]
+    remote_mode = helper_args == ["--remote-helper"] or (
+            len(helper_args) == 3
+            and helper_args[0] == "--remote-helper"
+            and helper_args[1] == "--remote-helper-state-root")
+    worker_mode = len(helper_args) == 4 and helper_args[0] == "--local-worker"
+    verify_mode = helper_args == ["--verify-held-helper"]
+    if not (remote_mode or worker_mode or verify_mode):
+        raise ValueError("remote helper action argv is invalid")
+    descriptor, opened = open_held_helper(helper_path)
+    try:
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        source = b"".join(chunks)
+        after = os.fstat(descriptor)
+        if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                after.st_ctime_ns) != (
+                opened.st_dev, opened.st_ino, opened.st_size,
+                opened.st_mtime_ns, opened.st_ctime_ns):
+            raise ValueError("remote helper changed while reading")
+        if len(source) != opened.st_size:
+            raise ValueError("remote helper size changed while reading")
+        if hashlib.sha256(source).hexdigest() != expected_digest:
+            raise ValueError("remote helper digest differs from bootstrap plan")
+        if verify_mode:
+            raise SystemExit(0)
+        sys.argv = [helper_path, *helper_args]
+        module_name = "_prismaquant_held_remote_helper"
+        module = types.ModuleType(module_name)
+        module.__file__ = helper_path
+        module.__package__ = None
+        module.__cached__ = None
+        module.__dict__["_PRISMAQUANT_HELD_HELPER_CONTEXT"] = (
+            "prismaquant.cluster_transport.held_helper.v1",
+            helper_path,
+            expected_digest,
+            launcher_source.decode("utf-8"),
+        )
+        sys.modules[module_name] = module
+        exec(compile(source, helper_path, "exec", dont_inherit=True), module.__dict__)
+        transport_type = getattr(module, "LocalTransport", None)
+        entry_point = getattr(module, "_main", None)
+        if transport_type is None or not callable(entry_point):
+            raise ValueError("remote helper lacks the pinned execution surface")
+        original_start = transport_type.start
+
+        def held_start(instance, request):
+            original_popen = instance._popen_impl
+
+            def held_popen(argv, *args, **kwargs):
+                candidate = list(argv)
+                if (len(candidate) == 9 and candidate[1:4] == ["-P", "-B", "-s"]
+                        and candidate[4] == helper_path
+                        and candidate[5] == "--local-worker"):
+                    candidate = [
+                        candidate[0], "-P", "-B", "-s", "-c",
+                        launcher_source.decode("utf-8"), helper_path,
+                        expected_digest,
+                        base64.b64encode(launcher_source).decode("ascii"),
+                        hashlib.sha256(launcher_source).hexdigest(),
+                        *candidate[5:],
+                    ]
+                expected_prefix = [
+                    candidate[0], "-P", "-B", "-s", "-c",
+                    launcher_source.decode("utf-8"), helper_path,
+                    expected_digest,
+                    base64.b64encode(launcher_source).decode("ascii"),
+                    hashlib.sha256(launcher_source).hexdigest(),
+                    "--local-worker",
+                ]
+                if len(candidate) != 14 or candidate[:11] != expected_prefix:
+                    raise ValueError("detached helper worker argv escaped held launcher")
+                return original_popen(candidate, *args, **kwargs)
+
+            instance._popen_impl = held_popen
+            try:
+                return original_start(instance, request)
+            finally:
+                instance._popen_impl = original_popen
+
+        transport_type.start = held_start
+        try:
+            raise SystemExit(entry_point(sys.argv[1:]))
+        finally:
+            sys.modules.pop(module_name, None)
+    finally:
+        os.close(descriptor)
+except BaseException as exc:
+    if isinstance(exc, SystemExit):
+        raise
+    sys.stderr.write(type(exc).__name__ + ": " + str(exc))
+    raise SystemExit(126)
+'''.strip()
+
 JobState: TypeAlias = Literal[
     "running", "succeeded", "failed", "timed_out", "transport_error"
 ]
@@ -71,6 +244,22 @@ JobState: TypeAlias = Literal[
 
 class ClusterTransportError(RuntimeError):
     """Base error for a refused or failed transport operation."""
+
+
+class TelemetryUnavailableError(ClusterTransportError):
+    """A telemetry management query was unavailable without losing job state."""
+
+
+class TelemetryIntegrityError(ClusterTransportError):
+    """Telemetry bytes or protocol state were present but invalid."""
+
+
+class _SSHInvocationUnavailableError(ClusterTransportError):
+    """The SSH helper process could not be reached or did not complete."""
+
+
+class JobNotFoundError(ClusterTransportError):
+    """The requested job ID has no durable transport claim."""
 
 
 class JobConflictError(ClusterTransportError):
@@ -172,6 +361,207 @@ def _strict_json_bytes(payload: bytes, *, where: str) -> object:
     if canonical_json_bytes(value, where=where) != payload:
         raise ValueError(f"{where} is not canonically encoded JSON")
     return value
+
+
+def read_regular_file_nofollow(
+    path: str | Path, *, where: str = "stored file",
+) -> bytes:
+    """Read one stable regular file without traversing any symlink.
+
+    Verification inputs are attacker-controlled durable state, so checking
+    ``Path.is_symlink()`` before ``Path.read_bytes()`` is not sufficient: an
+    ancestor can be a link and the final component can race between those two
+    operations.  Walk the directory ancestry with ``openat``-style held file
+    descriptors, open the final component with ``O_NOFOLLOW``, and bind the
+    bytes to matching lstat/fstat identities before returning them.
+    """
+
+    candidate = Path(path)
+    if "\0" in str(candidate) or ".." in candidate.parts:
+        raise ClusterTransportError(f"{where} path is unsafe: {candidate}")
+    absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
+    if absolute == Path(absolute.anchor):
+        raise ClusterTransportError(f"{where} is not a regular file: {candidate}")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise ClusterTransportError(
+            f"{where} cannot be read safely: O_NOFOLLOW is unavailable"
+        )
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | nofollow
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | nofollow
+    )
+
+    descriptor: int | None = None
+    file_descriptor: int | None = None
+    try:
+        advertised = absolute.lstat()
+        if not stat.S_ISREG(advertised.st_mode):
+            raise ClusterTransportError(
+                f"{where} is not a regular file: {candidate}"
+            )
+        descriptor = os.open(absolute.anchor, directory_flags)
+        for component in absolute.parts[1:-1]:
+            before = os.stat(
+                component, dir_fd=descriptor, follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(before.st_mode):
+                raise ClusterTransportError(
+                    f"{where} directory ancestry is not real: {candidate}"
+                )
+            child = os.open(component, directory_flags, dir_fd=descriptor)
+            opened = os.fstat(child)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)
+            ):
+                os.close(child)
+                raise ClusterTransportError(
+                    f"{where} directory ancestry changed: {candidate}"
+                )
+            os.close(descriptor)
+            descriptor = child
+
+        filename = absolute.parts[-1]
+        before = os.stat(
+            filename, dir_fd=descriptor, follow_symlinks=False,
+        )
+        if not stat.S_ISREG(before.st_mode):
+            raise ClusterTransportError(
+                f"{where} is not a regular file: {candidate}"
+            )
+        file_descriptor = os.open(
+            filename, file_flags, dir_fd=descriptor,
+        )
+        opened = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino)
+            != (before.st_dev, before.st_ino)
+            or (opened.st_dev, opened.st_ino)
+            != (advertised.st_dev, advertised.st_ino)
+        ):
+            raise ClusterTransportError(
+                f"{where} changed while being opened: {candidate}"
+            )
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(file_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(file_descriptor)
+        current = os.stat(
+            filename, dir_fd=descriptor, follow_symlinks=False,
+        )
+        stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if (
+            any(getattr(opened, key) != getattr(after, key) for key in stable_fields)
+            or (current.st_dev, current.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or len(payload) != after.st_size
+        ):
+            raise ClusterTransportError(
+                f"{where} changed while being read: {candidate}"
+            )
+        return payload
+    except ClusterTransportError:
+        raise
+    except OSError as exc:
+        raise ClusterTransportError(
+            f"cannot read {where} without following links: {candidate}"
+        ) from exc
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def list_regular_file_children_nofollow(
+    directory: str | Path,
+    *,
+    where: str,
+    suffix: str = ".json",
+    allow_missing: bool = False,
+) -> tuple[Path, ...]:
+    """List matching regular children of one real directory, without links."""
+
+    candidate = Path(directory)
+    if "\0" in str(candidate) or ".." in candidate.parts:
+        raise ClusterTransportError(f"{where} path is unsafe: {candidate}")
+    absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise ClusterTransportError(
+            f"{where} cannot be inspected safely: O_NOFOLLOW is unavailable"
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | nofollow
+    )
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(absolute.anchor, flags)
+        for component in absolute.parts[1:]:
+            try:
+                before = os.stat(
+                    component, dir_fd=descriptor, follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                if allow_missing:
+                    return ()
+                raise
+            if not stat.S_ISDIR(before.st_mode):
+                raise ClusterTransportError(
+                    f"{where} is not a real directory: {candidate}"
+                )
+            child = os.open(component, flags, dir_fd=descriptor)
+            opened = os.fstat(child)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)
+            ):
+                os.close(child)
+                raise ClusterTransportError(
+                    f"{where} directory changed: {candidate}"
+                )
+            os.close(descriptor)
+            descriptor = child
+        paths: list[Path] = []
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                metadata = entry.stat(follow_symlinks=False)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ClusterTransportError(
+                        f"{where} contains a non-regular child: {entry.name}"
+                    )
+                if suffix and not entry.name.endswith(suffix):
+                    continue
+                paths.append(candidate / entry.name)
+        return tuple(sorted(paths, key=lambda item: item.name))
+    except ClusterTransportError:
+        raise
+    except OSError as exc:
+        raise ClusterTransportError(
+            f"cannot inspect {where} without following links: {candidate}"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def canonical_json_sha256(value: object, *, where: str = "value") -> str:
@@ -1320,9 +1710,9 @@ def _atomic_write(path: Path, payload: bytes) -> None:
 
 def _read_canonical(path: Path, *, where: str) -> object:
     try:
-        payload = path.read_bytes()
-    except OSError as exc:
-        raise ClusterTransportError(f"cannot read {where}: {path}") from exc
+        payload = read_regular_file_nofollow(path, where=where)
+    except ClusterTransportError:
+        raise
     try:
         return _strict_json_bytes(payload, where=where)
     except ValueError as exc:
@@ -1475,17 +1865,52 @@ class LocalTransport:
     def start(self, request: RunRequest) -> JobReceipt:
         """Start a detached worker which will atomically replace the receipt."""
         job_root, running = self._claim(request)
-        worker_argv = [
-            sys.executable,
-            "-P",
-            "-B",
-            "-s",
-            str(Path(__file__).resolve()),
-            "--local-worker",
-            str(self.state_root),
-            request.job_id,
-            self.transport_name,
-        ]
+        held_context = globals().get("_PRISMAQUANT_HELD_HELPER_CONTEXT")
+        if held_context is None:
+            worker_argv = [
+                sys.executable,
+                "-P",
+                "-B",
+                "-s",
+                str(Path(__file__).resolve()),
+                "--local-worker",
+                str(self.state_root),
+                request.job_id,
+                self.transport_name,
+            ]
+        else:
+            if (
+                not isinstance(held_context, tuple)
+                or len(held_context) != 4
+                or held_context[0]
+                != "prismaquant.cluster_transport.held_helper.v1"
+                or held_context[1] != str(Path(__file__))
+                or not isinstance(held_context[2], str)
+                or _SHA256.fullmatch(held_context[2]) is None
+                or not isinstance(held_context[3], str)
+                or not held_context[3]
+            ):
+                raise ClusterTransportError(
+                    "held remote-helper launch context is invalid"
+                )
+            launcher = held_context[3]
+            launcher_bytes = launcher.encode("utf-8")
+            worker_argv = [
+                sys.executable,
+                "-P",
+                "-B",
+                "-s",
+                "-c",
+                launcher,
+                held_context[1],
+                held_context[2],
+                base64.b64encode(launcher_bytes).decode("ascii"),
+                hashlib.sha256(launcher_bytes).hexdigest(),
+                "--local-worker",
+                str(self.state_root),
+                request.job_id,
+                self.transport_name,
+            ]
         try:
             worker = self._popen_impl(
                 worker_argv,
@@ -1525,9 +1950,30 @@ class LocalTransport:
             return receipt
         return launched
 
-    def status(self, job_id: str) -> JobReceipt:
+    def _inspect_job(
+        self, job_id: str,
+    ) -> tuple[Path, RunRequest, JobReceipt]:
         validated_job_id = _require_job_id(job_id)
         job_root = self._job_root(validated_job_id)
+        try:
+            root_stat = job_root.lstat()
+        except FileNotFoundError as exc:
+            raise JobNotFoundError(
+                f"job {validated_job_id!r} does not exist"
+            ) from exc
+        except OSError as exc:
+            raise ClusterTransportError(
+                f"cannot inspect job {validated_job_id!r} durable state"
+            ) from exc
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise ClusterTransportError(
+                f"job {validated_job_id!r} root is not a real directory"
+            )
+        list_regular_file_children_nofollow(
+            job_root,
+            where=f"job {validated_job_id!r} root",
+            suffix="",
+        )
         try:
             request = RunRequest.from_payload(
                 _read_canonical(
@@ -1553,6 +1999,23 @@ class LocalTransport:
             raise ClusterTransportError(
                 f"job {validated_job_id!r} request/receipt identity mismatch"
             )
+        return job_root, request, receipt
+
+    def inspect(self, job_id: str) -> JobReceipt:
+        """Return only already-durable state and never reconcile it.
+
+        Verification uses this path so observing a stale ``running`` receipt
+        cannot rewrite it into ``transport_error``.  Run/resume uses
+        :meth:`status`, whose explicit job-management contract still performs
+        dead-worker reconciliation.
+        """
+
+        _job_root, _request, receipt = self._inspect_job(job_id)
+        return receipt
+
+    def status(self, job_id: str) -> JobReceipt:
+        job_root, request, receipt = self._inspect_job(job_id)
+        validated_job_id = request.job_id
         if receipt.state != "running":
             return receipt
         if receipt.pid is not None and self._pid_alive(receipt.pid):
@@ -1610,22 +2073,53 @@ class LocalTransport:
             f"--query-gpu={','.join(_NVIDIA_QUERY_FIELDS)}",
             "--format=csv,noheader,nounits",
         ]
-        completed = self._run_impl(
-            command,
-            capture_output=True,
-            check=False,
-            shell=False,
-            timeout=15.0,
-        )
+        try:
+            completed = self._run_impl(
+                command,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=15.0,
+            )
+        except (subprocess.TimeoutExpired, TimeoutError) as exc:
+            raise TelemetryUnavailableError(
+                "nvidia-smi telemetry timed out"
+            ) from exc
+        except OSError as exc:
+            raise TelemetryUnavailableError(
+                f"nvidia-smi telemetry query was unavailable: {exc}"
+            ) from exc
         if int(completed.returncode) != 0:
-            raise ClusterTransportError(
+            raise TelemetryUnavailableError(
                 "nvidia-smi telemetry failed: "
                 + _bytes(completed.stderr).decode("utf-8", errors="replace")
             )
+        try:
+            gpus = parse_nvidia_smi_csv(_bytes(completed.stdout))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise TelemetryIntegrityError(
+                f"nvidia-smi returned malformed telemetry: {exc}"
+            ) from exc
+        try:
+            meminfo = self._meminfo_reader()
+        except (TimeoutError, OSError) as exc:
+            raise TelemetryUnavailableError(
+                f"host memory telemetry query was unavailable: {exc}"
+            ) from exc
+        if not isinstance(meminfo, (str, bytes)):
+            raise TelemetryIntegrityError(
+                "host memory telemetry returned a non-text payload"
+            )
+        try:
+            host_mem_available_bytes = parse_mem_available(meminfo)
+        except (TypeError, ValueError) as exc:
+            raise TelemetryIntegrityError(
+                f"host memory telemetry was malformed: {exc}"
+            ) from exc
         return TelemetrySnapshot(
             captured_ns=time.time_ns(),
-            host_mem_available_bytes=parse_mem_available(self._meminfo_reader()),
-            gpus=parse_nvidia_smi_csv(_bytes(completed.stdout)),
+            host_mem_available_bytes=host_mem_available_bytes,
+            gpus=gpus,
         )
 
     def copy_verified(
@@ -1713,6 +2207,80 @@ def _validate_remote_executable(raw: str, *, where: str) -> str:
     return path.as_posix()
 
 
+_HELPER_ERROR_KINDS = frozenset({
+    "job_conflict",
+    "job_not_found",
+    "operation_error",
+    "telemetry_integrity",
+    "telemetry_unavailable",
+})
+_HELPER_TYPED_ERROR_NAMES = {
+    "job_conflict": JobConflictError.__name__,
+    "job_not_found": JobNotFoundError.__name__,
+    "telemetry_unavailable": TelemetryUnavailableError.__name__,
+}
+
+
+def _helper_error_payload(
+    exc: Exception,
+    *,
+    action: str | None,
+) -> dict[str, object]:
+    if isinstance(exc, JobNotFoundError):
+        error_kind = "job_not_found"
+    elif isinstance(exc, JobConflictError):
+        error_kind = "job_conflict"
+    elif isinstance(exc, TelemetryUnavailableError):
+        error_kind = "telemetry_unavailable"
+    elif action == "telemetry":
+        error_kind = "telemetry_integrity"
+    else:
+        error_kind = "operation_error"
+    return {
+        "schema": HELPER_ERROR_SCHEMA,
+        "error_kind": error_kind,
+        "exception_type": type(exc).__name__,
+        "message": str(exc),
+    }
+
+
+def _parse_helper_error_payload(payload: object) -> tuple[str, str, str]:
+    if not isinstance(payload, Mapping) or set(payload) != {
+        "schema",
+        "error_kind",
+        "exception_type",
+        "message",
+    }:
+        raise ClusterTransportError("SSH helper error payload has invalid fields")
+    if payload["schema"] != HELPER_ERROR_SCHEMA:
+        raise ClusterTransportError("SSH helper error payload has the wrong schema")
+    error_kind = payload["error_kind"]
+    exception_type = payload["exception_type"]
+    message = payload["message"]
+    if not isinstance(error_kind, str) or error_kind not in _HELPER_ERROR_KINDS:
+        raise ClusterTransportError("SSH helper error payload has an invalid error kind")
+    if (
+        not isinstance(exception_type, str)
+        or len(exception_type) > 128
+        or _ENV_NAME.fullmatch(exception_type) is None
+    ):
+        raise ClusterTransportError(
+            "SSH helper error payload has an invalid exception type"
+        )
+    if not isinstance(message, str):
+        raise ClusterTransportError("SSH helper error payload has a non-text message")
+    expected_exception_type = _HELPER_TYPED_ERROR_NAMES.get(error_kind)
+    names_typed_error = exception_type in _HELPER_TYPED_ERROR_NAMES.values()
+    if (
+        expected_exception_type is not None
+        and exception_type != expected_exception_type
+    ) or (expected_exception_type is None and names_typed_error):
+        raise ClusterTransportError(
+            "SSH helper error payload has contradictory typed classification"
+        )
+    return error_kind, exception_type, message
+
+
 class SSHTransport:
     """OpenSSH backend with a fixed helper and stdin-only request payloads."""
 
@@ -1721,6 +2289,7 @@ class SSHTransport:
         host: str,
         *,
         remote_helper_path: str,
+        helper_source: bytes | None = None,
         remote_python_path: str = "/usr/bin/python3",
         ssh_binary: str = "ssh",
         run_impl: RunImplementation = subprocess.run,
@@ -1736,6 +2305,19 @@ class SSHTransport:
         self.remote_helper_path = _validate_remote_executable(
             remote_helper_path, where="remote_helper_path"
         )
+        if helper_source is not None and (
+            not isinstance(helper_source, bytes) or not helper_source
+        ):
+            raise ValueError("helper_source must be nonempty bytes when supplied")
+        # Bind one immutable helper identity for bootstrap and every later
+        # action.  Re-reading ``__file__`` per call would allow a local source
+        # replacement to make bootstrap and invocation silently disagree.
+        self._helper_source = (
+            canonical_helper_source() if helper_source is None else helper_source
+        )
+        self._helper_source_sha256 = hashlib.sha256(
+            self._helper_source
+        ).hexdigest()
         self.remote_python_path = _validate_remote_executable(
             remote_python_path, where="remote_python_path"
         )
@@ -1745,12 +2327,18 @@ class SSHTransport:
 
     @property
     def command_argv(self) -> tuple[str, ...]:
-        # The final argument is a constant assembled only from strictly
-        # validated executable paths.  OpenSSH runs it remotely via the login
-        # shell; no request or manifest field ever enters this string.
+        # The final argument contains only constructor-validated paths, the
+        # immutable helper digest, and the fixed launcher above.  OpenSSH runs
+        # it through the login shell; request/manifest fields remain stdin-only.
+        launcher_source = _SSH_HELPER_LAUNCHER_PROGRAM.encode("utf-8")
+        launcher_source_b64 = base64.b64encode(launcher_source).decode("ascii")
+        launcher_source_sha256 = hashlib.sha256(launcher_source).hexdigest()
         remote_command = (
-            f"exec {self.remote_python_path} -P -B -s "
-            f"{self.remote_helper_path} --remote-helper"
+            f"exec {self.remote_python_path} -P -B -s -c "
+            f"{shlex.quote(_SSH_HELPER_LAUNCHER_PROGRAM)} "
+            f"{shlex.quote(self.remote_helper_path)} "
+            f"{self._helper_source_sha256} {launcher_source_b64} "
+            f"{launcher_source_sha256} --remote-helper"
         )
         return (
             self.ssh_binary,
@@ -1771,28 +2359,36 @@ class SSHTransport:
         )
 
     def helper_install_spec(self) -> HelperInstallSpec:
-        source = canonical_helper_source()
         return HelperInstallSpec(
             remote_path=self.remote_helper_path,
-            source_sha256=hashlib.sha256(source).hexdigest(),
-            size_bytes=len(source),
-            source=source,
+            source_sha256=self._helper_source_sha256,
+            size_bytes=len(self._helper_source),
+            source=self._helper_source,
         )
 
     def _invoke(self, envelope: Mapping[str, object], *, timeout: float) -> tuple[str, object]:
         canonical = canonical_json_bytes(envelope, where="helper envelope")
         wire = base64.b64encode(canonical) + b"\n"
-        completed = self._run_impl(
-            list(self.command_argv),
-            input=wire,
-            capture_output=True,
-            check=False,
-            shell=False,
-            timeout=timeout,
-        )
+        try:
+            completed = self._run_impl(
+                list(self.command_argv),
+                input=wire,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=timeout,
+            )
+        except (subprocess.TimeoutExpired, TimeoutError) as exc:
+            raise _SSHInvocationUnavailableError(
+                "SSH helper invocation timed out"
+            ) from exc
+        except OSError as exc:
+            raise _SSHInvocationUnavailableError(
+                f"SSH helper invocation was unavailable: {exc}"
+            ) from exc
         stdout, stderr = _bytes(completed.stdout).strip(), _bytes(completed.stderr)
         if int(completed.returncode) != 0:
-            raise ClusterTransportError(
+            raise _SSHInvocationUnavailableError(
                 f"SSH helper exited {completed.returncode}: "
                 + stderr.decode("utf-8", errors="replace")
             )
@@ -1804,9 +2400,23 @@ class SSHTransport:
             raise ClusterTransportError("SSH helper returned the wrong response schema")
         if set(response) != {"schema", "kind", "payload"}:
             raise ClusterTransportError("SSH helper response has invalid fields")
-        kind = str(response["kind"])
+        kind = response["kind"]
+        if not isinstance(kind, str):
+            raise ClusterTransportError("SSH helper response kind must be text")
         if kind == "error":
-            raise ClusterTransportError(str(response["payload"]))
+            error_kind, exception_type, message = _parse_helper_error_payload(
+                response["payload"]
+            )
+            detail = f"{exception_type}: {message}"
+            if error_kind == "job_not_found":
+                raise JobNotFoundError(detail)
+            if error_kind == "job_conflict":
+                raise JobConflictError(detail)
+            if error_kind == "telemetry_unavailable":
+                raise TelemetryUnavailableError(detail)
+            if error_kind == "telemetry_integrity":
+                raise TelemetryIntegrityError(detail)
+            raise ClusterTransportError(detail)
         return kind, response["payload"]
 
     @staticmethod
@@ -1838,11 +2448,36 @@ class SSHTransport:
             "status", {"job_id": _require_job_id(job_id)}, timeout=30.0
         )
 
+    def inspect(self, job_id: str) -> JobReceipt:
+        return self._job_action(
+            "inspect", {"job_id": _require_job_id(job_id)}, timeout=30.0
+        )
+
     def sample_telemetry(self) -> TelemetrySnapshot:
-        kind, payload = self._invoke(self._envelope("telemetry", {}), timeout=30.0)
+        try:
+            kind, payload = self._invoke(
+                self._envelope("telemetry", {}), timeout=30.0,
+            )
+        except _SSHInvocationUnavailableError as exc:
+            raise TelemetryUnavailableError(
+                f"SSH telemetry query was unavailable: {exc}"
+            ) from exc
+        except (TelemetryUnavailableError, TelemetryIntegrityError):
+            raise
+        except ClusterTransportError as exc:
+            raise TelemetryIntegrityError(
+                f"SSH telemetry helper response violated the protocol: {exc}"
+            ) from exc
         if kind != "telemetry":
-            raise ClusterTransportError(f"SSH helper returned {kind!r}, expected telemetry")
-        return TelemetrySnapshot.from_payload(payload)
+            raise TelemetryIntegrityError(
+                f"SSH helper returned {kind!r}, expected telemetry"
+            )
+        try:
+            return TelemetrySnapshot.from_payload(payload)
+        except (TypeError, ValueError) as exc:
+            raise TelemetryIntegrityError(
+                f"SSH helper returned malformed telemetry: {exc}"
+            ) from exc
 
 
 def _default_helper_state_root() -> Path:
@@ -1857,6 +2492,7 @@ def _helper_response(kind: str, payload: object) -> bytes:
 
 
 def _remote_helper(state_root: str | None = None) -> int:
+    action: str | None = None
     try:
         encoded = sys.stdin.buffer.read().strip()
         canonical = base64.b64decode(encoded, validate=True)
@@ -1878,10 +2514,11 @@ def _remote_helper(state_root: str | None = None) -> int:
             request = RunRequest.from_payload(payload)
             receipt = transport.run(request) if action == "run" else transport.start(request)
             response = _helper_response("job_receipt", receipt.to_payload())
-        elif action == "status":
+        elif action in {"status", "inspect"}:
             if not isinstance(payload, Mapping) or set(payload) != {"job_id"}:
-                raise ValueError("status payload must contain only job_id")
-            receipt = transport.status(_require_job_id(payload["job_id"]))
+                raise ValueError(f"{action} payload must contain only job_id")
+            reader = transport.status if action == "status" else transport.inspect
+            receipt = reader(_require_job_id(payload["job_id"]))
             response = _helper_response("job_receipt", receipt.to_payload())
         elif action == "telemetry":
             if payload != {}:
@@ -1890,7 +2527,10 @@ def _remote_helper(state_root: str | None = None) -> int:
         else:
             raise ValueError(f"unknown helper action {action!r}")
     except Exception as exc:
-        response = _helper_response("error", f"{type(exc).__name__}: {exc}")
+        response = _helper_response(
+            "error",
+            _helper_error_payload(exc, action=action),
+        )
     sys.stdout.buffer.write(response)
     sys.stdout.buffer.flush()
     return 0

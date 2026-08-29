@@ -9,9 +9,15 @@ returns successfully.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections import Counter
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
+import pickle
+import stat
 from typing import Any
 
 from prismaquant.allocator_candidates import (
@@ -36,14 +42,12 @@ from prismaquant.dsv4_aura_cb_reprice import (
     DSV4_W8A16_READMISSION_SCHEMA,
 )
 from prismaquant.format_registry import get_format
-from prismaquant.gridbook_runtime_pin import (
-    GRIDBOOK_RUNTIME_CONTRACT_SCHEMA,
-    GRIDBOOK_RUNTIME_RELEASE_VERSION,
-    load_gridbook_runtime_pin,
-    require_exact_gridbook_runtime_release,
-    supports_source_fp8_block128_w8a16,
+from prismaquant.cluster_transport import (
+    ClusterTransportError,
+    canonical_json_bytes,
+    read_regular_file_nofollow,
 )
-from prismaquant.layer_config import load_assignment
+from prismaquant.layer_config import canonicalize_assignment
 from prismaquant.nvfp4_cb_footprint import (
     assignment_serialization_sha256,
     cb_serialization_metadata_from_assignment_payload,
@@ -51,10 +55,80 @@ from prismaquant.nvfp4_cb_footprint import (
 
 
 DSV4_W8A16_EXPORT_HANDOFF_SCHEMA = (
-    "prismaquant.dsv4_w8a16.export_handoff.v2"
+    "prismaquant.dsv4_w8a16.export_handoff.v3"
 )
 DSV4_W8A16_EXPORT_SOURCE_CLOSURE_SCHEMA = (
-    "prismaquant.dsv4_w8a16.export_source_closure.v1"
+    "prismaquant.dsv4_w8a16.export_source_closure.v2"
+)
+DSV4_W8A16_LEGACY_COMPATIBILITY_SCHEMA = (
+    "prismaquant.dsv4_w8a16.legacy_compatibility.v1"
+)
+DSV4_W8A16_EXPORT_SOURCE_CLOSURE_PIN_SCHEMA = (
+    "prismaquant.dsv4_w8a16.export_source_closure_pin.v1"
+)
+_SOURCE_CLOSURE_PIN_NAME = "dsv4_w8a16_legacy_closure_pin.json"
+_LEGACY_GRIDBOOK_RUNTIME = {
+    "schema": "prismaquant.gridbook_runtime_pin.v3",
+    "repository": "https://github.com/RobTand/gridbook.git",
+    "commit": "e992e5980c96333a48149f96392d6cff56ae9e3f",
+    "version": "0.8.5",
+    "version_is_release": True,
+    "runtime_contract_schema": "gridbook.runtime-contract.v3",
+    "required_abi_features": {
+        "routed_moe_per_role_codebook_lut": 1,
+        "source_fp8_block128_w8a16": 1,
+    },
+    "serving_route": ROUTE_GRIDBOOK_FP8_SOURCE_W8A16,
+}
+_LEGACY_W8A16_FORMAT_COUNTS = {
+    "FP8_BLOCK_UE8M0_SOURCE": 120,
+    "FP8_CB_K28": 6144,
+    "FP8_CB_K36": 3,
+    "FP8_CB_K44": 36,
+    "FP8_CB_K48": 142,
+    "NVFP4_CB_K16": 1536,
+    "NVFP4_CB_K18": 25344,
+}
+_LEGACY_W8A16_ROUTED_K28_QNAMES = frozenset(
+    f"model.layers.{layer}.mlp.experts.{expert}.{projection}"
+    for layer in (18, 19, 22, 33, 34, 35, 36, 39)
+    for expert in range(256)
+    for projection in ("down_proj", "gate_proj", "up_proj")
+)
+_LEGACY_W8A16_DENSE_K36_QNAMES = frozenset({
+    "model.layers.0.self_attn.wq_b",
+    "model.layers.1.self_attn.wq_b",
+    "model.layers.24.self_attn.wq_b",
+})
+_LEGACY_W8A16_PUBLICATION_IDENTITY_SHA256 = (
+    "75574db23d9171a7808efc94a7bbb6d25ba59d48e274a11fe28e7147b07fd829"
+)
+_LEGACY_W8A16_PUBLISHED_SHA256 = {
+    "cb_col_weights.pkl": (
+        "df045bde786f7d092e501bfa856984243106a13f05594f4a11fe30270fb09379"
+    ),
+    "layer_config.json": (
+        "39070ffd7bb0f22353bc1857ab129a4aceb581265612a6ae74836a438a890618"
+    ),
+    "pareto.knees.json": (
+        "906d68c2b9d073bf304ba9088a3f3b586c9a0cc76996e917c723fa771059f2c0"
+    ),
+    "selection.json": (
+        "c116981675551d8cc88d138437ddca3b72b629e1734a4c10c1b1cb4895644813"
+    ),
+}
+_LEGACY_W8A16_SOURCE_IDENTITY_FILE_SHA256 = (
+    "a1f27124c6356a33cad17b7d64155f509eeb6ee03d6044d22ac14a1cec996e76"
+)
+_LEGACY_W8A16_SOURCE_CONTENT_SHA256 = (
+    "50d0e40217a3feece2afc5e80a32e0a1a119ddcf8d40cffecc05e108128da642"
+)
+_LEGACY_W8A16_SOURCE_SHARD_COUNT = 48
+_LEGACY_W8A16_BUNDLE_FILE_SHA256 = (
+    "dfeee6d592402dc2ff63ad43118537a8ebdae155e05109f651a1b7922ff643a5"
+)
+_LEGACY_W8A16_BUNDLE_CONTENT_SHA256 = (
+    "4b0d551aa041876c1976736202960f137f492942311633a7f623a506a8abb17f"
 )
 _PUBLISH_MANIFEST = ".anchored_publish.json"
 _PUBLISHED_FILES = frozenset({
@@ -63,437 +137,116 @@ _PUBLISHED_FILES = frozenset({
     "pareto.knees.json",
     "cb_col_weights.pkl",
 })
-# This is a deliberate release boundary, not an import-graph checksum.  It
-# closes the reviewed streaming exporter plus the code that defines its CB
-# wire/accounting contract, DSpark physical namespace, DeepSeek-v4 profile and
-# decoded-source semantics, source-complete render identity, completeness, and
-# output transaction.  Unrelated pipeline/probe modules remain outside this
-# one-purpose pre-export handoff.
-#
-# RE-FROZEN 2026-08-15 for four Qwen3.8-27B CB changes, each reviewed against
-# THIS handoff rather than merely re-hashed:
-#   export_nvfp4_cb_streaming.py -- ports the `quantized_embedding` declaration
-#     from export_nvfp4_cb (65bf9aa).  Every added branch is guarded by a
-#     non-empty `embedding_stock`, which is populated only from recipe units
-#     named `*.embed_tokens`.  A DSv4 W8A16 recipe assigns none, so
-#     `embedding_stock` is empty and each branch is inert on this lane:
-#     `sidecar_stock -= set(embedding_stock)` subtracts nothing and
-#     `(qname in sidecar_stock or qname in embedding_stock)` is unchanged.
-#   artifact_completeness.py -- also resolves a config-group target written in
-#     vLLM's module namespace (the delegated-target spelling) back to its
-#     checkpoint unit.  The change only ADDS spellings that can claim a unit,
-#     so it can turn a false failure into a pass and never the reverse, and the
-#     DeepSeek-v4 spec declares no `recipe_to_vllm` rewrite at all — on this
-#     lane the added spelling is the name the gate already tested.
-#   cb_export_config.py -- adds the `quantized_embedding` declaration builder
-#     and its wire-id table (683b605), plus comment-only text (82c0b30). The
-#     builder is called only from the embedding branch above, and its wire
-#     table admits NVFP4 alone; nothing on the W8A16 path reaches it.
-#   production_weight_cache.py -- NVFP4A16 now takes NVFP4's production render
-#     (28152ba), which changes rendered bytes only for units ASSIGNED
-#     NVFP4A16, a format this lane does not use; and a new
-#     `release_resident_tensors` method (1cb5e1c) that drops re-readable
-#     disk-backed copies while keeping every key resolvable — additive, and it
-#     cannot alter a rendered weight.
-#
-# The drift was introduced by this session's own commits and went unnoticed
-# because the gate reports only the FIRST mismatching file: refreshing one
-# digest simply advanced the error to the next. Enumerate the whole closure
-# when re-freezing.
-#
-# RE-FROZEN 2026-08-15 (second time, one Qwen3.5/3.6 dense namespace fix),
-# reviewed against THIS handoff rather than re-hashed:
-#   model_profiles/base.py + registry.py -- a profile is now handed the
-#     `model_type`/`architectures` the checkpoint declares (`declare_config`),
-#     and `structure_spec()` specializes the spec's naming block when that spec
-#     declares `naming_variants`. `specs/qwen3_5_dense.json` is the ONLY spec
-#     that declares any -- asserted over EVERY file in specs/ by
-#     tests/test_qwen3_5_text_only_namespace.py::
-#     test_qwen3_5_dense_is_the_only_spec_with_naming_variants, so the claim
-#     covers specs added later and not just a hand-picked few --
-#     so on the DeepSeek-v4 lane `for_config` is not reached and the spec this
-#     handoff's profile returns is EQUAL to the unspecialized file spec; the
-#     declaration is two otherwise-unread attributes. Verified directly:
-#     `lm_head`/`model.embed_tokens`/expert names derive exactly as before on
-#     both the vLLM-internal and checkpoint sides.
-#
-# RE-FROZEN 2026-08-16 (third time). Whole closure enumerated per the note
-# above; THREE files drifted, reviewed against THIS handoff rather than
-# re-hashed:
-#   artifact_completeness.py -- two changes. (1) 1ccdf58 widened the
-#     enumerator from "`.weight` in an FP8 dtype" to also read
-#     `.cb_qweight`/`.weight_packed` planes, added `quantized_embedding` as a
-#     claiming mechanism, and bridged a fused checkpoint unit claimed by its
-#     unfused halves. The widening can only ADD units to classify, i.e. it can
-#     only turn a pass into a failure, and on this lane it adds none: a DSv4
-#     W8A16 artifact ships `FP8_BLOCK_UE8M0_SOURCE` blocks as `.weight` +
-#     `.scale` and carries no coded or packed plane. The embedding branch needs
-#     a `quantized_embedding` key this lane never writes (same argument as the
-#     first re-freeze's `embedding_stock`). The fused bridge is the only
-#     pass-ward change, and it is unreachable here: this lane's units resolve
-#     through their `source_passthrough` declaration several branches earlier,
-#     and it fires only when EVERY member is separately claimed. (2) The DSpark
-#     construction bridge below, which is gated on a non-null
-#     `provenance.dspark_cb_sidecar`; a W8A16 or target artifact declares none,
-#     so the resolver is None and `_unit_variants` is byte-identical. Pinned by
-#     tests/test_artifact_completeness_namespaces.py::
-#     test_without_a_sidecar_declaration_the_construction_bridge_is_inert, and
-#     confirmed on real bytes: artifact-aura-cb-112p69 reports the same 100
-#     declared passthrough / 25 verbatim / COMPLETE before and after.
-#     (3) `per_expert_format_groups` is now recognized as a claiming mechanism
-#     in the classifier, closing the same omission 1ccdf58 left for split
-#     expert banks: those tensors were already owned in both directions by
-#     `_validate_per_expert_format_groups`, so the classifier was reporting
-#     them a second time as claimed by nothing. Undeclared split tensors still
-#     fail through that validator, pinned by a negative control. This lane
-#     ships no split bank -- it writes no `per_expert_format_groups` key at
-#     all, so the claimed set is empty and the branch is unreachable.
-#   nvfp4_cb_footprint.py -- `whole_artifact_budget_stamp` gained an optional
-#     `excluded_source_prefixes` that emits its field only when non-empty, its
-#     reader validates that field, and two exclusion helpers were added. This
-#     handoff imports `assignment_serialization_sha256` and
-#     `cb_serialization_metadata_from_assignment_payload` and neither was
-#     touched; a caller that passes no exclusions gets a byte-identical stamp,
-#     pinned by tests/test_cb_serialization_contract.py::
-#     test_budget_stamp_is_byte_identical_without_exclusions.
-#   export_nvfp4_cb_streaming.py -- `_validate_namespace_exclusions` now
-#     cross-checks the exclusion set against the budget stamp that priced the
-#     allocation. It returns early when there is no stamp, and on a lane that
-#     excludes nothing the check compares two empty sets, so it can refuse only
-#     an export whose exclusions contradict its own price.
-#
-# RE-FROZEN 2026-08-16 (fourth time). Whole closure enumerated per the note
-# above; exactly ONE file drifted, and unlike the previous three re-freezes the
-# honest review is NOT "inert on this lane" -- it changes this lane's verdict,
-# so it is written out in full rather than waved through:
-#   artifact_completeness.py -- `_fused_member_units` gained a second fusion
-#     source for ROUTED expert units only. Its first source is
-#     `profile.fused_sibling_leaf_mapping()`, i.e. vLLM's
-#     `packed_modules_mapping`, which describes DENSE fusions; DeepseekV4
-#     exposes no vLLM architecture class, so that mapping is `{}` and
-#     `specs/deepseek_v4.json` declares no `fused_groups`. The bridge the third
-#     re-freeze called "unreachable here" was in fact unreachable EVERYWHERE on
-#     this architecture, which is why the 8 expert stacks 1ccdf58 recorded as
-#     task #14 were still failing. The fallback consults
-#     `profile.packed_expert_projection_names`, the declarative
-#     `packed_experts.projection_splits` the exporter itself used to emit the
-#     halves, and the same table Gridbook keeps as `_FUSED_FALLBACK` for the
-#     identical reason.
-#
-#     WHAT THIS CHANGES HERE, stated plainly: on `artifact-aura-cb-112p69` the
-#     verdict moves from 8 undeclared / NOT complete to 0 undeclared / COMPLETE
-#     (259->267 cb_units; passthrough 184, verbatim 25, fp8_in_ignore 0,
-#     missing_scale 0 all unchanged). That is task #14 closing, not a gate being
-#     widened to admit a defect: a per-role LEARNED codebook fits one book per
-#     `(layer, projection)` and a packed `gate_up_proj` target binds exactly one
-#     `codebook_ref`, so a per-role layer CANNOT name the packed stack -- the
-#     halves are the only spelling the ABI permits. Gridbook 0.8.5 resolved it
-#     (as read at that release: `config.py:1487-1503` `_moe_target_keys`
-#     accepts the half leaves, `:1401-1454` builds `codebook_ref_by_role`,
-#     `moe.py:512-527` consumes it); the currently pinned 0.8.11 carries the
-#     same three mechanisms forward at shifted line numbers
-#     (`config.py:1729`, `:1694`, `moe.py:574`), and covers it with its tests
-#     (`test_routed_per_role_codebooks.py`). Correspondingly, 1ccdf58's message
-#     calls the dual spelling a "real inconsistency" -- that framing is wrong
-#     and is retracted here; lattice layers share one book and legally name the
-#     packed stack, so both spellings coexist in one correct artifact.
-#
-#     The pass-ward reach is bounded on three sides: the parent must be a
-#     routed-expert container (dotted-boundary anchored, so `experts2` never
-#     matches `experts`), the leaf must decompose to MORE than itself, and the
-#     call site's EVERY-member rule is untouched, so a half-claimed stack still
-#     fails -- Gridbook refuses that same partial. A W8A16 `.weight` + `.scale`
-#     block still resolves through its `source_passthrough` declaration several
-#     branches earlier and never reaches this code. Pinned by
-#     tests/test_artifact_completeness_routed_per_role.py (6 tests: both-halves
-#     claims, one-half still fails, packed spelling still works, the dense
-#     fusion does NOT get the routed fallback, the vLLM mapping still covers
-#     dense, and the `experts2` boundary).
-#
-# RE-FROZEN 2026-08-16 (fifth time). Whole closure enumerated per the note
-# above; THREE files drifted, all for one fix, and the honest review is that
-# this lane's verdict is UNCHANGED -- the drift is confined to the streamed
-# FORWARD path, which no exporter calls:
-#   layer_streaming.py -- `_compute_position_embeddings` gained an optional
-#     `profile` argument and now re-keys a multi-rope dict from ROPE AXIS to
-#     ATTENTION LAYER TYPE, and `_call_layer` lost its silent
-#     `position_embeddings["main"]` fallback (an unresolved layer type raises).
-#     DSv4-Flash's rotary is keyed `("main","compress")` while its layers
-#     report `sliding_attention`/`compressed_sparse_attention`/
-#     `heavily_compressed_attention`, so the lookup missed EVERY layer and the
-#     fallback rotated 41 of 46 layers on base 10000 with YaRN off instead of
-#     160000 with YaRN. That is the defect behind the perplexity-262 BF16
-#     teacher, and it is a reintroduction of the bug PATCH 06 had already
-#     fixed inside the vendored forward (modeling_deepseek_v4.py:1514-1521).
-#   model_profiles/base.py -- new `rope_axis_for_layer_type` hook, default
-#     None, which is exactly the pre-change behaviour for every other arch.
-#   model_profiles/deepseek_v4.py -- overrides it by DELEGATING to
-#     `DeepseekV4RotaryEmbedding.rope_axis_for_layer_type`, so the mapping has
-#     one definition that `DeepseekV4Model.forward` resolves through too.
-#
-#     WHAT THIS CHANGES HERE, stated plainly: nothing. The two touched
-#     functions have exactly five callers -- `cost_streaming.py:137`,
-#     `incremental_probe.py:1542`/`:2706`, `sensitivity_probe.py:3219`/`:3274`
-#     -- which are the teacher, the Fisher probe and the sensitivity probe.
-#     No export path reaches them, the `LayerCache`/residency machinery this
-#     handoff does depend on is untouched, and no already-written byte moves.
-#     What DOES change is every FUTURE probe/cost pass on DSv4-Flash, whose
-#     forward was previously wrong on 41 of 46 layers; the allocation behind
-#     the current artifacts was produced through the defective path, and
-#     whether to re-probe is being decided on gold KL against a valid teacher
-#     rather than assumed here. Pinned by tests/test_multilayer_rope_forward.py
-#     (6 new tests: the re-key, compressed layers receiving `compress` rope,
-#     Gemma-style passthrough, a profile returning None, the removed fallback
-#     now raising, and a profile naming an axis the rotary lacks) and
-#     test_deepseek_v4_profile.py::test_rope_axis_mapping_matches_the_vendored_definition,
-#     which asserts the model forward still resolves through the shared
-#     definition so the two cannot drift apart again.
-# RE-FROZEN 2026-08-18 (fourth time, the merge/proven-rescues line), reviewed
-# against THIS handoff rather than re-hashed:
-#   nvfp4_cb_formats.py + nvfp4_cb_footprint.py -- the signed CB family
-#     (S13..S16, mode="signed") is deleted (c2c72a9). Lane-inert twice over:
-#     no allocation in any campaign ever assigned a signed rung (the family
-#     lost 78.48% of matched weight-MSE comparisons and was research-only),
-#     and the W8A16 lane exports the FP8 block-source passthrough, which
-#     never touches a CB codec. The footprint change removes the signed
-#     branch of lattice_codebook_content_sha256 plus one docstring word;
-#     every surviving branch's bytes are unchanged.
-#   artifact_completeness.py -- three checker-read fixes (5d75fc4, 1ccdf58,
-#     fcda875): the completeness gate learns to READ delegated-target
-#     namespaces, per-expert split-format group tokens, and the DSpark
-#     sidecar's physical->construction bijection (the fifth namespace,
-#     resolved from the artifact's own published mapping, never inferred).
-#     Post-export verifier only: it classifies claims over already-written
-#     bytes and renders nothing; every change widens what a correctly
-#     declared artifact can prove, and undeclared tensors still fail through
-#     the same refusal paths.
-#
-# MERGE-FROZEN 2026-08-18: the proven-rescues and DSv4-release lines merged.
-# Both lines above label themselves "third time" -- they were written in
-# parallel on sibling branches that shared the completeness commits; both
-# records are kept verbatim. The digests below are recomputed from the MERGED
-# tree: footprint carries both lines' changes (signed-branch removal +
-# excluded_source_prefixes), completeness carries both fifth-namespace
-# mechanisms (the sidecar alias map AND the dspark-threaded _unit_variants
-# bridge -- redundant claim paths, both fail-closed; unification is a
-# candidate follow-up, not a correctness need). Per-file lane-inertness
-# arguments are exactly the union of the two records above.
-#
-# RE-FROZEN 2026-08-21 (the CB lane joins the shard standard), reviewed
-# against THIS handoff rather than re-hashed:
-#   export_nvfp4_cb_streaming.py + nvfp4_cb_footprint.py -- the CB lane now
-#     publishes ~1 GiB safetensors shards by default (`shard_bytes`,
-#     `EXPORT_SHARD_BYTES`), which is the standing packaging default every
-#     other lane already ships. The single-container layout it replaces is a
-#     MEASURED user-hit defect, not a preference: the published 87 GB
-#     `model.safetensors` stalls the default HF loader on a 128 GB
-#     unified-memory GB10 and the reporter resharded it by hand
-#     (RobTand/gridbook#47 setup notes). The footprint change is the matching
-#     inventory rule -- it used to refuse any `model.safetensors.index.json`
-#     and now derives from the published container set whether an index is
-#     required, forbidden, or unrecognisable, failing closed on all three.
-#
-#     WHAT THIS CHANGES HERE, stated plainly, because this one is NOT inert:
-#     a W8A16 export from this tree publishes ~90 shards plus an index rather
-#     than one ~92 GB container, so its `model_sha` (a filename->size map,
-#     shipcard.py:270-279) differs from what a pre-change run would have
-#     produced, and the added index/per-shard-header bytes count against
-#     `whole_artifact_budget_bytes` (kilobytes against 92 GB, but real and
-#     measured by the same inventory). That is accepted deliberately: this
-#     release is UNSHIPPED -- the handoff is a pre-export gate -- so no
-#     published artifact's identity moves, and reproduction of the artifacts
-#     that ARE published happens in era worktrees at their pinned commits,
-#     where the pre-sharding exporter still lives, so replay identity there
-#     is untouched. `--shard-bytes` at or above the finished artifact
-#     reproduces the single-container layout if a specific release wants it;
-#     there is deliberately no zero sentinel, because the native lane has
-#     none. Recognition across a reshard is carried by the new layout-
-#     INVARIANT `provenance.tensor_payload_identity`
-#     (`shard_layout.tensor_payload_identity`), stamped by both CB exporters
-#     from digests taken in the pass that already hashes the bytes. Pinned by
-#     tests/test_shard_layout.py (12) and tests/test_cb_lane_sharding.py (21),
-#     which include a cross-exporter test showing the two exporters agree on
-#     the payload identity while their shard COUNTS differ.
-# RE-FROZEN 2026-08-21 (second this date: the read-bytes ledger + discovery
-# walker merges), reviewed against THIS handoff rather than re-hashed:
-#   cb_export_config.py -- extracts the codebook sidecar name literal into
-#     `CODEBOOK_TENSOR_PREFIX` and uses it in the same f-string (5b03e3e), so
-#     a consumer (the read-traffic ledger) reads the producer's own spelling.
-#     Serialized names are byte-identical; plus one `__all__` entry.
-#   model_profiles/base.py + model_profiles/deepseek_v4.py -- the discovery
-#     walker's claim rules (f5ce761): `walk_claim_rules()` on the profile and
-#     five prepended DSv4 pins (routers, mHC mixers, hyper head,
-#     compressor/indexer). Pure additions consumed only by `model_walk`; no
-#     existing export or naming path is touched.
-# RE-FROZEN 2026-08-21 (third this date: campaign rule R1 merged), reviewed
-# against THIS handoff rather than re-hashed:
-#   export_nvfp4_cb_streaming.py -- routed learned books are keyed per
-#     (layer, stack, rung) when the bundle records that keying, emitting ONE
-#     codebook per fused weight, and a fused weight whose scheme would name
-#     more than one book fails closed unless --allow-per-role-books stamps the
-#     shipcard. The W8A16 lane exports FP8 block-source passthrough and
-#     assigns no CB rung, so neither branch is reachable on this lane; the
-#     gate's predicate is structural (distinct refs a producer writes).
-#   artifact_completeness.py -- learns to claim the pooled single-book routed
-#     spelling alongside the per-role one; claim-widening only, and no CB
-#     claims exist on this lane.
-# RE-FROZEN 2026-08-21 (fourth this date: the R3 route-status merge), reviewed
-# against THIS handoff rather than re-hashed:
-#   export_nvfp4_cb_streaming.py -- the CB route-status gate (48618a6) runs
-#     before any byte is written, resolving each unit's structural facts
-#     against the pinned runtime's eligibility attestation; with the 0.8.10
-#     attestation ABSENT every unit reports `unattested` and nothing refuses
-#     without `--allow-unbacked-route`/`--non-native-target` being needed. The
-#     W8A16 lane assigns no CB rung, so the gate's per-unit loop sees no CB
-#     units on this lane; merge union with the R1 split-book gate reviewed
-#     line-by-line (both are additive parameters + calls at the same anchors).
-# RE-FROZEN 2026-08-24 (K1..K25 NVFP4 public producer scaffolding), after enumerating
-# the whole closure and reviewing reachability against THIS handoff:
-#   cb_export_config.py + nvfp4_cb_footprint.py -- the authoritative NVFP4
-#     product domain and exact codebook-sidecar accounting now include K1..K25.
-#     This handoff assigns only block-FP8 W8A16 source passthrough, no CB rung,
-#     so neither a CB scheme nor its sidecar/accounting branch is reached.
-#   nvfp4_cb_formats.py -- adds the digest-pinned nested d4 tables and uint32
-#     K32 direct research codec surface while preserving every historical
-#     lattice tensor hash. K26..K32 have no registry/export identity.
-#     W8A16 copies its checkpoint element/scale planes verbatim and never calls
-#     the CB field quantizer, lattice resolver, or bit packer.
-#   export_nvfp4_cb_streaming.py -- updates only the strict external Gridbook
-#     contract help text from v10 to v11. It cannot change exported bytes.
-# RE-FROZEN 2026-08-24 (producer assignment preflight), after enumerating the
-# whole closure and reviewing reachability against THIS handoff:
-#   export_nvfp4_cb_streaming.py -- adds the shared assignment parser as an
-#     outer decorator, before the transactional output wrapper. A valid W8A16
-#     assignment is parsed once more and then follows the byte-identical export
-#     body; an invalid/research-only CB spelling now refuses before creating a
-#     destination or preserved `.tmp-*` tree. The decorator neither rewrites
-#     the assignment nor touches tensor data, source discovery, or W8A16
-#     passthrough emission.
-# RE-FROZEN 2026-08-24 (strict compiled CB scoring from the refreshed RTX4090
-# parent), after reviewing the only changed closure file against THIS legacy
-# handoff:
-#   nvfp4_cb_formats.py -- imports the closed compiled-helper contract and
-#     routes CB VQ/scale-scoring reductions through it when strict campaign
-#     compilation is requested. The W8A16 handoff copies published source-FP8
-#     element/scale planes verbatim and never enters those CB scoring helpers;
-#     no wire, tensor-name, source-discovery, or passthrough branch changed.
-#     Keeping this frozen reproduction gate green is legacy compatibility, not
-#     maintained target eligibility: hardware-scoped production profiles must
-#     admit W8A16 separately, and the SM120 profile explicitly denies it.
-# RE-FROZEN 2026-08-24 (target-bound Gridbook export policy), after reviewing
-# both changed regions against THIS legacy handoff rather than accepting a new
-# digest mechanically:
-#   export_nvfp4_cb_streaming.py -- (1) the generic CB route gate now takes its
-#     target profile from the layer-config stamp (or the explicit environment)
-#     instead of always assuming ``nvfp4_cb``. The approved W8A16 assignment has
-#     no CB or stock-CT target, so the gate receives an empty unit set and no
-#     tensor codec, source discovery, or passthrough byte path changes. With no
-#     target-profile stamp the same ``nvfp4_cb`` default is retained; a future
-#     stamped legacy replay may change only the route-provenance identity to
-#     name its actual target. (2) the exact SM120 validation-only policy is
-#     prepared before the ordinary/RTX4090 producer policies and adds stamps
-#     and a final manifest check only when layer metadata names
-#     ``qwen38_sm120_cb_validation_only`` together with its exact policy and
-#     candidate contract. This handoff's DSv4 W8A16 layer metadata names no
-#     such target, so preparation returns None and every added branch is inert.
-#     Conversely, tests/test_nvfp4_cb_streaming.py pins that W8A16 is refused
-#     before an output transaction when SM120 metadata does select the policy.
-#     The maintained RTX40/RTX50 profiles therefore remain CB-only; preserving
-#     this digest is reproduction support for the historical DSv4 lane, not
-#     readmission of W8A16 to either current hardware target.
-_FROZEN_EXPORT_SOURCE_SHA256 = {
-    "prismaquant/export_nvfp4_cb_streaming.py": (
-        "1e4461c3ab8f9f697fa00aca63987d10395fce714b41d89249a36b10bbeae588"
-    ),
-    "prismaquant/cb_export_config.py": (
-        "3aa767bba9e689d50234730846a1671088ec0b16278d18aa6fa2693815294412"
-    ),
-    "prismaquant/nvfp4_cb_formats.py": (
-        "9f886165d4495f8e93615ac3804b41d87a69c8c4526833c196817366147d23d1"
-    ),
-    "prismaquant/dspark_source_metadata.py": (
-        "94fac4b16922f381cffe989d7b9b1d00f211bb93d9479dfde30eb0c02ef167f7"
-    ),
-    "prismaquant/model_profiles/__init__.py": (
-        "fb20303ed1b017a5a7f3a035d5ef43880822d775e252c28a08f32a67f8104c95"
-    ),
-    "prismaquant/model_profiles/base.py": (
-        "69fcddeb8c5de48756bc47b053782f2ddd9e2773c68176248f679e8f5fbd0e5c"
-    ),
-    "prismaquant/model_profiles/registry.py": (
-        "2fb8bcc01fbfd3b89870d387d335f804b05378f9853f223469c619e7ab766b90"
-    ),
-    "prismaquant/model_profiles/deepseek_v4.py": (
-        "6368f5657fbfb3b77a886e9bc0c589885d9240c49fdb77635d4bf2a74164b6f6"
-    ),
-    "prismaquant/model_profiles/specs/deepseek_v4.json": (
-        "b8f3b22c16484a6859494d96ff052e5c5229c9a7c3afb7ae829e9cf5e26ecbf4"
-    ),
-    "prismaquant/cb_source_decode.py": (
-        "d9a06483d008bf2361b0522bc258ab291db870d1c2432f9d4cd8d7a8cbacefbe"
-    ),
-    "prismaquant/layer_streaming.py": (
-        "5344f30043be08baf0c1509d77be511f6d2fbe963ce4d7b32afd8072a48a9da4"
-    ),
-    "prismaquant/production_weight_cache.py": (
-        "1cc27e3b64043f9873da528ae2aa128e37c15be303109509f713b8d738c59f36"
-    ),
-    "prismaquant/nvfp4_cb_footprint.py": (
-        "96bc38a7ab18c6d2401ed2b66141eef9809409c78468f8ceb16c0891b9701547"
-    ),
-    "prismaquant/artifact_completeness.py": (
-        "7f0c6c74733c2503b1e9607383264479007f49ae04e41700327bf0e97ab59767"
-    ),
-    "prismaquant/export_output_safety.py": (
-        "4af0a9d891313f1d9d031955e431e1e84c1ba0e11a9ce2605ea92de3bc3703b5"
-    ),
-}
-
+# The active source authority is the complete descriptor-stable package
+# inventory in ``dsv4_w8a16_legacy_closure_pin.json`` below.  No hand-picked
+# subset of exporter files is accepted.
 
 class W8A16ExportHandoffError(RuntimeError):
     """The exact reviewed DSv4 W8A16 export handoff is not intact."""
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(8 * 1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return hashlib.sha256(_read_bytes(path, where="SHA-256 input")).hexdigest()
 
 
-def _real_file(path: Path, *, where: str) -> Path:
-    if path.is_symlink() or not path.is_file():
-        raise W8A16ExportHandoffError(f"{where} is not a regular file: {path}")
-    return path
-
-
-def _json_object(path: Path, *, where: str) -> dict[str, Any]:
-    _real_file(path, where=where)
+def _read_bytes(path: Path, *, where: str) -> bytes:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
+        return read_regular_file_nofollow(path, where=where)
+    except ClusterTransportError as exc:
         raise W8A16ExportHandoffError(f"{where} is unreadable: {path}") from exc
+
+
+@contextmanager
+def _sealed_memory_snapshot(payload: bytes, *, where: str):
+    """Expose exact held bytes to a path-only parser without a path reopen."""
+
+    required = (
+        "F_ADD_SEALS",
+        "F_SEAL_SEAL",
+        "F_SEAL_SHRINK",
+        "F_SEAL_GROW",
+        "F_SEAL_WRITE",
+    )
+    if not hasattr(os, "memfd_create") or any(
+        not hasattr(fcntl, name) for name in required
+    ):
+        raise W8A16ExportHandoffError(
+            f"{where} cannot create a sealed in-memory snapshot"
+        )
+    descriptor = os.memfd_create(
+        "prismaquant-w8a16-snapshot",
+        getattr(os, "MFD_CLOEXEC", 0) | getattr(os, "MFD_ALLOW_SEALING", 0),
+    )
+    try:
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:  # pragma: no cover - defensive syscall guard
+                raise W8A16ExportHandoffError(
+                    f"{where} in-memory snapshot write made no progress"
+                )
+            offset += written
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        seals = (
+            fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_WRITE
+            | fcntl.F_SEAL_SEAL
+        )
+        fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, seals)
+        yield Path(f"/proc/self/fd/{descriptor}")
+    except W8A16ExportHandoffError:
+        raise
+    except OSError as exc:
+        raise W8A16ExportHandoffError(
+            f"{where} in-memory snapshot failed"
+        ) from exc
+    finally:
+        os.close(descriptor)
+
+
+def _json_object_from_bytes(payload: bytes, *, where: str) -> dict[str, Any]:
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except Exception as exc:
+        raise W8A16ExportHandoffError(f"{where} is unreadable") from exc
     if not isinstance(value, dict):
-        raise W8A16ExportHandoffError(f"{where} is not a JSON object: {path}")
+        raise W8A16ExportHandoffError(f"{where} is not a JSON object")
     return value
 
 
-def _verify_publication(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
-    if root.is_symlink() or not root.is_dir():
-        raise W8A16ExportHandoffError(
-            f"readmission publication is not a real directory: {root}"
-        )
-    observed_names = {path.name for path in root.iterdir()}
-    expected_names = _PUBLISHED_FILES | {_PUBLISH_MANIFEST}
-    if observed_names != expected_names:
-        raise W8A16ExportHandoffError(
-            "readmission publication file set differs: "
-            f"missing={sorted(expected_names - observed_names)}, "
-            f"extra={sorted(observed_names - expected_names)}"
-        )
-    manifest = _json_object(
-        root / _PUBLISH_MANIFEST, where="readmission publication manifest"
+def _verify_publication(
+    root: Path,
+) -> tuple[Path, dict[str, Any], dict[str, str], dict[str, bytes]]:
+    directory_fd, absolute_root = _open_real_directory(
+        root, where="readmission publication",
+    )
+    try:
+        observed_names = set(os.listdir(directory_fd))
+        expected_names = _PUBLISHED_FILES | {_PUBLISH_MANIFEST}
+        if observed_names != expected_names:
+            raise W8A16ExportHandoffError(
+                "readmission publication file set differs: "
+                f"missing={sorted(expected_names - observed_names)}, "
+                f"extra={sorted(observed_names - expected_names)}"
+            )
+        payloads = {
+            name: _read_regular_at(
+                directory_fd,
+                name,
+                where=f"published {name}",
+            )[0]
+            for name in sorted(expected_names)
+        }
+        if set(os.listdir(directory_fd)) != observed_names:
+            raise W8A16ExportHandoffError(
+                "readmission publication file set changed while reading"
+            )
+    finally:
+        os.close(directory_fd)
+    manifest = _json_object_from_bytes(
+        payloads[_PUBLISH_MANIFEST],
+        where="readmission publication manifest",
     )
     identity = manifest.get("identity")
     outputs = manifest.get("outputs")
@@ -524,19 +277,19 @@ def _verify_publication(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
     observed: dict[str, str] = {}
     for name in sorted(_PUBLISHED_FILES):
         descriptor = outputs.get(name)
-        path = _real_file(root / name, where=f"published {name}")
         if not isinstance(descriptor, Mapping):
             raise W8A16ExportHandoffError(
                 f"published {name} has no checksum descriptor"
             )
-        digest = _sha256(path)
-        actual = {"size_bytes": path.stat().st_size, "sha256": digest}
+        payload = payloads[name]
+        digest = hashlib.sha256(payload).hexdigest()
+        actual = {"size_bytes": len(payload), "sha256": digest}
         if descriptor != actual:
             raise W8A16ExportHandoffError(
                 f"published {name} differs from its atomic manifest"
             )
         observed[name] = digest
-    return manifest, observed
+    return absolute_root, manifest, observed, payloads
 
 
 def _selection_contract(selection: Mapping[str, object]) -> dict[str, object]:
@@ -563,39 +316,267 @@ def _selection_contract(selection: Mapping[str, object]) -> dict[str, object]:
     return observed
 
 
-def _verify_frozen_export_source_closure(
-    repo_root: Path,
-) -> dict[str, object]:
-    if repo_root.is_symlink() or not repo_root.is_dir():
+def _open_real_directory(path: Path, *, where: str) -> tuple[int, Path]:
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory:
         raise W8A16ExportHandoffError(
-            f"PrismaQuant root is not a real directory: {repo_root}"
+            f"{where} cannot be traversed without following links"
         )
-    observed: dict[str, str] = {}
-    # Report the WHOLE drift, not the first file of it. Raising on the first
-    # mismatch makes a re-freeze an N-round-trip guessing game: each refreshed
-    # digest just advances the error to the next file, and the reviewer never
-    # sees the size of what they are being asked to re-approve.
-    drift: list[str] = []
-    for relative, expected in _FROZEN_EXPORT_SOURCE_SHA256.items():
-        path = _real_file(
-            repo_root / relative,
-            where=f"frozen exporter/source closure {relative}",
-        )
-        digest = _sha256(path)
-        if digest != expected:
-            drift.append(
-                f"{relative}; observed={digest}, expected={expected}"
+    flags = os.O_RDONLY | nofollow | directory | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(absolute.anchor, flags)
+    try:
+        for component in absolute.parts[1:]:
+            before = os.stat(
+                component, dir_fd=descriptor, follow_symlinks=False,
             )
-        observed[relative] = digest
-    if drift:
+            if not stat.S_ISDIR(before.st_mode):
+                raise W8A16ExportHandoffError(
+                    f"{where} ancestry is not a real directory: {absolute}"
+                )
+            child = os.open(component, flags, dir_fd=descriptor)
+            opened = os.fstat(child)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)
+            ):
+                os.close(child)
+                raise W8A16ExportHandoffError(
+                    f"{where} ancestry changed while opening: {absolute}"
+                )
+            os.close(descriptor)
+            descriptor = child
+        return descriptor, absolute
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_regular_at(
+    parent_fd: int,
+    name: str,
+    *,
+    where: str,
+) -> tuple[bytes, os.stat_result]:
+    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise W8A16ExportHandoffError(f"{where} is not a regular file")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0),
+        dir_fd=parent_fd,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino)
+            != (before.st_dev, before.st_ino)
+        ):
+            raise W8A16ExportHandoffError(
+                f"{where} changed while being opened"
+            )
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if (
+            any(getattr(opened, key) != getattr(after, key) for key in stable)
+            or any(getattr(opened, key) != getattr(current, key) for key in stable)
+            or len(payload) != after.st_size
+        ):
+            raise W8A16ExportHandoffError(
+                f"{where} changed while being read"
+            )
+        return payload, after
+    finally:
+        os.close(descriptor)
+
+
+def _runtime_inventory(
+    package_fd: int,
+    *,
+    pin_payload_sha256: str,
+) -> dict[str, str]:
+    observed: dict[str, str] = {}
+    stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+
+    def walk(directory_fd: int, relative_parts: tuple[str, ...]) -> None:
+        opened_directory = os.fstat(directory_fd)
+        names = sorted(os.listdir(directory_fd))
+        advertised: dict[str, os.stat_result] = {}
+        for name in names:
+            if (
+                not name
+                or name in {".", ".."}
+                or "/" in name
+                or "\x00" in name
+            ):
+                raise W8A16ExportHandoffError(
+                    "frozen runtime closure contains an unsafe entry name"
+                )
+            before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            advertised[name] = before
+            relative_path = Path("prismaquant", *relative_parts, name).as_posix()
+            if stat.S_ISLNK(before.st_mode):
+                raise W8A16ExportHandoffError(
+                    f"frozen runtime closure contains a symlink: {relative_path}"
+                )
+            if stat.S_ISDIR(before.st_mode):
+                if name == "__pycache__":
+                    continue
+                if name == ".git" or name.startswith(".tmp") or name.endswith(".tmp"):
+                    raise W8A16ExportHandoffError(
+                        "frozen runtime closure contains a temporary/control "
+                        f"directory: {relative_path}"
+                    )
+                child = os.open(
+                    name,
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=directory_fd,
+                )
+                try:
+                    child_opened = os.fstat(child)
+                    if (
+                        not stat.S_ISDIR(child_opened.st_mode)
+                        or (child_opened.st_dev, child_opened.st_ino)
+                        != (before.st_dev, before.st_ino)
+                    ):
+                        raise W8A16ExportHandoffError(
+                            "frozen runtime directory changed while opening: "
+                            f"{relative_path}"
+                        )
+                    walk(child, (*relative_parts, name))
+                finally:
+                    os.close(child)
+                continue
+            if not stat.S_ISREG(before.st_mode):
+                raise W8A16ExportHandoffError(
+                    f"frozen runtime closure contains a special file: {relative_path}"
+                )
+            if name.endswith((".pyc", ".pyo")):
+                raise W8A16ExportHandoffError(
+                    f"frozen runtime closure contains bytecode: {relative_path}"
+                )
+            payload, _after = _read_regular_at(
+                directory_fd, name, where=f"frozen runtime closure {relative_path}",
+            )
+            digest = hashlib.sha256(payload).hexdigest()
+            if relative_path == f"prismaquant/{_SOURCE_CLOSURE_PIN_NAME}":
+                if digest != pin_payload_sha256:
+                    raise W8A16ExportHandoffError(
+                        "source-closure pin changed during runtime inventory"
+                    )
+                continue
+            observed[relative_path] = digest
+
+        if sorted(os.listdir(directory_fd)) != names:
+            raise W8A16ExportHandoffError(
+                "frozen runtime directory entries changed during inventory"
+            )
+        for name, before in advertised.items():
+            current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if any(getattr(before, key) != getattr(current, key) for key in stable):
+                raise W8A16ExportHandoffError(
+                    "frozen runtime entry changed during inventory: "
+                    + Path("prismaquant", *relative_parts, name).as_posix()
+                )
+        after_directory = os.fstat(directory_fd)
+        if any(
+            getattr(opened_directory, key) != getattr(after_directory, key)
+            for key in ("st_dev", "st_ino", "st_mtime_ns", "st_ctime_ns")
+        ):
+            raise W8A16ExportHandoffError(
+                "frozen runtime directory changed during inventory"
+            )
+
+    walk(package_fd, ())
+    return observed
+
+
+def _verify_frozen_export_source_closure_from_package_fd(
+    package_fd: int,
+) -> dict[str, object]:
+    pin_payload, _pin_stat = _read_regular_at(
+        package_fd,
+        _SOURCE_CLOSURE_PIN_NAME,
+        where="DSv4 W8A16 source-closure pin manifest",
+    )
+    try:
+        pin = json.loads(pin_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise W8A16ExportHandoffError(
-            f"frozen exporter/source closure changed ({len(drift)} of "
-            f"{len(_FROZEN_EXPORT_SOURCE_SHA256)} file(s)): "
-            + "; ".join(drift)
+            "DSv4 W8A16 source-closure pin manifest is invalid JSON"
+        ) from exc
+    if (
+        not isinstance(pin, dict)
+        or canonical_json_bytes(pin) + b"\n" != pin_payload
+        or set(pin) != {"schema", "files_sha256", "identity_sha256"}
+        or pin.get("schema")
+        != DSV4_W8A16_EXPORT_SOURCE_CLOSURE_PIN_SCHEMA
+        or not isinstance(pin.get("files_sha256"), dict)
+    ):
+        raise W8A16ExportHandoffError(
+            "DSv4 W8A16 source-closure pin manifest is noncanonical"
+        )
+    pin_identity = pin.get("identity_sha256")
+    expected_pin_identity = canonical_json_sha256(
+        {key: pin[key] for key in ("schema", "files_sha256")},
+        where="DSv4 W8A16 source-closure pin identity",
+    )
+    if pin_identity != expected_pin_identity:
+        raise W8A16ExportHandoffError(
+            "DSv4 W8A16 source-closure pin identity differs"
+        )
+    observed = _runtime_inventory(
+        package_fd,
+        pin_payload_sha256=hashlib.sha256(pin_payload).hexdigest(),
+    )
+
+    expected_files = pin["files_sha256"]
+    assert isinstance(expected_files, dict)
+    if any(
+        not isinstance(relative, str)
+        or not relative.startswith("prismaquant/")
+        or relative == f"prismaquant/{_SOURCE_CLOSURE_PIN_NAME}"
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        for relative, digest in expected_files.items()
+    ):
+        raise W8A16ExportHandoffError(
+            "DSv4 W8A16 source-closure pin ledger is invalid"
+        )
+    missing = sorted(set(expected_files) - set(observed))
+    extra = sorted(set(observed) - set(expected_files))
+    drift = sorted(
+        relative for relative in set(observed) & set(expected_files)
+        if observed[relative] != expected_files[relative]
+    )
+    if missing or extra or drift:
+        raise W8A16ExportHandoffError(
+            "frozen exporter/source runtime closure changed: "
+            f"missing={missing[:16]}, extra={extra[:16]}, drift={drift[:16]}"
         )
     closure: dict[str, object] = {
         "schema": DSV4_W8A16_EXPORT_SOURCE_CLOSURE_SCHEMA,
-        "files_sha256": observed,
+        "file_count": len(observed),
+        "tree_sha256": canonical_json_sha256(
+            observed, where="DSv4 W8A16 runtime-tree ledger",
+        ),
+        "pin_manifest_sha256": hashlib.sha256(pin_payload).hexdigest(),
+        "pin_identity_sha256": pin_identity,
     }
     closure["identity_sha256"] = canonical_json_sha256(
         closure,
@@ -604,21 +585,24 @@ def _verify_frozen_export_source_closure(
     return closure
 
 
-def _verify_runtime_contract() -> dict[str, object]:
+def _verify_frozen_export_source_closure(
+    repo_root: Path,
+) -> dict[str, object]:
+    package_fd, _package_root = _open_real_directory(
+        Path(repo_root) / "prismaquant", where="PrismaQuant runtime package",
+    )
     try:
-        pin = load_gridbook_runtime_pin()
-        require_exact_gridbook_runtime_release(pin)
-    except Exception as exc:
-        raise W8A16ExportHandoffError(
-            f"Gridbook release pin is unresolved: {exc}"
-        ) from exc
+        return _verify_frozen_export_source_closure_from_package_fd(
+            package_fd,
+        )
+    finally:
+        os.close(package_fd)
+
+
+def _verify_runtime_contract() -> dict[str, object]:
     contract = SOURCE_PASSTHROUGH_CONTRACTS["FP8_BLOCK_UE8M0_SOURCE"]
     if (
-        pin.version != GRIDBOOK_RUNTIME_RELEASE_VERSION
-        or pin.version_is_release is not True
-        or pin.runtime_contract_schema != GRIDBOOK_RUNTIME_CONTRACT_SCHEMA
-        or not supports_source_fp8_block128_w8a16(pin)
-        or contract.serving_route != ROUTE_GRIDBOOK_FP8_SOURCE_W8A16
+        contract.serving_route != ROUTE_GRIDBOOK_FP8_SOURCE_W8A16
         or not contract.route_backed
         or "FP8_BLOCK_UE8M0_SOURCE" in ROUTE_PENDING_PASSTHROUGH_FORMATS
     ):
@@ -636,22 +620,15 @@ def _verify_runtime_contract() -> dict[str, object]:
         raise W8A16ExportHandoffError(
             "source W8A16 and direct group-32 W8A8 contracts have collapsed"
         )
-    return {
-        "schema": pin.schema,
-        "repository": pin.repository,
-        "commit": pin.commit,
-        "version": pin.version,
-        "version_is_release": pin.version_is_release,
-        "runtime_contract_schema": pin.runtime_contract_schema,
-        "required_abi_features": dict(pin.required_abi_features),
-        "serving_route": contract.serving_route,
-    }
+    return dict(_LEGACY_GRIDBOOK_RUNTIME)
 
 
 def _verify_bundle(
     bundle_path: Path, layer_payload: Mapping[str, object]
 ) -> dict[str, object]:
-    _real_file(bundle_path, where="immutable codebook bundle")
+    bundle_payload = _read_bytes(
+        bundle_path, where="immutable codebook bundle",
+    )
     context_stamp, _tensor_stamps = (
         cb_serialization_metadata_from_assignment_payload(layer_payload)
     )
@@ -662,7 +639,10 @@ def _verify_bundle(
     try:
         from prismaquant.cb_learned_bundle import load_bundle
 
-        bundle = load_bundle(bundle_path)
+        with _sealed_memory_snapshot(
+            bundle_payload, where="immutable codebook bundle",
+        ) as snapshot_path:
+            bundle = load_bundle(snapshot_path)
     except Exception as exc:
         raise W8A16ExportHandoffError(
             f"immutable codebook bundle is invalid: {bundle_path}"
@@ -677,11 +657,100 @@ def _verify_bundle(
             "codebook bundle bytes/source map differ from the assignment stamp"
         )
     return {
-        "path": str(bundle_path.resolve(strict=True)),
-        "file_sha256": _sha256(bundle_path),
+        "path": str(Path(os.path.abspath(os.fspath(bundle_path)))),
+        "file_sha256": hashlib.sha256(bundle_payload).hexdigest(),
         "bundle_content_sha256": bundle.bundle_content_sha256,
         "codebook_count": len(bundle.codebook_content_digests),
     }
+
+
+def _col_weights_content_sha256(payload: bytes) -> str:
+    """Bind the exact approved pickle to the tensor mapping the exporter sees."""
+
+    try:
+        import torch
+
+        value = pickle.loads(payload)
+    except Exception as exc:
+        raise W8A16ExportHandoffError(
+            "approved W8A16 column-weight payload is unreadable"
+        ) from exc
+    if not isinstance(value, Mapping):
+        raise W8A16ExportHandoffError(
+            "approved W8A16 column weights are not a mapping"
+        )
+    digest = hashlib.sha256()
+    for raw_name in sorted(value, key=str):
+        name = str(raw_name)
+        if raw_name != name or not name:
+            raise W8A16ExportHandoffError(
+                "approved W8A16 column weights have a noncanonical key"
+            )
+        try:
+            tensor = torch.as_tensor(value[raw_name]).to(torch.float32).cpu()
+            if tensor.ndim != 1 or not tensor.is_contiguous():
+                tensor = tensor.contiguous()
+            tensor_bytes = tensor.numpy().tobytes()
+        except Exception as exc:
+            raise W8A16ExportHandoffError(
+                f"approved W8A16 column weights are invalid at {name!r}"
+            ) from exc
+        digest.update(name.encode("utf-8"))
+        digest.update(tensor_bytes)
+    return digest.hexdigest()
+
+
+def legacy_w8a16_assignment_compatibility(
+    assignment: Mapping[str, str],
+) -> dict[str, object]:
+    """Validate and describe only the sealed W8A16 producer exceptions."""
+
+    observed_counts = dict(sorted(Counter(assignment.values()).items()))
+    if observed_counts != _LEGACY_W8A16_FORMAT_COUNTS:
+        raise W8A16ExportHandoffError(
+            "W8A16 assignment format counts differ from the sealed ledger: "
+            f"observed={observed_counts}"
+        )
+    routed_k28 = frozenset(
+        qname for qname, fmt in assignment.items() if fmt == "FP8_CB_K28"
+    )
+    dense_k36 = frozenset(
+        qname for qname, fmt in assignment.items() if fmt == "FP8_CB_K36"
+    )
+    if routed_k28 != _LEGACY_W8A16_ROUTED_K28_QNAMES:
+        raise W8A16ExportHandoffError(
+            "W8A16 routed FP8_CB_K28 cells differ from the sealed 6,144-row ledger"
+        )
+    if dense_k36 != _LEGACY_W8A16_DENSE_K36_QNAMES:
+        raise W8A16ExportHandoffError(
+            "W8A16 dense FP8_CB_K36 cells differ from the sealed three-row ledger"
+        )
+    exception_map = {
+        "routed_fp8_cb_k28": {
+            "format": "FP8_CB_K28",
+            "count": len(routed_k28),
+            "qnames_sha256": canonical_json_sha256(
+                sorted(routed_k28), where="W8A16 routed K28 qnames",
+            ),
+        },
+        "dense_fp8_cb_k36": {
+            "format": "FP8_CB_K36",
+            "count": len(dense_k36),
+            "qnames_sha256": canonical_json_sha256(
+                sorted(dense_k36), where="W8A16 dense K36 qnames",
+            ),
+        },
+    }
+    result: dict[str, object] = {
+        "schema": DSV4_W8A16_LEGACY_COMPATIBILITY_SCHEMA,
+        "assignment_sha256": assignment_serialization_sha256(assignment),
+        "format_counts": observed_counts,
+        "exception_map": exception_map,
+    }
+    result["identity_sha256"] = canonical_json_sha256(
+        result, where="DSv4 W8A16 legacy compatibility ledger",
+    )
+    return result
 
 
 def verify_dsv4_w8a16_export_handoff(
@@ -698,18 +767,46 @@ def verify_dsv4_w8a16_export_handoff(
 
     publication = Path(publication_dir)
     approved_raw = Path(approved_raw_publication_dir)
-    output = Path(output_path)
-    if output.exists() or output.is_symlink():
-        raise W8A16ExportHandoffError(
-            f"export output already exists; refusing clobber: {output}"
-        )
-    if output.parent.is_symlink() or not output.parent.is_dir():
-        raise W8A16ExportHandoffError(
-            f"export output parent is not a real directory: {output.parent}"
-        )
+    output = Path(os.path.abspath(os.fspath(output_path)))
+    if not output.name:
+        raise W8A16ExportHandoffError("export output must name a child path")
+    output_parent_fd, output_parent = _open_real_directory(
+        output.parent, where="export output parent",
+    )
+    try:
+        try:
+            os.stat(output.name, dir_fd=output_parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise W8A16ExportHandoffError(
+                f"export output already exists; refusing clobber: {output}"
+            )
+    finally:
+        os.close(output_parent_fd)
+    output = output_parent / output.name
 
-    manifest, published_sha256 = _verify_publication(publication)
-    _raw_manifest, raw_sha256 = _verify_publication(approved_raw)
+    (
+        publication_root,
+        manifest,
+        published_sha256,
+        published_payloads,
+    ) = _verify_publication(publication)
+    (
+        approved_raw_root,
+        _raw_manifest,
+        raw_sha256,
+        raw_payloads,
+    ) = _verify_publication(approved_raw)
+    if (
+        manifest.get("identity_sha256")
+        != _LEGACY_W8A16_PUBLICATION_IDENTITY_SHA256
+        or published_sha256 != _LEGACY_W8A16_PUBLISHED_SHA256
+    ):
+        raise W8A16ExportHandoffError(
+            "readmitted publication differs from the canonical packed-alias-v2 "
+            "W8A16 handoff"
+        )
     expected_raw = {
         "layer_config.json": DSV4_W8A16_APPROVED_LAYER_CONFIG_SHA256,
         "selection.json": DSV4_W8A16_APPROVED_SELECTION_SHA256,
@@ -721,13 +818,23 @@ def verify_dsv4_w8a16_export_handoff(
                 f"approved raw publication changed at {name}"
             )
 
-    layer_path = publication / "layer_config.json"
-    selection_path = publication / "selection.json"
-    layer_payload = _json_object(layer_path, where="readmitted layer config")
-    selection = _json_object(selection_path, where="readmitted selection")
+    layer_path = publication_root / "layer_config.json"
+    selection_path = publication_root / "selection.json"
+    layer_payload = _json_object_from_bytes(
+        published_payloads["layer_config.json"],
+        where="readmitted layer config",
+    )
+    selection = _json_object_from_bytes(
+        published_payloads["selection.json"],
+        where="readmitted selection",
+    )
     try:
-        raw_assignment = load_assignment(approved_raw / "layer_config.json")
-        assignment = load_assignment(layer_path)
+        raw_layer_payload = _json_object_from_bytes(
+            raw_payloads["layer_config.json"],
+            where="approved raw layer config",
+        )
+        raw_assignment = canonicalize_assignment(raw_layer_payload)
+        assignment = canonicalize_assignment(layer_payload)
     except Exception as exc:
         raise W8A16ExportHandoffError(
             "approved/readmitted assignments are unreadable"
@@ -737,15 +844,12 @@ def verify_dsv4_w8a16_export_handoff(
         assignment != raw_assignment
         or len(assignment) != DSV4_TOTAL_UNITS
         or assignment_sha256 != DSV4_W8A16_APPROVED_ASSIGNMENT_SHA256
-        or sum(
-            fmt == "FP8_BLOCK_UE8M0_SOURCE"
-            for fmt in assignment.values()
-        ) != 120
     ):
         raise W8A16ExportHandoffError(
             "readmitted full qname/format map differs from the approved "
             "33,325-unit assignment"
         )
+    compatibility = legacy_w8a16_assignment_compatibility(assignment)
     metrics = _selection_contract(selection)
     whole = selection["whole_artifact_budget"]
     if whole.get("selection_assignment_sha256") != assignment_sha256:
@@ -787,8 +891,7 @@ def verify_dsv4_w8a16_export_handoff(
     raw_stamp = readmission.get("approved_raw_publication")
     if (
         not isinstance(raw_stamp, Mapping)
-        or Path(str(raw_stamp.get("publication", ""))).resolve(strict=False)
-        != approved_raw.resolve(strict=True)
+        or Path(str(raw_stamp.get("publication", ""))) != approved_raw_root
         or raw_stamp.get("assignment_sha256") != assignment_sha256
         or raw_stamp.get("selection") != metrics
         or raw_stamp.get("layer_config_sha256")
@@ -814,18 +917,57 @@ def verify_dsv4_w8a16_export_handoff(
         )
 
     from prismaquant.cost_streaming import (
+        compact_streamed_model_identity,
         validate_cached_streamed_model_identity,
     )
+    source_identity_absolute = Path(
+        os.path.abspath(os.fspath(source_identity_path))
+    )
+    source_identity_payload = _read_bytes(
+        source_identity_absolute, where="sealed source identity",
+    )
+    source_directory_fd, source_model_root = _open_real_directory(
+        Path(source_model_dir), where="sealed source checkpoint",
+    )
     try:
-        source_identity = validate_cached_streamed_model_identity(
-            source_model_dir,
-            source_identity_path,
-            require_complete_checkpoint=True,
-        )
+        with _sealed_memory_snapshot(
+            source_identity_payload, where="sealed source identity",
+        ) as source_identity_snapshot:
+            source_identity = validate_cached_streamed_model_identity(
+                Path(f"/proc/self/fd/{source_directory_fd}"),
+                source_identity_snapshot,
+                require_complete_checkpoint=True,
+                cached_source_model=source_model_root,
+            )
     except Exception as exc:
         raise W8A16ExportHandoffError(
             "source checkpoint no longer matches its complete content identity"
         ) from exc
+    finally:
+        os.close(source_directory_fd)
+    source_identity_file_sha256 = hashlib.sha256(
+        source_identity_payload
+    ).hexdigest()
+    try:
+        compact_source_identity = compact_streamed_model_identity(
+            source_identity,
+            where="sealed DSv4 W8A16 source identity",
+        )
+    except Exception as exc:
+        raise W8A16ExportHandoffError(
+            "sealed source checkpoint identity cannot be compacted"
+        ) from exc
+    if (
+        source_identity_file_sha256
+        != _LEGACY_W8A16_SOURCE_IDENTITY_FILE_SHA256
+        or source_identity.get("content_sha256")
+        != _LEGACY_W8A16_SOURCE_CONTENT_SHA256
+        or len(source_identity.get("shards", ()))
+        != _LEGACY_W8A16_SOURCE_SHARD_COUNT
+    ):
+        raise W8A16ExportHandoffError(
+            "source checkpoint differs from the sealed DSv4 W8A16 identity"
+        )
 
     from prismaquant.dspark_source_metadata import (
         discover_dspark_source_overlay_from_artifact,
@@ -846,37 +988,65 @@ def verify_dsv4_w8a16_export_handoff(
         )
 
     bundle = _verify_bundle(Path(codebook_bundle_path), layer_payload)
+    if (
+        bundle.get("file_sha256") != _LEGACY_W8A16_BUNDLE_FILE_SHA256
+        or bundle.get("bundle_content_sha256")
+        != _LEGACY_W8A16_BUNDLE_CONTENT_SHA256
+    ):
+        raise W8A16ExportHandoffError(
+            "codebook bundle differs from the sealed DSv4 W8A16 identity"
+        )
+    col_weights_path = publication_root / "cb_col_weights.pkl"
+    col_weights_payload = published_payloads["cb_col_weights.pkl"]
+    col_weights = {
+        "path": str(col_weights_path),
+        "file_sha256": hashlib.sha256(col_weights_payload).hexdigest(),
+        "content_sha256": _col_weights_content_sha256(col_weights_payload),
+    }
     root = (
         Path(repo_root) if repo_root is not None
         else Path(__file__).resolve(strict=True).parent.parent
     )
     frozen = _verify_frozen_export_source_closure(root)
-    return {
+    receipt: dict[str, object] = {
         "schema": DSV4_W8A16_EXPORT_HANDOFF_SCHEMA,
-        "publication": str(publication.resolve(strict=True)),
+        "publication": str(publication_root),
         "publication_identity_sha256": manifest["identity_sha256"],
         "published_sha256": published_sha256,
-        "approved_raw_publication": str(approved_raw.resolve(strict=True)),
+        "approved_raw_publication": str(approved_raw_root),
         "assignment_sha256": assignment_sha256,
         "unit_count": len(assignment),
-        "fp8_block_w8a16_count": 120,
+        "fp8_block_w8a16_count": _LEGACY_W8A16_FORMAT_COUNTS[
+            "FP8_BLOCK_UE8M0_SOURCE"
+        ],
+        "legacy_compatibility": compatibility,
         "selection": metrics,
         "source_checkpoint": {
-            "identity_path": str(Path(source_identity_path).resolve(strict=True)),
+            "model_path": str(source_model_root),
+            "identity_path": str(source_identity_absolute),
+            "identity_file_sha256": source_identity_file_sha256,
             "content_sha256": source_identity["content_sha256"],
             "shard_count": len(source_identity["shards"]),
+            "compact_identity": compact_source_identity,
         },
+        "col_weights": col_weights,
         "codebook_bundle": bundle,
         "gridbook_runtime_pin": runtime,
         "frozen_export_source_closure": frozen,
-        "output_path": str(output.resolve(strict=False)),
+        "output_path": str(output),
         "output_absent": True,
     }
+    receipt["identity_sha256"] = canonical_json_sha256(
+        receipt, where="DSv4 W8A16 export handoff receipt",
+    )
+    return receipt
 
 
 __all__ = [
     "DSV4_W8A16_EXPORT_HANDOFF_SCHEMA",
     "DSV4_W8A16_EXPORT_SOURCE_CLOSURE_SCHEMA",
+    "DSV4_W8A16_LEGACY_COMPATIBILITY_SCHEMA",
     "W8A16ExportHandoffError",
+    "legacy_w8a16_assignment_compatibility",
     "verify_dsv4_w8a16_export_handoff",
 ]

@@ -9,16 +9,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import stat
 import time
+from types import ModuleType
 from typing import Any, Callable
 
 from prismaquant.cluster_campaign_contract import (
+    LEGACY_CAMPAIGN_MANIFEST_SCHEMA,
     STAGE_DAG,
     canonical_sha256,
     validate_campaign_manifest,
@@ -37,9 +38,12 @@ from prismaquant.cluster_live_runtime import (
     build_live_campaign_runtime,
 )
 from prismaquant.cluster_transport import (
+    ClusterTransportError,
     JobReceipt,
     RunRequest,
     canonical_json_bytes,
+    list_regular_file_children_nofollow,
+    read_regular_file_nofollow,
 )
 from prismaquant.rtx4090_two_host_campaign import (
     CampaignCoordinator,
@@ -258,13 +262,24 @@ def _verify_controller_snapshot(
     if active_verifier is None:
         expected_tool = snapshot / "tools/prismaquant_runtime_snapshot.py"
         try:
-            spec = importlib.util.spec_from_file_location(
-                "_prismaquant_campaign_snapshot_verifier", expected_tool,
+            if expected_tool.is_symlink():
+                raise OSError("snapshot verifier is a symlink")
+            tool_source = read_regular_file_nofollow(
+                expected_tool, where="snapshot verifier",
             )
-            if spec is None or spec.loader is None:
-                raise ImportError("snapshot verifier has no import loader")
-            snapshot_tool = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(snapshot_tool)
+            snapshot_tool = ModuleType(
+                "_prismaquant_campaign_snapshot_verifier"
+            )
+            snapshot_tool.__file__ = str(expected_tool)
+            exec(
+                compile(
+                    tool_source,
+                    str(expected_tool),
+                    "exec",
+                    dont_inherit=True,
+                ),
+                snapshot_tool.__dict__,
+            )
         except Exception as exc:
             raise RTX4090TwoHostApplicationError(
                 "snapshot verifier cannot be imported from the controller snapshot"
@@ -336,8 +351,8 @@ def _strict_json_bytes(payload: bytes, *, where: str) -> object:
 
 def _read_canonical_mapping(path: Path, *, where: str) -> dict[str, object]:
     try:
-        payload = path.read_bytes()
-    except OSError as exc:
+        payload = read_regular_file_nofollow(path, where=where)
+    except ClusterTransportError as exc:
         raise RTX4090TwoHostApplicationError(f"{where} is unreadable") from exc
     value = _strict_json_bytes(payload, where=where)
     if not isinstance(value, Mapping) or canonical_json_bytes(value) + b"\n" != payload:
@@ -350,8 +365,8 @@ def _read_canonical_mapping(path: Path, *, where: str) -> dict[str, object]:
 def _read_sealed_mapping(path: Path, *, where: str) -> dict[str, object]:
     """Read a digest-sealed receipt whose producer owns its JSON formatting."""
     try:
-        payload = path.read_bytes()
-    except OSError as exc:
+        payload = read_regular_file_nofollow(path, where=where)
+    except ClusterTransportError as exc:
         raise RTX4090TwoHostApplicationError(f"{where} is unreadable") from exc
     value = _strict_json_bytes(payload, where=where)
     return _validate_sealed(value, where=where)
@@ -374,7 +389,15 @@ def _write_no_clobber(path: Path, value: Mapping[str, object]) -> None:
     try:
         descriptor = os.open(path, flags, 0o600)
     except FileExistsError:
-        if path.read_bytes() != payload:
+        try:
+            existing = read_regular_file_nofollow(
+                path, where="existing application receipt",
+            )
+        except ClusterTransportError as exc:
+            raise RTX4090TwoHostApplicationError(
+                f"existing application receipt is unsafe: {path}"
+            ) from exc
+        if existing != payload:
             raise RTX4090TwoHostApplicationError(
                 f"existing application receipt differs: {path}"
             )
@@ -617,6 +640,7 @@ class _HostActionExecutor:
         *,
         token: str,
         before_attempt_index: int,
+        verify_only: bool,
     ) -> None:
         """Prove a prior exact action could have crossed its receipt window."""
 
@@ -624,6 +648,14 @@ class _HostActionExecutor:
             raise RTX4090TwoHostApplicationError(
                 f"host action {action} has no prior retry attempt on {self.host_id}"
             )
+        reader = self.transport.status
+        if verify_only:
+            reader = getattr(self.transport, "inspect", None)
+            if not callable(reader):
+                raise RTX4090TwoHostApplicationError(
+                    f"host action transport for {self.host_id} has no "
+                    "non-mutating durable inspection path"
+                )
         for attempt_index in range(before_attempt_index):
             request = build_host_action_request(
                 action,  # type: ignore[arg-type]
@@ -633,7 +665,7 @@ class _HostActionExecutor:
             )
             try:
                 job = _normalize_job(
-                    self.transport.status(request.job_id),
+                    reader(request.job_id),
                     request,
                     require_succeeded=False,
                 )
@@ -952,6 +984,13 @@ class LiveCampaignApplication:
     def stage_preconditions(
         self, stage: str, *, verify_only: bool,
     ) -> Sequence[str]:
+        if (
+            not verify_only
+            and self.manifest["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+        ):
+            raise RTX4090TwoHostApplicationError(
+                "legacy campaign manifests are read-only"
+            )
         if stage not in _STAGE_INDEX:
             raise RTX4090TwoHostApplicationError(
                 f"unknown campaign stage {stage!r}"
@@ -967,6 +1006,10 @@ class LiveCampaignApplication:
         return tuple(sorted({str(item["identity_sha256"]) for item in receipts}))
 
     def prepare(self, *, resume: bool) -> None:
+        if self.manifest["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+            raise RTX4090TwoHostApplicationError(
+                "legacy campaign manifests are read-only"
+            )
         self.state_dir.mkdir(parents=True, exist_ok=True)
         # The remote host cannot execute even the stdlib-only admission module
         # until the exact immutable snapshot has been published there.
@@ -1030,6 +1073,10 @@ class LiveCampaignApplication:
         return value
 
     def record_gpu_start_guard(self, host_id: str, request: RunRequest) -> None:
+        if self.manifest["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+            raise RTX4090TwoHostApplicationError(
+                "legacy campaign manifests are read-only"
+            )
         current = self._load_guard_journal(host_id, request)
         checks = [] if current is None else list(current["checks"])
         index = len(checks)
@@ -1110,6 +1157,7 @@ class LiveCampaignApplication:
                     "release",
                     token="complete",
                     before_attempt_index=int(value["action_attempt_index"]),
+                    verify_only=verify_only,
                 )
             elif disposition != "released":
                 raise RTX4090TwoHostApplicationError(
@@ -1121,7 +1169,17 @@ class LiveCampaignApplication:
     def verify_guard_receipts(self) -> None:
         required: set[str] = set()
         receipts_root = self.state_dir / RECEIPT_DIR
-        for path in sorted(receipts_root.glob("*.json")):
+        try:
+            receipt_paths = list_regular_file_children_nofollow(
+                receipts_root,
+                where="execution receipt directory",
+                allow_missing=True,
+            )
+        except ClusterTransportError as exc:
+            raise RTX4090TwoHostApplicationError(
+                "execution receipt directory is unsafe"
+            ) from exc
+        for path in receipt_paths:
             receipt = _read_sealed_mapping(
                 path, where=f"execution receipt {path.name}",
             )
@@ -1166,10 +1224,20 @@ class LiveCampaignApplication:
                 allowed[filename] = (command.host_id, request)
 
         guard_root = self.application_root / GUARD_DIR
+        try:
+            guard_paths = list_regular_file_children_nofollow(
+                guard_root,
+                where="GPU start-guard directory",
+                allow_missing=True,
+            )
+        except ClusterTransportError as exc:
+            raise RTX4090TwoHostApplicationError(
+                "GPU start-guard directory is unsafe"
+            ) from exc
         actual_journals = {
-            path.name for path in guard_root.glob("*.json")
+            path.name for path in guard_paths
             if ".check-" not in path.name
-        } if guard_root.exists() else set()
+        }
         if not required.issubset(actual_journals):
             raise RTX4090TwoHostApplicationError(
                 "successful guarded executions are missing start journals"
@@ -1195,8 +1263,9 @@ class LiveCampaignApplication:
                 for index in range(len(checks))
             )
         actual_checks = {
-            path.name for path in guard_root.glob("*.check-*.json")
-        } if guard_root.exists() else set()
+            path.name for path in guard_paths
+            if ".check-" in path.name
+        }
         if actual_checks != expected_checks:
             raise RTX4090TwoHostApplicationError(
                 "start-guard action receipts differ from their journals"
@@ -1221,7 +1290,16 @@ class LiveCampaignApplication:
 
     def verify(self) -> dict[str, object]:
         result = self.coordinator.verify()
-        self.verify_application(require_release=True)
+        if self.manifest["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+            if result["complete"]:
+                self.verify_application(require_release=True)
+            else:
+                # An incomplete historical generation has no release receipt.
+                # Its compatibility route validates only immutable campaign
+                # state and the exact guards for completed GPU children.
+                self.verify_guard_receipts()
+        else:
+            self.verify_application(require_release=True)
         return result
 
 
@@ -1232,9 +1310,52 @@ def build_live_campaign_application(
     initialize: bool,
 ) -> LiveCampaignApplication:
     normalized = validate_campaign_manifest(manifest)
+    if initialize and normalized["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+        raise RTX4090TwoHostApplicationError(
+            "legacy campaign manifests are read-only"
+        )
     _validate_application_state_path(normalized, state_dir)
-    _verify_controller_snapshot(normalized)
-    runtime = build_live_campaign_runtime(normalized, initialize=initialize)
+    historical_helper_source: bytes | None = None
+    if normalized["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+        local_host = next(
+            host for host in normalized["hosts"]  # type: ignore[index]
+            if host["transport"]["kind"] == "local"  # type: ignore[index]
+        )
+        roots = local_host["roots"]
+        assert isinstance(roots, Mapping)
+        snapshot = Path(str(roots["snapshot_root"]))
+        _verify_controller_snapshot(
+            normalized,
+            source_file=(
+                snapshot / "prismaquant/rtx4090_two_host_application.py"
+            ),
+        )
+        helper_path = snapshot / "prismaquant/cluster_transport.py"
+        try:
+            helper_stat = helper_path.lstat()
+            if not stat.S_ISREG(helper_stat.st_mode) or helper_path.is_symlink():
+                raise RTX4090TwoHostApplicationError(
+                    "historical transport helper is not a regular file"
+                )
+            historical_helper_source = read_regular_file_nofollow(
+                helper_path, where="historical transport helper",
+            )
+        except (OSError, ClusterTransportError) as exc:
+            raise RTX4090TwoHostApplicationError(
+                "historical transport helper is absent or unreadable"
+            ) from exc
+        if not historical_helper_source:
+            raise RTX4090TwoHostApplicationError(
+                "historical transport helper is empty"
+            )
+    else:
+        # A current campaign must execute from its manifest-pinned snapshot.
+        _verify_controller_snapshot(normalized)
+    runtime = build_live_campaign_runtime(
+        normalized,
+        initialize=initialize,
+        ssh_helper_source=historical_helper_source,
+    )
     return LiveCampaignApplication(normalized, state_dir, runtime=runtime)
 
 

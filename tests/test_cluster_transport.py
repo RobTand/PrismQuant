@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import time
@@ -14,16 +16,20 @@ import prismaquant.cluster_transport as cluster_transport
 from prismaquant.cluster_transport import (
     ClusterTransportError,
     GpuSample,
+    HELPER_ERROR_SCHEMA,
     HELPER_ENVELOPE_SCHEMA,
     HELPER_RESPONSE_SCHEMA,
     JobConflictError,
+    JobNotFoundError,
     JobReceipt,
     LocalTransport,
     ManifestEntry,
     ManifestError,
     RunRequest,
     SSHTransport,
+    TelemetryIntegrityError,
     TelemetrySnapshot,
+    TelemetryUnavailableError,
     TreeManifest,
     build_tree_manifest,
     canonical_json_bytes,
@@ -33,6 +39,44 @@ from prismaquant.cluster_transport import (
     verify_tree_manifest,
     write_exact_bytes_no_clobber,
 )
+
+
+_HISTORICAL_HELPER_COMMIT = "6bde48a"
+_HISTORICAL_HELPER_SHA256 = (
+    "9fc47559fba4e0d1d4276a05375b2813dd91403991f61ad60629a8a914b50195"
+)
+
+
+def _historical_helper_source() -> bytes:
+    repo = Path(__file__).parents[1]
+    result = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{_HISTORICAL_HELPER_COMMIT}:prismaquant/cluster_transport.py",
+        ],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        shell=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert hashlib.sha256(result.stdout).hexdigest() == _HISTORICAL_HELPER_SHA256
+    assert b"def inspect(" not in result.stdout
+    return result.stdout
+
+
+def _filesystem_snapshot(root: Path) -> dict[str, tuple[int, bytes | None]]:
+    snapshot: dict[str, tuple[int, bytes | None]] = {}
+    if not root.exists():
+        return snapshot
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        mode = path.lstat().st_mode
+        snapshot[relative] = (mode, path.read_bytes() if path.is_file() else None)
+    return snapshot
 
 
 class RecordingRunner:
@@ -71,6 +115,32 @@ def helper_job_response(receipt: JobReceipt) -> bytes:
             "kind": "job_receipt",
             "payload": receipt.to_payload(),
         }
+    )
+
+
+def helper_response(kind: str, payload: object) -> bytes:
+    return canonical_json_bytes(
+        {
+            "schema": HELPER_RESPONSE_SCHEMA,
+            "kind": kind,
+            "payload": payload,
+        }
+    )
+
+
+def helper_error_response(
+    error_kind: str,
+    exception_type: str,
+    message: object,
+) -> bytes:
+    return helper_response(
+        "error",
+        {
+            "schema": HELPER_ERROR_SCHEMA,
+            "error_kind": error_kind,
+            "exception_type": exception_type,
+            "message": message,
+        },
     )
 
 
@@ -230,6 +300,22 @@ def test_local_start_uses_detached_fixed_worker_argv_and_shell_false(tmp_path):
         transport.start(request)
 
 
+def test_local_status_distinguishes_absence_from_a_claimed_job_id(tmp_path):
+    transport = LocalTransport(tmp_path / "state")
+
+    with pytest.raises(JobNotFoundError, match="job 'absent' does not exist"):
+        transport.status("absent")
+
+    claimed_root = tmp_path / "state" / "jobs" / "claimed"
+    claimed_root.mkdir(parents=True)
+    with pytest.raises(ClusterTransportError) as invalid_state:
+        transport.status("claimed")
+    assert type(invalid_state.value) is ClusterTransportError
+
+    with pytest.raises(JobConflictError, match="refusing overwrite"):
+        transport.start(RunRequest("claimed", ("/bin/true",)))
+
+
 def test_real_detached_local_worker_publishes_and_is_adopted(tmp_path) -> None:
     transport = LocalTransport(tmp_path / "state")
     request = RunRequest(
@@ -293,6 +379,75 @@ def test_local_status_binds_request_identity_and_fails_closed_on_dead_pid(tmp_pa
     tampered["request_sha256"] = "0" * 64
     receipt_path.write_bytes(canonical_json_bytes(tampered))
     with pytest.raises(ClusterTransportError, match="identity mismatch"):
+        transport.status(request.job_id)
+
+
+def test_local_inspect_never_reconciles_stale_running_receipt(tmp_path):
+    class FakeProcess:
+        pid = 987655
+
+    transport = LocalTransport(
+        tmp_path / "state",
+        popen_impl=lambda *args, **kwargs: FakeProcess(),
+        pid_alive=lambda _pid: False,
+        process_identity_reader=lambda pid: {
+            "schema": "prismaquant.cluster_transport.process_identity.v1",
+            "pid": pid,
+            "boot_id": "fixture",
+            "start_ticks": 1,
+        },
+    )
+    request = RunRequest("inspect-stale-worker", ("/bin/work",))
+    assert transport.start(request).state == "running"
+    job_root = tmp_path / "state/jobs/inspect-stale-worker"
+    before = {
+        child.name: child.read_bytes()
+        for child in job_root.iterdir()
+        if child.is_file()
+    }
+
+    assert transport.inspect(request.job_id).state == "running"
+    after = {
+        child.name: child.read_bytes()
+        for child in job_root.iterdir()
+        if child.is_file()
+    }
+
+    assert after == before
+    assert transport.status(request.job_id).state == "transport_error"
+    assert (job_root / "receipt.json").read_bytes() != before["receipt.json"]
+
+
+@pytest.mark.parametrize(
+    "substitution", ("job_root", "request", "receipt", "child"),
+)
+def test_local_status_rejects_symlinked_durable_job_state(
+    tmp_path,
+    substitution,
+):
+    transport = LocalTransport(
+        tmp_path / "state",
+        run_impl=RecordingRunner(completed()),
+    )
+    request = RunRequest("linked-job", ("/bin/true",))
+    transport.run(request)
+    job_root = tmp_path / "state/jobs/linked-job"
+    if substitution == "job_root":
+        target = job_root.with_name("linked-job-target")
+        job_root.rename(target)
+        job_root.symlink_to(target.name, target_is_directory=True)
+    elif substitution in {"request", "receipt"}:
+        path = job_root / f"{substitution}.json"
+        target = job_root / f"{substitution}.target"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target.name)
+    else:
+        target = job_root / "extra.target"
+        target.write_bytes(b"ignored before no-follow enumeration\n")
+        (job_root / "extra-child").symlink_to(target.name)
+
+    with pytest.raises(ClusterTransportError):
         transport.status(request.job_id)
 
 
@@ -424,10 +579,25 @@ def test_ssh_request_is_stdin_only_canonical_base64_and_shell_free(tmp_path):
     command = " ".join(argv)
     for private_value in (*request.argv, request.cwd, "manifest-only-secret"):
         assert private_value not in command
-    assert argv[-1] == (
-        "exec /usr/bin/python3 -P -B -s "
-        "/opt/prismaquant/cluster_transport.py --remote-helper"
+    remote_argv = shlex.split(argv[-1])
+    install = transport.helper_install_spec()
+    assert remote_argv[:6] == [
+        "exec", "/usr/bin/python3", "-P", "-B", "-s", "-c",
+    ]
+    assert remote_argv[7:9] == [
+        "/opt/prismaquant/cluster_transport.py",
+        install.source_sha256,
+    ]
+    assert remote_argv[-1] == "--remote-helper"
+    launcher_source = base64.b64decode(remote_argv[9], validate=True)
+    assert launcher_source.decode() == (
+        cluster_transport._SSH_HELPER_LAUNCHER_PROGRAM
     )
+    assert hashlib.sha256(launcher_source).hexdigest() == remote_argv[10]
+    launcher = remote_argv[6]
+    assert "O_NOFOLLOW" in launcher
+    assert "exec(compile(source" in launcher
+    assert "/opt/prismaquant/cluster_transport.py" not in launcher
     wire = kwargs["input"].strip()
     envelope_bytes = base64.b64decode(wire, validate=True)
     assert envelope_bytes == canonical_json_bytes(json.loads(envelope_bytes))
@@ -436,7 +606,7 @@ def test_ssh_request_is_stdin_only_canonical_base64_and_shell_free(tmp_path):
     assert envelope["payload"] == request.to_payload()
 
 
-def test_ssh_start_and_status_are_explicit_helper_actions():
+def test_ssh_start_status_and_inspect_are_explicit_helper_actions():
     request = RunRequest("remote-job", ("/bin/work",))
     running = JobReceipt(
         job_id=request.job_id,
@@ -450,7 +620,11 @@ def test_ssh_start_and_status_are_explicit_helper_actions():
         stderr=b"",
         transport="remote",
     )
-    replies = [helper_job_response(running), helper_job_response(running)]
+    replies = [
+        helper_job_response(running),
+        helper_job_response(running),
+        helper_job_response(running),
+    ]
 
     def fake_run(argv, **kwargs):
         return completed(stdout=replies.pop(0))
@@ -464,14 +638,266 @@ def test_ssh_start_and_status_are_explicit_helper_actions():
 
     assert transport.start(request).state == "running"
     assert transport.status(request.job_id).state == "running"
+    assert transport.inspect(request.job_id).state == "running"
     actions = []
     payloads = []
     for _, kwargs in runner.calls:
         envelope = json.loads(base64.b64decode(kwargs["input"].strip()))
         actions.append(envelope["action"])
         payloads.append(envelope["payload"])
-    assert actions == ["start", "status"]
-    assert payloads[1] == {"job_id": "remote-job"}
+    assert actions == ["start", "status", "inspect"]
+    assert payloads[1:] == [
+        {"job_id": "remote-job"},
+        {"job_id": "remote-job"},
+    ]
+
+
+class LocalShellSSHRunner:
+    """Execute only the fixed remote-command argument for launcher tests."""
+
+    def __init__(self, *, home: Path | None = None):
+        self.calls = []
+        self.home = home
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((list(argv), dict(kwargs)))
+        environment = dict(os.environ)
+        if self.home is not None:
+            environment["HOME"] = str(self.home)
+        return subprocess.run(
+            ["/bin/sh", "-c", argv[-1]],
+            input=kwargs.get("input"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            shell=False,
+            timeout=kwargs.get("timeout", 10),
+            env=environment,
+        )
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_ssh_launcher_executes_only_planned_held_helper_bytes(
+    tmp_path: Path,
+    historical: bool,
+) -> None:
+    source = (
+        _historical_helper_source()
+        if historical
+        else cluster_transport.canonical_helper_source()
+    )
+    helper = tmp_path / "remote" / "cluster_transport.py"
+    helper.parent.mkdir()
+    runner = LocalShellSSHRunner(home=tmp_path / "home")
+    transport = SSHTransport(
+        "fixture",
+        remote_helper_path=str(helper),
+        helper_source=source,
+        run_impl=runner,
+    )
+    spec = transport.helper_install_spec()
+    helper.write_bytes(spec.source)
+
+    if historical:
+        receipt = transport.run(RunRequest("held-historical", ("/bin/true",)))
+        assert receipt.succeeded
+    else:
+        with pytest.raises(JobNotFoundError):
+            transport.inspect("definitely-missing")
+
+    remote_argv = shlex.split(runner.calls[-1][0][-1])
+    assert remote_argv[7:9] == [str(helper), spec.source_sha256]
+    assert remote_argv[-1] == "--remote-helper"
+    assert remote_argv[6] == cluster_transport._SSH_HELPER_LAUNCHER_PROGRAM
+    assert not (helper.parent / "__pycache__").exists()
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_ssh_launcher_refuses_post_plan_helper_substitution_without_execution(
+    tmp_path: Path,
+    historical: bool,
+) -> None:
+    source = (
+        _historical_helper_source()
+        if historical
+        else cluster_transport.canonical_helper_source()
+    )
+    helper = tmp_path / "remote" / "cluster_transport.py"
+    helper.parent.mkdir()
+    marker = helper.parent / "MALICIOUS_EXECUTED"
+    runner = LocalShellSSHRunner(home=tmp_path / "home")
+    transport = SSHTransport(
+        "fixture",
+        remote_helper_path=str(helper),
+        helper_source=source,
+        run_impl=runner,
+    )
+    planned = transport.helper_install_spec()
+    helper.write_bytes(planned.source)
+    helper.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+    )
+    before_names = sorted(path.name for path in helper.parent.iterdir())
+
+    with pytest.raises(ClusterTransportError, match="digest differs"):
+        transport.inspect("must-not-run")
+
+    assert not marker.exists()
+    assert not (helper.parent / "__pycache__").exists()
+    assert sorted(path.name for path in helper.parent.iterdir()) == before_names
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_ssh_held_launcher_secures_real_detached_worker_entry(
+    tmp_path: Path,
+    historical: bool,
+) -> None:
+    source = (
+        _historical_helper_source()
+        if historical
+        else cluster_transport.canonical_helper_source()
+    )
+    helper = tmp_path / "remote" / "cluster_transport.py"
+    helper.parent.mkdir()
+    helper.write_bytes(source)
+    runner = LocalShellSSHRunner(home=tmp_path / "home")
+    transport = SSHTransport(
+        "fixture",
+        remote_helper_path=str(helper),
+        helper_source=source,
+        run_impl=runner,
+    )
+    request = RunRequest(
+        "held-detached-worker",
+        (
+            sys.executable,
+            "-P",
+            "-B",
+            "-s",
+            "-c",
+            "import sys; sys.stdout.write('held-worker-ok\\n')",
+        ),
+        timeout_seconds=10.0,
+    )
+
+    running = transport.start(request)
+    assert running.state == "running"
+    deadline = time.monotonic() + 10.0
+    while True:
+        receipt = transport.status(request.job_id)
+        if receipt.state != "running":
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail("held detached worker did not publish a terminal receipt")
+        time.sleep(0.02)
+
+    assert receipt.succeeded
+    assert receipt.stdout == b"held-worker-ok\n"
+    assert not (helper.parent / "__pycache__").exists()
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_detached_worker_refuses_helper_substitution_before_state_or_payload(
+    tmp_path: Path,
+    historical: bool,
+) -> None:
+    source = (
+        _historical_helper_source()
+        if historical
+        else cluster_transport.canonical_helper_source()
+    )
+    helper = tmp_path / "remote" / "cluster_transport.py"
+    helper.parent.mkdir()
+    helper.write_bytes(source)
+    state_root = tmp_path / "state"
+    job_root = state_root / "jobs" / "worker-substitution"
+    job_root.mkdir(parents=True)
+    marker = tmp_path / "payload-executed"
+    request = RunRequest(
+        "worker-substitution",
+        (
+            sys.executable,
+            "-P",
+            "-B",
+            "-s",
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')",
+        ),
+    )
+    running = JobReceipt(
+        job_id=request.job_id,
+        request_sha256=request.request_sha256,
+        state="running",
+        started_ns=1,
+        finished_ns=None,
+        returncode=None,
+        pid=None,
+        stdout=b"",
+        stderr=b"",
+        transport="remote",
+    )
+    (job_root / "request.json").write_bytes(
+        canonical_json_bytes(request.to_payload())
+    )
+    (job_root / "receipt.json").write_bytes(
+        canonical_json_bytes(running.to_payload())
+    )
+    (job_root / "launched").write_bytes(b"ready\n")
+    planned_digest = hashlib.sha256(source).hexdigest()
+    helper.write_text("raise RuntimeError('substituted helper executed')\n")
+    launcher = cluster_transport._SSH_HELPER_LAUNCHER_PROGRAM
+    launcher_bytes = launcher.encode("utf-8")
+    before = _filesystem_snapshot(tmp_path)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            "-s",
+            "-c",
+            launcher,
+            str(helper),
+            planned_digest,
+            base64.b64encode(launcher_bytes).decode("ascii"),
+            hashlib.sha256(launcher_bytes).hexdigest(),
+            "--local-worker",
+            str(state_root),
+            request.job_id,
+            "remote",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        shell=False,
+        timeout=10,
+    )
+
+    assert completed.returncode == 126
+    assert b"digest differs from bootstrap plan" in completed.stderr
+    assert not marker.exists()
+    assert _filesystem_snapshot(tmp_path) == before
+
+
+def test_ssh_launcher_refuses_symlinked_helper_ancestry(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    helper = real / "cluster_transport.py"
+    helper.write_bytes(cluster_transport.canonical_helper_source())
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    transport = SSHTransport(
+        "fixture",
+        remote_helper_path=str(linked / helper.name),
+        run_impl=LocalShellSSHRunner(),
+    )
+
+    with pytest.raises(ClusterTransportError, match="ancestry"):
+        transport.inspect("must-not-run")
+
+    assert not (real / "__pycache__").exists()
 
 
 def test_remote_helper_uses_explicit_campaign_state_root(tmp_path: Path) -> None:
@@ -503,6 +929,215 @@ def test_remote_helper_uses_explicit_campaign_state_root(tmp_path: Path) -> None
     assert JobReceipt.from_payload(response["payload"]).succeeded
     assert (state_root / "jobs/rooted-helper/request.json").is_file()
     assert (state_root / "jobs/rooted-helper/receipt.json").is_file()
+
+
+def test_remote_helper_inspect_is_read_only_for_stale_running_job(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "sealed-worker-state" / "transport"
+    job_root = state_root / "jobs" / "stale-remote"
+    job_root.mkdir(parents=True)
+    request = RunRequest("stale-remote", ("/bin/true",))
+    running = JobReceipt(
+        job_id=request.job_id,
+        request_sha256=request.request_sha256,
+        state="running",
+        started_ns=1,
+        finished_ns=None,
+        returncode=None,
+        pid=999_999_999,
+        stdout=b"",
+        stderr=b"",
+        transport="remote",
+    )
+    (job_root / "request.json").write_bytes(
+        canonical_json_bytes(request.to_payload())
+    )
+    receipt_path = job_root / "receipt.json"
+    receipt_path.write_bytes(canonical_json_bytes(running.to_payload()))
+    before = receipt_path.read_bytes()
+    helper = Path(__file__).parents[1] / "prismaquant/cluster_transport.py"
+
+    def invoke(action: str) -> JobReceipt:
+        envelope = {
+            "schema": HELPER_ENVELOPE_SCHEMA,
+            "action": action,
+            "payload": {"job_id": request.job_id},
+        }
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-P",
+                "-B",
+                "-s",
+                str(helper),
+                "--remote-helper",
+                "--remote-helper-state-root",
+                str(state_root),
+            ],
+            input=base64.b64encode(canonical_json_bytes(envelope)) + b"\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            shell=False,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        response = json.loads(result.stdout)
+        assert response["kind"] == "job_receipt"
+        return JobReceipt.from_payload(response["payload"])
+
+    assert invoke("inspect").state == "running"
+    assert receipt_path.read_bytes() == before
+    assert invoke("status").state == "transport_error"
+    assert receipt_path.read_bytes() != before
+
+
+def test_remote_helper_emits_structured_telemetry_integrity_error(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "sealed-worker-state" / "transport"
+    envelope = {
+        "schema": HELPER_ENVELOPE_SCHEMA,
+        "action": "telemetry",
+        "payload": {"unexpected": True},
+    }
+    helper = Path(__file__).parents[1] / "prismaquant/cluster_transport.py"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            "-s",
+            str(helper),
+            "--remote-helper",
+            "--remote-helper-state-root",
+            str(state_root),
+        ],
+        input=base64.b64encode(canonical_json_bytes(envelope)) + b"\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        shell=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr.decode()
+    response = json.loads(result.stdout)
+    assert response == {
+        "schema": HELPER_RESPONSE_SCHEMA,
+        "kind": "error",
+        "payload": {
+            "schema": HELPER_ERROR_SCHEMA,
+            "error_kind": "telemetry_integrity",
+            "exception_type": "ValueError",
+            "message": "telemetry payload must be empty",
+        },
+    }
+
+
+def test_helper_error_payload_names_unavailability_without_message_prefixes():
+    payload = cluster_transport._helper_error_payload(
+        TelemetryUnavailableError("driver query failed"),
+        action="telemetry",
+    )
+
+    assert payload == {
+        "schema": HELPER_ERROR_SCHEMA,
+        "error_kind": "telemetry_unavailable",
+        "exception_type": "TelemetryUnavailableError",
+        "message": "driver query failed",
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "action", "error_kind"),
+    [
+        (JobNotFoundError("missing"), "status", "job_not_found"),
+        (JobConflictError("claimed"), "start", "job_conflict"),
+    ],
+)
+def test_helper_error_payload_preserves_typed_job_errors(
+    error,
+    action,
+    error_kind,
+):
+    payload = cluster_transport._helper_error_payload(error, action=action)
+
+    assert payload == {
+        "schema": HELPER_ERROR_SCHEMA,
+        "error_kind": error_kind,
+        "exception_type": type(error).__name__,
+        "message": str(error),
+    }
+
+
+def test_remote_helper_preserves_not_found_and_conflict(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "sealed-worker-state" / "transport"
+    helper = Path(__file__).parents[1] / "prismaquant/cluster_transport.py"
+
+    def invoke(envelope: dict[str, object]) -> dict[str, object]:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-P",
+                "-B",
+                "-s",
+                str(helper),
+                "--remote-helper",
+                "--remote-helper-state-root",
+                str(state_root),
+            ],
+            input=base64.b64encode(canonical_json_bytes(envelope)) + b"\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            shell=False,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        return json.loads(result.stdout)
+
+    missing = invoke(
+        {
+            "schema": HELPER_ENVELOPE_SCHEMA,
+            "action": "status",
+            "payload": {"job_id": "missing"},
+        }
+    )
+    assert missing == {
+        "schema": HELPER_RESPONSE_SCHEMA,
+        "kind": "error",
+        "payload": {
+            "schema": HELPER_ERROR_SCHEMA,
+            "error_kind": "job_not_found",
+            "exception_type": "JobNotFoundError",
+            "message": "job 'missing' does not exist",
+        },
+    }
+
+    (state_root / "jobs" / "claimed").mkdir(parents=True)
+    request = RunRequest("claimed", ("/bin/true",))
+    conflict = invoke(
+        {
+            "schema": HELPER_ENVELOPE_SCHEMA,
+            "action": "start",
+            "payload": request.to_payload(),
+        }
+    )
+    assert conflict == {
+        "schema": HELPER_RESPONSE_SCHEMA,
+        "kind": "error",
+        "payload": {
+            "schema": HELPER_ERROR_SCHEMA,
+            "error_kind": "job_conflict",
+            "exception_type": "JobConflictError",
+            "message": "job 'claimed' already exists; refusing overwrite",
+        },
+    }
 
 
 @pytest.mark.parametrize(
@@ -543,6 +1178,173 @@ def test_ssh_refuses_noncanonical_or_failed_helper_response():
     assert install.size_bytes == len(install.source)
     assert install.source_sha256 == hashlib.sha256(install.source).hexdigest()
     assert base64.b64decode(install.to_payload()["source_b64"]) == install.source
+
+
+@pytest.mark.parametrize(
+    ("action", "error_kind", "exception_type", "expected_type"),
+    [
+        ("status", "job_not_found", "JobNotFoundError", JobNotFoundError),
+        ("start", "job_conflict", "JobConflictError", JobConflictError),
+    ],
+)
+def test_ssh_job_actions_restore_structured_remote_errors(
+    action,
+    error_kind,
+    exception_type,
+    expected_type,
+):
+    transport = SSHTransport(
+        "host",
+        remote_helper_path="/safe/helper.py",
+        run_impl=RecordingRunner(
+            completed(
+                stdout=helper_error_response(
+                    error_kind,
+                    exception_type,
+                    "remote detail",
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(expected_type, match=f"{exception_type}: remote detail"):
+        if action == "status":
+            transport.status("remote-job")
+        else:
+            transport.start(RunRequest("remote-job", ("/bin/true",)))
+
+
+def test_ssh_job_operation_error_remains_generic():
+    transport = SSHTransport(
+        "host",
+        remote_helper_path="/safe/helper.py",
+        run_impl=RecordingRunner(
+            completed(
+                stdout=helper_error_response(
+                    "operation_error",
+                    "OSError",
+                    "remote detail",
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(ClusterTransportError) as raised:
+        transport.status("remote-job")
+    assert type(raised.value) is ClusterTransportError
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        helper_error_response("job_not_found", "RuntimeError", "spoofed"),
+        helper_error_response("job_conflict", "RuntimeError", "spoofed"),
+        helper_error_response(
+            "operation_error", "JobNotFoundError", "spoofed",
+        ),
+        helper_error_response(
+            "operation_error", "JobConflictError", "spoofed",
+        ),
+    ],
+)
+def test_ssh_job_actions_reject_contradictory_typed_errors(response):
+    transport = SSHTransport(
+        "host",
+        remote_helper_path="/safe/helper.py",
+        run_impl=RecordingRunner(completed(stdout=response)),
+    )
+
+    with pytest.raises(ClusterTransportError) as raised:
+        transport.status("remote-job")
+    assert type(raised.value) is ClusterTransportError
+
+
+@pytest.mark.parametrize(
+    ("error_kind", "exception_type", "expected_type"),
+    [
+        (
+            "telemetry_unavailable",
+            "TelemetryUnavailableError",
+            TelemetryUnavailableError,
+        ),
+        ("telemetry_integrity", "TelemetryIntegrityError", TelemetryIntegrityError),
+        ("telemetry_integrity", "ValueError", TelemetryIntegrityError),
+        ("operation_error", "RuntimeError", TelemetryIntegrityError),
+    ],
+)
+def test_ssh_telemetry_preserves_structured_remote_error_classification(
+    error_kind,
+    exception_type,
+    expected_type,
+):
+    transport = SSHTransport(
+        "host",
+        remote_helper_path="/safe/helper.py",
+        run_impl=RecordingRunner(
+            completed(
+                stdout=helper_error_response(
+                    error_kind,
+                    exception_type,
+                    "remote detail",
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(expected_type, match=f"{exception_type}: remote detail"):
+        transport.sample_telemetry()
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        RecordingRunner(
+            error=subprocess.TimeoutExpired(cmd=["ssh"], timeout=30),
+        ),
+        RecordingRunner(
+            completed(returncode=255, stderr=b"connection refused"),
+        ),
+        RecordingRunner(error=OSError("ssh executable unavailable")),
+    ],
+)
+def test_ssh_telemetry_transport_failures_are_unavailable(runner):
+    transport = SSHTransport(
+        "host",
+        remote_helper_path="/safe/helper.py",
+        run_impl=runner,
+    )
+
+    with pytest.raises(TelemetryUnavailableError, match="SSH telemetry query"):
+        transport.sample_telemetry()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # A legacy/free-form error string cannot impersonate the typed class.
+        helper_response("error", "TelemetryUnavailableError: spoofed"),
+        helper_error_response(
+            "telemetry_unavailable", "ValueError", "contradictory",
+        ),
+        helper_error_response(
+            "telemetry_integrity", "TelemetryUnavailableError", "contradictory",
+        ),
+        helper_error_response("unknown", "ValueError", "unknown kind"),
+        helper_error_response("telemetry_integrity", "ValueError", 7),
+        helper_response("job_receipt", {}),
+        helper_response("telemetry", {"captured_ns": 1}),
+        b'{"kind":"telemetry", "payload":{}}',
+    ],
+)
+def test_ssh_telemetry_malformed_helper_responses_are_integrity_errors(response):
+    transport = SSHTransport(
+        "host",
+        remote_helper_path="/safe/helper.py",
+        run_impl=RecordingRunner(completed(stdout=response)),
+    )
+
+    with pytest.raises(TelemetryIntegrityError):
+        transport.sample_telemetry()
 
 
 def test_tree_manifest_is_canonical_and_verifies_nested_and_empty_dirs(tmp_path):
@@ -740,6 +1542,99 @@ def test_local_telemetry_uses_fixed_nvidia_query_and_injected_meminfo(tmp_path):
     assert argv[1].startswith("--query-gpu=timestamp,index,name,uuid")
     assert argv[2] == "--format=csv,noheader,nounits"
     assert kwargs["shell"] is False
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        RecordingRunner(
+            error=subprocess.TimeoutExpired(cmd=["nvidia-smi"], timeout=15),
+        ),
+        RecordingRunner(completed(returncode=1, stderr=b"driver unavailable")),
+        RecordingRunner(error=OSError("nvidia-smi unavailable")),
+    ],
+)
+def test_local_telemetry_query_failures_are_unavailable(tmp_path, runner):
+    transport = LocalTransport(
+        tmp_path / "state",
+        run_impl=runner,
+        meminfo_reader=lambda: "MemAvailable: 42 kB\n",
+    )
+
+    with pytest.raises(TelemetryUnavailableError):
+        transport.sample_telemetry()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"not,enough,fields\n",
+        (
+            b"time, bad-index, GPU, GPU-0, 0000:01:00.0, "
+            b"5, 6, 7, 8, 9, 10\n"
+        ),
+        (
+            b"time, 0, GPU, GPU-0, 0000:01:00.0, "
+            b"not-a-number, 6, 7, 8, 9, 10\n"
+        ),
+        object(),
+    ],
+)
+def test_local_malformed_nvidia_telemetry_is_an_integrity_error(
+    tmp_path,
+    payload,
+):
+    transport = LocalTransport(
+        tmp_path / "state",
+        run_impl=RecordingRunner(completed(stdout=payload)),
+        meminfo_reader=lambda: "MemAvailable: 42 kB\n",
+    )
+
+    with pytest.raises(TelemetryIntegrityError, match="nvidia-smi"):
+        transport.sample_telemetry()
+
+
+@pytest.mark.parametrize(
+    "meminfo",
+    [
+        "MemTotal: 42 kB\n",
+        "MemAvailable: 1 kB\nMemAvailable: 2 kB\n",
+        "MemAvailable: not-a-number kB\n",
+        object(),
+    ],
+)
+def test_local_malformed_meminfo_is_an_integrity_error(tmp_path, meminfo):
+    payload = (
+        b"time, 0, GPU, GPU-0, 0000:01:00.0, "
+        b"5, 6, 7, 8, 9, 10\n"
+    )
+    transport = LocalTransport(
+        tmp_path / "state",
+        run_impl=RecordingRunner(completed(stdout=payload)),
+        meminfo_reader=lambda: meminfo,
+    )
+
+    with pytest.raises(TelemetryIntegrityError, match="host memory telemetry"):
+        transport.sample_telemetry()
+
+
+def test_local_unreadable_meminfo_is_unavailable(tmp_path):
+    payload = (
+        b"time, 0, GPU, GPU-0, 0000:01:00.0, "
+        b"5, 6, 7, 8, 9, 10\n"
+    )
+
+    def unavailable_meminfo():
+        raise OSError("meminfo unavailable")
+
+    transport = LocalTransport(
+        tmp_path / "state",
+        run_impl=RecordingRunner(completed(stdout=payload)),
+        meminfo_reader=unavailable_meminfo,
+    )
+
+    with pytest.raises(TelemetryUnavailableError, match="host memory telemetry"):
+        transport.sample_telemetry()
 
 
 def test_empty_utilization_summary_is_total_and_deterministic():

@@ -19,11 +19,9 @@ import prismaquant.shipcard as shipcard_module
 import prismaquant.validate_rtx4090_fp8_cb as rtx_verifier
 from prismaquant.cb_layout import FP8_PRODUCT_RUNGS
 from prismaquant.gridbook_validation_only_policy import (
+    GridbookValidationOnlyPolicyError,
     SM120_VALIDATION_CANDIDATE_CONTRACT_PATH,
-    VALIDATION_ONLY_DISPOSITION,
     sm120_validation_only_policy_stamp,
-    sm120_validation_only_route_status_stamp,
-    validation_only_policy_build_fields,
 )
 from prismaquant.shipcard import (
     REQUIRED_SLOTS,
@@ -405,94 +403,18 @@ def test_validation_only_artifact_is_categorically_unshippable(tmp_path):
     )
 
 
-def _stamp_sm120_validation_quant_config(model_dir) -> dict:
-    assignment = {
-        "model.layers.0.self_attn.q_proj": "NVFP4_CB_K1",
-        "model.layers.0.self_attn.k_proj": "FP8_CB_K48",
-        "model.norm": "BF16",
-    }
-    policy = sm120_validation_only_policy_stamp(
-        SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
-    )
-    quant = {
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-        "provenance": {
-            "producer_policy": policy,
-            "tensor_formats": assignment,
-            "cb_route_status": sm120_validation_only_route_status_stamp(
-                policy, assignment
-            ),
-        },
-    }
-    (model_dir / "quant_config.json").write_text(json.dumps(quant))
-    return quant
-
-
-def test_sm120_validation_only_shipcard_echoes_and_categorically_refuses(
-    tmp_path,
-):
-    model_dir = _artifact(tmp_path, artifact_format="nvfp4_cb")
-    quant = _stamp_sm120_validation_quant_config(model_dir)
-    card = build_shipcard(
-        model_dir,
-        build=validation_only_policy_build_fields(
-            quant["provenance"]["producer_policy"]
-        ),
-    )
-
-    assert card["cb_route_status"]["serving_profile"] == (
-        "qwen38_sm120_cb_validation_only"
-    )
-    assert card["cb_route_status"]["artifact_disposition"] == (
-        VALIDATION_ONLY_DISPOSITION
-    )
-    assert card["cb_route_status"]["release_eligible"] is False
-    problems = verify(card, model_dir=model_dir, required=())
-    assert any(VALIDATION_ONLY_DISPOSITION in item for item in problems)
-    assert any("exact stamp verified" in item for item in problems)
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    ("remove_stamp", "tamper_policy", "cross_policy_replay"),
-)
-def test_sm120_shipcard_refuses_removed_tampered_or_cross_policy_stamp(
-    tmp_path,
-    mutation,
-):
-    model_dir = _artifact(tmp_path, artifact_format="nvfp4_cb")
-    quant = _stamp_sm120_validation_quant_config(model_dir)
-    card = build_shipcard(
-        model_dir,
-        build=validation_only_policy_build_fields(
-            quant["provenance"]["producer_policy"]
-        ),
-    )
-    provenance = quant["provenance"]
-    if mutation == "remove_stamp":
-        del provenance["producer_policy"]
-        del provenance["cb_route_status"]
-    elif mutation == "tamper_policy":
-        provenance["producer_policy"]["candidate_runtime"]["gridbook"][
-            "tree"
-        ] = "0" * 40
-    else:
-        provenance["producer_policy"] = {
-            "schema": (
-                "prismaquant.rtx4090_qwen38_fp8_validation_only_policy.v1"
-            ),
-            "id": "qwen38_27b_rtx4090_fp8_cb_validation_only",
-            "artifact_disposition": VALIDATION_ONLY_DISPOSITION,
-        }
-    (model_dir / "quant_config.json").write_text(json.dumps(quant))
-
-    problems = verify(card, model_dir=model_dir, required=())
-    assert any(VALIDATION_ONLY_DISPOSITION in item for item in problems)
-    assert any(
-        "missing or malformed" in item or "lacks the required" in item
-        for item in problems
-    )
+def test_sm120_shipcard_stamp_is_blocked_by_incompatible_sealed_pin():
+    # Shipcard mutation/replay checks cannot honestly start until a current
+    # producer contract can mint the policy stamp they consume. The sealed
+    # untagged candidate predates the reader/producer contraction and must not
+    # be relabeled or blessed in place.
+    with pytest.raises(
+        GridbookValidationOnlyPolicyError,
+        match="NVFP4_CB_K reader rungs are unknown to PrismaQuant",
+    ):
+        sm120_validation_only_policy_stamp(
+            SM120_VALIDATION_CANDIDATE_CONTRACT_PATH
+        )
 
 
 def test_required_slots_rederives_strict_obligation_after_card_erasure(tmp_path):
@@ -849,7 +771,7 @@ def test_specialized_verifier_surfaces_gridbook_distribution_errors(
         (
             ("runtime_attestation", "platform"),
             "sm_90",
-            "exact full K4..K48 step-4",
+            "exact K40/K44/K48 producer",
         ),
         (
             (

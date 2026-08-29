@@ -104,14 +104,14 @@ def test_initial_sm89_cells_are_structural_but_compile_only():
             family="FP8_CB_K",
             device_capability=(8, 9),
             structure="dense",
-            rungs=(4, 20, 48),
+            rungs=(40, 44, 48),
         )
     structural = require_compile_only_gridbook_routes(
         contract,
         family="FP8_CB_K",
         device_capability=(8, 9),
         structure="dense",
-        rungs=(4, 20, 48),
+        rungs=(40, 44, 48),
     )
     assert {row.qualification for row in structural.resolutions} == {
         "compile_only"
@@ -121,7 +121,7 @@ def test_initial_sm89_cells_are_structural_but_compile_only():
             contract,
             family="FP8_CB_K",
             structure="dense",
-            rungs=(20,),
+            rungs=(44,),
         )
 
 
@@ -132,7 +132,7 @@ def test_only_device_qualified_routes_cover_exact_sm89_and_every_regime():
         family="FP8_CB_K",
         device_capability=(8, 9),
         structure="dense",
-        rungs=(4, 20, 48),
+        rungs=(40, 44, 48),
     )
     assert attestation.platform.id == "sm_89"
     assert {item.regime for item in attestation.resolutions} == {
@@ -143,7 +143,7 @@ def test_only_device_qualified_routes_cover_exact_sm89_and_every_regime():
         contract,
         family="FP8_CB_K",
         structure="dense",
-        rungs=(4, 20, 48),
+        rungs=(40, 44, 48),
     ) == 89
 
     # Exact platform mapping, never a numerical minimum-capability inference.
@@ -153,11 +153,11 @@ def test_only_device_qualified_routes_cover_exact_sm89_and_every_regime():
             family="FP8_CB_K",
             device_capability=(9, 0),
             structure="dense",
-            rungs=(20,),
+            rungs=(44,),
         )
 
 
-def test_nvfp4_k1_k25_need_exact_device_qualified_routes_in_both_regimes():
+def test_nvfp4_k12_k24_need_exact_device_qualified_routes_in_both_regimes():
     contract = _v11_contract()
     contract["lane_eligibility"]["platforms"]["sm_121"] = {
         "compute_capability": [12, 1]
@@ -180,26 +180,26 @@ def test_nvfp4_k1_k25_need_exact_device_qualified_routes_in_both_regimes():
         family="NVFP4_CB_K",
         device_capability=(12, 1),
         structure="dense",
-        rungs=(1, 25),
+        rungs=(12, 24),
     )
-    assert attestation.rungs == (1, 25)
+    assert attestation.rungs == (12, 24)
     assert len(attestation.resolutions) == 4
 
-    _cells(contract)[-1]["rungs"].remove(25)
+    _cells(contract)[-1]["rungs"].remove(24)
     with pytest.raises(GridbookExecutionContractError, match="no sm_121"):
         require_device_qualified_gridbook_routes(
             contract,
             family="NVFP4_CB_K",
             device_capability=(12, 1),
             structure="dense",
-            rungs=(1, 25),
+            rungs=(12, 24),
         )
 
 
 def test_unsupported_nvfp4_rung_cannot_enter_an_execution_cell():
     contract = _v11_contract()
     _cells(contract)[0]["family"] = "NVFP4_CB_K"
-    _cells(contract)[0]["rungs"] = [25, 26]
+    _cells(contract)[0]["rungs"] = [24, 25]
     with pytest.raises(
         GridbookExecutionContractError,
         match=r"outside formats\['NVFP4_CB_K'\]\.producer_rungs",
@@ -301,7 +301,7 @@ def test_sm120_compile_only_nvfp4_scaffold_preserves_fallback_boundaries():
             family="NVFP4_CB_K",
             device_capability=(12, 0),
             structure="dense",
-            rungs=(1, 25),
+            rungs=(12, 24),
         )
     with pytest.raises(GridbookExecutionContractError, match="fallback"):
         require_compile_only_gridbook_routes(
@@ -309,10 +309,10 @@ def test_sm120_compile_only_nvfp4_scaffold_preserves_fallback_boundaries():
             family="NVFP4_CB_K",
             device_capability=(12, 0),
             structure="routed_moe",
-            rungs=(1, 25),
+            rungs=(12, 24),
             facts_by_rung={
-                1: {"role_split": True},
-                25: {"role_split": True},
+                12: {"role_split": True},
+                24: {"role_split": True},
             },
         )
     with pytest.raises(GridbookExecutionContractError, match="compile_only"):
@@ -321,10 +321,10 @@ def test_sm120_compile_only_nvfp4_scaffold_preserves_fallback_boundaries():
             family="NVFP4_CB_K",
             device_capability=(12, 0),
             structure="routed_moe",
-            rungs=(1, 25),
+            rungs=(12, 24),
             facts_by_rung={
-                1: {"role_split": False},
-                25: {"role_split": False},
+                12: {"role_split": False},
+                24: {"role_split": False},
             },
         )
 
@@ -338,7 +338,7 @@ def test_absent_or_fallback_regime_is_not_producer_legal():
             family="FP8_CB_K",
             device_capability=(8, 9),
             structure="dense",
-            rungs=(20,),
+            rungs=(44,),
         )
 
     fallback = _qualify(_v11_contract())
@@ -349,7 +349,7 @@ def test_absent_or_fallback_regime_is_not_producer_legal():
             family="FP8_CB_K",
             device_capability=(8, 9),
             structure="dense",
-            rungs=(20,),
+            rungs=(44,),
         )
 
 
@@ -364,16 +364,16 @@ def test_predicates_are_closed_and_missing_shape_facts_fail_closed():
             family="FP8_CB_K",
             device_capability=(8, 9),
             structure="dense",
-            rungs=(20,),
+            rungs=(44,),
         )
     assert require_device_qualified_gridbook_routes(
         contract,
         family="FP8_CB_K",
         device_capability=(8, 9),
         structure="dense",
-        rungs=(20,),
-        facts_by_rung={20: {"in_features": 5120}},
-    ).rungs == (20,)
+        rungs=(44,),
+        facts_by_rung={44: {"in_features": 5120}},
+    ).rungs == (44,)
 
 
 @pytest.mark.parametrize("reverse", (False, True))
@@ -393,7 +393,7 @@ def test_equal_rank_overlaps_fail_closed_independent_of_cell_order(reverse):
             family="FP8_CB_K",
             device_capability=(8, 9),
             structure="dense",
-            rungs=(20,),
+            rungs=(44,),
         )
 
 

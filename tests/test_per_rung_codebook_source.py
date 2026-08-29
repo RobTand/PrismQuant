@@ -315,8 +315,8 @@ def test_policy_scope_with_only_lattice_rungs_needs_no_learned_digests(
             codebook_source_scope="none",
             codebook_source_by_format={"FP8_CB_K43": "learned"},
         )
-    with pytest.raises(ValueError, match="learned NVFP4 bundle cells"):
-        CBSerializationContext.production(
-            codebook_source_scope="fp8",
-            codebook_source_by_format={"NVFP4_CB_K25": "learned"},
-        )
+        with pytest.raises(ValueError, match="learned NVFP4 bundle cells"):
+            CBSerializationContext.production(
+                codebook_source_scope="fp8",
+                codebook_source_by_format={"NVFP4_CB_K24": "learned"},
+            )

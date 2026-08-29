@@ -5,14 +5,14 @@ and format standards"); runtime boundary updated 2026-08-02 for Gridbook
 0.7.0, refreshed 2026-08-12 for released Gridbook 0.8.5, and re-pointed
 2026-08-21 to released Gridbook 0.8.11 when the producer pin advanced. The
 strict Ada candidate boundary was refreshed 2026-08-24 without promoting the
-tracked runtime. The NVFP4 producer scaffold was expanded the same day to
-K1..K25; widths above the public ceiling remain direct-codec/kernel research
-only. The same revision adds `qwen38_sm120_cb_validation_only`, a closed
-candidate-registration profile for the dense full-ladder campaign. It is
-now paired with the exact producer policy of the same id and a separately
-packaged Gridbook candidate pin, but remains categorically validation-only: no
-release pin, device qualification, or shipping claim follows from it. This page
-is the contract production runs build against.
+tracked runtime. On 2026-08-25 the public domains were contracted to evidence:
+NVFP4 reader/interim producer K12..K24, FP8 reader K28..K48, and fresh FP8
+producer K40/K44/K48. Other widths remain explicit research only. The earlier
+revision added `qwen38_sm120_cb_validation_only`, a closed candidate profile.
+Its immutable Gridbook candidate pin names the superseded broad ladders and is
+now deliberately incompatible; no build may use it until a newly committed
+package and reviewed identity match the contracted surfaces. This page is the
+contract production runs build against.
 Changes to it require a served A/B, not a preference.
 
 For the new SM120/RTX50 line, W8A16 and source-FP8 carriers are not maintained
@@ -35,8 +35,8 @@ repository does not duplicate those tables.
 
 | Family | Rungs | Rate | Scale coding | Mode |
 |---|---|---|---|---|
-| NVFP4_CB (fp4 grid) | K1–K25, EVERY integer | 0.40625–3.40625 bpw serialized body | two-tier v2 (E8M0 super + 4-bit sub codes, 0.28125 bpw) | product, ceil-first uneven splits |
-| FP8_CB (e4m3 grid) | producer: K4–K48 in steps of 4; reader: every K28–K48 plus the low producer rungs | 0.5–6.0 index bpw + `32/in_features` scale bpw | per-output-row fp32 tensor | product, ceil-first uneven splits |
+| NVFP4_CB (fp4 grid) | reader/interim producer: every integer K12–K24 | 1.78125–3.28125 bpw serialized body | two-tier v2 (E8M0 super + 4-bit sub codes, 0.28125 bpw) | product, ceil-first splits |
+| FP8_CB (e4m3 grid) | producer: K40/K44/K48; reader: every integer K28–K48 | reader 3.5–6.0 index bpw + `32/in_features` scale bpw | per-output-row fp32 tensor | product, ceil-first uneven splits |
 | NVFP4 (vanilla) | — | 4.5 bpw | group-16 E4M3 | menu member; Blackwell-only serving |
 | FP8_DYNAMIC | — | 8 bpw | per-channel | menu member |
 | BF16 | — | 16 | — | maintained unquantized terminal |
@@ -44,16 +44,16 @@ repository does not duplicate those tables.
 
 - Codeword layout: 32 k-bit codewords per 256-weight superblock, LSB-first;
   sub-index bit split is **ceil-first** (`_bit_split`), sub-0 at the LSBs.
-  K1 is `(1,0)`, with a one-row zero-bit second subtable; the public K25
-  endpoint is `(13,12)`. A direct research-only K32 codec test pins `(16,16)`
-  and an all-ones uint32 word, but K32 has no public format id.
+  The accepted K12 endpoint is `(6,6)` and K24 is `(12,12)`. A direct
+  research-only K32 codec test pins `(16,16)` and an all-ones uint32 word, but
+  K32 has no public NVFP4 format id.
 - Canonical FP4 d4 lattices at widths 0..16 are versioned by
   `STRUCTURED_FP4_D4_LATTICE_VERSION`. Historical width-6..12 tables continue
   to resolve from the digest-pinned asset byte-for-byte. The materialized
   low-width tables are nested subsets of width 6; the materialized high-width
-  tables are nested supersets of width 12. Production K1..K25 lookup is
-  asset-only and refuses a missing key. Widths 14..16 remain explicitly
-  research-only. Width 16 has 65,536 rows but 50,625 distinct numeric vectors
+  tables are nested supersets of width 12. Production K12..K24 lookup is
+  asset-only and refuses a missing key. Direct widths outside the public
+  domain remain explicitly research-only. Width 16 has 65,536 rows but 50,625 distinct numeric vectors
   because E2M1 has 15 numeric values.
 - fp4 scale coding v1 (bare E4M3 plane) is legacy-compat only: readable,
   never produced by new exports.
@@ -71,22 +71,22 @@ repository does not duplicate those tables.
   Full mode: spec-reserved, unimplemented.
 - MTP sidecars: CB-quantized, rung by the canon throughput selector
   (`mtp_rung_selection.py`). Vision towers (VLMs): vanilla NVFP4.
-- Standard maintained SM120 production menu = both product K-ladders (FP8
-  obeys K%4) + NVFP4 + FP8_DYNAMIC + BF16. Source-FP8/W8A16 is a legacy
+- Standard maintained SM120 production menu = NVFP4-CB K12..K24 and FP8-CB
+  K40/K44/K48 + NVFP4 + FP8_DYNAMIC + BF16. Source-FP8/W8A16 is a legacy
   compatibility surface, not an RTX50 candidate. Target hardware:
   Blackwell (GB10 sm_121 / RTX 5090 sm_120). The separate strict
   `qwen38_rtx4090_fp8_cb` campaign removes both NVFP4 families and is closed
   to lattice FP8-CB (`CB_ACTIVATION_SCOPE=none`) plus delegated FP8/BF16. It
   remains closed until an exact `sm_89` Gridbook v11 contract device-qualifies
-  dense decode and batch for **all twelve** K4..K48 step-4 producer rungs and a
+  dense decode and batch for all three K40/K44/K48 producer rungs and a
   physical RTX 4090 receipt proves 7/7 FULL plus 7/7 PIECEWISE capture. The
   available explicit-sm89 SASS evidence is `compile_only`, not a device claim;
   Gridbook 0.9.0 TP/EP behavior remains preserved.
 
 Target registration, not a hand-written family preference, controls AQUA's
 choice. SM89/RTX40 registers no NVFP4 or NVFP4-CB activation contract and is
-FP8-only. `qwen38_sm120_cb_validation_only` registers NVFP4-CB K1..K25,
-FP8-CB K4..K48 step 4, and native NVFP4/FP8_E4M3/BF16 under exact
+FP8-only. `qwen38_sm120_cb_validation_only` registers NVFP4-CB K12..K24,
+FP8-CB K40/K44/K48, and native NVFP4/FP8_E4M3/BF16 under exact
 `target_platform=sm_120`; AQUA then compares the registered candidates in its
 normal currency. It must not bias one family manually, and K26..K32 are never
 registered. The profile also carries an explicit deny sourced from
@@ -96,33 +96,20 @@ FP8. The resident and streaming exporters re-check the target profile stamped
 inside `layer_config.json` before opening an output transaction; a hand-edited
 source-FP8 assignment therefore cannot bypass the chooser gate or leave a temp
 artifact behind. Metadata selecting the profile also requires exact producer
-policy `qwen38_sm120_cb_validation_only` and an explicitly supplied contract
-matching the packaged untagged Gridbook 0.9.1 candidate: commit
-`d7827c507c2869184803f53314e589fc2dacbdb6`, tree
-`7371475656a11b57408b47508a4dd22937fe5c3f`,
-`gridbook.runtime-contract.v11` version 11,
-`gridbook.lane-eligibility.v2`, canonical JSON SHA-256
-`15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`,
-and literal file SHA-256
-`585d5563cc69913937ab4c4a3b0cc6428a5c072d6a49b57ed03f8c28b8699b0d`.
-Both exporters stamp the exact policy and assignment-bound route census into
-`quant_config.json` before finalization, then replay them afterward; missing,
-mutated, or cross-policy inputs refuse. Every resulting artifact has disposition
-`UNRELEASABLE_VALIDATION_ONLY`, a `compile_only` qualification ceiling, and no
-release eligibility. Shipcard and publisher refusal is categorical, including
-under force flags and for a malformed or removed required stamp. The candidate
-pin is not a release tag and does not advance the production runtime pin; a
-future releasable artifact requires a distinct policy and fresh export.
+policy `qwen38_sm120_cb_validation_only` and an explicitly supplied reviewed
+contract. The sealed untagged Gridbook 0.9.1 candidate is preserved only as
+historical identity: it declares NVFP4 K1..K25 and the old broad FP8 producer
+ladder, so both exporters now refuse it before opening an output transaction.
+Do not edit its contract or pin hashes in place. A new Gridbook kernel package
+must commit a matching v11 contract and acquire a separately reviewed identity
+before this campaign can mint even an unreleasable validation artifact.
 
-The widened NVFP4 registry is producer scaffolding, not a runtime claim. A
-new artifact using K1..K11 or K25 requires a Gridbook v11 contract whose
-NVFP4 `rungs` and `producer_rungs` both attest K1..K25, plus device-qualified
-route cells for the target structure and regime. K26..K32 are unsupported and
-must not appear in a contract cell. Released Gridbook 0.8.11/v4
-cannot provide producer-rung attestation, so release tooling must fail closed
-until an external release pin with device-qualified routes advances. The exact
-0.9.1 candidate pin above is only deterministic validation authority and cannot
-satisfy that release gate.
+Registry admission is producer scaffolding, not a runtime claim. New endpoint
+artifacts require a Gridbook v11 contract whose domains match NVFP4
+reader/producer K12..K24 and FP8 reader K28..K48 / producer K40/K44/K48, plus
+the required target route cells. Released Gridbook 0.8.11/v4 remains
+reader-only because it has no producer-rung attestation; the old 0.9.1
+candidate cannot satisfy the contracted producer gate either.
 
 ## Runtime/kernel standard (owned by Gridbook)
 
@@ -197,14 +184,13 @@ gates to pass, followed by advancing the immutable external pin.
   back to full per-rung measurement. The gate is the contract; the laws
   are only ever proposals under it. (Measured on the 27B full-menu run:
   3.2% of tensors fall back.)
-- The old dense K12..K24 rung/parity interpolation is not endpoint evidence.
-  Dense campaign v3 uses a below-K12 hinge and an above-K24
-  endpoint shoulder, measures K1/K25 in its panel, and validates K25 transfer
-  on held-out units. Because K25 is the only public rung above K24, this is not
-  described as a fitted high-band slope. No cost payload produced under the
-  former campaign schema may be restamped or extrapolated onto K1..K11 or K25.
-- The same campaign exposes the complete FP8 producer ladder rather than the
-  historical fused-mid-M subset: K24 anchor; K4/K28/K48 panel; off-panel
-  K8/K20/K36/K44 validation. Fused-mid-M eligibility is performance metadata
-  for one batch regime, not candidate admission. Learned books remain out of
-  this dense campaign; every cell is lattice.
+- Dense campaign v3 stays inside NVFP4 K12..K24: K18 anchor,
+  K13/K16/K20/K23 panel, and K12/K15/K21/K24 validation. No cost payload may
+  infer authority for a width outside that public domain.
+- The same campaign exposes the complete three-rung FP8 producer ladder: K44
+  anchor and directly measured K40/K48 panel. With no additional producer rung
+  available, K40/K48 repeat only on held-out units for validation; the report
+  labels that unit-only axis instead of inventing reader-rung evidence.
+  Fused-mid-M eligibility is performance metadata for one batch regime, not
+  candidate admission. Learned books remain out of this dense campaign; every
+  cell is lattice.

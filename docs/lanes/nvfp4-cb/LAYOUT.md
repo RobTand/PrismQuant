@@ -24,16 +24,14 @@ selects it. Two grids and one production index-encoding mode:
 | `FP8_CB_K{k}`   | fp8 / E4M3 | E4M3 grid (‖·‖ ≤ 448) | W8A8 | **none in weight bytes** — per-output-channel fp32, separate tensor | `k/8` |
 
 `k` has separate producer and reader domains. New FP8-CB artifacts may use
-exactly `FP8_CB_K4,K8,...,K48`; this K%4 rule is the format/TMA producer law.
-Readers retain every historical `FP8_CB_K28..K48` wire id, including off-law
-rungs such as K29 and K47, so old artifacts remain inspectable and loadable.
-Reader acceptance is not menu authority: cost, allocation, learned-v2 bundle
-construction, and export use the producer-only registry API and reject those
-off-law ids. NVFP4-CB reader and producer domains are both exactly
-`NVFP4_CB_K1..K25`: K1 is the smallest nonempty wire stream and K25 splits
-`(13,12)`. K26..K32 have no public wire id. The direct codec retains a
-research-only K32 uint32 boundary test, which is not reader or producer
-authority.
+exactly `FP8_CB_K40`, `FP8_CB_K44`, and `FP8_CB_K48`. Readers retain every
+historical `FP8_CB_K28..K48` wire id, including off-law rungs such as K29 and
+K47, so old artifacts remain inspectable and loadable. Reader acceptance is
+not menu authority: fresh cost, allocation, and export use the producer-only
+registry API and reject every other reader id. NVFP4-CB reader and interim
+producer domains are both exactly `NVFP4_CB_K12..K24`. Widths outside that
+domain have no public wire id; direct codec/lattice experiments are separate
+research authority, not reader or producer authority.
 A decoded fp4 tile is bit-compatible NVFP4 (E2M1 codes + NVFP4 group-16 E4M3
 scale) and feeds the existing CUTLASS FP4 path unchanged.
 
@@ -54,31 +52,25 @@ E4M3, but no NVFP4 static-activation scalar/metadata or FP4 codebook family may
 appear in its config, sidecar, tensor census, or delegated terminals.
 
 The separate `qwen38_sm120_cb_validation_only` profile closes candidate
-registration to both public producer ladders plus native
+registration to the current producer ladders plus native
 NVFP4/FP8_E4M3/BF16 terminals and remains lattice-only. This changes no byte
-layout. It now binds exact producer policy `qwen38_sm120_cb_validation_only`
-to a packaged candidate pin for untagged Gridbook 0.9.1 commit
-`d7827c507c2869184803f53314e589fc2dacbdb6`, tree
-`7371475656a11b57408b47508a4dd22937fe5c3f`. The explicit input contract must
-be `gridbook.runtime-contract.v11` version 11 with
-`gridbook.lane-eligibility.v2` and canonical JSON SHA-256
-`15a1e3aedc5ed3da2bf04b3c28546bf11528f6976723f971321dfebda223098c`
-(literal file SHA-256
-`585d5563cc69913937ab4c4a3b0cc6428a5c072d6a49b57ed03f8c28b8699b0d`).
-This candidate binding is not a release pin or tag: every route has a
-`compile_only` ceiling and every produced artifact is stamped
-`UNRELEASABLE_VALIDATION_ONLY`.
+layout. Its previously reviewed untagged Gridbook 0.9.1 package is deliberately
+not rewritten: that sealed contract advertises NVFP4 K1..K25 and a broader FP8
+producer surface, so exact policy preflight now refuses it. A usable SM120
+campaign requires a newly committed Gridbook kernel package and separately
+reviewed pin/contract identity matching NVFP4 K12..K24 and FP8 K40/K44/K48.
+No old pin, contract digest, or validation-only artifact is silently blessed
+by this producer contraction.
 It also explicitly denies the shared registry's W8A16/source-FP8 compatibility
 set. Those legacy wire/assignment readers remain available for published
 source-model artifacts, but no such format may enter this profile's new RTX50
 cost menu, assignment, or release decision. Both materializers read the
 allocator's stamped target profile during outer preflight. When it selects this
-profile, they require the matching policy plus that explicit exact contract,
-refuse any mismatch or denied format before creating the destination transaction
-or a `.tmp-*` sibling, stamp the policy into `quant_config.json` before
-finalization, and replay it afterward. Shipcard verification and publication
-categorically refuse the result even under force flags; removing or corrupting
-the required stamp also refuses. These exact validation bytes cannot be promoted
+profile, they require matching policy plus an explicit exact contract and
+refuse the existing incompatible pin (or any denied format) before creating the
+destination transaction or a `.tmp-*` sibling. If a successor package later
+passes that preflight, the existing validation-only stamp/replay and categorical
+shipcard/publication refusal still apply. Validation bytes cannot be promoted
 in place into a shippable artifact.
 
 **Hard constraint:** `in_features % 256 == 0` (the 256-weight superblock is both
@@ -329,7 +321,7 @@ Learned codebooks are selected per family by
 | value | NVFP4-CB | FP8-CB | contract |
 |---|---|---|---|
 | `none` (default) | lattice | lattice | historical producer; the scope member is omitted from identity so the serialized stamp and rendered bytes stay byte-identical to baseline `76666bd` |
-| `fp8` | lattice | learned | production CBL arm |
+| `fp8` | lattice | learned | sealed DSv4 learned-v1 compatibility/research arm; no fresh producer authority |
 | `all` | learned | learned | research-only warning; the production bundle builder refuses learned NVFP4-CB because it is measured NO-GO |
 
 The legacy `CB_CODEBOOK_SOURCE` scalar remains on the wire as an artifact-wide
@@ -357,7 +349,7 @@ before cost/cache/KL, never during export. The bundle contains:
   `(layer, role, rung)`;
 - the certified `learn_pool` trainer identity and the source-weight/imatrix
   value identity for every cell;
-- for production banked expert cells, the exact selection/burn/book origin and
+- for sealed DSv4 compatibility and banked research expert cells, the exact selection/burn/book origin and
   payload digests, tied to the role input identity again on bundle reload;
 - the measurement-backed rung-policy table; and
 - `codebook_content_sha256`, one SHA-256 per contiguous little-endian FP16
@@ -379,15 +371,16 @@ each value digest (`build_quant_config` in `prismaquant.cb_export_config`;
 external Gridbook `gridbook/cb_digest.py`). Export-time retraining and silent lattice
 fallback are both contract violations.
 
-Learned FP8 eligibility is enforced from the data table
-`CBL_RUNG_POLICY`, not inferred from subtable size:
+Historical learned-v1 FP8 eligibility for the sealed DSv4 compatibility lane is
+enforced from the data table `CBL_RUNG_POLICY`, not inferred from subtable size.
+This table is not fresh producer authority:
 
 | rungs | state | provenance |
 |---|---|---|
-| K28–K43 | enabled for production | K28/K33/K38/K43 are directly measured GO; each intermediate row says explicitly that it is admitted by the measured K43 boundary, not by a fabricated per-rung result |
-| K44 | enabled for production | sweep-matched CBL/lattice holdout act-MSE ratio 0.6057 (`dq-runs/dsv4-quality-hybrid/sfd-analysis/cbl_k43_k47.log:31`) |
-| K45 | enabled for production | sweep-matched ratio 0.6929 (`cbl_k43_k47.log:40`) |
-| K46 | enabled for production | sweep-matched ratio 0.8312 (`cbl_k43_k47.log:51`) |
+| K28–K43 | sealed compatibility/research only | K28/K33/K38/K43 are directly measured GO; each intermediate row says explicitly that it is admitted by the measured K43 boundary, not by a fabricated per-rung result |
+| K44 | sealed compatibility/research only | sweep-matched CBL/lattice holdout act-MSE ratio 0.6057 (`dq-runs/dsv4-quality-hybrid/sfd-analysis/cbl_k43_k47.log:31`) |
+| K45 | sealed compatibility/research only | sweep-matched ratio 0.6929 (`cbl_k43_k47.log:40`) |
+| K46 | sealed compatibility/research only | sweep-matched ratio 0.8312 (`cbl_k43_k47.log:51`) |
 | K47 | rejected | sweep-matched ratio 1.0689 (`cbl_k43_k47.log:60`) |
 | K48 | rejected | measured 54–98% worse than lattice |
 

@@ -66,21 +66,22 @@ class CBFamily:
         return int(k) in self.rungs
 
 
-# The unsigned FP4 wire ABI carries one k-bit codeword for every 8 weights.
-# The public reader and producer domain stops at K25. K1 has the ceil-first
-# split (1, 0); K25 has split (13, 12). Width-14..16 lattice assets and the
-# direct uint32 codec endpoint remain available only to explicit low-level
-# research code. They have no public format id, registry entry, contract rung,
-# chooser candidate, assignment, bundle, or export path.
-NVFP4_PRODUCT_RUNGS = tuple(range(1, 26))
-NVFP4_ACCEPTED_RUNGS = NVFP4_PRODUCT_RUNGS
-FP8_PRODUCT_RUNGS = tuple(range(4, 49, 4))
-# Gridbook artifacts produced before the K%4/TMA rule was made a producer
-# invariant used every integer rung from K28 through K48.  They remain valid
-# serialized inputs and must stay parseable/reportable, but the off-law rungs
-# must never re-enter a new producer menu.
+# The compatibility domain is evidence from the released Gridbook 0.8.11
+# reader contract, not a prediction from the codec's arithmetic range.  Its
+# unsigned FP4 product reader accepts every integer K12..K24.  Those same
+# rungs are the interim PrismaQuant producer surface; wider direct
+# lattice/codec experiments remain deliberately unnamed here.
+NVFP4_ACCEPTED_RUNGS = tuple(range(12, 25))
+NVFP4_PRODUCT_RUNGS = NVFP4_ACCEPTED_RUNGS
+
+# Released Gridbook readers accept every historical FP8 product wire id from
+# K28 through K48.  Fresh PrismaQuant production is narrower: the campaign has
+# direct evidence only for K40/K44/K48.  Low step-four and off-law experiments
+# belong to their explicit learned/research contracts; accepting one there
+# must never widen this artifact-writing authority.
 FP8_LEGACY_RUNGS = tuple(range(28, 49))
-FP8_ACCEPTED_RUNGS = tuple(sorted(set(FP8_PRODUCT_RUNGS) | set(FP8_LEGACY_RUNGS)))
+FP8_ACCEPTED_RUNGS = FP8_LEGACY_RUNGS
+FP8_PRODUCT_RUNGS = (40, 44, 48)
 
 # The signed sign-magnitude family (``NVFP4_CB_S13..S16``, mode="signed",
 # n_sub=1) was DELETED on 2026-08-17 (Rob: "we can get entirely rid of the
@@ -152,6 +153,12 @@ NVFP4_CB_FORMAT_NAMES = frozenset(
     for family in FAMILIES
     if family.grid == "fp4"
     for k in family.rungs
+)
+NVFP4_ACCEPTED_FORMAT_NAMES = frozenset(
+    family.accepted_name(k)
+    for family in FAMILIES
+    if family.grid == "fp4"
+    for k in family.accepted_rungs
 )
 FP8_CB_FORMAT_NAMES = frozenset(
     family.name(k)
@@ -323,6 +330,7 @@ __all__ = [
     "INDEX_BYTES_PER_K",
     "LAYOUT_FOR_SCALE_CODING",
     "NVFP4_ACCEPTED_RUNGS",
+    "NVFP4_ACCEPTED_FORMAT_NAMES",
     "NVFP4_PRODUCT_RUNGS",
     "PRODUCT_CB_FORMAT_NAMES",
     "PRODUCT_CB_FORMATS",

@@ -1141,6 +1141,7 @@ def cb_serialization_context_from_env(
     *,
     require_explicit: bool = False,
     where: str = "CB cost render",
+    _bundle_override: object = None,
 ) -> CBSerializationContext:
     """Resolve the producer identity used by a CB render.
 
@@ -1251,9 +1252,12 @@ def cb_serialization_context_from_env(
                 f"{where}: set CB_CODEBOOK_BUNDLE, not the legacy "
                 "digest-only CB_CODEBOOK_DIGESTS contract, for learned CB"
             )
-        from .cb_learned_bundle import load_bundle_cached
+        if _bundle_override is None:
+            from .cb_learned_bundle import load_bundle_cached
 
-        bundle = load_bundle_cached(bundle_source)
+            bundle = load_bundle_cached(bundle_source)
+        else:
+            bundle = _bundle_override
         digests = dict(bundle.codebook_content_digests)
         source_by_format = bundle.codebook_source_by_format
         bundle_scalar = (
@@ -1275,7 +1279,7 @@ def cb_serialization_context_from_env(
             str(qname): dict(by_format)
             for qname, by_format in bundle.codebook_refs_by_cell.items()
         }
-    elif bundle_source:
+    elif bundle_source or _bundle_override is not None:
         raise ValueError(
             f"{where}: CB_CODEBOOK_BUNDLE is set while the effective learned "
             "scope is none; refusing a stale value-bearing input that the "

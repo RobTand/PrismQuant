@@ -10,13 +10,15 @@ FP8-CB now has two deliberately different domains:
 
 | Domain | Rungs | Authority | Intended use |
 |---|---|---|---|
-| producer | K4, K8, K12, K16, K20, K24, K28, K32, K36, K40, K44, K48 | `FP8_PRODUCT_RUNGS` / `list_producer_formats` | new cost menus, assignments, bundles, exports |
-| reader | low producer rungs plus every K28 through K48 | `FP8_ACCEPTED_RUNGS` / `list_formats` | load, inspect, and report historical artifacts |
+| producer | K40, K44, K48 | `FP8_PRODUCT_RUNGS` / `list_producer_formats` | new cost menus, assignments, and exports |
+| reader | every K28 through K48 | `FP8_ACCEPTED_RUNGS` / `list_formats` | load, inspect, and report historical artifacts |
 
-K29, K43, and K47 therefore remain valid historical wire ids but are never
-legal inputs to a new producer. Explicit-menu APIs fail closed instead of
-silently rounding an off-law rung. The K%4 rule is shared by Ada and
-Blackwell; hardware qualification is a separate execution-contract question.
+K28, K29, K36, K43, and K47 therefore remain valid historical wire ids but are
+never legal inputs to a new producer. Explicit-menu APIs fail closed instead
+of silently rounding or widening a reader rung. The learned-v2 K4..K48
+step-four experiment remains an explicitly separate research ladder and does
+not grant artifact-writing authority. Hardware qualification is a separate
+execution-contract question.
 
 Each rung retains the existing exact FP8-CB footprint: `k/8` index bits per
 quantizable parameter plus one FP32 scale per output row and the codebook
@@ -27,7 +29,7 @@ sidecar. Tests cover every producer rung and representative reader-only rungs.
 The `qwen38_rtx4090_fp8_cb` serving profile inherits the historical
 `nvfp4_cb` serializer lane but narrows production to:
 
-- FP8-CB K4..K48 in steps of four;
+- FP8-CB K40/K44/K48;
 - delegated W8A8 dynamic FP8 (`FP8_E4M3`); and
 - BF16 terminals.
 
@@ -118,7 +120,7 @@ explicit Gridbook runtime contract with both:
    structure, and both `decode` and `batch` regimes.
 
 The lane table is closed-world. An exact `sm_89` runtime is producer-legal only
-when **all twelve** FP8-CB producer rungs—not merely the subset selected by one
+when all three FP8-CB producer rungs—not merely the subset selected by one
 artifact—resolve to clean `backed`, flag-free, `device_qualified` routes in
 both decode and batch regimes. The strict artifact stamps that supplied v11
 attestation directly beside its selected-rung/unit counts; it neither consults
@@ -179,7 +181,7 @@ finding serializer, census, and artifact-layout defects before Ada hardware is
 available. The launcher requires exactly one DGX Spark GB10 (compute capability
 12.1), then runs the ordinary GPU-bound pipeline and existing resident-prefetch
 and `ProductionWeightCache` mechanisms. It consumes exact backed, flag-free
-Gridbook v11 `compile_only` SM89 dense cells for the complete twelve-rung
+Gridbook v11 `compile_only` SM89 dense cells for the complete three-rung
 producer ladder. It does not weaken or call the production device-qualified
 resolver.
 

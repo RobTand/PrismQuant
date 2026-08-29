@@ -63,7 +63,7 @@ _CB_CONTEXT = CBSerializationContext.production()
 # Two rungs per CB family. NVFP4_CB_* is the W4 index stream served through
 # the BF16 bridge; FP8_CB_* is W8A8 — the audit's live contest.
 _FP4_RUNGS = ["NVFP4_CB_K16", "NVFP4_CB_K20"]
-_FP8_RUNGS = ["FP8_CB_K36", "FP8_CB_K44"]
+_FP8_RUNGS = ["FP8_CB_K40", "FP8_CB_K44"]
 _MENU = _FP4_RUNGS + _FP8_RUNGS + ["BF16"]
 
 
@@ -115,7 +115,7 @@ def test_family_penalty_is_the_geometric_mean_of_the_estimator_ratio():
     rows = [
         CalibrationRow("a", "NVFP4_CB_K16", "nvfp4_cb", 4.0, 1.0),
         CalibrationRow("b", "NVFP4_CB_K20", "nvfp4_cb", 16.0, 1.0),
-        CalibrationRow("c", "FP8_CB_K36", "fp8_cb", 2.0, 1.0),
+        CalibrationRow("c", "FP8_CB_K40", "fp8_cb", 2.0, 1.0),
         CalibrationRow("d", "FP8_CB_K44", "fp8_cb", 8.0, 1.0),
     ]
     fit = calibrate(
@@ -229,7 +229,7 @@ def _two_family_tables(*, fp4_weight_only=True, fp8_weight_only=True):
             "NVFP4_CB_K16": _measured_row(weight_mse=1e-4, output_mse=4e-4),
             "NVFP4_CB_K20": _measured_row(weight_mse=1e-4, output_mse=4e-4),
             # ...and 2x for the fp8 family.
-            "FP8_CB_K36": _measured_row(weight_mse=1e-4, output_mse=2e-4),
+            "FP8_CB_K40": _measured_row(weight_mse=1e-4, output_mse=2e-4),
             "FP8_CB_K44": _measured_row(weight_mse=1e-4, output_mse=2e-4),
             "BF16": {"weight_mse": 0.0, "output_mse": 0.0,
                      "output_mse_measured": True},
@@ -266,7 +266,7 @@ def test_calibration_corrects_weight_only_rows_and_leaves_measured_rows_alone():
     priced = {c.fmt: c for c in cands[expert]}
     # The weight-only expert row is charged its family's factor...
     assert priced["NVFP4_CB_K16"].predicted_dloss == pytest.approx(4e-3)
-    assert priced["FP8_CB_K36"].predicted_dloss == pytest.approx(2e-3)
+    assert priced["FP8_CB_K40"].predicted_dloss == pytest.approx(2e-3)
     assert priced["NVFP4_CB_K16"].activation_pricing == BRANCH_CALIBRATED
     # ...while the measured dense rows keep the activation-inclusive price
     # they already had, bit for bit.
@@ -545,7 +545,7 @@ def test_the_dp_flips_to_fp8_cb_once_the_w4_activation_cost_is_priced():
     """
     from prismaquant.allocator_solver import solve_allocation
 
-    menu = ["NVFP4_CB_K24", "FP8_CB_K28", "BF16"]
+    menu = ["NVFP4_CB_K24", "FP8_CB_K40", "BF16"]
     specs = _specs(menu)
     stats, costs = {}, {}
     # Two measured dense rows per family supply the calibration: the W4
@@ -557,19 +557,19 @@ def test_the_dp_flips_to_fp8_cb_once_the_w4_activation_cost_is_priced():
         stats[name] = _shape_stats(1.0)
         costs[name] = {
             "NVFP4_CB_K24": _measured_row(weight_mse=1e-5, output_mse=3e-5),
-            "FP8_CB_K28": _measured_row(weight_mse=1e-5, output_mse=1e-5),
+            "FP8_CB_K40": _measured_row(weight_mse=1e-5, output_mse=1e-5),
             "BF16": {"weight_mse": 0.0, "output_mse": 0.0,
                      "output_mse_measured": True},
         }
     # The expert unit: weight-only rows only (PRISMAQUANT_EXPERT_COST_SAMPLE).
     # NVFP4_CB_K24 (3.281 bpw under two-tier v2) is both CHEAPER in bytes and
-    # priced lower than FP8_CB_K28 (3.508 bpw) — dominant, on weight-only
+    # priced lower than FP8_CB_K40 (5.008 bpw) — dominant, on weight-only
     # evidence alone.
     expert = "model.layers.9.mlp.experts.gate_up_proj"
     stats[expert] = _shape_stats(1.0)
     costs[expert] = {
         "NVFP4_CB_K24": _weight_only_row(1.0e-3),
-        "FP8_CB_K28": _weight_only_row(1.2e-3),
+        "FP8_CB_K40": _weight_only_row(1.2e-3),
         "BF16": _weight_only_row(0.0),
     }
 
@@ -580,7 +580,7 @@ def test_the_dp_flips_to_fp8_cb_once_the_w4_activation_cost_is_priced():
             activation_pricing=pricing)
         # Budget the expert row alone at a rate both CB rungs can reach.
         solved = solve_allocation(
-            {expert: stats[expert]}, {expert: cands[expert]}, 3.6)
+            {expert: stats[expert]}, {expert: cands[expert]}, 5.1)
         assert solved is not None
         assignment, _chosen = solved
         return assignment[expert]
@@ -589,7 +589,7 @@ def test_the_dp_flips_to_fp8_cb_once_the_w4_activation_cost_is_priced():
     pricing = calibrate_activation_fair_pricing(stats, costs, specs)
     assert pricing.families["nvfp4_cb"].penalty == pytest.approx(3.0)
     assert pricing.families["fp8_cb"].penalty == pytest.approx(1.0)
-    assert _solve(pricing) == "FP8_CB_K28"         # activation-fair: W8 wins
+    assert _solve(pricing) == "FP8_CB_K40"         # activation-fair: W8 wins
 
 
 def test_branch_label_is_derivable_without_a_calibration_object():

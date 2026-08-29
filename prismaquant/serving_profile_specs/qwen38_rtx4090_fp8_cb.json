@@ -7,12 +7,12 @@
   "extends": [
     "nvfp4_cb"
   ],
-  "description": "Strict dense Qwen3.8-27B RTX 4090 lane. New artifacts may use only the K%4 FP8-CB producer ladder plus the existing dynamic-FP8 and BF16 terminals. NVFP4, NVFP4-CB, and historical off-law FP8-CB wire ids are reader compatibility only and are refused before allocation/export. Hardware and graph qualification are separate, contract-attested ship gates; this format profile alone never claims that an Ada route is qualified.",
+  "description": "Strict dense Qwen3.8-27B RTX 4090 lane. New artifacts may use only FP8-CB K40/K44/K48 plus dynamic-FP8 and BF16 terminals. NVFP4, NVFP4-CB, and the remaining FP8-CB reader wire ids are compatibility only and are refused before allocation/export. Hardware and graph qualification are separate, contract-attested ship gates; this format profile alone never claims that an Ada route is qualified.",
   "format_rules": [
     {
       "id": "qwen38_rtx4090_forbid_nvfp4_families",
       "deny_formats_from": [
-        "prismaquant.cb_layout:NVFP4_CB_FORMAT_NAMES"
+        "prismaquant.cb_layout:NVFP4_ACCEPTED_FORMAT_NAMES"
       ],
       "deny_formats": [
         "NVFP4"
@@ -31,7 +31,7 @@
         "BF16"
       ],
       "reason": "rtx4090_fp8_only",
-      "detail": "Only FP8_CB_K4,K8,...,K48 and the dynamic-FP8/BF16 terminals are legal. Legacy off-law FP8-CB rungs remain readable but cannot enter this producer menu."
+      "detail": "Only FP8_CB_K40/K44/K48 and the dynamic-FP8/BF16 terminals are legal. The other K28..K48 FP8-CB rungs remain readable but cannot enter this producer menu."
     }
   ]
 }

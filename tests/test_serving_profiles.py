@@ -413,11 +413,11 @@ def test_vllm_lane_denies_the_a16_rungs_with_a_structural_reason():
 
 
 def test_nvfp4_cb_all_product_rungs_remain_in_every_production_scope():
-    from prismaquant.cb_layout import NVFP4_PRODUCT_RUNGS
+    from prismaquant.cb_layout import FP8_PRODUCT_RUNGS, NVFP4_PRODUCT_RUNGS
 
     product_rungs = (
         *(f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS),
-        *(f"FP8_CB_K{k}" for k in range(4, 49, 4)),
+        *(f"FP8_CB_K{k}" for k in FP8_PRODUCT_RUNGS),
     )
     for qname, packed_expert in (
         (DENSE_QNAME, False),
@@ -429,6 +429,18 @@ def test_nvfp4_cb_all_product_rungs_remain_in_every_production_scope():
                 "nvfp4_cb", qname, fmt, packed_expert=packed_expert
             )
             assert decision.legal, (qname, fmt, decision)
+
+
+@pytest.mark.parametrize("rung", (28, 29, 32, 36, 41, 47))
+def test_nvfp4_cb_reader_only_fp8_rungs_have_routes_but_no_producer_authority(
+    rung,
+):
+    fmt = f"FP8_CB_K{rung}"
+    assert fr.get_format(fmt).producer_eligible is False
+    assert serving_profiles_module.serving_lane_route("nvfp4_cb", fmt) is not None
+    decision = check_serving_format("nvfp4_cb", DENSE_QNAME, fmt)
+    assert not decision.legal
+    assert decision.rule == "nvfp4_cb_container_formats"
 
 
 @pytest.mark.parametrize("qname,packed_expert", NVFP4_CB_SCOPE_CASES)

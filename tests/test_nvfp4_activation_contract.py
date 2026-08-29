@@ -323,8 +323,8 @@ def test_config_has_one_top_level_contract_and_fp4_only_reference():
         ("lattice", "NVFP4_CB_K12"): (
             torch.zeros(64, 4), torch.zeros(64, 4)
         ),
-        ("lattice", "FP8_CB_K28"): tuple(
-            torch.zeros(128, 2) for _ in range(4)
+        ("lattice", "FP8_CB_K40"): tuple(
+            torch.zeros(1024, 2) for _ in range(4)
         ),
     }
     record, _ = build_execution_contract(
@@ -332,16 +332,16 @@ def test_config_has_one_top_level_contract_and_fp4_only_reference():
         policy=FULL_E4M3_INPUT_GLOBAL_SCALE_POLICY,
     )
     config = build_quant_config(
-        assignment={"fp4": "NVFP4_CB_K12", "fp8": "FP8_CB_K28"},
+        assignment={"fp4": "NVFP4_CB_K12", "fp8": "FP8_CB_K40"},
         cb_targets={
             "fp4": ("fp4", "product", 12),
-            "fp8": ("fp8", "product", 28),
+            "fp8": ("fp8", "product", 40),
         },
         source_targets=[],
         stock_targets={},
         by_group={
             ("lattice", "NVFP4_CB_K12"): ["fp4"],
-            ("lattice", "FP8_CB_K28"): ["fp8"],
+            ("lattice", "FP8_CB_K40"): ["fp8"],
         },
         codebooks=codebooks,
         col_weights={},

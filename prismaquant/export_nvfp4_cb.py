@@ -59,7 +59,11 @@ from prismaquant.cb_export_config import (
     codebook_tensor_names as _codebook_tensor_names,
     codebook_tensors as _codebook_tensors,
 )
-from prismaquant.layer_config import load_assignment, read_layer_config_metadata
+from prismaquant.layer_config import (
+    layer_config_metadata,
+    load_assignment,
+    read_layer_config_metadata,
+)
 from prismaquant.shard_layout import (
     DEFAULT_SHARD_BYTES,
     container_names,
@@ -137,8 +141,51 @@ def _preflight_assignment_before_output_transaction(function):
         bound = signature.bind(*args, **kwargs)
         bound.apply_defaults()
         layer_config_path = bound.arguments["layer_config_path"]
-        assignment = load_assignment(layer_config_path)
-        metadata = read_layer_config_metadata(layer_config_path)
+        legacy_compatibility = bound.arguments.get(
+            "_legacy_w8a16_compatibility"
+        )
+        if legacy_compatibility is not None:
+            layer_payload, assignment = (
+                legacy_compatibility.read_bound_layer_config(layer_config_path)
+            )
+            metadata = layer_config_metadata(layer_payload)
+        else:
+            assignment = load_assignment(layer_config_path)
+            metadata = read_layer_config_metadata(layer_config_path)
+        raw_scope = str(
+            os.environ.get("CB_CODEBOOK_SOURCE_SCOPE", "")
+        ).strip().lower()
+        raw_source = str(
+            os.environ.get("CB_CODEBOOK_SOURCE", "")
+        ).strip().lower()
+        explicit_learned_bundle = bool(
+            str(os.environ.get("CB_CODEBOOK_BUNDLE", "")).strip()
+        ) and (
+            raw_scope in {"fp8", "all"}
+            or (not raw_scope and raw_source == "learned")
+        )
+        reader_only_cb = []
+        for qname, fmt in assignment.items():
+            if (
+                _parse_cb_format(fmt) is None
+                or _parse_producer_cb_format(fmt) is not None
+                or (
+                    legacy_compatibility is not None
+                    and legacy_compatibility.allows(qname, fmt)
+                )
+                or (
+                    explicit_learned_bundle
+                    and _parse_routed_learned_bank_format(fmt) is not None
+                )
+            ):
+                continue
+            reader_only_cb.append((qname, fmt))
+        if reader_only_cb:
+            raise ValueError(
+                f"{function.__name__}: reader-only CB format(s) require the "
+                "exact sealed compatibility capability or an explicit routed "
+                f"learned-bundle path: {reader_only_cb[:8]}"
+            )
         target_profile = str(
             os.environ.get("PRISMAQUANT_TARGET_PROFILE")
             or metadata.get("target_profile")
@@ -150,7 +197,10 @@ def _preflight_assignment_before_output_transaction(function):
             refused = []
             for qname, fmt in assignment.items():
                 decision = check_serving_format(target_profile, qname, fmt)
-                if not decision.legal:
+                if not decision.legal and not (
+                    legacy_compatibility is not None
+                    and legacy_compatibility.allows(qname, fmt)
+                ):
                     refused.append({
                         "qname": qname,
                         "format": fmt,
@@ -210,6 +260,30 @@ def _parse_producer_cb_format(fmt: str) -> tuple[str, str, int] | None:
         return None
     family, k = parsed
     return family.grid, family.mode, k
+
+
+def _parse_routed_learned_bank_format(
+    fmt: str,
+) -> tuple[str, str, int] | None:
+    """Parse the closed routed-MoE learned research bank only.
+
+    This is intentionally separate from ``_parse_producer_cb_format``: the
+    immutable K28..K33 CBL bank remains usable by its explicitly scoped
+    learned routed-expert path without making any of those rungs eligible for
+    an ordinary new artifact, chooser menu, or uniform assignment.
+    """
+
+    parsed = _parse_cb_format(fmt)
+    if parsed is None:
+        return None
+    grid, mode, k = parsed
+    if (
+        grid == "fp8"
+        and mode == "product"
+        and k in ROUTED_MOE_CBL_BANK_RUNGS
+    ):
+        return parsed
+    return None
 
 
 def _role_of(qname: str) -> str:
@@ -889,6 +963,13 @@ def export_nvfp4_cb(
         if fmt == "BF16":
             continue
         parsed = _parse_producer_cb_format(fmt)
+        if (
+            parsed is None
+            and _scoped_bundle_export
+            and source == "learned"
+            and learned_role_qnames_for_packed(qname)
+        ):
+            parsed = _parse_routed_learned_bank_format(fmt)
         if parsed is not None:
             cb_targets[qname] = parsed
             continue
@@ -1997,6 +2078,11 @@ def export_nvfp4_cb(
         quantized_embedding_units=embedding_stock or None,
         by_group=by_group,
         cb_group_target_names=cb_group_target_names,
+        routed_learned_bank_groups={
+            group_key
+            for group_key, group_qnames in by_group.items()
+            if any(qname in routed_role_plans for qname in group_qnames)
+        },
         codebooks=codebooks,
         col_weights=col_weights,
         codebook_tensors_by_name=cb_tensor_blobs,

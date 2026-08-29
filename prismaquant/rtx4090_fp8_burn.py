@@ -2,9 +2,9 @@
 
 The ordinary format-menu production-cache path retains rendered weights.  This
 driver instead partitions *qnames* by whole decoder layer, transiently renders
-three lattice anchors plus fresh native FP8 through the existing streamed AURA
-consumer, and merges the two receipt-bearing scalar shards before anchored
-interpolation and one byte-budget solve.
+the complete evidence-backed K40/K44/K48 producer ladder plus fresh native FP8
+through the existing streamed AURA consumer, and merges the two
+receipt-bearing scalar shards before one byte-budget solve.
 Nothing in this module publishes or validates an exported artifact.
 """
 from __future__ import annotations
@@ -65,13 +65,12 @@ from prismaquant.rtx4090_cb_compile_proof import (
 )
 from prismaquant.rtx4090_qwen38_policy import (
     RTX4090_CONTEXT_FIRST_TARGET_BYTES,
-    RTX4090_QWEN38_FORMAT_MENU,
     RTX4090_QWEN38_SERVING_PROFILE,
     validate_rtx4090_format_menu,
 )
 
 
-PLAN_SCHEMA = "prismaquant.rtx4090_fp8_burn.plan.v4"
+PLAN_SCHEMA = "prismaquant.rtx4090_fp8_burn.plan.v5"
 IMATRIX_CONTRACT_SCHEMA = "prismaquant.rtx4090_fp8_burn.probe_imatrix.v1"
 EXECUTION_ATTESTATION_SCHEMA = (
     "prismaquant.rtx4090_fp8_burn.execution_attestation.v1"
@@ -97,9 +96,12 @@ AURA_N_PROBES = 32
 AURA_TOKEN_SCOPE = "all"
 BF16_FORMAT = "BF16"
 NATIVE_FP8_FORMAT = "FP8_E4M3"
-CB_FORMATS = tuple(RTX4090_QWEN38_FORMAT_MENU[:-2])
-MEASURED_CB_FORMATS = (CB_FORMATS[0], CB_FORMATS[3], CB_FORMATS[-1])
-ANCHOR_CB_FORMAT = CB_FORMATS[3]
+# Keep the numerical campaign explicit. Positional slicing of another
+# module's menu previously made the K4/K16/K48 burn survive a producer-policy
+# change unnoticed. The fresh campaign directly measures every legal CB rung.
+CB_FORMATS = ("FP8_CB_K40", "FP8_CB_K44", "FP8_CB_K48")
+MEASURED_CB_FORMATS = CB_FORMATS
+ANCHOR_CB_FORMAT = "FP8_CB_K44"
 MEASURED_FORMATS = (*MEASURED_CB_FORMATS, NATIVE_FP8_FORMAT)
 FULL_FORMATS = (*CB_FORMATS, NATIVE_FP8_FORMAT, BF16_FORMAT)
 RENDER_FORMATS = (*MEASURED_FORMATS, BF16_FORMAT)
@@ -800,9 +802,9 @@ def _qname_maps(qnames: Sequence[str]) -> dict[str, object]:
         "formats_by_qname": {name: list(RENDER_FORMATS) for name in ordered},
         "purposes_by_qname": {
             name: {
-                MEASURED_CB_FORMATS[0]: ["panel"],
+                "FP8_CB_K40": ["panel"],
                 ANCHOR_CB_FORMAT: ["anchor", "panel"],
-                MEASURED_CB_FORMATS[-1]: ["panel"],
+                "FP8_CB_K48": ["panel"],
                 NATIVE_FP8_FORMAT: ["anchor"],
             }
             for name in ordered
@@ -1459,29 +1461,89 @@ def load_campaign_plan(path: str | Path) -> dict[str, object]:
     return result
 
 
-def _classify_source_census(
-    source_census: Mapping[str, str], *, profile,
-) -> tuple[tuple[str, ...], dict[str, dict[str, object]]]:
+def _authoritative_linear_source_census(
+    qname_census: Mapping[str, object],
+) -> tuple[
+    dict[str, str], tuple[str, ...], dict[str, dict[str, object]],
+]:
+    """Return the exact BF16 body/fixed universe from a validated census.
+
+    The sample-parallel Qwen census is the architecture-specific authority for
+    which checkpoint weights are Linears.  The allocator source scanner has a
+    deliberately wider passthrough purpose and includes embeddings, norms,
+    and DeltaNet convolution weights; using it here turns those non-Linears
+    into nonexistent probe obligations.  Callers may pass either the complete
+    live census or its already validated stable source projection.
+    """
+    from prismaquant.sample_parallel_probe import (
+        BODY_STATS_AND_ACTIVATION,
+        LM_HEAD_STATS_ONLY,
+        MTP_STATS_ONLY,
+        TEXT_EXCLUDED,
+    )
+
+    source = qname_census.get("source_census")
+    if not isinstance(source, Mapping):
+        source = qname_census
+    entries = source.get("linear_entries") if isinstance(
+        source, Mapping
+    ) else None
+    source_linear_count = source.get("source_linear_count") if isinstance(
+        source, Mapping
+    ) else None
+    if (
+        not isinstance(entries, Mapping)
+        or type(source_linear_count) is not int
+        or source_linear_count != len(entries)
+    ):
+        raise RTX4090FP8BurnError(
+            "authoritative source census has no exact Linear cover"
+        )
+
+    source_census: dict[str, str] = {}
     body: list[str] = []
     fixed: dict[str, dict[str, object]] = {}
-    for qname in sorted(source_census):
-        source_dtype = str(source_census[qname]).lower()
+    for raw_qname, raw_entry in entries.items():
+        if type(raw_qname) is not str or not raw_qname or not isinstance(
+            raw_entry, Mapping
+        ):
+            raise RTX4090FP8BurnError(
+                "authoritative source census Linear entry is malformed"
+            )
+        source_dtype_raw = raw_entry.get("source_dtype")
+        disposition = raw_entry.get("disposition")
+        if type(source_dtype_raw) is not str or type(disposition) is not str:
+            raise RTX4090FP8BurnError(
+                f"authoritative source Linear {raw_qname!r} is malformed"
+            )
+        source_dtype = source_dtype_raw.lower()
         if source_dtype != "bf16":
             raise RTX4090FP8BurnError(
-                f"source Linear {qname} has dtype class {source_dtype!r}; "
+                f"source Linear {raw_qname} has dtype class {source_dtype!r}; "
                 "this campaign requires one exact BF16 source class"
             )
-        if profile.is_pinned_name(qname):
+        source_census[raw_qname] = source_dtype
+        if disposition == BODY_STATS_AND_ACTIVATION:
+            body.append(raw_qname)
+            continue
+        if disposition == LM_HEAD_STATS_ONLY:
             reason = "profile_pinned"
-        elif qname.startswith("mtp.") or ".mtp." in qname:
+        elif disposition == MTP_STATS_ONLY:
             reason = "mtp_fixed"
-        elif qname.startswith("visual.") or ".visual." in qname:
+        elif disposition == TEXT_EXCLUDED:
             reason = "visual_fixed"
         else:
-            body.append(qname)
-            continue
-        fixed[qname] = {"reason": reason, "source_dtype": source_dtype}
-    return tuple(body), fixed
+            raise RTX4090FP8BurnError(
+                f"authoritative source Linear {raw_qname!r} has unknown "
+                f"disposition {disposition!r}"
+            )
+        fixed[raw_qname] = {
+            "reason": reason,
+            "source_dtype": source_dtype,
+        }
+    return dict(sorted(source_census.items())), tuple(sorted(body)), dict(
+        sorted(fixed.items())
+    )
 
 
 def _validate_sample_merge_bundle(
@@ -1736,17 +1798,15 @@ def _validate_burn_runtime_snapshot(
 
 def _revalidate_live_campaign_census(
     *,
-    model: str | Path,
+    authoritative_census: Mapping[str, object],
     probe: str | Path,
     plan: Mapping[str, object],
-    profile,
     validated_probe_payload: Mapping[str, object] | None = None,
 ) -> None:
     """Re-derive every source/probe census fact a self-hashed plan carries."""
-    from prismaquant.allocator_candidates import _scan_source_dtype_manifest
-
-    source_census = _scan_source_dtype_manifest(str(model), profile)
-    body, fixed = _classify_source_census(source_census, profile=profile)
+    source_census, body, fixed = _authoritative_linear_source_census(
+        authoritative_census
+    )
     probe_stats, _probe_meta = (
         _normalized_probe_payload(validated_probe_payload)
         if validated_probe_payload is not None
@@ -1849,7 +1909,6 @@ def attest_execution(args: argparse.Namespace) -> Path:
 
 
 def prepare(args: argparse.Namespace) -> Path:
-    from prismaquant.allocator_candidates import _scan_source_dtype_manifest
     from prismaquant.model_profiles import detect_profile
 
     producer_snapshot = _validate_burn_runtime_snapshot(
@@ -1884,7 +1943,7 @@ def prepare(args: argparse.Namespace) -> Path:
         source_identity_binding,
         live_source_identity=live_source_identity,
     )
-    _validate_live_sample_source_census(
+    live_census = _validate_live_sample_source_census(
         sample_bundle,
         model=args.model,
         source_identity_cache=args.source_identity,
@@ -1894,8 +1953,9 @@ def prepare(args: argparse.Namespace) -> Path:
     probe_stats, probe_meta = _normalized_probe_payload(
         validated_probe_payload
     )
-    source_census = _scan_source_dtype_manifest(args.model, profile)
-    body, fixed = _classify_source_census(source_census, profile=profile)
+    source_census, body, fixed = _authoritative_linear_source_census(
+        live_census
+    )
     missing_probe = sorted(set(body) - set(probe_stats))
     extra_probe = sorted(set(probe_stats) - set(body) - set(fixed))
     if missing_probe or extra_probe:
@@ -2533,13 +2593,15 @@ def measure(args: argparse.Namespace) -> Path:
         source_binding,
         live_source_identity=live_source_identity,
     )
-    _validate_live_sample_source_census(
+    live_census = _validate_live_sample_source_census(
         sample_bundle,
         model=args.model,
         source_identity_cache=args.source_identity,
     )
     _revalidate_live_campaign_census(
-        model=args.model, probe=args.probe, plan=plan, profile=profile,
+        authoritative_census=live_census,
+        probe=args.probe,
+        plan=plan,
         validated_probe_payload=validated_probe_payload,
     )
     if _probe_imatrix_contract(
@@ -3068,6 +3130,10 @@ def _allocator_cost(
         "cell_count": sum(len(rows) for rows in costs.values()),
         "cost_currency": "aura_predicted_dloss",
         "cost_semantics": (
+            "direct final table: byte-preserved production-render AURA "
+            "cells for every FP8-CB/native-FP8 candidate and an exact "
+            "zero-loss BF16 source-passthrough terminal"
+            if not imputed_formats else
             "mixed final table: byte-preserved direct production-render "
             "AURA cells, anchored-AURA imputed CB cells, and an exact "
             "zero-loss BF16 source-passthrough terminal"
@@ -3110,8 +3176,6 @@ def allocate(args: argparse.Namespace) -> Path:
         "activation_cache_manifest",
         Path(args.activation_cache_dir) / "sample_parallel_merge.json",
     )
-    from prismaquant.model_profiles import detect_profile
-
     sample_bundle = _validate_sample_merge_bundle(
         probe=args.probe,
         activation_cache_dir=args.activation_cache_dir,
@@ -3151,11 +3215,17 @@ def allocate(args: argparse.Namespace) -> Path:
             "validated sample-merge members differ from the campaign plan"
         )
     _validate_sample_bundle_source_binding(sample_bundle, source_binding)
+    authoritative_census = sample_bundle.get(
+        "_validated_source_census_projection"
+    )
+    if not isinstance(authoritative_census, Mapping):
+        raise RTX4090FP8BurnError(
+            "validated sample bundle lacks its authoritative Linear census"
+        )
     _revalidate_live_campaign_census(
-        model=args.model,
+        authoritative_census=authoritative_census,
         probe=args.probe,
         plan=plan,
-        profile=detect_profile(args.model),
         validated_probe_payload=validated_probe_payload,
     )
     if _probe_imatrix_contract(

@@ -120,7 +120,7 @@ def _official_wrapper_config() -> dict:
 
 
 def _quant_config(contract: dict) -> dict:
-    formats = ("FP8_CB_K20", "FP8_E4M3", "BF16")
+    formats = ("FP8_CB_K44", "FP8_E4M3", "BF16")
     return {
         "quant_method": "gridbook",
         "format": "fp8_cb",
@@ -128,23 +128,23 @@ def _quant_config(contract: dict) -> dict:
         "ignore": ["lm_head"],
         "config_groups": {
             "group_0": {
-                "format": "FP8_CB_K20",
+                "format": "FP8_CB_K44",
                 "scheme": {
                     "grid": "fp8",
                     "mode": "product",
-                    "k": 20,
+                    "k": 44,
                     "superblock": 256,
                     "group_size": 0,
                     "vec_dim": 8,
                     "n_sub": 4,
-                    "type_size": 80,
+                    "type_size": 176,
                     "act_bits": 8,
                     "codebook_source": "lattice",
                     "codebook_ref": [
-                        "lattice__FP8_CB_K20__sub0",
-                        "lattice__FP8_CB_K20__sub1",
-                        "lattice__FP8_CB_K20__sub2",
-                        "lattice__FP8_CB_K20__sub3",
+                        "lattice__FP8_CB_K44__sub0",
+                        "lattice__FP8_CB_K44__sub1",
+                        "lattice__FP8_CB_K44__sub2",
+                        "lattice__FP8_CB_K44__sub3",
                     ],
                     "codebook_group": None,
                 },
@@ -157,7 +157,7 @@ def _quant_config(contract: dict) -> dict:
         },
         "provenance": {
             "tensor_formats": {
-                "model.layers.0.mlp.down_proj": "FP8_CB_K20",
+                "model.layers.0.mlp.down_proj": "FP8_CB_K44",
                 "model.layers.0.self_attn.o_proj": "FP8_E4M3",
                 "lm_head": "BF16",
             },
@@ -238,12 +238,12 @@ def test_menu_and_assignment_hard_refuse_every_out_of_policy_format(name):
 
 def test_assignment_accepts_dict_spelling_and_fp8_alias():
     assignment = validate_rtx4090_assignment({
-        "a.weight": {"data_type": "fp8_cb", "cb_k": 4},
+        "a.weight": {"data_type": "fp8_cb", "cb_k": 40},
         "b": "FP8_DYNAMIC",
         "c": "BF16",
     })
     assert assignment == {
-        "a": "FP8_CB_K4",
+        "a": "FP8_CB_K40",
         "b": "FP8_E4M3",
         "c": "BF16",
     }
@@ -304,9 +304,9 @@ def test_dense_qwen38_identity_pins_the_32k_kv_memory_contract():
 def test_gridbook_device_attestation_and_graph_policy_are_separate():
     compile_only = _runtime_contract(qualified=False)
     with pytest.raises(RTX4090Qwen38PolicyError, match="compile_only"):
-        require_rtx4090_runtime_contract(compile_only, ("FP8_CB_K20",))
+        require_rtx4090_runtime_contract(compile_only, ("FP8_CB_K44",))
     structural = require_rtx4090_compile_only_runtime_contract(
-        compile_only, ("FP8_CB_K20",)
+        compile_only, ("FP8_CB_K44",)
     )
     assert structural["rungs"] == list(FP8_PRODUCT_RUNGS)
     assert {
@@ -314,11 +314,11 @@ def test_gridbook_device_attestation_and_graph_policy_are_separate():
     } == {"compile_only"}
     with pytest.raises(RTX4090Qwen38PolicyError, match="device_qualified"):
         require_rtx4090_compile_only_runtime_contract(
-            _runtime_contract(), ("FP8_CB_K20",)
+            _runtime_contract(), ("FP8_CB_K44",)
         )
 
     attested = require_rtx4090_runtime_contract(
-        _runtime_contract(), ("FP8_CB_K20",)
+        _runtime_contract(), ("FP8_CB_K44",)
     )
     assert attested["platform"] == "sm_89"
     assert attested["rungs"] == list(FP8_PRODUCT_RUNGS)
@@ -337,7 +337,7 @@ def test_gridbook_device_attestation_and_graph_policy_are_separate():
 
 def test_artifact_subset_still_qualifies_the_complete_producer_ladder():
     attested = require_rtx4090_runtime_contract(
-        _runtime_contract(), ("FP8_CB_K20", "FP8_E4M3", "BF16")
+        _runtime_contract(), ("FP8_CB_K44", "FP8_E4M3", "BF16")
     )
 
     assert attested["rungs"] == list(FP8_PRODUCT_RUNGS)
@@ -354,7 +354,7 @@ def test_artifact_subset_still_qualifies_the_complete_producer_ladder():
     # public menu validator, whose duplicate refusal remains intentional.
     repeated = require_rtx4090_compile_only_runtime_contract(
         _runtime_contract(qualified=False),
-        ("FP8_CB_K20", "FP8_CB_K20", "BF16", "BF16"),
+        ("FP8_CB_K44", "FP8_CB_K44", "BF16", "BF16"),
     )
     assert repeated["rungs"] == list(FP8_PRODUCT_RUNGS)
 
@@ -363,7 +363,7 @@ def test_strict_route_status_is_exact_v11_evidence_not_generic_override_state(
     tmp_path,
 ):
     assignment = {
-        "model.layers.0.mlp.down_proj": "FP8_CB_K20",
+        "model.layers.0.mlp.down_proj": "FP8_CB_K44",
         "model.layers.0.self_attn.o_proj": "FP8_E4M3",
         "lm_head": "BF16",
     }
@@ -374,7 +374,7 @@ def test_strict_route_status_is_exact_v11_evidence_not_generic_override_state(
     assert route["schema"] == RTX4090_ROUTE_STATUS_SCHEMA
     assert route["authority"] == "producer_policy.runtime_attestation"
     assert route["selected_fp8_cb_units"] == 1
-    assert route["selected_fp8_cb_rungs"] == [20]
+    assert route["selected_fp8_cb_rungs"] == [44]
     assert "override" not in route
     assert "declared_non_native_target" not in route
     assert validate_rtx4090_route_status(
@@ -431,7 +431,7 @@ def test_strict_route_status_is_exact_v11_evidence_not_generic_override_state(
 
 @pytest.mark.parametrize(
     ("missing_rung", "missing_regime"),
-    ((4, "decode"), (28, "batch"), (48, "decode")),
+    ((40, "decode"), (44, "batch"), (48, "decode")),
 )
 def test_runtime_contract_rejects_missing_first_middle_or_last_route(
     missing_rung, missing_regime
@@ -447,12 +447,12 @@ def test_runtime_contract_rejects_missing_first_middle_or_last_route(
         RTX4090Qwen38PolicyError,
         match=rf"no sm_89/dense/{missing_regime} route.*K{missing_rung}",
     ):
-        require_rtx4090_runtime_contract(contract, ("FP8_CB_K20",))
+        require_rtx4090_runtime_contract(contract, ("FP8_CB_K44",))
 
 
 def _full_runtime_attestation() -> dict:
     return producer_policy_stamp(
-        _runtime_contract(), ("FP8_CB_K20", "BF16")
+        _runtime_contract(), ("FP8_CB_K44", "BF16")
     )["runtime_attestation"]
 
 
@@ -472,12 +472,12 @@ def test_runtime_attestation_replay_rejects_off_law_or_extra_rung(bad_rung):
 
     with pytest.raises(
         rtx_validator.RTX4090FP8CBValidationError,
-        match="exact full K4..K48 step-4",
+        match="exact K40/K44/K48 producer",
     ):
         rtx_validator._validate_runtime_attestation(attestation)
 
 
-@pytest.mark.parametrize("missing_rung", (4, 28, 48))
+@pytest.mark.parametrize("missing_rung", (40, 44, 48))
 def test_runtime_attestation_replay_rejects_missing_ladder_rung(missing_rung):
     attestation = deepcopy(_full_runtime_attestation())
     attestation["rungs"].remove(missing_rung)
@@ -488,7 +488,7 @@ def test_runtime_attestation_replay_rejects_missing_ladder_rung(missing_rung):
 
     with pytest.raises(
         rtx_validator.RTX4090FP8CBValidationError,
-        match="exact full K4..K48 step-4",
+        match="exact K40/K44/K48 producer",
     ):
         rtx_validator._validate_runtime_attestation(attestation)
 
@@ -509,7 +509,7 @@ def test_export_preflight_requires_model_assignment_and_qualified_v11(
     )
     resolved, stamp = prepare_rtx4090_export_policy(
         model_dir=tmp_path,
-        assignment={"model.layers.0.mlp.down_proj": "FP8_CB_K20"},
+        assignment={"model.layers.0.mlp.down_proj": "FP8_CB_K44"},
         producer_policy=RTX4090_QWEN38_POLICY_ID,
         runtime_contract=contract,
         where="test exporter",
@@ -521,14 +521,14 @@ def test_export_preflight_requires_model_assignment_and_qualified_v11(
     with pytest.raises(RTX4090Qwen38PolicyError, match="compile_only"):
         prepare_rtx4090_export_policy(
             model_dir=tmp_path,
-            assignment={"model.layers.0.mlp.down_proj": "FP8_CB_K20"},
+            assignment={"model.layers.0.mlp.down_proj": "FP8_CB_K44"},
             producer_policy=RTX4090_QWEN38_POLICY_ID,
             runtime_contract=_runtime_contract(qualified=False),
             where="test exporter",
         )
     _, validation_stamp = prepare_rtx4090_export_policy(
         model_dir=tmp_path,
-        assignment={"model.layers.0.mlp.down_proj": "FP8_CB_K20"},
+        assignment={"model.layers.0.mlp.down_proj": "FP8_CB_K44"},
         producer_policy=RTX4090_VALIDATION_ONLY_POLICY_ID,
         runtime_contract=_runtime_contract(qualified=False),
         where="test validation-only exporter",
@@ -540,7 +540,7 @@ def test_export_preflight_requires_model_assignment_and_qualified_v11(
     with pytest.raises(RTX4090Qwen38PolicyError, match="without an explicit"):
         prepare_rtx4090_export_policy(
             model_dir=tmp_path,
-            assignment={"model.layers.0.mlp.down_proj": "FP8_CB_K20"},
+            assignment={"model.layers.0.mlp.down_proj": "FP8_CB_K44"},
             producer_policy=None,
             runtime_contract=contract,
             where="test exporter",
@@ -557,10 +557,10 @@ def test_runtime_attestation_sha_binds_every_contract_field():
     changed["abi_features"]["dspark_construction_physical_bridge"] = 2
 
     original = require_rtx4090_runtime_contract(
-        contract, ("FP8_CB_K20",)
+        contract, ("FP8_CB_K44",)
     )
     mutated = require_rtx4090_runtime_contract(
-        changed, ("FP8_CB_K20",)
+        changed, ("FP8_CB_K44",)
     )
     assert original["runtime_contract_sha256"] != (
         mutated["runtime_contract_sha256"]
@@ -581,7 +581,7 @@ def test_validation_only_manifest_is_structural_but_never_strict_release():
     payload = _quant_config(_runtime_contract())
     payload["provenance"]["producer_policy"] = (
         validation_only_producer_policy_stamp(
-            contract, ("FP8_CB_K20", "FP8_E4M3", "BF16")
+            contract, ("FP8_CB_K44", "FP8_E4M3", "BF16")
         )
     )
     route = rtx4090_route_status_stamp(
@@ -617,7 +617,7 @@ def test_physical_rtx4090_validator_categorically_refuses_validation_stamp(
     (tmp_path / "quant_config.json").write_text(json.dumps({
         "provenance": {
             "producer_policy": validation_only_producer_policy_stamp(
-                _runtime_contract(qualified=False), ("FP8_CB_K20",)
+                _runtime_contract(qualified=False), ("FP8_CB_K44",)
             )
         }
     }))

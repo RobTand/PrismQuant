@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -24,6 +24,7 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from prismaquant.cluster_campaign_contract import (
+    LEGACY_CAMPAIGN_MANIFEST_SCHEMA,
     STAGE_DAG,
     validate_campaign_manifest,
 )
@@ -35,6 +36,9 @@ from prismaquant.cluster_live_transport import (
     bootstrap_ssh_helper,
 )
 from prismaquant.cluster_transport import (
+    ClusterTransportError,
+    JobNotFoundError,
+    JobReceipt,
     LocalTransport,
     SSHTransport,
     TreeManifest,
@@ -59,6 +63,12 @@ ENDPOINT_IDENTITY_RECEIPT_SCHEMA = (
 ARTIFACT_ROUTE_SCHEMA = "prismaquant.cluster_live_runtime.artifact_route.v1"
 ARTIFACT_TRANSFER_RECEIPT_SCHEMA = (
     "prismaquant.cluster_live_runtime.artifact_transfer_receipt.v1"
+)
+HISTORICAL_JOB_INSPECT_REQUEST_SCHEMA = (
+    "prismaquant.cluster_live_runtime.historical_job_inspect_request.v1"
+)
+HISTORICAL_JOB_INSPECT_RESPONSE_SCHEMA = (
+    "prismaquant.cluster_live_runtime.historical_job_inspect_response.v1"
 )
 ARTIFACT_BARRIER_RECEIPT_SCHEMA = (
     "prismaquant.cluster_live_runtime.artifact_barrier_receipt.v1"
@@ -481,6 +491,45 @@ def _duplicate_refusing_object(
     return result
 
 
+def _endpoint_probe_receipt_like(
+    completed: Any,
+    *,
+    schema: str,
+    where: str,
+) -> Mapping[str, object]:
+    stdout = (
+        completed.stdout
+        if isinstance(completed.stdout, bytes)
+        else str(completed.stdout or "").encode()
+    )
+    stderr = (
+        completed.stderr
+        if isinstance(completed.stderr, bytes)
+        else str(completed.stderr or "").encode()
+    )
+    if int(completed.returncode) != 0:
+        raise ClusterLiveRuntimeError(
+            f"{where} failed: " + stderr.decode("utf-8", errors="replace")
+        )
+    payload = stdout.strip()
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_duplicate_refusing_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ClusterLiveRuntimeError(f"{where} returned invalid JSON") from exc
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema") != schema
+        or canonical_json_bytes(value) != payload
+    ):
+        raise ClusterLiveRuntimeError(
+            f"{where} returned a noncanonical or wrong-schema response"
+        )
+    return value
+
+
 def _fixed_remote_program_argv(
     ssh: SSHTransport,
     program: str,
@@ -663,6 +712,161 @@ def _initialize_remote_directory_skeleton(
     return receipt
 
 
+_HISTORICAL_JOB_INSPECT_PROGRAM = r'''
+import base64, hashlib, json, os, re, stat, sys
+
+REQUEST = "prismaquant.cluster_live_runtime.historical_job_inspect_request.v1"
+RESPONSE = "prismaquant.cluster_live_runtime.historical_job_inspect_response.v1"
+RUN_REQUEST = "prismaquant.cluster_transport.run_request.v1"
+JOB_RECEIPT = "prismaquant.cluster_transport.job_receipt.v1"
+SAFE = re.compile(r"[A-Za-z0-9._-]+")
+
+def unique(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError("duplicate JSON member")
+        out[key] = value
+    return out
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+def absolute_parts(raw):
+    if (not isinstance(raw, str) or not raw.startswith("/") or "\x00" in raw):
+        raise ValueError("unsafe historical state root")
+    parts = raw.split("/")[1:]
+    if (not parts or any(not part or part in (".", "..")
+                         or SAFE.fullmatch(part) is None for part in parts)):
+        raise ValueError("unsafe historical state root")
+    return parts
+
+def open_directory(parent, component):
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory:
+        raise ValueError("descriptor-safe historical inspection unavailable")
+    before = os.stat(component, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISDIR(before.st_mode):
+        raise ValueError("historical job ancestry is not a real directory")
+    child = os.open(
+        component,
+        os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=parent,
+    )
+    opened = os.fstat(child)
+    if (not stat.S_ISDIR(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+        os.close(child)
+        raise ValueError("historical job ancestry changed while opening")
+    return child
+
+def open_job(root, job_id):
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(
+        "/", os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        for component in [*absolute_parts(root), "jobs", job_id]:
+            child = open_directory(descriptor, component)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+def read_regular(parent, name):
+    before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("historical job child is not a regular file")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0),
+        dir_fd=parent,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)):
+            raise ValueError("historical job child changed while opening")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        if ((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                after.st_ctime_ns) != (
+                opened.st_dev, opened.st_ino, opened.st_size,
+                opened.st_mtime_ns, opened.st_ctime_ns)
+                or len(payload) != after.st_size):
+            raise ValueError("historical job child changed while reading")
+        return payload
+    finally:
+        os.close(descriptor)
+
+def strict_json(payload):
+    value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique)
+    if canonical(value) != payload:
+        raise ValueError("historical job JSON is not canonical")
+    return value
+
+try:
+    encoded = sys.stdin.buffer.read().strip()
+    raw = base64.b64decode(encoded, validate=True)
+    request = strict_json(raw)
+    if (not isinstance(request, dict)
+            or set(request) != {"schema", "state_root", "job_id"}
+            or request.get("schema") != REQUEST
+            or not isinstance(request.get("job_id"), str)
+            or SAFE.fullmatch(request["job_id"]) is None):
+        raise ValueError("historical inspect request is invalid")
+    try:
+        job = open_job(request["state_root"], request["job_id"])
+    except FileNotFoundError:
+        response = {
+            "schema": RESPONSE,
+            "kind": "job_not_found",
+            "payload": {"message": "historical job does not exist"},
+        }
+    else:
+        try:
+            for name in os.listdir(job):
+                child = os.stat(name, dir_fd=job, follow_symlinks=False)
+                if not stat.S_ISREG(child.st_mode):
+                    raise ValueError("historical job root contains a non-regular child")
+            request_payload = strict_json(read_regular(job, "request.json"))
+            receipt = strict_json(read_regular(job, "receipt.json"))
+        finally:
+            os.close(job)
+        if (not isinstance(request_payload, dict)
+                or request_payload.get("schema") != RUN_REQUEST
+                or request_payload.get("job_id") != request["job_id"]
+                or not isinstance(receipt, dict)
+                or receipt.get("schema") != JOB_RECEIPT
+                or receipt.get("job_id") != request["job_id"]
+                or receipt.get("request_sha256")
+                != hashlib.sha256(canonical(request_payload)).hexdigest()):
+            raise ValueError("historical request/receipt identity differs")
+        response = {"schema": RESPONSE, "kind": "job_receipt", "payload": receipt}
+    sys.stdout.buffer.write(canonical(response))
+except Exception as exc:
+    response = {
+        "schema": RESPONSE,
+        "kind": "integrity_error",
+        "payload": {"message": type(exc).__name__ + ": " + str(exc)},
+    }
+    sys.stdout.buffer.write(canonical(response))
+'''.strip()
+
+
 class _ManifestSSHTransport(SSHTransport):
     """SSHTransport that preserves the manifest's explicit TCP port."""
 
@@ -672,7 +876,9 @@ class _ManifestSSHTransport(SSHTransport):
         *,
         port: int,
         remote_helper_path: str,
+        helper_source: bytes | None = None,
         remote_state_root: str | None = None,
+        historical_read_only: bool = False,
         remote_python_path: str = "/usr/bin/python3",
         ssh_binary: str = "ssh",
         run_impl: Callable[..., Any] = subprocess.run,
@@ -688,9 +894,13 @@ class _ManifestSSHTransport(SSHTransport):
                 remote_state_root, where="remote transport state root",
             )
         )
+        if type(historical_read_only) is not bool:
+            raise TypeError("historical_read_only must be a boolean")
+        self.historical_read_only = historical_read_only
         super().__init__(
             host,
             remote_helper_path=remote_helper_path,
+            helper_source=helper_source,
             remote_python_path=remote_python_path,
             ssh_binary=ssh_binary,
             run_impl=run_impl,
@@ -708,6 +918,88 @@ class _ManifestSSHTransport(SSHTransport):
         separator = command.index("--")
         command[separator:separator] = ["-p", str(self.port)]
         return tuple(command)
+
+    def _verify_held_helper_only(self) -> None:
+        command = list(self.command_argv)
+        remote = shlex.split(command[-1])
+        try:
+            action_index = max(
+                index for index, value in enumerate(remote)
+                if value == "--remote-helper"
+            )
+        except ValueError as exc:  # pragma: no cover - constructor invariant
+            raise ClusterLiveRuntimeError(
+                "held helper command has no action token"
+            ) from exc
+        command[-1] = shlex.join([
+            *remote[:action_index], "--verify-held-helper",
+        ])
+        completed = self._run_impl(
+            command,
+            input=b"",
+            capture_output=True,
+            check=False,
+            shell=False,
+            timeout=30.0,
+        )
+        if int(completed.returncode) != 0:
+            stderr = completed.stderr
+            detail = (
+                stderr.decode("utf-8", errors="replace")
+                if isinstance(stderr, bytes) else str(stderr or "")
+            )
+            raise ClusterTransportError(
+                "historical SSH helper identity verification failed: " + detail
+            )
+
+    def inspect(self, job_id: str) -> JobReceipt:
+        if not self.historical_read_only:
+            return super().inspect(job_id)
+        if self.remote_state_root is None:  # pragma: no cover - builder invariant
+            raise ClusterLiveRuntimeError(
+                "historical inspection requires a remote state root"
+            )
+        self._verify_held_helper_only()
+        request = {
+            "schema": HISTORICAL_JOB_INSPECT_REQUEST_SCHEMA,
+            "state_root": self.remote_state_root,
+            "job_id": str(job_id),
+        }
+        completed = self._run_impl(
+            list(_fixed_remote_program_argv(
+                self, _HISTORICAL_JOB_INSPECT_PROGRAM,
+            )),
+            input=base64.b64encode(canonical_json_bytes(request)) + b"\n",
+            capture_output=True,
+            check=False,
+            shell=False,
+            timeout=30.0,
+        )
+        response = _endpoint_probe_receipt_like(
+            completed,
+            schema=HISTORICAL_JOB_INSPECT_RESPONSE_SCHEMA,
+            where="historical read-only job inspection",
+        )
+        kind = response.get("kind")
+        payload = response.get("payload")
+        if kind == "job_not_found":
+            raise JobNotFoundError(f"historical job {job_id!r} does not exist")
+        if kind != "job_receipt":
+            message = payload.get("message") if isinstance(payload, Mapping) else payload
+            raise ClusterTransportError(
+                f"historical read-only job inspection failed: {message}"
+            )
+        try:
+            receipt = JobReceipt.from_payload(payload)
+        except (TypeError, ValueError) as exc:
+            raise ClusterTransportError(
+                "historical inspector returned an invalid receipt"
+            ) from exc
+        if receipt.job_id != job_id:
+            raise ClusterTransportError(
+                "historical inspector returned another job identity"
+            )
+        return replace(receipt, transport=f"ssh:{self.host}")
 
 
 def _directory_receipt(
@@ -1035,6 +1327,10 @@ class LiveCampaignRuntime:
         destinations through :class:`VerifiedRsyncSSHTransfer`.
         """
 
+        if self.manifest["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+            raise ClusterLiveRuntimeError(
+                "legacy campaign manifests are read-only"
+            )
         routes = self.route_specs_for_stage(stage)
         if not routes:
             return None
@@ -1182,16 +1478,20 @@ def build_live_campaign_runtime(
     transfer_timeout_seconds: float = 3600.0,
     initialize: bool = True,
     endpoint_verifier: Callable[..., Mapping[str, Mapping[str, object]]] | None = None,
+    ssh_helper_source: bytes | None = None,
 ) -> LiveCampaignRuntime:
     """Build exactly one local and one SSH live transport from ``manifest``.
 
     ``initialize=False`` is the read-only open path used by ``verify``.  It
     constructs deterministic endpoints and inspectors but does not create
-    directories or install the remote helper; subsequent inspection still
-    verifies the helper's exact source digest before trusting it.
+    directories, install the remote helper, or proactively attest the remote
+    helper bytes.  Callers may use the resulting endpoints only for the
+    read-only verification operations explicitly performed by the application.
     """
 
     normalized = validate_campaign_manifest(manifest)
+    if initialize and normalized["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA:
+        raise ClusterLiveRuntimeError("legacy campaign manifests are read-only")
     campaign_identity = str(normalized["identity_sha256"])
     hosts = normalized["hosts"]
     assert isinstance(hosts, list)
@@ -1227,7 +1527,11 @@ def build_live_campaign_runtime(
         target,
         port=int(ssh_config["port"]),
         remote_helper_path=(remote_runtime_root / "helper" / "cluster_transport.py").as_posix(),
+        helper_source=ssh_helper_source,
         remote_state_root=(remote_runtime_root / "transport").as_posix(),
+        historical_read_only=(
+            normalized["schema"] == LEGACY_CAMPAIGN_MANIFEST_SCHEMA
+        ),
         remote_python_path=remote_python_path,
         ssh_binary=ssh_binary,
         run_impl=ssh_run_impl,

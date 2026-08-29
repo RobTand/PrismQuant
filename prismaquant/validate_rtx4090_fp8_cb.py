@@ -794,7 +794,7 @@ def _validate_runtime_attestation(
         or len(routes) != 2 * len(FP8_PRODUCT_RUNGS)
     ):
         raise RTX4090FP8CBValidationError(
-            "runtime attestation is not the exact full K4..K48 step-4, "
+            "runtime attestation is not the exact K40/K44/K48 producer, "
             "flag-free, device-qualified SM89 dense FP8-CB route projection"
         )
     observed_pairs: set[tuple[int, str]] = set()

@@ -163,9 +163,10 @@ does not mean provenance-free.
 The schema encodes no intrinsic minimum, maximum, or contiguous rung range.
 K1, a future research K32, holes between them, and overlaps with FP8 are all
 representable as explicit catalog members. That data-model capability is not
-format authority. The current public NVFP4 format catalog is exactly K1–K25;
-K26–K32 have no parser, registry, contract, chooser, assignment, bundle, or
-export identity. Promotion policy remains external: lattice-first is the safe
+format authority. The current public NVFP4 reader and interim producer catalog
+is exactly K12–K24; direct codec/lattice widths outside that interval have no
+parser, registry, contract, chooser, assignment, bundle, or export identity.
+Promotion policy remains external: lattice-first is the safe
 production default, while a learned candidate must earn its extra asset,
 training, and runtime complexity under the same target and qualification
 contract. Learned NVFP4 remains receipt-gated and refused today.
@@ -185,10 +186,11 @@ free-form `exclusions` are not format authority and no collection record may
 claim the earlier gate has run without its own receipt. Legacy readers remain
 broad; maintained performance eligibility is target-specific and fail-closed.
 
-The range study retains a **direct-codec/kernel research span through K32** but
-recommends a public artifact catalog of **K1–K25**. With two four-value-vector
-product subtables, the index split is `(ceil(K/2), floor(K/2))`; K1 is therefore
-the valid `(1, 0)` degenerate product, not malformed metadata. An E2M1 value
+The range study retains a **direct-codec/kernel research span through K32**,
+including widths outside the public interval, but the evidence-backed public
+artifact catalog is **K12–K24**. With two four-value-vector product subtables,
+the index split is `(ceil(K/2), floor(K/2))`; K1 is therefore a valid `(1, 0)`
+research geometry, not malformed metadata. An E2M1 value
 has 15 distinct numeric possibilities (the two signed-zero encodings compare
 equal), so a four-value tuple has `15^4 = 50,625` distinct numeric vectors. A
 width-16 table can therefore fill 65,536 physical rows only by deterministic
@@ -199,20 +201,23 @@ The sidecar grows much earlier.  An FP16 sidecar product dictionary occupies
 `2 * (4*2^ceil(K/2) + 4*2^floor(K/2))` bytes: 65,536 at K24, 98,304 at K25,
 and 131,072 at K26. The present GB10 full-dictionary staging budget is 101,376
 bytes (`gridbook/csrc/cb_gemv_v2.cu`), making K25 the last rung compatible with
-that whole-dictionary staging architecture. Gridbook's generic global-LUT
-kernel can structurally exercise larger direct-codec words, but the accepted
-performance cutoff is K25 and there is no legacy artifact reason to preserve
-K26–K32 as public wire ids. The external v11 contract must therefore declare
-both NVFP4 `rungs` and `producer_rungs` as K1–K25, and every eligibility cell
-must be a subset. Its current sm120 evidence is only `compile_only`: dense and
+that whole-dictionary staging architecture. That structural ceiling is not
+format authority. Gridbook's generic global-LUT kernel can exercise larger
+direct-codec words, but there is no legacy artifact reason to preserve widths
+outside K12–K24 as public wire ids. A compatible external v11 contract must
+therefore declare both NVFP4 `rungs` and `producer_rungs` as K12–K24, and every
+eligibility cell must be a subset. The sealed untagged 0.9.1 candidate predates
+this contraction and is deliberately rejected pending a newly committed
+Gridbook package with a new reviewed identity. Its sm120 evidence is only
+`compile_only`: dense and
 routed decode are `backed`; routed batch is `backed` only for
 `role_split=false` through persistent-B, with a generic expand-to-BF16
 `fallback`; dense batch is likewise only the expand-to-BF16 `fallback`.
 Accordingly:
 
-- enumerate and export K1–K25 as explicit artifact candidates;
-- keep K26–K32 confined to direct-codec, lattice-asset, and kernel research
-  tests with no public format spelling;
+- enumerate and export K12–K24 as explicit artifact candidates;
+- keep widths outside K12–K24 confined to direct-codec, lattice-asset, and
+  kernel research tests with no public format spelling;
 - advertise every new band only as validation-only while its exact target,
   structure, regime, rung, and predicate winner remains `compile_only` or
   `fallback`;

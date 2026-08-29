@@ -73,6 +73,7 @@ def _fixture(tmp_path, *, cross_family_verdict=None, with_experts=False):
         "FP8_CB_K28": 4.0e-4,
         "FP8_CB_K32": 3.0e-4,
         "FP8_CB_K36": 2.0e-4,
+        "FP8_CB_K40": 1.5e-4,
         "NVFP4": 1.0e-4,
         "BF16": 0.0,
     }
@@ -386,9 +387,14 @@ def test_report_records_serving_lanes_per_arm(tmp_path):
     probe_p, cost_p, _stats = _fixture(tmp_path)
     report = _run(
         tmp_path, probe_p, cost_p,
-        extra=["--skip-byte-neutral", "--target-profile", "nvfp4_cb"])
+        extra=[
+            "--skip-byte-neutral",
+            "--formats", "FP8_CB_K40,NVFP4,BF16",
+            "--cb-format", "FP8_CB_K40",
+            "--target-profile", "nvfp4_cb",
+        ])
     lanes = report["serving_lane_provenance_by_arm"]
-    cb = lanes["cb:FP8_CB_K36"]
+    cb = lanes["cb:FP8_CB_K40"]
     native = lanes["native:NVFP4"]
 
     # Vanilla NVFP4 has no declared CB lane at all.
@@ -405,23 +411,23 @@ def test_report_records_serving_lanes_per_arm(tmp_path):
         + cb["units_without_declared_lane"]
     ) == len(_DENSE)
 
-    # Which side of that split K36 lands on is a function of the pin, so it is
+    # Which side of that split K40 lands on is a function of the pin, so it is
     # asserted against the pin rather than hardcoded. The repo currently pins
-    # Whether K36 is backed is resolved from the immutable released-runtime
+    # Whether K40 is backed is resolved from the immutable released-runtime
     # table; a future pin with no key must fall back rather than inheriting a
     # prior release's evidence.
-    if 36 in serving_profile_backed_rungs("nvfp4_cb"):
+    if 40 in serving_profile_backed_rungs("nvfp4_cb"):
         assert cb["units_on_backed_fused_mid_m_lane"] == len(_DENSE)
-        assert cb["selected_rungs_fused_mid_m_backed"] == [36]
+        assert cb["selected_rungs_fused_mid_m_backed"] == [40]
     else:
         assert cb["units_on_fallback_route"] == len(_DENSE)
         assert cb["selected_rungs_fused_mid_m_backed"] == []
-        assert cb["selected_rungs_on_fallback_route"] == [36]
+        assert cb["selected_rungs_on_fallback_route"] == [40]
 
 
 def serving_profile_backed_rungs(profile_id: str) -> tuple[int, ...]:
     """The fused mid-M rungs the CURRENT pin attests for ``profile_id``."""
-    lane = serving_lane_route(profile_id, "FP8_CB_K36")
+    lane = serving_lane_route(profile_id, "FP8_CB_K40")
     if lane is None or not lane.fused_mid_m_backed:
         return ()
     return tuple(lane.fused_mid_m_rungs)
@@ -463,6 +469,8 @@ def test_serving_constraints_are_evaluated_per_arm_when_supplied(tmp_path):
         tmp_path, probe_p, cost_p, out="constrained.json",
         extra=[
             "--skip-byte-neutral",
+            "--formats", "FP8_CB_K40,NVFP4,BF16",
+            "--cb-format", "FP8_CB_K40",
             "--serve-dispatch-table", str(table),
             "--serve-workload-mix", "prefill:dense=1.0",
             "--slo-prefill-p95-ttft-ms", "1200",
@@ -470,7 +478,7 @@ def test_serving_constraints_are_evaluated_per_arm_when_supplied(tmp_path):
         ])
     arms = {a["label"]: a for a in
             report["experiments"]["matched_bytes"]["arms"]}
-    cb = arms["cb:FP8_CB_K36"]["serve_constraints"]
+    cb = arms["cb:FP8_CB_K40"]["serve_constraints"]
     native = arms["native:NVFP4"]["serve_constraints"]
     # The audit's headline trade, made mechanical: the CB arm costs 1.44x the
     # native arm on dense prefill and misses a 1200 ms SLO the native arm

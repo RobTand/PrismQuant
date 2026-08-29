@@ -115,7 +115,9 @@ def _validate(payload: dict[str, object], **overrides):
 
 
 def test_receipt_promotes_every_rung_independently_without_a_crossover():
-    assert CBL_STEP4_RUNGS == FP8_PRODUCT_RUNGS
+    assert CBL_STEP4_RUNGS == tuple(range(4, 49, 4))
+    assert FP8_PRODUCT_RUNGS == (40, 44, 48)
+    assert set(FP8_PRODUCT_RUNGS) < set(CBL_STEP4_RUNGS)
     payload = promotion_receipt(failed_rungs={8, 44})
     validated = _validate(payload)
     assert validated.source_for_rung(4) == "learned"

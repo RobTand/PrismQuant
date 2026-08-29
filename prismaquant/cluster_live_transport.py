@@ -269,7 +269,7 @@ class TelemetryJobAdapter:
 
 
 _BOOTSTRAP_PROGRAM = r'''
-import base64, hashlib, json, os, pathlib, re, stat, sys
+import base64, ctypes, errno, hashlib, json, os, re, stat, sys
 
 SCHEMA = "prismaquant.cluster_live_transport.bootstrap_request.v1"
 OUT = "prismaquant.cluster_live_transport.bootstrap_receipt.v1"
@@ -287,25 +287,118 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
-def safe_path(raw):
-    if not isinstance(raw, str):
-        raise ValueError("remote_path must be a string")
-    pure = pathlib.PurePosixPath(raw)
-    if not pure.is_absolute() or any(
-        part in ("", ".", "..") or SAFE.fullmatch(part) is None
-        for part in pure.parts[1:]
-    ):
+def open_parent(raw):
+    if (not isinstance(raw, str) or not raw.startswith("/") or "\x00" in raw):
         raise ValueError("unsafe remote_path")
-    path = pathlib.Path(raw)
-    current = pathlib.Path(path.anchor)
-    for part in path.parent.parts[1:]:
-        current /= part
-        mode = current.lstat().st_mode
-        if stat.S_ISLNK(mode):
-            raise ValueError("remote_path traverses a symlink")
-    if not path.parent.is_dir():
-        raise ValueError("remote_path parent is not a directory")
-    return path
+    parts = raw.split("/")[1:]
+    if (not parts or any(not part or part in (".", "..")
+                         or SAFE.fullmatch(part) is None for part in parts)):
+        raise ValueError("unsafe remote_path")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory:
+        raise ValueError("descriptor-safe bootstrap is unavailable")
+    parent = os.open(
+        "/", os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        for component in parts[:-1]:
+            before = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISDIR(before.st_mode):
+                raise ValueError("remote_path ancestry is not a real directory")
+            child = os.open(
+                component,
+                os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent,
+            )
+            opened = os.fstat(child)
+            if (not stat.S_ISDIR(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino)
+                    != (before.st_dev, before.st_ino)):
+                os.close(child)
+                raise ValueError("remote_path ancestry changed while opening")
+            os.close(parent)
+            parent = child
+        return parent, parts[-1]
+    except BaseException:
+        os.close(parent)
+        raise
+
+def open_regular(parent, name):
+    before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("bootstrap path is not a regular file")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0),
+        dir_fd=parent,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)):
+            raise ValueError("bootstrap path changed while opening")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        if ((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                after.st_ctime_ns) != (
+                opened.st_dev, opened.st_ino, opened.st_size,
+                opened.st_mtime_ns, opened.st_ctime_ns)
+                or len(payload) != after.st_size):
+            raise ValueError("bootstrap path changed while reading")
+        return descriptor, after, payload
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+def read_regular(parent, name):
+    descriptor, _opened, payload = open_regular(parent, name)
+    os.close(descriptor)
+    return payload
+
+def read_held(descriptor):
+    opened = os.fstat(descriptor)
+    if not stat.S_ISREG(opened.st_mode):
+        raise ValueError("bootstrap staging descriptor is not regular")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks = []
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    payload = b"".join(chunks)
+    after = os.fstat(descriptor)
+    if ((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+            after.st_ctime_ns) != (
+            opened.st_dev, opened.st_ino, opened.st_size,
+            opened.st_mtime_ns, opened.st_ctime_ns)
+            or len(payload) != after.st_size):
+        raise ValueError("bootstrap staging descriptor changed while reading")
+    return payload
+
+def link_held(descriptor, parent, destination):
+    # Linux linkat(AT_EMPTY_PATH) publishes the verified held inode rather
+    # than re-opening a mutable staging pathname.
+    libc = ctypes.CDLL(None, use_errno=True)
+    result = libc.linkat(
+        ctypes.c_int(descriptor), ctypes.c_char_p(b""),
+        ctypes.c_int(parent), ctypes.c_char_p(destination.encode("ascii")),
+        ctypes.c_int(0x1000),
+    )
+    if result != 0:
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise FileExistsError(destination)
+        raise OSError(code, os.strerror(code), destination)
 
 try:
     encoded = sys.stdin.buffer.read().strip()
@@ -320,44 +413,75 @@ try:
     digest = hashlib.sha256(source).hexdigest()
     if digest != request["source_sha256"] or len(source) != request["size_bytes"]:
         raise ValueError("bootstrap source identity mismatch")
-    destination = safe_path(request["remote_path"])
-    already_present = False
+    parent, destination = open_parent(request["remote_path"])
     try:
-        mode = destination.lstat().st_mode
-    except FileNotFoundError:
-        mode = None
-    if mode is not None:
-        if not stat.S_ISREG(mode) or hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
-            raise FileExistsError("remote helper exists with different bytes")
-        already_present = True
-    else:
-        temporary = destination.parent / ("." + destination.name + "." + digest + ".tmp")
+        already_present = False
         try:
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            existing = read_regular(parent, destination)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if hashlib.sha256(existing).hexdigest() != digest:
+                raise FileExistsError("remote helper exists with different bytes")
+            already_present = True
+        else:
+            temporary = "." + destination + "." + digest + ".tmp"
             try:
-                view = memoryview(source)
-                while view:
-                    count = os.write(fd, view)
-                    view = view[count:]
-                os.fsync(fd)
+                fd = os.open(
+                    temporary,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                    dir_fd=parent,
+                )
+            except FileExistsError:
+                fd, _opened, staged = open_regular(parent, temporary)
+                if hashlib.sha256(staged).hexdigest() != digest:
+                    os.close(fd)
+                    raise FileExistsError("bootstrap staging path has different bytes")
+            else:
+                try:
+                    view = memoryview(source)
+                    while view:
+                        count = os.write(fd, view)
+                        view = view[count:]
+                    os.fsync(fd)
+                    if hashlib.sha256(read_held(fd)).hexdigest() != digest:
+                        raise ValueError("bootstrap staging write differs")
+                except BaseException:
+                    os.close(fd)
+                    raise
+            try:
+                try:
+                    link_held(fd, parent, destination)
+                except FileExistsError:
+                    if hashlib.sha256(read_regular(parent, destination)).hexdigest() != digest:
+                        raise FileExistsError("remote helper raced with different bytes")
+                    already_present = True
+                else:
+                    published_fd, published, published_bytes = open_regular(
+                        parent, destination,
+                    )
+                    try:
+                        staged = os.fstat(fd)
+                        if ((published.st_dev, published.st_ino)
+                                != (staged.st_dev, staged.st_ino)
+                                or hashlib.sha256(published_bytes).hexdigest() != digest):
+                            raise ValueError(
+                                "published helper differs from held staging inode"
+                            )
+                    finally:
+                        os.close(published_fd)
             finally:
                 os.close(fd)
-        except FileExistsError:
-            if hashlib.sha256(temporary.read_bytes()).hexdigest() != digest:
-                raise FileExistsError("bootstrap staging path has different bytes")
-        try:
-            os.link(temporary, destination, follow_symlinks=False)
-        except FileExistsError:
-            if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
-                raise FileExistsError("remote helper raced with different bytes")
-            already_present = True
-        temporary.unlink(missing_ok=True)
-        directory_fd = os.open(destination.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    response = {"schema": OUT, "remote_path": str(destination),
+                try:
+                    os.unlink(temporary, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+            os.fsync(parent)
+    finally:
+        os.close(parent)
+    response = {"schema": OUT, "remote_path": request["remote_path"],
                 "source_sha256": digest, "size_bytes": len(source),
                 "already_present": already_present}
     sys.stdout.buffer.write(canonical(response))
@@ -447,7 +571,7 @@ def bootstrap_ssh_helper(
 
 
 _REMOTE_FILE_OP_PROGRAM = r'''
-import base64, hashlib, importlib.util, json, os, pathlib, re, stat, sys
+import base64, hashlib, json, os, pathlib, re, stat, sys, types
 
 SCHEMA = "prismaquant.cluster_live_transport.remote_op_request.v1"
 OUT = "prismaquant.cluster_live_transport.remote_op_response.v1"
@@ -477,15 +601,75 @@ def safe_path(raw):
         raise ValueError("unsafe remote path")
     return pathlib.Path(raw)
 
-def load_helper(path, expected):
+def open_held_helper(path):
     path = safe_path(path)
-    mode = path.lstat().st_mode
-    if not stat.S_ISREG(mode) or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    nonblock = getattr(os, "O_NONBLOCK", 0)
+    if not nofollow or not directory:
+        raise ValueError("descriptor-safe remote helper traversal unavailable")
+    parts = path.parts[1:]
+    parent = os.open("/", os.O_RDONLY | directory | nofollow | cloexec)
+    try:
+        for component in parts[:-1]:
+            before = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISDIR(before.st_mode):
+                raise ValueError("remote helper ancestry is not a real directory")
+            child = os.open(
+                component,
+                os.O_RDONLY | directory | nofollow | cloexec,
+                dir_fd=parent,
+            )
+            opened = os.fstat(child)
+            if (not stat.S_ISDIR(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino)
+                    != (before.st_dev, before.st_ino)):
+                os.close(child)
+                raise ValueError("remote helper ancestry changed while opening")
+            os.close(parent)
+            parent = child
+        before = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("remote helper is not a regular file")
+        descriptor = os.open(
+            parts[-1],
+            os.O_RDONLY | nofollow | cloexec | nonblock,
+            dir_fd=parent,
+        )
+        opened = os.fstat(descriptor)
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            os.close(descriptor)
+            raise ValueError("remote helper identity changed while opening")
+        return path, descriptor, opened
+    finally:
+        os.close(parent)
+
+def load_helper(path, expected):
+    path, descriptor, opened = open_held_helper(path)
+    try:
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        source = b"".join(chunks)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if ((after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+            or after.st_size != len(source)
+            or after.st_mtime_ns != opened.st_mtime_ns
+            or after.st_ctime_ns != opened.st_ctime_ns
+            or hashlib.sha256(source).hexdigest() != expected):
         raise ValueError("remote helper identity mismatch")
-    spec = importlib.util.spec_from_file_location("_pq_cluster_transport_helper", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    name = "_pq_cluster_transport_helper"
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    sys.modules[name] = module
+    exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
     return module
 
 try:
