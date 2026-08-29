@@ -129,6 +129,7 @@ from .fixed_head import (
     is_lm_head_name,
     parse_allow_pinned,
 )
+from .trellis_formats import parse_trellis_format_name
 from .nvfp4_cb_footprint import (
     CB_ASSIGNMENT_IDENTITIES_FIELD,
     CB_TENSOR_IDENTITY_FIELD,
@@ -251,6 +252,68 @@ def _sort_specs_by_serialized_rate(
         sorted(specs, key=lambda spec: (rates[spec.name], spec.name)),
         rates,
     )
+
+
+def _extend_format_rank_with_candidate_menu(
+    format_rank: dict[str, int],
+    rank_rates: Mapping[str, float],
+    stats: Mapping[str, Mapping],
+    candidates: Mapping[str, list],
+) -> tuple[dict[str, int], dict[str, float]]:
+    """Rank menu formats that have no ``FormatSpec``, by their exact rate.
+
+    ``promote_serving_units`` indexes ``format_rank`` for EVERY assigned
+    format of a coupled unit, so a format the registry cannot resolve is a
+    live ``KeyError`` the moment super-item aggregation stops dropping such
+    formats.  The rank is not a preference to invent (principle 2): it is
+    the same quantity :func:`_serialized_format_rates` computes for a
+    ``FormatSpec`` -- aggregate exact serialized bits per parameter over the
+    shapes that can carry it -- read off the candidates that already hold
+    those exact bytes, because a format with no spec has no closed form to
+    ask.  "Higher rank" therefore keeps meaning "more bytes on this model",
+    which is exactly the invariant promotion relies on.
+
+    Existing names keep their relative order: they were sorted ascending by
+    ``(rate, name)``, so re-sorting them by ``(rate, current index)`` is the
+    identity.  With no registry-free format in the menu the returned rank is
+    the input rank, key for key.
+    """
+    spec_names = set(format_rank)
+    bytes_by_fmt: dict[str, int] = {}
+    params_by_fmt: dict[str, int] = {}
+    for unit, menu in candidates.items():
+        entry = stats.get(unit)
+        n_params = int(entry.get("n_params", 0) or 0) if isinstance(entry, Mapping) else 0
+        for cand in menu:
+            if cand.fmt in spec_names:
+                continue
+            bytes_by_fmt[cand.fmt] = (
+                bytes_by_fmt.get(cand.fmt, 0) + int(cand.memory_bytes))
+            params_by_fmt[cand.fmt] = params_by_fmt.get(cand.fmt, 0) + n_params
+    if not bytes_by_fmt:
+        return format_rank, dict(rank_rates)
+    # Keyed by the RANK table, not the rate table: a rate the rank never
+    # carried must not become a rank entry as a side effect.
+    rates = {name: float(rank_rates[name]) for name in format_rank}
+    for fmt_name, total_bytes in bytes_by_fmt.items():
+        total_params = params_by_fmt.get(fmt_name, 0)
+        if total_params <= 0:
+            raise AssertionError(
+                f"[alloc] cannot rank {fmt_name!r}: it is offered by "
+                f"{sum(1 for m in candidates.values() if any(c.fmt == fmt_name for c in m))} "
+                "unit(s) whose stats carry no n_params, so its exact "
+                "serialized rate is undefined. A menu format with no "
+                "FormatSpec must be priced from the candidates that hold "
+                "its bytes; there is no closed form to fall back to."
+            )
+        rates[fmt_name] = 8.0 * total_bytes / float(total_params)
+    order = {name: i for i, name in enumerate(
+        sorted(format_rank, key=format_rank.__getitem__))}
+    merged = sorted(
+        rates,
+        key=lambda name: (rates[name], order.get(name, len(order)), name),
+    )
+    return {name: i for i, name in enumerate(merged)}, rates
 _RD_LOG_LINEAR_R2_THRESHOLD = 0.99
 
 
@@ -2753,6 +2816,15 @@ def main():
             print(line, flush=True)
 
     candidate_mask_records: list[dict] = []
+    # The run's objective, ATTESTED: the cost stage stamps the pipeline
+    # COST_MODE that produced this table into provenance (re-vet R2). It is
+    # not read from os.environ -- run-pipeline.sh assigns COST_MODE with `:=`
+    # and never exports it, so an environment read here would compare the
+    # trellis manifest's declared objective against a default the run may
+    # never have used.
+    run_cost_mode = str(
+        (cost_data.get("provenance") or {}).get("cost_mode", "") or "")
+    trellis_provenance: dict = {}
     candidates = build_candidates(
         stats, costs, specs_sorted, calibrated_gains,
         source_manifest=source_manifest,
@@ -2760,8 +2832,27 @@ def main():
         mask_records=candidate_mask_records,
         cb_serialization_context=cb_serialization_context,
         activation_pricing=activation_pricing,
+        cost_mode=run_cost_mode,
+        trellis_provenance=trellis_provenance,
     )
     print(f"[alloc] candidates built for {len(candidates)} Linears")
+    # Formats with no FormatSpec can now be in the menu (the trellis seam is
+    # the only producer today). promote_serving_units indexes format_rank for
+    # every assigned format of a coupled unit, so the rank table has to cover
+    # the MENU, not the registry. No-op when every candidate format is a spec.
+    format_rank, _rank_serialized_rates = _extend_format_rank_with_candidate_menu(
+        format_rank, _rank_serialized_rates, stats, candidates)
+    if trellis_provenance:
+        print(
+            "[alloc] trellis surface: "
+            f"{trellis_provenance.get('candidates_added', 0)} rungs added "
+            f"across {trellis_provenance.get('units_in_menu', 0)} units "
+            f"(manifest {trellis_provenance.get('manifest_sha256', '?')[:12]}, "
+            f"currency {trellis_provenance.get('currency', '?')}, "
+            f"anchors measured at "
+            f"{trellis_provenance.get('anchor_activation_contract', '?')})",
+            flush=True,
+        )
 
     fixed_format_assignment: dict[str, str] = {}
     fixed_stats: dict[str, dict] = {}
@@ -2811,6 +2902,9 @@ def main():
             # own predicted_dloss/cost_source precedence while making the
             # absence of body activation transfer explicit.
             activation_pricing=None,
+            # Pinned menu: the format is an operator declaration, not a
+            # DP choice, so the research surface has nothing to offer it.
+            apply_trellis_surface=False,
         )
         missing_head_candidates = [
             name for name in head_probe_names
@@ -2897,6 +2991,9 @@ def main():
             mask_records=candidate_mask_records,
             cb_serialization_context=cb_serialization_context,
             activation_pricing=activation_pricing,
+            # Pinned menu: the format is an operator declaration, not a
+            # DP choice, so the research surface has nothing to offer it.
+            apply_trellis_surface=False,
         )
         missing_mtp_candidates = [
             name for name in mtp_names
@@ -2969,6 +3066,9 @@ def main():
                 mask_records=candidate_mask_records,
                 cb_serialization_context=cb_serialization_context,
                 activation_pricing=activation_pricing,
+                # Pinned menu: the format is an operator declaration,
+                # not a DP choice, so the surface has nothing to offer.
+                apply_trellis_surface=False,
             )
             visual_aux_candidates = {
                 name: cand for name in visual_cost_names
@@ -3379,6 +3479,26 @@ def main():
                         ),
                     )
                 continue
+            if parse_trellis_format_name(fmt) is not None:
+                # A trellis rung's exact bytes are NOT a function of (name,
+                # shape): the wire's body stride, block offsets, per-column
+                # schedule plane and alphabet directory are campaign data
+                # (trellis_footprint.trellis_tensor_payload_breakdown), which
+                # is why no FormatSpec can supply them and why the seam
+                # records them on the candidate and in
+                # _memory_bytes_by_format. Reaching here means this stats
+                # entry never saw the seam's write, so the only honest
+                # answers are these bytes or none -- not a closed form that
+                # would be plausible and wrong.
+                raise AssertionError(
+                    f"[alloc] {name} is assigned {fmt}, a trellis rung, but "
+                    "its stats entry carries no '_memory_bytes_by_format' "
+                    "row for it. Exact trellis bytes need the layout, the "
+                    "per-column schedule and the alphabets the surface "
+                    "manifest declares; the format registry has no spec that "
+                    "can compute them. This assignment was built from stats "
+                    "the trellis seam did not write."
+                )
             shape = _shape_from_stats(entry)
             payload_bytes, _identity, _sidecar_identity = serialized_candidate_payload(
                 fr.get_format(fmt),
@@ -5090,6 +5210,18 @@ def main():
     for name, fmt in assignment_expanded.items():
         if fmt in format_specs:
             layer_cfg[name] = format_specs[fmt].autoround_config()
+        elif parse_trellis_format_name(fmt) is not None:
+            # The closed TCQ_<grid>_R<q256> name IS the recipe: the family
+            # and the body rate round-trip out of it
+            # (trellis_formats.parse_trellis_format_name), and everything
+            # else a render would need -- layout, schedule, alphabets -- is
+            # campaign data no autoround_config dict has ever carried. Emit
+            # the name as a string entry (layer_config.canonicalize_format
+            # round-trips it) so the assignment is readable and the
+            # exporter's pointed trellis refusal is REACHABLE, instead of
+            # dying here on a registry lookup that can never succeed.
+            layer_cfg[name] = fmt
+            continue
         else:
             # Visual format outside the body's format set (e.g., user
             # passed --formats NVFP4,BF16 plus --visual-format MXFP8_E4M3).
@@ -5184,6 +5316,18 @@ def main():
         **({
             "serve_constraints": final_serve_feasibility.as_dict(),
         } if final_serve_feasibility is not None else {}),
+        # Only when the trellis seam actually contributed rungs, so a run
+        # without it writes byte-identical layer-config metadata. What
+        # travels: the manifest's sha256 (identity, not a path that may be
+        # rewritten), the currency the anchors were fitted in, the activation
+        # contract they were MEASURED under, and the resolved serving lane /
+        # route status. Principles 12 and 14: the anchor contract is a claim
+        # about what was measured and what a runtime does, so it must ride
+        # WITH the assignment rather than be recomputed downstream from a
+        # manifest the consumer may not have.
+        **({
+            "trellis_surface": dict(trellis_provenance),
+        } if trellis_provenance else {}),
     }
 
     out = Path(args.layer_config)

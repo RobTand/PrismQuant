@@ -1780,6 +1780,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      activation_pricing: ActivationFairPricing | None = None,
                      cost_mode: str | None = None,
                      trellis_provenance: dict | None = None,
+                     apply_trellis_surface: bool = True,
                      ) -> dict[str, list[Candidate]]:
     """Build runtime-legal format candidates for every measured Linear.
 
@@ -1800,6 +1801,13 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     candidate, so the concrete route — activation contract, whether the
     consumer's fused mid-M kernel backs this rung, fallback — travels WITH
     the choice instead of being reconstructed from the format name later.
+
+    ``apply_trellis_surface`` gates the opt-in trellis seam at the end. It is
+    ``False`` only for the PINNED menus (lm_head / MTP / visual), whose single
+    format is an operator declaration rather than a DP choice: building a
+    research menu the caller will never consult would record bytes and count
+    rungs for a decision nobody makes. It is not a format ban — the body menu,
+    which is what the DP solves, always sees the surface.
     """
     gains = calibrated_gains or {}
     out: dict[str, list[Candidate]] = {}
@@ -2023,18 +2031,26 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     # Continuous trellis rate surface (opt-in, research). Unset
     # PRISMAQUANT_TRELLIS_SURFACE returns `out` unchanged and this run is
     # byte-identical to one built before the seam existed. The rungs it adds
-    # are ordinary multi-choice candidates priced in exact serialized bytes;
-    # the DP, the fused/packed aggregation and the byte budget need no change.
-    out = trellis_menu.augment_candidates(
-        out,
-        stats,
-        cost_mode=(
-            cost_mode
-            if cost_mode is not None
-            else os.environ.get("COST_MODE", "aura")
-        ),
-        provenance_out=trellis_provenance,
-    )
+    # are ordinary multi-choice candidates priced in exact serialized bytes:
+    # super-item aggregation intersects the MEMBERS' menus (so a rung survives
+    # a fused/packed group), format_rank is extended from those menus by exact
+    # serialized rate, and the exact bytes the seam records in
+    # `_memory_bytes_by_format` are what the byte budget and the payload
+    # filter read. `cost_mode` is the run's ATTESTED objective from the cost
+    # table's provenance; the environment fallback exists only for direct
+    # callers that hold no cost payload, and the seam refuses an empty one
+    # rather than defaulting.
+    if apply_trellis_surface:
+        out = trellis_menu.augment_candidates(
+            out,
+            stats,
+            cost_mode=(
+                cost_mode
+                if cost_mode is not None
+                else os.environ.get("COST_MODE", "")
+            ),
+            provenance_out=trellis_provenance,
+        )
     return out
 
 
@@ -2296,6 +2312,43 @@ def _member_serving_lane(
     return None
 
 
+def _super_menu_format_names(
+    formats: "list[fr.FormatSpec]",
+    member_menu_intersection: set[str],
+) -> tuple[str, ...]:
+    """The format names a super item's menu must consider, in DP order.
+
+    Both aggregators used to build each super item's menu by iterating the
+    run's ``FormatSpec`` OBJECTS.  A super item's menu is a property of its
+    MEMBERS' candidate lists, not of the registry, and the two differ exactly
+    when a candidate's format has no ``FormatSpec`` -- which is what the
+    trellis seam adds.  Iterating specs therefore dropped every such rung
+    from every fused-sibling and packed-expert group while it survived on
+    every ungrouped Linear, silently: no error, just a menu missing an
+    option.  (On a dense model that left only ``o_proj`` and ``down_proj``
+    able to hold one.)
+
+    Returns the run's spec names FIRST, in the order they were given, then
+    any registry-free format every member offers, sorted.  With an
+    all-registry menu the ``extra`` tail is empty and the result is exactly
+    ``[spec.name for spec in formats]``, so the iteration -- and therefore
+    the emitted menu, byte for byte -- is unchanged
+    (``tests/test_super_item_menu_byte_identity.py``).
+    """
+    spec_names = tuple(spec.name for spec in formats)
+    extra = sorted(set(member_menu_intersection) - set(spec_names))
+    return spec_names + tuple(extra)
+
+
+def _registry_free_menu_names(
+    formats: "list[fr.FormatSpec]",
+    member_menu_intersection: set[str],
+) -> tuple[str, ...]:
+    """The tail of :func:`_super_menu_format_names`: names with no FormatSpec."""
+    spec_names = {spec.name for spec in formats}
+    return tuple(sorted(set(member_menu_intersection) - spec_names))
+
+
 _FUSED_SIBLING_MARKER = ".__siblings__."
 
 
@@ -2378,6 +2431,27 @@ def aggregate_fused_siblings(
             "_memory_bytes_by_format": {},
         }
 
+        # The menu comes from the MEMBERS, not the registry. Hoisted above
+        # the cost loop because the registry-free tail is priced from the
+        # member candidates rather than from ``costs`` (there is no cost row
+        # to resolve for a format the cost stage never measured).
+        member_by_name = {
+            member: {
+                candidate.fmt: candidate for candidate in candidates[member]
+            }
+            for member in members
+        }
+        member_format_sets = [
+            {c.fmt for c in candidates.get(m, [])}
+            for m in members
+        ]
+        if member_format_sets:
+            member_format_intersection = set.intersection(*member_format_sets)
+        else:
+            member_format_intersection = set()
+        menu_names = _super_menu_format_names(
+            formats, member_format_intersection)
+
         super_cost = {}
         super_cost_entry_fmt: dict[str, str] = {}
         for spec in formats:
@@ -2434,16 +2508,39 @@ def aggregate_fused_siblings(
                 # The members' penalties are already inside base_pred; mark
                 # the super entry so a re-price cannot square the correction.
                 super_cost[spec.name][APPLIED_MARKER_KEY] = True
+
+        # Registry-free formats every member offers. Their Δloss and bytes
+        # were priced by whatever built the member candidate (the trellis
+        # seam, from a measured rate surface), so the super item's price is
+        # the exact sum of the member candidates -- the SAME construction
+        # aggregate_packed_serving_groups uses for every format, and the same
+        # additive Fisher argument this function's docstring makes. There is
+        # no ``costs`` row to resolve and no per-member stderr to convert:
+        # the solver Candidate carries no stderr, so the honest aggregated
+        # hedge is 0.0 rather than a fabricated one.
+        for fmt_name in _registry_free_menu_names(
+                formats, member_format_intersection):
+            sum_pred = sum(
+                float(member_by_name[m][fmt_name].predicted_dloss)
+                for m in members
+            )
+            super_cost[fmt_name] = {
+                "weight_mse": (
+                    sum_pred / (0.5 * sum_h) if sum_h > 0 else 0.0),
+                "predicted_dloss": sum_pred,
+                "predicted_dloss_stderr": 0.0,
+            }
+            if activation_pricing is not None:
+                # The applied penalty is the identity: penalty_for consults
+                # act_quant_changes_input, which a format with no FormatSpec
+                # cannot assert. Marking it applied states that the members'
+                # prices are final, exactly as the loop above does -- it does
+                # NOT claim an activation measurement this rung never had.
+                # What the rung WAS measured under travels on the candidate's
+                # provenance instead (trellis_menu's third refusal).
+                super_cost[fmt_name][APPLIED_MARKER_KEY] = True
         costs_ext[super_name] = super_cost
 
-        member_format_sets = [
-            {c.fmt for c in candidates.get(m, [])}
-            for m in members
-        ]
-        if member_format_sets:
-            member_format_intersection = set.intersection(*member_format_sets)
-        else:
-            member_format_intersection = set()
         if not member_format_intersection:
             raise AssertionError(
                 _fused_group_menu_error(
@@ -2457,40 +2554,34 @@ def aggregate_fused_siblings(
                 )
             )
 
-        member_by_name = {
-            member: {
-                candidate.fmt: candidate for candidate in candidates[member]
-            }
-            for member in members
-        }
         cands = []
-        for spec in formats:
-            if spec.name not in member_format_intersection:
+        for fmt_name in menu_names:
+            if fmt_name not in member_format_intersection:
                 continue
-            entry = super_cost.get(spec.name)
+            entry = super_cost.get(fmt_name)
             if entry is None or "error" in entry:
                 continue
             total_bytes = sum(
-                int(member_by_name[m][spec.name].memory_bytes) for m in members
+                int(member_by_name[m][fmt_name].memory_bytes) for m in members
             )
             serialized_identities = sorted({
                 identity
                 for m in members
-                for identity in (member_by_name[m][spec.name].serialized_identity,)
+                for identity in (member_by_name[m][fmt_name].serialized_identity,)
                 if identity is not None
             })
             serialized_sidecar_identities = sorted({
                 identity
                 for m in members
                 for identity in (
-                    member_by_name[m][spec.name].serialized_sidecar_identity,
+                    member_by_name[m][fmt_name].serialized_sidecar_identity,
                 )
                 if identity is not None
             })
             bits_per_param = 8.0 * total_bytes / max(n_params, 1)
-            stats_ext[super_name]["_memory_bytes_by_format"][spec.name] = total_bytes
-            entry_fmt = super_cost_entry_fmt.get(spec.name, spec.name)
-            gain = float(gains.get(spec.name, gains.get(entry_fmt, 1.0)))
+            stats_ext[super_name]["_memory_bytes_by_format"][fmt_name] = total_bytes
+            entry_fmt = super_cost_entry_fmt.get(fmt_name, fmt_name)
+            gain = float(gains.get(fmt_name, gains.get(entry_fmt, 1.0)))
             # gain·(base + z·stderr_agg) == gain·base + z·sqrt(Σ (stderr·gain)²)
             # for the single group-wide gain this path applies, i.e. exactly the
             # packed path's construction. At z == 0 this is gain·sum_pred,
@@ -2500,14 +2591,14 @@ def aggregate_fused_siblings(
                 + ucb_z * float(entry.get("predicted_dloss_stderr", 0.0))
             ) * gain
             cands.append(Candidate(
-                fmt=spec.name,
+                fmt=fmt_name,
                 bits_per_param=bits_per_param,
                 memory_bytes=total_bytes,
                 predicted_dloss=max(predicted, 0.0),
                 activation_pricing=_member_activation_branch(
-                    member_by_name, members, spec.name),
+                    member_by_name, members, fmt_name),
                 serving_lane=_member_serving_lane(
-                    member_by_name, members, spec.name),
+                    member_by_name, members, fmt_name),
                 serialized_identity=(
                     json.dumps(serialized_identities, separators=(",", ":"))
                     if serialized_identities else None
@@ -2698,14 +2789,14 @@ def aggregate_packed_serving_groups(
         memory_by_fmt: dict[str, int] = {}
         super_cost: dict[str, dict] = {}
         cands: list[Candidate] = []
-        for spec in formats:
-            if spec.name not in common_fmts:
+        for fmt_name in _super_menu_format_names(formats, common_fmts):
+            if fmt_name not in common_fmts:
                 continue
             total_bytes = sum(
-                int(member_cands[m][spec.name].memory_bytes) for m in members
+                int(member_cands[m][fmt_name].memory_bytes) for m in members
             )
             sum_pred = sum(
-                float(member_cands[m][spec.name].predicted_dloss)
+                float(member_cands[m][fmt_name].predicted_dloss)
                 for m in members
             )
             # UCB hedge (PRISMAQUANT_COST_UCB_Z > 0): each member candidate
@@ -2720,48 +2811,48 @@ def aggregate_packed_serving_groups(
             # P5a: member candidates were priced WITH the family penalty, so
             # the hedge conversion must scale each member's stderr by the same
             # factor or it would over-subtract the linear hedge it is undoing.
-            act_penalty = _activation_penalty(spec.name, activation_pricing)
+            act_penalty = _activation_penalty(fmt_name, activation_pricing)
             for m in members:
                 entry, entry_fmt = _resolve_cost_entry(
-                    costs.get(m, {}), spec.name)
+                    costs.get(m, {}), fmt_name)
                 member_terms.append((
                     stats[m],
                     entry,
-                    float(member_cands[m][spec.name].predicted_dloss),
-                    float(gains.get(spec.name, gains.get(entry_fmt, 1.0)))
+                    float(member_cands[m][fmt_name].predicted_dloss),
+                    float(gains.get(fmt_name, gains.get(entry_fmt, 1.0)))
                     * act_penalty,
                 ))
             hedge_linear, stderr_agg = _super_item_ucb_hedge(
                 member_terms, ucb_z)
             base_pred = sum_pred - hedge_linear
             hedged_pred = base_pred + ucb_z * stderr_agg
-            memory_by_fmt[spec.name] = total_bytes
-            super_cost[spec.name] = {
+            memory_by_fmt[fmt_name] = total_bytes
+            super_cost[fmt_name] = {
                 "predicted_dloss": base_pred,
                 "predicted_dloss_stderr": stderr_agg,
             }
             if activation_pricing is not None:
-                super_cost[spec.name][APPLIED_MARKER_KEY] = True
+                super_cost[fmt_name][APPLIED_MARKER_KEY] = True
             cands.append(Candidate(
-                fmt=spec.name,
+                fmt=fmt_name,
                 bits_per_param=8.0 * total_bytes / max(n_params, 1),
                 memory_bytes=total_bytes,
                 predicted_dloss=max(hedged_pred, 0.0),
                 activation_pricing=_member_activation_branch(
-                    member_cands, members, spec.name),
+                    member_cands, members, fmt_name),
                 serving_lane=_member_serving_lane(
-                    member_cands, members, spec.name),
+                    member_cands, members, fmt_name),
                 serialized_identity=(
                     json.dumps(sorted({
                         identity
                         for m in members
                         for identity in (
-                            member_cands[m][spec.name].serialized_identity,
+                            member_cands[m][fmt_name].serialized_identity,
                         )
                         if identity is not None
                     }), separators=(",", ":"))
                     if any(
-                        member_cands[m][spec.name].serialized_identity is not None
+                        member_cands[m][fmt_name].serialized_identity is not None
                         for m in members
                     ) else None
                 ),
@@ -2770,13 +2861,13 @@ def aggregate_packed_serving_groups(
                         identity
                         for m in members
                         for identity in (
-                            member_cands[m][spec.name]
+                            member_cands[m][fmt_name]
                             .serialized_sidecar_identity,
                         )
                         if identity is not None
                     }), separators=(",", ":"))
                     if any(
-                        member_cands[m][spec.name]
+                        member_cands[m][fmt_name]
                         .serialized_sidecar_identity is not None
                         for m in members
                     ) else None
