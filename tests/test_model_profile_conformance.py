@@ -71,6 +71,9 @@ REPRESENTATIVE_CONFIGS: dict[str, tuple[tuple[str, list[str]], ...]] = {
     "Qwen3_5Profile": (
         ("qwen3_5_moe", ["Qwen3_5MoeForConditionalGeneration"]),
     ),
+    "Qwen4ExpProfile": (
+        ("qwen4_exp", ["Qwen4ExpForConditionalGeneration"]),
+    ),
     # Gemma 4 ships two config flavours; the profile claims both.
     "Gemma4Profile": (
         ("gemma4", ["Gemma4ForConditionalGeneration"]),

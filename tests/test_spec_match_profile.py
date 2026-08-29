@@ -39,6 +39,7 @@ EXPECTED_ORDER = [
     "Qwen3_5DenseProfile",
     "Qwen3_5Profile",
     "Qwen3Profile",
+    "Qwen4ExpProfile",
     "Gemma4Profile",
     "Lfm2MoeProfile",
     "MiniMaxM2Profile",
@@ -58,6 +59,10 @@ CONFIGS: list[tuple[str, list[str]]] = [
     ("", ["Qwen3ForSequenceClassification"]),   # exact-match, not a prefix
     ("qwen3_moe", ["Qwen3MoeForCausalLM"]),
     ("", ["Qwen3MoeForCausalLM"]),
+    # Qwen4-Exp / Qwen3.8-Flash-Next
+    ("qwen4_exp", ["Qwen4ExpForConditionalGeneration"]),
+    ("qwen4_exp_text", ["Qwen4ExpForCausalLM"]),
+    ("", ["Qwen4ExpTextModel"]),
     # Qwen3.5 / 3.6 MoE
     ("qwen3_5_moe", ["Qwen3_5MoeForConditionalGeneration"]),
     ("qwen3_5_moe_text", ["Qwen3_5MoeForCausalLM"]),

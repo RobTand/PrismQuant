@@ -168,15 +168,14 @@ def test_a_naming_variant_must_declare_a_condition_and_a_map():
             "when": {"architectures": ["X"]}, "nameing": {}})
 
 
-def test_qwen3_5_dense_is_the_only_spec_with_naming_variants():
+def test_only_profiles_with_distinct_wrapper_namespaces_have_naming_variants():
     """Every OTHER spec is untouched by the mechanism — checked over all of them.
 
-    The DSv4 W8A16 export handoff's frozen-source review cites this exact
-    property to justify re-freezing `base.py`/`registry.py`: if no other spec
-    declares a variant, `for_config` is never reached on any other lane and the
-    spec those profiles return is the file spec. A review note is only worth
-    what its assertion covers, so this enumerates the directory rather than a
-    hand-picked three.
+    A variant changes source and serving namespaces, so it remains an explicit
+    allowlist rather than becoming a casual family default.  Qwen3.5 dense and
+    Qwen4-Exp are the two families with both wrapper and text-only runtime
+    classes.  Enumerate the directory so a third declaration cannot arrive
+    unnoticed.
     """
     import json
     import pathlib
@@ -190,7 +189,10 @@ def test_qwen3_5_dense_is_the_only_spec_with_naming_variants():
         p.name for p in files
         if json.loads(p.read_text()).get("naming_variants")
     )
-    assert with_variants == ["qwen3_5_dense.json"], with_variants
+    assert with_variants == [
+        "qwen3_5_dense.json",
+        "qwen4_exp.json",
+    ], with_variants
 
 
 def test_specs_without_variants_are_returned_unchanged():

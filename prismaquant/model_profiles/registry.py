@@ -41,6 +41,7 @@ from .lfm2_moe import Lfm2MoeProfile
 from .qwen3 import Qwen3Profile
 from .qwen3_5 import Qwen3_5Profile
 from .qwen3_5_dense import Qwen3_5DenseProfile
+from .qwen4_exp import Qwen4ExpProfile
 
 # MiniMaxM2Profile: re-imported from its live mirror after the 2026-04-24
 # session's Phase-3 archive move. The profile is still tracked under
@@ -64,6 +65,7 @@ _REGISTERED: list[type[ModelProfile]] = [
     Qwen3_5DenseProfile,  # 100 — must precede Qwen3_5Profile (dense is a subset)
     Qwen3_5Profile,       # 110
     Qwen3Profile,         # 120 — original Qwen3 dense + routed MoE
+    Qwen4ExpProfile,      # 130 — Qwen3.8-Flash-Next / qwen4_exp
     Gemma4Profile,        # 140
     Lfm2MoeProfile,       # 150
     MiniMaxM2Profile,     # 160

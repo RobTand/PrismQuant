@@ -22,6 +22,7 @@ from .lfm2_moe import Lfm2MoeProfile
 from .qwen3 import Qwen3Profile
 from .qwen3_5 import Qwen3_5Profile
 from .qwen3_5_dense import Qwen3_5DenseProfile
+from .qwen4_exp import Qwen4ExpProfile
 from .registry import (
     detect_profile,
     detect_profile_with_warning,
@@ -45,6 +46,7 @@ __all__ = [
     "Qwen3Profile",
     "Qwen3_5Profile",
     "Qwen3_5DenseProfile",
+    "Qwen4ExpProfile",
     "Gemma4Profile",
     "HyV3Profile",
     "LagunaProfile",
