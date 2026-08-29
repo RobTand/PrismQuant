@@ -1,0 +1,37 @@
+{
+  "schema": "prismaquant.serving_profile.v1",
+  "id": "qwen38_rtx4090_fp8_cb",
+  "runtime": "gridbook_plugin",
+  "target_platform": "sm_89",
+  "producer_policy": "qwen38_27b_rtx4090_fp8_cb",
+  "extends": [
+    "nvfp4_cb"
+  ],
+  "description": "Strict dense Qwen3.8-27B RTX 4090 lane. New artifacts may use only the K%4 FP8-CB producer ladder plus the existing dynamic-FP8 and BF16 terminals. NVFP4, NVFP4-CB, and historical off-law FP8-CB wire ids are reader compatibility only and are refused before allocation/export. Hardware and graph qualification are separate, contract-attested ship gates; this format profile alone never claims that an Ada route is qualified.",
+  "format_rules": [
+    {
+      "id": "qwen38_rtx4090_forbid_nvfp4_families",
+      "deny_formats_from": [
+        "prismaquant.cb_layout:NVFP4_CB_FORMAT_NAMES"
+      ],
+      "deny_formats": [
+        "NVFP4"
+      ],
+      "reason": "rtx4090_fp8_only",
+      "detail": "The RTX 4090 Qwen3.8 campaign is FP8-CB only. It must never spend an assignment on NVFP4/NVFP4-CB, whose native FP4 tensor-core contract is Blackwell-specific."
+    },
+    {
+      "id": "qwen38_rtx4090_product_menu",
+      "allow_formats_from": [
+        "prismaquant.cb_layout:FP8_CB_FORMAT_NAMES"
+      ],
+      "allow_formats": [
+        "FP8_DYNAMIC",
+        "FP8_E4M3",
+        "BF16"
+      ],
+      "reason": "rtx4090_fp8_only",
+      "detail": "Only FP8_CB_K4,K8,...,K48 and the dynamic-FP8/BF16 terminals are legal. Legacy off-law FP8-CB rungs remain readable but cannot enter this producer menu."
+    }
+  ]
+}

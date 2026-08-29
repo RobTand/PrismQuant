@@ -1,0 +1,109 @@
+{
+  "schema": "prismaquant.model_structure.v1",
+  "id": "qwen4_exp",
+  "priority": 200,
+  "match": {
+    "model_type": ["qwen4_exp", "qwen4_exp_text"],
+    "architectures": ["Qwen4Exp*"]
+  },
+  "staging": {
+    "text_only_strip_keys": [
+      "vision_config",
+      "audio_config",
+      "speech_config",
+      "image_token_id",
+      "video_token_id",
+      "vision_start_token_id",
+      "vision_end_token_id"
+    ],
+    "promote_inner_model_type": true
+  },
+  "shard_regexes": {
+    "visual_config_key": "vision_config",
+    "visual_layer_prefix": "model.visual.blocks",
+    "body_layer_prefix": "model.layers",
+    "mtp_source_prefix": "mtp.",
+    "mtp_layer_prefix": "mtp.layers",
+    "mtp_extra_linear_names": ["mtp.fc_embedding", "mtp.fc_hidden"],
+    "lm_head_name": "lm_head",
+    "embedding_name": "model.embed_tokens"
+  },
+  "naming": {
+    "live_to_recipe": [
+      {
+        "strip_prefix": "model.language_model.",
+        "add_prefix": "model."
+      }
+    ],
+    "recipe_to_source": [
+      {
+        "prefix": "mtp.",
+        "replace": "mtp.",
+        "stop": true
+      },
+      {
+        "prefix": "model.visual.",
+        "replace": "model.visual.",
+        "stop": true
+      },
+      {
+        "exact": "lm_head",
+        "replace": "lm_head",
+        "stop": true
+      },
+      {
+        "prefix": "model.language_model.",
+        "replace": "model.language_model.",
+        "stop": true
+      },
+      {
+        "prefix": "model.",
+        "replace": "model.language_model."
+      }
+    ]
+  },
+  "fused_groups": [
+    {
+      "target": "self_attn.qkv_proj",
+      "members": ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
+    },
+    {
+      "target": "linear_attn.in_proj_qkvz",
+      "members": ["linear_attn.in_proj_qkv", "linear_attn.in_proj_z"]
+    },
+    {
+      "target": "linear_attn.in_proj_ba",
+      "members": ["linear_attn.in_proj_b", "linear_attn.in_proj_a"]
+    },
+    {
+      "target": "mlp.shared_expert.gate_up_proj",
+      "members": ["mlp.shared_expert.gate_proj", "mlp.shared_expert.up_proj"]
+    }
+  ],
+  "packed_experts": {
+    "param_names": ["gate_up_proj", "down_proj"],
+    "module_class_names": ["Qwen4ExpTextExperts"],
+    "projection_splits": {
+      "gate_up_proj": ["gate_proj", "up_proj"]
+    },
+    "format_groups": [
+      ["gate_up_proj", "down_proj"],
+      ["gate_proj", "up_proj", "down_proj"],
+      ["w1", "w2", "w3"]
+    ]
+  },
+  "passthrough_prefixes": ["model.visual.", "mtp."],
+  "pinned_names": [
+    "lm_head",
+    "mlp.shared_expert_gate",
+    "self_attn.indexer.index_qk_proj",
+    "attn_hyper_connection.input_mix_weight_down",
+    "attn_hyper_connection.input_mix_weight_up",
+    "attn_hyper_connection.block_inject_weight",
+    "mlp_hyper_connection.input_mix_weight_down",
+    "mlp_hyper_connection.input_mix_weight_up",
+    "mlp_hyper_connection.block_inject_weight",
+    "hyper_connection_mixer.input_mix_weight_down",
+    "hyper_connection_mixer.input_mix_weight_up"
+  ]
+}

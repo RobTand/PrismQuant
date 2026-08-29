@@ -1,7 +1,294 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `review/pr86` — stamps follow, newest first, each recording
-its own branch and date. Re-stamped (2026-08-29, `review/pr86`) for the
+As of: 2026-08-29 · `claude/trellis-continuous-surface` — stamps follow, newest
+first, each recording its own branch and date. Re-stamped (2026-08-29,
+`claude/trellis-continuous-surface`) for the **trellis seam correction**
+(§4.9): the seam that landed earlier the same day is now **fail-closed** when
+enabled, and this document's claim that it made trellis rungs "pass the same
+legality, aggregation and byte accounting every other candidate does" is
+**retracted** — it was false on all three counts, written in the same commit as
+the code it described (§ P13, "currency is not truth"). `trellis_menu.
+UNWIRED_LINKS` is the authoritative eight-entry ledger of what is missing and
+is the text of the refusal; `build_trellis_menu` still builds a correctly
+priced menu for research, now using the repo's own `_shape_from_stats` and
+`_stats_indicates_packed_expert` (the hand-rolled 2-tuple underpriced a
+128-expert row **128×**, silently, and the guard meant to catch it read a stats
+key nothing writes). Two of the seam's tests asserted on source text and now
+assert behaviour. Earlier same-day stamp
+(`claude/trellis-continuous-surface`) for the **opt-in continuous trellis rate
+surface** (§4.9): `prismaquant/trellis_menu.py` is now the one seam through
+which the previously islanded trellis modules reach
+`allocator_candidates.build_candidates`, behind
+`PRISMAQUANT_TRELLIS_SURFACE=<manifest.json>` whose unset default returns the
+menu object unchanged. Rungs are named by the shape-free closed
+`TCQ_{E2M1,E4M3}_R<q256>` vocabulary so fused-sibling and packed-expert
+promotion — which intersects member menus by format name — still finds a common
+format; the per-tensor recipe digest rides `serialized_identity`. New profile
+`serving_profile_specs/trellis_research_sm121.json` declares
+`target_platform: sm_121` for the one reason it exists: `_capability_gate`
+returns legal without comparing anything when a profile declares no platform,
+and six of ten specs declare none. Export refuses a `TCQ_*` assignment with a
+pointed message — there is no render mechanism and no runtime attestation, so
+this is allocation-time reach only.
+
+Re-stamped (2026-08-28,
+`claude/trellis-continuous-surface`) for the **PrismaSnap source-dtype
+contract** (§3.0): the BF16-realization lane now accepts a native-FP8 source as
+well as BF16, dequantizing through the checkpoint's declared block grid and
+folding in BF16. The prior refusal was guarding a real hazard, not being
+conservative — `apply_diagonal_transform` restores the *source* dtype by
+default, so a naive widening would have rounded every fold back into
+`float8_e4m3fn` against a stale block scale. Uplifted operands drop their
+scale siblings from shard and index. FP8 **materialization** is not yet
+reachable — every liftable FP8 source refuses, up front, at
+`_preflight_uplift_publishability`; the dense lane only, as the MoE plan
+lane remains BF16-gated. Re-stamped (2026-08-28,
+`claude/trellis-continuous-surface`) for the **packed-expert cache render
+identity (SB-1)**: `fill_packed_expert_cache_entries` appended packed-MoE keys
+to `cache.weights` without touching `requested_entries`, `render_scores` or
+`render_gates`, so the exact cache union refused at its first subcommand on
+every packed-MoE model (35B, 122B, 284B, GLM-5.3). Every packed expert is now
+scored honestly — per-expert render scores summed into the one record the cache
+key owns — each packed entry carries a truthful empty-trace gate record naming
+the mechanism that actually ran, the counters are recomputed from the cache so
+the M4 lazy gap-fill loop stays exact, and no exclusion or subtraction is added
+to the union arithmetic (§ exact multi-host striping;
+`tests/test_packed_expert_union_identity.py`). Earlier same-day stamp
+(`claude/trellis-continuous-surface`) for the **PrismaSnap dead-gate repair**:
+`merge_checkpoint_parts` now takes `production` and runs
+`_require_attested_container()` first, so the CLI's `merge-checkpoint-parts`
+(which now passes `production=True`) is held to the same attested-container
+contract as `materialize-part`. It deliberately takes **no** `device`: the
+union executes on no device, so the CUDA leg of `_require_production_execution`
+would have been satisfied by a caller-supplied string with no referent, and
+that leg is now split out for the paths that do execute -- each of which
+asserts `torch.cuda.is_available()` immediately after the gate;
+`_producer_identity` additionally binds `prismasnap_moe.py`,
+`prismasnap_moe_checkpoint.py` and `prismasnap_contract.py`, so an edit to the
+MoE plan stack or the lane-admission contract invalidates a producer receipt;
+and `_layer_source_graph`'s `source` parameter now binds every planned MoE
+operand to the live checkpoint header (`_Checkpoint.metadata`) instead of
+trusting the tensor census alone, matching the dense twin. Earlier stamp
+(2026-08-27,
+`claude/trellis-continuous-surface`) for the **glm5_next export bring-up**: the
+streamed exporter now builds the multimodal skeleton when the profile declares
+`requires_multimodal_skeleton()` (stage_multimodal + declared-arch class, weight
+map `multimodal=True`), the tensor-sink rename composes `live_to_recipe_name`
+before `export_tensor_name`, the 3e layer passthrough ships concat-merge SOURCE
+tensors verbatim instead of the merged live key, per-layer progress lines are
+unconditional with sweep rate/ETA, `fill_packed_expert_cache_entries` probes its
+device from the first non-meta parameter, live↔recipe probe/cost rekeying exists
+as `glm53_stock_reprice rekey-recipe`, and `specs/glm5_next.json` declares the
+MLP gate/up fused groups attested from the pinned PR image (see §Model-profile
+plugin, concat_merges / multimodal-forced export). Earlier same-day stamp
+(`claude/trellis-continuous-surface`) for the **GLM stock anchored campaign +
+streamed non-CB checkpointing**: the streamed AURA durable-checkpoint guard now
+accepts the production-anchor renderer's exact identity as the value-bearing
+render identity, so an anchored run on a CB-free menu checkpoints on the anchor
+identity alone (the fail-closed refusal remains for non-anchored non-CB;
+`tests/test_streamed_cost_checkpoints.py`), `run_streamed_production_anchor_aura`
+exposes `allow_packed_expert_omission` for MoE models whose routed experts are
+priced empirically, the streamed capture/reverse passes emit per-layer rate/ETA
+progress lines, and a new manual campaign row (§ stage table: **GLM stock
+anchored**) wires `prismaquant.glm53_stock_harvest` (GPU batched adjoint over
+the dense plan) → `prismaquant.glm53_stock_reprice campaign` (CPU three-
+provenance merge) for the GLM-5.3-Flash teacher artifact. Re-stamped
+(2026-08-26, `claude/trellis-continuous-surface`) for the **GLM-5.3-Flash /
+Qwen3.8-Flash-Next plugin-contract change**: two new registered profiles (`qwen4_exp` 200,
+`glm5_next` 210 — §8.4), and a new spec key + profile accessor,
+`concat_merges` / `ModelProfile.concat_merge_groups()`, backed by a generic N→1
+source-concatenation bridge in the streaming loader
+(`layer_streaming._merge_concat_sources`, wired into the probe/cost read path and
+the exporter). It closes glm5_next's one hard blocker — the KDA short
+convolution's `{q,k,v}_conv1d → conv1d` `Concatenate(dim=0)`, which a
+1:1-or-drop `checkpoint_to_live_name` cannot express and which would otherwise
+have loaded uninitialised. Both new profiles are enablement scaffolds: no vLLM
+class is importable for either, so neither is export-ready (§8.4). Re-stamped
+(2026-08-26, `claude/snapquant-productionalization`) for the **model-calibrated PrismaSnap fold
+threshold**: the served fold gate is no longer the fixed `5e-4` alone but
+`max(5e-4, 2.0 × measured null perturbation floor)` when the attestor receives a
+saturation-licensed null-floor receipt, content-hashed into
+`fold_fidelity.threshold_derivation` (the fixed constant, calibrated at 0.6B, sits
+below the measured 27B BF16 perturbation floor; evidence and decision in
+`docs/results/qwen38_prismasnap_fold_gate_floor_2026-08-26.md`). The realized v2
+machinery is merged with the MoE plan family on one mainline. Re-stamped (2026-08-25,
+`codex/prismasnap-bf16-v2-20260825`) for the **cast-aware BF16-realized PrismaSnap v2
+plan transition**. The nominal fast `stage,polish` v1 search remains the immutable parent,
+but it is no longer executed directly by the repaired arm. `realize-bf16` accepts only one
+complete merged v1 plan plus its content-verified original BF16 source and emits a distinct
+v2 schema/algorithm. For each input/post-norm seam it preserves the nominal float64 scale,
+stores the selected projected BF16 norm bytes, and derives a separate positive consumer
+inverse from projected/source effective gamma. Zero or collapsed gamma, non-finite values,
+sign disagreement, or a non-bit-exact quotient replay executes identity for that channel;
+materialization writes the projected BF16 norm directly rather than recreating it from the
+quotient. The transition re-scores exact `BF16(W / s_real)` under the static-6 NVFP4 full
+render objective with `importance * s_real**2`, falling an entire seam back to identity on no
+strict improvement. Dense up/down is identity in v2. Parent plan/scales/producer, source,
+nominal vectors, projected norm payloads, executed vectors, reason counts, and realized
+objectives are cryptographically bound; provenance v2 carries that derivation through parts,
+collation, served fold attestation, native export admission, and the unchanged downstream
+pipeline. Legacy v1 plans/provenance remain readable, but v2 cannot re-enter worker-plan merge.
+The reason for the transition is measured and preserved at
+`/home/rob/dq-runs/prismasnap-qwen38-27b-20gb-20260825/fold-fidelity/`: direct v1 snapped-BF16
+KL was `0.002956950685081059` while source-vs-source was exactly zero, so the v1 checkpoint
+failed the `5e-4` prerequisite and remains unverified. No repaired 27B fold result, quantized
+A/B result, or release promotion is claimed by this stamp. Previously re-stamped (2026-08-25,
+`claude/snapquant-productionalization`) for the **candidate PrismaSnap
+additive BF16 source-preparation lane**. PrismaSnap is outside the four-stage quantization
+pipeline: an unmarked source takes the historical path unchanged, while a marked source must
+carry a content-replayed `VERIFIED` receipt before the existing probe, AURA, per-Linear
+allocator, `ProductionWeightCache`, recache, native compressed-tensors exporter, and validation
+stack may consume it. Production planning fixes the measured-fast `stage,polish` search,
+requires CUDA plus an attested container and complete source/probe/producer identity, and
+materializes ordinary BF16 safetensors without a serving transform. The version-2 cluster
+campaign runner can close an explicit local/SSH dependency graph without an agent: two Spark
+workers build disjoint layer plans and shard parts, exact-union merges reject overlaps or gaps,
+and the low-space campaign requires same-filesystem hardlink collation after the remote part is
+content-verified on the coordinator. Materialization alone is not admission; original-BF16 to
+snapped-BF16 served all-position KL must be at most the attested fold threshold — the plan's
+`5e-4` by default, or `max(5e-4, 2.0 × the model's measured null perturbation floor)` when the
+attestor is given a saturation-licensed null-floor receipt (2026-08-26: the fixed `5e-4`,
+calibrated at 0.6B, sits below the 27B BF16 perturbation floor of ~5–6.6e-4, so the threshold
+is now derived per model; see `docs/results/qwen38_prismasnap_fold_gate_floor_2026-08-26.md`).
+The receipt requires at least two independent matched-mass null arms agreeing within 3×, is
+content-hashed into `fold_fidelity.threshold_derivation`, and is re-validated on every
+provenance read. Source, calibration, evaluator, serve-stack, index, and shard identities are
+replayed before the atomic `VERIFIED` transition.
+The pipeline GGUF branch and direct-GGUF API, plus both Gridbook/codebook exporters, reject any
+PrismaSnap marker; the native exporter replays
+the verified source immediately before copying its receipt under the unambiguous
+`source_prismasnap_provenance.json` name. The first production gate is the still-running,
+text-only/no-vision Qwen3.8-27B strict-decimal-20-GB A/B; its requested 20% KL improvement is an
+acceptance threshold, **not a result**. The MoE planner and release-layout gate are second and
+remain experimental; Qwen3.5-family native/wrapper namespace resolution and explicit RMSNorm
+parameter-offset metadata are prerequisites, not a Qwen3.8-125B-A3B promotion. No completed
+27B result, MoE result, release readiness, or serving-performance claim follows from this stamp,
+and the final integration commit is deliberately not predicted. Previously re-stamped
+(2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **maintained SM120/RTX50
+W8A16 exclusion**. The shared registry retains W8A16 assignment compatibility, while generic
+source-model container profiles retain source-FP8 wire compatibility for already-published
+artifacts; neither is target-performance eligibility. `qwen38_sm120_cb_validation_only` now
+carries an explicit deny for `format_registry.W8A16_COMPAT_FORMAT_NAMES` on top of its closed
+allow-list, and the dense
+Qwen3.8 campaign refuses any non-BF16 body source before plan construction, allocation, or GPU
+work. Both CB materializers read the allocator's stamped target profile and reject a denied
+assignment before opening the destination transaction, so a hand-edited W8A16 recipe cannot
+bypass chooser legality. New SM120 candidates therefore remain exactly both public CB ladders
+plus native NVFP4/FP8_E4M3/BF16; source-FP8 and other W8A16 formats cannot enter its chooser or future
+release decision. The generic DSv4/MiniMax compatibility producers and readers are deliberately
+unchanged. No device or served performance claim follows from this policy. Previously re-stamped
+(2026-08-24, `codex/rtx5060-fp4-gridbook-pilot-20260824`) for the **validation-only SM120
+candidate registration and the dense full-ladder AQUA scaffold**. The new
+`qwen38_sm120_cb_validation_only` profile extends `nvfp4_cb`, binds exact platform `sm_120`,
+and closes admission to NVFP4-CB K1..K25, FP8-CB K4..K48 step 4, plus deliberate native
+NVFP4/FP8_E4M3/BF16 terminals. It has no `producer_policy`: candidate v11 is compile-only and
+unpinned, so this is neither a device-qualified claim nor a release identity. The dense
+anchored driver defaults to that explicit profile (with a CLI override), stamps it into plan
+and allocator provenance, and exposes both complete public producer ladders. Its FP8 panel now
+spans K4/K28/K48 around a K24 anchor and validates off-panel at K8/K20/K36/K44; the campaign is
+lattice-only and AQUA sees both executed activation contracts with no manual family preference.
+The immutable release pin plus exact device-qualified route contract remain the fail-closed
+shipping gate. No new device or served measurement is claimed, and the final integration
+commit is deliberately not predicted. Previously re-stamped
+(2026-08-24, `codex/rtx4090-fp8-gridbook-pilot-20260824`) for the
+**CPU-tested exact sample-axis probe reducer and four-render-per-Linear RTX 4090 FP8
+campaign**. The opt-in probe lane partitions one immutable calibration tensor by complete
+samples; its two-stage barrier first reduces raw shifted-token CE, then every worker reruns
+phase 1 with the same global mean and executes the complete dense text qname schedule. The
+strict reducer adds raw Fisher/marginal sufficient statistics and finalizes once at the global
+token denominator; it also refuses raw Fisher marginals whose row/column sums do not reproduce
+the raw trace. Its activation side independently replays the complete global priority domain,
+exact top-R order/cardinality, and fused-sibling row alignment through the existing
+activation-cache path. Bundle validation consumes the same no-follow probe bytes it hashes;
+the burn passes that captured payload forward, while lazy activation loads are checked against
+the captured committed tensor identities through a pinned directory descriptor. The documented
+launcher executes its verifier from the exact pinned Git object, makes and checks the candidate
+snapshot non-writable, starts the host-verified immutable registry RepoDigest with canonical `/model`,
+`/dataset`, and `/run` paths plus read-only source/model/data mounts, and enters only through
+Python's safe-path snapshot bootstrap. A closed common execution attestation joins the sample
+execution identity to that live snapshot closure/commit/tree and launcher-owned RepoDigest before
+either burn entry point can touch CUDA. The RTX4090 cost lane stripes whole layers across
+two hosts and physically renders only lattice `FP8_CB_K4`, `FP8_CB_K16`, `FP8_CB_K48`, and
+delegated `FP8_E4M3` per body Linear. It preserves those measured AURA rows, imputes only the
+nine remaining K%4 CB rungs inside the lattice segment, and adds BF16 solely as the exact
+unrendered source terminal. Producer scoring is fail-closed full-graph Inductor under one
+explicit strict switch: every live helper return proves exactly one compiled backend dispatch,
+while resume-restored units inherit the same settings/producer/source identity through AURA's
+already validated unit envelopes. The shard receipt distinguishes those covers and marks LDLQ
+atom execution not applicable. No NVFP4 format is admitted. Its streamed source contract is exactly
+two existing `LayerCache` slots, effective lookahead one, and
+`require_prefetched_residency=true`: both forward capture and reverse AURA require each current
+layer to be resident or already prefetched, while reverse schedules the next lower layer before
+the current render/backward work. A missed or rejected prefetch refuses before synchronous
+source I/O. Both mechanisms are implemented and
+CPU-tested, but the two-host GPU campaign, merged-vs-monolithic numeric gate, validation-only
+GB10 artifact, and physical RTX 4090 correctness/performance/full-graph qualification remain
+unrun. Existing Gridbook graph requirements are unchanged. The final integration commit is
+deliberately not predicted in this provenance stamp. Previously re-stamped
+(2026-08-24, `audit/math-reunderwrite-2026-08-21`) for the **final implemented, still
+unqualified strict RTX 4090 FP8-Gridbook candidate and its categorically unreleasable GB10
+structural-validation producer**. FP8-CB has two different authorities:
+`cb_layout.FP8_ACCEPTED_RUNGS` is the backward-compatible reader domain
+(K4/K8/K12/K16/K20/K24 plus every historical integer K28 through K48), while
+`cb_layout.FP8_PRODUCT_RUNGS` is exactly K4..K48 step 4 and is the only new-producer ladder.
+The opt-in `qwen38_rtx4090_fp8_cb` profile admits that producer ladder, delegated
+`FP8_E4M3`, and BF16 only. It fixes `lm_head` and MTP to BF16, sets
+`CB_ACTIVATION_SCOPE=none`, forbids native and codebook NVFP4 at every manifest/census
+boundary, and remains lattice-only until raw learned-v2 promotion evidence is carried into the
+strict artifact attestation (`rtx4090_qwen38_policy.py`). Its architecture-specific source
+census closes the official wrapper at exactly 1,199 source tensors and 615 Linears, requires
+an assignment for every Linear, then replays exact config-group ownership, `ignore`, finalized
+tensor keys/dtypes/shapes, and codebook-sidecar references (`rtx4090_artifact_census.py`). The
+AURA build streams from one absolute checkpoint directory; its cached streamed-model identity
+is the source-census identity, while cost, frontier KL, and export share the probe's full-corpus
+imatrix and its value digest. The complete frozen publication tree, including documentation
+and evidence, may not exceed exactly 18,000,000,000 bytes, and neither that invariant nor any
+strict evidence/replay failure is forceable by `--force-unverified` or `--confirm-name`.
+Strict publication folds container, upload-block, and raw-tensor hashes into the existing
+held-descriptor freeze traversal, then replays the frozen manifest/ledger/index from that receipt
+without a second weight scan (`tools/publish_artifact.py`). The physical serve workload is 32K and one live smoke request
+with `n=1`, TP=1, and exactly 4 GiB of FP8 KV; `max_num_seqs=64` exists solely so vLLM FULL
+capture admits `[1,2,4,8,16,32,64]`, not as a 64-concurrent-context claim. Graph evidence
+requires compilation mode 3, explicit Inductor, `FULL_AND_PIECEWISE`, **7/7 PIECEWISE and
+7/7 FULL** capture completion, and the installed wrapper's direct
+`torch.compile(..., fullgraph=True, dynamic=False)` call, with any compiler/graph fallback
+refusing (`rtx4090_graph_contract.py`, `validate_rtx4090_fp8_cb.py`). The strict launcher
+additionally requires a closed vLLM runtime pin naming only the official upstream Git URL,
+one exact commit and version, and the installed `RECORD` digest; server collection binds
+matching PEP 610 VCS metadata plus RECORD-bound `direct_url.json` and wrapper bytes, and
+manifest/shipcard replay require the same pin. No candidate vLLM pin is supplied, so an
+immutable image digest alone cannot qualify the lane. The last pre-vLLM operation inside the
+serving container scans every individually read-only-bound safetensors shard once and writes a
+stat-bound no-clobber receipt; post-serve census and endpoint/shipcard replay reuse it without a
+second weight-payload pass (`tools/serve_fingerprint.py`). Gridbook contract v11
+separates reader `rungs` from `producer_rungs` and adds closed-world
+`gridbook.lane-eligibility.v2`; a candidate runtime must device-qualify exact sm89 dense decode
+and batch routes for the **entire twelve-rung producer ladder**, even if one artifact selects a
+legal subset. Its v0.9.0 tensor-parallel and expert-parallel contract subtrees and runtime
+behavior remain preserved. The available sm89 evidence is deliberately only `compile_only`.
+The separate `qwen38_rtx4090_fp8_cb_validation_only` profile may build the same FP8-only wire
+artifact on exactly one DGX Spark GB10 through the ordinary GPU-bound pipeline, but stamps it
+`UNRELEASABLE_VALIDATION_ONLY` and validates it only through
+`validate_rtx4090_fp8_cb_validation_only.py`. Shipcard verification, publication (including
+force flags), and the physical strict validator categorically refuse that identity. The
+production profile and its device-qualified resolver are unchanged: no physical RTX 4090
+correctness, graph, memory, or performance gate has run, no v11 Gridbook release is claimed or
+pinned, and strict release remains fail-closed. The final
+integration commit is deliberately not predicted in this provenance stamp. Previously
+re-stamped (2026-08-23,
+`audit/math-reunderwrite-2026-08-21`) for the **fixed output-head policy,
+profile-synthesized MTP production renders, and exact striped cache union**. `LM_HEAD_FORMAT`
+now defaults to historical BF16; an explicit non-BF16 head is a measured fixed auxiliary
+assignment outside the body DP/bpp and inside exact artifact bytes, while
+`ALLOW_PINNED=lm_head` remains the mutually exclusive research/DP path. Every persisted
+cost/cache stage binds the resolved head policy. `build_production_cache` now appends
+profile-built `mtp.*` Linears from the probe activation rows into the one
+`ProductionWeightCache`, with exact source/module/activation coverage and qname-allowlist
+filtering. `production_cache_stripes.py` emits deterministic layer-local qname stripes, and
+`union_production_cache.py` publishes, verifies, and atomically unions portable disjoint
+cache bundles under exact source/calibration/code/settings/render coverage; this native-only
+set union is not the archived surrogate-driven smart union. The final integration commit is
+deliberately not predicted in this provenance stamp. Earlier same-day stamp (2026-08-29, `review/pr86`, merged to main as #89) for the
 **codebook lane's namespace contract** (§6.2): delegated (stock-CT) and
 source-passthrough group targets now ship in the CANONICAL namespace rather
 than the full live-tree spelling, mirroring the pinned consumer's
@@ -11,8 +298,9 @@ are named by their group's checkpoint prefix. Same commit fulfils the FP8
 serialized-scale contract in the packed-expert imatrix replay
 (`moe_imatrix._load_tensors`), reading the dequant grid through the streaming
 loader's `_declared_weight_block_size` so the two paths cannot disagree about
-one checkpoint. Reported and implemented by smb209 (PR #86). Previously
-re-stamped (2026-08-21, `merge/proven-rescues`) for the Re-stamped (2026-08-21, `merge/proven-rescues`) for the
+one checkpoint. Reported and implemented by smb209 (PR #86).
+Previously re-stamped (2026-08-21,
+`merge/proven-rescues`) for the
 **Gridbook 0.8.11 PRODUCER pin**: the producer pin
 (`gridbook_runtime_pin.json`) advanced 0.8.5/v3 → 0.8.11/v4 at commit
 `187c721`, in lockstep with the serving pin, and a new test
@@ -815,16 +1103,20 @@ by measurement, not by the cost model (§2).
 
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
-| Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | NVFP4, FP8_DYNAMIC/E4M3, FP8_SOURCE, BF16 | production default |
-| CB ("gridbook") | `nvfp4_cb` codebook checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from the exact commit in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json` | FP4-CB / FP8-CB rungs plus the native menu | production only for architectures declared by Gridbook's packaged runtime contract; DSv4 is declared, while learned per-role expert LUTs remain device-validation-gated |
+| Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | maintained: NVFP4, FP8_DYNAMIC/E4M3, BF16; FP8_SOURCE remains a source-artifact compatibility codec | production default for the maintained W4A4/W8A8/BF16 menu; W8A16/source FP8 is not SM120 performance eligibility |
+| CB ("gridbook") | historical mixed `nvfp4_cb`, or a hardware-scoped CB checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. `qwen38_sm120_cb_validation_only` structurally registers both public ladders plus native NVFP4/FP8_E4M3/BF16 on exact `sm_120`, explicitly denies W8A16/source-FP8 compatibility carriers, and lets AQUA compare the admitted activation contracts without a manual family preference. Both hardware-scoped campaigns are lattice-only | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. Generic readers retain published source-model compatibility, but that inventory does not make W8A16 a maintained RTX50 candidate. The strict `qwen38_rtx4090_fp8_cb` candidate still refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells and a physical 4090 closes the graph/device gate. The SM120 profile has no producer policy and is validation scaffolding only: candidate v11 is compile-only/unpinned, so the immutable release pin and exact device-qualified route contract remain mandatory before any artifact can ship |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
 
 Lane detail, defaults and proven results: §9. Export codecs: §6. Pipeline defaults: §3.3.
 
 ### 1.2 Shipped artifact family
 
-bpp is over **quantizable** parameters only (excludes `lm_head`, MTP/visual sidecars, pinned
-Linears) and labels are **not** comparable across accounting eras (§12). conf-KL =
+bpp is over **quantizable body** parameters only (excludes `lm_head`, MTP/visual sidecars,
+and profile-pinned Linears) and labels are **not** comparable across accounting eras (§12).
+A fixed quantized `lm_head` stays outside that body denominator and the body's predicted
+Δloss, but its measured auxiliary Δloss and exact serialized payload are carried separately and
+its bytes count toward every whole-artifact budget (`allocator.py` `aux_fixed_*` fields).
+conf-KL =
 confident-position KL-vs-BF16; ALL-KL = all positions. Comparative lane deltas belong to §9;
 the numbers below are each artifact's own readout.
 
@@ -946,19 +1238,213 @@ imply a root-level copy and there is none. One bash script, four numbered phases
 `prismaquant/pipeline.py` is a *declarative* spec layer invoked once at the top; it executes
 nothing (§3.6).
 
+### 3.0 Optional PrismaSnap BF16 source preparation
+
+**PrismaSnap is purely additive to this graph.** It is an offline BF16 checkpoint-to-checkpoint
+pre-pass, not a format, allocator, cache, export layout, kernel, or runtime adapter. An original
+source with no `prismasnap_provenance.json` enters the four numbered phases exactly as it did
+before this feature. A snapped source is still an ordinary HF BF16 checkpoint; once admitted,
+the same probe, AURA objective, per-Linear allocator, `ProductionWeightCache`, recache, native
+exporter, and serving validators run with no PrismaSnap scheduler or serve-time operation
+(`prismasnap.py` module contract; `prismasnap_contract.require_verified_prismasnap_if_present`).
+
+**The source may be BF16 or native FP8; the fold's output is always BF16.**
+`SUPPORTED_SOURCE_DTYPES = {BF16, F8_E4M3}` (`prismasnap_checkpoint.py`). A fold is a
+per-**channel** diagonal, while a native-FP8 checkpoint carries a per-**block**
+`weight_scale_inv`, so the fold is not constant inside a block and cannot be absorbed into the
+scale. An FP8 operand is therefore dequantized once through the checkpoint's own declared grid
+(`_Checkpoint.load_bf16`, delegating to the streaming path's `_declared_weight_block_size` /
+`_apply_fp8_dequant_inplace` — one dequant mechanism, per principle 8) and folded in BF16, which
+is the dtype `attest_fold_fidelity` serves anyway. The materializer forces `output_dtype` to
+BF16 for those operands: letting it default to the source dtype would round each fold back into
+`float8_e4m3fn` while the stored block scale stayed put — wrong values with no error. A BF16
+source takes a byte-identical no-op path. `I8`, per-tensor-scale FP8, and any dtype PrismaSnap
+cannot lift exactly are refused by name; a checkpoint that pairs FP8 weights with scales but
+declares no `weight_block_size` fails closed rather than assuming a 128x128 grid.
+
+An uplifted operand's `weight_scale_inv` no longer describes it, so it is dropped from the
+shard and from the output index, and `_verify_output_census` states that derived census exactly
+rather than relaxing its comparison.
+
+**Completion boundary — FP8 sources support plan build and fold measurement, not
+materialization.** This is not a corner case: it is *every* liftable FP8 source, so no FP8
+checkpoint can currently be materialized. Uplift leaves the output **mixed** — folded operands
+BF16 with no scale, untouched operands still block-scaled FP8 — and two consumers read that mix
+without a way to be told about it. (a) `config.json` declares one `quantization_config` for the
+whole checkpoint, and the block-scaled FP8 schemas in play
+(`{quant_method, fmt, weight_block_size, scale_fmt}`) carry no per-operand exclusion key, so
+there is no attested way to name the uplifted operands (principle 14). (b) A profile that
+overrides `fp8_scale_pairs` supplies the scale map from the *profile*, not the index
+(`layer_streaming.py:301`), so dropping a scale from the index never reaches it — it would
+dequant a BF16 tensor against a scale the shard no longer holds. Both are owed design work.
+`_preflight_uplift_publishability` refuses at plan validation, **before any bytes are written**,
+rather than at the downstream config/census gates that are only reached after the whole body has
+been streamed — on a 284B FP8 source the late refusal costs hours and a full checkpoint of disk.
+
+The widening covers the **dense** lane. `prismasnap_moe_checkpoint.py` still gates every
+operand, router and norm on `dtype == "BF16"`, so an FP8 MoE source is refused at plan
+discovery.
+
+The candidate's nominal search is the measured-fast `stage,polish` algorithm, not Fable's
+original sequential greedy implementation. `PrismaSnapSearchConfig` is versioned data and
+production accepts only its canonical value: group size 16; alpha candidates
+`[0,.125,.25,.375,.5]`; at most four fixed-global rounds; round-one staging of the top half of
+predicted gains; then true-render polish over the top-eight-gain and near-maximum groups, capped
+at 16 groups per seam. Each logical tensor keeps its own static-6 NVFP4 global, candidate folds
+are rounded to fp32 for the nominal objective. A full true-render no-op comparison is the hard
+upper bound. Fused-sibling globals, one-final-cast materialization, a different codec objective,
+and the slower greedy search are different algorithms, not aliases for nominal v1
+(`prismasnap.PrismaSnapSearchConfig.as_dict`, `search_diagonal_scale`,
+`prismasnap_checkpoint.plan_dense_checkpoint`).
+
+Before materialization, `realize-bf16` derives the executable v2 plan. Offset-one norm bytes are
+projected once to BF16 and stored directly; consumer columns use a separate positive realized
+inverse, unsafe channels execute identity, and the exact executed-BF16 static-6 objective must
+strictly beat the original seam or the seam becomes identity. Up/down is identity. The v2
+validator reconstructs every copied parent field and requires its canonical digest to equal the
+bound merged-v1 plan digest; it separately hashes every nominal, executed, and projected vector
+(`prismasnap_checkpoint.realize_bf16_plan`, `_validate_bf16_realized_plan_semantics`). Rejected
+norm seams and all up/down seams omit identity transforms; changed-tensor coverage and v2 seam
+summaries therefore report executed movement/objective gain while the parent records retain the
+explicitly nominal search statistics.
+
+The application lifecycle is
+`PREPARED → PLANNED-v1 → REALIZED-v2 → MATERIALIZED → VERIFIED → COMMITTED`:
+
+- **PREPARED** validates the original config/index/shard closure, complete tensor census and
+  BF16 transform domain, profile, probe bytes and calibration/source binding, producer source
+  closure, CUDA device, and attested container rootfs before a production plan may start.
+- **PLANNED** is an atomic, self-digested plan plus float64 scale vectors. It binds three exact
+  dense seams per claimed layer, the complete safetensors tensor metadata, transform order,
+  search semantics, and the fp64 algebra gate (`≤1e-10`).
+- **REALIZED** is the derived executable plan. It binds its complete merged-v1 parent and
+  original source, preserves nominal statistics as nominal, stores direct BF16 norm payloads
+  plus separate realized consumer inverses, records per-channel refusal reasons, and gates each
+  norm seam on its exact executed-BF16 render objective. Production derives it on CUDA with
+  `tools/prismasnap.py realize-bf16 --resume`.
+- **MATERIALIZED** is the atomically published BF16 checkpoint. Per-shard receipts prove the
+  source/output bytes, tensor shapes/dtypes, changed-tensor count, exact source-shard cover,
+  checkpoint weight-map digest, index digest, and whole shard-content identity. It is explicitly
+  not a numerical verdict.
+- **VERIFIED** is the only state admitted downstream. `attest-fold-fidelity` replays the original
+  source identity, teacher payload and calibration windows, BF16 teacher/student launch
+  contracts, both serve fingerprints, all-position metric coherence, and current checkpoint
+  bytes; original-BF16 → snapped-BF16 forward KL must be at most the attested threshold:
+  the plan's `5e-4`, or `max(5e-4, 2.0 × measured null floor)` under a saturation-licensed
+  `--null-floor-receipt` whose content hash is stamped into the verified provenance.
+- **COMMITTED** is the fail-closed handoff of that verified source to the unchanged native
+  pipeline/export transaction. `PLANNED`, `REALIZED`, `MATERIALIZED`, and `VERIFIED` are
+  serialized receipt states; `PREPARED` and `COMMITTED` name validated transition boundaries rather than additional
+  mutable JSON states (`prismasnap_checkpoint.py`, `prismasnap_validation.attest_fold_fidelity`).
+
+Multi-Spark operation is deterministic application code, not an agent protocol.
+`cluster_campaign.manifest.v2` declares local/SSH hosts, exact argv arrays, dependencies,
+working directories, closed environments, expected receipt hashes, timeouts, retry bounds, and
+maximum parallelism. Workers execute with `shell=False`; host-local locks, PID/start-time/owner
+checks, fsynced self-hashed compare-and-swap state, sealed-stage receipts, and dependency barriers
+make restart decisions mechanical and ambiguous ownership a refusal
+(`cluster_campaign.run_campaign_v2`). For the two-Spark dense campaign, workers plan disjoint
+layer sets, `merge-plans --resume` accepts only their exact layer union, workers materialize
+disjoint original shard sets, and `merge-checkpoint-parts --resume` accepts only an exact
+non-overlapping source-shard union. The remote part is transferred as an explicit
+content-addressed campaign stage. `merge-checkpoint-parts` is the last writer of the tree the
+two `materialize-part` workers staged, so the CLI runs it under the same `production` execution
+gate they use (`_require_production_execution`: CUDA-typed device plus an attested container
+rootfs); an unattested merge would otherwise launder both workers' receipts. The strict
+low-space collation arm passes
+`--require-hardlinks`: every admitted part shard must already be on the coordinator filesystem,
+and the staging and committed trees must retain the same device/inode binding or fail. This
+avoids another full-checkpoint copy; the general-purpose CLI's durable-copy mode is not the
+27B low-space campaign contract (`prismasnap_checkpoint.merge_plans`,
+`merge_checkpoint_parts`; `tools/prismasnap.py`).
+
+Planning and transform materialization are CUDA-only in production and bind the attested Docker
+rootfs plus producer commit/source bytes; source identity binds semantic config, sorted weight
+map, every shard size/hash, and a portable content digest; the probe receipt binds its own bytes,
+calibration hash/dataset/sample count/sequence length/modality, original model path, BF16 dtype,
+streaming-GPU device map, and execution device. Plan construction streams only the tensors for
+one layer and materialization streams one shard at a time. Part transfer and hardlink collation
+are explicit offline checkpoint-lifecycle I/O, separate from the GPU-bound search/transform and
+the ordinary GPU-bound quantization hot path (`prismasnap_checkpoint._require_production_execution`,
+`_validate_source_identity`, `_validate_probe_source_contract`).
+
+Admission is deliberately narrow. `run-pipeline.sh` validates any marker before work and then
+admits it only when `EXPORT_CONTAINER=compressed-tensors`; the native exporter re-hashes the
+verified BF16 input before opening its transaction and again before preserving the source receipt
+as `source_prismasnap_provenance.json`. The pipeline GGUF branch and direct-GGUF API, plus both
+Gridbook/codebook exporters, reject the mere presence of a PrismaSnap marker before output. The measured candidate
+menu is therefore native `{NVFP4, FP8_DYNAMIC, BF16}` only
+(`run-pipeline.sh:92-99`; `export_native_compressed.main`;
+`prismasnap_contract.refuse_prismasnap_for_unvalidated_lane`).
+
+Promotion remains ordered and evidence-gated. First is the Qwen3.8-27B text-only/no-vision,
+strict decimal 20,000,000,000-byte arm against the existing unsnapped control, with the same
+16×512 diverse-v1 probe, assignment/accounting semantics, production cache behavior, and gold
+8×512 served protocol. The requested ≥20% all-position and confident-position KL reduction is
+still a threshold, not a measured result (`docs/results/qwen38_prismasnap_20gb_ab_2026-08-25.md`,
+status **RUNNING**). `plan_dense_checkpoint` currently refuses a non-dense profile. MoE is the
+second experimental gate and must separately prove router/shared-gate compensation, packed
+expert axes and per-expert importance, route stability, partial-source disk lifecycle, and the
+released tensor layout. The Qwen3.5-family profile's native-causal versus wrapper source census
+and explicit RMSNorm stored-parameter offset are prerequisites for that work, not evidence that
+Qwen3.8-125B-A3B is admitted (`model_profiles/qwen3_5.py`,
+`ModelProfile.rms_norm_parameter_offset`; `docs/design/prismasnap.md`).
+
 **DIAGRAM-1 — Pipeline dataflow:** source checkpoint to three artifact containers, with the
 four `COST_MODE`s, the opt-in validated-frontier loop, and the manual (echoed-only) ship gate.
 
 ```mermaid
 flowchart TD
-  SRC["source checkpoint<br/>HF safetensors"]
+  ORIG["original BF16 source checkpoint<br/>HF safetensors"]
+  SRC["ordinary pipeline source<br/>unmarked BF16, or COMMITTED verified PrismaSnap BF16"]
+  ORIG -->|"no PrismaSnap marker: historical path"| SRC
+
+  subgraph PSNAP["optional additive PrismaSnap source preparation -- before [1/4]"]
+    PSPREP["PREPARED<br/>source config/index/shards + full tensor headers<br/>probe/calibration + producer/container identity"]
+    PSPLAN0["Sparky plan-dense<br/>disjoint layers; CUDA measured-fast stage,polish"]
+    PSPLAN1["Sparklina plan-dense<br/>disjoint layers; CUDA measured-fast stage,polish"]
+    PSMERGE["PLANNED-v1<br/>merge-plans --resume<br/>exact layer union + 3 seams/layer"]
+    PSREAL["REALIZED-v2<br/>realize-bf16 --resume<br/>direct BF16 norms + realized inverses<br/>executed objective / identity fallback"]
+    PSPART0["Sparky materialize-part<br/>disjoint original shards"]
+    PSPART1["Sparklina materialize-part<br/>disjoint original shards"]
+    PSTRANSFER["content-verified remote-part transfer<br/>explicit campaign stage"]
+    PSCOLLATE["MATERIALIZED<br/>merge-checkpoint-parts --resume --require-hardlinks<br/>exact shard union; same-filesystem/inode proof"]
+    PSKL["served original-BF16 → snapped-BF16<br/>all-position fold KL ≤ max(5e-4, 2× null floor)"]
+    PSVER["VERIFIED<br/>source/calibration/serve/index/shard replay"]
+    PSCOMMIT["COMMITTED<br/>atomic native-pipeline handoff"]
+    PSPREP --> PSPLAN0
+    PSPREP --> PSPLAN1
+    PSPLAN0 --> PSMERGE
+    PSPLAN1 --> PSMERGE
+    PSMERGE --> PSREAL
+    PSREAL --> PSPART0
+    PSREAL --> PSPART1
+    PSPART0 --> PSCOLLATE
+    PSPART1 --> PSTRANSFER --> PSCOLLATE
+    PSCOLLATE --> PSKL --> PSVER --> PSCOMMIT
+  end
+
+  ORIG -. "candidate pre-pass" .-> PSPREP
+  PSCOMMIT --> SRC
   PROBE["[1/4] incremental_probe -- run-pipeline.sh:544-560<br/>per-Linear empirical Fisher h_trace<br/>artifacts/probe.pkl"]
   ACT["activation cache<br/>WORK_DIR/act"]
   CBL["learned-CB pre-render gate (scope fp8)<br/>immutable value-bearing CB_CODEBOOK_BUNDLE<br/>trained once before cost/cache/KL/export"]
   BASE["[2/4] incremental_measure_quant_cost -- :645-658<br/>RTN per-Linear-per-format error<br/>cost.pkl (local) or cost_baseline.pkl"]
 
+  subgraph SPROBE["optional exact sample-axis probe map/reduce"]
+    SPCAL["immutable ids[N,T] + closed source/run contract"]
+    SPCE["N stage-1 workers<br/>raw shifted-token CE sum/count"]
+    SPBAR["global CE barrier<br/>exact cover + one global mean"]
+    SPWORK["N full-model stage-2 workers<br/>complete qname census per sample stripe"]
+    SPMERGE["strict raw-stat + activation merger<br/>ordinary probe.pkl + act/"]
+    SPCAL --> SPCE --> SPBAR --> SPWORK --> SPMERGE
+  end
+
   SRC --> PROBE
   PROBE --> ACT
+  SRC -. "source/config/header/content identity" .-> SPCAL
+  SPMERGE --> ACT
+  SPMERGE --> BASE
   SRC --> CBL
   ACT --> CBL
   PROBE --> BASE
@@ -1007,10 +1493,22 @@ flowchart TD
   FR --> VAK
   VAK --> SVF
 
-  PCACHE["[4/4] D. build_production_cache / production_recache<br/>ProductionWeightCache -- the one rendered-weight store<br/>levers: gptq, static_act_order, joint_scale_opt"]
+  PCACHE["[4/4] D. build_production_cache / production_recache<br/>ProductionWeightCache -- the one rendered-weight store<br/>body + profile-synthesized MTP; levers: gptq, static_act_order, joint_scale_opt"]
+
+  subgraph XUNION["optional exact multi-host cache build -- native materialized renders only"]
+    SPLAN["production_cache_stripes<br/>probe-shaped LPT over whole decoder layers<br/>plus indivisible lm_head / MTP groups"]
+    SCACHE["independent build_production_cache workers<br/>one --include-qnames-file and cache bundle per stripe"]
+    SUNION["union_production_cache<br/>manifest -> verify-shard -> union -> verify<br/>exact disjoint set union; no candidate selection"]
+    SPLAN --> SCACHE --> SUNION
+  end
 
   SVF --> PCACHE
   ALLOC -->|"SELECTION_MODE=surrogate"| PCACHE
+  PROBE -. "qname shapes" .-> SPLAN
+  ALLOC -. "assignment coverage" .-> SCACHE
+  SRC -. "same checkpoint identity" .-> SCACHE
+  ACT -. "MTP activation rows" .-> PCACHE
+  ACT -. "same calibration rows" .-> SCACHE
   CBL -. "exact learned tensors" .-> PCACHE
 
   EXPCT["export_native_compressed -- :1665-1699"]
@@ -1018,6 +1516,7 @@ flowchart TD
   EXPGG["convert_hf_to_gguf.py skeleton -> export_gguf<br/>(:1461-1493)"]
 
   PCACHE --> EXPCT
+  SUNION --> EXPCT
   ALLOC -->|"EXPORT_CONTAINER=nvfp4_cb, PRODUCTION_CACHE=0"| EXPCB
   ALLOC -->|"EXPORT_CONTAINER=gguf, PRODUCTION_CACHE=0"| EXPGG
   CBL -. "same tensors; no retraining" .-> VAK
@@ -1051,19 +1550,23 @@ flowchart TD
 
   classDef optin stroke:#c07800,stroke-width:2px,stroke-dasharray:4
   classDef manual stroke:#c0392b,stroke-width:2px
-  class AUR,CBH,FR,VAK,SVF,DAP0,DAP1,DAP3,DAART optin
+  class PSPREP,PSPLAN0,PSPLAN1,PSMERGE,PSPART0,PSPART1,PSTRANSFER,PSCOLLATE,PSKL,PSVER,PSCOMMIT,AUR,CBH,FR,VAK,SVF,DAP0,DAP1,DAP3,DAART,SPLAN,SCACHE,SUNION optin
   class VNE,VQM,GOLD,NOSMOKE manual
 ```
 
 ### 3.1 Pre-flight gates
 
-In order, all failing `exit 2`: required `MODEL_PATH`/`WORK_DIR` (`43-44`); GGUF lane
-consistency (`97-110`); CB lane consistency (`119-132`); GPU-or-bust — both `DEVICE` and
-`EXPORT_DEVICE` must match `cuda*` and an inline `python3` asserts `torch.cuda.is_available()`
-(`134-145`); the archived-lever gates of §3.5 (`233-248`, `337-340`, `387-406`); `COST_MODE`
-dispatch, unknown mode rejected (`314-385`); work-dir creation (`408`); `SELECTION_MODE`
-legality (`410-416`); `MSE_PROMOTION` legality — requires validated-surrogate and a production
-cache (`417-429`); spec write/validate (`462-481`).
+In current order, all failing closed: required `MODEL_PATH`/`WORK_DIR` (`48-49`); optional
+PrismaSnap marker replay plus native-only admission (`93-99`); architecture lane and
+serving-profile resolution (`357-388`); GGUF and CB lane consistency (`508-551`);
+GPU-or-bust — both `DEVICE` and `EXPORT_DEVICE` must match `cuda*` and inline Python asserts
+`torch.cuda.is_available()` (`554-565`); the archived-lever gates of §3.5 (`737-1077`);
+`COST_MODE` dispatch and unknown-mode refusal (`391-507`, `972-1013`); work-dir creation
+(`1081`); `SELECTION_MODE` legality (`1083-1089`); and declarative spec write/validate
+(`1128-1147`). The PrismaSnap check is deliberately before profile resolution, GPU setup,
+work-dir creation, cache work, or export: a corrupt, merely `MATERIALIZED`, or non-native marked
+source cannot consume an expensive stage before refusal
+(`prismasnap_contract.require_verified_prismasnap_if_present`).
 
 The two lane gates encode one contract, and since re-vet **R3** they say so directly (§4.7):
 the GGUF and CB exporters requantize the bf16 skeleton with **imatrix-weighted** renders, so
@@ -1083,27 +1586,55 @@ which is what the rows touched since are keyed on.
 
 | # | Stage | Script | Artifact(s) | Reuse guard | Mode/lane gate |
 |---|---|---|---|---|---|
+| **PREPARED → PLANNED (optional, pre-pipeline; ×2)** | Validate the original BF16/source/probe/producer/container closure, discover exactly three dense seams per claimed layer, run the canonical CUDA `stage,polish` search, then exact-union the two disjoint layer plans | `tools/prismasnap.py plan-dense --resume`; `merge-plans --resume`; autonomous dependency/retry/barrier execution by `tools/run_cluster_campaign.py` / `prismaquant.cluster_campaign` | one self-digested plan directory per Spark; merged `plan.json` + `scales.safetensors`; campaign manifest/state/logs/sealed receipts | exact argv and producer closure; full source identity + tensor-header census; probe bytes/calibration/execution identity; canonical search; host locks and receipt hashes; merged layer cover must be disjoint, complete, and carry exactly three semantically valid seams per layer | opt-in candidate source-prep only; production requires CUDA and attested container; current planner is dense-only and excludes vision/MTP seams |
+| **PLANNED → MATERIALIZED (optional, pre-pipeline; ×2)** | Stream disjoint original shard sets through the merged transform program, transfer the remote part by explicit receipt, then exact-union on the coordinator. The strict 27B low-space arm requires hardlinks and proves device/inode identity in staging and after commit | `tools/prismasnap.py materialize-part --resume`; `merge-checkpoint-parts --resume --require-hardlinks` | two `part.json` directories with per-shard receipts; atomically committed BF16 HF checkpoint + `prismasnap_provenance.json` state `MATERIALIZED` | plan/source/header identity; exact disjoint source-shard cover; source/output hash, size, tensor shape/dtype and transform census per shard; same-filesystem hardlink proof; producer/container attestation on the merge as well as on each part; fsynced no-clobber staging and committed-tree replay | still outside `run-pipeline.sh`; `MATERIALIZED` is not downstream admission |
+| **MATERIALIZED → VERIFIED → COMMITTED (optional, pre-pipeline)** | Serve snapped BF16 against the original BF16 teacher, attest all-position fold KL, atomically replace provenance with the verified receipt, then hand the ordinary checkpoint to the unchanged native pipeline | `tools/measure_vllm_full_kl.py`; `tools/prismasnap.py attest-fold-fidelity`; admission by `python -m prismaquant.prismasnap_contract --model "$MODEL_PATH"` | student result + teacher metadata/payload; `prismasnap_provenance.json` state `VERIFIED`; native output copy `source_prismasnap_provenance.json` | BF16/no-quantization/no-spec-decode launch contracts; teacher/source/calibration windows and corpus; both serve fingerprints; coherent metrics; current index/weight-map/every-shard identity; forward KL `≤5e-4` | native compressed-tensors `{NVFP4, FP8_DYNAMIC, BF16}` only; GGUF and Gridbook/codebook refuse any marker; an absent marker is the historical no-op path |
 | **1/4** | Sensitivity probe — per-Linear empirical Fisher `h_trace`, body + MTP in one pass; tied heads materialized and excluded, KV-sharing cotangents grafted (§7.5) | `prismaquant.incremental_probe` (`544-560`) | `artifacts/probe.pkl`; activations → `act/`; shards → `work/`; `logs/probe.log` | settings-hash `probe` (`703`); reuse also re-checks stored `calibration_modality` | — |
-| **2/4** | Baseline per-(Linear,format) RTN cost | `prismaquant.incremental_measure_quant_cost` (`645-658`) | `artifacts/cost.pkl` (`COST_MODE=local`) or `artifacts/cost_baseline.pkl` (`314-380`); `logs/cost.log` | settings-hash `base-cost` (`768`) + cost-mode provenance when it IS the allocator table (`769-777`) | — |
+| **1/4×N (manual)** | Exact sample-axis probe map/reduce. Every worker processes the complete dense text qname census over one canonical contiguous sample partition. Stage 1 publishes raw shifted-token CE; a global scalar barrier closes the cover; stage 2 reruns phase 1 with that global mean, then the strict reducer finalizes raw Fisher/marginals once and publishes the deterministic dense-body activation union (§4.1) | `prismaquant.sample_parallel_probe` + `prismaquant.incremental_probe` + `prismaquant.sample_parallel_probe_merge` | immutable calibration/run contract and digest-bound sample cover; per-worker CE/probe/cache shards; global CE receipt; ordinary merged `probe.pkl` + `act/` | committed read-only source snapshot + host-verified immutable registry RepoDigest; source/config/header/content identity; exact sample cover replayed before GPU setup; duplicate-key-free trusted JSON; marginal-to-trace and independently replayed global top-R/fused-row checks; no-follow same-byte probe and committed-identity lazy activation consumption; no-clobber output | opt-in operator workflow; no `torch.distributed`, qname/layer partitioning, alternate cache, serving-runtime change, h-detail, visual, routed, or packed path |
+| **2/4** | Baseline per-(Linear,format) RTN cost. The measured menu is derived `COST_FORMATS`; `lm_head` is included only for a fixed non-BF16 or DP-unpinned head | `prismaquant.incremental_measure_quant_cost --[no-]include-lm-head` | `artifacts/cost.pkl` (`COST_MODE=local`) or `artifacts/cost_baseline.pkl`; `logs/cost.log` | settings-hash `base-cost`, including all three resolved head-policy axes and `COST_FORMATS` | — |
 | **2a-CB** | imatrix column-weight harvest | `harvest_cb_col_weights` — ONE shell function, four call sites (`[2/4] pre-cost`, `[2b/4] cost-cache`, `[2d-CB]`, `[4/4]`) → `export_gguf.build_imatrix_from_act_cache` + `moe_imatrix.synthesize_packed_expert_col_weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | CB lane; called by whichever stage needs the vector first |
-| **pre-2-CBL** | Train/verify the immutable value-bearing dense learned-codebook bundle | `ensure_cb_learned_bundle` → `prismaquant.build_cb_learned_bundle` → streaming source reader + certified `learn_pool` | `artifacts/cb_learned_bundle.pqcb` | settings-hash `cb-learned-bundle` includes the col-weight file SHA-256; existing files are fully revalidated | CB lane, learned scope only; runs before the first cost/cache/KL render |
-| **2b/4** | Format-menu production render for allocator cost. Materialized mode retains render shards; streamed CB mode synchronously renders each full-menu pair, checkpoints the consumer acknowledgement, then discards the tensor (§5.4) | `build_production_cache --render-scope format-menu` (`672-686`); transient lifetime is implemented by `streaming_production_cache.py` through the existing `ProductionWeightCache` | `artifacts/production_render_score_cache.pkl`; `…_weight_cache/` contains tensors only for materialized mode, while transient CB pairs retain identity/digest/consumer sidecars but no rendered-weight shard | settings-hash `render-cost-cache` (`837`) | `production-render-score`; transient mode is CB-only and must cover the complete requested menu |
+| **pre-2-CBL** | Train/verify the immutable value-bearing codebook bundle. Historical trainer v1 keeps its measured rung policy. Trainer v2 derives the existing probe imatrix and emits lattice for every FP8 producer rung unless an independently validated per-rung promotion receipt authorizes the exact learned candidate | `ensure_cb_learned_bundle` → `prismaquant.build_cb_learned_bundle` → streaming source reader; v2 additionally uses `cb_imatrix` + `cb_learned_promotion` | `artifacts/cb_learned_bundle.pqcb`; optional external `prismaquant.fp8_cbl_promotion_receipt.v1` input is embedded and digest-bound | settings-hash `cb-learned-bundle` includes the calibration/imatrix input identity; bundle load revalidates complete source, role, candidate-table, and receipt bindings | CB lane, learned scope only; runs before the first cost/cache/KL render. V2 without a valid receipt is all-lattice, never a guessed learned/lattice crossover |
+| **2b/4** | Format-menu production render for allocator cost. Materialized mode retains render shards; streamed CB mode synchronously renders each full-menu pair, checkpoints the consumer acknowledgement, then discards the tensor (§5.4). The probe activation directory enables profile-synthesized MTP append; remaining profile pins are skipped | `build_production_cache --render-scope format-menu --activation-cache-dir act/` using derived `COST_FORMATS`; transient lifetime is implemented by `streaming_production_cache.py` through the existing `ProductionWeightCache` | `artifacts/production_render_score_cache.pkl`; `…_weight_cache/` contains tensors only for materialized mode, while transient CB pairs retain identity/digest/consumer sidecars but no rendered-weight shard | settings-hash `render-cost-cache`, including the resolved head policy | `production-render-score`; transient mode is CB-only and must cover the complete requested menu |
 | **2c/4** | Synthesize allocator cost from render scores | `prismaquant.production_render_cost` (`704-711`) | `artifacts/cost.pkl` | settings-hash `render-cost` (`858`) + cost-mode provenance (`859`) | `production-render-score` |
-| **2b/4** | Format-menu render for AURA dW. A materialized cache exposes dW later; the streamed CB lifetime exposes each canonical render to the synchronous cost consumer and discards it only after that row is durably acknowledged (§5.4) | `build_production_cache … --render-scope format-menu` (`857-871`) | frontier cache under validated-surrogate, else `production_render_score_cache.pkl` (`366-378`); transient CB mode retains pair attestations rather than loser weight shards | settings-hash `aura-dw-cache` (`913`) | `aura`; `exit 2` if the menu is BF16-only; every requested candidate must be consumed |
-| **2c/4** | AURA downstream-KL-adjoint cost | `prismaquant.aura_cost` (`881-900`) | `artifacts/cost_aura.pkl` | settings-hash `aura-cost` (`939`) | `aura` |
+| **2b/4** | Format-menu render for AURA dW. A materialized cache exposes dW later; the streamed CB lifetime exposes each canonical render to the synchronous cost consumer and discards it only after that row is durably acknowledged (§5.4). It uses the same activation-cache/MTP and remaining-pin policy as the cost cache | `build_production_cache … --render-scope format-menu --activation-cache-dir act/` | frontier cache under validated-surrogate, else `production_render_score_cache.pkl`; transient CB mode retains pair attestations rather than loser weight shards | settings-hash `aura-dw-cache`, including the resolved head policy | `aura`; `exit 2` if the menu is BF16-only; every requested candidate must be consumed |
+| **2c/4** | AURA downstream-KL-adjoint cost. A fixed head remains auxiliary and is omitted; only `ALLOW_PINNED=lm_head` asks AURA to price the head inside the research DP | `prismaquant.aura_cost` with `--include-lm-head` only in DP-unpinned mode | `artifacts/cost_aura.pkl` | settings-hash `aura-cost`, including the resolved head policy | `aura` |
 | **2d/4** | Hybrid finalize: empirical profile-declared routed-expert unit-KL + sidecar backfill | `prismaquant.expert_empirical_cost --merge-base --backfill-base` (with the shared `--col-weights` on weighted cached-menu lanes) or inline backfill (`run-pipeline.sh`, AURA `[2d]`) | `artifacts/cost.pkl` | settings-hash `aura-hybrid-cost` + cost-mode provenance | `aura` |
 | **2d-CB** | CB hybrid: replace routed-expert rows with empirical unit-KL | `harvest_cb_col_weights "[2d-CB]"` → `expert_empirical_cost --replace-experts --col-weights` | `artifacts/cost_local_raw.pkl`, `artifacts/cost.pkl`, `cb_col_weights.pkl` | settings-hash `cb-hybrid-cost` + the in-payload merge probe; col-weights `cb-col-weights` | CB lane, `CB_EXPERT_EMPIRICAL=1` |
 | **2b/4 cw** | Cost-cache col-weights (weighted lanes only) | `harvest_cb_col_weights "[2b/4] cost-cache"` → `build_production_cache --col-weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | `COST_RENDER=cached-menu` on a CB/GGUF lane (§4.7) |
 | **P0–P3** | Platform-agnostic anchored-AURA mechanism: format-blind streamed adjoint; plugin-mapped production anchors per legal `(unit,family,equivalence_class)`; within-segment shape fit; recomputed hull; one byte-budget DP (§4.3) | frozen DSv4 shim `tools/run_aura_cb_reprice.sh` → `prismaquant.dsv4_aura_cb_reprice`; generic mechanism `prismaquant.anchored_cost`; CB mapping plugin on `format_registry` + `model_profiles` | identity-bound scalar checkpoints; the driver atomically emits an exportable artifacts directory containing the AURA-stamped `layer_config.json`, matching `selection.json`, allocator `pareto.knees.json`, and the exact platform render inputs (`cb_col_weights.pkl` on CB) | qname-keyed atomic resume bound to model/menu/arm/plugin/calibration/format-plan/render-input identity | generic evaluate/price/allocate mechanism with a machine-specific map plugin; DSv4 remains the acceptance vehicle; never a full-menu render campaign |
-| **3/4** | Allocator — multi-choice knapsack over per-Linear formats (§4) | `prismaquant.allocator` (`1076-1090`) | `artifacts/layer_config.json`, `artifacts/pareto.csv`, `artifacts/pareto_assignments/` (validated-surrogate only, `1056-1061`); `logs/allocator.log` | **none — always runs** | — |
-| **4/4 A** | Frontier format-menu cache | `build_production_cache … --render-scope format-menu --render-packed-experts` | `artifacts/production_weight_cache_frontier_raw.pkl` + `…_frontier/` | settings-hash `frontier-cache` (`1206`) | validated-surrogate; `exit 2` if `PRODUCTION_CACHE=0` |
+| **RTX4090 sparse P1–P3 ×2 (manual)** | Strict 18 GB specialization of anchored AURA: derive the exact bundle-captured probe imatrix, attest one snapshot/image execution, split whole layers across two hosts, render only lattice K4/K16/K48 plus native FP8 per body Linear, reconstruct one exact global payload, fit the lattice rung law, byte-preserve direct rows, impute nine CB rungs, add the BF16 source terminal, and solve once (§4.3) | `prismaquant.rtx4090_fp8_burn` + `prismaquant.cb_anchored_cost` | durable no-clobber FP32 column weights; immutable execution attestation and two-stripe plan; 496×4 measured AURA cells; one mixed measured/imputed/source-terminal allocator table | complete disjoint qname/format/purpose/renderer/source/imatrix/snapshot/image/arm identity; worker chunk counters remain explicitly unverified planning metadata | Qwen3.8 strict FP8-only validation-artifact campaign; no NVFP4 and no twelve-rung physical render sweep |
+| **GLM stock anchored (manual)** | Stock-vLLM single-rung specialization of anchored AURA for a non-CB menu: one batched streamed KL-adjoint over the dense plan (135 units × NVFP4, production render gptq+static_act_order+JSO), priced/merged CPU-side with measured packed-expert unit-KL and exact source terminals. Unblocked 2026-08-27: the streamed checkpoint guard accepts the production-anchor renderer identity as the value-bearing render identity on a CB-free menu (`tests/test_streamed_cost_checkpoints.py`), and the anchored renderer's transient per-layer render makes the retained format-menu dW cache moot | `tools/run_glm53_stock_harvest.sh` → `prismaquant.glm53_stock_harvest` (GPU) → `prismaquant.glm53_stock_reprice campaign` (CPU) with the `prismaquant.stock_anchored_cost` map plugin | harvest wrapper pkl (arm identity + exact plan + AURA payload) → `cost_stock_anchored.pkl` (135 anchored + 84 empirical + 69 pinned = 288 units; packed-expert FP8_SOURCE terminals refused `profile_mismatch` and recorded as serving-gap findings) | per-unit identity-bound AURA shards; arm identity binds render levers + costed format + probe calibration (a CB-free renderer identity binds no levers by itself); campaign refuses filtered harvests, plan drift, RTN-fallback rows, foreign calibration | GLM-5.3-Flash teacher-artifact campaign; single costed rung per unit so no shape transfer is expressible; routed experts stay on the empirical unit-KL currency |
+| **3/4** | Allocator — multi-choice knapsack over per-Linear body formats plus explicit fixed auxiliary head/MTP/visual assignments (§4) | `prismaquant.allocator --lm-head-format "$LM_HEAD_FORMAT_CANONICAL"` | `artifacts/layer_config.json`, `artifacts/pareto.csv`, `artifacts/pareto_assignments/` (validated-surrogate only); `logs/allocator.log` | **none — always runs** | fixed non-BF16 head and `ALLOW_PINNED=lm_head` are mutually exclusive |
+| **4/4 A** | Frontier format-menu cache, including profile-synthesized MTP when the menu requests it | `build_production_cache … --render-scope format-menu --render-packed-experts --activation-cache-dir act/` | `artifacts/production_weight_cache_frontier_raw.pkl` + `…_frontier/` | settings-hash `frontier-cache`, including the resolved head policy | validated-surrogate; `exit 2` if `PRODUCTION_CACHE=0` |
 | **4/4 B** | Measured held-out KL per Pareto point | `prismaquant.validate_assignments_kl` (`1243-1248` per-point, `1272-1277` batched) | `artifacts/validated_frontier_kl.json` + `…_parts/*.json` (merged `1250-1269`) | settings-hash `frontier-kl-point` per point (`1294`) | validated-surrogate |
 | **4/4 C** | Frontier point selection | `prismaquant.select_validated_frontier` (`1281-1288`) | overwrites `artifacts/layer_config.json`; `layer_config_validated_assignment.json`; `validated_frontier_selection.json` | none | validated-surrogate |
-| **4/4 D** | Production cache build / recache for the selected assignment | `production_recache` (`1331-1346`, `1399-1414`) or `build_production_cache --recache-layer-config` (`1379-1396`, `1423-1438`) | `production_weight_cache_frontier_<digest>_recached.pkl` (`1328`), `production_weight_cache_recached.pkl` / `…_raw.pkl` (`1102-1103`) | settings-hash `production-cache-recached` (`1404`), `frontier-recache` (`1360`), `production-cache-raw` (`1452`) | `PRODUCTION_CACHE=1` |
+| **4/4 D** | Production cache build / recache for the selected assignment, including exact non-BF16 `mtp.*` renders synthesized through the profile from `act/` | `production_recache` or `build_production_cache --recache-layer-config --activation-cache-dir act/`; all direct builder calls receive the remaining profile pins | `production_weight_cache_frontier_<digest>_recached.pkl`, `production_weight_cache_recached.pkl` / `…_raw.pkl` and their shard directories | settings-hash `production-cache-recached`, `frontier-recache`, `production-cache-raw`, including the resolved head policy | `PRODUCTION_CACHE=1`; explicit quantized MTP fails closed without exact source/module/activation coverage |
+| **4/4 D×N (manual)** | Exact multi-host cache striping and set union. Plan whole-layer/auxiliary qname groups, run independent allowlisted cache builds, manifest and verify each portable bundle, union, then verify again after transfer | `prismaquant.production_cache_stripes`; `build_production_cache --include-qnames-file`; `prismaquant.union_production_cache {manifest,verify-shard,union,verify}` | `stripe-plan.json`, `stripe-NN.qnames.txt`, per-worker cache bundles, final `production_weight_cache.pkl` + content-addressed `weights/` + `union_manifest.json` | campaign identity binds source, calibration, full producer code, settings, render semantics, and assignment or stripe-plan coverage | operator workflow, not a `run-pipeline.sh` default; native materialized formats only (§5.4) |
 | **3c** | AURA additivity report — `residual = measured_end_KL − Σ predicted_dloss`, stamped into `cost.pkl` `provenance["additivity"]` (§4.3) | `prismaquant.aura_additivity_gate` (+ optional `validate_assignments_kl` under `AURA_ADDITIVITY_GATE=measure`) | `artifacts/aura_additivity.json`, `aura_additivity_kl.json` (measure only); `logs/aura_additivity*.log` | none — non-blocking report, skip-if-exists on the KL half | `COST_MODE=aura`, `AURA_ADDITIVITY_GATE≠0` |
 | **4/4 E-gguf** | GGUF skeleton + export + llama.cpp smoke | `convert_hf_to_gguf.py` (`1461-1464`), `prismaquant.export_gguf` (`1469-1493`), `llama-completion` (`1500-1516`) | `artifacts/skeleton.gguf`, `exported.gguf` | settings-hash `gguf-skeleton` (`1488`); export always runs | GGUF lane; **exits 0** |
 | **4/4 E-cb** | CB col-weights + codebook export | `harvest_cb_col_weights "[4/4]"`, `export_nvfp4_cb[_streaming]` | `exported_nvfp4_cb/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`) + `.pqcb` codebook sidecar | settings-hash `cb-col-weights`; export always runs | CB lane; no in-lane serving smoke; **exits 0** |
+| **RTX4090 strict build (operator campaign)** | Run the ordinary per-Linear pipeline under the dense Qwen3.8 context-first policy, prove the exact 1,199-tensor/615-Linear source census, then replay config ownership and finalized artifact headers/sidecar before publication | `scripts/run_qwen38_rtx4090_fp8_cb_18gb.sh` → `run-pipeline.sh` + `rtx4090_qwen38_policy` + `rtx4090_artifact_census` | strict top-level `format: fp8_cb` lattice artifact, exact policy/runtime-contract/source-identity stamps, complete tensor-format assignment, and strict `rtx4090.fp8_cb` shipcard slot | no special cache: streamed AURA, the existing activation cache, probe-derived full-corpus imatrix, `ProductionWeightCache`, prefetch, allocator, and CB exporter remain authoritative and identity-bound | opt-in `TARGET_PROFILE=qwen38_rtx4090_fp8_cb`; exact menu FP8-CB K4..K48 step 4 + `FP8_E4M3` + BF16, `CB_CODEBOOK_SOURCE_SCOPE=none`, `CB_ACTIVATION_SCOPE=none`, fixed BF16 `lm_head`/MTP, and a non-forceable complete-publication ceiling of 18,000,000,000 bytes; currently refuses because the available sm89 lane-v2 rows are compile-only |
+| **RTX4090 validation-only GB10 build** | Exercise the exact strict serializer, source/artifact census, top-level `fp8_cb` manifest, and complete FP8-only assignment under Gridbook v11 compile-only SM89 structural cells | `scripts/run_qwen38_rtx4090_fp8_cb_validation_only_gb10.sh` → the same launcher/pipeline with `RTX4090_BUILD_DISPOSITION=validation_only` → `validate_rtx4090_fp8_cb_validation_only` | artifact stamped `UNRELEASABLE_VALIDATION_ONLY`, `runtime_qualification_ceiling=compile_only`, `build_host=dgx_spark_gb10`; no serving receipt | exactly the strict build's streamed AURA, activation cache, imatrix, `ProductionWeightCache`, required resident prefetch, allocator, and CB exporter; no parallel cache | launcher requires one visible GB10 at CC 12.1; assignments/config groups/tensor formats admit only FP8-CB K4..K48 step 4, delegated `FP8_E4M3`, and BF16. Shipcard, publisher, and strict RTX4090 validator always refuse it regardless of filled slots or force flags |
+| **RTX4090 validation-only direct export** | Consume a completed allocator assignment plus its exact value-bound column weights and original source; rerender only selected FP8-CB units, copy required source/BF16 tensors, then structurally validate | `scripts/export_qwen38_rtx4090_fp8_cb_validation_only.sh` → `prismaquant.rtx4090_validation_export` → existing `export_nvfp4_cb_streaming` → `validate_rtx4090_fp8_cb_validation_only` | the same top-level `fp8_cb`, `UNRELEASABLE_VALIDATION_ONLY` artifact; no retained-menu cache or serving receipt | no cache build: exporter streams the source and invokes the existing weighted renderer only for the selected assignment; `cb_render_identity` binds the exact supplied col-weights values and complete decoded-source identity | requires the allocator's assignment-bound whole-artifact budget stamp at a positive ceiling no greater than 18,000,000,000 bytes; refuses source namespace exclusions and every non-policy/NVFP4 format. It never calls `run-pipeline.sh`, and release/graph gates remain unchanged |
 | **4/4 E** | compressed-tensors export (§6) | `prismaquant.export_native_compressed` (`1665-1699`) | `exported/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`); `logs/export.log` | **none — always runs** | default lane |
+
+The strict launcher keeps validated-surrogate selection on the production
+render path (`PRODUCTION_CACHE=1`, required resident prefetch) and deliberately
+sets `PRODUCTION_RECACHE=0`: the CB serializer re-encodes the selected
+assignment with the same bound codec and cannot consume a selected-assignment
+recache. `AURA_COST_STREAMING=1` requires one absolute checkpoint directory,
+and `PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE` points into that directory so
+the AURA resume identity is also the source-census identity. `CB_IMATRIX_SOURCE=probe`
+makes cost, frontier KL, and export use one digest-stamped full-corpus imatrix
+rather than a row-capped replay estimate. The official conditional-generation
+wrapper is accepted only after its nested dense text identity, exact schedule,
+1,199 source tensors, and 615 Linears validate; established text-only staging
+then presents the flattened causal-LM body to the ordinary pipeline. The
+strict serializer accepts only canonical lattice codebooks until a future
+artifact contract can bind the raw learned-v2 promotion ledger, imatrix, and
+source closure. Publication replays the strict slot after freezing the upload
+tree; neither an invalid/unfilled slot nor frozen replay failure can be waived
+or stamped with the generic force flags.
 
 **Output packaging — ~1 GiB shards (2026-08-20; CB lane 2026-08-21).** Published artifacts are
 packaged in ~1 GiB safetensors shards, down from 5 GiB, on Robert's standing instruction
@@ -1138,6 +1669,28 @@ pinned Gridbook runtime, which this repo may not import (`AGENTS.md`), so what i
 is that the layout is the standard HF one and that the reporter's own reshard served; no CB
 serve of a PrismaQuant-sharded artifact has been run.
 
+The strict RTX4090 lane additionally closes value identity without multiplying full-artifact
+I/O. `shipcard.verify_safetensors_content_once` walks each finalized shard forward exactly once
+through `O_NOFOLLOW` descriptors and computes the full-container SHA-256 and every raw-tensor
+SHA-256 in that same traversal. It binds the result to device, inode, size, mtime, and ctime.
+The resident strict exporter pays that one read after `save_file`; the streaming strict writer
+already hashes both scopes while emitting bytes, so it captures a zero-reread stat receipt.
+Final export replay accepts either receipt only while the namespace and every bound stat are
+unchanged; the operator build launcher's final check is metadata-only and does not add another
+weight-content pass. A copied artifact or independent serve validator has no process-local receipt and
+therefore performs exactly one fresh content traversal. The strict serve launcher performs that
+traversal inside the actual container namespace immediately before `exec vllm`, with each shard
+overlaid by its own read-only bind mount so a host pathname replacement cannot retarget the
+verified inode. Its no-clobber `/run` receipt is reused by the post-serve finalized census through
+stat and ledger validation, then rechecked against the same underlying bind-source stats by the
+host endpoint gate, never a second payload pass, and finally bound into shipcard evidence.
+In-place mutation changes the receipt stat and refuses. The small FP16 codebook sidecar
+keeps its separate exact digest replay. Generic artifacts retain their historical manifest
+behavior. This cross-process handoff is intentionally fail-closed, not atomic: per-shard mounts
+eliminate pathname replacement, while a host in-place writer can still race vLLM's open but
+cannot yield accepted evidence because post-serve ctime/mtime replay then fails. Unforked vLLM
+does not accept inherited verified shard descriptors; copying would require a second content pass.
+
 **Nothing in the pipeline validates the artifact** — that is a physical lane boundary (`vllm`
 is not importable in the build venv), not laziness. What the script now does instead of
 echoing a suggested command is **print the open ship record**: the closing block runs
@@ -1169,6 +1722,10 @@ PRODUCTION_RENDER_COST_SCORE_FIELD=weight_mse (M6, §4.2)
 TARGET_DISK_GB=<unset>  EXPORT_CONTAINER=compressed-tensors
 TARGET_PROFILE=<unset, spec-resolved>  TARGET_PROFILE_DEFAULT=vllm_packed_moe
 ALLOW_PINNED=<none>  (forwards allocator --allow-pinned; see §4.5)
+LM_HEAD_FORMAT=BF16  (fixed auxiliary policy; FP8_E4M3 is the approved native
+                     compressed-tensors quantized-head rung, §4.5)
+COST_FORMATS=<canonical FORMATS plus LM_HEAD_FORMAT when that fixed value is
+                     non-BF16; no duplicate when the rung is already present>
 SELECTION_MODE=surrogate, or validated-surrogate under a TARGET_DISK_GB card
 EXPORT_PRODUCTION_CACHE_PREFETCH=require (native lane, D8)
 MTP_FORMAT=BF16  PRODUCTION_CACHE=1  PRODUCTION_RECACHE=1
@@ -1203,6 +1760,33 @@ AURA_ADDITIVITY_GATE=measure
 PRISMAQUANT_GGUF_IMATRIX=1  DEVICE=cuda  EXPORT_DEVICE=cuda
 ```
 
+**The output-head policy has three resolved stage-identity axes.**
+`LM_HEAD_FORMAT` is canonicalized once; `LM_HEAD_RENDER_ACTIVE=1` when either a fixed
+non-BF16 head or the research DP-unpin needs head rows; and `LM_HEAD_DP_UNPINNED=1` only when
+`ALLOW_PINNED` structurally names the profile's output head. `run-pipeline.sh` adds those
+three values to `STAGE_SETTINGS_ENV`; `pipeline.py:_HEAD_SETTINGS` includes them in
+`base-cost`, `render-cost-cache`, `render-cost`, `aura-dw-cache`, `aura-cost`,
+`aura-hybrid-cost`, `frontier-cache`, `frontier-recache`, `production-cache-recached`, and
+`production-cache-raw`. Cost-bearing stages use derived `COST_FORMATS`, so changing a fixed
+head rung cannot reuse a body-only cost/cache artifact merely because `FORMATS` stayed the
+same. `CACHE_FORMATS` and `AURA_CACHE_FORMATS` are derived from that expanded menu where
+their stages need it. These are identity inputs, not new independent operator knobs.
+
+BF16 preserves the old pin exactly. A non-BF16 `LM_HEAD_FORMAT` and an
+`ALLOW_PINNED` token that lifts the head are a hard conflict: the first fixes a measured
+auxiliary rung outside the body DP/bpp, while the second asks the research DP to choose one.
+The pipeline includes the head in the baseline cost and render census whenever either mode is
+active, but AURA includes it only for the DP-unpinned mode; fixed-head predicted loss is
+reported as `aux_fixed_predicted_dloss` / `total_predicted_dloss_with_aux`, not folded into
+the body objective. The fixed path requires an untied head plus exact probe and cost rows and
+a candidate legal for the selected serving profile. The exporter lifts every alias of that
+one structural head from profile pins while retaining unrelated pins; explicit `--ignore`
+still wins. This policy quantizes no embedding by implication. The native production rung is
+`FP8_E4M3`; CB head formats remain unservable (§9.2). A materialized format-menu cache may
+render additional legal menu rungs for the active head even though the fixed assignment uses
+only one; that is bounded cache/render overhead, not assignment or accounting drift
+(`fixed_head.py`, `allocator.py`, `run-pipeline.sh`, `export_native_compressed.py`).
+
 **One default in this section is not a shell default.** `--emit-marginals` /
 `PRISMAQUANT_PROBE_MARGINALS` is **ON by default in the probe module itself**
 (`incremental_probe._marginals_enabled`, `_env_flag(..., default=True)`), and
@@ -1227,17 +1811,31 @@ With the scope unset the bool decides and the scope is *derived* from it: `all` 
 must be present (`:691-701`) — the CB producer settings are never defaulted silently. Neither
 name has a `run-pipeline.sh` shell default; the CB drivers export them directly.
 
-**The learned-codebook selector is build-time intent; the bundle is render
-authority.** `CB_CODEBOOK_SOURCE_SCOPE=none|fp8|all` chooses which family the
-bundle builder may train, and `CBL_RUNG_POLICY[k]["enabled"]` decides each FP8
-rung within that family. Once a value-bearing bundle is present,
-`CBLearnedBundle.codebook_source_by_format` freezes its complete per-rung map
-and `cb_fields_for_context` checks the exact `(qname, format)` cell before it
-decides whether calling the strict `codebook_for()` is legal. The current
-production map is learned K28–K46 plus lattice K47/K48 in one menu; changing
-the process-global policy after context creation cannot reinterpret that
-artifact (`cb_learned_bundle.py`, `nvfp4_cb_footprint.py`). `all` still warns
-because learned NVFP4-CB is measured NO-GO.
+**The learned-codebook selector is versioned build-time intent; the bundle is
+render authority.** Historical trainer v1 preserves the measured policy that
+uses learned FP8 books at K28–K46 and lattice at K47/K48, with
+`CB_CODEBOOK_SOURCE_SCOPE=none|fp8|all` selecting the family and
+`CBL_RUNG_POLICY[k]["enabled"]` selecting its cells. Once a value-bearing bundle
+is present, `CBLearnedBundle.codebook_source_by_format` freezes its complete
+per-rung map and `cb_fields_for_context` checks the exact `(qname, format)` cell
+before it decides whether calling strict `codebook_for()` is legal. Changing a
+process-global policy after context creation cannot reinterpret that artifact;
+`all` still warns because learned NVFP4-CB is measured NO-GO
+(`cb_learned_bundle.py`, `nvfp4_cb_footprint.py`).
+
+**Learned-v2 has no assumed crossover.** Its domain is the exact twelve-rung
+FP8 producer ladder K4..K48 step 4, and every rung starts on the committed
+lattice. `cb_imatrix.py` derives dense `act_sq_sum / n_tokens_seen` and routed
+`expert_act_sq_sum / expert_tokens` values from the existing sensitivity probe;
+it creates no calibration cache. A rung becomes learned only when
+`prismaquant.fp8_cbl_promotion_receipt.v1` passes both held-out result gates and
+binds the complete source checkpoint/tensor map, training calibration and
+imatrix values, role census, exact candidate FP16 table digests, and all rung
+decisions. Missing calibration, a density shortfall, a tie, or a missing,
+tampered, substituted, or incomplete receipt keeps the rung lattice or refuses;
+one rung's result is never transferred to another (`cb_imatrix.py`,
+`cb_learned_promotion.py`, `build_cb_learned_bundle.py`). Trainer v1 remains the
+compatibility default; choosing v2 changes no production default by itself.
 
 **Routed learned books are keyed per (layer, stack, rung) — campaign rule R1.**
 A routed book covers the fused `w13` stack, gate and up pooled, and `down_proj`
@@ -1427,7 +2025,7 @@ is refused without the allocator flag; an unstamped table cannot be blessed by t
 | `PRODUCTION_CACHE_LEVERS` ∋ `hadamard_duquant` | `361-366` | same |
 | `MULTI_SHOT_PASSES` ∉ {unset, 1} | `367-373` | `archive/multi_shot_2026-05-19` |
 | `ALLOC_PROPAGATED_SENSITIVITY_REPORT` non-empty | `374-380` | `archive/l3_propagated_2026-07-30` |
-| `PRODUCTION_CACHE_UNION` truthy | `381-387` | `archive/union_cache_2026-07-30` |
+| `PRODUCTION_CACHE_UNION` truthy (the archived surrogate-driven **smart-union candidate selector**, not the exact set union in §5.4) | `381-387` | `archive/union_cache_2026-07-30` |
 | `MSE_PROMOTION` truthy | `388-394` | `archive/mse_promotion_2026-07-30` |
 
 **A twelfth `exit 2` gate that is *not* an archived mode.** `COST_MODE=production-render-score`
@@ -1445,6 +2043,13 @@ Four of these landed with the 2026-07-30 re-vet (R17, R4, R18 ×2). Each error s
 The archive directory names are load-bearing for the orchestrator: moving or renaming one
 breaks its gate. Lessons: §11.
 
+The word *union* is overloaded historically, but the mechanisms are not. The archived shell
+flag selected which candidates deserved rendering from an `output_mse` percentile. The live
+`prismaquant.union_production_cache` CLI makes no quality decision: it accepts only already
+rendered, disjoint keys under exact expected coverage and performs their verified set union.
+It is therefore a manual cache-build transport/reconciliation tool, not a restored pipeline
+mode (`union_production_cache.py`; §5.4).
+
 A twelfth refusal lives outside `run-pipeline.sh`: `export_native_compressed.main()` calls
 `_refuse_archived_block_output_match()`, which `SystemExit`s if
 `PRISMAQUANT_BLOCK_OUTPUT_MATCH` is set truthy (`archive/block_output_match_2026-07-30`,
@@ -1461,6 +2066,12 @@ guard at all, six more each holding their own opinion of their key set), and it 
 thing `pipeline.py` was already positioned to fix: it receives the settings and it is the only
 place where "what does this artifact depend on?" can be reviewed as a table rather than
 rediscovered per call site. Re-vet **R5**, adjudicated in favour of Lens 2's narrow promotion.
+
+`_HEAD_SETTINGS = (LM_HEAD_FORMAT, LM_HEAD_RENDER_ACTIVE, LM_HEAD_DP_UNPINNED)` is part of that
+load-bearing table, not descriptive spec metadata. Those axes cover every persisted cost,
+AURA, frontier, and production-cache artifact that can contain or depend on `lm_head`; the
+cost-stage `FORMATS` key is sourced from derived `COST_FORMATS`. A head-policy change therefore
+invalidates reuse before any pickle is opened (`pipeline.py:STAGE_SETTINGS_KEYS`, §3.3).
 
 Everything else in the file remains **descriptive**: it also writes and `--validate`s a spec
 JSON declaring 14 artifacts, 3 gates and 9 base stages plus render-mechanism stages generated
@@ -1517,6 +2128,107 @@ allocator-consumable cost table falls out of it for free — §6.5.2.
 The probe is streamed shard-by-shard through `layer_streaming` — head resident, body paged,
 MTP a built-in shard kind (`incremental_probe.py:2-17`); a modality guard aborts on
 probe/`CALIBRATION_MODALITY` mismatch (`:562-599`).
+
+**Exact sample-axis probe map/reduce is an opt-in execution of that same probe, not a new
+estimator or cache.** `sample_parallel_probe.py` prepares one immutable `ids[N,T]` tensor,
+derives the complete qname/disposition manifests from the strict Qwen3.8 configuration and
+safetensors headers, binds the source checkpoint's value-bearing content identity, and emits a
+closed run contract. That identity also binds the immutable PrismaQuant runtime-snapshot
+closure/commit/tree and a trusted launcher's host-inspected `sha256:` container-image digest.
+Each worker re-hashes the mounted read-only snapshot and derives its own source census through a
+host-local `PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE` before any CE/precompute/shard reuse; it
+compares only the stable config/tensor/weight-map/model-content/qname projection across hosts and
+repeats the local source fingerprint/census and snapshot checks immediately before publication.
+The host-local streamed identity v1 and its original path-bearing `content_sha256` remain unchanged
+for compatibility. Cross-host joins use an additive portable-content projection: recursively
+canonicalized config semantics exclude only `_name_or_path` and `transformers_version`, while
+checkpoint maps and unique shard basename/size/SHA-256 records remain value-bearing. Local cache
+validation independently reconstructs the live text-only semantic config, so path neutrality does
+not permit a rope/config drift. Run-contract creation requires a coordinator-local complete cache
+and records that upstream portable digest beside the path-independent source-census digest. The
+RTX4090 burn revalidates every host cache against its live checkpoint and requires both portable
+joins before GPU-bearing measurement; a direct shard-hash-only contract is refused.
+Python validates the snapshot but does not claim to inspect its own Docker image: the immutable
+image digest is an explicit launcher-attestation trust boundary. Partitions are canonical
+contiguous, disjoint sample ranges whose union is exactly `0..N-1`; every worker processes the
+complete model schedule with `--unified-sweep --no-include-visual`. Partial layer schedules,
+user-authored qname lists, h-detail, visual modules, and routed or packed statistics/caches fail
+closed.
+
+The operator runbook is strict about that boundary: it executes the snapshot verifier from the
+exact pinned Git object rather than the candidate it judges, materializes a clean committed
+snapshot, removes and checks all write bits, verifies the exact pinned registry RepoDigest on the
+host, and launches by that digest-qualified reference. Docker's backend-dependent local image ID
+is not a cross-host authority. Both hosts mount their possibly different absolute host roots at
+the same canonical `/model`, `/dataset`, `/run`, and `/worker-state` paths; snapshot/model/dataset
+are read-only. The container runs as the invoking non-root host UID/GID, with writable home,
+temporary, and compiler caches confined to the private worker-state mount; the two reviewed Spark
+hosts expose their NVIDIA device nodes to that user. The same container re-verifies the snapshot,
+removes `PYTHONPATH`, enables safe-path/no-user-site/no-bytecode modes, sets both required CB
+compilation switches, and invokes the producer only through the snapshot-owned
+`prismaquant_source_bootstrap.py run-module`. Bare live-tree `python -m` commands are not a valid
+campaign launch.
+
+The digest-bound sample cover is a required worker input, not merely merge-side metadata.
+Before model/GPU readiness, each worker strictly decodes the cover and run contract (duplicate
+JSON object members refuse at any depth), replays their closed schemas/digests, and requires
+the cover's execution identity and qname census to equal the run contract. The selected
+partition loaded from the current calibration tensor must equal its exact cover member; that
+comparison transitively binds the calibration artifact SHA-256 plus the local/global tensor
+hashes, so a post-cover calibration replacement fails in CPU preflight.
+
+The ordinary versioned `precomputed.pt` remains the sole phase-1/2 resume cache. Sample-v1 reuse
+requires the exact dense-Qwen resident cover (`lm_head` only), closed raw-stat types and source
+geometry, `N_i·(T-1)` tokens, FP32 marginals/`h_full`/per-token gradient squares with consistent
+traces, finite activations at every layer boundary, and empty resident-activation, routed, and
+shared-state maps. Writes are atomic; any readable-but-invalid payload is a cache miss and
+recomputes through the existing streamed GPU path.
+
+Importance weighting has a real two-stage scalar barrier. Stage 1 emits each partition's raw
+shifted-token CE sum/count. `merge-importance` proves the exact sample cover and exactly
+`N·(T-1)` observations before publishing one digest-bound global CE mean. Both local and global
+v2 receipts bind the complete execution identity, stable source projection, producer snapshot,
+dtype, and image digest, so none can cross a producer/source/runtime boundary. Stage 2
+deliberately reruns phase 1, applies that identical global mean before body backward, and emits
+raw Fisher and marginal sufficient statistics. `sample_parallel_probe_merge.py` adds
+scalar/vector sums, takes an elementwise maximum only for activation absolute maxima, and calls
+the ordinary Fisher finalizer once at the global `N·T` denominator. Per-worker coverage is
+disposition specific: dense body rows see `N_i·T`, `lm_head` sees `N_i·(T-1)`, and MTP sees
+`N_i·(T-2)`; the actual head Linear call excludes the unscored final token, so its raw count and
+activation marginals have that same `T-1` cover. All Fisher rows still normalize by global
+`N·T`. Before and after addition, `sum(fisher_row)` and `sum(fisher_col)` must each reproduce
+`h_trace_raw` within the same `rtol=1e-3` numerical qualification used by `SensitivityCard`;
+finite but miswired marginals therefore cannot enter the imatrix/rank-1 Fisher path. “Exact”
+here means one calibration set, objective, sufficient-stat reduction, and final
+normalization. It does not promise bitwise equality with a monolithic run because partitioning
+changes GEMM shapes and therefore low-order floating-point accumulation.
+
+Only dense body Linears publish FP32 activation rows; terminal BF16 `lm_head` and MTP retain
+probe statistics but no activation-cache entry. The exact priority law is the collision-free
+uint32 PRP `blake2b64-keyed-fmix32x2-prp-global-row-fused-group-v2`: BLAKE2b derives little-
+endian `k0,k1` from the calibration hash and fused-group UTF-8 bytes, then priority is
+`fmix32(fmix32(global_row XOR k0) XOR k1)` using overflow-free int64 limb multiplication.
+`0 < N·T <= 2^32` is a hard contract. Global rows, priorities, and top-R reservoirs remain on
+the input device during hooks; one cached plan is shared by q/k/v or gate/up siblings and the
+device-to-host transfer occurs only at layer flush. The reducer independently reconstructs the
+law with scalar/NumPy code, and exact local-top-R/global-top-R associativity produces the merged
+cache without a tie convention. Public validation does not trust the manifest's claims: it
+recomputes priorities over the full global row domain, exact order/cardinality, row uniqueness
+and range, and identical fused-group rows. The campaign uses R=1024. Final publication requires one
+`--output-bundle` directory containing fixed `probe.pkl`, `activation_cache/`, and `commit.json`:
+the complete pair is staged/fsynced below one parent and atomically no-clobber renamed, so a
+mid-publication crash exposes no half-pair and an exact retry succeeds. All model execution
+remains on the streamed model, `LayerCache`, prefetch, and existing activation-cache path; there
+is no `torch.distributed` process group, parameter tensor parallelism, secondary residency
+layer, or serving/graph-compilation change (`sample_parallel_probe_contract.py`,
+`sample_parallel_probe.py`, `sample_parallel_probe_merge.py`, `incremental_probe.py`).
+Consumers validate the bundle as one object: exact topology and commit bytes, the complete closed
+probe census, activation-manifest identity, and every activation tensor are replayed before use.
+Probe hashing and deserialization consume one regular no-follow descriptor and the burn uses that
+captured payload rather than reopening a pathname. `ActivationIndex` keeps an opened directory
+descriptor for the validated activation cache and verifies each lazy blob's stable file identity,
+tensor hashes, qname, and merge stamp against the captured manifest at consumption; an
+`os.replace` between validation and use therefore refuses rather than feeding different rows.
 
 **The streamed driver must reproduce the model's own forward, and where it
 cannot observe a rule it must not guess one.** `_call_layer` drives one decoder
@@ -2014,6 +2726,62 @@ reports only from a measurement the run already made, otherwise recording the pr
 `measured_kl: null` and a status naming the reason. `0` disables. Either way it is a report —
 non-blocking, never touching an allocation.
 
+#### RTX4090 four-render specialization of anchored AURA
+
+`prismaquant.rtx4090_fp8_burn` specializes the same anchored-cost mechanism for the strict
+18,000,000,000-byte Qwen3.8-27B Ada artifact. One immutable campaign plan binds the probe,
+full-corpus imatrix/column-weight values, source checkpoint identity, producer snapshot,
+execution attestation, dataset, and complete 496-Linear body census. The balanced two-host plan
+keeps whole decoder layers intact: layers 0–31 and 32–63, 248 Linears per host. That gives
+exactly 992 physical renders per host and 1,984 globally—not a twelve-rung sweep.
+
+The burn's `derive-col-weights` entry point first validates the committed sample merge bundle
+as one object, consumes the exact captured in-memory probe that was hashed, derives the ordinary
+raw FP32 imatrix map, requires its exact calibration identity, and publishes durably without
+clobbering an existing or racing output. `attest-execution` then closes the sample execution
+identity over the live producer snapshot and the launcher-owned registry RepoDigest. Both `prepare` and
+each GPU-bearing `measure` replay that attestation, host-local streamed source identity, portable
+source census, merge bundle, imatrix, and snapshot before requesting CUDA.
+
+The plan, checkpoint identity, and runner all bind the same streamed-source settings: the
+existing `LayerCache` has two slots, the effective prefetch lookahead is one, and
+`require_prefetched_residency` is true. That final field is an explicit runner policy, not an
+inference from nonzero lookahead; generic streamed runners retain the backward-compatible false
+default. It fail-closes both forward boundary capture and AURA's reverse traversal to resident
+or completed-prefetch data. Forward capture leaves the tail window resident; immediately after
+each reverse install, the runner schedules the next lower layer through `StreamingContext` so
+its shard read overlaps the current layer's render and backward work. If an entry is absent
+after its required prefetch (including a refused insertion), the campaign raises before the
+synchronous cold-load path. No campaign-specific cache or residency mechanism exists.
+
+Every body Linear renders only lattice `FP8_CB_K4`, `FP8_CB_K16`, `FP8_CB_K48`, and delegated
+native `FP8_E4M3`; BF16 is an unrendered exact source-passthrough terminal. K16 is the production
+anchor, while K4/K16/K48 are the fitting panel. The global shard merger reconstructs its
+receipt from the exact disjoint qname cover; validates the full sparse format plan, purposes,
+renderer, source weights, imatrix, serialized-payload context, and arm identity; and labels
+worker chunk counts as unverified planning metadata rather than execution evidence. No native
+or codebook NVFP4 name is legal at any campaign boundary.
+
+The final allocator table byte-preserves all four direct AURA rows. The anchored lattice fit
+imputes only `FP8_CB_K8`, `K12`, `K20`, `K24`, `K28`, `K32`, `K36`, `K40`, and `K44`; it never
+relabels an imputed row as measured. Weight MSE exists exactly on the three CB panel cells as a
+fit diagnostic and is never an allocator currency. The fitted hull report describes the
+pre-overlay imputation law, not the final mixed direct/imputed/source-terminal table. Exact
+candidate bytes come from the production serialized-footprint primitive, including format
+payloads and sidecars, before one solve targets the complete-publication ceiling.
+`PRISMAQUANT_CB_ENCODE_COMPILE=1`, `PRISMAQUANT_CB_ATOM_COMPILE=1`, and
+`PRISMAQUANT_CB_COMPILE_FAIL_CLOSED=1` are mandatory, identity-bound producer inputs. Live
+scorer calls use full-graph Inductor with compiler suppression disabled and refuse unless every
+call enters exactly one compiled backend dispatch. Resume-restored units remain admissible only
+through AURA's already checksummed/deserialized unit envelopes whose manifest identity binds the
+same compile settings, producer arm/snapshot, and streamed source; each shard receipt separates
+live and restored coverage. Because serialization fixes `ldlq=false`/`ldlq_scope=none`, the atom
+route is stamped `not_applicable` rather than falsely claimed as executed. These producer proofs
+do not weaken or replace the existing physical RTX 4090
+eager and mandatory full-graph serving gates; validation on GB10 remains explicitly
+`UNRELEASABLE_VALIDATION_ONLY` (`cb_compile_contract.py`,
+`rtx4090_cb_compile_proof.py`, `cb_anchored_cost.py`, `rtx4090_fp8_burn.py`, §7.1, §9.2).
+
 #### Dense CB sibling driver, and where AQUA enters the anchored lane
 
 `prismaquant.dense_anchored_cb` is the second caller of the same mechanism, for a
@@ -2030,16 +2798,18 @@ Three dense-specific differences are structural rather than cosmetic:
   menu into lower- and higher-rate classes and requires the expert menu to be a *strict
   subset* of the nonexpert one; a dense model has nothing to split, and declaring a fake
   expert menu would put a menu in the artifact no unit can take. `DensePlan` derives both
-  ladders from `format_registry` narrowed by the serving profile's production format rule
+  ladders from `format_registry` narrowed by the explicitly selected serving profile's
+  production format rule
   (which used to drop the research-only signed `NVFP4_CB_S13..S16`; that family was
-  **deleted 2026-08-17**, so there is no signed rung left to drop) and then, for `fp8_cb`
-  only, by `_serving_backed_family` (the `k % 4 == 0` fused mid-M law). `nvfp4_cb` declares
-  no fused rung at any version, so its whole ladder rides the documented fallback route —
-  a speed property, not a correctness one, and it restricts nothing. **Read that narrowly:**
-  `fused_mid_m` is one lane for one batch-size regime, never a whole-unit verdict; NVFP4-CB
-  decode is native and default-on (§9.2). Module constants are
-  asserted against what was derived, so a runtime pin bump refuses instead of allocating
-  onto rungs the artifact cannot serve.
+  **deleted 2026-08-17**, so there is no signed rung left to drop). It does **not** narrow
+  either family by `_serving_backed_family`: fused mid-M is a performance route for one
+  batch regime, not format admission, and its historical K28..K48 subset had incorrectly
+  hidden public FP8 producer K4..K24 from AQUA. The selected profile and module constants
+  must agree exactly or plan derivation refuses. `--target-profile` defaults to
+  `qwen38_sm120_cb_validation_only`, and that identity plus exact `target_platform=sm_120`
+  travel in `DensePlan`, the render arm, plan report, and allocator invocation. This proves
+  structural candidate registration only; it does not replace the external release/device
+  gate (§9.2).
 * **One basis.** Learned codebooks are a measured null on Qwen dense (holdout ~1.00 across
   K28–K43), so the campaign runs `CB_CODEBOOK_SOURCE_SCOPE=none` and there is no learned
   segment. `_normalize_source_map` refuses "a global source scalar or K-range inference",
@@ -2067,11 +2837,14 @@ Three dense-specific differences are structural rather than cosmetic:
   kept, so the pre-AQUA allocation stays reproducible as the A/B arm; **AQUA-on-CB is a
   candidate until that served KL/PPL A/B at matched bpp lands, not a result.**
 
-The economics on Qwen3.8-27B: 496 body units × 19 rungs is 9,424 full-menu cells; the
-anchored plan renders 992 anchors + 840 panel + 288 validation = **2,120 cells, 22.5%** —
-and transiently, so ~0 GB is retained. The stock `COST_MODE=aura` path would instead have
-built a *retained* format-menu cache at a measured 45.5 GB/rung (arm-b: 91 GB for two
-rungs), i.e. ~865 GB for this ladder, for a cache the exporter never reads.
+The current menu is 37 rungs (NVFP4 K1..K25 plus FP8 K4..K48 step 4). On the known
+496-body-unit Qwen3.8 census that is **18,352** full-menu cells and 992 per-unit family
+anchors. Panel and validation counts are derived from the live role census rather than copied
+from the earlier six-rung FP8 campaign: per role the driver measures 10 units × (7 NVFP4 + 3
+FP8 panel rungs) and four disjoint units × (5 NVFP4 + 4 FP8 validation rungs). The plan report
+records the exact resulting union and fraction before GPU work. All renders remain transient.
+The stock `COST_MODE=aura` path would retain roughly 45.5 GB per rung on this model — about
+1.68 TB for the public menu — for a cache the exporter never reads.
 
 A validation cell holds out up to **two** axes, and only one of them is ever vacuous. At
 the segment's **anchor** the fit reproduces the measurement by construction — the
@@ -2097,10 +2870,16 @@ experts at all. Instead each cell carries `held_out_axes` (`["unit","rung"]` or
 A pooled statistic cannot distinguish a fit validated off the panel from one validated
 only on it; that is the difference the split makes visible.
 
-Current tables. Dense: NVFP4-CB at K12/K15/K21/K24 (the extremes *and* two interior rungs,
-so the report separates worst-case extrapolation from typical) and FP8-CB at K32/K44,
-straddling the anchor; FP8-CB gives up a panel rung to afford them, since only six of its
-rungs are on-law. DSv4: NVFP4-CB at **K13/K17** — it previously had **no** validation at
+Current tables. Dense campaign v3: NVFP4-CB panel K1/K2/K11/K12/K23/K24/K25,
+with validation at K3/K10/K14/K22 and K25 on held-out units. Its shape basis is
+`(rung, parity, below-K12 hinge, above-K24 shoulder)`, so the historical
+K12..K24 line is not silently extrapolated to either endpoint. K25 is the only
+public rung above K24, so its term is a measured one-point shoulder, not a
+claimed high-band slope. FP8-CB uses a K24 anchor, a K4/K28/K48 panel spanning the full
+producer ladder, and off-panel validation at K8/K20/K36/K44. Its shape basis is only `rung`
+because every producer rung is divisible by four; the four held-out cells challenge the
+straight-line proposal on both sides without laundering the anchor into validation. DSv4:
+NVFP4-CB at **K13/K17** — it previously had **no** validation at
 all, leaving 233,275 of 334,454 legal DP cells (**69.7%**) priced by a fit nothing
 checked; the total is the inventory's own census, 233,275 NVFP4 + 66,048 routed FP8 +
 1,806 dense FP8 + 33,325 exact source terminals — and
@@ -2157,20 +2936,37 @@ and `validation_harness` are unchanged.
 
 ### 4.5 Solver
 
-**Profile pins, and `ALLOW_PINNED` (2026-08-14).** `ModelProfile.is_pinned_name`
-force-excludes names like `lm_head` from the DP budget and ships them at source dtype.
-`allocator --allow-pinned <substrings>` lifts that for named units so the DP places them
-by budget-value instead; it enforces its own preconditions (a cost row and probe
-`n_params` for the name) and refuses rather than pricing an unpriced unit at zero.
-Until now the flag was reachable only by driving the allocator by hand, so
-`run-pipeline.sh` now forwards `ALLOW_PINNED` (default empty = historical behaviour,
-byte-identical). It matters at card scale: on Qwen3.8-27B a BF16 `lm_head` spans
-2.543 GB, **20% of a 13.0 GB whole-artifact budget**. Shipping a quantized pinned name
-additionally needs render + packing + serving support for that unit — `lm_head` has it
-on the native lane, and `embed_tokens` only on the Gridbook lane via the
-`quantized_embedding` declaration (§6.2). Note the measured counter-example: a CB rung
-on `lm_head` exports cleanly and then **fails at load** — no Gridbook method claims
-`ParallelLMHead`, so the head must ride the delegated stock-CT path (§9.2).
+**Profile pins, fixed `lm_head`, and `ALLOW_PINNED` (2026-08-23).**
+`ModelProfile.is_pinned_name` historically force-excludes names like `lm_head` from the DP
+budget and ships them at source dtype. That BF16 behavior remains the default. There are now
+two explicit ways to lift only the structural output-head aliases while leaving every other
+profile pin intact (`fixed_head.py`):
+
+- `allocator --lm-head-format FP8_E4M3` is the production fixed-auxiliary policy. The
+  allocator requires an untied head, a probe row, the corresponding measured cost row, and a
+  candidate legal for the target serving profile. It fixes that candidate before the body
+  solve; the head is excluded from body bpp, activation-fair pricing, body
+  `predicted_dloss`, and the DP decision, but its exact payload and measured loss remain in
+  `aux_fixed_assignment_payload_bits_total`, `aux_fixed_params`,
+  `aux_fixed_predicted_dloss`, and `total_predicted_dloss_with_aux`. Whole-artifact byte
+  selection therefore cannot hide it.
+- `allocator --allow-pinned lm_head` remains the independent research mode: the head enters
+  the ordinary multi-choice DP and is priced by budget-value. It too requires real probe/cost
+  rows. A non-BF16 fixed head and this DP-unpin are a hard conflict; an output head that is a
+  tied embedding cannot be fixed quantized because there is no independent source tensor and
+  the embedding-side perturbation is not measured by the head cost (§7.5).
+
+The allocator stamps `lm_head_format` and `lm_head_mode = profile_pinned_bf16|fixed|dp` in
+its metadata. `run-pipeline.sh` uses the same resolved policy to expand `COST_FORMATS`, choose
+the head probe/cost census, filter production-cache profile pins, and pass the exporter's
+remaining `--ignore` names. `export_native_compressed` trusts that allocator metadata for
+only the head aliases; an explicit operator `--ignore` remains highest precedence. It matters
+at card scale: on Qwen3.8-27B a BF16 `lm_head` spans 2.543 GB, **20% of a 13.0 GB
+whole-artifact budget**. The approved quantized head is `FP8_E4M3` on the native
+compressed-tensors lane; no token embedding is quantized by this policy. A CB rung on
+`lm_head` still exports cleanly and then **fails at load** — no Gridbook method claims
+`ParallelLMHead` — so a CB artifact must delegate a quantized head to the stock CT path
+(§6.2, §9.2; `allocator.py`, `run-pipeline.sh`, `export_native_compressed.py`).
 
 `allocator_solver.py`. Multi-choice knapsack DP over average-bits-per-parameter bins,
 numpy-vectorized (`solve_allocation :427-520`); the baseline per Linear is its cheapest
@@ -2585,6 +3381,138 @@ small model, allocation churn against a shipped `cost.pkl` inside the known ~3%
 noise, and — for AQUA — a served W4A4-vs-W4A8 A/B. §12 D30 carries the honest
 gaps.
 
+### 4.9 The continuous trellis rate surface — opt-in, allocation-time only (2026-08-29)
+
+`prismaquant/trellis_{formats,footprint,allocator,rate_surface}.py` (3701 LoC,
+69 tests) address and exactly price the Gridbook rate-256 tail-biting trellis
+families. Until 2026-08-29 nothing in the pipeline imported them: no
+`run-pipeline.sh` stage, no format menu, no exporter. `prismaquant/trellis_menu.py`
+is now the ONE seam that does, and it is off by default.
+
+**The flag, and what it does today.** `PRISMAQUANT_TRELLIS_SURFACE=<manifest.json>`.
+Unset, `augment_candidates` returns its input object unchanged, so a run
+without the flag executes exactly the path it executed before the seam existed
+— the `PRISMAQUANT_FISHER_CAP_MULTIPLIER` precedent (§ P6). **Set, it refuses.**
+
+> **Correction (2026-08-29, same day).** The first version of this section said
+> the seam's placement inside `allocator_candidates.build_candidates` meant
+> "trellis rungs pass the same legality, aggregation and byte accounting every
+> other candidate does." That was **false on all three counts**, and it is the
+> § P13 "currency is not truth" case in its own doc: the paragraph was written
+> in the same commit as the code and was wrong about it. The seam appends
+> AFTER the per-spec legality loop, so it never runs
+> `check_stats_format_applicability` nor the `_memory_bytes_by_format` write at
+> `allocator_candidates.py:1950`; aggregation drops every rung; byte accounting
+> `KeyError`s. `trellis_menu.UNWIRED_LINKS` is now the authoritative list —
+> eight entries, each with a file:line — and it is the text of the refusal.
+
+The eight, in the order a run would hit them: no TCQ `FormatSpec`
+(`format_registry.py:1267-1272`); the exact assignment-payload filter falling
+through to `fr.get_format` because nothing writes `_memory_bytes_by_format` for
+a TCQ row, which kills the allocator inside the Pareto sweep **before**
+`layer_config.json` and makes the pointed refusals in `layer_config` and the
+exporter unreachable (`allocator.py:3369-3386`); fused-sibling aggregation
+building super-item menus by iterating `FormatSpec` objects
+(`allocator_candidates.py:2464`); the identical packed-expert construction
+(`:2701`); `promote_serving_units`' `format_rank` lookup, which does not crash
+today only because aggregation guarantees a TCQ unit is a lone ungrouped
+Linear (`allocator_solver.py:340-342`); the byte-budget path's own registry
+lookup (`footprint.py:1183`); `build_candidates` being called with neither
+`cost_mode=` nor `trellis_provenance=`, so the currency gate compares against
+`os.environ.get("COST_MODE","aura")` — a variable `run-pipeline.sh` sets with
+`:=` and never exports — and the manifest identity and anchor contract are
+discarded rather than travelling with the assignment (`allocator.py:2756`,
+§§ P12/P14); and the anchors' currency being weighted SSE under an activation
+second moment, an output-MSE proxy and **not** the AURA KL-adjoint the DP ranks
+in (`trellis_rate_surface.py:43-52`).
+
+**Why refuse as a whole rather than wire it halfway.** The eight do not fail
+alike. The registry gaps crash **loudly**; the aggregation gaps are **silent** —
+they drop every rung from every fused and packed group and hand back a
+plausible frontier in which only `o_proj` and `down_proj` could carry one. A
+partial fix that removed the crashes would trade the loud failure for the
+silent one, and the packed-expert case was worse still: a hand-rolled 2-tuple
+shape priced a 128-expert row as one expert (a **128×** underprice, reported as
+"0 unit(s) skipped"), while the guard meant to catch it read a stats key
+nothing writes. Both are fixed — the seam now uses
+`allocator_solver._shape_from_stats` and
+`allocator_candidates._stats_indicates_packed_expert`, and refuses a packed row
+with a counted reason — but the fix is inside `build_trellis_menu`, which is
+research-reachable and cannot reach an artifact.
+
+**So: `build_trellis_menu` builds a correctly priced menu; `augment_candidates`
+refuses.** Enabling the surface means landing the eight links with tests that
+exercise behaviour and then deleting the refusal — not passing a flag.
+
+**Why a manifest, not a `FORMATS` enum entry.** A trellis rung is
+`(family, body_rate_q256, layout, schedule, alphabets)`, and the wire carries
+one 4-bit rate code per input column shared across rows, so the rate resolution
+is `SUPERBLOCK_WEIGHTS/columns` q256 — 0.25 q256 on a 1024-column Linear,
+effectively continuous. What makes a rung *cost* something is a measured
+anchor, and anchors are per-campaign data. The manifest names them; the module
+fits a monotone piecewise-linear surface in `(q256, log2 dloss)` between
+BRACKETING anchors only and densifies it. Every densified rung gets a real
+per-column schedule and therefore an EXACT byte footprint: the rate is
+interpolated, the bytes never are.
+
+**The name the DP sees is shape-free, and that is load-bearing.** Candidates
+carry `fmt = TCQ_{E2M1,E4M3}_R<q256>` (the closed 2546-name vocabulary
+`trellis_formats.ALL_LEGAL_TRELLIS_FORMAT_NAMES`, round-tripped by
+`parse_trellis_format_name`). `TrellisAllocatorCandidate.allocator_key` is NOT
+used: it embeds the pre-render recipe digest, which hashes the SHAPE, so q_proj
+and k_proj would share no format at any rung and `aggregate_fused_siblings` /
+`aggregate_packed_serving_groups` — which intersect member menus BY FORMAT NAME
+— would silently collapse every fused and packed group back to individual rows.
+The per-tensor recipe digest still travels, on `Candidate.serialized_identity`,
+which is where per-member layout identity belongs.
+
+**Three refusals, each closing a specific hole.**
+
+1. *A profile that declares no `target_platform`.* `trellis_allocator._capability_gate`
+   (`:578-586`) returns **legal** when the platform is `None` — deliberately,
+   because admission is then the experiment's responsibility. Six of the ten
+   serving-profile specs take that branch, `research` among them. Allocating
+   against a gate that cannot compare anything is worse than no gate: it looks
+   like a check. So the manifest must name a profile declaring an exact
+   platform. `serving_profile_specs/trellis_research_sm121.json` is that
+   profile — `target_platform: sm_121`, `emulation_only: true`, no export lane,
+   and deliberately **no `format_rules`**: naming 2546 TCQ rungs in an allow
+   list would assert they are `format_registry` entries, and they are not (a
+   trellis rung has no `FormatSpec` and no RTN `quantize_dequantize`, because
+   nothing renders one).
+2. *An objective the run is not pricing in.* The manifest declares `cost_mode`
+   and `currency`; a mismatch with the run refuses. One DP prices in one
+   currency.
+3. *An unstated activation contract.* The manifest must declare the contract
+   its dloss numbers were measured under, and it is stamped on the provenance
+   payload. The hull anchors were priced **W\*A16** while both families' native
+   `_scaled_mm` routes are **A=W** (W8A8 for E4M3, W4A4 for E2M1). Rendering
+   identity without execution identity priced a real A-side at zero once
+   already (NVFP4_CB, 2026-08-17); the stamp is what stops a future A=W lane
+   inheriting a W\*A16 loss.
+
+**Export fails closed, and says why.** `export_native_compressed` refuses any
+`TCQ_*` assignment with a pointed message rather than the generic
+"absent from FORMAT_SCHEME" one, because the generic message blames the serving
+profile's export lane and that is the wrong diagnosis. No lane bound is
+missing: `ProductionWeightCache` renders no trellis wire, so there are no bytes
+to pack, and the producer Gridbook pin publishes no executed-activation-contract
+table for these families, so an exported artifact could not state its own
+activation contract (§ P14). **This is allocation-time reach only** — the
+surface lets the DP see the continuum, report where bytes would go, and price
+the choice in exact serialized bytes. Promoting it to an artifact needs a
+render mechanism and a runtime attestation first; both are open (§12).
+
+Gate: `tests/test_trellis_menu.py` (15), on top of the surface's own 69.
+Two of the original 13 asserted on **source text** — that the string
+`trellis_menu.augment_candidates` appeared in `build_candidates` — which passes
+whether or not the call does anything, and did pass while the enabled path
+could not produce an assignment at all. They now assert observed behaviour: the
+seam raises `TrellisSeamUnwiredError` naming every entry of `UNWIRED_LINKS`, a
+128-expert row is skipped-with-reason rather than underpriced, and the two
+cheapest ledger entries are re-checked against the code so a stale entry fails
+the suite.
+
 ## 5. Formats & render
 
 ### 5.1 The menu
@@ -2608,11 +3536,11 @@ pricing and emulation. Registry-vs-callable consistency is pinned by
 | `NVFP4` | `:667-677` | 4 / 16 / fp8 e4m3, A4 g16 | 4.5 | Production, in the default menu (§3.3) |
 | `FP8_E4M3` | `:750-762` | 8 / per-channel / fp32, A8 per-token | 8 + 32/in_f | Production (`FP8_DYNAMIC`), in the default menu |
 | `BF16` | `:798-808` | 16 / — | 16 | Production, **passthrough only**, in the default menu |
-| `FP8_SOURCE` | `:825-837` | 8 / block (128,128) / fp32 | 8.00195 | Production, **passthrough only**, verbatim copy |
+| `FP8_SOURCE` | `:825-837` | 8 / block (128,128) / fp32 | 8.00195 | Source-artifact compatibility, **passthrough only**, verbatim copy; excluded from maintained SM120 production/chooser profiles |
 | `MXFP8_E4M3` | `:720-728` | 8 / 32 / e8m0 | 8.25 | Registered, profile-allowed, **de-menued** |
 | `NVFP4A16`, `MXFP4`, `MXFP6_E3M2/E2M3`, `MXFP8A16`, `MXFP8_E5M2`, `FP8_E5M2`, `INT8_W8A16`, `INT4_W4A16_g128` | `:678-795` | — | — | Research / registry-only |
 | GGUF k-quants + IQ | `:884-902` | `_make_gguf_spec :864` | 2.0625–8.5 | GGUF lane (§9.3) |
-| `NVFP4_CB_K12..K24` / `FP8_CB_K28..K48` | `:913`, `:954` | product-VQ codebook, g256 | 1.78125–3.28125 serialized body / 3.5–6.0 index stream plus row scales | one production Gridbook CB menu: FP8 K28–K46 render learned, FP8 K47/K48 render lattice by measured policy (§9.2) |
+| `NVFP4_CB_K1..K25`; FP8-CB reader K4/K8/K12/K16/K20/K24 + every K28..K48; FP8-CB producer K4..K48 step 4 | `cb_layout.py`, registry construction in `format_registry.py` | product-VQ codebook, g256 | NVFP4 v2 body `k/8 + 0.28125` bpw; FP8 index stream `k/8` bpw plus per-row FP32 scales; both add a deduplicated codebook sidecar | NVFP4 reader/producer domains are both every integer K1..K25; K26..K32 exist only in direct lattice/codec research and have no public format id. New endpoint artifacts remain Gridbook-v11 route-attestation and measurement gated. New FP8-CB producers emit exactly K4/K8/K12/K16/K20/K24/K28/K32/K36/K40/K44/K48; reader-only off-law K29–K47 artifacts remain inspectable but cannot enter a new menu, assignment, bundle, or export. Strict Ada profile allows only this FP8 ladder + `FP8_E4M3` + BF16 (§9.2) |
 | ~~`NVFP4_CB_S13..S16`~~ | — | signed codebook, g256 | — | **DELETED 2026-08-17** — every native Gridbook FP4 route requires the unsigned two-tier product layout (`n_sub == 2 and type_size == 4*k + 9`), so a signed rung could only ever ride a fallback; it had already lost 78.48% of matched weight-MSE comparisons. Registry, encoder, exporter and footprint branches removed; `cb_layout.subtable_bit_widths(..., "signed", ...)` and a recipe carrying `cb_mode: "signed"` now **refuse** rather than resolve to the product rung of the same `k` (§9.2) |
 
 MXFP8 is de-menued rather than denied — `vllm_packed_moe` still allows `MXFP8_E4M3` — because
@@ -2621,12 +3549,40 @@ both, the allocator never picks it.
 
 `FP8_SOURCE`'s `quantize_dequantize` is identity (`:835`): the bf16 view *is* the lossless
 dequant of the source E4M3, so cost is exactly zero. Legal on dense Linears under
-`vllm_packed_moe`, **illegal on packed experts** (absent from the expert allow-list — §6.4).
+the generic `vllm_packed_moe` compatibility profile, **illegal on packed experts** (absent
+from the expert allow-list — §6.4), and explicitly denied by the maintained SM120 profile.
+Registry/read compatibility is intentionally broader than target performance eligibility.
 CB candidates deliberately use a different byte authority: the versioned
 `CBSerializationContext` in `nvfp4_cb_footprint.py` prices the exact FP4 layout,
 FP8 per-row FP32 scales, and deduplicated sidecar identity. Candidate
 construction, assignment accounting, reports, and exporter assertions share
 that context; exact post-export inventory remains the final artifact check.
+
+NVFP4 endpoint geometry is explicit rather than inferred. K1 splits `(1,0)`
+and carries a one-row zero-bit second subtable; public K25 splits `(13,12)`.
+Production v2 type sizes are 13 and 109 bytes per superblock respectively. The
+FP16 sidecar is `8·(2^ceil(k/2)+2^floor(k/2))` bytes: 24 bytes at K1 and
+98,304 bytes at K25. Every d4 width 0..16 is materialized in the pinned asset,
+but widths 14..16 and the direct `(16,16)` uint32 codec boundary are explicitly
+research-only; public production lookup K1..K25 refuses a missing key.
+Historical width-6..12 tensors remain unchanged;
+`fp4-d4-nested-e2m1-v3` makes widths 0..5 nested subsets of width 6 and widths
+13..16 nested supersets of width 12, so widening the new bands cannot worsen
+nearest-codeword distortion solely through table replacement. Width 16
+necessarily has duplicate physical rows because the 15-value E2M1 grid
+contains only 15^4 distinct d4 vectors.
+
+The FP8 reader/producer split is deliberate compatibility, not rounding. The
+reader accepts the six low step-four rungs K4..K24 and every historical integer
+rung K28..K48. `list_producer_formats()` and every strict explicit-menu check
+accept only the twelve `k % 4 == 0` rungs from K4 through K48; K29, K43, K47,
+and every other off-law legacy wire id remain readable but are never silently
+mapped to a neighboring rung. `FormatSpec.min_capability_sm=89` says the format
+can be considered on Ada; production legality still requires the exact
+platform/regime `device_qualified` cell from the external Gridbook v11
+lane-eligibility contract (§9.2), so registry admission alone makes no 4090
+support claim (`cb_layout.py`, `gridbook_format_contract.py`,
+`gridbook_execution_contract.py`).
 
 NVFP4 *weight* RTN routes through the export codec (`_nvfp4_export_aligned_rtn` `:636-663`) so
 emulation and shipped bytes share one rendering; *activations* do not — per-group dynamic RTN,
@@ -2672,6 +3628,50 @@ surrogate, the KL validation, and the exported bytes must be the *same* renderin
 carries a rendering confound. Levers are recorded on the cache (`:165`, `:835-858`), which is
 what makes M19 (§6.1) possible.
 
+**Profile-synthesized MTP is an append scope of that same cache.** Transformers does not
+instantiate the Qwen3.5/3.6 MTP sidecar, so the ordinary resident body walk cannot discover
+`mtp.*`. `mtp_production_cache.fill_profile_mtp_production_cache` asks the resolved
+`ModelProfile` to build the module, reads the exact `mtp_source_prefix()` tensors, loads them
+through the profile's packed-expert-aware loader, and reuses
+`streaming_production_cache._render_dense_layer`; it does not introduce another renderer or
+residency mechanism. The probe's existing activation rows supply GPTQ/JSO inputs. Profile,
+source tensor, module-name, activation-row/width, requested-pair, and resulting cache coverage
+are all checked exactly before the append can succeed. An explicit non-BF16 MTP assignment
+therefore requires `--activation-cache-dir` and fails closed rather than degrading to RTN or
+BF16.
+
+Compatibility is deliberate. Assignment scope appends only its concrete non-BF16 `mtp.*`
+pairs. Format-menu scope without an activation-cache directory retains the historical
+body-only behavior; with that directory it appends every live MTP Linear for every requested
+non-BF16 menu format. `--include-qnames-file` filters both the body walk and the synthesized
+append: a stripe with no `mtp.*` names creates no MTP entries, and the MTP-owning stripe
+creates only the listed names. The cache updates the ordinary `requested_entries`,
+`render_scores`, failures, activation maxima, and backing shards, plus an exact
+`prismaquant.production_weight_cache.mtp_render.v1` receipt binding qnames, formats by qname,
+source prefix/count, activation row counts, and row limit. CB MTP renders are refused until
+their identity-bound CB pair contract can be merged; the supported production-cache append
+is the native materialized lane (`mtp_production_cache.py`, `build_production_cache.py`).
+
+**The packed-MoE expert append carries the same render-identity contract.**
+`fill_packed_expert_cache_entries` adds 3-D `(experts_qname.pn, fmt)` keys to that same cache,
+and it updates the same metadata the union reads: `requested_entries` **recomputed** from the
+cache rather than incremented (the M4 lazy expert gap-fill calls the append in a loop over
+frontier points with overlapping assignments, and an increment drifts on every rerun), one
+render-score record per packed key, one render-gate record per packed key, and
+`packed_expert_coverage`. Records are replaced by key inside one exact packed scope, never
+appended. The score is **measured, not declared**: every expert in the stack is scored by the
+same scorer the dense path uses, against its own routed rows, and the per-expert records are
+summed into the one record the cache key owns — experts the router never reached are counted
+in `experts_without_activations` rather than averaged into an output metric they have no
+evidence for. The gate record is truthful about a path that runs no progressive gate: an
+**empty trace**, the mechanism that actually executed (batched fixed-damp GPTQ, or the
+untraced per-expert render stack), and the per-expert GPTQ-vs-RTN do-no-harm counts the render
+did measure. No declared exclusion or subtraction is added to the union arithmetic. The
+streaming builder merges rather than overwrites these fields, because its own
+`render_formats_by_qname` plan is dense-only (`production_weight_cache.py`
+`_finalize_packed_expert_cache_metadata`, `streaming_production_cache.py`,
+`tests/test_packed_expert_union_identity.py`).
+
 **A streamed CB format menu is a lifetime mode of that same cache, not a second cache.**
 `build_production_cache --streaming --render-scope format-menu` routes the complete requested
 CB menu through `streaming_production_cache.py`; there is no disk-budget candidate filter.
@@ -2698,6 +3698,51 @@ that commitment; a mismatch is a hard failure. Thus streamed menu scoring bounds
 disk residency while the surrogate, selected-assignment KL, and export still share one
 bit-identical rendering. Assignment-scoped cache builds and materialized format-menu/frontier
 builds retain their existing shard semantics.
+
+**Exact multi-host striping is a plan plus a fail-closed set union, not tensor
+parallelism.** `production_cache_stripes.py` reads positive-size qnames from `probe.pkl`, keeps
+each decoder layer whole, makes `mtp.*` and `lm_head` separate indivisible auxiliary groups,
+and asserts that the profile's fused-sibling and packed-expert serving units cannot cross a
+group boundary. It balances those groups deterministically with longest-processing-time
+binning over `n_params × max(in_features, 1)`, preserving layer-local source prefetch. The
+output schema `prismaquant.production_cache_stripe_plan.v1` contains the probe digest,
+model/profile, requested formats, work/parameter counts, and SHA-256-bound
+`stripe-NN.qnames.txt` files. Workers run ordinary, independent
+`build_production_cache --include-qnames-file ...` calls into distinct disk-backed cache
+bundles; no worker shares a cache directory or tensor file.
+
+`union_production_cache.py` owns the portable reconciliation workflow:
+
+```
+python -m prismaquant.union_production_cache manifest ... (--assignment A | --stripe-plan P)
+python -m prismaquant.union_production_cache verify-shard ... (--assignment A | --stripe-plan P)
+python -m prismaquant.union_production_cache union ... (--assignment A | --stripe-plan P)
+python -m prismaquant.union_production_cache verify ... (--assignment A | --stripe-plan P)
+```
+
+Every subcommand requires exactly one coverage authority. `--assignment` means the exact
+non-BF16 pairs in the selected layer config. `--stripe-plan` SHA-verifies every qname file and
+means the exact Cartesian product of all planned qnames and formats; its semantic plan digest
+is part of coverage. A worker manifest may cover only its disjoint subset, but the final union
+must equal the complete expected key set with no extras. Each shard manifest SHA-binds its
+pickle and every backing tensor and binds a path-independent source-checkpoint identity,
+calibration hash, full producer commit and source hash, explicit settings payload, render
+levers/scope/retention/streaming state, requested formats, mechanism order, and assignment or
+stripe-plan identity. Missing/tampered/out-of-bundle/symlinked/shared files, in-memory or
+non-materialized caches, render failures, overlaps, activation-max overlap, identity drift,
+and unknown differing metadata all refuse. Resident caches and streaming caches are both
+eligible only when their rendered weights are materialized; transient consumed-and-evicted CB
+menus are not.
+
+The merge has explicit rules for `requested_entries`, render scores, packed-expert coverage,
+activation maxima, and the MTP receipt. It deliberately refuses all CB keys because their pair
+identity sidecars do not yet have a union rule. The publisher copies verified tensors into a
+temporary bundle under content/key-addressed names, fsyncs, verifies complete coverage, and
+atomically publishes `production_weight_cache.pkl`, `weights/`, and `union_manifest.json`
+without overwriting an existing output. `verify` must be run again after transfer. This is an
+operator-selected native cache-build path and is not wired as a `run-pipeline.sh` default
+(`production_cache_stripes.py`, `union_production_cache.py`,
+`tests/test_production_cache_stripes.py`, `tests/test_union_production_cache.py`).
 
 Render mechanisms are a registry with declared ordering semantics, not a lever string parsed in
 spelling order (`render_score.py:188-260`): each `RenderMechanismSpec` declares `operation`,
@@ -2962,6 +4007,17 @@ which is why the recipe filter here stays `mtp.` regardless of the source prefix
 `validate_mtp_assignment_coverage` `:9195-9222` **hard-fails** when the source has tensors under
 `mtp_source_prefix()`, the profile `has_mtp()`, and the recipe has no `mtp.*` entries.
 
+That export-time synthesis is now mirrored by a production-cache producer, not postponed until
+packing. `build_production_cache` invokes `fill_profile_mtp_production_cache` after the body
+fill in both resident and streaming-assignment modes. A non-BF16 MTP recipe must therefore be
+present in the attached `ProductionWeightCache`; the exporter cache-fingerprint gate treats
+missing `mtp.*` pairs like any other missing assignment pair and points the operator back to
+the same layer config plus the probe `--activation-cache-dir`. Source/module/activation
+coverage and `--include-qnames-file` stripe ownership are §5.4. BF16 `MTP_FORMAT` remains the
+default and preserves legacy body-only cache behavior when no activation directory is supplied
+(`mtp_production_cache.py`, `build_production_cache.py`,
+`export_native_compressed.py:_production_cache_expected_keys`).
+
 **DeepSeek-V4 DSpark has two explicit producer modes.** The release-default mode is a
 source-format metadata overlay, not a second quantization pass. The released Flash checkpoint
 already carries three complete
@@ -3207,6 +4263,7 @@ silently corrupts.
 | Incomplete fused groups → BF16 + `ignore` | `allocator.py:1482`; ignore back-fill `:7643-7700` | the fused loader expects all siblings; a missing `v_proj` breaks the merged Linear |
 | Packed `config_groups` use vLLM **canonical** scheme names | `:7980-7994` | no scheme binds to FusedMoE; `w2_input_global_scale` never registers; `load_weights` KeyError |
 | Multi-format menu must not resolve to `DefaultProfile` | `validate_default_profile_format_menu` `allocator.py:961-988`, called `:1550-1554` | silently produces the fused-coherence bug class above |
+| A fixed quantized output head is independent, measured, and served by the selected native scheme | `allocator --lm-head-format` refuses tied heads, missing probe/cost rows, and unavailable candidates; `fixed_head.remaining_profile_pins` lifts only head aliases; allocator metadata controls export pinning; production rung `FP8_E4M3` | treating the fixed head as a body-DP item corrupts bpp/Δloss accounting; retaining its profile pin silently ships BF16 bytes; treating it as an embedding routes the wrong operation; a CB head has no `ParallelLMHead` method and fails load |
 | Final serving promotion is a no-op | `validate_final_serving_promotion_noop` `allocator.py:1046-1063`, called `:2669` | a late promotion means the DP priced an assignment that is not the one shipped |
 | Passthrough integrity (BF16/FP8_SOURCE only if the source already is) | `allocator_candidates.py:24-27`, `:112-120`; export judges it against the *same* `_scan_source_dtype_manifest` vocabulary (§6.3) | synthesising BF16 from a dequantised FP8 source burns 8 bpp for nothing |
 | A candidate's exact per-unit payload never exceeds its known source-format payload | scaled owners derive from `SOURCE_PASSTHROUGH_CONTRACTS`, plain owners from their safetensors dtype; exact integer-byte gate `_source_bpp_applicability`; common byte authority in `footprint.py`; complete eliminations persisted under `format_applicability.json:source_bpp_legality` | without the gate, a quality-favoured rung can spend more bytes than the representation it replaces while still appearing in a compression frontier; an unknown source owner could hide the same error behind a guessed bpp |
@@ -3398,10 +4455,13 @@ re-render, it is the render the gate declined to keep.
 
 | Stage | Tool | Run by the pipeline? | Verdict? |
 |---|---|---|---|
+| PrismaSnap BF16 fold fidelity | `tools/measure_vllm_full_kl.py` → `tools/prismasnap.py attest-fold-fidelity` | no — optional pre-pipeline candidate workflow | **blocking for a marked source**: original-BF16 → snapped-BF16 all-position forward KL `≤5e-4`, with BF16/no-spec-decode launch contracts and source, teacher payload, calibration, serve-fingerprint, index, weight-map, and shard-content replay; atomically transitions `MATERIALIZED` to `VERIFIED` |
+| PrismaSnap source admission | `python -m prismaquant.prismasnap_contract --model "$MODEL_PATH"`; exporter-local replay/refusal helpers | yes, but only when the source carries the marker | binary: verified content is admitted only to native compressed-tensors; missing marker is a no-op; malformed/unverified marker and every marked GGUF/Gridbook source refuse before expensive work/output |
 | Candidate real-KL (selection) | `validate_assignments_kl.py` | yes, only under `SELECTION_MODE=validated-surrogate` (`run-pipeline.sh:1223-1278`) | ranks, does not gate |
 | Artifact survey (PPL/MMLU/end-KL) | `validation_harness.py` | no | **no thresholds at all** |
 | vLLM load + greedy smoke | `validate_native_export.py` | **echoed only** (`run-pipeline.sh:1704-1705`) | binary |
 | DSv4 CB exact eager + CUDA-graph load/generation | `scripts/serve_dsv4_cb_validate.sh {eager,graph}` → `validate_cb_endpoint.py` | no — operator-run, one fresh container per arm | **binary; each arm closes its matching `native_export.*` slot; eager also runs the independently recorded numeric gate before teardown** |
+| Strict Qwen3.8 RTX 4090 FP8-CB eager + mandatory full-graph proof | `SERVE_ARM=eager|graph scripts/serve_qwen38_rtx4090_fp8_cb.sh` → `validate_rtx4090_fp8_cb.py` + `rtx4090_graph_contract.py` | no — operator-run on one physical RTX 4090 per fresh arm | **blocking for an on-disk strict artifact: exact RTX 4090/sm89, 32K, seq=1, FP8 KV exactly 4 GiB, immutable released Gridbook v11/device-qualified lane-v2 receipt, deterministic generation, and graph mode 3 + explicit Inductor + `FULL_AND_PIECEWISE` captures `[1,2,4,8,16,32,64]` with `fullgraph=True,dynamic=False` and no fallback. Graph fills `native_export.graph` and `rtx4090.fp8_cb`; eager fills `native_export.eager`. No physical run exists yet.** |
 | Numeric ship gate | `validate_quantized_model.py` | never by the build pipeline; the DSv4 CB eager serve driver invokes it against its already-bound live session | yes, exit 0/1; closes `ship_gate` |
 | Gold lane | `tools/measure_vllm_full_kl.py`, `tools/measure_vllm_wikitext_ppl.py` | never | manual, authoritative |
 | DSv4 CB matched-budget performance | `python -m prismaquant.validate_cb_performance` | no — operator-run after export | **blocking paired prefill/decode/mixed parity against the exact displaced container** |
@@ -3409,10 +4469,14 @@ re-render, it is the render the gate declined to keep.
 | Ship record | `exported/shipcard.json` (opened by the exporter) → `python -m prismaquant.shipcard_cli verify` | opened by every export | **refuses** until every serve-lane slot is closed |
 | **Publication** | `tools/publish_artifact.py` | no — operator-run | **BLOCKING**: refuses to upload (or even print the upload command) unless `shipcard.verify` passes |
 
-Nothing in the pipeline blocks on a quality number — and it should not: `vllm` is not
+Nothing in the ordinary quantization pipeline blocks on an artifact-quality number — and it
+should not: `vllm` is not
 importable in the build venv, so embedding a serve inside `run-pipeline.sh` would make the
-build tool own the serving stack. The boundary is physical, so the contract is a **record**,
-not CI.
+build tool own the serving stack. PrismaSnap's `≤5e-4` check is different in kind: it is a
+prerequisite source-integrity/fold-fidelity transition completed before `run-pipeline.sh`, not a
+quantized-artifact promotion result. Once its `VERIFIED` record exists, the build pipeline only
+replays that record and the current source bytes. The ordinary build/serve boundary remains
+physical, so its contract is a **record**, not CI.
 
 **The bar is defined once, per lane** (`prismaquant/lane_specs/*.json` + `lane_spec.py`, re-vet
 **R16**). Each lane declares its `{serve command/scripts, endpoint, gate set, KL evaluator}`,
@@ -3438,15 +4502,27 @@ filters are forbidden because excluding a claimed artifact member or the shipcar
 the uploaded model a different object, and model publication is repository-root only.
 
 The publication authority is a **frozen snapshot**, not a final check followed by a live path.
-After preflight (and after an override stamp, if any), the publisher opens the complete tree
+The preflight shipcard replay is payload-cheap: it rejects failed slots and stat/model-identity
+problems before paying for the tree scan, but does not traverse weight payloads. After that
+preflight (and after an override stamp, if any), the publisher opens the complete tree
 with no-follow descriptors and rejects symlinks and non-regular members. Small files are copied
 into the private snapshot as bytes. Large files stay zero-copy: one sequential pass records
 their full and per-8-MiB SHA-256 identities while retaining the open inode, the shipcard is
-replayed against an internal `/proc/self/fd` view, and the upload reader exposes a block only
-after it matches the frozen digest. Replacing an original path or swapping it to a symlink
-therefore cannot change the upload; an in-place mutation aborts before the Hub commit. This
-avoids a second 112-GB local copy while still making the uploaded bytes exactly the verified
-bytes (`tools/publish_artifact.py:_freeze_artifact`, `_VerifiedBlockReader`).
+replayed against an internal `/proc/self/fd` view, and upload consumes that held-inode view.
+Replacing an original path or swapping it to a symlink therefore cannot retarget the upload;
+the post-commit whole-file replay makes any same-inode mutation across the upload window a loud
+failure rather than verified success (if the remote commit already exists, the operator is told
+to inspect it). This avoids a second 112-GB local copy while keeping one immutable inode as the
+authority (`tools/publish_artifact.py:_freeze_artifact`, `_replay_frozen_digests`).
+
+For the strict RTX4090 FP8-CB lane, that same freeze pass additionally parses each root
+safetensors header through the shared exact-geometry validator and feeds every raw-tensor digest
+from the same bytes used for the whole-container and upload-block hashes. The resulting
+process-local receipt is bound to the source root and each shard's device/inode/size/mtime/ctime.
+Authoritative frozen replay compares it directly with the frozen closed weight manifest,
+canonical tensor payload identity, and exact shard index; it does not reopen mutable source
+paths or invoke the independent path-based content scanner. Generic artifacts retain their
+historical freeze behavior, and the post-upload held-descriptor replay above is unchanged.
 
 Remote replacement uses the low-level Hub commit API rather than `upload_folder`. The publisher
 resolves an explicit destination revision to one full parent commit, enumerates the remote file
@@ -3465,6 +4541,13 @@ operator to **re-type the artifact directory's basename** (interactively, or `--
 for scripts) and stamps `forced_unverified: true` plus the overridden problems into the
 shipcard, so the artifact itself carries the record that it shipped ungated. Tests:
 `tests/test_publish_artifact.py`.
+
+The strict RTX4090 FP8-CB lane is the explicit exception to that generic
+escape hatch. Strictness is re-derived from the canonical policy/profile,
+specialized slot topology, and on-disk quantization manifest. Any invalid or
+unfilled strict slot, frozen replay problem, or complete-tree size breach
+returns before force confirmation or stamping; neither `--force-unverified`
+nor `--confirm-name` can publish it (`tools/publish_artifact.py`).
 
 **The ship record (`exported/shipcard.json`).** Native export and both CB exporters open a card
 carrying the build-lane
@@ -3615,6 +4698,12 @@ than only in a probe log (D24) — plus five base **empty, required** serve-lane
 slots: `native_export.eager`, `native_export.graph`, `ship_gate`, `gold.kl`,
 `gold.ppl`. Gridbook CB artifacts open a sixth blocking slot,
 `perf.matched_budget_parity`; the generic record importer cannot fill it.
+An artifact whose immutable on-disk producer policy is
+`qwen38_27b_rtx4090_fp8_cb` additionally opens `rtx4090.fp8_cb`; verification
+re-derives that obligation from `quant_config.json`, so deleting or nulling the
+mutable slot cannot waive the exact physical-Ada, lane-v2, 32K/4-GiB, and
+full-graph receipt (`shipcard.RTX4090_REQUIRED_SLOTS`,
+`validate_rtx4090_fp8_cb.verify_rtx4090_shipcard_record`).
 
 The card reserves a fixed 256 KiB (`shipcard.SHIPCARD_RESERVED_BYTES`) and every rewrite pads
 with trailing JSON whitespace. That fixed size is load-bearing for CB: `shipcard.json` is
@@ -3725,6 +4814,66 @@ the pin's original intent (images too *old* to dispatch the NVFP4 MoE backend on
 while making it structurally unable to break a working container. `--no-flashinfer-upgrade`
 `:219` remains the escape hatch. Note the container is `--rm`, so the bad downgrade was discarded
 rather than persisted — do not assume that holds for a gate run in a long-lived container.
+
+**Strict RTX 4090 FP8-CB graph/device gate (candidate, unrun).** This is not the
+historical DSv4 `FULL_DECODE_ONLY` contract with a different GPU string. The
+strict artifact's on-disk policy stamp makes `rtx4090.fp8_cb` mandatory even if
+the mutable card omits the slot (`shipcard.RTX4090_REQUIRED_SLOTS`,
+`shipcard._is_rtx4090_fp8_cb_artifact`). The operator runs
+`scripts/serve_qwen38_rtx4090_fp8_cb.sh` twice, once with `SERVE_ARM=eager` and
+once with `SERVE_ARM=graph`, in fresh evidence/cache directories. Both arms
+require exactly one `NVIDIA GeForce RTX 4090`, compute capability `[8,9]`, TP=1,
+`max_model_len=32768`, scheduler `max_num_seqs=64`,
+`max_num_batched_tokens=32768`, FP8 KV,
+and `kv_cache_memory_bytes=4294967296`; the artifact's complete recursive
+inventory must still be at most 18,000,000,000 bytes
+(`validate_rtx4090_fp8_cb.py`). A Spark, an sm89 cross-compile, or a reported
+minimum capability cannot satisfy that identity.
+
+The graph arm is fail-closed on both source shape and observed execution. The
+in-container fingerprint binds the installed vLLM distribution/RECORD/import
+origin and AST-checks exactly one direct `torch.compile` call with literal
+`fullgraph=True`, literal `dynamic=False`, and an explicit backend. The launch
+then requires compilation mode 3, backend `inductor`,
+`FULL_AND_PIECEWISE`, and exact capture sizes `[1,2,4,8,16,32,64]` in a fresh
+dedicated compile-cache root. `validate_rtx4090_graph_log` requires positive
+Dynamo, compile-range, total-compile, FULL completion, seven-of-seven PIECEWISE,
+and final capture markers and refuses every known compile/graph downgrade or
+fallback marker. The scheduler ceiling of 64 is required for vLLM to admit the
+FULL-decode capture ladder; the deterministic validation workload remains one
+live request with `n=1`, and the contract does not claim that 64 concurrent
+32K contexts fit in the fixed KV allocation. The graph arm closes both
+`native_export.graph` and the
+specialized `rtx4090.fp8_cb` receipt; eager closes `native_export.eager`.
+Gold KL/PPL, the numeric ship gate, and any applicable performance gate retain
+their ordinary independent slots. As of this stamp there is no physical RTX
+4090 receipt, so none of these claims is promoted.
+
+The GB10 validation-only producer is a different policy identity, not a weak
+mode of this gate. `require_compile_only_gridbook_routes` accepts exact backed,
+flag-free compile-only SM89 cells only for that identity; production continues
+to call `require_device_qualified_gridbook_routes`. Its launcher first requires
+one physical GB10 at compute capability 12.1, then reuses the strict pipeline
+and FP8-only finalized census. The output keeps top-level `format: fp8_cb` and
+cannot contain NVFP4 in assignments, config groups, or tensor formats, but it
+also carries the immutable `UNRELEASABLE_VALIDATION_ONLY` disposition.
+`shipcard.verify`, `tools/publish_artifact.py` (before any override/stamp path),
+and `validate_rtx4090_fp8_cb.py` each refuse that disposition categorically.
+Only `validate_rtx4090_fp8_cb_validation_only.py` may replay its structural
+contract, and that command emits no serving or ship evidence.
+
+A completed allocation can bypass the stock retained-format-menu workflow via
+`rtx4090_validation_export.py`. Its preflight replays the exact assignment-bound
+whole-artifact budget, requires a value-bearing/source-complete
+`cb_render_identity`, hashes the supplied column-weight values through the
+existing render-identity validator, and consumes the same compile-only v11
+policy. It then constructs exactly one `export_nvfp4_cb_streaming` invocation
+with lattice/v1/no-activation settings and the validation-only producer policy.
+The exporter streams the source and rerenders only selected FP8-CB assignment
+entries; it does not rebuild or retain a full candidate menu. Final recursive
+inventory and the dedicated structural validator still enforce the artifact's
+actual byte count at or below the assignment's ceiling and the absolute decimal
+18 GB policy ceiling.
 
 **DSv4 CB two-arm native gate.** `scripts/serve_dsv4_cb_validate.sh` owns the exact one-Spark
 load/generation proof for Gridbook CB artifacts. The launcher first requires the artifact's
@@ -4482,7 +5631,7 @@ flowchart TD
 
 | Registry | Where | Holds |
 |---|---|---|
-| Model structure | `model_profiles/<arch>.py` (`ModelProfile` subclass) + `model_profiles/specs/<name>.json` (`ModelStructureSpec`, schema `prismaquant.model_structure.v1`, `structure.py:20`) | detection (`match`, `priority`), naming across five name spaces, routed-expert packed/unpacked layout and format groups, pinned/passthrough names, staging, shard regexes, probe skips, `default_serving_profile`, `supported_lanes`/`preferred_lane` |
+| Model structure | `model_profiles/<arch>.py` (`ModelProfile` subclass) + `model_profiles/specs/<name>.json` (`ModelStructureSpec`, schema `prismaquant.model_structure.v1`, `structure.py:20`) | detection (`match`, `priority`), naming across five name spaces, routed-expert packed/unpacked layout and format groups, `concat_merges` (N→1 source concatenations, below), pinned/passthrough names, staging, shard regexes, probe skips, `default_serving_profile`, `supported_lanes`/`preferred_lane` |
 | Serving constraints | `serving_profiles.py` + `serving_profile_specs/<id>.json` (schema `prismaquant.serving_profile.v1`) | per-format allow/deny rules with name conditions, shape rules, runtime shape validators, runtime package requirements; `extends` composition (`serving_profiles.py:557-609`) |
 | Pipeline contract | `pipeline.py` | almost nothing — `target_profile` as a kwarg (`:644`), run metadata (`:688`), CLI passthrough (`:1115`, `:1151`), one `model.structure_graph` stage spec (`:877-884`). Zero architecture names, which is correct: the contract layer should not know models (§3.6) |
 
@@ -4491,7 +5640,7 @@ still precede supersets — `Qwen3_5DenseProfile` before `Qwen3_5Profile` — bu
 encoded in `_REGISTERED`'s literal order plus comments. Original Qwen3 dense and routed-MoE
 now share the contract-aligned `Qwen3Profile`. Priority is a class `int` (**lower is consulted first**, like a sort
 rank), declared both on the Python class and in its spec, so the ordering survives the Python
-body being deleted. Built-ins take 100–190 in the historical order; `ModelProfile.priority`
+body being deleted. Built-ins take 100–210 in the historical order; `ModelProfile.priority`
 defaults to **0**, which is what keeps `register_profile`'s documented insert-at-front override
 true for third parties. `detect_profile` keys on `config.json` `model_type` + `architectures`
 and dispatches through `_resolve`, which walks `detection_order()`; unmatched models fall to
@@ -4500,9 +5649,88 @@ order still reproduces the list literal exactly.
 
 `detection_order()` folds in a second kind of candidate: a **`SpecMatchProfile`**
 (`model_profiles/spec_profile.py`) per `specs/<id>.json` whose `id` no registered Python
-profile claims, matched by its declarative `match` block. All nine shipped specs are claimed by
-a Python profile, so today the live order contains none — landing the reader changed detection
-for exactly zero shipped models, which is the point (see §8.3 Tier A).
+profile claims, matched by its declarative `match` block. All eleven shipped specs are claimed
+by a Python profile, so today the live order contains none — landing the reader changed
+detection for exactly zero shipped models, which is the point (see §8.3 Tier A).
+`qwen4_exp` and `glm5_next` were registered on 2026-08-26; while their specs sat unclaimed,
+`detection_order()` folded in two `SpecMatchProfile`s and
+`tests/test_spec_match_profile.py::test_python_profile_wins_over_a_same_named_spec` was red.
+
+**`concat_merges` — N→1 source concatenations.** A checkpoint may store one live parameter as
+several separate tensors that the modelling code concatenates on load (transformers'
+`Concatenate(dim=…)` conversion entries). `checkpoint_to_live_name` is a 1:1-or-drop contract
+and cannot express a merge, so it passes the sources through unchanged and the merge is
+declared in the spec — `{"target", "sources", "dim"}`, suffix-matched like `fused_groups`,
+source order load-bearing (`structure.py` `ConcatMergeSpec`, accessor
+`ModelProfile.concat_merge_groups()`). The loader bridge `layer_streaming._merge_concat_sources`
+executes it, wired by `_build_concat_merger` into `_read_layer_to_device` on the streaming
+probe/cost path (`streaming_model.py`) and the exporter (`export_native_compressed.py`), so
+every path loads the same bytes. It is the sibling of `_pack_per_expert_into_packed`, and
+carries no architecture names. The merge is cast-free: mixed source dtypes are refused rather
+than promoted, and the assembled shape is checked against the live parameter. This is
+deliberately **not** `fused_groups`: a fused group is a claim about what a serving runtime
+fuses (principle 14), while a concat merge is a fact about the checkpoint's own layout.
+Only `glm5_next` declares one today — its KDA `self_attn.{q,k,v}_conv1d.weight` →
+`self_attn.conv1d.weight` (34 layers × 3 BF16 `[8192,1,4]` sources → `[24576,1,4]`); unbridged,
+the short convolution would have run on uninitialised weights. Gate:
+`tests/test_conv1d_concat_bridge.py`. The exporter carries the **emit-side inverse**
+(2026-08-27): the merged live key never existed in the source checkpoint, so the 3e
+layer-passthrough skips any concat-merge target and copies the SOURCE tensors verbatim
+from the shards under their checkpoint keys — shipping the merged spelling would hand the
+serving runtime's loader a key it does not know while dropping the three it expects. Gate:
+`tests/test_glm53_stock_campaign.py::test_glm5_next_concat_merge_source_keys_roundtrip`.
+
+**Multimodal-forced export skeleton (2026-08-27).** `materialize_tensors_streaming`
+historically hardcoded `stage_text_only` + `AutoModelForCausalLM` — unresolvable for a
+family with no `<Arch>ForCausalLM` auto-route. It now mirrors `_build_streaming_context`'s
+flip: `profile.requires_multimodal_skeleton()` → `stage_multimodal` +
+`_skeleton_config_and_class(multimodal=True)`, with `_build_weight_map(multimodal=…)` to
+match, and the visual tower stays on meta (shipped via the source-passthrough merge, never
+the body walk). Two companion fixes ride with it: the tensor-sink rename composes
+`live_to_recipe_name` before `export_tensor_name` (body-walk keys are LIVE; the composition
+is an idempotent no-op for every text-only-skeleton family), and
+`fill_packed_expert_cache_entries` probes its compute device from the first **non-meta**
+parameter — `next(model.parameters())` returned a meta visual weight on the wrapper and
+silently `.to(meta)`'d the activation snapshot (the same fragile probe still exists in
+`aura_cost.py:1158`, `kl_measurement.py:1078`, `validate_assignments_kl.py:987/:1579`,
+`validation_harness.py:63`; audit before running those stages on a partially-meta skeleton).
+
+**glm5_next streamed-forward wiring (2026-08-26).** The concat bridge was necessary but not
+sufficient: `glm5_next` is also the first architecture here whose decoder stack runs on
+`hc_mult` **parallel residual streams** (manifold-constrained hyper-connections) and whose
+attention schedule declares `deepseek_sparse_attention`. Two existing seams carry it, with no
+new contract:
+
+* `Glm5NextProfile.expand_hidden_for_layers` / `collapse_hidden_after_layers` mirror
+  `Glm5NextTextModel.forward` — expand `[B,T,H] → [B,T,hc_mult,H]` before the loop, collapse
+  with the model's own `hc_head` after it (the DSv4 precedent for the same pair of hooks).
+* `layer_streaming._compute_attention_mask` gained a `deepseek_sparse_attention` entry: those
+  layers consume a **2D boolean padding mask** `[B,S]` — the DSA indexer applies causality and
+  padding itself — and it is never optional, so an all-ones mask is substituted when the
+  recurrent helper yields `None`, exactly as upstream does "to guarantee the mask to exist for
+  the indexer". `linear_attention` keeps the existing recurrent shim.
+
+Neither is checkable by inspection: a wrong mask is a plausible tensor and a wrong collapse is
+a plausible mean. Gate: `tests/test_glm5_next_streamed_forward_parity.py` compares
+`StreamedCausalLM` logits against `Glm5NextForConditionalGeneration` on a tiny random config,
+on CPU. It runs the comparison at **1024 tokens as well as 12**, because the short cases cannot
+see this architecture's failure modes: the KDA scan is *chunked* with recurrent state crossing
+chunk boundaries, the short convolution carries a 4-wide window across the same boundaries, and
+the DSA indexer only begins sparsifying past `index_topk`. None of the three is exercised at 12
+tokens — an injected mask defect that blinds the past beyond position 512 leaves the 12-token
+logits **bit-identical** and moves the 1024-token logits by 1.15. The long case is also run with
+each layer type in isolation, so a future failure names its suspect (KDA state, conv window, or
+DSA long-range masking) rather than just reporting disagreement. Two related facts the streamed
+loop depends on and asserts rather than assumes:
+`glm5_next` is NoPE (`qk_rope_head_dim = 0`, no standalone rotary, upstream passes
+`position_embeddings=None`), and cross-layer top-k sharing is **not** threaded — correct only
+while every DSA layer declares `indexer_types == "full"`, which the GLM-5.3-Flash checkpoint
+does and the forward-fidelity gate re-checks per checkpoint. transformers 5.16 ships no
+`Glm5NextForCausalLM`, so the streamed skeleton is built through the **multimodal** path;
+the profile declares this via `requires_multimodal_skeleton()` and
+`_build_streaming_context` flips itself, so probe/cost/validation call sites need no
+per-family threading (`multimodal=True` explicit still works). The path yields the `model.language_model` base
+prefix and root `lm_head` the spec already describes.
 
 `_resolve` also **refuses to hand back a profile whose vendored-modelling override is known
 dead** (`_refuse_dead_vendored_override`, added by #19 / `29f3cff`). Its `except Exception:
@@ -4576,12 +5804,33 @@ maps it names, the rest inheriting the base block. Selection input is what the c
 declared: `registry._resolve` hands every profile its `model_type`/`architectures` via
 `ModelProfile.declare_config`, and `structure_spec()` applies `spec.for_config(...)` **only**
 when the spec declares variants — every other spec is returned untouched, and a profile
-constructed by hand declares nothing and keeps its historical derivation. `qwen3_5_dense.json`
-is the only spec with variants today. A profile that specializes naming must also specialize
-`vllm_architecture_class()` (`qwen3_5_dense.py`), or the two sources of the map disagree and a
-build host with vLLM installed would emit different names than one without. `source_tensor_name`
-is unaffected — the checkpoint legitimately spells both classes `model.language_model.*`, which
-is exactly what the text-only class's mapper exists to strip.
+constructed by hand declares nothing and keeps its historical derivation. Both
+`qwen3_5_dense.json` and `qwen3_5.json` now carry variants. A profile that specializes naming
+must also specialize `vllm_architecture_class()` (`qwen3_5_dense.py`, `qwen3_5.py`), or the two
+sources of the map disagree and a build host with vLLM installed would emit different names
+than one without.
+
+The MoE case needs one more distinction: serving namespace and source namespace are independent
+facts. An official native-causal Qwen3.5-family checkpoint uses `model.layers.*` in its index
+and vLLM tree, while the multimodal wrapper uses `model.language_model.layers.*` on disk and
+`language_model.model.layers.*` in vLLM. Internal `stage_text_only` can legitimately declare the
+causal serving class while retaining a symlinked wrapper-named source index. Path-based
+`detect_profile` therefore records the checkpoint root as private intake evidence;
+`Qwen3_5Profile._checkpoint_source_layout` censuses the actual index for source lookup while the
+exact declared architecture continues to select the vLLM class. Mixed, absent, or unknown
+namespace evidence fails closed rather than inheriting the wrapper default
+(`model_profiles/registry.py:detect_profile`; `model_profiles/qwen3_5.py`). This lands namespace
+intake for the future MoE PrismaSnap gate; it does not implement that gate or assert the layout
+of an unreleased checkpoint.
+
+Offline function-preserving folds also need the stored RMSNorm parameter convention, which is
+not inferable safely from values. `ModelProfile.rms_norm_parameter_offset()` therefore defaults
+to `None`; a transform must refuse that profile unless it explicitly returns `0.0` for literal
+gamma or the architecture's declared offset. Qwen3.5/Qwen3.8 returns `1.0`, matching execution
+with effective `gamma = 1 + weight`, so its materialized update is
+`weight' = (weight + 1)d - 1` (`model_profiles/base.py`, `qwen3_5.py`;
+`prismasnap_checkpoint._discover_dense_layer_graph`). This accessor is source-algebra metadata,
+not a quantization or serving default.
 
 The adapter is `model_profiles/vllm_registry.py`: `vllm_class_for_architecture` (`:25-102`)
 tries four registry APIs plus internal-table fallbacks and degrades to `None` when vLLM is
@@ -4658,13 +5907,16 @@ bodies one architecture at a time, only after a release of green equivalence.
 `TARGET_PROFILE=<id>` on the run invocation — leak L1 means the spec field alone does not take
 effect.
 
-**Tier C — commonly also needed.** MTP (today: edit `mtp_module.py` itself, see L2; or the
-hy_v3 route — `has_mtp → False` plus `passthrough_prefixes` and out-of-band CB encoding
-scripts); streaming overrides (`checkpoint_to_live_name` for flat naming, `init_rotaries` for
-multi-layer-type rope, `head_resident_extra_prefixes`); cross-layer forward state; vendored
-modeling. Then run the conformance validator (§8.6), which nothing else does, and the
-discovery walker (§8.8) on a meta load — an unclaimed matmul-fed parameter at intake is a
-`wo_a` waiting to ship.
+**Tier C — commonly also needed.** MTP is profile-owned: implement `has_mtp()`,
+`build_mtp_module(text_config)`, `mtp_source_prefix()`, and, only when the checkpoint layout
+needs it, the source-reader/loader overrides. Probe, cost, native production cache, and export
+all use that one contract; `prismaquant/mtp_module.py` no longer exists (L2). Architectures
+whose MTP remains source-passthrough use the hy_v3 route — `has_mtp → False` plus
+`passthrough_prefixes` and out-of-band CB encoding scripts. Common remaining work is streaming
+overrides (`checkpoint_to_live_name` for flat naming, `init_rotaries` for multi-layer-type
+rope, `head_resident_extra_prefixes`), cross-layer forward state, and vendored modeling. Then
+run the conformance validator (§8.6), which nothing else does, and the discovery walker (§8.8)
+on a meta load — an unclaimed matmul-fed parameter at intake is a `wo_a` waiting to ship.
 
 **Tier D — the gridbook CB lane (§9.2) adds per-arch work.** (6) `default_serving_profile:
 "nvfp4_cb"` in the spec **and** `TARGET_PROFILE=nvfp4_cb` (gated `run-pipeline.sh:124-125`),
@@ -4695,6 +5947,8 @@ artifacts exported before the rename.
 | deepseek_v4 | `deepseek_v4.py` | 170 | ✅ | `vllm_packed_moe` **(added R22)** | CT, **nvfp4_cb** (CT) | declared by the exact Gridbook producer pin (0.8.5/v3 commit `e992e59` when this row was written; 0.8.11/v4 commit `187c721` since 2026-08-21); streaming CB export, W8A16 source passthrough, top-level loader, and routed per-role LUT ABI are wired and the installed-wheel GPU route gate passed on 0.8.5; full-artifact served parity remains a post-export gate | `has_mtp → False`; three source-quantized DSpark stages are declared by the header-validated physical→construction overlay (§6.3), with no tensor rewrite. The experimental hybrid sidecar emits 27 physical K12 CB targets plus four physical W8A16 bases (`main_proj` and three grouped-BMM `wo_a`) with exact construction declarations. It remains non-shipping until the separately pinned Gridbook 0.8.6/v4 consumer is immutable and the sidecar clears load, memory, acceptance, and paired endpoint/throughput-evidence gates. |
 | hy_v3 | `hy_v3.py` | 180 | ✅ | `gguf` (overridden, L1) | CT, nvfp4_cb, **gguf** (gguf) | declared by pinned Gridbook contract | `has_mtp → False`; MTP passthrough + out-of-band CB scripts |
 | laguna (poolside S/XS 2.x) | `laguna.py` | 190 | ✅ | `nvfp4_cb` (overridden, L1) | CT, **nvfp4_cb** (nvfp4_cb) | declared by pinned Gridbook contract; drafter still separate | `has_mtp → False` |
+| qwen4_exp (Qwen3.8-Flash-Next 177B) | `qwen4_exp.py` | 200 | ✅ | ⚠ **spec declares none** | ⚠ **spec declares none** → accessor default CT | ⚠ none | `has_mtp → False`; `mtp_source_prefix "mtp."` + `mtp.` in `passthrough_prefixes` |
+| glm5_next (GLM-5.3-Flash 314B) | `glm5_next.py` | 210 | ✅ | `vllm_packed_moe` | CT, nvfp4_cb (CT) | ⚠ none | `has_mtp → False`; body-indexed nextn at layer 45, passthrough (hy_v3 route) |
 | default | `default.py` | — (terminal) | n/a by design | — | CT (default) | n/a | none |
 
 `prio` = detection priority, lower first (§8.1); the same number is declared on the Python class
@@ -4704,6 +5958,30 @@ six CB producer profiles with Gridbook's packaged contract; GGUF has one. Over-d
 failure the field exists to prevent: an undeclared lane does not fail loudly, it serves
 uninitialised expert memory. `require_lane_supported(profile, EXPORT_CONTAINER)`
 (`serving_profiles.py`) runs in `run-pipeline.sh` before profile resolution and export.
+
+The two 2026-08-26 additions are **enablement scaffolds, not export-ready lanes**. Neither has
+a vLLM class importable from the pinned serving stacks, so both return `vllm_architecture_class
+→ None`. `qwen4_exp` still declares `fused_groups` read from HF modelling code (`in_proj_qkvz`,
+`in_proj_ba`, the shared-expert `gate_up_proj`), the hy_v3 precedent. `glm5_next` declares
+**none**, and has nothing it may honestly declare: its KDA attention exposes separate q/k/v
+Linears live, and the only fusion evidence is the checkpoint's own
+`quantization_config.modules_to_not_convert` naming `self_attn.qkv_proj` /
+`self_attn.fused_qkvbfg_a_proj`, names that appear in no index key — a lead about someone's
+serving tree, not a contract (principle 14). The gap is harmless only because every fusable
+attention projection is pinned, so no fused group can be split across formats; that pairing is
+ratcheted in `tests/test_model_profile_conformance.py`
+(`UNATTESTED_FUSED_SOURCE_XFAIL`), which goes red if either half changes.
+`qwen4_exp` declares no `default_serving_profile` and
+no `supported_lanes` **on purpose** — each is a statement about what a serving runtime does, and
+principle 14 refuses an unattested one; they are owed once a class exists to attest them, and
+until then `require_lane_supported` refuses the arch rather than guessing. `glm5_next` declares
+both, and its large `pinned_names` list is a principle-9 gate input recorded against vLLM PR
+#53906 (`ZJY0516/vllm@933876c`), which builds only routed experts, shared experts and dense
+MLPs with a `quant_config`; that citation must be re-attested against a pinned release before
+export. The one contradiction found in recon is recorded in the spec
+(`_verified_source_layout.serving_restriction.CONTRADICTION_to_resolve_before_export`): the PR
+comments that MLA projections are BF16, while the checkpoint ships them FP8 with
+`.weight_scale_inv`.
 
 Gaps beyond the four leaks. **minimax_m2's missing spec is closed** (R22, 2026-07-30): all
 eight overrides (`:69,:86,:91,:101,:104,:110,:133,:137`) are now declared in
@@ -4911,14 +6189,14 @@ evaluator are declared in `prismaquant/lane_specs/*.json` (re-vet **R16**); the 
 advisory and the shipcard is what refuses — at **publication**, via `tools/publish_artifact.py`
 (§7.1).
 
-**DIAGRAM-2 — Serving lanes:** the three artifact containers, the runtime each requires, and
-the one box any of it has been proven on.
+**DIAGRAM-2 — Serving lanes:** the three artifact containers, the runtime each requires, the
+Spark-proven target, and the physically unqualified RTX 4090 candidate.
 
 ```mermaid
 flowchart LR
   subgraph CONT["artifact containers"]
-    A1["compressed-tensors<br/>NVFP4 / FP8_DYNAMIC / FP8_SOURCE / BF16<br/>export_native_compressed.py"]
-    A2["codebook (CB)<br/>production: NVFP4_CB_K12-K24 + FP8_CB_K28-K48<br/>legacy/research decoder: signed S13-S16<br/>plus stock rungs -- deliberately a mixed container<br/>export_nvfp4_cb.py, cb_layout.py"]
+    A1["compressed-tensors<br/>maintained: NVFP4 / FP8_DYNAMIC / BF16<br/>FP8_SOURCE: source-artifact compatibility<br/>export_native_compressed.py"]
+    A2["codebook (CB)<br/>NVFP4 reader/producer: K1..K25 (new bands contract-gated)<br/>K26..K32: direct codec/lattice research only<br/>FP8 reader: K4/K8/K12/K16/K20/K24 + every K28..K48<br/>new FP8 producer: K4..K48 step 4<br/>SM89: lattice FP8-CB + FP8_E4M3 + BF16 only<br/>SM120 validation: both producer ladders + native terminals; no W8A16/source FP8"]
     A3["GGUF<br/>Q2_K..Q8_0 + IQ family<br/>export_gguf.py"]
   end
 
@@ -4931,6 +6209,8 @@ flowchart LR
 
   subgraph HW["hardware"]
     H1["NVIDIA GB10 DGX Spark<br/>Blackwell sm_121, 128 GB unified memory<br/>~121 GB usable serving budget"]
+    H3["NVIDIA GeForce RTX 4090<br/>Ada sm_89, 24 GiB<br/>strict 18,000,000,000-byte artifact + 4 GiB FP8 KV<br/>PENDING physical correctness / graph / memory / performance"]
+    H4["NVIDIA sm_120 discrete target class<br/>candidate registration only<br/>v11 compile_only + unpinned<br/>NO device-qualified or shipping claim"]
     H2["Strix Halo<br/>CANCELED / UNSUPPORTED<br/>prototype removed after hardware access was lost;<br/>no qualified Gridbook backend"]
   end
 
@@ -4941,6 +6221,8 @@ flowchart LR
 
   R1 -->|"Spark-proven -- shipped rdtand artifacts"| H1
   R2 -->|"Spark-proven -- 295B-class at ~2.9 bpp on ONE Spark"| H1
+  R2 -.->|"v11 sm89 routes are compile_only; strict export refuses"| H3
+  R2 -.->|"validation-only profile; release/device gate still closed"| H4
   R3 -->|"Spark-proven -- 295B-class at 2.8 bpp; the KL harness for this lane"| H1
   R4 -->|"smoke-verified on the 0.19.2 venv only, never KL-measured"| H1
 
@@ -4948,8 +6230,11 @@ flowchart LR
   R4 -.->|"no qualified deployment"| H2
 
   classDef proven stroke:#2d7a2d,stroke-width:2px
+  classDef pending stroke:#c07800,stroke-width:2px,stroke-dasharray:4
   classDef unsupported stroke:#c0392b,stroke-width:2px,stroke-dasharray:4
   class H1 proven
+  class H3 pending
+  class H4 pending
   class H2 unsupported
 ```
 
@@ -5185,6 +6470,65 @@ alias or loader table. Its producer codec remains an intentionally independent i
 the artifact ABI; CI
 compares every packing/layout field and every rung so incompatibility fails at the boundary.
 
+**Candidate contract v11 and the strict sm89 lane (implemented, not pinned or
+released).** V11 makes the reader/producer distinction explicit instead of
+overloading one rung range. For FP8-CB, `formats[].rungs` is the reader domain
+K4/K8/K12/K16/K20/K24 plus every K28..K48, while
+`formats[].producer_rungs` is exactly K4..K48 step 4. PrismaQuant validates
+that external object with `gridbook_format_contract.py`; no local range is
+treated as evidence about a Gridbook runtime. V11 also carries
+`gridbook.lane-eligibility.v2`, a closed-world table keyed by exact platform,
+family, structure, regime, and rung. The strict dense Ada producer asks
+`gridbook_execution_contract.require_device_qualified_gridbook_routes` for
+both `decode` and `batch` on exact `sm_89`; an sm90/sm121 row or a
+`compile_only` row cannot satisfy it. `backed_with_serve_flag` is legal only
+when its exact required flags travel with the receipt. Graph compilation is
+intentionally **not** folded into that Gridbook table: the vLLM
+`fullgraph=True,dynamic=False` and mode-3 `FULL_AND_PIECEWISE` proof is external
+endpoint evidence under §7.
+
+For NVFP4-CB, a compatible v11 contract must declare both `rungs` and
+`producer_rungs` as every integer K1..K25; every lane cell must be a subset.
+K26..K32 have no public contract identity. Released Gridbook 0.8.11/v4 remains
+a historical reader input and cannot attest this producer expansion. Therefore
+the wider local registry is scaffolding only until the exact external pin also
+publishes those rungs and device-qualifies the requested structure/regime cells.
+
+`qwen38_sm120_cb_validation_only` is the matching producer-side registration
+scaffold: exact `target_platform=sm_120`, both public producer ladders, and only
+native NVFP4/FP8_E4M3/BF16 terminals. Its format rule also explicitly denies
+`format_registry.W8A16_COMPAT_FORMAT_NAMES`: the generic profile still knows
+how to read/reproduce published source-FP8 artifacts, but those compatibility
+routes cannot enter a new RTX50 cost menu, assignment, or release decision.
+The dense driver independently requires a complete BF16 body-source census
+before it writes the format plan. Both resident and streaming CB exporters
+read the assignment's reserved `target_profile` metadata (or the explicit
+`PRISMAQUANT_TARGET_PROFILE` override) during their outer preflight and refuse
+profile-denied formats before creating a destination or `.tmp-*` sibling. It
+deliberately declares no `producer_policy`. The profile therefore proves a closed candidate set and lets
+the dense AQUA campaign compare both registered activation contracts; it cannot
+stamp route qualification, become an exporter ship policy, or stand in for an
+immutable Gridbook pin. The release/device-qualified contract gate remains the
+only path from this validation identity to a shippable one.
+
+The current v11 implementation's sm89 dense FP8-CB decode/batch rows cover all
+twelve producer rungs but carry qualification `compile_only`. A no-device
+cross-compile produced explicit sm89 SASS and checked the extension/vLLM ABI;
+it did not execute a kernel or graph and therefore does not advance those rows
+to `device_qualified`. The tracked PrismaQuant producer/serving pin remains the
+released Gridbook 0.8.11/v4 record described above. No v11 release, wheel, or
+pin advance is claimed here, and `qwen38_rtx4090_fp8_cb` remains structurally
+unable to export until an immutable external release plus physical RTX 4090
+evidence closes that boundary. Evidence and hashes:
+`docs/results/rtx4090_fp8_gridbook_implementation_2026-08-24.md`.
+
+Qualification is family-wide at this boundary: artifact assignments may use
+any legal rung subset, but `require_rtx4090_runtime_contract` always requests
+all twelve producer rungs in both regimes. The candidate v11 changes neither
+the packaged tensor-parallel nor expert-parallel subtree from Gridbook 0.9.0,
+and its dense FP8 dispatch changes do not bypass their existing loader/runtime
+enforcement.
+
 At runtime `register()` registers `"gridbook"` plus the legacy artifact alias `"prismaquant"`
 and installs the per-architecture loader hooks. It does not patch vLLM core. The pinned release
 (0.8.11 at `187c7216b9d4882321c1923de0b4c49dc139743c`) resolves and attests every serving-reachable
@@ -5251,10 +6595,13 @@ on a hardware grid, so a decoded tile *is* a bit-standard NVFP4/FP8 tensor and d
 is a gather rather than arithmetic. A weight vector is d=8 wide; a k-bit index selects a
 codeword; 32 codewords plus scales form a 256-weight superblock (external Gridbook
 `gridbook/codec.py`). Two
-ladders, every integer rung: `NVFP4_CB_K12–K24` (E2M1 grid, 1.78125–3.28125
-serialized body bpw under production layout v2) and `FP8_CB_K28–K48`
-(E4M3 grid, 3.5–6.0 bpw) — `prismaquant/cb_layout.py`, sourced into
-`serving_profile_specs/nvfp4_cb.json`. A third, signed-codebook ladder
+ladders with different compatibility domains: `NVFP4_CB_K1–K25`
+(E2M1 grid, 0.40625–3.40625 serialized body bpw under production layout v2),
+and FP8-CB (E4M3) whose **reader** accepts K4/K8/K12/K16/K20/K24 plus every
+integer K28–K48, while a **new producer** may emit only
+K4/K8/K12/K16/K20/K24/K28/K32/K36/K40/K44/K48 —
+`prismaquant/cb_layout.py`, `gridbook_format_contract.py`. Historical off-law
+FP8 rungs remain readable; no producer API rounds or re-emits them. A third, signed-codebook ladder
 `NVFP4_CB_S13–S16` existed until **2026-08-17, when it was deleted outright**
 (Rob: *"they are not performant. We don't support them. We can delete them."*).
 The 2026-07-22 Qwen3.5-0.8B matched-rung screen had already found product K
@@ -5279,7 +6626,33 @@ from `config.json` (external Gridbook `gridbook/config.py`,
 `export_nvfp4_cb.py:630-639`); the non-globbed extension
 keeps vLLM's weight loader off it.
 
-**Learned FP8 codebooks are a value-bearing rendering mode, not a new format
+**Strict Qwen3.8/Ada artifact policy.** The serving-profile key
+`qwen38_rtx4090_fp8_cb` selects producer policy
+`qwen38_27b_rtx4090_fp8_cb`. That policy permits only the twelve FP8-CB
+producer rungs above, delegated `FP8_E4M3`, and BF16; both native NVFP4 and
+NVFP4-CB are hard refusals, and `lm_head` is fixed to BF16. The artifact
+validator walks the current export directory recursively; publication freezes
+the complete upload tree and applies the same non-forceable ceiling again,
+after README/evidence/shipcard authoring. At most exactly 18,000,000,000 bytes
+of regular files may ship, rather than merely a modeled weight payload
+(`rtx4090_qwen38_policy.py`, `validate_rtx4090_fp8_cb.py`,
+`tools/publish_artifact.py`). This is an implemented, opt-in producer policy,
+not evidence that the candidate Gridbook v11 runtime has been released or that
+the artifact has passed a physical RTX 4090 gate. Final provenance is
+value-closed as well as name-closed: `render_identity_verified` must be bool
+true; the shared source-complete render validator binds the canonical imatrix;
+logical codebook digests replay against the exact FP16 sidecar bytes; the
+strict tensor-payload ledger replays its aggregate over the exact finalized
+header census; and the full weight-content manifest and producer Git identity
+bind to the on-disk containers and an exact clean (`dirty: false`) shipcard
+build record. Strict `cb_route_status` is a
+separate candidate-v11/sm89 record derived exactly from
+`producer_policy.runtime_attestation`, never the historical generic serving
+pin or an override/fallback disposition. Its shipcard summary therefore states
+device-qualified/backed decode+batch evidence explicitly instead of projecting
+the strict record through the generic route-summary schema.
+
+**Historical learned-v1 FP8 codebooks are a value-bearing rendering mode, not a new format
 name.** `CB_CODEBOOK_SOURCE_SCOPE=fp8` is the build instruction: it keeps every
 NVFP4-CB target on its canonical lattice and trains a distinct book only when
 the rung's measured `CBL_RUNG_POLICY` row is enabled. The resulting single
@@ -5335,6 +6708,21 @@ both when a bundle is trained and when it is loaded. Policy-disabled cells are
 legal only as explicit lattice cells, so editing a menu or presenting an old
 bundle cannot relabel K47/K48 learned (`require_cbl_rung_enabled` call sites in
 `train_and_save_bundle` and `load_bundle`).
+
+**Learned-v2 starts from lattice and promotes only measured identities.** Its
+candidate domain is the exact twelve-rung FP8 producer ladder, but no rung is
+assumed learned and there is no inferred crossover. It reuses the sensitivity
+probe's activation statistics to derive the imatrix; it does not create a
+parallel calibration or activation cache. A per-rung learned table becomes
+authoritative only when a
+`prismaquant.fp8_cbl_promotion_receipt.v1` result certificate passes both
+held-out comparisons and binds the source checkpoint and tensor map, training
+calibration and derived-imatrix identities, role census, candidate FP16 table
+identities, and the decisions for the complete rung ladder. Missing evidence,
+a tie, or any changed identity leaves the committed lattice authoritative or
+refuses the supplied certificate (`cb_imatrix.py`, `cb_learned_promotion.py`).
+Historical trainer v1 remains the compatibility default; learned-v2 does not
+silently replace its policy.
 
 **Dense and routed-MoE serving are role-distinct from released 0.8.4 onward.**
 Gridbook's dense loader reads `codebook_ref` inside its
@@ -5576,11 +6964,15 @@ the DSv4 body/MTP/DSpark loader and routed per-role ABI consumed by this produce
 not retroactively promote the 92 GB study: the current 112.690 GB AURA artifact must still close
 the exact eager/graph, quality, and paired whole-model served native-parity shipcard gates.
 
-#### 9.2.1 Structured route status, and why it reads "unattested" (R3)
+#### 9.2.1 Tracked v4 route status and candidate v11 lane-v2 (R3)
 
 Principle 9 requires route status in a **structured** field a gate can read, and principle 14
 requires that field to be derived from a table the pinned runtime publishes, or refused. Both
-apply to this lane, and the honest current answer is a refusal to claim.
+apply to this lane. The tracked released Gridbook 0.8.11/v4 contract publishes no eligibility
+table, so its honest answer remains `unattested`. The unreleased candidate v11 contract is a
+separate path: its closed-world lane-v2 table is accepted structurally, but the current sm89
+cells are only `compile_only`. Neither state is physical RTX 4090 qualification, and one may not
+be used to upgrade the other.
 
 **The two measured defects.** The shipped DSv4 87 GB artifact carries 11 routed FP8-CB layers
 whose `gate_proj` and `up_proj` bind distinct learned codebooks. Gridbook's persistent-B prefill
@@ -5704,12 +7096,33 @@ decision rather than operator policy. Strix Halo enters this lane first, serving
 
 ## 10. Hardware & environment
 
-One NVIDIA GB10 / DGX Spark ("sparky"), Blackwell sm_121, **128 GB unified memory** shared
-physically between CPU and GPU, ~121 GB usable, 1.8 TB NVMe. Two consequences that catch every
-newcomer: "move it to CPU to spare the GPU" is a **no-op** for memory pressure, and a
-production run gets the box — concurrent heavy agents or downloads starve the launch-bound cost
-loop. Every production hot path must be GPU-bound; `prismaquant/gpu_guard.py:7`
-(`require_cuda_hot_path`) refuses to run otherwise (though seven stages never call it — §12 D9).
+The primary build hardware is now two NVIDIA GB10 / DGX Sparks, **Sparky** and **Sparklina**,
+each Blackwell sm_121 with **128 GB unified memory** shared physically between CPU and GPU
+(~121 GB usable). Sparky has the historically documented 1.8 TB NVMe; campaign manifests bind
+each host's own absolute work root rather than assuming identical free space. Two consequences
+that catch every newcomer: "move it to CPU to spare the GPU" is a **no-op** for memory pressure,
+and a production run owns each assigned box — concurrent serves, heavy agents, or downloads
+starve the launch-bound loop. Every production hot path must be GPU-bound;
+`prismaquant/gpu_guard.py:7` (`require_cuda_hot_path`) refuses to run otherwise (though seven
+stages never call it — §12 D9).
+
+The current PrismaSnap candidate uses both Sparks for source preparation. The two
+hosts are peers only for explicitly manifest-partitioned planning/materialization: neither may
+infer work from the other's progress. Both plans must bind the same portable source, probe,
+canonical search, producer source closure, and attested container-rootfs identity; the
+coordinator then verifies exact layer/shard covers and all transferred content. The final
+low-space merge runs where both part directories reside on one filesystem and requires
+hardlinks. Those orchestration and transfer stages are offline lifecycle work; after the
+verified BF16 checkpoint is committed, the ordinary production pipeline retains its existing
+GPU-resident cache/prefetch contracts (§3.0; `prismaquant.cluster_campaign`,
+`prismasnap_checkpoint.merge_checkpoint_parts`).
+
+The strict Qwen3.8 FP8-CB campaign adds a second target, not a second qualified
+machine: one physical 24 GiB RTX 4090/sm89. GB10 can exercise architecture-independent code and
+learned-table determinism, and a no-device toolchain can cross-compile explicit sm89 SASS, but
+neither emulates Ada execution, its 24 GiB memory boundary, vLLM graph capture, or served
+performance. Those claims remain pending until the two-arm physical gate in §7 runs on the exact
+GPU identity.
 
 **OOM discipline.** The pool has no evictable slack, so an allocation that would merely swap on
 a discrete-GPU box kills the machine instead. Rules, all learned from kills: serve at util
@@ -5795,9 +7208,13 @@ reading e4m3 and Strix bf16. The HIP kernels are therefore **dtype-agnostic at m
 the LDS LUT is always filled as bf16 and any e4m3→bf16 conversion happens **once at fill time,
 never per gather** (the ALU term R6 removed on Blackwell stays removed), pinned by a test that
 asserts a bf16 sidecar is **bit-identical** to the e4m3 one. The cost is LDS footprint —
-a materialised LUT is 2 B/element, so K48 and NVFP4_CB K24 need the full 64 KiB. Those still
-*fit* here, because A and B are register-resident and the LUT is the only LDS consumer; the top
-rungs use the global-gather arm because it is measurably faster, not because the LUT overflows.
+a materialised LUT is 2 B/element, so K48 and NVFP4_CB K24 need the full 64 KiB. Public NVFP4 K25
+exceeds that old whole-codebook LDS envelope and therefore requires an attested
+global/partitioned lookup route; the registry expansion does not claim the historical LDS kernel
+covers it. Research-only K26..K32 (K32 is 1 MiB across its two subtables) are unsupported public
+formats. K24 and below still *fit* here because A and B are
+register-resident and the LUT is the only LDS consumer; the top historical rungs use the
+global-gather arm because it is measurably faster, not because the LUT overflows.
 `iu8`/`iu4` WMMA are present, and measured on this box at **1.56× bf16 LDS-fed but only 1.06×
 register-resident** (iu8) and 2.86× (iu4) — iu8's gain is halved LDS traffic, not faster math,
 which buys little in a GEMM whose operands are already in registers. Both need integer
@@ -5850,7 +7267,7 @@ walls live under `docs/archive/`; code walls under repo-root `archive/`.
 | The three-level cost cascade (L1→L2→L3) | **Retired from the spine 2026-07-30 (R4).** L2 beat additive L1 by −1.5% while AURA beat L1 by −38.5%; pairwise residuals are +5–12% diffuse with 3/1180 pairs significant and the apparent non-additivity is a bf16 artifact; L3-polish-of-many does not compose. One faithful cost + real-KL selection replaced all three (§2.2, §4.4). | `archive/l3_propagated_2026-07-30/` |
 | `COST_MODE=production-render-staged` | Rendered NVFP4 first, promoted only the top-30% error tail — so every Linear outside the tail carried an `unavailable` cost the DP could not consider. On 27B its last-token-KL screen improved (0.0232 vs 0.0280) while **direct WikiText PPL regressed 10.83 vs 8.33**; the result doc says "Do not ship". The canonical screen-vs-gold inversion. | `archive/production_render_staged_2026-07-30/` |
 | `MSE_PROMOTION` post-frontier rewrite | Re-ranked the *already measured-KL-selected* point by local `output_mse_per_bit`. On 35B it beat the strategic baseline but lost to both the shipped 4.75 and the 5.16 kneedle. A post-allocator rewrite cannot beat a better cost inside the DP (AURA). No shipped run carries `layer_config_before_mse_promotion.json`. | `archive/mse_promotion_2026-07-30/` |
-| `PRODUCTION_CACHE_UNION` smart-union cache | Saved ~40% of the frontier render by offering an FP8 rung only above a percentile of the NVFP4 `output_mse` surrogate — a render-budget heuristic deciding the allocator's candidate set (principle 1). Never used by a shipped artifact. | `archive/union_cache_2026-07-30/` |
+| `PRODUCTION_CACHE_UNION` smart-union cache | Saved ~40% of the frontier render by offering an FP8 rung only above a percentile of the NVFP4 `output_mse` surrogate — a render-budget heuristic deciding the allocator's candidate set (principle 1). Never used by a shipped artifact. This archived selector is unrelated to §5.4's live exact set union, which never chooses or prunes candidates. | `archive/union_cache_2026-07-30/` |
 | Block-output match (quality lever #12) | **Unreachable, not unmeasured.** The production-cache pack `continue`s first, so on the shipping recipe no dense NVFP4 Linear ever reached the branch (0 hits in two real export logs). Had it run it would have re-derived NVFP4 scales outside `_export_match_render_scale_rule` and discarded the render's `joint_mse` scales (the −6.6% M19 defect). Its `{0.95,1.0,1.05}` gain search is subsumed by JSO; its "~0.05–0.10 PPL" was a pre-JSO expectation. | `archive/block_output_match_2026-07-30/` |
 | Orphan modules and tools (4 + 6) | Zero references tree-wide; three belong to threads with recorded verdicts (damp-sweep OFF-final, xlayer null, export-config collapse subsumed). `_fast_kernel_guard` is the exception — an orphan that is a **missing caller**, booked as debt in §12 rather than declared dead. | `archive/orphans_2026-07-30/` |
 | MXFP8 in the default menu | E8M0 pow2 scale wastes ~√2 of a binade (+13.8% output MSE over 410 Gemma Linears); exact-scale FP8 Pareto-dominates. Registry entry retained. | de-menued (§5.1) |

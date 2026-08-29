@@ -423,6 +423,137 @@ def test_streaming_byte_identical_dense_and_stacked(workdir):
 
 
 @pytest.mark.parametrize(
+    ("format_name", "expected_type_size", "expected_book_shapes"),
+    [
+        ("NVFP4_CB_K1", 13, [(1, 4), (2, 4)]),
+        ("NVFP4_CB_K25", 109, [(4096, 4), (8192, 4)]),
+    ],
+    ids=["k1", "k25"],
+)
+def test_public_endpoint_resident_and_streaming_exports_are_byte_identical(
+    workdir,
+    format_name,
+    expected_type_size,
+    expected_book_shapes,
+):
+    torch.manual_seed(101)
+    qname = "model.layers.0.self_attn.q_proj"
+    suffix = format_name.lower()
+    mdl = workdir / f"model-{suffix}"
+    _write_model(mdl, {
+        f"{qname}.weight": (torch.randn(8, 256) * 0.3).to(torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / f"{suffix}.json"
+    _assign(assignment, {qname: format_name})
+    col_weights = {qname: torch.rand(256) + 0.05}
+    resident_dir = workdir / f"{suffix}-resident"
+    streaming_dir = workdir / f"{suffix}-streaming"
+
+    export_nvfp4_cb(
+        mdl, assignment, resident_dir, col_weights, device="cpu"
+    )
+    export_nvfp4_cb_streaming(
+        mdl, assignment, streaming_dir, col_weights, device="cpu"
+    )
+    resident = load_file(str(resident_dir / "model.safetensors"))
+    streaming = load_file(str(streaming_dir / "model.safetensors"))
+    assert _tensors_equal(resident, streaming)
+    resident_config = json.loads(
+        (resident_dir / "quant_config.json").read_text()
+    )
+    streaming_config = json.loads(
+        (streaming_dir / "quant_config.json").read_text()
+    )
+    assert resident_config["config_groups"] == streaming_config["config_groups"]
+    assert next(iter(resident_config["config_groups"].values()))["scheme"][
+        "type_size"
+    ] == expected_type_size
+    resident_books = load_file(str(
+        resident_dir / resident_config["codebook_file"]
+    ))
+    streaming_books = load_file(str(
+        streaming_dir / streaming_config["codebook_file"]
+    ))
+    assert _tensors_equal(resident_books, streaming_books)
+    assert sorted(tuple(tensor.shape) for tensor in resident_books.values()) == (
+        expected_book_shapes
+    )
+
+
+@pytest.mark.parametrize(
+    "exporter",
+    [export_nvfp4_cb, export_nvfp4_cb_streaming],
+    ids=["batch", "streaming"],
+)
+@pytest.mark.parametrize(
+    "format_name",
+    ["NVFP4_CB_K26", "NVFP4_CB_K32"],
+    ids=["k26", "k32"],
+)
+def test_unsupported_nvfp4_rungs_are_refused_before_output_transaction(
+    workdir, exporter, format_name,
+):
+    """Research codec rungs have no producer transaction or filesystem trace."""
+    qname = "model.layers.0.self_attn.q_proj"
+    suffix = format_name.lower()
+    mdl = workdir / f"model-{suffix}"
+    _write_model(mdl, {
+        f"{qname}.weight": torch.zeros(8, 256, dtype=torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / f"{suffix}.json"
+    _assign(assignment, {qname: format_name})
+    col_weights = {qname: torch.ones(256)}
+    out = workdir / f"{suffix}-{exporter.__name__}"
+    with pytest.raises(ValueError, match="unsupported format string"):
+        exporter(mdl, assignment, out, col_weights, device="cpu")
+    assert not out.exists()
+    assert list(workdir.glob(f".{out.name}.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
+    "exporter",
+    [export_nvfp4_cb, export_nvfp4_cb_streaming],
+    ids=["batch", "streaming"],
+)
+@pytest.mark.parametrize(
+    "format_name",
+    ["FP8_SOURCE", "FP8_BLOCK_UE8M0_SOURCE"],
+)
+def test_sm120_w8a16_is_refused_before_output_transaction(
+    workdir, exporter, format_name,
+):
+    """Compatibility readers do not make W8A16 materializable for RTX50."""
+    qname = "model.layers.0.self_attn.q_proj"
+    mdl = workdir / f"model-{format_name.lower()}"
+    _write_model(mdl, {
+        f"{qname}.weight": torch.zeros(8, 256, dtype=torch.bfloat16),
+        "model.norm.weight": torch.ones(256, dtype=torch.bfloat16),
+    })
+    assignment = workdir / f"{format_name.lower()}.json"
+    _assign(assignment, {
+        qname: format_name,
+        "__prismaquant__": {
+            "schema": "prismaquant.layer_config_meta.v1",
+            "target_profile": "qwen38_sm120_cb_validation_only",
+        },
+    })
+    out = workdir / f"{format_name.lower()}-{exporter.__name__}"
+
+    with pytest.raises(ValueError, match="target profile.*refuses assignment"):
+        exporter(
+            mdl,
+            assignment,
+            out,
+            {qname: torch.ones(256)},
+            device="cpu",
+        )
+    assert not out.exists()
+    assert list(workdir.glob(f".{out.name}.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
     "exporter",
     [export_nvfp4_cb, export_nvfp4_cb_streaming],
     ids=["batch", "streaming"],
@@ -1576,10 +1707,21 @@ def _emitted_bytes(out: Path, name: str) -> bytes:
     return _source_bytes(out, name)
 
 
-def _export_dsv4(workdir, out_name="out", **model_kwargs):
+def _export_dsv4(
+    workdir,
+    out_name="out",
+    *,
+    target_profile: str | None = None,
+    **model_kwargs,
+):
     mdl = workdir / "src"
     tensors = _dsv4_source_model(mdl, **model_kwargs)
     assignment, col_weights = _dsv4_recipe(**model_kwargs)
+    if target_profile is not None:
+        assignment["__prismaquant__"] = {
+            "schema": "prismaquant.layer_config_meta.v1",
+            "target_profile": target_profile,
+        }
     path = workdir / f"{out_name}.json"
     _assign(path, assignment)
     out = workdir / out_name
@@ -1627,6 +1769,18 @@ def test_source_passthrough_streams_checkpoint_bytes_verbatim(workdir):
     assert header["layers.1.ffn.experts.0.w1.scale"]["dtype"] == "F8_E8M0"
     assert header["layers.0.attn.wq_a.weight"]["dtype"] == "F8_E4M3"
     assert header["layers.0.attn.wq_a.scale"]["dtype"] == "F8_E8M0"
+
+
+def test_generic_profile_keeps_published_source_materialization_compatible(
+    workdir,
+):
+    """The new SM120 deny must not globally disable DSv4 source artifacts."""
+    _mdl, _out, _tensors, counts = _export_dsv4(
+        workdir,
+        target_profile="nvfp4_cb",
+    )
+    assert counts["MXFP4_SOURCE"] == _SOURCE_EXPERTS * 3
+    assert counts["FP8_BLOCK_UE8M0_SOURCE"] == 1
 
 
 def test_ue8m0_block_scale_is_not_widened_like_fp8_source(workdir):

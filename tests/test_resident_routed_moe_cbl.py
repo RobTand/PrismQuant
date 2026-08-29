@@ -32,7 +32,7 @@ GATE = "model.layers.0.mlp.experts.gate_proj"
 UP = "model.layers.0.mlp.experts.up_proj"
 DOWN = "model.layers.0.mlp.experts.down_proj"
 FORMAT = "FP8_CB_K28"
-FORMAT_29 = "FP8_CB_K29"
+FORMAT_32 = "FP8_CB_K32"
 
 
 class _PerExpertProfile:
@@ -215,15 +215,15 @@ def _fixture(tmp_path, monkeypatch, *, keying="role"):
     lattice = cb._resolve_codebook(
         28, "fp8", "product", None, torch.device("cpu")
     )
-    lattice_29 = cb._resolve_codebook(
-        29, "fp8", "product", None, torch.device("cpu")
+    lattice_32 = cb._resolve_codebook(
+        32, "fp8", "product", None, torch.device("cpu")
     )
     gate_book = tuple(table.clone() for table in lattice)
     up_book = tuple(table.flip(0).contiguous() for table in lattice)
     down_book = tuple(table.flip(1).contiguous() for table in lattice)
-    gate_book_29 = tuple(table.flip(1).contiguous() for table in lattice_29)
-    up_book_29 = tuple(table.flip(0).contiguous() for table in lattice_29)
-    down_book_29 = tuple(table.clone() for table in lattice_29)
+    gate_book_32 = tuple(table.flip(1).contiguous() for table in lattice_32)
+    up_book_32 = tuple(table.flip(0).contiguous() for table in lattice_32)
+    down_book_32 = tuple(table.clone() for table in lattice_32)
     bundle_path = tmp_path / "learned.pqcb"
 
     def input_aliases(qname, weight, _cw):
@@ -265,17 +265,17 @@ def _fixture(tmp_path, monkeypatch, *, keying="role"):
             weights={PACKED: physical, PACKED_DOWN: down_stack},
             col_weights={PACKED: physical_cw, PACKED_DOWN: down_cw_stack},
             formats={
-                PACKED: (FORMAT, FORMAT_29),
-                PACKED_DOWN: (FORMAT, FORMAT_29),
+                PACKED: (FORMAT, FORMAT_32),
+                PACKED_DOWN: (FORMAT, FORMAT_32),
             },
-            learned_formats=(FORMAT, FORMAT_29),
+            learned_formats=(FORMAT, FORMAT_32),
             routed_moe_qnames=(PACKED, PACKED_DOWN),
             routed_book_keying="stack",
             pretrained_codebooks={
                 (PACKED, FORMAT): gate_book,
-                (PACKED, FORMAT_29): gate_book_29,
+                (PACKED, FORMAT_32): gate_book_32,
                 (PACKED_DOWN, FORMAT): down_book,
-                (PACKED_DOWN, FORMAT_29): down_book_29,
+                (PACKED_DOWN, FORMAT_32): down_book_32,
             },
             input_alias_provider=stack_aliases,
         )
@@ -314,19 +314,19 @@ def _fixture(tmp_path, monkeypatch, *, keying="role"):
             DOWN: down_cw_stack,
         },
         formats={
-            GATE: (FORMAT, FORMAT_29),
-            UP: (FORMAT, FORMAT_29),
-            DOWN: (FORMAT, FORMAT_29),
+            GATE: (FORMAT, FORMAT_32),
+            UP: (FORMAT, FORMAT_32),
+            DOWN: (FORMAT, FORMAT_32),
         },
-        learned_formats=(FORMAT, FORMAT_29),
+        learned_formats=(FORMAT, FORMAT_32),
         routed_moe_qnames=(GATE, UP, DOWN),
         pretrained_codebooks={
             (GATE, FORMAT): gate_book,
             (UP, FORMAT): up_book,
             (DOWN, FORMAT): down_book,
-            (GATE, FORMAT_29): gate_book_29,
-            (UP, FORMAT_29): up_book_29,
-            (DOWN, FORMAT_29): down_book_29,
+            (GATE, FORMAT_32): gate_book_32,
+            (UP, FORMAT_32): up_book_32,
+            (DOWN, FORMAT_32): down_book_32,
         },
         input_alias_provider=input_aliases,
     )
@@ -678,7 +678,7 @@ def test_streaming_split_format_groups_reuse_exact_role_rung_books(
     )
     context = cb_serialization_context_from_env()
     formats_by_member = {
-        name: (FORMAT if ".experts.0." in name else FORMAT_29)
+        name: (FORMAT if ".experts.0." in name else FORMAT_32)
         for name in fixture["col_weights"]
         if name not in {PACKED, PACKED_DOWN}
     }
@@ -709,7 +709,7 @@ def test_streaming_split_format_groups_reuse_exact_role_rung_books(
     bundle = fixture["bundle"]
     for expert_id, format_name, rung in (
         (0, FORMAT, 28),
-        (1, FORMAT_29, 29),
+        (1, FORMAT_32, 32),
     ):
         expected_parts = []
         expected_scales = []
@@ -768,12 +768,12 @@ def test_streaming_split_format_groups_reuse_exact_role_rung_books(
     quant_config = json.loads((out / "quant_config.json").read_text())
     learned_groups = [
         group for group in quant_config["config_groups"].values()
-        if group.get("format") in {FORMAT, FORMAT_29}
+        if group.get("format") in {FORMAT, FORMAT_32}
     ]
     expected_targets = {
         f"model.layers.0.mlp.experts.{projection}.format_group_{fmt.lower()}"
         for projection in ("gate_proj", "up_proj", "down_proj")
-        for fmt in (FORMAT, FORMAT_29)
+        for fmt in (FORMAT, FORMAT_32)
     }
     assert {
         group["targets"][0] for group in learned_groups
@@ -782,7 +782,7 @@ def test_streaming_split_format_groups_reuse_exact_role_rung_books(
         group["targets"][0]: tuple(group["scheme"]["codebook_ref"])
         for group in learned_groups
     }
-    for format_name in (FORMAT, FORMAT_29):
+    for format_name in (FORMAT, FORMAT_32):
         role_refs = {
             refs_by_target[
                 "model.layers.0.mlp.experts."
@@ -795,7 +795,7 @@ def test_streaming_split_format_groups_reuse_exact_role_rung_books(
     assert {
         (entry["format_wire_id"], tuple(entry["expert_ids"]))
         for entry in declaration["w13"]
-    } == {(FORMAT, (0,)), (FORMAT_29, (1,))}
+    } == {(FORMAT, (0,)), (FORMAT_32, (1,))}
 
 
 def test_streaming_routed_books_refuse_an_fp8_ldlq_scope(

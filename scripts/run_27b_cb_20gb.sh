@@ -5,7 +5,7 @@
 # Robert 2026-07-21: "create a Qwen 3.6 27B using the new stack and serve with
 # the new kernels; target 20 GB so it runs on a 24 GB 4090 or 5090."
 #
-# MENU: the full all-integer CB ladder (fp4 K12-K24 two-tier + fp8 K28-K48,
+# MENU: the full producer CB ladder (fp4 K1-K25 two-tier + fp8 step-four,
 # 0.125-bpw steps — landed 2026-07-21, 116-test gate) + vanilla NVFP4 +
 # FP8_DYNAMIC + BF16. Robert 2026-07-21: "Blackwell only is fine" + "Put
 # nvfp4 in the menu for completeness sake" — the allocator decides per-Linear

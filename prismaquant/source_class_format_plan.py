@@ -276,7 +276,7 @@ def _complete_family(
             f"got {sorted(families)!r}"
         )
     family = next(iter(families))
-    registered = tuple(spec.name for spec in fr.list_formats(family))
+    registered = tuple(spec.name for spec in fr.list_producer_formats(family))
     restriction: dict[str, object] | None = None
     if serving_backed_profile is not None:
         registered, restriction = _serving_backed_family(

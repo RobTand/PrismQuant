@@ -42,7 +42,7 @@ from .footprint import (
     source_tensor_bytes_manifest,
     nvfp4_global_sidecar_bytes,
 )
-from .format_registry import canonical_format_name, list_formats
+from .format_registry import canonical_format_name, list_producer_formats
 from .gridbook_runtime_pin import load_gridbook_runtime_pin
 from .lane_spec import load_lane_spec
 from .model_profiles import detect_profile
@@ -422,7 +422,7 @@ def _legal_no_cb_options(
     if len(members) != len(member_evidence) or not members:
         raise ValueError("serving members/evidence coverage differs")
     available: list[dict[str, Any]] = []
-    for spec in list_formats():
+    for spec in list_producer_formats():
         fmt = canonical_format_name(spec.name)
         if is_cb_format(fmt):
             continue
@@ -989,7 +989,9 @@ def _validate_contract_binding(raw: object) -> str:
 def _validate_format_options(raw: object, *, where: str) -> list[dict[str, Any]]:
     if not isinstance(raw, list) or not raw:
         raise ValueError(f"{where} must be a non-empty list")
-    registered = {canonical_format_name(spec.name) for spec in list_formats()}
+    registered = {
+        canonical_format_name(spec.name) for spec in list_producer_formats()
+    }
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, item in enumerate(raw):

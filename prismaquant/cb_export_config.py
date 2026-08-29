@@ -36,6 +36,7 @@ from prismaquant.cb_layout import (
     codebook_subtable_shapes,
     family_for,
     parse_format_name,
+    parse_producer_format_name,
     type_size,
 )
 from prismaquant.export_native_compressed import (
@@ -823,10 +824,10 @@ def build_cb_scheme(
     mode = str(mode).lower()
     k = int(k)
     family = family_for(grid, mode)
-    parsed = parse_format_name(fmt)
+    parsed = parse_producer_format_name(fmt)
     if parsed is None or parsed[0] != family or parsed[1] != k:
         raise ValueError(
-            f"CB format/fields disagree: {fmt!r} vs "
+            f"CB producer format/fields disagree: {fmt!r} vs "
             f"grid={grid!r}, mode={mode!r}, k={k}"
         )
     tensors = _validated_codebook_sequence(fmt, codebook)

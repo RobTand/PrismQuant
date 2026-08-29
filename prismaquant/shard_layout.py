@@ -63,6 +63,8 @@ TENSOR_PAYLOAD_IDENTITY_SCHEMA = "prismaquant.tensor_payload_identity/1"
 
 def tensor_payload_identity(
     tensor_sha256: Mapping[str, str],
+    *,
+    include_tensor_sha256: bool = False,
 ) -> dict[str, object]:
     """Reduce per-tensor content digests to one layout-invariant identity.
 
@@ -79,7 +81,16 @@ def tensor_payload_identity(
     if not tensor_sha256:
         raise ValueError("cannot identify an empty tensor payload")
     rows = {str(name): str(digest) for name, digest in tensor_sha256.items()}
-    return {
+    if (
+        any(not name for name in rows)
+        or len(rows) != len(tensor_sha256)
+        or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in rows.values())
+    ):
+        raise ValueError(
+            "tensor payload identity requires unique nonempty names and "
+            "lowercase SHA-256 content digests"
+        )
+    result: dict[str, object] = {
         "schema": TENSOR_PAYLOAD_IDENTITY_SCHEMA,
         "algorithm": "sha256",
         "tensors": len(rows),
@@ -90,6 +101,13 @@ def tensor_payload_identity(
             ensure_ascii=False,
         ).encode("utf-8")).hexdigest(),
     }
+    if include_tensor_sha256:
+        # Strict release artifacts retain the producer's already-computed
+        # per-tensor ledger so the aggregate can be replayed against the exact
+        # finalized header census without rereading an 18 GB payload.  Generic
+        # artifacts keep the compact historical wire shape by default.
+        result["tensor_sha256"] = dict(sorted(rows.items()))
+    return result
 
 
 def shard_name(index: int, count: int) -> str:

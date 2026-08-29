@@ -39,7 +39,7 @@ export EXPORT_STREAMING=auto
 
 # --- JOINT menu: the CB ladder + vanilla NVFP4 (4.5) + FP8_DYNAMIC (8) ---
 # FULL rung range (Robert 2026-07-21: "support all possible bit widths —
-# marginal bits go to the best recipients"): EVERY integer fp4 rung K12-K24
+# marginal bits go to the best recipients"): EVERY integer fp4 rung K1-K25
 # (0.125-bpw steps) and EVERY integer fp8 rung K28-K48 (also 0.125), all
 # CUDA-served — odd/uneven k uses the ceil-first per-sub split (SubSplit in
 # cb_gemv.cu, encoder-anchored by test_fp8_uneven_split_* and the widened

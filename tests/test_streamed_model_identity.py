@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from transformers import LlamaConfig
 
 import prismaquant.cost_streaming as cost_streaming
 from prismaquant.cost_stage_checkpoint import canonical_json_sha256
@@ -20,13 +21,26 @@ from prismaquant.export_nvfp4_cb_streaming import (
 class _Config:
     _commit_hash = "source-revision"
 
+    def __init__(self, source: str = ""):
+        self._config = LlamaConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            num_key_value_heads=1,
+            vocab_size=32,
+        )
+        self._config._name_or_path = source
+
     def to_dict(self):
-        return {"model_type": "fixture", "hidden_size": 8}
+        return self._config.to_dict()
 
 
 def _fixture(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()
+    config = _Config(str(source))
+    (source / "config.json").write_text(json.dumps(config.to_dict()))
     body = source / "model-00001-of-00002.safetensors"
     sidecar = source / "model-00002-of-00002.safetensors"
     body.write_bytes(b"body-weights")
@@ -39,7 +53,7 @@ def _fixture(tmp_path: Path):
         "weight_map": checkpoint_map,
     }))
     runner = SimpleNamespace(
-        model=SimpleNamespace(config=_Config()),
+        model=SimpleNamespace(config=config),
         context=SimpleNamespace(
             # Deliberately omit the MTP shard, mirroring a streamed decoder
             # runner.  Complete identity must still cover the export sidecar.
@@ -51,6 +65,73 @@ def _fixture(tmp_path: Path):
         ),
     )
     return source, body, sidecar, checkpoint_map, runner
+
+
+def test_cached_streamed_identity_refuses_live_semantic_config_drift(
+    tmp_path,
+):
+    source, _body, _sidecar, _checkpoint_map, runner = _fixture(tmp_path)
+    cache = tmp_path / "streamed_model_identity.json"
+    cost_streaming.build_streamed_model_identity(
+        runner, str(source), identity_cache_path=cache,
+    )
+    before = json.loads((source / "config.json").read_text())
+    before["attention_bias"] = not bool(before.get("attention_bias", False))
+    (source / "config.json").write_text(json.dumps(before))
+
+    with pytest.raises(RuntimeError, match="live config differs"):
+        cost_streaming.validate_cached_streamed_model_identity(source, cache)
+
+
+def test_portable_streamed_identity_joins_independent_roots_and_staging_paths(
+    tmp_path,
+):
+    host_a = tmp_path / "sparky"
+    host_b = tmp_path / "sparklina"
+    host_a.mkdir()
+    host_b.mkdir()
+    source_a, _body_a, _sidecar_a, _map_a, runner_a = _fixture(host_a)
+    source_b, _body_b, _sidecar_b, _map_b, runner_b = _fixture(host_b)
+    runner_a.model.config = _Config("/tmp/prismaquant_stage_sparky")
+    runner_b.model.config = _Config("/tmp/prismaquant_stage_sparklina")
+    cache_a = host_a / "streamed_model_identity.json"
+    cache_b = host_b / "streamed_model_identity.json"
+
+    identity_a = cost_streaming.build_streamed_model_identity(
+        runner_a, str(source_a), identity_cache_path=cache_a,
+    )
+    identity_b = cost_streaming.build_streamed_model_identity(
+        runner_b, str(source_b), identity_cache_path=cache_b,
+    )
+    # v1 deliberately remains host-local for backward compatibility.
+    assert identity_a["content_sha256"] != identity_b["content_sha256"]
+    assert identity_a["config"]["_name_or_path"] != (
+        identity_b["config"]["_name_or_path"]
+    )
+    assert {Path(row["path"]).parent for row in identity_a["shards"]} == {
+        source_a.resolve()
+    }
+    assert {Path(row["path"]).parent for row in identity_b["shards"]} == {
+        source_b.resolve()
+    }
+
+    validated_a = cost_streaming.validate_cached_streamed_model_identity(
+        source_a, cache_a,
+    )
+    validated_b = cost_streaming.validate_cached_streamed_model_identity(
+        source_b, cache_b,
+    )
+    portable_a = cost_streaming.portable_streamed_model_content_identity(
+        validated_a,
+    )
+    portable_b = cost_streaming.portable_streamed_model_content_identity(
+        validated_b,
+    )
+    assert portable_a == portable_b
+
+    # The path-neutral join does not weaken each cache's local source binding.
+    with pytest.raises(RuntimeError, match="does not bind source"):
+        cost_streaming.validate_cached_streamed_model_identity(source_b, cache_a)
 
 
 def test_streamed_identity_covers_index_passthrough_and_validates_by_stat(

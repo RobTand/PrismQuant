@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+from concurrent.futures import Future
 import inspect
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -74,6 +76,37 @@ def test_one_slot_shared_context_refuses_speculative_prefetch():
     assert context.schedule_prefetch(0) is None
 
 
+@pytest.mark.parametrize("has_inflight", [False, True])
+def test_required_prefetch_refuses_cold_loader_when_residency_is_missing(
+    monkeypatch, has_inflight,
+):
+    import prismaquant.streaming_model as streaming_model
+
+    context = object.__new__(StreamingContext)
+    context.layer_cache = LayerCache(max_bytes=1 << 30, max_entries=2)
+    context._inflight = {}
+    context._inflight_lock = threading.Lock()
+    if has_inflight:
+        completed_without_residency = Future()
+        completed_without_residency.set_result(None)
+        context._inflight[0] = completed_without_residency
+
+    cold_reads = []
+
+    def forbidden_cold_read(*args, **kwargs):
+        cold_reads.append((args, kwargs))
+        raise AssertionError("required-prefetch path invoked cold loader")
+
+    monkeypatch.setattr(
+        streaming_model, "_read_layer_to_device", forbidden_cold_read,
+    )
+
+    with pytest.raises(RuntimeError, match="refusing synchronous cold"):
+        context.ensure_loaded(0, require_prefetched=True)
+
+    assert cold_reads == []
+
+
 def test_cost_streaming_builder_threads_slot_cap_and_disables_lookahead(
     monkeypatch,
 ):
@@ -111,6 +144,7 @@ def test_cost_streaming_builder_threads_slot_cap_and_disables_lookahead(
     assert captured["max_cache_slots"] == 1
     assert runner.context is context
     assert runner.prefetch_lookahead == 0
+    assert runner.require_prefetched_residency is False
 
 
 def test_dsv4_measurement_hard_wires_one_source_cache_slot():

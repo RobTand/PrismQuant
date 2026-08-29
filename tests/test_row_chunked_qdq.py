@@ -23,6 +23,8 @@ large difference rather than as noise.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -127,8 +129,12 @@ def test_unknown_format_falls_back_rather_than_guessing():
     unit, w = _unit(256, 512, rng)
     plugin = RegistryFormatPlugin.build("NVFP4", shape=w.shape, device="cuda")
     # A format the chunker does not know about must decline, so `price` uses the
-    # dense reference path instead of silently rendering something else.
-    object.__setattr__(plugin.spec, "name", "TOTALLY_MADE_UP_FORMAT")
-    object.__setattr__(plugin.spec, "family", "nonesuch")
+    # dense reference path instead of silently rendering something else. Build
+    # a private descriptor: RegistryFormatPlugin.build returns the registry's
+    # shared FormatSpec object, so mutating it would poison every later test in
+    # a GPU-enabled full-suite process.
+    plugin.spec = replace(
+        plugin.spec, name="TOTALLY_MADE_UP_FORMAT", family="nonesuch",
+    )
     assert plugin._row_chunked_qdq(
         torch.zeros(4, 4, device="cuda", dtype=torch.bfloat16)) is None

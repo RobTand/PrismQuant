@@ -2102,10 +2102,17 @@ def compute_aura_cost_streamed(
                 where="streamed AURA production cache",
             )
     if checkpoint_dir is not None:
-        if not cb_provenance:
+        # The checkpoint identity must embed a value-bearing render identity.
+        # Two sources qualify: CB provenance (CB menus), or the production-
+        # anchor renderer's exact identity (bound below as
+        # extra["production_anchor_renderer"], with the qname->format plan
+        # asserted equal above). A non-CB menu has no CB identity to bear, so
+        # an anchored non-CB run checkpoints on the anchor identity alone.
+        if not cb_provenance and anchor_identity is None:
             raise RuntimeError(
                 "streamed AURA durable checkpointing requires a value-bearing "
-                "CB ProductionWeightCache identity"
+                "render identity: a CB ProductionWeightCache identity or a "
+                "production-anchor renderer with exact identity"
             )
         if anchor_renderer is None:
             _validate_aura_checkpoint_cache_identity(production_cache)
@@ -2335,7 +2342,16 @@ def compute_aura_cost_streamed(
 
     # Identity validation above is intentionally before the first model
     # forward: a mismatched resume is a refusal, never a recomputation.
+    _log(
+        f"boundary capture: one streamed forward over calib "
+        f"{tuple(calib_ids.shape)} across {runner.num_layers} layers ..."
+    )
+    capture_started = time.time()
     batch = runner.capture_boundaries(calib_ids)
+    _log(
+        f"boundary capture done in {(time.time() - capture_started) / 60:.1f} "
+        f"min; starting {n_probes}-probe tail cotangents"
+    )
     device = runner.device
     dtype = runner.dtype
 
@@ -2373,8 +2389,20 @@ def compute_aura_cost_streamed(
     # boundary will not be read again during the reverse sweep.
     batch.activations_cpu[-1] = torch.empty(0)
 
+    reverse_started = time.time()
+    reverse_layers_done = 0
     for layer in reversed(range(runner.num_layers)):
-        runner.context.install(layer)
+        runner.context.install(
+            layer,
+            require_prefetched=runner.require_prefetched_residency,
+        )
+        # Forward boundary capture leaves the final lookahead window hot.
+        # Keep that pipeline moving in the direction of this traversal: the
+        # existing StreamingContext/LayerCache loads the next reverse layer
+        # while the current layer performs its expensive anchor render and
+        # adjoint probes.  Without this call, every layer after the retained
+        # tail window falls through ensure_loaded()'s synchronous cold path.
+        runner.schedule_reverse_prefetch(layer)
         pending = [
             name for name in names_by_layer.get(layer, [])
             if name not in completed_checkpoint_units
@@ -2735,6 +2763,20 @@ def compute_aura_cost_streamed(
                             source_weight_identity=source_weight_identity,
                         ),
                     )
+            # Closed-loop observability: a reverse layer is minutes of silent
+            # render+adjoint work at streamed scale, so each one reports its
+            # own rate and the sweep ETA the moment it lands.
+            reverse_layers_done += 1
+            if pending:
+                elapsed = time.time() - reverse_started
+                rate = reverse_layers_done / max(elapsed, 1e-9)
+                remaining = runner.num_layers - reverse_layers_done
+                _log(
+                    f"reverse layer {layer} done "
+                    f"({reverse_layers_done}/{runner.num_layers}, "
+                    f"{len(pending)} unit(s), {elapsed / 60:.1f} min elapsed, "
+                    f"ETA {remaining / rate / 60:.1f} min)"
+                )
         finally:
             for name in pending:
                 linears[name].weight.grad = None
@@ -2772,6 +2814,7 @@ def run_streamed_production_anchor_aura(
     h_detail_dir: str | Path | None = None,
     checkpoint_identity_extra: Mapping[str, object] | None = None,
     include_routed_experts: bool = True,
+    allow_packed_expert_omission: bool = False,
     collect_col_energy: bool = False,
     profile=None,
 ) -> dict:
@@ -2789,6 +2832,12 @@ def run_streamed_production_anchor_aura(
     The returned ordinary AURA payload carries scalar ``predicted_dloss`` rows
     and exact renderer/plan provenance.  Rendered weights and ``dW`` live only
     for the current reverse layer and are discarded before it is unloaded.
+
+    On a routed-expert model whose packed experts are priced by the empirical
+    unit-KL path, pass ``include_routed_experts=False`` together with
+    ``allow_packed_expert_omission=True``; the payload then carries no
+    routed-expert rows and the caller must merge the empirical rows before
+    allocation (the packed-expert coverage guard raises otherwise).
     """
     if checkpoint_dir is None:
         raise ValueError(
@@ -2948,7 +2997,7 @@ def run_streamed_production_anchor_aura(
         # 3-GiB guardian floor.
         dw_dtype="bfloat16",
         include_lm_head=False,
-        allow_packed_expert_omission=False,
+        allow_packed_expert_omission=allow_packed_expert_omission,
         collect_col_energy=collect_col_energy,
         checkpoint_dir=checkpoint_dir,
         resume=resume,
@@ -2986,6 +3035,19 @@ def run_streamed_production_anchor_aura(
         ),
     })
     return payload
+
+
+def _stage_aura_model(model_path: str) -> str:
+    """Return AURA's canonical text-only execution view of a checkpoint.
+
+    Wrapper checkpoints must execute the nested ``text_config`` values, while
+    already-flattened sources stay on their original path.  The shared stager
+    also owns process-exit cleanup of any temporary staged tree, keeping it
+    alive for the complete resident or streaming AURA run.
+    """
+    from prismaquant.sensitivity_probe import stage_text_only
+
+    return stage_text_only(model_path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -3147,14 +3209,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from prismaquant.calibration_data import load_wikitext_calibration_windowed
-    # Reuse the pipeline's text-only stager so multimodal (VL) checkpoints
-    # (e.g. Qwen3.6-27B Qwen3_5ForConditionalGeneration) load as a CausalLM
-    # with tensor names that match the production cache keys. No-op on
-    # pure-text checkpoints.
-    from prismaquant.build_rtn_cache import stage_multimodal
     from prismaquant.model_profiles import detect_profile
 
-    staged, _cleanup = stage_multimodal(args.model)
+    staged = _stage_aura_model(args.model)
     # Profile detection installs architecture-owned vendored modelling where
     # required and is also the fail-closed authority for routed-expert
     # membership.  Resolve it before model construction and reuse that exact

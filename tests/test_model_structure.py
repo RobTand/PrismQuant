@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -153,9 +154,14 @@ def test_qwen_structure_spec_matches_profile_naming():
     assert spec.rewrite_recipe_to_vllm("mtp.layers.0.mlp.gate_proj") == (
         "mtp.layers.0.mlp.gate_proj"
     )
+    # Both source layouts are real for this family: a staged text-only
+    # checkpoint keeps its wrapper-named index (`language_model.model.`) even
+    # when its config declares the native causal class (`model.`), so the
+    # regex must match either. `specs/qwen3_5.json` `moe.per_expert_regex` is
+    # the declared form; this literal is the independent check on it.
     assert profile.per_expert_moe_regex() == (
-        r"re:^language_model[.]model[.]layers[.][0-9]+[.]mlp[.]experts"
-        r"[.][0-9]+[.](gate|up|down)_proj$"
+        r"re:^(?:model|language_model[.]model)[.]layers[.][0-9]+[.]mlp"
+        r"[.]experts[.][0-9]+[.](gate|up|down)_proj$"
     )
     assert profile.per_expert_mtp_regex() == (
         r"re:^mtp[.]layers[.][0-9]+[.]mlp[.]experts[.][0-9]+"
@@ -417,13 +423,17 @@ def test_qwen35_dense_profile_uses_dense_structure_spec():
 
 
 def test_qwen36_model_type_aliases_route_dense_and_moe_profiles():
+    # The subject here is model_type alias routing, which is orthogonal to
+    # namespace selection -- so declare a real architecture. A *declared*
+    # config with no architecture is refused on purpose (it is not evidence
+    # for either namespace); that refusal is asserted separately below.
     dense = profile_from_config({
         "model_type": "qwen3_6",
-        "architectures": [],
+        "architectures": ["Qwen3_6ForCausalLM"],
     })
     moe = profile_from_config({
         "model_type": "qwen3_6_moe",
-        "architectures": [],
+        "architectures": ["Qwen3_6MoeForConditionalGeneration"],
     })
 
     assert isinstance(dense, Qwen3_5DenseProfile)
@@ -431,6 +441,16 @@ def test_qwen36_model_type_aliases_route_dense_and_moe_profiles():
     assert isinstance(moe, Qwen3_5Profile)
     assert not isinstance(moe, Qwen3_5DenseProfile)
     assert moe.structure_spec().id == "qwen3_5"
+
+    # Fail closed rather than inheriting the historical wrapper mapping: an
+    # alias-routed MoE config that declares no architecture cannot say whether
+    # its tensors are `model.` or `language_model.model.`.
+    ambiguous = profile_from_config({
+        "model_type": "qwen3_6_moe",
+        "architectures": [],
+    })
+    with pytest.raises(RuntimeError, match="declares no architecture"):
+        ambiguous.structure_spec()
 
 
 def test_gemma_structure_collapses_live_moe_and_injects_vllm_moe_prefix():

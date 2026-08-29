@@ -203,6 +203,27 @@ def test_no_fallback_means_the_unit_is_omitted(graph, profile):
     assert result.demoted_units == ()
 
 
+def test_reader_only_fp8_cb_rung_cannot_enter_a_uniform_assignment(
+        graph, profile):
+    with pytest.raises(ValueError, match="reader-only"):
+        build_uniform_assignment(
+            graph,
+            "FP8_CB_K29",
+            profile=profile,
+            target_profile="research",
+            source_kinds=_bf16_sources(graph),
+        )
+
+    with pytest.raises(AssertionError, match="reader-only"):
+        assert_assignment_legal(
+            {"model.layers.0.mlp.down_proj": "FP8_CB_K29"},
+            graph,
+            profile=profile,
+            target_profile="research",
+            source_kinds=_bf16_sources(graph),
+        )
+
+
 # ---------------------------------------------------------------------------
 # The output must pass the allocator's legality gate + the production parser
 # ---------------------------------------------------------------------------

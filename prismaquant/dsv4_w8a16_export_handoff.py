@@ -347,15 +347,86 @@ _PUBLISHED_FILES = frozenset({
 #     W8A16 lane assigns no CB rung, so the gate's per-unit loop sees no CB
 #     units on this lane; merge union with the R1 split-book gate reviewed
 #     line-by-line (both are additive parameters + calls at the same anchors).
+# RE-FROZEN 2026-08-24 (K1..K25 NVFP4 public producer scaffolding), after enumerating
+# the whole closure and reviewing reachability against THIS handoff:
+#   cb_export_config.py + nvfp4_cb_footprint.py -- the authoritative NVFP4
+#     product domain and exact codebook-sidecar accounting now include K1..K25.
+#     This handoff assigns only block-FP8 W8A16 source passthrough, no CB rung,
+#     so neither a CB scheme nor its sidecar/accounting branch is reached.
+#   nvfp4_cb_formats.py -- adds the digest-pinned nested d4 tables and uint32
+#     K32 direct research codec surface while preserving every historical
+#     lattice tensor hash. K26..K32 have no registry/export identity.
+#     W8A16 copies its checkpoint element/scale planes verbatim and never calls
+#     the CB field quantizer, lattice resolver, or bit packer.
+#   export_nvfp4_cb_streaming.py -- updates only the strict external Gridbook
+#     contract help text from v10 to v11. It cannot change exported bytes.
+# RE-FROZEN 2026-08-24 (producer assignment preflight), after enumerating the
+# whole closure and reviewing reachability against THIS handoff:
+#   export_nvfp4_cb_streaming.py -- adds the shared assignment parser as an
+#     outer decorator, before the transactional output wrapper. A valid W8A16
+#     assignment is parsed once more and then follows the byte-identical export
+#     body; an invalid/research-only CB spelling now refuses before creating a
+#     destination or preserved `.tmp-*` tree. The decorator neither rewrites
+#     the assignment nor touches tensor data, source discovery, or W8A16
+#     passthrough emission.
+# RE-FROZEN 2026-08-24 (strict compiled CB scoring from the refreshed RTX4090
+# parent), after reviewing the only changed closure file against THIS legacy
+# handoff:
+#   nvfp4_cb_formats.py -- imports the closed compiled-helper contract and
+#     routes CB VQ/scale-scoring reductions through it when strict campaign
+#     compilation is requested. The W8A16 handoff copies published source-FP8
+#     element/scale planes verbatim and never enters those CB scoring helpers;
+#     no wire, tensor-name, source-discovery, or passthrough branch changed.
+#     Keeping this frozen reproduction gate green is legacy compatibility, not
+#     maintained target eligibility: hardware-scoped production profiles must
+#     admit W8A16 separately, and the SM120 profile explicitly denies it.
+#
+# RE-FROZEN 2026-08-28 for three `93d340a` changes, each reviewed against THIS
+# handoff rather than merely re-hashed.  All three are inert on the DSv4 W8A16
+# lane; DeepSeek-v4 overrides none of the new accessors and inherits their
+# fail-closed defaults.
+#   export_nvfp4_cb_streaming.py -- adds the PrismaSnap lane refusals
+#     (`@refuse_prismasnap_lane_before_output(lane="Gridbook/codebook")` and
+#     the `main()` precheck).  Both fire only when the source directory carries
+#     PrismaSnap provenance.  A DSv4 W8A16 source is never Snap-prepared
+#     (PrismaSnap refuses non-BF16 sources outright), so both are inert here
+#     and the emitted bytes are unchanged.
+#   model_profiles/base.py -- adds `_declared_model_path` private intake plus
+#     two accessors, `rms_norm_parameter_offset()` and
+#     `prismasnap_moe_layer_contract()`, each defaulting to `None`.  `None` is
+#     the fail-closed value: an offline source transform refuses rather than
+#     inferring a gamma encoding or an MoE graph.  DeepSeek-v4 declares
+#     neither, and this lane performs no offline transform.
+#   model_profiles/registry.py -- attaches the resolved checkpoint root to the
+#     profile as private intake evidence.  The sole consumer is
+#     `qwen3_5.py:155`; DeepSeek-v4 never reads it.
+#
+# Every digest above is a HEAD blob, so the closure is exact at HEAD.  FOUR of
+# the fifteen additionally differ in the working tree and are deliberately NOT
+# stamped to their worktree bytes; the gate hashes the worktree, so it refuses
+# until each lands and is reviewed:
+#   base.py, registry.py -- re-stamped ABOVE for `93d340a` only.  The worktree
+#     has since changed them again (base.py: `concat_merge_groups`,
+#     `runtime_loads_source_fp8`, `requires_multimodal_skeleton`; registry.py:
+#     two profile registrations).  Those newer edits are NOT covered by the
+#     review recorded above and need their own before the next stamp.
+#   layer_streaming.py, production_weight_cache.py -- unchanged since their
+#     last freeze at HEAD; the worktree edits need real review rather than a
+#     re-hash, because DSv4 W8A16 executes both paths: the default-ON threaded
+#     gather in the streamed read, and `fill_packed_expert_cache_entries` for
+#     packed experts.
+# Sequencing: because these four span several commits, the re-stamp covering
+# them belongs in the LAST commit that touches any of them, or the gate is red
+# at every intermediate commit.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
-        "3380385f601623fc5d5b31147a226da15928b77b99dc15d2719e0ccb54232d1b"
+        "0714e841ebe0c1960186bbc20deeb367bd4737d0475d198bd653e9a400a5c54f"
     ),
     "prismaquant/cb_export_config.py": (
-        "2bca669278cc1f3195c27747c05facea497e7b6ff2912bad7f917a184d1d6f94"
+        "3aa767bba9e689d50234730846a1671088ec0b16278d18aa6fa2693815294412"
     ),
     "prismaquant/nvfp4_cb_formats.py": (
-        "1f29d3c08af0272f8a709a1b820da9caeafa4e27865fa552e1d99432d4cb74f9"
+        "9f886165d4495f8e93615ac3804b41d87a69c8c4526833c196817366147d23d1"
     ),
     "prismaquant/dspark_source_metadata.py": (
         "94fac4b16922f381cffe989d7b9b1d00f211bb93d9479dfde30eb0c02ef167f7"
@@ -364,10 +435,10 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "fb20303ed1b017a5a7f3a035d5ef43880822d775e252c28a08f32a67f8104c95"
     ),
     "prismaquant/model_profiles/base.py": (
-        "69fcddeb8c5de48756bc47b053782f2ddd9e2773c68176248f679e8f5fbd0e5c"
+        "f9a89bfa4aa19447bb30346e95bbb0ea1da054d18faebbddbeefd4f8534187e6"
     ),
     "prismaquant/model_profiles/registry.py": (
-        "2fb8bcc01fbfd3b89870d387d335f804b05378f9853f223469c619e7ab766b90"
+        "3b88ee0d37521dd0a6c0a9a905af02d4109b4ccdec1e7a4c41a4b817f496f2be"
     ),
     "prismaquant/model_profiles/deepseek_v4.py": (
         "6368f5657fbfb3b77a886e9bc0c589885d9240c49fdb77635d4bf2a74164b6f6"
@@ -385,7 +456,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "1cc27e3b64043f9873da528ae2aa128e37c15be303109509f713b8d738c59f36"
     ),
     "prismaquant/nvfp4_cb_footprint.py": (
-        "68fa72cfb7274ceb8152db31940b2401e3d25485ea4b5a589ee8366b52997b93"
+        "96bc38a7ab18c6d2401ed2b66141eef9809409c78468f8ceb16c0891b9701547"
     ),
     "prismaquant/artifact_completeness.py": (
         "7f0c6c74733c2503b1e9607383264479007f49ae04e41700327bf0e97ab59767"

@@ -64,6 +64,7 @@ from .autoscale import (
 from .layer_streaming import (
     _build_fp8_scale_inv_map,
     LayerCache,
+    _build_concat_merger,
     _build_expert_packer,
     _build_install_resolver,
     _build_weight_map,
@@ -376,6 +377,19 @@ def _classify_shard(regex: str) -> str:
 # Built once for the whole run and reused across every shard. Holding this
 # object idle between shards costs the head weights + cache RAM only;
 # decoder layers live on meta or on disk and get installed transiently.
+def _prefetch_delivery_enabled() -> bool:
+    """Prefetch delivery: a completed speculative read is always handed to
+    its consumer, even when the cache declines to retain it.
+
+    ``PRISMAQUANT_PREFETCH_DELIVERY=0`` reproduces the whole pre-2026-08-26
+    loader schedule for a controlled A/B — discard-on-refusal, no admission
+    bound, no walk top-up, static-budget lookahead. Production leaves it on.
+    """
+    return str(
+        os.environ.get("PRISMAQUANT_PREFETCH_DELIVERY", "1")
+    ).strip().lower() not in {"0", "false", "no", "off"}
+
+
 # ---------------------------------------------------------------------------
 class StreamingContext:
     def __init__(self, *, model, base_model, layers, layers_prefix: str,
@@ -390,7 +404,8 @@ class StreamingContext:
                  estimated_layer_bytes: int = 0,
                  prefetch_workers: int = 3,
                  prefetch_min_available_bytes: int = 0,
-                 expert_packer=None):
+                 expert_packer=None,
+                 concat_merger=None):
         self.model = model
         self.base_model = base_model
         self.layers = layers
@@ -430,8 +445,29 @@ class StreamingContext:
         # every other checkpoint/model (zero behavior change). Built once
         # in `_build_streaming_context` from the model profile's spec.
         self.expert_packer = expert_packer
+        # Optional N->1 concat bridge for checkpoints that store one live
+        # parameter as several source tensors (transformers'
+        # `Concatenate(dim=...)` merges, declared per family as the spec's
+        # `concat_merges`). None for every other checkpoint/model (zero
+        # behavior change). Built once in `_build_streaming_context`.
+        self.concat_merger = concat_merger
         self._inflight: dict[int, Any] = {}
         self._inflight_lock = threading.Lock()
+        # Sequential-walk tracking for the automatic prefetch top-up.
+        # Every streamed consumer (probe phase-1/phase-3, cost_streaming's
+        # forward and reverse sweeps, incremental_measure_quant_cost) walks
+        # layers with a +-1 stride; `install()` infers that stride and keeps
+        # the achievable lookahead window enqueued, so a caller whose own
+        # `schedule_prefetch(L + depth)` call was refused under memory
+        # pressure still gets the nearer layers queued on the next step
+        # instead of dropping to a cold read for the rest of the walk.
+        self._last_installed: int | None = None
+        self._walk_step: int = 0
+        # Diagnostics: reads the cache declined to retain but that were
+        # still delivered to the consumer from the in-flight future. Before
+        # the delivery fix these were silently discarded and re-read.
+        self.prefetch_delivered_unretained = 0
+        self.prefetch_released_stale = 0
         self.configure_runtime_pressure_floor()
 
     def memory_pressure_floor_bytes(self) -> int:
@@ -451,6 +487,12 @@ class StreamingContext:
         # schedule_prefetch's check may be stale if the queue was deep,
         # and the cache's dynamic budget only kicks in at put() time —
         # which is too late on UMA where the read itself can OOM.
+        #
+        # Cancelling here — BEFORE the read — is the only legal way to
+        # decline a scheduled prefetch. Once the bytes are on the wire the
+        # consumer is going to demand them within `lookahead` steps and
+        # will force-insert them itself, so discarding a finished read
+        # saves zero peak memory and costs one full re-read.
         pressure_floor = self.memory_pressure_floor_bytes()
         if pressure_floor > 0:
             try:
@@ -467,15 +509,71 @@ class StreamingContext:
         tensors = _read_layer_to_device(
             prefix, self.weight_shard, self.weight_ckpt, self.dtype,
             self.device, fp8_scale_inv_map=self.fp8_scale_inv_map,
-            pack_experts=self.expert_packer)
-        # v20 fix #5: prefetch path doesn't force-insert. If the layer
-        # exceeds effective budget, the put returns False and the
-        # tensors fall out of scope here — ensure_loaded will re-load
-        # synchronously when actually needed.
-        self.layer_cache.put(L, tensors, force=False, pinned_until_read=True)
-        with self._inflight_lock:
-            self._inflight.pop(L, None)
+            pack_experts=self.expert_packer,
+            merge_concat=self.concat_merger)
+        # The cache may still decline to RETAIN the layer under its dynamic
+        # budget (or evict it as `pinned_until_read` before the consumer
+        # arrives). That is a retention decision, not a delivery decision:
+        # this future keeps the tensors reachable until `ensure_loaded`
+        # claims them. The inflight entry is deliberately NOT popped here —
+        # popping on completion is what previously turned every refused or
+        # pre-empted put into a second synchronous read of the same bytes.
+        retained = self.layer_cache.put(
+            L, tensors, force=False, pinned_until_read=True)
+        if not _prefetch_delivery_enabled():
+            # Pre-fix reproduction lever (A/B only): pop on completion and
+            # drop the tensors when the cache refused to retain them, which
+            # is what forced the consumer into a second synchronous read of
+            # the identical bytes. Never set this in production.
+            with self._inflight_lock:
+                self._inflight.pop(L, None)
+            if not retained:
+                return None
         return tensors
+
+    def _claim_inflight(self, L: int):
+        """Drop layer L's prefetch future, releasing its tensor reference."""
+        with self._inflight_lock:
+            return self._inflight.pop(L, None)
+
+    def affordable_prefetch_slots(self) -> int:
+        """How many layer-sized speculative reads host memory can carry.
+
+        This is the admission budget: `put()`'s dynamic cap and the
+        pressure floor both measure MemAvailable, so the prefetch scheduler
+        has to measure it too or it enqueues reads the retention path is
+        guaranteed to reject.
+        """
+        est = int(self.estimated_layer_bytes or 0)
+        if est <= 0:
+            return max(1, self.prefetch_workers)
+        floor = self.memory_pressure_floor_bytes()
+        try:
+            import psutil
+            avail = int(psutil.virtual_memory().available)
+        except Exception:
+            return max(1, self.prefetch_workers)
+        return max(0, (avail - int(floor)) // est)
+
+    def _release_stale_prefetches(self, keep: set[int]) -> int:
+        """Drop finished prefetches the walk has moved past.
+
+        Futures now hold their layer's bytes until claimed, so a walk that
+        turns around (phase-1 forward -> phase-3 reverse) must be able to
+        hand those bytes back. Only finished-or-cancellable entries are
+        dropped; a read still in progress is left to complete.
+        """
+        released = 0
+        with self._inflight_lock:
+            for idx in list(self._inflight):
+                if idx in keep:
+                    continue
+                fut = self._inflight[idx]
+                if fut.cancel() or fut.done():
+                    self._inflight.pop(idx, None)
+                    released += 1
+        self.prefetch_released_stale += released
+        return released
 
     def schedule_prefetch(self, L: int):
         # A one-slot policy is used by the DSv4 anchored-AURA campaign on a
@@ -500,21 +598,98 @@ class StreamingContext:
         with self._inflight_lock:
             if L in self._inflight:
                 return self._inflight[L]
+            # Admission reserves only unfinished reads. A completed future is
+            # intentionally kept here until its consumer claims it, but its
+            # tensor storage is already reflected in MemAvailable (and may be
+            # aliased by LayerCache). Counting that delivery alias again as a
+            # future allocation double-reserves the same layer and can refuse
+            # a safe tail refill. At least one unfinished read is still
+            # admitted above the floor: that is the overlap the walk needs,
+            # and it is exactly what the cold path would allocate anyway.
+            if _prefetch_delivery_enabled():
+                unfinished = sum(
+                    1 for fut in self._inflight.values() if not fut.done())
+                if unfinished >= max(1, self.affordable_prefetch_slots()):
+                    self.prefetch_memory_skips += 1
+                    return None
             fut = self.prefetch_pool.submit(self._prefetch_worker, L)
             self._inflight[L] = fut
             return fut
 
-    def ensure_loaded(self, L: int) -> tuple[dict[str, torch.Tensor], str]:
+    def _top_up_prefetch(self, L: int) -> None:
+        """Keep the achievable lookahead window enqueued for a +-1 walk.
+
+        Callers already issue one `schedule_prefetch(L + depth)` per step,
+        but that single call is fire-and-forget: when it is refused (memory
+        pressure, admission bound) nothing ever re-queues that layer and the
+        walk falls to cold reads for the rest of the sweep. Re-deriving the
+        window each step, nearest layer first, makes the schedule
+        self-healing and covers every streamed consumer at once.
+        """
+        prev = self._last_installed
+        self._last_installed = L
+        step = 0 if prev is None else L - prev
+        if step in (1, -1):
+            self._walk_step = step
+        elif step != 0:
+            # Random access (polish flips, isolated re-runs): no direction
+            # to extrapolate, so don't speculate.
+            self._walk_step = 0
+        step = self._walk_step
+        if (not step or self.max_cache_slots == 1
+                or not _prefetch_delivery_enabled()):
+            return
+        depth = min(self.suggest_prefetch_lookahead(),
+                    max(1, self.affordable_prefetch_slots()))
+        if depth <= 0:
+            return
+        window = [L + step * k for k in range(1, depth + 1)]
+        self._release_stale_prefetches({L, *window})
+        for target in window:
+            self.schedule_prefetch(target)
+
+    def ensure_loaded(
+        self,
+        L: int,
+        *,
+        require_prefetched: bool = False,
+    ) -> tuple[dict[str, torch.Tensor], str]:
+        """Return one resident layer, optionally refusing a cold source read.
+
+        ``require_prefetched`` is the fail-closed production mode for a
+        traversal that has already established its prefetch schedule.  A hot
+        cache entry is accepted; an in-flight prefetch is awaited.  If neither
+        produces a resident entry, fail before calling the synchronous shard
+        loader so a broken schedule cannot silently turn a GPU-bound campaign
+        into serialized NVMe I/O.
+        """
         cached = self.layer_cache.get(L)
         if cached is not None:
+            self._claim_inflight(L)
             return cached, "hot"
         with self._inflight_lock:
             fut = self._inflight.get(L)
         if fut is not None:
-            fut.result()
+            delivered = fut.result()
+            self._claim_inflight(L)
             cached = self.layer_cache.get(L)
             if cached is not None:
                 return cached, "wait"
+            if delivered:
+                # The read completed but the cache declined to retain it
+                # (dynamic budget refusal, or a pressure trim / pinned
+                # eviction that beat the consumer here). Deliver it anyway
+                # and insert on the cold path's terms — the consumer needs
+                # this layer now, so re-reading the identical bytes buys
+                # nothing but disk time.
+                self.prefetch_delivered_unretained += 1
+                self.layer_cache.put(L, delivered)
+                return delivered, "wait"
+        if require_prefetched:
+            raise RuntimeError(
+                f"streamed layer {L} is not resident after its required "
+                "prefetch; refusing synchronous cold source read"
+            )
         # v20 fix #1: pre-evict to make room for the synchronous read.
         # Cold path can't skip (the consumer needs this layer now), so
         # prepare_for_load best-efforts; if effective_max < layer size,
@@ -524,13 +699,18 @@ class StreamingContext:
         tensors = _read_layer_to_device(
             prefix, self.weight_shard, self.weight_ckpt, self.dtype,
             self.device, fp8_scale_inv_map=self.fp8_scale_inv_map,
-            pack_experts=self.expert_packer)
+            pack_experts=self.expert_packer,
+            merge_concat=self.concat_merger)
         self.layer_cache.put(L, tensors)
         return tensors, "cold"
 
-    def install(self, L: int):
-        tensors, src = self.ensure_loaded(L)
+    def install(self, L: int, *, require_prefetched: bool = False):
+        tensors, src = self.ensure_loaded(
+            L, require_prefetched=require_prefetched,
+        )
         _fast_install(self.install_resolvers[L], tensors, self.device, model=self.model)
+        # Re-derive the lookahead window now that this layer's slot is free.
+        self._top_up_prefetch(L)
         # v20 step 3+4: value-aware retention. The historical
         # one-way-stream assumption (discard immediately after install)
         # is wrong for multi-shard workloads where every phase-3 shard
@@ -549,6 +729,11 @@ class StreamingContext:
 
     def shutdown(self):
         self.prefetch_pool.shutdown(wait=True)
+        # Completed-but-unclaimed futures hold a reference to their layer
+        # tensors (that is the delivery guarantee); drop them so a torn-down
+        # context does not pin layer bytes until it is garbage-collected.
+        with self._inflight_lock:
+            self._inflight.clear()
 
     def reset_between_chunks(self, retain_cache: bool = False) -> dict:
         """Drop accumulated state at chunk boundaries in the multi-chunk
@@ -621,6 +806,12 @@ class StreamingContext:
         self.layer_cache.set_priority_layers(set())
         self.configure_runtime_pressure_floor()
         self.prefetch_memory_skips = 0
+        self.prefetch_delivered_unretained = 0
+        self.prefetch_released_stale = 0
+        # The next chunk starts a fresh forward walk; a stale stride would
+        # make the first install top-up in the previous chunk's direction.
+        self._last_installed = None
+        self._walk_step = 0
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
@@ -645,6 +836,14 @@ class StreamingContext:
             1, int(self.layer_cache.max_bytes // self.estimated_layer_bytes))
         if self.max_cache_slots is not None:
             cache_slots = min(cache_slots, self.max_cache_slots)
+        # `max_bytes` is the STATIC budget; `put()` enforces the dynamic one
+        # (MemAvailable - reserve). Sizing the lookahead off the static
+        # budget alone produced a depth-4 opening burst on a box that could
+        # only retain one layer, so layers 1..3 were queued, refused, and
+        # never re-queued. Clamp to what memory can actually carry.
+        if _prefetch_delivery_enabled():
+            cache_slots = min(
+                cache_slots, max(1, self.affordable_prefetch_slots()) + 1)
         # Queue at most what the cache can plausibly retain. More than
         # this tends to turn prefetch into churn on memory-constrained
         # runs, especially when backward has become fast.
@@ -661,12 +860,17 @@ class StreamingContext:
         est_gb = self.estimated_layer_bytes / (1024 ** 3)
         min_gb = self.prefetch_min_available_bytes / (1024 ** 3)
         floor_gb = self.memory_pressure_floor_bytes() / (1024 ** 3)
+        from .layer_streaming import layer_read_threads
         return (f"Prefetch: workers={self.prefetch_workers} "
+                f"read_threads={layer_read_threads()} "
                 f"inflight={inflight} est_layer={est_gb:.1f}GB "
                 f"max_cache_slots={self.max_cache_slots} "
+                f"slots_affordable={self.affordable_prefetch_slots()} "
                 f"min_avail={min_gb:.1f}GB "
                 f"pressure_floor={floor_gb:.1f}GB "
-                f"mem_skips={self.prefetch_memory_skips}")
+                f"mem_skips={self.prefetch_memory_skips} "
+                f"delivered_unretained={self.prefetch_delivered_unretained} "
+                f"released_stale={self.prefetch_released_stale}")
 
 
 def _resolve_declared_model_cls(config, default_cls):
@@ -946,6 +1150,20 @@ def _build_streaming_context(model_path: str, *,
 
     from .sensitivity_probe import stage_multimodal, stage_text_only
 
+    if not multimodal:
+        # A family with no <Arch>ForCausalLM auto-route (e.g. glm5_next on
+        # transformers 5.16) cannot build a text-only skeleton at all; the
+        # profile declares that fact and every caller inherits the flip
+        # here rather than each call site threading `multimodal=True`.
+        from .model_profiles import detect_profile
+
+        _profile = detect_profile(model_path)
+        if _profile.requires_multimodal_skeleton():
+            print(f"{log_prefix} profile {_profile.name} has no text-only "
+                  "skeleton route; using the multimodal construction",
+                  flush=True)
+            multimodal = True
+
     bypass_hf_fp8_rewrite = False
     if multimodal:
         staged = stage_multimodal(model_path)
@@ -1216,4 +1434,5 @@ def _build_streaming_context(model_path: str, *,
         prefetch_workers=worker_count,
         prefetch_min_available_bytes=min_available_bytes,
         expert_packer=_build_expert_packer(model, weight_ckpt),
+        concat_merger=_build_concat_merger(model, weight_ckpt),
     )

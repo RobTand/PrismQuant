@@ -62,6 +62,11 @@ GRIDBOOK_DISTRIBUTION_SCHEMA = (
     "prismaquant.installed_gridbook_distribution/2"
 )
 GRIDBOOK_IMPORT_ORIGIN_SCHEMA = "prismaquant.gridbook_import_origin/1"
+VLLM_COMPILATION_PROVENANCE_SCHEMA = (
+    "prismaquant.vllm_compilation_provenance/1"
+)
+VLLM_RUNTIME_PIN_SCHEMA = "prismaquant.vllm_runtime_pin.v1"
+VLLM_REPOSITORY = "https://github.com/vllm-project/vllm.git"
 GRIDBOOK_REPOSITORY = "https://github.com/RobTand/gridbook.git"
 GOLD_PRODUCER_IDENTITY_SCHEMA = "prismaquant.gold_producer_identity/1"
 MODELS_ENDPOINT_BINDING_SCHEMA = (
@@ -195,6 +200,16 @@ SERVER_ENV_ALLOWLIST = (
     # The imported module origin is attested separately below.
     "PYTHONSAFEPATH",
     *_gridbook_environment_allowlist(),
+)
+
+# Candidate-v10 inputs belong to the strict Ada campaign, not to the shared
+# historical manifest contract.  Keeping the projection profile-specific
+# preserves byte-for-byte replay of existing Gridbook release evidence while
+# proving that neither v10 diagnostic selector entered the RTX 4090 server.
+RTX4090_SERVER_ENV_ALLOWLIST = (
+    *SERVER_ENV_ALLOWLIST,
+    "PRISMAQUANT_CB_BF16_SWIZZLE",
+    "PRISMAQUANT_CB_FP4V2_DENSE_R2",
 )
 
 #: The extensions whose residency moves the numbers (§7.4).
@@ -763,6 +778,296 @@ def package_versions(names: Sequence[str] = TRACKED_PACKAGES) -> dict[str, str]:
     return out
 
 
+def _torch_compile_wrapper_contract(source: str) -> dict[str, Any]:
+    """Prove the installed vLLM wrapper's direct ``torch.compile`` call.
+
+    Runtime logs expose the resolved compilation mode, but they do not print
+    the Python keyword arguments passed to ``torch.compile``.  The strict Ada
+    lane therefore binds the installed wrapper bytes and derives the two
+    load-bearing keyword values from its AST.  Exactly one direct call is
+    accepted so a second, weaker path cannot hide behind one good call.
+    """
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ValueError("installed vLLM compilation wrapper is not valid Python") from exc
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "compile"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+    ]
+    if len(calls) != 1:
+        raise ValueError(
+            "installed vLLM wrapper must contain exactly one direct "
+            f"torch.compile call, observed {len(calls)}"
+        )
+    keywords = {
+        keyword.arg: keyword.value
+        for keyword in calls[0].keywords
+        if keyword.arg is not None
+    }
+    fullgraph = keywords.get("fullgraph")
+    dynamic = keywords.get("dynamic")
+    if not (
+        isinstance(fullgraph, ast.Constant)
+        and fullgraph.value is True
+        and isinstance(dynamic, ast.Constant)
+        and dynamic.value is False
+    ):
+        raise ValueError(
+            "installed vLLM wrapper must call torch.compile with literal "
+            "fullgraph=True and dynamic=False"
+        )
+    if "backend" not in keywords:
+        raise ValueError(
+            "installed vLLM wrapper does not forward an explicit compile backend"
+        )
+    return {
+        "direct_torch_compile_calls": 1,
+        "fullgraph": True,
+        "dynamic": False,
+        "backend_explicit": True,
+    }
+
+
+def _normalized_vllm_runtime_pin(
+    expected_pin: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the closed official-VCS identity for a strict vLLM install."""
+
+    required = {
+        "schema",
+        "repository",
+        "commit",
+        "version",
+        "record_sha256",
+    }
+    if (
+        not isinstance(expected_pin, Mapping)
+        or set(expected_pin) != required
+        or expected_pin.get("schema") != VLLM_RUNTIME_PIN_SCHEMA
+        or expected_pin.get("repository") != VLLM_REPOSITORY
+        or re.fullmatch(
+            r"[0-9a-f]{40}", str(expected_pin.get("commit", ""))
+        ) is None
+        or not isinstance(expected_pin.get("version"), str)
+        or not str(expected_pin.get("version"))
+        or re.fullmatch(
+            r"[0-9a-f]{64}", str(expected_pin.get("record_sha256", ""))
+        ) is None
+    ):
+        raise ValueError(
+            "vLLM runtime pin must be the closed official VCS/RECORD identity"
+        )
+    return {key: expected_pin[key] for key in sorted(required)}
+
+
+def validate_vllm_pep610_direct_url(
+    direct_url: object,
+    expected_pin: Mapping[str, Any],
+) -> None:
+    """Require one exact official vLLM Git revision, never a fork or wheel."""
+
+    pin = _normalized_vllm_runtime_pin(expected_pin)
+    expected_vcs = {
+        "vcs": "git",
+        "requested_revision": pin["commit"],
+        "commit_id": pin["commit"],
+    }
+    if (
+        not isinstance(direct_url, Mapping)
+        or set(direct_url) != {"url", "vcs_info"}
+        or direct_url.get("url") != VLLM_REPOSITORY
+        or direct_url.get("vcs_info") != expected_vcs
+    ):
+        raise ValueError(
+            "installed vLLM PEP 610 direct_url is not the exact official "
+            "pinned VCS commit"
+        )
+
+
+def vllm_compilation_provenance(
+    expected_pin: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bind the installed vLLM wrapper and its fullgraph compile contract.
+
+    This is metadata/source inspection only: it never imports vLLM and never
+    creates a CUDA context.  The package RECORD proves the inspected wrapper
+    is an installed distribution member; ``find_spec`` proves the top-level
+    import resolves to that same distribution rather than a CWD/PYTHONPATH
+    shadow.
+    """
+
+    strict_pin = (
+        _normalized_vllm_runtime_pin(expected_pin)
+        if expected_pin is not None
+        else None
+    )
+    try:
+        distribution = importlib_metadata.distribution("vllm")
+    except Exception as exc:
+        raise ValueError("the vLLM distribution is not installed") from exc
+    name = str(distribution.metadata.get("Name", "")).strip().lower()
+    version = str(distribution.version)
+    if (
+        name != "vllm"
+        or not version
+        or (strict_pin is not None and version != strict_pin["version"])
+    ):
+        raise ValueError("installed vLLM distribution name/version is malformed")
+
+    files = tuple(distribution.files or ())
+    init_items = [item for item in files if str(item) == "vllm/__init__.py"]
+    wrapper_items = [
+        item for item in files
+        if str(item) == "vllm/compilation/wrapper.py"
+    ]
+    if len(init_items) != 1 or len(wrapper_items) != 1:
+        raise ValueError(
+            "installed vLLM distribution must contain exactly one package "
+            "initializer and compilation wrapper"
+        )
+    installed_init = Path(distribution.locate_file(init_items[0]))
+    wrapper_path = Path(distribution.locate_file(wrapper_items[0]))
+    for path, label in (
+        (installed_init, "initializer"),
+        (wrapper_path, "compilation wrapper"),
+    ):
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"installed vLLM {label} is missing or is a symlink")
+    installed_init = installed_init.resolve(strict=True)
+    wrapper_path = wrapper_path.resolve(strict=True)
+    package_root = installed_init.parent.resolve(strict=True)
+    try:
+        wrapper_path.relative_to(package_root)
+    except ValueError as exc:
+        raise ValueError("installed vLLM wrapper escapes its package root") from exc
+
+    spec = importlib.util.find_spec("vllm")
+    spec_origin = getattr(spec, "origin", None)
+    search = getattr(spec, "submodule_search_locations", None)
+    if not isinstance(spec_origin, str) or search is None:
+        raise ValueError("vLLM import resolution has no concrete package origin")
+    try:
+        resolved_origin = Path(spec_origin).resolve(strict=True)
+        resolved_search = sorted({
+            str(Path(item).resolve(strict=True)) for item in search
+        })
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError("vLLM import resolution paths are unreadable") from exc
+    if resolved_origin != installed_init or resolved_search != [str(package_root)]:
+        raise ValueError(
+            "vLLM import resolution differs from the installed distribution "
+            "(CWD/PYTHONPATH shadow suspected)"
+        )
+
+    record_items = [
+        item for item in files
+        if item.name == "RECORD" and ".dist-info" in str(item.parent)
+    ]
+    if len(record_items) != 1:
+        raise ValueError("installed vLLM distribution must contain one RECORD")
+    record_path = Path(distribution.locate_file(record_items[0]))
+    if not record_path.is_file() or record_path.is_symlink():
+        raise ValueError("installed vLLM RECORD is missing or is a symlink")
+    record_path = record_path.resolve(strict=True)
+    record_rows: dict[str, tuple[str, str]] = {}
+    try:
+        with record_path.open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.reader(handle):
+                if len(row) != 3 or not row[0] or row[0] in record_rows:
+                    raise ValueError("malformed or duplicate RECORD row")
+                record_rows[row[0]] = (row[1], row[2])
+    except Exception as exc:
+        raise ValueError("installed vLLM RECORD is malformed") from exc
+
+    identity = _file_identity(wrapper_path)
+    record_hash, record_size = record_rows.get(
+        "vllm/compilation/wrapper.py", ("", "")
+    )
+    if not record_hash.startswith("sha256="):
+        raise ValueError("installed vLLM RECORD has no wrapper SHA-256")
+    try:
+        encoded = record_hash.removeprefix("sha256=")
+        decoded = base64.urlsafe_b64decode(
+            encoded + "=" * (-len(encoded) % 4)
+        ).hex()
+    except Exception as exc:
+        raise ValueError("installed vLLM RECORD wrapper digest is malformed") from exc
+    if (
+        decoded != identity["sha256"]
+        or not record_size.isdigit()
+        or int(record_size) != identity["bytes"]
+    ):
+        raise ValueError("installed vLLM wrapper differs from its RECORD")
+    record_identity = _file_identity(record_path)
+    direct_url = None
+    direct_relative = None
+    direct_identity = None
+    if strict_pin is not None:
+        if record_identity["sha256"] != strict_pin["record_sha256"]:
+            raise ValueError(
+                "installed vLLM RECORD differs from the exact runtime pin"
+            )
+        direct_relative, direct_path = _distribution_file(
+            distribution, filename="direct_url.json", distribution_name="vLLM"
+        )
+        direct_path = direct_path.resolve(strict=True)
+        try:
+            direct_url = json.loads(direct_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(
+                "installed vLLM direct_url.json is unreadable"
+            ) from exc
+        validate_vllm_pep610_direct_url(direct_url, strict_pin)
+        direct_identity = _file_identity(direct_path)
+        direct_hash, direct_size = record_rows.get(
+            direct_relative, ("", "")
+        )
+        if (
+            _decode_record_sha256(
+                direct_hash, path=direct_relative, distribution_name="vLLM"
+            )
+            != direct_identity["sha256"]
+            or not direct_size.isdigit()
+            or int(direct_size) != direct_identity["bytes"]
+        ):
+            raise ValueError(
+                "installed vLLM direct_url.json differs from its RECORD"
+            )
+    try:
+        source = wrapper_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("installed vLLM wrapper source is unreadable") from exc
+
+    receipt: dict[str, Any] = {
+        "schema": VLLM_COMPILATION_PROVENANCE_SCHEMA,
+        "name": "vllm",
+        "version": version,
+        "distribution_package_root": str(package_root),
+        "module_origin": str(installed_init),
+        "wrapper_path": str(wrapper_path),
+        "wrapper_identity": identity,
+        "compile_contract": _torch_compile_wrapper_contract(source),
+    }
+    if strict_pin is not None:
+        receipt.update({
+            "runtime_pin": strict_pin,
+            "direct_url": direct_url,
+            "direct_url_path": str(direct_path),
+            "direct_url_identity": direct_identity,
+            "record_path": str(record_path),
+            "record_identity": record_identity,
+        })
+    receipt["identity_sha256"] = _canonical_sha256(receipt)
+    return receipt
+
+
 def _file_identity(path: Path) -> dict[str, Any]:
     """Exact bytes of one installed/source file."""
     digest = hashlib.sha256()
@@ -774,19 +1079,28 @@ def _file_identity(path: Path) -> dict[str, Any]:
     return {"bytes": size, "sha256": digest.hexdigest()}
 
 
-def _decode_record_sha256(value: str, *, path: str) -> str:
+def _decode_record_sha256(
+    value: str,
+    *,
+    path: str,
+    distribution_name: str = "Gridbook",
+) -> str:
     prefix = "sha256="
     if not isinstance(value, str) or not value.startswith(prefix):
-        raise ValueError(f"Gridbook RECORD has no sha256 for {path}")
+        raise ValueError(
+            f"{distribution_name} RECORD has no sha256 for {path}"
+        )
     encoded = value[len(prefix):]
     try:
         raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
     except Exception as exc:
         raise ValueError(
-            f"Gridbook RECORD has an invalid sha256 for {path}"
+            f"{distribution_name} RECORD has an invalid sha256 for {path}"
         ) from exc
     if len(raw) != hashlib.sha256().digest_size:
-        raise ValueError(f"Gridbook RECORD has an invalid sha256 for {path}")
+        raise ValueError(
+            f"{distribution_name} RECORD has an invalid sha256 for {path}"
+        )
     return raw.hex()
 
 
@@ -794,6 +1108,7 @@ def _distribution_file(
     distribution: importlib_metadata.Distribution,
     *,
     filename: str,
+    distribution_name: str = "Gridbook",
 ) -> tuple[str, Path]:
     matches = [
         item for item in (distribution.files or ())
@@ -801,13 +1116,14 @@ def _distribution_file(
     ]
     if len(matches) != 1:
         raise ValueError(
-            f"installed Gridbook distribution must contain exactly one {filename}"
+            f"installed {distribution_name} distribution must contain exactly "
+            f"one {filename}"
         )
     relative = str(matches[0])
     path = Path(distribution.locate_file(matches[0]))
     if not path.is_file() or path.is_symlink():
         raise ValueError(
-            f"installed Gridbook {filename} is missing or is a symlink"
+            f"installed {distribution_name} {filename} is missing or is a symlink"
         )
     return relative, path
 
@@ -1423,11 +1739,11 @@ def artifact_binding(
 
 
 def gpu_identity() -> dict[str, Any]:
-    """Stable GPU UUID, name, and driver without creating a CUDA context."""
+    """Stable GPU UUID, name, driver, and SM without a CUDA context."""
     try:
         out = subprocess.run(
             ["nvidia-smi",
-             "--query-gpu=name,uuid,driver_version",
+             "--query-gpu=name,uuid,driver_version,compute_cap",
              "--format=csv,noheader"],
             check=True, text=True, timeout=30,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -1437,6 +1753,8 @@ def gpu_identity() -> dict[str, Any]:
             "gpu_name": None,
             "gpu_uuid": None,
             "driver_version": None,
+            "compute_capability": None,
+            "gpu_compute_capabilities": [],
             "gpu_count": 0,
         }
     if not out:
@@ -1444,13 +1762,29 @@ def gpu_identity() -> dict[str, Any]:
             "gpu_name": None,
             "gpu_uuid": None,
             "driver_version": None,
+            "compute_capability": None,
+            "gpu_compute_capabilities": [],
             "gpu_count": 0,
         }
-    first = [field.strip() for field in out[0].split(",")]
+    rows = [next(csv.reader([line]), []) for line in out]
+    rows = [[field.strip() for field in row] for row in rows]
+
+    def capability(value: str | None) -> list[int] | None:
+        match = re.fullmatch(r"([0-9]+)[.]([0-9]+)", str(value or ""))
+        if match is None:
+            return None
+        return [int(match.group(1)), int(match.group(2))]
+
+    capabilities = [
+        capability(row[3] if len(row) > 3 else None) for row in rows
+    ]
+    first = rows[0]
     return {
         "gpu_name": first[0] if first else None,
         "gpu_uuid": first[1] if len(first) > 1 else None,
         "driver_version": first[2] if len(first) > 2 else None,
+        "compute_capability": capabilities[0],
+        "gpu_compute_capabilities": capabilities,
         "gpu_count": len(out),
     }
 
@@ -1551,7 +1885,14 @@ def performance_stack_payload(manifest: Mapping[str, Any]) -> dict[str, Any]:
         "gpu_uuid": manifest.get("gpu_uuid"),
         "gpu_count": manifest.get("gpu_count"),
         "driver_version": manifest.get("driver_version"),
+        "compute_capability": manifest.get("compute_capability"),
+        "gpu_compute_capabilities": manifest.get(
+            "gpu_compute_capabilities"
+        ),
         "package_versions": manifest.get("package_versions"),
+        "vllm_compilation_provenance": manifest.get(
+            "vllm_compilation_provenance"
+        ),
         "gridbook_runtime_pin": manifest.get("gridbook_runtime_pin"),
         "gridbook_distribution": manifest.get("gridbook_distribution"),
         "resident_extensions": manifest.get("resident_extensions"),
@@ -1837,6 +2178,8 @@ def collect_manifest(
     base_url: str | None = None,
     attestation_phase: str = "snapshot",
     server_environment_names: Sequence[str] = SERVER_ENV_ALLOWLIST,
+    vllm_pin_attestation: Mapping[str, Any] | None = None,
+    artifact_content_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for a live serving (or measuring) process."""
     if attestation_phase not in {"snapshot", "pre", "post"}:
@@ -1893,6 +2236,16 @@ def collect_manifest(
         else None
     )
     gpu = gpu_identity()
+    installed_packages = package_versions()
+    if vllm_pin_attestation is not None and "vllm" not in installed_packages:
+        raise ValueError(
+            "a strict vLLM runtime pin was supplied but vLLM is not installed"
+        )
+    vllm_compilation = None
+    if vllm_pin_attestation is not None:
+        vllm_compilation = vllm_compilation_provenance(
+            vllm_pin_attestation
+        )
     runtime_pin = gridbook_runtime_pin()
     gridbook_distribution = None
     if runtime_pin is not None:
@@ -1925,7 +2278,7 @@ def collect_manifest(
         "quantization": _flag_value(launch_argv, "--quantization"),
         "kv_cache_dtype": _flag_value(launch_argv, "--kv-cache-dtype"),
         "speculative_config": _flag_value(launch_argv, "--speculative-config"),
-        "package_versions": package_versions(),
+        "package_versions": installed_packages,
         "gridbook_runtime_pin": runtime_pin,
         "resident_extensions": extensions,
         # False whenever any inspected process's address space could not be
@@ -1943,6 +2296,12 @@ def collect_manifest(
     }
     if gridbook_distribution is not None:
         manifest["gridbook_distribution"] = gridbook_distribution
+    if vllm_compilation is not None:
+        manifest["vllm_compilation_provenance"] = vllm_compilation
+    if artifact_content_receipt is not None:
+        manifest["artifact_content_receipt"] = dict(
+            artifact_content_receipt
+        )
     manifest.update(gpu)
     if artifact_dir is not None:
         manifest["artifact_binding"] = artifact_binding(
@@ -2113,6 +2472,70 @@ def find_manifest(model_dir: str | os.PathLike | None) -> Path | None:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+def _cmd_rtx4090_artifact_preflight(args: argparse.Namespace) -> int:
+    """Create one in-container, no-clobber content receipt before vLLM."""
+
+    model_dir = Path(args.model_dir)
+    contract_path = Path(args.runtime_contract)
+    out = Path(args.out)
+    if (
+        not model_dir.is_absolute()
+        or not contract_path.is_absolute()
+        or not out.is_absolute()
+        or not model_dir.is_dir()
+        or model_dir.is_symlink()
+        or not contract_path.is_file()
+        or contract_path.is_symlink()
+        or not out.parent.is_dir()
+        or out.parent.is_symlink()
+        or out.exists()
+    ):
+        raise ValueError(
+            "RTX4090 artifact preflight paths must be absolute, ordinary, "
+            "and the receipt must not exist"
+        )
+    from prismaquant.validate_rtx4090_fp8_cb import (
+        _load_json,
+        create_rtx4090_artifact_content_receipt,
+        validate_rtx4090_artifact_content_receipt,
+        validate_rtx4090_artifact_metadata,
+    )
+
+    runtime_contract, _raw = _load_json(
+        contract_path, where="Gridbook runtime contract"
+    )
+    # Policy and inventory first; neither operation opens safetensors content.
+    validate_rtx4090_artifact_metadata(
+        model_dir, runtime_contract=runtime_contract
+    )
+    receipt = create_rtx4090_artifact_content_receipt(model_dir)
+    validate_rtx4090_artifact_content_receipt(model_dir, receipt)
+    encoded = (
+        json.dumps(receipt, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        + "\n"
+    ).encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(out, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb", closefd=True) as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        try:
+            out.unlink()
+        except OSError:
+            pass
+        raise
+    print(
+        "[rtx4090-artifact-preflight] verified "
+        f"files={len(receipt['files'])} bytes={receipt['content_bytes_read']}"
+    )
+    return 0
+
+
 def _cmd_write(args: argparse.Namespace) -> int:
     if args.pid is not None:
         raise ValueError(
@@ -2142,7 +2565,93 @@ def _cmd_write(args: argparse.Namespace) -> int:
             )
     extra = None
     server_environment_names = SERVER_ENV_ALLOWLIST
+    vllm_pin_attestation = None
+    artifact_content_receipt = None
+    if args.server_environment_profile == "rtx4090_fp8_cb":
+        server_environment_names = RTX4090_SERVER_ENV_ALLOWLIST
+        if args.vllm_runtime_pin is None:
+            raise ValueError(
+                "RTX4090 FP8-CB server evidence requires --vllm-runtime-pin"
+            )
+        pin_path = Path(args.vllm_runtime_pin)
+        if not pin_path.is_absolute() or not pin_path.is_file() or pin_path.is_symlink():
+            raise ValueError(
+                "strict vLLM runtime pin must be one absolute ordinary file"
+            )
+        try:
+            vllm_pin_attestation = _normalized_vllm_runtime_pin(
+                json.loads(pin_path.read_text(encoding="utf-8"))
+            )
+        except Exception as exc:
+            raise ValueError(
+                "strict vLLM runtime pin is unreadable or invalid"
+            ) from exc
+        if (
+            args.artifact_dir is None
+            or args.artifact_content_receipt is None
+            or args.rtx4090_runtime_contract is None
+        ):
+            raise ValueError(
+                "RTX4090 FP8-CB evidence requires artifact, content receipt, "
+                "and runtime contract"
+            )
+        receipt_path = Path(args.artifact_content_receipt)
+        contract_path = Path(args.rtx4090_runtime_contract)
+        if (
+            not receipt_path.is_absolute()
+            or not receipt_path.is_file()
+            or receipt_path.is_symlink()
+            or not contract_path.is_absolute()
+            or not contract_path.is_file()
+            or contract_path.is_symlink()
+        ):
+            raise ValueError(
+                "strict artifact receipt and runtime contract must be absolute "
+                "ordinary files"
+            )
+        from prismaquant.validate_rtx4090_fp8_cb import (
+            _load_json,
+            validate_rtx4090_artifact,
+            validate_rtx4090_artifact_content_receipt,
+        )
+
+        artifact_content_receipt, _receipt_raw = _load_json(
+            receipt_path, where="RTX4090 artifact content receipt"
+        )
+        runtime_contract, _contract_raw = _load_json(
+            contract_path, where="Gridbook runtime contract"
+        )
+        artifact_content_receipt = (
+            validate_rtx4090_artifact_content_receipt(
+                args.artifact_dir, artifact_content_receipt
+            )
+        )
+        # This is the one full finalized-census replay in the serve flow. It
+        # consumes headers and sidecar metadata but reuses the receipt for all
+        # safetensors payload/content verification.
+        validate_rtx4090_artifact(
+            args.artifact_dir,
+            runtime_contract=runtime_contract,
+            artifact_content_receipt=artifact_content_receipt,
+        )
+    elif args.vllm_runtime_pin is not None:
+        raise ValueError(
+            "--vllm-runtime-pin is reserved for the RTX4090 FP8-CB profile"
+        )
+    elif (
+        args.artifact_content_receipt is not None
+        or args.rtx4090_runtime_contract is not None
+    ):
+        raise ValueError(
+            "strict artifact receipt/contract options are reserved for the "
+            "RTX4090 FP8-CB profile"
+        )
     if args.dspark_runtime_evidence is not None:
+        if args.server_environment_profile != "default":
+            raise ValueError(
+                "DSpark runtime evidence and an alternate environment profile "
+                "are mutually exclusive"
+            )
         # Lazy and stdlib-only: the profile module imports neither torch nor
         # vLLM.  Its separate collector already performed the explicit live
         # imports; here we re-hash its metadata/cache files and the installed
@@ -2168,6 +2677,8 @@ def _cmd_write(args: argparse.Namespace) -> int:
         base_url=args.base_url,
         attestation_phase=args.attestation_phase,
         server_environment_names=server_environment_names,
+        vllm_pin_attestation=vllm_pin_attestation,
+        artifact_content_receipt=artifact_content_receipt,
         extra=extra,
     )
     out = Path(args.out)
@@ -2233,7 +2744,49 @@ def main(argv: list[str] | None = None) -> int:
             "paired-DSpark process-environment/profile closure"
         ),
     )
+    p_write.add_argument(
+        "--server-environment-profile",
+        choices=("default", "rtx4090_fp8_cb"),
+        default="default",
+        help=(
+            "closed live-process environment projection; the RTX4090 profile "
+            "adds candidate-v10 selectors without changing historical evidence"
+        ),
+    )
+    p_write.add_argument(
+        "--vllm-runtime-pin",
+        default=None,
+        help=(
+            "closed official-VCS vLLM pin required by the RTX4090 FP8-CB "
+            "server-evidence profile"
+        ),
+    )
+    p_write.add_argument(
+        "--artifact-content-receipt",
+        default=None,
+        help=(
+            "stat-bound in-container one-pass safetensors receipt required by "
+            "the RTX4090 FP8-CB profile"
+        ),
+    )
+    p_write.add_argument(
+        "--rtx4090-runtime-contract",
+        default=None,
+        help=(
+            "exact mounted Gridbook runtime contract used for the strict "
+            "post-serve finalized-census replay"
+        ),
+    )
     p_write.set_defaults(func=_cmd_write)
+
+    p_preflight = sub.add_parser(
+        "rtx4090-artifact-preflight",
+        help="verify strict safetensors once immediately before vLLM",
+    )
+    p_preflight.add_argument("--model-dir", required=True)
+    p_preflight.add_argument("--runtime-contract", required=True)
+    p_preflight.add_argument("--out", required=True)
+    p_preflight.set_defaults(func=_cmd_rtx4090_artifact_preflight)
 
     p_show = sub.add_parser("show", help="pretty-print a manifest")
     p_show.add_argument("manifest")

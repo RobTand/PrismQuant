@@ -11,14 +11,20 @@ import torch
 from prismaquant import format_registry as fr
 from prismaquant import layer_config as lc
 from prismaquant import nvfp4_cb_formats as cb
-from prismaquant.cb_layout import bit_split
+from prismaquant.cb_layout import (
+    ACCEPTED_CB_FORMAT_NAMES,
+    FP8_ACCEPTED_RUNGS,
+    FP8_PRODUCT_RUNGS,
+    PRODUCT_CB_FORMAT_NAMES,
+    bit_split,
+)
 from prismaquant.nvfp4_cb_footprint import (
     CBSerializationContext,
     cb_serialization_context_stamp,
 )
 
-_NVFP4_KS = list(range(12, 25))
-_FP8_KS = [28, 32, 36, 40, 44, 48]
+_NVFP4_KS = list(range(1, 26))
+_FP8_KS = list(FP8_PRODUCT_RUNGS)
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
 
@@ -286,14 +292,12 @@ def test_flat_k_ceiling_raises():
 
 # (i) menu: all rungs register, resolve, sort by effective_bits.
 #
-# The FULL ladder is all-integer in every family (c52d04c, "every integer bit
-# width"): a step-4 FP8 set here is exactly the staleness that crashed the
-# first full-ladder 27B export on cb_k=47. _FP8_KS above stays a sampled
-# subset for the expensive per-rung parametrizations; the menu test pins the
-# whole set, per family, structurally.
+# Registry/layer-config parsing is the full READER domain: it retains every
+# historical K28..K48 wire id and adds the low K%4 rungs. New producer menus
+# are narrower and are pinned separately below.
 _MENU_LADDERS = (
-    ("NVFP4_CB_K", tuple(range(12, 25)), lambda k: k / 8 + 0.5),
-    ("FP8_CB_K", tuple(range(28, 49)), lambda k: k / 8),
+    ("NVFP4_CB_K", tuple(range(1, 26)), lambda k: k / 8 + 0.5),
+    ("FP8_CB_K", FP8_ACCEPTED_RUNGS, lambda k: k / 8),
 )
 
 
@@ -308,11 +312,15 @@ def test_menu_registers_and_resolves():
         {"data_type": "nvfp4_cb", "cb_k": 20}) == "NVFP4_CB_K20"
     assert lc.canonicalize_format(
         {"data_type": "fp8_cb", "cb_k": 44}) == "FP8_CB_K44"
-    # The registered menu is EXACTLY the ladder the layer-config parser
-    # accepts — the two sources may not drift apart.
+    # Registry and layer-config parsing are compatibility readers. The
+    # explicit producer API is the narrower artifact-writing surface.
     fam = [s for s in fr.list_formats() if s.family in ("nvfp4_cb", "fp8_cb")]
-    assert {s.name for s in fam} == set(names)
-    assert set(lc._NVFP4_CB_FORMAT_NAMES) == set(names)
+    assert {s.name for s in fam} == ACCEPTED_CB_FORMAT_NAMES == set(names)
+    assert set(lc._NVFP4_CB_FORMAT_NAMES) == ACCEPTED_CB_FORMAT_NAMES
+    assert {
+        s.name for s in fr.list_producer_formats()
+        if s.family in ("nvfp4_cb", "fp8_cb")
+    } == PRODUCT_CB_FORMAT_NAMES
     # Per family: bpw strictly increasing in k, and exactly the accounting
     # formula (index stream + the fp4 family's group-16 scale plane).
     for prefix, ks, bpw in _MENU_LADDERS:
@@ -382,6 +390,39 @@ def test_nvfp4_cb_pack_unpack_matches_emulation(device, grid, mode, k):
     rec = cb.nvfp4_cb_reconstruct(up, k, grid=grid, mode=mode).to(w.dtype)
     emu = cb.nvfp4_cb_reconstruct(fields, k, grid=grid, mode=mode).to(w.dtype)
     assert torch.equal(rec, emu)
+
+
+@pytest.mark.parametrize("k", [1, 32])
+def test_nvfp4_endpoint_bitstream_roundtrip_without_quantizer_cost(k):
+    """Pin K1 and the research-only uint32 endpoint in the direct codec."""
+
+    bits = cb.subtable_bit_widths(k, "product", 2)
+    indices = torch.zeros(1, 32, 2, dtype=torch.int64)
+    indices[..., 0] = torch.arange(32).reshape(1, 32) & ((1 << bits[0]) - 1)
+    if bits[1]:
+        indices[..., 1] = (
+            torch.arange(31, -1, -1).reshape(1, 32)
+            & ((1 << bits[1]) - 1)
+        )
+    fields = {
+        "indices": indices,
+        "scales": torch.ones(1, 16),
+        "shape": (1, 256),
+    }
+    packed = cb.nvfp4_cb_assemble_bytes(
+        fields, k, grid="fp4", mode="product"
+    )
+    unpacked = cb.nvfp4_cb_unpack(
+        packed, k, "fp4", "product", (1, 256)
+    )
+    assert torch.equal(unpacked["indices"], indices)
+    if k == 1:
+        assert torch.count_nonzero(unpacked["indices"][..., 1]) == 0
+    else:
+        codes = cb._vector_codes(fields, k, "fp4", "product")
+        codes[0, 0] = (1 << 32) - 1
+        raw = cb._pack_codes_to_bytes(codes, k)
+        assert torch.equal(cb._unpack_bytes_to_codes(raw, k), codes)
 
 
 def test_nvfp4_cb_assemble_asserts_type_size():
