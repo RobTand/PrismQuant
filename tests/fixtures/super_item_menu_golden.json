@@ -1,0 +1,820 @@
+{
+ "digest": "033adb45e71a51b831f5335047fa56e5fb00dc3137894a983fa0146bf456197d",
+ "menu": [
+  "NVFP4",
+  "FP8_E4M3",
+  "BF16"
+ ],
+ "scenarios": {
+  "fused_hedged_gained_priced": {
+   "passthrough_rows": [
+    "model.layers.0.mlp.down_proj",
+    "model.layers.0.self_attn.o_proj"
+   ],
+   "super_items": {
+    "model.layers.0.mlp.__siblings__.model__layers__0__mlp__gate_up_proj": {
+     "cost_rows": {
+      "BF16": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0",
+       "weight_mse": "0.0"
+      },
+      "FP8_E4M3": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0013679500000000002",
+       "predicted_dloss_stderr": "0.0004187997880849512",
+       "weight_mse": "0.001954214285714286"
+      },
+      "NVFP4": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.034387",
+       "predicted_dloss_stderr": "0.010527627700484096",
+       "weight_mse": "0.04912428571428572"
+      }
+     },
+     "members": [
+      "model.layers.0.mlp.gate_proj",
+      "model.layers.0.mlp.up_proj"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 180355072,
+      "FP8_E4M3": 90265600,
+      "NVFP4": 50724864
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 50724864,
+       "predicted_dloss": "0.061719483107393155",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "8.0078125",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 90265600,
+       "predicted_dloss": "0.0017566117202721357",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 180355072,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 90177536
+    },
+    "model.layers.0.self_attn.__siblings__.model__layers__0__self_attn__qkv_proj": {
+     "cost_rows": {
+      "BF16": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0",
+       "weight_mse": "0.0"
+      },
+      "FP8_E4M3": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0010545750000000003",
+       "predicted_dloss_stderr": "0.0003353411173715505",
+       "weight_mse": "0.0014061000000000004"
+      },
+      "NVFP4": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.026509500000000005",
+       "predicted_dloss_stderr": "0.008429675794477507",
+       "weight_mse": "0.03534600000000001"
+      }
+     },
+     "members": [
+      "model.layers.0.self_attn.k_proj",
+      "model.layers.0.self_attn.q_proj",
+      "model.layers.0.self_attn.v_proj"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 50331648,
+      "FP8_E4M3": 25190400,
+      "NVFP4": 14155776
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 14155776,
+       "predicted_dloss": "0.04815943684081101",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "8.0078125",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 25190400,
+       "predicted_dloss": "0.001370676274930447",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 50331648,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 25165824
+    }
+   }
+  },
+  "fused_plain": {
+   "passthrough_rows": [
+    "model.layers.0.mlp.down_proj",
+    "model.layers.0.self_attn.o_proj"
+   ],
+   "super_items": {
+    "model.layers.0.mlp.__siblings__.model__layers__0__mlp__gate_up_proj": {
+     "cost_rows": {
+      "BF16": {
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0",
+       "weight_mse": "0.0"
+      },
+      "FP8_E4M3": {
+       "predicted_dloss": "0.001255",
+       "predicted_dloss_stderr": "0.0003842199890687626",
+       "weight_mse": "0.0017928571428571431"
+      },
+      "NVFP4": {
+       "predicted_dloss": "0.0251",
+       "predicted_dloss_stderr": "0.007684399781375251",
+       "weight_mse": "0.03585714285714286"
+      }
+     },
+     "members": [
+      "model.layers.0.mlp.gate_proj",
+      "model.layers.0.mlp.up_proj"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 180355072,
+      "FP8_E4M3": 90265600,
+      "NVFP4": 50724864
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_uncalibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 50724864,
+       "predicted_dloss": "0.0251",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_uncalibrated",
+       "bits_per_param": "8.0078125",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 90265600,
+       "predicted_dloss": "0.001255",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 180355072,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 90177536
+    },
+    "model.layers.0.self_attn.__siblings__.model__layers__0__self_attn__qkv_proj": {
+     "cost_rows": {
+      "BF16": {
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0",
+       "weight_mse": "0.0"
+      },
+      "FP8_E4M3": {
+       "predicted_dloss": "0.0009675",
+       "predicted_dloss_stderr": "0.00030765240125830317",
+       "weight_mse": "0.0012900000000000001"
+      },
+      "NVFP4": {
+       "predicted_dloss": "0.01935",
+       "predicted_dloss_stderr": "0.006153048025166064",
+       "weight_mse": "0.0258"
+      }
+     },
+     "members": [
+      "model.layers.0.self_attn.k_proj",
+      "model.layers.0.self_attn.q_proj",
+      "model.layers.0.self_attn.v_proj"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 50331648,
+      "FP8_E4M3": 25190400,
+      "NVFP4": 14155776
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_uncalibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 14155776,
+       "predicted_dloss": "0.01935",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_uncalibrated",
+       "bits_per_param": "8.0078125",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 25190400,
+       "predicted_dloss": "0.0009675",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 50331648,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 25165824
+    }
+   }
+  },
+  "packed_hedged_gained_priced": {
+   "passthrough_rows": [
+    "model.layers.0.self_attn.o_proj"
+   ],
+   "super_items": {
+    "model.layers.0.mlp.experts.0.__packed_serving__.model__layers__0__mlp__experts": {
+     "cost_rows": {
+      "BF16": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0"
+      },
+      "FP8_E4M3": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0020718720000000006",
+       "predicted_dloss_stderr": "0.00037297958867476926"
+      },
+      "NVFP4": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.07279632000000003",
+       "predicted_dloss_stderr": "0.013104835381064503"
+      }
+     },
+     "members": [
+      "model.layers.0.mlp.experts.0.w1",
+      "model.layers.0.mlp.experts.0.w2",
+      "model.layers.0.mlp.experts.0.w3",
+      "model.layers.0.mlp.experts.1.w1",
+      "model.layers.0.mlp.experts.1.w2",
+      "model.layers.0.mlp.experts.1.w3",
+      "model.layers.0.mlp.experts.2.w1",
+      "model.layers.0.mlp.experts.2.w2",
+      "model.layers.0.mlp.experts.2.w3"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 28311552,
+      "FP8_E4M3": 14198784,
+      "NVFP4": 7962624
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 7962624,
+       "predicted_dloss": "0.09245357307159678",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "8.024305555555555",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 14198784,
+       "predicted_dloss": "0.0026313413830121547",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 28311552,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 14155776
+    },
+    "model.layers.1.mlp.experts.0.__packed_serving__.model__layers__1__mlp__experts": {
+     "cost_rows": {
+      "BF16": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0"
+      },
+      "FP8_E4M3": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.005999796000000002",
+       "predicted_dloss_stderr": "0.0007613413972719467"
+      },
+      "NVFP4": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.21080601000000002",
+       "predicted_dloss_stderr": "0.026750133205649652"
+      }
+     },
+     "members": [
+      "model.layers.1.mlp.experts.0.w1",
+      "model.layers.1.mlp.experts.0.w2",
+      "model.layers.1.mlp.experts.0.w3",
+      "model.layers.1.mlp.experts.1.w1",
+      "model.layers.1.mlp.experts.1.w2",
+      "model.layers.1.mlp.experts.1.w3",
+      "model.layers.1.mlp.experts.2.w1",
+      "model.layers.1.mlp.experts.2.w2",
+      "model.layers.1.mlp.experts.2.w3"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 28311552,
+      "FP8_E4M3": 14198784,
+      "NVFP4": 7962624
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 7962624,
+       "predicted_dloss": "0.2509312098084745",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "8.024305555555555",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 14198784,
+       "predicted_dloss": "0.007141808095907922",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 28311552,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 14155776
+    }
+   }
+  },
+  "packed_plain": {
+   "passthrough_rows": [
+    "model.layers.0.self_attn.o_proj"
+   ],
+   "super_items": {
+    "model.layers.0.mlp.experts.0.__packed_serving__.model__layers__0__mlp__experts": {
+     "cost_rows": {
+      "BF16": {
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0"
+      },
+      "FP8_E4M3": {
+       "predicted_dloss": "0.0021600000000000005",
+       "predicted_dloss_stderr": "0.0003888444419044717"
+      },
+      "NVFP4": {
+       "predicted_dloss": "0.04320000000000001",
+       "predicted_dloss_stderr": "0.007776888838089434"
+      }
+     },
+     "members": [
+      "model.layers.0.mlp.experts.0.w1",
+      "model.layers.0.mlp.experts.0.w2",
+      "model.layers.0.mlp.experts.0.w3",
+      "model.layers.0.mlp.experts.1.w1",
+      "model.layers.0.mlp.experts.1.w2",
+      "model.layers.0.mlp.experts.1.w3",
+      "model.layers.0.mlp.experts.2.w1",
+      "model.layers.0.mlp.experts.2.w2",
+      "model.layers.0.mlp.experts.2.w3"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 28311552,
+      "FP8_E4M3": 14198784,
+      "NVFP4": 7962624
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_uncalibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 7962624,
+       "predicted_dloss": "0.04320000000000001",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_uncalibrated",
+       "bits_per_param": "8.024305555555555",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 14198784,
+       "predicted_dloss": "0.0021600000000000005",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 28311552,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 14155776
+    },
+    "model.layers.1.mlp.experts.0.__packed_serving__.model__layers__1__mlp__experts": {
+     "cost_rows": {
+      "BF16": {
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0"
+      },
+      "FP8_E4M3": {
+       "predicted_dloss": "0.006255",
+       "predicted_dloss_stderr": "0.0007937253933193773"
+      },
+      "NVFP4": {
+       "predicted_dloss": "0.12510000000000002",
+       "predicted_dloss_stderr": "0.015874507866387545"
+      }
+     },
+     "members": [
+      "model.layers.1.mlp.experts.0.w1",
+      "model.layers.1.mlp.experts.0.w2",
+      "model.layers.1.mlp.experts.0.w3",
+      "model.layers.1.mlp.experts.1.w1",
+      "model.layers.1.mlp.experts.1.w2",
+      "model.layers.1.mlp.experts.1.w3",
+      "model.layers.1.mlp.experts.2.w1",
+      "model.layers.1.mlp.experts.2.w2",
+      "model.layers.1.mlp.experts.2.w3"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 28311552,
+      "FP8_E4M3": 14198784,
+      "NVFP4": 7962624
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_uncalibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 7962624,
+       "predicted_dloss": "0.12510000000000002",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_uncalibrated",
+       "bits_per_param": "8.024305555555555",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 14198784,
+       "predicted_dloss": "0.006255",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 28311552,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 14155776
+    }
+   }
+  },
+  "packed_role_split_hedged": {
+   "passthrough_rows": [
+    "model.layers.0.self_attn.o_proj"
+   ],
+   "super_items": {
+    "model.layers.0.mlp.experts.0.__packed_serving__.model__layers__0__mlp__experts::role:down_proj": {
+     "cost_rows": {
+      "BF16": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0"
+      },
+      "FP8_E4M3": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0006906240000000004",
+       "predicted_dloss_stderr": "0.00021533986592361395"
+      },
+      "NVFP4": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.02426544000000001",
+       "predicted_dloss_stderr": "0.007566080234943323"
+      }
+     },
+     "members": [
+      "model.layers.0.mlp.experts.0.w2",
+      "model.layers.0.mlp.experts.1.w2",
+      "model.layers.0.mlp.experts.2.w2"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 9437184,
+      "FP8_E4M3": 4743168,
+      "NVFP4": 2654208
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 2654208,
+       "predicted_dloss": "0.03561456035241499",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "8.041666666666666",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 4743168,
+       "predicted_dloss": "0.0010136337988854213",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 9437184,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 4718592
+    },
+    "model.layers.0.mlp.experts.0.__packed_serving__.model__layers__0__mlp__experts::role:gate_up_proj": {
+     "cost_rows": {
+      "BF16": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0"
+      },
+      "FP8_E4M3": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0013812480000000007",
+       "predicted_dloss_stderr": "0.00030453655890877874"
+      },
+      "NVFP4": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.04853088000000002",
+       "predicted_dloss_stderr": "0.01070005328225986"
+      }
+     },
+     "members": [
+      "model.layers.0.mlp.experts.0.w1",
+      "model.layers.0.mlp.experts.0.w3",
+      "model.layers.0.mlp.experts.1.w1",
+      "model.layers.0.mlp.experts.1.w3",
+      "model.layers.0.mlp.experts.2.w1",
+      "model.layers.0.mlp.experts.2.w3"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 18874368,
+      "FP8_E4M3": 9455616,
+      "NVFP4": 5308416
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 5308416,
+       "predicted_dloss": "0.0645809599233898",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "8.015625",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 9455616,
+       "predicted_dloss": "0.0018380528383631688",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 18874368,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 9437184
+    },
+    "model.layers.1.mlp.experts.0.__packed_serving__.model__layers__1__mlp__experts::role:down_proj": {
+     "cost_rows": {
+      "BF16": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0"
+      },
+      "FP8_E4M3": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0019999320000000003",
+       "predicted_dloss_stderr": "0.00043956066066016424"
+      },
+      "NVFP4": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.07026867",
+       "predicted_dloss_stderr": "0.015444196607140174"
+      }
+     },
+     "members": [
+      "model.layers.1.mlp.experts.0.w2",
+      "model.layers.1.mlp.experts.1.w2",
+      "model.layers.1.mlp.experts.2.w2"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 9437184,
+      "FP8_E4M3": 4743168,
+      "NVFP4": 2654208
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 2654208,
+       "predicted_dloss": "0.09343496491071027",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "8.041666666666666",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 4743168,
+       "predicted_dloss": "0.0026592729909902467",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 9437184,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 4718592
+    },
+    "model.layers.1.mlp.experts.0.__packed_serving__.model__layers__1__mlp__experts::role:gate_up_proj": {
+     "cost_rows": {
+      "BF16": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0",
+       "predicted_dloss_stderr": "0.0"
+      },
+      "FP8_E4M3": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.0039998640000000005",
+       "predicted_dloss_stderr": "0.000621632647791282"
+      },
+      "NVFP4": {
+       "activation_pricing_applied": true,
+       "predicted_dloss": "0.14053734",
+       "predicted_dloss_stderr": "0.021841392301774173"
+      }
+     },
+     "members": [
+      "model.layers.1.mlp.experts.0.w1",
+      "model.layers.1.mlp.experts.0.w3",
+      "model.layers.1.mlp.experts.1.w1",
+      "model.layers.1.mlp.experts.1.w3",
+      "model.layers.1.mlp.experts.2.w1",
+      "model.layers.1.mlp.experts.2.w3"
+     ],
+     "memory_bytes_by_format": {
+      "BF16": 18874368,
+      "FP8_E4M3": 9455616,
+      "NVFP4": 5308416
+     },
+     "menu": [
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "4.5",
+       "fmt": "NVFP4",
+       "memory_bytes": 5308416,
+       "predicted_dloss": "0.17329942845266127",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "weight_only_activation_calibrated",
+       "bits_per_param": "8.015625",
+       "fmt": "FP8_E4M3",
+       "memory_bytes": 9455616,
+       "predicted_dloss": "0.004932312971686923",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      },
+      {
+       "activation_pricing": "bit_exact",
+       "bits_per_param": "16.0",
+       "fmt": "BF16",
+       "memory_bytes": 18874368,
+       "predicted_dloss": "0.0",
+       "serialized_identity": null,
+       "serialized_sidecar_identity": null,
+       "serving_lane": null
+      }
+     ],
+     "n_params": 9437184
+    }
+   }
+  }
+ },
+ "schema": "prismaquant.super_item_menu_golden.v1"
+}
