@@ -1,0 +1,234 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+import importlib
+import json
+
+import pytest
+import torch
+
+from prismaquant import format_registry
+
+
+M = importlib.import_module(
+    "research.qtip_native_nvfp4_2026-08-30."
+    "trellis_online_hadamard_producer"
+)
+
+
+def _contract(rows: int = 8, columns: int = 16):
+    return M.build_online_transform(
+        rows=rows,
+        columns=columns,
+        input_block_size=4,
+        output_block_size=4,
+        input_seed=0x1234,
+        output_seed=0x5678,
+    )
+
+
+def _block_hadamard(dimension: int, block_size: int) -> torch.Tensor:
+    block = torch.ones(1, 1, dtype=torch.float32)
+    while block.shape[0] < block_size:
+        block = torch.cat((
+            torch.cat((block, block), dim=1),
+            torch.cat((block, -block), dim=1),
+        ), dim=0)
+    block *= block_size ** -0.5
+    result = torch.zeros(dimension, dimension)
+    for first in range(0, dimension, block_size):
+        result[first:first + block_size, first:first + block_size] = block
+    return result
+
+
+def _fixture():
+    generator = torch.Generator().manual_seed(20260830)
+    weight = torch.randn(8, 16, generator=generator)
+    activations = torch.randn(19, 16, generator=generator)
+    hessian = activations.T @ activations + 0.25 * torch.eye(16)
+    return weight, activations, hessian
+
+
+def test_metadata_matches_gridbook_pinned_conformance_vectors():
+    contract = _contract()
+    assert M.seeded_sign_digest(
+        "input", 19, 0x0123456789ABCDEF
+    ) == "c9850b2a7c2d365cdb23964ff33c6e934fd3dde47bedb07b35eb9ba8823f6368"
+    assert contract["input"]["sign_sha256"] == \
+        "11a6e83c049227716147570449f8a019853aa9400dae038c3fcc53727d056b01"
+    assert contract["output"]["sign_sha256"] == \
+        "1b16b1df538ba12dc3f97edbb85caa7050d46c148134290feba80f8236c83db9"
+    assert contract["transform_sha256"] == \
+        "3231ab8ed01b068864b261a369a9cfda3e3e59ffbabd5bd0b1bb854c1ec844b5"
+    assert M.validate_online_transform(contract, rows=8, columns=16) == contract
+
+
+@pytest.mark.parametrize("field,value", [
+    ("algorithm", "different"),
+    ("normalization", "none"),
+    ("padding", "zero"),
+])
+def test_metadata_refuses_semantic_or_digest_drift(field, value):
+    contract = _contract()
+    contract[field] = value
+    with pytest.raises(ValueError, match=field):
+        M.validate_online_transform(contract, rows=8, columns=16)
+
+
+def test_metadata_refuses_seed_geometry_and_unknown_field_drift():
+    contract = _contract()
+    bad_seed = copy.deepcopy(contract)
+    bad_seed["input"]["seed"] += 1
+    with pytest.raises(ValueError, match="sign_sha256 does not bind"):
+        M.validate_online_transform(bad_seed, rows=8, columns=16)
+
+    bad_geometry = copy.deepcopy(contract)
+    bad_geometry["output"]["dimension"] = 4
+    with pytest.raises(ValueError, match="does not match"):
+        M.validate_online_transform(bad_geometry, rows=8, columns=16)
+
+    unknown = copy.deepcopy(contract)
+    unknown["future_order"] = "guess"
+    with pytest.raises(ValueError, match="unknown"):
+        M.validate_online_transform(unknown, rows=8, columns=16)
+
+
+def test_weight_and_hessian_basis_match_explicit_matrices():
+    weight, _activations, hessian = _fixture()
+    contract = _contract()
+    input_signs = M.seeded_signs("input", 16, 0x1234)
+    output_signs = M.seeded_signs("output", 8, 0x5678)
+    h_in = _block_hadamard(16, 4)
+    h_out = _block_hadamard(8, 4)
+    r_in = h_in @ torch.diag(input_signs)
+    r_out = h_out @ torch.diag(output_signs)
+
+    transformed_weight, transformed_hessian = \
+        M.transform_weight_and_hessian(weight, hessian, contract)
+    assert torch.allclose(
+        transformed_weight, r_out @ weight @ r_in.T, rtol=1e-6, atol=1e-6
+    )
+    assert torch.allclose(
+        transformed_hessian, r_in @ hessian @ r_in.T,
+        rtol=1e-6, atol=3e-6,
+    )
+
+
+def test_transformed_hessian_matches_transformed_activation_gram():
+    weight, activations, _hessian = _fixture()
+    hessian = activations.T @ activations
+    contract = _contract()
+    _weight_t, hessian_t = M.transform_weight_and_hessian(
+        weight, hessian, contract
+    )
+    activations_t = M.transformed_activations(activations, contract)
+    assert torch.allclose(
+        hessian_t, activations_t.T @ activations_t, rtol=2e-6, atol=2e-5
+    )
+
+
+def test_gridbook_runtime_bf16_boundaries_are_reference_exact():
+    _weight, activations, _hessian = _fixture()
+    contract = _contract()
+    input_signs = M.seeded_signs("input", 16, 0x1234)
+    h_in = _block_hadamard(16, 4)
+    expected_input = ((activations * input_signs) @ h_in).to(torch.bfloat16)
+    assert torch.equal(
+        M.transformed_activations(
+            activations, contract, runtime_bf16_boundary=True
+        ),
+        expected_input,
+    )
+
+    output = torch.arange(-24, 24, dtype=torch.float32).reshape(6, 8) / 8
+    output_signs = M.seeded_signs("output", 8, 0x5678)
+    h_out = _block_hadamard(8, 4)
+    expected_output = ((output @ h_out) * output_signs).to(torch.bfloat16)
+    assert torch.equal(
+        M.inverse_transformed_outputs(
+            output, contract, runtime_bf16_boundary=True
+        ),
+        expected_output,
+    )
+
+
+def test_post_decode_serve_algebra_round_trip_and_quadratic_invariance():
+    weight, activations, hessian = _fixture()
+    contract = _contract()
+    transformed_weight, transformed_hessian = \
+        M.transform_weight_and_hessian(weight, hessian, contract)
+
+    # Model a future exact Gridbook reference decoder's output without making
+    # any claim that this tensor came from physical wire bytes.
+    decoded_q = transformed_weight + torch.linspace(
+        -0.02, 0.02, transformed_weight.numel()
+    ).reshape_as(transformed_weight)
+    result = M.verify_post_decode_serve_algebra(
+        decoded_q, activations, contract
+    )
+    assert result["status"] == "post_decode_matrix_algebra_verified"
+    assert result["wire_identity_verified"] is False
+
+    original_q = M.decoded_weight_in_original_basis(decoded_q, contract)
+    original_error = weight - original_q
+    transformed_error = transformed_weight - decoded_q
+    original_proxy = ((original_error @ hessian) * original_error).sum()
+    transformed_proxy = (
+        (transformed_error @ transformed_hessian) * transformed_error
+    ).sum()
+    assert torch.allclose(
+        original_proxy, transformed_proxy, rtol=5e-6, atol=2e-5
+    )
+
+
+def test_scaffold_is_opt_in_unregistered_and_refuses_a_fake_wire():
+    weight, _activations, hessian = _fixture()
+    before = set(format_registry.REGISTRY)
+    with pytest.raises(ValueError, match="research_opt_in"):
+        M.prepare_one_linear_scaffold(
+            weight,
+            hessian,
+            body_rate_q256=512,
+            input_block_size=4,
+            output_block_size=4,
+            input_seed=0x1234,
+            output_seed=0x5678,
+            research_opt_in="",
+        )
+
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        hessian,
+        body_rate_q256=512,
+        input_block_size=4,
+        output_block_size=4,
+        input_seed=0x1234,
+        output_seed=0x5678,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    assert set(format_registry.REGISTRY) == before
+    assert prepared.receipt["status"].startswith("blocked_missing")
+    assert prepared.receipt["format_registry_entries_created"] == 0
+    assert prepared.receipt["producer_eligible"] is False
+    assert prepared.receipt["wire"] == {
+        "schema": "gridbook.trellis.wire.v1",
+        "family": "TCQ_E2M1_R256",
+        "body_rate_q256": 512,
+        "terminal_grid": "E2M1",
+        "scale_contract": "group16_fp8_e4m3_0p5_bpw",
+        "qtip_bitshift_wire_allowed": False,
+        "wire_bytes": None,
+        "wire_identity_sha256": None,
+        "encoder_invoked": False,
+        "decoder_invoked": False,
+    }
+    body = dict(prepared.receipt)
+    identity = body.pop("identity_sha256")
+    encoded = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    assert identity == hashlib.sha256(encoded).hexdigest()
+    with pytest.raises(M.MissingTrellisProducerSeam, match="no repository API"):
+        M.require_combined_wire_round_trip(prepared)
