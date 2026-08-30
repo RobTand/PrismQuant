@@ -435,6 +435,16 @@ if [[ -n "${COST_RENDER:-}" || -n "${COST_OBJECTIVE:-}" ]]; then
 fi
 # COST_MODE default lives here (not in the defaults block below) because the
 # lane render-faithfulness assertion runs before it.
+#
+# NOTE, and it is load-bearing: this is an assignment, not an export, and
+# `:=` also PRESERVES an inherited export, so the value a child process sees
+# in its environment depends on how the caller happened to invoke this
+# script. Every stage that needs the objective is therefore handed
+# `--cost-mode "$COST_MODE"` explicitly (the cost stages below, and since
+# 2026-08-30 the allocator, whose candidate-menu currency gate used to read
+# `os.environ.get("COST_MODE", "aura")` and so compared against the default
+# on every pipeline run). Do not "fix" a future consumer by exporting this;
+# pass it.
 : "${COST_MODE:=aura}"
 case "$COST_MODE" in
   local)                              COST_RENDER=inline;      COST_OBJECTIVE=weight-recon ;;
@@ -1996,6 +2006,7 @@ fi
 python3 -m prismaquant.allocator \
   --probe "${PROBE_PATH}" \
   --costs "${COST_PATH}" \
+  --cost-mode "$COST_MODE" \
   --target-bits "$TARGET_BITS" \
   --formats "$FORMATS" \
   "${ALLOCATOR_PROFILE_ARGS[@]}" \
