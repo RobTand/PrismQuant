@@ -2,9 +2,26 @@
 
 Gridbook owns the runtime and its packaged ``runtime_contract.json``.  This
 module deliberately accepts a decoded contract mapping instead of importing
-Gridbook or reading an unpinned installation.  The currently materialized v4
-contract remains a reader-compatibility input; only v11's explicit
-``formats[].producer_rungs`` field can attest a new producer ladder.
+Gridbook or reading an unpinned installation.  The legacy v4 contract remains a
+reader-compatibility input; only v11's explicit ``formats[].producer_rungs``
+field can attest a new producer ladder.
+
+DELIBERATELY NOT EXTENDED TO v12 (2026-08-30, pin advance 0.8.11 -> 0.9.1).
+The pinned contract is now v12 and it *does* carry ``producer_rungs``, so
+accepting it here is one line -- and that one line is a producer-policy change,
+not a version bump.  0.9.1 publishes ``FP8_CB_K.producer_rungs = [40, 44, 48]``
+and ``NVFP4_CB_K.producer_rungs = [12..24]``.  Binding this reader to v12 would
+therefore make ``FP8_CB_K28``/``K32`` -- the rungs the shipped DSv4 routed
+experts are built on -- no longer producer-attested, and would trip the
+``declared.producer_rungs != local.rungs`` equality in
+``validate_gridbook_cb_rung_contract``.  That is Gridbook's own narrowing and
+it may well be right, but it is a decision about what PrismaQuant may BUILD; it
+does not belong inside a pin commit, and no production caller feeds this module
+the materialized pin today (the sole caller,
+``rtx4090_qwen38_policy``, passes a contract of its own).  A v12 contract
+handed to this reader raises rather than silently re-scoping the ladder --
+which is the correct failure -- and closing that gap is its own change, with
+its own decision about the DSv4 rungs.
 """
 from __future__ import annotations
 

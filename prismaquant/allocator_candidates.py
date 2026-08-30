@@ -199,9 +199,11 @@ SOURCE_PASSTHROUGH_CONTRACTS: dict[str, SourcePassthroughContract] = {
                 "a Gridbook release attesting "
                 "abi_features.source_fp8_block128_w8a16=1; first released in "
                 "0.8.5 commit e992e5980c96333a48149f96392d6cff56ae9e3f under "
-                "runtime-contract v3, and carried unchanged by the currently "
-                "pinned 0.8.11 commit "
-                "187c7216b9d4882321c1923de0b4c49dc139743c under v4"
+                "runtime-contract v3, carried unchanged by 0.8.11 under v4, "
+                "and carried unchanged again by the currently pinned 0.9.1 "
+                "commit 227420f9821bab7089632ee914f0ba050f82b817 under v12 "
+                "(the two packaged contracts' abi_features maps are equal; "
+                "v12 changes formats and adds lane_eligibility, not this)"
             ),
             detail=(
                 "block-FP8 with UE8M0 block exponents, consumed by "
@@ -219,9 +221,11 @@ SOURCE_PASSTHROUGH_CONTRACTS: dict[str, SourcePassthroughContract] = {
                 "resident, dispatches decode to native GEMV and prefill to "
                 "the owned grouped BF16 CUTLASS bridge, and attests the exact "
                 "JIT extension identity/capability. Carried forward to the "
-                "pinned 0.8.11 on the packaged contract's unchanged "
+                "pinned 0.9.1 on the packaged contract's unchanged "
                 "source_fp8_block128_w8a16 attestation; the GPU gate has not "
-                "been re-run on 0.8.11."
+                "been re-run on 0.8.11 or on 0.9.1, so the measurement's scope "
+                "is still 0.8.5 and this row says so rather than inheriting a "
+                "claim it did not make."
             ),
         ),
         # DeepSeek-V4 routed experts: nibble-packed E2M1 + E8M0 group scales.

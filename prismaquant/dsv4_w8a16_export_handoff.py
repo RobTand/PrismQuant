@@ -190,9 +190,11 @@ _PUBLISHED_FILES = frozenset({
 #     halves are the only spelling the ABI permits. Gridbook 0.8.5 resolved it
 #     (as read at that release: `config.py:1487-1503` `_moe_target_keys`
 #     accepts the half leaves, `:1401-1454` builds `codebook_ref_by_role`,
-#     `moe.py:512-527` consumes it); the currently pinned 0.8.11 carries the
-#     same three mechanisms forward at shifted line numbers
-#     (`config.py:1729`, `:1694`, `moe.py:574`), and covers it with its tests
+#     `moe.py:512-527` consumes it); 0.8.11 carried the same three mechanisms
+#     forward at shifted line numbers (`config.py:1729`, `:1694`,
+#     `moe.py:574`), and so does the currently pinned 0.9.1 (`config.py:2161`
+#     `_moe_target_keys`, `:2126` `codebook_ref_by_role`, `moe.py:673`
+#     consuming it), and covers it with its tests
 #     (`test_routed_per_role_codebooks.py`). Correspondingly, 1ccdf58's message
 #     calls the dual spelling a "real inconsistency" -- that framing is wrong
 #     and is retracted here; lattice layers share one book and legally name the

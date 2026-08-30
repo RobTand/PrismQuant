@@ -157,11 +157,24 @@ def _rewrite(root: Path, quant_config: dict) -> dict:
 #: The plain receipt this fixture produced BEFORE the per-role/passthrough cover
 #: work, captured from the pre-change code. See
 #: `test_the_plain_receipt_digest_is_stable_for_an_ordinary_artifact`.
+#:
+#: The COVER digest has never moved and must not: it is computed over the
+#: artifact's own bytes and geometry, which the Gridbook pin does not touch.
+#: The EVIDENCE digest moved once, on the 0.8.11/v4 -> 0.9.1/v12 pin advance,
+#: because the evidence envelope carries `required_runtime_contract_schema`
+#: and the cover does not.  That was verified rather than assumed: substituting
+#: `gridbook.runtime-contract.v4` back into
+#: `validate_cb_endpoint.DSPARK_CB_RUNTIME_CONTRACT_SCHEMA` and rerunning this
+#: test reproduces the previous evidence digest
+#: e604772c53b1e3cba9783c0f961a62e5d0d89f45d077df69da4a89f8df50f223 exactly,
+#: so the schema string is the ONLY input that changed.  A receipt that names
+#: the contract it was validated against SHOULD move when that contract does;
+#: what would be a defect is the cover moving, and it did not.
 _PINNED_PLAIN_COVER_SHA256 = (
     "f4127eb51b5b586852ffb27b30de8cf90dda67608bf020480b77cfb285a8f4ac"
 )
 _PINNED_PLAIN_EVIDENCE_SHA256 = (
-    "e604772c53b1e3cba9783c0f961a62e5d0d89f45d077df69da4a89f8df50f223"
+    "7426aafbe191ef9ecf78fcf6dd40fd164d0ffc31c367c37f12cb558a2417f41d"
 )
 
 
@@ -338,6 +351,7 @@ def test_a_receipt_cannot_borrow_the_dspark_schema(plain_case) -> None:
 def test_the_runtime_pin_must_implement_every_feature_the_artifact_needs(
     plain_case,
 ) -> None:
+
     evidence = dict(_validate(plain_case))
     evidence["required_runtime_features"] = {
         cbv.CB_ROUTED_MOE_RUNTIME_FEATURE: cbv.CB_ROUTED_MOE_RUNTIME_FEATURE_VERSION

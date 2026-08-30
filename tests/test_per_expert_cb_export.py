@@ -33,6 +33,16 @@ MX_SOURCE = {"data_type": "fp4_e2m1", "bits": 4, "group_size": 32}
 RECIPE_PREFIX = "model.layers.0.mlp.experts"
 PHYSICAL_PREFIX = "layers.0.ffn.experts"
 
+# This module builds synthetic CB bodies on CPU and never serves them.
+# Gridbook 0.9.1's v12 table names no CB cell on sm_121, so the route gate
+# refuses these exports unless the artifact declares what it is.  See
+# tests/cb_synthetic_target.py; the real sm_121 refusal stays asserted in
+# tests/test_cb_route_status_gate.py.
+from cb_synthetic_target import declare_synthetic_cb_target
+
+pytestmark = pytest.mark.usefixtures("synthetic_cb_target")
+
+
 
 def _e8m0(shape, generator):
     return torch.randint(110, 140, shape, generator=generator).to(
@@ -113,11 +123,17 @@ def _export(root: Path, *, per_expert=None, name="out"):
     if per_expert is not None:
         per_path = _write_json(root / "per-expert.json", per_expert)
     out = root / name
-    export_nvfp4_cb_streaming(
-        source, base, out, _col_weights(), device="cpu",
-        allow_unstamped_research=True,
-        per_expert_config_path=per_path,
-    )
+    # Declared HERE and not only via the module's `pytestmark`, because
+    # `mixed_export` is a MODULE-scoped fixture: pytest sets higher-scoped
+    # fixtures up before the function-scoped `synthetic_cb_target`, so the
+    # mark alone leaves this export running with the gate armed and the
+    # tests fail at setup rather than in the body.
+    with declare_synthetic_cb_target():
+        export_nvfp4_cb_streaming(
+            source, base, out, _col_weights(), device="cpu",
+            allow_unstamped_research=True,
+            per_expert_config_path=per_path,
+        )
     return source, source_tensors, out
 
 
@@ -293,6 +309,7 @@ def test_mxfp4_subgroup_is_verbatim_and_not_double_declared(mixed_export):
 def test_completeness_refuses_broken_group_contract(
     mixed_export, tmp_path, mutation, message,
 ):
+
     _source, _source_tensors, healthy = mixed_export
     broken = tmp_path / mutation
     shutil.copytree(healthy, broken)

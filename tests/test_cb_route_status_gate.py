@@ -16,9 +16,12 @@ THE DEFECT THIS PINS, measured twice.
 
 The property under test is therefore about SHAPE as much as values: an absent
 attestation must be *unrepresentable* as a clean bill. The synthetic tables here
-exercise the gate's four dispositions; the ABSENT test runs against the REAL
-materialized Gridbook 0.8.11 contract, because that is the state the repository
-actually ships in and the one a vacuous zero would hide.
+exercise the gate's four dispositions. The ABSENT tests run against the REAL
+materialized Gridbook 0.8.11 contract -- a shipped release that genuinely
+publishes no lane_eligibility. The serving pin has since moved to 0.9.1, which
+does publish one, so absence is no longer the live state; the coverage stays
+because retiring a regression guard on the grounds that its defect is currently
+unreachable is how the defect returns.
 """
 from __future__ import annotations
 
@@ -37,9 +40,11 @@ from prismaquant.cb_route_status_gate import (
     shipcard_route_summary,
 )
 from prismaquant.gridbook_lane_eligibility import (
+    CELL_ROUTE_STATUSES,
     LANE_ELIGIBILITY_SCHEMA,
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
+    ROUTE_STATUS_FALLBACK,
     ROUTE_STATUS_UNATTESTED,
     ROUTE_STATUS_UNBACKED,
     GridbookLaneEligibilityError,
@@ -56,100 +61,180 @@ from prismaquant.gridbook_lane_eligibility import (
 REPO = Path(__file__).resolve().parents[1]
 ASSET_DIR = REPO / "prismaquant" / "gridbook_runtime"
 
+#: A byte-verbatim copy of the runtime contract Gridbook publishes at commit
+#: 30287aa (contract v12, lane_eligibility v3), which Gridbook released as
+#: 0.9.1. The pin bump has since materialized those same bytes at
+#: prismaquant/gridbook_runtime/gridbook_runtime_contract.0.9.1.json; this
+#: fixture is kept as an INDEPENDENT copy so a test that reads the publisher's
+#: shape cannot be made to pass by editing the materialized one, and
+#: test_the_v12_fixture_is_the_materialized_contract asserts the two agree
+#: byte for byte. Neither imports gridbook (AGENTS.md:38).
+V12_FIXTURE = (Path(__file__).resolve().parent / "fixtures"
+               / "gridbook_runtime_contract.v12.30287aa.json")
+V12_FIXTURE_SHA256 = (
+    "836b7831aa8bbad30170bcae56a1b01e08031ac3159914973f0a1bd15edc4f24")
+
+#: The platform the synthetic CB cells below are scoped to. v3 cells are
+#: platform-scoped, so every resolution in this file names one explicitly.
+TEST_PLATFORM = "sm_120"
+TRELLIS_PLATFORM = "sm_121"
+
+_FP8_RUNGS = [28, 40, 44, 48]
+_NVFP4_RUNGS = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+_MIDM_FLAG = "PRISMAQUANT_CB_FP4_FUSED_MIDM=1"
+_E2M1_FLAGS = ["GRIDBOOK_TRELLIS_E2M1=1",
+               "GRIDBOOK_TRELLIS_E2M1_MODE=resident|streamed"]
+
+
+def _cell(cid, *, platform, family, structure, regime, route_status,
+          qualification="compile_only", rungs=None, rungs_q256=None,
+          activation_contract=None, flags=(), predicates=()):
+    """One v3 cell, with the publisher's exact key set for its family kind."""
+    payload = {
+        "id": cid,
+        "platform": platform,
+        "family": family,
+        "structure": structure,
+        "regime": regime,
+        "route_status": route_status,
+        "qualification": qualification,
+        "requires_serve_flags": list(flags),
+        "predicates": [dict(p) for p in predicates],
+    }
+    if rungs_q256 is not None:
+        payload["rungs_q256"] = list(rungs_q256)
+        payload["activation_contract"] = activation_contract
+    else:
+        payload["rungs"] = list(rungs)
+    return payload
+
 
 # ---------------------------------------------------------------------------
-# A synthetic table modelling the MEASURED Gridbook 0.8.10 behaviour.
+# A synthetic v3 table modelling the MEASURED Gridbook behaviour.
 #
 # It is a FIXTURE, never a shipped attestation: writing these values into
 # prismaquant/ would be exactly the transcription principle 14 forbids. It
-# exists so the gate's logic can be tested before Gridbook packages the real
-# thing, and the values mirror what was measured in gridbook 0.8.10 source
-# (moe.py token-count predicate; persistent-B role-split refusal).
+# exists so the gate's logic can be tested over cases the published table does
+# not currently contain (a fallback-only unit, a mid-M opt-in flag), and its
+# shape is the publisher's own -- platform-scoped cells with an explicit rung
+# list, dispatched on each family's ``formats[].kind``.
+#
+# The base contract is the byte-verbatim v12 fixture, so the CB/trellis kind
+# discriminator under test is the real one and not a test invention.
 # ---------------------------------------------------------------------------
 def _table_payload() -> dict:
     return {
         "schema": LANE_ELIGIBILITY_SCHEMA,
+        "platforms": {
+            TEST_PLATFORM: {"compute_capability": [12, 0]},
+            TRELLIS_PLATFORM: {"compute_capability": [12, 1]},
+        },
         "regimes": ["decode", "batch"],
-        "lanes": [
-            {
-                "id": "cb_moe_gemv_decode",
-                "regime": "decode",
-                "structure": "routed_moe",
-                "route_status": "backed",
-                "detail": "per-role GEMVs below the token threshold",
-                "predicates": [
-                    {"fact": "payload_family", "op": "in",
-                     "value": ["FP8_CB_K", "NVFP4_CB_K"]},
-                    {"fact": "out_features", "op": "multiple_of", "value": 16},
-                ],
-            },
-            {
-                "id": "cb_moe_persistent_b",
-                "regime": "batch",
-                "structure": "routed_moe",
-                "route_status": "backed",
-                "detail": "decode-in-mainloop prefill; canonical books only",
-                "predicates": [
-                    {"fact": "payload_family", "op": "in",
-                     "value": ["FP8_CB_K", "NVFP4_CB_K"]},
-                    {"fact": "role_split", "op": "equals", "value": False},
-                    {"fact": "k", "op": "multiple_of", "value": 4},
-                ],
-            },
-            {
-                "id": "cb_moe_expand_bridge",
-                "regime": "batch",
-                "structure": "routed_moe",
-                "route_status": "fallback",
-                "detail": "announced expand + grouped bridge; role-split books",
-                "predicates": [
-                    {"fact": "payload_family", "op": "in",
-                     "value": ["FP8_CB_K", "NVFP4_CB_K"]},
-                ],
-            },
-            {
-                "id": "cb_dense_decode",
-                "regime": "decode",
-                "structure": "dense",
-                "route_status": "backed",
-                "predicates": [
-                    {"fact": "in_features", "op": "multiple_of", "value": 256},
-                ],
-            },
-            {
-                "id": "cb_dense_midm_optin",
-                "regime": "batch",
-                "structure": "dense",
-                "route_status": "backed_with_serve_flag",
-                "requires_serve_flags": ["PRISMAQUANT_CB_FP4_FUSED_MIDM=1"],
-                "predicates": [
-                    {"fact": "in_features", "op": "multiple_of", "value": 256},
-                ],
-            },
+        "structures": ["dense", "routed_moe"],
+        "cells": [
+            # 0: per-role GEMVs below the token threshold.
+            _cell("cb_moe_gemv_decode", platform=TEST_PLATFORM,
+                  family="FP8_CB_K", structure="routed_moe", regime="decode",
+                  route_status="backed", rungs=_FP8_RUNGS,
+                  predicates=[{"fact": "out_features", "op": "multiple_of",
+                               "value": 16}]),
+            # 1: decode-in-mainloop prefill; canonical books only.
+            _cell("cb_moe_persistent_b", platform=TEST_PLATFORM,
+                  family="FP8_CB_K", structure="routed_moe", regime="batch",
+                  route_status="backed", rungs=_FP8_RUNGS,
+                  predicates=[{"fact": "role_split", "op": "equals",
+                               "value": False}]),
+            # 2: announced expand + grouped bridge; role-split books.
+            _cell("cb_moe_expand_bridge", platform=TEST_PLATFORM,
+                  family="FP8_CB_K", structure="routed_moe", regime="batch",
+                  route_status="fallback", rungs=_FP8_RUNGS),
+            # 3/4: dense NVFP4, decode backed and batch behind an opt-in flag.
+            _cell("cb_dense_decode", platform=TEST_PLATFORM,
+                  family="NVFP4_CB_K", structure="dense", regime="decode",
+                  route_status="backed", rungs=_NVFP4_RUNGS,
+                  predicates=[{"fact": "in_features", "op": "multiple_of",
+                               "value": 256}]),
+            _cell("cb_dense_midm_optin", platform=TEST_PLATFORM,
+                  family="NVFP4_CB_K", structure="dense", regime="batch",
+                  route_status="backed_with_serve_flag", rungs=_NVFP4_RUNGS,
+                  flags=[_MIDM_FLAG],
+                  predicates=[{"fact": "in_features", "op": "multiple_of",
+                               "value": 256}]),
+            # 5/6: routed NVFP4 serves in BOTH regimes, natively in NEITHER.
+            # This is the only way a v3 table can say "unbacked": by publishing
+            # a fallback everywhere and nothing better.
+            _cell("cb_moe_nvfp4_expand_decode", platform=TEST_PLATFORM,
+                  family="NVFP4_CB_K", structure="routed_moe", regime="decode",
+                  route_status="fallback", rungs=_NVFP4_RUNGS),
+            _cell("cb_moe_nvfp4_expand_batch", platform=TEST_PLATFORM,
+                  family="NVFP4_CB_K", structure="routed_moe", regime="batch",
+                  route_status="fallback", rungs=_NVFP4_RUNGS),
+            # 7/8: the trellis lane, device-qualified behind operator flags.
+            _cell("trellis_e2m1_dense_decode", platform=TRELLIS_PLATFORM,
+                  family="TCQ_E2M1_R256", structure="dense", regime="decode",
+                  route_status="backed_with_serve_flag",
+                  qualification="device_qualified", rungs_q256=[512],
+                  activation_contract="e2m1_group16_ue4m3_static",
+                  flags=_E2M1_FLAGS),
+            _cell("trellis_e2m1_dense_batch", platform=TRELLIS_PLATFORM,
+                  family="TCQ_E2M1_R256", structure="dense", regime="batch",
+                  route_status="backed_with_serve_flag",
+                  qualification="device_qualified", rungs_q256=[512],
+                  activation_contract="e2m1_group16_ue4m3_static",
+                  flags=_E2M1_FLAGS),
         ],
     }
 
 
+#: Index of the flag-gated CB cell inside ``_table_payload()["cells"]``.
+_MIDM_CELL = 4
+#: Index of a trellis cell.
+_TRELLIS_CELL = 7
+
+
+def _contract_with(block, tmp_path: Path, name: str = "c.json") -> Path:
+    contract = json.loads(V12_FIXTURE.read_text())
+    contract["lane_eligibility"] = block
+    path = tmp_path / name
+    path.write_text(json.dumps(contract))
+    return path
+
+
 @pytest.fixture()
 def attested_table(tmp_path: Path):
-    contract = json.loads(
-        (ASSET_DIR / "gridbook_runtime_contract.0.8.10.json").read_text())
-    contract["lane_eligibility"] = _table_payload()
-    path = tmp_path / "runtime_contract.json"
-    path.write_text(json.dumps(contract))
-    return load_eligibility_table("0.8.10-test", contract_path=path)
+    return load_eligibility_table(
+        "0.9.1-test",
+        contract_path=_contract_with(_table_payload(), tmp_path))
+
+
+@pytest.fixture(scope="module")
+def v12_formats():
+    return {
+        str(entry["family"]): dict(entry)
+        for entry in json.loads(V12_FIXTURE.read_text())["formats"]
+    }
 
 
 def _facts(qname, fmt, *, routed=True, role_split=False,
-           in_features=2048, out_features=1408):
+           in_features=2048, out_features=1408, formats=None):
     return unit_structural_facts(
         qname, fmt,
         is_routed_moe=routed,
         role_split=role_split,
         in_features=in_features,
         out_features=out_features,
-        published_formats=load_published_formats(),
+        published_formats=(
+            formats if formats is not None else load_published_formats()),
     )
+
+
+def _v12_facts(qname, fmt, **kw):
+    """Facts derived from the v12 formats table (the one with trellis rows)."""
+    formats = {
+        str(entry["family"]): dict(entry)
+        for entry in json.loads(V12_FIXTURE.read_text())["formats"]
+    }
+    return _facts(qname, fmt, formats=formats, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -172,40 +257,78 @@ def test_the_shipped_contract_index_matches_the_serving_pin():
 
 def test_an_unknown_predicate_fact_is_a_malformed_contract_not_a_no_op(tmp_path):
     """An ignored predicate would make a NARROWER rule read as unconditional."""
-    contract = json.loads(
-        (ASSET_DIR / "gridbook_runtime_contract.0.8.10.json").read_text())
     block = _table_payload()
-    block["lanes"][0]["predicates"].append(
+    block["cells"][0]["predicates"].append(
         {"fact": "sm_capability", "op": "equals", "value": 121})
-    contract["lane_eligibility"] = block
-    path = tmp_path / "c.json"
-    path.write_text(json.dumps(contract))
     with pytest.raises(GridbookLaneEligibilityError, match="sm_capability"):
-        load_eligibility_table("x", contract_path=path)
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
 
 
 def test_a_flag_gated_route_must_name_its_flag(tmp_path):
-    contract = json.loads(
-        (ASSET_DIR / "gridbook_runtime_contract.0.8.10.json").read_text())
+    """BITE: an operator cannot reach an unnamed flag."""
     block = _table_payload()
-    block["lanes"][4]["requires_serve_flags"] = []
-    contract["lane_eligibility"] = block
-    path = tmp_path / "c.json"
-    path.write_text(json.dumps(contract))
+    block["cells"][_MIDM_CELL]["requires_serve_flags"] = []
     with pytest.raises(GridbookLaneEligibilityError, match="unnamed flag"):
-        load_eligibility_table("x", contract_path=path)
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_a_trellis_cell_with_an_empty_flag_list_is_refused(tmp_path):
+    """BITE, on the shape that matters: the trellis lane IS flag-gated.
+
+    Every published trellis cell is ``backed_with_serve_flag``. Dropping its
+    flags would make a route an operator cannot actually reach read as one
+    they can, on the exact lane this parser was written to admit.
+    """
+    block = _table_payload()
+    block["cells"][_TRELLIS_CELL]["requires_serve_flags"] = []
+    with pytest.raises(GridbookLaneEligibilityError, match="unnamed flag"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_flags_without_the_flag_gated_status_are_refused(tmp_path):
+    """The converse: naming flags on a plain ``backed`` cell is incoherent."""
+    block = _table_payload()
+    block["cells"][0]["requires_serve_flags"] = ["GRIDBOOK_SOMETHING=1"]
+    with pytest.raises(GridbookLaneEligibilityError, match="by definition"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
 
 
 def test_a_wrong_schema_is_refused(tmp_path):
-    contract = json.loads(
-        (ASSET_DIR / "gridbook_runtime_contract.0.8.10.json").read_text())
     block = _table_payload()
     block["schema"] = "gridbook.lane-eligibility.v99"
-    contract["lane_eligibility"] = block
-    path = tmp_path / "c.json"
-    path.write_text(json.dumps(contract))
     with pytest.raises(GridbookLaneEligibilityError, match="schema"):
-        load_eligibility_table("x", contract_path=path)
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_a_v2_lane_table_is_refused(tmp_path):
+    """BITE: v2 is not a subset of v3 and must not be read as one.
+
+    A v2 table's rules carry no platform and no rung list. Parsing one with a
+    v3 reader would make every rule match every platform and every rung -- the
+    precise overclaim this rewrite exists to prevent -- so the schema string is
+    an equality test, never a floor.
+    """
+    v2 = {
+        "schema": "gridbook.lane-eligibility.v2",
+        "regimes": ["decode", "batch"],
+        "lanes": [{
+            "id": "cb_moe_gemv_decode",
+            "regime": "decode",
+            "structure": "routed_moe",
+            "route_status": "backed",
+            "predicates": [],
+        }],
+    }
+    with pytest.raises(GridbookLaneEligibilityError) as exc:
+        load_eligibility_table("x", contract_path=_contract_with(v2, tmp_path))
+    message = str(exc.value)
+    assert "gridbook.lane-eligibility.v3" in message
+    assert "v2" in message
 
 
 def test_family_facts_are_derived_from_the_published_format_table():
@@ -225,7 +348,8 @@ def test_family_facts_are_derived_from_the_published_format_table():
 # ---------------------------------------------------------------------------
 def test_backed_unit_passes_with_no_fallback_recorded(attested_table):
     verdict = evaluate_cb_route_status(
-        [_facts("l0.experts", "FP8_CB_K28")], table=attested_table)
+        [_facts("l0.experts", "FP8_CB_K28")], table=attested_table,
+        target_platform=TEST_PLATFORM)
     assert not verdict.refused
     assert verdict.provenance["units_backed"] == 1
     assert verdict.provenance["units_with_announced_fallback"] == 0
@@ -235,15 +359,16 @@ def test_backed_unit_passes_with_no_fallback_recorded(attested_table):
 def test_the_dsv4_per_role_case_is_recorded_not_refused(attested_table):
     """decode backed + batch announced fallback = the MEASURED DSv4 state."""
     unit = _facts("l22.experts", "FP8_CB_K28", role_split=True)
-    route = resolve_unit_route(unit, attested_table)
+    route = resolve_unit_route(unit, attested_table, platform=TEST_PLATFORM)
 
     assert route.route_status == ROUTE_STATUS_BACKED
     assert route.fallback_regimes == ("batch",)
     by_regime = {r.regime: r for r in route.regimes}
-    assert by_regime["decode"].rule_id == "cb_moe_gemv_decode"
-    assert by_regime["batch"].rule_id == "cb_moe_expand_bridge"
+    assert by_regime["decode"].cell_id == "cb_moe_gemv_decode"
+    assert by_regime["batch"].cell_id == "cb_moe_expand_bridge"
 
-    verdict = evaluate_cb_route_status([unit], table=attested_table)
+    verdict = evaluate_cb_route_status([unit], table=attested_table,
+                                       target_platform=TEST_PLATFORM)
     assert not verdict.refused, "an announced fallback SERVES; refusing is wrong"
     assert verdict.provenance["units_with_announced_fallback"] == 1
     assert verdict.provenance["announced_fallback_units"] == ["l22.experts"]
@@ -251,22 +376,57 @@ def test_the_dsv4_per_role_case_is_recorded_not_refused(attested_table):
     assert any("ANNOUNCED FALLBACK" in w for w in verdict.warnings)
 
 
-def test_a_unit_with_no_backed_route_fails_export_closed(attested_table):
-    """out_features % 16 != 0 has no decode rule, so no regime backs it."""
+def test_a_unit_no_cell_covers_fails_export_closed_as_unattested(
+        attested_table):
+    """out_features % 16 != 0 has no decode cell, so nothing claims it.
+
+    Under a v3 table this is UNATTESTED, not ``unbacked``: the runtime never
+    enumerates what it refuses, so silence is the only negative signal it has.
+    The gate must still fail closed on it -- a gate that admitted an uncovered
+    unit would turn that one signal into no signal at all.
+    """
     unit = _facts("l1.experts", "FP8_CB_K28", out_features=1410)
-    verdict = evaluate_cb_route_status([unit], table=attested_table)
+    route = resolve_unit_route(unit, attested_table, platform=TEST_PLATFORM)
+    assert route.route_status == ROUTE_STATUS_UNATTESTED
+    assert route.in_scope is True
+    assert route.unattested_regimes == ("decode",)
+
+    verdict = evaluate_cb_route_status([unit], table=attested_table,
+                                       target_platform=TEST_PLATFORM)
     assert verdict.refused
-    assert verdict.provenance["units_unbacked"] == 1
+    assert verdict.provenance["units_unattested_in_scope"] == 1
+    assert verdict.provenance["units_unbacked"] == 0
     assert verdict.provenance["unbacked_disposition"] == "refused"
     assert "NO backed serving route" in verdict.refusal_reason
     with pytest.raises(CBRouteStatusRefusal):
-        require_cb_route_status([unit], table=attested_table)
+        require_cb_route_status([unit], table=attested_table,
+                                target_platform=TEST_PLATFORM)
+
+
+def test_a_fallback_only_unit_is_attested_unbacked_and_refused(attested_table):
+    """Every regime serves, none natively -- principle 9's ``unbacked``.
+
+    Distinct from the case above: here the runtime DID publish a route for
+    every regime, and every one of them is an announced fallback. The status is
+    attested and negative, and the gate refuses it just the same.
+    """
+    unit = _facts("l5.experts", "NVFP4_CB_K16")
+    route = resolve_unit_route(unit, attested_table, platform=TEST_PLATFORM)
+    assert route.route_status == ROUTE_STATUS_UNBACKED
+    assert route.attested is True
+    assert route.fallback_regimes == ("decode", "batch")
+
+    verdict = evaluate_cb_route_status([unit], table=attested_table,
+                                       target_platform=TEST_PLATFORM)
+    assert verdict.refused
+    assert verdict.provenance["units_unbacked"] == 1
+    assert verdict.provenance["units_unattested_in_scope"] == 0
 
 
 def test_an_explicit_override_ships_and_is_stamped(attested_table):
     unit = _facts("l1.experts", "FP8_CB_K28", out_features=1410)
     provenance = require_cb_route_status(
-        [unit], table=attested_table,
+        [unit], table=attested_table, target_platform=TEST_PLATFORM,
         override_reason="research arm; serving gap tracked in gridbook#48")
     assert provenance["unbacked_disposition"] == "explicit_override"
     assert provenance["override"]["reason"].startswith("research arm")
@@ -279,7 +439,8 @@ def test_an_explicit_override_ships_and_is_stamped(attested_table):
 def test_a_declared_non_native_target_ships_and_is_stamped(attested_table):
     unit = _facts("l1.experts", "FP8_CB_K28", out_features=1410)
     provenance = require_cb_route_status(
-        [unit], table=attested_table, non_native_target="sm90-a100-fallback")
+        [unit], table=attested_table, target_platform=TEST_PLATFORM,
+        non_native_target="sm90-a100-fallback")
     assert provenance["unbacked_disposition"] == "declared_non_native_target"
     assert provenance["declared_non_native_target"] == "sm90-a100-fallback"
     assert shipcard_route_summary(provenance)[
@@ -290,23 +451,36 @@ def test_a_serve_flag_route_is_backed_with_serve_flag_and_names_the_flag(
         attested_table):
     unit = _facts("attn.o_proj", "NVFP4_CB_K16", routed=False,
                   in_features=2048, out_features=2048)
-    route = resolve_unit_route(unit, attested_table)
+    route = resolve_unit_route(unit, attested_table, platform=TEST_PLATFORM)
     assert route.route_status == ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
-    verdict = evaluate_cb_route_status([unit], table=attested_table)
-    assert verdict.provenance["requires_serve_flags"] == [
-        "PRISMAQUANT_CB_FP4_FUSED_MIDM=1"]
+    verdict = evaluate_cb_route_status([unit], table=attested_table,
+                                       target_platform=TEST_PLATFORM)
+    assert verdict.provenance["requires_serve_flags"] == [_MIDM_FLAG]
     assert not verdict.refused
+
+    # BITE: backed_with_serve_flag is NOT backed, end to end. Flattening the
+    # two is precisely the overclaim Gridbook refused to make.
+    p = verdict.provenance
+    assert p["units_backed"] == 0
+    assert p["units_backed_with_serve_flag"] == 1
+    assert p["units_by_route_status"] == {ROUTE_STATUS_BACKED_WITH_SERVE_FLAG: 1}
+    summary = shipcard_route_summary(p)
+    assert summary["units_backed"] == 0
+    assert summary["units_backed_with_serve_flag"] == 1
+    assert summary["requires_serve_flags"] == [_MIDM_FLAG]
 
 
 def test_env_supplies_the_override_when_the_caller_does_not(
         attested_table, monkeypatch):
     unit = _facts("l1.experts", "FP8_CB_K28", out_features=1410)
     monkeypatch.setenv(ROUTE_OVERRIDE_ENV, "one-off bringup")
-    provenance = require_cb_route_status([unit], table=attested_table)
+    provenance = require_cb_route_status([unit], table=attested_table,
+                                         target_platform=TEST_PLATFORM)
     assert provenance["override"]["reason"] == "one-off bringup"
     monkeypatch.delenv(ROUTE_OVERRIDE_ENV)
     monkeypatch.setenv(NON_NATIVE_TARGET_ENV, "gb10-eager")
-    provenance = require_cb_route_status([unit], table=attested_table)
+    provenance = require_cb_route_status([unit], table=attested_table,
+                                         target_platform=TEST_PLATFORM)
     assert provenance["declared_non_native_target"] == "gb10-eager"
 
 
@@ -318,7 +492,8 @@ def test_a_mixed_selection_counts_every_disposition(attested_table):
         _facts("attn.o_proj", "NVFP4_CB_K16", routed=False,
                in_features=2048, out_features=2048),
     ]
-    verdict = evaluate_cb_route_status(units, table=attested_table)
+    verdict = evaluate_cb_route_status(units, table=attested_table,
+                                       target_platform=TEST_PLATFORM)
     assert not verdict.refused
     assert verdict.provenance["units_total"] == 4
     assert verdict.provenance["units_with_announced_fallback"] == 2
@@ -329,30 +504,98 @@ def test_a_mixed_selection_counts_every_disposition(attested_table):
 # ---------------------------------------------------------------------------
 # 3. The ABSENT path — the exact defect of units_on_fallback_route = 0
 # ---------------------------------------------------------------------------
-def test_the_real_pinned_release_publishes_no_eligibility_table():
-    """Measured, not assumed: Gridbook 0.8.11 packages no lane_eligibility.
+def _absent_table():
+    """A genuinely ABSENT table, from the last pin that had one.
 
-    (0.8.11's packaged contract is byte-identical to 0.8.10's; the serving
-    pin, not this file, says which release the claim is made of.)
+    The serving pin advanced to 0.9.1, which DOES publish a table, so the
+    absent-path defect coverage below can no longer come from the live pin.
+    It comes from 0.8.11's still-indexed materialized contract instead -- the
+    same bytes the gate saw before the bump. Deleting these tests with the pin
+    would retire the `units_on_fallback_route = 0` regression guard on the
+    grounds that the defect is currently unreachable, which is how it comes
+    back.
+    """
+    return load_eligibility_table(
+        "0.8.11",
+        contract_path=ASSET_DIR / "gridbook_runtime_contract.0.8.11.json")
+
+
+def test_the_real_pinned_release_publishes_the_v12_eligibility_table():
+    """Measured, not assumed: Gridbook 0.9.1 packages lane-eligibility v3.
+
+    This is the pin bump's whole point -- route status stops being
+    unattested-by-absence and becomes a resolution against a published table.
+    The serving pin, not this file, says which release the claim is made of.
     """
     contract = json.loads(
-        (ASSET_DIR / "gridbook_runtime_contract.0.8.11.json").read_text())
-    assert "lane_eligibility" not in contract
-    # What it DOES publish, so a future reader can see the gap precisely.
+        (ASSET_DIR / "gridbook_runtime_contract.0.9.1.json").read_text())
+    assert contract["schema"] == "gridbook.runtime-contract.v12"
     assert set(contract) == {
         "schema", "contract_version", "abi_features", "quant_method",
-        "packing", "layout", "formats", "producer_profiles",
+        "packing", "layout", "formats", "lane_eligibility", "tensor_parallel",
+        "expert_parallel", "producer_profiles",
     }
+    assert contract["lane_eligibility"]["schema"] == (
+        "gridbook.lane-eligibility.v3")
     table = load_eligibility_table()
-    assert table.present is False
-    assert table.runtime_version == "0.8.11"
+    assert table.present is True
+    assert table.runtime_version == "0.9.1"
+
+
+def test_the_published_table_names_no_cb_cell_on_sm121():
+    """The serving gap this pin bump makes visible, asserted rather than met.
+
+    Every CB cell v12 publishes is `compile_only` on sm_89 or sm_120; sm_121
+    carries the four device-qualified trellis cells and nothing else. Gridbook
+    fixes each CB preflight's capability in code, so there is no CB receipt
+    for compute 12.1 to publish, and principle 14 forbids inventing one. The
+    consequence is the next test: a CB export declaring sm_121 refuses.
+
+    If a future Gridbook does receipt CB on sm_121, this test fails and is
+    deleted -- deliberately, so the gap cannot close silently.
+    """
+    cells = json.loads(
+        (ASSET_DIR / "gridbook_runtime_contract.0.9.1.json").read_text()
+    )["lane_eligibility"]["cells"]
+    on_121 = [c for c in cells if c["platform"] == "sm_121"]
+    assert on_121, "sm_121 must be a published platform"
+    assert {c["family"] for c in on_121} == {
+        "TCQ_E4M3_R256", "TCQ_E2M1_R256"}
+    assert not [c for c in on_121 if c["family"].endswith("_CB_K")]
+
+
+def test_cb_on_sm121_refuses_under_the_real_pin():
+    """Principle 9 judged per artifact, on the profile's declared hardware.
+
+    `nvfp4_cb.json` declares `target_platform: sm_121`, so the gate asks the
+    v12 table for a CB route on compute 12.1 and the table has none. Absence
+    is a v3 table's only way to say no, so the answer is UNATTESTED and the
+    export fails closed. The refusal text must name the platform and the two
+    declared escape hatches; an operator who cannot tell WHY it refused will
+    reach for the override without reading what it stamps.
+    """
+    units = [_facts("l0.experts", "FP8_CB_K28"),
+             _facts("l1.q_proj", "NVFP4_CB_K16", routed=False)]
+    with pytest.raises(CBRouteStatusRefusal) as excinfo:
+        require_cb_route_status(units)
+    reason = str(excinfo.value)
+    assert "sm_121" in reason
+    assert "not covered by any published lane cell" in reason
+    assert NON_NATIVE_TARGET_ENV in reason and ROUTE_OVERRIDE_ENV in reason
+
+    # And it is a REFUSAL, not a silent pass with a warning.
+    verdict = evaluate_cb_route_status(units)
+    assert verdict.refused
+    assert verdict.provenance["target_platform"] == "sm_121"
+    assert verdict.provenance["units_unattested_in_scope"] == 2
+    assert verdict.provenance["units_unbacked"] == 0
 
 
 def test_absent_attestation_reports_unattested_and_never_a_zero():
     """A vacuous zero must be UNREPRESENTABLE, not merely discouraged."""
     units = [_facts("l0.experts", "FP8_CB_K28"),
              _facts("l22.experts", "FP8_CB_K28", role_split=True)]
-    verdict = evaluate_cb_route_status(units)  # real pinned table => ABSENT
+    verdict = evaluate_cb_route_status(units, table=_absent_table())
 
     assert not verdict.refused, "absence is not evidence of an unbacked route"
     assert not verdict.attested
@@ -360,7 +603,10 @@ def test_absent_attestation_reports_unattested_and_never_a_zero():
     assert p["route_attestation"] == ROUTE_STATUS_UNATTESTED
     assert p["units_unattested"] == 2
     assert p["attestation"]["status"] == "absent"
-    assert p["attestation"]["gridbook_serving_commit"].startswith("187c721")
+    # It still names WHICH release attested nothing. (Under the live pin that
+    # is the pin's commit; here the release is named by version, since the pin
+    # itself has moved on to one that does publish a table.)
+    assert p["attestation"]["gridbook_serving_version"] == "0.8.11"
 
     # THE POINT: none of the counters that could be misread as a clean bill
     # exist in this payload at all.
@@ -404,7 +650,7 @@ def test_the_route_census_lands_on_the_written_shipcard(tmp_path,
 
     provenance = require_cb_route_status(
         [_facts("l1.experts", "FP8_CB_K28", out_features=1410)],
-        table=attested_table,
+        table=attested_table, target_platform=TEST_PLATFORM,
         non_native_target="sm90-a100-fallback")
     root = _cb_artifact(tmp_path, {"cb_route_status": provenance})
 
@@ -414,10 +660,12 @@ def test_the_route_census_lands_on_the_written_shipcard(tmp_path,
 
     assert on_disk["unbacked_disposition"] == "declared_non_native_target"
     assert on_disk["declared_non_native_target"] == "sm90-a100-fallback"
-    assert on_disk["units_unbacked"] == 1
-    # The card names the release the claim came from; a route status with no
-    # runtime identity attests nothing (principle 14).
-    assert on_disk["gridbook_serving_version"] == "0.8.10-test"
+    assert on_disk["units_unattested_in_scope"] == 1
+    # The card names the release the claim came from, AND the platform the
+    # claim is scoped to; a route status with no runtime identity or no
+    # hardware scope attests nothing (principle 14 and its corollary).
+    assert on_disk["gridbook_serving_version"] == "0.9.1-test"
+    assert on_disk["target_platform"] == TEST_PLATFORM
 
 
 def test_an_unattested_card_publishes_no_route_counters(tmp_path):
@@ -425,7 +673,7 @@ def test_an_unattested_card_publishes_no_route_counters(tmp_path):
     from prismaquant.shipcard import build_shipcard
 
     verdict = evaluate_cb_route_status(
-        [_facts("l0.experts", "FP8_CB_K28")])  # real pin => ABSENT
+        [_facts("l0.experts", "FP8_CB_K28")], table=_absent_table())
     root = _cb_artifact(tmp_path, {"cb_route_status": verdict.provenance})
 
     summary = build_shipcard(root, build={"quant_method": "gridbook"})[
@@ -449,13 +697,41 @@ def test_a_card_without_a_route_stamp_omits_the_field(tmp_path):
     assert "cb_route_status" not in build_shipcard(root, build={})
 
 
-def test_every_unit_resolves_unattested_under_the_real_pin():
+def test_every_cb_unit_resolves_unattested_on_sm121_under_the_real_pin():
+    """Per-unit view of the gap, and the two silences it must not conflate.
+
+    A CB unit on sm_121 is IN SCOPE and answers `unattested` in every regime
+    the table defines: the table covers this platform and this payload family,
+    and declines to name a cell for it. BF16 is OUT OF SCOPE with no regime
+    rows at all -- the contract publishes no BF16 payload family, so the table
+    has nothing to say and says nothing. Reporting the second as a serving gap
+    would manufacture an alarm; reporting the first as out of remit would hide
+    one.
+
+    The control is the last assertion: the same NVFP4_CB_K16 unit resolves
+    BACKED on sm_120. The sm_121 answer is therefore this table declining to
+    attest CB on compute 12.1, not a parser that cannot see CB cells at all.
+    """
     table = load_eligibility_table()
-    for fmt in ("FP8_CB_K28", "NVFP4_CB_K16", "BF16"):
-        route = resolve_unit_route(_facts("u", fmt), table)
+    assert table.present is True
+    for fmt in ("FP8_CB_K28", "NVFP4_CB_K16"):
+        route = resolve_unit_route(_facts("u", fmt), table, platform="sm_121")
         assert route.route_status == ROUTE_STATUS_UNATTESTED
         assert route.attested is False
-        assert route.regimes == ()
+        assert route.in_scope is True
+        assert {r.regime for r in route.regimes} == set(table.regimes)
+        assert {r.route_status for r in route.regimes} == {
+            ROUTE_STATUS_UNATTESTED}
+        assert all(r.cell_id is None for r in route.regimes)
+
+    bf16 = resolve_unit_route(_facts("u", "BF16"), table, platform="sm_121")
+    assert bf16.route_status == ROUTE_STATUS_UNATTESTED
+    assert bf16.in_scope is False
+    assert bf16.regimes == ()
+
+    on_120 = resolve_unit_route(
+        _facts("u", "NVFP4_CB_K16"), table, platform="sm_120")
+    assert on_120.route_status == ROUTE_STATUS_BACKED
 
 
 def test_a_pin_with_no_materialized_contract_attests_nothing(tmp_path):
@@ -497,8 +773,95 @@ def test_the_resolved_lane_exposes_structured_route_status():
     # Principle 9's field, present and structured, on the real pin.
     assert payload["route_status"] == ROUTE_STATUS_UNATTESTED
     assert payload["requires_serve_flags"] == []
-    assert payload["route_status_source"].endswith(":absent")
-    assert "0.8.11" in payload["route_status_source"]
+    # Resolved against a PRESENT table now, and the source says which of the
+    # three ways it came up empty: no cell for this platform+family. A reader
+    # who cannot tell `no_cell` from `absent` cannot tell a serving gap from a
+    # runtime that publishes nothing.
+    assert payload["route_status_source"].endswith(":no_cell")
+    assert "0.9.1" in payload["route_status_source"]
+
+
+@pytest.fixture()
+def present_pin(monkeypatch):
+    """Resolve serving lanes against the PUBLISHED v12 table, not the pin.
+
+    Nothing exercised ``ServingLaneSpec.route_status_for`` on a present table
+    before this: the real pin's table is absent, so the function returned at
+    its first branch and every line past it was unreached. That is how it kept
+    reading ``table.rules`` -- a name lane-eligibility v3 does not have -- and
+    would have raised AttributeError the moment the pin advanced. Unused
+    because unmeasured is a gap, not evidence.
+    """
+    from prismaquant import gridbook_lane_eligibility as le
+    from prismaquant import serving_profiles as sp
+
+    formats = {
+        str(entry["family"]): dict(entry)
+        for entry in json.loads(V12_FIXTURE.read_text())["formats"]
+    }
+    monkeypatch.setattr(
+        le, "load_eligibility_table",
+        lambda *a, **kw: load_eligibility_table(
+            "0.9.1-fixture", contract_path=V12_FIXTURE))
+    monkeypatch.setattr(le, "load_published_formats",
+                        lambda *a, **kw: formats)
+    sp._reset_eligibility_table_cache()
+    yield
+    sp._reset_eligibility_table_cache()
+
+
+def _cb_lane(fmt):
+    from prismaquant.serving_profiles import load_serving_profile
+
+    profile = load_serving_profile("nvfp4_cb")
+    chosen = None
+    for lane in profile.serving_lanes:
+        if lane.covers(fmt):
+            chosen = lane
+    assert chosen is not None, f"no CB lane covers {fmt}"
+    return chosen
+
+
+def test_a_present_table_resolves_a_lane_without_touching_table_rules(
+        present_pin):
+    """The v3 rename is followed through into the serving-lane resolver."""
+    status, flags, source = _cb_lane("FP8_CB_K44").route_status_for(
+        "FP8_CB_K44", platform="sm_120")
+    # sm_120/FP8_CB_K/K44 is covered in both regimes, and the routed_moe batch
+    # cell predicates on role_split -- a fact only the export gate holds. The
+    # lane says so rather than guessing a lane-wide verdict.
+    assert status == "unit_dependent"
+    assert flags == ()
+    assert source == ("gridbook_runtime_contract:0.9.1-fixture"
+                      ":unit_dependent(cb_route_status_gate)")
+
+
+def test_a_lane_resolved_without_a_platform_stays_unattested(present_pin):
+    """BITE: v3 cells are platform-scoped even at lane granularity."""
+    status, flags, source = _cb_lane("FP8_CB_K44").route_status_for(
+        "FP8_CB_K44", platform=None)
+    assert status == ROUTE_STATUS_UNATTESTED
+    assert flags == ()
+    assert source.endswith(":no_target_platform")
+
+
+def test_a_lane_whose_rung_no_cell_lists_stays_unattested(present_pin):
+    """K32 is a published codec rung; no lane cell covers it."""
+    lane = _cb_lane("FP8_CB_K32")
+    assert lane.route_status_for("FP8_CB_K32", platform="sm_120")[2].endswith(
+        ":rung_not_listed")
+    # ...and a rung that IS listed does not take that branch.
+    assert not lane.route_status_for(
+        "FP8_CB_K44", platform="sm_120")[2].endswith(":rung_not_listed")
+
+
+def test_a_lane_on_an_unpublished_platform_stays_unattested(present_pin):
+    status, _, source = _cb_lane("FP8_CB_K44").route_status_for(
+        "FP8_CB_K44", platform="sm_121")
+    assert status == ROUTE_STATUS_UNATTESTED
+    assert source.endswith(":no_cell"), (
+        "the published table names no CB cell on sm_121; saying so is the "
+        "table reporting a serving gap, which is the signal it carries")
 
 
 def test_selection_provenance_distinguishes_unattested_from_zero():
@@ -578,9 +941,398 @@ def test_both_cb_exporters_run_the_gate_before_writing_bytes():
         assert "cb_route_status" in src
 
 
+# ---------------------------------------------------------------------------
+# 6. Lane-eligibility v3: rungs_q256, platforms, scope, and what is REFUSED
+#
+# Every test in this section is a mutation of a table that otherwise parses.
+# A bad input proves the check runs; the point is that each mutation BITES.
+# ---------------------------------------------------------------------------
+def test_the_v12_fixture_is_the_materialized_contract():
+    """Two copies of one publisher artifact, held byte-identical.
+
+    The fixture was taken from Gridbook's packaged contract before the pin
+    moved; the materialized copy is what the gate now resolves against. If
+    they ever diverge, one of them was edited rather than re-materialized --
+    which is the failure mode principle 14 exists to catch, since an edited
+    contract is a claim about another runtime that the runtime never made.
+    """
+    materialized = ASSET_DIR / "gridbook_runtime_contract.0.9.1.json"
+    assert materialized.read_bytes() == V12_FIXTURE.read_bytes()
+
+
+def test_the_published_v12_table_parses_and_keeps_its_distinctions(tmp_path):
+    """The fixture is Gridbook's own table, byte-verbatim, read end to end."""
+    import hashlib
+
+    assert hashlib.sha256(
+        V12_FIXTURE.read_bytes()).hexdigest() == V12_FIXTURE_SHA256
+
+    table = load_eligibility_table("0.9.1-fixture", contract_path=V12_FIXTURE)
+    assert table.present
+    assert table.schema == LANE_ELIGIBILITY_SCHEMA
+    assert table.platforms == ("sm_89", "sm_120", "sm_121")
+    assert table.regimes == ("decode", "batch")
+    assert table.trellis_families == {"TCQ_E2M1_R256", "TCQ_E4M3_R256"}
+    assert len(table.cells) == 16
+
+    trellis = [c for c in table.cells if c.is_trellis]
+    assert len(trellis) == 4
+    for cell in trellis:
+        # backed_with_serve_flag, never flattened to backed, and every one
+        # names the flags an operator needs.
+        assert cell.route_status == ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+        assert cell.requires_serve_flags
+        assert cell.qualification == "device_qualified"
+        assert cell.activation_contract
+        assert cell.rungs_q256 and not cell.rungs
+    for cell in table.cells:
+        if not cell.is_trellis:
+            assert cell.rungs and not cell.rungs_q256
+            assert cell.activation_contract == ""
+        # The publisher has no way to spell an outright refusal.
+        assert cell.route_status in CELL_ROUTE_STATUSES
+        assert cell.route_status != ROUTE_STATUS_UNBACKED
+
+
+def test_the_published_table_backs_the_trellis_lane_on_sm121():
+    """The whole point of the rewrite: trellis becomes servable in our eyes."""
+    table = load_eligibility_table("0.9.1-fixture", contract_path=V12_FIXTURE)
+    unit = _v12_facts("model.layers.0.mlp.down_proj", "TCQ_E2M1_R512",
+                      routed=False)
+    assert unit.payload_family == "TCQ_E2M1_R256"
+    assert unit.rate_q256 == 512
+    assert unit.k is None
+
+    route = resolve_unit_route(unit, table, platform="sm_121")
+    assert route.route_status == ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+    assert route.requires_serve_flags == tuple(sorted(_E2M1_FLAGS))
+    assert route.activation_contracts == ("e2m1_group16_ue4m3_static",)
+    assert route.qualifications == ("device_qualified",)
+
+    verdict = evaluate_cb_route_status([unit], table=table,
+                                       target_platform="sm_121")
+    assert not verdict.refused
+    assert verdict.provenance["units_backed"] == 0
+    assert verdict.provenance["units_backed_with_serve_flag"] == 1
+    assert verdict.provenance["activation_contracts"] == {
+        "e2m1_group16_ue4m3_static": 2}
+    assert verdict.provenance["qualifications"] == {"device_qualified": 2}
+    assert any("flag" in w for w in verdict.warnings)
+
+
+def test_a_trellis_rate_no_cell_lists_resolves_unattested():
+    """BITE, and the one the whole table exists for.
+
+    640 q256 is a rate the E2M1 family PUBLISHES as a candidate rung and the
+    reader accepts, so the unit's facts carry it. No lane cell lists it. A
+    parser that admitted it would be strictly worse than one that could not
+    parse the table at all, because it would report a route the runtime never
+    claimed.
+    """
+    table = load_eligibility_table("0.9.1-fixture", contract_path=V12_FIXTURE)
+    listed = _v12_facts("u", "TCQ_E2M1_R512", routed=False)
+    unlisted = _v12_facts("u", "TCQ_E2M1_R640", routed=False)
+
+    # Same family, same platform, same structure -- ONLY the rate differs.
+    assert unlisted.payload_family == listed.payload_family
+    assert unlisted.rate_q256 == 640
+
+    assert resolve_unit_route(
+        listed, table, platform="sm_121"
+    ).route_status == ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+    route = resolve_unit_route(unlisted, table, platform="sm_121")
+    assert route.route_status == ROUTE_STATUS_UNATTESTED
+    assert route.in_scope is True
+    assert route.unattested_regimes == ("decode", "batch")
+
+    verdict = evaluate_cb_route_status([unlisted], table=table,
+                                       target_platform="sm_121")
+    assert verdict.refused
+    assert verdict.provenance["units_unattested_in_scope"] == 1
+    assert "rate_q256=640" in verdict.refusal_reason
+
+
+def test_a_rate_outside_the_published_reader_range_carries_no_rate():
+    """Fail closed one step earlier: an out-of-range rate is not even a fact."""
+    over = _v12_facts("u", "TCQ_E2M1_R2000", routed=False)
+    assert over.payload_family == "TCQ_E2M1_R256"
+    assert over.rate_q256 is None, (
+        "2000 q256 is above the E2M1 reader range [256, 1016]; carrying it as "
+        "a fact would let a predicate or a rung list match on it")
+    table = load_eligibility_table("0.9.1-fixture", contract_path=V12_FIXTURE)
+    assert resolve_unit_route(
+        over, table, platform="sm_121"
+    ).route_status == ROUTE_STATUS_UNATTESTED
+
+
+def test_a_cb_rung_no_cell_lists_resolves_unattested(attested_table):
+    """The CB twin: K32 is a legal codec rung that no lane cell covers."""
+    unit = _v12_facts("l0.experts", "FP8_CB_K32")
+    assert unit.k == 32, "K32 IS published in formats[].rungs"
+    assert 32 not in _FP8_RUNGS, "but no lane cell lists it"
+
+    route = resolve_unit_route(unit, attested_table, platform=TEST_PLATFORM)
+    assert route.route_status == ROUTE_STATUS_UNATTESTED
+    verdict = evaluate_cb_route_status([unit], table=attested_table,
+                                       target_platform=TEST_PLATFORM)
+    assert verdict.refused
+
+
+def test_a_trellis_cell_must_use_rungs_q256_not_rungs(tmp_path):
+    """BITE: the rung vocabulary follows the family's kind, not the cell.
+
+    Body bits per 256 weights and a codebook K are different quantities on the
+    same axis. Letting a trellis cell spell its rate as ``rungs`` would make
+    ``512`` collide with a codebook size the moment either list grew.
+    """
+    block = _table_payload()
+    cell = block["cells"][_TRELLIS_CELL]
+    cell["rungs"] = cell.pop("rungs_q256")
+    with pytest.raises(GridbookLaneEligibilityError) as exc:
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+    assert "rungs_q256" in str(exc.value)
+
+
+def test_a_cb_cell_may_not_carry_a_trellis_rate(tmp_path):
+    block = _table_payload()
+    block["cells"][0]["rungs_q256"] = [512]
+    with pytest.raises(GridbookLaneEligibilityError, match="unknown field"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_a_trellis_cell_must_name_its_activation_contract(tmp_path):
+    """A route with no executed contract attests nothing (principle 14)."""
+    block = _table_payload()
+    block["cells"][_TRELLIS_CELL]["activation_contract"] = ""
+    with pytest.raises(GridbookLaneEligibilityError,
+                       match="activation_contract"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+    block = _table_payload()
+    del block["cells"][_TRELLIS_CELL]["activation_contract"]
+    with pytest.raises(GridbookLaneEligibilityError, match="missing field"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_an_empty_rung_list_is_refused(tmp_path):
+    """An empty list covers nothing and would silently disable its cell."""
+    block = _table_payload()
+    block["cells"][0]["rungs"] = []
+    with pytest.raises(GridbookLaneEligibilityError, match="at least one rung"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_a_cell_claiming_unbacked_is_refused(tmp_path):
+    """The publisher has no such status; accepting one would out-lax it.
+
+    Gridbook's own validator admits ``backed | backed_with_serve_flag |
+    fallback``. A table handed to us with an ``unbacked`` cell is not a table
+    that runtime produced.
+    """
+    block = _table_payload()
+    block["cells"][0]["route_status"] = ROUTE_STATUS_UNBACKED
+    with pytest.raises(GridbookLaneEligibilityError) as exc:
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+    assert "absence" in str(exc.value)
+
+
+def test_an_unknown_qualification_is_refused(tmp_path):
+    block = _table_payload()
+    block["cells"][0]["qualification"] = "probably_fine"
+    with pytest.raises(GridbookLaneEligibilityError, match="qualification"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_compile_only_is_recorded_and_never_upgraded(attested_table):
+    """``compile_only`` means the kernels build. It is not a serve."""
+    verdict = evaluate_cb_route_status(
+        [_facts("l0.experts", "FP8_CB_K28")], table=attested_table,
+        target_platform=TEST_PLATFORM)
+    assert verdict.provenance["qualifications"] == {"compile_only": 2}
+    assert any("COMPILE_ONLY" in w for w in verdict.warnings)
+
+
+def test_a_cell_on_an_undeclared_platform_is_refused(tmp_path):
+    block = _table_payload()
+    block["cells"][0]["platform"] = "sm_75"
+    with pytest.raises(GridbookLaneEligibilityError, match="not a declared"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_a_cell_for_an_unpublished_family_is_refused(tmp_path):
+    """A lane cell for a codec the runtime does not publish routes nothing."""
+    block = _table_payload()
+    block["cells"][0]["family"] = "INT3_CB_K"
+    with pytest.raises(GridbookLaneEligibilityError, match="formats"):
+        load_eligibility_table(
+            "x", contract_path=_contract_with(block, tmp_path))
+
+
+def test_no_declared_platform_attests_nothing(attested_table):
+    """BITE: v3 cells are platform-scoped, so no platform is no claim.
+
+    Resolving without one must NOT fall through to a match-any. This is the
+    landmine for whoever bumps the pin: a CB serving profile that declares no
+    ``target_platform`` will refuse, and the reason says so in as many words.
+    """
+    unit = _facts("l0.experts", "FP8_CB_K28")
+    route = resolve_unit_route(unit, attested_table, platform=None)
+    assert route.route_status == ROUTE_STATUS_UNATTESTED
+    assert "no declared target platform" in route.unattested_reason
+    assert "platform-scoped" in route.unattested_reason
+
+    verdict = evaluate_cb_route_status([unit], table=attested_table,
+                                       target_platform=None,
+                                       target_profile="__no_such_profile__")
+    assert verdict.refused
+    assert verdict.provenance["target_platform"] is None
+    assert "UNDECLARED" in verdict.refusal_reason
+
+
+def test_an_unpublished_platform_attests_nothing(attested_table):
+    """sm_89 is not in this table; a unit targeted at it gets no claim."""
+    unit = _facts("l0.experts", "FP8_CB_K28")
+    route = resolve_unit_route(unit, attested_table, platform="sm_89")
+    assert route.route_status == ROUTE_STATUS_UNATTESTED
+    assert "sm_89" in route.unattested_reason
+
+
+def test_the_published_table_makes_no_cb_claim_on_sm121():
+    """A measured fact about the published table, not an opinion about it.
+
+    Gridbook's v12 table publishes CB cells for sm_89 and sm_120 only. On
+    sm_121 -- the GB10 the flagships are built for -- a CB unit resolves
+    UNATTESTED and the gate refuses. That is the table reporting a serving
+    gap, which is exactly the signal it exists to carry (principle 1).
+    """
+    table = load_eligibility_table("0.9.1-fixture", contract_path=V12_FIXTURE)
+    assert not any(c.platform == "sm_121" and not c.is_trellis
+                   for c in table.cells)
+    unit = _v12_facts("l0.experts", "FP8_CB_K48")
+    assert resolve_unit_route(
+        unit, table, platform="sm_121").route_status == ROUTE_STATUS_UNATTESTED
+    assert resolve_unit_route(
+        unit, table, platform="sm_120").route_status == ROUTE_STATUS_BACKED
+
+
+def test_partial_regime_coverage_is_unattested_not_backed(tmp_path):
+    """One covered regime is not coverage; it must not read as backed."""
+    block = _table_payload()
+    block["cells"] = [c for c in block["cells"]
+                      if c["id"] != "cb_moe_expand_bridge"
+                      and c["id"] != "cb_moe_persistent_b"]
+    table = load_eligibility_table(
+        "x", contract_path=_contract_with(block, tmp_path))
+    route = resolve_unit_route(
+        _facts("l0.experts", "FP8_CB_K28"), table, platform=TEST_PLATFORM)
+    assert route.route_status == ROUTE_STATUS_UNATTESTED
+    assert route.unattested_regimes == ("batch",)
+    assert [r.route_status for r in route.regimes] == [
+        ROUTE_STATUS_BACKED, ROUTE_STATUS_UNATTESTED]
+
+
+def test_units_outside_the_published_families_are_reported_not_refused(
+        attested_table):
+    """The scope test is DERIVED from formats[], never a list typed here.
+
+    BF16, a SOURCE passthrough and a stock CT rung all reach this gate from
+    ``export_nvfp4_cb`` (it passes ``(*cb_targets, *stock_targets)``). The lane
+    table publishes no codec for them, so it is not the authority for those
+    bytes: they are counted and named, and they never read as backed.
+    """
+    units = [
+        _facts("l0.experts", "FP8_CB_K28"),
+        _facts("attn.q_proj", "BF16", routed=False, in_features=2048,
+               out_features=2048),
+        _facts("attn.k_proj", "FP8_SOURCE", routed=False, in_features=2048,
+               out_features=512),
+    ]
+    for unit in units[1:]:
+        route = resolve_unit_route(unit, attested_table,
+                                   platform=TEST_PLATFORM)
+        assert route.route_status == ROUTE_STATUS_UNATTESTED
+        assert route.in_scope is False
+        assert "not published in" in route.unattested_reason
+
+    verdict = evaluate_cb_route_status(units, table=attested_table,
+                                       target_platform=TEST_PLATFORM)
+    assert not verdict.refused, (
+        "the lane table makes no claim about non-CB bytes; refusing on them "
+        "would refuse every real CB export")
+    p = verdict.provenance
+    assert p["units_total"] == 3
+    assert p["units_in_attested_families"] == 1
+    assert p["units_outside_attested_families"] == 2
+    assert p["outside_attested_families_units"] == ["attn.k_proj",
+                                                    "attn.q_proj"]
+    assert p["outside_attested_families_formats"] == ["BF16", "FP8_SOURCE"]
+    # And they are NOT counted as backed anywhere.
+    assert p["units_backed"] == 1
+    assert sum(p["units_by_route_status"].values()) == 1
+    assert any("out of the attestation's scope" in w for w in verdict.warnings)
+    assert shipcard_route_summary(p)["units_outside_attested_families"] == 2
+
+
+def test_facts_cannot_carry_both_a_codebook_rung_and_a_trellis_rate():
+    """The two rung vocabularies are exclusive by construction."""
+    with pytest.raises(GridbookLaneEligibilityError, match="never both"):
+        UnitStructuralFacts(
+            qname="x", format_name="FP8_CB_K28", payload_family="FP8_CB_K",
+            k=28, n_sub=4, structure="dense", role_split=False,
+            in_features=256, out_features=16, rate_q256=512)
+
+
 def test_unit_facts_reject_an_unknown_structure():
     with pytest.raises(Exception):
         UnitStructuralFacts(
             qname="x", format_name="FP8_CB_K28", payload_family="FP8_CB_K",
             k=28, n_sub=4, structure="sparse_moe", role_split=False,
             in_features=256, out_features=16)
+
+
+def test_an_unconsulted_scope_is_omitted_not_defaulted():
+    """The same defect class as `units_on_fallback_route=0`, one field down.
+
+    `in_scope` answers "does the pinned contract publish this unit's payload
+    family". Under an ABSENT table that question is never asked -- the resolver
+    returns before `governs()` runs. A field defaulting to True would have
+    every BF16 and stock-CT unit stamp `in_scope: true` into provenance,
+    claiming a table that was never opened had ruled them in. The honest
+    payload omits the key.
+    """
+    units = [_facts("l0.experts", "FP8_CB_K28"),
+             _facts("attn.q_proj", "BF16")]
+    p = evaluate_cb_route_status(
+        units, table=_absent_table()).provenance
+
+    for row in p["by_unit"]:
+        assert "in_scope" not in row, (
+            f"{row['qname']}: an absent table asked nothing about scope; "
+            "stamping a default is the units_on_fallback_route=0 defect")
+
+
+def test_a_consulted_scope_is_always_stated(attested_table):
+    """Conversely: every row resolved against a real table states its scope.
+
+    Omission must mean "never asked", so a present table may never omit it --
+    otherwise a reader cannot tell the two apart and the field carries no
+    information.
+    """
+    units = [_facts("l0.experts", "FP8_CB_K28"),   # published family
+             _facts("attn.q_proj", "BF16")]        # outside the remit
+    p = evaluate_cb_route_status(
+        units, table=attested_table, target_platform=TEST_PLATFORM).provenance
+
+    scopes = {row["qname"]: row["in_scope"] for row in p["by_unit"]}
+    assert set(scopes) == {"l0.experts", "attn.q_proj"}
+    assert all(isinstance(v, bool) for v in scopes.values())
+    assert scopes["l0.experts"] is True
+    assert scopes["attn.q_proj"] is False

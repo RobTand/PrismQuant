@@ -44,6 +44,14 @@ from prismaquant.shipcard import (  # noqa: E402
     REQUIRED_SLOTS,
 )
 
+# This module builds synthetic CB bodies on CPU and never serves them.
+# Gridbook 0.9.1's v12 table names no CB cell on sm_121, so the route gate
+# refuses these exports unless the artifact declares what it is.  See
+# tests/cb_synthetic_target.py; the real sm_121 refusal stays asserted in
+# tests/test_cb_route_status_gate.py.
+pytestmark = pytest.mark.usefixtures("synthetic_cb_target")
+
+
 
 def export_nvfp4_cb(*args, **kwargs):
     kwargs.setdefault("allow_unstamped_research", True)
@@ -374,6 +382,7 @@ def test_a_sharded_cb_artifact_carries_a_valid_card_and_inventory(
 def test_both_exporters_stamp_a_budget_invariant_payload_identity(
     tmp_path, exporter,
 ):
+
     """The property `model_sha` cannot carry across a reshard."""
     mdl, assignment, col_weights = _cb_fixture(tmp_path)
     one, many = tmp_path / "one", tmp_path / "many"

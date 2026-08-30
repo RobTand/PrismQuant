@@ -1,9 +1,33 @@
 # Lane eligibility in Gridbook's packaged runtime contract
 
-**Status:** proposal to the [`gridbook`](https://github.com/RobTand/gridbook)
-repository. PrismaQuant's consumption half is implemented and shipping; the
-producer half does not exist yet, so every CB serving lane resolves
-`route_status = "unattested"`.
+**Status: SUPERSEDED as a specification (2026-08-30), kept as the record of
+the ask.** Gridbook has now published a `lane_eligibility` table — commit
+`30287aa`, runtime contract v12, schema `gridbook.lane-eligibility.v3` — and it
+is **not** the shape proposed below. Read this file for *why* each field was
+demanded; read the published contract for what the table actually is, and
+`prismaquant/gridbook_lane_eligibility.py` for what PrismaQuant parses.
+
+What the published v3 does differently, and where this document is now wrong:
+
+- Cells are **platform-scoped** (`{schema, platforms, regimes, structures,
+  cells}`), not a flat regime/lane map. A rule that names no platform matches
+  nothing; there is no match-any.
+- Rungs live in two disjoint vocabularies — `rungs` (CB codebook K) and
+  `rungs_q256` (trellis body bits per 256 weights) — and the `kind`
+  discriminator (`cb_product` / `tcq_trellis`) sits on the `formats[]` rows,
+  not on the cells.
+- Cells carry `qualification` (`compile_only` / `device_qualified`) and an
+  `activation_contract` string, neither of which this proposal anticipated.
+- The cell status set is closed at `backed | backed_with_serve_flag |
+  fallback`. **There is no `unbacked` cell**: Gridbook declines to publish a
+  negative claim, so *absence is the only negative signal*, and a rate or rung
+  the table does not list must resolve `unattested`. That inverts this
+  document's assumption that the table would enumerate refusals.
+
+Still true, and still the reason the lane reads `unattested` today: PrismaQuant
+pins Gridbook 0.8.11, whose contract is v4 and carries no table at all. Moving
+the pins to a build that has one is release-gated (`30287aa` is untagged); see
+ARCHITECTURE.md §9.2.1 for the exact prerequisites.
 
 **Audience:** whoever implements the Gridbook side. This document specifies the
 exact table to package and why each field is required.

@@ -8,6 +8,10 @@ import shutil
 import subprocess
 import sys
 
+from prismaquant.gridbook_runtime_pin import (
+    GRIDBOOK_RUNTIME_RELEASE_VERSION,
+)
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOL = REPO / "tools" / "prismaquant_source_bootstrap.py"
@@ -164,7 +168,7 @@ from prismaquant.serving_profiles import (
 )
 from prismaquant.model_profiles.structure import load_structure_spec
 assert load_serving_profile("nvfp4_cb").id == "nvfp4_cb"
-assert gridbook_runtime_version() == "0.8.11"
+assert gridbook_runtime_version() == {GRIDBOOK_RUNTIME_RELEASE_VERSION!r}
 assert load_structure_spec("deepseek_v4").id == "deepseek_v4"
 """
     result = subprocess.run(

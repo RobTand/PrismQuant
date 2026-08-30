@@ -523,8 +523,15 @@ CID=$(docker create --pull=never --name "$NAME" --gpus all --ipc=host \
   --entrypoint bash "$BASE_IMAGE" -lc '
     set -euo pipefail
     # Absence is part of the released environment contract.  In particular,
-    # literal 0 is invalid for both fused-FP4 selectors and expert chunking.
+    # literal 0 is invalid for both fused-FP4 selectors and expert chunking,
+    # and for the four trellis lane vars 0.9.1 added: both lane flags are
+    # latched_bool(default=False), so unset IS off, while the two _MODE vars
+    # accept only "resident" or "streamed" and RAISE on anything else --
+    # including "0".  Absence is the only value that is both off and legal,
+    # so they are scrubbed here rather than pinned to a disabled spelling.
     unset CUDACXX CXX GRIDBOOK_MXFP8_DENSE \
+      GRIDBOOK_TRELLIS_E2M1 GRIDBOOK_TRELLIS_E2M1_MODE \
+      GRIDBOOK_TRELLIS_E4M3 GRIDBOOK_TRELLIS_E4M3_MODE \
       PRISMAQUANT_CB_DECODE PRISMAQUANT_CB_EXPAND PRISMAQUANT_CB_PREFILL \
       PRISMAQUANT_CB_FUSED_FP4 PRISMAQUANT_CB_FUSED_FP4_MOE \
       PRISMAQUANT_CB_PREFILL_EXPERT_CHUNK \
