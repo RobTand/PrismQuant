@@ -13,10 +13,14 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
 import shutil
+import socket
 import subprocess
+import sys
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
@@ -26,7 +30,8 @@ import torch
 from prismaquant import export_native_compressed as enc
 
 
-SCHEMA = "prismaquant.research.qtip_native_nvfp4_one_linear.v1"
+SCHEMA = "prismaquant.research.qtip_native_nvfp4_one_linear.v2"
+CALIBRATION_SCHEMA = "prismaquant.calibration_identity.v1"
 QTIP_REPOSITORY = "https://github.com/Cornell-RelaxML/qtip"
 QTIP_PINNED_COMMIT = "e90c6688c8dfae326a3a81b5eb032db7c6680ec0"
 QTIP_SOURCE_FILES = {
@@ -46,9 +51,23 @@ ARM_NAMES = (
     "A_native_nvfp4_rtn_jso",
     "B_prismaquant_gptq_static_order_jso",
     "C_qtip_block_ldl_native_nvfp4",
-    "C2_qtip_block_ldl_native_nvfp4_full_jso",
+    "C2_qtip_block_ldl_native_nvfp4_seven_level_scale_heuristic",
 )
 _LOCK = threading.RLock()
+QUALITY_ENV = {
+    "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+    "PRISMAQUANT_ACT_CLIP_QUANTILE": str(CLIP_QUANTILE),
+    "PRISMAQUANT_GPTQ_DAMP": str(DAMP),
+    "PRISMAQUANT_GPTQ_DAMP_SWEEP": "0",
+    "PRISMAQUANT_GPTQ_DAMP_ROLES": "",
+    "PRISMAQUANT_DO_NO_HARM": "1",
+    "PRISMAQUANT_NVFP4_SNAPPED_SCALE_SCORING": "0",
+    "PRISMAQUANT_GPTQ_BLOCK_SIZE": "128",
+    "PRISMAQUANT_FP8_GPTQ_BLOCK_SIZE": "128",
+    "PRISMAQUANT_NVFP4_JOINT_SCALE_GLOBAL_GRID": "5",
+    "PRISMAQUANT_NVFP4_JOINT_SCALE_GLOBAL_SPAN_LO": "0.75",
+    "PRISMAQUANT_NVFP4_JOINT_SCALE_GLOBAL_SPAN_HI": "1.25",
+}
 
 
 @dataclass(frozen=True)
@@ -61,24 +80,37 @@ class Arm:
 @contextlib.contextmanager
 def fixed_contract(scale_levels: tuple[float, ...] = SCALE_LEVELS) -> Iterator[None]:
     """Pin legacy env-backed render choices and restore the caller exactly."""
-    values = {
-        "PRISMAQUANT_ACT_CLIP_QUANTILE": str(CLIP_QUANTILE),
-        "PRISMAQUANT_GPTQ_DAMP": str(DAMP),
-        "PRISMAQUANT_GPTQ_DAMP_SWEEP": "0",
-        "PRISMAQUANT_GPTQ_DAMP_ROLES": "",
-        "PRISMAQUANT_DO_NO_HARM": "1",
-        "PRISMAQUANT_NVFP4_SNAPPED_SCALE_SCORING": "0",
-    }
     with _LOCK:
-        old_env = {k: os.environ.get(k) for k in values}
+        old_env = {k: os.environ.get(k) for k in QUALITY_ENV}
         old_levels = enc._NVFP4_JOINT_SCALE_LEVELS
+        old_flags = dict(enc._ACT_AWARE_FLAGS)
+        old_precision = torch.get_float32_matmul_precision()
+        old_deterministic = torch.are_deterministic_algorithms_enabled()
+        old_warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+        old_cuda_tf32 = torch.backends.cuda.matmul.allow_tf32
+        old_cudnn_tf32 = torch.backends.cudnn.allow_tf32
         try:
-            os.environ.update(values)
+            os.environ.update(QUALITY_ENV)
             enc._NVFP4_JOINT_SCALE_LEVELS = scale_levels
+            enc._ACT_AWARE_FLAGS.update(
+                {key: False for key in enc._ACT_AWARE_FLAGS}
+            )
+            torch.set_float32_matmul_precision("highest")
+            torch.use_deterministic_algorithms(True)
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
             with enc._temporary_export_nvfp4_scale_rule(SCALE_RULE):
                 yield
         finally:
             enc._NVFP4_JOINT_SCALE_LEVELS = old_levels
+            enc._ACT_AWARE_FLAGS.clear()
+            enc._ACT_AWARE_FLAGS.update(old_flags)
+            torch.set_float32_matmul_precision(old_precision)
+            torch.use_deterministic_algorithms(
+                old_deterministic, warn_only=old_warn_only
+            )
+            torch.backends.cuda.matmul.allow_tf32 = old_cuda_tf32
+            torch.backends.cudnn.allow_tf32 = old_cudnn_tf32
             for key, value in old_env.items():
                 if value is None:
                     os.environ.pop(key, None)
@@ -109,18 +141,215 @@ def fields_sha256(fields: Mapping[str, torch.Tensor]) -> str:
     return h.hexdigest()
 
 
+def file_sha256(path: str | Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def validate_calibration_manifest(path: str | Path) -> dict[str, object]:
+    """Load a self-consistent calibration identity and bind its exact bytes."""
+    source = Path(path).resolve()
+    try:
+        value = json.loads(source.read_text())
+    except Exception as exc:
+        raise ValueError(f"invalid calibration manifest {source}: {exc}") from exc
+    if not isinstance(value, dict) or value.get("schema") != CALIBRATION_SCHEMA:
+        raise ValueError(f"calibration manifest schema must be {CALIBRATION_SCHEMA!r}")
+    for key in ("dataset", "capture_precision", "calibration_hash"):
+        if not isinstance(value.get(key), str) or not value[key].strip():
+            raise ValueError(f"calibration manifest {key!r} must be a non-empty string")
+    if not re.fullmatch(r"[0-9a-f]{32}|[0-9a-f]{64}", value["calibration_hash"]):
+        raise ValueError("calibration_hash must be lowercase 128- or 256-bit hex")
+    for key in ("nsamples", "seqlen"):
+        if isinstance(value.get(key), bool) or not isinstance(value.get(key), int) or value[key] <= 0:
+            raise ValueError(f"calibration manifest {key!r} must be a positive integer")
+    if isinstance(value.get("seed"), bool) or not isinstance(value.get("seed"), int):
+        raise ValueError("calibration manifest 'seed' must be an integer")
+    claimed = value.get("identity_sha256")
+    identity_payload = {key: item for key, item in value.items() if key != "identity_sha256"}
+    expected = _canonical_sha256(identity_payload)
+    if claimed != expected:
+        raise ValueError(
+            f"calibration identity_sha256 mismatch: expected {expected}, got {claimed!r}"
+        )
+    return {
+        "path": str(source),
+        "file_sha256": file_sha256(source),
+        "identity_sha256": expected,
+        "contract": value,
+    }
+
+
+def validate_prismaquant_checkout(
+    path: str | Path, expected_commit: str
+) -> dict[str, object]:
+    """Bind the actual clean checkout and exact implementation sources."""
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+        raise ValueError("--prismaquant-commit must be 40 lowercase hex characters")
+    root = Path(path).resolve()
+    git = shutil.which("git")
+    if git:
+        result = subprocess.run(
+            [git, "-C", str(root), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        commit = result.stdout.strip()
+        dirty = subprocess.run(
+            [git, "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        if dirty:
+            raise ValueError("PrismaQuant checkout has tracked modifications")
+        tree_state = "tracked_clean_git_checked"
+    else:
+        commit = _checkout_head_without_git(root)
+        tree_state = "git_unavailable_source_digests_bound"
+    if commit != expected_commit:
+        raise ValueError(
+            f"PrismaQuant checkout mismatch: expected {expected_commit}, got {commit}"
+        )
+    sources = {
+        "prismaquant/export_native_compressed.py": Path(enc.__file__).resolve(),
+        "research/qtip_native_nvfp4_2026-08-30/native_nvfp4_ldlq.py": Path(__file__).resolve(),
+    }
+    digests: dict[str, str] = {}
+    for relative, imported in sources.items():
+        expected_path = (root / relative).resolve()
+        if imported != expected_path or not expected_path.is_file():
+            raise ValueError(
+                f"imported source does not belong to pinned checkout: {relative}={imported}"
+            )
+        digests[relative] = file_sha256(expected_path)
+    return {
+        "commit": commit,
+        "checkout": str(root),
+        "tree_verification": tree_state,
+        "source_sha256": digests,
+    }
+
+
+def quality_contract() -> dict[str, object]:
+    return {
+        "environment": dict(sorted(QUALITY_ENV.items())),
+        "nvfp4_scale_rule": SCALE_RULE,
+        "production_scale_levels": list(SCALE_LEVELS),
+        "seven_level_heuristic_scale_levels": list(FULL_SCALE_LEVELS),
+        "group_size": GROUP,
+        "activation_aware_module_flags_for_native_terminals": {
+            key: False for key in sorted(enc._ACT_AWARE_FLAGS)
+        },
+        "float32_matmul_precision": "highest",
+        "cuda_matmul_allow_tf32": False,
+        "cudnn_allow_tf32": False,
+        "deterministic_algorithms": True,
+    }
+
+
+def device_identity(device: torch.device) -> dict[str, object]:
+    identity: dict[str, object] = {
+        "requested": str(device),
+        "platform": platform.platform(),
+        "container_hostname": socket.gethostname(),
+    }
+    if device.type != "cuda":
+        identity["type"] = device.type
+        return identity
+    index = torch.cuda.current_device() if device.index is None else int(device.index)
+    props = torch.cuda.get_device_properties(index)
+    identity.update({
+        "type": "cuda", "index": index, "name": props.name,
+        "compute_capability": [int(props.major), int(props.minor)],
+        "total_memory_bytes": int(props.total_memory),
+    })
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        probe = subprocess.run(
+            [smi, "--query-gpu=driver_version,pci.bus_id,uuid",
+             "--format=csv,noheader,nounits", "-i", str(index)],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        parts = [part.strip() for part in probe.split(",")]
+        if len(parts) != 3 or not all(parts):
+            raise ValueError(f"invalid nvidia-smi device identity: {probe!r}")
+        identity.update({"driver_version": parts[0], "pci_bus_id": parts[1], "uuid": parts[2]})
+    else:
+        driver = Path("/proc/driver/nvidia/version")
+        if not driver.is_file():
+            raise ValueError("CUDA receipt requires a readable NVIDIA driver identity")
+        identity["driver_version_text"] = driver.read_text().strip()
+    return identity
+
+
 def _publish_no_clobber(destination: Path, writer) -> None:
     """Publish one complete file atomically and refuse an existing result."""
     destination = destination.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
+    temporary = destination.with_name(
+        f".{destination.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}"
+    )
     try:
-        if temporary.exists():
-            raise FileExistsError(f"stale temporary output exists: {temporary}")
         writer(temporary)
+        if not temporary.is_file() or temporary.is_symlink():
+            raise ValueError(f"publisher did not create one regular file: {temporary}")
+        temporary.chmod(0o644)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
         os.link(temporary, destination)
+        directory_fd = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def validate_publication_plan(
+    root: str | Path, destinations: list[Path]
+) -> tuple[Path, dict[Path, str]]:
+    """Require a unique, one-root result set before any publication starts."""
+    publication_root = Path(root).resolve()
+    resolved = [path.resolve() for path in destinations]
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("publication destinations must be unique")
+    relative: dict[Path, str] = {}
+    for destination in resolved:
+        try:
+            rel = destination.relative_to(publication_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"publication destination escapes root {publication_root}: {destination}"
+            ) from exc
+        if not rel.parts:
+            raise ValueError("publication root itself cannot be an output file")
+        relative[destination] = rel.as_posix()
+    return publication_root, relative
+
+
+def durable_uri(root: str, relative: str) -> str:
+    base = root.strip().rstrip("/")
+    if not base or any(ch in base for ch in ("\n", "\r", "\0")):
+        raise ValueError("--durable-root-uri must be a non-empty single-line URI/path")
+    return f"{base}/{relative}"
+
+
+def validate_container_identity(value: str) -> str:
+    identity = value.strip()
+    if not re.fullmatch(r"(?:[^\s]+@)?sha256:[0-9a-f]{64}", identity):
+        raise ValueError(
+            "--container-identity must be an image ID or repo digest ending in sha256:<64 hex>"
+        )
+    return identity
 
 
 def validate_fields(fields: Mapping[str, torch.Tensor]) -> tuple[int, int]:
@@ -297,8 +526,10 @@ def qtip_native_arm(
     return Arm(fields, decoded, tuple(reversed(receipts)))
 
 
-def qtip_native_full_scale_arm(weight: torch.Tensor, activations: torch.Tensor) -> Arm:
-    """QTIP BlockLDLQ plus the exporter's existing full legal JSO candidate grid."""
+def qtip_native_seven_level_scale_arm(
+    weight: torch.Tensor, activations: torch.Tensor
+) -> Arm:
+    """QTIP BlockLDLQ plus the exporter's seven max-to-level heuristics."""
     return qtip_native_arm(weight, activations, FULL_SCALE_LEVELS)
 
 
@@ -345,9 +576,11 @@ def compare_one_linear(weight: torch.Tensor, activations: torch.Tensor):
         raise ValueError("inputs must be finite")
     with torch.inference_mode():
         a = rtn_arm(weight)
+        gate_before = dict(enc._DO_NO_HARM_STATS)
         b = gptq_jso_arm(weight, activations)
+        gate_after = dict(enc._DO_NO_HARM_STATS)
         c = qtip_native_arm(weight, activations)
-        d = qtip_native_full_scale_arm(weight, activations)
+        d = qtip_native_seven_level_scale_arm(weight, activations)
         x, hessian, realized = damped_hessian(activations, cols, weight.device)
     arms = {
         ARM_NAMES[0]: a,
@@ -361,21 +594,24 @@ def compare_one_linear(weight: torch.Tensor, activations: torch.Tensor):
         "weight": {"shape": list(weight.shape), "dtype": str(weight.dtype), "sha256": tensor_sha256(weight)},
         "activations": {"shape": list(activations.shape), "dtype": str(activations.dtype),
                         "sha256": tensor_sha256(activations), "clip_quantile": CLIP_QUANTILE,
-                        "preprocessed_rows": int(x.shape[0])},
+                        "preprocessed_rows": int(x.shape[0]),
+                        "preprocessed_sha256": tensor_sha256(x)},
         "hessian": {"construction": "X.T@X with production dead-channel convention",
                     "damp_fraction": DAMP, "realized_diagonal_damping": realized,
-                    "block_size": GROUP},
+                    "block_size": GROUP, "sha256": tensor_sha256(hessian)},
+        "quality_contract": quality_contract(),
         "native_nvfp4_contract": {"group_size": GROUP, "element_grid": "E2M1",
             "group_scale_dtype": "torch.float8_e4m3fn", "tensor_global": "float32_divisor",
             "scale_rule": SCALE_RULE,
             "scale_levels_by_arm": {"A_B_C": list(SCALE_LEVELS), "C2": list(FULL_SCALE_LEVELS)},
+            "C2_is_exhaustive_e4m3_scale_byte_search": False,
             "scale_byte_is_semantic_not_side_channel": True,
             "fields": list(FIELDS)},
         "arm_contracts": {
             ARM_NAMES[0]: "RTN optimizer; JSO names the final native group/tensor scale search only",
             ARM_NAMES[1]: "GPTQ static activation order with joint_scale_opt, then final native JSO packing",
             ARM_NAMES[2]: "QTIP BlockLDLQ recurrence with production {6,4} native terminal JSO",
-            ARM_NAMES[3]: "same QTIP recurrence with existing opt-in full native terminal JSO grid",
+            ARM_NAMES[3]: "same QTIP recurrence with seven max-to-E2M1-level scale heuristics; not exhaustive E4M3 search",
         },
         "transferred": ["activation Hessian", "block-unit-lower Cholesky",
                         "reverse block schedule", "later-block error feedback"],
@@ -384,6 +620,13 @@ def compare_one_linear(weight: torch.Tensor, activations: torch.Tensor):
             "signs_hadamards": "need runtime inverse or separately proved model-wide fold",
             "SU_SV": "QTIP sidecars have no stock NVFP4 representation",
             "allocation": "whole-model mixed-rate allocation is outside this one-Linear isolate",
+        },
+        "control_observations": {
+            "arm_B_do_no_harm_stat_delta": {
+                key: int(gate_after.get(key, 0) - gate_before.get(key, 0))
+                for key in sorted(set(gate_before) | set(gate_after))
+            },
+            "causal_interpretation_requires_a_recorded_pre_gate_candidate": True,
         },
         "arms": {name: _metrics(weight, x, hessian, arm) for name, arm in arms.items()},
     }
@@ -411,16 +654,28 @@ def _checkout_head_without_git(root: Path) -> str:
     if not head.startswith("ref: "):
         raise ValueError(f"invalid Git HEAD value {head!r}")
     ref = head.removeprefix("ref: ")
-    loose = gitdir / ref
-    if loose.is_file():
-        return loose.read_text().strip()
-    packed = gitdir / "packed-refs"
-    if packed.is_file():
-        for line in packed.read_text().splitlines():
-            if line and not line.startswith(("#", "^")):
-                commit, name = line.split(" ", 1)
-                if name == ref:
-                    return commit
+    if not re.fullmatch(r"refs/[A-Za-z0-9._/-]+", ref) or ".." in ref.split("/"):
+        raise ValueError(f"invalid Git ref {ref!r}")
+    roots = [gitdir]
+    commondir = gitdir / "commondir"
+    if commondir.is_file():
+        common = Path(commondir.read_text().strip())
+        if not common.is_absolute():
+            common = (gitdir / common).resolve()
+        roots.append(common)
+    for metadata_root in roots:
+        loose = metadata_root / ref
+        if loose.is_file():
+            commit = loose.read_text().strip()
+            if re.fullmatch(r"[0-9a-f]{40}", commit):
+                return commit
+        packed = metadata_root / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text().splitlines():
+                if line and not line.startswith(("#", "^")):
+                    commit, name = line.split(" ", 1)
+                    if name == ref and re.fullmatch(r"[0-9a-f]{40}", commit):
+                        return commit
     raise ValueError(f"cannot resolve Git ref {ref!r}")
 
 
@@ -478,65 +733,150 @@ def _load(path: str, key: str | None) -> torch.Tensor:
 
 
 def main(argv=None) -> int:
+    actual_argv = list(sys.argv[1:] if argv is None else argv)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--weight", required=True); ap.add_argument("--weight-key")
     ap.add_argument("--activations", required=True); ap.add_argument("--activations-key")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--output", required=True)
-    ap.add_argument("--artifacts-dir")
-    ap.add_argument("--profile-dir")
+    ap.add_argument("--artifacts-dir", required=True)
+    ap.add_argument("--profile-dir", required=True)
+    ap.add_argument("--publication-root", required=True)
+    ap.add_argument("--durable-root-uri", required=True)
+    ap.add_argument("--host", required=True)
+    ap.add_argument("--container-identity", required=True)
+    ap.add_argument("--model-id", required=True)
+    ap.add_argument("--calibration-manifest", required=True)
+    ap.add_argument("--prismaquant-checkout", required=True)
+    ap.add_argument("--prismaquant-commit", required=True)
     ap.add_argument("--qtip-checkout", default="/home/rob/dq-runs/qtip-reference-20260830")
-    args = ap.parse_args(argv)
+    args = ap.parse_args(actual_argv)
     output = Path(args.output).resolve()
-    planned = [output]
-    if args.artifacts_dir:
-        outdir = Path(args.artifacts_dir).resolve()
-        planned.extend(outdir / f"{name}.safetensors" for name in ARM_NAMES)
-    if args.profile_dir:
-        trace = Path(args.profile_dir).resolve() / "one_linear_trace.json"
-        planned.append(trace)
+    outdir = Path(args.artifacts_dir).resolve()
+    trace = Path(args.profile_dir).resolve() / "one_linear_trace.json"
+    planned = [output, trace]
+    planned.extend(outdir / f"{name}.safetensors" for name in ARM_NAMES)
+    publication_root, relative_paths = validate_publication_plan(
+        args.publication_root, planned
+    )
+    if publication_root.exists() and any(publication_root.iterdir()):
+        raise FileExistsError(
+            f"v2 requires a fresh empty publication root: {publication_root}"
+        )
+    durable_base = args.durable_root_uri.strip().rstrip("/")
+    for relative in relative_paths.values():
+        durable_uri(durable_base, relative)
     occupied = [str(path) for path in planned if path.exists()]
     if occupied:
         raise FileExistsError(f"refusing to overwrite research outputs: {occupied}")
+    if not args.host.strip():
+        raise ValueError("--host must name the physical execution host")
+    if not args.model_id.strip():
+        raise ValueError("--model-id must be non-empty")
+    container = validate_container_identity(args.container_identity)
+    prismaquant_source = validate_prismaquant_checkout(
+        args.prismaquant_checkout, args.prismaquant_commit
+    )
+    qtip_source = validate_qtip_checkout(args.qtip_checkout)
+    calibration = validate_calibration_manifest(args.calibration_manifest)
     device = torch.device(args.device)
-    w = _load(args.weight, args.weight_key).to(device)
-    x = _load(args.activations, args.activations_key).to(device)
-    source = validate_qtip_checkout(args.qtip_checkout)
-    profiler = None
-    if args.profile_dir:
-        Path(args.profile_dir).mkdir(parents=True, exist_ok=True)
-        acts = [torch.profiler.ProfilerActivity.CPU]
-        if device.type == "cuda": acts.append(torch.profiler.ProfilerActivity.CUDA)
-        profiler = torch.profiler.profile(activities=acts, record_shapes=True, profile_memory=True)
-        profiler.__enter__()
+    device_provenance = device_identity(device)
+    weight_path = Path(args.weight).resolve()
+    activation_path = Path(args.activations).resolve()
+    input_sources = {
+        "weight": {
+            "path": str(weight_path), "key": args.weight_key,
+            "file_sha256": file_sha256(weight_path),
+        },
+        "activations": {
+            "path": str(activation_path), "key": args.activations_key,
+            "file_sha256": file_sha256(activation_path),
+        },
+    }
+    w = _load(str(weight_path), args.weight_key).to(device)
+    x = _load(str(activation_path), args.activations_key).to(device)
+    Path(args.profile_dir).mkdir(parents=True, exist_ok=True)
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if device.type == "cuda":
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+    profiler = torch.profiler.profile(
+        activities=activities, record_shapes=True, profile_memory=True
+    )
+    profiler.__enter__()
     try:
         report, arms = compare_one_linear(w, x)
-        if device.type == "cuda": torch.cuda.synchronize(device)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
     finally:
-        if profiler: profiler.__exit__(None, None, None)
-    report["qtip_source"] = source
-    report["execution"] = {"device": str(device), "torch_version": torch.__version__,
-                           "cuda_version": torch.version.cuda,
-                           "activation_precision": "BF16/FP32 Hessian isolate; not a served W4A4 claim"}
-    if profiler:
-        trace = Path(args.profile_dir).resolve() / "one_linear_trace.json"
-        _publish_no_clobber(trace, lambda temp: profiler.export_chrome_trace(str(temp)))
-        report["execution"]["torch_profiler_trace"] = str(trace)
-    if args.artifacts_dir:
-        from safetensors.torch import save_file
-        outdir = Path(args.artifacts_dir).resolve(); outdir.mkdir(parents=True, exist_ok=True)
-        saved = {}
-        for name, arm in arms.items():
-            p = outdir / f"{name}.safetensors"
-            tensors = {k: v.detach().contiguous().cpu() for k, v in arm.fields.items()}
-            _publish_no_clobber(
-                p,
-                lambda temp, tensors=tensors, name=name: save_file(
-                    tensors, str(temp),
-                    metadata={"schema": SCHEMA, "arm": name, "format": "native NVFP4"}),
-            )
-            saved[name] = str(p)
-        report["native_field_artifacts"] = saved
+        profiler.__exit__(None, None, None)
+    report["qtip_source"] = qtip_source
+    report["prismaquant_source"] = prismaquant_source
+    report["calibration"] = calibration
+    report["input_sources"] = input_sources
+    report["weight"]["model_id"] = args.model_id
+    report["execution"] = {
+        "physical_host": args.host.strip(),
+        "container_identity": container,
+        "device": device_provenance,
+        "torch_version": torch.__version__,
+        "cuda_toolkit_version": torch.version.cuda,
+        "command": [str(Path(__file__).resolve()), *actual_argv],
+        "command_sha256": _canonical_sha256(actual_argv),
+        "working_directory": str(Path.cwd().resolve()),
+        "activation_precision": "source tensor recorded exactly; FP32 Hessian isolate; not a served W4A4 claim",
+    }
+    published: list[dict[str, object]] = []
+
+    def record_member(path: Path, kind: str, **extra: object) -> dict[str, object]:
+        resolved = path.resolve()
+        relative = relative_paths[resolved]
+        item: dict[str, object] = {
+            "kind": kind,
+            "relative_path": relative,
+            "durable_uri": durable_uri(durable_base, relative),
+            "file_sha256": file_sha256(resolved),
+            "bytes": resolved.stat().st_size,
+            "mode": oct(resolved.stat().st_mode & 0o777),
+        }
+        item.update(extra)
+        published.append(item)
+        return item
+
+    _publish_no_clobber(
+        trace, lambda temp: profiler.export_chrome_trace(str(temp))
+    )
+    report["execution"]["torch_profiler_trace"] = record_member(
+        trace, "torch_profiler_trace"
+    )
+    from safetensors.torch import save_file
+    outdir.mkdir(parents=True, exist_ok=True)
+    saved: dict[str, dict[str, object]] = {}
+    for name, arm in arms.items():
+        path = outdir / f"{name}.safetensors"
+        tensors = {key: value.detach().contiguous().cpu() for key, value in arm.fields.items()}
+        _publish_no_clobber(
+            path,
+            lambda temp, tensors=tensors, name=name: save_file(
+                tensors, str(temp),
+                metadata={"schema": SCHEMA, "arm": name, "format": "native NVFP4"}),
+        )
+        saved[name] = record_member(
+            path, "native_nvfp4_fields", arm=name,
+            fields_sha256=fields_sha256(tensors),
+        )
+    report["native_field_artifacts"] = saved
+    receipt_relative = relative_paths[output]
+    report["publication"] = {
+        "semantics": "per_file_no_clobber_receipt_is_commit_marker",
+        "publication_root": str(publication_root),
+        "durable_root_uri": durable_base,
+        "members_published_before_commit_marker": published,
+        "commit_marker": {
+            "relative_path": receipt_relative,
+            "durable_uri": durable_uri(durable_base, receipt_relative),
+        },
+        "incomplete_rule": "any member set without the receipt commit marker is invalid and must not be resumed in place",
+    }
     payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
     _publish_no_clobber(output, lambda temp: temp.write_text(payload))
     print(json.dumps(report, indent=2, sort_keys=True))
