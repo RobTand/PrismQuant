@@ -63,10 +63,12 @@ import argparse
 import collections
 import dataclasses
 import fnmatch
+import hashlib
 import json
 import os
 import pickle
 import re
+import subprocess
 import time
 
 import numpy as np
@@ -81,6 +83,102 @@ CUDA_RESERVED_DRAIN_GIB = 8.0
 
 def log(m: str) -> None:
     print(f"[aqua-cost] {m}", flush=True)
+
+
+def _sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(8 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def producer_source_identity() -> dict:
+    """Identity of the exact tracked source executing this stage.
+
+    A table carrying an A-side but no producer revision is quarantined under
+    the campaign provenance rules.  Resolve the identity from this module's
+    checkout, bind both the Git object and the actual bytes, and make dirtiness
+    explicit rather than silently stamping ``HEAD`` over an edited worktree.
+    """
+    module = os.path.realpath(__file__)
+    repo = os.path.dirname(os.path.dirname(module))
+    relative = os.path.relpath(module, repo)
+    identity = {
+        "repo": repo,
+        "module": relative,
+        "git_commit": "unknown",
+        "module_sha256": _sha256(module),
+        "tracked_module_sha256": None,
+        "worktree_clean": False,
+    }
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=repo, check=True, capture_output=True, text=True, timeout=20,
+        ).stdout.strip()
+        tracked = subprocess.run(
+            ["git", "show", f"HEAD:{relative}"], cwd=repo, check=True,
+            capture_output=True, timeout=20,
+        ).stdout
+        identity.update({
+            "git_commit": commit or "unknown",
+            "tracked_module_sha256": hashlib.sha256(tracked).hexdigest(),
+            "worktree_clean": not bool(status),
+        })
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return identity
+
+
+def activation_cell_coverage(costs: dict, executed_activation_formats,
+                             non_activation_formats=()) -> dict:
+    """Coverage of the cost cells whose A-grid the serving lane executes.
+
+    For a named lane, its explicit contract is authoritative even when a
+    format descriptor disagrees.  That disagreement is the recorded
+    ``FP8_SOURCE`` hole: compressed-tensors executes dynamic A8, while the
+    descriptor says the format leaves activations alone.  For the explicit
+    ``"all"`` research assertion there is no such lane list, so descriptor
+    non-activation formats are excluded.
+    """
+    executes_all = executed_activation_formats == "all"
+    patterns = (("*",) if executes_all
+                else tuple(executed_activation_formats or ()))
+    non_activation = frozenset(non_activation_formats)
+    active = 0
+    priced = 0
+    missing: list[dict[str, str]] = []
+    by_format: dict[str, dict[str, int]] = collections.defaultdict(
+        lambda: {"active": 0, "priced": 0, "missing": 0})
+    for name, row in costs.items():
+        if not isinstance(row, dict):
+            continue
+        for fmt, entry in row.items():
+            matched = any(fnmatch.fnmatchcase(fmt, pat) for pat in patterns)
+            if not matched or (executes_all and fmt in non_activation):
+                continue
+            active += 1
+            by_format[fmt]["active"] += 1
+            has_price = isinstance(entry, dict) and ACT_DLOSS_KEY in entry
+            if has_price:
+                priced += 1
+                by_format[fmt]["priced"] += 1
+            else:
+                by_format[fmt]["missing"] += 1
+                if len(missing) < 20:
+                    missing.append({"unit": str(name), "format": str(fmt)})
+    return {
+        "lane_activation_cells": active,
+        "priced_activation_cells": priced,
+        "missing_activation_cells": active - priced,
+        "missing_examples": missing,
+        "by_format": {k: dict(v) for k, v in sorted(by_format.items())},
+    }
 
 
 def build_weight_resolver(weight_map: dict, profile=None) -> dict:
@@ -863,8 +961,11 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
         log(f"HOLE: {fmt} quantizes activations but {len(names_)} units could "
             f"not be priced; those rows keep a weight-only cost. "
             f"e.g. {names_[:3]}")
-    return (table, {k: v for k, v in holes.items()},
-            {"act_var_source": dict(var_source)})
+    return (table, {k: v for k, v in holes.items()}, {
+        "act_var_source": dict(var_source),
+        "non_activation_formats": sorted(non_act),
+        "not_executed_formats": sorted(not_executed),
+    })
 
 
 def merge_act_dloss(costs: dict, table: dict) -> dict:
@@ -901,6 +1002,11 @@ def main() -> int:
     ap.add_argument("--cost-out", required=True,
                     help="written; --cost-in is left untouched so the "
                          "weight-only allocation stays reproducible as an arm")
+    ap.add_argument(
+        "--require-stamped-producer", action="store_true",
+        help="refuse unless this module is executing from a clean Git "
+             "worktree whose tracked bytes match HEAD; the resolved commit "
+             "and module hashes are embedded in the output provenance")
     ap.add_argument("--formats", default=None,
                     help="default: every format present in the cost artifact")
     ap.add_argument("--device", default="cuda")
@@ -932,6 +1038,27 @@ def main() -> int:
                          "per-channel Gaussian fit; units with no cached rows "
                          "fall back to the model and are counted separately.")
     args = ap.parse_args()
+
+    if os.path.realpath(args.cost_in) == os.path.realpath(args.cost_out):
+        raise SystemExit(
+            "REFUSE: --cost-in and --cost-out resolve to the same path; the "
+            "weight-only arm is immutable")
+    if os.path.exists(args.cost_out):
+        raise SystemExit(
+            f"REFUSE: --cost-out already exists: {args.cost_out}. This stage "
+            "never clobbers a cost table.")
+
+    producer = producer_source_identity()
+    if args.require_stamped_producer and (
+            producer["git_commit"] == "unknown"
+            or not producer["worktree_clean"]
+            or producer["module_sha256"] != producer["tracked_module_sha256"]):
+        raise SystemExit(
+            "REFUSE: a stamped producer was required, but the AQUA module is "
+            f"not a clean tracked Git object: {producer}")
+    log(f"producer: {producer['git_commit']} module "
+        f"{producer['module_sha256']} "
+        f"({'clean' if producer['worktree_clean'] else 'DIRTY'})")
 
     from .sensitivity_card import SensitivityCard
 
@@ -985,19 +1112,42 @@ def main() -> int:
             "None for every unit in that case."
         )
 
+    coverage = activation_cell_coverage(
+        costs, executed,
+        non_activation_formats=meta.get("non_activation_formats", ()))
+    log(f"served activation-cell coverage: {coverage}")
+    if coverage["missing_activation_cells"]:
+        raise SystemExit(
+            "REFUSE: the serving lane executes activation quantization for "
+            f"{coverage['lane_activation_cells']} cost cells, but only "
+            f"{coverage['priced_activation_cells']} carry act_dloss; missing "
+            f"{coverage['missing_activation_cells']}, examples "
+            f"{coverage['missing_examples']}. An absent A-side is read as "
+            "zero (free) by the allocator.")
+
     prov = dict(blob.get("provenance") or {})
+    prior_blindness = prov.pop("activation_blindness_limitation", None)
     prov["aqua_activation_cost"] = {
         "card_fingerprint": fingerprint,
         "card_path": os.path.abspath(args.card),
+        "card_calib_hash": card.provenance.calib_hash,
+        "card_probe_commit": card.provenance.probe_commit,
+        "model_path": os.path.abspath(args.model_path),
         "formats_priced": formats,
         "holes": {k: len(v) for k, v in holes.items()},
         "merge_report": report,
+        "activation_cell_coverage": coverage,
         "act_dir": os.path.abspath(args.act_dir) if args.act_dir else None,
         "packed_expert_chunk": args.packed_expert_chunk,
+        "producer": producer,
+        "superseded_activation_blindness_limitation": prior_blindness,
         **meta,
     }
     blob["provenance"] = prov
-    with open(args.cost_out, "wb") as fh:
+    # Exclusive creation closes the preflight-to-payload race. A second launch
+    # must never overwrite the first table merely because both saw an absent
+    # output during their static checks.
+    with open(args.cost_out, "xb") as fh:
         pickle.dump(blob, fh)
     log(f"wrote {args.cost_out}")
 

@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-30 · `claude/aqua-packed-expert-pricing` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-30,
+As of: 2026-08-30 · `codex/glm53-bf16-aqua-stamp-20260830` — stamps follow,
+newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/glm53-bf16-aqua-stamp-20260830`) for **AQUA persisted-output identity
+and activation-cell completeness** (§"AQUA-AURA"): a production invocation
+can now require a clean tracked producer, whose Git object plus working/tracked
+module hashes are embedded in the cost table; output creation is exclusive;
+and the writer refuses when any cost cell the named serving lane says executes
+activation quantization lacks `act_dloss`. This deliberately catches the
+recorded `FP8_SOURCE` descriptor-vs-lane disagreement. Only after that complete
+coverage is established is an inherited `activation_blindness_limitation`
+moved under the AQUA block as superseded history, rather than left beside the
+new prices as a contradictory current claim. Re-stamped (2026-08-30,
 `claude/aqua-packed-expert-pricing`) for **AQUA's packed routed-expert A-side
 and the `holes` report semantics** (§"AQUA-AURA"): `aqua_activation_cost.py`
 now assembles packed decision units whose checkpoints store experts
@@ -3440,6 +3450,23 @@ frontier selection (§4.6), and inventing a weighting would be exactly the
 heuristic-where-an-explicit-exists that is banned. `activation_fair_pricing.py`
 is left running and untouched: superseding it is a promotion decision on served
 evidence, not a drive-by refactor.
+
+**Persisted-table completeness and identity.** A successful numerical loop is
+not sufficient evidence that the allocator can consume the result. With
+`--require-stamped-producer`, `aqua_activation_cost` refuses an unknown or dirty
+checkout and embeds the exact Git commit, executed-module SHA-256, tracked-blob
+SHA-256 and clean-worktree verdict. Before exclusive creation of `--cost-out`,
+it independently enumerates every cost cell matched by the named lane's
+`served_activation_quantization.executes` patterns and requires an explicit
+`act_dloss`. The lane contract is authoritative even when the format descriptor
+disagrees: compressed-tensors names `FP8_SOURCE` as dynamic A8, so a table that
+skips it because the descriptor says activation-identity now refuses instead of
+persisting a silent zero. The explicit research assertion `"all"` remains
+descriptor-bounded, because it means every activation *grid*, not BF16 identity.
+An inherited `activation_blindness_limitation` describes the input table's
+earlier state; after complete coverage it is preserved only as
+`aqua_activation_cost.superseded_activation_blindness_limitation`. Leaving both
+claims at the top level made the artifact self-contradictory.
 
 **Status.** The tier that reproduces today's behaviour is exact and unit-tested;
 the two that do not are **screening surrogates with no served A/B**, and §2.5

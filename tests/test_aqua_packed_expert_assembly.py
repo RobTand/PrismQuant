@@ -38,7 +38,8 @@ torch = pytest.importorskip("torch")
 from safetensors.torch import save_file  # noqa: E402
 
 from prismaquant.aqua_activation_cost import (  # noqa: E402
-    _slice_experts, activation_dloss_table, build_packed_expert_plan,
+    _slice_experts, activation_cell_coverage, activation_dloss_table,
+    build_packed_expert_plan,
 )
 from prismaquant.format_cost_protocol import price_activation_only  # noqa: E402
 from prismaquant.format_cost_registry import RegistryFormatPlugin  # noqa: E402
@@ -590,3 +591,47 @@ def test_the_variance_estimator_is_exactly_sliceable_over_experts(fmt):
         f"then depend on how many chunks preceded it, and on whatever else "
         f"the process had drawn -- neither of which is a property of the "
         f"tensor being priced.")
+
+
+# --------------------------------------------------------------------------
+# 11. persisted coverage follows the serving contract, not the descriptor
+# --------------------------------------------------------------------------
+def test_explicit_lane_contract_exposes_the_fp8_source_descriptor_hole():
+    """Mutate the DRIVER INPUT: offer FP8_SOURCE without an A-side.
+
+    compressed-tensors explicitly executes dynamic A8 for FP8_SOURCE even
+    though that format's descriptor currently says ``quantizes_activations``
+    is false.  A descriptor-based completeness check would accept this table;
+    the serving-contract check must refuse it as an unpriced active cell.
+    """
+    costs = {
+        DENSE: {
+            "FP8_SOURCE": {"predicted_dloss": 0.0},
+            "NVFP4": {"predicted_dloss": 1.0, "act_dloss": 2.0},
+        }
+    }
+    got = activation_cell_coverage(
+        costs, frozenset(("FP8_SOURCE", "NVFP4")),
+        non_activation_formats=("FP8_SOURCE",),
+    )
+    assert got["lane_activation_cells"] == 2
+    assert got["priced_activation_cells"] == 1
+    assert got["missing_activation_cells"] == 1
+    assert got["missing_examples"] == [
+        {"unit": DENSE, "format": "FP8_SOURCE"}
+    ]
+
+
+def test_all_grids_assertion_excludes_descriptor_identity_formats():
+    """The research ``all`` assertion means all grids, not BF16 identity."""
+    costs = {
+        DENSE: {
+            "BF16": {"predicted_dloss": 0.0},
+            "NVFP4": {"predicted_dloss": 1.0, "act_dloss": 2.0},
+        }
+    }
+    got = activation_cell_coverage(
+        costs, "all", non_activation_formats=("BF16",))
+    assert got["lane_activation_cells"] == 1
+    assert got["priced_activation_cells"] == 1
+    assert got["missing_activation_cells"] == 0
