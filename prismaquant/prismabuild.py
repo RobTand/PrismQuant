@@ -16,7 +16,7 @@ portable because D29 records cross-architecture row-scale byte drift.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 import errno
 import fcntl
@@ -1039,7 +1039,12 @@ def _validate_scope_labels(
         )
 
 
-def _atomic_publish(path: Path, raw: bytes) -> bool:
+def _atomic_publish(
+    path: Path,
+    raw: bytes,
+    *,
+    prelink_verify: Callable[[], None] | None = None,
+) -> bool:
     """Publish immutable bytes with an NFS-safe first-writer-wins hard link."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1053,6 +1058,8 @@ def _atomic_publish(path: Path, raw: bytes) -> bool:
             handle.flush()
             os.fsync(handle.fileno())
             os.fchmod(handle.fileno(), 0o444)
+        if prelink_verify is not None:
+            prelink_verify()
         try:
             os.link(temporary, path)
             won = True
@@ -1702,11 +1709,17 @@ class PrismaBuildCAS:
         result_path: str | Path,
         *,
         attestation: object,
+        precommit_verify: Callable[[], None] | None = None,
     ) -> tuple[dict[str, object], bool]:
         """Publish a result and return ``(canonical_receipt, won_publication)``.
 
         A losing deterministic producer must reproduce the winner byte-for-byte;
         a stochastic producer accepts the already-published canonical result.
+        ``precommit_verify`` runs after the payload copy and temporary receipt
+        fsync, immediately before the no-clobber receipt link. Local workers use
+        it to keep those potentially long operations from opening a provenance
+        gap. It cannot make a mutable checkout an immutable snapshot; the
+        remaining verification-to-link syscall interval is deliberately small.
         """
 
         normalized = validate_action(action)
@@ -1740,7 +1753,11 @@ class PrismaBuildCAS:
             }
             candidate = {**body, "receipt_sha256": canonical_sha256(body)}
             receipt_path = self._receipt_path(str(normalized["action_key"]))
-            won = _atomic_publish(receipt_path, _canonical_file_bytes(candidate))
+            won = _atomic_publish(
+                receipt_path,
+                _canonical_file_bytes(candidate),
+                prelink_verify=precommit_verify,
+            )
             if won:
                 return candidate, True
             canonical = self.lookup(normalized)
@@ -1971,12 +1988,23 @@ def run_local_action(
             raise LocalActionError(
                 f"action succeeded without its declared result file: {output}"
             )
+        # Preflight alone is insufficient: an action (or another checkout
+        # writer) can change a closure member while argv is running.  Check
+        # once before an expensive result copy, then again at the CAS receipt
+        # commit point so copying a large artifact cannot reopen that gap.
+        verify_code_closure(normalized["code_closure"], root)
         _verify_attested_executable_unchanged(attestation, normalized)
         _validate_result_containment(output, cwd)
+
+        def verify_publication_provenance() -> None:
+            verify_code_closure(normalized["code_closure"], root)
+            _verify_attested_executable_unchanged(attestation, normalized)
+
         receipt, won = cas.publish_result(
             normalized,
             output,
             attestation=attestation,
+            precommit_verify=verify_publication_provenance,
         )
     return {
         "status": "published" if won else "canonical_result_reused",

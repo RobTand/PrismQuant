@@ -713,9 +713,11 @@ class DagsterActionRunner:
                 continue
             if requeues < spec.max_requeues:
                 # Requeue the same SLURM allocation with the exact sealed action.
-                # Dagster-level retries are intentionally disabled by the native
-                # definition factory because a new submission could duplicate a
-                # still-live allocation after an orchestrator process failure.
+                # Dagster-level retries are disabled by the native definition
+                # factory so this live invocation cannot escape through submit.
+                # The job id is not durably recoverable after process loss; a
+                # fresh invocation can still duplicate a live allocation, so
+                # crash-safe adoption remains a deployment gate.
                 requeued = self.adapter.requeue(spec.action, submission.job_id)
                 if not requeued:
                     result = self._verified_result(spec)

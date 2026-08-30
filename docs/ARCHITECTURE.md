@@ -1,16 +1,29 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-30 · `codex/prismabuild-attestation-20260830` — stamps follow,
+As of: 2026-08-30 · `codex/finish-numeric-prismabuild-20260830` — stamps follow,
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/finish-numeric-prismabuild-20260830`) for the **QTIP-derived native
+NVFP4 research producer and PrismaBuild publication boundary** (§10.1–§10.2):
+PrismaBuild rechecks its code closure and executable immediately before CAS
+receipt publication, but remains code and mocked/in-process tests rather than
+a deployed SLURM/Dagster/CAS/telemetry system. A physical one-Linear Arm E
+producer now combines randomized orthogonal transforms, the canonical
+PrismaQuant/Gridbook trellis wire, same-byte decode, and full cross-block
+BlockLDL feedback. Its local terminal is Frobenius- or diagonal-D-weighted;
+dense-D optimization refuses because the current Viterbi state cannot carry
+the pairwise cross terms. The external transform runtime remains unpinned and
+unserved. QTIP's wire is excluded, Quartet II is literature-only, and EXL3 is
+source-reading-only. No pipeline default, production format menu, immutable
+Gridbook pin, or serving topology changed. Re-stamped (2026-08-30,
 `codex/prismabuild-attestation-20260830`) for a **documentation-only boundary
 correction** (§10.1–§10.2): PrismaBuild remains code and mocked/in-process tests,
 not a deployed SLURM/Dagster/CAS/telemetry system; its replay, speculative-tier,
 and OOM-isolation benefits remain unvalidated target behavior. The
-QTIP-derived NVFP4 work currently consists of an implemented stock-native Arm
-C isolate and an external unpinned Gridbook transform reference; no combined
-rotated PrismaQuant/Gridbook trellis producer exists. QTIP's wire is excluded,
-Quartet II is literature-only, and EXL3 is source-reading-only. No code,
-pipeline default, format menu, or serving topology changed. Re-stamped
+QTIP-derived NVFP4 work at that stamp consisted of an implemented stock-native
+Arm C isolate and an external unpinned Gridbook transform reference; no
+combined rotated PrismaQuant/Gridbook trellis producer existed. QTIP's wire
+was excluded, Quartet II was literature-only, and EXL3 was source-reading-only.
+No code, pipeline default, format menu, or serving topology changed. Re-stamped
 (2026-08-30,
 `codex/prismabuild-attestation-20260830`) for the **PrismaBuild worker
 attestation/preflight contract** (§10.1): worker platform and host class are no
@@ -7475,10 +7488,14 @@ upstream readiness are independently replayed through
 `PrismaBuildCAS.lookup()`. Even a Dagster materialization or a SLURM
 `COMPLETED`/adapter-success result is refused when the exact receipt is missing,
 tampered, wrong-scope, or points at changed blob bytes. Bounded retries call
-`SlurmAdapter.requeue` with the original sealed action and job identity;
-Dagster-level retries are zero to avoid accidentally submitting a second live
-allocation after loss of orchestrator state. Dagster remains an optional
-`prismaquant[prismabuild]` dependency and is not imported by the base module.
+`SlurmAdapter.requeue` with the original sealed action and job identity inside
+one live runner invocation; Dagster-level retries are zero so that in-memory
+path cannot escape through a second `sbatch`. The job id is not durably bound
+to the action key, however. After orchestrator process loss, a fresh invocation
+cannot adopt or disprove an already-live allocation and may submit a duplicate.
+Crash-safe submission identity/adoption is therefore an unimplemented
+deployment gate. Dagster remains an optional `prismaquant[prismabuild]`
+dependency and is not imported by the base module.
 
 All current PrismaBuild evidence is code-level: core behavior is exercised
 locally, SLURM command/state behavior uses fake command paths and patched
@@ -7492,24 +7509,36 @@ behavior of the target fleet.
 
 ### 10.2 QTIP-derived native NVFP4 research boundary
 
-The current tree implements only the stock-native Arm C isolate: QTIP-derived
-BlockLDLQ makes each decision against ordinary group-16 E2M1/E4M3 NVFP4 fields.
-It is research-only and is not registered as a production format. An external
-Gridbook research reference implements online sign/Hadamard execution, but it
-is unpinned; the current Gridbook 0.9.1 contract does not expose that transform
-ABI. No PrismaQuant producer combines transformed weights and Hessians with
-the existing Gridbook trellis carrier, so the desired rotated-trellis Arm E is
-absent rather than measured or served.
+The current tree implements the stock-native Arm C isolate: QTIP-derived
+BlockLDLQ makes each decision against ordinary group-16 E2M1/E4M3 NVFP4
+fields. It also implements a physical, research-only, one-Linear Arm E
+producer. Arm E transforms the weight, Hessian, and calibration activations,
+emits the existing canonical `TCQ_E2M1_R256` wire, reparses and decodes those
+same bytes, and verifies the original-basis online-transform algebra. Its
+BlockLDL entry consumes the complete cross-block feedback matrix in reverse
+order, with only a decoded terminal feeding an earlier block. The local
+terminal is either QTIP-style Frobenius or diagonal-D-weighted. Exact dense-D
+local minimization is not implemented: its pairwise error terms are not
+coordinate-additive in the current 256-state Viterbi state, and that requested
+mode fails closed.
+
+Both implementations remain unregistered and production-ineligible. The
+online sign/Hadamard execution reference lives on an external, unpinned
+Gridbook research branch; Gridbook 0.9.1's packaged runtime contract exposes
+no such transform ABI. Consequently there is still no immutable pin, stock
+vLLM load/generate receipt, served quality comparison, fused-kernel profile,
+or parity result for Arm E. The producer closes a physical byte/algebra seam,
+not the production gate.
 
 The carrier distinction is load-bearing. QTIP's bitshift/tail-biting serialized
-wire is excluded and Gridbook does not decode it. The proposed Arm E would
-retain PrismaQuant/Gridbook's existing `TCQ_E2M1_R256` wire and native W4A4
+wire is excluded and Gridbook does not decode it. Arm E retains
+PrismaQuant/Gridbook's `TCQ_E2M1_R256` wire and targets its native W4A4
 endpoint while borrowing QTIP-derived BlockLDLQ and rotation ideas. Arm D, a
-rotated stock-native supporting ablation, is also not implemented. Quartet II
-is literature motivation only, with no bound source, implementation, or result;
-EXL3 was read only as source context and is not a dependency, comparator run,
-or measurement claim. The full research contract and implemented isolate
-boundary live in `docs/design/qtip_native_nvfp4.md` and
+rotated stock-native supporting ablation, still has no stock-field producer.
+Quartet II is literature motivation only, with no bound implementation or
+result; EXL3 was read only as source context and is not a dependency,
+comparator run, or measurement claim. The full research contract and
+implemented boundaries live in `docs/design/qtip_native_nvfp4.md` and
 `research/qtip_native_nvfp4_2026-08-30/README.md`.
 
 **OOM discipline.** The pool has no evictable slack, so an allocation that would merely swap on

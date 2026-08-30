@@ -174,11 +174,16 @@ uses a key-sorted topological order.
 
 Native definitions use one asset key per action key and set `code_version` to
 that full key. Dagster-level retries are disabled: the bounded retry path uses
-`SlurmAdapter.requeue` on the original allocation and sealed action, avoiding a
-second live allocation after an orchestrator process failure. A cache hit,
-upstream dependency, or successful SLURM resolution is accepted only after an
-independent `PrismaBuildCAS.lookup()` verifies the exact receipt, producer
-scope, and blob bytes. Therefore Dagster run state and materialization state
+`SlurmAdapter.requeue` on the original allocation and sealed action within one
+live runner invocation, avoiding a second allocation on that in-memory retry
+path. The returned SLURM job id is not durably mapped to the action key. If the
+orchestrator dies after `sbatch` and before a CAS receipt, a fresh invocation
+cannot prove whether an exact-key allocation is still live and may submit
+again. Crash recovery therefore remains unimplemented and must fail closed or
+gain an externally durable/adoptable submission identity before deployment. A
+cache hit, upstream dependency, or successful SLURM resolution is accepted only
+after an independent `PrismaBuildCAS.lookup()` verifies the exact receipt,
+producer scope, and blob bytes. Therefore Dagster run state and materialization state
 are views of CAS truth, never certification themselves. The optional package
 extra is `prismaquant[prismabuild]` (supported `>=1.13,<2`, checked against
 1.13.20); no daemon, webserver, workspace, or scheduler installation is

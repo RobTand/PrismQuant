@@ -540,6 +540,98 @@ def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: P
         )
 
 
+def test_local_worker_refuses_closure_changed_by_action_before_publish(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    code = (
+        "import pathlib; "
+        "pathlib.Path('task_code.py').write_text('# changed by action\\n'); "
+        "pathlib.Path('result.bin').write_bytes(b'untrusted')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(pb.ActionContractError, match="live code closure differs"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+    assert (checkout / "result.bin").read_bytes() == b"untrusted"
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_rechecks_closure_after_result_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_copy = pb._copy_to_staging
+
+    def copy_then_mutate(source: Path, staging_dir: Path):
+        staged = original_copy(source, staging_dir)
+        (checkout / "task_code.py").write_text(
+            "# changed during CAS staging\n", encoding="utf-8"
+        )
+        return staged
+
+    monkeypatch.setattr(pb, "_copy_to_staging", copy_then_mutate)
+    with pytest.raises(pb.ActionContractError, match="live code closure differs"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_rechecks_closure_at_receipt_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_publish = pb._atomic_publish
+
+    def publish_after_receipt_staging(
+        path: Path,
+        raw: bytes,
+        *,
+        prelink_verify=None,
+    ):
+        if prelink_verify is None:
+            return original_publish(path, raw)
+
+        def mutate_then_verify():
+            (checkout / "task_code.py").write_text(
+                "# changed while receipt was staged\n", encoding="utf-8"
+            )
+            prelink_verify()
+
+        return original_publish(
+            path,
+            raw,
+            prelink_verify=mutate_then_verify,
+        )
+
+    monkeypatch.setattr(pb, "_atomic_publish", publish_after_receipt_staging)
+    with pytest.raises(pb.ActionContractError, match="live code closure differs"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+    assert cas.lookup(action) is None
+
+
 def test_local_worker_refuses_symlinked_result_parent(tmp_path: Path):
     checkout = tmp_path / "checkout"
     outside = tmp_path / "outside"

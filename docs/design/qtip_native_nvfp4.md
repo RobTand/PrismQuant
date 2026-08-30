@@ -223,6 +223,16 @@ terminal, quantizable-parameter denominator, and deterministic seeds.
 | D | same as C in the rotated basis | input + output sign/Hadamard | stock NVFP4 fields served by Gridbook | supporting incoherence ablation with native W4A4 compute | no stock-field producer and no pinned runtime contract |
 | E | transformed-Hessian optimizer | input + output sign/Hadamard | existing PrismaQuant/Gridbook E2M1 trellis wire | target combined rotated-trellis arm | physical one-Linear producer implemented; external runtime reference unpinned |
 
+Arm E's implemented optimizer consumes the complete 256-column block-LDL
+cross-block feedback matrix in reverse order, and only the same-byte decoded
+trellis terminal feeds earlier blocks. Its local terminal is honestly narrower:
+`qtip_frobenius` uses the QTIP-style unweighted terminal and `diag_block_D`
+uses the diagonal of the local dense LDL block. The residual cross terms
+`2 D[s,t] e_s e_t` are not coordinate-additive and cannot be summarized by
+the current 256-state Viterbi state, so `dense_block_D` fails closed. Thus the
+producer implements all cross-block off-diagonal feedback, not an exact dense-
+`D` trellis minimizer.
+
 Arm D would not be a new compressed-tensors scheme: it needs Gridbook metadata
 and runtime transforms even though its matrix operand is ordinary native
 NVFP4. Arm E is the actual project target and would retain the existing
