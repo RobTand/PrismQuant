@@ -1,6 +1,7 @@
 # E2M1 trellis: the high-rate band, and the coding gain against an honest scalar
 
-Status: **drivers preserved, three runs STAGED BUT UNRUN.** 2026-08-30.
+Status: **drivers preserved; GLM corpus/fixed-vs-learned scaffolding added;
+GPU runs STAGED BUT UNRUN.** 2026-08-30.
 
 These drivers live in the repo; the corpora and result caches they read live
 under `/home/rob/dq-runs/` and are not checked in. Paths are absolute inside
@@ -97,16 +98,24 @@ and the session closed before it cleared.
    plus 3.96875 where reachable.
 3. `coding_gain_table.py --rows <each rows file>` -- the single matched-rate
    table over both corpora.
-4. A GLM arm was specified and then countermanded. `--corpus glm` is NOT
-   implemented. `/home/rob/dq-runs/glm-corpus-20260830/` exists (33 tensors,
-   3192-4197 distinct source values, routed + dense). NOTE for whoever wires
-   it: its manifest is a `tensors` DICT keyed by name with a `role` field, not
-   the `entries` LIST the bf16 loader expects, and **it carries no importance
-   vectors at all** -- every other corpus here supplies one, and the metric
-   `enc_w = imp * pes^2` depends on it. That has to be resolved before a GLM
-   arm means anything. Read it with `glm-corpus-20260830/extract.py`'s
-   pread range reader, never `safe_open`: mmap over NFS wedged sparky into an
-   unclean reboot on 2026-08-30 with 66 GB free and no OOM kill.
+4. The GLM arm is now contract-complete in code but **UNRUN**.  The original
+   `/home/rob/dq-runs/glm-corpus-20260830/` remains deliberately unloadable as
+   `trellis.glm_corpus.v0-INCOMPLETE`: it has 33 sound weight tensors but no
+   importance vectors.  `prismaquant.trellis_bf16_corpus` maps the existing
+   packed-probe `expert_act_sq_sum / expert_tokens` (expert 0) and dense
+   `act_sq_sum / n_tokens_seen` marginals, and
+   `tools/finalize_glm_bf16_trellis_corpus.py` byte-copies those weights into a
+   new immutable `trellis.bf16_corpus.v2` artifact using `os.pread` only.
+   `e2m1_highrate.py --corpus glm --glm-manifest <final-v2.json>` consumes only
+   that strict artifact.  Every result cell carries `population=dense|routed`,
+   and `coding_gain_table.py` refuses to pool their summaries.
+
+5. `fp8_learned_glm.py --manifest <final-v2.json> --out <rows.json>` is the
+   provenance-locked K32/K40/K48 fixed-vs-learned FP8-CB campaign. Both arms
+   render at the production `balanced` tier; dense and routed results are
+   summarized separately. Its `--dry-run` validates the corpus and the exact
+   locked ladder/hull source hashes without touching CUDA or writing output.
+   It is also **UNRUN** and makes no serving or performance claim.
 
 ## Known reachability limit
 
@@ -127,6 +136,10 @@ crashing.
     $PY scalar_subgrid_ladder.py --corpus bf16      # CPU only
     $PY shaped_scalar_control.py                    # CPU only
     $PY e2m1_highrate.py --corpus dsv4 --out <rows.json>   # GPU
+    $PY e2m1_highrate.py --corpus glm --glm-manifest <final-v2.json> \
+      --out <glm-rows.json>                                # GPU
+    $PY fp8_learned_glm.py --manifest <final-v2.json> \
+      --out <glm-fp8-learned.json> --dry-run               # CPU validation
     $PY coding_gain_table.py --rows <rows.json>
 
 The four CPU drivers need no GPU and no trellis encode. `e2m1_highrate.py` is

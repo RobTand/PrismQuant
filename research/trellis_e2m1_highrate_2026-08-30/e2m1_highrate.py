@@ -32,6 +32,8 @@ from pathlib import Path
 import sys
 import time
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, "/home/rob/dq-runs/trellis-hull-20260828")
 
 import numpy as np
@@ -49,6 +51,7 @@ W, C, P, S4, TF = H.W, H.C, H.P, H.S4, H.TF
 CORPUS_LABEL = {
     "dsv4": "DSv4 routed experts, MXFP4 source",
     "bf16": "Qwen3-4B DENSE MLP, bf16 source (NOT MoE, NOT GLM)",
+    "glm": "GLM-5.3-Flash expert 0 + dense MLP, bf16 source",
 }
 CONTROL_RATE = 3.0
 NEW_RATES = (3.25, 3.5, 3.75, 3.9375, 3.96875)
@@ -76,7 +79,13 @@ CONTROL_RTOL = 1e-9
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--corpus", choices=("dsv4", "bf16"), default="dsv4")
+    ap.add_argument("--corpus", choices=("dsv4", "bf16", "glm"),
+                    default="dsv4")
+    ap.add_argument(
+        "--glm-manifest", type=Path,
+        help=("finalized trellis.bf16_corpus.v2 manifest; required for glm. "
+              "The explicit path is part of the result provenance."),
+    )
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--allow-control-drift", action="store_true",
@@ -96,7 +105,7 @@ def main() -> int:
         rate_plan = (*MID_RATES, CONTROL_RATE, *NEW_RATES)
         control_keys = (f"tcq_two_tier@{CONTROL_RATE}",
                         "tcq_two_tier@2.5", "tcq_v1@2.5")
-    else:
+    elif args.corpus == "bf16":
         import bf16_ladder as B
         _m, _n, entries = B.load_corpus()
         names = list(entries)
@@ -108,25 +117,46 @@ def main() -> int:
         published = (json.loads(BF16_PUBLISHED.read_text())["cells"]
                      if BF16_PUBLISHED.exists() else {})
         control_keys = ("tcq_two_tier@2.0",)
+        glm_corpus = None
+    else:
+        if args.glm_manifest is None:
+            raise SystemExit("--corpus glm requires --glm-manifest")
+        from prismaquant.trellis_bf16_corpus import load_finalized_bf16_corpus
+        glm_corpus = load_finalized_bf16_corpus(args.glm_manifest)
+        entries = {entry.name: entry for entry in glm_corpus.entries}
+        names = list(entries)
+        rate_plan = BF16_RATES
+        published = {}
+        control_keys = ()
     if args.limit:
         names = names[:args.limit]
 
     env = H.current_env()
     receipt = {
-        "schema": "trellis.e2m1_highrate.v1",
+        "schema": "trellis.e2m1_highrate.v2",
         "started_at_unix_s": time.time(),
         "question": ("does the E2M1 trellis, above body rate 2.25 and up to "
                      "its 3.96875 mathematical ceiling, beat scalar NVFP4 "
                      "(4.5 bpw) at equal or smaller bpw on the same corpus"),
-        "control_rungs": ["tcq_two_tier@3.0", "tcq_two_tier@2.5",
-                          "tcq_v1@2.5"],
+        "control_rungs": list(control_keys),
         "arms_measured": ["tcq_two_tier (research 0.28125 plane)",
                           "tcq_v1 (ATTESTED group16_fp8_e4m3_0p5_bpw plane, "
                           "rendered AND priced there)"],
-        "control_source": str(PUBLISHED),
+        "control_source": (
+            str(PUBLISHED) if args.corpus == "dsv4" else
+            (str(BF16_PUBLISHED) if args.corpus == "bf16" else None)
+        ),
         "control_rtol": CONTROL_RTOL,
         "corpus": args.corpus,
         "corpus_label": CORPUS_LABEL[args.corpus],
+        "corpus_manifest": (
+            str(args.glm_manifest.resolve()) if args.corpus == "glm" else None
+        ),
+        "aggregation_contract": (
+            "dense and routed populations are summarized independently; "
+            "no pooled median is valid" if args.corpus == "glm" else
+            "single declared corpus population"
+        ),
         "rate_plan": list(rate_plan),
         "new_rates": list(NEW_RATES),
         "mathematical_q256_bounds": list(
@@ -153,9 +183,14 @@ def main() -> int:
                     raise SystemExit(f"{name}: compact {label} hash mismatch")
             weight = W.dequant_mxfp4(packed, raw_scale, device)
             importance = importance.to(device, torch.float32)
-        else:
+        elif args.corpus == "bf16":
             import bf16_ladder as B
             raw, imp = B.load_tensor(entry)   # hashes checked inside
+            weight = raw.to(device, torch.float32)
+            importance = imp.to(device, torch.float32)
+        else:
+            assert glm_corpus is not None
+            raw, imp = glm_corpus.load_tensor(entry)
             weight = raw.to(device, torch.float32)
             importance = imp.to(device, torch.float32)
         rows, columns = map(int, weight.shape)
@@ -182,6 +217,9 @@ def main() -> int:
         colw_tt = S4.column_weight(enc_tt)
 
         cell = {"shape": [rows, columns], "numel": rows * columns,
+                "population": (
+                    entry.population if args.corpus == "glm" else args.corpus
+                ),
                 "weighted_energy": weighted_energy,
                 "plain_energy": plain_energy,
                 "two_tier_plane_sha256": H.tensor_sha256(snapped),
@@ -389,6 +427,10 @@ def main() -> int:
     receipt["status"] = "ok"
     receipt["control_verdict"] = {
         n: c["control"]["status"] for n, c in out.items()}
+    receipt["population_counts"] = {
+        population: sum(cell["population"] == population for cell in out.values())
+        for population in sorted({cell["population"] for cell in out.values()})
+    }
     args.out.write_text(json.dumps(
         {"receipt": {**receipt, "partial": False}, "per_tensor": out},
         indent=1))
