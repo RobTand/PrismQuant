@@ -33,8 +33,12 @@ import sys
 import time
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+LOCKED_HULL_ROOT = Path("/home/rob/dq-runs/trellis-hull-20260828")
+# The locked hull snapshot supplies ``hull_sweep``, but it also contains an
+# older ``prismaquant`` package.  Keep the active checkout first so GLM-only
+# corpus modules cannot be shadowed by that historical snapshot.
+sys.path.insert(0, str(LOCKED_HULL_ROOT))
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, "/home/rob/dq-runs/trellis-hull-20260828")
 
 import numpy as np
 import torch
