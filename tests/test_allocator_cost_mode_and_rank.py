@@ -208,9 +208,9 @@ def test_the_seam_is_told_the_runs_objective_not_the_environments(
     )
 
 
-def test_every_menu_the_run_builds_is_priced_in_the_same_currency(
+def test_every_menu_gets_the_run_currency_but_only_body_reaches_the_surface(
         tmp_path, monkeypatch, capsys):
-    """The body, head, MTP and visual menus all reach the same seam."""
+    """Pinned menus share the objective without accepting research rungs."""
 
     monkeypatch.setenv("COST_MODE", "aura")
     argv = _tiny_run(
@@ -222,15 +222,31 @@ def test_every_menu_the_run_builds_is_priced_in_the_same_currency(
         extra_argv=("--lm-head-format", "FP8_DYNAMIC"),
         with_lm_head=True,
     )
-    seen = _spy_on_the_seam(monkeypatch)
+    seam_seen = _spy_on_the_seam(monkeypatch)
+    build_seen: list[dict] = []
+    real_build = allocator.build_candidates
+
+    def build_spy(*args, **kwargs):
+        build_seen.append(dict(kwargs))
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(allocator, "build_candidates", build_spy)
     monkeypatch.setattr(sys, "argv", ["allocator", *argv])
     allocator.main()
     capsys.readouterr()
-    assert len(seen) >= 2, (
-        f"only {len(seen)} menu(s) were built; this test has to exercise the "
+    assert len(build_seen) >= 2, (
+        f"only {len(build_seen)} menu(s) were built; this test has to exercise the "
         f"head call site as well as the body one"
     )
-    assert {call["cost_mode"] for call in seen} == {"local"}
+    assert {call["cost_mode"] for call in build_seen} == {"local"}
+    assert build_seen[0].get("apply_trellis_surface", True) is True
+    assert all(call["apply_trellis_surface"] is False
+               for call in build_seen[1:])
+    assert len(seam_seen) == 1, (
+        "a pinned operator choice reached the research surface; only the body "
+        "menu may be augmented"
+    )
+    assert seam_seen[0]["cost_mode"] == "local"
 
 
 def test_the_flag_beats_an_unstamped_table(tmp_path, monkeypatch, capsys):

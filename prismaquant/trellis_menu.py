@@ -10,19 +10,45 @@ names a manifest file.  Unset, :func:`augment_candidates` returns its input
 unchanged and the run is byte-identical to one built without this module
 (principle 6, the ``PRISMAQUANT_FISHER_CAP_MULTIPLIER`` precedent).
 
-STATUS: THE MENU IS BUILT, THE SEAM IS NOT WIRED
-------------------------------------------------
-:func:`build_trellis_menu` produces a correctly priced menu.  The production
-seam :func:`augment_candidates` **refuses** when the flag is set, because
-links between that menu and a shipped assignment are still missing -- see
-:data:`UNWIRED_LINKS`, which is the refusal message and the re-enable
-checklist.  The list shrinks as links land, so nothing here or in the refusal
-quotes a count.  The first version of this module (40d3e15) claimed the seam's
-placement inside ``build_candidates`` meant trellis rungs "pass the same
-legality, aggregation and byte accounting every other candidate does".  That
-was false on all three counts and is the reason the refusal exists: the
-registry gaps crash loudly, but the aggregation gaps are SILENT, and a partial
-fix would trade the loud failure for the silent one.
+STATUS: WIRED FOR ALLOCATION, NEVER EXPORTED
+---------------------------------------------
+:func:`build_trellis_menu` produces a correctly priced menu and
+:func:`augment_candidates` installs it when the manifest flag is set.  Exact
+bytes travel in ``_memory_bytes_by_format``; the payload and footprint paths
+prefer that map, the rank table is extended from candidates' exact serialized
+rates, and the run's attested objective plus surface provenance travel with
+the assignment.  The fused and packed aggregation implementations build from
+their members' menus, but their ledger entries remain until a real
+``allocator.main()`` run kills a mutation in each production path.  The
+ledger therefore records proof still owed, not an invitation to guess.
+
+The currency entry is different: no plumbing turns a weighted-SSE anchor into
+an AURA-priced one, so :func:`_require_run_currency` remains a genuine
+dW-supply refusal.  Rendering and export remain unavailable as well.
+
+WHY NO TCQ SPEC ANSWERS FOR BYTES
+---------------------------------
+The obvious alternative -- register a minimal TCQ ``FormatSpec`` so every
+site that resolves a format through the registry just works -- is not
+available, and not as a matter of taste.  ``FormatSpec.memory_bytes_for_shape``
+is a closed form over ``weight_bits`` / ``scale_bits`` / ``group_size``, while
+a rung's exact size needs the layout, the per-column schedule and the alphabet
+directory (``trellis_footprint.trellis_tensor_payload_breakdown``: 16-byte row
+stride alignment, an 88-byte wire header, a nibble schedule plane, block
+offsets under ``tight_offsets``, and a family-specific scale plane).  Those are
+per-campaign manifest data, so ``(name, shape)`` does not determine the bytes
+and a registered spec could only be plausible and WRONG -- silently consumed
+by ``_serialized_format_rates``, ``footprint`` and the payload filter, which
+is precisely the failure this module exists to prevent.  It would also expose
+TCQ to every ``quantize_dequantize`` consumer with no render behind it -- which
+is why that helper still refuses, while ``act_quant_changes_input`` answers,
+since the executed contract is a fact about the name.  Exact bytes therefore
+ride the ``Candidate`` and ``_memory_bytes_by_format`` -- the repo's existing
+single mechanism.  ``fr.get_format('TCQ_...')`` parse-resolves an
+exact-or-refuse ``TrellisFormatSpec`` that is never inserted into ``REGISTRY``;
+it answers what a rung EXECUTES and refuses what it WEIGHS.  The cost is N
+pointed refusals instead of one closed form; each one refuses where a closed
+form would have guessed.
 
 WHY A MANIFEST AND NOT A ``FORMATS`` ENUM ENTRY
 ----------------------------------------------
@@ -73,8 +99,9 @@ report what it would choose, and price the choice in exact serialized bytes.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -117,47 +144,30 @@ class TrellisSeamUnwiredError(TrellisMenuError):
     """The production seam is enabled but the DP cannot honour a TCQ rung."""
 
 
-#: Every link between a built trellis menu and a shipped assignment that does
-#: NOT exist yet.  This list is the refusal message and the re-enable
-#: checklist; it is also what ``docs/ARCHITECTURE.md`` 4.9 cites instead of the
-#: claim it used to make.  Delete an entry only when a test exercises the
-#: behaviour it names -- not when the code merely looks present.  Nothing
-#: quotes its length: entries leave as links land, and a hardcoded count goes
-#: stale the moment one does.
+#: The links whose production behaviour is not yet proved.  This is the live
+#: re-enable checklist cited by ``docs/ARCHITECTURE.md`` §4.9.  Delete an entry
+#: only when a test drives the entry point and exercises the behaviour it names
+#: -- code that merely looks present does not license deletion.
 #:
-#: Closed so far (each with the test that licensed the deletion):
-#:   * ``format_registry.py`` get_format -- parse-resolves TCQ names to an
-#:     exact-or-refuse ``TrellisFormatSpec`` (``tests/test_trellis_format_spec.py``).
-#:   * ``allocator_solver.py`` promote_serving_units' rank lookup -- refuses by
-#:     name instead of KeyErroring, and ``allocator.extend_format_rank_from_candidates``
-#:     supplies the rate-derived rank so a rung inside a fused or packed group
-#:     promotes rather than crashing
-#:     (``tests/test_allocator_cost_mode_and_rank.py``).
-#:   * ``allocator.py`` build_candidates' call site -- the run's objective now
-#:     reaches the currency gate from the cost table and the new --cost-mode
-#:     flag rather than from an unexported environment variable, and the
-#:     surface's identity, currency, target platform and anchor activation
-#:     contract travel into selection.json and layer_config.json
-#:     (``tests/test_allocator_cost_mode_and_rank.py``).
+#: Closed entries and the tests that license their deletion:
+#:   * registry resolution (#1): ``tests/test_trellis_format_spec.py``;
+#:   * exact assignment-payload and target-disk byte paths (#2/#6):
+#:     ``tests/test_trellis_byte_budget_path.py``;
+#:   * named promotion-rank refusal plus exact candidate-rate extension (#5):
+#:     ``tests/test_allocator_cost_mode_and_rank.py``;
+#:   * attested cost mode and surface provenance at the allocator call site
+#:     (#7): ``tests/test_allocator_cost_mode_and_rank.py``.
 UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
-    ("allocator.py:3596-3615",
-     "the exact assignment-payload filter finds no '_memory_bytes_by_format' "
-     "entry for a TCQ row and falls through to fr.get_format -- the allocator "
-     "dies inside the Pareto sweep, before layer_config.json is written; the "
-     "pointed refusals in layer_config.canonicalize_format and "
-     "export_native_compressed are therefore unreachable"),
-    ("allocator_candidates.py:2464",
-     "fused-sibling aggregation builds each super-item menu by iterating "
-     "FormatSpec objects, so every trellis rung is dropped from every fused "
-     "group (probe: members offered TCQ_E2M1_R640, super item offered only "
-     "BF16/NVFP4)"),
-    ("allocator_candidates.py:2701",
-     "packed-expert aggregation has the identical construction, so no MoE "
-     "expert group can carry a rung either; between the two, on a dense model "
-     "only o_proj and down_proj could ever hold one"),
-    ("footprint.py:1183",
-     "the byte-budget (--target-disk-gb) path has its own registry lookup "
-     "that KeyErrors on TCQ independently of the payload filter"),
+    ("allocator_candidates.py:2434-2453",
+     "fused-sibling aggregation must build each super-item menu from the "
+     "members' candidate intersection, including registry-free trellis rungs; "
+     "the merged implementation is not licensed for deletion until a real "
+     "allocator.main() run kills a mutation that drops the rung"),
+    ("allocator_candidates.py:2782-2800",
+     "packed-expert aggregation must carry a registry-free trellis rung shared "
+     "by every member into the packed super-item at the exact summed bytes and "
+     "predicted_dloss; the merged implementation is not licensed for deletion "
+     "until a real allocator.main() run kills a mutation in this path"),
     ("trellis_rate_surface.py:43-52",
      "the anchors' currency is weighted SSE under a per-input-channel "
      "activation second moment -- an output-MSE proxy, explicitly NOT the "
@@ -168,11 +178,30 @@ UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
 )
 
 
+#: ``COST_MODE`` is a spelling over ``COST_RENDER x COST_OBJECTIVE`` (re-vet
+#: R3).  The objective half IS the currency a ``predicted_dloss`` is
+#: denominated in, so the run's currency is a definitional function of its
+#: attested cost mode -- not a threshold anyone picks (principle 2).  This is
+#: the same case block ``run-pipeline.sh`` resolves the axes with (its
+#: ``case "$COST_MODE"``); a mode outside it has no declared objective and is
+#: refused rather than defaulted.
+COST_MODE_OBJECTIVE_CURRENCY: Mapping[str, str] = {
+    "local": "weight-recon",
+    "production-render-score": "render-score",
+    "production-render": "render-score",
+    "aura": "aura-adjoint",
+}
+
+
 @dataclass(frozen=True)
 class TrellisSurfaceManifest:
     """A campaign's measured trellis anchors, plus what they were measured on."""
 
     path: Path
+    #: SHA-256 of the manifest bytes. The IDENTITY that travels with the
+    #: assignment: a path is a name that can be rewritten, moved, or point at
+    #: different bytes on the machine that reads the layer_config.
+    sha256: str
     cost_mode: str
     currency: str
     target_profile: str
@@ -202,7 +231,13 @@ def load_manifest(path: str | os.PathLike[str]) -> TrellisSurfaceManifest:
 
     resolved = Path(path)
     try:
-        payload = json.loads(resolved.read_text())
+        raw = resolved.read_bytes()
+    except FileNotFoundError as exc:
+        raise TrellisMenuError(
+            f"{TRELLIS_SURFACE_ENV}={resolved} does not exist"
+        ) from exc
+    try:
+        payload = json.loads(raw)
     except FileNotFoundError as exc:
         raise TrellisMenuError(
             f"{TRELLIS_SURFACE_ENV}={resolved} does not exist"
@@ -232,6 +267,7 @@ def load_manifest(path: str | os.PathLike[str]) -> TrellisSurfaceManifest:
         raise TrellisMenuError("rungs_per_unit must be at least 2")
     return TrellisSurfaceManifest(
         path=resolved,
+        sha256=hashlib.sha256(raw).hexdigest(),
         cost_mode=str(_require(payload, "cost_mode")),
         currency=str(_require(payload, "currency")),
         target_profile=str(_require(payload, "target_profile")),
@@ -271,6 +307,57 @@ def _profile_declares_platform(profile_id: str) -> str:
             f"were measured on."
         )
     return str(platform)
+
+
+def _require_run_currency(manifest: TrellisSurfaceManifest,
+                          cost_mode: str) -> str:
+    """Refuse a surface whose anchors are not in the run's currency.
+
+    This is the surviving entry of :data:`UNWIRED_LINKS` and the one refusal
+    an enabled seam still hits in practice.  It is not plumbing: the ladder's
+    measured anchors are weighted SSE under a per-input-channel activation
+    second moment -- an output-MSE proxy -- while an ``aura`` run's DP ranks
+    the KL-adjoint.  A DP that ranks a weighted-SSE rung against an
+    AURA-priced NVFP4 rung is not solving any stated objective, and no amount
+    of wiring changes what the anchors measured.  Producing AURA-priced
+    anchors is a dW-supply problem (``aura_cost``'s two dW sources both need
+    a registered format), owned elsewhere.
+
+    Returns the run's objective currency on success.
+    """
+
+    if not cost_mode:
+        raise TrellisMenuError(
+            "the cost table carries no provenance['cost_mode'] stamp "
+            "(re-vet R2), so this run's objective is unknown and the "
+            "manifest's declared currency cannot be checked against it. "
+            "Re-run the cost stage with --cost-mode; an unstamped table is "
+            "refused rather than compared against a default."
+        )
+    expected = COST_MODE_OBJECTIVE_CURRENCY.get(cost_mode)
+    if expected is None:
+        raise TrellisMenuError(
+            f"COST_MODE={cost_mode!r} names no objective in "
+            f"COST_MODE_OBJECTIVE_CURRENCY "
+            f"({sorted(COST_MODE_OBJECTIVE_CURRENCY)}), so the currency its "
+            f"predicted_dloss is denominated in is undeclared. A trellis "
+            f"surface cannot be admitted to a run whose objective has no name."
+        )
+    if manifest.currency != expected:
+        raise TrellisSeamUnwiredError(
+            f"trellis surface declares currency {manifest.currency!r}, but "
+            f"COST_MODE={cost_mode!r} prices in {expected!r}. This is "
+            f"the UNWIRED_LINKS currency entry and it is not a plumbing gap: "
+            f"the measured "
+            f"trellis anchors are weighted SSE under a per-input-channel "
+            f"activation second moment (trellis_rate_surface.py:43-52), an "
+            f"output-MSE proxy, NOT the AURA KL-adjoint the production DP "
+            f"ranks in. Ranking rungs measured under one objective against "
+            f"candidates priced under another solves neither. AURA-priced "
+            f"anchors are a dW-supply problem (aura_cost's two dW sources "
+            f"both require a registered format), not a flag."
+        )
+    return expected
 
 
 def _achievable_q256(columns: int, family, low: int, high: int,
@@ -417,6 +504,7 @@ def build_trellis_menu(
             f"One DP prices in one currency; ranking rungs measured under two "
             f"objectives against each other solves neither."
         )
+    run_currency = _require_run_currency(manifest, cost_mode)
     platform = _profile_declares_platform(manifest.target_profile)
 
     added = 0
@@ -484,7 +572,39 @@ def build_trellis_menu(
                 )
             seen.add(fmt)
             base = record.to_solver_candidate()
-            candidates[unit_name].append(replace(base, fmt=fmt))
+            cand = replace(base, fmt=fmt)
+            candidates[unit_name].append(cand)
+            # The SAME exact-bytes channel build_candidates writes for a
+            # FormatSpec row (allocator_candidates:1950), and the reason no
+            # TCQ FormatSpec is needed: a rung's serialized size is not a
+            # function of (name, shape) -- it needs the layout, the
+            # per-column schedule plane and the alphabet directory this
+            # manifest declares (trellis_tensor_payload_breakdown) -- so the
+            # bytes travel from where they were computed instead of being
+            # recomputed from a closed form that cannot express them. Every
+            # downstream byte path already PREFERS this map over the registry
+            # (allocator's payload filter, footprint, compute_achieved,
+            # kl_measurement, bit attribution), so writing it is what wires
+            # them, and one mechanism stays one mechanism (principle 8).
+            if isinstance(stat, MutableMapping):
+                stat.setdefault(
+                    "_memory_bytes_by_format", {})[fmt] = int(cand.memory_bytes)
+                if cand.serialized_identity is not None:
+                    stat.setdefault(
+                        "_serialized_identity_by_format",
+                        {})[fmt] = cand.serialized_identity
+                    stat.setdefault(
+                        "_serialized_sidecar_identity_by_format",
+                        {})[fmt] = cand.serialized_sidecar_identity
+            else:
+                raise TrellisMenuError(
+                    f"{unit_name}: stats entry is a read-only "
+                    f"{type(stat).__name__}, so the rung's exact bytes cannot "
+                    f"be recorded in '_memory_bytes_by_format'. Every "
+                    f"downstream byte path reads them from there and no "
+                    f"FormatSpec can recompute them; a menu whose bytes "
+                    f"cannot be recorded must not be built."
+                )
             added += 1
         if records:
             covered.append(unit_name)
@@ -492,8 +612,17 @@ def build_trellis_menu(
     payload = {
         "schema": TRELLIS_MENU_PROVENANCE_SCHEMA,
         "manifest_path": str(manifest.path),
+        # IDENTITY, not location: a consumer holding the layer_config can
+        # check it has the same anchors, on a machine where the path means
+        # nothing (principle 12).
+        "manifest_sha256": manifest.sha256,
         "cost_mode": manifest.cost_mode,
         "currency": manifest.currency,
+        # The objective this RUN prices in, resolved from the cost table's
+        # own provenance stamp. Recorded next to the manifest's declared
+        # currency so the equality the gate enforced is auditable from the
+        # assignment alone rather than re-derived.
+        "run_objective_currency": run_currency,
         "target_profile": manifest.target_profile,
         "target_platform": platform,
         # The contract the anchors' dloss was MEASURED under. The hull that
@@ -555,43 +684,34 @@ def augment_candidates(
     manifest_path: str | None = None,
     provenance_out: dict | None = None,
 ) -> dict[str, list[Candidate]]:
-    """The production seam: a no-op when unset, a REFUSAL when set.
+    """The production seam: a no-op when unset, a built menu when set.
 
     Unset, this returns its input object unchanged and the run is
-    byte-identical to one built without this module -- that half is real and
-    is what ships.
+    byte-identical to one built without this module -- that half was always
+    real and is what ships.
 
-    Set, it refuses.  :func:`build_trellis_menu` builds a correctly priced
-    menu, but the links between that menu and a shipped assignment listed in
-    :data:`UNWIRED_LINKS` do not exist, and they do not fail the same way: the
-    registry gaps crash loudly inside the Pareto sweep, while the aggregation
-    gaps are SILENT -- they would drop every rung from every fused and packed
-    group and hand back a plausible-looking frontier in which only o_proj and
-    down_proj could carry a rung.  A partial fix that removed only the crashes
-    would convert the loud failures into that silent one, which is why this
-    refuses as a whole rather than being wired halfway (principle 1: the
-    measurement must be right, not the symptom suppressed).
-
-    Enabling the surface therefore means landing those links with tests that
-    exercise behaviour, then deleting this refusal -- not passing a flag.
-    Until then :func:`build_trellis_menu` is reachable directly, for research
-    and for the tests, where a wrong menu cannot reach a shipped artifact.
+    Set, it builds the menu.  Exact-byte, rank and call-site links are closed.
+    The fused and packed aggregation entries remain in :data:`UNWIRED_LINKS`
+    until real-entry-point mutation tests prove those implementations execute;
+    the currency entry remains a genuine refusal inside the build because no
+    plumbing changes the anchors' objective.
+    Two things this still does not do: render and export.
+    ``ProductionWeightCache`` has no trellis mechanism and
+    ``export_native_compressed`` refuses a TCQ assignment outright.  A
+    selected rung is a research result -- an exactly priced report of what
+    the DP would choose -- not a shippable artifact.
     """
 
     resolved_path = manifest_path or os.environ.get(TRELLIS_SURFACE_ENV)
     if not resolved_path:
         return candidates
 
-    links = "\n".join(f"  - {where}: {what}" for where, what in UNWIRED_LINKS)
-    raise TrellisSeamUnwiredError(
-        f"{TRELLIS_SURFACE_ENV}={resolved_path} was set, but the allocator "
-        f"cannot honour a trellis rung end-to-end. "
-        f"{len(UNWIRED_LINKS)} link(s) are missing:\n"
-        f"{links}\n"
-        f"Build the menu directly with trellis_menu.build_trellis_menu() for "
-        f"research. Do not remove this refusal to reach a selectable run: the "
-        f"aggregation gaps are silent, so the run would look successful and "
-        f"allocate wrongly."
+    return build_trellis_menu(
+        candidates,
+        stats,
+        cost_mode=cost_mode,
+        manifest_path=resolved_path,
+        provenance_out=provenance_out,
     )
 
 

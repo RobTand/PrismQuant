@@ -13,6 +13,8 @@ from pathlib import Path
 
 from prismaquant.cb_layout import ACCEPTED_CB_FORMAT_NAMES
 from prismaquant.schemas import validate_layer_config_payload
+# torch-free, stdlib-only (see its imports): safe for this module's contract.
+from prismaquant.trellis_formats import parse_trellis_format_name
 
 
 def strip_weight(name: str) -> str:
@@ -168,6 +170,15 @@ def canonicalize_format(entry: dict | str | int) -> str:
         raise ValueError(f"unsupported scheme: {entry!r}")
     if isinstance(entry, str):
         value = entry.lower()
+        if parse_trellis_format_name(value.upper()) is not None:
+            # Trellis (TCQ) rungs. The closed ``TCQ_<grid>_R<q256>`` name is
+            # the whole recipe the parser can validate, and it round-trips
+            # here for one reason: nothing downstream renders or exports a
+            # trellis assignment, and the refusals that say so live in
+            # export_native_compressed. A generic "unsupported format string"
+            # here would make those pointed refusals unreachable and report a
+            # research assignment as a parse error.
+            return value.upper()
         if value.upper() in _GGUF_FORMAT_NAMES:
             return value.upper()
         if value.upper() in _NVFP4_CB_FORMAT_NAMES:

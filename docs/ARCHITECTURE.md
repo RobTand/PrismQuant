@@ -1,7 +1,15 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-30 · `claude/trellis-link57` — stamps follow, newest first,
-each recording its own branch and date. Re-stamped (2026-08-30,
+As of: 2026-08-30 · `codex/trellis-unwired-3-4-v2` — integration of
+`claude/trellis-link57` (`7300b7e`) and `claude/trellis-unwired-2-6`
+(`d69a505`). Re-stamped for the authorized union of complementary trellis
+mechanisms (§4.9): exact byte-map pricing closes entries #2/#6; named rank
+refusal plus exact candidate-rate extension closes #5; registry resolution
+and cost/provenance threading remain closed; fused and packed aggregation
+entries remain until real `allocator.main()` mutation proof licenses them.
+Stamps follow, newest first, each recording its own branch and date.
+
+Prior stamp: 2026-08-30 · `claude/trellis-link57`. Re-stamped (2026-08-30,
 `claude/trellis-link57`) for **three UNWIRED_LINKS entries closed** (§4.9):
 the registry entry (deleted here, wired by `claude/trellis-get-format`), the
 promotion-rank entry, and the `build_candidates` call-site entry. The allocator
@@ -10,7 +18,66 @@ of leaving the candidate-menu currency gate to read an environment variable the
 script never exported. The ledger no longer quotes its own length. Prior stamp
 (2026-08-30, `claude/trellis-get-format`) for **the registry link wired**:
 `format_registry.get_format` parse-resolves `TCQ_{E2M1,E4M3}_R<q256>` to an
-exact-or-refuse `TrellisFormatSpec` (§4.9 note). Prior stamp: 2026-08-29,
+exact-or-refuse `TrellisFormatSpec` (§4.9 note).
+
+Prior stamp: 2026-08-30 · `claude/trellis-unwired-2-6`. Re-stamped (2026-08-30,
+`claude/trellis-unwired-2-6`) for the **reconciliation of the two trellis
+byte-doctrine branches** (§4.9). `claude/trellis-seam-wiring` and
+`claude/trellis-get-format` were written in parallel and answer different
+questions; this integration unions their textually overlapping mechanisms.
+The wiring decides *where exact trellis bytes come
+from*: `_memory_bytes_by_format`, written by the seam, preferred by the payload
+filter and `footprint`, refused pointedly when absent. `get_format` decides
+*what a caller holding only a rung's name may learn*: an exact-or-refuse
+`TrellisFormatSpec` that answers the executed activation triple (A=W) and the
+capability floor and RAISES `TrellisSpecFieldRefused` on every byte/bpp helper.
+Neither supplies a byte count from `(name, shape)` — the property both branches
+exist to protect — so the merged claim is **no TCQ spec ANSWERS for bytes**,
+not "no TCQ spec exists"; the instance still never enters `REGISTRY`. Also
+lands the end-to-end gate the two direct-call tests left open:
+`tests/test_trellis_byte_budget_path.py` drives the real
+`allocator.main --target-disk-gb` with a rung in the menu, so `UNWIRED_LINKS`
+#2 (death inside the Pareto sweep) and #6 (the byte-budget path) are exercised
+where the ledger named them rather than one function call away — the rule those
+two now-deleted entries closed under. The same file also **executes** the
+wiring's reachability claim: the exporter's pointed `TCQ_*` refusal really is
+the first exception a trellis `layer_config.json` hits, with the schema check,
+the research-cost gate, `canonicalize_format` and profile detection all passing
+first. Reading the source could not settle that, and this repo has shipped an
+unreachable mechanism before. Prior stamp: 2026-08-29,
+`claude/trellis-seam-wiring`.
+Re-stamped (2026-08-29,
+`claude/trellis-seam-wiring`) for the **trellis seam wiring** (§4.9). Its
+direct fused-helper and packed-injection tests establish the aggregation
+contract but do not license entries #3/#4 under the real-entry-point rule;
+those entries remain in the integrated ledger. The enabled seam nevertheless
+builds the allocation menu instead of refusing outright. Both super-item
+aggregators build each menu from the MEMBERS' candidate lists rather than from
+`FormatSpec` objects (`_super_menu_format_names`) — the silent gap that dropped
+every rung from every coupled unit; `format_rank` is extended from the
+candidate menu by exact serialized rate so `promote_serving_units` can rank a
+selected rung; exact bytes travel in `_memory_bytes_by_format`, written by the
+seam and preferred by every byte reader inside the allocator process — the
+payload filter and `footprint` refuse pointedly when it is absent, and
+`compute_achieved` and bit attribution prefer it rather than guessing a closed
+form (**no TCQ spec answers for bytes, and that is the design** — a rung's
+bytes are not a function of `(name, shape)`). That map is **process-local**: it
+is never written back to `probe.pkl`, so the seam's reach is allocation-time
+only and a TCQ assignment handed to a later stage (`kl_measurement`, export)
+fails at the registry lookup — by design, and the next wiring frontier. Finally the
+run's **attested** `COST_MODE` plus the surface provenance (manifest sha256,
+currency, anchor activation contract) now travel into `layer_config.json`'s
+`__prismaquant__` block. The anchors' weighted-SSE currency entry is not
+plumbing and stays a refusal (`_require_run_currency`). Because both
+aggregators are default-path code, `tests/test_super_item_menu_byte_identity.py`
+and its golden fixture were generated and committed **before** the change and
+re-run after: digest
+`033adb45e71a51b831f5335047fa56e5fb00dc3137894a983fa0146bf456197d`, unchanged.
+Re-stamped (2026-08-30,
+`claude/trellis-get-format`) for **UNWIRED_LINKS #1 wired**:
+`format_registry.get_format` now parse-resolves `TCQ_{E2M1,E4M3}_R<q256>` to an
+exact-or-refuse `TrellisFormatSpec` (§4.9 note); link57 deleted its ledger
+entry after the behavior tests landed. Prior stamp: 2026-08-29,
 `docs/architecture-currency-20260829`. Re-stamped (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
@@ -29,8 +96,9 @@ quantized formats outside the three module families PR #53906 wires a
 `b4a8846` refresh, so it is the § P13 "currency is not truth" case: this file
 was re-stamped in lockstep while carrying a false statement about a serving
 default. Nothing else in the window crossed the trigger; the reasoning is in the
-commit message. Re-stamped (2026-08-29,
-`claude/trellis-continuous-surface`) for the **trellis seam correction**
+Earlier same-day stamp (`claude/trellis-continuous-surface`) for the
+**trellis seam correction** — *superseded by the wiring stamp above: the
+outright refusal and the eight-entry ledger it describes are history*
 (§4.9): the seam that landed earlier the same day is now **fail-closed** when
 enabled, and this document's claim that it made trellis rungs "pass the same
 legality, aggregation and byte accounting every other candidate does" is
@@ -3421,7 +3489,8 @@ is now the ONE seam that does, and it is off by default.
 **The flag, and what it does today.** `PRISMAQUANT_TRELLIS_SURFACE=<manifest.json>`.
 Unset, `augment_candidates` returns its input object unchanged, so a run
 without the flag executes exactly the path it executed before the seam existed
-— the `PRISMAQUANT_FISHER_CAP_MULTIPLIER` precedent (§ P6). **Set, it refuses.**
+— the `PRISMAQUANT_FISHER_CAP_MULTIPLIER` precedent (§ P6). **Set, it builds
+the menu, and refuses only on the anchors' currency.**
 
 > **Correction (2026-08-29, same day).** The first version of this section said
 > the seam's placement inside `allocator_candidates.build_candidates` meant
@@ -3436,24 +3505,23 @@ without the flag executes exactly the path it executed before the seam existed
 > eight entries at that stamp, each with a file:line — and it is the text of
 > the refusal.
 
-**Entries still open**, in the order a run would hit them: the exact
-assignment-payload filter falling through to `fr.get_format` because nothing
-writes `_memory_bytes_by_format` for a TCQ row, which kills the allocator
-inside the Pareto sweep **before** `layer_config.json` and makes the pointed
-refusals in `layer_config` and the exporter unreachable
-(`allocator.py:3596-3615`); fused-sibling aggregation building super-item menus
-by iterating `FormatSpec` objects (`allocator_candidates.py:2464`); the
-identical packed-expert construction (`:2701`); the byte-budget path's own
-registry lookup (`footprint.py:1183`); and the anchors' currency being weighted
-SSE under an activation second moment, an output-MSE proxy and **not** the AURA
-KL-adjoint the DP ranks in (`trellis_rate_surface.py:43-52`).
+**Entries still open before #3/#4 entry-point proof:** fused-sibling
+aggregation at `allocator_candidates.py:2434-2453`, packed-expert aggregation
+at `allocator_candidates.py:2782-2800`, and the anchors' currency at
+`trellis_rate_surface.py:43-52`. The aggregation implementations and direct
+helper tests exist, but the ledger's rule requires a real `allocator.main()`
+run that kills a mutation in the production path. The currency entry is a
+different class: weighted SSE under an activation second moment is an
+output-MSE proxy, not the AURA KL-adjoint, and no plumbing supplies the missing
+AURA-priced dW.
 
 **Entries closed**, each by a test that exercises the behaviour it named —
-which is the ledger's own rule for deletion, and the reason neither the module
-nor this section quotes a count: the registry lookup
-(`format_registry.py`, see the note below); the promotion-rank lookup
-(`allocator_solver.py`); and the `build_candidates` call site
-(`allocator.py`). The last two are described next.
+which is the ledger's own rule for deletion: registry resolution (#1,
+`tests/test_trellis_format_spec.py`); exact assignment-payload and target-disk
+byte paths (#2/#6, `tests/test_trellis_byte_budget_path.py`, driven through
+`allocator.main --target-disk-gb`); promotion-rank refusal and exact rate
+extension (#5); and attested cost/provenance call-site threading (#7). The
+last two are exercised in `tests/test_allocator_cost_mode_and_rank.py`.
 
 > **Update (2026-08-30, `claude/trellis-get-format`).** Entry #1 is **wired**:
 > `format_registry.get_format` parse-resolves `TCQ_{E2M1,E4M3}_R<q256>` to a
@@ -3465,31 +3533,71 @@ nor this section quotes a count: the registry lookup
 > `group_size`, `scale_bits`, `quantize_dequantize`, ...) and every byte/bpp
 > helper raises `TrellisSpecFieldRefused` **at attribute read**, as a
 > non-`AttributeError` so `getattr(spec, ..., None)` probes cannot swallow it
-> (`tests/test_trellis_format_spec.py`, 33 tests). Consequences for the
-> ledger: the registry-lookup halves of #2 and #6 no longer `KeyError` — they
-> hit the same pointed byte-formula refusal CB formats use — but both entries
-> stay open (nothing yet supplies `_memory_bytes_by_format` for a TCQ row,
-> and the byte-budget path still has no trellis bytes source). The
-> `trellis_menu.UNWIRED_LINKS` entry for #1 awaits deletion by that file's
-> owner under the ledger's own rule; the other seven entries stand.
+> (`tests/test_trellis_format_spec.py`, 33 tests). It answers what a rung
+> EXECUTES and refuses what it WEIGHS. Exact bytes instead ride
+> `_memory_bytes_by_format`; the real byte-budget test proves #2/#6 consume
+> that map and refuse pointedly when it is absent. The #1 ledger entry is gone.
 
-**Why refuse as a whole rather than wire it halfway.** The entries do not fail
-alike. The registry gaps crash **loudly**; the aggregation gaps are **silent** —
-they drop every rung from every fused and packed group and hand back a
-plausible frontier in which only `o_proj` and `down_proj` could carry one. A
-partial fix that removed the crashes would trade the loud failure for the
-silent one, and the packed-expert case was worse still: a hand-rolled 2-tuple
-shape priced a 128-expert row as one expert (a **128×** underprice, reported as
-"0 unit(s) skipped"), while the guard meant to catch it read a stats key
-nothing writes. Both are fixed — the seam now uses
+**Why the seam originally refused as a whole.** Registry gaps crashed loudly;
+aggregation gaps silently dropped rungs and returned a plausible frontier. A
+hand-rolled two-dimensional shape also priced a 128-expert row as one expert,
+a 128× underprice, while the guard read a key no producer wrote. The packed-row
+shape/refusal defect is fixed with `allocator_solver._shape_from_stats` and
+`allocator_candidates._stats_indicates_packed_expert`. The member-menu
+aggregation implementations are present, but their ledger closure still
+awaits the real-entry-point mutation proof described above.
+
+**Merged mechanism status.**
+
+| was | now |
+|---|---|
+| no TCQ `FormatSpec`; `fr.get_format('TCQ_*')` `KeyError`s (`format_registry.py:1267-1272`) | `get_format` **parse-resolves** the name to a memoized `TrellisFormatSpec` — never a `REGISTRY` insertion, because the rate axis is dense — that is **exact-or-refuse**: exact activation triple (A=W, read off the family's `terminal_format` entry: E2M1 W4A4, E4M3 W8A8), exact capability floor (SM120+/SM89+), `producer_eligible=False`; every RTN-shaped field (`weight_bits`, `scale_bits`, `group_size`, …) raises `TrellisSpecFieldRefused` **at attribute read** and every byte/bpp helper (`memory_bytes_for_shape`, `effective_bits_for_shape`) raises it **when called** — in both cases a non-`AttributeError`, so `getattr(spec, …, None)` probes cannot swallow it (checked field by field against a real `FormatSpec`'s surface: nothing degrades to a plain `AttributeError`) (`tests/test_trellis_format_spec.py`). So a caller may learn what a rung EXECUTES; it still may not learn what it WEIGHS — exact bytes travel only in `_memory_bytes_by_format`, and every byte site refuses pointedly without it. |
+| the exact assignment-payload filter falls through to `fr.get_format` (`allocator.py:3369-3386`) | prefers the recorded map (it always did); a TCQ row with no recorded bytes now raises a pointed `AssertionError` naming what is missing, instead of a registry `KeyError`. `layer_config.canonicalize_format` round-trips `TCQ_*`, so the exporter's own refusal is REACHABLE — and that is now **executed, not asserted**: `tests/test_trellis_byte_budget_path.py::test_the_exporter_refusal_a_tcq_layer_config_hits_is_the_pointed_one` drives the prefix of `export_native_compressed.main()` between reading `--layer-config` and the first `_coerce_runtime_legal_assignment` (schema validation, the research-cost gate, `_canonicalize_assignment`, profile detection) on a `layer_config.json` the real allocator wrote, and asserts all four PASS and the first exception is the pointed one. A refusal nobody reaches is a comment, not a gate — block-output-match sat behind an earlier `continue` for months. |
+| fused-sibling aggregation iterates `FormatSpec` objects | `_super_menu_format_names(formats, member_intersection)` carries registry-free formats every member offers and prices exact summed bytes/Δloss. Its direct test is useful but does not yet license #3; the required proof drives `allocator.main()`. |
+| the identical packed-expert construction | the same helper and exact-sum contract are implemented. The existing test injects candidates and does not establish the packed production path, so #4 remains live pending `allocator.main()` mutation proof. |
+| `promote_serving_units`' `format_rank` lookup | `allocator.extend_format_rank_from_candidates` derives each added format's exact aggregate serialized rate (`8·Σbytes/Σparams`) and re-enumerates before promotion. `_rank_of` raises named `FormatRankUnknownError` with the format, serving unit, table and missing input if that ordering was not supplied. |
+| the byte-budget path's own registry lookup (`footprint.py:1183`) | a TCQ branch before the final `else` reads `_memory_bytes_by_format` and **refuses** when it is absent — same doctrine as the CB branch above it, no closed-form fallback. |
+| `build_candidates` called with neither `cost_mode=` nor `trellis_provenance=` (`allocator.py:2756`) | both are passed. The cost mode is the **attested** one: `cost_data["provenance"]["cost_mode"]` (re-vet R2), never `os.environ` — `run-pipeline.sh` assigns `COST_MODE` with `:=` and never exports it. The provenance (manifest **sha256**, declared currency, the run's objective currency, the anchor activation contract, lane/route status) lands in `layer_config.json`'s `__prismaquant__` block under `trellis_surface`, present only when the seam contributed (§§ P12/P14, § P6). |
+| the anchors' currency is weighted SSE under an activation second moment (`trellis_rate_surface.py:43-52`) | a genuine dW-supply refusal; unlike #3/#4, it cannot be closed by plumbing. |
+
+**Reach: allocation-time only, and deliberately.** `_memory_bytes_by_format` is
+written into the in-memory probe stats; nothing rewrites `probe.pkl`, so the
+exact bytes do not survive the allocator process. Every later stage
+(`kl_measurement.assignment_bit_total`, `production_recache`, export) resolves a
+format through the registry first, so a TCQ assignment that escapes into one
+fails at that lookup rather than being priced by a closed form. Wiring the seam
+did not make a trellis rung shippable and was not meant to: an exportable rung
+needs a render and a P14 runtime attestation, neither of which exists.
+
+**Why the currency entry stays a refusal.** It is not plumbing. The ladder's measured
+anchors are weighted SSE under a per-input-channel activation second moment —
+an output-MSE proxy — while an `aura` run's DP ranks the KL-adjoint. No code
+change converts one into the other; AURA-priced anchors are a **dW-supply**
+problem (`aura_cost`'s two dW sources both require a registered format).
+`trellis_menu._require_run_currency` therefore compares the manifest's declared
+`currency` against `COST_MODE_OBJECTIVE_CURRENCY[cost_mode]` — the same
+`COST_RENDER × COST_OBJECTIVE` decomposition `run-pipeline.sh` resolves, so the
+expected value is definitional rather than chosen (§ P2) — and refuses with
+`TrellisSeamUnwiredError`. An **unstamped** cost table is refused too, rather
+than compared against a default.
+
+**Why refuse as a whole rather than wire it halfway (the reasoning that held
+until the links landed).** The eight did not fail alike. The registry gaps
+crashed **loudly**; the aggregation gaps were **silent** — they dropped every
+rung from every fused and packed group and handed back a plausible frontier in
+which only `o_proj` and `down_proj` could carry one. A partial fix that removed
+only the crashes would have traded the loud failure for the silent one. The
+packed-expert case was worse still: a hand-rolled 2-tuple shape priced a
+128-expert row as one expert (a **128×** underprice, reported as "0 unit(s)
+skipped"), while the guard meant to catch it read a stats key nothing writes.
+The packed-row underprice is fixed — the seam uses
 `allocator_solver._shape_from_stats` and
 `allocator_candidates._stats_indicates_packed_expert`, and refuses a packed row
-with a counted reason — but the fix is inside `build_trellis_menu`, which is
-research-reachable and cannot reach an artifact.
+with a counted reason.
 
-**So: `build_trellis_menu` builds a correctly priced menu; `augment_candidates`
-refuses.** Enabling the surface means landing the remaining links with tests
-that exercise behaviour and then deleting the refusal — not passing a flag.
+**The seam now installs the menu.** Exact-byte, rank and call-site links are
+closed; the two aggregation entries remain until the required entry-point
+mutation proof lands. Currency mismatch still refuses inside the build.
 
 > **Update (2026-08-30, `claude/trellis-link57`).** Two more entries closed.
 >
@@ -3539,8 +3647,47 @@ that exercise behaviour and then deleting the refusal — not passing a flag.
 >
 > Both are exercised by `tests/test_allocator_cost_mode_and_rank.py`
 > (21 tests), and every check in it was verified by breaking the source and
-> confirming a test dies. The refusal still stands: the aggregation entries
-> are the silent ones, and they are still open.
+> confirming a test dies. The aggregation entries remain open because their
+> existing tests stop below `allocator.main()`.
+**Why no TCQ spec answers for bytes.** The obvious alternative — register a
+minimal spec so every registry lookup just works — is unavailable as a
+matter of arithmetic, not taste. `FormatSpec.memory_bytes_for_shape` is a closed form over
+`weight_bits` / `scale_bits` / `group_size`; a rung's exact size needs the
+layout, the per-column schedule and the alphabet directory
+(`trellis_footprint.trellis_tensor_payload_breakdown`: 16-byte row-stride
+alignment, an 88-byte wire header, a nibble schedule plane, block offsets under
+`tight_offsets`, a family-specific scale plane), all per-campaign manifest
+data. `(name, shape)` therefore does not determine the bytes, and a registered
+spec could only be **plausible and wrong** — silently consumed by
+`_serialized_format_rates`, `footprint` and the payload filter, which is
+exactly the failure this seam exists to prevent. It would also expose TCQ to
+every `quantize_dequantize` consumer with no render behind it — which is why
+that helper still refuses, while `act_quant_changes_input` answers, since the
+executed contract is a fact about the name. So the bytes ride the `Candidate`
+and `_memory_bytes_by_format` — the repo's existing single mechanism (§ P8).
+`fr.get_format("TCQ_…")` parse-resolves an exact-or-refuse `TrellisFormatSpec`
+that is never inserted into `REGISTRY`; it answers what a rung EXECUTES and
+refuses what it WEIGHS. The cost is N pointed refusals instead of one closed
+form; each one refuses where a closed form would have guessed.
+
+**Principle-6 evidence for the aggregation change.** Both aggregators are
+default-path code. `tests/test_super_item_menu_byte_identity.py` +
+`tests/fixtures/super_item_menu_golden.json` were generated and committed
+**against the unmodified functions**, and pin every super item's whole menu in
+order (fmt, `bits_per_param`, `memory_bytes`, `predicted_dloss`, both
+serialized identities, `activation_pricing`, `serving_lane`, all floats by
+`repr`), the `_memory_bytes_by_format` map, the whole `costs_ext` row including
+`predicted_dloss_stderr`, and the pass-through row names — across five
+scenarios covering both aggregators, `PRISMAQUANT_COST_UCB_Z` at 0 and 1.5,
+calibrated gains, activation fair pricing and the role-split packed profile.
+Golden digest `033adb45e71a51b831f5335047fa56e5fb00dc3137894a983fa0146bf456197d`,
+unchanged after the change. This proves registry-only default menus did not
+change; it does not prove #3/#4 execute through `allocator.main()`. A passing
+golden is not yet evidence, so
+`test_the_golden_is_load_bearing` mutates the aggregators' menu-order helper at
+runtime — the same SET of formats in a different DP order, the minimal
+perturbation an order-blind record would miss — and asserts the digest MOVES
+(to `0d7b2edf…`) and returns on restore.
 
 **Why a manifest, not a `FORMATS` enum entry.** A trellis rung is
 `(family, body_rate_q256, layout, schedule, alphabets)`, and the wire carries
@@ -3581,8 +3728,11 @@ which is where per-member layout identity belongs.
    RTN `quantize_dequantize` refuses rather than renders, because nothing
    renders one).
 2. *An objective the run is not pricing in.* The manifest declares `cost_mode`
-   and `currency`; a mismatch with the run refuses. One DP prices in one
-   currency.
+   and `currency`; **both** are checked against the run and a mismatch refuses.
+   One DP prices in one currency. The run's cost mode comes from the cost
+   table's own provenance stamp, not the environment, and the currency it
+   implies is `COST_MODE_OBJECTIVE_CURRENCY[cost_mode]`. This is the ledger's
+   genuine currency refusal rather than an aggregation proof gap.
 3. *An unstated activation contract.* The manifest must declare the contract
    its dloss numbers were measured under, and it is stamped on the provenance
    payload. The hull anchors were priced **W\*A16** while both families' native
@@ -3603,15 +3753,16 @@ surface lets the DP see the continuum, report where bytes would go, and price
 the choice in exact serialized bytes. Promoting it to an artifact needs a
 render mechanism and a runtime attestation first; both are open (§12).
 
-Gate: `tests/test_trellis_menu.py` (15), on top of the surface's own 69.
-Two of the original 13 asserted on **source text** — that the string
-`trellis_menu.augment_candidates` appeared in `build_candidates` — which passes
-whether or not the call does anything, and did pass while the enabled path
-could not produce an assignment at all. They now assert observed behaviour: the
-seam raises `TrellisSeamUnwiredError` naming every entry of `UNWIRED_LINKS`, a
-128-expert row is skipped-with-reason rather than underpriced, and the two
-cheapest ledger entries are re-checked against the code so a stale entry fails
-the suite.
+Gate: `tests/test_trellis_menu.py`,
+`tests/test_super_item_menu_byte_identity.py`,
+`tests/test_trellis_byte_budget_path.py`, and
+`tests/test_allocator_cost_mode_and_rank.py`. They exercise seam installation,
+exact byte-map preference/refusal, rank extension, cost/provenance threading,
+export refusal reachability, and legacy-menu identity. The direct fused-helper
+and packed-injection tests establish only their local aggregation contracts;
+they do not license #3/#4 deletion. `UNWIRED_LINKS` is asserted to retain those
+two proof gaps plus the currency entry until real `allocator.main()` mutation
+tests land, so a stale ledger fails the suite.
 
 ## 5. Formats & render
 
@@ -3722,7 +3873,7 @@ defaulting; it now delegates to `production_weight_cache._resolve_production_ren
 
 ### 5.4 The single rendered-weight store
 
-`ProductionWeightCache` (`production_weight_cache.py:137`) is the only store for rendered
+`ProductionWeightCache` (`production_weight_cache.py:198`) is the only store for rendered
 weights and `render_production_weight` (`:1785`) the only producer. Not tidiness: the
 surrogate, the KL validation, and the exported bytes must be the *same* rendering, or every A/B
 carries a rendering confound. Levers are recorded on the cache (`:165`, `:835-858`), which is

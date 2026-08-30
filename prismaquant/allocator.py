@@ -130,6 +130,7 @@ from .fixed_head import (
     is_lm_head_name,
     parse_allow_pinned,
 )
+from .trellis_formats import parse_trellis_format_name
 from .nvfp4_cb_footprint import (
     CB_ASSIGNMENT_IDENTITIES_FIELD,
     CB_TENSOR_IDENTITY_FIELD,
@@ -2977,6 +2978,17 @@ def main():
         trellis_provenance=trellis_surface_stamp,
     )
     print(f"[alloc] candidates built for {len(candidates)} Linears")
+    if trellis_surface_stamp:
+        print(
+            "[alloc] trellis surface: "
+            f"{trellis_surface_stamp.get('candidates_added', 0)} rungs added "
+            f"across {trellis_surface_stamp.get('units_in_menu', 0)} units "
+            f"(manifest {trellis_surface_stamp.get('manifest_sha256', '?')[:12]}, "
+            f"currency {trellis_surface_stamp.get('currency', '?')}, "
+            f"anchors measured at "
+            f"{trellis_surface_stamp.get('anchor_activation_contract', '?')})",
+            flush=True,
+        )
 
     # The menus can carry formats the --formats rank table never saw (the
     # trellis rate surface densifies per unit). Promotion orders serving-unit
@@ -3035,6 +3047,9 @@ def main():
             # absence of body activation transfer explicit.
             activation_pricing=None,
             cost_mode=run_cost_mode,
+            # Pinned menu: the format is an operator declaration, not a
+            # DP choice, so the research surface has nothing to offer it.
+            apply_trellis_surface=False,
         )
         missing_head_candidates = [
             name for name in head_probe_names
@@ -3122,6 +3137,9 @@ def main():
             cb_serialization_context=cb_serialization_context,
             activation_pricing=activation_pricing,
             cost_mode=run_cost_mode,
+            # Pinned menu: the format is an operator declaration, not a
+            # DP choice, so the research surface has nothing to offer it.
+            apply_trellis_surface=False,
         )
         missing_mtp_candidates = [
             name for name in mtp_names
@@ -3195,6 +3213,9 @@ def main():
                 cb_serialization_context=cb_serialization_context,
                 activation_pricing=activation_pricing,
                 cost_mode=run_cost_mode,
+                # Pinned menu: the format is an operator declaration,
+                # not a DP choice, so the surface has nothing to offer.
+                apply_trellis_surface=False,
             )
             visual_aux_candidates = {
                 name: cand for name in visual_cost_names
@@ -3605,6 +3626,26 @@ def main():
                         ),
                     )
                 continue
+            if parse_trellis_format_name(fmt) is not None:
+                # A trellis rung's exact bytes are NOT a function of (name,
+                # shape): the wire's body stride, block offsets, per-column
+                # schedule plane and alphabet directory are campaign data
+                # (trellis_footprint.trellis_tensor_payload_breakdown), which
+                # is why no FormatSpec can supply them and why the seam
+                # records them on the candidate and in
+                # _memory_bytes_by_format. Reaching here means this stats
+                # entry never saw the seam's write, so the only honest
+                # answers are these bytes or none -- not a closed form that
+                # would be plausible and wrong.
+                raise AssertionError(
+                    f"[alloc] {name} is assigned {fmt}, a trellis rung, but "
+                    "its stats entry carries no '_memory_bytes_by_format' "
+                    "row for it. Exact trellis bytes need the layout, the "
+                    "per-column schedule and the alphabets the surface "
+                    "manifest declares; the format registry has no spec that "
+                    "can compute them. This assignment was built from stats "
+                    "the trellis seam did not write."
+                )
             shape = _shape_from_stats(entry)
             payload_bytes, _identity, _sidecar_identity = serialized_candidate_payload(
                 fr.get_format(fmt),
@@ -5327,6 +5368,18 @@ def main():
     for name, fmt in assignment_expanded.items():
         if fmt in format_specs:
             layer_cfg[name] = format_specs[fmt].autoround_config()
+        elif parse_trellis_format_name(fmt) is not None:
+            # The closed TCQ_<grid>_R<q256> name IS the recipe: the family
+            # and the body rate round-trip out of it
+            # (trellis_formats.parse_trellis_format_name), and everything
+            # else a render would need -- layout, schedule, alphabets -- is
+            # campaign data no autoround_config dict has ever carried. Emit
+            # the name as a string entry (layer_config.canonicalize_format
+            # round-trips it) so the assignment is readable and the
+            # exporter's pointed trellis refusal is REACHABLE, instead of
+            # dying here on a registry lookup that can never succeed.
+            layer_cfg[name] = fmt
+            continue
         else:
             # Visual format outside the body's format set (e.g., user
             # passed --formats NVFP4,BF16 plus --visual-format MXFP8_E4M3).
