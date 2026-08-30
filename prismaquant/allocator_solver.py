@@ -337,15 +337,38 @@ def _promote_group_components(
     for name in out:
         components.setdefault(find(name), []).append(name)
 
+    def rank_of(fmt: str) -> int:
+        """``format_rank[fmt]``, with the reason a miss is a caller bug.
+
+        The rank table is built from the run's FormatSpec menu, but this
+        promotes whatever the DP ASSIGNED — and a menu can legally contain a
+        format with no FormatSpec (the trellis seam's TCQ rungs). A bare
+        KeyError here reads as a corrupt assignment; it is really a rank
+        table built from the registry instead of from the candidate menu.
+        ``allocator._extend_format_rank_with_candidate_menu`` is the fix.
+        """
+        try:
+            return format_rank[fmt]
+        except KeyError:
+            raise KeyError(
+                f"promote_serving_units has no rank for assigned format "
+                f"{fmt!r}. format_rank must cover every format the CANDIDATE "
+                "MENU can produce, not only the ones with a FormatSpec: "
+                "promotion compares ranks across a coupled unit's members, "
+                "so an unranked format makes the unit unpromotable. Extend "
+                "the rank table from the candidates' exact serialized rates "
+                "(allocator._extend_format_rank_with_candidate_menu)."
+            ) from None
+
     for members in components.values():
         if len(members) < 2:
             continue
-        best_fmt = max((out[member] for member in members), key=lambda fmt: format_rank[fmt])
+        best_fmt = max((out[member] for member in members), key=rank_of)
         if all(_member_allows(best_fmt, member, legal_formats)
                for member in members):
-            best_rank = format_rank[best_fmt]
+            best_rank = rank_of(best_fmt)
             for member in members:
-                if format_rank[out[member]] < best_rank:
+                if rank_of(out[member]) < best_rank:
                     out[member] = best_fmt
             continue
         # The max-rank assignment cannot run on every member of an atomic

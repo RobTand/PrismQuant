@@ -65,6 +65,7 @@ from typing import Iterable, Mapping
 
 from . import format_registry as fr
 from .allocator_solver import _shape_from_stats
+from .trellis_formats import parse_trellis_format_name
 from .nvfp4_cb_footprint import (
     CBSerializationContext,
     cb_assignment_payload_breakdown,
@@ -1181,6 +1182,27 @@ def assignment_artifact_bytes(
                 )
             cb_assignment[qname] = name
             cb_shapes[qname] = shape
+        elif parse_trellis_format_name(name) is not None:
+            # A trellis rung's exact bytes are campaign data, not a closed
+            # form over (name, shape): the body stride, block offsets, the
+            # per-column schedule plane and the alphabet directory all come
+            # from the surface manifest (see
+            # trellis_tensor_payload_breakdown). The allocator records them
+            # per unit in `_memory_bytes_by_format`, which is where this
+            # reads them; there is no FormatSpec that could answer, so a
+            # missing map is refused rather than approximated. Same doctrine
+            # as the CB branch above.
+            memory_map = entry.get("_memory_bytes_by_format")
+            if not isinstance(memory_map, dict) or name not in memory_map:
+                raise ValueError(
+                    f"[footprint] {context}: {qname} is assigned the trellis "
+                    f"rung {name}, whose exact bytes depend on the layout, "
+                    "per-column schedule and alphabets its surface manifest "
+                    "declares -- no FormatSpec can compute them. The stats "
+                    "entry carries no '_memory_bytes_by_format' row for it, "
+                    "so these bytes were never measured for this unit."
+                )
+            body_quant += int(memory_map[name])
         else:
             body_quant += fr.get_format(name).memory_bytes_for_shape(shape)
         if name == "NVFP4":
