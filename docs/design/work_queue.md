@@ -72,6 +72,16 @@ python3 $Q cancel <id>     # ready/claimed -> failed
    command that exits 0 without producing its declared receipt lands in
    `failed/`. This encodes a real incident: a collected systemd unit reported
    success for work that had not happened.
+
+   **And the receipt must be produced by the work, not by the wrapper.**
+   Writing `<command> && touch <receipt>` recreates the exact bug the receipt
+   exists to prevent: it attests that the command exited 0, which is what the
+   exit code already said. First tried on 2026-08-29 with queued Codex jobs;
+   Codex's sandbox failed, Codex reported the blockage as its *answer* and
+   exited 0, `touch` fired, and two items sat in `done/` having done nothing.
+   The fix is a receipt only the work itself can write -- the task's own
+   output file, or a value the task must compute -- and a gate that checks
+   it (`...; test -s <receipt>`), never `&&`.
 4. **Receipt-gating makes requeue safe.** An item whose receipt already
    exists skips without executing, so a stale-lease requeue cannot
    double-run finished work, and a whole campaign can be re-enqueued after a
@@ -86,13 +96,33 @@ python3 $Q cancel <id>     # ready/claimed -> failed
 
 * **It does not migrate work whose inputs are box-local.** `/home/rob` is
   local per box, not shared. An item is portable only if its inputs live on
-  `/mnt/shared`; otherwise it pins itself with `--host`. The utilization win
+  `/mnt/shared`; otherwise it pins itself with `--host`. **Receipts belong on
+  `/mnt/shared`** for the same reason: a `--after` dependency on a
+  box-local path can never be observed by the other box, so the dependent
+  item would wait forever. The utilization win
   here is backfill-on-idle per box, and saying otherwise would overstate it.
 * **It does not generate work.** Agents remain the producers. Rob asked for
   agents off the critical path of work *distribution*, and that is the scope.
 * **It does not schedule cleverly.** One GPU item per box by default, because
   unified memory means two large jobs contend for one physical pool. With two
   GB10s there is no scheduling problem worth solving.
+
+## Codex jobs
+
+Codex runs through the queue like anything else, but two things bite:
+
+* **Use the default sandbox, not `--sandbox workspace-write`.** The latter
+  needs a user namespace, and this fleet runs with
+  `kernel.apparmor_restrict_unprivileged_userns=1`, so bwrap fails its own
+  loopback setup before any command runs. The failure is box-wide, not
+  specific to the worker unit -- an interactive shell hits it too. The
+  default sandbox executes commands and writes files fine.
+* **Have Codex write the receipt itself** as its final instructed action --
+  the PR number it opened, say -- and gate with `; test -s <receipt>`. See
+  property 3 above for why `&& touch` does not work.
+
+`gh` and `codex` live in `~/.local/bin` on sparklina, which a non-login shell
+does not have on `PATH`; jobs there pass it explicitly with `--env PATH=...`.
 
 ## Operating it
 
