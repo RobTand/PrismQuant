@@ -134,11 +134,12 @@ kernel performance.
 ### The near-four-bit boundary
 
 The explicit high plan measures body rates 3.25, 3.5, 3.75, 3.9375, and
-3.96875. The best common rung is R=3.9375. It reaches a median 20.177 dB at
-4.43785 bpw for dense weights, 0.417 dB below scalar NVFP4; routed weights
-reach 20.408 dB at 4.43962 bpw, 0.270 dB below scalar NVFP4. All 33 tensors
-reach that rung. R=3.96875 regresses to 19.897/20.285 dB and one dense tensor
-is unreachable.
+3.96875. The best common rung is R=3.9375. The dense population median point
+is 20.177 dB at 4.43785 bpw, versus a 20.595 dB population median for scalar
+NVFP4; routed weights reach 20.408 dB at 4.43962 bpw, versus 20.678 dB. The
+median of the per-tensor paired deficits is 0.236 dB dense and 0.299 dB routed,
+with zero wins in either population. All 33 tensors reach that rung.
+R=3.96875 regresses to 19.897/20.285 dB and one dense tensor is unreachable.
 
 This is the measured form of the fixed-support boundary. Above shaped rate 3,
 the current wire can only mix rate-3 trellis columns with rate-4 scalar bypass

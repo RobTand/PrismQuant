@@ -62,6 +62,37 @@ No result reported by upstream QTIP, no EXL3 or Quartet II result, no synthetic
 source-coding result, and no weight-only SSE number is a served PrismaQuant
 quality or speed result.
 
+### What the EXL3 source audit contributes—and does not
+
+EXL3 was inspected at commit
+`0c49587a7c235e6303a6bbedc8b665272ad3a2ea`; it is not vendored or invoked.
+Its useful lesson is architectural, not a request to reproduce its container:
+
+- the quantizer regularizes both matrix axes with sign/scale vectors and
+  block Hadamards, then couples those coordinates to a procedural tail-biting
+  codebook. Its reconstruction support is therefore much larger than a
+  product of 15 scalar E2M1 values;
+- the regular kernel path preserves FP16 activations. An optional integer-
+  activation GEMV exists for a restricted codebook, but EXL3 is not generally
+  the same W4A4 problem as Gridbook's native NVFP4 lane. A quality difference
+  can include activation precision and cannot automatically be assigned to
+  the weight code;
+- EXL3 does require the transformed basis semantically, but not always as two
+  standalone online launches. Small-row paths keep or fuse input/output
+  Hadamards around the quantized kernel. For long prefill, its reconstruct
+  path can emit the weight in the original basis by folding both Hadamards and
+  sign vectors into reconstruction, so the following GEMM consumes raw input;
+  and
+- the transferable pattern is consequently “keep an exact basis contract and
+  choose a shape-specific fused execution,” not “adopt EXL3 bytes.” Gridbook's
+  research ABI implements the exact contract first; a production proposal
+  still needs fused/graph-safe kernels and measured W4A4 quality.
+
+This audit explains why a scalar E2M1 trellis need not match EXL3 and why that
+observation is not a theorem against PrismaQuant's target. The target combines
+QTIP-derived error shaping and incoherence with native NVFP4 compute while
+retaining PrismaQuant/Gridbook's own physical trellis carrier.
+
 ## Mathematical decomposition
 
 For a Linear with column-vector convention
