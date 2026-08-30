@@ -10,10 +10,13 @@ version = "0.16.2"
 description = "Mixed-precision quantization allocator for LLMs: every layer refracts into a different format based on its sensitivity."
 readme = "README.md"
 license = "Apache-2.0"
-# 3.11 is the real floor, not a preference: prismaquant/schemas.py imports
-# typing.NotRequired, which does not exist before 3.11. The old ">=3.10"
-# claim was untrue and went unnoticed because nothing ever installed on 3.10.
-requires-python = ">=3.11"
+# 3.12 is the supported floor as of 2026-08-29. 3.11 was technically
+# sufficient for the language features used (prismaquant/schemas.py needs
+# typing.NotRequired, 3.11+), but nothing is exercised on it: the reference
+# box, the release workflow and every venv run 3.12. Claiming support we do
+# not test is the same class of error as the old ">=3.10" claim, which was
+# untrue and went unnoticed because nothing ever installed on 3.10.
+requires-python = ">=3.12"
 authors = [
     { name = "Rob Tand" },
 ]
@@ -23,7 +26,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
