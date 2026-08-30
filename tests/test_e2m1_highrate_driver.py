@@ -7,9 +7,10 @@ DRIVER = (
 )
 
 
-def test_active_checkout_precedes_locked_hull_snapshot_on_sys_path():
+def test_active_corpus_loader_is_isolated_from_locked_hull_package():
     source = DRIVER.read_text()
-    locked_insert = "sys.path.insert(0, str(LOCKED_HULL_ROOT))"
-    repo_insert = "sys.path.insert(0, str(REPO_ROOT))"
 
-    assert source.index(locked_insert) < source.index(repo_insert)
+    assert "def _load_active_glm_corpus(manifest: Path):" in source
+    assert 'package_name = "_prismaquant_active_glm_corpus"' in source
+    assert "module.load_finalized_bf16_corpus(manifest)" in source
+    assert "from prismaquant.trellis_bf16_corpus import" not in source
