@@ -558,24 +558,35 @@ class ServingLaneSpec:
             return (), "lane_declares_no_fused_mid_m_lane"
         return (), "pinned_runtime_version_not_declared"
 
-    def route_status_for(self, fmt: str) -> tuple[str, tuple[str, ...], str]:
+    def route_status_for(
+        self, fmt: str, *, platform: str | None = None,
+    ) -> tuple[str, tuple[str, ...], str]:
         """``(route_status, requires_serve_flags, source)`` from the pin (R3).
 
         Resolved, never declared. The spec names which structural classes of
         the runtime's eligibility table this lane consults; the verdict comes
         from the table the PINNED SERVING release packages.
+
+        Under lane-eligibility v3 a cell is scoped to one platform, one payload
+        family and an explicit rung list, so this lane-level answer is narrower
+        than it looks: it filters by all three, and returns ``unit_dependent``
+        the moment a surviving cell predicates on a fact only the export gate
+        holds. It never widens -- an unmatched platform, family or rung is
+        ``unattested``, because absence is the only way a v3 table says no.
         """
         from .gridbook_lane_eligibility import (
             ROUTE_STATUS_UNATTESTED,
             load_eligibility_table,
+            resolve_payload_rung,
         )
 
         table = _cached_eligibility_table(load_eligibility_table)
+        version = table.runtime_version
         if not table.present:
             return (
                 ROUTE_STATUS_UNATTESTED,
                 (),
-                f"gridbook_runtime_contract:{table.runtime_version}:absent",
+                f"gridbook_runtime_contract:{version}:absent",
             )
         if not self.route_status_structures:
             # A lane that names no attestation has none. Fail-closed.
@@ -584,43 +595,69 @@ class ServingLaneSpec:
                 (),
                 "lane_declares_no_route_status_source",
             )
-        canonical = fr.canonical_format_name(fmt)
-        rules = [
-            rule for rule in table.rules
-            if rule.structure in self.route_status_structures
-        ]
-        if not rules:
+        if not platform:
+            # v3 cells are platform-scoped. A lane resolved without one cannot
+            # name a route; it must not fall through to a match-any.
             return (
                 ROUTE_STATUS_UNATTESTED,
                 (),
-                f"gridbook_runtime_contract:{table.runtime_version}:no_rule",
+                f"gridbook_runtime_contract:{version}:no_target_platform",
             )
-        # Any rule carrying a predicate needs per-unit facts the lane does not
+        canonical = fr.canonical_format_name(fmt)
+        family, k, rate_q256 = resolve_payload_rung(canonical)
+        cells = [
+            cell for cell in table.cells
+            if cell.structure in self.route_status_structures
+            and cell.platform == platform
+            and cell.family == family
+        ]
+        if not cells:
+            return (
+                ROUTE_STATUS_UNATTESTED,
+                (),
+                f"gridbook_runtime_contract:{version}:no_cell",
+            )
+        rung = rate_q256 if k is None else k
+        covering = [
+            cell for cell in cells
+            if rung is not None
+            and rung in (cell.rungs_q256 if cell.is_trellis else cell.rungs)
+        ]
+        if not covering:
+            # The rung this lane would serve is not in any cell's list. A rung
+            # the table does not name is unattested, never admitted.
+            return (
+                ROUTE_STATUS_UNATTESTED,
+                (),
+                f"gridbook_runtime_contract:{version}:rung_not_listed",
+            )
+        # Any cell carrying a predicate needs per-unit facts the lane does not
         # have (role split, out_features). The export gate settles those; this
         # lane says so rather than guessing a lane-wide verdict.
-        if any(rule.predicates for rule in rules):
+        if any(cell.predicates for cell in covering):
             return (
                 "unit_dependent",
                 tuple(sorted({
-                    flag for rule in rules
-                    for flag in rule.requires_serve_flags
+                    flag for cell in covering
+                    for flag in cell.requires_serve_flags
                 })),
-                f"gridbook_runtime_contract:{table.runtime_version}"
+                f"gridbook_runtime_contract:{version}"
                 ":unit_dependent(cb_route_status_gate)",
             )
-        best = max(rules, key=lambda rule: _LANE_STATUS_RANK.get(
-            rule.route_status, 0))
-        _ = canonical
+        best = max(covering, key=lambda cell: _LANE_STATUS_RANK.get(
+            cell.route_status, 0))
         return (
             best.route_status,
             best.requires_serve_flags,
-            f"gridbook_runtime_contract:{table.runtime_version}:{best.id}",
+            f"gridbook_runtime_contract:{version}:{best.id}",
         )
 
     def resolve(self, fmt: str, *, runtime_version: str,
-                rung: int | None) -> ResolvedServingLane:
+                rung: int | None,
+                target_platform: str | None = None) -> ResolvedServingLane:
         rungs, source = self.backed_rungs(runtime_version)
-        status, flags, status_source = self.route_status_for(fmt)
+        status, flags, status_source = self.route_status_for(
+            fmt, platform=target_platform)
         return ResolvedServingLane(
             lane_id=self.id,
             format=fr.canonical_format_name(fmt),
@@ -802,6 +839,7 @@ class ServingProfile:
                 else gridbook_runtime_version()
             ),
             rung=_cb_rung_of(fmt),
+            target_platform=self.target_platform,
         )
 
     def check_shape(

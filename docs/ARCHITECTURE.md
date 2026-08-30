@@ -3,7 +3,8 @@
 As of: 2026-08-30 · `claude/lane-eligibility-v3` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-30,
 `claude/lane-eligibility-v3`) for the **lane-eligibility v3 parser and the
-scoped route-status refusal** (§9.2.1). `gridbook_lane_eligibility.py` read
+scoped route-status refusal** (§9.2.1). `gridbook_lane_eligibility.py` and
+`ServingLaneSpec.route_status_for` read
 `gridbook.lane-eligibility.v1` (`{schema, regimes, lanes}`); Gridbook publishes
 v3 at `30287aa` (`{schema, platforms, regimes, structures, cells}`), so the
 consumer would have refused the very table it was written to consume. The
@@ -7132,7 +7133,19 @@ load-bearing, and each is pinned by a mutation-checked test in
   the published table, never from a list typed here.
 - **A missing platform is not a match-any.** `evaluate_cb_route_status` takes `target_platform`,
   defaulting to the serving profile's `target_platform`. A profile that declares none resolves
-  every unit `unattested` and refuses, with that exact reason.
+  every unit `unattested` and refuses, with that exact reason. **`nvfp4_cb.json` declares no
+  `target_platform` today** — only `qwen38_rtx4090_fp8_cb*` (`sm_89`),
+  `qwen38_sm120_cb_validation_only` (`sm_120`) and `trellis_research_sm121` (`sm_121`) do — so
+  that declaration is a prerequisite of the pin bump, not of this change.
+
+`ServingLaneSpec.route_status_for` was rewritten to the same shape and gained a `platform`
+argument, threaded from the profile's `target_platform` through `ServingProfile.resolve`. It had
+been reading `table.rules`, a name v3 does not have; the real pin's table is absent, so the
+function returned at its first branch and **no test had ever reached the line**. It would have
+raised `AttributeError` the day the pin advanced. At lane granularity the answer is narrower
+than at unit granularity — cells are scoped to a platform, a family and a rung list, and any
+surviving cell carrying a predicate yields `unit_dependent`, because `role_split` is a fact only
+the export gate holds.
 
 Two censuses are added to the provenance and the shipcard summary: `qualifications`
 (`compile_only` vs `device_qualified`) and `activation_contracts`. `compile_only` means the
