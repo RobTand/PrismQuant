@@ -12,6 +12,8 @@ Current production path:
 Older cross-layer allocators are archived under archive/cross_layer_2026-05-09
 for artifact replay and comparison.
 """
+import contextlib as _contextlib
+
 from .format_registry import FormatSpec, REGISTRY, register_format
 
 # Resolved from installed metadata rather than duplicated here, so
@@ -100,9 +102,21 @@ def _polyfill_transformers() -> None:
         # rotary modules to expose `compute_default_rope_parameters`,
         # which older remote modeling files (MiniMax M2/M2.7) don't
         # provide. No-op it globally at import time.
+        #
+        # The no-op is only sound for callers that overwrite every
+        # parameter afterwards. A caller that *uses* a from-config model
+        # -- a test fixture, an eval harness building a random reference --
+        # gets whatever the allocator last left in the pages backing the
+        # parameters a modeling file allocates with a bare `torch.empty()`
+        # (transformers' own `nn.Linear`/`nn.Embedding` still self-init in
+        # their constructors; the raw `nn.Parameter(torch.empty(...))` ones
+        # do not). Keep the real method reachable so such a caller can
+        # restore it -- see `genuine_weight_initialization` below.
         import transformers.modeling_utils as _mu
         if hasattr(_mu, "PreTrainedModel") and \
                 not getattr(_mu.PreTrainedModel, "_prismaquant_init_noop", False):
+            _mu.PreTrainedModel._prismaquant_real_initialize_weights = (
+                _mu.PreTrainedModel._initialize_weights)
             _mu.PreTrainedModel._initialize_weights = (
                 lambda self, *a, **kw: None)
             _mu.PreTrainedModel._prismaquant_init_noop = True
@@ -161,6 +175,45 @@ def _polyfill_transformers() -> None:
         _register_qwen3()
     except Exception:
         pass
+
+
+@_contextlib.contextmanager
+def genuine_weight_initialization():
+    """Build a model the way transformers would, inside a PrismaQuant process.
+
+    `_polyfill_transformers` no-ops `PreTrainedModel._initialize_weights`
+    for the whole process at import time, because every PrismaQuant load
+    path builds a `from_config` skeleton and then overwrites every
+    parameter from the checkpoint. That makes `from_config` construction
+    silently return **uninitialized** parameters for any tensor the
+    modeling file allocates as a bare `nn.Parameter(torch.empty(...))` --
+    routed-expert weights and hyper-connection tensors are the common
+    cases -- and heap contents are neither reproducible nor guaranteed
+    finite, so a forward on such a model can be fine on one run and `nan`
+    on the next.
+
+    Wrap a from-config construction in this context manager when the model
+    it returns is used as-is:
+
+        with genuine_weight_initialization():
+            model = SomeForCausalLM(config)
+
+    A no-op when the polyfill never applied (older transformers, or an
+    import that raised), so callers need not test for it.
+    """
+    import transformers.modeling_utils as _mu
+
+    real = getattr(
+        _mu.PreTrainedModel, "_prismaquant_real_initialize_weights", None)
+    if real is None:
+        yield
+        return
+    patched = _mu.PreTrainedModel._initialize_weights
+    _mu.PreTrainedModel._initialize_weights = real
+    try:
+        yield
+    finally:
+        _mu.PreTrainedModel._initialize_weights = patched
 
 
 _ensure_triton_cache_writable()
