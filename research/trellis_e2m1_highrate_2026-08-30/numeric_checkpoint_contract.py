@@ -56,6 +56,8 @@ _E2_CONTROL_KEYS = frozenset({
 })
 _E2_CONTROL_CHECK_KEYS = frozenset({"mine", "published", "rel"})
 _E2_UNREACHABLE_KEYS = frozenset({"lane", "rate", "reason"})
+_E2_CEILING_RATE = 3.96875
+_E2_CEILING_REFUSAL = "cannot rebalance trellis-length guard"
 _E2_SUBSET_KEYS = frozenset({
     "bits_per_weight_here", "columns", "energy", "nvfp4_bits_per_weight",
     "nvfp4_db", "nvfp4_wsse", "scalar_subgrid_oracle",
@@ -203,6 +205,19 @@ def _close(a: float, b: float, *, where: str, rel: float = 1e-9) -> None:
         raise CheckpointContractError(f"{where} is internally inconsistent")
 
 
+def _json_digest(value: object, *, newline: bool, where: str) -> str:
+    try:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise CheckpointContractError(f"{where} is not canonical JSON") from exc
+    if newline:
+        encoded += "\n"
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
 def _validate_e2_footprint(value: object, *, lane: str, rate: float,
                            shape: list[int], where: str,
                            production_payload: bool = False) -> None:
@@ -330,6 +345,10 @@ def _validate_e2_arm(value: object, *, lane: str, rate: float,
 def validate_e2m1_checkpoint(document: object, *, current_receipt: Mapping[str, object],
                               names: Sequence[str], require_partial: bool = True) -> None:
     root = _exact(document, _E2_ROOT_KEYS, where="checkpoint")
+    digest = _sha(root.get("checkpoint_sha256"), where="checkpoint.checkpoint_sha256")
+    body = {key: root[key] for key in ("receipt", "per_tensor")}
+    if digest != _json_digest(body, newline=True, where="checkpoint"):
+        raise CheckpointContractError("checkpoint self-digest differs")
     receipt = _exact(
         root.get("receipt"),
         _E2_RECEIPT_KEYS if require_partial else _E2_FINAL_RECEIPT_KEYS,
@@ -347,6 +366,8 @@ def validate_e2m1_checkpoint(document: object, *, current_receipt: Mapping[str, 
     rates = [_finite(rate, where="receipt.rate_plan[]", positive=True) for rate in rates_raw]
     if len(set(rates)) != len(rates):
         raise CheckpointContractError("receipt.rate_plan contains duplicates")
+    if receipt.get("mathematical_q256_bounds") != [256, 1016]:
+        raise CheckpointContractError("receipt mathematical q256 bounds differ")
     _sha(receipt.get("publication_identity_sha256"), where="receipt.publication_identity_sha256")
     comparable_saved = {key: value for key, value in receipt.items()
                         if key not in {"started_at_unix_s", "partial", "tensors_done"}}
@@ -397,6 +418,7 @@ def validate_e2m1_checkpoint(document: object, *, current_receipt: Mapping[str, 
         if not isinstance(unreachable_raw, list):
             raise CheckpointContractError(f"per_tensor.{name}.unreachable_rungs must be a list")
         unreachable: set[tuple[str, float]] = set()
+        unreachable_reasons: dict[tuple[str, float], str] = {}
         for index, raw in enumerate(unreachable_raw):
             row = _exact(raw, _E2_UNREACHABLE_KEYS,
                          where=f"per_tensor.{name}.unreachable_rungs[{index}]")
@@ -407,8 +429,34 @@ def validate_e2m1_checkpoint(document: object, *, current_receipt: Mapping[str, 
                 raise CheckpointContractError(f"per_tensor.{name} unreachable domain differs")
             _text(row.get("reason"), where=f"per_tensor.{name}.unreachable_rungs[{index}].reason")
             unreachable.add(identity)
+            unreachable_reasons[identity] = str(row["reason"])
         if measured & unreachable or measured | unreachable != expected_domain:
             raise CheckpointContractError(f"per_tensor.{name} does not cover every expected arm exactly once")
+        if not measured:
+            raise CheckpointContractError(
+                f"per_tensor.{name} cannot declare every arm unreachable"
+            )
+        unreachable_rates = {rate for _lane, rate in unreachable}
+        if unreachable_rates:
+            if unreachable_rates != {_E2_CEILING_RATE}:
+                raise CheckpointContractError(
+                    f"per_tensor.{name} declares a non-ceiling rung unreachable"
+                )
+            ceiling_lanes = {
+                lane for lane, rate in unreachable if rate == _E2_CEILING_RATE
+            }
+            if ceiling_lanes != set(_E2_LANES):
+                raise CheckpointContractError(
+                    f"per_tensor.{name} has one-sided ceiling reachability"
+                )
+            if any(
+                unreachable_reasons[(lane, _E2_CEILING_RATE)]
+                != _E2_CEILING_REFUSAL
+                for lane in _E2_LANES
+            ):
+                raise CheckpointContractError(
+                    f"per_tensor.{name} has an unrecognized ceiling refusal"
+                )
         control = _exact(cell.get("control"), _E2_CONTROL_KEYS,
                          where=f"per_tensor.{name}.control")
         if control.get("status") not in {"pass", "fail", "uncontrolled"}:
@@ -552,6 +600,11 @@ def validate_fp8_checkpoint(document: object, *, settings: Mapping[str, object],
         _FP8_ROOT_KEYS if require_partial else _FP8_FINAL_ROOT_KEYS,
         where="checkpoint",
     )
+    digest = _sha(root.get("checkpoint_sha256"), where="checkpoint.checkpoint_sha256")
+    body = {key: value for key, value in root.items()
+            if key != "checkpoint_sha256"}
+    if digest != _json_digest(body, newline=False, where="checkpoint"):
+        raise CheckpointContractError("checkpoint self-digest differs")
     if root.get("schema") != "trellis.glm_fp8_learned_balanced.v2":
         raise CheckpointContractError("checkpoint schema differs")
     _validate_fp8_settings(root.get("settings"), expected=settings)

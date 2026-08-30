@@ -44,20 +44,33 @@ def _e2_footprint(lane: str, rate: float, shape: list[int], *, nested=False):
 
 
 def _e2_arm(lane: str, rate: float, shape: list[int]):
-    counts = {"1": 0, "2": shape[1], "3": 0, "4": 0}
-    scalar = {
-        "coding_gain_db": 1.0, "db": 10.0, "levels": [-1.0, -0.5, 0.5, 1.0],
-        "n_levels": 4, "subset_fit_scope": "whole tensor", "wsse": 0.1,
-    }
-    subset = {
-        "2": {
-            "bits_per_weight_here": 2, "columns": shape[1], "energy": 1.0,
-            "nvfp4_bits_per_weight": 4, "nvfp4_db": 9.0,
+    if rate == 3.96875:
+        assert shape[1] == 256
+        counts = {"1": 0, "2": 0, "3": 8, "4": 248}
+    else:
+        integer_rate = int(rate)
+        assert float(integer_rate) == rate
+        counts = {str(value): shape[1] if value == integer_rate else 0
+                  for value in range(1, 5)}
+    subset = {}
+    for rate_text, columns in counts.items():
+        if not columns:
+            continue
+        local_rate = int(rate_text)
+        n_levels = (1 << local_rate) if local_rate < 4 else 15
+        scalar = {
+            "coding_gain_db": 1.0, "db": 10.0,
+            "levels": [float(index) for index in range(n_levels)],
+            "n_levels": n_levels, "subset_fit_scope": "whole tensor",
+            "wsse": 0.1,
+        }
+        subset[rate_text] = {
+            "bits_per_weight_here": local_rate, "columns": columns,
+            "energy": 1.0, "nvfp4_bits_per_weight": 4, "nvfp4_db": 9.0,
             "nvfp4_wsse": 0.2, "scalar_subgrid_oracle": copy.deepcopy(scalar),
             "scalar_subgrid_shared": copy.deepcopy(scalar), "trellis_db": 10.0,
             "trellis_minus_nvfp4_db": 1.0, "trellis_wsse": 0.1,
         }
-    }
     schedule = {key: 0 for key in C._E2_SCHEDULE_KEYS}
     schedule.update({
         "target_rate": rate, "achieved_rate": rate, "maximum_rate": 4,
@@ -80,6 +93,7 @@ def _e2_checkpoint():
     receipt.update({
         "schema": "trellis.e2m1_highrate.v3", "started_at_unix_s": 1.0,
         "publication_identity_sha256": "c" * 64, "rate_plan": [2.0],
+        "mathematical_q256_bounds": [256, 1016],
     })
     shape = [2, 3]
     cell = {
@@ -97,10 +111,19 @@ def _e2_checkpoint():
         },
     }
     saved = {**receipt, "partial": True, "tensors_done": 1}
-    return {
+    checkpoint = {
         "receipt": saved, "per_tensor": {"tensor-a": cell},
-        "checkpoint_sha256": "e" * 64,
-    }, receipt
+        "checkpoint_sha256": "",
+    }
+    _seal_e2(checkpoint)
+    return checkpoint, receipt
+
+
+def _seal_e2(checkpoint):
+    body = {key: checkpoint[key] for key in ("receipt", "per_tensor")}
+    checkpoint["checkpoint_sha256"] = hashlib.sha256(
+        (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
 
 
 def test_e2_checkpoint_requires_closed_complete_semantics():
@@ -113,12 +136,13 @@ def test_e2_checkpoint_requires_closed_complete_semantics():
         (lambda value: value["receipt"].__setitem__("production_eligible", True), "receipt members"),
         (lambda value: value["per_tensor"]["tensor-a"].__setitem__("unrecognized_claim", True), "members differ"),
         (lambda value: value["per_tensor"]["tensor-a"].__setitem__("arms", {}), "cover every expected arm"),
-        (lambda value: value["per_tensor"]["tensor-a"].__setitem__("weighted_energy", float("nan")), "must be finite"),
+        (lambda value: value["per_tensor"]["tensor-a"].__setitem__("weighted_energy", float("nan")), "canonical JSON"),
         (lambda value: value["per_tensor"]["tensor-a"]["arms"]["tcq_v1@2.0"].__setitem__("rung", 3.0), "rung"),
         (lambda value: value["per_tensor"]["tensor-a"]["arms"]["tcq_v1@2.0"]["footprint"].__setitem__("shipping_claim", True), "footprint members"),
     ):
         bad = copy.deepcopy(checkpoint)
         mutate(bad)
+        _seal_e2(bad)
         with pytest.raises(C.CheckpointContractError, match=match):
             C.validate_e2m1_checkpoint(
                 bad, current_receipt=receipt, names=["tensor-a", "tensor-b"]
@@ -129,6 +153,61 @@ def test_e2_checkpoint_requires_closed_complete_semantics():
     with pytest.raises(C.CheckpointContractError, match="identity differs"):
         C.validate_e2m1_checkpoint(
             checkpoint, current_receipt=drifted, names=["tensor-a", "tensor-b"]
+        )
+
+    stale = copy.deepcopy(checkpoint)
+    stale["per_tensor"]["tensor-a"]["weighted_energy"] = 2.0
+    with pytest.raises(C.CheckpointContractError, match="self-digest differs"):
+        C.validate_e2m1_checkpoint(
+            stale, current_receipt=receipt, names=["tensor-a", "tensor-b"]
+        )
+
+
+def test_e2_unreachable_is_only_paired_mathematical_ceiling_refusal():
+    checkpoint, receipt = _e2_checkpoint()
+    cell = checkpoint["per_tensor"]["tensor-a"]
+    cell["shape"] = [2, 256]
+    cell["numel"] = 512
+    cell["arms"] = {
+        "tcq_two_tier@2.0": _e2_arm("tcq_two_tier", 2.0, [2, 256]),
+        "tcq_v1@2.0": _e2_arm("tcq_v1", 2.0, [2, 256]),
+    }
+    receipt["rate_plan"] = [2.0, 3.96875]
+    checkpoint["receipt"]["rate_plan"] = [2.0, 3.96875]
+    paired = [
+        {"lane": lane, "rate": 3.96875,
+         "reason": "cannot rebalance trellis-length guard"}
+        for lane in ("tcq_two_tier", "tcq_v1")
+    ]
+    cell["unreachable_rungs"] = paired
+    _seal_e2(checkpoint)
+    C.validate_e2m1_checkpoint(
+        checkpoint, current_receipt=receipt, names=["tensor-a"]
+    )
+
+    one_sided = copy.deepcopy(checkpoint)
+    one_sided["per_tensor"]["tensor-a"]["unreachable_rungs"] = paired[:1]
+    one_sided["per_tensor"]["tensor-a"]["arms"]["tcq_v1@3.96875"] = (
+        _e2_arm("tcq_v1", 3.96875, [2, 256])
+    )
+    _seal_e2(one_sided)
+    with pytest.raises(C.CheckpointContractError, match="one-sided"):
+        C.validate_e2m1_checkpoint(
+            one_sided, current_receipt=receipt, names=["tensor-a"]
+        )
+
+    all_unreachable = copy.deepcopy(checkpoint)
+    all_unreachable["per_tensor"]["tensor-a"]["arms"] = {}
+    all_unreachable["per_tensor"]["tensor-a"]["unreachable_rungs"] = [
+        {"lane": lane, "rate": rate,
+         "reason": "cannot rebalance trellis-length guard"}
+        for rate in (2.0, 3.96875)
+        for lane in ("tcq_two_tier", "tcq_v1")
+    ]
+    _seal_e2(all_unreachable)
+    with pytest.raises(C.CheckpointContractError, match="cannot declare every arm unreachable"):
+        C.validate_e2m1_checkpoint(
+            all_unreachable, current_receipt=receipt, names=["tensor-a"]
         )
 
 
@@ -215,9 +294,18 @@ def _fp8_checkpoint():
             },
             "weighted_energy": 1.0, "arms": arms,
         }},
-        "partial": True, "tensors_done": 1, "checkpoint_sha256": "3" * 64,
+        "partial": True, "tensors_done": 1, "checkpoint_sha256": "",
     }
+    _seal_fp8(root)
     return root, settings, [entry]
+
+
+def _seal_fp8(root):
+    body = {key: value for key, value in root.items()
+            if key != "checkpoint_sha256"}
+    root["checkpoint_sha256"] = hashlib.sha256(json.dumps(
+        body, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
 
 
 def test_fp8_checkpoint_rejects_unknown_claims_and_fake_metrics():
@@ -236,5 +324,11 @@ def test_fp8_checkpoint_rejects_unknown_claims_and_fake_metrics():
     ):
         bad = copy.deepcopy(root)
         mutate(bad)
+        _seal_fp8(bad)
         with pytest.raises(C.CheckpointContractError, match=match):
             C.validate_fp8_checkpoint(bad, settings=settings, entries=entries)
+
+    stale = copy.deepcopy(root)
+    stale["per_tensor"]["tensor-a"]["weighted_energy"] = 2.0
+    with pytest.raises(C.CheckpointContractError, match="self-digest differs"):
+        C.validate_fp8_checkpoint(stale, settings=settings, entries=entries)

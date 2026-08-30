@@ -126,7 +126,10 @@ namespace, closed-schema and semantic exact-prefix resume validation,
 final-time identity replay, and hard-link no-replace publication with the
 completed result published last. The checkpoint SHA is only a checksum; it is
 not accepted as evidence that cells, metrics, footprints, or arm coverage are
-valid.
+valid. An unreachable declaration is not a free-form substitute for an arm:
+only the mathematical 3.96875 ceiling may carry the exact scheduler guard
+refusal, and both lanes must refuse together; every lower lane/rate is required
+to contain a measured arm.
 
 ### Same-grid coding gain
 
