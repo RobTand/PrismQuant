@@ -106,6 +106,20 @@ def qdir(name: str) -> Path:
     return QUEUE_ROOT / name
 
 
+def queue_reachable() -> bool:
+    """Is the shared queue root actually present?
+
+    Kept separate from ``ensure_layout`` so a worker can tell "the share is
+    away" apart from "the share is here but empty". Creating the layout on a
+    *missing* autofs mountpoint would silently build a local shadow queue
+    that no other box can see, which is worse than doing nothing.
+    """
+    try:
+        return QUEUE_ROOT.is_dir()
+    except OSError:
+        return False
+
+
 def ensure_layout() -> None:
     for d in STATE_DIRS:
         qdir(d).mkdir(parents=True, exist_ok=True)
@@ -654,9 +668,40 @@ def choose_victim(jobs: list):
     return sorted(victims, key=lambda j: (int(j.item.get("priority", 50)), -j.started))[0]
 
 
+def wait_for_queue(once: bool) -> None:
+    """Block until the shared queue root appears, backing off as we go.
+
+    A worker whose queue has gone away must wait, never exit. On 2026-08-30
+    the opposite arrangement took a box out of the pool for an hour: the
+    unit ran its own binary from the NFS path, the mount dropped, systemd
+    restarted it every 15 s, each restart re-triggered the autofs mount, and
+    the automount unit hit ``mount-start-limit-hit`` and failed *permanently*.
+    A transient mount failure became a persistent one because the retry was
+    too eager and lived in the wrong place.
+
+    Hence both halves of the fix: the binary is installed box-locally so the
+    worker can run at all without the share, and the wait backs off so
+    polling can never re-trip systemd's start limit.
+    """
+    delay = 15.0
+    announced = False
+    while not queue_reachable():
+        if once:
+            return
+        if not announced:
+            print(f"[pqwork] queue root {QUEUE_ROOT} is not reachable; "
+                  f"waiting (backing off, not restarting)", flush=True)
+            announced = True
+        time.sleep(delay)
+        delay = min(delay * 2, 300.0)
+    if announced:
+        print(f"[pqwork] queue root {QUEUE_ROOT} is back", flush=True)
+
+
 def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
                 once: bool, reserve_gb: float, horizon_s: float,
                 settle_s: float, admission: str = "optimistic") -> int:
+    wait_for_queue(once)
     ensure_layout()
     has_gpu = gpu_slots > 0
     gov = MemoryGovernor(reserve_gb, horizon_s, settle_s, admission)
@@ -670,6 +715,11 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
     last_mem_hold = 0.0
     last_beat = 0.0
     while True:
+        if not queue_reachable():
+            # Losing the share mid-run is not fatal: running jobs keep their
+            # own local state, and bookkeeping resumes when it returns.
+            wait_for_queue(once)
+            ensure_layout()
         avail = gov.sample()
         jobs = [j for j in jobs if j.alive()]
 
@@ -743,6 +793,12 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
                 gpu_busy += 1
             else:
                 cpu_busy += 1
+            if once:
+                # --once means exactly one item, as its help says. The
+                # threaded rewrite briefly let it claim a whole slot's worth,
+                # which made the order several jobs recorded their own start
+                # in a race -- it passed on an idle box and failed at load 28.
+                break
 
         if once:
             if not started_any and not jobs:
