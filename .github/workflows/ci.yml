@@ -51,10 +51,13 @@ jobs:
         # 3.12 only. The reference box runs 3.12 and nothing else is
         # exercised anywhere; requires-python is >=3.12 to match. Dropped 3.11
         # on 2026-08-29 (Rob: "I don't care if we don't support python 3.11").
-        # NOTE: 3.11 was not failing on an interpreter incompatibility -- it was
-        # a proxy for test ORDER. The dsa_only NaN it exposed is still being
-        # root-caused; this narrowing does not fix it and must not be read as
-        # having fixed it. Widen only when a version is actually exercised.
+        # NOTE: 3.11 was not failing on an interpreter incompatibility -- it
+        # stood in for heap/allocation order. The dsa_only NaN it exposed was a
+        # real latent defect (the transformers polyfill left from-config expert
+        # weights uninitialized) and was fixed on its own merits in #94 BEFORE
+        # this job was removed. 3.12 can surface that class of bug just as
+        # easily, so narrowing the matrix hides nothing.
+        # Widen only when a version is actually exercised somewhere.
         python: ["3.12"]
     steps:
       - uses: actions/checkout@v7.0.1
