@@ -1124,6 +1124,55 @@ def test_eviction_count_pins_cooldown_reservation_until_eventual_admission(
     assert state_of("newcomer") == pqwork.READY
 
 
+def test_non_evictable_job_waits_unclaimed_until_declaration_fits(
+        queue, tmp_path, monkeypatch):
+    """Irreversible work cannot turn a positive margin negative on start."""
+    receipt = tmp_path / "pinned.receipt"
+    enqueue(
+        "pinned", cmd=f"echo complete > {receipt}", cwd=tmp_path,
+        receipt=str(receipt), mem_gb=55.0, evictable=False,
+        priority=95, enqueued_at=1.0)
+    enqueue(
+        "backfill", cwd=tmp_path, mem_gb=1.0,
+        priority=10, enqueued_at=2.0)
+
+    # This reconstructs the production admission: 72.8 GB available minus
+    # the worker's 24 GB reserve leaves +48.8 GB before the claim, but the
+    # pinned job declares 55 GB.  The old optimistic branch admitted it and
+    # only the post-claim log exposed the resulting -6.2 GB commitment.
+    available = [72.8]
+    monkeypatch.setattr(pqwork, "mem_available_gb", lambda: available[0])
+    monkeypatch.setattr(pqwork, "capping_supported", lambda: False)
+    assert pqwork.worker_loop(
+        "mine", set(), 0, 2, True, 24.0, 20.0, 60.0) == 0
+
+    # Waiting is neither a claim nor an external resource hold.  It does pin
+    # admission order so repeated backfill cannot starve irreversible work.
+    assert state_of("pinned") == pqwork.READY
+    assert state_of("backfill") == pqwork.READY
+    assert list(pqwork.qdir(pqwork.CLAIMED).glob("*.json")) == []
+    assert pqwork.read_reservation_ledger()["reservations"] == {}
+    assert not receipt.exists()
+
+    available[0] = 80.0  # 56 GB headroom: the complete declaration now fits.
+    assert pqwork.worker_loop(
+        "mine", set(), 0, 2, True, 24.0, 20.0, 60.0) == 0
+    assert state_of("pinned") == pqwork.DONE
+    assert state_of("backfill") == pqwork.READY
+    assert receipt.read_text().strip() == "complete"
+
+
+def test_evictable_job_keeps_optimistic_positive_headroom_probe(monkeypatch):
+    """The safety boundary does not silently turn all admission strict."""
+    governor = _governor()
+    _drive_sample(monkeypatch, governor, time.time(), 72.8)
+    item = {"id": "probe", "mem_gb": 55.0, "evictable": True,
+            "evictions": 0}
+
+    assert governor.headroom([]) == pytest.approx(48.8)
+    assert governor.may_admit(item, [])
+
+
 def test_protected_dependency_gate_allows_backfill(queue):
     """Protection cannot reserve a box before external dependencies exist."""
     enqueue("gated-aged", priority=99,

@@ -212,14 +212,27 @@ python3 $Q cancel <id>     # ready/claimed -> failed
    into a permanent bench. The old exponential cooldown and
    `evicted_Nx_does_not_fit` terminal outcome no longer exist.
 
+   Producer-pinned `--no-evict` work follows the irreversible side of that
+   admission contract from its first attempt. Once its placement, receipt and
+   time gates pass, it holds *admission order* while its complete declared (or
+   previously observed) footprint does not fit. It remains in `ready/`, owns
+   no claim and publishes no external memory/GPU reservation while the box
+   drains. With no footprint it waits for an exclusive attempt. This is
+   deliberately different from ordinary optimistic backfill: the governor
+   cannot walk a non-evictable overcommit back, so negative committed headroom
+   and non-evictability are an invalid combination. Pinning admission order is
+   also necessary because a refused non-evictable item earns no eviction age;
+   allowing an unbounded stream of backfill would otherwise starve it forever.
+
    The only memory-fit terminal is
    `measured_footprint_exceeds_box_capacity`, reached when a declared or
    observed footprint is larger than `MemTotal - mem_reserve_gb`. Its record
    carries the source footprint, total memory, reserve, capacity, and timestamp.
    Ordinary command/receipt failures retain their separate attempt contract.
 
-   Optimistic admission is unchanged for new work: the queue still starts it
-   whenever headroom is positive and measures what happens. The 2026-08-30
+   Optimistic admission is unchanged for new **evictable** work: the queue
+   still starts it whenever headroom is positive and measures what happens.
+   The 2026-08-30
    `pq-currency-4b-v2` log is the incident behind this split: its application
    samples stayed near 81 GB with a 24 GB reserve, so it demonstrably fit, but
    those sparse four-minute samples cannot reconstruct the governor's unlogged

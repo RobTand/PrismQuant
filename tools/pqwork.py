@@ -1124,6 +1124,17 @@ def item_is_protected(item: dict) -> bool:
     return item_eviction_count(item) >= EVICTIONS_BEFORE_PROTECTION
 
 
+def item_is_explicitly_non_evictable(item: dict) -> bool:
+    """Whether the producer forbids the governor from undoing admission."""
+    return not bool(item.get("evictable", True))
+
+
+def item_requires_reserved_admission(item: dict) -> bool:
+    """Whether admission must wait for the item's complete reservation."""
+    return (item_is_protected(item)
+            or item_is_explicitly_non_evictable(item))
+
+
 def _median_consecutive_slope(samples) -> float | None:
     """Return the median value-growth slope, or ``None`` without a trend.
 
@@ -1232,7 +1243,7 @@ class Job:
 
     @property
     def evictable(self) -> bool:
-        return (bool(self.item.get("evictable", True))
+        return (not item_is_explicitly_non_evictable(self.item)
                 and not item_is_protected(self.item))
 
     def sunk_runtime_s(self, now: float | None = None) -> float:
@@ -1709,22 +1720,32 @@ class MemoryGovernor:
         return None
 
     def admission_candidates(self, candidates: list[dict]) -> list[dict]:
-        """Let the most-aged protected item hold admission until it can start.
+        """Let irreversible work hold admission until it can start.
 
         Once an item has earned protection, admitting another arrival ahead of
         it would recreate starvation one layer earlier.  Returning only the
         most-aged reservation drains existing work without letting a stream of
-        newcomers consume the memory or slot it is waiting for.
+        newcomers consume the memory or slot it is waiting for. Explicitly
+        non-evictable work needs the same drain: optimistic backfill is unsafe
+        when admission cannot be undone, and letting it backfill forever would
+        turn a safety refusal into starvation.
+
+        This is only an admission-order reservation. The item stays in
+        ``ready/`` and publishes no external memory/GPU hold while it waits.
         """
         protected = [item for item in candidates if item_is_protected(item)]
-        if not protected:
-            return candidates
-        reserved = min(
-            protected,
-            key=lambda item: (-item_eviction_count(item),
-                              -int(item.get("priority", 50)),
-                              float(item.get("enqueued_at", 0))))
-        return [reserved]
+        if protected:
+            reserved = min(
+                protected,
+                key=lambda item: (-item_eviction_count(item),
+                                  -int(item.get("priority", 50)),
+                                  float(item.get("enqueued_at", 0))))
+            return [reserved]
+        pinned = [item for item in candidates
+                  if item_is_explicitly_non_evictable(item)]
+        if pinned:
+            return [min(pinned, key=sort_key)]
+        return candidates
 
     def headroom(self, jobs: list) -> float:
         """Memory we may still commit, after unrealized declarations.
@@ -1757,16 +1778,19 @@ class MemoryGovernor:
         cannot all start in the same instant on the strength of memory the
         first one has not taken yet.
 
-        ``strict`` restores refusal-on-declaration for a box where restarting
-        work is genuinely expensive.
+        Optimism is valid only while the governor can undo a bad guess.
+        Producer-pinned ``evictable: false`` items therefore use the same
+        full-reservation admission rule as scheduler-protected retries.
+        ``strict`` restores refusal-on-declaration for every item on a box
+        where restarting work is genuinely expensive.
         """
         headroom = self.headroom(jobs)
-        if item_is_protected(item):
+        if item_requires_reserved_admission(item):
             reservation = self.reservation_gb(item)
             if reservation is None:
                 # No declared or observed size: drain the box and give the
-                # protected item an exclusive attempt rather than inventing a
-                # number that MemAvailable cannot support.
+                # irreversible item an exclusive attempt rather than inventing
+                # a number that MemAvailable cannot support.
                 return not jobs and headroom > 0
             return headroom >= reservation
         if self.admission == "strict":
@@ -1961,16 +1985,23 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
                       flush=True)
         candidates = gov.admission_candidates(possible)
         reservation = (candidates[0] if len(candidates) == 1
-                       and item_is_protected(candidates[0]) else None)
+                       and item_requires_reserved_admission(candidates[0])
+                       else None)
         reservation_id = reservation["id"] if reservation else None
         if reservation_id != last_reservation:
             if reservation is not None:
                 want = gov.reservation_gb(reservation)
                 requirement = (f"{want:.1f}GB" if want is not None
                                else "an exclusive slot")
-                print(f"[pqwork] protecting {reservation_id} after "
-                      f"{item_eviction_count(reservation)} policy evictions; "
-                      f"reserving {requirement}", flush=True)
+                if item_is_protected(reservation):
+                    print(f"[pqwork] protecting {reservation_id} after "
+                          f"{item_eviction_count(reservation)} policy "
+                          f"evictions; reserving {requirement}", flush=True)
+                else:
+                    print(f"[pqwork] reserving admission for non-evictable "
+                          f"{reservation_id} until {requirement} is available; "
+                          f"holding no external resource reservation",
+                          flush=True)
             last_reservation = reservation_id
 
         started_any = False
@@ -2282,8 +2313,9 @@ def main(argv: list[str] | None = None) -> int:
                         "find out what something costs.")
     e.add_argument("--no-evict", action="store_true", dest="no_evict",
                    help="never evict this item under memory pressure. Use for "
-                        "gold-path work whose restart is expensive; note that "
-                        "a box where everything is pinned can still OOM.")
+                        "gold-path work whose restart is expensive. Admission "
+                        "waits until its declared/observed footprint fits, or "
+                        "for an exclusive slot when no footprint is known.")
     e.add_argument("--receipt", help="path that must exist for the item to count "
                                      "as complete; also the skip-if-done gate")
     e.add_argument("--after", action="append",
