@@ -1433,6 +1433,16 @@ def default_production_pipeline_spec(
             resident=True,
         ),
         ArtifactSpec("kl_metrics", "validation_metrics"),
+        # R5 discovery-walker export gate: the structured verdict the walk
+        # gate refuses on (prismaquant.model_walk.WALK_GATE_SCHEMA).
+        ArtifactSpec(
+            "walk_coverage_report",
+            "walk_coverage_report",
+            description=(
+                "Discovery-walker coverage ledger + fail-closed export-gate "
+                "verdict over the source model"
+            ),
+        ),
         ArtifactSpec("compressed_artifact", "hf_checkpoint"),
         ArtifactSpec("vllm_smoke", "validation_metrics"),
         ArtifactSpec("render.baseline_weight", "tensor", provided=True),
@@ -1552,6 +1562,40 @@ def default_production_pipeline_spec(
                 ),
             ),
             tags=("validation", "gpu_bound"),
+        ),
+        PipelineStageSpec(
+            name="export.walk_coverage_gate",
+            component="model_walk:walk_export_gate",
+            inputs=("source_model",),
+            outputs=("walk_coverage_report",),
+            tags=("walk", "gate", "fail_closed", "meta_intake_cpu"),
+            metadata={
+                "schema": "prismaquant.model_walk_gate.v1",
+                "policy": (
+                    "refuse on an unclaimed matmul-fed node, an unresolved "
+                    "floating multiplicand, or any unknown walk failure kind"
+                ),
+                # TP stance: identity and dispositions live on the whole
+                # logical tensor; byte fields are totals with a reserved
+                # additive shard_policy annotation.
+                "decision_unit": "whole_logical_tensor",
+                "byte_accounting": "total_logical_tensor_bytes",
+                "override_env": "PRISMAQUANT_WALK_GATE_OVERRIDE",
+                "override_scope": "trace_incompleteness_only_never_claims",
+                # Deliberately NOT a MetricGateSpec: the refusal is
+                # structural (a named node), not a metric comparison, and
+                # runtime enforcement lives in the stage code
+                # (run-pipeline.sh -> python3 -m prismaquant.model_walk).
+                "gate_kind": "structural_refusal",
+            },
+            description=(
+                "R5 discovery-walker export gate (§8.8): walks the source "
+                "model — module tree plus one FakeTensorMode forward — "
+                "against the profile's claim rules, immediately before every "
+                "export lane. An unclaimed matmul-fed parameter refuses the "
+                "export with the node named and the op cited. Meta-device "
+                "intake: no GPU, no weight I/O, no cache residency."
+            ),
         ),
         PipelineStageSpec(
             name="export.native_compressed",
