@@ -77,6 +77,7 @@ from pathlib import Path
 import re
 import subprocess
 import time
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -91,6 +92,9 @@ from prismaquant.render_score import (
     score_render_error,
 )
 from prismaquant.source_prefetch import prefetch_files_to_page_cache
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from prismaquant.trellis_render import TrellisWireSink
 
 
 CB_RENDER_IDENTITY_SCHEMA = (
@@ -4275,6 +4279,7 @@ def render_production_weight(
     cb_serialization_context=None,
     gate_trace: list[dict[str, object]] | None = None,
     ldlq_missing_activation_ok: bool = False,
+    trellis_wire_out: "TrellisWireSink | None" = None,
 ) -> torch.Tensor:
     """Compute the production-faithful dequantized weight for ``(qname, fmt)``.
 
@@ -4309,6 +4314,19 @@ def render_production_weight(
     KL and shipped bytes can come from ONE render through
     ``ProductionWeightCache``.
 
+    ``trellis_wire_out`` is the wire sink for a Gridbook trellis rung, and it
+    is MANDATORY for one -- the only parameter here that is required by the
+    format rather than offered to it. For a trellis rung the wire blob IS the
+    artifact (``gridbook/trellis_scheme.py:11-19``: the schedule, alphabets and
+    scale plane exist nowhere else, so a body-shaped payload cannot rebuild a
+    wire), the returned tensor is its decoded view, and a render that discards
+    the blob cannot be exported, KL-validated or priced. Supplying it for any
+    other format raises rather than being ignored: a caller that believes it
+    holds a wire and does not is the silent failure this argument exists to
+    prevent. For every non-trellis format the parameter is absent and this
+    function is textually and behaviourally the pre-change function. See
+    ``prismaquant/trellis_render.py``.
+
     ``ldlq_missing_activation_ok`` is a deliberately narrow cold-expert
     escape hatch.  It may be set only by a caller that has already checked an
     exact never-routed provenance declaration.  In that case the exporter
@@ -4317,6 +4335,44 @@ def render_production_weight(
     for an ordinary missing activation row.
 
     """
+    # Trellis dispatch happens BEFORE any registry resolution. No TCQ name is
+    # a FormatSpec, so ``fr.get_format('TCQ_E2M1_R640')`` raises KeyError two
+    # lines below (``trellis_menu.UNWIRED_LINKS`` records this at
+    # ``format_registry.py:1267-1272``). Keying on the closed TCQ vocabulary
+    # instead also keeps this seam out of ``format_registry.py`` entirely.
+    # ``parse_trellis_format_name`` returns None for every registered format
+    # name, so an existing caller executes two comparisons and nothing else.
+    from prismaquant.trellis_formats import parse_trellis_format_name
+
+    _trellis_rung = parse_trellis_format_name(str(fmt).strip().upper())
+    if _trellis_rung is None:
+        if trellis_wire_out is not None:
+            raise ValueError(
+                f"{qname}={fmt}: a trellis wire sink was supplied for a "
+                f"non-trellis format. Ignoring it would leave the caller "
+                f"holding an empty sink it believes is a rendered wire; "
+                f"refusing instead."
+            )
+    else:
+        from prismaquant.trellis_render import (
+            render_trellis_production_weight,
+        )
+
+        if trellis_wire_out is None:
+            raise ValueError(
+                f"{qname}={fmt}: production trellis render requires an "
+                f"explicit wire sink; the wire is the artifact and a render "
+                f"that discards it cannot be exported, KL-validated or "
+                f"priced. Refusing a wire-less trellis cache entry."
+            )
+        return render_trellis_production_weight(
+            weight,
+            fmt,
+            qname=qname,
+            col_weights=col_weights,
+            trellis_wire_out=trellis_wire_out,
+        )
+
     from prismaquant import format_registry as fr
 
     fmt = fr.canonical_format_name(str(fmt).strip().upper())
