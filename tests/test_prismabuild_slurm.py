@@ -24,7 +24,7 @@ def _action(
     code = checkout / "task.py"
     code.write_text("# immutable closure\n", encoding="utf-8")
     argv = [sys.executable, "-c", "open('result.bin','wb').write(b'ok')"]
-    toolchain = {"python": "3.12"}
+    toolchain: dict[str, str] = {}
     if portability != "portable":
         toolchain.update(pb.executable_toolchain_contract(argv[0]))
         evidence = pb._collect_worker_evidence()
