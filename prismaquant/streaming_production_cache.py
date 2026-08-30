@@ -1361,6 +1361,7 @@ def run_streaming_render(
     include_qnames: Sequence[str] | None = None,
     format_plan: Mapping[str, Sequence[str]] | None = None,
     format_plan_identity: str | None = None,
+    unit_shard=None,
     install=None,
     unload=None,
     set_priority=None,
@@ -1446,6 +1447,57 @@ def run_streaming_render(
         skip_tokens,
         include_qname_set,
     )
+    unit_shard_stamp: dict[str, object] | None = None
+    if unit_shard is not None:
+        from prismaquant import unit_sharding as _unit_sharding
+        from prismaquant.decision_units import fused_group_key
+
+        if any(_is_cb_format_name(fmt) for fmt in requested_formats):
+            raise ValueError(
+                "unit sharding refuses a CB render scope: CB pairs carry "
+                "per-pair identity/resume sidecars and a set-level artifact "
+                "digest that a v1 shard merge would relabel. Render CB "
+                "unsharded."
+            )
+        ordered = list(dense_modules)
+        unit_records = [
+            (
+                qname,
+                int(mod.weight.numel()) * int(mod.weight.element_size()),
+            )
+            for qname, mod in dense_modules.items()
+        ]
+        # Layer atomicity keeps each fused-sibling group inside one shard.
+        # The streamed joint NVFP4 global is already computed per layer over
+        # co-resident siblings, so an intact layer renders identical bytes.
+        _unit_sharding.assert_groups_within_atoms(
+            ordered,
+            lambda name: (
+                fused_group_key(profile, name) if profile is not None else None
+            ),
+            where="streaming production cache unit shard",
+        )
+        partition = _unit_sharding.partition_units(
+            unit_records, unit_shard.count
+        )
+        shard_units = set(partition.units_for(unit_shard))
+        unit_shard_stamp = {
+            **_unit_sharding.shard_stamp(partition, unit_shard),
+            "host": _unit_sharding.host_identity(),
+        }
+        cache.metadata["unit_shard"] = unit_shard_stamp
+        dense_modules = {
+            qname: mod
+            for qname, mod in dense_modules.items()
+            if qname in shard_units
+        }
+        if progress:
+            print(
+                f"[stream-prod-cache] unit shard {unit_shard.label}: "
+                f"rendering {len(dense_modules)}/{len(ordered)} dense units; "
+                f"partition_hash={partition.partition_hash[:16]}",
+                flush=True,
+            )
     if render_scope == "assignment":
         render_formats_by_qname = {
             qname: (fmt,)
@@ -1499,12 +1551,30 @@ def run_streaming_render(
                 for qname, formats in render_formats_by_qname.items()
                 if formats
             }
+    if unit_shard_stamp is not None:
+        # The shard states its own debt, from the format map the render loop
+        # consumes, so the merge gate never infers it from an operator file.
+        from prismaquant import unit_sharding as _unit_sharding_stamp
+
+        unit_shard_stamp.update(
+            _unit_sharding_stamp.owed_pairs_stamp(
+                (qname, fmt)
+                for qname, formats in render_formats_by_qname.items()
+                for fmt in formats
+            )
+        )
     per_layer_dense: dict[int | None, dict[str, nn.Module]] = defaultdict(dict)
     for qname, mod in dense_modules.items():
         per_layer_dense[_layer_index_of(qname, layers_prefix)][qname] = mod
     per_layer_experts = _experts_qnames_by_layer(
         model, profile, layers_prefix, num_layers,
     )
+    if unit_shard is not None and any(per_layer_experts.values()):
+        raise ValueError(
+            f"unit shard {unit_shard.label} on a model with packed-MoE "
+            "experts: packed-expert renders are not unit-sharded in v1 "
+            "(every shard would render every expert). Render unsharded."
+        )
 
     cb_scope = _streaming_cb_render_scope(
         model,
@@ -1746,6 +1816,7 @@ def fill_production_weight_cache_streaming(
     include_qnames: Sequence[str] | None = None,
     format_plan: Mapping[str, Sequence[str]] | None = None,
     format_plan_identity: str | None = None,
+    unit_shard=None,
     offload_folder: str | Path | None = None,
     progress: bool = True,
 ) -> ProductionWeightCache:
@@ -1812,6 +1883,7 @@ def fill_production_weight_cache_streaming(
             include_qnames=include_qnames,
             format_plan=format_plan,
             format_plan_identity=format_plan_identity,
+            unit_shard=unit_shard,
             install=ctx.install,
             unload=ctx.unload,
             set_priority=_priority_setter(ctx),

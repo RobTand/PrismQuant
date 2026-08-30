@@ -1,7 +1,24 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
+As of: 2026-08-29 · `rescue/parallel-producer` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-29,
+`rescue/parallel-producer`) for
+**unit-sharded production-cache renders** (§5.4, D33): `PRISMAQUANT_UNIT_SHARD=i/N` splits a
+dense render across boxes on a deterministic layer-contiguous, exact-byte-balanced partition
+(`prismaquant/unit_sharding.py`), and `tools/merge_unit_shards.py` reassembles the shards into
+the same `ProductionWeightCache` under a fail-closed completeness gate. No default changes and
+`run-pipeline.sh` is untouched; unset is a byte-identical no-op, verified on Qwen3-0.6B. The
+substantive behaviour change is inside `_LinearActivationCollector`: row-priority reservoir
+values are now drawn for every hooked Linear rather than only for the ones a run stores, which
+also fixes resumed builds that did not reproduce a fresh build's sampled rows.
+(`--include-qnames-file` shrinks the hooked set itself, upstream of this fix, and still
+changes sampled rows — D33.) Each shard stamps the `(unit, format)` entries it owed, so the
+merge gate reads the shard's own debt instead of an operator-supplied layer config, and the
+merged `cache_dir` is byte-identical to an unsharded one. `production_render_cost`,
+`production_recache`, and packed-expert renders refuse the variable rather than pretending to
+shard.
+
+Earlier stamp (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
 rather than by a test — the two doc gates were green across both drifts. (i) The
@@ -19,8 +36,9 @@ quantized formats outside the three module families PR #53906 wires a
 `b4a8846` refresh, so it is the § P13 "currency is not truth" case: this file
 was re-stamped in lockstep while carrying a false statement about a serving
 default. Nothing else in the window crossed the trigger; the reasoning is in the
-commit message. Re-stamped (2026-08-29,
-`claude/trellis-continuous-surface`) for the **trellis seam correction**
+commit message.
+
+Earlier stamp (2026-08-29, `claude/trellis-continuous-surface`) for the **trellis seam correction**
 (§4.9): the seam that landed earlier the same day is now **fail-closed** when
 enabled, and this document's claim that it made trellis rungs "pass the same
 legality, aggregation and byte accounting every other candidate does" is
@@ -3772,6 +3790,51 @@ at phase 50 with `before=("gptq",)` and no relation to each other, and
 (matching `pipeline.py`'s own stage list); `fisher_gptq` (50, archived); `scale_sweep` (60,
 after gptq). The production lever set is §3.3.
 
+**A unit shard is a lifetime mode of that same store too** (`prismaquant/unit_sharding.py`,
+2026-08-23). `PRISMAQUANT_UNIT_SHARD=i/N` makes `build_production_cache` render only shard `i`
+of a deterministic layer-contiguous partition of the units it already enumerates, balanced by
+exact source-tensor bytes with a min-max partition DP. Unset is a byte-identical no-op, and
+`run-pipeline.sh` does not set it. `tools/merge_unit_shards.py` puts the shards back into one
+`ProductionWeightCache` with the same layout — not a second store — and refuses unless every
+unit of the recomputed partition appears exactly once, under its owning shard. There is no
+force flag; missing, duplicate, and out-of-shard units all name the units and stop.
+
+The gate reads what each shard says it owed, not what an operator says it should have. Every
+shard stamps `owed_pairs` — the exact `(unit, format)` entries fixed at the moment its render
+map was built, from the same structure the render loop consumes — so a `--render-layer-config`
+that disagreed with the config a shard actually ran under can no longer under-expect a dropped
+unit into a clean merge. That flag survives only for stamps predating the field. The merged
+artifact is the unsharded artifact: `.pt` files, `render_scores.json` (through the stage's own
+`_write_render_score_sidecar`, whose `{"records": …}` envelope the resume loader requires) and
+`activation_max_abs.json` are written in the same order and shape, the render-gate summary is
+re-derived over every shard's records rather than inherited from shard 0, and the merged pickle
+differs from an unsharded one only by its `cache_dir` path and the `unit_shard_merge` block.
+
+Three properties make a shard's rendered bytes the unsharded run's bytes, and each is enforced
+rather than assumed. Layer atomicity keeps every fused-sibling group in one shard, so the joint
+NVFP4 global (`_compute_nvfp4_joint_global`, a max over the members present in the run) is
+computed over the same members; the stage asserts the grouping against the model profile and
+refuses a straddling group. The hooked activation set, the fused-sibling joint globals, and
+`activation_max_abs` are all computed over the FULL enumeration — only the render narrows. And
+`_LinearActivationCollector` now draws its row-priority reservoir values for **every** hooked
+Linear, not only for the ones this run stores (`production_weight_cache.py`). One generator
+feeds every Linear's reservoir, so drawing only for stored Linears made the surviving rows a
+function of which other Linears happened to be in the run — which also means a **resumed** build
+did not reproduce a fresh build's rows. That is a defect fix, not only shard plumbing; a fresh
+full build is unaffected byte-for-byte. `--include-qnames-file` is a different and still-open
+case: it filters the `qnames` list before the fill, so it shrinks the hooked set itself and the
+fix does not reach it (§12, D33).
+
+`production_render_cost` renders nothing, so it does not shard: it runs once on the merged
+cache and refuses a cache still carrying an unmerged shard stamp. `production_recache` and
+`--recache-layer-config` refuse the variable outright — the recache is a whole-model
+calibration replay, not a per-unit render. Packed-MoE expert renders refuse it too: their
+reservoir has the same shared-generator coupling and their enumeration is separate, so v1
+shards dense units only. `tools/cluster_render_sentinel.py` is the cross-box preflight: it
+renders K deterministically chosen units through this same fill path and byte-compares the
+manifests, refusing a match that was produced without `PRISMAQUANT_DETERMINISTIC=1`. Cross-box
+execution and the 4B repeat of the bit-identity acceptance remain open (§12).
+
 ### 5.5 Named invariants
 
 | Name | One line | Detail |
@@ -7382,6 +7445,7 @@ New with the 2026-07-30 merge:
 | D30 | **The Sensitivity Card's non-scalar tiers are screening surrogates, and its probe wiring has two soft spots** (added 2026-08-14, §4.8). Four honest gaps, none of them closed: (1) **No served A/B.** The `MARGINAL` tier and AQUA-AURA have never been measured on exact full-vocab vLLM KL-vs-BF16 or direct WikiText PPL. `SCALAR` is a byte-identical reproduction of today's model and carries no such debt; the other two must not be cited as results (§2.5). (2) **The rank-1 reconstruction's error is unquantified on real layers.** `H = Σ_t outer(g_t², x_t²)` is exactly rank-1 only when one token dominates; `outer(row, col)/h_trace_raw` is provably exact in that case (`rtol=1e-10`) and an approximation of unknown magnitude everywhere else. Nothing has compared it against a materialized `H` on a real Linear. (3) **The marginal identity is exact only at the two streaming sites.** `sum(fisher_row) == sum(fisher_col) == h_trace_raw` holds by construction where `h_trace_raw` is literally `chunk_h.sum()` in fp32 (`incremental_probe.py:2520`, `:2751`). On the **resident** path `h_trace_raw` comes from the bf16 outer-product-norm identity `(gy2_sq.sum(1) · x2_sq.sum(1)).sum()` (`:1667-1668`) while the marginals reduce the fp32 `chunk_h`, so the two agree mathematically but not bitwise; `SensitivityUnit.validate`'s `rtol=1e-3` is what absorbs that, and nothing measures the actual spread. (4) **One accumulation site is dead on the shipping path and therefore untested.** The batched MoE block-flush hook (`:2276-2362`) fires only for blocks whose immediate children are per-expert containers exposing the profile's projection names as `nn.Linear` — the *unpacked*-expert layout. The shipping recipe's MoE models do not take it, and `tests/test_probe_marginals.py` covers the helpers and the two streaming sites but not that branch, so its marginal emission has never executed. A transposed axis or a wrong merge rule there would surface first on a new unpacked-expert architecture, which is exactly the class of silent-garbage failure §8.5 L3 is about. | §4.8; `prismaquant/sensitivity_card.py`, `format_cost_protocol.py`, `sensitivity_card_allocate.py`; `incremental_probe.py:97-199,1667-1672,2276-2360,2501-2520,2735-2751`; `tests/test_sensitivity_card.py`, `tests/test_probe_marginals.py`; `docs/design/sensitivity_card_contract.md` §8 | MED | (1)-(2) run the rank-agreement check against measured `output_mse` on Qwen3-0.6B and an allocation-churn check against a shipped `cost.pkl` before any tier but `SCALAR` is proposed for a default; (3) record the resident-vs-streaming identity spread on one real probe, or tighten the resident path to reduce `chunk_h` for both; (4) cover the MoE block flush with a synthetic unpacked-expert fixture, or state that the branch is retired. |
 | D31 | **Shipcard replay binds recorded evidence to the serving pin at HEAD** (added 2026-08-18). Every gate slot records the runtime that actually gated it (serve-manifest `gridbook_distribution`, endpoint-contract stack), but the replay compares those records against `load_gridbook_serving_runtime_pin()` at HEAD — so the 0.8.9 pin bump made the already-published DSv4 flagship unpublishable for a docs-only README update: six slot refusals, all "is not the tracked pin", on evidence that exactly matches the pin that was tracked when it was measured. Worked around honestly for the 0.8.9 card update by running the publisher from a worktree at `0266662` (the pre-bump commit; publisher and verifier code there are byte-identical to HEAD — the bump commit `6a883bc` touched pin data and docs only — so this verifies the card against the pin that gated it, with zero tool divergence). Recurs on every serving-pin bump for every historical artifact. | `prismaquant/shipcard.py:1225,2374,2521`; `tools/publish_artifact.py` dry-run refusal 2026-08-18 | MED | Decision for Robert: accept a declarative superseded-pins record in `gridbook_serving_runtime_pin.py` (version/commit/wheel of prior released pins; replay accepts recorded == current OR recorded ∈ superseded, and the verdict names which) — keeps fail-closed against unreviewed runtimes without rotting history — or rule that docs updates to historical artifacts always re-run the publisher at the artifact's pin era. |
 | D32 | **The Fisher probe is not bit-reproducible, and nothing in the tree said so** (added 2026-08-20). Two runs of `incremental_probe` with byte-identical calibration, the same commit and the same `--layers-per-shard` differ on **379/402 units**, median `|Δh_trace|/h_trace` **2.5e-4** (max 1.1e-2); `n_tokens_seen` and the per-expert Fisher *support* are bit-identical on every unit, so the forward and the routing are exactly deterministic and only the backward moves. Mechanism: 30 of Ornith-1.5-35B-A3B's 40 layers are Gated DeltaNet, whose `fla` Triton kernels reduce over chunks in a non-deterministic order. **Why it is debt rather than a bug:** the jitter is unbiased (signed mean +6.5e-5 against its own sd 5.7e-4) and three orders below the 23% cost CV that §9 records as producing 3% assignment churn and 0σ served — but a probe-side change gated on bit-identity refuses for reasons that have nothing to do with the change, and `--layers-per-shard auto` (sized from free RAM at launch) adds a second, *avoidable* source on top. **Consequence for provenance:** probe-derived artifacts (`cost_baseline.pkl`, `cost_aura.pkl`, `cost.pkl`, the sensitivity card) must be rebuilt together from one probe run rather than half-reused, or `cost.pkl`'s stamped provenance names a probe that produced only some of its numbers. | `incremental_probe.py`; `sensitivity_probe.py` `_accumulate_packed_per_token_fisher`; measured Ornith-1.5-35B-A3B 2026-08-20 | LOW | Gate probe changes on what is invariant (`n_tokens_seen`, per-expert support, an unbiased signed mean within a *measured* floor), never on bit-identity; pin `--layers-per-shard` for any A/B. |
+| D33 | **Unit-sharded renders are proven on 0.6B dense only, and the packed-expert half is unbuilt** (added 2026-08-23, §5.4). `PRISMAQUANT_UNIT_SHARD` splits a dense production-cache render across boxes and `tools/merge_unit_shards.py` gates completeness fail-closed, but four gaps are open. (1) **No cross-box run.** `tools/cluster_render_sentinel.py` exists and is unit-tested; it has never been executed on a second Spark, so the cross-box bit-identity the design assumes is untested. (2) **Packed-MoE experts do not shard.** `fill_packed_expert_cache_entries` enumerates its own modules and reservoir-samples them off a second shared `torch.Generator`, so every shard would render every expert; the stage refuses instead. The spec's motivating wall is an MoE cost stage, so v1 does not speed up the case that prompted it. (3) **`--include-qnames-file` still perturbs sampled rows.** It filters the `qnames` list before the fill, so it shrinks the hooked activation set itself, upstream of the reservoir fix; a partial render selected that way is not a slice of the full render. (4) **Bit-identity is measured at 0.6B, one calibration.** The A1 merge-versus-unsharded comparison ran on Qwen3-0.6B at 8x256 under `PRISMAQUANT_DETERMINISTIC=1`; the 4B repeat the spec asks for has not run, and nothing has measured whether the render is bit-identical with the determinism flag OFF. | `prismaquant/unit_sharding.py`; `prismaquant/production_weight_cache.py` `_LinearActivationCollector`; `tools/merge_unit_shards.py`; `tools/cluster_render_sentinel.py`; `tests/test_unit_sharding.py` | MED | Run the sentinel across both Sparks before any distributed campaign; repeat A1 at 4B; either give the packed-expert reservoir a per-module generator and shard it, or record that experts are permanently unsharded. |
 
 **Open items carried from session handovers.** Of the 41 items the handover census could not
 map to a verified closure, the prior FP4-CB fast-expander/Triton item is now closed by the

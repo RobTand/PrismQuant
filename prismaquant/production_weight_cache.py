@@ -964,6 +964,28 @@ class _LinearActivationCollector:
                 if prev is None
                 else torch.maximum(prev, x_abs_max.detach())
             )
+            # Draw this call's row priorities for EVERY hooked Linear,
+            # stored or not. One generator feeds every Linear's reservoir, so
+            # the slice of the stream a Linear receives is a function of how
+            # many rows every earlier hook consumed. Drawing only for stored
+            # Linears would make a run that stores a subset — a unit shard,
+            # or a resume that skips already-rendered units — keep DIFFERENT
+            # rows than the full run, and the rendered bytes follow the rows.
+            # (`--include-qnames-file` shrinks the hooked set itself, upstream
+            # of this hook, so it is a separate and still-open case.) Draws are
+            # CPU floats; the cost is noise next to the D2H copy below.
+            last_dim = int(x.shape[-1]) if x.dim() >= 1 else 0
+            n_rows = (x.numel() // last_dim) if last_dim > 0 else 0
+            new_priorities = (
+                torch.rand(
+                    int(n_rows),
+                    generator=self._activation_generator,
+                    dtype=torch.float32,
+                    device="cpu",
+                )
+                if n_rows > 0 and self.max_rows > 0
+                else None
+            )
             # Only store the full activation tensor if this Linear is in
             # the store set.  Memory bound: store_qnames × max_rows × in.
             if key not in self.store_qnames:
@@ -986,7 +1008,7 @@ class _LinearActivationCollector:
                 self._activation_priorities.get(key),
                 flat,
                 max_rows=self.max_rows,
-                generator=self._activation_generator,
+                new_priorities=new_priorities,
             )
             self.activations[key] = [] if sampled is None else [sampled]
             if priorities is None:
@@ -4737,6 +4759,8 @@ def fill_production_weight_cache(
     h_detail_dir: str | Path | None = None,
     col_weights: Mapping[str, torch.Tensor] | None = None,
     cb_serialization_context=None,
+    unit_shard=None,
+    render_qnames: Sequence[str] | None = None,
 ) -> ProductionWeightCache:
     """End-to-end fill: collect activations, render production δw per
     (qname, fmt), return a `ProductionWeightCache`.
@@ -4772,6 +4796,21 @@ def fill_production_weight_cache(
       cb_serialization_context: explicit artifact serialization identity for
         every CB render. Required when the scope contains a CB format; never
         inferred from the current environment.
+      unit_shard: optional ``unit_sharding.ShardSpec``. When given, this run
+        RENDERS only its shard of the deterministic layer-contiguous
+        partition of the full unit enumeration, and stamps the shard identity
+        into ``metadata['unit_shard']`` for ``tools/merge_unit_shards.py``.
+        Everything that establishes cross-unit identity — the hooked
+        activation set and its priority stream, the fused-sibling NVFP4 joint
+        globals, and ``activation_max_abs`` — is still computed over the FULL
+        enumeration, so a shard's rendered bytes are the unsharded run's
+        bytes. Resolved at the CLI boundary and passed explicitly; this
+        function never reads the environment.
+      render_qnames: optional subset of ``qnames`` to RENDER. Same contract
+        as ``unit_shard`` (hook / joint-global / max_abs scope stays full);
+        used by ``tools/cluster_render_sentinel.py`` to render a handful of
+        units with production-identical inputs. Intersected with the shard
+        when both are given.
     """
     if recache_pass and not recache_assignment:
         raise ValueError(
@@ -4862,6 +4901,97 @@ def fill_production_weight_cache(
             model_profile = profile_from_model(model)
         except Exception:
             model_profile = None
+
+    render_only: set[str] | None = None
+    if render_qnames is not None:
+        render_only = {str(name) for name in render_qnames}
+        unknown = sorted(render_only - qname_set)
+        if unknown:
+            raise ValueError(
+                "render_qnames contains units outside the render scope; "
+                f"sample={unknown[:8]}"
+            )
+
+    unit_shard_stamp: dict[str, object] | None = None
+    if unit_shard is not None:
+        from prismaquant import unit_sharding as _unit_sharding
+        from prismaquant.decision_units import fused_group_key
+
+        if any(
+            _is_cb_format_name(fmt)
+            for fmts in render_formats_by_qname.values()
+            for fmt in fmts
+        ):
+            raise ValueError(
+                "unit sharding refuses a CB render scope: CB pairs carry "
+                "per-pair identity/resume sidecars and a set-level artifact "
+                "digest that a v1 shard merge would relabel. Render CB "
+                "unsharded."
+            )
+        ordered = [str(q) for q in qnames if str(q) in qname_set]
+        if len(ordered) != len(qname_set):
+            raise ValueError(
+                "unit sharding requires the caller's qname enumeration to "
+                "cover every rendered unit in a deterministic order; "
+                f"enumeration={len(ordered)} render_scope_units="
+                f"{len(qname_set)}"
+            )
+        named_modules_for_bytes = dict(model.named_modules())
+        unit_records: list[tuple[str, int]] = []
+        for name in ordered:
+            mod = named_modules_for_bytes.get(name)
+            weight = getattr(mod, "weight", None)
+            if weight is None:
+                raise ValueError(
+                    f"unit sharding cannot size unit {name!r}: no source "
+                    "weight on the live module"
+                )
+            unit_records.append(
+                (name, int(weight.numel()) * int(weight.element_size()))
+            )
+        # Layer atomicity is what keeps a fused-sibling group whole; assert it
+        # against the profile's real grouping rather than trusting the name.
+        _unit_sharding.assert_groups_within_atoms(
+            ordered,
+            lambda name: (
+                fused_group_key(model_profile, name)
+                if model_profile is not None else None
+            ),
+            where="production weight cache unit shard",
+        )
+        partition = _unit_sharding.partition_units(
+            unit_records, unit_shard.count
+        )
+        shard_units = set(partition.units_for(unit_shard))
+        unit_shard_stamp = {
+            **_unit_sharding.shard_stamp(partition, unit_shard),
+            "host": _unit_sharding.host_identity(),
+        }
+        render_only = (
+            shard_units if render_only is None
+            else (render_only & shard_units)
+        )
+        if progress:
+            print(
+                f"[prod-cache] unit shard {unit_shard.label}: rendering "
+                f"{len(shard_units)}/{len(ordered)} units "
+                f"({partition.shard_bytes[unit_shard.index]:,} of "
+                f"{sum(b for _, b in unit_records):,} source bytes); "
+                f"partition_hash={partition.partition_hash[:16]}",
+                flush=True,
+            )
+
+    if render_only is not None:
+        # Restrict only what gets RENDERED. `qname_set` (the hooked
+        # activation set and its shared priority stream), `qname_to_module`,
+        # the fused-sibling NVFP4 joint globals and `activation_max_abs` all
+        # stay at the full enumeration — that is what makes a restricted
+        # run's bytes the full run's bytes.
+        render_formats_by_qname = {
+            qname: fmts
+            for qname, fmts in render_formats_by_qname.items()
+            if qname in render_only
+        }
 
     if progress:
         requested_entries = sum(
@@ -5012,6 +5142,10 @@ def fill_production_weight_cache(
         # A qname is FULLY done if every requested format has a shard.
         prerendered = 0
         for q in list(qname_set):
+            if not render_formats_by_qname.get(q):
+                # Out of this unit shard's render scope: leave its (empty)
+                # missing set alone instead of counting it as pre-rendered.
+                continue
             missing = {
                 f for f in render_formats_by_qname.get(q, ())
                 if not (cache_dir_path / _cache_weight_filename(q, f)).is_file()
@@ -5291,6 +5425,18 @@ def fill_production_weight_cache(
     import gc as _gc
     activations_local = dict(activations)  # shallow copy; we'll pop entries
     n = sum(len(render_formats_by_qname.get(q, ())) for q in qname_to_module)
+    if unit_shard_stamp is not None:
+        # Stamp the shard's debt from the same structure the loop below
+        # consumes, so the merge gate never has to infer it.
+        from prismaquant import unit_sharding as _unit_sharding_stamp
+
+        unit_shard_stamp.update(
+            _unit_sharding_stamp.owed_pairs_stamp(
+                (qname, fmt)
+                for qname in qname_to_module
+                for fmt in render_formats_by_qname.get(qname, ())
+            )
+        )
     done = 0
     skipped_resumed = 0
     skipped_prewritten = 0
@@ -5674,6 +5820,9 @@ def fill_production_weight_cache(
             "render_scope": render_scope,
             "requested_formats": list(requested_formats),
             "requested_entries": int(n),
+            **({
+                "unit_shard": unit_shard_stamp,
+            } if unit_shard_stamp is not None else {}),
             **({
                 "calib_hash": cb_pair_calibration_hash,
             } if cb_pair_calibration_hash is not None else {}),

@@ -136,6 +136,47 @@ def _explicit_cb_render_context(formats):
         raise SystemExit(f"[build-prod-cache] ERROR: {exc}") from exc
 
 
+def _resolve_unit_shard(args):
+    """Resolve PRISMAQUANT_UNIT_SHARD once, at the CLI boundary.
+
+    Unset is a byte-identical no-op: nothing downstream changes shape. When
+    set, refuse the paths a unit shard cannot mean:
+
+    * packed-MoE experts — ``fill_packed_expert_cache_entries`` enumerates
+      and reservoir-samples its own modules off a second shared generator, so
+      every shard would render every expert (duplicates the merge would
+      reject) with rows that are not the full run's rows;
+    * the recache replay (``--recache-layer-config``) — it is a whole-model
+      calibration forward with the production weights installed, not a
+      per-unit render, and a shard holding a subset of the weights would
+      measure a different activation distribution.
+    """
+    from prismaquant.unit_sharding import SHARD_ENV, resolve_shard_spec
+
+    try:
+        spec = resolve_shard_spec()
+    except ValueError as exc:
+        raise SystemExit(f"[build-prod-cache] ERROR: {exc}") from exc
+    if spec is None:
+        return None
+    if args.recache_layer_config:
+        raise SystemExit(
+            f"[build-prod-cache] ERROR: {SHARD_ENV}={spec.label} with "
+            "--recache-layer-config. The production recache is a whole-model "
+            "calibration replay with the selected weights installed, not a "
+            "per-unit render; a shard would replay with a subset of the "
+            "assignment installed. Shard the render, merge, then recache."
+        )
+    if args.render_packed_experts:
+        raise SystemExit(
+            f"[build-prod-cache] ERROR: {SHARD_ENV}={spec.label} with "
+            "--render-packed-experts. Packed-MoE expert renders are not "
+            "unit-sharded in v1 (see prismaquant/unit_sharding.py); every "
+            "shard would render every expert."
+        )
+    return spec
+
+
 def _model_has_packed_experts(model: nn.Module, profile) -> bool:
     from prismaquant.sensitivity_probe import _is_packed_experts_module
     return any(
@@ -269,7 +310,7 @@ def _load_cache_calibration(tokenizer, args) -> torch.Tensor:
     )
 
 
-def _run_streaming(args, formats, levers, dtype) -> int:
+def _run_streaming(args, formats, levers, dtype, unit_shard=None) -> int:
     """Streaming per-layer render path for models too large to load whole.
 
     No whole-model from_pretrained and no calibration forward: dense + packed
@@ -404,6 +445,7 @@ def _run_streaming(args, formats, levers, dtype) -> int:
             format_plan.identity_sha256
             if format_plan is not None else None
         ),
+        unit_shard=unit_shard,
     )
     if render_assignment is not None:
         profile = detect_profile_with_warning(
@@ -428,6 +470,11 @@ def _run_streaming(args, formats, levers, dtype) -> int:
         )
     elapsed = time.monotonic() - t0
 
+    if unit_shard is not None and render_assignment is not None:
+        shard_units = set((cache.metadata or {})["unit_shard"]["unit_names"])
+        render_assignment = {
+            q: fmt for q, fmt in render_assignment.items() if q in shard_units
+        }
     try:
         if render_assignment is not None:
             coverage_assignment = _filter_assignment_to_include_qnames(
@@ -717,6 +764,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = p.parse_args(argv)
     if args.format_plan and not args.streaming:
         p.error("--format-plan requires --streaming")
+    unit_shard = _resolve_unit_shard(args)
 
     # Opt-in deterministic CUDA path. The default lever ablations on small
     # models show ~2-4% per-Linear weight variance across re-runs of the
@@ -761,7 +809,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     dtype = _dtype_from_name(args.dtype)
 
     if args.streaming:
-        return _run_streaming(args, formats, levers, dtype)
+        return _run_streaming(args, formats, levers, dtype, unit_shard)
 
     staged, cleanup = stage_multimodal(args.model)
     device = require_cuda_hot_path("build_production_cache")
@@ -895,6 +943,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             h_detail_dir=args.h_detail_dir,
             col_weights=col_weights,
             cb_serialization_context=cb_serialization_context,
+            unit_shard=unit_shard,
         )
         # R14: stamp the calibration identity onto the cache so every artifact
         # derived from it (production_render_cost's cost table) can be checked
@@ -932,6 +981,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         # assignment (which format each expert gets).
         expert_assignment = render_assignment or recache_assignment
         expert_coverage: dict = {}
+        if (
+            unit_shard is not None
+            and expert_assignment is not None
+            and _model_has_packed_experts(model, profile)
+        ):
+            from prismaquant.unit_sharding import SHARD_ENV
+            raise SystemExit(
+                f"[build-prod-cache] ERROR: {SHARD_ENV}={unit_shard.label} on "
+                "a model with packed-MoE experts. Packed-expert renders are "
+                "not unit-sharded in v1: every shard would render every "
+                "expert. Render this model unsharded."
+            )
         if expert_assignment is not None:
             from prismaquant.production_weight_cache import (
                 fill_packed_expert_cache_entries,
@@ -987,14 +1048,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         # failures, and any other silent gaps that would otherwise fall
         # through to RTN at hook time.
         try:
-            if render_assignment is not None:
+            # A shard is complete when ITS units are complete; the merge
+            # tool is what gates the full enumeration.  Narrow by shard
+            # first, then by --include-qnames-file, in the same order the
+            # streaming path applies them.
+            coverage_qnames = qnames
+            coverage_assignment = render_assignment
+            if unit_shard is not None:
+                shard_units = set(
+                    (cache.metadata or {})["unit_shard"]["unit_names"]
+                )
+                coverage_qnames = [q for q in qnames if q in shard_units]
+                if coverage_assignment is not None:
+                    coverage_assignment = {
+                        q: fmt
+                        for q, fmt in coverage_assignment.items()
+                        if q in shard_units
+                    }
+            if coverage_assignment is not None:
                 coverage_assignment = _filter_assignment_to_include_qnames(
-                    render_assignment, include_qnames,
+                    coverage_assignment, include_qnames,
                 )
                 validate_render_assignment_cache_coverage(
                     cache, coverage_assignment)
             else:
-                cache.validate_coverage(qnames, formats)
+                cache.validate_coverage(coverage_qnames, formats)
             print("[build-prod-cache] coverage check passed", flush=True)
         except RuntimeError as e:
             if args.allow_incomplete:

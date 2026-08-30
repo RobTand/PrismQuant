@@ -208,6 +208,31 @@ def _calibration_hashes(*sources: object) -> list[str]:
     return sorted(found)
 
 
+def _refuse_unmerged_shard_cache(production_cache: object) -> None:
+    """Refuse a cache that is one unit shard rather than the whole render.
+
+    This stage does no rendering: it reads the render scores the production
+    cache already recorded. A single shard's cache carries scores for only
+    its own units, and every other unit would silently fall back to the
+    baseline table — a cost payload that is part production-render and part
+    something else, with nothing in it saying so. Merge the shards first
+    (``tools/merge_unit_shards.py``).
+    """
+    metadata = getattr(production_cache, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return
+    stamp = metadata.get("unit_shard")
+    if not isinstance(stamp, Mapping):
+        return
+    raise ValueError(
+        f"production cache is unit shard {stamp.get('shard')} of "
+        f"{stamp.get('shard_count')} "
+        f"(partition_hash={stamp.get('partition_hash')}), not a complete "
+        "render. Merge every shard with tools/merge_unit_shards.py and run "
+        "this stage on the merged cache."
+    )
+
+
 def _lookup_record(
     records: Mapping[tuple[str, str], Mapping],
     qname: str,
@@ -496,6 +521,7 @@ def synthesize_production_render_cost_payload(
             cache_pairs | transient_pairs
         )
 
+    _refuse_unmerged_shard_cache(production_cache)
     records = _cache_render_score_records(production_cache)
 
     output_costs: dict[str, dict[str, dict]] = {}
@@ -637,6 +663,13 @@ def synthesize_production_render_cost_payload(
         inherited_provenance["source_format_plan_identity_sha256"] = (
             format_plan.identity_sha256
         )
+    cache_metadata = getattr(production_cache, "metadata", None)
+    if isinstance(cache_metadata, Mapping):
+        merge_stamp = cache_metadata.get("unit_shard_merge")
+        if isinstance(merge_stamp, Mapping):
+            # Which boxes rendered these bytes travels with the cost table,
+            # not only with the cache it came from.
+            inherited_provenance["unit_shard_merge"] = dict(merge_stamp)
     return {
         "schema": SCHEMA,
         "costs": output_costs,
@@ -719,6 +752,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         "instead of output_mse/fisher_output_mse.",
     )
     args = parser.parse_args(argv)
+    from prismaquant.unit_sharding import SHARD_ENV, resolve_shard_spec
+
+    shard = resolve_shard_spec()
+    if shard is not None:
+        raise SystemExit(
+            f"[production-render-cost] ERROR: {SHARD_ENV}={shard.label} is "
+            "set, but this stage renders nothing — it synthesizes allocator "
+            "cost from the render scores the production cache already "
+            "recorded. Shard the CACHE BUILD "
+            "(python -m prismaquant.build_production_cache), merge the "
+            "shards with tools/merge_unit_shards.py, then run this stage "
+            "once on the merged cache with the variable unset."
+        )
     from prismaquant.gpu_guard import require_cuda_hot_path
     require_cuda_hot_path("production_render_cost")
 

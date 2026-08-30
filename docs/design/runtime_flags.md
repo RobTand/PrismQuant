@@ -190,6 +190,74 @@ levers or cost modes are requested.
 | `EXPORT_PRODUCTION_CACHE_PREFETCH` | `require` (native lane) | Export-side assignment prefetch policy (re-vet R24, closes D8) → `export_native_compressed --production-cache-prefetch {require,warn}`. `require` fails the export when the cache cannot supply a layer's assignment instead of silently degrading to per-tensor NVMe reads; the bare-CLI default stays `warn`. The CB/GGUF lanes read no production cache. |
 | `PRODUCTION_CACHE_PREFETCH_WORKERS` | `4` | Thread count for eager production-cache prefetch. |
 | `EXPORT_CONTAINER` | `compressed-tensors` | `gguf` and `nvfp4_cb` switch stage 4 to their own exporters and impose gates (see §5, §8). |
+| `PRISMAQUANT_UNIT_SHARD` | unset | Split one production-cache render across boxes by unit: `i/N` renders only shard `i` of the deterministic layer-contiguous partition (§3.1). Unset is a byte-identical no-op. `run-pipeline.sh` does not set it; a cluster driver exports it around the `build_production_cache` invocation. |
+
+### 3.1 `PRISMAQUANT_UNIT_SHARD` — render one shard of the units
+
+`PRISMAQUANT_UNIT_SHARD=i/N` makes `build_production_cache` render only shard
+`i` of the units it would otherwise render. The stage enumerates its unit list
+exactly as it does today, then splits it with `prismaquant/unit_sharding.py`:
+layer-contiguous atoms, balanced by exact source-tensor bytes with a min-max
+partition DP, a pure function of the ordered unit list and `N`. Unset is a
+byte-identical no-op.
+
+Layer atomicity is the invariant that makes a shard's bytes the unsharded
+run's bytes. Fused siblings share one NVFP4 global scale computed as a max
+over the group members present in the run, so a partition that split a fused
+group would change those members' rendered weights. The stage also asserts the
+grouping against the model profile and refuses rather than rendering a split
+group.
+
+Everything that establishes cross-unit identity stays at the full enumeration:
+the hooked activation set and its shared row-priority stream,
+`activation_max_abs`, and the fused-sibling joint globals. Only the render
+narrows. The collector draws its row priorities for every hooked Linear rather
+than only for the ones a run stores, which is what keeps a shard's sampled rows
+equal to the full run's. `--include-qnames-file` still shrinks the hooked set
+itself and therefore still changes sampled rows; use the shard variable, not the
+include file, to split a render.
+
+Each shard cache carries `metadata['unit_shard']` — the shard label, the
+`partition_hash`, its own unit names, the complete ordered enumeration, the
+host that rendered it, and `owed_pairs`: the exact `(unit, format)` entries
+that shard set out to render, recorded from the same format map its render
+loop consumes. `tools/merge_unit_shards.py` recomputes the partition from that
+stamp and refuses to merge unless every unit appears exactly once, under the
+shard the partition assigns it to, and every owed entry is present. There is
+no force flag.
+
+The shard states its own debt because the alternative puts an operator file in
+the trust path: a `--render-layer-config` that disagrees with the config the
+shard actually rendered under would under-expect, and a dropped unit would
+merge clean. That flag now only serves stamps written before `owed_pairs`
+existed.
+
+A merged cache is the unsharded artifact, not a lookalike. The merge writes
+its `.pt` files, `render_scores.json`, and `activation_max_abs.json` through
+the same writers and in the same order the unsharded stage uses, so a merged
+`cache_dir` resumes and re-reads identically; it re-derives the render-gate
+summary over every shard's records rather than inheriting shard 0's counters;
+and the merged pickle differs from an unsharded one only by its `cache_dir`
+path and the added `unit_shard_merge` provenance block.
+
+Three paths refuse the variable outright, because a unit shard has no meaning
+for them:
+
+- `production_render_cost` renders nothing. It reads the render scores the
+  cache already recorded, so it runs once, unsharded, on the merged cache. It
+  also refuses a cache that still carries an unmerged shard stamp.
+- `production_recache`, and `build_production_cache --recache-layer-config`,
+  replay calibration through the whole model with the selected weights
+  installed. A shard holding a subset of the assignment would measure a
+  different activation distribution.
+- Packed-MoE expert renders. `fill_packed_expert_cache_entries` enumerates its
+  own modules off a second shared reservoir generator, so every shard would
+  render every expert. Dense units shard; experts do not, in v1.
+
+Run both shards under `PRISMAQUANT_DETERMINISTIC=1`. Without it the GPTQ
+Cholesky and U-update reduction order is not reproducible, and neither the
+merge nor `tools/cluster_render_sentinel.py` can certify that two boxes
+produced the same bytes.
 
 ## 4. CUDA / system flags
 

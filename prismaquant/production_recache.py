@@ -491,6 +491,19 @@ def main(argv: list[str] | None = None) -> int:
              "an ablation or smoke run.",
     )
     args = parser.parse_args(argv)
+    from prismaquant.unit_sharding import SHARD_ENV, resolve_shard_spec
+
+    shard = resolve_shard_spec()
+    if shard is not None:
+        raise SystemExit(
+            f"[production-recache] ERROR: {SHARD_ENV}={shard.label} is set, "
+            "but the recache is a whole-model calibration replay with the "
+            "selected production weights installed — not a per-unit render. "
+            "A shard holding a subset of the assignment would measure a "
+            "different activation distribution, so its activation_max_abs "
+            "would not be the full run's. Run this stage unsharded on the "
+            "merged cache."
+        )
 
     from transformers import AutoTokenizer
 
