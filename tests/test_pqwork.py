@@ -8,9 +8,12 @@ an exit code all put the queue back to losing work silently.
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import json
+import os
+import subprocess
+import threading
 import time
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -110,6 +113,17 @@ def backdate_lease(item_id, seconds):
     pqwork.write_json_atomic(pqwork.lease_path(item_id), lease)
 
 
+def host_resource(host, *, gpu=6, mem=115.0,
+                  gpu_capacity=6, mem_capacity=121.6):
+    return {
+        "host": host,
+        "gpu_slots": gpu,
+        "mem_gb": mem,
+        "gpu_capacity": gpu_capacity,
+        "mem_capacity_gb": mem_capacity,
+    }
+
+
 # --------------------------------------------------------------------------
 # 1. receipt gating beats exit code
 
@@ -195,6 +209,294 @@ def test_double_claim_yields_exactly_one_winner(queue):
     assert not pqwork.item_path(pqwork.READY, "contested").exists()
 
 
+def test_gated_actor_holds_nothing_and_ready_job_is_admitted(
+        queue, tmp_path, monkeypatch):
+    """Waiting for a launch gate is not itself a resource reservation."""
+    owner = tmp_path / "gated-owner.json"
+    # The external actor has not passed its gate, so it has made no acquire
+    # call and owns no partial resource on either target.
+    assert pqwork.read_reservation_ledger()["reservations"] == {}
+    for host in ("sparky", "gx10-6b77"):
+        assert pqwork.reserved_gpu_slots(host)[0] == 0
+        assert pqwork.reserved_memory_gb(host)[0] == 0
+    assert not owner.exists()
+
+    receipt = tmp_path / "backfill.receipt"
+    enqueue("backfill-while-gated",
+            cmd=f"echo admitted > {receipt}", receipt=str(receipt),
+            cwd=tmp_path, hosts=["sparky"], mem_gb=8.0)
+    monkeypatch.setattr(pqwork, "mem_available_gb", lambda: 100.0)
+    monkeypatch.setattr(pqwork, "capping_supported", lambda: False)
+    assert pqwork.worker_loop("sparky", set(), 6, 2, True,
+                              8.0, 20.0, 0.0) == 0
+    assert state_of("backfill-while-gated") == pqwork.DONE
+    assert receipt.read_text().strip() == "admitted"
+    heartbeat = pqwork.read_item(pqwork.worker_heartbeat_path("sparky"))
+    assert heartbeat["pid"] == os.getpid()
+    assert heartbeat["source_sha256"] == pqwork.loaded_source_sha256()
+
+
+def test_multi_host_reservation_is_atomic_or_absent(queue, tmp_path):
+    """A conflict on box B never leaves a hold behind on box A."""
+    owner = tmp_path / "reservation-owner.json"
+    claims = [host_resource("sparky"), host_resource("gx10-6b77")]
+    (pqwork.qdir(pqwork.RESERVED) / "gx10-6b77.mem").write_text(
+        "10\nconflicting work\n")
+
+    with pytest.raises(pqwork.ReservationBusy):
+        pqwork.acquire_reservation_set(
+            "arm-a", claims, owner, "two-box serve",
+            require_no_claimed=True)
+    assert pqwork.read_reservation_ledger()["reservations"] == {}
+    assert pqwork.reserved_memory_gb("sparky")[0] == 0
+    assert pqwork.reserved_gpu_slots("sparky")[0] == 0
+    assert not owner.exists()
+
+    (pqwork.qdir(pqwork.RESERVED) / "gx10-6b77.mem").unlink()
+    record = pqwork.acquire_reservation_set(
+        "arm-a", claims, owner, "two-box serve", require_no_claimed=True)
+    assert {claim["host"] for claim in record["claims"]} == {
+        "sparky", "gx10-6b77"}
+    for host in ("sparky", "gx10-6b77"):
+        assert pqwork.reserved_gpu_slots(host)[0] == 6
+        assert pqwork.reserved_memory_gb(host)[0] == pytest.approx(115.0)
+
+    pqwork.release_reservation_set("arm-a", owner)
+    for host in ("sparky", "gx10-6b77"):
+        assert pqwork.reserved_gpu_slots(host)[0] == 0
+        assert pqwork.reserved_memory_gb(host)[0] == 0
+
+
+@pytest.mark.parametrize("_race", range(20))
+def test_reservation_and_worker_admission_race_has_one_winner(
+        queue, tmp_path, _race):
+    """A full two-box hold and a target-host claim can never coexist."""
+    item = enqueue("racing-job", hosts=["sparky"], needs_gpu=True,
+                   mem_gb=1.0, cwd=tmp_path)
+    owner = tmp_path / "race-owner.json"
+    claims = [host_resource("sparky"), host_resource("gx10-6b77")]
+    governor = _governor(total_gb=128.0)
+    governor.samples.append((time.time(), 100.0))
+    barrier = threading.Barrier(2)
+    outcomes = {}
+
+    def reserve():
+        barrier.wait()
+        try:
+            pqwork.acquire_reservation_set(
+                "race-set", claims, owner, "race",
+                require_no_claimed=True)
+            outcomes["reservation"] = True
+        except pqwork.ReservationBusy:
+            outcomes["reservation"] = False
+
+    def admit():
+        barrier.wait()
+        outcomes["claim"] = pqwork.try_admit_item(
+            item, "sparky", set(), True, False, 6, 2,
+            governor, []) is not None
+
+    threads = [threading.Thread(target=reserve),
+               threading.Thread(target=admit)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert outcomes["reservation"] != outcomes["claim"]
+    ledger_has_set = "race-set" in (
+        pqwork.read_reservation_ledger()["reservations"])
+    assert ledger_has_set == outcomes["reservation"]
+    assert (state_of("racing-job") == pqwork.CLAIMED) == outcomes["claim"]
+
+
+def test_wrong_owner_cannot_verify_or_release_reservation(queue, tmp_path):
+    owner = tmp_path / "owner.json"
+    impostor = tmp_path / "impostor.json"
+    pqwork.acquire_reservation_set(
+        "owned-set", [host_resource("sparky")], owner, "owned")
+    impostor.write_text(json.dumps({
+        "reservation_id": "owned-set", "token": "wrong-token"}))
+
+    with pytest.raises(pqwork.ReservationOwnershipError):
+        pqwork.verify_reservation_set("owned-set", impostor)
+    with pytest.raises(pqwork.ReservationOwnershipError):
+        pqwork.release_reservation_set("owned-set", impostor)
+    assert "owned-set" in pqwork.read_reservation_ledger()["reservations"]
+
+
+def test_low_level_claim_cannot_bypass_reservation(queue, tmp_path):
+    owner = tmp_path / "owner.json"
+    pqwork.acquire_reservation_set(
+        "held-set", [host_resource("sparky")], owner, "held")
+    enqueue("must-wait", hosts=["sparky"], needs_gpu=True, mem_gb=1.0)
+
+    assert pqwork.try_claim("must-wait", "sparky") is None
+    assert state_of("must-wait") == pqwork.READY
+    pqwork.release_reservation_set("held-set", owner)
+    assert pqwork.try_claim("must-wait", "sparky") is not None
+
+
+def test_malformed_reservation_ledger_fails_closed(queue, tmp_path):
+    pqwork.reservation_ledger_path().write_text("not-json")
+    assert pqwork.reserved_gpu_slots("sparky")[0] > 1_000_000
+    assert pqwork.reserved_memory_gb("sparky")[0] == float("inf")
+    with pytest.raises(RuntimeError, match="malformed reservation ledger"):
+        pqwork.acquire_reservation_set(
+            "blocked", [host_resource("sparky")], tmp_path / "owner.json",
+            "must not overwrite evidence")
+
+
+def test_null_host_in_reservation_ledger_fails_closed(queue):
+    pqwork.write_json_atomic(pqwork.reservation_ledger_path(), {
+        "version": 2,
+        "updated_at": time.time(),
+        "reservations": {
+            "broken": {
+                "id": "broken",
+                "owner_sha256": "0" * 64,
+                "claims": [{
+                    "host": None, "gpu_slots": 1, "mem_gb": 1.0,
+                    "gpu_capacity": 6, "mem_capacity_gb": 121.6,
+                }],
+            },
+        },
+    })
+    assert pqwork.reserved_memory_gb("sparky")[0] == float("inf")
+
+
+def test_stale_admission_guard_is_fatal_not_retryable_busy(queue, tmp_path):
+    lock = pqwork.admission_lock_path()
+    lock.mkdir()
+    pqwork.write_json_atomic(lock / "owner.json", {
+        "token": "possibly-live-owner",
+        "acquired_at": time.time() - pqwork.ADMISSION_LOCK_STALE_S - 1,
+    })
+    args = Namespace(
+        id="blocked", owner_file=str(tmp_path / "owner.json"),
+        host_resources=["sparky:6:115:6:121.6"],
+        require_no_claimed=True, why="must block")
+
+    assert pqwork.cmd_reserve_set_acquire(args) == 70
+    assert not (tmp_path / "owner.json").exists()
+    assert not pqwork.reservation_ledger_path().exists()
+
+
+@pytest.mark.parametrize("corrupt_payload", ["not-json", "[1]"])
+def test_unreadable_claim_blocks_reservation_acquisition(
+        queue, tmp_path, corrupt_payload):
+    pqwork.item_path(pqwork.CLAIMED, "corrupt").write_text(corrupt_payload)
+    with pytest.raises(pqwork.ReservationBusy, match="corrupt"):
+        pqwork.acquire_reservation_set(
+            "blocked-by-claim", [host_resource("sparky")],
+            tmp_path / "owner.json", "must fail closed")
+    assert pqwork.read_reservation_ledger()["reservations"] == {}
+
+
+def test_host_capacity_registry_survives_release_and_rejects_inflation(
+        queue, tmp_path):
+    owner = tmp_path / "owner.json"
+    pqwork.acquire_reservation_set(
+        "first", [host_resource("sparky")], owner, "establish capacity")
+    assert (owner.stat().st_mode & 0o777) == 0o600
+    pqwork.release_reservation_set("first", owner)
+
+    with pytest.raises(ValueError, match="capacity conflicts"):
+        pqwork.acquire_reservation_set(
+            "inflated",
+            [host_resource("sparky", mem_capacity=999.0)],
+            tmp_path / "inflated-owner.json", "must not inflate")
+
+
+def test_legacy_nan_memory_hold_fails_closed(queue, tmp_path):
+    (pqwork.qdir(pqwork.RESERVED) / "sparky.mem").write_text(
+        "nan\ncorrupt legacy hold\n")
+    assert pqwork.reserved_memory_gb("sparky")[0] == float("inf")
+    with pytest.raises(pqwork.ReservationBusy):
+        pqwork.acquire_reservation_set(
+            "blocked-by-nan", [host_resource("sparky")],
+            tmp_path / "owner.json", "must fail closed")
+
+
+def test_release_cannot_unlink_reacquired_owner_capability(
+        queue, tmp_path, monkeypatch):
+    owner = tmp_path / "owner.json"
+    claims = [host_resource("sparky")]
+    pqwork.acquire_reservation_set("same-id", claims, owner, "first")
+    ledger_released = threading.Event()
+    allow_release = threading.Event()
+    original_write = pqwork.write_json_atomic
+
+    def pause_after_release(path, payload):
+        original_write(path, payload)
+        if (path == pqwork.reservation_ledger_path()
+                and "same-id" not in payload.get("reservations", {})):
+            ledger_released.set()
+            assert allow_release.wait(5)
+
+    monkeypatch.setattr(pqwork, "write_json_atomic", pause_after_release)
+    outcomes = {}
+
+    def release():
+        pqwork.release_reservation_set("same-id", owner)
+        outcomes["released"] = True
+
+    def reacquire():
+        ledger_released.wait(5)
+        pqwork.acquire_reservation_set("same-id", claims, owner, "second")
+        outcomes["reacquired"] = True
+
+    release_thread = threading.Thread(target=release)
+    acquire_thread = threading.Thread(target=reacquire)
+    release_thread.start()
+    acquire_thread.start()
+    assert ledger_released.wait(5)
+    allow_release.set()
+    release_thread.join()
+    acquire_thread.join()
+
+    assert outcomes == {"released": True, "reacquired": True}
+    assert owner.exists()
+    assert pqwork.verify_reservation_set("same-id", owner)["why"] == "second"
+
+
+def test_reserve_set_cli_exit_contract_is_0_75_77_2(
+        queue, tmp_path, capsys):
+    owner = tmp_path / "owner.json"
+    common = [
+        "--owner-file", str(owner),
+        "--host-resource", "sparky:6:115:6:121.6",
+    ]
+    assert pqwork.main([
+        "reserve-set", "acquire", "--id", "cli-owner", *common,
+    ]) == 0
+
+    assert pqwork.main([
+        "reserve-set", "acquire", "--id", "cli-contender",
+        "--owner-file", str(tmp_path / "contender.json"),
+        "--host-resource", "sparky:6:115:6:121.6",
+    ]) == 75
+
+    impostor = tmp_path / "impostor.json"
+    impostor.write_text(json.dumps({
+        "reservation_id": "cli-owner", "token": "wrong"}))
+    assert pqwork.main([
+        "reserve-set", "verify", "--id", "cli-owner",
+        "--owner-file", str(impostor),
+    ]) == 77
+
+    assert pqwork.main([
+        "reserve-set", "acquire", "--id", "invalid-resource",
+        "--owner-file", str(tmp_path / "invalid.json"),
+        "--host-resource", "sparky:not-a-number:1:6:121.6",
+    ]) == 2
+    assert pqwork.main([
+        "reserve-set", "release", "--id", "cli-owner",
+        "--owner-file", str(owner),
+    ]) == 0
+    capsys.readouterr()
+
+
 # --------------------------------------------------------------------------
 # 4. stale-lease reap
 
@@ -237,6 +539,76 @@ def test_fresh_lease_is_not_reaped(queue, tmp_path):
     pqwork.try_claim("alive", "mine")
     assert pqwork.reap() == 0
     assert state_of("alive") == pqwork.CLAIMED
+
+
+def test_terminal_job_stale_orphan_lease_is_reaped_automatically(
+        queue, tmp_path):
+    """A terminal record cannot leave a stale claimed-sidecar forever."""
+    enqueue("terminal-orphan", cwd=tmp_path)
+    pqwork.try_claim("terminal-orphan", "gone")
+    backdate_lease("terminal-orphan", pqwork.LEASE_TIMEOUT_S + 1)
+
+    claimed = pqwork.item_path(pqwork.CLAIMED, "terminal-orphan")
+    terminal = pqwork.item_path(pqwork.FAILED, "terminal-orphan")
+    os.rename(claimed, terminal)
+
+    assert pqwork.reap() == 1
+    assert not pqwork.lease_path("terminal-orphan").exists()
+    assert (pqwork.qdir(pqwork.REAPED) / "terminal-orphan.lease").exists()
+    assert state_of("terminal-orphan") == pqwork.FAILED
+
+
+def test_terminal_job_fresh_orphan_lease_is_reaped_automatically(
+        queue, tmp_path):
+    """Terminal state, independently of TTL, makes its lease obsolete."""
+    enqueue("fresh-terminal-orphan", cwd=tmp_path)
+    pqwork.try_claim("fresh-terminal-orphan", "gone")
+    claimed = pqwork.item_path(pqwork.CLAIMED, "fresh-terminal-orphan")
+    terminal = pqwork.item_path(pqwork.DONE, "fresh-terminal-orphan")
+    os.rename(claimed, terminal)
+
+    assert pqwork.reap() == 1
+    assert not pqwork.lease_path("fresh-terminal-orphan").exists()
+    assert (pqwork.qdir(pqwork.REAPED)
+            / "fresh-terminal-orphan.lease").exists()
+    assert state_of("fresh-terminal-orphan") == pqwork.DONE
+
+
+def test_terminal_job_malformed_orphan_lease_is_reaped_automatically(
+        queue, tmp_path):
+    """Terminal truth wins even when an abandoned heartbeat is corrupt."""
+    enqueue("terminal-malformed", cwd=tmp_path)
+    pqwork.try_claim("terminal-malformed", "gone")
+    claimed = pqwork.item_path(pqwork.CLAIMED, "terminal-malformed")
+    terminal = pqwork.item_path(pqwork.FAILED, "terminal-malformed")
+    os.rename(claimed, terminal)
+    pqwork.lease_path("terminal-malformed").write_text(
+        '{"host": "dead-box", "beat": "not-a-number"}')
+
+    assert pqwork.reap() == 1
+    assert not pqwork.lease_path("terminal-malformed").exists()
+    assert (pqwork.qdir(pqwork.REAPED)
+            / "terminal-malformed.lease").exists()
+
+
+def test_malformed_claim_heartbeat_fails_closed_into_recovery(
+        queue, tmp_path):
+    enqueue("malformed-claim", cwd=tmp_path)
+    assert pqwork.try_claim("malformed-claim", "dead-box") is not None
+    pqwork.lease_path("malformed-claim").write_text(
+        '{"host": "dead-box", "beat": "not-a-number"}')
+
+    assert pqwork.reap() == 1
+    assert state_of("malformed-claim") == pqwork.READY
+
+
+def test_stale_orphan_lease_without_item_record_is_reaped(queue):
+    pqwork.write_lease("lost-record", "gone", 123)
+    backdate_lease("lost-record", pqwork.LEASE_TIMEOUT_S + 1)
+
+    assert pqwork.reap() == 1
+    assert not pqwork.lease_path("lost-record").exists()
+    assert (pqwork.qdir(pqwork.REAPED) / "lost-record.lease").exists()
 
 
 # --------------------------------------------------------------------------
@@ -718,6 +1090,51 @@ def test_fitting_item_ages_into_protection_and_completes(
     assert receipt.read_text().strip() == "complete"
 
 
+def test_eviction_count_pins_cooldown_reservation_until_eventual_admission(
+        queue, monkeypatch):
+    """The protection threshold is an admission guarantee, not a counter."""
+    now = time.time()
+    enqueue("aged", priority=1, mem_gb=55.0,
+            evictions=pqwork.EVICTIONS_BEFORE_PROTECTION,
+            not_before=now + 60.0, enqueued_at=now - 100.0)
+    enqueue("newcomer", priority=99, mem_gb=1.0, enqueued_at=now)
+
+    visible = pqwork.ready_candidates("mine", set(), True)
+    assert [item["id"] for item in visible] == ["newcomer", "aged"]
+    governor = _governor(total_gb=100.0)
+    assert [item["id"] for item in
+            governor.admission_candidates(visible)] == ["aged"]
+    assert not pqwork.is_runnable(visible[1], "mine", set(), True)
+
+    # The worker's final runnable check leaves both items ready during the
+    # protected item's cooldown instead of backfilling with the newcomer.
+    monkeypatch.setattr(pqwork, "mem_available_gb", lambda: 100.0)
+    monkeypatch.setattr(pqwork, "capping_supported", lambda: False)
+    assert pqwork.worker_loop("mine", set(), 1, 1, True,
+                              8.0, 20.0, 0.0) == 0
+    assert state_of("aged") == pqwork.READY
+    assert state_of("newcomer") == pqwork.READY
+
+    aged = read_state(pqwork.READY, "aged")
+    aged["not_before"] = 0
+    pqwork.write_json_atomic(pqwork.item_path(pqwork.READY, "aged"), aged)
+    assert pqwork.worker_loop("mine", set(), 1, 1, True,
+                              8.0, 20.0, 0.0) == 0
+    assert state_of("aged") == pqwork.DONE
+    assert state_of("newcomer") == pqwork.READY
+
+
+def test_protected_dependency_gate_allows_backfill(queue):
+    """Protection cannot reserve a box before external dependencies exist."""
+    enqueue("gated-aged", priority=99,
+            evictions=pqwork.EVICTIONS_BEFORE_PROTECTION,
+            after=[str(queue / "missing.receipt")])
+    enqueue("backfill", priority=1)
+
+    assert [item["id"] for item in
+            pqwork.ready_candidates("mine", set(), True)] == ["backfill"]
+
+
 def test_only_measured_absolute_impossibility_is_terminal(queue):
     enqueue("oversized", mem_gb=80.0)
     item = read_state(pqwork.READY, "oversized")
@@ -767,3 +1184,39 @@ def test_deployment_hold_blocks_new_claim_candidates(queue):
             pqwork.ready_candidates("mine", set(), True)] == ["waiting"]
     pqwork.deployment_hold_path().write_text("deployment in progress\n")
     assert pqwork.ready_candidates("mine", set(), True) == []
+
+
+@pytest.mark.parametrize("_race", range(10))
+def test_deployment_hold_and_worker_claim_have_one_linearized_winner(
+        queue, tmp_path, _race):
+    item = enqueue("deploy-race", hosts=["sparky"], needs_gpu=True,
+                   mem_gb=1.0, cwd=tmp_path)
+    governor = _governor(total_gb=128.0)
+    governor.samples.append((time.time(), 100.0))
+    barrier = threading.Barrier(2)
+    outcomes = {}
+
+    def hold():
+        barrier.wait()
+        try:
+            pqdeploy.acquire_hold(queue)
+            outcomes["hold"] = True
+        except RuntimeError:
+            outcomes["hold"] = False
+
+    def claim():
+        barrier.wait()
+        outcomes["claim"] = pqwork.try_admit_item(
+            item, "sparky", set(), True, False, 6, 2,
+            governor, []) is not None
+
+    threads = [threading.Thread(target=hold),
+               threading.Thread(target=claim)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert outcomes["hold"] != outcomes["claim"]
+    assert (queue / pqdeploy.DEPLOY_HOLD).exists() == outcomes["hold"]
+    assert (state_of("deploy-race") == pqwork.CLAIMED) == outcomes["claim"]

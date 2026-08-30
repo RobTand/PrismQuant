@@ -47,8 +47,13 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
+import hashlib
 import json
+import math
 import os
+import re
+import secrets
 import signal
 import socket
 import statistics
@@ -66,8 +71,20 @@ DONE = "done"
 FAILED = "failed"
 LOGS = "logs"
 RESERVED = "reserved"
+REAPED = "reaped"
+WORKERS = "workers"
 DEPLOY_HOLD = ".deploying"
-STATE_DIRS = (READY, CLAIMED, DONE, FAILED, LOGS, RESERVED)
+STATE_DIRS = (READY, CLAIMED, DONE, FAILED, LOGS, RESERVED, REAPED, WORKERS)
+
+# A multi-host external launch is represented by one record in one ledger.
+# Publishing the ledger with rename makes a reservation set visible on every
+# host all at once.  The admission guard serializes that publication with the
+# worker's final ready->claimed transition; without both pieces, an atomic
+# manifest could still race a claim made from a stale capacity sample.
+RESERVATION_LEDGER = "reservations.v2.json"
+ADMISSION_LOCK = ".admission-lock"
+ADMISSION_LOCK_STALE_S = 120.0
+ADMISSION_LOCK_WAIT_S = 10.0
 
 # A lease is refreshed this often and considered abandoned after this long.
 # The timeout dwarfs any plausible NTP skew between boxes, which matters
@@ -133,6 +150,14 @@ def ensure_layout() -> None:
         qdir(d).mkdir(parents=True, exist_ok=True)
 
 
+def reservation_ledger_path() -> Path:
+    return qdir(RESERVED) / RESERVATION_LEDGER
+
+
+def admission_lock_path() -> Path:
+    return qdir(RESERVED) / ADMISSION_LOCK
+
+
 def item_path(state: str, item_id: str) -> Path:
     return qdir(state) / f"{item_id}.json"
 
@@ -145,11 +170,16 @@ def log_path(item_id: str) -> Path:
     return qdir(LOGS) / f"{item_id}.log"
 
 
+def worker_heartbeat_path(host: str) -> Path:
+    return qdir(WORKERS) / f"{host}.json"
+
+
 def read_item(path: Path) -> dict | None:
     try:
-        return json.loads(path.read_text())
+        payload = json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+    return payload if isinstance(payload, dict) else None
 
 
 def write_json_atomic(path: Path, payload: dict) -> None:
@@ -161,6 +191,228 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
     os.rename(tmp, path)
+
+
+def loaded_source_sha256() -> str:
+    """Hash the exact script bytes this interpreter loaded."""
+    digest = hashlib.sha256()
+    with Path(__file__).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_worker_heartbeat(host: str, source_sha256: str,
+                           started_at: float) -> None:
+    write_json_atomic(worker_heartbeat_path(host), {
+        "host": host,
+        "pid": os.getpid(),
+        "source_sha256": source_sha256,
+        "started_at": started_at,
+        "beat": time.time(),
+    })
+
+
+class AdmissionLockTimeout(RuntimeError):
+    """The short queue-admission critical section could not be entered."""
+
+
+class AdmissionLockStale(AdmissionLockTimeout):
+    """A possibly-live old holder prevents safe timestamp-based recovery."""
+
+
+def _admission_lock_age(lock: Path) -> float | None:
+    """Return lock age for diagnostics; never break a lock by timestamp."""
+    owner = read_item(lock / "owner.json")
+    try:
+        acquired_at = float((owner or {}).get("acquired_at", lock.stat().st_mtime))
+    except (OSError, TypeError, ValueError):
+        return None
+    return max(0.0, time.time() - acquired_at)
+
+
+@contextlib.contextmanager
+def admission_guard(timeout_s: float = ADMISSION_LOCK_WAIT_S):
+    """Serialize reservation changes with final worker admission on NFS.
+
+    ``flock`` is deliberately not used: the queue lives on NFSv4 and its
+    advisory-lock semantics depend on mount configuration.  Directory
+    creation is one atomic namespace operation.  Critical sections contain
+    only small JSON reads, an atomic rename, and (for workers) one claim.
+    """
+    ensure_layout()
+    lock = admission_lock_path()
+    token = f"{socket.gethostname()}:{os.getpid()}:{time.time_ns()}"
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        try:
+            os.mkdir(lock)
+        except FileExistsError:
+            age = _admission_lock_age(lock)
+            if age is not None and age > ADMISSION_LOCK_STALE_S:
+                # Timestamp-based lock stealing is not fencing. A paused old
+                # holder could resume and publish after its directory was
+                # moved, violating the exact atomicity this guard exists to
+                # provide. Surface an explicit blocker for operator-verified
+                # recovery instead.
+                raise AdmissionLockStale(
+                    f"stale queue admission guard at {lock} "
+                    f"(age {age:.1f}s); refusing unsafe lock stealing")
+            if time.monotonic() >= deadline:
+                raise AdmissionLockTimeout(
+                    f"timed out waiting for queue admission guard {lock}")
+            time.sleep(0.05)
+            continue
+        try:
+            write_json_atomic(
+                lock / "owner.json",
+                {"token": token, "pid": os.getpid(),
+                 "host": socket.gethostname().split(".")[0],
+                 "acquired_at": time.time()},
+            )
+        except Exception:
+            try:
+                (lock / "owner.json").unlink(missing_ok=True)
+                (lock / f"owner.json.tmp.{os.getpid()}").unlink(
+                    missing_ok=True)
+                lock.rmdir()
+            except OSError:
+                pass
+            raise
+        break
+    try:
+        yield
+    finally:
+        owner = read_item(lock / "owner.json")
+        if owner and owner.get("token") == token:
+            try:
+                (lock / "owner.json").unlink(missing_ok=True)
+                lock.rmdir()
+            except OSError:
+                # An operator can move a diagnosed stale lock after proving
+                # its owner dead. Token checking prevents this holder from
+                # removing a successor's lock if it later resumes.
+                pass
+
+
+def _empty_reservation_ledger() -> dict:
+    return {"version": 2, "updated_at": 0.0,
+            "capacities": {}, "reservations": {}}
+
+
+def read_reservation_ledger(*, strict: bool = False) -> dict:
+    """Read and validate the v2 reservation ledger.
+
+    Capacity readers fail closed on corruption.  Mutators use ``strict`` and
+    refuse to replace evidence they cannot understand.
+    """
+    path = reservation_ledger_path()
+    try:
+        payload = json.loads(path.read_text())
+        if (not isinstance(payload, dict)
+                or payload.get("version") != 2
+                or not isinstance(payload.get("capacities"), dict)
+                or not isinstance(payload.get("reservations"), dict)):
+            raise ValueError("invalid reservation ledger schema")
+        for host, capacity in payload["capacities"].items():
+            if (not isinstance(host, str) or not isinstance(capacity, dict)):
+                raise ValueError("invalid host capacity record")
+            parse_host_resource(
+                f"{host}:0:0:{capacity.get('gpu_capacity')}:"
+                f"{capacity.get('mem_capacity_gb')}")
+        for reservation_id, record in payload["reservations"].items():
+            if (not isinstance(reservation_id, str)
+                    or not isinstance(record, dict)
+                    or record.get("id") != reservation_id
+                    or not isinstance(record.get("owner_sha256"), str)
+                    or not isinstance(record.get("claims"), list)):
+                raise ValueError("invalid reservation record")
+            for claim in record["claims"]:
+                if (not isinstance(claim, dict)
+                        or not isinstance(claim.get("host"), str)):
+                    raise ValueError("invalid reservation claim")
+                normalized_claim = parse_host_resource(
+                    f"{claim.get('host')}:{claim.get('gpu_slots')}:"
+                    f"{claim.get('mem_gb')}:{claim.get('gpu_capacity')}:"
+                    f"{claim.get('mem_capacity_gb')}")
+                expected_capacity = {
+                    "gpu_capacity": normalized_claim["gpu_capacity"],
+                    "mem_capacity_gb": normalized_claim["mem_capacity_gb"],
+                }
+                if payload["capacities"].get(
+                        normalized_claim["host"]) != expected_capacity:
+                    raise ValueError(
+                        "reservation claim disagrees with host capacity")
+        return payload
+    except FileNotFoundError:
+        return _empty_reservation_ledger()
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        if strict:
+            raise RuntimeError(f"malformed reservation ledger {path}: {exc}")
+        return {"version": 2, "updated_at": 0.0,
+                "capacities": {}, "reservations": {},
+                "malformed": str(exc)}
+
+
+def _ledger_holds(host: str) -> tuple[int, float, list[str], bool]:
+    ledger = read_reservation_ledger()
+    if ledger.get("malformed"):
+        # There is no honest way to infer free capacity from unreadable
+        # claims.  A huge hold stops admission and makes the fault visible.
+        return (2 ** 31 - 1, float("inf"),
+                [f"MALFORMED {reservation_ledger_path()}: "
+                 f"{ledger['malformed']}"], True)
+    gpu_slots = 0
+    mem_gb = 0.0
+    reasons = []
+    for reservation_id, record in ledger["reservations"].items():
+        for claim in record["claims"]:
+            if claim.get("host") != host:
+                continue
+            try:
+                gpu_slots += max(0, int(claim.get("gpu_slots", 0)))
+                mem_gb += max(0.0, float(claim.get("mem_gb", 0.0)))
+            except (TypeError, ValueError):
+                return (2 ** 31 - 1, float("inf"),
+                        [f"MALFORMED reservation {reservation_id}"], True)
+            reasons.append(
+                f"set={reservation_id}: {record.get('why') or 'unattributed'}")
+    return gpu_slots, mem_gb, reasons, False
+
+
+def _legacy_reserved_memory_gb(host: str) -> tuple[float, str]:
+    f = qdir(RESERVED) / f"{host}.mem"
+    try:
+        text = f.read_text().strip()
+    except (FileNotFoundError, NotADirectoryError):
+        return 0.0, ""
+    if not text:
+        return 0.0, ""
+    head, _, rest = text.partition("\n")
+    try:
+        value = float(head.strip())
+    except ValueError:
+        # An unreadable external hold cannot establish free capacity.
+        return float("inf"), f"MALFORMED {f}: {text}"
+    if not math.isfinite(value):
+        return float("inf"), f"MALFORMED {f}: {text}"
+    return max(0.0, value), rest.strip()
+
+
+def _legacy_reserved_gpu_slots(host: str) -> tuple[int, str]:
+    f = qdir(RESERVED) / f"{host}.gpu"
+    try:
+        text = f.read_text().strip()
+    except (FileNotFoundError, NotADirectoryError):
+        return 0, ""
+    if not text:
+        return 0, ""
+    head, _, rest = text.partition("\n")
+    try:
+        n = int(head.strip())
+    except ValueError:
+        return 2 ** 31 - 1, f"MALFORMED {f}: {text}"
+    return max(0, n), rest.strip()
 
 
 def reserved_memory_gb(host: str) -> tuple[float, str]:
@@ -178,18 +430,10 @@ def reserved_memory_gb(host: str) -> tuple[float, str]:
     which makes the queue conservative exactly where it cannot police the
     outcome.
     """
-    f = qdir(RESERVED) / f"{host}.mem"
-    try:
-        text = f.read_text().strip()
-    except (FileNotFoundError, NotADirectoryError):
-        return 0.0, ""
-    if not text:
-        return 0.0, ""
-    head, _, rest = text.partition("\n")
-    try:
-        return max(0.0, float(head.strip())), rest.strip()
-    except ValueError:
-        return 0.0, text
+    legacy_gb, legacy_why = _legacy_reserved_memory_gb(host)
+    _, set_gb, set_reasons, _ = _ledger_holds(host)
+    reasons = ([legacy_why] if legacy_why else []) + set_reasons
+    return legacy_gb + set_gb, "\n".join(reasons)
 
 
 def reserved_gpu_slots(host: str) -> tuple[int, str]:
@@ -208,21 +452,269 @@ def reserved_gpu_slots(host: str) -> tuple[int, str]:
     why.  Removing the file returns the slots.  An absent file means
     nothing is held, which is the common case.
     """
-    f = qdir(RESERVED) / f"{host}.gpu"
+    legacy_slots, legacy_why = _legacy_reserved_gpu_slots(host)
+    set_slots, _, set_reasons, _ = _ledger_holds(host)
+    reasons = ([legacy_why] if legacy_why else []) + set_reasons
+    return legacy_slots + set_slots, "\n".join(reasons)
+
+
+class ReservationBusy(RuntimeError):
+    """A reservation set cannot be admitted without exceeding capacity."""
+
+
+class ReservationOwnershipError(RuntimeError):
+    """The supplied owner capability does not control this reservation."""
+
+
+_RESERVATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def parse_host_resource(spec: str) -> dict:
+    """Parse HOST:GPU:MEM_GB:GPU_CAPACITY:MEM_CAPACITY_GB."""
+    parts = spec.split(":")
+    if len(parts) != 5:
+        raise ValueError(
+            "host resource must be "
+            "HOST:GPU_SLOTS:MEM_GB:GPU_CAPACITY:MEM_CAPACITY_GB")
+    host, gpu, mem, gpu_capacity, mem_capacity = parts
+    if not host or not _RESERVATION_ID_RE.fullmatch(host):
+        raise ValueError(f"invalid host in resource: {host!r}")
     try:
-        text = f.read_text().strip()
-    except (FileNotFoundError, NotADirectoryError):
-        return 0, ""
-    if not text:
-        return 0, ""
-    head, _, rest = text.partition("\n")
+        claim = {
+            "host": host,
+            "gpu_slots": int(gpu),
+            "mem_gb": float(mem),
+            "gpu_capacity": int(gpu_capacity),
+            "mem_capacity_gb": float(mem_capacity),
+        }
+    except ValueError as exc:
+        raise ValueError(f"invalid numeric resource in {spec!r}") from exc
+    if (claim["gpu_slots"] < 0 or claim["mem_gb"] < 0
+            or not math.isfinite(claim["mem_gb"])
+            or claim["gpu_capacity"] <= 0
+            or claim["mem_capacity_gb"] <= 0
+            or not math.isfinite(claim["mem_capacity_gb"])
+            or claim["gpu_slots"] > claim["gpu_capacity"]
+            or claim["mem_gb"] > claim["mem_capacity_gb"]):
+        raise ValueError(f"resource outside declared capacity: {spec!r}")
+    return claim
+
+
+def _validate_reservation_claims(claims: list[dict]) -> list[dict]:
+    if not claims:
+        raise ValueError("at least one --host-resource is required")
+    normalized = []
+    seen = set()
+    for raw in claims:
+        if isinstance(raw, str):
+            claim = parse_host_resource(raw)
+        elif isinstance(raw, dict):
+            claim = dict(raw)
+            if not isinstance(claim.get("host"), str):
+                raise ValueError("reservation host must be a string")
+        else:
+            raise ValueError("reservation claim must be a string or object")
+        host = claim.get("host")
+        if host in seen:
+            raise ValueError(f"duplicate host in reservation set: {host}")
+        seen.add(host)
+        # Round-trip through the parser so direct API callers get the same
+        # validation and JSON-normalized types as CLI callers.
+        normalized.append(parse_host_resource(
+            f"{host}:{claim.get('gpu_slots')}:{claim.get('mem_gb')}:"
+            f"{claim.get('gpu_capacity')}:{claim.get('mem_capacity_gb')}"))
+    return sorted(normalized, key=lambda claim: claim["host"])
+
+
+def _owner_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _read_owner_capability(owner_file: Path, reservation_id: str) -> str | None:
+    owner = read_item(owner_file)
+    if owner is None:
+        return None
+    token = owner.get("token")
+    if owner.get("reservation_id") != reservation_id or not isinstance(token, str):
+        raise ReservationOwnershipError(
+            f"owner file {owner_file} does not name reservation {reservation_id}")
+    return token
+
+
+def _write_owner_capability(owner_file: Path, reservation_id: str,
+                            token: str) -> None:
+    owner_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "reservation_id": reservation_id,
+        "token": token,
+        "created_at": time.time(),
+    }
+    staged = owner_file.with_name(
+        f".{owner_file.name}.owner-{os.getpid()}-{time.time_ns()}")
+    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        n = int(head.strip())
-    except ValueError:
-        # A malformed reservation is treated as one held slot rather than
-        # as zero: failing toward "do not stack" is the safe direction.
-        return 1, text
-    return max(0, n), rest.strip()
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(payload, indent=2, sort_keys=True))
+        os.replace(staged, owner_file)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _claimed_by_host() -> tuple[dict[str, list[dict]], list[dict]]:
+    by_host: dict[str, list[dict]] = collections.defaultdict(list)
+    unknown = []
+    for path in sorted(qdir(CLAIMED).glob("*.json")):
+        item = read_item(path)
+        if item is None:
+            unknown.append({"id": path.stem, "unreadable": True})
+            continue
+        lease = read_item(lease_path(path.stem)) or {}
+        host = lease.get("host") or item.get("claimed_by")
+        if isinstance(host, str) and host:
+            by_host[host].append(item)
+        else:
+            unknown.append(item)
+    return dict(by_host), unknown
+
+
+def _ledger_totals(ledger: dict, host: str) -> tuple[int, float]:
+    gpu_slots = 0
+    mem_gb = 0.0
+    for record in ledger["reservations"].values():
+        for claim in record["claims"]:
+            if claim.get("host") != host:
+                continue
+            try:
+                gpu_slots += max(0, int(claim.get("gpu_slots", 0)))
+                mem_gb += max(0.0, float(claim.get("mem_gb", 0.0)))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"malformed reservation claim for host {host}") from exc
+    return gpu_slots, mem_gb
+
+
+def acquire_reservation_set(reservation_id: str, claims: list[dict],
+                            owner_file: Path, why: str,
+                            require_no_claimed: bool = False) -> dict:
+    """Atomically acquire every host claim, or publish none of them."""
+    ensure_layout()
+    if not _RESERVATION_ID_RE.fullmatch(reservation_id):
+        raise ValueError(f"invalid reservation id: {reservation_id!r}")
+    normalized = _validate_reservation_claims(claims)
+    owner_file = Path(owner_file)
+    with admission_guard():
+        ledger = read_reservation_ledger(strict=True)
+        existing = ledger["reservations"].get(reservation_id)
+        existing_token = _read_owner_capability(owner_file, reservation_id)
+        if existing is not None:
+            if (existing_token is None
+                    or not secrets.compare_digest(
+                        existing.get("owner_sha256", ""),
+                        _owner_digest(existing_token))):
+                raise ReservationOwnershipError(
+                    f"reservation {reservation_id} is owned by another capability")
+            if existing.get("claims") != normalized:
+                raise ReservationOwnershipError(
+                    f"reservation {reservation_id} already has different resources")
+            return existing
+
+        by_host, unknown_claims = _claimed_by_host()
+        if unknown_claims:
+            raise ReservationBusy(
+                "claimed item with unreadable/unknown host prevents safe acquisition: "
+                + ", ".join(str(item.get("id")) for item in unknown_claims))
+        for claim in normalized:
+            host = claim["host"]
+            queue_items = by_host.get(host, [])
+            if require_no_claimed and queue_items:
+                ids = ", ".join(str(item.get("id")) for item in queue_items)
+                raise ReservationBusy(f"{host} has claimed queue work: {ids}")
+
+            legacy_gpu, _ = _legacy_reserved_gpu_slots(host)
+            legacy_mem, _ = _legacy_reserved_memory_gb(host)
+            ledger_gpu, ledger_mem = _ledger_totals(ledger, host)
+            capacity = {
+                "gpu_capacity": claim["gpu_capacity"],
+                "mem_capacity_gb": claim["mem_capacity_gb"],
+            }
+            configured_capacity = ledger["capacities"].get(host)
+            if (configured_capacity is not None
+                    and configured_capacity != capacity):
+                raise ValueError(
+                    f"{host} capacity conflicts with ledger: requested "
+                    f"{capacity}, configured {configured_capacity}")
+            claimed_gpu = sum(1 for item in queue_items
+                              if item.get("needs_gpu"))
+            claimed_mem = sum(
+                _positive_item_gb(item, "mem_gb")
+                or _positive_item_gb(item, "observed_peak_gb") or 0.0
+                for item in queue_items)
+            total_gpu = (legacy_gpu + ledger_gpu + claimed_gpu
+                         + claim["gpu_slots"])
+            total_mem = (legacy_mem + ledger_mem + claimed_mem
+                         + claim["mem_gb"])
+            if total_gpu > claim["gpu_capacity"]:
+                raise ReservationBusy(
+                    f"{host} GPU capacity: need {total_gpu}, "
+                    f"capacity {claim['gpu_capacity']}")
+            if total_mem > claim["mem_capacity_gb"]:
+                raise ReservationBusy(
+                    f"{host} memory capacity: need {total_mem:.3f}GB, "
+                    f"capacity {claim['mem_capacity_gb']:.3f}GB")
+            ledger["capacities"].setdefault(host, capacity)
+
+        token = existing_token or secrets.token_urlsafe(32)
+        if existing_token is None:
+            _write_owner_capability(owner_file, reservation_id, token)
+        record = {
+            "id": reservation_id,
+            "claims": normalized,
+            "why": why or "unattributed",
+            "owner_sha256": _owner_digest(token),
+            "acquired_at": time.time(),
+        }
+        ledger["reservations"][reservation_id] = record
+        ledger["updated_at"] = time.time()
+        try:
+            write_json_atomic(reservation_ledger_path(), ledger)
+        except Exception:
+            if existing_token is None:
+                owner_file.unlink(missing_ok=True)
+            raise
+        return record
+
+
+def verify_reservation_set(reservation_id: str, owner_file: Path) -> dict:
+    """Return a token-authenticated reservation record without its token."""
+    with admission_guard():
+        ledger = read_reservation_ledger(strict=True)
+        record = ledger["reservations"].get(reservation_id)
+        token = _read_owner_capability(Path(owner_file), reservation_id)
+        if (record is None or token is None
+                or not secrets.compare_digest(
+                    record.get("owner_sha256", ""), _owner_digest(token))):
+            raise ReservationOwnershipError(
+                f"reservation {reservation_id} is absent or owned elsewhere")
+        return record
+
+
+def release_reservation_set(reservation_id: str, owner_file: Path) -> dict:
+    """Atomically release a complete set, only with its owner capability."""
+    owner_file = Path(owner_file)
+    with admission_guard():
+        ledger = read_reservation_ledger(strict=True)
+        record = ledger["reservations"].get(reservation_id)
+        token = _read_owner_capability(owner_file, reservation_id)
+        if (record is None or token is None
+                or not secrets.compare_digest(
+                    record.get("owner_sha256", ""), _owner_digest(token))):
+            raise ReservationOwnershipError(
+                f"reservation {reservation_id} is absent or owned elsewhere")
+        del ledger["reservations"][reservation_id]
+        ledger["updated_at"] = time.time()
+        write_json_atomic(reservation_ledger_path(), ledger)
+        owner_file.unlink(missing_ok=True)
+    return record
 
 
 # --------------------------------------------------------------------------
@@ -254,6 +746,22 @@ def receipts_present(paths: list[str]) -> bool:
     return all(receipt_satisfied(p) for p in paths)
 
 
+def placement_matches(item: dict, host: str, tags: set[str], has_gpu: bool,
+                      only_declared: bool = False) -> bool:
+    """Can this worker ever run this item, independent of time and gates?"""
+    hosts = item.get("hosts")
+    required = set(item.get("requires") or ())
+    if only_declared and not hosts and not required:
+        return False
+    if hosts and host not in hosts:
+        return False
+    if not required.issubset(tags):
+        return False
+    if item.get("needs_gpu") and not has_gpu:
+        return False
+    return True
+
+
 def is_runnable(item: dict, host: str, tags: set[str], has_gpu: bool,
                 only_declared: bool = False) -> bool:
     """Can *this* worker run *this* item right now?
@@ -272,19 +780,29 @@ def is_runnable(item: dict, host: str, tags: set[str], has_gpu: bool,
     takes only items that ask for it by name or by tag, so adding a box
     cannot break work that predates it.
     """
-    hosts = item.get("hosts")
-    required = set(item.get("requires") or ())
-    if only_declared and not hosts and not required:
-        return False
-    if hosts and host not in hosts:
-        return False
-    if not required.issubset(tags):
-        return False
-    if item.get("needs_gpu") and not has_gpu:
+    if not placement_matches(item, host, tags, has_gpu, only_declared):
         return False
     if time.time() < float(item.get("not_before") or 0):
         return False
     return receipts_present(item.get("after") or [])
+
+
+def can_reserve_admission(item: dict, host: str, tags: set[str],
+                          has_gpu: bool,
+                          only_declared: bool = False) -> bool:
+    """May an aged item pin admission while its eviction cooldown expires?
+
+    Receipt dependencies remain real gates: an item waiting on unrelated
+    work must not freeze a box.  The fixed post-eviction cooldown is
+    different.  It is scheduler-imposed, and hiding a protected item during
+    that cooldown lets a stream of newcomers consume its next attempt before
+    the scheduler ever sees it.  Once protection is earned, keep the item in
+    admission selection while ignoring only ``not_before``; the worker still
+    refuses to claim it until the timestamp passes.
+    """
+    return (item_is_protected(item)
+            and placement_matches(item, host, tags, has_gpu, only_declared)
+            and receipts_present(item.get("after") or []))
 
 
 def sort_key(item: dict) -> tuple:
@@ -295,13 +813,15 @@ def sort_key(item: dict) -> tuple:
 
 def ready_candidates(host: str, tags: set, has_gpu: bool,
                      only_declared: bool = False) -> list[dict]:
-    """Runnable items, or none while a deployment holds claim boundaries."""
+    """Runnable items plus aged cooldown waiters that reserve admission."""
     if deployment_hold_path().exists():
         return []
     candidates = []
     for path in qdir(READY).glob("*.json"):
         item = read_item(path)
-        if item and is_runnable(item, host, tags, has_gpu, only_declared):
+        if item and (is_runnable(item, host, tags, has_gpu, only_declared)
+                     or can_reserve_admission(
+                         item, host, tags, has_gpu, only_declared)):
             candidates.append(item)
     candidates.sort(key=sort_key)
     return candidates
@@ -324,7 +844,13 @@ def lease_is_stale(item_id: str) -> bool:
         # A claimed item with no readable lease is orphaned by definition:
         # the claimer died between the rename and the first lease write.
         return True
-    return (time.time() - float(lease.get("beat", 0))) > LEASE_TIMEOUT_S
+    try:
+        beat = float(lease.get("beat", 0))
+    except (TypeError, ValueError):
+        # A malformed heartbeat cannot establish a live lease. Fail toward
+        # recovery instead of crashing every worker's reap loop forever.
+        return True
+    return (time.time() - beat) > LEASE_TIMEOUT_S
 
 
 def claimed_on_host(host: str) -> list[dict]:
@@ -359,8 +885,57 @@ def move_item(item_id: str, src: str, dst: str, patch: dict | None = None) -> bo
     return True
 
 
+def _archive_orphan_lease(item_id: str) -> Path | None:
+    """Atomically remove an orphan lease from ``claimed/`` for forensics.
+
+    The first archive keeps the same basename operators already use when
+    manually reaping a lease. A repeated incarnation of the same item gets a
+    unique suffix rather than overwriting the earlier evidence.
+    """
+    source = lease_path(item_id)
+    destination = qdir(REAPED) / f"{item_id}.lease"
+    if destination.exists():
+        destination = qdir(REAPED) / (
+            f"{item_id}.{time.time_ns()}.{os.getpid()}.lease")
+    try:
+        os.rename(source, destination)
+    except FileNotFoundError:
+        return None
+    return destination
+
+
+def _reap_orphan_leases(verbose: bool = False) -> int:
+    """Reap lease sidecars whose claim is gone and cannot be live.
+
+    A terminal item makes the lease obsolete immediately. With no item in
+    ``claimed/`` and no terminal record, retain a fresh lease for one TTL in
+    case an in-flight NFS transition is still settling; once its heartbeat is
+    stale it is orphaned by definition and is archived as well.
+    """
+    n = 0
+    for lease in sorted(qdir(CLAIMED).glob("*.lease")):
+        item_id = lease.stem
+        if item_path(CLAIMED, item_id).exists():
+            continue
+        terminal = next(
+            (state for state in (DONE, FAILED)
+             if item_path(state, item_id).exists()),
+            None,
+        )
+        if terminal is None and not lease_is_stale(item_id):
+            continue
+        archived = _archive_orphan_lease(item_id)
+        if archived is None:
+            continue
+        n += 1
+        if verbose:
+            reason = f"terminal in {terminal}/" if terminal else "heartbeat stale"
+            print(f"[reap] {item_id}: orphan lease ({reason}) -> {archived}")
+    return n
+
+
 def reap(verbose: bool = False) -> int:
-    """Requeue claims whose lease has gone stale.
+    """Requeue stale claims and remove leases that no longer own a claim.
 
     This is the recovery path for a box that died mid-job.  Without it the
     queue develops permanent holes and we are back to "nothing
@@ -395,10 +970,10 @@ def reap(verbose: bool = False) -> int:
             n += 1
             if verbose:
                 print(f"[reap] {item_id}: stale lease -> requeued (attempt {attempts})")
-    return n
+    return n + _reap_orphan_leases(verbose=verbose)
 
 
-def try_claim(item_id: str, host: str) -> dict | None:
+def _try_claim_unlocked(item_id: str, host: str) -> dict | None:
     """Atomically take ownership of a ready item.
 
     ``rename`` is the whole concurrency story.  Exactly one worker's
@@ -419,6 +994,57 @@ def try_claim(item_id: str, host: str) -> dict | None:
         item["claimed_at"] = time.time()
         write_json_atomic(dst, item)
     return item
+
+
+def try_claim(item_id: str, host: str) -> dict | None:
+    """Conservatively take a low-level claim at the linearization point.
+
+    The worker uses :func:`try_admit_item`, which knows exact slot and memory
+    capacities.  This compatibility helper has no capacity arguments, so it
+    must fail closed when any relevant external hold exists rather than let a
+    caller bypass reservation admission.
+    """
+    try:
+        with admission_guard():
+            if deployment_hold_path().exists():
+                return None
+            item = read_item(item_path(READY, item_id))
+            if item is None:
+                return None
+            held_mem, _ = reserved_memory_gb(host)
+            held_gpu, _ = reserved_gpu_slots(host)
+            if held_mem > 0 or (item.get("needs_gpu") and held_gpu > 0):
+                return None
+            return _try_claim_unlocked(item_id, host)
+    except AdmissionLockTimeout:
+        return None
+
+
+def try_admit_item(item: dict, host: str, tags: set[str], has_gpu: bool,
+                   only_declared: bool, gpu_slots: int, cpu_slots: int,
+                   governor, jobs: list) -> dict | None:
+    """Recheck capacity and claim at the reservation linearization point."""
+    with admission_guard(timeout_s=1.0):
+        if (deployment_hold_path().exists()
+                or not is_runnable(
+                    item, host, tags, has_gpu, only_declared)):
+            return None
+        mine = claimed_on_host(host)
+        gpu_busy = sum(1 for claimed_item in mine
+                       if claimed_item.get("needs_gpu"))
+        cpu_busy = len(mine) - gpu_busy
+        held_mem, _ = reserved_memory_gb(host)
+        held_gpu, _ = reserved_gpu_slots(host)
+        gpu_capacity = max(0, gpu_slots - held_gpu)
+        governor.set_external_hold(held_mem)
+        if item.get("needs_gpu"):
+            if gpu_busy >= gpu_capacity:
+                return None
+        elif cpu_busy >= cpu_slots:
+            return None
+        if not governor.may_admit(item, jobs):
+            return None
+        return _try_claim_unlocked(item["id"], host)
 
 
 # --------------------------------------------------------------------------
@@ -1232,6 +1858,9 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
                 only_declared: bool = False) -> int:
     wait_for_queue(once)
     ensure_layout()
+    worker_started_at = time.time()
+    worker_source_sha256 = loaded_source_sha256()
+    write_worker_heartbeat(host, worker_source_sha256, worker_started_at)
     has_gpu = gpu_slots > 0
     gov = MemoryGovernor(reserve_gb, horizon_s, settle_s, admission)
     jobs: list = []
@@ -1241,7 +1870,8 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
           f"admission={admission} swap_free={swap_free_gb():.0f}GB "
           f"caps={'on' if capping_supported() else 'UNAVAILABLE'} "
           f"{'only-declared ' if only_declared else ''}"
-          f"queue={QUEUE_ROOT}", flush=True)
+          f"source_sha256={worker_source_sha256} queue={QUEUE_ROOT}",
+          flush=True)
     last_held = None
     last_mem_hold = 0.0
     last_reservation = None
@@ -1281,6 +1911,8 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
         if now - last_beat >= HEARTBEAT_S:
             for j in jobs:
                 write_lease(j.id, host, j.proc.pid if j.proc else os.getpid())
+            write_worker_heartbeat(
+                host, worker_source_sha256, worker_started_at)
             last_beat = now
 
         reap(verbose=True)
@@ -1343,14 +1975,22 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
 
         started_any = False
         for item in candidates:
-            if item.get("needs_gpu"):
-                if gpu_busy >= gpu_capacity:
-                    continue
-            elif cpu_busy >= cpu_slots:
+            # ``ready_candidates`` deliberately includes a protected item
+            # during its scheduler-imposed cooldown so it can reserve the
+            # next admission.  Reservation is not execution: recheck every
+            # real gate immediately before claiming it.
+            if not is_runnable(item, host, tags, has_gpu, only_declared):
                 continue
-            if not gov.may_admit(item, jobs):
+            try:
+                # Reservation acquisition uses the same guard inside this
+                # helper. Exactly one side of the race can publish.
+                claimed = try_admit_item(
+                    item, host, tags, has_gpu, only_declared,
+                    gpu_slots, cpu_slots, gov, jobs)
+            except AdmissionLockTimeout as exc:
+                print(f"[pqwork] admission guard unavailable: {exc}",
+                      flush=True)
                 continue
-            claimed = try_claim(item["id"], host)
             if claimed is None:
                 continue
             job = Job(claimed, host)
@@ -1541,20 +2181,82 @@ def cmd_requeue(a: argparse.Namespace) -> int:
 def cmd_reserve(a: argparse.Namespace) -> int:
     ensure_layout()
     f = qdir(RESERVED) / f"{a.host}.gpu"
+    try:
+        with admission_guard():
+            if a.release:
+                existed = f.exists()
+                f.unlink(missing_ok=True)
+                (qdir(RESERVED) / f"{a.host}.mem").unlink(missing_ok=True)
+            else:
+                f.write_text(f"{a.slots}\n{a.why or 'unattributed'}\n")
+                if a.mem_gb:
+                    (qdir(RESERVED) / f"{a.host}.mem").write_text(
+                        f"{a.mem_gb}\n{a.why or 'unattributed'}\n")
+    except AdmissionLockTimeout as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 70 if isinstance(exc, AdmissionLockStale) else 75
     if a.release:
-        existed = f.exists()
-        f.unlink(missing_ok=True)
-        (qdir(RESERVED) / f"{a.host}.mem").unlink(missing_ok=True)
         print(f"released GPU reservation on {a.host}" if existed
               else f"no GPU reservation held on {a.host}")
         return 0
-    f.write_text(f"{a.slots}\n{a.why or 'unattributed'}\n")
     msg = f"reserved {a.slots} GPU slot(s) on {a.host}"
     if a.mem_gb:
-        (qdir(RESERVED) / f"{a.host}.mem").write_text(
-            f"{a.mem_gb}\n{a.why or 'unattributed'}\n")
         msg += f" and {a.mem_gb:.0f}GB"
     print(f"{msg}: {a.why or 'unattributed'}")
+    return 0
+
+
+def _reservation_error(exc: Exception) -> int:
+    if isinstance(exc, AdmissionLockStale):
+        print(f"fatal admission-lock error: {exc}", file=sys.stderr)
+        return 70
+    if isinstance(exc, (ReservationBusy, AdmissionLockTimeout)):
+        print(f"busy: {exc}", file=sys.stderr)
+        return 75
+    if isinstance(exc, ReservationOwnershipError):
+        print(f"ownership error: {exc}", file=sys.stderr)
+        return 77
+    print(f"error: {exc}", file=sys.stderr)
+    return 2
+
+
+def cmd_reserve_set_acquire(a: argparse.Namespace) -> int:
+    try:
+        record = acquire_reservation_set(
+            a.id, a.host_resources, Path(a.owner_file), a.why,
+            require_no_claimed=a.require_no_claimed)
+    except (ValueError, RuntimeError) as exc:
+        return _reservation_error(exc)
+    print(json.dumps({
+        "id": record["id"],
+        "claims": record["claims"],
+        "why": record["why"],
+        "acquired_at": record["acquired_at"],
+    }, sort_keys=True))
+    return 0
+
+
+def cmd_reserve_set_verify(a: argparse.Namespace) -> int:
+    try:
+        record = verify_reservation_set(a.id, Path(a.owner_file))
+    except RuntimeError as exc:
+        return _reservation_error(exc)
+    print(json.dumps({
+        "id": record["id"],
+        "claims": record["claims"],
+        "why": record["why"],
+        "acquired_at": record["acquired_at"],
+    }, sort_keys=True))
+    return 0
+
+
+def cmd_reserve_set_release(a: argparse.Namespace) -> int:
+    try:
+        record = release_reservation_set(a.id, Path(a.owner_file))
+    except RuntimeError as exc:
+        return _reservation_error(exc)
+    print(json.dumps({"released": record["id"],
+                      "claims": record["claims"]}, sort_keys=True))
     return 0
 
 
@@ -1657,6 +2359,34 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--why", help="who holds it and why; shown by status")
     v.add_argument("--release", action="store_true", help="give the slots back")
     v.set_defaults(func=cmd_reserve)
+
+    rs = sub.add_parser(
+        "reserve-set",
+        help="atomically acquire/verify/release a multi-host reservation")
+    rs_sub = rs.add_subparsers(dest="reserve_set_command", required=True)
+
+    rsa = rs_sub.add_parser("acquire", help="acquire every host or none")
+    rsa.add_argument("--id", required=True)
+    rsa.add_argument("--owner-file", required=True,
+                     help="0600 capability file; never copy it into receipts")
+    rsa.add_argument("--host-resource", "--claim", action="append",
+                     required=True, dest="host_resources",
+                     metavar="HOST:GPU:MEM:GPU_CAP:MEM_CAP",
+                     help="repeat once per host")
+    rsa.add_argument("--require-no-claimed", action="store_true",
+                     help="return 75 if any target host has a claimed item")
+    rsa.add_argument("--why", default="")
+    rsa.set_defaults(func=cmd_reserve_set_acquire)
+
+    rsv = rs_sub.add_parser("verify", help="verify ownership and show claims")
+    rsv.add_argument("--id", required=True)
+    rsv.add_argument("--owner-file", required=True)
+    rsv.set_defaults(func=cmd_reserve_set_verify)
+
+    rsr = rs_sub.add_parser("release", help="release every host atomically")
+    rsr.add_argument("--id", required=True)
+    rsr.add_argument("--owner-file", required=True)
+    rsr.set_defaults(func=cmd_reserve_set_release)
 
     a = ap.parse_args(argv)
     if getattr(a, "host", None) is None and a.command == "reserve":

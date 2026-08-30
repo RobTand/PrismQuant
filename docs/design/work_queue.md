@@ -18,7 +18,11 @@ eligible for. Nothing dispatches.
   done/<id>.json      complete
   failed/<id>.json    complete and wrong
   logs/<id>.log       stdout+stderr, appended across attempts
-  reserved/<host>.gpu GPU slots held by work outside the queue
+  reaped/<id>.lease   archived orphan lease evidence
+  reserved/<host>.gpu legacy single-host external GPU hold
+  reserved/<host>.mem legacy single-host external memory hold
+  reserved/reservations.v2.json atomic multi-host reservation sets
+  workers/<host>.json live PID, heartbeat, and loaded source SHA-256
 ```
 
 ## Why it exists
@@ -61,13 +65,19 @@ python3 $Q cancel <id>     # ready/claimed -> failed
 ## The seven properties that make it safe
 
 1. **Claiming is `rename()`.** Atomic on NFSv4; the loser gets `ENOENT` and
-   moves on. `flock` over NFS is version-dependent and was not used.
+   moves on. The final capacity recheck, rename, and lease write run under
+   the same short NFS namespace guard as external reservation acquisition,
+   so a queue claim and a conflicting reservation cannot both publish.
+   `flock` over NFS is version-dependent and was not used.
    Verified across boxes: 6 items, 8 racing workers on two machines, 6
    executions, 0 double-claims.
 2. **A claim is a lease.** The holder rewrites its timestamp every 30 s; any
    worker may requeue a claim stale for 300 s. This is the recovery path for
    a box that dies mid-job — without it the queue develops permanent holes,
-   which is the original bug one level down.
+   which is the original bug one level down. The same runner moves an orphan
+   `claimed/*.lease` into `reaped/` as soon as its job is terminal, or after
+   the heartbeat TTL when no item record remains; stale sidecars therefore
+   need no manual cleanup.
 3. **Completion is the receipt, never the exit code or unit state.** A
    command that exits 0 without producing its declared receipt lands in
    `failed/`. This encodes a real incident: a collected systemd unit reported
@@ -87,8 +97,32 @@ python3 $Q cancel <id>     # ready/claimed -> failed
    double-run finished work, and a whole campaign can be re-enqueued after a
    partial run without redoing its finished arms.
 5. **Out-of-queue work declares itself — memory as well as GPU slots.**
-   `reserved/<host>.gpu` holds slots and `reserved/<host>.mem` holds
-   gigabytes, for jobs the queue cannot see. The memory half exists because
+   Legacy single-host work uses `reserved/<host>.gpu` and
+   `reserved/<host>.mem`. A gang launch uses one entry in
+   `reserved/reservations.v2.json`; one same-directory rename publishes or
+   releases every host and resource together. Acquisition and the worker's
+   final admission share the NFS-safe admission guard, re-read claims and
+   reservations inside it, and return temporary-failure status 75 without
+   publishing anything when capacity was lost. This is what rules out both
+   partial box-A holds and the worker race between an earlier capacity read
+   and its later claim.
+
+   A gated actor owns **nothing while it waits**. It calls `reserve-set
+   acquire` only after the gate passes; if it loses admission, it returns to
+   the gate. Releases and verification require the 0600 owner capability
+   created during acquisition, so another actor cannot release the set by
+   guessing its public ID. A malformed ledger fails closed. Timestamp-based
+   stealing of the admission guard is intentionally forbidden because it is
+   not fencing; an old paused holder could otherwise resume and overwrite a
+   successor.
+
+   The first successful claim for a host also records its GPU and memory
+   capacities in the ledger. Releases retain that registry, and later actors
+   must supply the same values; an actor cannot manufacture headroom by
+   inflating its own capacity argument.
+
+   These declarations hold resources for jobs the queue cannot see. The
+   memory half exists because
    of a failure: on 2026-08-30 a hand-launched job took sparklina from 68 GB
    to 4 GB in about 100 seconds, filled 16 GB of swap, and left the box
    unreachable over SSH for five minutes. The governor could not evict it --
@@ -171,7 +205,9 @@ python3 $Q cancel <id>     # ready/claimed -> failed
    losses, the next attempt is non-evictable and holds admission for its
    declared footprint, falling back to its observed peak. If neither exists,
    the queue drains current work and gives it an exclusive attempt. New
-   arrivals cannot consume the reservation while it waits. Thus a fitting item
+   arrivals cannot consume the reservation while it waits, including during
+   the scheduler-imposed cooldown. Receipt dependencies remain genuine gates
+   and do not reserve a box before they are satisfied. Thus a fitting item
    loses at most two attempts before the queue guarantees one; it never ages
    into a permanent bench. The old exponential cooldown and
    `evicted_Nx_does_not_fit` terminal outcome no longer exist.
@@ -247,6 +283,16 @@ systemctl --user status pqwork          # is the puller alive
 journalctl --user -u pqwork -f          # what it is pulling
 python3 $Q reserve --slots 1 --why "…"  # hold the GPU for a hand-launched job
 python3 $Q reserve --release            # give it back
+
+# A two-box actor calls this only after its start gate passes. Status 75
+# means it lost admission and must return to the gate with no hold retained.
+python3 $Q reserve-set acquire --id campaign-run-id \
+  --owner-file /home/rob/campaign-state/reservation-owner.json \
+  --host-resource sparky:6:115:6:121.6 \
+  --host-resource gx10-6b77:6:115:6:121.6 \
+  --require-no-claimed --why "two-box endpoint"
+python3 $Q reserve-set release --id campaign-run-id \
+  --owner-file /home/rob/campaign-state/reservation-owner.json
 ```
 
 ### Deploying a worker change
@@ -270,13 +316,17 @@ split one execution across two contracts. The deployer creates the shared
 `.deploying` admission hold first and refuses to change any file while
 `claimed/*.json` is non-empty. Workers carrying this version admit no new
 claims while the hold exists. For the first rollout from an older worker that
-does not yet understand the hold, choose a verified idle window immediately
-after the board shows no claimed items; the refusal check remains a second
-guard, but cannot close a race in code not deployed yet. An ordinary failed
-deployment removes its hold and reports the incomplete step; a process killed
-before its `finally` block can leave the hold behind, and that marker must be
-cleared only after confirming no deployment is active and no item is claimed.
-Rerun only after the board is idle again.
+does not yet understand the hold, stop both old workers after the board shows
+no claims, recheck that no claim raced the stops, and deploy with
+`--no-restart`. Create the admission hold while both remain stopped, start
+both new workers, and verify each `workers/<host>.json` reports the active
+service PID and deployed source SHA before removing the hold. The refusal
+check remains a second guard, but cannot close a race in code not deployed
+yet. A refusal before any replacement removes its hold. Once any deployed byte
+has changed, a failure intentionally retains the hold so a split-version fleet
+cannot claim new work. Clear that marker only after confirming no deployment
+is active, all copies and loaded worker heartbeats match, and no item is
+claimed. Rerun only after the board is idle again.
 
 Restarting the unit kills any job it is running. That is intentional: the
 lease then goes stale, the reaper requeues, and receipt-gating makes the
