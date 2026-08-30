@@ -92,13 +92,32 @@ def _direct_url(*, repository=fingerprint.VLLM_REPOSITORY, commit=_VLLM_COMMIT):
 
 
 def test_rtx4090_environment_projection_is_profile_specific():
-    additions = {
-        "PRISMAQUANT_CB_BF16_SWIZZLE",
-        "PRISMAQUANT_CB_FP4V2_DENSE_R2",
-    }
-    assert additions.isdisjoint(fingerprint.SERVER_ENV_ALLOWLIST)
+    """The RTX 4090 projection adds exactly the names no registry carries.
+
+    2026-08-29: this test originally named two profile-specific additions.
+    ``PRISMAQUANT_CB_FP4V2_DENSE_R2`` has since graduated into the shared
+    Gridbook registry (65bde48, 2026-08-22 -- two days before this lane landed
+    in c6ab745), and the shared allowlist is by contract the full registry, so
+    the name now arrives through the shared projection rather than beside it.
+    The freeze is restated on the scope it was written to protect -- the name
+    that is still profile-specific -- exactly as the 0.8.11 pin advance and
+    this same R2 registration were handled in
+    ``test_dspark_serving_profile.
+    test_gold_environment_grew_additively_over_the_historical_0_8_5_set``.
+    """
+    profile_specific = {"PRISMAQUANT_CB_BF16_SWIZZLE"}
+    graduated = {"PRISMAQUANT_CB_FP4V2_DENSE_R2"}
+    assert profile_specific.isdisjoint(fingerprint.SERVER_ENV_ALLOWLIST)
+    # Fail closed if the graduated name is ever silently dropped from the
+    # shared registry: it would then leave the RTX 4090 projection entirely,
+    # and this lane would stop proving the selector absent from its server.
+    assert graduated.issubset(set(fingerprint.SERVER_ENV_ALLOWLIST))
     assert set(rtx4090_serve_environment_allowlist()) == (
-        set(fingerprint.SERVER_ENV_ALLOWLIST) | additions
+        set(fingerprint.SERVER_ENV_ALLOWLIST) | profile_specific
+    )
+    # The graduated name must arrive once, through the shared set.
+    assert len(fingerprint.RTX4090_SERVER_ENV_ALLOWLIST) == len(
+        set(fingerprint.RTX4090_SERVER_ENV_ALLOWLIST)
     )
 
 

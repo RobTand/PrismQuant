@@ -8,14 +8,34 @@ merge products of two separately reviewed deltas — `model_profiles/base.py`
 (this branch's `probe_grouped_module_class_names` accessor and two claim rules,
 plus main's three fail-closed profile accessors) and
 `production_weight_cache.py` (this branch's shard-scoped cache metadata plus
-main's packed-expert render scoring) — so `_FROZEN_EXPORT_SOURCE_SHA256`
-(`dsv4_w8a16_export_handoff.py`) is re-stamped once more, to the merged bytes,
-in this same commit; the RE-FROZEN 2026-08-29 (merge) note records that the
-merge introduces no third delta on any closure file. The two code conflicts
+main's packed-expert render scoring). In `_FROZEN_EXPORT_SOURCE_SHA256`
+(`dsv4_w8a16_export_handoff.py`) the two are treated differently, on purpose:
+`base.py` **is** re-stamped to the merged bytes here, because both halves
+already carry a review above and combining two reviews is bookkeeping;
+`production_weight_cache.py` is **deliberately left at main's reviewed
+value**, so the closure gate is **red** and names that file until this
+branch's unit-sharded-render half (`5a8303b`) gets the review it has never
+had. The RE-FROZEN 2026-08-29 (merge) note records that the merge itself
+introduces no third delta on any closure file. The two code conflicts
 were compositions, not choices: `build_production_cache`'s resident coverage
 check now narrows by unit shard and then by `--include-qnames-file`, matching
 the order the streaming path already applies them, and `allocator_candidates`
-imports both `trellis_menu` and the name-projection layer. Re-stamped (2026-08-29,
+imports both `trellis_menu` and the name-projection layer. One **semantic**
+conflict git could not see, because the two halves live in different files:
+this branch registered `PRISMAQUANT_CB_FP4V2_DENSE_R2` in
+`GRIDBOOK_ENVIRONMENT_REGISTRY` (`65bde48`, 2026-08-22) while main's RTX 4090
+lane (`c6ab745`, 2026-08-24) listed the same name as a *profile-specific*
+addition and asserted it absent from the shared allowlist — which
+`SERVER_ENV_ALLOWLIST` is by contract the full registry of. Post-merge the
+name arrives through the shared projection, so it is dropped from
+`RTX4090_SERVER_ENV_ALLOWLIST` (it would otherwise be a duplicate) and that
+lane's test is restated on the one name still profile-specific
+(`PRISMAQUANT_CB_BF16_SWIZZLE`), following the scoped-freeze precedent this
+branch already set for this same variable in
+`test_gold_environment_grew_additively_over_the_historical_0_8_5_set`. The
+consequence that the *shared* allowlist grew by one name — so shared-lane
+manifests recorded before 2026-08-22 no longer replay byte-for-byte — is a
+property of `65bde48`, not of this merge, and is flagged for review. Re-stamped (2026-08-29,
 `claude/trellis-continuous-surface`) for the **trellis seam correction**
 (§4.9): the seam that landed earlier the same day is now **fail-closed** when
 enabled, and this document's claim that it made trellis rungs "pass the same
