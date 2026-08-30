@@ -372,9 +372,9 @@ def resolve_run_cost_mode(
     declared ``cost_mode`` against the run's.  It used to answer "what is the
     run's?" with ``os.environ.get("COST_MODE", "aura")``, and that answer was
     never this run's: ``run-pipeline.sh`` assigns ``COST_MODE`` with ``:=``
-    (:438), never exports it, and hands the allocator no such flag (:1996) --
-    while every other stage is fed ``--cost-mode "$COST_MODE"`` explicitly
-    (:1583, :1652, :1766, :1806, :1891).  So the gate read the ``"aura"``
+    (:448), never exports it, and used to hand the allocator no such flag,
+    while every other stage was fed ``--cost-mode "$COST_MODE"`` explicitly
+    (:1593, :1662, :1776, :1816, :1901).  So the gate read the ``"aura"``
     default on every pipeline run, or -- worse, because it is
     invocation-dependent -- whatever a caller's own shell leaked, since ``:=``
     keeps an inherited variable exported.  A gate that cannot see its input is
