@@ -1,15 +1,10 @@
-"""Fail-closed producer scaffold for QTIP-style transforms plus E2M1 TCQ.
+"""Research producer for QTIP-style transforms plus PrismaQuant E2M1 TCQ.
 
-This module closes the deterministic basis and metadata halves of the proposed
-one-Linear experiment.  It deliberately does *not* serialize a trellis wire:
-PrismaQuant currently exposes the E2M1 rate/schedule/alphabet/accounting
-contract, but no repository-owned Viterbi-output -> ``gridbook.trellis.wire.v1``
-packer/decoder seam.  Importing Gridbook or copying its runtime is forbidden at
-this repository boundary, and QTIP's bitshift wire is a different format.
-
-``require_combined_wire_round_trip`` therefore always refuses.  The function
-is intentional executable debt: a caller cannot mistake transformed floats
-and a valid Gridbook sidecar for a physical, decoded Gridbook artifact.
+The online-transform contract is independent of Gridbook and the physical
+wire remains PrismaQuant's existing ``gridbook.trellis.wire.v1`` carrier.
+The combined entry point is explicit, opt-in, and unregistered; it encodes,
+packs, reparses, and reference-decodes the same immutable bytes before it can
+report a successful one-Linear algebra check.
 """
 from __future__ import annotations
 
@@ -27,10 +22,17 @@ from prismaquant.trellis_formats import (
     get_trellis_family,
     validate_body_rate_q256,
 )
+from prismaquant.trellis_producer import (
+    TrellisOneLinearArtifact,
+    encode_trellis_one_linear,
+)
 
 
 SCAFFOLD_SCHEMA = (
     "prismaquant.research.qtip_trellis_online_hadamard_one_linear.v1"
+)
+COMBINED_ARTIFACT_SCHEMA = (
+    "prismaquant.research.qtip_trellis_online_hadamard_artifact.v1"
 )
 RESEARCH_OPT_IN = "qtip_trellis_online_hadamard_one_linear_v1"
 TRANSFORM_SCHEMA = "gridbook.qtip-online-hadamard.v1"
@@ -49,16 +51,23 @@ _SIDE_FIELDS = frozenset({
 _SIGN_DOMAIN = (TRANSFORM_SCHEMA + "/signs\0").encode("ascii")
 
 
-class MissingTrellisProducerSeam(RuntimeError):
-    """The physical Gridbook wire cannot be produced or replayed in-tree."""
-
-
 @dataclass(frozen=True)
 class PreparedOneLinear:
     """Basis-transformed inputs plus an unregistered, non-artifact receipt."""
 
     transformed_weight: torch.Tensor
     transformed_hessian: torch.Tensor
+    online_transform: Mapping[str, object]
+    receipt: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class CombinedOneLinearArtifact:
+    """Physical trellis bytes and their transformed-basis decoded view."""
+
+    wire_bytes: bytes
+    decoded_transformed_weight: torch.Tensor
+    decoded_codes: torch.Tensor
     online_transform: Mapping[str, object]
     receipt: Mapping[str, object]
 
@@ -547,7 +556,7 @@ def prepare_one_linear_scaffold(
     )
     receipt_body: dict[str, object] = {
         "schema": SCAFFOLD_SCHEMA,
-        "status": "blocked_missing_exact_trellis_encoder_decoder_seam",
+        "status": "prepared_exact_trellis_wire_seam_available",
         "scope": "research_only_one_linear_unregistered_contract_scaffold",
         "research_opt_in": RESEARCH_OPT_IN,
         "shape": {"rows": rows, "columns": columns},
@@ -592,18 +601,13 @@ def prepare_one_linear_scaffold(
             "encoder_invoked": False,
             "decoder_invoked": False,
         },
-        "missing_seam": {
-            "present_in_prismaquant": [
-                "trellis family/rate/schedule/alphabet validation",
-                "pre-render footprint accounting",
-                "QTIP-style BlockLDLQ research isolate",
-            ],
-            "absent_from_prismaquant_repository_api": [
+        "wire_seam": {
+            "available_repository_api": [
                 "tail-biting Viterbi path planes",
-                "gridbook.trellis.wire.v1 packer returning physical bytes",
-                "wire-v1 reference parser/decoder bound to those bytes",
+                "gridbook.trellis.wire.v1 immutable byte packer",
+                "same-byte canonical parser and reference decoder",
             ],
-            "forbidden_substitutions": [
+            "excluded_substitutions": [
                 "QTIP bitshift wire",
                 "vendored or imported Gridbook runtime",
                 "unparsed caller-asserted decoded weights",
@@ -626,20 +630,173 @@ def prepare_one_linear_scaffold(
     )
 
 
-def require_combined_wire_round_trip(_prepared: PreparedOneLinear) -> None:
-    """Refuse until PrismaQuant has one exact encoder+packer+decoder seam."""
+def _validate_prepared_one_linear(
+    prepared: PreparedOneLinear,
+    *,
+    body_rate_q256: int,
+) -> dict[str, object]:
+    """Reauthenticate the prepared receipt at the encode trust boundary."""
 
-    raise MissingTrellisProducerSeam(
-        "combined QTIP-basis/E2M1-trellis publication is unavailable: "
-        "PrismaQuant has no repository API that returns tail-biting path "
-        "planes, packs them as gridbook.trellis.wire.v1, and reference-"
-        "decodes the same bytes; refusing QTIP bitshift, a Gridbook import, "
-        "or a caller-asserted decoded tensor"
+    if not isinstance(prepared, PreparedOneLinear):
+        raise ValueError("prepared must be a PreparedOneLinear")
+    if not isinstance(prepared.receipt, Mapping):
+        raise ValueError("prepared receipt must be an object")
+    body = dict(prepared.receipt)
+    identity = body.pop("identity_sha256", None)
+    if not isinstance(identity, str) or not hmac.compare_digest(
+        identity, _canonical_sha256(body)
+    ):
+        raise ValueError("prepared receipt identity mismatch")
+    if body.get("schema") != SCAFFOLD_SCHEMA:
+        raise ValueError("prepared receipt schema mismatch")
+    if body.get("research_opt_in") != RESEARCH_OPT_IN:
+        raise ValueError("prepared receipt research opt-in mismatch")
+    rows, columns = map(int, prepared.transformed_weight.shape)
+    if body.get("shape") != {"rows": rows, "columns": columns}:
+        raise ValueError("prepared receipt shape mismatch")
+    transformed = body.get("transformed")
+    if not isinstance(transformed, Mapping):
+        raise ValueError("prepared receipt transformed identity is missing")
+    expected = {
+        "weight": {
+            "dtype": str(prepared.transformed_weight.dtype),
+            "sha256": _tensor_sha256(prepared.transformed_weight),
+        },
+        "hessian": {
+            "dtype": str(prepared.transformed_hessian.dtype),
+            "sha256": _tensor_sha256(prepared.transformed_hessian),
+        },
+    }
+    if transformed != expected:
+        raise ValueError("prepared transformed tensor identity mismatch")
+    wire = body.get("wire")
+    if not isinstance(wire, Mapping):
+        raise ValueError("prepared receipt wire contract is missing")
+    if (
+        wire.get("schema") != TRELLIS_WIRE_SCHEMA
+        or wire.get("family") != E2M1_FAMILY
+        or wire.get("body_rate_q256") != body_rate_q256
+        or wire.get("qtip_bitshift_wire_allowed") is not False
+    ):
+        raise ValueError("prepared receipt wire contract mismatch")
+    contract = validate_online_transform(
+        body.get("online_transform"), rows=rows, columns=columns
+    )
+    if contract != validate_online_transform(
+        prepared.online_transform, rows=rows, columns=columns
+    ):
+        raise ValueError("prepared online-transform metadata mismatch")
+    return body
+
+
+def require_combined_wire_round_trip(
+    prepared: PreparedOneLinear,
+    activations: torch.Tensor,
+    *,
+    body_rate_q256: int,
+    schedule: tuple[int, ...] | list[int],
+    layout: str,
+    alphabets: Mapping[int, tuple[int, ...] | list[int]],
+    scale_rule: str,
+    sb_chunk: int,
+    determinism_mode: str,
+    tailbite_candidates: int,
+    backend: str,
+    point_route: str,
+    research_opt_in: str,
+) -> CombinedOneLinearArtifact:
+    """Produce and verify the exact combined research artifact.
+
+    The promoted encoder's objective is column-diagonal.  Consequently this
+    seam consumes exactly ``diag(H_tilde)`` and records that limitation; it
+    does not claim the encoder applies full BlockLDLQ off-diagonal feedback.
+    """
+
+    if research_opt_in != RESEARCH_OPT_IN:
+        raise ValueError(f"research_opt_in must equal {RESEARCH_OPT_IN!r}")
+    prepared_receipt = _validate_prepared_one_linear(
+        prepared, body_rate_q256=body_rate_q256
+    )
+    rows, columns = map(int, prepared.transformed_weight.shape)
+    contract = validate_online_transform(
+        prepared.online_transform, rows=rows, columns=columns
+    )
+    if prepared.transformed_hessian.shape != (columns, columns):
+        raise ValueError("prepared transformed Hessian has the wrong shape")
+    objective = torch.diagonal(prepared.transformed_hessian).contiguous()
+    if not bool(torch.isfinite(objective).all().item()) or bool(
+        (objective < 0).any().item()
+    ):
+        raise ValueError(
+            "diag(transformed_hessian) must be finite and nonnegative"
+        )
+    if float(objective.sum().item()) <= 0.0:
+        raise ValueError("diag(transformed_hessian) must contain positive mass")
+
+    trellis: TrellisOneLinearArtifact = encode_trellis_one_linear(
+        prepared.transformed_weight,
+        objective,
+        family=E2M1_FAMILY,
+        body_rate_q256=body_rate_q256,
+        schedule=schedule,
+        layout=layout,
+        alphabets=alphabets,
+        scale_rule=scale_rule,
+        sb_chunk=sb_chunk,
+        determinism_mode=determinism_mode,
+        tailbite_candidates=tailbite_candidates,
+        backend=backend,
+        point_route=point_route,
+    )
+    serve = dict(verify_post_decode_serve_algebra(
+        trellis.decoded_weight, activations, contract
+    ))
+    serve.update({
+        "wire_identity_verified": True,
+        "wire_identity_sha256": trellis.receipt["wire_identity_sha256"],
+        "claim_boundary": (
+            "decoded by PrismaQuant's reference decoder from the same "
+            "canonical gridbook.trellis.wire.v1 bytes"
+        ),
+    })
+    receipt_body: dict[str, object] = {
+        "schema": COMBINED_ARTIFACT_SCHEMA,
+        "status": "physical_wire_and_serve_algebra_verified",
+        "scope": "research_only_one_linear_unregistered",
+        "research_opt_in": RESEARCH_OPT_IN,
+        "shape": {"rows": rows, "columns": columns},
+        "online_transform": contract,
+        "prepared_receipt_identity_sha256": prepared.receipt["identity_sha256"],
+        "prepared_receipt_status": prepared_receipt["status"],
+        "trellis_objective": {
+            "kind": "diag(transformed_hessian)",
+            "sha256": _tensor_sha256(objective),
+            "full_off_diagonal_blockldlq_applied": False,
+        },
+        "trellis": dict(trellis.receipt),
+        "serve_algebra": serve,
+        "qtip_bitshift_wire_allowed": False,
+        "format_registry_entries_created": 0,
+        "runtime_pin_changed": False,
+        "production_contract_changed": False,
+        "producer_eligible": False,
+    }
+    receipt = {
+        **receipt_body,
+        "identity_sha256": _canonical_sha256(receipt_body),
+    }
+    return CombinedOneLinearArtifact(
+        wire_bytes=trellis.wire_bytes,
+        decoded_transformed_weight=trellis.decoded_weight,
+        decoded_codes=trellis.decoded_codes,
+        online_transform=contract,
+        receipt=receipt,
     )
 
 
 __all__ = [
-    "MissingTrellisProducerSeam",
+    "CombinedOneLinearArtifact",
+    "COMBINED_ARTIFACT_SCHEMA",
     "PreparedOneLinear",
     "RESEARCH_OPT_IN",
     "SCAFFOLD_SCHEMA",

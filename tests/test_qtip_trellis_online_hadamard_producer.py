@@ -182,7 +182,7 @@ def test_post_decode_serve_algebra_round_trip_and_quadratic_invariance():
     )
 
 
-def test_scaffold_is_opt_in_unregistered_and_refuses_a_fake_wire():
+def test_scaffold_is_opt_in_unregistered_and_prepares_exact_wire_seam():
     weight, _activations, hessian = _fixture()
     before = set(format_registry.REGISTRY)
     with pytest.raises(ValueError, match="research_opt_in"):
@@ -208,7 +208,8 @@ def test_scaffold_is_opt_in_unregistered_and_refuses_a_fake_wire():
         research_opt_in=M.RESEARCH_OPT_IN,
     )
     assert set(format_registry.REGISTRY) == before
-    assert prepared.receipt["status"].startswith("blocked_missing")
+    assert prepared.receipt["status"] == \
+        "prepared_exact_trellis_wire_seam_available"
     assert prepared.receipt["format_registry_entries_created"] == 0
     assert prepared.receipt["producer_eligible"] is False
     assert prepared.receipt["wire"] == {
@@ -230,5 +231,123 @@ def test_scaffold_is_opt_in_unregistered_and_refuses_a_fake_wire():
         allow_nan=False,
     ).encode("ascii")
     assert identity == hashlib.sha256(encoded).hexdigest()
-    with pytest.raises(M.MissingTrellisProducerSeam, match="no repository API"):
-        M.require_combined_wire_round_trip(prepared)
+    assert prepared.receipt["wire_seam"]["available_repository_api"] == [
+        "tail-biting Viterbi path planes",
+        "gridbook.trellis.wire.v1 immutable byte packer",
+        "same-byte canonical parser and reference decoder",
+    ]
+
+
+def test_combined_producer_emits_same_byte_wire_and_serve_round_trip():
+    generator = torch.Generator().manual_seed(20260830)
+    weight = torch.randn(1, 256, generator=generator)
+    activations = torch.randn(5, 256, generator=generator)
+    hessian = activations.T @ activations + 0.25 * torch.eye(256)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        hessian,
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=1,
+        input_seed=0x1234,
+        output_seed=0x5678,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    before = set(format_registry.REGISTRY)
+    artifact = M.require_combined_wire_round_trip(
+        prepared,
+        activations,
+        body_rate_q256=512,
+        schedule=[2] * 256,
+        layout="fixed_quota_per_256",
+        alphabets={2: (15, 13, 11, 9, 8, 2, 4, 7)},
+        scale_rule="static_6",
+        sb_chunk=1,
+        determinism_mode="on",
+        tailbite_candidates=4,
+        backend="eager",
+        point_route="full",
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    assert set(format_registry.REGISTRY) == before
+    assert artifact.receipt["status"] == \
+        "physical_wire_and_serve_algebra_verified"
+    assert artifact.receipt["serve_algebra"]["wire_identity_verified"] is True
+    assert artifact.receipt["trellis"]["same_byte_reparse_verified"] is True
+    assert artifact.receipt["trellis_objective"][
+        "full_off_diagonal_blockldlq_applied"
+    ] is False
+    assert artifact.receipt["qtip_bitshift_wire_allowed"] is False
+    assert artifact.receipt["producer_eligible"] is False
+    assert hashlib.sha256(artifact.wire_bytes).hexdigest() == artifact.receipt[
+        "trellis"
+    ]["wire_identity_sha256"]
+
+
+def test_combined_producer_requires_explicit_opt_in():
+    generator = torch.Generator().manual_seed(9)
+    weight = torch.randn(1, 256, generator=generator)
+    hessian = torch.eye(256)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        hessian,
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=1,
+        input_seed=1,
+        output_seed=2,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    with pytest.raises(ValueError, match="research_opt_in"):
+        M.require_combined_wire_round_trip(
+            prepared,
+            torch.randn(2, 256, generator=generator),
+            body_rate_q256=512,
+            schedule=[2] * 256,
+            layout="fixed_quota_per_256",
+            alphabets={2: (15, 13, 11, 9, 8, 2, 4, 7)},
+            scale_rule="static_6",
+            sb_chunk=1,
+            determinism_mode="on",
+            tailbite_candidates=4,
+            backend="eager",
+            point_route="full",
+            research_opt_in="",
+        )
+
+
+def test_combined_producer_refuses_prepared_tensor_identity_drift():
+    weight = torch.zeros(1, 256)
+    hessian = torch.eye(256)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        hessian,
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=1,
+        input_seed=1,
+        output_seed=2,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    tampered = M.PreparedOneLinear(
+        transformed_weight=prepared.transformed_weight + 1,
+        transformed_hessian=prepared.transformed_hessian,
+        online_transform=prepared.online_transform,
+        receipt=prepared.receipt,
+    )
+    with pytest.raises(ValueError, match="transformed tensor identity mismatch"):
+        M.require_combined_wire_round_trip(
+            tampered,
+            torch.zeros(1, 256),
+            body_rate_q256=512,
+            schedule=[2] * 256,
+            layout="fixed_quota_per_256",
+            alphabets={2: (15, 13, 11, 9, 8, 2, 4, 7)},
+            scale_rule="static_6",
+            sb_chunk=1,
+            determinism_mode="on",
+            tailbite_candidates=4,
+            backend="eager",
+            point_route="full",
+            research_opt_in=M.RESEARCH_OPT_IN,
+        )
