@@ -147,7 +147,7 @@ def main() -> None:
         cache_before = {
             "entries": len(ctx.layer_cache._cache),
             "current_bytes": ctx.layer_cache.total_bytes,
-            "summary": repr(ctx.layer_cache),
+            "summary": str(ctx.layer_cache),
         }
         ctx.unload(args.layer)
         _tensors, second_source = ctx.ensure_loaded(
@@ -160,7 +160,7 @@ def main() -> None:
         cache_after = {
             "entries": len(ctx.layer_cache._cache),
             "current_bytes": ctx.layer_cache.total_bytes,
-            "summary": repr(ctx.layer_cache),
+            "summary": str(ctx.layer_cache),
         }
     finally:
         if ctx is not None:
