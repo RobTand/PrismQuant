@@ -21,6 +21,7 @@ import torch
 import torch.nn as nn
 
 from prismaquant import format_registry as fr
+from prismaquant.cost_stage_checkpoint import atomic_write_bytes
 from prismaquant.decision_units import fused_group_key
 from prismaquant.layer_config import load_assignment as _load_assignment
 from prismaquant.memory_management import model_device as _model_device
@@ -427,7 +428,10 @@ def recache_production_weight_cache(
         # re-open the exact resurrection path the apply step closes.
         applied = dict(
             getattr(production_weight_cache, "activation_max_abs", {}) or {})
-        sidecar.write_text(json.dumps(applied, indent=2))
+        atomic_write_bytes(
+            sidecar,
+            json.dumps(applied, indent=2).encode("utf-8"),
+        )
         delta = (
             getattr(production_weight_cache, "metadata", {}) or {}
         ).get("activation_recache", {}).get("activation_max_abs_delta")

@@ -1483,6 +1483,12 @@ def test_production_cache_records_render_scores(monkeypatch, tmp_path):
 
     model = _TinyChain()
     calib_ids = torch.tensor([[0, 1]], dtype=torch.long)
+    atomic_paths: list[Path] = []
+    real_atomic_write = pwc.atomic_write_bytes
+
+    def record_atomic_write(path, payload):
+        atomic_paths.append(Path(path))
+        real_atomic_write(path, payload)
 
     monkeypatch.setattr(
         enc,
@@ -1494,6 +1500,7 @@ def test_production_cache_records_render_scores(monkeypatch, tmp_path):
         "render_production_weight",
         lambda weight, fmt, **_kwargs: weight.detach().to(torch.float32),
     )
+    monkeypatch.setattr(pwc, "atomic_write_bytes", record_atomic_write)
 
     cache = fill_production_weight_cache(
         model,
@@ -1513,6 +1520,7 @@ def test_production_cache_records_render_scores(monkeypatch, tmp_path):
     assert record["normalizer"] == 64.0
     assert record["score"] == pytest.approx(0.0)
     assert (tmp_path / "render_scores.json").is_file()
+    assert tmp_path / "activation_max_abs.json" in atomic_paths
 
 
 def test_resume_collects_activations_when_render_scores_missing(tmp_path):
@@ -1591,6 +1599,86 @@ class _TinyChain(nn.Module):
         return self.l2(x)
 
 
+def test_resume_refuses_truncated_activation_max_abs_sidecar(tmp_path):
+    import json
+    import prismaquant.production_weight_cache as pwc
+
+    model = _TinyChain()
+    torch.save(
+        model.l1.weight.detach().to(torch.float32),
+        tmp_path / pwc._cache_weight_filename("l1", "NVFP4"),
+    )
+    (tmp_path / "render_scores.json").write_text(json.dumps({
+        "schema": "prismaquant.production_render_scores.v1",
+        "records": {"l1|NVFP4": {}},
+    }))
+    sidecar = tmp_path / "activation_max_abs.json"
+    sidecar.write_text('{"l1":')
+
+    with pytest.raises(RuntimeError) as exc_info:
+        fill_production_weight_cache(
+            model,
+            torch.tensor([[0, 1]], dtype=torch.long),
+            qnames=["l1"],
+            formats=["NVFP4"],
+            levers={"gptq": False, "scale_sweep": False},
+            cache_dir=tmp_path,
+            max_act_rows=8,
+            progress=False,
+        )
+
+    assert str(sidecar) in str(exc_info.value)
+
+
+def test_resume_loads_existing_activation_max_abs_sidecar(tmp_path):
+    import json
+    import prismaquant.production_weight_cache as pwc
+
+    model = _TinyChain()
+    torch.save(
+        model.l1.weight.detach().to(torch.float32),
+        tmp_path / pwc._cache_weight_filename("l1", "NVFP4"),
+    )
+    (tmp_path / "render_scores.json").write_text(json.dumps({
+        "schema": "prismaquant.production_render_scores.v1",
+        "records": {"l1|NVFP4": {}},
+    }))
+    sidecar = tmp_path / "activation_max_abs.json"
+    sidecar.write_text(json.dumps({"l1": 2.5}, indent=2))
+
+    cache = fill_production_weight_cache(
+        model,
+        torch.tensor([[0, 1]], dtype=torch.long),
+        qnames=["l1"],
+        formats=["NVFP4"],
+        levers={"gptq": False, "scale_sweep": False},
+        cache_dir=tmp_path,
+        max_act_rows=8,
+        progress=False,
+    )
+
+    assert cache.activation_max_abs == {"l1": 2.5}
+
+
+def test_resume_refuses_truncated_render_score_sidecar(tmp_path):
+    sidecar = tmp_path / "render_scores.json"
+    sidecar.write_text('{"records":')
+
+    with pytest.raises(RuntimeError) as exc_info:
+        fill_production_weight_cache(
+            _TinyChain(),
+            torch.tensor([[0, 1]], dtype=torch.long),
+            qnames=["l1"],
+            formats=["NVFP4"],
+            levers={"gptq": False, "scale_sweep": False},
+            cache_dir=tmp_path,
+            max_act_rows=8,
+            progress=False,
+        )
+
+    assert str(sidecar) in str(exc_info.value)
+
+
 def test_production_recache_measures_quantized_upstream_activation_range():
     model = _TinyChain()
     cache = ProductionWeightCache(
@@ -1621,6 +1709,50 @@ def test_production_recache_measures_quantized_upstream_activation_range():
     assert delta["n_common"] == 2
     assert delta["changed_gt_5pct"] == 1
     assert delta["ratio_p50"] == pytest.approx(2.0)
+
+
+def test_production_recache_atomically_publishes_activation_sidecar(
+    monkeypatch,
+    tmp_path,
+):
+    import json
+    import prismaquant.production_recache as production_recache
+
+    cache = ProductionWeightCache(
+        weights={},
+        levers={},
+        cache_dir=str(tmp_path),
+        activation_max_abs={"l1": 1.0},
+    )
+    monkeypatch.setattr(
+        production_recache,
+        "measure_production_activation_max_abs",
+        lambda *_args, **_kwargs: {"l1": 2.0},
+    )
+    atomic_paths: list[Path] = []
+    real_atomic_write = production_recache.atomic_write_bytes
+
+    def record_atomic_write(path, payload):
+        atomic_paths.append(Path(path))
+        real_atomic_write(path, payload)
+
+    monkeypatch.setattr(
+        production_recache,
+        "atomic_write_bytes",
+        record_atomic_write,
+    )
+
+    recache_production_weight_cache(
+        nn.Linear(1, 1),
+        torch.ones((1, 1), dtype=torch.long),
+        {"l1": "BF16"},
+        cache,
+        progress=False,
+    )
+
+    sidecar = tmp_path / "activation_max_abs.json"
+    assert atomic_paths == [sidecar]
+    assert json.loads(sidecar.read_text()) == {"l1": 2.0}
 
 
 def test_production_recache_tempdir_uses_requested_parent(monkeypatch, tmp_path):
