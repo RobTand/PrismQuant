@@ -1,0 +1,7 @@
+[
+  "model.language_model.layers.0.hc_attn_scale",
+  "model.language_model.layers.1.mlp.up_proj.weight",
+  "model.language_model.layers.23.self_attn.o_proj.weight",
+  "model.language_model.layers.37.mlp.experts.181.up_proj.weight",
+  "model.visual.merger.down_proj.weight"
+]
