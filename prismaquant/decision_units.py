@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import format_registry as fr
 from .allocator_candidates import check_format_applicability
+from .name_projection import strip_weight_leaf
 from .serving_profiles import resolve_target_profile
 
 
@@ -118,16 +119,12 @@ def incomplete_fused_group_members(names: Iterable[str], profile) -> set[str]:
     return pinned
 
 
-def _recipe_name(full_name: str) -> str:
-    return full_name[:-7] if full_name.endswith(".weight") else full_name
-
-
 def _enumerate_quantizable_linears(model, profile=None) -> list[str]:
     from .build_rtn_cache import iter_quantizable_tensors
 
     names: list[str] = []
     for full_name, _module, _attr in iter_quantizable_tensors(model, profile):
-        names.append(_recipe_name(full_name))
+        names.append(strip_weight_leaf(full_name))
     return sorted(set(names))
 
 
@@ -136,7 +133,7 @@ def _shape_of_param(model, qname: str, profile=None) -> tuple[int, ...] | None:
 
     target = qname
     for full_name, module, attr in iter_quantizable_tensors(model, profile):
-        if _recipe_name(full_name) == target:
+        if strip_weight_leaf(full_name) == target:
             param = getattr(module, attr, None)
             if param is None:
                 return None
@@ -270,7 +267,7 @@ def _discover_units_from_model_graph(
         return None
 
     shapes_by_name = {
-        _recipe_name(tensor.recipe_name): tensor.shape
+        strip_weight_leaf(tensor.recipe_name): tensor.shape
         for tensor in graph.quantizable_tensors()
     }
     if not shapes_by_name:
@@ -283,9 +280,9 @@ def _discover_units_from_model_graph(
     for opt_unit in graph.optimization_units():
         unit_name = _decision_unit_name_from_graph_unit(opt_unit.id)
         members = tuple(
-            _recipe_name(member)
+            strip_weight_leaf(member)
             for member in opt_unit.members
-            if _recipe_name(member) in shapes_by_name
+            if strip_weight_leaf(member) in shapes_by_name
         )
         if not members:
             continue
@@ -351,8 +348,8 @@ def _target_profile_id(profile, target_profile: str | None) -> str:
 def _decision_unit_name_from_graph_unit(unit_id: str) -> str:
     for prefix in ("fused:", "packed_expert:", "tensor:"):
         if unit_id.startswith(prefix):
-            return _recipe_name(unit_id[len(prefix):])
-    return _recipe_name(unit_id)
+            return strip_weight_leaf(unit_id[len(prefix):])
+    return strip_weight_leaf(unit_id)
 
 
 def _parse_pair_key(key: str) -> tuple[str, str]:

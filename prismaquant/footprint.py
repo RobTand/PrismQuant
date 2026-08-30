@@ -41,6 +41,16 @@ weight-only W4A16 and ship only the weight scalar.
 :func:`nvfp4_global_sidecar_bytes` adds the exact one- or two-scalar payload
 (per expert × on-disk projection for packed 3-D tensors).
 
+Name derivation is NOT done here. Every mapping between checkpoint keys,
+live allocator qnames, and packed aggregates routes through
+:mod:`prismaquant.name_projection` (the shared R5 layer): the leaf rule is
+its ``strip_weight_leaf``, the per-expert→packed alias is its
+``packed_expert_alias`` (re-exported below for the historic import path),
+and :func:`source_tensor_bytes_manifest` / :func:`floor_bytes_for_model`
+accept a prebuilt ``NameProjection`` so a caller holding a profile gets the
+layer's fail-closed refusals and declared-drop outcomes instead of this
+module re-deriving any of it.
+
 There is exactly ONE way to run that identity: :func:`assignment_artifact_bytes`
 (and :func:`floor_bytes_for_model` for the model-path convenience form, which
 shares the same resolve/check helpers). Every consumer — the byte-budget ship
@@ -65,6 +75,12 @@ from typing import Iterable, Mapping
 
 from . import format_registry as fr
 from .allocator_solver import _shape_from_stats
+from .name_projection import (
+    MAPPED,
+    NameProjection,
+    packed_expert_alias,
+    strip_weight_leaf,
+)
 from .nvfp4_cb_footprint import (
     CBSerializationContext,
     cb_assignment_payload_breakdown,
@@ -267,46 +283,6 @@ def source_regime(by_dtype: Mapping[str, int]) -> str:
 _SIDECAR_SUFFIXES = (".scale", ".weight_scale_inv", ".weight_scale")
 
 
-def _default_expert_parent_for_projection(projection_name: str) -> str | None:
-    """No-profile fallback for the per-expert -> packed projection mapping.
-
-    Mirrors ``ModelProfile.packed_expert_parent_for_projection``'s legacy
-    fallback: per-expert ``gate_proj``/``up_proj`` fuse into the packed
-    ``gate_up_proj`` (output-axis cat, the transformers packed-FusedMoE
-    convention); ``down_proj`` packs 1:1. Anything else (e.g. MiniMax's
-    per-expert ``w1``/``w2``/``w3`` modules, which stay per-expert live)
-    has no packed parent here — callers with a profile should pass its
-    ``packed_expert_parent_for_projection`` instead.
-    """
-    if projection_name in ("gate_proj", "up_proj"):
-        return "gate_up_proj"
-    if projection_name == "down_proj":
-        return "down_proj"
-    return None
-
-
-def packed_expert_alias(qname: str, parent_for_projection=None) -> str | None:
-    """Packed live qname a per-expert Linear aggregates into, or None.
-
-    ``...experts.{i}.{proj}`` -> ``...experts.{parent}`` when
-    ``parent_for_projection(proj)`` names a packed parent
-    (``ModelProfile.packed_expert_parent_for_projection``; the legacy
-    gate/up/down fallback when None). Non-expert names and unrecognized
-    projections return None. This is the same structural
-    ``experts.{idx}.{leaf}`` detection the profile layer uses for
-    packed-format grouping (``packed_expert_format_group``).
-    """
-    parts = str(qname).split(".")
-    if len(parts) < 3 or parts[-3] != "experts" or not parts[-2].isdigit():
-        return None
-    fn = (parent_for_projection if parent_for_projection is not None
-          else _default_expert_parent_for_projection)
-    parent = fn(parts[-1])
-    if not parent:
-        return None
-    return ".".join(parts[:-2] + [str(parent)])
-
-
 class SourceByteManifest(dict):
     """``{live_qname: source_bytes}`` that remembers WHICH spans it summed.
 
@@ -344,15 +320,15 @@ class SourceByteManifest(dict):
 def source_span_identity(checkpoint_key: str) -> str:
     """The SOURCE identity of a checkpoint key: the key without ``.weight``.
 
-    Unique per checkpoint tensor and shared by every live name that covers it
-    (the per-expert entry and the packed aggregate both resolve to it), which
-    is what makes a double charge structurally detectable in
+    The leaf rule is the name-projection layer's (``strip_weight_leaf``,
+    imported above); this historic name is kept as a thin alias because
+    callers outside this module (``read_traffic``) resolve spans by it.
+    Unique per checkpoint tensor and shared by every live name that covers
+    it (the per-expert entry and the packed aggregate both resolve to it),
+    which is what makes a double charge structurally detectable in
     :class:`SourceByteManifest.spans`.
     """
-    return (
-        checkpoint_key[: -len(".weight")]
-        if checkpoint_key.endswith(".weight") else checkpoint_key
-    )
+    return strip_weight_leaf(checkpoint_key)
 
 
 def source_tensor_span_bytes(model_path: str) -> dict[str, int]:
@@ -417,6 +393,8 @@ def source_tensor_bytes_manifest(
     model_path: str,
     name_map=None,
     expert_parent_for_projection=None,
+    *,
+    projection: NameProjection | None = None,
 ) -> SourceByteManifest:
     """Exact on-disk source bytes per weight tensor, keyed by live qname base.
 
@@ -424,10 +402,31 @@ def source_tensor_bytes_manifest(
     byte span with its quantization sidecars (``<base>.scale``,
     ``<base>.weight_scale_inv``, ``<base>.weight_scale``) — exactly the
     bytes the export removes from the checkpoint when it re-encodes that
-    Linear. ``name_map`` maps a checkpoint key to the live transformers
-    parameter name (``ModelProfile.checkpoint_to_live_name``); identity
-    when None. Keys are stored without the ``.weight`` suffix to match
+    Linear. Keys are stored without the ``.weight`` suffix to match
     allocator qnames.
+
+    The name mapping is the shared projection layer's, in one of two
+    mutually exclusive forms:
+
+    - **``projection=NameProjection(...)``** (preferred): every key goes
+      through :meth:`NameProjection.checkpoint_to_live`. A mapped key uses
+      the projected live unit; a DECLARED drop (the profile declines the
+      key by contract — MTP sidecars, visual towers, fp8 scale siblings)
+      keeps its RAW checkpoint spelling, because a live-graph mapper
+      declining a key does NOT mean the tensor has no source bytes. A
+      profile accessor that raises or returns garbage propagates as a
+      structured :class:`NameProjectionError` — never a silent skip.
+      Per-expert spans are aliased into their packed aggregate via
+      :meth:`NameProjection.packed_parent_of_expert_param`.
+    - **``name_map`` / ``expert_parent_for_projection``** (legacy form):
+      the raw ``ModelProfile.checkpoint_to_live_name`` /
+      ``packed_expert_parent_for_projection`` accessors; identity when
+      None. Same semantics, but accessor failures surface as raw
+      exceptions and an empty-string mapper result falls back to the raw
+      key instead of refusing.
+
+    Passing both forms is refused: two name authorities for one manifest
+    is exactly the second-enumeration drift this module must not host.
 
     Both packed-MoE on-disk layouts resolve to the packed allocator names
     (``...experts.gate_up_proj`` / ``...experts.down_proj``):
@@ -438,8 +437,8 @@ def source_tensor_bytes_manifest(
       lands in the manifest under its own name.
     - **Per-expert 2-D on disk** (``...experts.{i}.{proj}.weight``): each
       per-expert span is ALSO accumulated into the packed parent name via
-      :func:`packed_expert_alias` (gate+up fuse into gate_up), driven by
-      ``expert_parent_for_projection``
+      the shared alias primitive (gate+up fuse into gate_up), driven by the
+      projection or by ``expert_parent_for_projection``
       (``ModelProfile.packed_expert_parent_for_projection``; legacy
       gate/up/down fallback when None). The per-expert entries are kept
       alongside the packed aggregate so per-expert-named allocations
@@ -463,6 +462,38 @@ def source_tensor_bytes_manifest(
     manifest is >= 0 by construction (a negative floor is always an
     accounting bug — rejected at the consumers).
     """
+    if projection is not None and (
+            name_map is not None or expert_parent_for_projection is not None):
+        raise ValueError(
+            "[footprint] source_tensor_bytes_manifest: pass EITHER a "
+            "name-projection layer object (projection=NameProjection(...)) "
+            "OR the raw profile accessors (name_map / "
+            "expert_parent_for_projection), never both — one manifest must "
+            "not carry two disagreeing name authorities")
+
+    def _live_and_packed(name: str) -> tuple[str, str | None]:
+        # THE one name mapping, owned by prismaquant.name_projection:
+        # checkpoint key -> live allocator unit qname, with the profile's
+        # DECLARED drops kept under their raw checkpoint spelling and each
+        # per-expert span aliased into its packed aggregate.
+        if projection is not None:
+            projected = projection.checkpoint_to_live(name)
+            live = (projected.target if projected.outcome == MAPPED
+                    else strip_weight_leaf(name))
+            return live, projection.packed_parent_of_expert_param(live)
+        # Legacy accessor form: `or name` keeps a DECLINED key's bytes in
+        # the manifest under the raw checkpoint spelling (the MTP case:
+        # transformers v5 dropped the module, so the Qwen profiles decline
+        # `mtp.*`, while the exporter still re-encodes them from exactly
+        # these bytes and the allocator assigns them under raw names).
+        # Inert for tensors nothing re-encodes: the floor is
+        # `checkpoint_total - sum(resolved re-encoded spans)`, so a
+        # manifest entry no `reencoded_names` member references never
+        # moves it.
+        live = strip_weight_leaf(
+            (name_map(name) if name_map is not None else name) or name)
+        return live, packed_expert_alias(live, expert_parent_for_projection)
+
     out = SourceByteManifest()
     provenance: dict[str, set[str]] = {}
 
@@ -478,25 +509,12 @@ def source_tensor_bytes_manifest(
         # Packed 3-D expert params have no ".weight" suffix; the key IS the
         # base (and its sidecars still hang off `<base>.scale` etc.).
         base = source_span_identity(name)
-        # A live-graph mapper declining a key does NOT mean the tensor has no
-        # source bytes, so it must not drop out of the manifest: MTP sidecars
-        # are the live case (transformers v5 removed the module, so
-        # `checkpoint_to_live_name("mtp.fc.weight")` is None on the Qwen
-        # profiles) while the exporter still re-encodes `mtp.*` from exactly
-        # these bytes, and the allocator assigns them under their raw names.
-        # Fall back to the checkpoint key so such a name resolves. This is
-        # inert for tensors nothing re-encodes: the floor is
-        # `checkpoint_total - sum(resolved re-encoded spans)`, so a manifest
-        # entry no `reencoded_names` member references never moves it.
-        live = (name_map(name) if name_map is not None else name) or name
-        if live.endswith(".weight"):
-            live = live[: -len(".weight")]
-        # `base` (the checkpoint key without .weight) is the SOURCE identity:
-        # unique per checkpoint tensor, and shared by the per-expert entry and
-        # the packed aggregate that both cover it. That shared key is what
-        # makes the double-charge structurally detectable.
+        # `base` is the SOURCE identity: unique per checkpoint tensor, and
+        # shared by the per-expert entry and the packed aggregate that both
+        # cover it. That shared key is what makes the double charge
+        # structurally detectable.
+        live, packed = _live_and_packed(name)
         _add(live, total, base)
-        packed = packed_expert_alias(live, expert_parent_for_projection)
         if packed is not None:
             _add(packed, total, base)
     out.spans = {k: frozenset(v) for k, v in provenance.items()}
@@ -681,8 +699,8 @@ def resolve_reencoded_source_bytes(
     for qname in reencoded_names:
         key = qname
         nb = manifest.get(key)
-        if nb is None and qname.endswith(".weight"):
-            key = qname[: -len(".weight")]
+        if nb is None:
+            key = strip_weight_leaf(qname)
             nb = manifest.get(key)
         if nb is None:
             missing.append(qname)
@@ -1146,8 +1164,8 @@ def assignment_artifact_bytes(
                 source_manifest, passthrough_names, context=context)
     for qname, fmt in assignment.items():
         entry = stats.get(qname)
-        if entry is None and qname.endswith(".weight"):
-            entry = stats.get(qname[: -len(".weight")])
+        if entry is None:
+            entry = stats.get(strip_weight_leaf(qname))
         if not isinstance(entry, dict):
             missing_stats.append(qname)
             continue
@@ -1279,6 +1297,7 @@ def floor_bytes_for_model(
     regime: str | None = None,
     name_map=None,
     expert_parent_for_projection=None,
+    projection: NameProjection | None = None,
 ) -> dict:
     """Compute the non-quantizable floor (and the scalars to reuse) from a model.
 
@@ -1294,19 +1313,23 @@ def floor_bytes_for_model(
     so it never needs the regime-wide per-param rate); a name the manifest
     cannot resolve is a hard error (:func:`resolve_reencoded_source_bytes`) —
     an unresolved name would silently over-count the artifact.
-    ``name_map`` / ``expert_parent_for_projection`` are the profile's
-    ``checkpoint_to_live_name`` / ``packed_expert_parent_for_projection``
-    (pass them for any packed-MoE architecture; defaults handle the
-    identity naming and the legacy gate/up/down packing). ``regime``
-    defaults to :func:`source_regime` (robust fp8/bf16 detection) and is
-    returned for reporting. ``stats`` is retained for call compatibility
-    (shapes are no longer needed to price source bytes).
+    The name mapping goes to the shared projection layer: pass
+    ``projection=NameProjection(...)`` (fail-closed refusals, declared-drop
+    outcomes) OR the legacy ``name_map`` /
+    ``expert_parent_for_projection`` accessor pair — never both (see
+    :func:`source_tensor_bytes_manifest`). Pass the profile's accessors for
+    any packed-MoE architecture; defaults handle identity naming and the
+    legacy gate/up/down packing. ``regime`` defaults to
+    :func:`source_regime` (robust fp8/bf16 detection) and is returned for
+    reporting. ``stats`` is retained for call compatibility (shapes are no
+    longer needed to price source bytes).
     """
     total, by_dtype = source_checkpoint_bytes(model_path)
     reg = regime if regime is not None else source_regime(by_dtype)
     manifest = source_tensor_bytes_manifest(
         model_path, name_map=name_map,
-        expert_parent_for_projection=expert_parent_for_projection)
+        expert_parent_for_projection=expert_parent_for_projection,
+        projection=projection)
     reenc_by_name = resolve_reencoded_source_bytes(
         manifest, reencoded_names, context="floor_bytes_for_model")
     reenc_src = sum(reenc_by_name.values())

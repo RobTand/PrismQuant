@@ -148,6 +148,12 @@ from . import format_registry as fr
 from . import footprint as fp
 from .allocator_solver import _shape_from_stats
 from .cb_export_config import CODEBOOK_TENSOR_PREFIX
+from .name_projection import (
+    DECLARED_OUT_OF_GRAPH,
+    MAPPED,
+    NameProjection,
+    strip_weight_leaf,
+)
 from .nvfp4_cb_footprint import is_cb_format
 
 SCHEMA = "prismaquant.read_traffic.v1"
@@ -327,10 +333,6 @@ def read_model_config(model_path: str | os.PathLike) -> dict:
 # Classification
 # ---------------------------------------------------------------------------
 
-def _strip_weight(name: str) -> str:
-    return name[: -len(".weight")] if name.endswith(".weight") else name
-
-
 def _has_experts_segment(name: str) -> bool:
     """True when a qname structurally sits under a routed-expert container.
 
@@ -385,7 +387,7 @@ def resolve_vocab_size(config: Mapping[str, Any] | None) -> int | None:
 
 def _module_stem(name: str) -> str:
     """The module a tensor hangs off: its name minus the final leaf."""
-    base = _strip_weight(str(name))
+    base = strip_weight_leaf(str(name))
     for suffix in fp._SIDECAR_SUFFIXES:
         if base.endswith(suffix):
             base = base[: -len(suffix)]
@@ -554,7 +556,7 @@ class EmbeddingDisposition:
 
 def _matches_declared(base: str, declared: str) -> bool:
     """``base`` is the tensor the profile means by ``declared``."""
-    declared = _strip_weight(str(declared))
+    declared = strip_weight_leaf(str(declared))
     return base == declared or base.endswith("." + declared)
 
 
@@ -600,12 +602,12 @@ def resolve_embedding_disposition(
     says ``head``) while ``embedding_name()`` is the live one (``model.
     embed_tokens``, where the checkpoint says ``embed``).
     """
-    lm_head = _strip_weight(str(profile.lm_head_name()))
-    embedding = _strip_weight(str(profile.embedding_name()))
+    lm_head = strip_weight_leaf(str(profile.lm_head_name()))
+    embedding = strip_weight_leaf(str(profile.embedding_name()))
     lm_head_present = False
     embedding_present = False
     for raw in names:
-        base = _strip_weight(str(raw))
+        base = strip_weight_leaf(str(raw))
         if _matches_declared(base, lm_head):
             lm_head_present = True
         elif _matches_declared(base, embedding):
@@ -666,6 +668,7 @@ def classify_read_class(
     scaled_stems: frozenset[str] | None = None,
     quant_targets: tuple[str, ...] = (),
     context: str = "read_traffic",
+    projection: NameProjection | None = None,
 ) -> str:
     """The read class of one tensor.  See :data:`READ_CLASS_TABLE`.
 
@@ -674,7 +677,10 @@ def classify_read_class(
     profile's ``checkpoint_to_live_name`` declines it, so the manifest falls
     back to the raw key).  Both spellings are tested against every rule, so a
     class is never missed on naming alone (project memory: a Linear has three
-    names).
+    names).  The checkpoint→live bridge is the shared
+    :class:`~prismaquant.name_projection.NameProjection`, not a private
+    mapping here; pass the caller's instance (``projection=``) so every span
+    shares one projection.
 
     ``embedding_streamed`` answers the one question a single tensor's name
     cannot: a tied embedding IS the output projection and is read in full
@@ -690,7 +696,7 @@ def classify_read_class(
     spellings = {str(name)}
     if checkpoint_key:
         spellings.add(str(checkpoint_key))
-    bases = {_strip_weight(s) for s in spellings}
+    bases = {strip_weight_leaf(s) for s in spellings}
 
     if any(base.startswith(CODEBOOK_TENSOR_PREFIX) for base in bases):
         return "resident_codebooks"
@@ -730,7 +736,7 @@ def classify_read_class(
             )
         return "routed_experts"
 
-    embedding = _strip_weight(str(profile.embedding_name()))
+    embedding = strip_weight_leaf(str(profile.embedding_name()))
     if any(_matches_declared(base, embedding) for base in bases):
         if embedding_streamed is None:
             raise ReadTrafficError(
@@ -749,12 +755,14 @@ def classify_read_class(
     # the architecture's OWN declaration that the tensor is not part of the
     # text decode path (vision/audio towers).  It is a declaration, not a
     # name test, which is why it is the rule rather than a prefix list.
+    # Routed through the shared name-projection layer: the DECLARED drop is
+    # data (DECLARED_OUT_OF_GRAPH), and an accessor that fails raises
+    # NameProjectionError instead of silently passing the key through.
     if checkpoint_key is not None:
-        try:
-            mapped = profile.checkpoint_to_live_name(str(checkpoint_key))
-        except Exception:
-            mapped = str(checkpoint_key)
-        if mapped is None:
+        if projection is None:
+            projection = NameProjection(profile)
+        projected = projection.checkpoint_to_live(str(checkpoint_key))
+        if projected.outcome == DECLARED_OUT_OF_GRAPH:
             return "excluded_non_text_graph"
 
     return "dense" if in_assignment else "held_fixed"
@@ -1005,6 +1013,11 @@ def assignment_read_traffic(
         if passthrough_names else {}
     )
 
+    # One shared name-projection for every checkpoint→live question below.
+    # Built from the same profile the byte authorities take, so the ledger
+    # cannot describe a different model than the footprint does.
+    projection = NameProjection(profile)
+
     # The embedding's read probability is a whole-checkpoint fact (is there a
     # separate output projection?), so it is resolved once, over every name in
     # the artifact, before any tensor is classified.
@@ -1012,11 +1025,15 @@ def assignment_read_traffic(
     live_names: list[str] = list(merged)
 
     def _live(ckpt_key: str) -> str:
-        try:
-            mapped = profile.checkpoint_to_live_name(ckpt_key)
-        except Exception:
-            mapped = ckpt_key
-        return _strip_weight(mapped or ckpt_key)
+        # The layer's declared drop (vision/audio/MTP/scale keys) keeps the
+        # raw checkpoint spelling in play as a NAME for rule matching -- which
+        # is what the pre-projection code did with a ``None`` mapping too --
+        # while a failing profile accessor now refuses loudly through
+        # NameProjectionError instead of silently passing the key through.
+        projected = projection.checkpoint_to_live(ckpt_key)
+        if projected.outcome == MAPPED:
+            return projected.target
+        return strip_weight_leaf(ckpt_key)
 
     for key in span_bytes:
         live_names.append(key)        # the checkpoint spelling (`head`)
@@ -1043,7 +1060,7 @@ def assignment_read_traffic(
     for qname, raw_format in merged.items():
         entry = stats.get(qname)
         if entry is None and qname.endswith(".weight"):
-            entry = stats.get(_strip_weight(qname))
+            entry = stats.get(strip_weight_leaf(qname))
         if not isinstance(entry, dict):
             continue  # unpriced: its source bytes stay in the floor half
         # `priced` in footprint's own loop: these are the names whose SOURCE
@@ -1110,7 +1127,7 @@ def assignment_read_traffic(
     covered_spans: set[str] = set()
     span_map = getattr(source_manifest, "spans", {}) or {}
     for qname in priced_names:
-        key = qname if qname in source_manifest else _strip_weight(qname)
+        key = qname if qname in source_manifest else strip_weight_leaf(qname)
         covered_spans.update(span_map.get(key, ()))
 
     for ckpt_key, nbytes in sorted(span_bytes.items()):
@@ -1122,7 +1139,7 @@ def assignment_read_traffic(
             in_assignment=False, embedding_streamed=embedding.streamed,
             dtype=dtype, shape=shape, vocab_size=vocab_size,
             scaled_stems=scaled_stems, quant_targets=quant_targets,
-            context=context)
+            context=context, projection=projection)
         saw_routed |= klass == "routed_experts"
         integer_tally.note(dtype, shape, nbytes, klass)
         _charge(int(nbytes), klass)
@@ -1257,18 +1274,21 @@ def exported_checkpoint_read_traffic(
     if config is None:
         config = read_model_config(export_dir)
 
+    projection = NameProjection(profile)
     spans = fp.source_tensor_span_bytes(export_dir)
 
     # Classify on the LIVE spelling with the on-disk one alongside: a
     # multimodal checkpoint stores the embedding as
     # `model.language_model.embed_tokens.weight`, and only the profile's own
-    # mapping turns that into the name the profile declares.
+    # mapping turns that into the name the profile declares.  The mapping is
+    # the shared name-projection layer: a declared drop keeps the raw key as a
+    # rule-matching name (as the pre-projection code did with `None`), while
+    # a failing profile accessor refuses instead of passing through.
     def _live(ckpt_key: str) -> str:
-        try:
-            mapped = profile.checkpoint_to_live_name(ckpt_key)
-        except Exception:
-            mapped = ckpt_key
-        return _strip_weight(mapped or ckpt_key)
+        projected = projection.checkpoint_to_live(ckpt_key)
+        if projected.outcome == MAPPED:
+            return projected.target
+        return strip_weight_leaf(ckpt_key)
 
     embedding = resolve_embedding_disposition(
         [name for key in spans for name in (key, _live(key))],
@@ -1291,7 +1311,7 @@ def exported_checkpoint_read_traffic(
             in_assignment=False, embedding_streamed=embedding.streamed,
             dtype=dtype, shape=shape, vocab_size=vocab_size,
             scaled_stems=scaled_stems, quant_targets=quant_targets,
-            context=context)
+            context=context, projection=projection)
         integer_tally.note(dtype, shape, nbytes, klass)
         # An exported artifact has no allocator/floor distinction on disk, so
         # every always-active tensor lands in `held_fixed`; the recipe-side
@@ -1301,7 +1321,7 @@ def exported_checkpoint_read_traffic(
         class_totals[klass]["n_tensors"] += 1
 
     for name, (_dtype, shape) in header_meta.items():
-        if len(shape) == 3 and _has_experts_segment(_strip_weight(name)):
+        if len(shape) == 3 and _has_experts_segment(strip_weight_leaf(name)):
             observed_expert_counts[name] = shape[0]
 
     ledger_total = sum(
@@ -1338,7 +1358,14 @@ def exported_checkpoint_read_traffic(
         },
         embedding=embedding,
         integer_tally=integer_tally,
-        measured_from=f"exported safetensors headers under {export_dir}",
+        # Deliberately NOT f"...under {export_dir}": during a staged export
+        # this function runs against the ATOMIC STAGING directory, which the
+        # publishing rename then destroys -- so an embedded absolute path is
+        # provenance naming a directory that no longer exists by the time
+        # anyone reads the card. The card already records the final location
+        # in `model_dir`. Describe WHAT was measured, matching the sibling
+        # claim at :1165 ("allocator assignment + source checkpoint spans").
+        measured_from="exported safetensors headers",
     )
 
 
