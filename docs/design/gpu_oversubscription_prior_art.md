@@ -166,6 +166,9 @@ GPU-memory requests, but its own GPU-sharing guide says it does not enforce
 memory limits or isolate processes by default; an interception mechanism such
 as HAMi is required
 ([KAI GPU sharing](https://github.com/kai-scheduler/KAI-Scheduler/blob/main/docs/gpu-sharing/README.md)).
+KAI documents HAMi as an `LD_PRELOAD` CUDA-allocation interception layer that
+enforces per-container limits
+([KAI HAMi isolation](https://github.com/kai-scheduler/KAI-Scheduler/blob/main/docs/gpu-sharing/hami/README.md)).
 KAI's scheduling cycle has allocate, consolidate, reclaim, preempt, and stale
 gang-eviction phases; priority governs lower-priority preemption
 ([KAI scheduling deep dive](https://github.com/kai-scheduler/KAI-Scheduler/blob/main/docs/scheduling-deep-dive/README.md)).
@@ -173,6 +176,10 @@ Run:ai's dynamic-fractions contract is closer to this task: a workload gets a
 GPU-memory/compute **Request**, may borrow up to a larger **Limit**, and an
 extendable GPU OOM killer reclaims the loan when necessary
 ([Run:ai dynamic GPU fractions](https://run-ai-docs.nvidia.com/self-hosted/platform-management/runai-scheduler/resource-optimization/dynamic-fractions)).
+Run:ai separately documents **GPU memory swap** as expanding discrete GPU
+physical memory into CPU memory and moving inactive workload state between
+those two tiers
+([Run:ai GPU memory swap](https://run-ai-docs.nvidia.com/self-hosted/platform-management/runai-scheduler/resource-optimization/memory-swap)).
 
 **Inference for PrismaQuant.**  Run:ai's request/limit split is valuable prior
 art for a soft watermark plus a non-borrowable reserve.  Its implementation is
@@ -180,21 +187,34 @@ not portable to Spark as documented: it reasons about a fraction or byte count
 of one GPU's memory, while this GB10 reports no dedicated framebuffer capacity
 and competes with the host in one pool.  KAI's optional CUDA-interposition
 enforcement likewise needs explicit sm_121/UMA validation; its own default has
-no isolation.  Borrow the burstable-loan policy, not either Kubernetes stack.
+no isolation.  Run:ai memory swap is categorically inapplicable: its source
+and destination are the same LPDDR5x pool here, so moving a CUDA allocation to
+CPU-addressed pages does not return physical capacity to MemAvailable and may
+consume bandwidth while the same ceiling is under pressure.  That conclusion
+is an inference from Run:ai's documented two-tier mechanism and Spark's
+documented UMA, not a Run:ai compatibility statement.  Borrow the
+burstable-loan policy, not either Kubernetes stack.
 **Adoption cost for the policy: medium; for KAI/Run:ai: very high.**
 
-**Volcano — documented.**  Volcano's gang plugin uses all-or-nothing
-`minAvailable` admission so a distributed job does not strand a partial set of
-pods, and its configurable cycle can combine allocate, preempt, reclaim, and
-backfill
+**Volcano — documented.**  Volcano's vGPU integration offers HAMi-core CUDA
+interposition for software core/memory control or dynamic MIG for hardware
+isolation; its documentation says the latter requires a MIG-capable GPU
+([Volcano vGPU modes](https://github.com/volcano-sh/volcano/blob/master/docs/user-guide/how_to_use_volcano_vgpu.md)).
+Its gang plugin uses all-or-nothing `minAvailable` admission so a distributed
+job does not strand a partial set of pods, and its configurable cycle can
+combine allocate, preempt, reclaim, and backfill
 ([gang plugin](https://volcano.sh/docs/scheduler/plugins/gang/),
 [scheduler workflow](https://volcano.sh/docs/scheduler/overview/)).
 
-**Inference for PrismaQuant.**  Gang admission matters when several ranks must
-start together.  It does not help a mostly single-process workload decide
-whether two CUDA processes fit one UMA pool.  Receipt dependencies already
-cover the local all-or-nothing relationships that exist.  Do not adopt
-Volcano; revisit only for real multi-rank campaigns.  **Adoption cost: high.**
+**Inference for PrismaQuant.**  Neither vGPU path is production-applicable:
+dynamic MIG is unavailable on the measured GB10, while HAMi is an unvalidated
+`LD_PRELOAD`/CUDA-interception boundary on sm_121 and still does not account
+for non-CUDA host consumers of the shared pool.  Gang admission matters when
+several ranks must start together, but it does not help a mostly single-process
+workload decide whether two CUDA processes fit one UMA pool.  Receipt
+dependencies already cover the local all-or-nothing relationships that exist.
+Do not adopt Volcano; revisit gang admission only for real multi-rank
+campaigns.  **Adoption cost: high.**
 
 **Kueue — documented.**  Kueue is a Kubernetes-native quota/admission manager,
 not a replacement pod scheduler
