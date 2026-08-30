@@ -129,11 +129,17 @@ unary cost* over `(Linear, format)`, solved by a multi-choice knapsack DP:
   budget** ("fit the card", `footprint.py` exact) plus the saturation point B*;
   **kneedle is demoted to a diagnostic** — it is axis-dependent and
   LOO-unstable (fp32 4B: elbow at 5.00 in only 454/1000 bootstraps).
-- **The guarantee.** Coordinate-descent polish accepts only single-unit flips
-  that *strictly* reduce measured real KL — *provably no worse* than the chosen
-  frontier point (a contractual guarantee under the fixed polish-time evaluator,
-  explicitly **not** an optimality claim, and re-validated end-to-end after
-  export).
+- **The guarantee — archived 2026-05-15; NOT a live stage.** Coordinate-descent
+  polish accepted only single-unit flips that *strictly* reduced measured real KL
+  — *provably no worse* than the chosen frontier point (a contractual guarantee
+  under the fixed polish-time evaluator, explicitly **not** an optimality claim).
+  It is **not in the shipping pipeline**: `run-pipeline.sh` mentions polish only in
+  a comment (`:695`), `pipeline.py` declares no polish stage, and no live module
+  imports it — the code is walled at `archive/polish_2026-05-15/`, whose README
+  records the same three checks. Read the guarantee as a property of the retired
+  mechanism, not as something the pipeline currently delivers, and do not budget a
+  polish stage into a build plan. `docs/ARCHITECTURE.md` has this right (`:2945`);
+  this file was the stale one.
 
 ### History: the retired cascade
 
@@ -562,9 +568,12 @@ a `TARGET_DISK_GB` card).
   `PRISMAQUANT_FISHER_CAP_MULTIPLIER=K` → `allocator.clip_probe_fisher_outliers`,
   unset = byte-identical no-op. Still **research** — no served A/B; do not
   default it on. Reference tool: `/home/rob/dq-runs/robust_fisher_clip.py`.
-- **Production-faithful polish** (5.39 bpp / polish-time KL 0.0054): **provisional**
-  — that number is a polish-time signal on a 2×128 calibration, **not** a held-out
-  8×512 claim. Do not cite −2.8× as a result until the 8×512 re-measurement lands.
+- **Production-faithful polish** (5.39 bpp / polish-time KL 0.0054): **provisional
+  *and* archived** — polish stopped being a pipeline stage on 2026-05-15
+  (`archive/polish_2026-05-15/`), so this is not an actionable in-flight item. That
+  number is a polish-time signal on a 2×128 calibration, **not** a held-out 8×512
+  claim. Do not cite −2.8× as a result, and do not schedule the 8×512
+  re-measurement without first deciding, deliberately, to un-archive polish.
 - **Low-bit kernel lane** (`references/lowbit-kernels/`): direction agreed
   (MicroMix-style mixed MXFP4/MXFP6/MXFP8 per-channel kernel to fill the
   NVFP4→MXFP8 4× gap; the knee lands at 5.0–5.7 bpp across his models) but not
