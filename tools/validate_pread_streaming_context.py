@@ -137,9 +137,9 @@ def main() -> None:
             raise ValidationError(
                 f"installed layer retains meta tensors: {meta_after_install[:8]}"
             )
-        cached = ctx.layer_cache.peek(args.layer)
-        if not cached:
+        if not ctx.layer_cache.peek(args.layer):
             raise ValidationError("prefetched layer was not retained in LayerCache")
+        cached = ctx.layer_cache._cache[args.layer]
         layer_tensor_count = len(cached)
         layer_payload_bytes = sum(
             int(t.numel() * t.element_size()) for t in cached.values()
