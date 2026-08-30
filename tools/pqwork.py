@@ -46,12 +46,14 @@ utilization win is backfill-on-idle per box.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
-import shlex
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -73,6 +75,27 @@ HEARTBEAT_S = 30
 LEASE_TIMEOUT_S = 300
 
 POLL_S = 10
+
+# Memory admission and eviction.  On GB10 the GPU and the host share one
+# physical pool, so /proc/meminfo MemAvailable *is* the GPU memory ceiling --
+# every dedicated GPU-memory source on this box reads null or a fake zero.
+# There is also no swap (SwapTotal: 0), so MemAvailable reaching the wall
+# means the kernel OOM killer picks a victim immediately, with no cushion and
+# by its own heuristic.  It has picked wrong here before.  Evicting early is
+# how we choose the victim ourselves.
+# An evicted item must not be re-admitted immediately.  Aggressive
+# admission and zero backoff together are a livelock: the box evicts, sees
+# headroom, re-admits the same job, and evicts it again, forever, making no
+# progress while looking busy.  Backoff is the necessary complement to
+# "start it and find out" -- observed doing exactly this on 2026-08-29
+# before the cooldown existed.
+EVICT_BACKOFF_BASE_S = 60.0
+EVICT_BACKOFF_CAP_S = 1800.0
+MAX_EVICTIONS = 5
+
+MEM_SAMPLE_S = 2.0
+MEM_RATE_WINDOW_S = 30.0
+EVICT_GRACE_S = 10.0
 
 
 # --------------------------------------------------------------------------
@@ -173,6 +196,8 @@ def is_runnable(item: dict, host: str, tags: set[str], has_gpu: bool) -> bool:
     if not required.issubset(tags):
         return False
     if item.get("needs_gpu") and not has_gpu:
+        return False
+    if time.time() < float(item.get("not_before") or 0):
         return False
     return receipts_present(item.get("after") or [])
 
@@ -301,111 +326,346 @@ def try_claim(item_id: str, host: str) -> dict | None:
 # execution
 
 
-def run_item(item: dict, host: str) -> str:
-    """Execute one claimed item and return its terminal state name.
+def swap_free_gb() -> float:
+    """Swap still available, in GB; 0.0 when swap is off.
 
-    The job runs as a direct child of the worker rather than as its own
-    transient unit.  That is deliberate: if the worker dies the child dies
-    with it, the lease goes stale, and the reaper requeues -- one recovery
-    path instead of an orphaned unit nothing is watching.
+    Swap is not extra capacity here -- paging a multi-gigabyte tensor
+    workload is ruinous for throughput -- but it is *time*.  It converts a
+    hard OOM kill chosen by the kernel into a slow slide we can detect and
+    act on, which is the difference between choosing the victim and being
+    handed one. Note sparky ran with swap disabled from 2026-07-25 as an
+    OOM-livelock mitigation, so this legitimately reads 0 there.
     """
-    item_id = item["id"]
-    receipt = item.get("receipt")
+    try:
+        with open("/proc/meminfo") as fh:
+            vals = {}
+            for line in fh:
+                k, _, rest = line.partition(":")
+                if k in ("SwapFree", "SwapTotal"):
+                    vals[k] = int(rest.split()[0]) / (1024.0 * 1024.0)
+            return vals.get("SwapFree", 0.0)
+    except OSError:
+        return 0.0
 
-    if receipt and Path(receipt).exists():
-        # Idempotency gate.  This is what makes requeue-on-stale-lease safe
-        # and what lets a campaign be re-enqueued wholesale after a partial
-        # run without redoing the finished arms.
-        move_item(item_id, CLAIMED, DONE,
-                  {"outcome": "already_complete", "finished_at": time.time()})
-        return "already_complete"
 
-    env = dict(os.environ)
-    env.update({str(k): str(v) for k, v in (item.get("env") or {}).items()})
-    # Never /tmp: it was cleared by an OOM once and took artifacts with it.
-    local_tmp = Path.home() / ".pq-queue-tmp"
-    local_tmp.mkdir(parents=True, exist_ok=True)
-    env["TMPDIR"] = str(local_tmp)
-    env["PQ_ITEM_ID"] = item_id
-    env["PQ_WORKER_HOST"] = host
+def mem_available_gb() -> float:
+    """Free memory this box can still hand out, in GB.
 
-    cwd = item.get("cwd") or str(Path.home())
-    timeout = item.get("timeout_s")
-    log = log_path(item_id)
+    MemAvailable rather than MemFree: it already accounts for reclaimable
+    page cache, which is the number that actually predicts whether the next
+    allocation succeeds.  On GB10 it is also the GPU ceiling, because the GPU
+    and the host share one physical pool.
+    """
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024.0 * 1024.0)
+    except OSError:
+        pass
+    return float("inf")
 
-    beat_deadline = time.time() + HEARTBEAT_S
-    started = time.time()
-    with open(log, "a", buffering=1) as fh:
-        fh.write(f"\n==== pqwork {item_id} on {host} at {time.strftime('%F %T')} ====\n")
-        fh.write(f"cwd={cwd}\ncmd={item['cmd']}\n\n")
-        fh.flush()
-        proc = subprocess.Popen(
-            ["bash", "-lc", item["cmd"]],
-            cwd=cwd, env=env, stdout=fh, stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        while True:
+
+class Job:
+    """One claimed item executing as a child process group."""
+
+    def __init__(self, item: dict, host: str):
+        self.item = item
+        self.id = item["id"]
+        self.host = host
+        self.proc: subprocess.Popen | None = None
+        self.started = time.time()
+        self.avail_at_start = mem_available_gb()
+        self.evicted = False
+        self.state: str | None = None
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    @property
+    def declared_gb(self) -> float:
+        try:
+            return float(self.item.get("mem_gb") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
+    def evictable(self) -> bool:
+        return bool(self.item.get("evictable", True))
+
+    def _run(self) -> None:
+        item, host = self.item, self.host
+        receipt = item.get("receipt")
+        if receipt and Path(receipt).exists():
+            # Idempotency gate.  This is what makes requeue-on-eviction and
+            # requeue-on-stale-lease safe, and what lets a partially finished
+            # campaign be re-enqueued wholesale without redoing its finished
+            # arms.
+            move_item(self.id, CLAIMED, DONE,
+                      {"outcome": "already_complete", "finished_at": time.time()})
+            self.state = "already_complete"
+            return
+
+        env = dict(os.environ)
+        env.update({str(k): str(v) for k, v in (item.get("env") or {}).items()})
+        # Never /tmp: it was cleared by an OOM once and took artifacts with it.
+        local_tmp = Path.home() / ".pq-queue-tmp"
+        local_tmp.mkdir(parents=True, exist_ok=True)
+        env["TMPDIR"] = str(local_tmp)
+        env["PQ_ITEM_ID"] = self.id
+        env["PQ_WORKER_HOST"] = host
+
+        log = log_path(self.id)
+        with open(log, "a", buffering=1) as fh:
+            fh.write(f"\n==== pqwork {self.id} on {host} at "
+                     f"{time.strftime('%F %T')} ====\n")
+            fh.write(f"cwd={item.get('cwd')}\ncmd={item['cmd']}\n"
+                     f"mem_available_at_start={self.avail_at_start:.1f}GB\n\n")
+            # start_new_session so the whole job -- and anything it spawns --
+            # is one process group we can signal as a unit. Killing only the
+            # shell would leave the actual worker holding the memory.
+            self.proc = subprocess.Popen(
+                ["bash", "-lc", item["cmd"]],
+                cwd=item.get("cwd") or str(Path.home()), env=env,
+                stdout=fh, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+            rc = self.proc.wait()
+            elapsed = time.time() - self.started
+            if self.evicted:
+                fh.write(f"\n[pqwork] evicted to avoid OOM after {elapsed:.0f}s\n")
+
+        if self.evicted:
+            # An eviction is not a failure of the work, so it does not spend
+            # an attempt -- a box under memory pressure would otherwise burn
+            # through max_attempts on items that never got to run. It does
+            # spend an *eviction*, which backs the item off and eventually
+            # concludes it does not fit here.
+            evictions = int(item.get("evictions", 0)) + 1
+            if evictions >= MAX_EVICTIONS:
+                move_item(self.id, CLAIMED, FAILED,
+                          {"outcome": f"evicted_{evictions}x_does_not_fit",
+                           "evictions": evictions, "finished_at": time.time()})
+                self.state = "does_not_fit"
+                return
+            backoff = min(EVICT_BACKOFF_BASE_S * (2 ** (evictions - 1)),
+                          EVICT_BACKOFF_CAP_S)
+            move_item(self.id, CLAIMED, READY,
+                      {"outcome": "evicted_for_memory",
+                       "evictions": evictions,
+                       "not_before": time.time() + backoff,
+                       "attempts": max(0, int(item.get("attempts", 1)) - 1)})
+            self.state = f"evicted (backoff {backoff:.0f}s)"
+            return
+
+        receipt = item.get("receipt")
+        if receipt:
+            ok = Path(receipt).exists()
+            outcome = "receipt_present" if ok else f"no_receipt (rc={rc})"
+        else:
+            ok = rc == 0
+            outcome = f"rc={rc}"
+        patch = {"outcome": outcome, "exit_code": rc,
+                 "elapsed_s": round(elapsed, 1), "finished_at": time.time()}
+        if ok:
+            move_item(self.id, CLAIMED, DONE, patch)
+            self.state = "done"
+        elif int(item.get("attempts", 0)) < int(item.get("max_attempts", 3)):
+            move_item(self.id, CLAIMED, READY, patch)
+            self.state = "requeued"
+        else:
+            move_item(self.id, CLAIMED, FAILED, patch)
+            self.state = "failed"
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def alive(self) -> bool:
+        return self.thread.is_alive()
+
+    def evict(self) -> None:
+        """Stop this job so its memory comes back, and requeue it.
+
+        SIGTERM to the process group first so a job with a cleanup handler
+        can flush a partial receipt, then SIGKILL. Signalling the group
+        rather than the shell matters: the shell is not the process holding
+        the tens of gigabytes.
+        """
+        self.evicted = True
+        proc = self.proc
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            return
+        deadline = time.time() + EVICT_GRACE_S
+        while time.time() < deadline and proc.poll() is None:
+            time.sleep(0.5)
+        if proc.poll() is None:
             try:
-                rc = proc.wait(timeout=5)
-                break
-            except subprocess.TimeoutExpired:
-                now = time.time()
-                if now >= beat_deadline:
-                    write_lease(item_id, host, proc.pid)
-                    beat_deadline = now + HEARTBEAT_S
-                if timeout and (now - started) > float(timeout):
-                    proc.kill()
-                    rc = -9
-                    fh.write(f"\n[pqwork] killed: exceeded timeout_s={timeout}\n")
-                    break
-
-    elapsed = time.time() - started
-    # Gate on the receipt when one is declared; an exit code only says the
-    # process ended, not that the artifact landed.
-    if receipt:
-        ok = Path(receipt).exists()
-        outcome = "receipt_present" if ok else f"no_receipt (rc={rc})"
-    else:
-        ok = rc == 0
-        outcome = f"rc={rc}"
-
-    patch = {"outcome": outcome, "exit_code": rc,
-             "elapsed_s": round(elapsed, 1), "finished_at": time.time()}
-    if ok:
-        move_item(item_id, CLAIMED, DONE, patch)
-        return "done"
-
-    attempts = int(item.get("attempts", 0))
-    if attempts < int(item.get("max_attempts", 3)):
-        move_item(item_id, CLAIMED, READY, patch)
-        return "requeued"
-    move_item(item_id, CLAIMED, FAILED, patch)
-    return "failed"
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
 
 
-# --------------------------------------------------------------------------
-# the worker loop
+class MemoryGovernor:
+    """Decides what may start and what must stop, from MemAvailable.
+
+    The trigger is a *trajectory*, not a level.  A level alone is either too
+    conservative (refusing work on a box that is merely warm) or too late (by
+    the time MemAvailable is low, a job allocating fast is already past the
+    point where killing it can help).  Projecting the current drop rate
+    forward answers the question that actually matters -- will we hit the
+    wall before an eviction can free anything -- and that horizon is roughly
+    the time it takes to signal a process group and have the kernel reclaim
+    its pages.
+    """
+
+    def __init__(self, reserve_gb: float, horizon_s: float, settle_s: float,
+                 admission: str = "optimistic"):
+        self.reserve_gb = reserve_gb
+        self.horizon_s = horizon_s
+        self.settle_s = settle_s
+        self.admission = admission
+        self.samples: collections.deque = collections.deque()
+
+    def sample(self) -> float:
+        now, avail = time.time(), mem_available_gb()
+        self.samples.append((now, avail))
+        while self.samples and now - self.samples[0][0] > MEM_RATE_WINDOW_S:
+            self.samples.popleft()
+        return avail
+
+    def drop_rate_gb_s(self) -> float:
+        """GB/s at which MemAvailable is falling; negative means recovering."""
+        if len(self.samples) < 2:
+            return 0.0
+        (t0, a0), (t1, a1) = self.samples[0], self.samples[-1]
+        dt = t1 - t0
+        return (a0 - a1) / dt if dt > 0 else 0.0
+
+    def headroom(self, jobs: list) -> float:
+        """Memory we may still commit, after unrealized declarations.
+
+        A job that started seconds ago may not have allocated yet, so its
+        declared footprint is not visible in MemAvailable.  Counting it until
+        it has had time to settle prevents admitting three large jobs in the
+        same instant on the strength of memory the first one is about to take.
+        """
+        now = time.time()
+        unrealized = sum(
+            j.declared_gb for j in jobs
+            if j.declared_gb and (now - j.started) < self.settle_s
+        )
+        return self.samples[-1][1] - self.reserve_gb - unrealized if self.samples else 0.0
+
+    def may_admit(self, item: dict, jobs: list) -> bool:
+        """Optimistic by default: start it and find out.
+
+        Rob, 2026-08-29: *"I'd rather be overly aggressive enqueuing items
+        and then killing them than just having them wait in line."*  So a
+        declared ``mem_gb`` larger than current headroom is not a refusal --
+        estimates are guesses, and a job idling in ``ready/`` while the box
+        has memory free is a certain loss, where an eviction is only a
+        possible one.  The declaration still does real work: it is held
+        against headroom during the settle window so several large jobs
+        cannot all start in the same instant on the strength of memory the
+        first one has not taken yet.
+
+        ``strict`` restores refusal-on-declaration for a box where restarting
+        work is genuinely expensive.
+        """
+        headroom = self.headroom(jobs)
+        if self.admission == "strict":
+            try:
+                want = float(item.get("mem_gb") or 0.0)
+            except (TypeError, ValueError):
+                want = 0.0
+            return headroom >= want
+        return headroom > 0
+
+    def must_evict(self, jobs: list) -> bool:
+        """Are we projected to hit the wall before an eviction could help?
+
+        Swap extends the horizon rather than the capacity: with swap on,
+        crossing the reserve starts a slow slide instead of an immediate
+        kernel kill, so there is more time to act and the trigger can wait
+        for a real trend. With swap off -- sparky's state since 2026-07-25 --
+        there is no cushion at all and the projection has to fire earlier.
+        """
+        if not self.samples or not jobs:
+            return False
+        avail = self.samples[-1][1]
+        if avail <= self.reserve_gb:
+            return True
+        horizon = self.horizon_s
+        if swap_free_gb() <= 0.5:
+            horizon *= 2.0
+        projected = avail - self.drop_rate_gb_s() * horizon
+        return projected < self.reserve_gb
 
 
-def worker_loop(host: str, tags: set[str], gpu_slots: int, cpu_slots: int,
-                once: bool) -> int:
+def choose_victim(jobs: list):
+    """The newest, lowest-priority evictable job.
+
+    Newest because it is the one that pushed the box over and has the least
+    sunk compute to lose; lowest priority first so gold-path work outlives
+    speculative work. A job marked non-evictable is never chosen -- which
+    means a box can still OOM if everything running is pinned, and that is
+    the operator's declared choice rather than a surprise.
+    """
+    victims = [j for j in jobs if j.evictable and j.alive()]
+    if not victims:
+        return None
+    return sorted(victims, key=lambda j: (int(j.item.get("priority", 50)), -j.started))[0]
+
+
+def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
+                once: bool, reserve_gb: float, horizon_s: float,
+                settle_s: float, admission: str = "optimistic") -> int:
     ensure_layout()
     has_gpu = gpu_slots > 0
+    gov = MemoryGovernor(reserve_gb, horizon_s, settle_s, admission)
+    jobs: list = []
     print(f"[pqwork] worker up on {host} tags={sorted(tags) or '-'} "
-          f"gpu_slots={gpu_slots} cpu_slots={cpu_slots} queue={QUEUE_ROOT}", flush=True)
+          f"gpu_slots={gpu_slots} cpu_slots={cpu_slots} "
+          f"mem_reserve={reserve_gb:.0f}GB horizon={horizon_s:.0f}s "
+          f"admission={admission} swap_free={swap_free_gb():.0f}GB "
+          f"queue={QUEUE_ROOT}", flush=True)
     last_held = None
+    last_beat = 0.0
     while True:
+        avail = gov.sample()
+        jobs = [j for j in jobs if j.alive()]
+
+        # Memory policing comes before admission: give the box back its
+        # headroom before considering whether to take on more.
+        if gov.must_evict(jobs):
+            victim = choose_victim(jobs)
+            if victim is not None:
+                rate = gov.drop_rate_gb_s()
+                print(f"[pqwork] EVICT {victim.id}: MemAvailable {avail:.1f}GB "
+                      f"falling {rate:.2f}GB/s -> projected "
+                      f"{avail - rate * horizon_s:.1f}GB below the "
+                      f"{reserve_gb:.0f}GB reserve", flush=True)
+                victim.evict()
+
+        now = time.time()
+        if now - last_beat >= HEARTBEAT_S:
+            for j in jobs:
+                write_lease(j.id, host, j.proc.pid if j.proc else os.getpid())
+            last_beat = now
+
         reap(verbose=True)
         mine = claimed_on_host(host)
         gpu_busy = sum(1 for i in mine if i.get("needs_gpu"))
         cpu_busy = len(mine) - gpu_busy
         held, held_why = reserved_gpu_slots(host)
         gpu_capacity = max(0, gpu_slots - held)
-        if held and held != last_held:
-            print(f"[pqwork] {held} GPU slot(s) reserved outside the queue"
-                  f"{': ' + held_why.splitlines()[0] if held_why else ''}"
-                  f" -> gpu capacity {gpu_capacity}", flush=True)
-        last_held = held
+        if held != last_held:
+            if held:
+                print(f"[pqwork] {held} GPU slot(s) reserved outside the queue"
+                      f"{': ' + held_why.splitlines()[0] if held_why else ''}"
+                      f" -> gpu capacity {gpu_capacity}", flush=True)
+            last_held = held
 
         candidates = []
         for p in qdir(READY).glob("*.json"):
@@ -414,30 +674,44 @@ def worker_loop(host: str, tags: set[str], gpu_slots: int, cpu_slots: int,
                 candidates.append(item)
         candidates.sort(key=sort_key)
 
-        picked = None
+        started_any = False
         for item in candidates:
             if item.get("needs_gpu"):
                 if gpu_busy >= gpu_capacity:
                     continue
             elif cpu_busy >= cpu_slots:
                 continue
-            picked = try_claim(item["id"], host)
-            if picked is not None:
-                break
+            if not gov.may_admit(item, jobs):
+                continue
+            claimed = try_claim(item["id"], host)
+            if claimed is None:
+                continue
+            job = Job(claimed, host)
+            jobs.append(job)
+            job.start()
+            started_any = True
+            print(f"[pqwork] running {job.id} (gpu={bool(claimed.get('needs_gpu'))}, "
+                  f"declared={job.declared_gb or '-'}GB, "
+                  f"headroom={gov.headroom(jobs):.1f}GB) -> {log_path(job.id)}",
+                  flush=True)
+            if claimed.get("needs_gpu"):
+                gpu_busy += 1
+            else:
+                cpu_busy += 1
 
-        if picked is None:
-            if once:
+        if once:
+            if not started_any and not jobs:
                 print("[pqwork] nothing runnable here", flush=True)
                 return 0
-            time.sleep(POLL_S)
-            continue
-
-        print(f"[pqwork] running {picked['id']} "
-              f"(gpu={bool(picked.get('needs_gpu'))}) -> {log_path(picked['id'])}", flush=True)
-        state = run_item(picked, host)
-        print(f"[pqwork] {picked['id']}: {state}", flush=True)
-        if once:
+            for j in jobs:
+                j.thread.join()
+                print(f"[pqwork] {j.id}: {j.state}", flush=True)
             return 0
+
+        for j in list(jobs):
+            if not j.alive() and j.state:
+                print(f"[pqwork] {j.id}: {j.state}", flush=True)
+        time.sleep(MEM_SAMPLE_S if jobs else POLL_S)
 
 
 # --------------------------------------------------------------------------
@@ -462,6 +736,8 @@ def cmd_enqueue(a: argparse.Namespace) -> int:
         "hosts": a.host or None,
         "requires": a.require or [],
         "needs_gpu": bool(a.gpu),
+        "mem_gb": a.mem_gb,
+        "evictable": not a.no_evict,
         "receipt": a.receipt,
         "after": a.after or [],
         "priority": a.priority,
@@ -470,6 +746,8 @@ def cmd_enqueue(a: argparse.Namespace) -> int:
         "env": dict(kv.split("=", 1) for kv in (a.env or [])),
         "enqueued_at": time.time(),
         "attempts": 0,
+        "evictions": 0,
+        "not_before": 0,
     }
     write_json_atomic(item_path(READY, a.id), item)
     print(f"queued {a.id} -> {item_path(READY, a.id)}")
@@ -519,6 +797,10 @@ def cmd_status(a: argparse.Namespace) -> int:
                 pending = [p for p in (i.get("after") or []) if not Path(p).exists()]
                 if pending:
                     bits.append(f"blocked on {len(pending)} receipt(s)")
+                cool = float(i.get("not_before") or 0) - time.time()
+                if cool > 0:
+                    bits.append(f"cooling {int(cool)}s after "
+                                f"{i.get('evictions')} eviction(s)")
                 bits.append(f"waiting {_fmt_age(i.get('enqueued_at'))}")
             elif state in (DONE, FAILED):
                 bits.append(str(i.get("outcome")))
@@ -539,7 +821,9 @@ def cmd_reap(a: argparse.Namespace) -> int:
 
 def cmd_run(a: argparse.Namespace) -> int:
     host = a.host or socket.gethostname().split(".")[0]
-    return worker_loop(host, set(a.tag or []), a.gpu_slots, a.cpu_slots, a.once)
+    return worker_loop(host, set(a.tag or []), a.gpu_slots, a.cpu_slots,
+                       a.once, a.mem_reserve_gb, a.evict_horizon_s,
+                       a.mem_settle_s, a.admission)
 
 
 def cmd_cancel(a: argparse.Namespace) -> int:
@@ -556,7 +840,8 @@ def cmd_cancel(a: argparse.Namespace) -> int:
 def cmd_requeue(a: argparse.Namespace) -> int:
     for state in (FAILED, DONE):
         if item_path(state, a.id).exists():
-            move_item(a.id, state, READY, {"outcome": None, "attempts": 0})
+            move_item(a.id, state, READY, {"outcome": None, "attempts": 0,
+                                           "evictions": 0, "not_before": 0})
             print(f"requeued {a.id} (was {state})")
             return 0
     print(f"error: no failed/done item '{a.id}'", file=sys.stderr)
@@ -593,6 +878,15 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--require", action="append",
                    help="worker tag this item needs; repeatable")
     e.add_argument("--gpu", action="store_true", help="consumes a GPU slot")
+    e.add_argument("--mem-gb", type=float, default=None, dest="mem_gb",
+                   help="expected peak memory. Optional: an item that "
+                        "declares nothing is admitted optimistically and "
+                        "policed by eviction, which is the intended way to "
+                        "find out what something costs.")
+    e.add_argument("--no-evict", action="store_true", dest="no_evict",
+                   help="never evict this item under memory pressure. Use for "
+                        "gold-path work whose restart is expensive; note that "
+                        "a box where everything is pinned can still OOM.")
     e.add_argument("--receipt", help="path that must exist for the item to count "
                                      "as complete; also the skip-if-done gate")
     e.add_argument("--after", action="append",
@@ -607,11 +901,33 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run", help="run the pull loop for this box")
     r.add_argument("--host", default=None)
     r.add_argument("--tag", action="append", help="capability tag; repeatable")
-    r.add_argument("--gpu-slots", type=int, default=1, dest="gpu_slots",
-                   help="concurrent GPU items. Default 1: unified memory means "
-                        "two big jobs contend for one pool.")
+    r.add_argument("--gpu-slots", type=int, default=6, dest="gpu_slots",
+                   help="concurrency cap on GPU items. Memory, not this "
+                        "number, is the real gate -- the cap only bounds how "
+                        "many can be in flight at once.")
     r.add_argument("--cpu-slots", type=int, default=2, dest="cpu_slots")
     r.add_argument("--once", action="store_true", help="claim at most one item, then exit")
+    r.add_argument("--mem-reserve-gb", type=float, default=8.0,
+                   dest="mem_reserve_gb",
+                   help="MemAvailable floor. This is a declared operating "
+                        "reserve, not a derived constant: it has to cover "
+                        "whatever the kernel and everything off-queue need, "
+                        "which no measurement on this box reports.")
+    r.add_argument("--evict-horizon-s", type=float, default=20.0,
+                   dest="evict_horizon_s",
+                   help="evict when the current drop rate projects through "
+                        "the reserve within this many seconds")
+    r.add_argument("--admission", choices=("optimistic", "strict"),
+                   default="optimistic",
+                   help="optimistic (default) starts work whenever any "
+                        "headroom exists and relies on eviction; strict "
+                        "refuses an item whose declared mem_gb exceeds "
+                        "headroom.")
+    r.add_argument("--mem-settle-s", type=float, default=120.0,
+                   dest="mem_settle_s",
+                   help="how long a just-started job's declared mem_gb is "
+                        "held against headroom before MemAvailable is "
+                        "trusted to reflect it")
     r.set_defaults(func=cmd_run)
 
     s = sub.add_parser("status", help="show the queue")
