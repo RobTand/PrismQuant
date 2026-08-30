@@ -76,8 +76,11 @@ from typing import Any, Mapping, Sequence
 
 #: Schema of the eligibility table PrismaQuant consumes. Gridbook publishes it
 #: inside its packaged ``runtime_contract.json`` under the ``lane_eligibility``
-#: key; ``docs/design/gridbook_lane_eligibility_contract.md`` is the normative
-#: specification handed to that repository.
+#: key. The normative shape is the one Gridbook publishes -- principle 14 runs
+#: in this direction and no other. ``docs/design/gridbook_lane_eligibility_
+#: contract.md`` was the proposal handed to that repository and is SUPERSEDED
+#: by what came back: it is the record of why the fields were asked for, never
+#: a second authority on what they mean.
 LANE_ELIGIBILITY_SCHEMA = "gridbook.lane-eligibility.v3"
 
 #: Schema of the provenance payload this module produces. Bumped with the table
