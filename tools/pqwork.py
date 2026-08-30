@@ -246,17 +246,30 @@ def receipts_present(paths: list[str]) -> bool:
     return all(receipt_satisfied(p) for p in paths)
 
 
-def is_runnable(item: dict, host: str, tags: set[str], has_gpu: bool) -> bool:
+def is_runnable(item: dict, host: str, tags: set[str], has_gpu: bool,
+                only_declared: bool = False) -> bool:
     """Can *this* worker run *this* item right now?
 
     Slot availability is checked separately -- this answers eligibility
     only, so that ``status`` can report "runnable but no free slot" as
     distinct from "not eligible here".
+
+    ``only_declared`` inverts the default for a worker that is not
+    interchangeable with the others. Normally an item that names no host and
+    no tags is eligible everywhere, which is right for a fleet of identical
+    boxes and wrong the moment one differs: a job written for the Sparks --
+    their venv, their repo checkout, their GPU -- would be claimed by an
+    unlike box and fail there, and the failure would look like the job's
+    fault rather than the placement's. Under ``only_declared`` such a worker
+    takes only items that ask for it by name or by tag, so adding a box
+    cannot break work that predates it.
     """
     hosts = item.get("hosts")
+    required = set(item.get("requires") or ())
+    if only_declared and not hosts and not required:
+        return False
     if hosts and host not in hosts:
         return False
-    required = set(item.get("requires") or ())
     if not required.issubset(tags):
         return False
     if item.get("needs_gpu") and not has_gpu:
@@ -855,7 +868,8 @@ def wait_for_queue(once: bool) -> None:
 
 def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
                 once: bool, reserve_gb: float, horizon_s: float,
-                settle_s: float, admission: str = "optimistic") -> int:
+                settle_s: float, admission: str = "optimistic",
+                only_declared: bool = False) -> int:
     wait_for_queue(once)
     ensure_layout()
     has_gpu = gpu_slots > 0
@@ -866,6 +880,7 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
           f"mem_reserve={reserve_gb:.0f}GB horizon={horizon_s:.0f}s "
           f"admission={admission} swap_free={swap_free_gb():.0f}GB "
           f"caps={'on' if capping_supported() else 'UNAVAILABLE'} "
+          f"{'only-declared ' if only_declared else ''}"
           f"queue={QUEUE_ROOT}", flush=True)
     last_held = None
     last_mem_hold = 0.0
@@ -921,7 +936,8 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
         candidates = []
         for p in qdir(READY).glob("*.json"):
             item = read_item(p)
-            if item and is_runnable(item, host, tags, has_gpu):
+            if item and is_runnable(item, host, tags, has_gpu,
+                                    only_declared):
                 candidates.append(item)
         candidates.sort(key=sort_key)
 
@@ -1082,7 +1098,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     host = a.host or socket.gethostname().split(".")[0]
     return worker_loop(host, set(a.tag or []), a.gpu_slots, a.cpu_slots,
                        a.once, a.mem_reserve_gb, a.evict_horizon_s,
-                       a.mem_settle_s, a.admission)
+                       a.mem_settle_s, a.admission, a.only_declared)
 
 
 def cmd_cancel(a: argparse.Namespace) -> int:
@@ -1181,6 +1197,12 @@ def main(argv: list[str] | None = None) -> int:
                    dest="evict_horizon_s",
                    help="evict when the current drop rate projects through "
                         "the reserve within this many seconds")
+    r.add_argument("--only-declared", action="store_true",
+                   help="claim only items that name this host (--host) or a "
+                        "tag this worker carries (--require). Use on any box "
+                        "that is not interchangeable with the others, so "
+                        "work written for the Sparks is never claimed by an "
+                        "unlike machine.")
     r.add_argument("--admission", choices=("optimistic", "strict"),
                    default="optimistic",
                    help="optimistic (default) starts work whenever any "

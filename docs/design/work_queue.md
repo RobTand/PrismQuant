@@ -142,6 +142,21 @@ python3 $Q cancel <id>     # ready/claimed -> failed
    job goes through `systemctl --user stop` instead; that path is tested to
    terminate in well under a second and leave no orphaned children.
 
+## Adding a box that is not a Spark
+
+Eligibility is opt-in by declaration: `is_runnable` filters on the item's
+`hosts`, `requires` and `needs_gpu`. An item that declares none of them is
+eligible **everywhere** -- correct for two interchangeable GB10s, and wrong
+the moment a third machine differs, because a job written for a Spark's venv
+and repo checkout would be claimed by an unlike box and fail there, looking
+like the job's fault rather than the placement's.
+
+So an unlike box runs with `--only-declared`, which claims only items that
+name it by `--host` or carry a tag it declares. Adding the box then cannot
+break work enqueued before it existed. Give it tags that describe what it
+actually is (`--tag x86 --tag cpu`), not what you hope to run on it, and let
+work opt in with `--require`.
+
 ## What it deliberately does not do
 
 * **It does not migrate work whose inputs are box-local.** `/home/rob` is

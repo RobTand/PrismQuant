@@ -459,3 +459,30 @@ def test_a_job_that_exceeds_its_budget_is_killed_and_not_retried(queue):
     rec = json.loads((pqwork.qdir(pqwork.FAILED) / "hog.json").read_text())
     assert "budget_exceeded" in rec["outcome"]
     assert "--mem-gb" in rec["outcome"], "the outcome must name the fix"
+
+
+def test_only_declared_refuses_work_that_did_not_ask_for_this_box(queue):
+    """Adding an unlike box must not break work that predates it.
+
+    An item naming no host and no tags is eligible everywhere, which is right
+    for interchangeable boxes and wrong the moment one differs. A worker in
+    only-declared mode takes it only if it was asked for.
+    """
+    plain = {"id": "plain", "cmd": "true"}
+    by_host = {"id": "byhost", "cmd": "true", "hosts": ["wslgpu"]}
+    by_tag = {"id": "bytag", "cmd": "true", "requires": ["x86"]}
+    tags = {"x86"}
+
+    # Default mode: the undeclared item is fair game.
+    assert pqwork.is_runnable(plain, "wslgpu", tags, False)
+    # Only-declared: it is not, but both declared forms still are.
+    assert not pqwork.is_runnable(plain, "wslgpu", tags, False,
+                                  only_declared=True)
+    assert pqwork.is_runnable(by_host, "wslgpu", tags, False,
+                              only_declared=True)
+    assert pqwork.is_runnable(by_tag, "wslgpu", tags, False,
+                              only_declared=True)
+    # A tag this worker does not carry is still refused in either mode.
+    assert not pqwork.is_runnable({"id": "gb10only", "cmd": "true",
+                                   "requires": ["gb10"]},
+                                  "wslgpu", tags, False)
