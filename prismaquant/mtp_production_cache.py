@@ -458,6 +458,11 @@ def fill_profile_mtp_production_cache(
             transient_results={},
             cb_git_commit=None,
             cb_producer_source_sha256=None,
+            trellis_plans={},
+            trellis_pair_identities={},
+            trellis_pair_artifacts={},
+            trellis_git_commit=None,
+            trellis_producer_source_sha256=None,
             joint_scale_modules=selected_linears,
             progress=False,
         )
