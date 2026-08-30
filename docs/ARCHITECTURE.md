@@ -19,8 +19,14 @@ lands the end-to-end gate the two direct-call tests left open:
 `tests/test_trellis_byte_budget_path.py` drives the real
 `allocator.main --target-disk-gb` with a rung in the menu, so `UNWIRED_LINKS`
 #2 (death inside the Pareto sweep) and #6 (the byte-budget path) are exercised
-where the ledger names them rather than one function call away. Prior stamp:
-2026-08-29, `claude/trellis-seam-wiring`.
+where the ledger named them rather than one function call away — the rule those
+two now-deleted entries closed under. The same file also **executes** the
+wiring's reachability claim: the exporter's pointed `TCQ_*` refusal really is
+the first exception a trellis `layer_config.json` hits, with the schema check,
+the research-cost gate, `canonicalize_format` and profile detection all passing
+first. Reading the source could not settle that, and this repo has shipped an
+unreachable mechanism before. Prior stamp: 2026-08-29,
+`claude/trellis-seam-wiring`.
 Re-stamped (2026-08-29,
 `claude/trellis-seam-wiring`) for the **trellis seam wiring** (§4.9): seven of
 the eight `UNWIRED_LINKS` are now wired, each with a behaviour test, so an
@@ -3482,7 +3488,7 @@ a wiring gap.**
 | was | now |
 |---|---|
 | no TCQ `FormatSpec`; `fr.get_format('TCQ_*')` `KeyError`s (`format_registry.py:1267-1272`) | `get_format` **parse-resolves** the name to a memoized `TrellisFormatSpec` — never a `REGISTRY` insertion, because the rate axis is dense — that is **exact-or-refuse**: exact activation triple (A=W, read off the family's `terminal_format` entry: E2M1 W4A4, E4M3 W8A8), exact capability floor (SM120+/SM89+), `producer_eligible=False`; every RTN-shaped field and every byte/bpp helper raises `TrellisSpecFieldRefused` **at attribute read**, as a non-`AttributeError` so `getattr(spec, …, None)` probes cannot swallow it (`tests/test_trellis_format_spec.py`). So a caller may learn what a rung EXECUTES; it still may not learn what it WEIGHS — exact bytes travel only in `_memory_bytes_by_format`, and every byte site refuses pointedly without it. |
-| the exact assignment-payload filter falls through to `fr.get_format` (`allocator.py:3369-3386`) | prefers the recorded map (it always did); a TCQ row with no recorded bytes now raises a pointed `AssertionError` naming what is missing, instead of a registry `KeyError`. `layer_config.canonicalize_format` round-trips `TCQ_*`, so the exporter's own refusal is now REACHABLE. |
+| the exact assignment-payload filter falls through to `fr.get_format` (`allocator.py:3369-3386`) | prefers the recorded map (it always did); a TCQ row with no recorded bytes now raises a pointed `AssertionError` naming what is missing, instead of a registry `KeyError`. `layer_config.canonicalize_format` round-trips `TCQ_*`, so the exporter's own refusal is REACHABLE — and that is now **executed, not asserted**: `tests/test_trellis_byte_budget_path.py::test_the_exporter_refusal_a_tcq_layer_config_hits_is_the_pointed_one` drives the prefix of `export_native_compressed.main()` between reading `--layer-config` and the first `_coerce_runtime_legal_assignment` (schema validation, the research-cost gate, `_canonicalize_assignment`, profile detection) on a `layer_config.json` the real allocator wrote, and asserts all four PASS and the first exception is the pointed one. A refusal nobody reaches is a comment, not a gate — block-output-match sat behind an earlier `continue` for months. |
 | fused-sibling aggregation iterates `FormatSpec` objects (`allocator_candidates.py:2464`) | both aggregators build each super item's menu from `_super_menu_format_names(formats, member_intersection)`: the run's spec names first, in order, then any registry-free format EVERY member offers. Registry-free rungs are priced as the exact sum of the member candidates' bytes and Δloss, with an aggregated hedge of 0.0 (the solver `Candidate` carries no stderr, so fabricating one would be a claim). |
 | the identical packed-expert construction (`:2701`) | same helper, same contract. The seam still refuses packed-expert ROWS (no per-expert trellis render exists), so no manifest reaches this path today; the aggregation contract is tested by injection. |
 | `promote_serving_units`' `format_rank` lookup (`allocator_solver.py:340-342`) | `allocator._extend_format_rank_with_candidate_menu` extends the rank table from the CANDIDATE MENU by each registry-free format's exact aggregate serialized rate (`8·Σbytes/Σparams`) — the same quantity `_serialized_format_rates` computes for a spec, so "higher rank" keeps meaning "more bytes on this model" (§ P2). Byte-identical no-op when every candidate format is a spec. The solver's lookup now names the rank table on a miss instead of raising a bare `KeyError`. |
