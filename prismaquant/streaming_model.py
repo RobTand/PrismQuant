@@ -30,6 +30,7 @@ stable public API that both sides share.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -79,6 +80,11 @@ from .layer_streaming import (
     set_module_tensor_to_device,
 )
 from .tied_embeddings import resolve_tied_output_embedding
+from .safetensors_pread import (
+    PREAD_BACKEND,
+    read_safetensors_metadata,
+    resolve_safetensors_backend,
+)
 
 
 def _bypass_hf_fp8_module_rewrite(model_path: str) -> bool:
@@ -275,6 +281,7 @@ def _estimate_layer_cache_bytes(
     num_layers: int,
     target_dtype: torch.dtype,
     fp4_experts: bool = False,
+    safetensors_backend: str | None = None,
 ) -> tuple[int, list[int]]:
     """Estimate dequanted cache bytes per decoder layer without loading data.
 
@@ -297,19 +304,32 @@ def _estimate_layer_cache_bytes(
             bool(fp4_experts and declared_expert_dtype_covers(model_name)),
         ))
 
+    backend = resolve_safetensors_backend(safetensors_backend)
     sizes = [0 for _ in range(num_layers)]
     try:
         for shard, pairs in by_shard.items():
-            with safe_open(shard, framework="pt") as f:
+            if backend == PREAD_BACKEND:
+                metadata = read_safetensors_metadata(shard)
                 for idx, ckpt_name, fp4_packed in pairs:
-                    sl = f.get_slice(ckpt_name)
-                    n = 1
-                    for dim in sl.get_shape():
-                        n *= int(dim)
+                    info = metadata[ckpt_name]
+                    n = math.prod(info.shape)
                     sizes[idx] += n * _safetensors_cache_dtype_bytes(
-                        sl.get_dtype(), target_dtype,
+                        info.dtype, target_dtype,
                         fp4_packed=fp4_packed)
+            else:
+                with safe_open(shard, framework="pt") as f:
+                    for idx, ckpt_name, fp4_packed in pairs:
+                        sl = f.get_slice(ckpt_name)
+                        n = math.prod(int(dim) for dim in sl.get_shape())
+                        sizes[idx] += n * _safetensors_cache_dtype_bytes(
+                            sl.get_dtype(), target_dtype,
+                            fp4_packed=fp4_packed)
     except Exception:
+        if backend == PREAD_BACKEND:
+            # The explicit mmap-free backend is also the validation contract:
+            # corruption or a missing key must not silently turn into a zero
+            # estimate and an unsafe cache/prefetch budget.
+            raise
         return 0, sizes
     nonzero = [s for s in sizes if s > 0]
     return (max(nonzero) if nonzero else 0), sizes
@@ -392,6 +412,10 @@ def _prefetch_delivery_enabled() -> bool:
 
 # ---------------------------------------------------------------------------
 class StreamingContext:
+    # Compatibility default for lightweight test/diagnostic contexts built
+    # with ``object.__new__`` rather than the production constructor.
+    safetensors_backend = "safe_open"
+
     def __init__(self, *, model, base_model, layers, layers_prefix: str,
                  num_layers: int, install_resolvers: list[dict],
                  weight_shard: dict[str, str], weight_ckpt: dict[str, str],
@@ -404,6 +428,7 @@ class StreamingContext:
                  estimated_layer_bytes: int = 0,
                  prefetch_workers: int = 3,
                  prefetch_min_available_bytes: int = 0,
+                 safetensors_backend: str = "safe_open",
                  expert_packer=None,
                  concat_merger=None):
         self.model = model
@@ -432,6 +457,9 @@ class StreamingContext:
         self.max_cache_slots = layer_cache.max_entries
         self.prefetch_workers = int(prefetch_workers)
         self.prefetch_min_available_bytes = int(prefetch_min_available_bytes or 0)
+        self.safetensors_backend = resolve_safetensors_backend(
+            safetensors_backend
+        )
         self.prefetch_memory_skips = 0
         # Native-FP8 checkpoint dequant map: `{live_weight_key:
         # (shard_path, scale_inv_ckpt_key)}`. When non-empty, every
@@ -510,7 +538,8 @@ class StreamingContext:
             prefix, self.weight_shard, self.weight_ckpt, self.dtype,
             self.device, fp8_scale_inv_map=self.fp8_scale_inv_map,
             pack_experts=self.expert_packer,
-            merge_concat=self.concat_merger)
+            merge_concat=self.concat_merger,
+            safetensors_backend=self.safetensors_backend)
         # The cache may still decline to RETAIN the layer under its dynamic
         # budget (or evict it as `pinned_until_read` before the consumer
         # arrives). That is a retention decision, not a delivery decision:
@@ -700,7 +729,8 @@ class StreamingContext:
             prefix, self.weight_shard, self.weight_ckpt, self.dtype,
             self.device, fp8_scale_inv_map=self.fp8_scale_inv_map,
             pack_experts=self.expert_packer,
-            merge_concat=self.concat_merger)
+            merge_concat=self.concat_merger,
+            safetensors_backend=self.safetensors_backend)
         self.layer_cache.put(L, tensors)
         return tensors, "cold"
 
@@ -1113,6 +1143,7 @@ def _build_streaming_context(model_path: str, *,
                              log_prefix: str = "[streaming]",
                              multimodal: bool = False,
                              visual_requires_grad: bool = False,
+                             safetensors_backend: str | None = None,
                              ) -> StreamingContext:
     """One-time setup: AutoConfig + empty skeleton, then manually
     materialize only the always-resident head pieces. Decoder layers
@@ -1145,6 +1176,9 @@ def _build_streaming_context(model_path: str, *,
             or max_cache_slots < 1
         ):
             raise ValueError("max_cache_slots must be an integer >= 1 or None")
+    resolved_safetensors_backend = resolve_safetensors_backend(
+        safetensors_backend
+    )
     import psutil
     from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -1203,7 +1237,8 @@ def _build_streaming_context(model_path: str, *,
     t0 = time.time()
     print(f"{log_prefix} base_prefix={base_prefix!r}  layers={num_layers}  "
           f"head_resident_on={resident_device}  offload={offload_folder}  "
-          f"multimodal={multimodal}  visual_prefix={skel_visual_prefix or 'n/a'}",
+          f"multimodal={multimodal}  visual_prefix={skel_visual_prefix or 'n/a'}  "
+          f"safetensors_backend={resolved_safetensors_backend}",
           flush=True)
 
     model = skeleton
@@ -1302,7 +1337,8 @@ def _build_streaming_context(model_path: str, *,
             tensors = _read_layer_to_device(
                 visual_prefix + ".",
                 weight_shard, weight_ckpt, dtype, device,
-                fp8_scale_inv_map=fp8_scale_inv_map)
+                fp8_scale_inv_map=fp8_scale_inv_map,
+                safetensors_backend=resolved_safetensors_backend)
             print(f"{log_prefix} materializing visual tower: "
                   f"{len(tensors)}/{len(vis_keys)} tensors -> {device}", flush=True)
             if _module_has_meta_tensors(visual_module):
@@ -1392,6 +1428,7 @@ def _build_streaming_context(model_path: str, *,
         num_layers=num_layers,
         target_dtype=dtype,
         fp4_experts=declared_fp4_expert_dtype(model_path),
+        safetensors_backend=resolved_safetensors_backend,
     )
     worker_count, worker_src = _auto_prefetch_workers(
         cache_bytes, estimated_layer_bytes, requested=prefetch_workers)
@@ -1433,6 +1470,7 @@ def _build_streaming_context(model_path: str, *,
         estimated_layer_bytes=estimated_layer_bytes,
         prefetch_workers=worker_count,
         prefetch_min_available_bytes=min_available_bytes,
+        safetensors_backend=resolved_safetensors_backend,
         expert_packer=_build_expert_packer(model, weight_ckpt),
         concat_merger=_build_concat_merger(model, weight_ckpt),
     )

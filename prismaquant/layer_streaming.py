@@ -84,6 +84,12 @@ except ModuleNotFoundError:
         raise AttributeError(f"{tensor_name!r} is not a parameter or buffer")
 from safetensors import safe_open
 
+from .safetensors_pread import (
+    PREAD_BACKEND,
+    PreadSafetensors,
+    resolve_safetensors_backend,
+)
+
 
 # ---------------------------------------------------------------------------
 # v21 #5: opt-in direct-to-CUDA safetensors load. Default path opens the
@@ -1300,6 +1306,7 @@ def _read_layer_to_device(prefix: str,
                               | None = None,
                           pack_experts=None,
                           merge_concat=None,
+                          safetensors_backend: str | None = None,
                           ) -> dict[str, torch.Tensor]:
     """Read all tensors under `prefix` from safetensors and place them
     on `device`. Returns {model_name: device_tensor}.
@@ -1314,7 +1321,13 @@ def _read_layer_to_device(prefix: str,
     the layer has enough tensors to be worth it (see
     ``layer_read_threads``); the result is assembled in deterministic
     shard/key order either way.
+
+    ``safetensors_backend="pread"`` replaces only the source-file reader:
+    tensors still enter this function's existing device transfer, dequant,
+    packing, and resident-cache path.  The default remains ``safe_open``.
+    Invalid backend names and malformed pread containers fail closed.
     """
+    backend = resolve_safetensors_backend(safetensors_backend)
     by_shard: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for model_name, shard in model_to_shard.items():
         if model_name.startswith(prefix):
@@ -1328,12 +1341,16 @@ def _read_layer_to_device(prefix: str,
         local: dict[str, torch.Tensor] = {}
         if not pairs:
             return local
-        try:
-            f_ctx = safe_open(shard, **open_kwargs)
-            used_direct = direct
-        except (TypeError, RuntimeError):
-            f_ctx = safe_open(shard, framework="pt")
+        if backend == PREAD_BACKEND:
+            f_ctx = PreadSafetensors(shard)
             used_direct = False
+        else:
+            try:
+                f_ctx = safe_open(shard, **open_kwargs)
+                used_direct = direct
+            except (TypeError, RuntimeError):
+                f_ctx = safe_open(shard, framework="pt")
+                used_direct = False
         with f_ctx as f:
             for model_name, ckpt_name in pairs:
                 t = f.get_tensor(ckpt_name)
