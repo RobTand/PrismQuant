@@ -1492,6 +1492,91 @@ def cost_entry_act_dloss(cost_entry: dict) -> float:
 
 ACTIVATION_COST_UNMEASURED_REASON = "activation_cost_unmeasured"
 
+#: A format that DECLARES ``act_cost_required`` was offered a row that carries
+#: no activation price at all. Distinct from
+#: ``ACTIVATION_COST_UNMEASURED_REASON``, which catches the narrower case where
+#: the resulting price is exactly 0.0.
+ACTIVATION_COST_UNDECLARED_REASON = "activation_cost_missing_for_declared_format"
+
+
+def cost_entry_omits_declared_activation_cost(
+    stats_entry: dict,
+    cost_entry: dict,
+    format_name: str | None = None,
+) -> bool:
+    """Whether this row prices a format that DECLARES an A side without one.
+
+    THE HOLE THIS CLOSES, AND WHY IT IS NOT THE ONE ABOVE
+    -----------------------------------------------------
+    ``cost_entry_prices_unmeasured_activation_at_zero`` catches the corner
+    where the whole price lands on exactly 0.0 -- the DP's global optimum,
+    which no budget can trade away. That leaves the ordinary case open: a
+    LOSSY re-encode on an activation-quantizing format prices its W side at
+    some positive number, ``cost_entry_act_dloss`` contributes 0.0 because the
+    key is absent, and the row is admitted looking cheaper than the route the
+    runtime will execute. A positive W-side surrogate is a biased but
+    tradeable estimate of the W side; it is not an estimate of the A side at
+    all, and adding 0.0 for the A side is not conservatism, it is the claim
+    that the activation grid is free. That claim priced a real A side at zero
+    once already (NVFP4_CB, 2026-08-17, principle 8) and it is the same shape
+    here.
+
+    So this is a MEASUREMENT GAP made visible, not a format ban (principle 1).
+    The format stays on the menu and stays honestly priced the moment an
+    activation cost exists for the row; what is refused is pricing an
+    unmeasured quantity as zero. The carve-out is principle 9's: the declared
+    contract is a fact about what the pinned runtime executes, not an opinion
+    that the format looks risky.
+
+    WHEN IT FIRES
+    -------------
+      * the format DECLARES the stricter contract
+        (``FormatSpec.act_cost_required``) AND its activation path is
+        provably non-identity (``act_quant_changes_input``). Both, because
+        the flag alone on an A16 format would refuse a row with nothing to
+        price;
+      * pricing does NOT read this row's ``output_mse``. That branch is
+        activation-inclusive by construction -- ``measure_quant_cost`` and
+        ``incremental_measure_quant_cost`` both push the batch through
+        ``spec.activation_quantize_dequantize`` before measuring, so the
+        number already saw the activation path and a separate A term would
+        double-count it;
+      * the row carries no ``act_dloss`` KEY. Deliberately key-presence and
+        not ``cost_entry_act_dloss()``'s value: that reader collapses an
+        absent key with a measured 0.0, and those are opposite statements. A
+        measured zero is an answer and is priced; an absent key is the hole;
+      * the row's measured sensitivity is POSITIVE. ``h_trace == 0`` prices
+        every format at 0.0 through the same Fisher expansion that multiplies
+        both sides, so it is a measured statement that no perturbation of
+        this Linear's output moves the loss -- A side included. Exactly the
+        exemption ``cost_entry_prices_unmeasured_activation_at_zero`` carries,
+        and for the same reason: a zero-token expert at thin calibration must
+        stay free to take the cheapest format.
+
+    ``cost_entry_is_exact_by_construction`` cannot collide with this:
+    ``cost_entry_is_bit_exact`` already requires an identity activation path,
+    so a declaring format never reaches that branch.
+    """
+    if format_name is None:
+        return False
+    try:
+        spec = fr.get_format(str(format_name))
+    except KeyError:
+        return False
+    if not getattr(spec, "act_cost_required", False):
+        return False
+    if not spec.act_quant_changes_input:
+        return False
+    if _prices_from_output_mse(stats_entry, cost_entry):
+        return False
+    if ACT_DLOSS_KEY in cost_entry:
+        return False
+    try:
+        h_trace = float(stats_entry.get("h_trace", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return h_trace > 0.0
+
 
 def cost_entry_prices_unmeasured_activation_at_zero(
     stats_entry: dict,
@@ -1807,6 +1892,10 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     source_counts: Counter[str] = Counter()
     activation_branch_counts: Counter[str] = Counter()
     unpriceable: dict[str, list[str]] = {}
+    # Which refusal starved each name. Two reasons feed `unpriceable`
+    # and they have DIFFERENT remedies, so the raise below must not
+    # offer one run's fix for the other run's gap.
+    unpriceable_reasons: dict[str, set[str]] = {}
     lane_by_format: dict[str, object] = {
         spec.name: serving_lane_route(target_profile, spec.name)
         for spec in formats
@@ -1932,6 +2021,60 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                     [],
                 ).append(name)
                 unpriceable.setdefault(name, []).append(spec.name)
+                unpriceable_reasons.setdefault(name, set()).add(
+                    ACTIVATION_COST_UNMEASURED_REASON)
+                continue
+            if cost_entry_omits_declared_activation_cost(s, entry, spec.name):
+                # This format DECLARES that the serving kernel quantizes its
+                # activations and that an unpriced A side must refuse rather
+                # than default to 0.0. No activation cost exists for this row,
+                # so the only price on offer is the W side alone -- a number
+                # for a route the runtime does not execute. Refuse the
+                # candidate, counted and logged exactly like any other
+                # inapplicable format. See
+                # cost_entry_omits_declared_activation_cost.
+                h_trace = float(s.get("h_trace", 0.0) or 0.0)
+                detail = (
+                    f"{spec.name} declares act_cost_required and quantizes "
+                    f"activations (act_bits={spec.act_bits}, "
+                    f"act_dtype={spec.act_dtype_name}), but the cost row for "
+                    f"{name!r} carries no {ACT_DLOSS_KEY!r} key and is not "
+                    f"priced from a measured output_mse, so its activation "
+                    f"cost would enter the DP as exactly 0.0 while "
+                    f"h_trace={h_trace:.6g} > 0. This is a MISSING "
+                    f"MEASUREMENT, not a ban on the format: run "
+                    f"`python -m prismaquant.aqua_activation_cost` with the "
+                    f"serving lane whose "
+                    f"`served_activation_quantization.executes` covers "
+                    f"{spec.name}, then `merge_act_dloss` to write "
+                    f"{ACT_DLOSS_KEY!r} into this cost artifact per (unit, "
+                    f"format); the candidate is then priced and admitted "
+                    f"normally. A measured {ACT_DLOSS_KEY!r} of 0.0 is an "
+                    f"answer and is accepted -- only an absent key refuses. "
+                    f"A cost table stamped `activation_blindness_limitation` "
+                    f"is admitting this same gap in prose; this refusal is "
+                    f"its machine-readable half, and the two must not drift "
+                    f"apart (cost_source="
+                    f"{cost_entry_source(s, entry, spec.name)})"
+                )
+                if mask_records is not None:
+                    mask_records.append({
+                        "qname": name,
+                        "format": spec.name,
+                        "reason": ACTIVATION_COST_UNDECLARED_REASON,
+                        "detail": detail,
+                        "shape": [out_features, in_features],
+                        "out_features": out_features,
+                        "in_features": in_features,
+                        "source_kind": source_kind,
+                    })
+                masked.setdefault(
+                    (spec.name, ACTIVATION_COST_UNDECLARED_REASON),
+                    [],
+                ).append(name)
+                unpriceable.setdefault(name, []).append(spec.name)
+                unpriceable_reasons.setdefault(name, set()).add(
+                    ACTIVATION_COST_UNDECLARED_REASON)
                 continue
             source_counts[cost_entry_source(s, entry, spec.name)] += 1
             activation_branch = cost_entry_activation_pricing_branch(
@@ -2000,25 +2143,50 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
         # membership — silently, with the export still emitting the tensor.
         # The allocator cannot price these rows, so it must not pretend to.
         detail = "\n".join(
-            f"    {n}: unpriceable={sorted(unpriceable[n])} (other cost rows: "
+            f"    {n}: unpriceable={sorted(unpriceable[n])} "
+            f"reason={sorted(unpriceable_reasons.get(n, ()))} "
+            f"(other cost rows: "
             f"{sorted(set(costs.get(n, {})) - set(unpriceable[n]))})"
             for n in starved[:8]
         )
+        reasons = set().union(
+            *(unpriceable_reasons.get(n, set()) for n in starved))
+        remedies = []
+        if ACTIVATION_COST_UNMEASURED_REASON in reasons:
+            remedies.append(
+                f"  [{ACTIVATION_COST_UNMEASURED_REASON}] the weight side is "
+                "exactly 0.0 (a lossless re-encode) and nothing measured the "
+                "activation side, so every legal format would have been "
+                "priced at the DP's global minimum on no activation-path "
+                "evidence. Unset PRISMAQUANT_EXPERT_COST_SAMPLE (and make "
+                "the expert activation cache available) so measure_quant_cost "
+                "records output_mse with activation_quantize_dequantize "
+                "applied, or include a rung whose activation path is the "
+                "identity (BF16, FP8_SOURCE, NVFP4A16, MXFP8A16) in the "
+                "format menu.")
+        if ACTIVATION_COST_UNDECLARED_REASON in reasons:
+            remedies.append(
+                f"  [{ACTIVATION_COST_UNDECLARED_REASON}] the format declares "
+                "act_cost_required, so an unpriced activation side refuses "
+                "rather than entering the DP as 0.0. Run `python -m "
+                "prismaquant.aqua_activation_cost` with the serving lane "
+                "whose `served_activation_quantization.executes` covers "
+                "these formats, then `merge_act_dloss` to write "
+                f"{ACT_DLOSS_KEY!r} into the cost artifact per (unit, "
+                "format); the rows are then priced and admitted. A cost "
+                "table stamped `activation_blindness_limitation` is admitting "
+                "this same gap in prose -- this refusal is its "
+                "machine-readable half. Offering a rung whose activation path "
+                "is the identity also works, where the lane serves one.")
         raise AssertionError(
             f"{len(starved)} Linear(s) have no priceable format left after "
             "excluding activation-quantizing formats whose activation-side "
-            "cost was never measured and whose weight-side error is exactly "
-            f"0.0:\n{detail}\n"
-            "Every legal format for these rows would have been priced at "
-            "dloss 0.0 (the DP's global minimum) on no activation-path "
-            "evidence, and omitting the rows would silently shrink the "
-            "allocator's bit/disk accounting and serving-unit membership. "
-            "Close the measurement gap instead: unset "
-            "PRISMAQUANT_EXPERT_COST_SAMPLE (and make the expert activation "
-            "cache available) so measure_quant_cost records output_mse with "
-            "activation_quantize_dequantize applied, or include a rung whose "
-            "activation path is the identity (BF16, FP8_SOURCE, NVFP4A16, "
-            "MXFP8A16) in the format menu."
+            f"cost is unknown:\n{detail}\n"
+            "Omitting the rows would silently shrink the allocator's bit/disk "
+            "accounting and serving-unit membership, and pricing them on the "
+            "weight side alone would price a route the runtime does not "
+            "execute. Close the measurement gap instead:\n"
+            + "\n".join(remedies)
         )
     # Continuous trellis rate surface (opt-in, research). Unset
     # PRISMAQUANT_TRELLIS_SURFACE returns `out` unchanged and this run is

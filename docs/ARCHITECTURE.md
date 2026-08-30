@@ -1,7 +1,27 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-29,
+As of: 2026-08-30 · `claude/trellis-activation-contract` — stamps follow, newest
+first, each recording its own branch and date. Re-stamped (2026-08-30,
+`claude/trellis-activation-contract`) for the **declared trellis activation
+contract and the fail-closed A-side gate** (§§4.9, 4.3): `TrellisFamily` now
+states `act_bits` / `act_dtype_name` / `act_group_size` in `FormatSpec`'s own
+spelling — **W4A4** for `TCQ_E2M1_R256`, **W8A8** for `TCQ_E4M3_R256` — because
+both Gridbook trellis lanes execute A=W and neither has a BF16-activation
+route. A test pins each family's declaration equal to its terminal format's
+registry entry, so the kernel fact travels as data rather than an import
+(`AGENTS.md:38`). `FormatSpec` gains `act_cost_required`, and
+`allocator_candidates.cost_entry_omits_declared_activation_cost` **refuses** a
+candidate whose format declares it and whose cost row carries no `act_dloss`
+key, instead of letting the absent key contribute 0.0. The flag defaults
+**False** and no registered format sets it: `run-pipeline.sh` runs no AQUA
+stage, so every NVFP4/FP8 row on the default recipe lacks `act_dloss`, and
+keying the refusal on `act_quant_changes_input` alone would empty the default
+menu on every existing run (§ P6). Turning it on for a production format is the
+enforcement step of the no-A16 direction and must land with an A-side
+measurement. `UNWIRED_LINKS` gains a **ninth** entry: the seam's anchors price a
+weight-only loss against A=W routes, and the `anchor_activation_contract` it
+stamps was read by nothing — a stamp no gate consumes is a confession log
+(§§ P8, P9). Re-stamped (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
 rather than by a test — the two doc gates were green across both drifts. (i) The
@@ -3424,7 +3444,7 @@ without the flag executes exactly the path it executed before the seam existed
 > `KeyError`s. `trellis_menu.UNWIRED_LINKS` is now the authoritative list —
 > eight entries, each with a file:line — and it is the text of the refusal.
 
-The eight, in the order a run would hit them: no TCQ `FormatSpec`
+The nine, in the order a run would hit them: no TCQ `FormatSpec`
 (`format_registry.py:1267-1272`); the exact assignment-payload filter falling
 through to `fr.get_format` because nothing writes `_memory_bytes_by_format` for
 a TCQ row, which kills the allocator inside the Pareto sweep **before**
@@ -3442,7 +3462,29 @@ lookup (`footprint.py:1183`); `build_candidates` being called with neither
 discarded rather than travelling with the assignment (`allocator.py:2756`,
 §§ P12/P14); and the anchors' currency being weighted SSE under an activation
 second moment, an output-MSE proxy and **not** the AURA KL-adjoint the DP ranks
-in (`trellis_rate_surface.py:43-52`).
+in (`trellis_rate_surface.py:43-52`); and — added 2026-08-30 — the anchors
+pricing a **weight-only** loss while both lanes execute **A=W**
+(`trellis_menu.py:build_trellis_menu`).
+
+**The ninth: the A side the anchors never priced.**
+`TrellisE2M1LinearMethod.apply` and `TrellisE4M3LinearMethod.apply` each hand
+`torch._scaled_mm` two operands in the family's own grid dtype, so a trellis
+rung is served **W4A4** or **W8A8** — the terminal format's activation grid,
+whatever the body rate — and neither lane has a BF16-activation route.
+`TrellisFamily` now declares that (`act_bits`, `act_dtype_name`,
+`act_group_size`, `served_activation_contract`), pinned equal to
+`fr.get_format(terminal_format)`'s by test. The manifest's required
+`activation_contract` records what the anchors were measured under and the seam
+stamped it as `anchor_activation_contract` — but **nothing read it**, so an
+A16-measured anchor priced against an A=W route would sell every rung at a
+discount to the route the runtime executes. The seam now stamps
+`served_activation_contracts` and
+`anchor_activation_contract_matches_serving` alongside it, as values a gate can
+compare rather than prose, and the ledger entry names the two things closing it
+needs: an A-side price per (unit, rung), and TCQ `FormatSpec`s registered with
+`act_cost_required=True` so
+`allocator_candidates.cost_entry_omits_declared_activation_cost` refuses an
+unpriced row rather than adding 0.0.
 
 **Why refuse as a whole rather than wire it halfway.** The eight do not fail
 alike. The registry gaps crash **loudly**; the aggregation gaps are **silent** —

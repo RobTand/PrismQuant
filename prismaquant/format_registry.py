@@ -89,6 +89,30 @@ class FormatSpec:
     # positional constructor ABI. Menus/assignments must use the explicit
     # producer APIs instead of treating registry membership as authority.
     producer_eligible: bool = True
+    # Does an UNPRICED A side refuse, or fall back to the legacy 0.0?
+    #
+    # ``act_quant_changes_input`` says the serving kernel quantizes
+    # activations. This says what the ALLOCATOR must do when nothing measured
+    # that cost for a row: refuse the candidate rather than price the unknown
+    # at 0.0 (see
+    # ``allocator_candidates.cost_entry_omits_declared_activation_cost``).
+    #
+    # It is a separate field, not a synonym, and defaults False on purpose.
+    # Every cost artifact written before AQUA lacks ``act_dloss`` entirely,
+    # AQUA is not a stage ``run-pipeline.sh`` runs, and the shipped NVFP4/FP8
+    # menus are priced from those artifacts -- so keying the refusal on
+    # ``act_quant_changes_input`` alone would empty the default menu of every
+    # activation-quantizing format on every existing run. Principle 6 makes
+    # those runs' reproducibility a hard constraint, so legacy tolerance is
+    # the default and this flag is how a format opts INTO the stricter
+    # contract from birth. Flipping it on NVFP4/FP8 is the enforcement step of
+    # the no-A16 direction and is a separate, visible decision: it must be
+    # taken together with making an A-side measurement available, not as a
+    # side effect of a refactor.
+    #
+    # Kept after ``producer_eligible`` for the same reason that field is last:
+    # FormatSpec's positional constructor ABI.
+    act_cost_required: bool = False
 
     @property
     def act_quant_changes_input(self) -> bool:

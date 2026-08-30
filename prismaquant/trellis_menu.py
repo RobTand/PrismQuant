@@ -162,6 +162,23 @@ UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
      "(ProductionWeightCache and fr.get_format(...).quantize_dequantize, "
      ":609-654) both require a registered format, so AURA-priced anchors are "
      "a dW-supply problem, not an objective change"),
+    ("trellis_menu.py:build_trellis_menu (anchor_activation_contract)",
+     "the anchors price a WEIGHT-ONLY loss while both trellis lanes execute "
+     "A=W -- TrellisE2M1LinearMethod.apply and TrellisE4M3LinearMethod.apply "
+     "each hand torch._scaled_mm two operands in the family's own grid "
+     "dtype, and neither has a BF16-activation route, so TrellisFamily now "
+     "declares W4A4 and W8A8 (trellis_formats.TrellisFamily.act_bits, "
+     "served_activation_contract). The manifest's required "
+     "`activation_contract` records what the anchors were measured under and "
+     "the seam stamps it as `anchor_activation_contract`, but NOTHING reads "
+     "it: an A16-measured anchor priced against an A=W route sells every "
+     "rung at a discount to the route the runtime executes, and a stamp no "
+     "gate consumes is a confession log, not a gate (principles 8 and 9). "
+     "Closing this means an A-side price per (unit, rung) -- the terminal "
+     "format's activation grid is the rung's, whatever the body rate -- and "
+     "registering the TCQ FormatSpecs with act_cost_required=True so "
+     "allocator_candidates.cost_entry_omits_declared_activation_cost refuses "
+     "an unpriced row instead of adding 0.0"),
 )
 
 
@@ -486,6 +503,23 @@ def build_trellis_menu(
         if records:
             covered.append(unit_name)
 
+    # What the LANE executes, from the family declaration -- the other half of
+    # `anchor_activation_contract` below. Resolved defensively: an anchor that
+    # names no family, or an unknown one, is already handled as a counted skip
+    # in the loop above, so it must not raise from here.
+    anchor_families = {
+        str(entry["family"])
+        for entry in manifest.anchors.values()
+        if isinstance(entry, Mapping) and entry.get("family") is not None
+    }
+    served_contracts: dict[str, str] = {}
+    for family_name in sorted(anchor_families):
+        try:
+            served_contracts[family_name] = (
+                get_trellis_family(family_name).served_activation_contract)
+        except TrellisFormatError:
+            continue
+
     payload = {
         "schema": TRELLIS_MENU_PROVENANCE_SCHEMA,
         "manifest_path": str(manifest.path),
@@ -498,6 +532,26 @@ def build_trellis_menu(
         # _scaled_mm routes are A=W; stamping it here is what stops a future
         # A=W lane from silently inheriting a W*A16 loss.
         "anchor_activation_contract": manifest.activation_contract,
+        # ...and what the LANE executes, from the family declaration. Two
+        # fields, because the whole point is that they can disagree: the
+        # anchors above are a WEIGHT-only loss, both lanes are A=W, and until
+        # an A-side price exists the difference is the size of the discount
+        # the DP would be handed. Stamped as structured values a gate can
+        # read rather than prose, per principle 14; the gate that reads them
+        # is the UNWIRED_LINKS refusal in augment_candidates.
+        "served_activation_contracts": served_contracts,
+        # True only if every family the manifest names agrees with the
+        # contract its anchors were measured under. An unresolvable family is
+        # left OUT of `served_contracts` and forces this False rather than
+        # raising: a malformed anchor is already a counted per-unit skip
+        # above, and a receipt field must not promote one bad row into a
+        # whole-menu crash.
+        "anchor_activation_contract_matches_serving": bool(
+            served_contracts
+            and set(served_contracts.values()) == {
+                manifest.activation_contract}
+            and len(served_contracts) == len(anchor_families)
+        ),
         "layout": manifest.layout,
         "rungs_per_unit": manifest.rungs_per_unit,
         "units_covered": len(covered),
@@ -558,9 +612,10 @@ def augment_candidates(
     byte-identical to one built without this module -- that half is real and
     is what ships.
 
-    Set, it refuses.  :func:`build_trellis_menu` builds a correctly priced
-    menu, but eight links between that menu and a shipped assignment do not
-    exist (:data:`UNWIRED_LINKS`), and they do not fail the same way: the
+    Set, it refuses.  :func:`build_trellis_menu` builds a menu that is priced
+    correctly on the WEIGHT side, but the links between that menu and a
+    shipped assignment do not exist (:data:`UNWIRED_LINKS`), and they do not
+    fail the same way: the
     registry gaps crash loudly inside the Pareto sweep, while the aggregation
     gaps are SILENT -- they would drop every rung from every fused and packed
     group and hand back a plausible-looking frontier in which only o_proj and
@@ -582,7 +637,8 @@ def augment_candidates(
     links = "\n".join(f"  - {where}: {what}" for where, what in UNWIRED_LINKS)
     raise TrellisSeamUnwiredError(
         f"{TRELLIS_SURFACE_ENV}={resolved_path} was set, but the allocator "
-        f"cannot honour a trellis rung end-to-end. Eight links are missing:\n"
+        f"cannot honour a trellis rung end-to-end. "
+        f"{len(UNWIRED_LINKS)} links are missing:\n"
         f"{links}\n"
         f"Build the menu directly with trellis_menu.build_trellis_menu() for "
         f"research. Do not remove this refusal to reach a selectable run: the "

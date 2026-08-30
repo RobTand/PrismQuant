@@ -79,6 +79,43 @@ class TrellisFamily:
     quality_candidate_q256: tuple[int, ...]
     terminal_format: str
     minimum_capability_sm: int
+    # ---- the declared ACTIVATION contract --------------------------------
+    # Spelled exactly as ``format_registry.FormatSpec`` spells it, because a
+    # second vocabulary for one question is how two of our own spec files
+    # came to disagree about one runtime. Both trellis lanes execute A=W:
+    # ``TrellisE2M1LinearMethod.apply`` and ``TrellisE4M3LinearMethod.apply``
+    # each call ``torch._scaled_mm`` with BOTH operands in the family's grid
+    # dtype, and neither has a BF16-activation route. So the activation grid
+    # a trellis rung is served on is its TERMINAL format's grid, whatever the
+    # weight rate -- which is why these three fields must equal
+    # ``fr.get_format(terminal_format)``'s and a test pins that equality
+    # (tests/test_trellis_activation_contract.py). The kernel fact travels as
+    # this declaration plus that test; AGENTS.md:38 forbids importing the
+    # runtime to ask it.
+    act_bits: int = 16
+    act_dtype_name: str | None = None
+    act_group_size: int | None = None
+    # DECLARED, not re-derived. "Does this format quantize the activations?"
+    # has exactly one definition in this repo --
+    # ``format_registry.FormatSpec.act_quant_changes_input`` -- and
+    # tests/test_bit_exact_cost_pricing.py refuses a second one, because
+    # consumers that re-derived it from ``act_bits`` disagreed with the
+    # allocator's gate and a format's activation semantics then differed
+    # between pricing and emulation. This module is also deliberately
+    # torch-free and cannot import the registry to ask. So the answer travels
+    # as a declared value, pinned equal to the terminal format's by
+    # tests/test_trellis_activation_contract.py.
+    quantizes_activations: bool = False
+
+    @property
+    def served_activation_contract(self) -> str:
+        """``W<weight>A<act>`` for the rung's SERVED contract, e.g. ``W4A4``.
+
+        The weight half is the grid width, not the body rate: a trellis rung
+        spends fractional bits per weight on the wire but decodes onto the
+        family's grid, and it is the grid the GEMM operand carries.
+        """
+        return f"W{int(self.grid_bits)}A{int(self.act_bits)}"
 
     @property
     def mathematical_q256_bounds(self) -> tuple[int, int]:
@@ -323,6 +360,11 @@ FAMILIES: Mapping[str, TrellisFamily] = {
         quality_candidate_q256=(384, 512, 640, 768, 896),
         terminal_format="NVFP4",
         minimum_capability_sm=120,
+        # == fr.get_format("NVFP4"): act_bits=4, fp4_e2m1, group 16.
+        act_bits=4,
+        act_dtype_name="fp4_e2m1",
+        act_group_size=16,
+        quantizes_activations=True,
     ),
     E4M3_FAMILY: TrellisFamily(
         family=E4M3_FAMILY,
@@ -334,6 +376,11 @@ FAMILIES: Mapping[str, TrellisFamily] = {
         quality_candidate_q256=(1152,),
         terminal_format="FP8_E4M3",
         minimum_capability_sm=89,
+        # == fr.get_format("FP8_E4M3"): act_bits=8, fp8_e4m3, per-tensor (0).
+        act_bits=8,
+        act_dtype_name="fp8_e4m3",
+        act_group_size=0,
+        quantizes_activations=True,
     ),
 }
 
@@ -707,6 +754,18 @@ def format_contract_payload() -> dict[str, object]:
                 "scale_contract": family.scale_contract,
                 "terminal_format": family.terminal_format,
                 "minimum_capability_sm": family.minimum_capability_sm,
+                # The A side is part of the contract, not an afterthought:
+                # both lanes are A=W, so every rung of every family quantizes
+                # activations and a cost that omits the A term is priced
+                # against a route no runtime executes.
+                "act_bits": family.act_bits,
+                "act_dtype_name": family.act_dtype_name,
+                "act_group_size": family.act_group_size,
+                "quantizes_activations": family.quantizes_activations,
+                "served_activation_contract": (
+                    family.served_activation_contract
+                ),
+                "act_cost_required": family.quantizes_activations,
                 "producer_eligible": False,
             }
             for family in FAMILIES.values()
