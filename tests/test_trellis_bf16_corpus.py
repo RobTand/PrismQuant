@@ -50,6 +50,21 @@ def _write_safetensors(path: Path, rows: dict[str, tuple[str, torch.Tensor]]) ->
     path.write_bytes(len(encoded).to_bytes(8, "little") + encoded + payload)
 
 
+def _calibration() -> dict[str, object]:
+    payload: dict[str, object] = {
+        "probe_calib_hash": "a" * 32,
+        "dataset": "test",
+        "nsamples": 2,
+        "seqlen": 8,
+        "seed": 7,
+        "tokens": 16,
+    }
+    payload["identity_sha256"] = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode()).hexdigest()
+    return payload
+
+
 def _glm_names() -> list[str]:
     names: list[str] = []
     for layer in corpus.GLM_DENSE_LAYERS:
@@ -130,7 +145,7 @@ def _probe_fixture(tmp_path: Path) -> tuple[Path, dict[str, torch.Tensor]]:
     with probe.open("wb") as handle:
         pickle.dump({
             "stats": stats,
-            "meta": {"calibration_hash": "a" * 64},
+            "meta": {"calibration_hash": "a" * 32},
         }, handle)
     return probe, expected
 
@@ -150,14 +165,7 @@ def _finalized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         importance_identity=identity,
         output_artifact_path=output,
         output_manifest_path=manifest,
-        calibration={
-            "identity_sha256": "a" * 64,
-            "dataset": "test",
-            "nsamples": 2,
-            "seqlen": 8,
-            "seed": 7,
-            "tokens": 16,
-        },
+        calibration=_calibration(),
         model_config_sha256="b" * 64,
         prismaquant_commit="c" * 40,
         generated="2026-08-30T00:00:00+00:00",
@@ -244,14 +252,7 @@ def test_finalizer_is_no_clobber_and_never_mutates_incomplete_artifact(
             importance_identity=identity,
             output_artifact_path=output,
             output_manifest_path=manifest,
-            calibration={
-                "identity_sha256": "a" * 64,
-                "dataset": "test",
-                "nsamples": 2,
-                "seqlen": 8,
-                "seed": 7,
-                "tokens": 16,
-            },
+            calibration=_calibration(),
             model_config_sha256="b" * 64,
             prismaquant_commit="c" * 40,
             generated="now",
@@ -282,6 +283,36 @@ def test_loader_refuses_declared_hash_drift(tmp_path, monkeypatch):
     )
     with pytest.raises(corpus.CorpusContractError, match="importance hash differs"):
         corpus.load_finalized_bf16_corpus(manifest)
+
+
+def test_loader_refuses_probe_calibration_identity_drift(tmp_path, monkeypatch):
+    manifest, *_ = _finalized(tmp_path, monkeypatch)
+    _rewrite_manifest(
+        manifest,
+        lambda payload: payload["calibration"].__setitem__(
+            "probe_calib_hash", "b" * 32
+        ),
+    )
+    with pytest.raises(
+        corpus.CorpusContractError,
+        match="identity_sha256 does not bind",
+    ):
+        corpus.load_finalized_bf16_corpus(manifest)
+
+
+def test_adapter_refuses_sha256_mislabelled_as_probe_calibration_hash(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(corpus, "_expected_shape", _small_shape)
+    incomplete, _source, _ = _source_fixture(tmp_path)
+    probe, _expected = _probe_fixture(tmp_path)
+    with probe.open("rb") as handle:
+        payload = pickle.load(handle)
+    payload["meta"]["calibration_hash"] = "a" * 64
+    with probe.open("wb") as handle:
+        pickle.dump(payload, handle)
+    with pytest.raises(corpus.CorpusContractError, match="BLAKE2b-128"):
+        corpus.adapt_glm_importance_from_probe(incomplete, probe)
 
 
 @pytest.mark.parametrize("kind", ["dtype", "shape"])

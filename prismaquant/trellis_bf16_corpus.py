@@ -106,6 +106,19 @@ def _require_sha256(value: object, *, where: str) -> str:
     return text
 
 
+def _require_calibration_hash(value: object, *, where: str) -> str:
+    """Validate PrismaQuant's existing calibration-data identity.
+
+    ``calibration_data_hash`` is BLAKE2b-128, not SHA-256.  Keeping this
+    distinct from file and descriptor SHA-256 fields prevents a finalized
+    corpus from relabelling a real probe's 32-hex identity as another hash.
+    """
+    text = str(value)
+    if re.fullmatch(r"[0-9a-f]{32}", text) is None:
+        raise CorpusContractError(f"{where} must be lowercase BLAKE2b-128 hex")
+    return text
+
+
 def _require_positive_int(value: object, *, where: str) -> int:
     if isinstance(value, bool):
         raise CorpusContractError(f"{where} must be a positive integer")
@@ -373,8 +386,10 @@ def load_finalized_bf16_corpus(
     calibration = manifest.get("calibration")
     if not isinstance(calibration, dict) or not calibration:
         raise CorpusContractError("calibration must be a nonempty object")
-    calibration_hash = _require_sha256(
-        calibration.get("identity_sha256"), where="calibration.identity_sha256"
+    calibration = _canonical_calibration(calibration)
+    calibration_hash = _require_calibration_hash(
+        calibration.get("probe_calib_hash"),
+        where="calibration.probe_calib_hash",
     )
     if not isinstance(calibration.get("dataset"), str) or not calibration["dataset"]:
         raise CorpusContractError("calibration.dataset must be a nonempty string")
@@ -664,7 +679,9 @@ def _calibration_hash(meta: Mapping[str, object], *, source: Path) -> str:
         raise CorpusContractError(
             f"{source}: probe must carry exactly one coherent calibration hash"
         )
-    return _require_sha256(next(iter(values)), where="probe calibration hash")
+    return _require_calibration_hash(
+        next(iter(values)), where="probe calibration hash"
+    )
 
 
 def adapt_glm_importance_from_probe(
@@ -819,14 +836,31 @@ def _canonical_calibration(calibration: Mapping[str, object]) -> dict[str, objec
     if not isinstance(calibration, Mapping) or not calibration:
         raise CorpusContractError("calibration must be a nonempty mapping")
     out = dict(calibration)
-    out["identity_sha256"] = _require_sha256(
+    identity_sha256 = _require_sha256(
         out.get("identity_sha256"), where="calibration.identity_sha256"
+    )
+    out["probe_calib_hash"] = _require_calibration_hash(
+        out.get("probe_calib_hash"), where="calibration.probe_calib_hash"
     )
     if not isinstance(out.get("dataset"), str) or not out["dataset"]:
         raise CorpusContractError("calibration.dataset must be a nonempty string")
     for field in ("nsamples", "seqlen", "tokens"):
         out[field] = _require_positive_int(out.get(field), where=f"calibration.{field}")
     out["seed"] = _require_nonnegative_int(out.get("seed"), where="calibration.seed")
+    identity_payload = {key: value for key, value in out.items()
+                        if key != "identity_sha256"}
+    expected_identity = hashlib.sha256(json.dumps(
+        identity_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+    if identity_sha256 != expected_identity:
+        raise CorpusContractError(
+            "calibration.identity_sha256 does not bind the canonical "
+            "calibration descriptor"
+        )
+    out["identity_sha256"] = identity_sha256
     return out
 
 
@@ -873,7 +907,7 @@ def finalize_glm_bf16_corpus(
     identity = dict(importance_identity)
     if identity.get("schema") != IMPORTANCE_SCHEMA:
         raise CorpusContractError("importance identity schema differs")
-    if identity.get("probe_calibration_hash") != calibration_out["identity_sha256"]:
+    if identity.get("probe_calibration_hash") != calibration_out["probe_calib_hash"]:
         raise CorpusContractError("importance calibration does not match corpus calibration")
     expected_value_hash = canonical_imatrix_sha256(
         {name: item.value for name, item in importance.items()}
