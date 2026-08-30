@@ -26,13 +26,11 @@ rows are not comparable to the published ladder and it refuses.
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import math
 from pathlib import Path
 import sys
 import time
-import types
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCKED_HULL_ROOT = Path("/home/rob/dq-runs/trellis-hull-20260828")
@@ -42,6 +40,7 @@ import numpy as np
 import torch
 
 import hull_sweep as H
+from isolated_glm_corpus import load_active_glm_corpus
 
 W, C, P, S4, TF = H.W, H.C, H.P, H.S4, H.TF
 
@@ -77,33 +76,6 @@ BF16_RATES = (1.0, 2.0, 2.5, 3.0)
 # flips DISCRETE encode decisions and shows at ~1e-3, which no tolerance
 # absorbs -- it is diagnosed, not tolerated.  Same bar hull_sweep uses.
 CONTROL_RTOL = 1e-9
-
-
-def _load_active_glm_corpus(manifest: Path):
-    """Load the live corpus reader without disturbing the frozen hull codec.
-
-    ``hull_sweep`` deliberately binds the canonical ``prismaquant`` package
-    name to its Stage-6 snapshot.  The GLM corpus reader was added later and
-    is absent from that snapshot.  Load the active reader under a private
-    package alias so its relative ``cb_imatrix`` import resolves beside it,
-    while every encoder module in ``H`` remains pinned to Stage 6.
-    """
-
-    package_name = "_prismaquant_active_glm_corpus"
-    package_root = (REPO_ROOT / "prismaquant").resolve()
-    if package_name not in sys.modules:
-        package = types.ModuleType(package_name)
-        package.__file__ = str(package_root / "__init__.py")
-        package.__package__ = package_name
-        package.__path__ = [str(package_root)]
-        sys.modules[package_name] = package
-    module = importlib.import_module(f"{package_name}.trellis_bf16_corpus")
-    module_path = Path(module.__file__).resolve()
-    if not module_path.is_relative_to(package_root):
-        raise RuntimeError(
-            f"active GLM corpus loader escaped checkout: {module_path}"
-        )
-    return module.load_finalized_bf16_corpus(manifest)
 
 
 def main() -> int:
@@ -150,7 +122,7 @@ def main() -> int:
     else:
         if args.glm_manifest is None:
             raise SystemExit("--corpus glm requires --glm-manifest")
-        glm_corpus = _load_active_glm_corpus(args.glm_manifest)
+        glm_corpus = load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
         entries = {entry.name: entry for entry in glm_corpus.entries}
         names = list(entries)
         rate_plan = BF16_RATES

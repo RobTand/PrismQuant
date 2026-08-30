@@ -27,7 +27,8 @@ from typing import Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
+
+from isolated_glm_corpus import load_active_glm_corpus
 
 EXPECTED_FP8_LADDER_SHA256 = (
     "f9c5167905b98fe98a3389a9471cb9bea06e6ced9a1288329ce1b0fb6a92d2a3"
@@ -163,8 +164,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    from prismaquant.trellis_bf16_corpus import load_finalized_bf16_corpus
-    corpus = load_finalized_bf16_corpus(args.manifest)
+    corpus = load_active_glm_corpus(REPO_ROOT, args.manifest)
     locked = _locked_sources(args.locked_ladder)
     settings = {
         "schema": SCHEMA,

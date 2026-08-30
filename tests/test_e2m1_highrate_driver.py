@@ -10,7 +10,5 @@ DRIVER = (
 def test_active_corpus_loader_is_isolated_from_locked_hull_package():
     source = DRIVER.read_text()
 
-    assert "def _load_active_glm_corpus(manifest: Path):" in source
-    assert 'package_name = "_prismaquant_active_glm_corpus"' in source
-    assert "module.load_finalized_bf16_corpus(manifest)" in source
+    assert "load_active_glm_corpus(REPO_ROOT, args.glm_manifest)" in source
     assert "from prismaquant.trellis_bf16_corpus import" not in source

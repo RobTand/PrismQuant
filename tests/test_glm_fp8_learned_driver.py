@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 
 
 _PATH = (
@@ -11,7 +12,11 @@ _PATH = (
 _SPEC = importlib.util.spec_from_file_location("fp8_learned_glm", _PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 _DRIVER = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_DRIVER)
+sys.path.insert(0, str(_PATH.parent))
+try:
+    _SPEC.loader.exec_module(_DRIVER)
+finally:
+    sys.path.pop(0)
 
 
 def _cell(population, fixed, learned, fixed_bpw=4.0, learned_bpw=4.1):
@@ -42,3 +47,10 @@ def test_population_summary_never_pools_dense_and_routed():
     assert all(row["learned_minus_fixed_db_median"] == 4.0
                for row in summaries["routed"]["rows"])
     assert "all" not in summaries and "pooled" not in summaries
+
+
+def test_corpus_reader_does_not_claim_canonical_prismaquant_package():
+    source = _PATH.read_text()
+
+    assert "load_active_glm_corpus(REPO_ROOT, args.manifest)" in source
+    assert "from prismaquant.trellis_bf16_corpus import" not in source
