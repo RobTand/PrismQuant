@@ -60,18 +60,24 @@ def test_source_passthrough_prefixes_are_spec_backed(profile):
     )
 
 
-def test_probe_skip_linear_class_names_are_spec_backed(profile):
+def test_probe_skip_and_grouped_class_declarations_are_spec_backed(profile):
     DeepseekV4GroupedLinear = type(
         "DeepseekV4GroupedLinear",
         (nn.Linear,),
         {},
     )
 
-    assert profile.structure_spec().probe_skip_module_class_names == (
+    # The grouped-BMM class LEFT the skip list when the grouped Fisher
+    # accumulator landed: it is priced now, so holding it at source
+    # precision would be a choice, not a debt. The declaration moved to
+    # `grouped_module_class_names`, which routes the probe to the grouped
+    # accumulator instead of the dense one.
+    assert profile.structure_spec().probe_skip_module_class_names == ()
+    assert profile.structure_spec().probe_grouped_module_class_names == (
         "DeepseekV4GroupedLinear",
     )
     assert profile.should_probe_linear("model.layers.0.self_attn.wq_a", nn.Linear(4, 4))
-    assert not profile.should_probe_linear(
+    assert profile.should_probe_linear(
         "model.layers.0.self_attn.wo_a",
         DeepseekV4GroupedLinear(4, 4),
     )

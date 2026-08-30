@@ -11,6 +11,17 @@ like a tree traversal.").**
 walks are usable now; wiring the walk as an export gate and migrating
 probe/cost/footprint/read-traffic onto its edge list is still open.**
 
+**Update 2026-08-22 (`walker/woa-grouped-fisher`): the motivating instance is
+priced.** The grouped Fisher accumulator landed (`ARCHITECTURE.md` §8.9) —
+exact per-group reductions on the same estimator, flat-plane marginals, the
+one global-token normalization — and `DeepseekV4GroupedLinear` left the
+probe's skip list for the new `probe.grouped_module_class_names`. DSv4's
+`wo_a` walk claim moved from `pin(probe cannot price grouped operands yet)`
+to `decide`, and cost cells flow from probe keys with an honestly unmeasured
+output-MSE screen. The edge-list migration above remains open: this change
+prices `wo_a` through the EXISTING module-boundary hook mechanism; it does not
+yet derive the probe's inventory from the walk's edge list.
+
 ## The failure class this exists to kill
 
 On DeepSeek-V4, `attn.wo_a` — 17.9% of all decode read traffic — was never an
@@ -75,7 +86,10 @@ profile-plugin time, before any campaign spends GPU hours — and again at
 export as a gate. Dispositions with reasons are first-class output: they land
 on the shipcard and the model card, so the honest state is visible instead of
 silent. `wo_a` claimed as `pin(probe cannot price grouped operands yet)` on
-day one is a known debt with a name; `wo_a` absent is what bit us.
+day one is a known debt with a name; `wo_a` absent is what bit us. (That
+particular debt retired 2026-08-22 when the accumulator landed — see the
+update note above — but the pin mechanism stays for the next class no
+accumulator covers.)
 
 ## One enumeration, every consumer derives
 

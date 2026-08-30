@@ -533,7 +533,203 @@ def finalize_fisher_stats(merged_stats: dict, global_tokens: int) -> None:
         per = s.get("h_trace_per_expert_raw")
         if per is not None:
             s["h_trace_per_expert"] = [float(v) / global_tokens for v in per]
+        # Per-GROUP Fisher trace (grouped-BMM operands like DSv4's wo_a).
+        # Same rule, same denominator: the group axis is a contraction
+        # structure ON one logical tensor, and every group sees every
+        # calibration token (attention output projection — nothing is
+        # routed), so the global count is exact for it, not just
+        # consistent.
+        per_group = s.get("h_trace_per_group_raw")
+        if per_group is not None:
+            s["h_trace_per_group"] = [
+                float(v) / global_tokens for v in per_group]
         s["h_trace_norm_tokens"] = global_tokens
+
+
+# ---------------------------------------------------------------------------
+# Grouped-BMM Linear Fisher (`wo_a` shape)
+#
+# A declared grouped module (spec `probe.grouped_module_class_names`) is an
+# nn.Linear subclass whose forward consumes its `[G*R, D]` weight plane as
+# `W[g, r, d]`: `y[..., g, r] = sum_d x[..., g, d] * W[g, r, d]`
+# (view + bmm in `DeepseekV4GroupedLinear.forward`). The dense accumulator's
+# flatten-to-2D cannot represent this consumption: its chunk_h comes out
+# [R, D] against an [G*R, D] weight (the `chunk_h * w.pow(2)` broadcast that
+# motivated the original probe skip), and pooling groups into the token axis
+# destroys the per-(g,r) channel marginals. The functions below are the ONE
+# grouped accumulation mechanism; both backends fold its outputs into the
+# same stats keys the dense rows use.
+#
+# TP note (walker campaign addendum, 2026-08-22): identity, dispositions,
+# and every field below are properties of the WHOLE logical tensor. A future
+# Tensor-Parallel shard of `wo_a` would cut the stored plane's ROW axis
+# (axis 0 = G*R; the profile's `base_model_tp_plan` declares `rowwise`),
+# so a shard boundary must not straddle a group (a cut inside g's R rows
+# would make any future group-aware format illegal at that TP degree).
+# Nothing here bakes rank/shard identity into keys or sizes; byte totals
+# are TOTAL-of-logical, per-device splits are a serving-runtime concern.
+
+
+def grouped_linear_groups(mod, profile=None) -> int | None:
+    """Group count `G` for a profile-declared grouped-BMM Linear, else None.
+
+    Dispatch is EXPLICIT: only classes the profile declares under
+    ``probe.grouped_module_class_names`` are grouped — never a shape
+    heuristic. A declared class whose instance lacks a usable ``n_groups``
+    fails fast: silently falling through to the dense accumulator would
+    produce the inflated, mis-shaped numbers the old probe skip existed to
+    prevent.
+    """
+    import torch.nn as _nn
+    if not isinstance(mod, _nn.Linear) or profile is None:
+        return None
+    try:
+        declared = tuple(profile.probe_grouped_module_class_names())
+    except AttributeError:
+        declared = ()
+    if type(mod).__name__ not in declared:
+        return None
+    n_groups = getattr(mod, "n_groups", None)
+    if n_groups is None:
+        raise ValueError(
+            f"{type(mod).__name__} is declared under "
+            "probe.grouped_module_class_names but carries no n_groups "
+            "attribute; refusing to fall through to the dense Fisher "
+            "accumulator (its numbers would be wrong-shaped)")
+    g = int(n_groups)
+    out_features = int(mod.out_features)
+    if g <= 0 or out_features % g != 0:
+        raise ValueError(
+            f"{type(mod).__name__}: n_groups={g} does not divide "
+            f"out_features={out_features}")
+    return g
+
+
+def grouped_linear_stats_entry(mod, num_groups: int,
+                               w_max_abs: float | None = None,
+                               w_norm_sq: float | None = None) -> dict:
+    """Stats-schema entry for a grouped operand, mirroring the dense row.
+
+    Shape convention follows the serialized truth, NOT a slice fiction:
+    `out_features`=G*R and `in_features`=D name the flat `[G*R, D]` plane
+    the exporter quantizes, and the 1-D marginals index that same plane
+    (`fisher_row[g*R + r]`). `num_groups` is the distinguishing field —
+    deliberately NOT `num_experts`, which downstream code
+    (`_shape_from_stats`, `_stats_indicates_packed_expert`) reads as a
+    packed expert stack. Per-group structure rides on
+    `h_trace_per_group_raw`; the unit stays the whole logical tensor."""
+    w = mod.weight
+    return {
+        "h_trace_raw": 0.0,
+        "h_w2_sum_raw": 0.0,
+        "w_max_abs": w_max_abs,
+        "w_norm_sq": w_norm_sq,
+        "n_params": int(w.numel()),
+        "in_features": int(mod.in_features),
+        "out_features": int(mod.out_features),
+        "num_groups": int(num_groups),
+        "n_tokens_seen": 0,
+        # Grouped attention output projections are not routed: route
+        # metadata exists for schema parity with dense rows, always None.
+        "route_prob": None,
+        "router_path": None,
+        "expert_id": None,
+    }
+
+
+def grouped_linear_fisher_chunk(
+    x: torch.Tensor,
+    gy: torch.Tensor,
+    num_groups: int,
+    weight: torch.Tensor | None = None,
+) -> dict[str, torch.Tensor]:
+    """One backward hook's worth of grouped empirical-Fisher pieces.
+
+    Input contract (validated): `x` is the module input `[..., G, D]`,
+    `gy = dL/dy` is `[..., G, R]`, `weight` is the `[G*R, D]` plane. The
+    per-token gradient of the weight is `grad_t W[g,r,d] =
+    gy[t,g,r] * x[t,g,d]`, so the per-token-summed empirical Fisher —
+    the SAME estimator as every dense row (`Σ_t ‖∇_t‖²_F`, audit M3;
+    never `‖Σ_t ∇_t‖²`) factorizes exactly:
+
+        h_trace = Σ_t Σ_g ‖gy[t,g,:]‖² · ‖x[t,g,:]‖²
+                = Σ_g Σ_{r,d} chunk_h[g,r,d],
+        chunk_h[g,r,d] = Σ_t gy[t,g,r]² · x[t,g,d]²
+
+    The true elementwise Fisher is block-diagonal in `g`
+    (`H[(g,r),(g',d)] = 0` for `g' ≠ g`), so the per-group bmm is EXACT,
+    not an approximation. Everything downstream reduces the ONE fp32
+    `chunk_h`, which makes `sum(fisher_row) == sum(fisher_col) ==
+    h_trace` hold BY CONSTRUCTION — the wiring discipline the dense
+    sites document at their own accumulation points.
+
+    Returns device-resident fp32 tensors:
+      h_trace         0-dim, raw (pre-`finalize_fisher_stats`)
+      h_w2            0-dim ⟨chunk_h, W²⟩ proxy (None when weight absent/meta)
+      fisher_row     [G*R] flat-plane output-channel marginal
+      fisher_col     [D]    input-channel marginal (pools groups: column d
+                      of the plane serves every group's contraction)
+      g_sq_sum       [G*R] flat gy² marginal
+      act_sq_sum     [D]    imatrix second moment (pools groups)
+      act_absmax     [D]    max |x| bound (pools groups; merge rule MAX)
+      trace_per_group [G]  decomposition of h_trace across the group axis
+      chunk_flat     [G*R, D] chunk_h reshaped onto the stored plane, for
+                      `h_full` collection
+
+    Normalization is NOT applied here: rows keep raw token-SUMMED values
+    and `finalize_fisher_stats` divides every row by the GLOBAL calibration
+    token count. Callers bump `n_tokens_seen` by TOKENS (= x rows before
+    the group dim), never T*G — group slices of one token are one token's
+    evidence, and the shared global denominator is what keeps grouped rows
+    commensurable with dense ones.
+    """
+    g = int(num_groups)
+    if x.dim() < 2 or gy.dim() < 2 or x.shape[-2] != g or gy.shape[-2] != g:
+        raise ValueError(
+            f"grouped Fisher expects x [..., {g}, D] and gy [..., {g}, R]; "
+            f"got x {tuple(x.shape)}, gy {tuple(gy.shape)}")
+    d_in = int(x.shape[-1])
+    r_out = int(gy.shape[-1])
+    if weight is not None and tuple(weight.shape) != (g * r_out, d_in):
+        raise ValueError(
+            f"grouped weight plane expected {(g * r_out, d_in)}, "
+            f"got {tuple(weight.shape)}")
+
+    xf = x.detach().reshape(-1, g, d_in)     # [T, G, D]
+    gyf = gy.detach().reshape(-1, g, r_out)  # [T, G, R]
+    tokens = int(xf.size(0))
+    gy_sq = gyf.pow(2)                       # input dtype, like the dense path
+    x_sq = xf.pow(2)
+    # One batched matmul over the group axis: [G,R,T] @ [G,T,D] -> [G,R,D].
+    # Same cost class as the dense chunk_h matmul; the [T*G, ...] flattening
+    # the dense path would apply instead pools groups into the token axis
+    # and loses exactly the structure this function exists to keep.
+    chunk_h = torch.bmm(
+        gy_sq.permute(1, 2, 0), x_sq.permute(1, 0, 2)).float()
+    if tokens == 0:
+        # An empty reduction would make amax/amin raise (same guard as
+        # _marginal_chunk); every sum here is already zero.
+        act_absmax = torch.zeros(d_in, dtype=torch.float32, device=xf.device)
+    else:
+        hi = torch.maximum(xf.amax(dim=0).abs(), xf.amin(dim=0).abs())
+        act_absmax = hi.amax(dim=0).to(torch.float32)
+
+    out = {
+        "h_trace": chunk_h.sum(),
+        "fisher_row": chunk_h.sum(dim=-1).reshape(-1),
+        "fisher_col": chunk_h.sum(dim=(0, 1)),
+        "g_sq_sum": gy_sq.sum(dim=0).reshape(-1).to(torch.float32),
+        "act_sq_sum": x_sq.sum(dim=(0, 1)).to(torch.float32),
+        "act_absmax": act_absmax,
+        "trace_per_group": chunk_h.sum(dim=(1, 2)),
+        "chunk_flat": chunk_h.reshape(g * r_out, d_in),
+    }
+    if weight is not None and not weight.is_meta:
+        w_view = weight.detach().view(g, r_out, d_in)
+        out["h_w2"] = (chunk_h * w_view.float().pow(2)).sum()
+    else:
+        out["h_w2"] = None
+    return out
 
 
 def _scalar_acc_add(acc: dict, name: str, value: torch.Tensor) -> None:
@@ -1956,6 +2152,29 @@ class FisherAccumulator:
             if _skip_fisher_name(name):
                 self._fisher_skip.add(name)
             w = mod.weight
+            # Grouped-BMM operand (wo_a shape): route to the grouped
+            # accumulator BEFORE the dense registration below. Its stats
+            # entry carries `num_groups`; the flat-plane dims let every
+            # dense consumer (byte math, card validate, shape gates) read
+            # it unchanged.
+            num_groups = grouped_linear_groups(mod, self.model_profile)
+            if num_groups is not None:
+                self.stats[name] = grouped_linear_stats_entry(
+                    mod, num_groups,
+                    w_max_abs=None if w.is_meta else float(
+                        w.detach().abs().max().item()),
+                    w_norm_sq=None if w.is_meta else float(
+                        w.detach().pow(2).sum().item()),
+                )
+                self._h_full[name] = (
+                    None if w.is_meta
+                    else torch.zeros(int(w.shape[0]), int(w.shape[1]),
+                                     dtype=torch.float32, device=w.device))
+                self._fwd_handles.append(
+                    mod.register_forward_hook(self._make_fwd(name)))
+                self._bwd_handles.append(mod.register_full_backward_hook(
+                    self._make_grouped_bwd(name, num_groups)))
+                continue
             router_qname, eid = expert_info.get(name, (None, None))
             # Weights loaded under accelerate disk offload start on the
             # meta device and materialize lazily during forward. Defer
@@ -2164,6 +2383,66 @@ class FisherAccumulator:
                         (idx.detach().to("cpu", dtype=torch.long) + base)
                     )
                     self._rows_got[name] += flat.size(0)
+        return hook
+
+    def _make_grouped_bwd(self, name: str, num_groups: int):
+        """Backward hook for a grouped-BMM operand (wo_a shape).
+
+        Same accumulators and same flush discipline as the dense
+        `_make_bwd` (device-resident 0-dim fp32 scalars, `h_full`,
+        per-token grad norms), but the reductions run through
+        `grouped_linear_fisher_chunk`, which keeps the group axis
+        explicit instead of flattening it into the token axis. Scalars
+        land in `self._gpu_h_trace` / `self._gpu_h_w2_sum`, so the
+        existing finalize() flush and the ONE global-token normalization
+        in `finalize_fisher_stats` apply unchanged."""
+        def hook(module, grad_input, grad_output):
+            # Fast skip: same contract as the dense hook.
+            if name in self._fisher_skip:
+                self._saved_inputs.pop(name, None)
+                return
+            gy = grad_output[0]
+            x = self._saved_inputs.pop(name, None)
+            if x is None or gy is None:
+                return
+            pieces = grouped_linear_fisher_chunk(
+                x, gy, num_groups, module.weight)
+            gpu_trace = self._gpu_h_trace.get(name)
+            if gpu_trace is None:
+                gpu_trace = torch.zeros(
+                    (), dtype=torch.float32, device=pieces["h_trace"].device)
+                self._gpu_h_trace[name] = gpu_trace
+            gpu_trace.add_(pieces["h_trace"])
+            w2 = pieces.get("h_w2")
+            if w2 is not None:
+                gpu_w2 = self._gpu_h_w2_sum.get(name)
+                if gpu_w2 is None:
+                    gpu_w2 = torch.zeros(
+                        (), dtype=torch.float32, device=w2.device)
+                    self._gpu_h_w2_sum[name] = gpu_w2
+                gpu_w2.add_(w2)
+            acc = self._h_full.get(name)
+            if acc is None:
+                acc = torch.zeros(
+                    int(pieces["chunk_flat"].shape[0]),
+                    int(pieces["chunk_flat"].shape[1]),
+                    dtype=torch.float32, device="cpu")
+                self._h_full[name] = acc
+            acc.add_(pieces["chunk_flat"].to(acc.device))
+            # Per-(token, group) grad-norm² rows: ‖gy_t,g‖²·‖x_t,g‖² —
+            # the plane-coordinate analog of the dense per-token vector,
+            # so h_detail reconstruction tooling reads it unchanged.
+            gy_sq = gy.detach().reshape(-1, num_groups, gy.shape[-1]).pow(2)
+            x_sq = x.detach().reshape(-1, num_groups, x.shape[-1]).pow(2)
+            pt = (gy_sq.sum(dim=-1) * x_sq.sum(dim=-1)).reshape(-1)
+            self._per_token_grad_norm.setdefault(name, []).append(
+                pt.detach().to("cpu", dtype=torch.float32))
+            # TOKENS, not token-group pairs: one token's group slices are
+            # one token's evidence. The normalization denominator is the
+            # global calibration count either way (`finalize_fisher_stats`);
+            # this field is metadata and must count what a dense row counts.
+            tokens = int(x.detach().numel()) // (num_groups * int(x.shape[-1]))
+            self.stats[name]["n_tokens_seen"] += tokens
         return hook
 
     def _make_moe_block_flush(self, block_name: str):

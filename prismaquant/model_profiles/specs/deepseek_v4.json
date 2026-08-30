@@ -129,7 +129,8 @@
     "per_expert_mtp_regex": "re:^model[.]mtp[.][0-9]+[.]mlp[.]experts[.][0-9]+[.](gate|up|down)_proj$"
   },
   "probe": {
-    "skip_module_class_names": [
+    "skip_module_class_names": [],
+    "grouped_module_class_names": [
       "DeepseekV4GroupedLinear"
     ]
   },

@@ -373,10 +373,14 @@ def test_qwen3_walk_is_stable_across_two_runs(qwen3_walk):
 DSV4_CONFIG = "/home/rob/dq-runs/dsv4-flash-0731/source/config.json"
 
 
-def test_dsv4_profile_rules_pin_the_grouped_linear_weight():
-    """The wo_a claim does not need the 284B model: the DSv4 spec declares
-    `DeepseekV4GroupedLinear` in `probe_skip_module_class_names`, and the
-    base rules translate that declaration into a pin with a reason."""
+def test_dsv4_profile_rules_decide_the_grouped_linear_weight():
+    """The wo_a claim after the grouped Fisher accumulator landed: the
+    DSv4 spec no longer declares `DeepseekV4GroupedLinear` in
+    `probe_skip_module_class_names` (it moved to
+    `probe_grouped_module_class_names`, and the probe prices it through
+    the grouped accumulator), so the base rules claim its weight as an
+    ordinary allocator decision. The pin mechanism itself stays covered
+    by the generic base-rule tests below."""
     from prismaquant.model_profiles.deepseek_v4 import DeepseekV4Profile
     from prismaquant.model_walk import WalkNode, apply_claim_rules
 
@@ -391,8 +395,7 @@ def test_dsv4_profile_rules_pin_the_grouped_linear_weight():
         aliases=(),
     )
     claim = apply_claim_rules([wo_a], rules)[wo_a.name]
-    assert claim.disposition == "pin"
-    assert "probe" in claim.reason and "unpriced" in claim.reason
+    assert claim.disposition == "decide"
 
 
 def _shrunken_dsv4():
@@ -422,11 +425,12 @@ def _shrunken_dsv4():
 
 
 @pytest.mark.slow
-def test_dsv4_real_cpu_walk_discovers_and_pins_wo_a():
+def test_dsv4_real_cpu_walk_discovers_and_decides_wo_a():
     """Acceptance c on the contract's root-B fallback: the real DSv4
-    modeling code, real tiny tensors, CPU. Discovers the `wo_a` bmm edge
-    plus the OTHER matmul-fed bare-Parameter families the walk surfaced
-    (router gates, mHC mixers), all pinned by the profile's rules."""
+    modeling code, real tiny tensors, CPU. Discovers the `wo_a` bmm edge;
+    since the grouped Fisher accumulator landed, its claim is `decide` —
+    priced, not pinned-with-debt. The OTHER matmul-fed bare-Parameter
+    families (router gates, mHC mixers) stay pinned."""
     profile, model = _shrunken_dsv4()
     result = walk_model(
         model, execution="real", seq_len=16,
@@ -437,8 +441,7 @@ def test_dsv4_real_cpu_walk_discovers_and_pins_wo_a():
     assert len(wo_a_edges) == 4  # one per layer
     for edge in wo_a_edges:
         assert edge.op == "bmm"
-        assert result.claims[edge.param].disposition == "pin"
-        assert "unpriced" in result.claims[edge.param].reason
+        assert result.claims[edge.param].disposition == "decide"
 
     # The families the walk discovered beyond wo_a — each was a silent
     # omission candidate until claimed.
