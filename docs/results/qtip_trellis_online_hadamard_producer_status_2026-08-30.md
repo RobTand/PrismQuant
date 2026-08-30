@@ -122,9 +122,28 @@ Neither mode claims to minimize the dense `D_j`. A general local cost contains
 pairwise residual terms `2 D_j[s,t] e_s e_t`; those are not summarized by the
 current convolutional eight-bit state or its coordinate-additive Viterbi
 cost. `dense_block_D` therefore fails closed. Receipts record
-`terminal_dense_D_consumed=false` and `terminal_dense_D_exact=false` while
-separately binding the complete `L`, dense `D`, feedback targets, decoded
-terminals, shared scale, encoder source, final wire, and transform metadata.
+one literal `dense_D_terminal_consumption` object: `diagonal_consumed=true`
+only for `diag_block_D`, while `off_diagonal_consumed`,
+`full_matrix_consumed`, and `exact_dense_objective` remain false in both
+modes. The receipt separately binds the complete `L`, dense `D`, feedback
+targets, decoded terminals, shared scale, encoder source, final wire, and
+transform metadata. It also binds the exact BlockLDL/transform producer and
+trellis-encoder sources plus the audited QTIP repository commit and four
+relevant source-file digests. Both local source hashes are captured at module
+import and rechecked around final receipt construction, so a mid-run edit
+refuses rather than publishing a mixed closure. The QTIP runtime and wire
+remain explicitly absent.
+
+The prepared-receipt boundary is a closed schema, not an extensible bag of
+self-hashed claims. It requires exact root and nested field sets and replays
+all fixed basis, wire, seam, status, scope, and production-ineligibility
+constants. Recomputing the receipt's self-digest after changing or appending
+one of those semantics still refuses.
+
+The original weight/Hessian hashes are explicitly labelled preparation-time
+provenance rather than reauthenticated inputs because those tensors are not
+retained at encode; the transformed weight and Hessian identities are the
+tensors reauthenticated at that boundary.
 
 At width 256 there is no cross-block feedback. A full-feedback experiment
 requires at least two physical superblocks; the API remains valid for one but
@@ -158,7 +177,7 @@ CPU reference command:
   tests/test_qtip_trellis_online_hadamard_producer.py
 ```
 
-Result after the BlockLDL follow-up: `111 passed`; the separate documentation
-and architecture guards add `20 passed` (`131 passed` together). This is codec
+Result after the BlockLDL follow-up: `113 passed`; the separate documentation
+and architecture guards add `20 passed` (`133 passed` together). This is codec
 and reference-algebra evidence only. No GPU performance, energy, graph, or
 production-serving claim is made.

@@ -69,6 +69,19 @@ def _fixture():
     return weight, activations, hessian
 
 
+def _rehashed_prepared(prepared, mutation):
+    receipt = copy.deepcopy(prepared.receipt)
+    receipt.pop("identity_sha256")
+    mutation(receipt)
+    receipt["identity_sha256"] = M._canonical_sha256(receipt)
+    return M.PreparedOneLinear(
+        transformed_weight=prepared.transformed_weight,
+        transformed_hessian=prepared.transformed_hessian,
+        online_transform=prepared.online_transform,
+        receipt=receipt,
+    )
+
+
 def test_metadata_matches_gridbook_pinned_conformance_vectors():
     contract = _contract()
     assert M.seeded_sign_digest(
@@ -81,6 +94,26 @@ def test_metadata_matches_gridbook_pinned_conformance_vectors():
     assert contract["transform_sha256"] == \
         "3231ab8ed01b068864b261a369a9cfda3e3e59ffbabd5bd0b1bb854c1ec844b5"
     assert M.validate_online_transform(contract, rows=8, columns=16) == contract
+
+
+def test_qtip_source_audit_constants_match_native_isolate_and_local_source(
+    monkeypatch,
+):
+    assert M.QTIP_REPOSITORY == NATIVE.QTIP_REPOSITORY
+    assert M.QTIP_PINNED_COMMIT == NATIVE.QTIP_PINNED_COMMIT
+    assert M.QTIP_SOURCE_FILES == NATIVE.QTIP_SOURCE_FILES
+    assert M.producer_source_sha256() == hashlib.sha256(
+        M._PRODUCER_SOURCE_PATH.read_bytes()
+    ).hexdigest()
+    monkeypatch.setattr(M, "_current_producer_source_sha256", lambda: "0" * 64)
+    with pytest.raises(ValueError, match="source changed since module import"):
+        M._require_producer_source_unchanged()
+    monkeypatch.undo()
+    monkeypatch.setattr(M, "encoder_source_sha256", lambda: "0" * 64)
+    with pytest.raises(
+        ValueError, match="encoder source changed since module import"
+    ):
+        M._require_encoder_source_unchanged()
 
 
 @pytest.mark.parametrize("field,value", [
@@ -372,6 +405,81 @@ def test_combined_producer_refuses_prepared_tensor_identity_drift():
         )
 
 
+def test_prepared_boundary_rejects_rehashed_unknown_and_semantic_mutations():
+    prepared = M.prepare_one_linear_scaffold(
+        torch.zeros(1, 256),
+        torch.eye(256),
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=1,
+        input_seed=1,
+        output_seed=2,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+
+    mutations = [
+        (
+            "root unknown field",
+            lambda body: body.__setitem__("future_semantics", True),
+            "unknown=.*future_semantics",
+        ),
+        (
+            "fixed status",
+            lambda body: body.__setitem__("status", "trust_me"),
+            "status mismatch",
+        ),
+        (
+            "basis orientation",
+            lambda body: body["basis"].__setitem__(
+                "row_input", "x H_in D_in"
+            ),
+            "basis mismatch",
+        ),
+        (
+            "source authority",
+            lambda body: body["source"]["authority"].__setitem__(
+                "reauthenticated_at_encode", True
+            ),
+            "source.authority mismatch",
+        ),
+        (
+            "wire semantic",
+            lambda body: body["wire"].__setitem__(
+                "terminal_grid", "not_E2M1"
+            ),
+            "wire contract mismatch",
+        ),
+        (
+            "nested wire unknown field",
+            lambda body: body["wire"].__setitem__("future_wire", 1),
+            "prepared receipt wire has .*unknown=.*future_wire",
+        ),
+        (
+            "wire seam substitution",
+            lambda body: body["wire_seam"][
+                "excluded_substitutions"
+            ].clear(),
+            "wire_seam mismatch",
+        ),
+        (
+            "production eligibility",
+            lambda body: body.__setitem__("producer_eligible", True),
+            "producer_eligible mismatch",
+        ),
+        (
+            "JSON bool/int alias",
+            lambda body: body.__setitem__(
+                "format_registry_entries_created", False
+            ),
+            "format_registry_entries_created mismatch",
+        ),
+    ]
+    for _label, mutation, match in mutations:
+        tampered = _rehashed_prepared(prepared, mutation)
+        with pytest.raises(ValueError, match=match):
+            M._validate_prepared_one_linear(tampered, body_rate_q256=512)
+
+
 @pytest.mark.parametrize("buffer_blocks", [1, 2, 3])
 def test_buffered_blockldl_recurrence_matches_unbuffered_oracle(buffer_blocks):
     generator = torch.Generator().manual_seed(20260831)
@@ -463,6 +571,7 @@ def test_blockldl_factorization_refuses_non_positive_definite_hessian():
 def test_blockldl_trellis_uses_full_feedback_and_one_same_byte_wire(
     terminal_metric_mode,
     buffer_blocks,
+    monkeypatch,
 ):
     generator = torch.Generator().manual_seed(20260901)
     weight = torch.randn(2, 512, generator=generator)
@@ -477,6 +586,17 @@ def test_blockldl_trellis_uses_full_feedback_and_one_same_byte_wire(
         input_seed=0x1234,
         output_seed=0x5678,
         research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    source_rechecks = 0
+    original_source_recheck = M._require_implementation_sources_unchanged
+
+    def tracked_source_recheck():
+        nonlocal source_rechecks
+        source_rechecks += 1
+        return original_source_recheck()
+
+    monkeypatch.setattr(
+        M, "_require_implementation_sources_unchanged", tracked_source_recheck
     )
     before = set(format_registry.REGISTRY)
     artifact = M.require_blockldl_trellis_wire_round_trip(
@@ -509,7 +629,19 @@ def test_blockldl_trellis_uses_full_feedback_and_one_same_byte_wire(
     assert receipt["block_ldl"][
         "full_cross_block_feedback_matrix_consumed"
     ] is True
-    assert receipt["block_ldl"]["terminal_dense_D_consumed"] is False
+    expected_consumption = {
+        "diagonal_consumed": terminal_metric_mode == "diag_block_D",
+        "off_diagonal_consumed": False,
+        "full_matrix_consumed": False,
+        "exact_dense_objective": False,
+    }
+    assert receipt["block_ldl"][
+        "dense_D_terminal_consumption"
+    ] == expected_consumption
+    assert all(
+        block["dense_D_terminal_consumption"] == expected_consumption
+        for block in receipt["terminal_blocks"]
+    )
     assert receipt["block_ldl"][
         "terminal_metric_mode"
     ] == terminal_metric_mode
@@ -518,6 +650,25 @@ def test_blockldl_trellis_uses_full_feedback_and_one_same_byte_wire(
     assert receipt["same_byte_reparse_verified"] is True
     assert receipt["serve_algebra"]["wire_identity_verified"] is True
     assert receipt["producer_eligible"] is False
+    assert source_rechecks == 2
+    provenance = receipt["implementation_provenance"]
+    assert provenance["producer_source"] == {
+        "path": (
+            "research/qtip_native_nvfp4_2026-08-30/"
+            "trellis_online_hadamard_producer.py"
+        ),
+        "sha256": M.producer_source_sha256(),
+    }
+    assert provenance["encoder_source"] == {
+        "path": "prismaquant/trellis_encoder.py",
+        "sha256": M._IMPORTED_ENCODER_SOURCE_SHA256,
+    }
+    assert provenance["qtip_source_audit"] == {
+        "repository": M.QTIP_REPOSITORY,
+        "commit": M.QTIP_PINNED_COMMIT,
+        "source_sha256": dict(sorted(M.QTIP_SOURCE_FILES.items())),
+        "runtime_or_wire_imported": False,
+    }
     first_target = receipt["terminal_blocks"][0]["feedback_target_sha256"]
     assert first_target != M._tensor_sha256(
         prepared.transformed_weight[:, :256]

@@ -231,7 +231,17 @@ uses the diagonal of the local dense LDL block. The residual cross terms
 `2 D[s,t] e_s e_t` are not coordinate-additive and cannot be summarized by
 the current 256-state Viterbi state, so `dense_block_D` fails closed. Thus the
 producer implements all cross-block off-diagonal feedback, not an exact dense-
-`D` trellis minimizer.
+`D` trellis minimizer. Its receipt describes local use literally: the
+`diag_block_D` mode records diagonal consumption, while both terminal modes
+record that off-diagonal and full-matrix `D` consumption and an exact dense
+objective are false. The same receipt binds the producer and trellis-encoder
+sources plus the audited QTIP commit and source digests. Both local source
+hashes are captured at module import and rechecked around final receipt
+construction; a self-rehashed prepared receipt cannot change or extend its
+fixed basis, wire, seam, scope, or eligibility semantics.
+
+Original weight/Hessian hashes remain explicitly preparation-time provenance;
+the encode boundary reauthenticates the transformed tensors it actually owns.
 
 Arm D would not be a new compressed-tensors scheme: it needs Gridbook metadata
 and runtime transforms even though its matrix operand is ordinary native

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import json
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import torch
@@ -55,6 +56,22 @@ TRANSFORM_ALGORITHM = "block_walsh_hadamard"
 TRANSFORM_NORMALIZATION = "orthonormal"
 TRANSFORM_PADDING = "none"
 SIGN_GENERATOR = "sha256_counter_rademacher"
+QTIP_REPOSITORY = "https://github.com/Cornell-RelaxML/qtip"
+QTIP_PINNED_COMMIT = "e90c6688c8dfae326a3a81b5eb032db7c6680ec0"
+QTIP_SOURCE_FILES = {
+    "lib/algo/finetune.py": (
+        "0a1021d9bffa3e6a1a86f537096a072779c759417b87624f1eef669a1df2c1a4"
+    ),
+    "lib/algo/ldlq.py": (
+        "793e364fbe91e5b28740d0fc81a6e8618daa6a6a8ce5adbf9b877ba2e46e5bbe"
+    ),
+    "lib/codebook/bitshift.py": (
+        "a299ae97d2ccc80a142095c3c16ed619b435b68736fd52702ab396bc37218531"
+    ),
+    "lib/utils/math_utils.py": (
+        "65d50936e87b2c266806de201dea89b2d74a2ed38e33ef462bd8c3aafb333844"
+    ),
+}
 
 _ROOT_PAYLOAD_FIELDS = frozenset({
     "schema", "algorithm", "normalization", "padding", "input", "output",
@@ -64,6 +81,77 @@ _SIDE_FIELDS = frozenset({
     "dimension", "block_size", "seed", "sign_generator", "sign_sha256",
 })
 _SIGN_DOMAIN = (TRANSFORM_SCHEMA + "/signs\0").encode("ascii")
+_PREPARED_ROOT_FIELDS = frozenset({
+    "schema",
+    "status",
+    "scope",
+    "research_opt_in",
+    "shape",
+    "source",
+    "transformed",
+    "basis",
+    "online_transform",
+    "wire",
+    "wire_seam",
+    "format_registry_entries_created",
+    "runtime_pin_changed",
+    "production_contract_changed",
+    "producer_eligible",
+})
+_PREPARED_SOURCE_FIELDS = frozenset({"authority", "weight", "hessian"})
+_PREPARED_SOURCE_KINDS = frozenset({"weight", "hessian"})
+_PREPARED_SOURCE_AUTHORITY_FIELDS = frozenset({
+    "status", "reauthenticated_at_encode", "reason",
+})
+_PREPARED_TENSOR_IDENTITY_FIELDS = frozenset({"dtype", "sha256"})
+_PREPARED_TRANSFORMED_KINDS = frozenset({"weight", "hessian"})
+_PREPARED_SHAPE_FIELDS = frozenset({"rows", "columns"})
+_PREPARED_BASIS = {
+    "weight": "R_out W R_in.T",
+    "hessian": "R_in H R_in.T",
+    "row_input": "x D_in H_in",
+    "row_output_inverse": "y H_out D_out",
+    "weight_dtype": "torch.float32",
+    "hessian_dtype": "torch.float32",
+}
+_PREPARED_WIRE_FIELDS = frozenset({
+    "schema",
+    "family",
+    "body_rate_q256",
+    "terminal_grid",
+    "scale_contract",
+    "qtip_bitshift_wire_allowed",
+    "wire_bytes",
+    "wire_identity_sha256",
+    "encoder_invoked",
+    "decoder_invoked",
+})
+_PREPARED_WIRE_SEAM_FIELDS = frozenset({
+    "available_repository_api", "excluded_substitutions",
+})
+_PREPARED_AVAILABLE_REPOSITORY_API = [
+    "tail-biting Viterbi path planes",
+    "gridbook.trellis.wire.v1 immutable byte packer",
+    "same-byte canonical parser and reference decoder",
+]
+_PREPARED_EXCLUDED_SUBSTITUTIONS = [
+    "QTIP bitshift wire",
+    "vendored or imported Gridbook runtime",
+    "unparsed caller-asserted decoded weights",
+]
+_PREPARED_SOURCE_AUTHORITY = {
+    "status": "preparation_time_provenance_only",
+    "reauthenticated_at_encode": False,
+    "reason": (
+        "original source tensors are not retained; transformed tensor "
+        "identities are reauthenticated at encode"
+    ),
+}
+_PRODUCER_SOURCE_PATH = Path(__file__).resolve()
+_IMPORTED_PRODUCER_SOURCE_SHA256 = hashlib.sha256(
+    _PRODUCER_SOURCE_PATH.read_bytes()
+).hexdigest()
+_IMPORTED_ENCODER_SOURCE_SHA256 = encoder_source_sha256()
 
 
 @dataclass(frozen=True)
@@ -96,6 +184,86 @@ def _canonical_sha256(value: object) -> str:
         allow_nan=False,
     ).encode("ascii")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def producer_source_sha256() -> str:
+    """Return the producer source identity captured once at module import."""
+
+    return _IMPORTED_PRODUCER_SOURCE_SHA256
+
+
+def _current_producer_source_sha256() -> str:
+    return hashlib.sha256(_PRODUCER_SOURCE_PATH.read_bytes()).hexdigest()
+
+
+def _require_producer_source_unchanged() -> str:
+    current = _current_producer_source_sha256()
+    if not hmac.compare_digest(current, _IMPORTED_PRODUCER_SOURCE_SHA256):
+        raise ValueError(
+            "BlockLDL producer source changed since module import; refusing "
+            "to publish a receipt for a mixed code closure"
+        )
+    return _IMPORTED_PRODUCER_SOURCE_SHA256
+
+
+def _require_encoder_source_unchanged() -> str:
+    current = encoder_source_sha256()
+    if not hmac.compare_digest(current, _IMPORTED_ENCODER_SOURCE_SHA256):
+        raise ValueError(
+            "trellis encoder source changed since module import; refusing "
+            "to publish a receipt for a mixed code closure"
+        )
+    return _IMPORTED_ENCODER_SOURCE_SHA256
+
+
+def _require_implementation_sources_unchanged() -> tuple[str, str]:
+    return (
+        _require_producer_source_unchanged(),
+        _require_encoder_source_unchanged(),
+    )
+
+
+def _require_exact_fields(
+    value: Any,
+    expected: frozenset[str],
+    *,
+    where: str,
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} must be an object")
+    missing = sorted(expected - set(value))
+    unknown = sorted(set(value) - expected)
+    if missing or unknown:
+        raise ValueError(f"{where} has missing={missing}, unknown={unknown}")
+    return value
+
+
+def _require_sha256(value: Any, *, where: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or value != value.lower()
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{where} must be lowercase SHA-256")
+    return value
+
+
+def _json_exact_equal(actual: Any, expected: Any) -> bool:
+    """Compare closed JSON semantics without Python's bool/int aliasing."""
+
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(
+            _json_exact_equal(actual[key], expected[key]) for key in expected
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _json_exact_equal(left, right)
+            for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
 
 
 def _tensor_sha256(value: torch.Tensor) -> str:
@@ -576,6 +744,7 @@ def prepare_one_linear_scaffold(
         "research_opt_in": RESEARCH_OPT_IN,
         "shape": {"rows": rows, "columns": columns},
         "source": {
+            "authority": dict(_PREPARED_SOURCE_AUTHORITY),
             "weight": {
                 "dtype": str(weight.dtype),
                 "sha256": _tensor_sha256(weight),
@@ -658,20 +827,78 @@ def _validate_prepared_one_linear(
         raise ValueError("prepared receipt must be an object")
     body = dict(prepared.receipt)
     identity = body.pop("identity_sha256", None)
-    if not isinstance(identity, str) or not hmac.compare_digest(
-        identity, _canonical_sha256(body)
-    ):
+    _require_sha256(identity, where="prepared receipt identity_sha256")
+    if not hmac.compare_digest(identity, _canonical_sha256(body)):
         raise ValueError("prepared receipt identity mismatch")
-    if body.get("schema") != SCAFFOLD_SCHEMA:
-        raise ValueError("prepared receipt schema mismatch")
-    if body.get("research_opt_in") != RESEARCH_OPT_IN:
-        raise ValueError("prepared receipt research opt-in mismatch")
+    _require_exact_fields(
+        body, _PREPARED_ROOT_FIELDS, where="prepared receipt",
+    )
+    expected_root_constants = {
+        "schema": SCAFFOLD_SCHEMA,
+        "status": "prepared_exact_trellis_wire_seam_available",
+        "scope": "research_only_one_linear_unregistered_contract_scaffold",
+        "research_opt_in": RESEARCH_OPT_IN,
+        "format_registry_entries_created": 0,
+        "runtime_pin_changed": False,
+        "production_contract_changed": False,
+        "producer_eligible": False,
+    }
+    for field, expected_value in expected_root_constants.items():
+        if not _json_exact_equal(body[field], expected_value):
+            raise ValueError(f"prepared receipt {field} mismatch")
     rows, columns = map(int, prepared.transformed_weight.shape)
-    if body.get("shape") != {"rows": rows, "columns": columns}:
+    _require_exact_fields(
+        body["shape"], _PREPARED_SHAPE_FIELDS, where="prepared receipt shape",
+    )
+    if not _json_exact_equal(
+        body["shape"], {"rows": rows, "columns": columns}
+    ):
         raise ValueError("prepared receipt shape mismatch")
-    transformed = body.get("transformed")
-    if not isinstance(transformed, Mapping):
-        raise ValueError("prepared receipt transformed identity is missing")
+    source = _require_exact_fields(
+        body["source"],
+        _PREPARED_SOURCE_FIELDS,
+        where="prepared receipt source",
+    )
+    _require_exact_fields(
+        source["authority"],
+        _PREPARED_SOURCE_AUTHORITY_FIELDS,
+        where="prepared receipt source.authority",
+    )
+    if not _json_exact_equal(
+        source["authority"], _PREPARED_SOURCE_AUTHORITY
+    ):
+        raise ValueError("prepared receipt source.authority mismatch")
+    for kind in sorted(_PREPARED_SOURCE_KINDS):
+        source_identity = _require_exact_fields(
+            source[kind],
+            _PREPARED_TENSOR_IDENTITY_FIELDS,
+            where=f"prepared receipt source.{kind}",
+        )
+        dtype_text = source_identity["dtype"]
+        dtype_value = (
+            getattr(torch, dtype_text.removeprefix("torch."), None)
+            if isinstance(dtype_text, str) and dtype_text.startswith("torch.")
+            else None
+        )
+        if not isinstance(dtype_value, torch.dtype):
+            raise ValueError(
+                f"prepared receipt source.{kind}.dtype must be a torch dtype"
+            )
+        _require_sha256(
+            source_identity["sha256"],
+            where=f"prepared receipt source.{kind}.sha256",
+        )
+    transformed = _require_exact_fields(
+        body["transformed"],
+        _PREPARED_TRANSFORMED_KINDS,
+        where="prepared receipt transformed",
+    )
+    for kind in sorted(_PREPARED_TRANSFORMED_KINDS):
+        _require_exact_fields(
+            transformed[kind],
+            _PREPARED_TENSOR_IDENTITY_FIELDS,
+            where=f"prepared receipt transformed.{kind}",
+        )
     expected = {
         "weight": {
             "dtype": str(prepared.transformed_weight.dtype),
@@ -684,16 +911,39 @@ def _validate_prepared_one_linear(
     }
     if transformed != expected:
         raise ValueError("prepared transformed tensor identity mismatch")
-    wire = body.get("wire")
-    if not isinstance(wire, Mapping):
-        raise ValueError("prepared receipt wire contract is missing")
-    if (
-        wire.get("schema") != TRELLIS_WIRE_SCHEMA
-        or wire.get("family") != E2M1_FAMILY
-        or wire.get("body_rate_q256") != body_rate_q256
-        or wire.get("qtip_bitshift_wire_allowed") is not False
-    ):
+    if not _json_exact_equal(body["basis"], _PREPARED_BASIS):
+        raise ValueError("prepared receipt basis mismatch")
+    wire = _require_exact_fields(
+        body["wire"], _PREPARED_WIRE_FIELDS, where="prepared receipt wire",
+    )
+    family = get_trellis_family(E2M1_FAMILY)
+    expected_wire = {
+        "schema": TRELLIS_WIRE_SCHEMA,
+        "family": E2M1_FAMILY,
+        "body_rate_q256": body_rate_q256,
+        "terminal_grid": "E2M1",
+        "scale_contract": family.scale_contract,
+        "qtip_bitshift_wire_allowed": False,
+        "wire_bytes": None,
+        "wire_identity_sha256": None,
+        "encoder_invoked": False,
+        "decoder_invoked": False,
+    }
+    if not _json_exact_equal(wire, expected_wire):
         raise ValueError("prepared receipt wire contract mismatch")
+    wire_seam = _require_exact_fields(
+        body["wire_seam"],
+        _PREPARED_WIRE_SEAM_FIELDS,
+        where="prepared receipt wire_seam",
+    )
+    if not _json_exact_equal(
+        wire_seam,
+        {
+            "available_repository_api": _PREPARED_AVAILABLE_REPOSITORY_API,
+            "excluded_substitutions": _PREPARED_EXCLUDED_SUBSTITUTIONS,
+        },
+    ):
+        raise ValueError("prepared receipt wire_seam mismatch")
     contract = validate_online_transform(
         body.get("online_transform"), rows=rows, columns=columns
     )
@@ -1097,7 +1347,12 @@ def require_blockldl_trellis_wire_round_trip(
             "dense_D_sha256": _tensor_sha256(dense_d),
             "terminal_metric_sha256": _tensor_sha256(metric),
             "terminal_metric_mode": terminal_metric_mode,
-            "dense_D_consumed_by_terminal": False,
+            "dense_D_terminal_consumption": {
+                "diagonal_consumed": terminal_metric_mode == "diag_block_D",
+                "off_diagonal_consumed": False,
+                "full_matrix_consumed": False,
+                "exact_dense_objective": False,
+            },
             "clipped_group_count_at_fixed_global": clipped,
         }
         return decoded_terminal
@@ -1263,12 +1518,20 @@ def require_blockldl_trellis_wire_round_trip(
         "cross_block_feedback_nonzero_count": int(
             torch.count_nonzero(feedback_lower).item()
         ),
-        "terminal_dense_D_consumed": False,
-        "terminal_dense_D_exact": False,
+        "dense_D_terminal_consumption": {
+            "diagonal_consumed": terminal_metric_mode == "diag_block_D",
+            "off_diagonal_consumed": False,
+            "full_matrix_consumed": False,
+            "exact_dense_objective": False,
+        },
         "terminal_metric_mode": terminal_metric_mode,
         "atomic_terminal_geometry": "one_output_row_by_256_input_columns",
         "qtip_16_by_16_terminal_geometry_claimed": False,
     }
+    (
+        implementation_source_sha256,
+        implementation_encoder_sha256,
+    ) = _require_implementation_sources_unchanged()
     wire_recipe = {
         "schema": TRELLIS_WIRE_SCHEMA,
         "family": E2M1_FAMILY,
@@ -1282,7 +1545,7 @@ def require_blockldl_trellis_wire_round_trip(
         "scale_rule": scale_rule,
         "global_scale_real": shared_global,
         "global_scale_selection": "pre_feedback_transformed_weight_static_6",
-        "encoder_source_sha256": encoder_source_sha256(),
+        "encoder_source_sha256": implementation_encoder_sha256,
         "backend": backend,
         "point_route": point_route,
         "sb_chunk": int(sb_chunk),
@@ -1302,6 +1565,25 @@ def require_blockldl_trellis_wire_round_trip(
         "terminal_blocks": [block_receipts[index] for index in range(block_count)],
         "wire_recipe": wire_recipe,
         "wire_recipe_identity_sha256": _canonical_sha256(wire_recipe),
+        "implementation_provenance": {
+            "producer_source": {
+                "path": (
+                    "research/qtip_native_nvfp4_2026-08-30/"
+                    "trellis_online_hadamard_producer.py"
+                ),
+                "sha256": implementation_source_sha256,
+            },
+            "encoder_source": {
+                "path": "prismaquant/trellis_encoder.py",
+                "sha256": implementation_encoder_sha256,
+            },
+            "qtip_source_audit": {
+                "repository": QTIP_REPOSITORY,
+                "commit": QTIP_PINNED_COMMIT,
+                "source_sha256": dict(sorted(QTIP_SOURCE_FILES.items())),
+                "runtime_or_wire_imported": False,
+            },
+        },
         "wire_bytes": len(blob),
         "wire_identity_sha256": wire_sha256,
         "decoded_codes_sha256": _tensor_sha256(decoded_codes),
@@ -1318,6 +1600,7 @@ def require_blockldl_trellis_wire_round_trip(
         **receipt_body,
         "identity_sha256": _canonical_sha256(receipt_body),
     }
+    _require_implementation_sources_unchanged()
     return CombinedOneLinearArtifact(
         wire_bytes=blob,
         decoded_transformed_weight=decoded_weight,
@@ -1332,6 +1615,9 @@ __all__ = [
     "CombinedOneLinearArtifact",
     "COMBINED_ARTIFACT_SCHEMA",
     "PreparedOneLinear",
+    "QTIP_PINNED_COMMIT",
+    "QTIP_REPOSITORY",
+    "QTIP_SOURCE_FILES",
     "RESEARCH_OPT_IN",
     "SCAFFOLD_SCHEMA",
     "SIGN_GENERATOR",
@@ -1343,6 +1629,7 @@ __all__ = [
     "decoded_weight_in_original_basis",
     "inverse_transformed_outputs",
     "online_transform_digest",
+    "producer_source_sha256",
     "prepare_one_linear_scaffold",
     "qtip_block_ldl_factors",
     "require_blockldl_trellis_wire_round_trip",
