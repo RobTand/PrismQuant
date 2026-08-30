@@ -1,8 +1,15 @@
-# PrismaBuild — distributed campaign execution (spec, deferred)
+# PrismaBuild — distributed campaign execution
 
-**Status: SPEC / NOT BUILT.** Filed 2026-08-26 from a design conversation with
-Robert; return to this after GLM-5.3-Flash v1 ships. Nothing in the live
-pipeline depends on this document.
+**Status: DETERMINISTIC CORE + SLURM ADAPTER BUILT / NOT LIVE-DEPLOYED.** The
+dependency-free action-key, immutable-CAS, and local-worker core lives in
+`prismaquant/prismabuild.py`; the fail-closed SLURM resource transport lives in
+`prismaquant/prismabuild_slurm.py`. The adapter submits a canonical immutable
+action request with exact argv, `--export=NONE`, and explicit resources, then
+accepts only a scope-correct CAS receipt as success. A SLURM `COMPLETED` state
+without that receipt is a failed action. `tools/prismabuild_worker.py` is the
+direct batch-script entry point. The SLURM daemons, Dagster layer, and
+observability stack in the chosen design below are not deployed, and nothing
+in the live quantization pipeline depends on PrismaBuild yet.
 
 ## Problem
 

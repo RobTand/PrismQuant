@@ -717,6 +717,35 @@ class PrismaBuildCAS:
     def _blob_path(self, digest: str) -> Path:
         return self.root / "blobs" / digest[:2] / digest
 
+    def publish_action_request(self, action: object) -> Path:
+        """Publish the canonical immutable request consumed by remote workers."""
+
+        normalized = validate_action(action)
+        key = str(normalized["action_key"])
+        path = self.root / "requests" / key[:2] / f"{key}.json"
+        raw = _canonical_file_bytes(normalized)
+        won = _atomic_publish(path, raw)
+        if not won:
+            try:
+                observed = _read_regular_file(path, where="PrismaBuild action request")
+            except ActionContractError as exc:
+                raise CASTamperError(str(exc)) from exc
+            if observed != raw:
+                raise CASTamperError(
+                    "existing PrismaBuild action request differs from its action key"
+                )
+        # Re-read after either side of a publication race.  A scheduler must
+        # never send a path whose bytes the submitter merely assumes.
+        try:
+            verified = _read_regular_file(path, where="PrismaBuild action request")
+        except ActionContractError as exc:
+            raise CASTamperError(str(exc)) from exc
+        if verified != raw:
+            raise CASTamperError(
+                "published PrismaBuild action request failed canonical readback"
+            )
+        return path
+
     def _load_receipt_bytes(self, path: Path) -> bytes:
         try:
             return _read_regular_file(path, where="CAS receipt")
@@ -759,6 +788,14 @@ class PrismaBuildCAS:
                 worker_id=raw_producer["worker_id"],
                 platform_key=raw_producer["platform_key"],
                 host_class=raw_producer["host_class"],
+            )
+            # Publication validates this relation, but lookup must independently
+            # replay it: a receipt is externally stored CAS data, not trusted
+            # merely because its self-digest is internally consistent.
+            validate_worker_scope(
+                action,
+                platform_key=producer["platform_key"],  # type: ignore[arg-type]
+                host_class=producer["host_class"],  # type: ignore[arg-type]
             )
             body = {
                 "schema": CAS_RECEIPT_SCHEMA_V1,

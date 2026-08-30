@@ -1,7 +1,12 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-30 · `claude/gridbook-v12-pin` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-30,
+As of: 2026-08-30 · `codex/prismabuild-slurm-20260830` — stamps follow,
+newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/prismabuild-slurm-20260830`) for the first **PrismaBuild SLURM resource
+transport** (§10.1): exact no-shell submission, explicit resource placement,
+immutable action requests, strict scheduler state parsing, and CAS-only
+success. This is implemented and tested but not live-deployed; it changes no
+pipeline default or serving topology. Re-stamped (2026-08-30,
 `claude/gridbook-v12-pin`) for the **Gridbook 0.9.1 / contract-v12 pin
 advance**, which is the step the stamp below deliberately did not take.
 Gridbook 0.9.1 was released from `227420f` (tag `v0.9.1`, PyPI wheel
@@ -7372,6 +7377,37 @@ learned-table determinism, and a no-device toolchain can cross-compile explicit 
 neither emulates Ada execution, its 24 GiB memory boundary, vLLM graph capture, or served
 performance. Those claims remain pending until the two-arm physical gate in §7 runs on the exact
 GPU identity.
+
+### 10.1 PrismaBuild resource transport (implemented, not deployed)
+
+PrismaBuild's dependency-free core (`prismaquant.prismabuild`) owns the
+canonical action key, declared code closure, local execution contract, and
+immutable `/mnt/shared` CAS. `prismaquant.prismabuild_slurm` is now the narrow
+SLURM resource adapter beneath the still-planned Dagster DAG layer. It does not
+create another queue, cache, or certification path. Each submission publishes
+one canonical read-only action request at its action-key address and passes
+that path to `tools/prismabuild_worker.py`; task argv remains inside the sealed
+request and is never interpolated into a shell command.
+
+The submission argv uses `sbatch --parsable --export=NONE --requeue` with one
+explicit node/task, append-only retry logs, CPU count, memory MiB, GPU count,
+constraint, partition, account, QoS, and time limit. The action key is carried
+in both the deterministic job-name prefix and full SLURM comment. The adapter
+checks the configured worker's
+platform/host-class identity against the action's `portable`,
+`platform_keyed`, or `host_class_keyed` scope before submission. `squeue` and
+`sacct` output is parsed as a closed state vocabulary; malformed, duplicate,
+wrong-job, or unknown rows fail closed. Cluster-suffixed parsable IDs remain
+cluster-scoped for status, cancellation, and explicit requeue.
+
+SLURM is not result authority. A valid, content-verified CAS receipt for the
+exact action is the sole success state, and its producer scope is replayed on
+every lookup. `COMPLETED` without a receipt is failure; scheduler retries are
+idempotent because the worker checks the same CAS before running. A dirty
+partial result still refuses in the core worker instead of being guessed away.
+No SLURM controller/daemon, Dagster service, or observability service is
+installed by this code change, so the existing pipeline and
+`cluster_campaign.manifest.v2` execution path remain unchanged.
 
 **OOM discipline.** The pool has no evictable slack, so an allocation that would merely swap on
 a discrete-GPU box kills the machine instead. Rules, all learned from kills: serve at util
