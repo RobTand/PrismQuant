@@ -1,7 +1,12 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-29,
+As of: 2026-08-30 · `claude/trellis-get-format` — stamps follow, newest first,
+each recording its own branch and date. Re-stamped (2026-08-30,
+`claude/trellis-get-format`) for **UNWIRED_LINKS #1 wired**:
+`format_registry.get_format` now parse-resolves `TCQ_{E2M1,E4M3}_R<q256>` to an
+exact-or-refuse `TrellisFormatSpec` (§4.9 note); the `trellis_menu.UNWIRED_LINKS`
+entry for it awaits deletion by that file's owner. Prior stamp: 2026-08-29,
+`docs/architecture-currency-20260829`. Re-stamped (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
 rather than by a test — the two doc gates were green across both drifts. (i) The
@@ -3444,6 +3449,24 @@ discarded rather than travelling with the assignment (`allocator.py:2756`,
 second moment, an output-MSE proxy and **not** the AURA KL-adjoint the DP ranks
 in (`trellis_rate_surface.py:43-52`).
 
+> **Update (2026-08-30, `claude/trellis-get-format`).** Entry #1 is **wired**:
+> `format_registry.get_format` parse-resolves `TCQ_{E2M1,E4M3}_R<q256>` to a
+> memoized `TrellisFormatSpec` — never a `REGISTRY` insertion, because the
+> rate axis is dense. The spec is exact-or-refuse: exact activation contract
+> (A=W, derived from the family's `terminal_format` registry entry — E2M1
+> W4A4, E4M3 W8A8), exact capability floor (SM120+/SM89+),
+> `producer_eligible=False`; every RTN-shaped field (`weight_bits`,
+> `group_size`, `scale_bits`, `quantize_dequantize`, ...) and every byte/bpp
+> helper raises `TrellisSpecFieldRefused` **at attribute read**, as a
+> non-`AttributeError` so `getattr(spec, ..., None)` probes cannot swallow it
+> (`tests/test_trellis_format_spec.py`, 33 tests). Consequences for the
+> ledger: the registry-lookup halves of #2 and #6 no longer `KeyError` — they
+> hit the same pointed byte-formula refusal CB formats use — but both entries
+> stay open (nothing yet supplies `_memory_bytes_by_format` for a TCQ row,
+> and the byte-budget path still has no trellis bytes source). The
+> `trellis_menu.UNWIRED_LINKS` entry for #1 awaits deletion by that file's
+> owner under the ledger's own rule; the other seven entries stand.
+
 **Why refuse as a whole rather than wire it halfway.** The eight do not fail
 alike. The registry gaps crash **loudly**; the aggregation gaps are **silent** —
 they drop every rung from every fused and packed group and hand back a
@@ -3495,9 +3518,11 @@ which is where per-member layout identity belongs.
    platform. `serving_profile_specs/trellis_research_sm121.json` is that
    profile — `target_platform: sm_121`, `emulation_only: true`, no export lane,
    and deliberately **no `format_rules`**: naming 2546 TCQ rungs in an allow
-   list would assert they are `format_registry` entries, and they are not (a
-   trellis rung has no `FormatSpec` and no RTN `quantize_dequantize`, because
-   nothing renders one).
+   list would assert they are enumerable `format_registry` entries, and they
+   are not (a TCQ name parse-resolves to an exact-or-refuse
+   `TrellisFormatSpec` since 2026-08-30 — never a `REGISTRY` row — and its
+   RTN `quantize_dequantize` refuses rather than renders, because nothing
+   renders one).
 2. *An objective the run is not pricing in.* The manifest declares `cost_mode`
    and `currency`; a mismatch with the run refuses. One DP prices in one
    currency.
