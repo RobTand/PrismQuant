@@ -1272,6 +1272,7 @@ def _build_streaming_context(model_path: str, *,
         device,
         dtype,
         fp8_scale_inv_map=fp8_scale_inv_map,
+        safetensors_backend=resolved_safetensors_backend,
     )
     # Weight tying: a `tie_word_embeddings` checkpoint ships no
     # `lm_head.weight`, so `_materialize` above has nothing to install and

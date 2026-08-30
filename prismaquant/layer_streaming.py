@@ -608,6 +608,7 @@ def _apply_fp8_dequant_inplace(
     out: dict[str, torch.Tensor],
     fp8_scale_inv_map: dict[str, tuple[str, str]],
     device: torch.device,
+    safetensors_backend: str | None = None,
 ) -> int:
     """For each tensor in `out` whose key matches a `fp8_scale_inv_map`
     entry, read the scale_inv, apply the checkpoint-declared block
@@ -629,6 +630,7 @@ def _apply_fp8_dequant_inplace(
     """
     if not fp8_scale_inv_map:
         return 0
+    backend = resolve_safetensors_backend(safetensors_backend)
     # Collect (name, scale_key) per shard so we can open each shard
     # once and pre-read every scale we need before batching.
     scale_reads: dict[str, list[tuple[str, str]]] = defaultdict(list)
@@ -644,7 +646,12 @@ def _apply_fp8_dequant_inplace(
     # Step 1: Read all scales from source safetensors once per shard.
     loaded_scales: dict[str, torch.Tensor] = {}  # name -> fp32 scale (cpu)
     for shard, reads in scale_reads.items():
-        with safe_open(shard, framework="pt") as f:
+        f_ctx = (
+            PreadSafetensors(shard)
+            if backend == PREAD_BACKEND
+            else safe_open(shard, framework="pt")
+        )
+        with f_ctx as f:
             for model_name, scale_key in reads:
                 loaded_scales[model_name] = f.get_tensor(scale_key)
 
@@ -797,6 +804,7 @@ def _materialize(model: nn.Module, prefixes: list[str],
                  model_to_ckpt: dict[str, str],
                  device: torch.device, dtype: torch.dtype,
                  fp8_scale_inv_map: dict[str, tuple[str, str]] | None = None,
+                 safetensors_backend: str | None = None,
                  ) -> int:
     """Load all tensors whose model-side name starts with any prefix in
     `prefixes` onto `device` as `dtype`. Uses the checkpoint-side key to
@@ -808,6 +816,7 @@ def _materialize(model: nn.Module, prefixes: list[str],
     cast to bf16. See `_dequant_fp8_block_weight`.
 
     Returns count of tensors loaded."""
+    backend = resolve_safetensors_backend(safetensors_backend)
     by_shard: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for model_name, shard in model_to_shard.items():
         if any(model_name.startswith(p) for p in prefixes):
@@ -816,12 +825,15 @@ def _materialize(model: nn.Module, prefixes: list[str],
     out: dict[str, torch.Tensor] = {}
     open_kwargs = _safe_open_kwargs(device)
     for shard, pairs in by_shard.items():
-        try:
-            f_ctx = safe_open(shard, **open_kwargs)
-        except (TypeError, RuntimeError):
-            # Older safetensors / unsupported device combos: drop the
-            # device kwarg and fall back to the host-stage path.
-            f_ctx = safe_open(shard, framework="pt")
+        if backend == PREAD_BACKEND:
+            f_ctx = PreadSafetensors(shard)
+        else:
+            try:
+                f_ctx = safe_open(shard, **open_kwargs)
+            except (TypeError, RuntimeError):
+                # Older safetensors / unsupported device combos: drop the
+                # device kwarg and fall back to the host-stage path.
+                f_ctx = safe_open(shard, framework="pt")
         with f_ctx as f:
             for model_name, ckpt_name in pairs:
                 t = f.get_tensor(ckpt_name)
@@ -832,7 +844,10 @@ def _materialize(model: nn.Module, prefixes: list[str],
                     t = t.to(dtype)
                 out[model_name] = t
     if fp8_scale_inv_map:
-        _apply_fp8_dequant_inplace(out, fp8_scale_inv_map, device)
+        _apply_fp8_dequant_inplace(
+            out, fp8_scale_inv_map, device,
+            safetensors_backend=backend,
+        )
     loaded = 0
     for model_name, t in out.items():
         install_dtype = t.dtype if t.is_floating_point() else None
@@ -1391,7 +1406,10 @@ def _read_layer_to_device(prefix: str,
             "refusing to install a partial layer"
         )
     if fp8_scale_inv_map:
-        _apply_fp8_dequant_inplace(out, fp8_scale_inv_map, device)
+        _apply_fp8_dequant_inplace(
+            out, fp8_scale_inv_map, device,
+            safetensors_backend=backend,
+        )
     if pack_experts is not None:
         # Generic per-expert -> packed-3D bridge for checkpoints that ship
         # MoE experts unfused while the live module is packed. No-op (None)
