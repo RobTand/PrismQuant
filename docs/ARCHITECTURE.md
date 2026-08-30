@@ -1,7 +1,77 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-30 · `claude/lane-eligibility-v3` — stamps follow, newest
+As of: 2026-08-30 · `claude/gridbook-v12-pin` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-30,
+`claude/gridbook-v12-pin`) for the **Gridbook 0.9.1 / contract-v12 pin
+advance**, which is the step the stamp below deliberately did not take.
+Gridbook 0.9.1 was released from `227420f` (tag `v0.9.1`, PyPI wheel
+`cb4d7ad6…`, digest confirmed against `pypi.org/pypi/gridbook/0.9.1/json`),
+its packaged contract materialized byte-verbatim as
+`gridbook_runtime_contract.0.9.1.json` (`836b7831…`), and **both** pins moved
+together with `GRIDBOOK_RUNTIME_CONTRACT_SCHEMA` → `gridbook.runtime-contract.v12`
+— `parse_gridbook_runtime_pin` refuses a pin whose schema differs from that
+constant, so the three are one change. **This changes gate behaviour, in the
+direction the pin was supposed to change it and one direction it was not.**
+Route status on the CB lane stops being `unattested`-by-absence and becomes a
+resolution against a published table: `route_status_source` now reads
+`gridbook_runtime_contract:0.9.1:no_cell` where it read `…:0.8.11:absent`.
+**And the v12 table names no CB cell on `sm_121` at all** — its twelve CB cells
+are `compile_only` on `sm_89`/`sm_120`, its four `sm_121` cells are
+`device_qualified` trellis — so with `serving_profile_specs/nvfp4_cb.json` now
+declaring `target_platform: sm_121` (a v3 cell is platform-scoped; no platform
+named is no route resolvable), **a CB export targeting GB10 fails closed**
+unless the artifact declares a non-native target or carries a per-run override,
+either of which is stamped on the shipcard. That is the table reporting a real
+serving gap, not a gate defect, and no cell was invented to paper over it: the
+only device-qualified CB-on-sm_121 receipt that exists is Gridbook **0.4.0**
+(2026-07-31, `/home/rob/dq-runs/evidence/gridbook-0.4.0-jason-gb10/`), four
+months and the whole v2/fused/persistent-B kernel line before this release, and
+whether it is still evidence is a judgment for Rob, not a gate for an agent.
+The blast radius is worth stating plainly, because it measures how much of the
+CB surface was resting on the absence of a table: **ten test modules, 90
+tests**, build synthetic CB bodies and now have to declare
+`PQ_CB_NON_NATIVE_TARGET` to build at all (one opt-in `pytestmark` per module,
+`tests/cb_synthetic_target.py`; not autouse, so nothing is silenced by
+default, and the real `sm_121` refusal stays asserted against the real pin in
+`tests/test_cb_route_status_gate.py`). None of those bodies is ever served —
+they are CPU fixtures for packing and decode geometry — but the count is the
+honest measure of how many CB exports in this tree have no backed route on the
+platform the lane targets. The count is measured, not asserted: stripping the
+declaration one module at a time reproduces the failures per module
+(`test_nvfp4_cb_streaming` 51, `test_cb_lane_sharding` 10,
+`test_nvfp4_cb_formats` 9, `test_resident_routed_moe_cbl` 6,
+`test_nvfp4_cb_pipeline` 6, `test_nvfp4_activation_contract` 3,
+`test_dsv4_packed_expert_export_bridge` 2, `test_dspark_cb_streaming_sidecar`
+1, `test_per_expert_cb_export` 1, `test_cb_export_pipeline` 1 — plus 5 more
+in `test_per_expert_cb_export` reached only by declaring inside its
+module-scoped fixture, because pytest sets higher-scoped fixtures up before a
+function-scoped one). Nine modules declare module-wide; the tenth,
+`test_cb_export_pipeline`, declares on the single test that exports, because
+the other three drive the pipeline without one and must keep running with the
+gate armed. Two further modules
+were marked on a first pass and the mark then removed: the two
+`test_validate_cb_endpoint_*` modules pass with the declaration stripped, so
+their failures were the pin-literal and receipt-digest classes below, not the
+route gate. An inert declaration is false documentation about where the
+serving gap falls, so it does not stay.
+Second, quieter consequence, recorded because a build will meet it: 0.9.1
+publishes `formats[FP8_CB_K].producer_rungs = [40, 44, 48]` and
+`formats[NVFP4_CB_K].producer_rungs = [12..24]`, a narrower ladder than the
+decode/reader surface, and the shipped DSv4 routed experts are built on
+`FP8_CB_K28`/`K32`. `gridbook_format_contract.py` is **deliberately left bound
+to v4/v11** so that narrowing does not silently re-scope what PrismaQuant may
+build inside a pin commit; its docstring records the open decision, and a v12
+contract handed to that reader raises rather than degrades. That narrowing was
+not merely latent: `test_gridbook_runtime_contract.py` asserted
+`producer_rungs == list_producer_formats(family)` on a branch dormant under v4,
+and v12 fires it on both families, so the pin commit splits the equality —
+keeping `producer_rungs ⊆ producer menu` and moving the reverse direction (a
+menu ban, vetoed by principle 1) to principle 9's per-artifact export gate. `NVFP4_CB_S`
+disappears from the published formats, which is consistent — PrismaQuant
+deleted that family on 2026-08-17. Verified against the release wheel on
+GB10/sm121: RELEASING §2.2 compile check (including the trellis extension),
+fused-FP4 SASS 58 passed / 0 skipped, kernel-adjacent 444 passed,
+`test_trellis_r256_cuda` 49 passed / 0 skipped. Re-stamped (2026-08-30,
 `claude/lane-eligibility-v3`) for the **lane-eligibility v3 parser and the
 scoped route-status refusal** (§9.2.1). `gridbook_lane_eligibility.py` and
 `ServingLaneSpec.route_status_for` read
@@ -939,13 +1009,19 @@ bit-identical to the weights the loader installs for the probe. Dense
 checkpoints hit the map-empty passthrough and behave exactly as before; any
 tensor that cannot be materialized to the card's `(out, in)` **raises** rather
 than pricing a wrong-shaped or code-range W.
-The external runtime record pins Gridbook **0.8.11** at exact commit
-`187c7216b9d4882321c1923de0b4c49dc139743c`, with
-`gridbook.runtime-contract.v4` and the exact required feature map
+The external runtime record pins Gridbook **0.9.1** at exact commit
+`227420f9821bab7089632ee914f0ba050f82b817`, with
+`gridbook.runtime-contract.v12` and the exact required feature map
 `routed_moe_per_role_codebook_lut=1`, `source_fp8_block128_w8a16=1` plus
 `dspark_construction_physical_bridge=1`, and `version_is_release=true`. It
-advanced there from 0.8.5/v3 on 2026-08-21 and is held in lockstep with the
-serving pin by a test. The 0.8.5 wheel — the release that first attested
+advanced 0.8.5/v3 → 0.8.11/v4 on 2026-08-21 and 0.8.11/v4 → 0.9.1/v12 on
+2026-08-30, and is held in lockstep with the serving pin by a test. The
+feature map is unchanged across the v12 advance: the 0.8.11 and 0.9.1 packaged
+contracts have **equal** `abi_features`, `quant_method`, `packing`, `layout`
+and `producer_profiles` maps, and differ only in `contract_version`, the
+`formats` rows (two trellis families added, `NVFP4_CB_S` removed,
+`producer_rungs`/`kind` added to the two CB families) and the three new
+`lane_eligibility` / `tensor_parallel` / `expert_parallel` keys. The 0.8.5 wheel — the release that first attested
 `source_fp8_block128_w8a16` — passed its GB10/sm121 GPU gate (91 passed, 0
 skipped), including
 raw-source W8A16 residency, native decode/prefill dispatch, and JIT extension
@@ -954,8 +1030,8 @@ full-artifact eager/graph generation, performance parity, and served quality
 remain post-export shipcard gates. The measured command, immutable inputs, and
 raw evidence paths are recorded in
 `docs/results/gridbook_0p8p5_w8a16_gate_2026-08-12.md`; that gate has not been
-re-run on 0.8.11, which carries the same attestation forward in its packaged
-contract. Gridbook 0.8.4 introduced the explicit
+re-run on 0.8.11 or 0.9.1, both of which carry the same attestation forward in
+their packaged contracts; the claim's scope is still the 0.8.5 measurement. Gridbook 0.8.4 introduced the explicit
 routed per-role LUT feature; capability
 decisions now read the closed feature map rather than infer from a numeric
 version. The on-law K28/K32/K36/K40/K44/K48 FP8-CB set is unchanged. This
@@ -969,8 +1045,9 @@ changes: it moves only by a reviewed edit, and since 2026-08-21 a test refuses
 a producer/serving pin that name different releases, so drift is loud in
 either direction. Serving has a
 second, current-consumer pin in
-`gridbook_runtime/gridbook_serving_runtime_pin.json`. It names Gridbook **0.8.7**
-(advanced from 0.8.6 on 2026-08-15), runtime-contract v4, the
+`gridbook_runtime/gridbook_serving_runtime_pin.json`. It names Gridbook **0.9.1**
+(0.8.6 → 0.8.7 on 2026-08-15, → 0.8.9, → 0.8.11 on 2026-08-21, → 0.9.1 on
+2026-08-30), runtime-contract v12, the
 routed-MoE/source-FP8 features above, and
 `dspark_construction_physical_bridge=1`. **That pin is now RESOLVED** (release
 commit `98916b09`, `version_is_release=true`), superseding this section's former
@@ -979,7 +1056,7 @@ description of it as `PENDING_...` sentinels;
 state from both the Python and shell readers.
 `gridbook_serving_runtime.sh` downloads or accepts only the exact pinned wheel,
 validates its archive paths and METADATA, installs it from the read-only local
-file, and checks PEP 610 plus the v4 feature closure. A wheel that fails that
+file, and checks PEP 610 plus the feature closure at the pinned schema. A wheel that fails that
 digest check is **never published into the digest-named cache** — the cache's
 first branch trusts the directory name, so caching a rejected wheel is permanent
 and bricks the lane (2026-08-14 incident; guarded and regression-tested in
@@ -6525,8 +6602,8 @@ alias or loader table. Its producer codec remains an intentionally independent i
 the artifact ABI; CI
 compares every packing/layout field and every rung so incompatibility fails at the boundary.
 
-**Candidate contract v11 and the strict sm89 lane (implemented, not pinned or
-released).** V11 makes the reader/producer distinction explicit instead of
+**Candidate contract v11 and the strict sm89 lane (superseded by the released
+v12 pin — read the correction at the end of this subsection).** V11 makes the reader/producer distinction explicit instead of
 overloading one rung range. For FP8-CB, `formats[].rungs` is the reader domain
 K4/K8/K12/K16/K20/K24 plus every K28..K48, while
 `formats[].producer_rungs` is exactly K4..K48 step 4. PrismaQuant validates
@@ -6548,6 +6625,35 @@ K26..K32 have no public contract identity. Released Gridbook 0.8.11/v4 remains
 a historical reader input and cannot attest this producer expansion. Therefore
 the wider local registry is scaffolding only until the exact external pin also
 publishes those rungs and device-qualifies the requested structure/regime cells.
+
+**Correction (2026-08-30, the 0.9.1/v12 pin).** The paragraphs above describe
+what the v11 *candidate* was expected to publish. The contract that actually
+shipped and is now pinned publishes something narrower on both families:
+`FP8_CB_K.producer_rungs = [40, 44, 48]` (not K4..K48 step 4) and
+`NVFP4_CB_K.producer_rungs = [12..24]` (not K1..K25), while the reader `rungs`
+domains are unchanged from v4 — FP8 K28..K48, NVFP4 K12..K24. Three
+consequences follow, and none of them is a bug to fix here:
+
+- The eligibility cells narrow the *same* rungs on the attestation axis: no
+  published cell names an FP8 rung outside `[40, 44, 48]`, on any platform. So
+  the shipped DSv4 `FP8_CB_K28`/`K32` experts resolve `unattested` at the
+  route-status gate even on an `sm_120`-targeted profile.
+- `test_gridbook_runtime_contract.py` had asserted
+  `producer_rungs == list_producer_formats(family)` since the v11 work, a branch
+  dormant while v4 published no `producer_rungs`. v12 activates it. The pin
+  commit **splits** that equality rather than deciding it: the direction
+  `producer_rungs ⊆ producer menu` stays an assertion (nothing else checks it);
+  the reverse direction is a menu ban, vetoed by §Principle 1 in those words,
+  and its enforcement point is the per-artifact export gate (§Principle 9),
+  which the same pin proved live.
+- The `fp8_cb` producer menu reaches down to K4 while the runtime's *reader*
+  domain starts at K28, so K4..K24 are rungs **no released Gridbook can decode
+  at all**. Pre-existing, invisible under v4 because v4 published no producer
+  set to compare against. Recorded; closing it is a production-policy decision.
+
+`gridbook_format_contract.py` stays bound to `{v4, v11}` for the same reason: a
+v12 contract handed to that reader raises rather than silently re-scoping the
+ladder.
 
 `qwen38_sm120_cb_validation_only` is the matching producer-side registration
 scaffold: exact `target_platform=sm_120`, both public producer ladders, and only
@@ -7019,15 +7125,18 @@ the DSv4 body/MTP/DSpark loader and routed per-role ABI consumed by this produce
 not retroactively promote the 92 GB study: the current 112.690 GB AURA artifact must still close
 the exact eager/graph, quality, and paired whole-model served native-parity shipcard gates.
 
-#### 9.2.1 Tracked v4 route status and the lane-v3 parser (R3)
+#### 9.2.1 Tracked v12 route status and the lane-v3 parser (R3)
 
 Principle 9 requires route status in a **structured** field a gate can read, and principle 14
 requires that field to be derived from a table the pinned runtime publishes, or refused. Both
-apply to this lane. The tracked released Gridbook 0.8.11/v4 contract publishes no eligibility
-table, so its honest answer remains `unattested`. The unreleased candidate v11 contract is a
-separate path: its closed-world lane-v2 table is accepted structurally, but the current sm89
-cells are only `compile_only`. Neither state is physical RTX 4090 qualification, and one may not
-be used to upgrade the other.
+apply to this lane. **Since 2026-08-30 the tracked release is Gridbook 0.9.1/v12, and it does
+publish a lane-eligibility v3 table** — so route status is resolved from it rather than reported
+absent. What that table says about CB is the subject of "A measured gap the published table
+reports" below: twelve CB cells, all `compile_only`, all on `sm_89`/`sm_120`. `compile_only` is
+not physical RTX 4090 qualification and may not be upgraded to it. (Before the bump the pinned
+0.8.11/v4 contract published no table at all, so the honest answer was `unattested` by absence;
+that state is kept under test against 0.8.11's still-indexed contract, because a guard retired
+on the grounds that its defect is currently unreachable is how the defect returns.)
 
 **The two measured defects.** The shipped DSv4 87 GB artifact carries 11 routed FP8-CB layers
 whose `gate_proj` and `up_proj` bind distinct learned codebooks. Gridbook's persistent-B prefill
@@ -7163,21 +7272,37 @@ Two censuses are added to the provenance and the shipcard summary: `qualificatio
 kernels cross-compile for that compute capability and nothing more; it is warned about and never
 upgraded. The provenance schema is `prismaquant.cb_route_attestation.v2`.
 
-**A measured gap the published table reports.** Gridbook's v12 lane table publishes CB cells for
-`sm_89` and `sm_120` only; on `sm_121` it publishes trellis cells alone. Under the v12 contract a
-CB unit targeted at GB10 therefore resolves `unattested` and the gate refuses. That is the table
-reporting a serving gap rather than the producer working around one (principle 1), and it is a
-consequence the pin bump will surface the day it lands.
+**A measured gap the published table reports — now live.** Gridbook's v12 lane table publishes
+CB cells for `sm_89` and `sm_120` only; on `sm_121` it publishes trellis cells alone. Under the
+v12 contract a CB unit targeted at GB10 therefore resolves `unattested` and the gate refuses.
+That is the table reporting a serving gap rather than the producer working around one
+(principle 1). Since 2026-08-30 this is not a forecast: the pin is bumped,
+`serving_profile_specs/nvfp4_cb.json` declares `target_platform: sm_121`, and
+`require_cb_route_status` refuses a CB export on GB10 naming the platform and the two declared
+escape hatches. Gridbook could not honestly say otherwise — both CB preflights fix their
+capability in code (`sm89_preflight.SM89_CAPABILITY = (8, 9)`,
+`sm120_preflight.SM120_CAPABILITY = (12, 0)`, and `sm120_preflight` hard-refuses any SASS target
+but `sm_120`/`sm_120a`), so no CB receipt for compute 12.1 exists at this release to publish. The
+one device-qualified CB-on-GB10 receipt in the house is Gridbook 0.4.0 from 2026-07-31 (286
+units, 94 `NVFP4_CB_K16` routed-expert stacks on `cb_moe_gemv_fp4_v2`, 604 served completions,
+sealed manifest at `/home/rob/dq-runs/evidence/gridbook-0.4.0-jason-gb10/`); it predates the v2,
+fused and persistent-B kernel lines entirely, and no cell was added from it.
 
 **To make it attested,** the serving pin must advance to a Gridbook release that packages the v3
 table, its packaged contract must be materialized byte-verbatim in
 `prismaquant/gridbook_runtime/` with an index entry, and
 `gridbook_runtime_pin.GRIDBOOK_RUNTIME_CONTRACT_SCHEMA` must move from
 `gridbook.runtime-contract.v4` to `v12` — `parse_gridbook_runtime_pin` refuses any pin whose
-`runtime_contract_schema` differs from that constant, so the two are one change, not two. That
-step is **release-keyed and outward-facing**: `30287aa` carries no tag, and the serving pin's
-`wheel_sha256` must be read from the served image's installed distribution. It is deliberately
-not taken here.
+`runtime_contract_schema` differs from that constant, so the two are one change, not two. **All
+of that was done on 2026-08-30.** `30287aa` was released as `v0.9.1` at `227420f`; the packaged
+contract is materialized as `gridbook_runtime_contract.0.9.1.json` (`836b7831…`, byte-identical
+to the `30287aa` test fixture, held so by a test) with an index entry naming version, commit and
+digest; both pins name `0.9.1` / `227420f9821bab7089632ee914f0ba050f82b817` /
+`gridbook.runtime-contract.v12`. The `wheel_sha256` rule was satisfied with a receipt rather than
+a reproduction argument: the CI-built wheel, the wheel the GB10 gates ran against, and the
+published PyPI archive are one file, `cb4d7ad64c5a78d447f427a0aa98790406b6821d02c7f2f5d589d61890abdf9d`
+(a local rebuild produced a different archive, `7141acf9…`, as expected — wheels are not
+byte-reproducible, which is why the digest is read and not recomputed).
 
 ### 9.3 GGUF
 

@@ -143,6 +143,11 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+# Only this test exports a body, so only this test declares.  The other three
+# in this module drive the pipeline without an export and must keep running
+# with the route gate armed.  Gridbook 0.9.1's v12 table names no CB cell on
+# sm_121; see tests/cb_synthetic_target.py.
+@pytest.mark.usefixtures("synthetic_cb_target")
 @pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="deferred real-GPU streaming export identity gate",

@@ -9,6 +9,7 @@ import pytest
 
 import prismaquant.dspark_serving_profile as dsp
 from prismaquant.gridbook_serving_runtime_pin import (
+    GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA,
     GRIDBOOK_SERVING_RUNTIME_RELEASE_VERSION,
 )
 import prismaquant.validate_cb_endpoint as cbv
@@ -22,7 +23,7 @@ _PIN = {
     "version": GRIDBOOK_SERVING_RUNTIME_RELEASE_VERSION,
     "version_is_release": True,
     "wheel_sha256": "b" * 64,
-    "runtime_contract_schema": "gridbook.runtime-contract.v4",
+    "runtime_contract_schema": GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA,
     "required_abi_features": {
         "routed_moe_per_role_codebook_lut": 1,
         "source_fp8_block128_w8a16": 1,
@@ -225,6 +226,17 @@ _ADDED_BY_THE_0_8_11_PIN_ADVANCE = (
     "PRISMAQUANT_CB_MOE_PERSISTENT_B_D2R",
 )
 
+# Added when the serving pin advanced 0.8.11 -> 0.9.1 on 2026-08-30.  Gridbook
+# 0.9.1 is the first release to ship the two trellis dense lanes, so it is the
+# first release whose environment namespace contains these reads; the closed
+# namespace had to grow again to stay closed.
+_ADDED_BY_THE_0_9_1_PIN_ADVANCE = (
+    "GRIDBOOK_TRELLIS_E4M3",
+    "GRIDBOOK_TRELLIS_E4M3_MODE",
+    "GRIDBOOK_TRELLIS_E2M1",
+    "GRIDBOOK_TRELLIS_E2M1_MODE",
+)
+
 
 def test_gold_environment_grew_additively_over_the_historical_0_8_5_set():
     """The 0.8.5-era gold environment is unchanged; 0.8.11 only extended it.
@@ -234,26 +246,53 @@ def test_gold_environment_grew_additively_over_the_historical_0_8_5_set():
     then either block the advance or hide it, so the freeze is stated on the
     scope it was written to protect: the 29-name HISTORICAL projection must
     still hash to its original literal, proving no pre-existing canonical
-    value moved, while the full 31-name map carries its own digest.  A silent
-    edit to any old entry still fails, which was the original point.
+    value moved, while the full map carries its own digest.  A silent edit to
+    any old entry still fails, which was the original point.
+
+    2026-08-30: the same thing happened again at 0.8.11 -> 0.9.1, so the same
+    shape is applied one level deeper rather than restated.  Each era keeps
+    the digest it was frozen with -- 29 names at 0.8.5, 31 at 0.8.11, 35 now
+    -- so an edit to a pre-0.9.1 entry fails on the 0.8.11 digest even though
+    the full map legitimately changed.  Both older literals are unchanged
+    here, which is the evidence that this growth was additive.
     """
     historical = {
         name: value for name, value in CANONICAL_GOLD_ENVIRONMENT.items()
         if name not in _ADDED_BY_THE_0_8_11_PIN_ADVANCE
+        and name not in _ADDED_BY_THE_0_9_1_PIN_ADVANCE
     }
     assert len(historical) == 29
     assert _sha(historical) == (
         "41dd44c5365d961b58f1fb94db9af32243bdbe1a1863cbdea60618f42e88397e"
     )
-    assert len(CANONICAL_GOLD_ENVIRONMENT) == 31
-    assert _sha(dict(CANONICAL_GOLD_ENVIRONMENT)) == (
+    era_0_8_11 = {
+        name: value for name, value in CANONICAL_GOLD_ENVIRONMENT.items()
+        if name not in _ADDED_BY_THE_0_9_1_PIN_ADVANCE
+    }
+    assert len(era_0_8_11) == 31
+    assert _sha(era_0_8_11) == (
         "e101a445656d000ac2a64614f5009635d41ec3bd5e36c4052da659db269c9df9"
     )
-    # Both additions are dispatch kill switches, consistent with every other
+    assert len(CANONICAL_GOLD_ENVIRONMENT) == 35
+    assert _sha(dict(CANONICAL_GOLD_ENVIRONMENT)) == (
+        "d1ae17b4aae2b042bd2fbab3df98030705e26e4be3e47e7055e83525fe8f1661"
+    )
+    # The 0.8.11 pair are dispatch kill switches, consistent with every other
     # selector in the table: the runtime's own default moved to "auto" in
     # 0.8.9, and gold stays pinned to the kernel its evidence was measured on.
     for name in _ADDED_BY_THE_0_8_11_PIN_ADVANCE:
         assert CANONICAL_GOLD_ENVIRONMENT[name] == "0"
+    # The 0.9.1 four are pinned ABSENT, and that is not the same shortcut.
+    # Read them in gridbook 0.9.1 rather than pattern-matched off the pair
+    # above: the two lane flags are latched_bool(default=False), so UNSET is
+    # already the disabled state -- there is no "auto" here for "0" to pin
+    # away from.  The two mode vars accept only "resident" or "streamed" and
+    # raise on anything else, so "0" is not a disabled spelling of them but an
+    # invalid one that would raise if the value were ever read.  Absence is
+    # the only value that is both off and legal, and it is what a CB gold
+    # serve actually has.
+    for name in _ADDED_BY_THE_0_9_1_PIN_ADVANCE:
+        assert CANONICAL_GOLD_ENVIRONMENT[name] is None
     assert CANONICAL_GOLD_ENVIRONMENT["PRISMAQUANT_CB_GEMV"] == "inherited"
     assert CANONICAL_GOLD_ENVIRONMENT["PRISMAQUANT_PRELOAD_FUSED"] == "0"
     assert "PYTORCH_ALLOC_CONF" not in CANONICAL_GOLD_ENVIRONMENT

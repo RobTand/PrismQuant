@@ -27,6 +27,14 @@ _NVFP4_KS = list(range(1, 26))
 _FP8_KS = list(FP8_PRODUCT_RUNGS)
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
+# This module builds synthetic CB bodies on CPU and never serves them.
+# Gridbook 0.9.1's v12 table names no CB cell on sm_121, so the route gate
+# refuses these exports unless the artifact declares what it is.  See
+# tests/cb_synthetic_target.py; the real sm_121 refusal stays asserted in
+# tests/test_cb_route_status_gate.py.
+pytestmark = pytest.mark.usefixtures("synthetic_cb_target")
+
+
 
 def _production_cb_stamp(formats):
     return cb_serialization_context_stamp(
@@ -299,6 +307,7 @@ _MENU_LADDERS = (
     ("NVFP4_CB_K", tuple(range(1, 26)), lambda k: k / 8 + 0.5),
     ("FP8_CB_K", FP8_ACCEPTED_RUNGS, lambda k: k / 8),
 )
+
 
 
 def test_menu_registers_and_resolves():

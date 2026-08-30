@@ -11,6 +11,10 @@ import pytest
 from prismaquant.anchored_cost import CandidateSpec, UnitSpec
 from prismaquant.cost_stage_checkpoint import canonical_json_sha256
 import prismaquant.dsv4_aura_cb_reprice as campaign
+from prismaquant.gridbook_runtime_pin import (
+    GRIDBOOK_RUNTIME_RELEASE_COMMIT,
+    GRIDBOOK_RUNTIME_RELEASE_VERSION,
+)
 
 
 def _runtime_snapshot_env(monkeypatch, root: Path) -> tuple[str, str, str]:
@@ -543,8 +547,8 @@ def test_w8a16_format_plan_migration_allows_only_runtime_provenance():
 
 def test_w8a16_readmission_release_pin_is_exact_and_released():
     proof = campaign._w8a16_runtime_contract_proof()
-    assert proof["commit"] == "187c7216b9d4882321c1923de0b4c49dc139743c"
-    assert proof["version"] == "0.8.11"
+    assert proof["commit"] == GRIDBOOK_RUNTIME_RELEASE_COMMIT
+    assert proof["version"] == GRIDBOOK_RUNTIME_RELEASE_VERSION
     assert proof["version_is_release"] is True
     assert proof["required_abi_features"][
         "source_fp8_block128_w8a16"

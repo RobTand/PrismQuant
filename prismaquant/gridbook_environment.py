@@ -1,4 +1,4 @@
-"""Pinned Gridbook-0.8.11 serving-environment contract.
+"""Pinned Gridbook-0.9.1 serving-environment contract.
 
 Gridbook resolves some dispatch choices at import/model-load time and reads a
 few CUDA schedule selectors at launch time.  A gold measurement therefore
@@ -30,7 +30,7 @@ from .gridbook_runtime_pin import (
 
 
 GRIDBOOK_ENVIRONMENT_SCHEMA = "prismaquant.gridbook_environment/1"
-PINNED_GRIDBOOK_VERSION = "0.8.11"
+PINNED_GRIDBOOK_VERSION = "0.9.1"
 # A projection of the single packaged pin, not a second independently edited
 # commit constant. Future unresolved pins still surface their fail-closed
 # placeholder here; the current released pin is a full immutable commit.
@@ -49,7 +49,7 @@ class GridbookEnvironmentError(ValueError):
 
 @dataclass(frozen=True)
 class GridbookEnvironmentVariable:
-    """One Gridbook-0.8.11 environment input and its gold-lane disposition."""
+    """One Gridbook-0.9.1 environment input and its gold-lane disposition."""
 
     name: str
     category: str
@@ -75,12 +75,25 @@ def _var(
 
 
 # The values and domains below carry forward the audited Gridbook 0.8.4 set
-# through the 0.8.5 contract into the released 0.8.11 contract. ``None`` is a
+# through the 0.8.5 and 0.8.11 contracts into the released 0.9.1 contract. ``None`` is a
 # contract value: the
 # variable must be
 # absent.  This matters for FUSED_FP4/FUSED_FP4_MOE ("0" is invalid), for the
 # expert-chunk override ("0" is invalid), and for CUDA switches whose source
 # recognizes only a non-default sentinel rather than a canonical default word.
+#
+# 2026-08-30, pin advance 0.8.11 -> 0.9.1 (contract v4 -> v12): FOUR
+# identifiers were added and no existing entry changed.  They are the two
+# trellis lanes' opt-in flags and their residency-mode selectors, and the
+# addition was derived, not guessed -- the 0.9.1 source's
+# ``PRISMAQUANT_*``/``GRIDBOOK_*`` namespace was diffed against this registry
+# and these four were the whole delta.  All four are pinned ABSENT for a gold
+# CB serve: the lanes construct only when their flag is set, so absence is
+# what reproduces the recorded gold routes.  The two ``_MODE`` selectors have
+# no ``gridbook_default`` to document because the lanes deliberately refuse to
+# pick one (``trellis_e4m3_mode``/``trellis_e2m1_mode`` raise on an unset
+# value) -- resident and streamed have different in-memory footprints, and
+# defaulting would make a footprint claim unfalsifiable.
 #
 # 2026-08-21, pin advance 0.8.5 -> 0.8.11: two identifiers were added
 # (PRISMAQUANT_CB_FP8_GEMV_V2, PRISMAQUANT_CB_MOE_PERSISTENT_B_D2R) and no
@@ -232,6 +245,28 @@ GRIDBOOK_ENVIRONMENT_REGISTRY = (
     _var(
         "PRISMAQUANT_DEBUG_PREFIXES", CATEGORY_DIAGNOSTIC, None, "disabled",
         "must be absent for the canonical non-debug serve",
+    ),
+    # The two trellis dense lanes (Gridbook 0.9.1).  Both are opt-in with no
+    # default residency mode, which is why contract v12 publishes their cells
+    # as ``backed_with_serve_flag`` rather than ``backed``.  A CB gold serve
+    # keeps all four absent.
+    _var(
+        "GRIDBOOK_TRELLIS_E4M3", CATEGORY_EXECUTION, None, "disabled",
+        "strict boolean: unset, 0, or 1",
+    ),
+    _var(
+        "GRIDBOOK_TRELLIS_E4M3_MODE", CATEGORY_EXECUTION, None,
+        "no default; the lane raises when the flag is set and this is unset",
+        "unset, or one of: resident, streamed",
+    ),
+    _var(
+        "GRIDBOOK_TRELLIS_E2M1", CATEGORY_EXECUTION, None, "disabled",
+        "strict boolean: unset, 0, or 1",
+    ),
+    _var(
+        "GRIDBOOK_TRELLIS_E2M1_MODE", CATEGORY_EXECUTION, None,
+        "no default; the lane raises when the flag is set and this is unset",
+        "unset, or one of: resident, streamed",
     ),
 )
 

@@ -32,6 +32,12 @@ EXECUTION = (
     "PRISMAQUANT_CB_W2_ROWS",
     "PRISMAQUANT_CB_W2_WARPS",
     "VLLM_USE_DEEP_GEMM",
+    # Gridbook 0.9.1: the two trellis dense lanes are opt-in with no default
+    # residency mode, which is why v12 publishes them backed_with_serve_flag.
+    "GRIDBOOK_TRELLIS_E4M3",
+    "GRIDBOOK_TRELLIS_E4M3_MODE",
+    "GRIDBOOK_TRELLIS_E2M1",
+    "GRIDBOOK_TRELLIS_E2M1_MODE",
 )
 CORRECTNESS_BYPASS = ("PRISMAQUANT_SKIP_CB_CAST_CHECK",)
 RESIDENCY_BUILD = (
@@ -52,6 +58,10 @@ CANONICAL = {
     "CUDACXX": None,
     "CXX": None,
     "GRIDBOOK_MXFP8_DENSE": None,
+    "GRIDBOOK_TRELLIS_E2M1": None,
+    "GRIDBOOK_TRELLIS_E2M1_MODE": None,
+    "GRIDBOOK_TRELLIS_E4M3": None,
+    "GRIDBOOK_TRELLIS_E4M3_MODE": None,
     "PRISMAQUANT_CB_BF16_SM120": "0",
     "PRISMAQUANT_CB_DECODE": None,
     "PRISMAQUANT_CB_DECODE_CONTRACT": "v1",
@@ -149,7 +159,7 @@ def test_attestation_receipt_is_full_and_fails_closed_on_set_and_unset_drift():
     )
     assert receipt == {
         "schema": envmod.GRIDBOOK_ENVIRONMENT_SCHEMA,
-        "gridbook_version": "0.8.11",
+        "gridbook_version": "0.9.1",
         "gridbook_commit": envmod.PINNED_GRIDBOOK_COMMIT,
         "environment": CANONICAL,
     }
@@ -175,7 +185,7 @@ def test_registry_matches_the_packaged_runtime_contract():
     # Deliberately a literal, not the module constant: this test is the second
     # independent witness that the packaged pin is the reviewed release.
     assert envmod.PINNED_GRIDBOOK_COMMIT == (
-        "187c7216b9d4882321c1923de0b4c49dc139743c"
+        "227420f9821bab7089632ee914f0ba050f82b817"
     )
 
 

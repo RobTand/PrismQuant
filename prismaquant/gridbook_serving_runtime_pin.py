@@ -1,7 +1,8 @@
 """Strict reader for the current Gridbook serving-runtime release pin.
 
 ``gridbook_runtime_pin.v3`` is the PRODUCER pin, which since 2026-08-21 names
-the same release as this one (0.8.11) and is held in lockstep with it by
+the same release as this one (0.9.1 since 2026-08-30) and is held in lockstep
+with it by
 ``tests/test_gridbook_runtime_boundary.py``.  Serving remains a distinct
 consumer boundary: it additionally requires an exact reviewed wheel digest,
 which the producer pin does not carry.
@@ -27,36 +28,63 @@ GRIDBOOK_SERVING_RUNTIME_PIN_SCHEMA = (
 GRIDBOOK_SERVING_RUNTIME_REPOSITORY = (
     "https://github.com/RobTand/gridbook.git"
 )
-GRIDBOOK_SERVING_RUNTIME_RELEASE_VERSION = "0.8.11"
+GRIDBOOK_SERVING_RUNTIME_RELEASE_VERSION = "0.9.1"
 GRIDBOOK_SERVING_RUNTIME_COMMIT_PENDING = (
     "PENDING_GRIDBOOK_V0_8_11_RELEASE_COMMIT"
 )
 GRIDBOOK_SERVING_RUNTIME_WHEEL_SHA256_PENDING = (
     "PENDING_GRIDBOOK_V0_8_11_WHEEL_SHA256"
 )
-# Resolved 2026-08-21 against the v0.8.11 release.  Neither value is guessed,
+# Resolved 2026-08-30 against the v0.9.1 release.  Neither value is guessed,
 # and neither is transcribed from the other's source:
-#   commit  -- annotated tag v0.8.11, which the release workflow refuses to
+#   commit  -- annotated tag v0.9.1, which the release workflow refuses to
 #              build unless the commit is reachable from origin/master.  It is
 #              also the build recorded in the image tag
-#              `gridbook:0.8.11-clean-187c721`.
+#              `gridbook:0.9.1-clean-227420f`.
 #   wheel   -- read out of that image's installed distribution, from the PEP
 #              610 `direct_url.json` `archive_info.hashes.sha256` of
-#              gridbook-0.8.11-py3-none-any.whl.  This is the digest of the
+#              gridbook-0.9.1-py3-none-any.whl.  This is the digest of the
 #              wheel that is actually importable at serve time, which is the
 #              only digest a serving pin may assert; a locally rebuilt wheel is
 #              a DIFFERENT archive and must not be substituted here without
-#              re-reading it from the served image.
+#              re-reading it from the served image.  (Confirmed here: a local
+#              `python -m build` of the tag produced 7141acf9..., a different
+#              archive from the published one below.  Wheels are not
+#              byte-reproducible and that is precisely why this field is read
+#              from the image and not from a build.)
 #
-# As with 0.8.7 through 0.8.10, this digest IS the PyPI wheel's: the image was
-# built by installing the published `gridbook==0.8.11` archive from a local
-# file rather than rebuilding it, so `pip download gridbook==0.8.11` satisfies
+# As with 0.8.7 through 0.8.11, this digest IS the PyPI wheel's: the image was
+# built by installing the published `gridbook==0.9.1` archive from a local
+# file rather than rebuilding it, so `pip download gridbook==0.9.1` satisfies
 # the pin instead of tripping the wheel-cache trap documented in
-# docs/audits/serving_wheel_cache_poisoning_2026-08-14.md.  (The PyPI archive
-# was additionally verified member-byte-identical to a rebuild from the tag,
-# 60/60 members.)
+# docs/audits/serving_wheel_cache_poisoning_2026-08-14.md.  It is additionally
+# the digest the release workflow's own build job recorded and re-checked at
+# every later step, so the CI receipt, the PyPI archive, the GitHub Release
+# asset and the served image all name one archive.
 #
-# WHY 0.8.11: two CUDA-graph capture fixes, no route/codec/default change for
+# WHY 0.9.1: it is the first release that packages a lane-eligibility table
+# PrismaQuant can read as a gate input, which is the whole reason this pin
+# moves.  Contract schema v4 -> v12; lane table
+# `gridbook.lane-eligibility.v3`.  The bump crosses two releases because 0.9.0
+# was never pinned: it brings 0.9.0's tensor/expert-parallel support and
+# 0.9.1's two trellis serving lanes, the CB ladder retraction, and the table
+# itself.
+#
+# What it changes for a CB serve, honestly: the CB codec, rung law and default
+# dispatch are unchanged (gridbook/fp8_fused_lane.py still names the fused
+# mid-M reader surface (28, 32, 36, 40, 44, 48); NVFP4-CB reads and produces
+# K12..K24 as before).  What DOES change is that route status stops being
+# UNATTESTED-by-absence and becomes a real resolution against a published
+# table -- and that table names CB cells on sm_89 and sm_120 only, publishing
+# trellis cells alone on sm_121.  A CB export declaring target_platform
+# sm_121, which `serving_profile_specs/nvfp4_cb.json` now does, therefore
+# REFUSES at `cb_route_status_gate` until Gridbook receipts an sm_121 CB cell
+# or the artifact declares a non-native target.  That refusal is the point of
+# the gate, not a regression to route around: both CB compile preflights fix
+# their capability in code, so no CB receipt for compute 12.1 exists, and
+# principle 14 forbids asserting one we have not been given.
+#
+# WHY 0.8.11 (history): two CUDA-graph capture fixes, no route/codec/default change for
 # an eager or FULL_DECODE_ONLY serve.  (a) gridbook#46: the MXFP8 dense lane's
 # swizzled-plane offset cache did an unpinned host->device copy on first use,
 # which aborted FULL_DECODE_ONLY capture at load; the offsets are pre-warmed
@@ -110,12 +138,12 @@ GRIDBOOK_SERVING_RUNTIME_WHEEL_SHA256_PENDING = (
 # default for uniform-stack artifacts, so this pin supersedes 0.8.9 with zero
 # serving-behaviour delta on everything we ship today.
 GRIDBOOK_SERVING_RUNTIME_RELEASE_COMMIT = (
-    "187c7216b9d4882321c1923de0b4c49dc139743c"
+    "227420f9821bab7089632ee914f0ba050f82b817"
 )
 GRIDBOOK_SERVING_RUNTIME_RELEASE_WHEEL_SHA256 = (
-    "3fbd257e315fe26502d97f3b65da86ca355b97a0b8bb528895c922e55dd44d9c"
+    "cb4d7ad64c5a78d447f427a0aa98790406b6821d02c7f2f5d589d61890abdf9d"
 )
-GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA = "gridbook.runtime-contract.v4"
+GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA = "gridbook.runtime-contract.v12"
 GRIDBOOK_SERVING_REQUIRED_ABI_FEATURES = {
     "routed_moe_per_role_codebook_lut": 1,
     "source_fp8_block128_w8a16": 1,
@@ -212,7 +240,8 @@ def parse_gridbook_serving_runtime_pin(
         GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA
     ):
         raise GridbookServingRuntimePinError(
-            f"{where}: serving runtime contract must be v4"
+            f"{where}: serving runtime contract must be "
+            f"{GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA}"
         )
     features = payload["required_abi_features"]
     if not isinstance(features, Mapping) or set(features) != set(

@@ -88,7 +88,7 @@ DSPARK_CB_RUNTIME_FEATURE = "dspark_construction_physical_bridge"
 DSPARK_CB_RUNTIME_FEATURE_VERSION = 1
 DSPARK_CB_SOURCE_FP8_RUNTIME_FEATURE = "source_fp8_block128_w8a16"
 DSPARK_CB_SOURCE_FP8_RUNTIME_FEATURE_VERSION = 1
-DSPARK_CB_RUNTIME_CONTRACT_SCHEMA = "gridbook.runtime-contract.v4"
+DSPARK_CB_RUNTIME_CONTRACT_SCHEMA = "gridbook.runtime-contract.v12"
 #: The source namespace holding DeepSeek-V4's MTP layers. A DSv4 release either
 #: constructs its DSpark stages FROM this namespace (the in-band overlay), IS
 #: this namespace (the draft sidecar), or deliberately OMITS it because the

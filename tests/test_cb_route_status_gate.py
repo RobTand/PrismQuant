@@ -16,9 +16,12 @@ THE DEFECT THIS PINS, measured twice.
 
 The property under test is therefore about SHAPE as much as values: an absent
 attestation must be *unrepresentable* as a clean bill. The synthetic tables here
-exercise the gate's four dispositions; the ABSENT test runs against the REAL
-materialized Gridbook 0.8.11 contract, because that is the state the repository
-actually ships in and the one a vacuous zero would hide.
+exercise the gate's four dispositions. The ABSENT tests run against the REAL
+materialized Gridbook 0.8.11 contract -- a shipped release that genuinely
+publishes no lane_eligibility. The serving pin has since moved to 0.9.1, which
+does publish one, so absence is no longer the live state; the coverage stays
+because retiring a regression guard on the grounds that its defect is currently
+unreachable is how the defect returns.
 """
 from __future__ import annotations
 
@@ -59,11 +62,13 @@ REPO = Path(__file__).resolve().parents[1]
 ASSET_DIR = REPO / "prismaquant" / "gridbook_runtime"
 
 #: A byte-verbatim copy of the runtime contract Gridbook publishes at commit
-#: 30287aa (contract v12, lane_eligibility v3). It is a TEST FIXTURE and is
-#: deliberately NOT in prismaquant/gridbook_runtime/: materializing it there
-#: would be the pin bump, which is release-keyed and Rob's call. Its only job
-#: is to prove this parser reads the shape the publisher really emits, without
-#: importing gridbook (AGENTS.md:38).
+#: 30287aa (contract v12, lane_eligibility v3), which Gridbook released as
+#: 0.9.1. The pin bump has since materialized those same bytes at
+#: prismaquant/gridbook_runtime/gridbook_runtime_contract.0.9.1.json; this
+#: fixture is kept as an INDEPENDENT copy so a test that reads the publisher's
+#: shape cannot be made to pass by editing the materialized one, and
+#: test_the_v12_fixture_is_the_materialized_contract asserts the two agree
+#: byte for byte. Neither imports gridbook (AGENTS.md:38).
 V12_FIXTURE = (Path(__file__).resolve().parent / "fixtures"
                / "gridbook_runtime_contract.v12.30287aa.json")
 V12_FIXTURE_SHA256 = (
@@ -499,30 +504,98 @@ def test_a_mixed_selection_counts_every_disposition(attested_table):
 # ---------------------------------------------------------------------------
 # 3. The ABSENT path — the exact defect of units_on_fallback_route = 0
 # ---------------------------------------------------------------------------
-def test_the_real_pinned_release_publishes_no_eligibility_table():
-    """Measured, not assumed: Gridbook 0.8.11 packages no lane_eligibility.
+def _absent_table():
+    """A genuinely ABSENT table, from the last pin that had one.
 
-    (0.8.11's packaged contract is byte-identical to 0.8.10's; the serving
-    pin, not this file, says which release the claim is made of.)
+    The serving pin advanced to 0.9.1, which DOES publish a table, so the
+    absent-path defect coverage below can no longer come from the live pin.
+    It comes from 0.8.11's still-indexed materialized contract instead -- the
+    same bytes the gate saw before the bump. Deleting these tests with the pin
+    would retire the `units_on_fallback_route = 0` regression guard on the
+    grounds that the defect is currently unreachable, which is how it comes
+    back.
+    """
+    return load_eligibility_table(
+        "0.8.11",
+        contract_path=ASSET_DIR / "gridbook_runtime_contract.0.8.11.json")
+
+
+def test_the_real_pinned_release_publishes_the_v12_eligibility_table():
+    """Measured, not assumed: Gridbook 0.9.1 packages lane-eligibility v3.
+
+    This is the pin bump's whole point -- route status stops being
+    unattested-by-absence and becomes a resolution against a published table.
+    The serving pin, not this file, says which release the claim is made of.
     """
     contract = json.loads(
-        (ASSET_DIR / "gridbook_runtime_contract.0.8.11.json").read_text())
-    assert "lane_eligibility" not in contract
-    # What it DOES publish, so a future reader can see the gap precisely.
+        (ASSET_DIR / "gridbook_runtime_contract.0.9.1.json").read_text())
+    assert contract["schema"] == "gridbook.runtime-contract.v12"
     assert set(contract) == {
         "schema", "contract_version", "abi_features", "quant_method",
-        "packing", "layout", "formats", "producer_profiles",
+        "packing", "layout", "formats", "lane_eligibility", "tensor_parallel",
+        "expert_parallel", "producer_profiles",
     }
+    assert contract["lane_eligibility"]["schema"] == (
+        "gridbook.lane-eligibility.v3")
     table = load_eligibility_table()
-    assert table.present is False
-    assert table.runtime_version == "0.8.11"
+    assert table.present is True
+    assert table.runtime_version == "0.9.1"
+
+
+def test_the_published_table_names_no_cb_cell_on_sm121():
+    """The serving gap this pin bump makes visible, asserted rather than met.
+
+    Every CB cell v12 publishes is `compile_only` on sm_89 or sm_120; sm_121
+    carries the four device-qualified trellis cells and nothing else. Gridbook
+    fixes each CB preflight's capability in code, so there is no CB receipt
+    for compute 12.1 to publish, and principle 14 forbids inventing one. The
+    consequence is the next test: a CB export declaring sm_121 refuses.
+
+    If a future Gridbook does receipt CB on sm_121, this test fails and is
+    deleted -- deliberately, so the gap cannot close silently.
+    """
+    cells = json.loads(
+        (ASSET_DIR / "gridbook_runtime_contract.0.9.1.json").read_text()
+    )["lane_eligibility"]["cells"]
+    on_121 = [c for c in cells if c["platform"] == "sm_121"]
+    assert on_121, "sm_121 must be a published platform"
+    assert {c["family"] for c in on_121} == {
+        "TCQ_E4M3_R256", "TCQ_E2M1_R256"}
+    assert not [c for c in on_121 if c["family"].endswith("_CB_K")]
+
+
+def test_cb_on_sm121_refuses_under_the_real_pin():
+    """Principle 9 judged per artifact, on the profile's declared hardware.
+
+    `nvfp4_cb.json` declares `target_platform: sm_121`, so the gate asks the
+    v12 table for a CB route on compute 12.1 and the table has none. Absence
+    is a v3 table's only way to say no, so the answer is UNATTESTED and the
+    export fails closed. The refusal text must name the platform and the two
+    declared escape hatches; an operator who cannot tell WHY it refused will
+    reach for the override without reading what it stamps.
+    """
+    units = [_facts("l0.experts", "FP8_CB_K28"),
+             _facts("l1.q_proj", "NVFP4_CB_K16", routed=False)]
+    with pytest.raises(CBRouteStatusRefusal) as excinfo:
+        require_cb_route_status(units)
+    reason = str(excinfo.value)
+    assert "sm_121" in reason
+    assert "not covered by any published lane cell" in reason
+    assert NON_NATIVE_TARGET_ENV in reason and ROUTE_OVERRIDE_ENV in reason
+
+    # And it is a REFUSAL, not a silent pass with a warning.
+    verdict = evaluate_cb_route_status(units)
+    assert verdict.refused
+    assert verdict.provenance["target_platform"] == "sm_121"
+    assert verdict.provenance["units_unattested_in_scope"] == 2
+    assert verdict.provenance["units_unbacked"] == 0
 
 
 def test_absent_attestation_reports_unattested_and_never_a_zero():
     """A vacuous zero must be UNREPRESENTABLE, not merely discouraged."""
     units = [_facts("l0.experts", "FP8_CB_K28"),
              _facts("l22.experts", "FP8_CB_K28", role_split=True)]
-    verdict = evaluate_cb_route_status(units)  # real pinned table => ABSENT
+    verdict = evaluate_cb_route_status(units, table=_absent_table())
 
     assert not verdict.refused, "absence is not evidence of an unbacked route"
     assert not verdict.attested
@@ -530,7 +603,10 @@ def test_absent_attestation_reports_unattested_and_never_a_zero():
     assert p["route_attestation"] == ROUTE_STATUS_UNATTESTED
     assert p["units_unattested"] == 2
     assert p["attestation"]["status"] == "absent"
-    assert p["attestation"]["gridbook_serving_commit"].startswith("187c721")
+    # It still names WHICH release attested nothing. (Under the live pin that
+    # is the pin's commit; here the release is named by version, since the pin
+    # itself has moved on to one that does publish a table.)
+    assert p["attestation"]["gridbook_serving_version"] == "0.8.11"
 
     # THE POINT: none of the counters that could be misread as a clean bill
     # exist in this payload at all.
@@ -597,7 +673,7 @@ def test_an_unattested_card_publishes_no_route_counters(tmp_path):
     from prismaquant.shipcard import build_shipcard
 
     verdict = evaluate_cb_route_status(
-        [_facts("l0.experts", "FP8_CB_K28")])  # real pin => ABSENT
+        [_facts("l0.experts", "FP8_CB_K28")], table=_absent_table())
     root = _cb_artifact(tmp_path, {"cb_route_status": verdict.provenance})
 
     summary = build_shipcard(root, build={"quant_method": "gridbook"})[
@@ -621,14 +697,41 @@ def test_a_card_without_a_route_stamp_omits_the_field(tmp_path):
     assert "cb_route_status" not in build_shipcard(root, build={})
 
 
-def test_every_unit_resolves_unattested_under_the_real_pin():
+def test_every_cb_unit_resolves_unattested_on_sm121_under_the_real_pin():
+    """Per-unit view of the gap, and the two silences it must not conflate.
+
+    A CB unit on sm_121 is IN SCOPE and answers `unattested` in every regime
+    the table defines: the table covers this platform and this payload family,
+    and declines to name a cell for it. BF16 is OUT OF SCOPE with no regime
+    rows at all -- the contract publishes no BF16 payload family, so the table
+    has nothing to say and says nothing. Reporting the second as a serving gap
+    would manufacture an alarm; reporting the first as out of remit would hide
+    one.
+
+    The control is the last assertion: the same NVFP4_CB_K16 unit resolves
+    BACKED on sm_120. The sm_121 answer is therefore this table declining to
+    attest CB on compute 12.1, not a parser that cannot see CB cells at all.
+    """
     table = load_eligibility_table()
-    for fmt in ("FP8_CB_K28", "NVFP4_CB_K16", "BF16"):
-        route = resolve_unit_route(_facts("u", fmt), table,
-                                   platform=TEST_PLATFORM)
+    assert table.present is True
+    for fmt in ("FP8_CB_K28", "NVFP4_CB_K16"):
+        route = resolve_unit_route(_facts("u", fmt), table, platform="sm_121")
         assert route.route_status == ROUTE_STATUS_UNATTESTED
         assert route.attested is False
-        assert route.regimes == ()
+        assert route.in_scope is True
+        assert {r.regime for r in route.regimes} == set(table.regimes)
+        assert {r.route_status for r in route.regimes} == {
+            ROUTE_STATUS_UNATTESTED}
+        assert all(r.cell_id is None for r in route.regimes)
+
+    bf16 = resolve_unit_route(_facts("u", "BF16"), table, platform="sm_121")
+    assert bf16.route_status == ROUTE_STATUS_UNATTESTED
+    assert bf16.in_scope is False
+    assert bf16.regimes == ()
+
+    on_120 = resolve_unit_route(
+        _facts("u", "NVFP4_CB_K16"), table, platform="sm_120")
+    assert on_120.route_status == ROUTE_STATUS_BACKED
 
 
 def test_a_pin_with_no_materialized_contract_attests_nothing(tmp_path):
@@ -670,8 +773,12 @@ def test_the_resolved_lane_exposes_structured_route_status():
     # Principle 9's field, present and structured, on the real pin.
     assert payload["route_status"] == ROUTE_STATUS_UNATTESTED
     assert payload["requires_serve_flags"] == []
-    assert payload["route_status_source"].endswith(":absent")
-    assert "0.8.11" in payload["route_status_source"]
+    # Resolved against a PRESENT table now, and the source says which of the
+    # three ways it came up empty: no cell for this platform+family. A reader
+    # who cannot tell `no_cell` from `absent` cannot tell a serving gap from a
+    # runtime that publishes nothing.
+    assert payload["route_status_source"].endswith(":no_cell")
+    assert "0.9.1" in payload["route_status_source"]
 
 
 @pytest.fixture()
@@ -840,6 +947,19 @@ def test_both_cb_exporters_run_the_gate_before_writing_bytes():
 # Every test in this section is a mutation of a table that otherwise parses.
 # A bad input proves the check runs; the point is that each mutation BITES.
 # ---------------------------------------------------------------------------
+def test_the_v12_fixture_is_the_materialized_contract():
+    """Two copies of one publisher artifact, held byte-identical.
+
+    The fixture was taken from Gridbook's packaged contract before the pin
+    moved; the materialized copy is what the gate now resolves against. If
+    they ever diverge, one of them was edited rather than re-materialized --
+    which is the failure mode principle 14 exists to catch, since an edited
+    contract is a claim about another runtime that the runtime never made.
+    """
+    materialized = ASSET_DIR / "gridbook_runtime_contract.0.9.1.json"
+    assert materialized.read_bytes() == V12_FIXTURE.read_bytes()
+
+
 def test_the_published_v12_table_parses_and_keeps_its_distinctions(tmp_path):
     """The fixture is Gridbook's own table, byte-verbatim, read end to end."""
     import hashlib
@@ -1190,7 +1310,8 @@ def test_an_unconsulted_scope_is_omitted_not_defaulted():
     """
     units = [_facts("l0.experts", "FP8_CB_K28"),
              _facts("attn.q_proj", "BF16")]
-    p = evaluate_cb_route_status(units).provenance  # real pin => ABSENT
+    p = evaluate_cb_route_status(
+        units, table=_absent_table()).provenance
 
     for row in p["by_unit"]:
         assert "in_scope" not in row, (

@@ -157,9 +157,17 @@ DSV4_W8A16_APPROVED_SELECTION = {
 # and the fused mainloop's single CbSubW = k/4 sub-table width is the format's
 # real layout only on those rungs -- a uniform decode at, say, k37 would be
 # *wrong*, not merely unaligned.  serving_profile_specs/nvfp4_cb.json backs
-# [28, 32, 36, 40, 44, 48] for every runtime 0.5.0..0.8.11 (the pin is 0.8.11,
+# [28, 32, 36, 40, 44, 48] for every runtime 0.5.0..0.9.1 (the pin is 0.9.1,
 # version_is_release, and its packaged contract explicitly attests the routed
-# per-role LUT ABI), so this is the served set, not an aspiration. NVFP4-CB
+# per-role LUT ABI -- abi_features is byte-equal to 0.8.11's), so this is the
+# served set, not an aspiration.  READ THIS BEFORE A RE-EXPORT: 0.9.1 also
+# publishes ``formats[FP8_CB_K].producer_rungs = [40, 44, 48]``, a narrower
+# ladder than the reader surface above.  The two are different questions --
+# what the runtime DECODES versus what gridbook attests a producer may EMIT --
+# and gridbook_format_contract.py is deliberately still bound to v4/v11, so
+# nothing enforces the narrowing today.  The K28/K32 expert rungs below are on
+# the decode law and were built that way; whether they stay producible is the
+# open decision that reader's docstring records. NVFP4-CB
 # is outside that law -- its lane backs no fused mid-M rungs at any version --
 # so K12..K18 stays contiguous.
 NVFP4_FORMATS = tuple(f"NVFP4_CB_K{k}" for k in range(12, 19))

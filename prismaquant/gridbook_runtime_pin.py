@@ -18,15 +18,21 @@ from typing import Any
 
 GRIDBOOK_RUNTIME_PIN_SCHEMA = "prismaquant.gridbook_runtime_pin.v3"
 GRIDBOOK_RUNTIME_REPOSITORY = "https://github.com/RobTand/gridbook.git"
-GRIDBOOK_RUNTIME_RELEASE_VERSION = "0.8.11"
+GRIDBOOK_RUNTIME_RELEASE_VERSION = "0.9.1"
 GRIDBOOK_RUNTIME_RELEASE_COMMIT = (
-    "187c7216b9d4882321c1923de0b4c49dc139743c"
+    "227420f9821bab7089632ee914f0ba050f82b817"
 )
 # Historical staging sentinel retained so parsers and third-party tooling can
-# reject an unresolved future pin explicitly. The packaged v0.8.11 pin is now a
-# full immutable commit and does not use this value.
+# reject an unresolved future pin explicitly. The packaged v0.9.1 pin is a full
+# immutable commit and does not use this value.
 GRIDBOOK_RUNTIME_COMMIT_PENDING = "PENDING_GRIDBOOK_V0_8_11_RELEASE_COMMIT"
-GRIDBOOK_RUNTIME_CONTRACT_SCHEMA = "gridbook.runtime-contract.v4"
+# The contract schema and this module's version/commit are ONE decision, not
+# three: ``parse_gridbook_runtime_pin`` refuses any payload whose
+# ``runtime_contract_schema`` differs from the constant below, so a release
+# that moves the schema cannot be pinned by halves. 0.8.11 -> 0.9.1 crosses
+# v4 -> v12 and lands 0.9.0's tensor/expert-parallel work and 0.9.1's trellis
+# lanes plus the ladder retraction in one step; 0.9.0 was never pinned.
+GRIDBOOK_RUNTIME_CONTRACT_SCHEMA = "gridbook.runtime-contract.v12"
 # Historical diagnostic floor retained for error prose and third-party callers.
 # Capability decisions no longer use it; they read the closed feature map.
 GRIDBOOK_ROUTED_MOE_PER_ROLE_CODEBOOK_LUT_MIN_VERSION = "0.8.4"

@@ -34,6 +34,14 @@ DOWN = "model.layers.0.mlp.experts.down_proj"
 FORMAT = "FP8_CB_K28"
 FORMAT_32 = "FP8_CB_K32"
 
+# This module builds synthetic CB bodies on CPU and never serves them.
+# Gridbook 0.9.1's v12 table names no CB cell on sm_121, so the route gate
+# refuses these exports unless the artifact declares what it is.  See
+# tests/cb_synthetic_target.py; the real sm_121 refusal stays asserted in
+# tests/test_cb_route_status_gate.py.
+pytestmark = pytest.mark.usefixtures("synthetic_cb_target")
+
+
 
 class _PerExpertProfile:
     def per_expert_moe_regex(self):
@@ -910,6 +918,7 @@ def test_streaming_pooled_stack_names_one_codebook_for_the_fused_weight(
 def test_streaming_refuses_per_role_books_without_the_override(
     tmp_path, monkeypatch
 ):
+
     """A fused weight naming two books fails closed at the ship step."""
 
     import importlib

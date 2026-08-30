@@ -2,7 +2,7 @@
 # Resolve and install the exact published Gridbook serving wheel.
 #
 # This is deliberately separate from gridbook_runtime.sh.  The latter is the
-# producer/handoff environment pin (0.8.11/v4 since 2026-08-21, held in
+# producer/handoff environment pin (0.9.1/v12 since 2026-08-30, held in
 # lockstep with this one by tests/test_gridbook_runtime_boundary.py); serving
 # additionally binds the independently reviewed release wheel and its
 # published SHA-256, which the producer pin does not carry.
@@ -45,14 +45,14 @@ if pin["schema"] != "prismaquant.gridbook_serving_runtime_pin.v1":
     raise SystemExit(f"{path}: unsupported serving-pin schema")
 if pin["repository"] != "https://github.com/RobTand/gridbook.git":
     raise SystemExit(f"{path}: unreviewed repository")
-if pin["version"] != "0.8.11" or pin["version_is_release"] is not True:
-    raise SystemExit(f"{path}: Gridbook 0.8.11 is not marked released")
+if pin["version"] != "0.9.1" or pin["version_is_release"] is not True:
+    raise SystemExit(f"{path}: Gridbook 0.9.1 is not marked released")
 if re.fullmatch(r"[0-9a-f]{40}", str(pin["commit"])) is None:
     raise SystemExit(f"{path}: release commit remains unresolved")
 if re.fullmatch(r"[0-9a-f]{64}", str(pin["wheel_sha256"])) is None:
     raise SystemExit(f"{path}: published wheel digest remains unresolved")
-if pin["runtime_contract_schema"] != "gridbook.runtime-contract.v4":
-    raise SystemExit(f"{path}: runtime contract is not v4")
+if pin["runtime_contract_schema"] != "gridbook.runtime-contract.v12":
+    raise SystemExit(f"{path}: runtime contract is not v12")
 features = pin["required_abi_features"]
 expected = {
     "routed_moe_per_role_codebook_lut": 1,

@@ -736,7 +736,7 @@ def load_eligibility_table(
 
     The SERVING pin resolves this, deliberately and explicitly. PrismaQuant
     carries two Gridbook pins -- a producer pin and a serving pin, both naming
-    0.8.11 since 2026-08-21 -- and
+    0.9.1 since 2026-08-30 (0.8.11 before that) -- and
     ``serving_profiles.gridbook_runtime_version()`` reads the PRODUCER one.
     Route status is a statement about what the *serve* executes, so resolving
     it through the producer pin would attest the wrong release whenever the

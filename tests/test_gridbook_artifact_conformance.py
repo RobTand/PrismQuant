@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 
 import pytest
+
+from cb_synthetic_target import declare_synthetic_cb_target
 import torch
 from safetensors.torch import load_file, save_file
 
@@ -118,19 +120,36 @@ def tiny_artifacts(tmp_path_factory):
     }
 
     outputs = {}
-    for coding in ("v1", "two_tier"):
-        out = root / coding
-        export_nvfp4_cb(
-            source,
-            assignment,
-            out,
-            col_weights,
-            shared_codebook_spec={"source": "lattice"},
-            device="cpu",
-            scale_coding=coding,
-            allow_unstamped_research=True,
-        )
-        outputs[coding] = out
+    # This fixture builds a 5-unit synthetic body purely to check that the
+    # bytes and the config sidecar match what the pinned Gridbook decodes. It
+    # is never served, and its rungs are chosen to exercise the DECODER (it
+    # includes FP8_CB_K28, which the runtime reads but no lane cell backs).
+    #
+    # Since the 0.9.1/v12 pin, the vllm_nvfp4_cb profile declares
+    # target_platform sm_121, and the published v3 table names no CB cell on
+    # sm_121 at all -- so every unit here resolves `unattested` and the export
+    # gate refuses, correctly. Declaring the non-native target is the
+    # platform's own sanctioned way to say "this artifact is not for the
+    # profile's native platform"; it is stamped into the export provenance
+    # rather than hidden. The sm_121 refusal itself is asserted where it
+    # belongs, against the real pin, in tests/test_cb_route_status_gate.py --
+    # so silencing it here costs no coverage.
+    with declare_synthetic_cb_target(
+        "decode-conformance fixture; synthetic 5-unit body, never served"
+    ):
+        for coding in ("v1", "two_tier"):
+            out = root / coding
+            export_nvfp4_cb(
+                source,
+                assignment,
+                out,
+                col_weights,
+                shared_codebook_spec={"source": "lattice"},
+                device="cpu",
+                scale_coding=coding,
+                allow_unstamped_research=True,
+            )
+            outputs[coding] = out
     return weights, outputs, selected_assignment
 
 
