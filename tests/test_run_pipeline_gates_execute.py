@@ -40,7 +40,9 @@ DEFAULT_SCRIPT = REPO / "prismaquant" / "run-pipeline.sh"
 # FIRED assertions pass for the wrong reason and the PASSED assertions fail,
 # which is exactly the signature these three tests showed in CI while passing
 # locally. A gate test must exercise the gate, not the absence of an import.
-VENV_BIN = str(Path(sys.executable).resolve().parent)
+# Do not resolve the executable symlink: venv Python commonly points at the
+# system binary, and resolving it silently changes PATH back to /usr/bin.
+VENV_BIN = str(Path(sys.executable).absolute().parent)
 SCRATCH = REPO / "scratch" / "run_pipeline_gate_tests"  # gitignored; never /tmp
 
 
@@ -139,6 +141,19 @@ def run_block(block: str, env: dict, preamble: str = "") -> int:
 
 FIRED = 2
 PASSED = 0
+
+
+def test_gate_python_path_preserves_pytest_virtualenv():
+    """The bare ``python3`` in a gate must stay in pytest's environment."""
+    proc = subprocess.run(
+        ["python3", "-c", "import sys; print(sys.prefix)"],
+        env={"PATH": f"{VENV_BIN}:/usr/bin:/bin", "LC_ALL": "C"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert Path(proc.stdout.strip()) == Path(sys.prefix)
 
 
 @pytest.fixture(scope="module")
