@@ -58,7 +58,7 @@ python3 $Q requeue <id>    # failed -> ready
 python3 $Q cancel <id>     # ready/claimed -> failed
 ```
 
-## The five properties that make it safe
+## The seven properties that make it safe
 
 1. **Claiming is `rename()`.** Atomic on NFSv4; the loser gets `ENOENT` and
    moves on. `flock` over NFS is version-dependent and was not used.
@@ -142,6 +142,54 @@ python3 $Q cancel <id>     # ready/claimed -> failed
    job goes through `systemctl --user stop` instead; that path is tested to
    terminate in well under a second and leave no orphaned children.
 
+7. **Eviction measures the trend, attributes the event, and ages work into
+   protection.** The box-wide trigger is the median of every consecutive
+   `MemAvailable` slope in the 30-second window, with at least three valid
+   intervals required. A single endpoint step therefore cannot trigger an
+   eviction. The median is deliberate: one interior outlier creates one steep
+   fall and one steep recovery, while an endpoint outlier creates one bad
+   interval; neither can dominate a sustained majority trend. A genuine fast
+   fall across the window still projects through the reserve and fires. lina
+   had swap free during the incident, so its configured 60-second horizon was
+   the branch in force; the earlier 120-second reconstruction was wrong.
+
+   Victim selection is still lowest-priority-first, but newest-first is gone.
+   Within a priority it chooses the least cumulative **measured sunk runtime**,
+   including runtime discarded by prior evictions. Restarting an item no
+   longer makes it newest and therefore the next victim of the policy that just
+   restarted it.
+
+   At each box sample the worker also records every running job's own footprint
+   from its cgroup `memory.current` (or the direct process tree's RSS when the
+   job is uncapped). The record distinguishes `evicted_for_own_memory_growth`,
+   `evicted_as_collateral`, and `evicted_without_attribution`; exact box and
+   victim slopes, footprint endpoints, source, sample count, and window travel
+   with the item. Missing measurement is never converted into blame.
+
+   `evictions` is now explicitly a **policy-aging count**, not an impossibility
+   budget. Every eviction earns age and a fixed 60-second cooldown. After two
+   losses, the next attempt is non-evictable and holds admission for its
+   declared footprint, falling back to its observed peak. If neither exists,
+   the queue drains current work and gives it an exclusive attempt. New
+   arrivals cannot consume the reservation while it waits. Thus a fitting item
+   loses at most two attempts before the queue guarantees one; it never ages
+   into a permanent bench. The old exponential cooldown and
+   `evicted_Nx_does_not_fit` terminal outcome no longer exist.
+
+   The only memory-fit terminal is
+   `measured_footprint_exceeds_box_capacity`, reached when a declared or
+   observed footprint is larger than `MemTotal - mem_reserve_gb`. Its record
+   carries the source footprint, total memory, reserve, capacity, and timestamp.
+   Ordinary command/receipt failures retain their separate attempt contract.
+
+   Optimistic admission is unchanged for new work: the queue still starts it
+   whenever headroom is positive and measures what happens. The 2026-08-30
+   `pq-currency-4b-v2` log is the incident behind this split: its application
+   samples stayed near 81 GB with a 24 GB reserve, so it demonstrably fit, but
+   those sparse four-minute samples cannot reconstruct the governor's unlogged
+   two-second series. They establish that the repeated fit verdict was false;
+   they do not establish which individual endpoint sample caused each trigger.
+
 ## Adding a box that is not a Spark
 
 Eligibility is opt-in by declaration: `is_runnable` filters on the item's
@@ -200,6 +248,35 @@ journalctl --user -u pqwork -f          # what it is pulling
 python3 $Q reserve --slots 1 --why "…"  # hold the GPU for a hand-launched job
 python3 $Q reserve --release            # give it back
 ```
+
+### Deploying a worker change
+
+Merging the repo file does not change either live worker. From the merged
+checkout, one command propagates the exact source through both deployment
+layers and restarts the services:
+
+```bash
+python3 tools/deploy_pqwork.py
+```
+
+It atomically installs `tools/pqwork.py` to
+`/mnt/shared/pq-queue/bin/pqwork.py`, copies that shared artifact atomically to
+`/home/rob/.local/bin/pqwork.py` on sparky and sparklina, verifies one SHA-256
+across all three deployed copies, and restarts both `pqwork` user services.
+
+**This command is safe only between claims, never mid-claim.** A runner may
+reread the script at a claim boundary; swapping it while a claim is active can
+split one execution across two contracts. The deployer creates the shared
+`.deploying` admission hold first and refuses to change any file while
+`claimed/*.json` is non-empty. Workers carrying this version admit no new
+claims while the hold exists. For the first rollout from an older worker that
+does not yet understand the hold, choose a verified idle window immediately
+after the board shows no claimed items; the refusal check remains a second
+guard, but cannot close a race in code not deployed yet. An ordinary failed
+deployment removes its hold and reports the incomplete step; a process killed
+before its `finally` block can leave the hold behind, and that marker must be
+cleared only after confirming no deployment is active and no item is claimed.
+Rerun only after the board is idle again.
 
 Restarting the unit kills any job it is running. That is intentional: the
 lease then goes stale, the reaper requeues, and receipt-gating makes the

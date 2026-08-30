@@ -24,6 +24,8 @@ if not (Path(__file__).resolve().parents[1] / "tools").is_dir():
                 allow_module_level=True)
 
 _TOOL_PATH = Path(__file__).resolve().parents[1] / "tools" / "pqwork.py"
+_DEPLOY_TOOL_PATH = (Path(__file__).resolve().parents[1]
+                     / "tools" / "deploy_pqwork.py")
 
 
 def _load_tool():
@@ -34,6 +36,17 @@ def _load_tool():
 
 
 pqwork = _load_tool()
+
+
+def _load_deploy_tool():
+    spec = importlib.util.spec_from_file_location("deploy_pqwork",
+                                                  _DEPLOY_TOOL_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+pqdeploy = _load_deploy_tool()
 
 
 @pytest.fixture()
@@ -486,3 +499,271 @@ def test_only_declared_refuses_work_that_did_not_ask_for_this_box(queue):
     assert not pqwork.is_runnable({"id": "gb10only", "cmd": "true",
                                    "requires": ["gb10"]},
                                   "wslgpu", tags, False)
+
+
+# --------------------------------------------------------------------------
+# 10. memory-governor trends and eviction attribution
+
+
+def _governor(*, total_gb=128.0):
+    return pqwork.MemoryGovernor(reserve_gb=24.0, horizon_s=60.0,
+                                 settle_s=0.0, total_gb=total_gb)
+
+
+def _drive_sample(monkeypatch, governor, sampled_at, available_gb):
+    monkeypatch.setattr(pqwork.time, "time", lambda: sampled_at)
+    monkeypatch.setattr(pqwork, "mem_available_gb", lambda: available_gb)
+    return governor.sample()
+
+
+def _drive_pressure(monkeypatch, *, start=0.0):
+    governor = _governor()
+    monkeypatch.setattr(pqwork, "swap_free_gb", lambda: 16.0)
+    for offset, available in [(0, 90.0), (2, 87.5),
+                              (4, 85.0), (6, 82.5)]:
+        _drive_sample(monkeypatch, governor, start + offset, available)
+    return governor
+
+
+def test_currency_log_trace_is_flat_and_does_not_evict(monkeypatch):
+    """The sparse application log proves a plateau, not a falling box."""
+    monkeypatch.setattr(pqwork, "swap_free_gb", lambda: 16.0)
+    # Seconds and MemAvailable GB transcribed from pq-currency-4b-v2's fifth
+    # run, 01:40:45--02:27:45.  The job moved only 1 GB in 47 minutes and
+    # remained 56.9 GB above the worker's 24 GB reserve.
+    governor = _governor()
+    for sample in [
+        (0, 81.9), (234, 81.4), (468, 81.4), (703, 81.3),
+        (937, 81.3), (1172, 81.3), (1406, 81.3), (1642, 81.3),
+        (1877, 81.3), (2115, 81.3), (2351, 81.3), (2585, 81.3),
+        (2820, 80.9),
+    ]:
+        _drive_sample(monkeypatch, governor, *sample)
+        assert not governor.must_evict([object()])
+
+
+def test_one_endpoint_step_cannot_override_a_flat_trace(monkeypatch):
+    """One alarming pair cannot become a 60-second trajectory."""
+    monkeypatch.setattr(pqwork, "swap_free_gb", lambda: 16.0)
+    governor = _governor()
+    # lina's swap leaves the configured horizon at 60 seconds.  The old
+    # endpoint estimator turns this isolated 1 GB/s step into a projected
+    # 60 GB fall and fires immediately; subsequent samples show a plateau.
+    for sample in [(0, 82.9), (2, 80.9), (4, 80.9),
+                   (6, 80.9), (8, 80.9)]:
+        _drive_sample(monkeypatch, governor, *sample)
+        assert not governor.must_evict([object()])
+
+
+def test_sustained_fast_drop_still_evicts(monkeypatch):
+    governor = _drive_pressure(monkeypatch)
+    assert governor.must_evict([object()])
+
+
+def test_single_memory_blip_then_recovery_does_not_evict(monkeypatch):
+    monkeypatch.setattr(pqwork, "swap_free_gb", lambda: 16.0)
+    governor = _governor()
+    for sample in [(0, 81.3), (2, 81.3), (4, 30.0),
+                   (6, 81.3), (8, 81.3)]:
+        _drive_sample(monkeypatch, governor, *sample)
+    assert not governor.must_evict([object()])
+
+
+def _claimed_job(item_id, **fields):
+    enqueue(item_id, attempts=0, max_attempts=3, **fields)
+    item = pqwork.try_claim(item_id, "mine")
+    assert item is not None
+    return pqwork.Job(item, "mine")
+
+
+def test_declared_job_samples_its_cgroup_memory_current(queue, tmp_path):
+    job = _claimed_job("measured", mem_gb=55.0)
+    job.unit = pqwork.unit_name(job.id)
+    memory_current = tmp_path / "memory.current"
+    job._memory_current_path = memory_current
+
+    for sampled_at, footprint_gb in [
+        (0, 20.0), (2, 21.0), (4, 22.0), (6, 23.0),
+    ]:
+        memory_current.write_text(str(int(footprint_gb * 1024 ** 3)))
+        assert job.sample_footprint(sampled_at) == footprint_gb
+
+    assert list(job.footprint_samples) == [
+        (0, 20.0), (2, 21.0), (4, 22.0), (6, 23.0),
+    ]
+    assert job.footprint_source == f"cgroup:{memory_current}"
+
+
+def test_collateral_eviction_records_policy_age_without_fit_blame(queue):
+    """Victim policy is not evidence that the selected job caused pressure."""
+    collateral = _claimed_job("collateral", evictions=1)
+    collateral.footprint_samples.extend([
+        (0, 20.0), (2, 20.0), (4, 20.0), (6, 20.0),
+    ])
+    attribution = collateral.classify_eviction(box_drop_rate_gb_s=1.0)
+    assert attribution["classification"] == "collateral"
+    collateral.evicted = True
+    collateral.eviction_attribution = attribution
+    assert collateral._finish_eviction()
+
+    record = read_state(pqwork.READY, "collateral")
+    assert record["outcome"] == "evicted_as_collateral"
+    assert record["evictions"] == 2
+    assert record.get("attributed_evictions", 0) == 0
+    assert record["collateral_evictions"] == 1
+    assert record["protection_earned"] is True
+    assert (record["not_before"] - record["last_evicted_at"]
+            == pytest.approx(pqwork.EVICT_BACKOFF_S))
+    assert record["eviction_attribution"]["victim_growth_gb_s"] == 0.0
+    assert state_of("collateral") != pqwork.FAILED
+
+    growing = _claimed_job("growing", evictions=0)
+    growing.footprint_samples.extend([
+        (0, 20.0), (2, 22.0), (4, 24.0), (6, 26.0),
+    ])
+    attribution = growing.classify_eviction(box_drop_rate_gb_s=1.0)
+    assert attribution["classification"] == "victim_growth"
+    growing.evicted = True
+    growing.eviction_attribution = attribution
+    assert growing._finish_eviction()
+
+    measured = read_state(pqwork.READY, "growing")
+    assert measured["outcome"] == "evicted_for_own_memory_growth"
+    assert measured["attributed_evictions"] == 1
+    assert measured["evictions"] == 1
+    assert state_of("growing") != pqwork.FAILED
+
+
+def _live_job(item_id, *, priority, evictions, started,
+              evicted_runtime_s=0.0, mem_gb=55.0):
+    item = {
+        "id": item_id,
+        "cmd": "true",
+        "priority": priority,
+        "evictions": evictions,
+        "evicted_runtime_s": evicted_runtime_s,
+        "evictable": True,
+        "mem_gb": mem_gb,
+    }
+    job = pqwork.Job(item, "mine")
+    job.started = started
+    job.alive = lambda: True
+    return job
+
+
+def test_restart_does_not_make_the_evicted_item_the_next_victim(monkeypatch):
+    governor = _drive_pressure(monkeypatch, start=1000.0)
+    incumbent = _live_job("incumbent", priority=50, evictions=0,
+                          started=900.0)
+    restarted = _live_job("restarted", priority=50, evictions=1,
+                          evicted_runtime_s=200.0, started=1005.0)
+
+    jobs = [incumbent, restarted]
+    assert governor.must_evict(jobs)
+    assert pqwork.choose_victim(jobs) is incumbent
+
+
+def test_fitting_item_ages_into_protection_and_completes(
+        queue, tmp_path, monkeypatch):
+    """A low-priority fit survives an unbounded stream within two losses."""
+    receipt = tmp_path / "target.receipt"
+    enqueue("target", cmd=f"echo complete > {receipt}", cwd=tmp_path,
+            receipt=str(receipt), mem_gb=55.0, priority=10)
+    target_item = read_state(pqwork.READY, "target")
+    protection_after = getattr(pqwork, "EVICTIONS_BEFORE_PROTECTION", 2)
+    survived = False
+
+    for attempt in range(protection_after + 1):
+        now = 2000.0 + attempt * 20.0
+        governor = _drive_pressure(monkeypatch, start=now - 6.0)
+        item_evictions = int(target_item.get("evictions", 0))
+        target = _live_job(
+            "target", priority=10,
+            evictions=item_evictions,
+            evicted_runtime_s=float(target_item.get("evicted_runtime_s", 0.0)),
+            started=now - 1.0)
+        arrival = _live_job(f"arrival-{attempt}", priority=50, evictions=0,
+                            started=now - 10.0)
+        assert governor.must_evict([target, arrival])
+        victim = pqwork.choose_victim([target, arrival])
+        if victim is arrival:
+            survived = True
+            break
+        assert victim is target
+        target_item["evictions"] = item_evictions + 1
+        target_item["evicted_runtime_s"] = (
+            float(target_item.get("evicted_runtime_s", 0.0)) + 1.0)
+
+    assert survived, "the fitting target kept losing to newer arrivals"
+    assert target_item["evictions"] == protection_after
+
+    # Aging also reserves admission: no newcomer can consume the target's
+    # 55 GB while it waits, and its running attempt is non-evictable.
+    newcomer = {"id": "newcomer", "priority": 99, "evictions": 0,
+                "enqueued_at": 0.0, "mem_gb": 1.0}
+    target_item["enqueued_at"] = 1.0
+    assert governor.admission_candidates([newcomer, target_item]) == [target_item]
+    assert not target.evictable
+    _drive_sample(monkeypatch, governor, now + 2.0, 50.0)
+    assert not governor.may_admit(target_item, [arrival])
+    _drive_sample(monkeypatch, governor, now + 4.0, 100.0)
+    assert governor.may_admit(target_item, [])
+
+    pqwork.write_json_atomic(pqwork.item_path(pqwork.READY, "target"),
+                             target_item)
+    monkeypatch.setattr(pqwork, "capping_supported", lambda: False)
+    claimed = pqwork.try_claim("target", "mine")
+    assert claimed is not None
+    assert _run_sync(claimed) == "done"
+    assert receipt.read_text().strip() == "complete"
+
+
+def test_only_measured_absolute_impossibility_is_terminal(queue):
+    enqueue("oversized", mem_gb=80.0)
+    item = read_state(pqwork.READY, "oversized")
+    governor = _governor(total_gb=100.0)
+
+    assert pqwork.fail_measured_impossibility(item, governor)
+    terminal = read_state(pqwork.FAILED, "oversized")
+    assert terminal["outcome"] == "measured_footprint_exceeds_box_capacity"
+    measurement = terminal["fit_measurement"]
+    assert measurement["source"] == "declared"
+    assert measurement["footprint_gb"] == pytest.approx(80.0)
+    assert measurement["box_total_gb"] == pytest.approx(100.0)
+    assert measurement["reserve_gb"] == pytest.approx(24.0)
+    assert measurement["capacity_gb"] == pytest.approx(76.0)
+    assert measurement["measured_at"] > 0
+
+
+def test_deployment_propagates_identical_copies_only_between_claims(
+        queue, tmp_path, monkeypatch):
+    source = tmp_path / "repo-pqwork.py"
+    source.write_text("#!/usr/bin/env python3\nprint('new')\n")
+    shared = queue / "bin" / "pqwork.py"
+    shared.parent.mkdir()
+    shared.write_text("old shared copy\n")
+    local = tmp_path / "local" / "pqwork.py"
+    monkeypatch.setattr(pqdeploy, "LOCAL_TARGET", local)
+
+    digest = pqdeploy.deploy(source, queue, ["localhost"], restart=False)
+    assert pqdeploy.sha256(shared) == digest
+    assert pqdeploy.sha256(local) == digest
+    assert not (queue / pqdeploy.DEPLOY_HOLD).exists()
+
+    pqwork.write_json_atomic(queue / pqwork.CLAIMED / "busy.json",
+                             {"id": "busy"})
+    source.write_text("#!/usr/bin/env python3\nprint('must not land')\n")
+    before = shared.read_bytes()
+    with pytest.raises(RuntimeError, match="safe only between claims"):
+        pqdeploy.deploy(source, queue, ["localhost"], restart=False)
+    assert shared.read_bytes() == before
+    assert local.read_bytes() == before
+    assert not (queue / pqdeploy.DEPLOY_HOLD).exists()
+
+
+def test_deployment_hold_blocks_new_claim_candidates(queue):
+    enqueue("waiting")
+    assert [item["id"] for item in
+            pqwork.ready_candidates("mine", set(), True)] == ["waiting"]
+    pqwork.deployment_hold_path().write_text("deployment in progress\n")
+    assert pqwork.ready_candidates("mine", set(), True) == []
