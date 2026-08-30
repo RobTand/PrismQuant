@@ -422,3 +422,40 @@ def test_a_trellis_row_the_seam_never_priced_is_refused_not_estimated(
             source_manifest=None,
             regime="bf16",
         )
+
+
+# ---------------------------------------------------------------------------
+# The merge interaction neither branch's tests cover
+# ---------------------------------------------------------------------------
+def test_a_resolvable_tcq_spec_declares_activation_quant_and_nothing_else():
+    """What changed when the two branches met, and what did not.
+
+    ``allocator_candidates`` asks three questions about a format through
+    ``fr.get_format``, each wrapped in ``except KeyError: return False``.
+    While no TCQ name resolved, all three took the except branch. Now that
+    ``get_format`` parse-resolves one, they take the real branch -- so this
+    pins which answers MOVED:
+
+      * ``act_quant_changes_input`` was False by accident (a swallowed
+        KeyError) and is now True by attestation. That is the whole reason
+        the resolving design was chosen: a gate keyed on the A side could
+        not see a trellis rung at all while the lookup raised, and the
+        native routes for both families are A=W.
+      * ``cost_entry_is_bit_exact`` and ``cost_entry_is_source_passthrough``
+        must still be False. They were False because the lookup raised; they
+        must now be False on the merits. A rung that started reading as
+        bit-exact or as a verbatim source copy would be priced at zero W
+        error and shipped, which is the failure the exactness predicates
+        exist to prevent -- and it would look like a fixed KeyError.
+    """
+    from prismaquant.allocator_candidates import (
+        _format_act_quant_changes_input,
+        cost_entry_is_bit_exact,
+        cost_entry_is_source_passthrough,
+    )
+
+    name = "TCQ_E4M3_R1024"
+    assert _format_act_quant_changes_input(name) is True
+    assert cost_entry_is_bit_exact({"weight_mse": 0.0}, name) is False
+    assert cost_entry_is_source_passthrough(
+        {"cost_source": "source_passthrough"}, name) is False
