@@ -52,7 +52,7 @@ _RESOURCE_KEYS = frozenset(
         "time_limit",
     }
 )
-_PLACEMENT_KEYS = frozenset({"worker_id", "platform_key", "host_class"})
+_PLACEMENT_KEYS = frozenset({"platform_key", "host_class"})
 _DEPENDENCY_KEYS = frozenset(
     {"upstream_action_key", "input_id", "result_sha256", "result_bytes"}
 )
@@ -253,10 +253,10 @@ class ActionSpec:
             poll_interval_seconds, where="retry.poll_interval_seconds"
         )
         self.max_polls = _positive_integer(max_polls, where="retry.max_polls")
-        pb.validate_worker_scope(
+        ps.validate_placement_scope(
             normalized,
-            platform_key=placement.platform_key,
-            host_class=placement.host_class,
+            placement=placement,
+            resources=resources,
         )
 
     @property
@@ -325,7 +325,6 @@ class ActionSpec:
                 "time_limit": self.resources.time_limit,
             },
             "placement": {
-                "worker_id": self.placement.worker_id,
                 "platform_key": self.placement.platform_key,
                 "host_class": self.placement.host_class,
             },

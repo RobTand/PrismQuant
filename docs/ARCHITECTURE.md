@@ -1,7 +1,15 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-30 · `codex/prismabuild-dagster-20260830` — stamps follow,
+As of: 2026-08-30 · `codex/prismabuild-attestation-20260830` — stamps follow,
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/prismabuild-attestation-20260830`) for the **PrismaBuild worker
+attestation/preflight contract** (§10.1): worker platform and host class are no
+longer caller-supplied CLI labels; the worker derives OS/architecture/NVIDIA
+capability, binds host-class claims to SLURM partition/constraint plus its
+kernel-owned job cgroup, verifies nonportable executable/toolchain/CAS inputs,
+and carries that evidence in receipt schema v2. The transport remains
+implemented but not live-deployed, and this changes no pipeline default or
+serving topology. Re-stamped (2026-08-30,
 `codex/prismabuild-dagster-20260830`) for the optional **PrismaBuild Dagster
 orchestration layer** (§10.1): deterministic content-bound asset graphs,
 CAS-verified cache/dependency/success transitions, and same-allocation SLURM
@@ -7397,23 +7405,54 @@ that path to `tools/prismabuild_worker.py`; task argv remains inside the sealed
 request and is never interpolated into a shell command.
 
 The submission argv uses `sbatch --parsable --export=NONE --requeue` with one
-explicit node/task, append-only retry logs, CPU count, memory MiB, GPU count,
-constraint, partition, account, QoS, and time limit. The action key is carried
-in both the deterministic job-name prefix and full SLURM comment. The adapter
-checks the configured worker's
-platform/host-class identity against the action's `portable`,
-`platform_keyed`, or `host_class_keyed` scope before submission. `squeue` and
-`sacct` output is parsed as a closed state vocabulary; malformed, duplicate,
-wrong-job, or unknown rows fail closed. Cluster-suffixed parsable IDs remain
-cluster-scoped for status, cancellation, and explicit requeue.
+explicit node/task, append-only retry logs, CPU count, memory MiB, an optional
+positive GPU count (the flag is absent for CPU work), constraint, partition,
+account, QoS, and time limit. The action key is carried in both the
+deterministic job-name prefix and full SLURM comment. The adapter
+checks scheduler placement intent against the action's `portable`,
+`platform_keyed`, or `host_class_keyed` scope before submission, and a
+host-class scope must select the same partition or constraint. Those strings
+are never forwarded as worker identity. `squeue` and `sacct` output is parsed
+as a closed state vocabulary; malformed, duplicate, wrong-job, or unknown rows
+fail closed. A fresh allocation absent from both views is explicit bounded
+`NOT_VISIBLE`/pending state, never success. Poll or requeue-transition budget
+exhaustion cancels the exact allocation, and requeue waits for a positive
+pending/running transition before another retry. Cluster-suffixed parsable IDs
+remain cluster-scoped for status, cancellation, and explicit requeue.
+
+On a cache miss the worker runs one machine-readable preflight before argv.
+`platform_key` is derived from live OS/machine facts plus the single visible
+NVIDIA compute capability; heterogeneous capabilities refuse. Local
+`worker_id` comes from the hostname. Under SLURM it comes from
+`SLURMD_NODENAME`, while `host_class` is accepted only when the action's class
+is the job partition or an exact constraint token and the numeric
+`SLURM_JOB_ID` is present in `/proc/self/cgroup`. Thus locally exported
+`SLURM_*` strings do not impersonate an allocation. The resolved executable is
+hashed before execution and checked again before publish. A nonportable action
+must bind its executable SHA-256/size, use only the preflight-supported
+toolchain vocabulary with every value verified (including CUDA capability and
+driver on NVIDIA), and resolve every declared input digest from the CAS.
+The same contract requires system/machine/libc ABI fields. Portable actions
+retain external-input compatibility: resolvable facts are
+verified and recorded, but absent external inputs or descriptive toolchain
+fields do not become a new refusal. For portable actions executable identity
+is receipt provenance rather than a newly mandatory action-key field. Input
+preflight verifies declared CAS bytes but cannot prove which paths the child
+later reads; the sealed argv/code owns that resolution. The `preflight` CLI
+emits the same `prismaquant.prismabuild.worker_attestation.v1` object without
+execution.
 
 SLURM is not result authority. A valid, content-verified CAS receipt for the
-exact action is the sole success state, and its producer scope is replayed on
-every lookup. `COMPLETED` without a receipt is failure; scheduler retries are
-idempotent because the worker checks the same CAS before running. A dirty
-partial result still refuses in the core worker instead of being guessed away.
-No SLURM controller/daemon, Dagster service, or observability service is
-installed by this code change, so the existing pipeline and
+exact action is the sole success state. Receipt schema
+`prismaquant.prismabuild.cas_receipt.v2` embeds the self-hashed worker
+attestation as `producer`; every lookup replays its action binding, derived
+platform/host scope, executable/toolchain/input evidence, and result-blob
+bytes.
+`COMPLETED` without a receipt is failure; scheduler retries are idempotent
+because the worker checks the same CAS before running. A dirty partial result
+still refuses in the core worker instead of being guessed away. No SLURM
+controller/daemon, Dagster service, or observability service is installed by
+this code change, so the existing pipeline and
 `cluster_campaign.manifest.v2` execution path remain unchanged.
 
 The Dagster graph is constructed only from explicit `ActionSpec` values. Each

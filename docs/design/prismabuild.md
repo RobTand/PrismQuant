@@ -78,6 +78,54 @@ matters). Rules:
 - Re-enqueue of an existing key = cache hit = no-op. Speculative enqueueing
   is therefore safe: superseded keys are simply never requested again.
 
+### Worker preflight and execution attestation
+
+Scheduler placement is intent, not producer identity. `run-local` accepts no
+`--worker-id`, `--platform-key`, or `--host-class` arguments. Before a cache
+miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
+`prismaquant.prismabuild.worker_attestation.v1` record bound to the action key:
+
+- `platform_key` is derived from the live lower-case OS and machine plus the
+  single visible NVIDIA compute capability, when present (for example,
+  `linux-aarch64-sm121`). Heterogeneous visible capabilities are ambiguous and
+  refuse.
+- `worker_id` is the live hostname locally or SLURM's node name inside an
+  allocation. A `host_class_keyed` action is SLURM-only: its class must equal
+  the job partition or an exact constraint token, and the claimed numeric job
+  must occur in `/proc/self/cgroup`. Merely setting `SLURM_*` variables is not
+  attestation.
+- The resolved regular file behind `argv[0]` is hashed before execution and
+  checked again before publication. Nonportable actions must bind that digest
+  and byte count as `environment.toolchain.{argv0.sha256,argv0.bytes}`, plus
+  the exact system, machine, and libc ABI fields. Their
+  toolchain may contain only preflight-backed fields (`python`, `torch`,
+  `transformers`, `vllm`, `gridbook`, OS/machine/libc, CUDA capability, NVIDIA
+  driver, and the executable identity); every declared field must verify.
+  NVIDIA workers additionally require the CUDA capability and driver fields.
+- Every nonportable `action.inputs` digest must already exist and verify in the
+  PrismaBuild CAS before argv starts. Portable actions preserve the existing
+  external-input contract: CAS-resident inputs and recognized toolchain fields
+  are verified when possible, while unresolved inputs and descriptive
+  toolchain fields remain permitted and are visibly absent from the
+  attestation's verified subsets.
+
+Two limits are explicit. For portable actions the observed executable hash is
+receipt provenance, not a newly required action-key field; callers that need
+the executable to participate in cache identity must use a nonportable scope
+and the `argv0.*` toolchain fields. Input preflight proves that the declared
+CAS bytes exist and match before execution, but the sealed argv/code remains
+responsible for resolving and consuming those bytes; process provenance is not
+an OS-level proof of every file read.
+
+The attestation becomes `producer` in the self-hashed
+`prismaquant.prismabuild.cas_receipt.v2` receipt. CAS lookup replays its action,
+scope, platform derivation, host-class evidence, executable identity, verified
+toolchain, verified-input subset, and self-digest before accepting the result.
+The `preflight` CLI prints the same machine-readable record without executing
+the action. This is process/platform provenance, not a cryptographic quote: the
+trust boundary remains the munge-authenticated, cgroup-enforced cluster and its
+shared CAS.
+
 **Restart economics + provenance (Rob, 2026-08-26).** Reruns become replays:
 after a failure or a code fix, re-enqueueing the whole campaign returns
 cached results for every task whose key is unchanged and recomputes only

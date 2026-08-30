@@ -26,6 +26,30 @@ def _action(
 ) -> dict[str, object]:
     code = checkout / f"{name}.py"
     code.write_text(f"# {name} closure\n", encoding="utf-8")
+    argv = [
+        sys.executable,
+        "-c",
+        f"open('{name}.bin','wb').write(b'{name}')",
+    ]
+    toolchain = {"python": "3.12"}
+    if portability != "portable":
+        toolchain.update(pb.executable_toolchain_contract(argv[0]))
+        evidence = pb._collect_worker_evidence()
+        toolchain.update(
+            {
+                "system": str(evidence["system"]),
+                "machine": str(evidence["machine"]),
+                "libc": str(evidence["libc"]),
+            }
+        )
+        accelerators = evidence["accelerators"]
+        if accelerators:
+            toolchain.update(
+                {
+                    "cuda_compute_capability": accelerators[0]["compute_capability"],
+                    "nvidia_driver": accelerators[0]["driver_version"],
+                }
+            )
     return pb.seal_action(
         {
             "schema": pb.ACTION_SCHEMA_V1,
@@ -35,11 +59,7 @@ def _action(
                 "task_class": "generation",
                 "determinism": "deterministic",
                 "artifact_kind": "generic",
-                "argv": [
-                    sys.executable,
-                    "-c",
-                    f"open('{name}.bin','wb').write(b'{name}')",
-                ],
+                "argv": argv,
                 "working_directory": ".",
                 "result_path": f"{name}.bin",
             },
@@ -48,7 +68,7 @@ def _action(
             "params": {"name": name},
             "environment": {
                 "variables": {"PATH": "/usr/bin:/bin"},
-                "toolchain": {"python": "test"},
+                "toolchain": toolchain,
             },
             "execution_scope": {
                 "portability": portability,
@@ -59,13 +79,13 @@ def _action(
     )
 
 
-def _resources() -> ps.SlurmResources:
+def _resources(host_class: str = "cpu") -> ps.SlurmResources:
     return ps.SlurmResources(
         cpus=2,
         memory_mib=4096,
         gpus=0,
-        constraint="cpu",
-        partition="cpu",
+        constraint=host_class,
+        partition=host_class,
         account="prismaquant",
         qos="batch",
         time_limit="00:10:00",
@@ -84,7 +104,7 @@ def _spec(
         checkout_root=checkout,
         resources=_resources(),
         placement=ps.SlurmPlacement(
-            worker_id="slurm/cpu", platform_key=None, host_class=None
+            platform_key=None, host_class=None
         ),
         dependencies=dependencies,
         max_requeues=max_requeues,
@@ -100,12 +120,15 @@ def _publish(
     payload: bytes,
 ) -> dict[str, object]:
     source.write_bytes(payload)
+    attestation = pb.preflight_action(
+        spec.action,
+        cas_root=cas_root,
+        checkout_root=spec.checkout_root,
+    )
     receipt, _ = pb.PrismaBuildCAS(cas_root).publish_result(
         spec.action,
         source,
-        worker_id="tests",
-        platform_key=None,
-        host_class=None,
+        attestation=attestation,
     )
     return receipt
 
@@ -249,7 +272,6 @@ def test_action_spec_config_round_trip_binds_placement_and_retries(tmp_path: Pat
     assert rebuilt.as_config() == spec.as_config()
     malformed = spec.as_config()
     malformed["placement"] = {
-        "worker_id": "slurm/cpu",
         "platform_key": None,
         "host_class": None,
         "mutable_path": "/tmp/result",
@@ -483,34 +505,56 @@ def test_tampered_cached_payload_fails_closed_before_adapter(tmp_path: Path):
         runner.execute(pd.ActionGraph([spec]), spec.action_key)
 
 
-def test_wrong_scope_receipt_fails_closed_before_adapter(tmp_path: Path):
+def test_wrong_scope_receipt_fails_closed_before_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     action = _action(
         tmp_path, "root", portability="host_class_keyed", host_class="gb10"
     )
     spec = pd.ActionSpec(
         action=action,
         checkout_root=tmp_path,
-        resources=_resources(),
+        resources=_resources("gb10"),
         placement=ps.SlurmPlacement(
-            worker_id="slurm/gb10", platform_key="linux-aarch64-sm121", host_class="gb10"
+            platform_key="linux-aarch64-sm121", host_class="gb10"
         ),
     )
     cas_root = tmp_path / "cas"
     source = tmp_path / "source"
     source.write_bytes(b"canonical")
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.setenv("SLURMD_NODENAME", "sparky")
+    monkeypatch.setenv("SLURM_JOB_PARTITION", "gb10")
+    monkeypatch.setattr(
+        pb,
+        "_verify_slurm_process_membership",
+        lambda job_id: f"/slurm/job_{job_id}/step_batch",
+    )
+    attestation = pb.preflight_action(
+        spec.action, cas_root=cas_root, checkout_root=spec.checkout_root
+    )
     receipt, _ = pb.PrismaBuildCAS(cas_root).publish_result(
         spec.action,
         source,
-        worker_id="sparky",
-        platform_key="linux-aarch64-sm121",
-        host_class="gb10",
+        attestation=attestation,
     )
     altered = dict(receipt)
-    altered["producer"] = {
-        "worker_id": "foreign",
-        "platform_key": "linux-x86-sm89",
-        "host_class": "rtx4090",
+    producer = json.loads(json.dumps(receipt["producer"]))
+    producer["host_class"] = "rtx4090"
+    producer["evidence"]["slurm"]["partition"] = "rtx4090"
+    producer_body = {
+        key: producer[key] for key in producer if key != "attestation_sha256"
     }
+    producer["attestation_sha256"] = hashlib.sha256(
+        json.dumps(
+            producer_body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    altered["producer"] = producer
     body = {key: altered[key] for key in altered if key != "receipt_sha256"}
     altered["receipt_sha256"] = hashlib.sha256(
         json.dumps(
@@ -533,5 +577,5 @@ def test_wrong_scope_receipt_fails_closed_before_adapter(tmp_path: Path):
         encoding="utf-8",
     )
     runner = pd.DagsterActionRunner(cas_root=cas_root, adapter=_NeverAdapter())
-    with pytest.raises(pb.CASTamperError, match="execution scope"):
+    with pytest.raises(pb.CASTamperError, match="host_class"):
         runner.execute(pd.ActionGraph([spec]), spec.action_key)

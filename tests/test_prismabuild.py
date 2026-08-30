@@ -28,6 +28,25 @@ def _body(
     code = checkout / "task_code.py"
     if not code.exists():
         code.write_text("# closure member\n", encoding="utf-8")
+    resolved_argv = argv or [
+        sys.executable,
+        "-c",
+        (
+            "import pathlib; "
+            f"pathlib.Path({result_path!r}).write_bytes(b'result')"
+        ),
+    ]
+    toolchain = {"python": "3.12", "torch": "2.11+cu130"}
+    if portability != "portable":
+        toolchain.update(pb.executable_toolchain_contract(resolved_argv[0]))
+        evidence = pb._collect_worker_evidence()
+        toolchain.update(
+            {
+                "system": str(evidence["system"]),
+                "machine": str(evidence["machine"]),
+                "libc": str(evidence["libc"]),
+            }
+        )
     return {
         "schema": pb.ACTION_SCHEMA_V1,
         "task": {
@@ -36,15 +55,7 @@ def _body(
             "task_class": task_class,
             "determinism": determinism,
             "artifact_kind": artifact_kind,
-            "argv": argv
-            or [
-                sys.executable,
-                "-c",
-                (
-                    "import pathlib; "
-                    f"pathlib.Path({result_path!r}).write_bytes(b'result')"
-                ),
-            ],
+            "argv": resolved_argv,
             "working_directory": ".",
             "result_path": result_path,
         },
@@ -56,7 +67,7 @@ def _body(
         "params": {"alpha": 1, "nested": {"enabled": True}},
         "environment": {
             "variables": {"DECLARED": "yes"},
-            "toolchain": {"python": "3.12", "torch": "2.11+cu130"},
+            "toolchain": toolchain,
         },
         "execution_scope": {
             "portability": portability,
@@ -68,6 +79,49 @@ def _body(
 
 def _action(checkout: Path, **kwargs: object) -> dict[str, object]:
     return pb.seal_action(_body(checkout, **kwargs))
+
+
+def _attestation(
+    checkout: Path, action: dict[str, object], cas_root: Path
+) -> dict[str, object]:
+    return pb.preflight_action(
+        action, cas_root=cas_root, checkout_root=checkout
+    )
+
+
+def _live_nonportable_body(
+    checkout: Path,
+    *,
+    inputs: list[dict[str, object]] | None = None,
+    argv: list[str] | None = None,
+) -> dict[str, object]:
+    evidence = pb._collect_worker_evidence()
+    platform_key = pb._platform_key_from_evidence(evidence)
+    body = _body(
+        checkout,
+        portability="platform_keyed",
+        platform_key=platform_key,
+        argv=argv,
+    )
+    body["inputs"] = [] if inputs is None else inputs
+    toolchain = {
+        **pb.executable_toolchain_contract(body["task"]["argv"][0]),  # type: ignore[index]
+        "python": "3.12",
+        "torch": "2.11+cu130",
+        "system": str(evidence["system"]),
+        "machine": str(evidence["machine"]),
+        "libc": str(evidence["libc"]),
+    }
+    accelerators = evidence["accelerators"]
+    if accelerators:
+        toolchain.update(
+            {
+                "cuda_compute_capability": accelerators[0]["compute_capability"],
+                "nvidia_driver": accelerators[0]["driver_version"],
+            }
+        )
+    body["environment"]["toolchain"] = toolchain  # type: ignore[index]
+    return body
 
 
 def test_action_key_is_canonical_and_inputs_are_sorted(tmp_path: Path):
@@ -154,13 +208,10 @@ def test_portability_contracts_and_d29_refusal(tmp_path: Path):
         portability="platform_keyed",
         platform_key="linux-aarch64-sm121",
     )
-    pb.validate_worker_scope(
-        platform, platform_key="linux-aarch64-sm121", host_class="gb10"
+    assert (
+        platform["execution_scope"]["platform_key"]  # type: ignore[index]
+        == "linux-aarch64-sm121"
     )
-    with pytest.raises(pb.ActionContractError, match="platform_key"):
-        pb.validate_worker_scope(
-            platform, platform_key="linux-x86_64-sm89", host_class="rtx4090"
-        )
 
     host = _action(
         tmp_path,
@@ -168,9 +219,207 @@ def test_portability_contracts_and_d29_refusal(tmp_path: Path):
         portability="host_class_keyed",
         host_class="gb10",
     )
-    pb.validate_worker_scope(host, platform_key=None, host_class="gb10")
-    with pytest.raises(pb.ActionContractError, match="host_class"):
-        pb.validate_worker_scope(host, platform_key=None, host_class="cpu-x86-large")
+    assert host["execution_scope"]["host_class"] == "gb10"  # type: ignore[index]
+
+
+def test_nonportable_action_refuses_unattestable_toolchain_or_unbound_argv0(
+    tmp_path: Path,
+):
+    body = _body(
+        tmp_path,
+        portability="platform_keyed",
+        platform_key="linux-aarch64-sm121",
+    )
+    body["environment"]["toolchain"] = {"container": "claimed-not-probed"}  # type: ignore[index]
+    with pytest.raises(pb.ActionContractError, match="no worker preflight"):
+        pb.seal_action(body)
+
+    body["environment"]["toolchain"] = {"python": "3.12"}  # type: ignore[index]
+    with pytest.raises(pb.ActionContractError, match=r"bind argv\[0\]"):
+        pb.seal_action(body)
+
+
+def test_platform_scope_is_derived_from_live_facts_not_a_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    body = _body(
+        tmp_path,
+        portability="platform_keyed",
+        platform_key="linux-aarch64-sm121",
+    )
+    body["inputs"] = []
+    body["environment"]["toolchain"].update(  # type: ignore[index]
+        {
+            "cuda_compute_capability": "8.9",
+            "nvidia_driver": "550.54",
+            "system": "linux",
+            "machine": "x86_64",
+            "libc": "glibc-2.39",
+        }
+    )
+    action = pb.seal_action(body)
+    monkeypatch.setattr(
+        pb,
+        "_collect_worker_evidence",
+        lambda: {
+            "source": "local",
+            "hostname": "foreign-worker",
+            "system": "linux",
+            "machine": "x86_64",
+            "libc": "glibc-2.39",
+            "accelerators": [
+                {
+                    "kind": "nvidia",
+                    "compute_capability": "8.9",
+                    "driver_version": "550.54",
+                }
+            ],
+            "slurm": None,
+        },
+    )
+    with pytest.raises(pb.ActionContractError, match="platform_key"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_host_class_requires_kernel_attested_slurm_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    body = _body(
+        tmp_path,
+        portability="host_class_keyed",
+        host_class="gb10",
+    )
+    body["inputs"] = []
+    action = pb.seal_action(body)
+    monkeypatch.setenv("SLURM_JOB_ID", "4242")
+    monkeypatch.setenv("SLURMD_NODENAME", "claimed-node")
+    monkeypatch.setenv("SLURM_JOB_PARTITION", "gb10")
+    with pytest.raises(pb.ActionContractError, match="cgroup membership"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_slurm_cgroup_attestation_accepts_duplicate_v1_controller_rows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cgroup = b"2:cpu:/slurm/job_4242/step_batch\n3:memory:/slurm/job_4242/step_batch\n"
+    monkeypatch.setattr(pb, "_read_regular_file", lambda *args, **kwargs: cgroup)
+    assert (
+        pb._verify_slurm_process_membership("4242")
+        == "/slurm/job_4242/step_batch"
+    )
+
+
+def test_host_class_preflight_records_slurm_and_machine_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    body = _live_nonportable_body(tmp_path)
+    body["execution_scope"] = {
+        "portability": "host_class_keyed",
+        "platform_key": None,
+        "host_class": "gb10",
+    }
+    action = pb.seal_action(body)
+    live = pb._collect_worker_evidence()
+    live["source"] = "slurm"
+    live["slurm"] = {
+        "job_id": "77",
+        "node_name": "sparky",
+        "partition": "gb10",
+        "constraints": ["gb10"],
+        "cgroup": "/slurm/job_77/step_batch",
+    }
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda: live)
+    result = pb.run_local_action(
+        action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+    )
+    producer = result["receipt"]["producer"]  # type: ignore[index]
+    assert producer["worker_id"] == "sparky"
+    assert producer["host_class"] == "gb10"
+    assert producer["evidence"]["slurm"]["cgroup"] == "/slurm/job_77/step_batch"
+    assert pb.validate_worker_attestation(producer, action=action) == producer
+
+
+def test_nonportable_preflight_refuses_unknown_libc_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    live = pb._collect_worker_evidence()
+    body = _live_nonportable_body(tmp_path)
+    body["environment"]["toolchain"]["libc"] = "unknown"  # type: ignore[index]
+    action = pb.seal_action(body)
+    live["libc"] = "unknown"
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda: live)
+    with pytest.raises(pb.ActionContractError, match="unknown libc"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_preflight_refuses_toolchain_mismatch_before_execution(tmp_path: Path):
+    body = _body(tmp_path)
+    body["inputs"] = []
+    body["environment"]["toolchain"] = {"python": "0.0"}  # type: ignore[index]
+    action = pb.seal_action(body)
+    with pytest.raises(pb.ActionContractError, match="toolchain field 'python'"):
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+    assert not (tmp_path / "result.bin").exists()
+
+
+def test_nonportable_preflight_requires_and_verifies_cas_inputs(tmp_path: Path):
+    payload = b"immutable upstream"
+    digest = hashlib.sha256(payload).hexdigest()
+    entry = {"id": "upstream/result", "sha256": digest, "bytes": len(payload)}
+    action = pb.seal_action(_live_nonportable_body(tmp_path, inputs=[entry]))
+    with pytest.raises(pb.ActionContractError, match="input is absent"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+    blob = tmp_path / "cas" / "blobs" / digest[:2] / digest
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(payload)
+    blob.chmod(0o444)
+    attestation = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+    )
+    assert attestation["inputs"] == [entry]
+
+
+def test_nonportable_preflight_binds_executable_bytes(tmp_path: Path):
+    executable = tmp_path / "task-executable"
+    executable.write_text(
+        "#!/usr/bin/python3.12\nimport pathlib\npathlib.Path('result.bin').write_bytes(b'ok')\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    body = _live_nonportable_body(tmp_path, argv=[str(executable)])
+    body["environment"]["toolchain"] = {  # type: ignore[index]
+        **pb.executable_toolchain_contract(executable),
+        **{
+            key: value
+            for key, value in body["environment"]["toolchain"].items()  # type: ignore[index]
+            if key
+            in {
+                "cuda_compute_capability",
+                "nvidia_driver",
+                "system",
+                "machine",
+                "libc",
+            }
+        },
+    }
+    action = pb.seal_action(body)
+    executable.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    with pytest.raises(pb.ActionContractError, match=r"argv0\.(sha256|bytes)"):
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+    assert not (tmp_path / "result.bin").exists()
 
 
 def test_code_closure_is_root_independent_and_live_verified(tmp_path: Path):
@@ -236,9 +485,6 @@ def test_local_worker_uses_exact_argv_and_closed_environment(
         action,
         cas_root=tmp_path / "cas",
         checkout_root=checkout,
-        worker_id="worker-1",
-        platform_key="linux-test",
-        host_class="test",
     )
 
     assert result["status"] == "published"
@@ -260,9 +506,6 @@ def test_cache_hit_skips_execution_and_fully_revalidates(tmp_path: Path):
         action=action,
         cas_root=tmp_path / "cas",
         checkout_root=checkout,
-        worker_id="worker-1",
-        platform_key=None,
-        host_class=None,
     )
     first = pb.run_local_action(**arguments)
     second = pb.run_local_action(**arguments)
@@ -285,9 +528,6 @@ def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: P
             dirty,
             cas_root=tmp_path / "cas-dirty",
             checkout_root=checkout,
-            worker_id="worker",
-            platform_key=None,
-            host_class=None,
         )
     (checkout / "result.bin").unlink()
     missing = _action(checkout, argv=[sys.executable, "-c", "pass"])
@@ -296,9 +536,6 @@ def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: P
             missing,
             cas_root=tmp_path / "cas-missing",
             checkout_root=checkout,
-            worker_id="worker",
-            platform_key=None,
-            host_class=None,
         )
 
 
@@ -314,9 +551,6 @@ def test_local_worker_refuses_symlinked_result_parent(tmp_path: Path):
             action,
             cas_root=tmp_path / "cas",
             checkout_root=checkout,
-            worker_id="worker",
-            platform_key=None,
-            host_class=None,
         )
     assert not (outside / "result.bin").exists()
 
@@ -351,9 +585,6 @@ def test_local_worker_serializes_shared_checkout_output(tmp_path: Path):
                     action,
                     cas_root=tmp_path / "cas",
                     checkout_root=checkout,
-                    worker_id="worker",
-                    platform_key=None,
-                    host_class=None,
                 )
             )
         except BaseException as exc:
@@ -387,9 +618,6 @@ def test_timeout_terminates_child_process_group(tmp_path: Path):
             action,
             cas_root=tmp_path / "cas",
             checkout_root=checkout,
-            worker_id="worker",
-            platform_key=None,
-            host_class=None,
             timeout_seconds=0.1,
         )
     time.sleep(1.0)
@@ -405,21 +633,18 @@ def test_deterministic_recompute_must_match(tmp_path: Path):
     first.write_bytes(b"canonical")
     second.write_bytes(b"different")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
     receipt, won = cas.publish_result(
         action,
         first,
-        worker_id="worker-a",
-        platform_key=None,
-        host_class=None,
+        attestation=attestation,
     )
     assert won
     with pytest.raises(pb.CASConflictError, match="deterministic recomputation"):
         cas.publish_result(
             action,
             second,
-            worker_id="worker-b",
-            platform_key=None,
-            host_class=None,
+            attestation=attestation,
         )
     assert cas.lookup(action) == receipt
 
@@ -434,6 +659,7 @@ def test_stochastic_action_is_atomic_first_result_wins(tmp_path: Path):
         path.write_bytes(f"candidate-{index}".encode())
         outputs.append(path)
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
     barrier = threading.Barrier(2)
     results: list[tuple[dict[str, object], bool]] = []
     errors: list[BaseException] = []
@@ -445,9 +671,7 @@ def test_stochastic_action_is_atomic_first_result_wins(tmp_path: Path):
                 cas.publish_result(
                     action,
                     outputs[index],
-                    worker_id=f"worker-{index}",
-                    platform_key=None,
-                    host_class=None,
+                    attestation=attestation,
                 )
             )
         except BaseException as exc:  # pragma: no cover - asserted below
@@ -475,12 +699,11 @@ def test_cache_detects_payload_and_receipt_tampering(tmp_path: Path):
     output = tmp_path / "output"
     output.write_bytes(b"trusted")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
     receipt, _ = cas.publish_result(
         action,
         output,
-        worker_id="worker",
-        platform_key=None,
-        host_class=None,
+        attestation=attestation,
     )
     payload = cas.result_path(receipt, action)
     payload.chmod(0o644)
@@ -539,8 +762,6 @@ def test_cli_seals_keys_runs_and_verifies(tmp_path: Path, capsys: pytest.Capture
             str(tmp_path / "cas"),
             "--checkout-root",
             str(checkout),
-            "--worker-id",
-            "cli-worker",
         ]
     ) == 0
     assert '"status": "published"' in capsys.readouterr().out

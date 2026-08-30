@@ -23,6 +23,26 @@ def _action(
 ) -> dict[str, object]:
     code = checkout / "task.py"
     code.write_text("# immutable closure\n", encoding="utf-8")
+    argv = [sys.executable, "-c", "open('result.bin','wb').write(b'ok')"]
+    toolchain = {"python": "3.12"}
+    if portability != "portable":
+        toolchain.update(pb.executable_toolchain_contract(argv[0]))
+        evidence = pb._collect_worker_evidence()
+        toolchain.update(
+            {
+                "system": str(evidence["system"]),
+                "machine": str(evidence["machine"]),
+                "libc": str(evidence["libc"]),
+            }
+        )
+        accelerators = evidence["accelerators"]
+        if accelerators:
+            toolchain.update(
+                {
+                    "cuda_compute_capability": accelerators[0]["compute_capability"],
+                    "nvidia_driver": accelerators[0]["driver_version"],
+                }
+            )
     return pb.seal_action(
         {
             "schema": pb.ACTION_SCHEMA_V1,
@@ -32,7 +52,7 @@ def _action(
                 "task_class": "generation",
                 "determinism": "deterministic",
                 "artifact_kind": "generic",
-                "argv": [sys.executable, "-c", "open('result.bin','wb').write(b'ok')"],
+                "argv": argv,
                 "working_directory": ".",
                 "result_path": "result.bin",
             },
@@ -41,7 +61,7 @@ def _action(
             "params": {},
             "environment": {
                 "variables": {"DECLARED": "1"},
-                "toolchain": {"python": "test"},
+                "toolchain": toolchain,
             },
             "execution_scope": {
                 "portability": portability,
@@ -49,6 +69,14 @@ def _action(
                 "host_class": host_class,
             },
         }
+    )
+
+
+def _attestation(
+    checkout: Path, action: dict[str, object], cas_root: Path
+) -> dict[str, object]:
+    return pb.preflight_action(
+        action, cas_root=cas_root, checkout_root=checkout
     )
 
 
@@ -115,7 +143,7 @@ def test_submit_uses_exact_argv_closed_environment_and_content_request(
         checkout_root=checkout,
         resources=_resources(),
         placement=ps.SlurmPlacement(
-            worker_id="slurm/gb10", platform_key="linux-aarch64-sm121", host_class="gb10"
+            platform_key="linux-aarch64-sm121", host_class="gb10"
         ),
     )
 
@@ -155,12 +183,6 @@ def test_submit_uses_exact_argv_closed_environment_and_content_request(
         str(tmp_path / "cas"),
         "--checkout-root",
         str(checkout),
-        "--worker-id",
-        "slurm/gb10",
-        "--platform-key",
-        "linux-aarch64-sm121",
-        "--host-class",
-        "gb10",
     ]
     assert kwargs["shell"] is False
     assert kwargs["check"] is False
@@ -188,9 +210,7 @@ def test_cpu_submission_omits_zero_gpu_request(
         action,
         checkout_root=checkout,
         resources=_resources(gpus=0),
-        placement=ps.SlurmPlacement(
-            worker_id="slurm/cpu", platform_key=None, host_class=None
-        ),
+        placement=ps.SlurmPlacement(platform_key=None, host_class=None),
     )
     assert not any(argument.startswith("--gpus=") for argument in calls[0])
 
@@ -235,10 +255,37 @@ def test_submit_refuses_wrong_scope_before_calling_slurm(
             checkout_root=checkout,
             resources=_resources(),
             placement=ps.SlurmPlacement(
-                worker_id="wrong", platform_key="linux-x86-sm89", host_class="gpu"
+                platform_key="linux-x86-sm89", host_class="gpu"
             ),
         )
     assert not called
+
+
+def test_host_class_scope_must_be_backed_by_slurm_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(
+        checkout, portability="host_class_keyed", host_class="gb10"
+    )
+    adapter, _ = _adapter(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid placement must not call SLURM")
+        ),
+    )
+    with pytest.raises(pb.ActionContractError, match="partition or constraint"):
+        adapter.submit(
+            action,
+            checkout_root=checkout,
+            resources=_resources(constraint="cpu", partition="cpu"),
+            placement=ps.SlurmPlacement(
+                platform_key="linux-aarch64-sm121", host_class="gb10"
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -358,12 +405,19 @@ def test_verified_receipt_is_success_even_before_slurm_disappears(
     output = tmp_path / "result"
     output.write_bytes(b"canonical")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.setenv("SLURMD_NODENAME", "sparky")
+    monkeypatch.setenv("SLURM_JOB_PARTITION", "gb10")
+    monkeypatch.setattr(
+        pb,
+        "_verify_slurm_process_membership",
+        lambda job_id: f"/slurm/job_{job_id}/step_batch",
+    )
+    attestation = _attestation(checkout, action, tmp_path / "cas")
     receipt, _ = cas.publish_result(
         action,
         output,
-        worker_id="sparky",
-        platform_key="linux-aarch64-sm121",
-        host_class="gb10",
+        attestation=attestation,
     )
     adapter, _ = _adapter(tmp_path)
 
@@ -389,9 +443,7 @@ def test_submit_is_cache_hit_noop_after_verified_receipt(
     receipt, _ = pb.PrismaBuildCAS(tmp_path / "cas").publish_result(
         action,
         output,
-        worker_id="any",
-        platform_key=None,
-        host_class=None,
+        attestation=_attestation(checkout, action, tmp_path / "cas"),
     )
     adapter, _ = _adapter(tmp_path)
     monkeypatch.setattr(
@@ -406,7 +458,7 @@ def test_submit_is_cache_hit_noop_after_verified_receipt(
         checkout_root=checkout,
         resources=_resources(),
         placement=ps.SlurmPlacement(
-            worker_id="worker", platform_key=None, host_class=None
+            platform_key=None, host_class=None
         ),
     )
     assert submission.status == "cache_hit"
@@ -425,19 +477,37 @@ def test_wrong_scope_self_consistent_receipt_is_tamper(
     output = tmp_path / "result"
     output.write_bytes(b"canonical")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.setenv("SLURMD_NODENAME", "sparky")
+    monkeypatch.setenv("SLURM_JOB_PARTITION", "gb10")
+    monkeypatch.setattr(
+        pb,
+        "_verify_slurm_process_membership",
+        lambda job_id: f"/slurm/job_{job_id}/step_batch",
+    )
+    attestation = _attestation(checkout, action, tmp_path / "cas")
     receipt, _ = cas.publish_result(
         action,
         output,
-        worker_id="sparky",
-        platform_key="linux-aarch64-sm121",
-        host_class="gb10",
+        attestation=attestation,
     )
     altered = dict(receipt)
-    altered["producer"] = {
-        "worker_id": "foreign",
-        "platform_key": "linux-x86-sm89",
-        "host_class": "rtx4090",
+    producer = json.loads(json.dumps(receipt["producer"]))
+    producer["host_class"] = "rtx4090"
+    producer["evidence"]["slurm"]["partition"] = "rtx4090"
+    producer_body = {
+        key: producer[key] for key in producer if key != "attestation_sha256"
     }
+    producer["attestation_sha256"] = hashlib.sha256(
+        json.dumps(
+            producer_body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    altered["producer"] = producer
     body = {key: altered[key] for key in altered if key != "receipt_sha256"}
     altered["receipt_sha256"] = hashlib.sha256(
         json.dumps(
@@ -468,7 +538,7 @@ def test_wrong_scope_self_consistent_receipt_is_tamper(
             AssertionError("must fail before scheduler query")
         ),
     )
-    with pytest.raises(pb.CASTamperError, match="execution scope"):
+    with pytest.raises(pb.CASTamperError, match="host_class"):
         adapter.resolve(action, "123")
 
 
@@ -503,9 +573,7 @@ def test_requeue_is_noop_after_receipt(tmp_path: Path, monkeypatch: pytest.Monke
     pb.PrismaBuildCAS(tmp_path / "cas").publish_result(
         action,
         output,
-        worker_id="any",
-        platform_key=None,
-        host_class=None,
+        attestation=_attestation(checkout, action, tmp_path / "cas"),
     )
     adapter, _ = _adapter(tmp_path)
     monkeypatch.setattr(
@@ -558,7 +626,7 @@ def test_worker_script_must_be_real_and_executable(
             checkout_root=checkout,
             resources=_resources(),
             placement=ps.SlurmPlacement(
-                worker_id="worker", platform_key=None, host_class=None
+                platform_key=None, host_class=None
             ),
         )
 
@@ -577,6 +645,6 @@ def test_worker_script_must_be_real_and_executable(
             checkout_root=checkout,
             resources=_resources(),
             placement=ps.SlurmPlacement(
-                worker_id="worker", platform_key=None, host_class=None
+                platform_key=None, host_class=None
             ),
         )

@@ -25,8 +25,10 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import re
 import signal
+import socket
 import stat
 import subprocess
 import tempfile
@@ -36,7 +38,8 @@ from .cluster_campaign import canonical_sha256
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
-CAS_RECEIPT_SCHEMA_V1 = "prismaquant.prismabuild.cas_receipt.v1"
+CAS_RECEIPT_SCHEMA_V2 = "prismaquant.prismabuild.cas_receipt.v2"
+WORKER_ATTESTATION_SCHEMA_V1 = "prismaquant.prismabuild.worker_attestation.v1"
 
 _ACTION_BODY_KEYS = frozenset(
     {
@@ -72,7 +75,31 @@ _RECEIPT_BODY_KEYS = frozenset(
 )
 _RECEIPT_KEYS = _RECEIPT_BODY_KEYS | {"receipt_sha256"}
 _RESULT_KEYS = frozenset({"sha256", "bytes"})
-_PRODUCER_KEYS = frozenset({"worker_id", "platform_key", "host_class"})
+_PRODUCER_KEYS = frozenset(
+    {
+        "schema",
+        "action_key",
+        "worker_id",
+        "platform_key",
+        "host_class",
+        "evidence",
+        "executable",
+        "toolchain",
+        "inputs",
+        "attestation_sha256",
+    }
+)
+_EVIDENCE_KEYS = frozenset(
+    {"source", "hostname", "system", "machine", "libc", "accelerators", "slurm"}
+)
+_ACCELERATOR_KEYS = frozenset(
+    {"kind", "compute_capability", "driver_version"}
+)
+_SLURM_EVIDENCE_KEYS = frozenset(
+    {"job_id", "node_name", "partition", "constraints", "cgroup"}
+)
+_EXECUTABLE_KEYS = frozenset({"path", "resolved_path", "sha256", "bytes"})
+_TOOLCHAIN_ATTESTATION_KEYS = frozenset({"declared", "verified"})
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
 _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}\Z")
@@ -84,6 +111,23 @@ _PORTABILITY = frozenset({"portable", "platform_keyed", "host_class_keyed"})
 _TASK_CLASSES = frozenset({"generation", "measurement"})
 _DETERMINISM = frozenset({"deterministic", "stochastic"})
 _PROCESS_GROUP_GRACE_SECONDS = 5.0
+_ATTESTABLE_TOOLCHAIN_KEYS = frozenset(
+    {
+        "argv0.sha256",
+        "argv0.bytes",
+        "python",
+        "torch",
+        "transformers",
+        "vllm",
+        "gridbook",
+        "system",
+        "machine",
+        "libc",
+        "cuda_compute_capability",
+        "nvidia_driver",
+    }
+)
+_PYTHON_DISTRIBUTIONS = frozenset({"torch", "transformers", "vllm", "gridbook"})
 
 
 class PrismaBuildError(RuntimeError):
@@ -360,6 +404,296 @@ def _file_identity(path: Path, *, where: str) -> tuple[str, int]:
         os.close(descriptor)
 
 
+def identify_executable(path: str | Path) -> dict[str, object]:
+    """Return the exact regular-file identity behind an absolute argv[0]."""
+
+    declared = Path(path)
+    if not declared.is_absolute():
+        _fail("executable path must be absolute")
+    try:
+        resolved = declared.resolve(strict=True)
+    except OSError as exc:
+        raise ActionContractError(
+            f"cannot resolve executable path: {declared}"
+        ) from exc
+    digest, size = _file_identity(resolved, where="action executable")
+    try:
+        mode = resolved.stat().st_mode
+    except OSError as exc:
+        raise ActionContractError(
+            f"cannot inspect executable path: {resolved}"
+        ) from exc
+    if mode & 0o111 == 0:
+        _fail(f"action executable is not executable: {resolved}")
+    return {
+        "path": str(declared),
+        "resolved_path": str(resolved),
+        "sha256": digest,
+        "bytes": size,
+    }
+
+
+def executable_toolchain_contract(path: str | Path) -> dict[str, str]:
+    """Build the action-key fields that bind argv[0] to exact file bytes."""
+
+    identity = identify_executable(path)
+    return {
+        "argv0.sha256": str(identity["sha256"]),
+        "argv0.bytes": str(identity["bytes"]),
+    }
+
+
+def _probe_nvidia_accelerators() -> list[dict[str, str]]:
+    """Read live NVIDIA compute/driver facts without importing the task stack."""
+
+    executable = Path("/usr/bin/nvidia-smi")
+    if not executable.is_file():
+        return []
+    argv = [
+        str(executable),
+        "--query-gpu=compute_cap,driver_version",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        completed = subprocess.run(
+            argv,
+            shell=False,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            env={"LANG": "C", "LC_ALL": "C"},
+            timeout=10.0,
+        )
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    facts: set[tuple[str, str]] = set()
+    for raw_line in completed.stdout.splitlines():
+        fields = [field.strip() for field in raw_line.split(",")]
+        if len(fields) != 2:
+            raise ActionContractError("nvidia-smi returned malformed accelerator facts")
+        capability, driver = fields
+        if re.fullmatch(r"[0-9]+\.[0-9]+", capability) is None:
+            raise ActionContractError("nvidia-smi returned an invalid compute capability")
+        if _VERSION_RE.fullmatch(driver) is None:
+            raise ActionContractError("nvidia-smi returned an invalid driver version")
+        facts.add((capability, driver))
+    return [
+        {
+            "kind": "nvidia",
+            "compute_capability": capability,
+            "driver_version": driver,
+        }
+        for capability, driver in sorted(facts)
+    ]
+
+
+def _constraint_tokens(value: str) -> list[str]:
+    return sorted(
+        {
+            token
+            for token in re.split(r"[^A-Za-z0-9._+:/-]+", value)
+            if token
+        }
+    )
+
+
+def _verify_slurm_process_membership(job_id: str) -> str:
+    """Bind SLURM environment claims to this process's kernel-owned cgroup."""
+
+    if re.fullmatch(r"[1-9][0-9]*", job_id) is None:
+        raise ActionContractError("SLURM_JOB_ID must be a positive numeric job id")
+    raw = _read_regular_file(Path("/proc/self/cgroup"), where="worker cgroup")
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ActionContractError("worker cgroup is not UTF-8") from exc
+    pattern = re.compile(rf"(?:^|/)job_{re.escape(job_id)}(?:[./]|$)")
+    matches: set[str] = set()
+    for line in lines:
+        fields = line.split(":", 2)
+        if len(fields) == 3 and pattern.search(fields[2]):
+            matches.add(fields[2])
+    if len(matches) != 1:
+        raise ActionContractError(
+            "SLURM environment is not attested by this process's cgroup membership"
+        )
+    return _text(next(iter(matches)), where="worker SLURM cgroup")
+
+
+def _collect_worker_evidence(
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Collect facts from the live worker and SLURM-owned job environment."""
+
+    env = os.environ if environment is None else environment
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    libc_name, libc_version = platform.libc_ver()
+    libc = f"{libc_name.lower()}-{libc_version}" if libc_name else "unknown"
+    hostname = socket.gethostname().lower()
+    slurm_values = {
+        "job_id": env.get("SLURM_JOB_ID"),
+        "node_name": env.get("SLURMD_NODENAME"),
+        "partition": env.get("SLURM_JOB_PARTITION"),
+    }
+    present = [value is not None for value in slurm_values.values()]
+    if any(present) and not all(present):
+        raise ActionContractError(
+            "partial SLURM worker evidence is ambiguous; job, node, and partition are required"
+        )
+    slurm: dict[str, object] | None = None
+    source = "local"
+    if all(present):
+        source = "slurm"
+        job_id = _text(
+            slurm_values["job_id"], where="SLURM_JOB_ID", pattern=_SCOPE_TOKEN_RE
+        )
+        node_name = str(slurm_values["node_name"]).lower()
+        partition = str(slurm_values["partition"])
+        slurm = {
+            "job_id": job_id,
+            "node_name": _text(
+                node_name, where="SLURMD_NODENAME", pattern=_ID_RE
+            ),
+            "partition": _text(
+                partition, where="SLURM_JOB_PARTITION", pattern=_SCOPE_TOKEN_RE
+            ),
+            "constraints": _constraint_tokens(env.get("SLURM_JOB_CONSTRAINTS", "")),
+            "cgroup": _verify_slurm_process_membership(job_id),
+        }
+    return {
+        "source": source,
+        "hostname": _text(hostname, where="worker hostname", pattern=_ID_RE),
+        "system": _text(system, where="worker system", pattern=_SCOPE_TOKEN_RE),
+        "machine": _text(machine, where="worker machine", pattern=_SCOPE_TOKEN_RE),
+        "libc": _text(libc, where="worker libc", pattern=_SCOPE_TOKEN_RE),
+        "accelerators": _probe_nvidia_accelerators(),
+        "slurm": slurm,
+    }
+
+
+def _platform_key_from_evidence(evidence: Mapping[str, object]) -> str:
+    system = str(evidence["system"])
+    machine = str(evidence["machine"])
+    accelerators = evidence["accelerators"]
+    assert isinstance(accelerators, list)
+    capabilities = {
+        str(accelerator["compute_capability"])
+        for accelerator in accelerators
+        if isinstance(accelerator, Mapping) and accelerator.get("kind") == "nvidia"
+    }
+    if len(capabilities) > 1:
+        raise ActionContractError(
+            "worker exposes heterogeneous NVIDIA compute capabilities; platform is ambiguous"
+        )
+    suffix = ""
+    if capabilities:
+        capability = next(iter(capabilities))
+        suffix = f"-sm{capability.replace('.', '')}"
+    return _text(
+        f"{system}-{machine}{suffix}",
+        where="derived worker platform_key",
+        pattern=_SCOPE_TOKEN_RE,
+    )
+
+
+def _worker_identity_from_evidence(evidence: Mapping[str, object]) -> str:
+    slurm = evidence["slurm"]
+    if isinstance(slurm, Mapping):
+        return str(slurm["node_name"])
+    return str(evidence["hostname"])
+
+
+def _host_class_from_evidence(
+    evidence: Mapping[str, object], *, expected: str | None
+) -> str | None:
+    # Partition and constraint are relevant only to a host-class-keyed action.
+    # Do not turn scheduler metadata into an ambient host-class assertion for
+    # portable or platform-keyed work.
+    if expected is None:
+        return None
+    slurm = evidence["slurm"]
+    if not isinstance(slurm, Mapping):
+        if expected is not None:
+            raise ActionContractError(
+                "host_class_keyed actions require complete SLURM job evidence"
+            )
+        return None
+    partition = str(slurm["partition"])
+    constraints = slurm["constraints"]
+    assert isinstance(constraints, list)
+    if expected != partition and expected not in constraints:
+        raise ActionContractError(
+            "SLURM partition/constraints do not attest the action host_class"
+        )
+    return expected
+
+
+def _probe_python_toolchain(executable: Path) -> dict[str, str]:
+    script = "\n".join(
+        (
+            "import importlib.metadata as metadata",
+            "import json",
+            "import platform",
+            "out = {'python': platform.python_version()}",
+            "for name in ('torch', 'transformers', 'vllm', 'gridbook'):",
+            "    try:",
+            "        out[name] = metadata.version(name)",
+            "    except metadata.PackageNotFoundError:",
+            "        pass",
+            "print(json.dumps(out, sort_keys=True, separators=(',', ':')))",
+        )
+    )
+    try:
+        completed = subprocess.run(
+            [str(executable), "-I", "-c", script],
+            shell=False,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+            timeout=30.0,
+        )
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        raise ActionContractError(
+            f"cannot probe declared Python toolchain through {executable}"
+        ) from exc
+    if completed.returncode != 0 or "\n" in completed.stdout.strip():
+        raise ActionContractError(
+            f"declared Python toolchain probe failed through {executable}"
+        )
+    value = _decode_strict_json(
+        completed.stdout.strip().encode("utf-8"), where="Python toolchain probe"
+    )
+    if not isinstance(value, Mapping) or any(
+        type(key) is not str or type(item) is not str for key, item in value.items()
+    ):
+        raise ActionContractError("Python toolchain probe returned malformed data")
+    return dict(value)
+
+
+def _toolchain_value_matches(declared: str, observed: str) -> bool:
+    if declared == observed:
+        return True
+    short = re.fullmatch(r"([0-9]+\.[0-9]+)(?:\+([A-Za-z0-9._-]+))?", declared)
+    full = re.fullmatch(
+        r"([0-9]+\.[0-9]+)(?:\.[0-9]+)?(?:\+([A-Za-z0-9._-]+))?",
+        observed,
+    )
+    return bool(
+        short
+        and full
+        and short.group(1) == full.group(1)
+        and short.group(2) == full.group(2)
+    )
+
+
 def build_code_closure(root: str | Path, files: Sequence[str]) -> dict[str, object]:
     """Hash a declared, path-independent code closure below ``root``.
 
@@ -594,13 +928,55 @@ def _normalize_action_body(value: object) -> dict[str, object]:
     normalized_params = _decode_strict_json(
         _canonical_bytes(normalized_params), where="action.params"
     )
+    environment = _normalize_environment(body["environment"])
+    toolchain = environment["toolchain"]
+    assert isinstance(toolchain, Mapping)
+    if "argv0.sha256" in toolchain:
+        _sha256(
+            toolchain["argv0.sha256"],
+            where="action.environment.toolchain.argv0.sha256",
+        )
+    if "argv0.bytes" in toolchain:
+        raw_bytes = toolchain["argv0.bytes"]
+        if (
+            re.fullmatch(r"0|[1-9][0-9]*", str(raw_bytes)) is None
+            or str(int(str(raw_bytes))) != raw_bytes
+        ):
+            _fail(
+                "action.environment.toolchain.argv0.bytes must be a canonical "
+                "integer string"
+            )
+    if "cuda_compute_capability" in toolchain and re.fullmatch(
+        r"[0-9]+\.[0-9]+", str(toolchain["cuda_compute_capability"])
+    ) is None:
+        _fail("action.environment.toolchain.cuda_compute_capability is malformed")
+    if scope["portability"] != "portable":
+        unknown = set(toolchain) - _ATTESTABLE_TOOLCHAIN_KEYS
+        if unknown:
+            _fail(
+                "nonportable action toolchain contains fields with no worker "
+                f"preflight: {sorted(unknown)}"
+            )
+        required = {
+            "argv0.sha256",
+            "argv0.bytes",
+            "system",
+            "machine",
+            "libc",
+        }
+        if not required <= set(toolchain):
+            _fail(
+                "nonportable actions must bind argv[0] and platform ABI with "
+                "toolchain fields argv0.sha256, argv0.bytes, system, machine, "
+                "and libc"
+            )
     return {
         "schema": ACTION_SCHEMA_V1,
         "task": task,
         "inputs": _normalize_inputs(body["inputs"]),
         "code_closure": validate_code_closure(body["code_closure"]),
         "params": normalized_params,
-        "environment": _normalize_environment(body["environment"]),
+        "environment": environment,
         "execution_scope": scope,
     }
 
@@ -628,12 +1004,23 @@ def validate_action(value: object) -> dict[str, object]:
 def validate_worker_scope(
     action: object,
     *,
-    platform_key: str | None,
-    host_class: str | None,
+    attestation: object,
 ) -> None:
-    normalized = validate_action(action)
+    """Validate scope from live-derived, self-hashed worker evidence.
+
+    Scheduler placement strings are intentionally not accepted here: they are
+    intent, not evidence that the allocated machine has the requested scope.
+    """
+
+    validate_worker_attestation(attestation, action=action)
+
+
+def _validate_scope_labels(
+    action: Mapping[str, object], *, platform_key: str | None, host_class: str | None
+) -> None:
     actual_platform = _optional_token(platform_key, where="worker platform_key")
     actual_host = _optional_token(host_class, where="worker host_class")
+    normalized = validate_action(action)
     scope = normalized["execution_scope"]
     assert isinstance(scope, Mapping)
     if (
@@ -740,16 +1127,398 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
         os.close(source_fd)
 
 
-def _validate_producer(
-    *, worker_id: object, platform_key: object, host_class: object
-) -> dict[str, object]:
+def _normalize_worker_evidence(value: object) -> dict[str, object]:
+    evidence = _exact_mapping(
+        value, keys=_EVIDENCE_KEYS, where="worker attestation.evidence"
+    )
+    source = _text(evidence["source"], where="worker evidence.source")
+    if source not in {"local", "slurm"}:
+        _fail("worker evidence.source must be 'local' or 'slurm'")
+    accelerators_raw = evidence["accelerators"]
+    if type(accelerators_raw) is not list:
+        _fail("worker evidence.accelerators must be an array")
+    accelerators: list[dict[str, str]] = []
+    for index, raw in enumerate(accelerators_raw):
+        accelerator = _exact_mapping(
+            raw,
+            keys=_ACCELERATOR_KEYS,
+            where=f"worker evidence.accelerators[{index}]",
+        )
+        kind = _text(
+            accelerator["kind"],
+            where=f"worker evidence.accelerators[{index}].kind",
+            pattern=_SCOPE_TOKEN_RE,
+        )
+        if kind != "nvidia":
+            _fail("worker evidence contains an unsupported accelerator kind")
+        capability = _text(
+            accelerator["compute_capability"],
+            where=f"worker evidence.accelerators[{index}].compute_capability",
+        )
+        if re.fullmatch(r"[0-9]+\.[0-9]+", capability) is None:
+            _fail("worker evidence compute capability is malformed")
+        accelerators.append(
+            {
+                "kind": kind,
+                "compute_capability": capability,
+                "driver_version": _text(
+                    accelerator["driver_version"],
+                    where=f"worker evidence.accelerators[{index}].driver_version",
+                    pattern=_VERSION_RE,
+                ),
+            }
+        )
+    accelerators.sort(
+        key=lambda row: (row["kind"], row["compute_capability"], row["driver_version"])
+    )
+    if len({_canonical_bytes(row) for row in accelerators}) != len(accelerators):
+        _fail("worker evidence accelerator rows must be unique")
+    raw_slurm = evidence["slurm"]
+    slurm: dict[str, object] | None
+    if raw_slurm is None:
+        slurm = None
+    else:
+        slurm_mapping = _exact_mapping(
+            raw_slurm, keys=_SLURM_EVIDENCE_KEYS, where="worker evidence.slurm"
+        )
+        constraints_raw = slurm_mapping["constraints"]
+        if type(constraints_raw) is not list:
+            _fail("worker evidence.slurm.constraints must be an array")
+        constraints = [
+            _text(
+                item,
+                where=f"worker evidence.slurm.constraints[{index}]",
+                pattern=_SCOPE_TOKEN_RE,
+            )
+            for index, item in enumerate(constraints_raw)
+        ]
+        if constraints != sorted(set(constraints)):
+            _fail("worker evidence.slurm.constraints must be unique and sorted")
+        cgroup = _text(
+            slurm_mapping["cgroup"], where="worker evidence.slurm.cgroup"
+        )
+        if not cgroup.startswith("/") or ".." in PurePosixPath(cgroup).parts:
+            _fail("worker evidence.slurm.cgroup must be an absolute cgroup path")
+        job_id = _text(
+            slurm_mapping["job_id"],
+            where="worker evidence.slurm.job_id",
+            pattern=_SCOPE_TOKEN_RE,
+        )
+        if re.fullmatch(r"[1-9][0-9]*", job_id) is None:
+            _fail("worker evidence.slurm.job_id must be a positive numeric job id")
+        slurm = {
+            "job_id": job_id,
+            "node_name": _text(
+                slurm_mapping["node_name"],
+                where="worker evidence.slurm.node_name",
+                pattern=_ID_RE,
+            ),
+            "partition": _text(
+                slurm_mapping["partition"],
+                where="worker evidence.slurm.partition",
+                pattern=_SCOPE_TOKEN_RE,
+            ),
+            "constraints": constraints,
+            "cgroup": cgroup,
+        }
+        job_pattern = re.compile(
+            rf"(?:^|/)job_{re.escape(str(slurm['job_id']))}(?:[./]|$)"
+        )
+        if job_pattern.search(str(slurm["cgroup"])) is None:
+            _fail("worker evidence SLURM cgroup does not bind its job id")
+    if (source == "slurm") != (slurm is not None):
+        _fail("worker evidence source and SLURM evidence disagree")
     return {
-        "worker_id": _text(worker_id, where="producer.worker_id", pattern=_ID_RE),
-        "platform_key": _optional_token(
-            platform_key, where="producer.platform_key"
+        "source": source,
+        "hostname": _text(
+            evidence["hostname"], where="worker evidence.hostname", pattern=_ID_RE
         ),
-        "host_class": _optional_token(host_class, where="producer.host_class"),
+        "system": _text(
+            evidence["system"], where="worker evidence.system", pattern=_SCOPE_TOKEN_RE
+        ),
+        "machine": _text(
+            evidence["machine"], where="worker evidence.machine", pattern=_SCOPE_TOKEN_RE
+        ),
+        "libc": _text(
+            evidence["libc"], where="worker evidence.libc", pattern=_SCOPE_TOKEN_RE
+        ),
+        "accelerators": accelerators,
+        "slurm": slurm,
     }
+
+
+def validate_worker_attestation(
+    value: object, *, action: object
+) -> dict[str, object]:
+    """Validate a persisted preflight against the exact sealed action."""
+
+    normalized_action = validate_action(action)
+    raw = _exact_mapping(value, keys=_PRODUCER_KEYS, where="worker attestation")
+    if raw["schema"] != WORKER_ATTESTATION_SCHEMA_V1:
+        _fail(
+            f"worker attestation.schema must be {WORKER_ATTESTATION_SCHEMA_V1!r}"
+        )
+    action_key = _sha256(raw["action_key"], where="worker attestation.action_key")
+    if action_key != normalized_action["action_key"]:
+        _fail("worker attestation is bound to a different action")
+    evidence = _normalize_worker_evidence(raw["evidence"])
+    worker_id = _text(
+        raw["worker_id"], where="worker attestation.worker_id", pattern=_ID_RE
+    )
+    if worker_id != _worker_identity_from_evidence(evidence):
+        _fail("worker_id is not derived from the worker evidence")
+    platform_key = _optional_token(
+        raw["platform_key"], where="worker attestation.platform_key"
+    )
+    derived_platform = _platform_key_from_evidence(evidence)
+    if platform_key != derived_platform:
+        _fail("platform_key is not derived from the worker evidence")
+    host_class = _optional_token(
+        raw["host_class"], where="worker attestation.host_class"
+    )
+    scope = normalized_action["execution_scope"]
+    assert isinstance(scope, Mapping)
+    expected_host = (
+        str(scope["host_class"])
+        if scope["portability"] == "host_class_keyed"
+        else None
+    )
+    derived_host = _host_class_from_evidence(evidence, expected=expected_host)
+    if host_class != derived_host:
+        _fail("host_class is not derived from SLURM worker evidence")
+
+    executable_raw = _exact_mapping(
+        raw["executable"], keys=_EXECUTABLE_KEYS, where="worker attestation.executable"
+    )
+    task = normalized_action["task"]
+    assert isinstance(task, Mapping)
+    argv = task["argv"]
+    assert isinstance(argv, list)
+    executable = {
+        "path": _text(
+            executable_raw["path"], where="worker attestation.executable.path"
+        ),
+        "resolved_path": _text(
+            executable_raw["resolved_path"],
+            where="worker attestation.executable.resolved_path",
+        ),
+        "sha256": _sha256(
+            executable_raw["sha256"], where="worker attestation.executable.sha256"
+        ),
+        "bytes": _nonnegative_integer(
+            executable_raw["bytes"], where="worker attestation.executable.bytes"
+        ),
+    }
+    if executable["path"] != argv[0] or not Path(
+        str(executable["resolved_path"])
+    ).is_absolute():
+        _fail("worker attestation executable differs from action.task.argv[0]")
+
+    toolchain_raw = _exact_mapping(
+        raw["toolchain"],
+        keys=_TOOLCHAIN_ATTESTATION_KEYS,
+        where="worker attestation.toolchain",
+    )
+    declared = _normalize_string_mapping(
+        toolchain_raw["declared"], where="worker attestation.toolchain.declared"
+    )
+    environment = normalized_action["environment"]
+    assert isinstance(environment, Mapping)
+    if declared != environment["toolchain"]:
+        _fail("worker attestation toolchain differs from the action")
+    verified = _normalize_string_mapping(
+        toolchain_raw["verified"], where="worker attestation.toolchain.verified"
+    )
+    if not set(verified) <= set(declared):
+        _fail("worker attestation verifies undeclared toolchain fields")
+    for key, observed in verified.items():
+        if not _toolchain_value_matches(declared[key], observed):
+            _fail(f"worker toolchain field {key!r} differs from the action")
+    if (
+        declared.get("argv0.sha256") is not None
+        and declared["argv0.sha256"] != executable["sha256"]
+    ):
+        _fail("worker executable digest differs from toolchain argv0.sha256")
+    if (
+        declared.get("argv0.bytes") is not None
+        and declared["argv0.bytes"] != str(executable["bytes"])
+    ):
+        _fail("worker executable size differs from toolchain argv0.bytes")
+
+    inputs = _normalize_inputs(raw["inputs"])
+    expected_inputs = {
+        str(entry["id"]): entry
+        for entry in normalized_action["inputs"]  # type: ignore[union-attr]
+    }
+    if any(expected_inputs.get(str(entry["id"])) != entry for entry in inputs):
+        _fail("worker attestation contains an input not bound by the action")
+
+    nonportable = scope["portability"] != "portable"
+    if nonportable:
+        if evidence["libc"] == "unknown":
+            _fail("nonportable action cannot attest an unknown libc ABI")
+        if set(verified) != set(declared):
+            _fail("nonportable action has unverified toolchain fields")
+        if len(inputs) != len(expected_inputs):
+            _fail("nonportable action has unresolved input artifacts")
+        accelerators = evidence["accelerators"]
+        assert isinstance(accelerators, list)
+        if accelerators and not {
+            "cuda_compute_capability",
+            "nvidia_driver",
+        } <= set(verified):
+            _fail(
+                "nonportable NVIDIA action must bind cuda_compute_capability "
+                "and nvidia_driver in its toolchain"
+            )
+
+    _validate_scope_labels(
+        normalized_action, platform_key=platform_key, host_class=host_class
+    )
+    body = {
+        "schema": WORKER_ATTESTATION_SCHEMA_V1,
+        "action_key": action_key,
+        "worker_id": worker_id,
+        "platform_key": platform_key,
+        "host_class": host_class,
+        "evidence": evidence,
+        "executable": executable,
+        "toolchain": {"declared": declared, "verified": verified},
+        "inputs": inputs,
+    }
+    recorded = _sha256(
+        raw["attestation_sha256"], where="worker attestation.attestation_sha256"
+    )
+    if recorded != canonical_sha256(body):
+        _fail("worker attestation digest does not match its body")
+    return {**body, "attestation_sha256": recorded}
+
+
+def _verified_toolchain(
+    declared: Mapping[str, str],
+    *,
+    executable: Mapping[str, object],
+    evidence: Mapping[str, object],
+) -> dict[str, str]:
+    observed: dict[str, str] = {
+        "argv0.sha256": str(executable["sha256"]),
+        "argv0.bytes": str(executable["bytes"]),
+        "system": str(evidence["system"]),
+        "machine": str(evidence["machine"]),
+        "libc": str(evidence["libc"]),
+    }
+    accelerators = evidence["accelerators"]
+    assert isinstance(accelerators, list)
+    if accelerators:
+        capabilities = {str(row["compute_capability"]) for row in accelerators}
+        drivers = {str(row["driver_version"]) for row in accelerators}
+        if len(capabilities) == 1:
+            observed["cuda_compute_capability"] = next(iter(capabilities))
+        if len(drivers) == 1:
+            observed["nvidia_driver"] = next(iter(drivers))
+    python_keys = set(declared) & ({"python"} | _PYTHON_DISTRIBUTIONS)
+    if python_keys:
+        observed.update(
+            _probe_python_toolchain(Path(str(executable["path"])))
+        )
+    verified: dict[str, str] = {}
+    for key, expected in declared.items():
+        actual = observed.get(key)
+        if actual is None:
+            continue
+        if not _toolchain_value_matches(expected, actual):
+            raise ActionContractError(
+                f"worker toolchain field {key!r} differs: "
+                f"declared={expected!r}, observed={actual!r}"
+            )
+        verified[key] = actual
+    return dict(sorted(verified.items()))
+
+
+def _verified_input_contracts(
+    action: Mapping[str, object], cas: "PrismaBuildCAS"
+) -> list[dict[str, object]]:
+    scope = action["execution_scope"]
+    assert isinstance(scope, Mapping)
+    required = scope["portability"] != "portable"
+    verified: list[dict[str, object]] = []
+    for entry in action["inputs"]:  # type: ignore[union-attr]
+        assert isinstance(entry, Mapping)
+        path = cas._blob_path(str(entry["sha256"]))
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            if required:
+                raise ActionContractError(
+                    f"nonportable action input is absent from the CAS: {entry['id']}"
+                )
+            continue
+        except OSError as exc:
+            raise CASUnavailableError(
+                f"cannot inspect action input in the CAS: {entry['id']}: {exc}"
+            ) from exc
+        cas._verify_blob(entry)
+        verified.append(dict(entry))
+    return sorted(verified, key=lambda entry: str(entry["id"]))
+
+
+def preflight_action(
+    action: object,
+    *,
+    cas_root: str | Path,
+    checkout_root: str | Path,
+) -> dict[str, object]:
+    """Derive and verify the execution facts required before launching argv."""
+
+    normalized = validate_action(action)
+    root = Path(checkout_root)
+    if not root.is_absolute():
+        _fail("checkout_root must be absolute")
+    verify_code_closure(normalized["code_closure"], root)
+    evidence = _collect_worker_evidence()
+    scope = normalized["execution_scope"]
+    assert isinstance(scope, Mapping)
+    expected_host = (
+        str(scope["host_class"])
+        if scope["portability"] == "host_class_keyed"
+        else None
+    )
+    host_class = _host_class_from_evidence(evidence, expected=expected_host)
+    executable = identify_executable(
+        normalized["task"]["argv"][0]  # type: ignore[index]
+    )
+    environment = normalized["environment"]
+    assert isinstance(environment, Mapping)
+    declared = environment["toolchain"]
+    assert isinstance(declared, Mapping)
+    verified = _verified_toolchain(
+        declared, executable=executable, evidence=evidence  # type: ignore[arg-type]
+    )
+    inputs = _verified_input_contracts(normalized, PrismaBuildCAS(cas_root))
+    body: dict[str, object] = {
+        "schema": WORKER_ATTESTATION_SCHEMA_V1,
+        "action_key": normalized["action_key"],
+        "worker_id": _worker_identity_from_evidence(evidence),
+        "platform_key": _platform_key_from_evidence(evidence),
+        "host_class": host_class,
+        "evidence": evidence,
+        "executable": executable,
+        "toolchain": {"declared": dict(declared), "verified": verified},
+        "inputs": inputs,
+    }
+    attestation = {**body, "attestation_sha256": canonical_sha256(body)}
+    return validate_worker_attestation(attestation, action=normalized)
+
+
+def _verify_attested_executable_unchanged(
+    attestation: Mapping[str, object], action: Mapping[str, object]
+) -> None:
+    validated = validate_worker_attestation(attestation, action=action)
+    expected = validated["executable"]
+    assert isinstance(expected, Mapping)
+    observed = identify_executable(str(expected["path"]))
+    if observed != expected:
+        raise LocalActionError("action executable changed after worker preflight")
 
 
 class PrismaBuildCAS:
@@ -815,8 +1584,8 @@ class PrismaBuildCAS:
     ) -> dict[str, object]:
         try:
             receipt = _exact_mapping(value, keys=_RECEIPT_KEYS, where="CAS receipt")
-            if receipt["schema"] != CAS_RECEIPT_SCHEMA_V1:
-                _fail(f"CAS receipt schema must be {CAS_RECEIPT_SCHEMA_V1!r}")
+            if receipt["schema"] != CAS_RECEIPT_SCHEMA_V2:
+                _fail(f"CAS receipt schema must be {CAS_RECEIPT_SCHEMA_V2!r}")
             action_key = _sha256(receipt["action_key"], where="CAS receipt.action_key")
             if action_key != action["action_key"]:
                 _fail("CAS receipt action_key differs from the requested action")
@@ -842,21 +1611,11 @@ class PrismaBuildCAS:
                 keys=_PRODUCER_KEYS,
                 where="CAS receipt.producer",
             )
-            producer = _validate_producer(
-                worker_id=raw_producer["worker_id"],
-                platform_key=raw_producer["platform_key"],
-                host_class=raw_producer["host_class"],
-            )
-            # Publication validates this relation, but lookup must independently
-            # replay it: a receipt is externally stored CAS data, not trusted
-            # merely because its self-digest is internally consistent.
-            validate_worker_scope(
-                action,
-                platform_key=producer["platform_key"],  # type: ignore[arg-type]
-                host_class=producer["host_class"],  # type: ignore[arg-type]
-            )
+            # Publication runs this preflight live.  Lookup independently
+            # replays its derivations and action binding from persisted data.
+            producer = validate_worker_attestation(raw_producer, action=action)
             body = {
-                "schema": CAS_RECEIPT_SCHEMA_V1,
+                "schema": CAS_RECEIPT_SCHEMA_V2,
                 "action_key": action_key,
                 "action_manifest_sha256": manifest_sha,
                 "result": result,
@@ -942,9 +1701,7 @@ class PrismaBuildCAS:
         action: object,
         result_path: str | Path,
         *,
-        worker_id: str,
-        platform_key: str | None,
-        host_class: str | None,
+        attestation: object,
     ) -> tuple[dict[str, object], bool]:
         """Publish a result and return ``(canonical_receipt, won_publication)``.
 
@@ -953,14 +1710,7 @@ class PrismaBuildCAS:
         """
 
         normalized = validate_action(action)
-        producer = _validate_producer(
-            worker_id=worker_id,
-            platform_key=platform_key,
-            host_class=host_class,
-        )
-        validate_worker_scope(
-            normalized, platform_key=platform_key, host_class=host_class
-        )
+        producer = validate_worker_attestation(attestation, action=normalized)
         staging, digest, size = _copy_to_staging(
             Path(result_path), self.root / ".staging"
         )
@@ -982,7 +1732,7 @@ class PrismaBuildCAS:
                 finally:
                     os.close(directory_fd)
             body: dict[str, object] = {
-                "schema": CAS_RECEIPT_SCHEMA_V1,
+                "schema": CAS_RECEIPT_SCHEMA_V2,
                 "action_key": normalized["action_key"],
                 "action_manifest_sha256": canonical_sha256(normalized),
                 "result": result,
@@ -1149,26 +1899,20 @@ def run_local_action(
     *,
     cas_root: str | Path,
     checkout_root: str | Path,
-    worker_id: str,
-    platform_key: str | None,
-    host_class: str | None,
     timeout_seconds: float | None = None,
     recompute: bool = False,
 ) -> dict[str, object]:
     """Execute one action locally and publish its declared file result."""
 
     normalized = validate_action(action)
-    validate_worker_scope(
-        normalized, platform_key=platform_key, host_class=host_class
-    )
     root = Path(checkout_root)
     if not root.is_absolute():
         raise ActionContractError("checkout_root must be absolute")
-    verify_code_closure(normalized["code_closure"], root)
     cas = PrismaBuildCAS(cas_root)
     if not recompute:
         cached = cas.lookup(normalized)
         if cached is not None:
+            verify_code_closure(normalized["code_closure"], root)
             return {
                 "status": "cache_hit",
                 "receipt": cached,
@@ -1189,11 +1933,15 @@ def run_local_action(
         if not recompute:
             cached = cas.lookup(normalized)
             if cached is not None:
+                verify_code_closure(normalized["code_closure"], root)
                 return {
                     "status": "cache_hit",
                     "receipt": cached,
                     "payload_path": str(cas._verified_receipt_result_path(cached)),
                 }
+        attestation = preflight_action(
+            normalized, cas_root=cas_root, checkout_root=root
+        )
         if output.exists() or output.is_symlink():
             raise LocalActionError(
                 f"declared result path must be absent before execution: {output}"
@@ -1223,13 +1971,12 @@ def run_local_action(
             raise LocalActionError(
                 f"action succeeded without its declared result file: {output}"
             )
+        _verify_attested_executable_unchanged(attestation, normalized)
         _validate_result_containment(output, cwd)
         receipt, won = cas.publish_result(
             normalized,
             output,
-            worker_id=worker_id,
-            platform_key=platform_key,
-            host_class=host_class,
+            attestation=attestation,
         )
     return {
         "status": "published" if won else "canonical_result_reused",
@@ -1278,11 +2025,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--action", required=True, type=Path)
     run.add_argument("--cas-root", required=True, type=Path)
     run.add_argument("--checkout-root", required=True, type=Path)
-    run.add_argument("--worker-id", required=True)
-    run.add_argument("--platform-key")
-    run.add_argument("--host-class")
     run.add_argument("--timeout-seconds", type=float)
     run.add_argument("--recompute", action="store_true")
+    preflight = commands.add_parser("preflight")
+    preflight.add_argument("--action", required=True, type=Path)
+    preflight.add_argument("--cas-root", required=True, type=Path)
+    preflight.add_argument("--checkout-root", required=True, type=Path)
     return parser
 
 
@@ -1293,7 +2041,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _atomic_write_new_json(args.output, closure)
         print(args.output)
         return 0
-    action_data = _read_json_mapping(args.action if hasattr(args, "action") else args.body, where="action")
+    action_path = args.action if hasattr(args, "action") else args.body
+    action_data = _read_json_mapping(action_path, where="action")
     if args.command == "seal-action":
         sealed = seal_action(action_data)
         _atomic_write_new_json(args.output, sealed)
@@ -1302,6 +2051,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     action = validate_action(action_data)
     if args.command == "key":
         print(action["action_key"])
+        return 0
+    if args.command == "preflight":
+        result = preflight_action(
+            action,
+            cas_root=args.cas_root,
+            checkout_root=args.checkout_root,
+        )
+        print(json.dumps(result, sort_keys=True))
         return 0
     cas = PrismaBuildCAS(args.cas_root)
     if args.command == "verify":
@@ -1314,9 +2071,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         action,
         cas_root=args.cas_root,
         checkout_root=args.checkout_root,
-        worker_id=args.worker_id,
-        platform_key=args.platform_key,
-        host_class=args.host_class,
         timeout_seconds=args.timeout_seconds,
         recompute=args.recompute,
     )
@@ -1326,8 +2080,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "ACTION_SCHEMA_V1",
-    "CAS_RECEIPT_SCHEMA_V1",
+    "CAS_RECEIPT_SCHEMA_V2",
     "CODE_CLOSURE_SCHEMA_V1",
+    "WORKER_ATTESTATION_SCHEMA_V1",
     "ActionContractError",
     "CASConflictError",
     "CASTamperError",
@@ -1336,12 +2091,16 @@ __all__ = [
     "PrismaBuildCAS",
     "PrismaBuildError",
     "build_code_closure",
+    "executable_toolchain_contract",
+    "identify_executable",
     "main",
+    "preflight_action",
     "run_local_action",
     "seal_action",
     "validate_action",
     "validate_code_closure",
     "validate_worker_scope",
+    "validate_worker_attestation",
     "verify_code_closure",
 ]
 

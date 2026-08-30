@@ -30,7 +30,6 @@ from . import prismabuild as pb
 _SLURM_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z")
 _SCOPE_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:/-]{0,255}\Z")
 _CLUSTER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
-_WORKER_ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _TIME_RE = re.compile(r"(?:(?:[0-9]+)-)?(?:[0-9]{1,2}):[0-5][0-9]:[0-5][0-9]\Z")
 _JOB_ID_RE = re.compile(
@@ -146,18 +145,12 @@ class SlurmResources:
 
 @dataclass(frozen=True)
 class SlurmPlacement:
-    """The worker identity promised by a configured partition/constraint."""
+    """Scheduler placement intent; never accepted as worker attestation."""
 
-    worker_id: str
     platform_key: str | None
     host_class: str | None
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "worker_id",
-            _token(self.worker_id, where="worker_id", pattern=_WORKER_ID_RE),
-        )
         for name in ("platform_key", "host_class"):
             value = getattr(self, name)
             if value is not None:
@@ -220,23 +213,36 @@ def parse_job_id(value: str) -> SlurmJobId:
 def _validated_receipt(
     cas: pb.PrismaBuildCAS, action: Mapping[str, object]
 ) -> Mapping[str, object] | None:
-    receipt = cas.lookup(action)
-    if receipt is None:
-        return None
-    producer = receipt.get("producer")
-    if not isinstance(producer, Mapping):  # core validation normally catches this
-        raise pb.CASTamperError("CAS receipt producer is not an object")
-    try:
-        pb.validate_worker_scope(
-            action,
-            platform_key=producer.get("platform_key"),  # type: ignore[arg-type]
-            host_class=producer.get("host_class"),  # type: ignore[arg-type]
+    return cas.lookup(action)
+
+
+def validate_placement_scope(
+    action: Mapping[str, object],
+    *,
+    placement: SlurmPlacement,
+    resources: SlurmResources,
+) -> None:
+    scope = action["execution_scope"]
+    assert isinstance(scope, Mapping)
+    portability = scope["portability"]
+    if (
+        portability == "platform_keyed"
+        and placement.platform_key != scope["platform_key"]
+    ):
+        raise pb.ActionContractError(
+            "scheduler platform_key does not match the action execution scope"
         )
-    except pb.ActionContractError as exc:
-        raise pb.CASTamperError(
-            "CAS receipt producer violates the action execution scope"
-        ) from exc
-    return receipt
+    if portability == "host_class_keyed":
+        expected = scope["host_class"]
+        if placement.host_class != expected:
+            raise pb.ActionContractError(
+                "scheduler host_class does not match the action execution scope"
+            )
+        if expected not in {resources.partition, resources.constraint}:
+            raise pb.ActionContractError(
+                "host_class_keyed action must select a matching SLURM partition "
+                "or constraint"
+            )
 
 
 def publish_action_request(action: object, *, cas_root: str | Path) -> Path:
@@ -367,7 +373,6 @@ class SlurmAdapter:
         *,
         request_path: Path,
         checkout_root: Path,
-        placement: SlurmPlacement,
         recompute: bool,
     ) -> list[str]:
         argv = [
@@ -379,13 +384,7 @@ class SlurmAdapter:
             str(self.cas_root),
             "--checkout-root",
             str(checkout_root),
-            "--worker-id",
-            placement.worker_id,
         ]
-        if placement.platform_key is not None:
-            argv.extend(["--platform-key", placement.platform_key])
-        if placement.host_class is not None:
-            argv.extend(["--host-class", placement.host_class])
         if recompute:
             argv.append("--recompute")
         return argv
@@ -402,10 +401,8 @@ class SlurmAdapter:
         """Submit an action or return its already-verified CAS receipt."""
 
         normalized = pb.validate_action(action)
-        pb.validate_worker_scope(
-            normalized,
-            platform_key=placement.platform_key,
-            host_class=placement.host_class,
+        validate_placement_scope(
+            normalized, placement=placement, resources=resources
         )
         cas = pb.PrismaBuildCAS(self.cas_root)
         if not recompute:
@@ -428,7 +425,6 @@ class SlurmAdapter:
         worker_argv = self._worker_argv(
             request_path=request,
             checkout_root=root,
-            placement=placement,
             recompute=recompute,
         )
         argv = [
@@ -640,4 +636,5 @@ __all__ = [
     "SlurmUnavailableError",
     "parse_job_id",
     "publish_action_request",
+    "validate_placement_scope",
 ]
