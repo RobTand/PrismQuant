@@ -99,7 +99,7 @@ matters). Rules:
 Scheduler placement is intent, not producer identity. `run-local` accepts no
 `--worker-id`, `--platform-key`, or `--host-class` arguments. Before a cache
 miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
-`prismaquant.prismabuild.worker_attestation.v1` record bound to the action key:
+`prismaquant.prismabuild.worker_attestation.v2` record bound to the action key:
 
 - `platform_key` is derived from the live lower-case OS and machine plus the
   single visible NVIDIA compute capability, when present (for example,
@@ -118,6 +118,13 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   `transformers`, `vllm`, `gridbook`, OS/machine/libc, CUDA capability, NVIDIA
   driver, and the executable identity); every declared field must verify.
   NVIDIA workers additionally require the CUDA capability and driver fields.
+- The worker implementation is a separate closed
+  `prismaquant.prismabuild.worker_runtime.v1` object. It binds the exact
+  `prismaquant/prismabuild.py` bytes and, for a script-launched worker, the
+  exact launcher bytes (the SLURM path is `tools/prismabuild_worker.py`). Both
+  files are checked after task execution and again immediately before the CAS
+  receipt link. Direct Python API calls record the explicit `in_process` mode
+  and a null launcher rather than inventing a script identity.
 - Every nonportable `action.inputs` digest must already exist and verify in the
   PrismaBuild CAS before argv starts. Portable actions preserve the existing
   external-input contract: CAS-resident inputs and recognized toolchain fields
@@ -131,12 +138,19 @@ the executable to participate in cache identity must use a nonportable scope
 and the `argv0.*` toolchain fields. Input preflight proves that the declared
 CAS bytes exist and match before execution, but the sealed argv/code remains
 responsible for resolving and consuming those bytes; process provenance is not
-an OS-level proof of every file read.
+an OS-level proof of every file read. Worker core/launcher identity is likewise
+receipt provenance, not action-key identity: a cache hit retains the producer
+revision that created its canonical result. The SLURM submitter verifies that
+the configured launcher path is a regular executable, but does not seal its
+then-current digest into the action request. If that file changes while a job
+waits, the job attests and rechecks the bytes it actually executed; submission-
+time bytes are not claimed.
 
 The attestation becomes `producer` in the self-hashed
-`prismaquant.prismabuild.cas_receipt.v2` receipt. CAS lookup replays its action,
-scope, platform derivation, host-class evidence, executable identity, verified
-toolchain, verified-input subset, and self-digest before accepting the result.
+`prismaquant.prismabuild.cas_receipt.v3` receipt. CAS lookup replays its action,
+scope, platform derivation, host-class evidence, worker core/launcher identity,
+task-executable identity, verified toolchain, verified-input subset, and self-
+digest before accepting the result.
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In
 the target deployment, the trust boundary would be the munge-authenticated,

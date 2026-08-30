@@ -22,4 +22,4 @@ from prismaquant.prismabuild import main  # noqa: E402
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(worker_launcher_path=Path(__file__).resolve()))

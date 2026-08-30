@@ -344,6 +344,73 @@ def test_host_class_preflight_records_slurm_and_machine_evidence(
     assert pb.validate_worker_attestation(producer, action=action) == producer
 
 
+def test_worker_runtime_attestation_binds_core_and_optional_launcher(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    launcher = tmp_path / "worker-launcher.py"
+    launcher.write_text("# exact launcher\n", encoding="utf-8")
+
+    direct = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout
+    )
+    assert direct["schema"] == pb.WORKER_ATTESTATION_SCHEMA_V2
+    assert direct["runtime"]["schema"] == pb.WORKER_RUNTIME_SCHEMA_V1
+    assert direct["runtime"]["launch_kind"] == "in_process"
+    assert direct["runtime"]["launcher"] is None
+    assert direct["runtime"]["core"]["sha256"] == hashlib.sha256(
+        Path(pb.__file__).read_bytes()
+    ).hexdigest()
+
+    launched = pb.preflight_action(
+        action,
+        cas_root=tmp_path / "cas",
+        checkout_root=checkout,
+        worker_launcher_path=launcher,
+    )
+    assert launched["runtime"]["launch_kind"] == "script"
+    assert launched["runtime"]["launcher"]["sha256"] == hashlib.sha256(
+        launcher.read_bytes()
+    ).hexdigest()
+    assert pb.validate_worker_attestation(launched, action=action) == launched
+
+    malformed = copy.deepcopy(launched)
+    malformed["runtime"]["unrecognized"] = True
+    runtime_body = {
+        key: value
+        for key, value in malformed["runtime"].items()
+        if key != "runtime_sha256"
+    }
+    malformed["runtime"]["runtime_sha256"] = pb.canonical_sha256(runtime_body)
+    attestation_body = {
+        key: value for key, value in malformed.items() if key != "attestation_sha256"
+    }
+    malformed["attestation_sha256"] = pb.canonical_sha256(attestation_body)
+    with pytest.raises(pb.ActionContractError, match="runtime fields differ"):
+        pb.validate_worker_attestation(malformed, action=action)
+
+    inconsistent = copy.deepcopy(direct)
+    inconsistent["runtime"]["launch_kind"] = "script"
+    runtime_body = {
+        key: value
+        for key, value in inconsistent["runtime"].items()
+        if key != "runtime_sha256"
+    }
+    inconsistent["runtime"]["runtime_sha256"] = pb.canonical_sha256(runtime_body)
+    attestation_body = {
+        key: value
+        for key, value in inconsistent.items()
+        if key != "attestation_sha256"
+    }
+    inconsistent["attestation_sha256"] = pb.canonical_sha256(attestation_body)
+    with pytest.raises(
+        pb.ActionContractError, match="launch_kind and launcher disagree"
+    ):
+        pb.validate_worker_attestation(inconsistent, action=action)
+
+
 def test_nonportable_preflight_refuses_unknown_libc_attestation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -632,6 +699,89 @@ def test_local_worker_rechecks_closure_at_receipt_link(
     assert cas.lookup(action) is None
 
 
+def test_local_worker_refuses_launcher_changed_by_action_before_publish(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    launcher = tmp_path / "worker-launcher.py"
+    launcher.write_text("# original launcher\n", encoding="utf-8")
+    code = (
+        "import pathlib; "
+        f"pathlib.Path({str(launcher)!r}).write_text('# changed launcher\\n'); "
+        "pathlib.Path('result.bin').write_bytes(b'untrusted')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(pb.LocalActionError, match="worker launcher changed"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            worker_launcher_path=launcher,
+        )
+
+    assert (checkout / "result.bin").read_bytes() == b"untrusted"
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_rechecks_launcher_after_result_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    launcher = tmp_path / "worker-launcher.py"
+    launcher.write_text("# original launcher\n", encoding="utf-8")
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_copy = pb._copy_to_staging
+
+    def copy_then_mutate(source: Path, staging_dir: Path):
+        staged = original_copy(source, staging_dir)
+        launcher.write_text("# changed during CAS staging\n", encoding="utf-8")
+        return staged
+
+    monkeypatch.setattr(pb, "_copy_to_staging", copy_then_mutate)
+    with pytest.raises(pb.LocalActionError, match="worker launcher changed"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            worker_launcher_path=launcher,
+        )
+
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_rechecks_core_after_result_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    fake_core = tmp_path / "prismabuild.py"
+    fake_core.write_text("# original worker core\n", encoding="utf-8")
+    monkeypatch.setattr(pb, "__file__", str(fake_core))
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_copy = pb._copy_to_staging
+
+    def copy_then_mutate(source: Path, staging_dir: Path):
+        staged = original_copy(source, staging_dir)
+        fake_core.write_text("# changed during CAS staging\n", encoding="utf-8")
+        return staged
+
+    monkeypatch.setattr(pb, "_copy_to_staging", copy_then_mutate)
+    with pytest.raises(pb.LocalActionError, match="worker core changed"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+    assert cas.lookup(action) is None
+
+
 def test_local_worker_refuses_symlinked_result_parent(tmp_path: Path):
     checkout = tmp_path / "checkout"
     outside = tmp_path / "outside"
@@ -740,6 +890,29 @@ def test_deterministic_recompute_must_match(tmp_path: Path):
             attestation=attestation,
         )
     assert cas.lookup(action) == receipt
+
+
+def test_cas_publish_refuses_worker_core_changed_after_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    fake_core = tmp_path / "prismabuild.py"
+    fake_core.write_text("# original worker core\n", encoding="utf-8")
+    monkeypatch.setattr(pb, "__file__", str(fake_core))
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout
+    )
+    result = tmp_path / "result"
+    result.write_bytes(b"candidate")
+    fake_core.write_text("# changed worker core\n", encoding="utf-8")
+
+    with pytest.raises(pb.LocalActionError, match="worker core changed"):
+        cas.publish_result(action, result, attestation=attestation)
+
+    assert cas.lookup(action) is None
 
 
 def test_stochastic_action_is_atomic_first_result_wins(tmp_path: Path):

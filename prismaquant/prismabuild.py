@@ -38,8 +38,9 @@ from .cluster_campaign import canonical_sha256
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
-CAS_RECEIPT_SCHEMA_V2 = "prismaquant.prismabuild.cas_receipt.v2"
-WORKER_ATTESTATION_SCHEMA_V1 = "prismaquant.prismabuild.worker_attestation.v1"
+CAS_RECEIPT_SCHEMA_V3 = "prismaquant.prismabuild.cas_receipt.v3"
+WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
+WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
 
 _ACTION_BODY_KEYS = frozenset(
     {
@@ -83,6 +84,7 @@ _PRODUCER_KEYS = frozenset(
         "platform_key",
         "host_class",
         "evidence",
+        "runtime",
         "executable",
         "toolchain",
         "inputs",
@@ -99,6 +101,9 @@ _SLURM_EVIDENCE_KEYS = frozenset(
     {"job_id", "node_name", "partition", "constraints", "cgroup"}
 )
 _EXECUTABLE_KEYS = frozenset({"path", "resolved_path", "sha256", "bytes"})
+_RUNTIME_KEYS = frozenset(
+    {"schema", "launch_kind", "core", "launcher", "runtime_sha256"}
+)
 _TOOLCHAIN_ATTESTATION_KEYS = frozenset({"declared", "verified"})
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
@@ -431,6 +436,127 @@ def identify_executable(path: str | Path) -> dict[str, object]:
         "sha256": digest,
         "bytes": size,
     }
+
+
+def _identify_runtime_source(path: str | Path, *, where: str) -> dict[str, object]:
+    """Return the exact regular-file identity of worker implementation source."""
+
+    declared = Path(path)
+    if not declared.is_absolute():
+        _fail(f"{where} path must be absolute")
+    try:
+        resolved = declared.resolve(strict=True)
+    except OSError as exc:
+        raise ActionContractError(f"cannot resolve {where}: {declared}") from exc
+    digest, size = _file_identity(resolved, where=where)
+    return {
+        "path": str(declared),
+        "resolved_path": str(resolved),
+        "sha256": digest,
+        "bytes": size,
+    }
+
+
+def _normalize_runtime_source(value: object, *, where: str) -> dict[str, object]:
+    raw = _exact_mapping(value, keys=_EXECUTABLE_KEYS, where=where)
+    path = _text(raw["path"], where=f"{where}.path")
+    resolved_path = _text(
+        raw["resolved_path"], where=f"{where}.resolved_path"
+    )
+    if not Path(path).is_absolute() or not Path(resolved_path).is_absolute():
+        _fail(f"{where} paths must be absolute")
+    return {
+        "path": path,
+        "resolved_path": resolved_path,
+        "sha256": _sha256(raw["sha256"], where=f"{where}.sha256"),
+        "bytes": _nonnegative_integer(raw["bytes"], where=f"{where}.bytes"),
+    }
+
+
+def _worker_runtime_identity(
+    worker_launcher_path: str | Path | None,
+) -> dict[str, object]:
+    """Bind the loaded core and, when present, its script launcher."""
+
+    core = _identify_runtime_source(
+        Path(__file__).resolve(), where="PrismaBuild worker core"
+    )
+    launcher = (
+        None
+        if worker_launcher_path is None
+        else _identify_runtime_source(
+            worker_launcher_path, where="PrismaBuild worker launcher"
+        )
+    )
+    body: dict[str, object] = {
+        "schema": WORKER_RUNTIME_SCHEMA_V1,
+        "launch_kind": "in_process" if launcher is None else "script",
+        "core": core,
+        "launcher": launcher,
+    }
+    return {**body, "runtime_sha256": canonical_sha256(body)}
+
+
+def _validate_worker_runtime(value: object) -> dict[str, object]:
+    raw = _exact_mapping(
+        value, keys=_RUNTIME_KEYS, where="worker attestation.runtime"
+    )
+    if raw["schema"] != WORKER_RUNTIME_SCHEMA_V1:
+        _fail(
+            "worker attestation.runtime.schema must be "
+            f"{WORKER_RUNTIME_SCHEMA_V1!r}"
+        )
+    launch_kind = _text(
+        raw["launch_kind"], where="worker attestation.runtime.launch_kind"
+    )
+    if launch_kind not in {"in_process", "script"}:
+        _fail("worker attestation.runtime.launch_kind is unsupported")
+    core = _normalize_runtime_source(
+        raw["core"], where="worker attestation.runtime.core"
+    )
+    launcher_raw = raw["launcher"]
+    launcher = (
+        None
+        if launcher_raw is None
+        else _normalize_runtime_source(
+            launcher_raw, where="worker attestation.runtime.launcher"
+        )
+    )
+    if (launch_kind == "in_process") != (launcher is None):
+        _fail("worker attestation runtime launch_kind and launcher disagree")
+    body: dict[str, object] = {
+        "schema": WORKER_RUNTIME_SCHEMA_V1,
+        "launch_kind": launch_kind,
+        "core": core,
+        "launcher": launcher,
+    }
+    recorded = _sha256(
+        raw["runtime_sha256"],
+        where="worker attestation.runtime.runtime_sha256",
+    )
+    if recorded != canonical_sha256(body):
+        _fail("worker attestation runtime digest does not match its body")
+    return {**body, "runtime_sha256": recorded}
+
+
+def _verify_worker_runtime_unchanged(runtime: object) -> None:
+    expected = _validate_worker_runtime(runtime)
+    core = expected["core"]
+    assert isinstance(core, Mapping)
+    observed_core = _identify_runtime_source(
+        str(core["path"]), where="PrismaBuild worker core"
+    )
+    if observed_core != core:
+        raise LocalActionError("PrismaBuild worker core changed after preflight")
+    launcher = expected["launcher"]
+    if isinstance(launcher, Mapping):
+        observed_launcher = _identify_runtime_source(
+            str(launcher["path"]), where="PrismaBuild worker launcher"
+        )
+        if observed_launcher != launcher:
+            raise LocalActionError(
+                "PrismaBuild worker launcher changed after preflight"
+            )
 
 
 def executable_toolchain_contract(path: str | Path) -> dict[str, str]:
@@ -1261,9 +1387,9 @@ def validate_worker_attestation(
 
     normalized_action = validate_action(action)
     raw = _exact_mapping(value, keys=_PRODUCER_KEYS, where="worker attestation")
-    if raw["schema"] != WORKER_ATTESTATION_SCHEMA_V1:
+    if raw["schema"] != WORKER_ATTESTATION_SCHEMA_V2:
         _fail(
-            f"worker attestation.schema must be {WORKER_ATTESTATION_SCHEMA_V1!r}"
+            f"worker attestation.schema must be {WORKER_ATTESTATION_SCHEMA_V2!r}"
         )
     action_key = _sha256(raw["action_key"], where="worker attestation.action_key")
     if action_key != normalized_action["action_key"]:
@@ -1293,6 +1419,7 @@ def validate_worker_attestation(
     derived_host = _host_class_from_evidence(evidence, expected=expected_host)
     if host_class != derived_host:
         _fail("host_class is not derived from SLURM worker evidence")
+    runtime = _validate_worker_runtime(raw["runtime"])
 
     executable_raw = _exact_mapping(
         raw["executable"], keys=_EXECUTABLE_KEYS, where="worker attestation.executable"
@@ -1383,12 +1510,13 @@ def validate_worker_attestation(
         normalized_action, platform_key=platform_key, host_class=host_class
     )
     body = {
-        "schema": WORKER_ATTESTATION_SCHEMA_V1,
+        "schema": WORKER_ATTESTATION_SCHEMA_V2,
         "action_key": action_key,
         "worker_id": worker_id,
         "platform_key": platform_key,
         "host_class": host_class,
         "evidence": evidence,
+        "runtime": runtime,
         "executable": executable,
         "toolchain": {"declared": declared, "verified": verified},
         "inputs": inputs,
@@ -1474,6 +1602,7 @@ def preflight_action(
     *,
     cas_root: str | Path,
     checkout_root: str | Path,
+    worker_launcher_path: str | Path | None = None,
 ) -> dict[str, object]:
     """Derive and verify the execution facts required before launching argv."""
 
@@ -1503,12 +1632,13 @@ def preflight_action(
     )
     inputs = _verified_input_contracts(normalized, PrismaBuildCAS(cas_root))
     body: dict[str, object] = {
-        "schema": WORKER_ATTESTATION_SCHEMA_V1,
+        "schema": WORKER_ATTESTATION_SCHEMA_V2,
         "action_key": normalized["action_key"],
         "worker_id": _worker_identity_from_evidence(evidence),
         "platform_key": _platform_key_from_evidence(evidence),
         "host_class": host_class,
         "evidence": evidence,
+        "runtime": _worker_runtime_identity(worker_launcher_path),
         "executable": executable,
         "toolchain": {"declared": dict(declared), "verified": verified},
         "inputs": inputs,
@@ -1526,6 +1656,13 @@ def _verify_attested_executable_unchanged(
     observed = identify_executable(str(expected["path"]))
     if observed != expected:
         raise LocalActionError("action executable changed after worker preflight")
+
+
+def _verify_attested_worker_runtime_unchanged(
+    attestation: Mapping[str, object], action: Mapping[str, object]
+) -> None:
+    validated = validate_worker_attestation(attestation, action=action)
+    _verify_worker_runtime_unchanged(validated["runtime"])
 
 
 class PrismaBuildCAS:
@@ -1591,8 +1728,8 @@ class PrismaBuildCAS:
     ) -> dict[str, object]:
         try:
             receipt = _exact_mapping(value, keys=_RECEIPT_KEYS, where="CAS receipt")
-            if receipt["schema"] != CAS_RECEIPT_SCHEMA_V2:
-                _fail(f"CAS receipt schema must be {CAS_RECEIPT_SCHEMA_V2!r}")
+            if receipt["schema"] != CAS_RECEIPT_SCHEMA_V3:
+                _fail(f"CAS receipt schema must be {CAS_RECEIPT_SCHEMA_V3!r}")
             action_key = _sha256(receipt["action_key"], where="CAS receipt.action_key")
             if action_key != action["action_key"]:
                 _fail("CAS receipt action_key differs from the requested action")
@@ -1622,7 +1759,7 @@ class PrismaBuildCAS:
             # replays its derivations and action binding from persisted data.
             producer = validate_worker_attestation(raw_producer, action=action)
             body = {
-                "schema": CAS_RECEIPT_SCHEMA_V2,
+                "schema": CAS_RECEIPT_SCHEMA_V3,
                 "action_key": action_key,
                 "action_manifest_sha256": manifest_sha,
                 "result": result,
@@ -1717,8 +1854,9 @@ class PrismaBuildCAS:
         a stochastic producer accepts the already-published canonical result.
         ``precommit_verify`` runs after the payload copy and temporary receipt
         fsync, immediately before the no-clobber receipt link. Local workers use
-        it to keep those potentially long operations from opening a provenance
-        gap. It cannot make a mutable checkout an immutable snapshot; the
+        it for their action-specific closure checks. The worker core and optional
+        script launcher recorded in the attestation are always rechecked at the
+        same point. This cannot make mutable source an immutable snapshot; the
         remaining verification-to-link syscall interval is deliberately small.
         """
 
@@ -1745,7 +1883,7 @@ class PrismaBuildCAS:
                 finally:
                     os.close(directory_fd)
             body: dict[str, object] = {
-                "schema": CAS_RECEIPT_SCHEMA_V2,
+                "schema": CAS_RECEIPT_SCHEMA_V3,
                 "action_key": normalized["action_key"],
                 "action_manifest_sha256": canonical_sha256(normalized),
                 "result": result,
@@ -1753,10 +1891,16 @@ class PrismaBuildCAS:
             }
             candidate = {**body, "receipt_sha256": canonical_sha256(body)}
             receipt_path = self._receipt_path(str(normalized["action_key"]))
+
+            def verify_publication_runtime() -> None:
+                _verify_worker_runtime_unchanged(producer["runtime"])
+                if precommit_verify is not None:
+                    precommit_verify()
+
             won = _atomic_publish(
                 receipt_path,
                 _canonical_file_bytes(candidate),
-                prelink_verify=precommit_verify,
+                prelink_verify=verify_publication_runtime,
             )
             if won:
                 return candidate, True
@@ -1918,6 +2062,7 @@ def run_local_action(
     checkout_root: str | Path,
     timeout_seconds: float | None = None,
     recompute: bool = False,
+    worker_launcher_path: str | Path | None = None,
 ) -> dict[str, object]:
     """Execute one action locally and publish its declared file result."""
 
@@ -1957,7 +2102,10 @@ def run_local_action(
                     "payload_path": str(cas._verified_receipt_result_path(cached)),
                 }
         attestation = preflight_action(
-            normalized, cas_root=cas_root, checkout_root=root
+            normalized,
+            cas_root=cas_root,
+            checkout_root=root,
+            worker_launcher_path=worker_launcher_path,
         )
         if output.exists() or output.is_symlink():
             raise LocalActionError(
@@ -1994,6 +2142,7 @@ def run_local_action(
         # commit point so copying a large artifact cannot reopen that gap.
         verify_code_closure(normalized["code_closure"], root)
         _verify_attested_executable_unchanged(attestation, normalized)
+        _verify_attested_worker_runtime_unchanged(attestation, normalized)
         _validate_result_containment(output, cwd)
 
         def verify_publication_provenance() -> None:
@@ -2062,7 +2211,11 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    worker_launcher_path: str | Path | None = None,
+) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "seal-closure":
         closure = build_code_closure(args.root, args.file)
@@ -2085,6 +2238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             action,
             cas_root=args.cas_root,
             checkout_root=args.checkout_root,
+            worker_launcher_path=worker_launcher_path,
         )
         print(json.dumps(result, sort_keys=True))
         return 0
@@ -2101,6 +2255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         checkout_root=args.checkout_root,
         timeout_seconds=args.timeout_seconds,
         recompute=args.recompute,
+        worker_launcher_path=worker_launcher_path,
     )
     print(json.dumps(result, sort_keys=True))
     return 0
@@ -2108,9 +2263,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "ACTION_SCHEMA_V1",
-    "CAS_RECEIPT_SCHEMA_V2",
+    "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",
-    "WORKER_ATTESTATION_SCHEMA_V1",
+    "WORKER_ATTESTATION_SCHEMA_V2",
+    "WORKER_RUNTIME_SCHEMA_V1",
     "ActionContractError",
     "CASConflictError",
     "CASTamperError",
@@ -2134,4 +2290,4 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(worker_launcher_path=Path(__file__).resolve()))
