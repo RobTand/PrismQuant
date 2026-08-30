@@ -5,9 +5,19 @@ serving-route provenance is a **gate input**, not a log. This module is that
 gate for the codebook lane. It walks every selected unit, resolves the route the
 pinned Gridbook serving release attests for that unit's structural facts, and:
 
-* **refuses** the export when a unit has no backed route for its declared
-  target -- unless the artifact declares a non-native target platform or
-  carries an explicit per-run override, either of which is stamped;
+* **refuses** the export when a unit whose payload family the pinned contract
+  publishes has no backed route for its declared target -- whether the runtime
+  published a fallback-only route (``unbacked``) or published nothing covering
+  it at all (``unattested``). A v3 lane table carries no ``unbacked`` cell:
+  the runtime never enumerates what it refuses, so *absence* is its only
+  negative signal, and a gate that did not fail closed on absence would be the
+  ``units_on_fallback_route = 0`` defect wearing a newer schema. Both refusals
+  lift on a declared non-native target platform or an explicit per-run
+  override, either of which is stamped;
+* **reports, and does not refuse,** a unit whose payload family the contract
+  does not publish at all -- BF16, a SOURCE passthrough, a stock CT rung. The
+  lane table is not the authority for those bytes. That scope test is derived
+  from the published ``formats[]`` table, never from a list typed here;
 * **records** -- per unit, and summarized on the shipcard -- a unit whose
   decode route is backed but whose above-threshold route takes an announced
   fallback. That is the measured DSv4 state and it is a recorded fact, not a
@@ -61,6 +71,24 @@ ROUTE_OVERRIDE_ENV = "PQ_CB_ROUTE_STATUS_OVERRIDE"
 NON_NATIVE_TARGET_ENV = "PQ_CB_NON_NATIVE_TARGET"
 
 
+def _profile_target_platform(target_profile: str) -> str | None:
+    """The exact Gridbook platform id the named serving profile targets.
+
+    v3 lane cells are platform-scoped, so the gate needs one. It is read from
+    the serving profile rather than inferred from the build host: the artifact
+    declares the hardware it is for, and a route claim inherits that scope
+    (principle 14's corollary). A profile that declares none resolves to
+    ``None``, every unit is then unattested, and the gate says so -- fail
+    closed, never a match-any.
+    """
+    try:
+        from .serving_profiles import load_serving_profile
+
+        return load_serving_profile(target_profile).target_platform or None
+    except Exception:
+        return None
+
+
 class CBRouteStatusRefusal(RuntimeError):
     """Export refused: a selected unit has no backed serving route."""
 
@@ -85,10 +113,17 @@ def evaluate_cb_route_status(
     *,
     table: EligibilityTable | None = None,
     target_profile: str = "nvfp4_cb",
+    target_platform: str | None = None,
     override_reason: str | None = None,
     non_native_target: str | None = None,
 ) -> RouteGateVerdict:
     """Resolve every unit's route and decide whether this export may proceed.
+
+    ``target_platform`` is the exact Gridbook platform id the artifact targets.
+    When omitted it is read from ``target_profile``'s serving profile; when
+    neither supplies one, every unit resolves ``unattested`` and the gate
+    refuses in-scope units with that reason -- v3 cells are platform-scoped and
+    a route claim without a platform is not a claim.
 
     ``override_reason`` and ``non_native_target`` default to the environment
     (:data:`ROUTE_OVERRIDE_ENV`, :data:`NON_NATIVE_TARGET_ENV`) so a driver can
@@ -102,13 +137,19 @@ def evaluate_cb_route_status(
         override_reason = os.environ.get(ROUTE_OVERRIDE_ENV) or None
     if non_native_target is None:
         non_native_target = os.environ.get(NON_NATIVE_TARGET_ENV) or None
+    if target_platform is None:
+        target_platform = _profile_target_platform(target_profile)
 
-    routes = [resolve_unit_route(facts, table) for facts in units]
+    routes = [
+        resolve_unit_route(facts, table, platform=target_platform)
+        for facts in units
+    ]
     attestation = table.provenance()
 
     base: dict[str, Any] = {
         "schema": ROUTE_ATTESTATION_SCHEMA,
         "target_profile": target_profile,
+        "target_platform": target_platform,
         "attestation": attestation,
         "units_total": len(routes),
         "declared_non_native_target": non_native_target,
@@ -135,41 +176,86 @@ def evaluate_cb_route_status(
         return RouteGateVerdict(
             provenance=base, refused=False, warnings=(warning,))
 
-    unbacked = [r for r in routes if r.route_status == ROUTE_STATUS_UNBACKED]
+    # SCOPE, derived from the contract's own formats table. A unit whose
+    # payload family the pinned release publishes is one the lane table is the
+    # authority for; anything else (BF16, a SOURCE passthrough, a stock CT
+    # rung) is outside its remit and is reported, never refused.
+    in_scope = [r for r in routes if r.in_scope]
+    out_of_scope = [r for r in routes if not r.in_scope]
+    unbacked = [r for r in in_scope if r.route_status == ROUTE_STATUS_UNBACKED]
+    unclaimed = [
+        r for r in in_scope if r.route_status == ROUTE_STATUS_UNATTESTED
+    ]
     fallback = [r for r in routes if r.fallback_regimes]
     flagged = [
         r for r in routes
         if r.route_status == ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
     ]
-    status_counts: Counter[str] = Counter(r.route_status for r in routes)
+    status_counts: Counter[str] = Counter(r.route_status for r in in_scope)
     regime_counts: dict[str, Counter[str]] = {}
+    qualification_counts: Counter[str] = Counter()
+    activation_counts: Counter[str] = Counter()
     for route in routes:
         for regime in route.regimes:
             regime_counts.setdefault(regime.regime, Counter())[
                 regime.route_status] += 1
+            if regime.qualification:
+                qualification_counts[regime.qualification] += 1
+            if regime.activation_contract:
+                activation_counts[regime.activation_contract] += 1
 
     base.update({
         "route_attestation": "attested",
+        "units_in_attested_families": len(in_scope),
+        "units_outside_attested_families": len(out_of_scope),
         "units_by_route_status": dict(sorted(status_counts.items())),
         "units_backed": status_counts[ROUTE_STATUS_BACKED],
         "units_backed_with_serve_flag": status_counts[
             ROUTE_STATUS_BACKED_WITH_SERVE_FLAG],
         "units_unbacked": len(unbacked),
+        "units_unattested_in_scope": len(unclaimed),
         "units_with_announced_fallback": len(fallback),
         "requires_serve_flags": sorted({
             flag for r in flagged for flag in r.requires_serve_flags
         }),
+        # Principle 9: a flag-gated route is NOT a backed route, and the flags
+        # travel with the artifact. Counted apart, listed by name, never summed
+        # into ``units_backed``.
         "by_regime": {
             regime: dict(sorted(counts.items()))
             for regime, counts in sorted(regime_counts.items())
         },
+        "qualifications": dict(sorted(qualification_counts.items())),
+        "activation_contracts": dict(sorted(activation_counts.items())),
         "announced_fallback_units": sorted(
             r.facts.qname for r in fallback),
         "unbacked_units": sorted(r.facts.qname for r in unbacked),
+        "unattested_in_scope_units": sorted(r.facts.qname for r in unclaimed),
+        "outside_attested_families_units": sorted(
+            r.facts.qname for r in out_of_scope),
+        "outside_attested_families_formats": sorted({
+            r.facts.format_name for r in out_of_scope
+        }),
         "by_unit": [route.as_dict() for route in routes],
     })
 
     warnings: list[str] = []
+    if out_of_scope:
+        warnings.append(
+            f"{len(out_of_scope)} unit(s) carry a payload family the pinned "
+            "release does not publish, so the lane table makes no claim about "
+            "them and this gate does not judge them: "
+            f"{sorted({r.facts.format_name for r in out_of_scope})}. Report "
+            "them as out of the attestation's scope, never as backed."
+        )
+    if qualification_counts.get("compile_only"):
+        warnings.append(
+            f"{qualification_counts['compile_only']} regime route(s) are "
+            "attested COMPILE_ONLY: the kernels build for that compute "
+            "capability and nothing more -- no serve on that device loaded, "
+            "dispatched or generated. Principle 12 puts that next to any bpp "
+            "or KL claim for this artifact."
+        )
     if fallback:
         warnings.append(
             f"{len(fallback)} unit(s) ride an ANNOUNCED FALLBACK route above "
@@ -187,36 +273,47 @@ def evaluate_cb_route_status(
             "artifact, not a tuning hint."
         )
 
-    if not unbacked:
+    # Both populations fail closed, and for the same principle-9 reason: the
+    # pinned runtime does not attest a native route for these bytes on the
+    # declared target. They differ only in HOW it declined -- by publishing a
+    # fallback-only route, or by publishing nothing that covers them.
+    refusable = [*unbacked, *unclaimed]
+    if not refusable:
         return RouteGateVerdict(
             provenance=base, refused=False, warnings=tuple(warnings))
 
-    detail = _unbacked_detail(unbacked)
+    detail = _no_route_detail(refusable)
     if non_native_target:
         base["unbacked_disposition"] = "declared_non_native_target"
         warnings.append(
-            f"{len(unbacked)} unit(s) have NO backed route; the artifact "
-            f"declares non-native target {non_native_target!r}, which is "
-            "stamped. A win on a non-native kernel is not a win on the named "
-            "hardware (principle 12).")
+            f"{len(refusable)} unit(s) have NO attested backed route; the "
+            f"artifact declares non-native target {non_native_target!r}, which "
+            "is stamped. A win on a non-native kernel is not a win on the "
+            "named hardware (principle 12).")
         return RouteGateVerdict(
             provenance=base, refused=False, warnings=tuple(warnings))
     if override_reason:
         base["unbacked_disposition"] = "explicit_override"
         warnings.append(
-            f"{len(unbacked)} unit(s) have NO backed route; an explicit "
-            f"per-run override is stamped: {override_reason!r}")
+            f"{len(refusable)} unit(s) have NO attested backed route; an "
+            f"explicit per-run override is stamped: {override_reason!r}")
         return RouteGateVerdict(
             provenance=base, refused=False, warnings=tuple(warnings))
 
     base["unbacked_disposition"] = "refused"
     reason = (
-        f"CB export refused: {len(unbacked)} of {len(routes)} selected unit(s) "
-        f"have NO backed serving route under the pinned Gridbook release "
-        f"{table.runtime_version} ({table.runtime_commit[:12]}).\n{detail}\n"
+        f"CB export refused: {len(refusable)} of {len(routes)} selected "
+        f"unit(s) have NO backed serving route under the pinned Gridbook "
+        f"release {table.runtime_version} ({table.runtime_commit[:12]}) for "
+        f"target platform {(target_platform or 'UNDECLARED')!r} "
+        f"({len(unbacked)} attested fallback-only, {len(unclaimed)} not "
+        f"covered by any published lane cell).\n{detail}\n"
+        "A rung the table does not list is UNATTESTED, and a v3 table has no "
+        "other way to say no: the runtime never enumerates what it refuses. "
         "Principle 9 judges eligibility per artifact at export, so this fails "
         "closed. The fixes, in order of preference: give these units a rung "
-        "whose route the pinned runtime attests; advance the serving pin to a "
+        "whose route the pinned runtime attests; declare the serving profile's "
+        "'target_platform' if it has none; advance the serving pin to a "
         "release that backs them; declare a non-native target platform via "
         f"{NON_NATIVE_TARGET_ENV}; or, last, set {ROUTE_OVERRIDE_ENV} to the "
         "REASON this artifact ships anyway -- it is stamped on the shipcard "
@@ -255,6 +352,8 @@ def gate_cb_export_units(
     shape_of,
     allow_unbacked_route: str | None = None,
     non_native_target: str | None = None,
+    target_profile: str = "nvfp4_cb",
+    target_platform: str | None = None,
     exporter: str = "export_nvfp4_cb",
 ) -> dict[str, Any]:
     """Run the route-status gate over one export's selected units.
@@ -302,6 +401,8 @@ def gate_cb_export_units(
 
     verdict = evaluate_cb_route_status(
         facts,
+        target_profile=target_profile,
+        target_platform=target_platform,
         override_reason=allow_unbacked_route,
         non_native_target=non_native_target,
     )
@@ -325,6 +426,7 @@ def shipcard_route_summary(provenance: Mapping[str, Any]) -> dict[str, Any]:
         "gridbook_serving_version": attestation.get("gridbook_serving_version"),
         "gridbook_serving_commit": attestation.get("gridbook_serving_commit"),
         "contract_sha256": attestation.get("contract_sha256"),
+        "target_platform": provenance.get("target_platform"),
         "units_total": provenance.get("units_total"),
     }
     if provenance.get("route_attestation") == ROUTE_STATUS_UNATTESTED:
@@ -336,8 +438,14 @@ def shipcard_route_summary(provenance: Mapping[str, Any]) -> dict[str, Any]:
         "units_backed",
         "units_backed_with_serve_flag",
         "units_unbacked",
+        "units_unattested_in_scope",
+        "units_in_attested_families",
+        "units_outside_attested_families",
+        "outside_attested_families_formats",
         "units_with_announced_fallback",
         "requires_serve_flags",
+        "qualifications",
+        "activation_contracts",
         "by_regime",
         "unbacked_disposition",
     ):
@@ -355,17 +463,23 @@ def _override_record(reason: str | None) -> dict[str, Any] | None:
     return {"env": ROUTE_OVERRIDE_ENV, "reason": reason}
 
 
-def _unbacked_detail(unbacked: Sequence[UnitRoute]) -> str:
+def _no_route_detail(refusable: Sequence[UnitRoute]) -> str:
     lines = []
-    for route in unbacked[:8]:
+    for route in refusable[:8]:
         dead = ", ".join(
             f"{r.regime}={r.route_status}" for r in route.regimes) or "none"
+        rung = (f"k={route.facts.k}" if route.facts.rate_q256 is None
+                else f"rate_q256={route.facts.rate_q256}")
         lines.append(
             f"  {route.facts.qname}  [{route.facts.format_name} "
+            f"family={route.facts.payload_family} {rung} "
             f"n_sub={route.facts.n_sub} role_split={route.facts.role_split} "
-            f"out={route.facts.out_features}]  regimes: {dead}")
-    if len(unbacked) > 8:
-        lines.append(f"  ... and {len(unbacked) - 8} more")
+            f"out={route.facts.out_features}]  {route.route_status}; "
+            f"regimes: {dead}")
+        if route.unattested_reason:
+            lines.append(f"      {route.unattested_reason}")
+    if len(refusable) > 8:
+        lines.append(f"  ... and {len(refusable) - 8} more")
     return "\n".join(lines)
 
 

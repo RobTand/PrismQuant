@@ -1,0 +1,702 @@
+{
+  "schema": "gridbook.runtime-contract.v12",
+  "contract_version": 12,
+  "abi_features": {
+    "dspark_construction_physical_bridge": 1,
+    "routed_moe_per_role_codebook_lut": 1,
+    "source_fp8_block128_w8a16": 1
+  },
+  "quant_method": {
+    "canonical": "gridbook",
+    "accepted": [
+      "gridbook",
+      "prismaquant"
+    ],
+    "legacy": [
+      "prismaquant"
+    ]
+  },
+  "packing": {
+    "vector_dim": 8,
+    "superblock_weights": 256,
+    "codewords_per_superblock": 32,
+    "index_bytes_per_k": 4,
+    "index_bit_order": "lsb_first",
+    "subindex_split": "ceil_first"
+  },
+  "layout": {
+    "field": "layout_version",
+    "current": 2,
+    "supported": [
+      1,
+      2
+    ],
+    "default_when_absent": 1,
+    "scale_coding_field": "scale_coding.kind",
+    "scale_coding_default_when_absent": "v1",
+    "type_size_rules": [
+      {
+        "grid": "fp4",
+        "layout_version": 1,
+        "scale_coding": "v1",
+        "scale_plane_bytes": 16
+      },
+      {
+        "grid": "fp4",
+        "layout_version": 2,
+        "scale_coding": "two_tier",
+        "scale_plane_bytes": 9
+      },
+      {
+        "grid": "fp8",
+        "layout_version": 1,
+        "scale_coding": "v1",
+        "scale_plane_bytes": 0
+      }
+    ]
+  },
+  "formats": [
+    {
+      "kind": "cb_product",
+      "family": "NVFP4_CB_K",
+      "name_pattern": "NVFP4_CB_K{k}",
+      "grid": "fp4",
+      "mode": "product",
+      "n_sub": 2,
+      "rungs": [
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24
+      ],
+      "producer_rungs": [
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24
+      ],
+      "layout_versions": [
+        1,
+        2
+      ],
+      "moe_layout_versions": [
+        2
+      ]
+    },
+    {
+      "kind": "cb_product",
+      "family": "FP8_CB_K",
+      "name_pattern": "FP8_CB_K{k}",
+      "grid": "fp8",
+      "mode": "product",
+      "n_sub": 4,
+      "rungs": [
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48
+      ],
+      "producer_rungs": [
+        40,
+        44,
+        48
+      ],
+      "layout_versions": [
+        1
+      ],
+      "moe_layout_versions": [
+        1
+      ]
+    },
+    {
+      "kind": "tcq_trellis",
+      "family": "TCQ_E2M1_R256",
+      "name_pattern": "TCQ_E2M1_R{k}",
+      "candidate_rungs_q256": [
+        384,
+        512,
+        640,
+        768,
+        896
+      ],
+      "reader_rate_range_q256": [
+        256,
+        1016
+      ],
+      "native_terminal_q256": 1024,
+      "residency_modes": [
+        "resident",
+        "streamed"
+      ]
+    },
+    {
+      "kind": "tcq_trellis",
+      "family": "TCQ_E4M3_R256",
+      "name_pattern": "TCQ_E4M3_R{k}",
+      "candidate_rungs_q256": [
+        1152
+      ],
+      "reader_rate_range_q256": [
+        256,
+        2040
+      ],
+      "native_terminal_q256": 2048,
+      "residency_modes": [
+        "resident",
+        "streamed"
+      ]
+    }
+  ],
+  "lane_eligibility": {
+    "schema": "gridbook.lane-eligibility.v3",
+    "platforms": {
+      "sm_89": {
+        "compute_capability": [
+          8,
+          9
+        ]
+      },
+      "sm_120": {
+        "compute_capability": [
+          12,
+          0
+        ]
+      },
+      "sm_121": {
+        "compute_capability": [
+          12,
+          1
+        ]
+      }
+    },
+    "regimes": [
+      "decode",
+      "batch"
+    ],
+    "structures": [
+      "dense",
+      "routed_moe"
+    ],
+    "cells": [
+      {
+        "id": "fp8_cb_dense_sm89_decode_cuda_gemv",
+        "platform": "sm_89",
+        "family": "FP8_CB_K",
+        "structure": "dense",
+        "regime": "decode",
+        "rungs": [
+          40,
+          44,
+          48
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "fp8_cb_dense_sm89_batch_expand_cutlass_w8a8",
+        "platform": "sm_89",
+        "family": "FP8_CB_K",
+        "structure": "dense",
+        "regime": "batch",
+        "rungs": [
+          40,
+          44,
+          48
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "nvfp4_cb_dense_sm120_decode_cuda_gemv",
+        "platform": "sm_120",
+        "family": "NVFP4_CB_K",
+        "structure": "dense",
+        "regime": "decode",
+        "rungs": [
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "nvfp4_cb_dense_sm120_batch_expand_bf16",
+        "platform": "sm_120",
+        "family": "NVFP4_CB_K",
+        "structure": "dense",
+        "regime": "batch",
+        "rungs": [
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24
+        ],
+        "route_status": "fallback",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "nvfp4_cb_routed_sm120_decode_cuda_gemv",
+        "platform": "sm_120",
+        "family": "NVFP4_CB_K",
+        "structure": "routed_moe",
+        "regime": "decode",
+        "rungs": [
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "nvfp4_cb_routed_sm120_batch_persistent_b",
+        "platform": "sm_120",
+        "family": "NVFP4_CB_K",
+        "structure": "routed_moe",
+        "regime": "batch",
+        "rungs": [
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": [
+          {
+            "fact": "role_split",
+            "op": "equals",
+            "value": false
+          }
+        ]
+      },
+      {
+        "id": "nvfp4_cb_routed_sm120_batch_expand_bf16",
+        "platform": "sm_120",
+        "family": "NVFP4_CB_K",
+        "structure": "routed_moe",
+        "regime": "batch",
+        "rungs": [
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24
+        ],
+        "route_status": "fallback",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "fp8_cb_dense_sm120_decode_cuda_gemv",
+        "platform": "sm_120",
+        "family": "FP8_CB_K",
+        "structure": "dense",
+        "regime": "decode",
+        "rungs": [
+          40,
+          44,
+          48
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "fp8_cb_dense_sm120_batch_expand_cutlass_w8a8",
+        "platform": "sm_120",
+        "family": "FP8_CB_K",
+        "structure": "dense",
+        "regime": "batch",
+        "rungs": [
+          40,
+          44,
+          48
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "fp8_cb_routed_sm120_decode_cuda_gemv",
+        "platform": "sm_120",
+        "family": "FP8_CB_K",
+        "structure": "routed_moe",
+        "regime": "decode",
+        "rungs": [
+          40,
+          44,
+          48
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "fp8_cb_routed_sm120_batch_persistent_b",
+        "platform": "sm_120",
+        "family": "FP8_CB_K",
+        "structure": "routed_moe",
+        "regime": "batch",
+        "rungs": [
+          40,
+          44,
+          48
+        ],
+        "route_status": "backed",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": [
+          {
+            "fact": "role_split",
+            "op": "equals",
+            "value": false
+          }
+        ]
+      },
+      {
+        "id": "fp8_cb_routed_sm120_batch_expand_bf16",
+        "platform": "sm_120",
+        "family": "FP8_CB_K",
+        "structure": "routed_moe",
+        "regime": "batch",
+        "rungs": [
+          40,
+          44,
+          48
+        ],
+        "route_status": "fallback",
+        "qualification": "compile_only",
+        "requires_serve_flags": [],
+        "predicates": []
+      },
+      {
+        "id": "trellis_e4m3_dense_sm121_decode_scaled_mm_w8a8",
+        "platform": "sm_121",
+        "family": "TCQ_E4M3_R256",
+        "structure": "dense",
+        "regime": "decode",
+        "rungs_q256": [
+          1152
+        ],
+        "activation_contract": "fp8_per_token_dynamic",
+        "route_status": "backed_with_serve_flag",
+        "qualification": "device_qualified",
+        "requires_serve_flags": [
+          "GRIDBOOK_TRELLIS_E4M3=1",
+          "GRIDBOOK_TRELLIS_E4M3_MODE=resident|streamed"
+        ],
+        "predicates": []
+      },
+      {
+        "id": "trellis_e4m3_dense_sm121_batch_scaled_mm_w8a8",
+        "platform": "sm_121",
+        "family": "TCQ_E4M3_R256",
+        "structure": "dense",
+        "regime": "batch",
+        "rungs_q256": [
+          1152
+        ],
+        "activation_contract": "fp8_per_token_dynamic",
+        "route_status": "backed_with_serve_flag",
+        "qualification": "device_qualified",
+        "requires_serve_flags": [
+          "GRIDBOOK_TRELLIS_E4M3=1",
+          "GRIDBOOK_TRELLIS_E4M3_MODE=resident|streamed"
+        ],
+        "predicates": []
+      },
+      {
+        "id": "trellis_e2m1_dense_sm121_decode_scaled_mm_w4a4",
+        "platform": "sm_121",
+        "family": "TCQ_E2M1_R256",
+        "structure": "dense",
+        "regime": "decode",
+        "rungs_q256": [
+          512
+        ],
+        "activation_contract": "e2m1_group16_ue4m3_static",
+        "route_status": "backed_with_serve_flag",
+        "qualification": "device_qualified",
+        "requires_serve_flags": [
+          "GRIDBOOK_TRELLIS_E2M1=1",
+          "GRIDBOOK_TRELLIS_E2M1_MODE=resident|streamed"
+        ],
+        "predicates": []
+      },
+      {
+        "id": "trellis_e2m1_dense_sm121_batch_scaled_mm_w4a4",
+        "platform": "sm_121",
+        "family": "TCQ_E2M1_R256",
+        "structure": "dense",
+        "regime": "batch",
+        "rungs_q256": [
+          512
+        ],
+        "activation_contract": "e2m1_group16_ue4m3_static",
+        "route_status": "backed_with_serve_flag",
+        "qualification": "device_qualified",
+        "requires_serve_flags": [
+          "GRIDBOOK_TRELLIS_E2M1=1",
+          "GRIDBOOK_TRELLIS_E2M1_MODE=resident|streamed"
+        ],
+        "predicates": []
+      }
+    ]
+  },
+  "tensor_parallel": {
+    "axis": "vllm_tensor_parallel_world_size",
+    "semantics": "closed_world",
+    "units": [
+      {
+        "unit": "FP8_CB_K",
+        "kind": "cb_format_family",
+        "shard_admission": {
+          "input_axis_group": 256,
+          "output_axis_quantum": 16,
+          "merged_roles": "even_division"
+        }
+      },
+      {
+        "unit": "NVFP4_CB_K",
+        "kind": "cb_format_family",
+        "shard_admission": {
+          "input_axis_group": 256,
+          "output_axis_quantum": 8,
+          "merged_roles": "even_division"
+        }
+      },
+      {
+        "unit": "fp8_e4m3_ue8m0_block128",
+        "kind": "source_passthrough_format",
+        "arms": [
+          {
+            "arm": "dense",
+            "shard_admission": {
+              "input_axis_group": 128,
+              "output_axis_quantum": 128,
+              "merged_roles": "per_role_group_multiple"
+            }
+          },
+          {
+            "arm": "bmm",
+            "shard_admission": {
+              "input_axis_group": 128,
+              "output_axis_quantum": 128,
+              "merged_roles": "per_role_group_multiple",
+              "qualified_shard_degrees": [
+                1,
+                2,
+                4
+              ]
+            },
+            "requires_geometry": {
+              "bmm_groups": 8,
+              "rows_per_group": 1024,
+              "k": 4096
+            }
+          }
+        ]
+      },
+      {
+        "unit": "mxfp4_e2m1_ue8m0_g32",
+        "kind": "source_passthrough_format",
+        "max_world_size": 1
+      },
+      {
+        "unit": "mxfp8_e4m3_e8m0_g32",
+        "kind": "source_passthrough_format",
+        "max_world_size": 1,
+        "arms": [
+          {
+            "arm": "dense",
+            "max_world_size": 1
+          },
+          {
+            "arm": "bmm",
+            "max_world_size": 1
+          }
+        ]
+      },
+      {
+        "unit": "mixed_fused_projection",
+        "kind": "mixed_fused_projection",
+        "shard_admission": {
+          "axes": [
+            "output"
+          ],
+          "per_role_law": "inherited"
+        }
+      },
+      {
+        "unit": "TCQ_E2M1_R256",
+        "kind": "trellis_format_family",
+        "max_world_size": 1
+      },
+      {
+        "unit": "TCQ_E4M3_R256",
+        "kind": "trellis_format_family",
+        "max_world_size": 1
+      }
+    ]
+  },
+  "expert_parallel": {
+    "axis": "vllm_expert_parallel_size",
+    "semantics": "closed_world",
+    "requires": {
+      "vllm_flag": "--enable-expert-parallel",
+      "moe_tensor_parallel_size": 1,
+      "all2all_kernels": false,
+      "expert_load_balancing": false,
+      "skip_final_all_reduce": false
+    },
+    "units": [
+      {
+        "unit": "FP8_CB_K",
+        "kind": "cb_moe_expert_stack",
+        "expert_admission": {
+          "shard_axis": "expert",
+          "sharded_dims": "none",
+          "placement": "monotone_bijection",
+          "checkpoint_leading_dim": "global_expert_count",
+          "remote_pair_handling": "zero_weight_alias",
+          "cross_rank_reduction": "vllm_final_all_reduce"
+        }
+      },
+      {
+        "unit": "NVFP4_CB_K",
+        "kind": "cb_moe_expert_stack",
+        "expert_admission": {
+          "shard_axis": "expert",
+          "sharded_dims": "none",
+          "placement": "monotone_bijection",
+          "checkpoint_leading_dim": "global_expert_count",
+          "remote_pair_handling": "zero_weight_alias",
+          "cross_rank_reduction": "vllm_final_all_reduce"
+        }
+      },
+      {
+        "unit": "cb_moe_per_expert_format_groups",
+        "kind": "cb_moe_expert_stack_refused",
+        "max_world_size": 1
+      }
+    ]
+  },
+  "producer_profiles": {
+    "supported_ids": [
+      "deepseek_v4",
+      "hy_v3",
+      "laguna",
+      "qwen3",
+      "qwen3_5",
+      "qwen3_5_dense"
+    ],
+    "top_level_loader_modules": [
+      "vllm.model_executor.models.hy_v3",
+      "vllm.model_executor.models.hy_v3_mtp",
+      "vllm.model_executor.models.laguna",
+      "vllm.model_executor.models.qwen3_5",
+      "vllm.model_executor.models.qwen3_5_mtp",
+      "vllm.model_executor.models.lfm2_moe",
+      "vllm.models.deepseek_v4.nvidia.model",
+      "vllm.models.deepseek_v4.nvidia.dspark"
+    ]
+  }
+}

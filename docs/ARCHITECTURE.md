@@ -1,7 +1,24 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-29,
+As of: 2026-08-30 · `claude/lane-eligibility-v3` — stamps follow, newest
+first, each recording its own branch and date. Re-stamped (2026-08-30,
+`claude/lane-eligibility-v3`) for the **lane-eligibility v3 parser and the
+scoped route-status refusal** (§9.2.1). `gridbook_lane_eligibility.py` read
+`gridbook.lane-eligibility.v1` (`{schema, regimes, lanes}`); Gridbook publishes
+v3 at `30287aa` (`{schema, platforms, regimes, structures, cells}`), so the
+consumer would have refused the very table it was written to consume. The
+parser now reads v3 — platform-scoped cells, explicit `rungs` / `rungs_q256`
+dispatched on each family's `formats[].kind`, `activation_contract`,
+`qualification` — and `UnitStructuralFacts` gained `rate_q256`. **This changes
+gate behaviour**, which is why it is stamped here: because a v3 table has no
+`unbacked` cell, absence is the runtime's only way to say no, so an uncovered
+unit resolves `unattested` and the export gate now **fails closed on it** for
+any family the contract publishes, while units outside those families are
+counted and reported rather than judged. The previous claim in §9.2.1 that
+flipping the index to `present` would need "no PrismaQuant code changes" is
+**retracted** — it was written about a table nobody had yet seen. The pins are
+**not** bumped: that step is release-keyed and outward-facing (see the end of
+§9.2.1). Re-stamped (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
 rather than by a test — the two doc gates were green across both drifts. (i) The
@@ -280,7 +297,7 @@ serving container scans every individually read-only-bound safetensors shard onc
 stat-bound no-clobber receipt; post-serve census and endpoint/shipcard replay reuse it without a
 second weight-payload pass (`tools/serve_fingerprint.py`). Gridbook contract v11
 separates reader `rungs` from `producer_rungs` and adds closed-world
-`gridbook.lane-eligibility.v2`; a candidate runtime must device-qualify exact sm89 dense decode
+`gridbook.lane-eligibility.v2` (superseded by the published v3 table, §9.2.1); a candidate runtime must device-qualify exact sm89 dense decode
 and batch routes for the **entire twelve-rung producer ladder**, even if one artifact selects a
 legal subset. Its v0.9.0 tensor-parallel and expert-parallel contract subtrees and runtime
 behavior remain preserved. The available sm89 evidence is deliberately only `compile_only`.
@@ -6999,7 +7016,7 @@ the DSv4 body/MTP/DSpark loader and routed per-role ABI consumed by this produce
 not retroactively promote the 92 GB study: the current 112.690 GB AURA artifact must still close
 the exact eager/graph, quality, and paired whole-model served native-parity shipcard gates.
 
-#### 9.2.1 Tracked v4 route status and candidate v11 lane-v2 (R3)
+#### 9.2.1 Tracked v4 route status and the lane-v3 parser (R3)
 
 Principle 9 requires route status in a **structured** field a gate can read, and principle 14
 requires that field to be derived from a table the pinned runtime publishes, or refused. Both
@@ -7061,9 +7078,11 @@ regime and then:
 |---|---|
 | Backed in every regime | Passes. |
 | Backed in some regime, announced fallback in another | **Recorded**, per unit and in the shipcard census. This is the measured DSv4 state, and it serves. |
-| Backed only behind an operator flag | Passes as `backed_with_serve_flag`; the flag travels with the artifact. |
-| No backed route in any regime | **Refuses**, unless `--non-native-target PLATFORM` or `--allow-unbacked-route REASON` is given. Both are strings, both are stamped. |
-| No table published | Reports `unattested`. |
+| Backed only behind an operator flag | Passes as `backed_with_serve_flag`, counted apart from `backed` and never summed into it; the flag travels with the artifact. |
+| Every regime serves, none natively | `unbacked`. **Refuses**, unless `--non-native-target PLATFORM` or `--allow-unbacked-route REASON` is given. Both are strings, both are stamped. |
+| No cell covers this platform / family / rung, and the contract publishes that family | `unattested`. **Refuses** on the same two escape hatches. Under a v3 table this is the *only* way the runtime can say no (below). |
+| The contract publishes no codec for this payload family at all | Counted as `units_outside_attested_families` and **reported, not refused**. The table is not the authority for those bytes. |
+| No table published | Reports `unattested` for every unit, refuses nothing. |
 
 Both dispositions are stamped into `quant_config["provenance"]["cb_route_status"]`, which is
 inventory-bound, so the census is part of the artifact's identity rather than a log line. From
@@ -7086,9 +7105,55 @@ distinguishable from one that came back clean. Principle 12 requires whichever i
 next to any bpp or KL claim: report "route status not attested for this lane", never "0 units on
 a fallback route".
 
-**To make it attested,** Gridbook must package the table specified in
-`docs/design/gridbook_lane_eligibility_contract.md`. Then advance the serving pin, add the new
-release's packaged contract, and flip the index entry to `present`; no PrismaQuant code changes.
+**The lane-v3 parser (2026-08-30).** Gridbook publishes the table at `30287aa` — contract v12,
+`lane_eligibility.schema = gridbook.lane-eligibility.v3` — and `gridbook_lane_eligibility.py` now
+reads that shape. The earlier claim in this section, that flipping the index to `present` needed
+"no PrismaQuant code changes", is **retracted**: the v1 parser required `{schema, regimes, lanes}`
+and would have refused the published table outright. Four properties of the v3 shape are
+load-bearing, and each is pinned by a mutation-checked test in
+`tests/test_cb_route_status_gate.py`:
+
+- **Cells are platform-scoped, and a rung list is explicit.** A cell names exactly one
+  `(platform, family, structure, regime)` and the rungs it covers — `rungs` (codebook K) for a
+  `cb_product` family, `rungs_q256` (body bits per 256 weights) for a `tcq_trellis` one. Which
+  discriminator applies is decided by the family's `formats[].kind`, never by a key on the cell,
+  exactly as Gridbook's own validator dispatches it. `UnitStructuralFacts` gained `rate_q256` for
+  the trellis vocabulary; it and `k` are mutually exclusive by construction.
+- **Absence is the only negative signal, so the gate fails closed on it.** Gridbook's cell status
+  vocabulary is `backed | backed_with_serve_flag | fallback` — there is **no `unbacked` cell**,
+  because the runtime does not enumerate what it cannot serve. An uncovered unit therefore
+  resolves `unattested` rather than having `unbacked` invented from silence, and the export gate
+  refuses it. A parser that admitted an unlisted rate would convert the table's one negative
+  signal into no signal at all: the `units_on_fallback_route = 0` defect in a newer schema.
+- **Scope is derived, not typed.** A unit is judged only when its payload family appears in the
+  contract's `formats[]` table. BF16, FP8_SOURCE and stock CT rungs reach this gate (the exporter
+  passes `(*cb_targets, *stock_targets)`) and derive no published family; they are counted and
+  named as `units_outside_attested_families` and never read as backed. The scope test comes from
+  the published table, never from a list typed here.
+- **A missing platform is not a match-any.** `evaluate_cb_route_status` takes `target_platform`,
+  defaulting to the serving profile's `target_platform`. A profile that declares none resolves
+  every unit `unattested` and refuses, with that exact reason.
+
+Two censuses are added to the provenance and the shipcard summary: `qualifications`
+(`compile_only` vs `device_qualified`) and `activation_contracts`. `compile_only` means the
+kernels cross-compile for that compute capability and nothing more; it is warned about and never
+upgraded. The provenance schema is `prismaquant.cb_route_attestation.v2`.
+
+**A measured gap the published table reports.** Gridbook's v12 lane table publishes CB cells for
+`sm_89` and `sm_120` only; on `sm_121` it publishes trellis cells alone. Under the v12 contract a
+CB unit targeted at GB10 therefore resolves `unattested` and the gate refuses. That is the table
+reporting a serving gap rather than the producer working around one (principle 1), and it is a
+consequence the pin bump will surface the day it lands.
+
+**To make it attested,** the serving pin must advance to a Gridbook release that packages the v3
+table, its packaged contract must be materialized byte-verbatim in
+`prismaquant/gridbook_runtime/` with an index entry, and
+`gridbook_runtime_pin.GRIDBOOK_RUNTIME_CONTRACT_SCHEMA` must move from
+`gridbook.runtime-contract.v4` to `v12` — `parse_gridbook_runtime_pin` refuses any pin whose
+`runtime_contract_schema` differs from that constant, so the two are one change, not two. That
+step is **release-keyed and outward-facing**: `30287aa` carries no tag, and the serving pin's
+`wheel_sha256` must be read from the served image's installed distribution. It is deliberately
+not taken here.
 
 ### 9.3 GGUF
 
