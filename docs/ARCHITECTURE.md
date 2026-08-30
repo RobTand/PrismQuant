@@ -412,8 +412,10 @@ once the per-`(qname, format)` codebook cells resolve. Its payload shape is
 load-bearing: under an absent attestation it carries `units_unattested` and
 **no** backed/fallback counters at all, so the
 `units_on_fallback_route = 0` defect is unrepresentable rather than merely
-discouraged. `docs/design/gridbook_lane_eligibility_contract.md` specifies
-what Gridbook must package to flip this to attested. Re-stamped (2026-08-21, `feat/pooled-stack-books`)
+discouraged. `docs/design/gridbook_lane_eligibility_contract.md` is the
+proposal that asked Gridbook for a table; it is superseded as a specification
+by the v3 shape Gridbook actually published (below) and is retained only as the
+record of the ask. Re-stamped (2026-08-21, `feat/pooled-stack-books`)
 for **pooled routed codebooks and the split-book ship gate** (campaign rule
 R1, §"The learned-codebook selector"). Routed learned books are now burned per
 `(layer, STACK, rung)` — gate and up pooled into one book — and the exporters
