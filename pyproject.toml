@@ -48,6 +48,7 @@ dependencies = [
 
 [project.optional-dependencies]
 serve = ["vllm>=0.19"]
+prismabuild = ["dagster>=1.13,<2"]
 # pytest-timeout is not optional in practice: CI runs the suite unattended,
 # and a hung test without it burns the whole job timeout instead of failing.
 test = ["pytest>=8", "pytest-cov>=5", "pytest-timeout>=2.3"]

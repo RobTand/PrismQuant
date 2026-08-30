@@ -1,7 +1,13 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-30 · `codex/prismabuild-slurm-20260830` — stamps follow,
+As of: 2026-08-30 · `codex/prismabuild-dagster-20260830` — stamps follow,
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/prismabuild-dagster-20260830`) for the optional **PrismaBuild Dagster
+orchestration layer** (§10.1): deterministic content-bound asset graphs,
+CAS-verified cache/dependency/success transitions, and same-allocation SLURM
+requeues with Dagster retries disabled. This is implemented and tested against
+Dagster 1.13.20 but not live-deployed; it changes no pipeline default or serving
+topology. Re-stamped (2026-08-30,
 `codex/prismabuild-slurm-20260830`) for the first **PrismaBuild SLURM resource
 transport** (§10.1): exact no-shell submission, explicit resource placement,
 immutable action requests, strict scheduler state parsing, and CAS-only
@@ -7383,8 +7389,9 @@ GPU identity.
 PrismaBuild's dependency-free core (`prismaquant.prismabuild`) owns the
 canonical action key, declared code closure, local execution contract, and
 immutable `/mnt/shared` CAS. `prismaquant.prismabuild_slurm` is now the narrow
-SLURM resource adapter beneath the still-planned Dagster DAG layer. It does not
-create another queue, cache, or certification path. Each submission publishes
+SLURM resource adapter. `prismaquant.prismabuild_dagster` is the optional DAG
+layer above it. Neither layer creates another queue, cache, or certification
+path. Each submission publishes
 one canonical read-only action request at its action-key address and passes
 that path to `tools/prismabuild_worker.py`; task argv remains inside the sealed
 request and is never interpolated into a shell command.
@@ -7408,6 +7415,20 @@ partial result still refuses in the core worker instead of being guessed away.
 No SLURM controller/daemon, Dagster service, or observability service is
 installed by this code change, so the existing pipeline and
 `cluster_campaign.manifest.v2` execution path remain unchanged.
+
+The Dagster graph is constructed only from explicit `ActionSpec` values. Each
+edge binds an upstream action key and exact result SHA-256/byte count to a
+matching immutable downstream `action.inputs` entry; mutable result paths are
+not dependency identities. Asset keys and code versions derive from full
+action keys, with a key-sorted topological order. At execution, cache hits and
+upstream readiness are independently replayed through
+`PrismaBuildCAS.lookup()`. Even a Dagster materialization or a SLURM
+`COMPLETED`/adapter-success result is refused when the exact receipt is missing,
+tampered, wrong-scope, or points at changed blob bytes. Bounded retries call
+`SlurmAdapter.requeue` with the original sealed action and job identity;
+Dagster-level retries are zero to avoid accidentally submitting a second live
+allocation after loss of orchestrator state. Dagster remains an optional
+`prismaquant[prismabuild]` dependency and is not imported by the base module.
 
 **OOM discipline.** The pool has no evictable slack, so an allocation that would merely swap on
 a discrete-GPU box kills the machine instead. Rules, all learned from kills: serve at util

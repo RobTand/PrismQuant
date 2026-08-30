@@ -1,15 +1,20 @@
 # PrismaBuild — distributed campaign execution
 
-**Status: DETERMINISTIC CORE + SLURM ADAPTER BUILT / NOT LIVE-DEPLOYED.** The
+**Status: DETERMINISTIC CORE + SLURM + OPTIONAL DAGSTER LAYER BUILT / NOT
+LIVE-DEPLOYED.** The
 dependency-free action-key, immutable-CAS, and local-worker core lives in
 `prismaquant/prismabuild.py`; the fail-closed SLURM resource transport lives in
-`prismaquant/prismabuild_slurm.py`. The adapter submits a canonical immutable
-action request with exact argv, `--export=NONE`, and explicit resources, then
-accepts only a scope-correct CAS receipt as success. A SLURM `COMPLETED` state
-without that receipt is a failed action. `tools/prismabuild_worker.py` is the
-direct batch-script entry point. The SLURM daemons, Dagster layer, and
-observability stack in the chosen design below are not deployed, and nothing
-in the live quantization pipeline depends on PrismaBuild yet.
+`prismaquant/prismabuild_slurm.py`; and the optional asset/DAG adapter lives in
+`prismaquant/prismabuild_dagster.py`. The SLURM adapter submits a canonical
+immutable action request with exact argv, `--export=NONE`, and explicit
+resources, then accepts only a scope-correct CAS receipt as success. A SLURM
+`COMPLETED` state without that receipt is a failed action.
+`tools/prismabuild_worker.py` is the direct batch-script entry point. The
+Dagster adapter constructs deterministic assets from sealed action keys, binds
+each edge to an expected CAS output digest, and materializes only after
+re-reading that receipt and payload from the CAS. The SLURM daemons, Dagster
+service, and observability stack in the chosen design below are not deployed,
+and nothing in the live quantization pipeline depends on PrismaBuild yet.
 
 ## Problem
 
@@ -89,6 +94,29 @@ Honest caveats: stochastic tasks (probe backward is recorded
 non-bit-reproducible) get run-once/first-result-wins — their entry is the
 *canonical* result, pinned but not re-derivable; and a cached measurement is
 valid only under its host-class key (a gb10 KL never answers an x86 query).
+
+### Optional Dagster orchestration (implemented, not deployed)
+
+`prismaquant.prismabuild_dagster` is an optional-import adapter over the core
+and SLURM resource layer; importing PrismaQuant still does not import or require
+Dagster. `ActionSpec` binds the sealed action, checkout, exact SLURM resources
+and placement, bounded same-job requeue policy, and content-addressed upstream
+dependencies. An edge is the tuple `(upstream action key, downstream input id,
+result sha256, result bytes)`. Graph construction refuses an edge unless that
+tuple is also present exactly in the downstream action's sealed `inputs`, and
+uses a key-sorted topological order.
+
+Native definitions use one asset key per action key and set `code_version` to
+that full key. Dagster-level retries are disabled: the bounded retry path uses
+`SlurmAdapter.requeue` on the original allocation and sealed action, avoiding a
+second live allocation after an orchestrator process failure. A cache hit,
+upstream dependency, or successful SLURM resolution is accepted only after an
+independent `PrismaBuildCAS.lookup()` verifies the exact receipt, producer
+scope, and blob bytes. Therefore Dagster run state and materialization state
+are views of CAS truth, never certification themselves. The optional package
+extra is `prismaquant[prismabuild]` (supported `>=1.13,<2`, checked against
+1.13.20); no daemon, webserver, workspace, or scheduler installation is
+performed by the repository.
 
 ## Speculative tier (pre-probe parallelism)
 
