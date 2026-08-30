@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import time
 
 import pytest
 
@@ -136,6 +137,16 @@ def test_portability_contracts_and_d29_refusal(tmp_path: Path):
         _action(tmp_path, artifact_kind="fp8_cb")
     with pytest.raises(pb.ActionContractError, match="D29"):
         _action(tmp_path, artifact_kind="fp8-cb")
+    for spelling in (
+        "fp8cb",
+        "cb_fp8",
+        "qwen3-fp8-cb",
+        "fp8_cb_v2",
+        "fp8_codebook",
+        "nvfp4-cb-rerender",
+    ):
+        with pytest.raises(pb.ActionContractError, match="D29"):
+            _action(tmp_path, artifact_kind=spelling)
 
     platform = _action(
         tmp_path,
@@ -190,6 +201,22 @@ def test_code_closure_refuses_traversal_duplicates_and_symlinks(tmp_path: Path):
     (tmp_path / "link.py").symlink_to("a.py")
     with pytest.raises(pb.ActionContractError, match="regular file"):
         pb.build_code_closure(tmp_path, ["link.py"])
+
+
+def test_paths_and_nested_params_reject_ambiguous_json(tmp_path: Path):
+    for path in (r"sub\result.bin", "C:result.bin"):
+        with pytest.raises(pb.ActionContractError, match="relative POSIX"):
+            _action(tmp_path, result_path=path)
+
+    for params in (
+        {"nested": {1: "coerced"}},
+        {"nested": {"nul\x00key": 1}},
+        {"nested": ["bad\nvalue"]},
+    ):
+        body = _body(tmp_path)
+        body["params"] = params
+        with pytest.raises(pb.ActionContractError):
+            pb.seal_action(body)
 
 
 def test_local_worker_uses_exact_argv_and_closed_environment(
@@ -273,6 +300,100 @@ def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: P
             platform_key=None,
             host_class=None,
         )
+
+
+def test_local_worker_refuses_symlinked_result_parent(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    outside = tmp_path / "outside"
+    checkout.mkdir()
+    outside.mkdir()
+    (checkout / "sub").symlink_to(outside, target_is_directory=True)
+    action = _action(checkout, result_path="sub/result.bin")
+    with pytest.raises(pb.LocalActionError, match="traverses a symlink"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            worker_id="worker",
+            platform_key=None,
+            host_class=None,
+        )
+    assert not (outside / "result.bin").exists()
+
+
+def test_local_worker_serializes_shared_checkout_output(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    actions = [
+        _action(
+            checkout,
+            argv=[
+                sys.executable,
+                "-c",
+                (
+                    "import pathlib,time; time.sleep(0.15); "
+                    f"pathlib.Path('shared.bin').write_bytes({payload!r})"
+                ),
+            ],
+            result_path="shared.bin",
+        )
+        for payload in (b"AAAA", b"BBBB")
+    ]
+    errors: list[BaseException] = []
+    results: list[dict[str, object]] = []
+    barrier = threading.Barrier(2)
+
+    def run(action: dict[str, object]) -> None:
+        try:
+            barrier.wait()
+            results.append(
+                pb.run_local_action(
+                    action,
+                    cas_root=tmp_path / "cas",
+                    checkout_root=checkout,
+                    worker_id="worker",
+                    platform_key=None,
+                    host_class=None,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(action,)) for action in actions]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], pb.LocalActionError)
+    published = Path(str(results[0]["payload_path"])).read_bytes()
+    assert published == (checkout / "shared.bin").read_bytes()
+
+
+def test_timeout_terminates_child_process_group(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    marker = tmp_path / "grandchild-marker"
+    child_code = f"import time,pathlib; time.sleep(0.8); pathlib.Path({str(marker)!r}).write_text('alive')"
+    parent_code = (
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(5)"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", parent_code])
+    with pytest.raises(pb.LocalActionError, match="timed out"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            worker_id="worker",
+            platform_key=None,
+            host_class=None,
+            timeout_seconds=0.1,
+        )
+    time.sleep(1.0)
+    assert not marker.exists()
 
 
 def test_deterministic_recompute_must_match(tmp_path: Path):
@@ -384,6 +505,17 @@ def test_cache_detects_payload_and_receipt_tampering(tmp_path: Path):
     receipt_path.write_text("{broken\n", encoding="utf-8")
     with pytest.raises(pb.CASTamperError, match="strict UTF-8 JSON"):
         cas.lookup(action)
+
+
+def test_cache_structural_error_is_not_a_clean_miss(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    shard = tmp_path / "cas" / "actions" / str(action["action_key"])[:2]
+    shard.parent.mkdir(parents=True)
+    shard.write_bytes(b"not-a-directory")
+    with pytest.raises(pb.CASTamperError):
+        pb.PrismaBuildCAS(tmp_path / "cas").lookup(action)
 
 
 def test_cli_seals_keys_runs_and_verifies(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

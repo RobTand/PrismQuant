@@ -17,11 +17,16 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+import errno
+import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import signal
 import stat
 import subprocess
 import tempfile
@@ -78,9 +83,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _PORTABILITY = frozenset({"portable", "platform_keyed", "host_class_keyed"})
 _TASK_CLASSES = frozenset({"generation", "measurement"})
 _DETERMINISM = frozenset({"deterministic", "stochastic"})
-_FP8_CB_ARTIFACT_KINDS = frozenset(
-    {"fp8_cb", "fp8-cb", "nvfp4_cb", "nvfp4-cb"}
-)
+_PROCESS_GROUP_GRACE_SECONDS = 5.0
 
 
 class PrismaBuildError(RuntimeError):
@@ -93,6 +96,10 @@ class ActionContractError(PrismaBuildError, ValueError):
 
 class CASTamperError(PrismaBuildError):
     """An existing content-addressed entry failed verification."""
+
+
+class CASUnavailableError(PrismaBuildError):
+    """The content-addressed store could not be read reliably."""
 
 
 class CASConflictError(PrismaBuildError):
@@ -174,6 +181,8 @@ def _canonical_file_bytes(value: object) -> bytes:
 
 def _normalize_relative_path(value: object, *, where: str, dot_ok: bool) -> str:
     raw = _text(value, where=where)
+    if "\\" in raw or re.match(r"^[A-Za-z]:", raw):
+        _fail(f"{where} must be a normalized relative POSIX path")
     path = PurePosixPath(raw)
     if path.is_absolute() or any(part in {"", ".."} for part in raw.split("/")):
         _fail(f"{where} must be a normalized relative POSIX path")
@@ -184,6 +193,44 @@ def _normalize_relative_path(value: object, *, where: str, dot_ok: bool) -> str:
     if any(part == "." for part in raw.split("/")) or str(path) != raw:
         _fail(f"{where} must be a normalized relative POSIX path")
     return raw
+
+
+def _normalize_json_value(value: object, *, where: str) -> object:
+    """Validate JSON recursively without Python's silent key coercions."""
+
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            _fail(f"{where} contains a non-finite number")
+        return value
+    if type(value) is str:
+        return _text(value, where=where, allow_empty=True)
+    if type(value) is list:
+        return [
+            _normalize_json_value(item, where=f"{where}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for raw_key, raw_value in value.items():
+            key = _text(raw_key, where=f"{where} key", allow_empty=True)
+            normalized[key] = _normalize_json_value(
+                raw_value, where=f"{where}.{key}"
+            )
+        return normalized
+    _fail(f"{where} contains a value that is not JSON data")
+
+
+def _is_codebook_artifact_kind(value: str) -> bool:
+    """Recognize codebook spelling variants conservatively for D29."""
+
+    compact = re.sub(r"[^a-z0-9]", "", value.lower())
+    has_quant_family = "fp8" in compact or "nvfp4" in compact
+    has_codebook = "codebook" in compact or "cb" in compact
+    return has_quant_family and has_codebook
 
 
 def _normalize_argv(value: object) -> list[str]:
@@ -530,7 +577,7 @@ def _normalize_action_body(value: object) -> dict[str, object]:
     if task["task_class"] == "measurement" and scope["portability"] == "portable":
         _fail("measurement actions must be platform_keyed or host_class_keyed")
     if (
-        task["artifact_kind"] in _FP8_CB_ARTIFACT_KINDS
+        _is_codebook_artifact_kind(str(task["artifact_kind"]))
         and scope["portability"] == "portable"
     ):
         _fail(
@@ -538,12 +585,14 @@ def _normalize_action_body(value: object) -> dict[str, object]:
             "row-scale byte drift"
         )
     params = body["params"]
-    if not isinstance(params, Mapping) or any(type(key) is not str for key in params):
+    if not isinstance(params, Mapping):
         _fail("action.params must be an object with string keys")
-    # Round-trip through canonical JSON to reject unsupported and non-finite data
-    # and to detach the sealed value from caller-owned mutable containers.
+    normalized_params = _normalize_json_value(params, where="action.params")
+    assert isinstance(normalized_params, Mapping)
+    # Detach the sealed value from caller-owned mutable containers and replay
+    # the strict decoder used for persisted manifests.
     normalized_params = _decode_strict_json(
-        _canonical_bytes(params), where="action.params"
+        _canonical_bytes(normalized_params), where="action.params"
     )
     return {
         "schema": ACTION_SCHEMA_V1,
@@ -750,6 +799,15 @@ class PrismaBuildCAS:
         try:
             return _read_regular_file(path, where="CAS receipt")
         except ActionContractError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, OSError):
+                if cause.errno == errno.ENOENT:
+                    raise FileNotFoundError(path) from cause
+                if cause.errno in {errno.ENOTDIR, errno.ELOOP, errno.EISDIR}:
+                    raise CASTamperError(str(exc)) from exc
+                raise CASUnavailableError(
+                    f"CAS receipt is unavailable: {path}: {cause}"
+                ) from exc
             raise CASTamperError(str(exc)) from exc
 
     def _validate_receipt(
@@ -817,8 +875,30 @@ class PrismaBuildCAS:
         digest = str(result["sha256"])
         path = self._blob_path(digest)
         try:
+            observed = path.lstat()
+        except FileNotFoundError as exc:
+            raise CASTamperError(f"CAS payload is missing: {path}") from exc
+        except OSError as exc:
+            raise CASUnavailableError(
+                f"CAS payload is unavailable: {path}: {exc}"
+            ) from exc
+        if not stat.S_ISREG(observed.st_mode):
+            raise CASTamperError(f"CAS payload is not a regular file: {path}")
+        if observed.st_size != result["bytes"]:
+            raise CASTamperError(
+                f"CAS payload content differs from receipt (size mismatch): {path}"
+            )
+        try:
             observed_digest, observed_size = _file_identity(path, where="CAS payload")
         except ActionContractError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, OSError) and cause.errno not in {
+                errno.ENOENT,
+                errno.ENOTDIR,
+                errno.ELOOP,
+                errno.EISDIR,
+            }:
+                raise CASUnavailableError(str(exc)) from exc
             raise CASTamperError(str(exc)) from exc
         if observed_digest != digest or observed_size != result["bytes"]:
             raise CASTamperError(
@@ -833,10 +913,8 @@ class PrismaBuildCAS:
         path = self._receipt_path(str(normalized["action_key"]))
         try:
             raw = self._load_receipt_bytes(path)
-        except CASTamperError:
-            if not path.exists() and not path.is_symlink():
-                return None
-            raise
+        except FileNotFoundError:
+            return None
         try:
             value = _decode_strict_json(raw, where="CAS receipt")
             receipt = self._validate_receipt(value, action=normalized)
@@ -846,6 +924,13 @@ class PrismaBuildCAS:
             raise CASTamperError("CAS receipt bytes are not canonical JSON")
         self._verify_blob(receipt["result"])  # type: ignore[arg-type]
         return receipt
+
+    def _verified_receipt_result_path(self, receipt: Mapping[str, object]) -> Path:
+        """Return the blob path after ``lookup`` has already verified it."""
+
+        result = receipt["result"]
+        assert isinstance(result, Mapping)
+        return self._blob_path(str(result["sha256"]))
 
     def result_path(self, receipt: object, action: object) -> Path:
         normalized = validate_action(action)
@@ -927,6 +1012,138 @@ class PrismaBuildCAS:
                 pass
 
 
+def _validate_execution_paths(
+    checkout_root: Path, working_directory: str, result_path: str
+) -> tuple[Path, Path]:
+    """Resolve an action cwd and refuse traversal out of the checkout."""
+
+    if checkout_root.is_symlink():
+        raise LocalActionError(f"checkout root is a symlink: {checkout_root}")
+    try:
+        resolved_root = checkout_root.resolve(strict=True)
+    except OSError as exc:
+        raise LocalActionError(f"checkout root is unavailable: {checkout_root}") from exc
+    cwd = (
+        checkout_root
+        if working_directory == "."
+        else checkout_root / working_directory
+    )
+    try:
+        resolved_cwd = cwd.resolve(strict=True)
+        resolved_cwd.relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
+        raise LocalActionError(
+            f"declared working directory escapes or is unavailable: {cwd}"
+        ) from exc
+    if cwd.is_symlink() or not resolved_cwd.is_dir():
+        raise LocalActionError(
+            f"declared working directory is not a real directory: {cwd}"
+        )
+    return resolved_cwd, resolved_cwd / result_path
+
+
+def _validate_result_containment(output: Path, cwd: Path) -> None:
+    """Refuse result files reached through a symlinked parent or final link."""
+
+    try:
+        resolved = output.resolve(strict=True)
+        resolved.relative_to(cwd)
+    except (OSError, ValueError) as exc:
+        raise LocalActionError(
+            f"declared result escapes or is unavailable: {output}"
+        ) from exc
+    relative = output.relative_to(cwd)
+    cursor = cwd
+    for component in relative.parts:
+        cursor = cursor / component
+        try:
+            mode = cursor.lstat().st_mode
+        except OSError as exc:
+            raise LocalActionError(
+                f"cannot inspect declared result path: {cursor}"
+            ) from exc
+        if stat.S_ISLNK(mode):
+            raise LocalActionError(
+                f"declared result path traverses a symlink: {cursor}"
+            )
+    if not stat.S_ISREG(output.lstat().st_mode):
+        raise LocalActionError(f"declared result is not a regular file: {output}")
+
+
+def _refuse_existing_result_symlink_prefix(output: Path, cwd: Path) -> None:
+    """Reject a pre-existing symlink in the declared output path."""
+
+    relative = output.relative_to(cwd)
+    cursor = cwd
+    for component in relative.parts:
+        cursor = cursor / component
+        try:
+            mode = cursor.lstat().st_mode
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise LocalActionError(
+                f"cannot inspect declared result path: {cursor}"
+            ) from exc
+        if stat.S_ISLNK(mode):
+            raise LocalActionError(
+                f"declared result path traverses a symlink: {cursor}"
+            )
+
+
+@contextmanager
+def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
+    """Serialize actions sharing one live-checkout result path."""
+
+    identity = hashlib.sha256(
+        f"{checkout.resolve(strict=True)}\0{output}".encode("utf-8")
+    ).hexdigest()
+    directory = cas.root / ".worker-locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{identity}.lock"
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise LocalActionError(f"cannot open local action lock: {path}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise LocalActionError(
+                f"local action lock is not a regular file: {path}"
+            )
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=_PROCESS_GROUP_GRACE_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=_PROCESS_GROUP_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run_local_action(
     action: object,
     *,
@@ -955,50 +1172,65 @@ def run_local_action(
             return {
                 "status": "cache_hit",
                 "receipt": cached,
-                "payload_path": str(cas.result_path(cached, normalized)),
+                "payload_path": str(cas._verified_receipt_result_path(cached)),
             }
     task = normalized["task"]
     environment = normalized["environment"]
     assert isinstance(task, Mapping)
     assert isinstance(environment, Mapping)
-    cwd = root if task["working_directory"] == "." else root / str(
-        task["working_directory"]
+    cwd, output = _validate_execution_paths(
+        root, str(task["working_directory"]), str(task["result_path"])
     )
-    if not cwd.is_dir():
-        raise LocalActionError(f"declared working directory does not exist: {cwd}")
-    output = cwd / str(task["result_path"])
-    if output.exists() or output.is_symlink():
-        raise LocalActionError(
-            f"declared result path must be absent before execution: {output}"
-        )
     variables = environment["variables"]
     assert isinstance(variables, Mapping)
-    try:
-        completed = subprocess.run(
-            list(task["argv"]),
-            cwd=cwd,
-            env={str(key): str(value) for key, value in variables.items()},
-            shell=False,
-            check=False,
-            timeout=timeout_seconds,
+    with _local_output_lock(cas, root, output):
+        # A concurrent producer may have filled the cache while this worker
+        # waited for the checkout/output lock.
+        if not recompute:
+            cached = cas.lookup(normalized)
+            if cached is not None:
+                return {
+                    "status": "cache_hit",
+                    "receipt": cached,
+                    "payload_path": str(cas._verified_receipt_result_path(cached)),
+                }
+        if output.exists() or output.is_symlink():
+            raise LocalActionError(
+                f"declared result path must be absent before execution: {output}"
+            )
+        _refuse_existing_result_symlink_prefix(output, cwd)
+        try:
+            process = subprocess.Popen(
+                list(task["argv"]),
+                cwd=cwd,
+                env={str(key): str(value) for key, value in variables.items()},
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            try:
+                returncode = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                _terminate_process_group(process)
+                raise LocalActionError(f"action execution timed out: {exc}") from exc
+        except OSError as exc:
+            raise LocalActionError(f"action execution failed: {exc}") from exc
+        if returncode != 0:
+            raise LocalActionError(
+                f"action argv exited with status {returncode}"
+            )
+        if not output.exists() and not output.is_symlink():
+            raise LocalActionError(
+                f"action succeeded without its declared result file: {output}"
+            )
+        _validate_result_containment(output, cwd)
+        receipt, won = cas.publish_result(
+            normalized,
+            output,
+            worker_id=worker_id,
+            platform_key=platform_key,
+            host_class=host_class,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise LocalActionError(f"action execution failed: {exc}") from exc
-    if completed.returncode != 0:
-        raise LocalActionError(
-            f"action argv exited with status {completed.returncode}"
-        )
-    if not output.exists() and not output.is_symlink():
-        raise LocalActionError(
-            f"action succeeded without its declared result file: {output}"
-        )
-    receipt, won = cas.publish_result(
-        normalized,
-        output,
-        worker_id=worker_id,
-        platform_key=platform_key,
-        host_class=host_class,
-    )
     return {
         "status": "published" if won else "canonical_result_reused",
         "receipt": receipt,
@@ -1099,6 +1331,7 @@ __all__ = [
     "ActionContractError",
     "CASConflictError",
     "CASTamperError",
+    "CASUnavailableError",
     "LocalActionError",
     "PrismaBuildCAS",
     "PrismaBuildError",
