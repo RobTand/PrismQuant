@@ -13,8 +13,8 @@ What is pinned, per scenario:
 * every super item's candidate list, IN ORDER, with ``fmt``,
   ``bits_per_param``, ``memory_bytes``, ``predicted_dloss``,
   ``serialized_identity``, ``serialized_sidecar_identity``,
-  ``activation_pricing`` and ``serving_lane`` -- floats by ``repr`` so the
-  comparison is exact rather than tolerance-based;
+  ``activation_pricing`` and ``serving_lane`` -- floats by ``repr``, which
+  round-trips exactly, so the fixture records the full float64 value;
 * ``stats_ext[super]["_memory_bytes_by_format"]`` (the exact-bytes map every
   downstream byte path prefers) and the whole ``costs_ext[super]`` row,
   including ``predicted_dloss_stderr`` and the applied-pricing marker;
@@ -26,6 +26,34 @@ aggregators, ``PRISMAQUANT_COST_UCB_Z`` at 0 and non-zero (the hedge
 conversion), calibrated gains, activation fair pricing, and the role-split
 packed profile.
 
+How each field is compared
+--------------------------
+
+Everything that decides BYTES or DP STRUCTURE is compared EXACTLY: menu order,
+``fmt``, ``memory_bytes``, ``_memory_bytes_by_format``, ``n_params``, the
+member lists, both serialized identities, ``activation_pricing``,
+``serving_lane``, the applied-pricing marker and the pass-through row names.
+Those are ints, bools, ``None`` and identity strings -- there is no float
+question to ask about them, and they are what the exported artifact is made of.
+
+The four ACCUMULATED float fields (``_FLOAT_FIELDS``) are compared to float64
+precision instead.  They must be compared, not dropped: the DP ranks on
+``predicted_dloss``, so a structure-only gate would miss a real cost regression
+entirely.  But pinning them to the LAST bit pins the reduction implementation
+rather than the aggregation:
+
+    a 9-member packed group's ``predicted_dloss`` is one builtin ``sum()``
+    over floats, and CPython 3.12 gave that ``sum()`` Neumaier compensated
+    summation (gh-100425) where 3.11 sums naively left-to-right.  Same
+    aggregation, same inputs, 1-2 ulp apart.  Measured: swapping ONLY the
+    summation algorithm reproduces all eight divergent values exactly,
+    including the three CI reported.  (That CI report blamed a numpy skew.
+    There is no numpy anywhere in this call chain.)
+
+An exact pin on those four therefore asserted summation order, not the
+property this module exists to protect -- the same defect, and the same fix,
+as ``tests/test_math_reunderwrite_pins.py`` (PR #90).
+
 Regenerate ONLY when a behaviour change is intended and argued::
 
     PYTHONPATH=. python tests/test_super_item_menu_byte_identity.py --regen
@@ -35,6 +63,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -57,6 +86,37 @@ from prismaquant.allocator_candidates import (
 GOLDEN_PATH = Path(__file__).with_name("fixtures") / "super_item_menu_golden.json"
 
 MENU = ("NVFP4", "FP8_E4M3", "BF16")
+
+# Fields ``_num`` renders as a float ``repr``.  Every OTHER leaf in the payload
+# is an int, a bool, ``None`` or an identity string and is compared exactly.
+_FLOAT_FIELDS = frozenset({
+    "bits_per_param",
+    "predicted_dloss",
+    "predicted_dloss_stderr",
+    "weight_mse",
+})
+
+# Principle 2: the bound comes from the dtype, not from what made the test
+# pass.  These are Python floats, i.e. IEEE-754 binary64, so the unit is
+# ``sys.float_info.epsilon`` (2.22e-16).
+#
+# 16 ulps covers the longest chain any pinned field accumulates over.  The
+# worst case is a packed group's hedged ``predicted_dloss``: per member, the
+# cost-entry product chain (0.5 * h_trace * mse, then the calibrated gain and
+# the per-family activation penalty) is ~5 roundings; those 9 member terms are
+# then summed (a 9-term reduction, <= 9 roundings naive, ~2 with the 3.12
+# compensated sum); the linear hedge is subtracted and ``z * sqrt(sum stderr^2)``
+# added, another ~4.  ~18 roundings at <= 0.5 ulp each, over an all-positive
+# sum whose condition number is 1, is a bound near 9 ulps; 16 is the next
+# power of two above it and matches the multiplier PR #90 derived the same way.
+#
+# Measured against the 3.11 reduction, the worst divergence across all five
+# scenarios is 1.5 ulps in these units (2.0 ulps of the value's own spacing),
+# against a bound of 16 -- so the tolerance is neither tuned to the observed
+# noise nor a headroom guess.  ``test_the_golden_is_load_bearing`` records how
+# large a driver perturbation the bound still catches.
+_FLOAT_TOLERANCE_ULPS = 16.0
+_FLOAT64_EPS = sys.float_info.epsilon
 
 
 # ---------------------------------------------------------------------------
@@ -340,13 +400,85 @@ def _canonical(payload: dict) -> str:
 
 
 def digest(payload: dict) -> str:
+    """Provenance stamp written by ``--regen``.
+
+    NOT the gate.  It hashes the float ``repr``s, so it moves on a 1-ulp
+    reduction difference; ``compare_to_golden`` is what the tests assert.
+    """
     return hashlib.sha256(_canonical(payload).encode()).hexdigest()
+
+
+def _float_mismatch(current: str, golden: str) -> str | None:
+    """Compare one accumulated float field to float64 precision.
+
+    Returns ``None`` when they agree, else a description.  A golden of exactly
+    ``0.0`` gets a tolerance of exactly 0.0 -- a bit-exact rung must stay
+    bit-exact, and this falls out of the relative form rather than needing a
+    special case.
+    """
+    cur = float(current)
+    gold = float(golden)
+    if cur == gold:
+        return None
+    tol = _FLOAT_TOLERANCE_ULPS * _FLOAT64_EPS * abs(gold)
+    delta = abs(cur - gold)
+    if delta <= tol:
+        return None
+    ulps = delta / max(abs(gold) * _FLOAT64_EPS, 5e-324)
+    return (f"{current} != {golden} (delta {delta:.6g} = {ulps:.1f} ulps, "
+            f"bound {tol:.6g} = {_FLOAT_TOLERANCE_ULPS:.0f} ulps)")
+
+
+def _walk(current, golden, path: str, field: str, out: list[str]) -> None:
+    if isinstance(golden, dict):
+        if not isinstance(current, dict):
+            out.append(f"{path}: expected an object, got {type(current).__name__}")
+            return
+        # Both directions: a key ADDED by the driver is a behaviour change too.
+        for key in sorted(set(golden) - set(current)):
+            out.append(f"{path}/{key}: missing (golden has {golden[key]!r})")
+        for key in sorted(set(current) - set(golden)):
+            out.append(f"{path}/{key}: added (value {current[key]!r})")
+        for key in sorted(set(golden) & set(current)):
+            _walk(current[key], golden[key], f"{path}/{key}", key, out)
+        return
+    if isinstance(golden, list):
+        if not isinstance(current, list):
+            out.append(f"{path}: expected a list, got {type(current).__name__}")
+            return
+        if len(current) != len(golden):
+            out.append(
+                f"{path}: length {len(current)} != {len(golden)} -- the menu "
+                "order and membership are pinned exactly")
+            return
+        for i, (c, g) in enumerate(zip(current, golden)):
+            _walk(c, g, f"{path}[{i}]", field, out)
+        return
+    if (field in _FLOAT_FIELDS
+            and isinstance(current, str) and isinstance(golden, str)):
+        problem = _float_mismatch(current, golden)
+        if problem is not None:
+            out.append(f"{path}: {problem}")
+        return
+    if current != golden:
+        out.append(f"{path}: {current!r} != {golden!r}")
+
+
+def compare_to_golden(current: dict, golden: dict) -> list[str]:
+    """Every mismatch between a built payload and the fixture, or ``[]``.
+
+    THE gate.  Exact on every structural field; float64-precision on the four
+    accumulated float fields.
+    """
+    out: list[str] = []
+    _walk(current["scenarios"], golden["scenarios"], "", "", out)
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-def test_super_item_menus_are_byte_identical_to_the_golden():
+def test_super_item_menus_match_the_golden():
     assert GOLDEN_PATH.exists(), (
         f"{GOLDEN_PATH} is missing. It is the pre-change record of what the "
         "two aggregators produce; regenerate it only with an argued "
@@ -354,15 +486,19 @@ def test_super_item_menus_are_byte_identical_to_the_golden():
     )
     golden = json.loads(GOLDEN_PATH.read_text())
     current = _build_payload()
-    for name in sorted(golden["scenarios"]):
-        assert name in current["scenarios"], f"scenario {name} disappeared"
-        assert current["scenarios"][name] == golden["scenarios"][name], (
-            f"super-item menu changed in scenario {name!r}: the aggregators "
-            "are default-path code and this is the principle-6 gate"
-        )
-    assert digest(current) == golden["digest"], (
-        "aggregate digest changed even though every recorded scenario "
-        "matched -- a scenario was added or removed"
+
+    # What the digest assertion this replaces actually claimed to catch. Both
+    # directions, so an ADDED scenario is caught as well as a removed one.
+    assert sorted(current["scenarios"]) == sorted(golden["scenarios"]), (
+        "the scenario set changed: "
+        f"added {sorted(set(current['scenarios']) - set(golden['scenarios']))}, "
+        f"removed {sorted(set(golden['scenarios']) - set(current['scenarios']))}"
+    )
+
+    problems = compare_to_golden(current, golden)
+    assert not problems, (
+        "super-item menu changed -- the aggregators are default-path code and "
+        "this is the principle-6 gate:\n  " + "\n  ".join(problems)
     )
 
 
@@ -404,30 +540,56 @@ def test_the_golden_actually_exercises_both_aggregators_and_the_hedge():
 def test_the_golden_is_load_bearing():
     """A passing golden is not evidence until a driver change makes it fail.
 
-    Mutate the aggregators' menu-order helper at runtime -- same SET of
-    formats, different DP order, the minimal perturbation an order-blind
-    record would miss -- and the digest must move.  Restoring it must bring
-    the recorded digest back, so the check is the fixture's, not the run's.
+    Two teeth, one per half of the comparison, and both mutate the DRIVER --
+    never the fixture, which would only prove the comparator can read its own
+    output.
+
+    STRUCTURAL: reorder every super item's menu (same SET of formats, different
+    DP order -- the minimal perturbation an order-blind record would miss).
+    No float tolerance can absorb this, and none should.
+
+    NUMERIC: scale every member's predicted dloss by 1 + 1e-12.  This is the
+    tooth the tolerance could blunt, so it is asserted in-tree rather than
+    only recorded in a commit message.  1e-12 relative sits ~280x above the
+    3.55e-15 bound and ~3000x above the largest reduction difference measured
+    (1.5 ulps), so it can neither flake nor pass.  Bisected on this tree:
+    1e-14 is CAUGHT (56 mismatches), 1e-15 is NOT -- the gate resolves a
+    driver change nine orders of magnitude finer than the 1e-5 / 1e-6
+    threshold PR #90 settled for in float32.
     """
     golden = json.loads(GOLDEN_PATH.read_text())
-    assert digest(_build_payload()) == golden["digest"]
+    assert not compare_to_golden(_build_payload(), golden)
 
-    original = alloc_cand._super_menu_format_names
+    original_menu = alloc_cand._super_menu_format_names
 
     def reordered(formats, member_menu_intersection):
-        return tuple(sorted(original(formats, member_menu_intersection)))
+        return tuple(sorted(original_menu(formats, member_menu_intersection)))
 
     with mock.patch.object(
         alloc_cand, "_super_menu_format_names", reordered
     ):
-        mutated = digest(_build_payload())
-    assert mutated != golden["digest"], (
-        "reordering every super item's menu did not change the recorded "
-        "payload -- the golden does not pin what it claims to pin"
+        assert compare_to_golden(_build_payload(), golden), (
+            "reordering every super item's menu did not fail the comparison "
+            "-- the golden does not pin what it claims to pin"
+        )
+
+    original_dloss = alloc_cand.cost_entry_predicted_dloss
+
+    def perturbed(*args, **kwargs):
+        return original_dloss(*args, **kwargs) * (1.0 + 1e-12)
+
+    with mock.patch.object(
+        alloc_cand, "cost_entry_predicted_dloss", perturbed
+    ):
+        problems = compare_to_golden(_build_payload(), golden)
+    assert problems, (
+        "a 1e-12 relative change to every member's predicted dloss did not "
+        "fail the comparison -- the float tolerance is too loose to be a gate"
     )
-    assert digest(_build_payload()) == golden["digest"], (
-        "the golden did not return to its recorded value after the mutation "
-        "was undone"
+
+    assert not compare_to_golden(_build_payload(), golden), (
+        "the golden did not compare clean again after the mutations were "
+        "undone"
     )
 
 
