@@ -533,7 +533,8 @@ def test_wrong_scope_receipt_fails_closed_before_adapter(
     attestation = pb.preflight_action(
         spec.action, cas_root=cas_root, checkout_root=spec.checkout_root
     )
-    receipt, _ = pb.PrismaBuildCAS(cas_root).publish_result(
+    cas = pb.PrismaBuildCAS(cas_root)
+    receipt, _ = cas.publish_result(
         spec.action,
         source,
         attestation=attestation,
@@ -565,12 +566,7 @@ def test_wrong_scope_receipt_fails_closed_before_adapter(
             allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
-    receipt_path = (
-        cas_root
-        / "actions"
-        / spec.action_key[:2]
-        / f"{spec.action_key}.json"
-    )
+    receipt_path = cas._receipt_path(spec.action_key)
     receipt_path.chmod(0o644)
     receipt_path.write_text(
         json.dumps(altered, sort_keys=True, separators=(",", ":")) + "\n",

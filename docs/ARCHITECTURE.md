@@ -4,10 +4,14 @@ As of: 2026-08-30 · `codex/finish-numeric-prismabuild-20260830` — stamps foll
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
 `codex/finish-numeric-prismabuild-20260830`) for the **QTIP-derived native
 NVFP4 research producer and PrismaBuild publication boundary** (§10.1–§10.2):
-PrismaBuild rechecks its code closure, task executable, worker core, and script
-launcher immediately before CAS receipt publication, but remains code and
-mocked/in-process tests rather than a deployed SLURM/Dagster/CAS/telemetry
-system. A physical one-Linear Arm E producer now combines randomized
+PrismaBuild now implements canonical hashing inside its bound core, captures
+that core during module initialization and the SLURM launcher at the earliest
+executed wrapper code, then runs action closure/executable checks before a
+final runtime recheck and CAS link. Receipt v3 has a disjoint namespace that
+preserves and ignores incompatible unversioned v2 receipts. This still remains
+code and mocked/in-process tests rather than a deployed
+SLURM/Dagster/CAS/telemetry system. A physical one-Linear Arm E producer now
+combines randomized
 orthogonal transforms, the canonical
 PrismaQuant/Gridbook trellis wire, same-byte decode, and full cross-block
 BlockLDL feedback. Its local terminal is Frobenius- or diagonal-D-weighted;
@@ -7474,17 +7478,33 @@ attestation as `producer`; every lookup replays its action binding, derived
 platform/host scope, worker-runtime, executable/toolchain/input evidence, and
 result-blob bytes. Worker attestation v2 contains a closed
 `prismaquant.prismabuild.worker_runtime.v1` record for the exact
-`prismaquant/prismabuild.py` bytes plus the exact script launcher when present;
-direct API use records `in_process` with a null launcher. Both sources are
-rehashed after execution and at the pre-link publication callback.
+`prismaquant/prismabuild.py` load-time source snapshot plus the script-launcher
+snapshot when present. Canonical JSON and SHA-256 live in the bound core rather
+than an unrecorded repository import. The core snapshot is taken once during
+module initialization and must still match disk at preflight, after execution,
+and publication. `tools/prismabuild_worker.py` snapshots itself at the earliest
+executed wrapper code, before importing the core; direct API use records
+`in_process` with a null launcher. At the pre-link callback, the potentially
+longer action closure/executable checks run first and the core/launcher rehash
+runs last. A sequential return-to-`os.link` syscall interval remains; this is a
+minimized gap, not an atomic source-filesystem snapshot.
+
+Receipt v3 is stored at
+`actions/v3/<prefix>/<action-key>.json`. The incompatible v2 namespace remains
+immutable at its historical unversioned `actions/<prefix>/<action-key>.json`
+address. V3 lookup treats v2-only state as a clean v3 miss and never parses,
+overwrites, deletes, or silently migrates the old receipt; producing v3
+authority requires recomputation under the v3 contract.
 
 Worker-runtime identity is receipt provenance, not part of the action key. A
 cache hit therefore retains the producer revision recorded by its canonical
 receipt. SLURM submission checks that the configured launcher is a regular
 executable but does not pin its submission-time digest into the action request;
-if it changes while queued, the worker binds and rechecks the bytes that
-actually launched it. No equivalence to the earlier submission-time bytes is
-claimed.
+if it changes while queued, the started wrapper binds and rechecks its earliest
+live source snapshot. No equivalence to the earlier submission-time bytes is
+claimed, and Python does not expose the already-started script's original
+parser buffer, so the snapshot is not a cryptographic proof of those exact
+parsed bytes.
 `COMPLETED` without a receipt is failure; scheduler retries are idempotent
 because the worker checks the same CAS before running. A dirty partial result
 still refuses in the core worker instead of being guessed away. No SLURM

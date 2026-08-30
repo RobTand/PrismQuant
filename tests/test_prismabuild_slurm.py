@@ -518,13 +518,7 @@ def test_wrong_scope_self_consistent_receipt_is_tamper(
             allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
-    receipt_path = (
-        tmp_path
-        / "cas"
-        / "actions"
-        / str(action["action_key"])[:2]
-        / f"{action['action_key']}.json"
-    )
+    receipt_path = cas._receipt_path(str(action["action_key"]))
     receipt_path.chmod(0o644)
     receipt_path.write_text(
         json.dumps(altered, sort_keys=True, separators=(",", ":")) + "\n",

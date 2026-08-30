@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import threading
 import time
@@ -352,6 +354,9 @@ def test_worker_runtime_attestation_binds_core_and_optional_launcher(
     action = _action(checkout)
     launcher = tmp_path / "worker-launcher.py"
     launcher.write_text("# exact launcher\n", encoding="utf-8")
+    launcher_identity = pb._identify_runtime_source(
+        launcher, where="test worker launcher"
+    )
 
     direct = pb.preflight_action(
         action, cas_root=tmp_path / "cas", checkout_root=checkout
@@ -368,7 +373,7 @@ def test_worker_runtime_attestation_binds_core_and_optional_launcher(
         action,
         cas_root=tmp_path / "cas",
         checkout_root=checkout,
-        worker_launcher_path=launcher,
+        worker_launcher_identity=launcher_identity,
     )
     assert launched["runtime"]["launch_kind"] == "script"
     assert launched["runtime"]["launcher"]["sha256"] == hashlib.sha256(
@@ -409,6 +414,110 @@ def test_worker_runtime_attestation_binds_core_and_optional_launcher(
         pb.ActionContractError, match="launch_kind and launcher disagree"
     ):
         pb.validate_worker_attestation(inconsistent, action=action)
+
+
+def test_worker_core_has_no_unattested_repository_imports():
+    source = Path(pb.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    repository_imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (
+            node.level > 0 or (node.module or "").startswith("prismaquant")
+        ):
+            repository_imports.append(ast.unparse(node))
+        if isinstance(node, ast.Import):
+            repository_imports.extend(
+                alias.name
+                for alias in node.names
+                if alias.name == "prismaquant"
+                or alias.name.startswith("prismaquant.")
+            )
+    assert repository_imports == []
+
+
+def test_slurm_worker_entrypoint_attests_its_early_launcher_snapshot(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    repository_root = Path(pb.__file__).resolve().parents[1]
+    launcher = repository_root / "tools" / "prismabuild_worker.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(launcher),
+            "preflight",
+            "--action",
+            str(action_path),
+            "--cas-root",
+            str(tmp_path / "cas"),
+            "--checkout-root",
+            str(checkout),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    attestation = json.loads(completed.stdout)
+    runtime = attestation["runtime"]
+    assert runtime["launch_kind"] == "script"
+    assert runtime["launcher"]["sha256"] == hashlib.sha256(
+        launcher.read_bytes()
+    ).hexdigest()
+    assert runtime["core"]["sha256"] == hashlib.sha256(
+        Path(pb.__file__).read_bytes()
+    ).hexdigest()
+
+
+def test_preflight_refuses_core_changed_after_module_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    fake_core = tmp_path / "prismabuild.py"
+    fake_core.write_text("# loaded worker core\n", encoding="utf-8")
+    captured = pb._identify_runtime_source(fake_core, where="test worker core")
+    monkeypatch.setattr(pb, "_LOADED_WORKER_CORE_IDENTITY", captured)
+    # The old implementation took its first snapshot from __file__ during
+    # preflight and therefore accepted these changed bytes as the loaded core.
+    monkeypatch.setattr(pb, "__file__", str(fake_core))
+    fake_core.write_text("# changed before first preflight\n", encoding="utf-8")
+
+    with pytest.raises(pb.LocalActionError, match="core changed after module import"):
+        pb.preflight_action(
+            _action(checkout),
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+
+def test_preflight_refuses_launcher_changed_after_entrypoint_capture(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    launcher = tmp_path / "worker-launcher.py"
+    launcher.write_text("# launched bytes\n", encoding="utf-8")
+    captured = pb._identify_runtime_source(
+        launcher, where="test worker launcher"
+    )
+    launcher.write_text("# changed before preflight\n", encoding="utf-8")
+
+    with pytest.raises(
+        pb.LocalActionError, match="launcher changed after entry-point capture"
+    ):
+        pb.preflight_action(
+            _action(checkout),
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            worker_launcher_identity=captured,
+        )
 
 
 def test_nonportable_preflight_refuses_unknown_libc_attestation(
@@ -706,6 +815,9 @@ def test_local_worker_refuses_launcher_changed_by_action_before_publish(
     checkout.mkdir()
     launcher = tmp_path / "worker-launcher.py"
     launcher.write_text("# original launcher\n", encoding="utf-8")
+    launcher_identity = pb._identify_runtime_source(
+        launcher, where="test worker launcher"
+    )
     code = (
         "import pathlib; "
         f"pathlib.Path({str(launcher)!r}).write_text('# changed launcher\\n'); "
@@ -719,7 +831,7 @@ def test_local_worker_refuses_launcher_changed_by_action_before_publish(
             action,
             cas_root=tmp_path / "cas",
             checkout_root=checkout,
-            worker_launcher_path=launcher,
+            worker_launcher_identity=launcher_identity,
         )
 
     assert (checkout / "result.bin").read_bytes() == b"untrusted"
@@ -733,6 +845,9 @@ def test_local_worker_rechecks_launcher_after_result_staging(
     checkout.mkdir()
     launcher = tmp_path / "worker-launcher.py"
     launcher.write_text("# original launcher\n", encoding="utf-8")
+    launcher_identity = pb._identify_runtime_source(
+        launcher, where="test worker launcher"
+    )
     action = _action(checkout)
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     original_copy = pb._copy_to_staging
@@ -748,7 +863,7 @@ def test_local_worker_rechecks_launcher_after_result_staging(
             action,
             cas_root=tmp_path / "cas",
             checkout_root=checkout,
-            worker_launcher_path=launcher,
+            worker_launcher_identity=launcher_identity,
         )
 
     assert cas.lookup(action) is None
@@ -761,7 +876,11 @@ def test_local_worker_rechecks_core_after_result_staging(
     checkout.mkdir()
     fake_core = tmp_path / "prismabuild.py"
     fake_core.write_text("# original worker core\n", encoding="utf-8")
-    monkeypatch.setattr(pb, "__file__", str(fake_core))
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(fake_core, where="test worker core"),
+    )
     action = _action(checkout)
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     original_copy = pb._copy_to_staging
@@ -900,7 +1019,11 @@ def test_cas_publish_refuses_worker_core_changed_after_preflight(
     action = _action(checkout)
     fake_core = tmp_path / "prismabuild.py"
     fake_core.write_text("# original worker core\n", encoding="utf-8")
-    monkeypatch.setattr(pb, "__file__", str(fake_core))
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(fake_core, where="test worker core"),
+    )
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     attestation = pb.preflight_action(
         action, cas_root=tmp_path / "cas", checkout_root=checkout
@@ -911,6 +1034,77 @@ def test_cas_publish_refuses_worker_core_changed_after_preflight(
 
     with pytest.raises(pb.LocalActionError, match="worker core changed"):
         cas.publish_result(action, result, attestation=attestation)
+
+    assert cas.lookup(action) is None
+
+
+def test_cas_refuses_attestation_from_a_different_loaded_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    first_core = tmp_path / "first-prismabuild.py"
+    second_core = tmp_path / "second-prismabuild.py"
+    first_core.write_text("# first loaded core\n", encoding="utf-8")
+    second_core.write_text("# second loaded core\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(first_core, where="first test worker core"),
+    )
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout
+    )
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(second_core, where="second test worker core"),
+    )
+    result = tmp_path / "result"
+    result.write_bytes(b"candidate")
+
+    with pytest.raises(
+        pb.LocalActionError, match="core differs from module import identity"
+    ):
+        cas.publish_result(action, result, attestation=attestation)
+
+    assert cas.lookup(action) is None
+
+
+def test_cas_runs_runtime_recheck_after_action_precommit_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    fake_core = tmp_path / "prismabuild.py"
+    fake_core.write_text("# original worker core\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(fake_core, where="test worker core"),
+    )
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout
+    )
+    result = tmp_path / "result"
+    result.write_bytes(b"candidate")
+
+    def mutate_core_during_action_check() -> None:
+        fake_core.write_text(
+            "# changed by action-specific callback\n", encoding="utf-8"
+        )
+
+    with pytest.raises(pb.LocalActionError, match="core changed after module import"):
+        cas.publish_result(
+            action,
+            result,
+            attestation=attestation,
+            precommit_verify=mutate_core_during_action_check,
+        )
 
     assert cas.lookup(action) is None
 
@@ -979,13 +1173,7 @@ def test_cache_detects_payload_and_receipt_tampering(tmp_path: Path):
 
     # Restore the content and then alter the immutable receipt's bytes.
     payload.write_bytes(b"trusted")
-    receipt_path = (
-        tmp_path
-        / "cas"
-        / "actions"
-        / str(action["action_key"])[:2]
-        / f"{action['action_key']}.json"
-    )
+    receipt_path = cas._receipt_path(str(action["action_key"]))
     receipt_path.chmod(0o644)
     receipt_path.write_text("{}\n", encoding="utf-8")
     with pytest.raises(pb.CASTamperError, match="fields differ"):
@@ -1000,11 +1188,84 @@ def test_cache_structural_error_is_not_a_clean_miss(tmp_path: Path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     action = _action(checkout)
-    shard = tmp_path / "cas" / "actions" / str(action["action_key"])[:2]
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    shard = cas._receipt_path(str(action["action_key"])).parent
     shard.parent.mkdir(parents=True)
     shard.write_bytes(b"not-a-directory")
     with pytest.raises(pb.CASTamperError):
-        pb.PrismaBuildCAS(tmp_path / "cas").lookup(action)
+        cas.lookup(action)
+
+
+def test_v3_receipt_namespace_preserves_and_ignores_legacy_v2(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action_key = str(action["action_key"])
+    legacy_path = cas._legacy_v2_receipt_path(action_key)
+    legacy_path.parent.mkdir(parents=True)
+    current_attestation = _attestation(
+        checkout, action, tmp_path / "cas"
+    )
+    legacy_producer_body = {
+        key: value
+        for key, value in current_attestation.items()
+        if key not in {"runtime", "attestation_sha256"}
+    }
+    legacy_producer_body["schema"] = (
+        "prismaquant.prismabuild.worker_attestation.v1"
+    )
+    legacy_producer = {
+        **legacy_producer_body,
+        "attestation_sha256": pb.canonical_sha256(legacy_producer_body),
+    }
+    legacy_payload = b"legacy v2 result"
+    legacy_digest = hashlib.sha256(legacy_payload).hexdigest()
+    legacy_blob = cas._blob_path(legacy_digest)
+    legacy_blob.parent.mkdir(parents=True)
+    legacy_blob.write_bytes(legacy_payload)
+    legacy_body = {
+        "schema": "prismaquant.prismabuild.cas_receipt.v2",
+        "action_key": action_key,
+        "action_manifest_sha256": pb.canonical_sha256(action),
+        "result": {"sha256": legacy_digest, "bytes": len(legacy_payload)},
+        "producer": legacy_producer,
+    }
+    legacy_receipt = {
+        **legacy_body,
+        "receipt_sha256": pb.canonical_sha256(legacy_body),
+    }
+    legacy_bytes = (
+        json.dumps(
+            legacy_receipt,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    legacy_path.write_bytes(legacy_bytes)
+    legacy_path.chmod(0o444)
+
+    # A legacy entry is not v3 tamper and cannot satisfy a v3 lookup.
+    assert cas.lookup(action) is None
+    output = tmp_path / "output"
+    output.write_bytes(b"v3 result")
+    receipt, won = cas.publish_result(
+        action,
+        output,
+        attestation=current_attestation,
+    )
+
+    assert won
+    assert receipt["schema"] == pb.CAS_RECEIPT_SCHEMA_V3
+    assert cas.lookup(action) == receipt
+    assert cas._receipt_path(action_key) != legacy_path
+    assert legacy_path.read_bytes() == legacy_bytes
+    assert legacy_blob.read_bytes() == legacy_payload
 
 
 def test_cli_seals_keys_runs_and_verifies(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

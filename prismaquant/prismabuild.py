@@ -33,14 +33,12 @@ import stat
 import subprocess
 import tempfile
 
-from .cluster_campaign import canonical_sha256
-
-
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
 CAS_RECEIPT_SCHEMA_V3 = "prismaquant.prismabuild.cas_receipt.v3"
 WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
 WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
+_CAS_RECEIPT_NAMESPACE = CAS_RECEIPT_SCHEMA_V3.rsplit(".", 1)[-1]
 
 _ACTION_BODY_KEYS = frozenset(
     {
@@ -226,6 +224,12 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _canonical_file_bytes(value: object) -> bytes:
     return _canonical_bytes(value) + b"\n"
+
+
+def canonical_sha256(value: object) -> str:
+    """Hash canonical JSON without importing another repository module."""
+
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
 def _normalize_relative_path(value: object, *, where: str, dot_ok: bool) -> str:
@@ -457,6 +461,14 @@ def _identify_runtime_source(path: str | Path, *, where: str) -> dict[str, objec
     }
 
 
+# This snapshot is part of module initialization, not worker preflight.  It
+# therefore precedes action loading and execution and represents the source
+# implementation this worker process loaded as closely as Python exposes it.
+_LOADED_WORKER_CORE_IDENTITY = _identify_runtime_source(
+    Path(__file__).resolve(), where="PrismaBuild worker core"
+)
+
+
 def _normalize_runtime_source(value: object, *, where: str) -> dict[str, object]:
     raw = _exact_mapping(value, keys=_EXECUTABLE_KEYS, where=where)
     path = _text(raw["path"], where=f"{where}.path")
@@ -473,21 +485,47 @@ def _normalize_runtime_source(value: object, *, where: str) -> dict[str, object]
     }
 
 
-def _worker_runtime_identity(
-    worker_launcher_path: str | Path | None,
-) -> dict[str, object]:
-    """Bind the loaded core and, when present, its script launcher."""
+def _verify_runtime_source_unchanged(
+    expected: Mapping[str, object], *, where: str, changed_message: str
+) -> None:
+    try:
+        observed = _identify_runtime_source(str(expected["path"]), where=where)
+    except ActionContractError as exc:
+        raise LocalActionError(f"{changed_message}: {exc}") from exc
+    if observed != expected:
+        raise LocalActionError(changed_message)
 
-    core = _identify_runtime_source(
-        Path(__file__).resolve(), where="PrismaBuild worker core"
+
+def _worker_runtime_identity(
+    worker_launcher_identity: object | None,
+) -> dict[str, object]:
+    """Bind the load-time core and optional entry-point launcher snapshot."""
+
+    core = _normalize_runtime_source(
+        _LOADED_WORKER_CORE_IDENTITY,
+        where="loaded PrismaBuild worker core",
+    )
+    _verify_runtime_source_unchanged(
+        core,
+        where="PrismaBuild worker core",
+        changed_message="PrismaBuild worker core changed after module import",
     )
     launcher = (
         None
-        if worker_launcher_path is None
-        else _identify_runtime_source(
-            worker_launcher_path, where="PrismaBuild worker launcher"
+        if worker_launcher_identity is None
+        else _normalize_runtime_source(
+            worker_launcher_identity,
+            where="captured PrismaBuild worker launcher",
         )
     )
+    if launcher is not None:
+        _verify_runtime_source_unchanged(
+            launcher,
+            where="PrismaBuild worker launcher",
+            changed_message=(
+                "PrismaBuild worker launcher changed after entry-point capture"
+            ),
+        )
     body: dict[str, object] = {
         "schema": WORKER_RUNTIME_SCHEMA_V1,
         "launch_kind": "in_process" if launcher is None else "script",
@@ -543,20 +581,28 @@ def _verify_worker_runtime_unchanged(runtime: object) -> None:
     expected = _validate_worker_runtime(runtime)
     core = expected["core"]
     assert isinstance(core, Mapping)
-    observed_core = _identify_runtime_source(
-        str(core["path"]), where="PrismaBuild worker core"
+    loaded_core = _normalize_runtime_source(
+        _LOADED_WORKER_CORE_IDENTITY,
+        where="loaded PrismaBuild worker core",
     )
-    if observed_core != core:
-        raise LocalActionError("PrismaBuild worker core changed after preflight")
+    if core != loaded_core:
+        raise LocalActionError(
+            "attested PrismaBuild worker core differs from module import identity"
+        )
+    _verify_runtime_source_unchanged(
+        core,
+        where="PrismaBuild worker core",
+        changed_message="PrismaBuild worker core changed after module import",
+    )
     launcher = expected["launcher"]
     if isinstance(launcher, Mapping):
-        observed_launcher = _identify_runtime_source(
-            str(launcher["path"]), where="PrismaBuild worker launcher"
+        _verify_runtime_source_unchanged(
+            launcher,
+            where="PrismaBuild worker launcher",
+            changed_message=(
+                "PrismaBuild worker launcher changed after entry-point capture"
+            ),
         )
-        if observed_launcher != launcher:
-            raise LocalActionError(
-                "PrismaBuild worker launcher changed after preflight"
-            )
 
 
 def executable_toolchain_contract(path: str | Path) -> dict[str, str]:
@@ -1602,7 +1648,7 @@ def preflight_action(
     *,
     cas_root: str | Path,
     checkout_root: str | Path,
-    worker_launcher_path: str | Path | None = None,
+    worker_launcher_identity: object | None = None,
 ) -> dict[str, object]:
     """Derive and verify the execution facts required before launching argv."""
 
@@ -1638,7 +1684,7 @@ def preflight_action(
         "platform_key": _platform_key_from_evidence(evidence),
         "host_class": host_class,
         "evidence": evidence,
-        "runtime": _worker_runtime_identity(worker_launcher_path),
+        "runtime": _worker_runtime_identity(worker_launcher_identity),
         "executable": executable,
         "toolchain": {"declared": dict(declared), "verified": verified},
         "inputs": inputs,
@@ -1674,6 +1720,18 @@ class PrismaBuildCAS:
             raise ActionContractError("CAS root must be a non-root absolute path")
 
     def _receipt_path(self, action_key: str) -> Path:
+        # Receipt schemas are immutable interpretation domains.  v2 occupied
+        # the unversioned path below ``actions/``; v3 must coexist with it and
+        # must never parse, overwrite, or delete those historical bytes.
+        return (
+            self.root
+            / "actions"
+            / _CAS_RECEIPT_NAMESPACE
+            / action_key[:2]
+            / f"{action_key}.json"
+        )
+
+    def _legacy_v2_receipt_path(self, action_key: str) -> Path:
         return self.root / "actions" / action_key[:2] / f"{action_key}.json"
 
     def _blob_path(self, digest: str) -> Path:
@@ -1810,7 +1868,12 @@ class PrismaBuildCAS:
         return path
 
     def lookup(self, action: object) -> dict[str, object] | None:
-        """Return a fully revalidated receipt, or ``None`` on a clean miss."""
+        """Return a verified v3 receipt, or ``None`` on a v3 miss.
+
+        An unversioned legacy-v2 receipt is deliberately neither migrated nor
+        interpreted here.  It remains immutable history while v3 recomputes
+        into its disjoint namespace.
+        """
 
         normalized = validate_action(action)
         path = self._receipt_path(str(normalized["action_key"]))
@@ -1853,11 +1916,11 @@ class PrismaBuildCAS:
         A losing deterministic producer must reproduce the winner byte-for-byte;
         a stochastic producer accepts the already-published canonical result.
         ``precommit_verify`` runs after the payload copy and temporary receipt
-        fsync, immediately before the no-clobber receipt link. Local workers use
-        it for their action-specific closure checks. The worker core and optional
-        script launcher recorded in the attestation are always rechecked at the
-        same point. This cannot make mutable source an immutable snapshot; the
-        remaining verification-to-link syscall interval is deliberately small.
+        fsync. Local workers use it for their action-specific closure checks;
+        the worker core and optional script launcher are rechecked after that
+        callback as the final userspace operation before the no-clobber link.
+        This cannot make mutable source an immutable snapshot; the remaining
+        verification-to-link syscall interval is deliberately small.
         """
 
         normalized = validate_action(action)
@@ -1892,15 +1955,18 @@ class PrismaBuildCAS:
             candidate = {**body, "receipt_sha256": canonical_sha256(body)}
             receipt_path = self._receipt_path(str(normalized["action_key"]))
 
-            def verify_publication_runtime() -> None:
-                _verify_worker_runtime_unchanged(producer["runtime"])
+            def verify_publication_provenance() -> None:
+                # Action-specific closure/executable checks may be relatively
+                # slow.  Run them first so the runtime recheck is the final
+                # userspace operation before _atomic_publish calls os.link.
                 if precommit_verify is not None:
                     precommit_verify()
+                _verify_worker_runtime_unchanged(producer["runtime"])
 
             won = _atomic_publish(
                 receipt_path,
                 _canonical_file_bytes(candidate),
-                prelink_verify=verify_publication_runtime,
+                prelink_verify=verify_publication_provenance,
             )
             if won:
                 return candidate, True
@@ -2062,7 +2128,7 @@ def run_local_action(
     checkout_root: str | Path,
     timeout_seconds: float | None = None,
     recompute: bool = False,
-    worker_launcher_path: str | Path | None = None,
+    worker_launcher_identity: object | None = None,
 ) -> dict[str, object]:
     """Execute one action locally and publish its declared file result."""
 
@@ -2105,7 +2171,7 @@ def run_local_action(
             normalized,
             cas_root=cas_root,
             checkout_root=root,
-            worker_launcher_path=worker_launcher_path,
+            worker_launcher_identity=worker_launcher_identity,
         )
         if output.exists() or output.is_symlink():
             raise LocalActionError(
@@ -2214,7 +2280,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(
     argv: Sequence[str] | None = None,
     *,
-    worker_launcher_path: str | Path | None = None,
+    worker_launcher_identity: object | None = None,
 ) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "seal-closure":
@@ -2238,7 +2304,7 @@ def main(
             action,
             cas_root=args.cas_root,
             checkout_root=args.checkout_root,
-            worker_launcher_path=worker_launcher_path,
+            worker_launcher_identity=worker_launcher_identity,
         )
         print(json.dumps(result, sort_keys=True))
         return 0
@@ -2255,7 +2321,7 @@ def main(
         checkout_root=args.checkout_root,
         timeout_seconds=args.timeout_seconds,
         recompute=args.recompute,
-        worker_launcher_path=worker_launcher_path,
+        worker_launcher_identity=worker_launcher_identity,
     )
     print(json.dumps(result, sort_keys=True))
     return 0
@@ -2290,4 +2356,6 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(worker_launcher_path=Path(__file__).resolve()))
+    raise SystemExit(
+        main(worker_launcher_identity=dict(_LOADED_WORKER_CORE_IDENTITY))
+    )

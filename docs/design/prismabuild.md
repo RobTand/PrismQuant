@@ -120,11 +120,16 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   NVIDIA workers additionally require the CUDA capability and driver fields.
 - The worker implementation is a separate closed
   `prismaquant.prismabuild.worker_runtime.v1` object. It binds the exact
-  `prismaquant/prismabuild.py` bytes and, for a script-launched worker, the
-  exact launcher bytes (the SLURM path is `tools/prismabuild_worker.py`). Both
-  files are checked after task execution and again immediately before the CAS
-  receipt link. Direct Python API calls record the explicit `in_process` mode
-  and a null launcher rather than inventing a script identity.
+  `prismaquant/prismabuild.py` source snapshot taken once while that module
+  initializes. Canonical JSON and SHA-256 are implemented in that same file,
+  so the receipt-digest implementation does not escape into an unrecorded
+  repository import. The live core file must still match the load-time
+  snapshot at preflight, after task execution, and at publication. For the
+  SLURM path, `tools/prismabuild_worker.py` snapshots its own source at the
+  earliest executed wrapper code, before importing the core, and passes that
+  identity into preflight. The launcher is checked there and at the same two
+  later boundaries. Direct Python API calls record the explicit `in_process`
+  mode and a null launcher rather than inventing a script identity.
 - Every nonportable `action.inputs` digest must already exist and verify in the
   PrismaBuild CAS before argv starts. Portable actions preserve the existing
   external-input contract: CAS-resident inputs and recognized toolchain fields
@@ -143,14 +148,28 @@ receipt provenance, not action-key identity: a cache hit retains the producer
 revision that created its canonical result. The SLURM submitter verifies that
 the configured launcher path is a regular executable, but does not seal its
 then-current digest into the action request. If that file changes while a job
-waits, the job attests and rechecks the bytes it actually executed; submission-
-time bytes are not claimed.
+waits, the started wrapper records its earliest live source snapshot and
+rechecks it; submission-time bytes are not claimed. Python does not expose the
+already-started script's parser input buffer, so even that early snapshot is
+not a cryptographic proof of the exact bytes the interpreter parsed.
 
 The attestation becomes `producer` in the self-hashed
 `prismaquant.prismabuild.cas_receipt.v3` receipt. CAS lookup replays its action,
 scope, platform derivation, host-class evidence, worker core/launcher identity,
 task-executable identity, verified toolchain, verified-input subset, and self-
-digest before accepting the result.
+digest before accepting the result. V3 receipts use
+`actions/v3/<prefix>/<action-key>.json`. Legacy v2 receipts retain their
+immutable unversioned `actions/<prefix>/<action-key>.json` addresses: v3 lookup
+does not parse them as v3, overwrite them, delete them, or silently migrate
+them. A v2-only key is a v3 cache miss and must be recomputed under the new
+producer contract.
+
+Receipt publication fsyncs the candidate, runs the potentially longer
+action-closure and executable callback first, then rehashes the core and
+launcher as the final userspace check before the first-writer-wins hard link.
+There remains an unavoidable sequential interval between that final check
+returning and the `os.link` syscall; this design minimizes that interval rather
+than claiming a zero-gap filesystem snapshot.
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In
 the target deployment, the trust boundary would be the munge-authenticated,
