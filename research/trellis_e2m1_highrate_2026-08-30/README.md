@@ -103,6 +103,24 @@ the manifest-file SHA-256 is
 Finalization copies through `os.pread`; the numeric drivers isolate their live
 corpus reader from the deliberately frozen historical encoder modules.
 
+### Legacy result identity boundary
+
+The three immutable GLM result files cited below predate the hardened
+publication contract: both E2M1 files carry
+`trellis.e2m1_highrate.v2`, and the learned-FP8 file carries
+`trellis.glm_fp8_learned_balanced.v1`. In substance their status is
+`execution_identity_attested=false`: their retained bytes establish the
+reported numeric values and hashes, but do not bind the active driver,
+isolated corpus loader, integration checkout, or transitive frozen-codec
+closure that actually executed. No post-hoc receipt can recover that missing
+fact, so none is fabricated and the result files remain untouched.
+
+Future E2M1 v3 and learned-FP8 v2 outputs bind the corpus manifest, artifact
+and importance hashes; active driver, isolated loader, corpus reader and Git
+identity; and the frozen hull source/tree closure. They use an identity-bound
+exclusive claim, self-digested exact-prefix resume, final-time identity replay,
+and hard-link no-replace publication with the completed result published last.
+
 ### Same-grid coding gain
 
 The completed matched-rate result covers every tensor. Each median below is

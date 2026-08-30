@@ -18,8 +18,8 @@ import importlib
 import inspect
 import json
 import math
-import os
 import statistics
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -29,6 +29,13 @@ from typing import Mapping
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from isolated_glm_corpus import load_active_glm_corpus
+from atomic_publication import (
+    PublicationError,
+    atomic_checkpoint_json,
+    exclusive_publication_claim,
+    file_sha256,
+    publish_file_no_replace,
+)
 
 EXPECTED_FP8_LADDER_SHA256 = (
     "f9c5167905b98fe98a3389a9471cb9bea06e6ced9a1288329ce1b0fb6a92d2a3"
@@ -39,7 +46,11 @@ EXPECTED_HULL_SWEEP_SHA256 = (
 DEFAULT_LOCKED_LADDER = Path("/home/rob/dq-runs/trellis-hull-20260828/fp8_ladder.py")
 RUNGS = (32, 40, 48)
 ENCODE_TIER = "balanced"
-SCHEMA = "trellis.glm_fp8_learned_balanced.v1"
+SCHEMA = "trellis.glm_fp8_learned_balanced.v2"
+CELL_KEYS = frozenset({
+    "population", "shape", "source_weight_sha256", "importance_sha256",
+    "importance_source", "weighted_energy", "arms",
+})
 
 
 class CampaignError(RuntimeError):
@@ -151,9 +162,145 @@ def population_summaries(per_tensor: Mapping[str, Mapping[str, object]]) -> dict
 
 
 def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
-    temporary = path.with_name(f".{path.name}.write-{os.getpid()}")
-    temporary.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n")
-    os.replace(temporary, path)
+    atomic_checkpoint_json(path, value)
+
+
+def _sealed_report(report: Mapping[str, object]) -> dict[str, object]:
+    body = {key: value for key, value in report.items() if key != "checkpoint_sha256"}
+    return {**body, "checkpoint_sha256": _identity_sha256(body)}
+
+
+def _strict_json_object(path: Path) -> dict[str, object]:
+    def object_from_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise CampaignError(f"duplicate JSON member {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(path.read_text(), object_pairs_hook=object_from_pairs)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise CampaignError(f"invalid partial checkpoint {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise CampaignError("partial checkpoint must be one JSON object")
+    return value
+
+
+def _resume_report(path: Path, *, settings, corpus) -> dict[str, object]:
+    sealed = _strict_json_object(path)
+    digest = sealed.pop("checkpoint_sha256", None)
+    if digest != _identity_sha256(sealed):
+        raise CampaignError("partial checkpoint self-digest differs")
+    if sealed.get("schema") != SCHEMA or sealed.get("settings") != settings:
+        raise CampaignError("partial checkpoint identity differs")
+    if sealed.get("partial") is not True:
+        raise CampaignError("resume checkpoint is not marked partial")
+    per_tensor = sealed.get("per_tensor")
+    if not isinstance(per_tensor, dict):
+        raise CampaignError("partial per_tensor must be an object")
+    if sealed.get("tensors_done") != len(per_tensor):
+        raise CampaignError("partial tensor count differs")
+    names = [entry.name for entry in corpus.entries]
+    if set(per_tensor) != set(names[:len(per_tensor)]):
+        raise CampaignError("partial checkpoint is not an exact tensor prefix")
+    entries = {entry.name: entry for entry in corpus.entries}
+    expected_arms = {
+        f"{family}@{rung}"
+        for rung in RUNGS
+        for family in ("fp8_cb", "fp8_cb_learned")
+    }
+    for name, cell in per_tensor.items():
+        entry = entries[name]
+        if not isinstance(cell, dict) or set(cell) != CELL_KEYS:
+            raise CampaignError(f"{name}: partial cell members differ")
+        if (
+            cell.get("population") != entry.population
+            or cell.get("source_weight_sha256") != entry.source_weight_sha256
+            or cell.get("importance_sha256") != entry.importance_sha256
+            or cell.get("shape") != list(entry.source_weight_shape)
+            or not isinstance(cell.get("arms"), dict)
+            or set(cell["arms"]) != expected_arms
+        ):
+            raise CampaignError(f"{name}: partial cell identity differs")
+    started = sealed.get("started_at_unix_s")
+    if not isinstance(started, (int, float)) or not math.isfinite(started):
+        raise CampaignError("partial start time is invalid")
+    return sealed
+
+
+def _repo_commit() -> str | None:
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return commit if len(commit) == 40 else None
+
+
+def _active_source_identity() -> dict[str, object]:
+    driver = Path(__file__).resolve(strict=True)
+    isolated_loader = driver.with_name("isolated_glm_corpus.py")
+    corpus_reader = REPO_ROOT / "prismaquant/trellis_bf16_corpus.py"
+    return {
+        "repo_root": str(REPO_ROOT),
+        "repo_git_commit": _repo_commit(),
+        "driver_path": str(driver),
+        "driver_sha256": file_sha256(driver),
+        "isolated_loader_path": str(isolated_loader),
+        "isolated_loader_sha256": file_sha256(isolated_loader),
+        "active_corpus_reader_path": str(corpus_reader.resolve(strict=True)),
+        "active_corpus_reader_sha256": file_sha256(corpus_reader),
+    }
+
+
+def _frozen_codec_closure(ladder) -> dict[str, object]:
+    hull = ladder.H
+    imported = {}
+    for name in ("H", "C", "W", "P", "S4", "TF"):
+        module = getattr(ladder, name, None)
+        module_path = Path(getattr(module, "__file__", ""))
+        if module_path.is_file():
+            resolved = module_path.resolve(strict=True)
+            imported[name] = {
+                "path": str(resolved),
+                "sha256": file_sha256(resolved),
+            }
+    return {
+        "snapshot_tree_sha256": hull.snapshot_tree_sha256(),
+        "source_sha256": hull.source_hashes(),
+        "imported_codec_modules": imported,
+    }
+
+
+def _verify_final_bindings(
+    *, args, settings: Mapping[str, object], ladder
+) -> None:
+    if settings.get("active_source_identity") != _active_source_identity():
+        raise CampaignError("active source identity drifted during run")
+    if settings.get("locked_sources") != _locked_sources(args.locked_ladder):
+        raise CampaignError("locked FP8/hull source identity drifted during run")
+    if settings.get("frozen_codec_closure") != _frozen_codec_closure(ladder):
+        raise CampaignError("frozen codec closure drifted during run")
+    fresh = load_active_glm_corpus(REPO_ROOT, args.manifest)
+    if (
+        file_sha256(fresh.manifest_path)
+        != settings.get("corpus_manifest_sha256")
+        or fresh.manifest.get("file_sha256")
+        != settings.get("corpus_file_sha256")
+        or file_sha256(fresh.artifact_path)
+        != settings.get("corpus_file_sha256")
+        or fresh.manifest.get("importance_identity", {}).get("value_sha256")
+        != settings.get("importance_value_sha256")
+        or fresh.manifest.get("prismaquant_commit")
+        != settings.get("corpus_prismaquant_commit")
+    ):
+        raise CampaignError("bound GLM corpus drifted during run")
 
 
 def main() -> int:
@@ -166,17 +313,22 @@ def main() -> int:
 
     corpus = load_active_glm_corpus(REPO_ROOT, args.manifest)
     locked = _locked_sources(args.locked_ladder)
+    ladder = _load_ladder(args.locked_ladder)
     settings = {
         "schema": SCHEMA,
         "corpus_manifest": str(corpus.manifest_path),
+        "corpus_manifest_sha256": file_sha256(corpus.manifest_path),
         "corpus_file_sha256": corpus.manifest["file_sha256"],
         "importance_value_sha256": corpus.manifest["importance_identity"]["value_sha256"],
+        "corpus_prismaquant_commit": corpus.manifest["prismaquant_commit"],
         "population_counts": {
             name: len(entries) for name, entries in corpus.populations.items()
         },
         "rungs": list(RUNGS),
         "encode_tier": ENCODE_TIER,
         "locked_sources": locked,
+        "frozen_codec_closure": _frozen_codec_closure(ladder),
+        "active_source_identity": _active_source_identity(),
         "aggregation_contract": "dense/routed population-separated; no pooled median",
     }
     settings["identity_sha256"] = _identity_sha256(settings)
@@ -184,18 +336,25 @@ def main() -> int:
         print(json.dumps({**settings, "status": "validated_no_gpu_no_write"},
                          indent=2, sort_keys=True))
         return 0
-    if args.out.exists():
+    try:
+        with exclusive_publication_claim(args.out, identity=settings):
+            return _run_claimed(args, corpus, settings, ladder)
+    except PublicationError as exc:
+        raise CampaignError(str(exc)) from exc
+
+
+def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
+    if args.out.exists() or args.out.is_symlink():
         raise CampaignError("final output already exists (immutable no-clobber)")
 
     import torch
     if not torch.cuda.is_available():
         raise CampaignError("CUDA required for learned FP8-CB encoding")
-    ladder = _load_ladder(args.locked_ladder)
     partial = args.out.with_name(args.out.name + ".partial")
+    if partial.is_symlink():
+        raise CampaignError("partial checkpoint must not be a symlink")
     if partial.exists():
-        report = json.loads(partial.read_text())
-        if report.get("settings") != settings:
-            raise CampaignError("partial checkpoint identity differs")
+        report = _resume_report(partial, settings=settings, corpus=corpus)
     else:
         report = {
             "schema": SCHEMA,
@@ -274,12 +433,13 @@ def main() -> int:
                 }
         per_tensor[entry.name] = cell
         report["tensors_done"] = len(per_tensor)
-        _atomic_json(partial, report)
+        _atomic_json(partial, _sealed_report(report))
         print(f"[{index}/{len(corpus.entries)}] {entry.population} {entry.name}",
               flush=True)
         del raw, importance, weight, metric
         torch.cuda.empty_cache()
 
+    _verify_final_bindings(args=args, settings=settings, ladder=ladder)
     report.update({
         "partial": False,
         "completed_at_unix_s": time.time(),
@@ -290,8 +450,11 @@ def main() -> int:
             "and both-host Netdata/power evidence before any performance claim"
         ),
     })
-    _atomic_json(partial, report)
-    os.rename(partial, args.out)
+    _atomic_json(partial, _sealed_report(report))
+    try:
+        publish_file_no_replace(partial, args.out)
+    except PublicationError as exc:
+        raise CampaignError(str(exc)) from exc
     print(f"wrote {args.out}", flush=True)
     return 0
 

@@ -14,12 +14,15 @@ not a production cache or a replacement for any resident prefetch mechanism.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
 import os
 import pickle
 import re
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -57,9 +60,171 @@ _ROUTED_RE = re.compile(
 )
 _DTYPE_BYTES = {"BF16": 2, "F32": 4}
 
+_FINALIZED_MANIFEST_KEYS = frozenset({
+    "schema", "status", "generated", "host", "corpus_label",
+    "model_profile", "model", "model_config_sha256", "num_hidden_layers",
+    "layers", "roles", "expert", "calibration", "importance_identity",
+    "reader_contract", "prismaquant_commit", "file", "file_size_bytes",
+    "file_sha256", "populations", "source_artifact", "entries",
+})
+_IMPORTANCE_IDENTITY_KEYS = frozenset({
+    "schema", "probe_file_sha256", "probe_calibration_hash",
+    "probe_imatrix_value_sha256", "value_sha256", "dense_normalization",
+    "routed_normalization", "gate_up_mapping", "down_mapping",
+})
+_SOURCE_ARTIFACT_KEYS = frozenset({
+    "manifest_schema", "file_sha256", "payload_bytes", "payload_copy",
+})
+_ENTRY_KEYS = frozenset({
+    "name", "population", "layer", "projection", "expert",
+    "source_weight_dtype", "source_weight_shape", "source_weight_sha256",
+    "importance_key", "importance_shape", "importance_dtype",
+    "importance_sha256", "importance_source", "census",
+})
+_IMPORTANCE_SOURCE_KEYS = frozenset({
+    "qname", "expert", "denominator_name", "denominator",
+})
+_CENSUS_KEYS = frozenset({"distinct_source_values", "numel"})
+_FINALIZATION_CLAIM_SCHEMA = "prismaquant.trellis_bf16_corpus.claim.v1"
+
 
 class CorpusContractError(ValueError):
     """A corpus or probe does not satisfy the finalized contract."""
+
+
+def _require_exact_keys(
+    value: Mapping[str, object], expected: frozenset[str], *, where: str
+) -> None:
+    actual = set(value)
+    if actual != expected:
+        raise CorpusContractError(
+            f"{where} members differ: missing={sorted(expected - actual)}, "
+            f"unknown={sorted(actual - expected)}"
+        )
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    try:
+        return (
+            json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ) + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise CorpusContractError("publication identity is not canonical JSON") from exc
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _exclusive_finalization_claim(
+    manifest_path: Path, *, identity: Mapping[str, object]
+):
+    """Hold a crash-releasable, identity-bound claim on one output pair.
+
+    The claim file persists so a retry can prove that it is resuming the same
+    producer identity.  ``flock`` is the live-owner exclusion: it is released
+    by the kernel on process death, unlike a stale O_EXCL sentinel.
+    """
+
+    claim_path = manifest_path.with_name(f".{manifest_path.name}.partial-claim")
+    expected = _canonical_json_bytes({
+        "schema": _FINALIZATION_CLAIM_SCHEMA,
+        "artifact": str(identity["output_artifact"]),
+        "manifest": str(identity["output_manifest"]),
+        "identity_sha256": hashlib.sha256(
+            _canonical_json_bytes(identity)
+        ).hexdigest(),
+    })
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(claim_path, flags, 0o600)
+    except OSError as exc:
+        raise CorpusContractError(
+            f"cannot open finalization claim {claim_path}: {exc}"
+        ) from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise CorpusContractError(
+                f"competing producer owns finalization claim: {claim_path}"
+            ) from exc
+        size = os.fstat(descriptor).st_size
+        if size:
+            current = os.pread(descriptor, size, 0)
+            if current != expected:
+                raise CorpusContractError(
+                    "finalization claim identity differs; use fresh output paths"
+                )
+        else:
+            _write_all(descriptor, expected)
+            os.fsync(descriptor)
+            _fsync_directory(claim_path.parent)
+        yield claim_path
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _publish_staged_file_no_replace(staged: Path, destination: Path) -> None:
+    """Durably publish a complete sibling file without a replace window."""
+
+    try:
+        os.link(staged, destination, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise CorpusContractError(
+            f"finalized output appeared concurrently: {destination}"
+        ) from exc
+    except OSError as exc:
+        raise CorpusContractError(
+            f"atomic no-replace publication failed for {destination}: {exc}"
+        ) from exc
+    _fsync_directory(destination.parent)
+    staged.unlink()
+    _fsync_directory(destination.parent)
+
+
+def _files_equal(left: Path, right: Path) -> bool:
+    """Compare two regular files without following a replacement mid-read."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        left_fd = os.open(left, flags)
+    except OSError as exc:
+        raise CorpusContractError(f"cannot compare staged/final artifacts: {exc}") from exc
+    try:
+        right_fd = os.open(right, flags)
+    except OSError as exc:
+        os.close(left_fd)
+        raise CorpusContractError(f"cannot compare staged/final artifacts: {exc}") from exc
+    try:
+        left_stat = os.fstat(left_fd)
+        right_stat = os.fstat(right_fd)
+        if left_stat.st_size != right_stat.st_size:
+            return False
+        offset = 0
+        while offset < left_stat.st_size:
+            size = min(8 << 20, left_stat.st_size - offset)
+            if os.pread(left_fd, size, offset) != os.pread(right_fd, size, offset):
+                return False
+            offset += size
+        return True
+    finally:
+        os.close(left_fd)
+        os.close(right_fd)
 
 
 def _no_duplicate_object(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
@@ -364,6 +529,7 @@ def load_finalized_bf16_corpus(
         if "INCOMPLETE" in str(schema).upper():
             raise CorpusContractError(f"{path}: incomplete corpus is never loadable")
         raise CorpusContractError(f"{path}: expected schema {FINALIZED_SCHEMA!r}")
+    _require_exact_keys(manifest, _FINALIZED_MANIFEST_KEYS, where=str(path))
     if manifest.get("status") != "finalized":
         raise CorpusContractError(f"{path}: status must be 'finalized'")
     if manifest.get("model_profile") != GLM_MODEL_PROFILE:
@@ -399,6 +565,9 @@ def load_finalized_bf16_corpus(
     identity = manifest.get("importance_identity")
     if not isinstance(identity, dict) or identity.get("schema") != IMPORTANCE_SCHEMA:
         raise CorpusContractError("importance_identity schema is missing or invalid")
+    _require_exact_keys(
+        identity, _IMPORTANCE_IDENTITY_KEYS, where="importance_identity"
+    )
     if identity.get("probe_calibration_hash") != calibration_hash:
         raise CorpusContractError("probe/calibration identities differ")
     _require_sha256(identity.get("probe_file_sha256"), where="probe_file_sha256")
@@ -439,6 +608,9 @@ def load_finalized_bf16_corpus(
     source_artifact = manifest.get("source_artifact")
     if not isinstance(source_artifact, dict):
         raise CorpusContractError("source_artifact must be an object")
+    _require_exact_keys(
+        source_artifact, _SOURCE_ARTIFACT_KEYS, where="source_artifact"
+    )
     if source_artifact.get("manifest_schema") != INCOMPLETE_GLM_SCHEMA:
         raise CorpusContractError("source_artifact manifest schema differs")
     _require_sha256(
@@ -471,6 +643,7 @@ def load_finalized_bf16_corpus(
         where = f"entries[{index}]"
         if not isinstance(raw, dict):
             raise CorpusContractError(f"{where} must be an object")
+        _require_exact_keys(raw, _ENTRY_KEYS, where=where)
         name = str(raw.get("name"))
         importance_key = str(raw.get("importance_key"))
         if name in seen_names:
@@ -511,6 +684,11 @@ def load_finalized_bf16_corpus(
         source = raw.get("importance_source")
         if not isinstance(source, dict):
             raise CorpusContractError(f"{where}: importance_source must be an object")
+        _require_exact_keys(
+            source,
+            _IMPORTANCE_SOURCE_KEYS,
+            where=f"{where}.importance_source",
+        )
         source_qname = str(source.get("qname"))
         source_expert = source.get("expert")
         expected_source_expert = GLM_EXPERT if population == "routed" else None
@@ -533,6 +711,16 @@ def load_finalized_bf16_corpus(
         denominator = _require_positive_int(
             source.get("denominator"),
             where=f"{where}.importance_source.denominator",
+        )
+        census = raw.get("census")
+        if not isinstance(census, dict):
+            raise CorpusContractError(f"{where}: census must be an object")
+        _require_exact_keys(census, _CENSUS_KEYS, where=f"{where}.census")
+        if census.get("numel") != math.prod(expected_shape):
+            raise CorpusContractError(f"{where}: census numel differs")
+        _require_positive_int(
+            census.get("distinct_source_values"),
+            where=f"{where}.census.distinct_source_values",
         )
         weight_header = layout.tensors.get(name)
         importance_header = layout.tensors.get(importance_key)
@@ -921,15 +1109,18 @@ def finalize_glm_bf16_corpus(
 
     incomplete_path = Path(incomplete_manifest_path).resolve()
     source_path = Path(source_artifact_path).resolve()
-    output_path = Path(output_artifact_path).resolve()
-    manifest_path = Path(output_manifest_path).resolve()
+    output_candidate = Path(output_artifact_path).absolute()
+    manifest_candidate = Path(output_manifest_path).absolute()
+    output_candidate.parent.mkdir(parents=True, exist_ok=True)
+    manifest_candidate.parent.mkdir(parents=True, exist_ok=True)
+    output_path = output_candidate.parent.resolve(strict=True) / output_candidate.name
+    manifest_path = (
+        manifest_candidate.parent.resolve(strict=True) / manifest_candidate.name
+    )
     if output_path == source_path:
         raise CorpusContractError("finalizer never mutates the source artifact")
     if output_path.parent != manifest_path.parent:
         raise CorpusContractError("artifact and manifest must share one directory")
-    if output_path.exists() or manifest_path.exists():
-        raise CorpusContractError("finalized output paths are immutable and must not exist")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     source_contract = validate_incomplete_glm_source(incomplete_path, source_path)
     incomplete = _read_json_object(incomplete_path)
@@ -946,6 +1137,9 @@ def finalize_glm_bf16_corpus(
     identity = dict(importance_identity)
     if identity.get("schema") != IMPORTANCE_SCHEMA:
         raise CorpusContractError("importance identity schema differs")
+    _require_exact_keys(
+        identity, _IMPORTANCE_IDENTITY_KEYS, where="importance_identity"
+    )
     if identity.get("probe_calibration_hash") != calibration_out["probe_calib_hash"]:
         raise CorpusContractError("importance calibration does not match corpus calibration")
     expected_value_hash = canonical_imatrix_sha256(
@@ -953,6 +1147,62 @@ def finalize_glm_bf16_corpus(
     )
     if identity.get("value_sha256") != expected_value_hash:
         raise CorpusContractError("importance identity value hash differs")
+
+    claim_identity = {
+        "schema": _FINALIZATION_CLAIM_SCHEMA,
+        "output_artifact": output_path.name,
+        "output_manifest": manifest_path.name,
+        "incomplete_manifest_sha256": _sha256_file(incomplete_path),
+        "source_artifact_sha256": actual_source_file_hash,
+        "importance_identity": identity,
+        "calibration": calibration_out,
+        "model_config_sha256": config_hash,
+        "prismaquant_commit": str(prismaquant_commit),
+    }
+    with _exclusive_finalization_claim(manifest_path, identity=claim_identity):
+        if manifest_path.exists() or manifest_path.is_symlink():
+            raise CorpusContractError(
+                "finalized output paths are immutable and must not exist"
+            )
+        if output_path.is_symlink():
+            raise CorpusContractError("artifact-only recovery refuses a symlink")
+        adopt_existing_artifact = output_path.exists()
+        return _finalize_glm_bf16_corpus_claimed(
+            source_layout=source_layout,
+            raw_tensors=raw_tensors,
+            importance=importance,
+            incomplete=incomplete,
+            output_path=output_path,
+            manifest_path=manifest_path,
+            calibration_out=calibration_out,
+            config_hash=config_hash,
+            identity=identity,
+            actual_source_file_hash=actual_source_file_hash,
+            prismaquant_commit=str(prismaquant_commit),
+            generated=str(generated),
+            host=str(host),
+            adopt_existing_artifact=adopt_existing_artifact,
+        )
+
+
+def _finalize_glm_bf16_corpus_claimed(
+    *,
+    source_layout: _SafetensorsLayout,
+    raw_tensors: Mapping[str, object],
+    importance: Mapping[str, ImportanceVector],
+    incomplete: Mapping[str, object],
+    output_path: Path,
+    manifest_path: Path,
+    calibration_out: Mapping[str, object],
+    config_hash: str,
+    identity: Mapping[str, object],
+    actual_source_file_hash: str,
+    prismaquant_commit: str,
+    generated: str,
+    host: str,
+    adopt_existing_artifact: bool,
+) -> Path:
+    """Build and commit one claimed artifact/manifest result set."""
 
     header: dict[str, object] = {}
     entries: list[dict[str, object]] = []
@@ -1031,21 +1281,37 @@ def finalize_glm_bf16_corpus(
         })
 
     header_bytes = _safetensors_header_bytes(header)
-    artifact_tmp = output_path.with_name(f".{output_path.name}.partial-{os.getpid()}")
-    manifest_tmp = manifest_path.with_name(f".{manifest_path.name}.partial-{os.getpid()}")
-    if artifact_tmp.exists() or manifest_tmp.exists():
-        raise CorpusContractError("stale finalizer temporary path exists")
+    artifact_descriptor, artifact_temporary = tempfile.mkstemp(
+        prefix=f".{output_path.name}.partial-",
+        suffix=".tmp",
+        dir=output_path.parent,
+    )
+    artifact_tmp = Path(artifact_temporary)
     try:
-        descriptor = os.open(artifact_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
+        manifest_descriptor, manifest_temporary = tempfile.mkstemp(
+            prefix=f".{manifest_path.name}.partial-",
+            suffix=".tmp",
+            dir=manifest_path.parent,
+        )
+    except BaseException:
+        os.close(artifact_descriptor)
+        artifact_tmp.unlink(missing_ok=True)
+        raise
+    os.close(manifest_descriptor)
+    manifest_tmp = Path(manifest_temporary)
+    try:
         try:
-            _write_all(descriptor, len(header_bytes).to_bytes(8, "little"))
-            _write_all(descriptor, header_bytes)
-            _copy_payload_pread(source_layout, descriptor)
+            _write_all(
+                artifact_descriptor, len(header_bytes).to_bytes(8, "little")
+            )
+            _write_all(artifact_descriptor, header_bytes)
+            _copy_payload_pread(source_layout, artifact_descriptor)
             for payload in importance_payloads:
-                _write_all(descriptor, payload)
-            os.fsync(descriptor)
+                _write_all(artifact_descriptor, payload)
+            os.fsync(artifact_descriptor)
+            os.fchmod(artifact_descriptor, 0o444)
         finally:
-            os.close(descriptor)
+            os.close(artifact_descriptor)
         artifact_hash = _sha256_file(artifact_tmp)
         manifest: dict[str, object] = {
             "schema": FINALIZED_SCHEMA,
@@ -1090,18 +1356,39 @@ def finalize_glm_bf16_corpus(
         # private names.  Only the basename differs from the final manifest;
         # no invalid artifact is ever published at the requested path.
         validation_manifest = {**manifest, "file": artifact_tmp.name}
-        manifest_tmp.write_text(
-            json.dumps(validation_manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        load_finalized_bf16_corpus(manifest_tmp)
-        manifest_tmp.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        with manifest_tmp.open("rb") as handle:
+        with manifest_tmp.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(validation_manifest, indent=2, sort_keys=True))
+            handle.write("\n")
+            handle.flush()
             os.fsync(handle.fileno())
-        os.rename(artifact_tmp, output_path)
-        os.rename(manifest_tmp, manifest_path)
+        load_finalized_bf16_corpus(manifest_tmp)
+        with manifest_tmp.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(manifest, indent=2, sort_keys=True))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o644)
+        if _sha256_file(source_layout.path) != actual_source_file_hash:
+            raise CorpusContractError(
+                "source artifact drifted during finalization"
+            )
+        # The artifact becomes visible first.  The strict manifest is the
+        # result-set commit marker and is linked only after the artifact is
+        # durable.  Neither publication can replace a concurrent destination.
+        if adopt_existing_artifact:
+            if (
+                output_path.stat().st_size != artifact_tmp.stat().st_size
+                or _sha256_file(output_path) != artifact_hash
+                or not _files_equal(artifact_tmp, output_path)
+            ):
+                raise CorpusContractError(
+                    "artifact-only recovery bytes differ from regenerated output"
+                )
+            artifact_tmp.unlink()
+            _fsync_directory(output_path.parent)
+        else:
+            _publish_staged_file_no_replace(artifact_tmp, output_path)
+        _publish_staged_file_no_replace(manifest_tmp, manifest_path)
     except Exception:
         for temporary in (artifact_tmp, manifest_tmp):
             try:

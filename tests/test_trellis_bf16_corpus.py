@@ -4,6 +4,8 @@ import hashlib
 import json
 import math
 import pickle
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -291,6 +293,108 @@ def test_finalizer_is_no_clobber_and_never_mutates_incomplete_artifact(
     assert hashlib.sha256(source.read_bytes()).hexdigest() == source_hash
 
 
+def test_concurrent_finalizers_have_exactly_one_live_owner(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(corpus, "_expected_shape", _small_shape)
+    incomplete, source, _ = _source_fixture(tmp_path)
+    probe, _ = _probe_fixture(tmp_path)
+    importance, identity = corpus.adapt_glm_importance_from_probe(incomplete, probe)
+    output = tmp_path / "final.safetensors"
+    manifest = tmp_path / "manifest.json"
+    kwargs = dict(
+        incomplete_manifest_path=incomplete,
+        source_artifact_path=source,
+        importance=importance,
+        importance_identity=identity,
+        output_artifact_path=output,
+        output_manifest_path=manifest,
+        calibration=_calibration(),
+        model_config_sha256="b" * 64,
+        prismaquant_commit="c" * 40,
+        generated="first",
+        host="host-a",
+    )
+    entered_copy = threading.Event()
+    release_copy = threading.Event()
+    original_copy = corpus._copy_payload_pread
+
+    def blocking_copy(*args, **inner_kwargs):
+        entered_copy.set()
+        assert release_copy.wait(timeout=10)
+        return original_copy(*args, **inner_kwargs)
+
+    monkeypatch.setattr(corpus, "_copy_payload_pread", blocking_copy)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winner = pool.submit(corpus.finalize_glm_bf16_corpus, **kwargs)
+        assert entered_copy.wait(timeout=10)
+        loser = pool.submit(corpus.finalize_glm_bf16_corpus, **kwargs)
+        with pytest.raises(corpus.CorpusContractError, match="competing producer"):
+            loser.result(timeout=10)
+        release_copy.set()
+        assert winner.result(timeout=10) == manifest.resolve()
+
+    loaded = corpus.load_finalized_bf16_corpus(manifest)
+    assert loaded.artifact_path == output.resolve()
+
+
+def test_artifact_only_crash_is_adopted_by_same_identity_retry(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(corpus, "_expected_shape", _small_shape)
+    incomplete, source, _ = _source_fixture(tmp_path)
+    probe, _ = _probe_fixture(tmp_path)
+    importance, identity = corpus.adapt_glm_importance_from_probe(incomplete, probe)
+    output = tmp_path / "final.safetensors"
+    manifest = tmp_path / "manifest.json"
+    kwargs = dict(
+        incomplete_manifest_path=incomplete,
+        source_artifact_path=source,
+        importance=importance,
+        importance_identity=identity,
+        output_artifact_path=output,
+        output_manifest_path=manifest,
+        calibration=_calibration(),
+        model_config_sha256="b" * 64,
+        prismaquant_commit="c" * 40,
+        generated="first-attempt",
+        host="host-a",
+    )
+    original_publish = corpus._publish_staged_file_no_replace
+    injected = False
+
+    def crash_before_manifest(staged, destination):
+        nonlocal injected
+        if destination == manifest.resolve() and not injected:
+            injected = True
+            raise corpus.CorpusContractError("injected crash before commit marker")
+        return original_publish(staged, destination)
+
+    monkeypatch.setattr(
+        corpus, "_publish_staged_file_no_replace", crash_before_manifest
+    )
+    with pytest.raises(corpus.CorpusContractError, match="injected crash"):
+        corpus.finalize_glm_bf16_corpus(**kwargs)
+    assert output.is_file()
+    assert not manifest.exists()
+    orphan_bytes = output.read_bytes()
+    orphan_hash = hashlib.sha256(output.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(
+        corpus, "_publish_staged_file_no_replace", original_publish
+    )
+    output.chmod(0o644)
+    output.write_bytes(orphan_bytes + b"corrupt")
+    with pytest.raises(corpus.CorpusContractError, match="recovery bytes differ"):
+        corpus.finalize_glm_bf16_corpus(**kwargs)
+    output.write_bytes(orphan_bytes)
+    output.chmod(0o444)
+    kwargs.update(generated="retry-time", host="host-b")
+    assert corpus.finalize_glm_bf16_corpus(**kwargs) == manifest.resolve()
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == orphan_hash
+    assert corpus.load_finalized_bf16_corpus(manifest).manifest["generated"] == "retry-time"
+
+
 def test_loader_refuses_incomplete_and_duplicate_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(corpus, "_expected_shape", _small_shape)
     incomplete, _source, _ = _source_fixture(tmp_path)
@@ -302,6 +406,38 @@ def test_loader_refuses_incomplete_and_duplicate_entries(tmp_path, monkeypatch):
         payload["entries"][-1] = dict(payload["entries"][0])
     _rewrite_manifest(manifest, duplicate)
     with pytest.raises(corpus.CorpusContractError, match="duplicate corpus tensor"):
+        corpus.load_finalized_bf16_corpus(manifest)
+
+
+@pytest.mark.parametrize(
+    ("where", "unknown"),
+    [
+        ("top", "production_eligible"),
+        ("entry", "unrecognized_claim"),
+        ("importance_source", "source_confidence"),
+        ("importance_identity", "normalization_claim"),
+        ("source_artifact", "copy_verified"),
+        ("census", "estimated_values"),
+    ],
+)
+def test_loader_refuses_unknown_claim_bearing_members(
+    tmp_path, monkeypatch, where, unknown,
+):
+    manifest, *_ = _finalized(tmp_path, monkeypatch)
+
+    def mutate(payload):
+        target = {
+            "top": payload,
+            "entry": payload["entries"][0],
+            "importance_source": payload["entries"][0]["importance_source"],
+            "importance_identity": payload["importance_identity"],
+            "source_artifact": payload["source_artifact"],
+            "census": payload["entries"][0]["census"],
+        }[where]
+        target[unknown] = True
+
+    _rewrite_manifest(manifest, mutate)
+    with pytest.raises(corpus.CorpusContractError, match=f"unknown=.*{unknown}"):
         corpus.load_finalized_bf16_corpus(manifest)
 
 

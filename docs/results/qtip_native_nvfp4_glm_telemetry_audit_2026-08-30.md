@@ -1,10 +1,11 @@
 # QTIP-native NVFP4 and GLM numeric telemetry audit — 2026-08-30
 
 **Status: accepted one-Linear QTIP result; GLM quality evidence remains
-research-only; no serving or comparative-performance verdict.** All hashes in
-this note were recomputed from the files on `sparky`. Power is reported because
-it was measured, but it is not converted into a speed, saturation, or
-work-per-joule claim.
+research-only; the immutable GLM E2M1-v2/learned-FP8-v1 results have
+`execution_identity_attested=false`; no serving or comparative-performance
+verdict.** All hashes in this note were recomputed from the files on `sparky`.
+Power is reported because it was measured, but it is not converted into a
+speed, saturation, or work-per-joule claim.
 
 ## Durable result wording
 
@@ -40,9 +41,9 @@ and does not change any production format or runtime gate.
 | Measurement | Authoritative result | In-process profile | Valid scope |
 |---|---|---|---|
 | QTIP-native NVFP4 R3 | `/home/rob/dq-runs/qtip-native-nvfp4-v2-r3-64679a7-telemetry/acceptance.v2.json` — `98ad857d0addac04d22c318bbd0dffff3fb62cebacf83b35dda356b2208cd8ca`; raw receipt `/home/rob/dq-runs/qtip-native-nvfp4-v2-r3-64679a7/receipt.v2.json` — `77912b7def1a0951dbeb067c50d0d617bd2458945ffd8170938d480828d1a54b` | py-spy `/home/rob/dq-runs/qtip-native-nvfp4-v2-r3-64679a7-telemetry/py-spy.speedscope.json` — `f85c0cab950a38fb23a62c118b3c29622c23c690e15e8aa414c4e2b6a468403c`; Torch trace `/home/rob/dq-runs/qtip-native-nvfp4-v2-r3-64679a7/profile/one_linear_trace.json` — `38ad6e85a4289c6161983d0819b81672528e15f60307ae9f0570a7c9d8f6ec63` | Accepted schema-v2 one-Linear numerical result. No serving or performance claim. |
-| GLM E2M1 high-rate | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-e2m1-highrate.json` — `097b1863ff6c1ba27cecc0fb897e825bc360edb8d09e9b3596951c9bc5730bcd` | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-e2m1-highrate-v4.speedscope.json` — `edc6bc486132703ca47e9da9f374fb82986144350623d291d9043addde165450` | Completed 33-tensor dense/routed-separated numerical sweep. |
-| GLM E2M1 near-four | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-e2m1-near4.json` — `d9356eee75f94c07fe11cfdab4f70a72357e2092a7e6846677aec0668211e3cd` | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-e2m1-near4.speedscope.json` — `f4c879e1ba040adf364c9c0cfd03cecdf5793d9dcf8d89fa64bc487bb38ff645` | Quality only. QTIP R2 overlapped the beginning; all performance attribution is forbidden. |
-| GLM learned FP8 | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-fp8-learned-balanced.json` — `3437be1473e1a880d5a6d338bc93f85902ea661be982d040681834426baf1a94` | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-fp8-learned-balanced-v2.speedscope.json` — `f7ef868f00d55794b7f16f34d09880f682f5bd63991a3e6880764172820662ad` | Measurement complete, explicitly no serving verdict. The telemetry window has a short post-result contaminated tail. |
+| GLM E2M1 high-rate | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-e2m1-highrate.json` — `097b1863ff6c1ba27cecc0fb897e825bc360edb8d09e9b3596951c9bc5730bcd` | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-e2m1-highrate-v4.speedscope.json` — `edc6bc486132703ca47e9da9f374fb82986144350623d291d9043addde165450` | Completed 33-tensor dense/routed-separated numerical sweep. Legacy schema v2; execution identity is not attested. |
+| GLM E2M1 near-four | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-e2m1-near4.json` — `d9356eee75f94c07fe11cfdab4f70a72357e2092a7e6846677aec0668211e3cd` | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-e2m1-near4.speedscope.json` — `f4c879e1ba040adf364c9c0cfd03cecdf5793d9dcf8d89fa64bc487bb38ff645` | Quality only. Legacy schema v2 with unattested execution identity; QTIP R2 overlapped the beginning, so all performance attribution is forbidden. |
+| GLM learned FP8 | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-fp8-learned-balanced.json` — `3437be1473e1a880d5a6d338bc93f85902ea661be982d040681834426baf1a94` | `/home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-fp8-learned-balanced-v2.speedscope.json` — `f7ef868f00d55794b7f16f34d09880f682f5bd63991a3e6880764172820662ad` | Measurement complete, explicitly no serving verdict. Legacy schema v1 with unattested execution identity; telemetry has a short contaminated tail. |
 
 The QTIP acceptance binds PrismaQuant commit
 `64679a7c0d2ee29fd5d76b0db4f35ede0190989e`, exporter SHA-256
@@ -53,6 +54,13 @@ the immutable container digest, model and activation hashes, calibration
 identity, command, GB10 UUID/driver, and every published member. The receipt
 is the publication commit marker; the external acceptance is the queue's only
 completion marker.
+
+The GLM rows deliberately have no retroactive acceptance receipt. Their exact
+result hashes can be bound to the retained corpus and current source files
+post hoc, but that cannot prove which source bytes executed. Future E2M1 v3
+and learned-FP8 v2 results close this gap prospectively by binding the corpus,
+active driver/loader/integration identity and transitive frozen-codec closure,
+then replaying those bindings immediately before no-replace final publication.
 
 ## Box telemetry
 

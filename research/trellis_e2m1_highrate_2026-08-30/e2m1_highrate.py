@@ -28,10 +28,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 from pathlib import Path
+import subprocess
 import sys
 import time
+from typing import Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCKED_HULL_ROOT = Path("/home/rob/dq-runs/trellis-hull-20260828")
@@ -41,6 +42,14 @@ import numpy as np
 import torch
 
 import hull_sweep as H
+from atomic_publication import (
+    PublicationError,
+    atomic_checkpoint_json,
+    exclusive_publication_claim,
+    file_sha256,
+    identity_sha256,
+    publish_file_no_replace,
+)
 from isolated_glm_corpus import load_active_glm_corpus
 
 W, C, P, S4, TF = H.W, H.C, H.P, H.S4, H.TF
@@ -81,15 +90,109 @@ GLM_RATE_PLANS = {
 # flips DISCRETE encode decisions and shows at ~1e-3, which no tolerance
 # absorbs -- it is diagnosed, not tolerated.  Same bar hull_sweep uses.
 CONTROL_RTOL = 1e-9
+CELL_KEYS = frozenset({
+    "shape", "numel", "population", "weighted_energy", "plain_energy",
+    "two_tier_plane_sha256", "arms", "unreachable_rungs", "control",
+})
 
 
 def _atomic_json(path: Path, value: dict) -> None:
-    temporary = path.with_name(f".{path.name}.write-{os.getpid()}")
-    temporary.write_text(json.dumps(value, indent=1) + "\n")
-    os.replace(temporary, path)
+    atomic_checkpoint_json(path, value)
 
 
-def main() -> int:
+def _checkpoint_document(
+    receipt: Mapping[str, object],
+    per_tensor: Mapping[str, object],
+    *,
+    partial: bool,
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "receipt": {
+            **receipt,
+            "partial": partial,
+            "tensors_done": len(per_tensor),
+        },
+        "per_tensor": dict(per_tensor),
+    }
+    return {**body, "checkpoint_sha256": identity_sha256(body)}
+
+
+def _strict_json_object(path: Path) -> dict[str, object]:
+    def object_from_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON member {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(path.read_text(), object_pairs_hook=object_from_pairs)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SystemExit(f"FATAL: invalid partial checkpoint {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise SystemExit(f"FATAL: partial checkpoint {path} is not an object")
+    return value
+
+
+def _resume_partial(
+    path: Path,
+    *,
+    receipt: Mapping[str, object],
+    names: list[str],
+) -> tuple[dict[str, dict], float] | None:
+    if not path.exists():
+        return None
+    document = _strict_json_object(path)
+    if set(document) != {"receipt", "per_tensor", "checkpoint_sha256"}:
+        raise SystemExit("FATAL: partial checkpoint members differ")
+    body = {key: document[key] for key in ("receipt", "per_tensor")}
+    if document["checkpoint_sha256"] != identity_sha256(body):
+        raise SystemExit("FATAL: partial checkpoint self-digest differs")
+    saved_receipt = document["receipt"]
+    per_tensor = document["per_tensor"]
+    if not isinstance(saved_receipt, dict) or not isinstance(per_tensor, dict):
+        raise SystemExit("FATAL: partial checkpoint payload types differ")
+    if saved_receipt.get("schema") != "trellis.e2m1_highrate.v3":
+        raise SystemExit("FATAL: only self-bound E2M1 v3 checkpoints can resume")
+    comparable_saved = {
+        key: value for key, value in saved_receipt.items()
+        if key not in {"started_at_unix_s", "partial", "tensors_done"}
+    }
+    comparable_current = {
+        key: value for key, value in receipt.items()
+        if key != "started_at_unix_s"
+    }
+    if comparable_saved != comparable_current:
+        raise SystemExit("FATAL: partial checkpoint identity differs")
+    if saved_receipt.get("partial") is not True:
+        raise SystemExit("FATAL: resume checkpoint is not marked partial")
+    if saved_receipt.get("tensors_done") != len(per_tensor):
+        raise SystemExit("FATAL: partial checkpoint tensor count differs")
+    done = len(per_tensor)
+    if set(per_tensor) != set(names[:done]):
+        raise SystemExit("FATAL: partial checkpoint is not an exact tensor prefix")
+    for name, cell in per_tensor.items():
+        if not isinstance(cell, dict) or set(cell) != CELL_KEYS:
+            raise SystemExit(f"FATAL: {name}: partial cell members differ")
+        shape = cell.get("shape")
+        if (
+            not isinstance(shape, list)
+            or len(shape) != 2
+            or any(not isinstance(value, int) or value <= 0 for value in shape)
+            or cell.get("numel") != math.prod(shape)
+            or not isinstance(cell.get("arms"), dict)
+            or not isinstance(cell.get("unreachable_rungs"), list)
+            or not isinstance(cell.get("control"), dict)
+        ):
+            raise SystemExit(f"FATAL: {name}: partial cell structure differs")
+    started = saved_receipt.get("started_at_unix_s")
+    if not isinstance(started, (int, float)) or not math.isfinite(started):
+        raise SystemExit("FATAL: partial checkpoint start time is invalid")
+    return dict(per_tensor), float(started)
+
+
+def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", choices=("dsv4", "bf16", "glm"),
                     default="dsv4")
@@ -107,15 +210,140 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--allow-control-drift", action="store_true",
                     help="record a failed 3.0 control instead of refusing")
-    args = ap.parse_args()
+    return ap.parse_args()
+
+
+def _repo_commit() -> str | None:
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return commit if len(commit) == 40 else None
+
+
+def _active_source_identity() -> dict[str, object]:
+    driver = Path(__file__).resolve(strict=True)
+    isolated_loader = driver.with_name("isolated_glm_corpus.py")
+    corpus_reader = REPO_ROOT / "prismaquant/trellis_bf16_corpus.py"
+    imported_codec_modules = {
+        name: {
+            "path": str(Path(module.__file__).resolve(strict=True)),
+            "sha256": file_sha256(Path(module.__file__).resolve(strict=True)),
+        }
+        for name, module in (
+            ("hull_sweep", H),
+            ("weight_codec", W),
+            ("common", C),
+            ("plane", P),
+            ("schedule", S4),
+            ("trellis_formats", TF),
+        )
+    }
+    return {
+        "repo_root": str(REPO_ROOT),
+        "repo_git_commit": _repo_commit(),
+        "driver_path": str(driver),
+        "driver_sha256": file_sha256(driver),
+        "isolated_loader_path": str(isolated_loader),
+        "isolated_loader_sha256": file_sha256(isolated_loader),
+        "active_corpus_reader_path": str(corpus_reader.resolve(strict=True)),
+        "active_corpus_reader_sha256": file_sha256(corpus_reader),
+        "frozen_hull": {
+            "root": str(LOCKED_HULL_ROOT.resolve(strict=True)),
+            "snapshot_tree_sha256": H.snapshot_tree_sha256(),
+            "source_sha256": H.source_hashes(),
+            "imported_codec_modules": imported_codec_modules,
+        },
+    }
+
+
+def _claim_identity(args: argparse.Namespace) -> dict[str, object]:
+    glm_manifest = (
+        args.glm_manifest.resolve(strict=True)
+        if args.glm_manifest is not None else None
+    )
+    return {
+        "schema": "trellis.e2m1_highrate.publication.v1",
+        "output": str(args.out.resolve()),
+        "corpus": args.corpus,
+        "glm_manifest": str(glm_manifest) if glm_manifest else None,
+        "glm_manifest_sha256": file_sha256(glm_manifest) if glm_manifest else None,
+        "glm_rate_plan": args.glm_rate_plan,
+        "limit": args.limit,
+        "allow_control_drift": bool(args.allow_control_drift),
+        "active_sources": _active_source_identity(),
+    }
+
+
+def _verify_final_bindings(
+    *,
+    args: argparse.Namespace,
+    receipt: Mapping[str, object],
+    publication_identity: Mapping[str, object],
+) -> None:
+    if _claim_identity(args) != publication_identity:
+        raise SystemExit("FATAL: publication identity drifted during run")
+    if receipt.get("active_source_identity") != _active_source_identity():
+        raise SystemExit("FATAL: active/frozen source identity drifted during run")
+    binding = receipt.get("corpus_binding")
+    if not isinstance(binding, dict):
+        raise SystemExit("FATAL: result corpus binding is missing")
+    if args.corpus == "glm":
+        if args.glm_manifest is None:
+            raise SystemExit("FATAL: GLM manifest disappeared from arguments")
+        fresh = load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
+        if (
+            file_sha256(fresh.manifest_path) != binding.get("manifest_sha256")
+            or fresh.manifest.get("file_sha256") != binding.get("artifact_sha256")
+            or file_sha256(fresh.artifact_path) != binding.get("artifact_sha256")
+            or fresh.manifest.get("importance_identity", {}).get("value_sha256")
+            != binding.get("importance_value_sha256")
+            or fresh.manifest.get("prismaquant_commit")
+            != binding.get("corpus_prismaquant_commit")
+        ):
+            raise SystemExit("FATAL: bound GLM corpus drifted during run")
+    else:
+        manifest_path = binding.get("manifest_path")
+        if manifest_path is not None and (
+            file_sha256(Path(str(manifest_path)))
+            != binding.get("manifest_sha256")
+        ):
+            raise SystemExit("FATAL: bound corpus manifest drifted during run")
+        control_path = binding.get("control_path")
+        control_hash = binding.get("control_sha256")
+        if control_hash is not None and (
+            file_sha256(Path(str(control_path))) != control_hash
+        ):
+            raise SystemExit("FATAL: bound control result drifted during run")
+
+
+def main() -> int:
+    args = _parse_args()
+    publication_identity = _claim_identity(args)
+    try:
+        with exclusive_publication_claim(
+            args.out, identity=publication_identity
+        ):
+            return _run_claimed(args, publication_identity)
+    except PublicationError as exc:
+        raise SystemExit(f"FATAL: {exc}") from exc
+
+
+def _run_claimed(
+    args: argparse.Namespace,
+    publication_identity: Mapping[str, object],
+) -> int:
 
     partial_path = args.out.with_name(args.out.name + ".partial")
-    if args.out.exists():
+    if args.out.exists() or args.out.is_symlink():
         raise SystemExit(f"final output already exists (immutable): {args.out}")
-    if partial_path.exists():
-        raise SystemExit(
-            f"partial output already exists; inspect before retry: {partial_path}"
-        )
+    if partial_path.is_symlink():
+        raise SystemExit(f"partial output must not be a symlink: {partial_path}")
 
     if not torch.cuda.is_available():
         raise SystemExit("FATAL: CUDA required (principle 7)")
@@ -158,8 +386,38 @@ def main() -> int:
         names = names[:args.limit]
 
     env = H.current_env()
+    active_sources = publication_identity["active_sources"]
+    corpus_binding: dict[str, object]
+    if args.corpus == "glm":
+        assert glm_corpus is not None and args.glm_manifest is not None
+        corpus_binding = {
+            "manifest_path": str(glm_corpus.manifest_path),
+            "manifest_sha256": file_sha256(glm_corpus.manifest_path),
+            "artifact_path": str(glm_corpus.artifact_path),
+            "artifact_sha256": glm_corpus.manifest["file_sha256"],
+            "importance_value_sha256": glm_corpus.manifest[
+                "importance_identity"
+            ]["value_sha256"],
+            "corpus_prismaquant_commit": glm_corpus.manifest[
+                "prismaquant_commit"
+            ],
+        }
+    elif args.corpus == "dsv4":
+        corpus_binding = {
+            "manifest_path": str(H.INPUT_MANIFEST.resolve(strict=True)),
+            "manifest_sha256": file_sha256(H.INPUT_MANIFEST),
+            "control_path": str(PUBLISHED.resolve(strict=True)),
+            "control_sha256": file_sha256(PUBLISHED),
+        }
+    else:
+        corpus_binding = {
+            "control_path": str(BF16_PUBLISHED.resolve()),
+            "control_sha256": (
+                file_sha256(BF16_PUBLISHED) if BF16_PUBLISHED.exists() else None
+            ),
+        }
     receipt = {
-        "schema": "trellis.e2m1_highrate.v2",
+        "schema": "trellis.e2m1_highrate.v3",
         "started_at_unix_s": time.time(),
         "question": ("does the E2M1 trellis, above body rate 2.25 and up to "
                      "its 3.96875 mathematical ceiling, beat scalar NVFP4 "
@@ -178,6 +436,9 @@ def main() -> int:
         "corpus_manifest": (
             str(args.glm_manifest.resolve()) if args.corpus == "glm" else None
         ),
+        "corpus_binding": corpus_binding,
+        "active_source_identity": active_sources,
+        "publication_identity_sha256": identity_sha256(publication_identity),
         "glm_rate_plan": args.glm_rate_plan if args.corpus == "glm" else None,
         "aggregation_contract": (
             "dense and routed populations are summarized independently; "
@@ -197,8 +458,17 @@ def main() -> int:
         "environment": env,
     }
 
-    out: dict[str, dict] = {}
+    resumed = _resume_partial(partial_path, receipt=receipt, names=names)
+    if resumed is None:
+        out: dict[str, dict] = {}
+    else:
+        out, started_at = resumed
+        receipt["started_at_unix_s"] = started_at
+        print(f"resuming {len(out)}/{len(names)} completed tensors", flush=True)
     for index, name in enumerate(names, start=1):
+        if name in out:
+            print(f"[{index}/{len(names)}] {name}: RESUMED", flush=True)
+            continue
         entry = entries[name]
         if args.corpus == "dsv4":
             packed, raw_scale, importance = W.load_compact(name)
@@ -446,9 +716,7 @@ def main() -> int:
         out[name] = cell
         _atomic_json(
             partial_path,
-            {"receipt": {**receipt, "partial": True,
-                         "tensors_done": len(out)},
-             "per_tensor": out},
+            _checkpoint_document(receipt, out, partial=True),
         )
 
     receipt["completed_at_unix_s"] = time.time()
@@ -460,11 +728,19 @@ def main() -> int:
         population: sum(cell["population"] == population for cell in out.values())
         for population in sorted({cell["population"] for cell in out.values()})
     }
+    _verify_final_bindings(
+        args=args,
+        receipt=receipt,
+        publication_identity=publication_identity,
+    )
     _atomic_json(
         partial_path,
-        {"receipt": {**receipt, "partial": False}, "per_tensor": out},
+        _checkpoint_document(receipt, out, partial=False),
     )
-    os.rename(partial_path, args.out)
+    try:
+        publish_file_no_replace(partial_path, args.out)
+    except PublicationError as exc:
+        raise SystemExit(f"FATAL: {exc}") from exc
     print(f"wrote {args.out}", flush=True)
     return 0
 
