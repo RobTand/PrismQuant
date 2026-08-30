@@ -31,16 +31,13 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SCRIPT = REPO / "prismaquant" / "run-pipeline.sh"
 # The gate blocks shell out to a bare `python3`, so the interpreter they find
-# has to be one that can `import prismaquant`. Deriving it from sys.executable
-# means that is ALWAYS the interpreter running these tests -- Rob's cu130 venv
-# locally, setup-python's 3.11/3.12 in CI. The previous hardcoded venv path
-# does not exist on a CI runner, so `python3` fell back to /usr/bin/python3,
-# which has no prismaquant; the heredoc died on the import and the outer
-# `if ! ...` turned every failure into the gate's own `exit 2`. That made the
-# FIRED assertions pass for the wrong reason and the PASSED assertions fail,
-# which is exactly the signature these three tests showed in CI while passing
-# locally. A gate test must exercise the gate, not the absence of an import.
-VENV_BIN = str(Path(sys.executable).resolve().parent)
+# has to be the one running pytest.  Keep the lexical venv path: resolving its
+# `python` symlink reaches `/usr/bin` and discards the adjacent `pyvenv.cfg`,
+# making the heredoc depend on whichever packages happen to be in user-site.
+# An import failure is especially dangerous here because the outer `if ! ...`
+# turns it into the gate's own `exit 2`, making every FIRED control pass for the
+# wrong reason while the PASSED controls fail.
+VENV_BIN = str(Path(sys.executable).parent)
 SCRATCH = REPO / "scratch" / "run_pipeline_gate_tests"  # gitignored; never /tmp
 
 
@@ -139,6 +136,14 @@ def run_block(block: str, env: dict, preamble: str = "") -> int:
 
 FIRED = 2
 PASSED = 0
+
+
+def test_gate_python_path_preserves_pytest_virtual_environment():
+    """The controlled PATH must not resolve the venv launcher to `/usr/bin`."""
+    selected = shutil.which("python3", path=f"{VENV_BIN}:/usr/bin:/bin")
+
+    assert selected is not None
+    assert Path(selected).parent == Path(sys.executable).parent
 
 
 @pytest.fixture(scope="module")
