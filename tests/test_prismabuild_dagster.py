@@ -31,7 +31,7 @@ def _action(
         "-c",
         f"open('{name}.bin','wb').write(b'{name}')",
     ]
-    toolchain = {"python": "3.12"}
+    toolchain: dict[str, str] = {}
     if portability != "portable":
         toolchain.update(pb.executable_toolchain_contract(argv[0]))
         evidence = pb._collect_worker_evidence()

@@ -36,7 +36,10 @@ def _body(
             f"pathlib.Path({result_path!r}).write_bytes(b'result')"
         ),
     ]
-    toolchain = {"python": "3.12", "torch": "2.11+cu130"}
+    # These generic actions do not consume Torch. Keep their contract limited
+    # to facts that matter to execution so the suite is portable across the
+    # supported producer images.
+    toolchain: dict[str, str] = {}
     if portability != "portable":
         toolchain.update(pb.executable_toolchain_contract(resolved_argv[0]))
         evidence = pb._collect_worker_evidence()
@@ -106,8 +109,6 @@ def _live_nonportable_body(
     body["inputs"] = [] if inputs is None else inputs
     toolchain = {
         **pb.executable_toolchain_contract(body["task"]["argv"][0]),  # type: ignore[index]
-        "python": "3.12",
-        "torch": "2.11+cu130",
         "system": str(evidence["system"]),
         "machine": str(evidence["machine"]),
         "libc": str(evidence["libc"]),
@@ -161,7 +162,7 @@ def test_unsealed_or_non_normalized_action_is_rejected(tmp_path: Path):
         (("code_closure", "closure_sha256"), "5" * 64),
         (("params", "alpha"), 2),
         (("environment", "variables", "DECLARED"), "different"),
-        (("environment", "toolchain", "torch"), "different"),
+        (("environment", "toolchain", "system"), "different"),
         (("execution_scope", "host_class"), "different"),
     ],
 )
