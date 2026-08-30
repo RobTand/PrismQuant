@@ -1,7 +1,14 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-29,
+As of: 2026-08-30 · `claude/aqua-packed-expert-pricing` — stamps follow, newest
+first, each recording its own branch and date. Re-stamped (2026-08-30,
+`claude/aqua-packed-expert-pricing`) for **AQUA's packed routed-expert A-side
+and the `holes` report semantics** (§"AQUA-AURA"): `aqua_activation_cost.py`
+now assembles packed decision units whose checkpoints store experts
+separately, which is a stage *capability* change — GLM-5.3-Flash went from 0 to
+303 of 591 cost cells carrying `act_dloss` — and it changes what `holes` means,
+because units that never resolved were previously absent from the report
+rather than recorded in it. Both cross the § P13 trigger. Re-stamped (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
 rather than by a test — the two doc gates were green across both drifts. (i) The
@@ -909,6 +916,50 @@ scalar-only card with no `g_sq_sum`). Both would otherwise emit an artifact
 with the right units and formats and an absent A-side, which
 `cost_entry_act_dloss` reads as 0.0 — i.e. free — making "unmeasured"
 indistinguishable from "costless" to the DP.
+**Packed routed experts the 1:1 name map cannot reach are now assembled
+(2026-08-30).** A packed decision unit is one live `[E, out, in]` parameter, but
+many checkpoints serialize it as `E * len(projections)` separate 2-D tensors
+(`...experts.{e}.{proj}.weight`). `build_weight_resolver` maps a unit to exactly
+one checkpoint key, so it cannot express that fan-out and every such unit
+dropped out at resolution — silently, since an absent `act_dloss` reads as 0.0.
+On GLM-5.3-Flash that was the entire routed body: 84 of 288 units, and
+precisely the ones whose menu has a live NVFP4-vs-FP8 choice for the A-side to
+move. `build_packed_expert_plan` indexes the per-expert leaves and
+`_assemble_expert_slab` stacks them into the `[C, out, in]` slab the packed
+pricer expects, taking the GLM stock cost table from **0 to 303 of 591 cells**
+carrying `act_dloss` (135 dense NVFP4, 84 packed NVFP4, 84 packed FP8_E4M3),
+`units_merged` 288/288, `units_without_act_price` 0. Every structural decision
+comes from the model profile (`packed_expert_param_names`,
+`packed_expert_projection_names`), never from a name pattern guessed in the
+stage (principle 2), and a unit whose expert set is incomplete on disk
+**raises** rather than assembling a short tensor — a packed weight missing
+experts would price a real A-side too low, which is the exact silent
+under-charge this stage exists to remove. Pricing is expert-chunked
+(`--packed-expert-chunk`, default 16) because a single GLM packed unit is
+19.3 GiB, and the chunking is **exact rather than approximate**:
+`_activation_dloss_packed` sums over experts and then applies a normalization
+linear in that sum, so per-chunk prices sum to the whole-tensor price.
+Measured both ways — synthetic max relative deviation **1.74e-16** over chunk
+sizes {1, 3, 5, E}, and on real GLM bytes chunk 16 versus chunk 48 bit-identical
+at `0.017408522460894423`. `var_source` reads
+`{measured: 408, modelled_per_expert: 168}`, and 168 is exactly 84 units × 2
+formats, so no chunk fell through to a different estimator; the loop names
+`expert_activation_error_variance` explicitly rather than letting
+`price_activation_only` choose, because chunks of one unit priced by two
+estimators do not sum to anything. `tests/test_aqua_packed_expert_assembly.py`
+holds the chunk-exactness identity, the incomplete-expert refusal, and the
+end-to-end chunk-size independence.
+**`holes` now reports units that never reached the pricing loop
+(2026-08-30).** The report was under-counting by construction: a unit that
+failed to *resolve* never entered the per-format loop, so nothing recorded it,
+and the stage wrote `holes: {}` while whole classes of unit were absent and the
+DP read their A-side as free. That is the same silent-zero shape the refusals
+above exist to prevent, wearing a clean bill of health. Every `wanted` unit
+missing from the table is now appended to `holes` for each format that
+quantizes activations and that the lane executes, so a consumer reading `holes`
+sees the real coverage. Consumers comparing `holes` counts across cost
+artifacts should note the semantics changed here: a pre-2026-08-30 `holes: {}`
+means "nothing failed *inside* the pricing loop", not "nothing is missing".
 On a **quantized-source** checkpoint the resolved tensor is not a dense weight
 (DSv4-Flash: MXFP4 nibble-packed routed experts, block-FP8 everything else,
 both with E8M0 `.scale` siblings), so `materialize_source_weight` dispatches on

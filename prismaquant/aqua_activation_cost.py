@@ -61,10 +61,12 @@ from __future__ import annotations
 
 import argparse
 import collections
+import dataclasses
 import fnmatch
 import json
 import os
 import pickle
+import re
 import time
 
 import numpy as np
@@ -236,6 +238,143 @@ def materialize_source_weight(name: str, weight, scale, fp8_map):
         name=name).to(torch.float32)
 
 
+def build_packed_expert_plan(weight_map: dict, card, names, profile) -> dict:
+    """``{unit: {expert_idx: {projection: ckpt_key}}}`` for packed units the
+    checkpoint stores PER EXPERT and unfused.
+
+    A packed decision unit is ONE ``[E, out, in]`` live parameter, but many
+    checkpoints serialize it as ``E * len(projections)`` separate 2-D tensors
+    (``...experts.{e}.{proj}.weight``). :func:`build_weight_resolver` maps a
+    unit to ONE checkpoint key, so it cannot express that fan-out and every
+    such unit drops out at resolution -- SILENTLY, because an absent
+    ``act_dloss`` reads as 0.0 (free) to the DP. On GLM-5.3-Flash that was the
+    entire routed body: 84 of 288 units, and precisely the ones whose menu has
+    a live NVFP4-vs-FP8 choice for the A-side to move. Assembling them is not
+    an optimization; it is what stops the routed body being A-priced at zero.
+
+    Every structural decision comes from the model profile
+    (``packed_expert_param_names`` / ``packed_expert_projection_names``), never
+    from a name pattern guessed here (principle 2). A unit whose expert set is
+    incomplete on disk raises rather than assembling a short tensor: a packed
+    weight missing experts would price a real A-side too low, which is the
+    silent under-charge this whole stage exists to remove.
+    """
+    if profile is None:
+        return {}
+    try:
+        parents = frozenset(profile.packed_expert_param_names())
+    except Exception:
+        return {}
+    if not parents:
+        return {}
+    # Index the per-expert leaves once: experts_path -> {idx -> {proj -> key}}.
+    by_path: dict = collections.defaultdict(lambda: collections.defaultdict(dict))
+    pat = re.compile(r"^(?P<path>.+)\.(?P<idx>\d+)\.(?P<proj>[^.]+)\.weight$")
+    for key in weight_map:
+        m = pat.match(key)
+        if m is None:
+            continue
+        by_path[m.group("path")][int(m.group("idx"))][m.group("proj")] = key
+
+    plan: dict = {}
+    for name in names:
+        unit = None
+        try:
+            unit = card[name]
+        except Exception:
+            continue
+        if unit is None or unit.n_experts is None:
+            continue
+        experts_path, _, parent = name.rpartition(".")
+        if parent not in parents:
+            continue
+        per_expert = by_path.get(experts_path)
+        if not per_expert:
+            continue
+        try:
+            order = tuple(profile.packed_expert_projection_names(parent))
+        except Exception:
+            continue
+        if not order:
+            continue
+        n_e = int(unit.n_experts)
+        built: dict = {}
+        for e in range(n_e):
+            projs = per_expert.get(e)
+            if projs is None or any(p not in projs for p in order):
+                raise RuntimeError(
+                    f"{name}: checkpoint stores routed experts per-expert but "
+                    f"expert {e} is missing projection(s) {order}. Refusing to "
+                    f"assemble a short packed weight -- it would under-price "
+                    f"this unit's A-side rather than fail.")
+            built[e] = {p: projs[p] for p in order}
+        plan[name] = built
+    return plan
+
+
+def _warm_shard(path: str, block: int = 1 << 25) -> None:
+    """Pull one shard into page cache with a single SEQUENTIAL pass.
+
+    Measured, not assumed (principle 15). ``safetensors`` mmaps the shard and
+    ``get_tensor`` faults pages in on touch. A packed routed-expert unit needs
+    E * len(projections) small tensors scattered through a multi-GiB shard, and
+    that random fault pattern ran at **92 MB/s against 648 MB/s sequential** on
+    this NFS mount, with 21.6 GiB of block reads for 1.9 GiB of requested bytes
+    -- 11x amplification, readahead pulling pages that are evicted before the
+    walk reaches them. One sequential pass makes every later fault a RAM hit.
+
+    This is a residency fix, not a numerical one: it changes when bytes arrive,
+    never which bytes. Cheap to undo if a future layout makes it pointless.
+    """
+    buf = memoryview(bytearray(block))
+    with open(path, "rb", buffering=0) as fh:
+        while fh.readinto(buf):
+            pass
+
+
+def _slice_experts(arr, ids):
+    """Expert-axis slice of a card's per-expert array (None stays None)."""
+    if arr is None:
+        return None
+    return np.asarray(arr)[ids]
+
+
+def _assemble_expert_slab(handles, plan_unit, expert_ids, order, fp8_map,
+                          unit, name):
+    """One ``[C, out, in]`` float32 slab for ``expert_ids``.
+
+    Projections are concatenated on the OUTPUT axis in the profile's declared
+    order (the packed-FusedMoE convention ``_pack_per_expert_into_packed``
+    also uses), then experts are stacked on a new leading axis. The shape is
+    checked against the card so a layout mismatch fails loud.
+    """
+    import torch
+    slabs = []
+    for e in expert_ids:
+        parts = []
+        for proj in order:
+            key = plan_unit[e][proj]
+            raw = handles(key).get_tensor(key)
+            scale = None
+            if fp8_map is not None and fp8_map.get(key) is not None:
+                scale_shard, scale_key = fp8_map.get(key)
+                scale = handles(scale_key, shard=scale_shard).get_tensor(scale_key)
+            leaf = key[: -len(".weight")]
+            parts.append(materialize_source_weight(leaf, raw, scale, fp8_map))
+            del raw, scale
+        slabs.append(parts[0] if len(parts) == 1 else torch.cat(parts, dim=0))
+        del parts
+    slab = torch.stack(slabs, dim=0).contiguous()
+    del slabs
+    want = (len(expert_ids), unit.out_features, unit.in_features)
+    if tuple(slab.shape) != want:
+        raise RuntimeError(
+            f"{name}: assembled expert slab has shape {tuple(slab.shape)}, "
+            f"expected {want} from the probe stats; refusing to price a "
+            f"wrong-shaped W")
+    return slab
+
+
 def cached_act_path(act_dir: str, name: str) -> str:
     """Where the probe parked this Linear's real input rows."""
     return os.path.join(act_dir, name.replace(".", "__") + ".pt")
@@ -314,6 +453,7 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
                            act_dir: str | None = None,
                            profile=None,
                            executed_activation_formats=None,
+                           experts_per_chunk: int = 16,
                            ) -> tuple[dict, dict, dict]:
     """``{unit: {format: act_dloss}}`` plus a report of what could not be priced.
 
@@ -378,6 +518,15 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
     resolvable = [n for n in wanted if n in resolver]
     log(f"weight-key resolution: {len(resolvable)}/{len(wanted)} card units "
         f"found in the checkpoint")
+    # Packed routed experts a 1:1 name map cannot reach: one live [E, out, in]
+    # decision unit stored as E * len(projections) separate 2-D checkpoint
+    # tensors. Without this they drop out silently and the DP reads their
+    # A-side as 0.0 (free).
+    packed_plan = build_packed_expert_plan(
+        weight_map, card, [n for n in wanted if n not in resolver], profile)
+    if packed_plan:
+        log(f"per-expert packed assembly: {len(packed_plan)} additional units "
+            f"reachable by stacking per-expert checkpoint leaves")
     # Refuse rather than write a no-op. "Nothing resolved" is never a valid
     # outcome for this stage, and the artifact it would otherwise produce is
     # indistinguishable from a real one -- same units, same formats, an A-side
@@ -385,7 +534,7 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
     # unambiguous case is a refusal; no coverage threshold is invented here,
     # because any such number would be a heuristic (principle 2). Partial
     # coverage is already reported per-format through `holes`.
-    if wanted and not resolvable:
+    if wanted and not resolvable and not packed_plan:
         raise SystemExit(
             f"REFUSE: 0 of {len(wanted)} card units resolve to a checkpoint "
             f"tensor, so there is nothing to price. This is a NAME-SPACE "
@@ -549,6 +698,128 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
                 if done % 100 == 0:
                     log(f"  priced {done}/{len(resolvable)} "
                         f"({time.time() - t0:.0f}s)")
+    # ---- packed routed experts, assembled from per-expert checkpoint leaves.
+    if packed_plan:
+        log(f"assembling {len(packed_plan)} packed routed-expert units "
+            f"({experts_per_chunk} experts per slab)")
+        t1 = time.time()
+        warmed: set = set()
+        for pi, name in enumerate(sorted(packed_plan), 1):
+            plan_unit = packed_plan[name]
+            unit = card[name]
+            need = sorted({weight_map[k] for by in plan_unit.values()
+                           for k in by.values()})
+            for sh in need:
+                if sh not in warmed:
+                    _warm_shard(os.path.join(model_path, sh))
+            # Only the shards this unit used stay "warm"; anything else is
+            # assumed evicted, so the next unit re-warms what it needs.
+            warmed = set(need)
+            order = tuple(profile.packed_expert_projection_names(
+                name.rpartition(".")[2]))
+            n_e = int(unit.n_experts)
+            # One handle cache per unit. A layer's experts live in a handful of
+            # shards; holding them open for the unit avoids reopening a shard
+            # per expert while still bounding resident mmap to that layer.
+            open_shards: dict = {}
+
+            def handles(key, shard=None, _os=open_shards):
+                sh = shard if shard is not None else weight_map[key]
+                h = _os.get(sh)
+                if h is None:
+                    h = safe_open(os.path.join(model_path, sh),
+                                  framework="pt", device="cpu")
+                    h.__enter__()
+                    _os[sh] = h
+                return h
+
+            row = {}
+            try:
+                for fmt in formats:
+                    try:
+                        plugin = RegistryFormatPlugin.build(
+                            fmt, shape=(unit.out_features, unit.in_features),
+                            device=device)
+                    except Exception as exc:
+                        holes[fmt].append(f"{name}: unbuildable ({exc})")
+                        continue
+                    if not plugin.descriptor.quantizes_activations:
+                        non_act.add(fmt)
+                        del plugin
+                        continue
+                    if not executes_all and not any(
+                            fnmatch.fnmatchcase(fmt, pat) for pat in patterns):
+                        not_executed.add(fmt)
+                        del plugin
+                        continue
+                    # EXPERT-CHUNKED, and the chunking is exact rather than an
+                    # approximation. `_activation_dloss_packed` sums over
+                    # experts and then applies a normalization LINEAR in that
+                    # sum (0.5 * total / n_tokens * gain), so the sum of
+                    # per-chunk prices IS the whole-tensor price -- up to
+                    # float64 addition order, and every term is a square times
+                    # a variance, so there is no cancellation to amplify it.
+                    # That identity is what lets a 19.3 GiB packed unit be
+                    # priced in ~1 GiB slabs instead of not at all.
+                    total = 0.0
+                    for lo in range(0, n_e, experts_per_chunk):
+                        ids = list(range(lo, min(lo + experts_per_chunk, n_e)))
+                        slab = _assemble_expert_slab(
+                            handles, plan_unit, ids, order, fp8_map, unit, name)
+                        sub = dataclasses.replace(
+                            unit,
+                            expert_g_sq_sum=_slice_experts(
+                                unit.expert_g_sq_sum, ids),
+                            expert_act_sq_sum=_slice_experts(
+                                unit.expert_act_sq_sum, ids),
+                            expert_act_absmax=_slice_experts(
+                                unit.expert_act_absmax, ids),
+                            expert_tokens=_slice_experts(
+                                unit.expert_tokens, ids))
+                        w_slab = (slab.to(device=device, dtype=torch.float32)
+                                  if torch.cuda.is_available()
+                                  and device != "cpu"
+                                  else slab.to(torch.float32).numpy())
+                        del slab
+                        # Name the estimator rather than letting
+                        # price_activation_only fall through to the dense
+                        # measure or the analytic model: chunks of one unit
+                        # must all be priced by the SAME estimator or the sum
+                        # is a mixture of two quantities.
+                        measure = getattr(plugin,
+                                          "expert_activation_error_variance",
+                                          None)
+                        var_e = measure(sub) if callable(measure) else None
+                        part = (None if var_e is None else
+                                price_activation_only(sub, w_slab, plugin,
+                                                      act_var=var_e))
+                        del w_slab, var_e
+                        if part is None:
+                            total = None
+                            break
+                        total += float(part)
+                        if torch.cuda.is_available() and (
+                                torch.cuda.memory_reserved() / (1 << 30)
+                                >= CUDA_RESERVED_DRAIN_GIB):
+                            torch.cuda.empty_cache()
+                    if total is None:
+                        holes[fmt].append(name)
+                    else:
+                        row[fmt] = float(total)
+                        var_source["modelled_per_expert"] += 1
+                    del plugin
+            finally:
+                for h in open_shards.values():
+                    try:
+                        h.__exit__(None, None, None)
+                    except Exception:
+                        pass
+            if row:
+                table[name] = row
+            if pi % 5 == 0 or pi == 1 or pi == len(packed_plan):
+                log(f"  packed {pi}/{len(packed_plan)} "
+                    f"({time.time() - t1:.0f}s)")
+
     log(f"A-side priced for {len(table)} units in {time.time() - t0:.0f}s")
     if var_source:
         log(f"act_var source: {dict(var_source)} (measured = real cached "
@@ -561,6 +832,33 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
         log(f"formats that quantize activations but THIS LANE DOES NOT EXECUTE "
             f"(correctly unpriced -- served A-side is exactly zero): "
             f"{sorted(not_executed)}")
+    # A unit that never RESOLVED never reached the per-format loop above, so
+    # nothing recorded it and `holes` read empty while whole classes of unit
+    # were absent -- provenance that says "no holes" while the DP reads their
+    # A-side as 0.0 (free) is the silent-zero shape this project keeps getting
+    # burned by. Record them against every format that would otherwise have
+    # been priced, so a consumer reading `holes` sees the real coverage.
+    # ONLY units that never reached the loop. A unit that DID reach it and
+    # could not be priced already appended itself with its real reason
+    # ("unbuildable", or a bare name from a `price_activation_only` -> None),
+    # and `table[name]` is only set when its row is non-empty -- so counting
+    # `wanted - table` here would record those a second time under a reason
+    # that is false for them. Materialization failures cannot hide in this
+    # set: both the dense path and `_assemble_expert_slab` RAISE on a shape or
+    # layout mismatch rather than skipping, so everything in
+    # `resolvable | packed_plan` either lands in `table` or is already a hole.
+    reached_pricing_loop = set(resolvable) | set(packed_plan)
+    unpriceable = [n for n in wanted
+                   if n not in table and n not in reached_pricing_loop]
+    priceable_formats = [f for f in formats
+                         if f not in non_act and f not in not_executed]
+    if unpriceable and priceable_formats:
+        log(f"{len(unpriceable)} card units never reached the pricing loop "
+            f"(unresolved in the checkpoint); recording them as holes for "
+            f"{priceable_formats}")
+        for fmt in priceable_formats:
+            holes[fmt].extend(f"{n}: unresolved in checkpoint"
+                              for n in unpriceable)
     for fmt, names_ in sorted(holes.items()):
         log(f"HOLE: {fmt} quantizes activations but {len(names_)} units could "
             f"not be priced; those rows keep a weight-only cost. "
@@ -620,6 +918,13 @@ def main() -> int:
         help="assert that the serving lane executes EVERY format's activation "
              "grid fused (the correct answer for a plain W4A4 lane). Mutually "
              "exclusive with --serving-lane.")
+    ap.add_argument("--packed-expert-chunk", type=int, default=16,
+                    help="experts per assembled slab for packed routed-expert "
+                         "units whose checkpoint stores experts separately. "
+                         "The per-chunk prices SUM to the whole-unit price "
+                         "exactly (the normalization is linear in the "
+                         "expert sum), so this bounds peak memory without "
+                         "changing the number.")
     ap.add_argument("--act-dir", default=None,
                     help="directory of cached real activations (the probe's "
                          "act/ dir). When given, act_var is MEASURED on each "
@@ -665,7 +970,8 @@ def main() -> int:
     table, holes, meta = activation_dloss_table(
         card, args.model_path, formats, device=args.device,
         names=[n for n in costs], act_dir=args.act_dir, profile=profile,
-        executed_activation_formats=executed)
+        executed_activation_formats=executed,
+        experts_per_chunk=args.packed_expert_chunk)
     report = merge_act_dloss(costs, table)
     log(f"merge: {report}")
     # Belt and braces on the silent-no-op: resolution can succeed while every
@@ -687,6 +993,7 @@ def main() -> int:
         "holes": {k: len(v) for k, v in holes.items()},
         "merge_report": report,
         "act_dir": os.path.abspath(args.act_dir) if args.act_dir else None,
+        "packed_expert_chunk": args.packed_expert_chunk,
         **meta,
     }
     blob["provenance"] = prov
