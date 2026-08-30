@@ -474,7 +474,9 @@ def _pin_payload(pin: GridbookServingRuntimePin | Mapping[str, Any]) -> dict[str
         != GRIDBOOK_SERVING_REQUIRED_ABI_FEATURES
     ):
         raise DSparkServingProfileError(
-            "Gridbook serving pin is not one exact released 0.8.7/v4 pin"
+            "Gridbook serving pin is not one exact released "
+            f"{GRIDBOOK_SERVING_RUNTIME_RELEASE_VERSION}/"
+            f"{GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA} pin"
         )
     return payload
 

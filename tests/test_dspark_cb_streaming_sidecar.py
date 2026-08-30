@@ -37,6 +37,14 @@ _STAGES = 3
 _EXPERTS = 2
 _WIDTH = 256
 
+# This module builds synthetic CB bodies on CPU and never serves them.
+# Gridbook 0.9.1's v12 table names no CB cell on sm_121, so the route gate
+# refuses these exports unless the artifact declares what it is.  See
+# tests/cb_synthetic_target.py; the real sm_121 refusal stays asserted in
+# tests/test_cb_route_status_gate.py.
+pytestmark = pytest.mark.usefixtures("synthetic_cb_target")
+
+
 
 def _e8m0_ones(shape: tuple[int, ...]) -> torch.Tensor:
     return torch.full(shape, 127, dtype=torch.uint8).view(
@@ -459,6 +467,7 @@ def test_streaming_export_refuses_cb_wo_a_grouped_bmm(tmp_path: Path):
 def test_dense_source_attestation_observes_host_value_before_device_copy(
     monkeypatch,
 ):
+
     """A CUDA encode must not round-trip its source tensor just to hash it."""
 
     qname = "mtp.0.attn.wq_a"

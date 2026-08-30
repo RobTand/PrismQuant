@@ -256,26 +256,52 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
     else:
         assert not producer_s
     # Registry membership is likewise the backwards-compatible FP8 reader
-    # inventory. The current v4 wheel knows only historical K28..K48; future
-    # v11 contracts explicitly distinguish their wider reader domain from
+    # inventory. The current wheel knows only historical K28..K48; contracts
+    # from v11 on explicitly distinguish their wider reader domain from
     # producer_rungs.
     assert set(by_family["FP8_CB_K"]["rungs"]) <= accepted_fp8
+    # ``producer_rungs`` first arrived with a real value at the 0.9.1/v12 pin
+    # (v4 published none, so this branch lay dormant and untested). It carries
+    # TWO directions, and only one of them belongs here.
+    #
+    #   runtime.producer_rungs <= prismaquant producer menu
+    #       "everything the pinned runtime attests for production, this
+    #       producer can actually build."  Nothing else checks this, so it is
+    #       the assertion below and it stays an assertion.
+    #
+    #   prismaquant producer menu <= runtime.producer_rungs
+    #       "this producer offers nothing the runtime does not attest."  That
+    #       is a MENU BAN, and principle 1 vetoes it in those words: the
+    #       platform "never removes an honestly priced rung from the menu --
+    #       an allocator that wants an unbacked route is reporting a serving
+    #       gap, and that signal is the point."  Its legitimate enforcement
+    #       point is principle 9's per-artifact export gate, and that gate is
+    #       demonstrably live: under this same pin, exporting a CB body whose
+    #       units the table does not cover raises CBRouteStatusRefusal (see
+    #       tests/test_cb_route_status_gate.py, and the tiny-export fixture in
+    #       tests/test_gridbook_artifact_conformance.py, which has to declare a
+    #       non-native target to get past it).  Asserting equality here would
+    #       amputate the shipped DSv4 FP8_CB_K28/K32 recipe and the K1..K4
+    #       research band to satisfy a producer-policy question that is Rob's
+    #       to answer, not a pin bump's.
+    #
+    # Note for whoever reads this next: at 0.9.1 the prismaquant fp8_cb
+    # producer menu reaches DOWN to K4, while the runtime's *reader* domain
+    # starts at K28 -- so K4..K24 are rungs no released Gridbook can decode at
+    # all.  That gap predates this pin and was invisible under v4; it is
+    # recorded, deliberately not closed here.
     if "producer_rungs" in by_family["FP8_CB_K"]:
         producer_fp8 = {
             int(spec.name.rsplit("K", 1)[1])
             for spec in list_producer_formats("fp8_cb")
         }
-        assert producer_fp8 == set(
-            by_family["FP8_CB_K"]["producer_rungs"]
-        )
+        assert set(by_family["FP8_CB_K"]["producer_rungs"]) <= producer_fp8
     if "producer_rungs" in by_family["NVFP4_CB_K"]:
         producer_nvfp4 = {
             int(spec.name.rsplit("K", 1)[1])
             for spec in list_producer_formats("nvfp4_cb")
         }
-        assert producer_nvfp4 == set(
-            by_family["NVFP4_CB_K"]["producer_rungs"]
-        )
+        assert set(by_family["NVFP4_CB_K"]["producer_rungs"]) <= producer_nvfp4
 
     packing = contract["packing"]
     assert packing == {
@@ -296,7 +322,26 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
         "NVFP4_CB_S": ("NVFP4_CB_S{k}", "fp4", "signed", 1),
         "FP8_CB_K": ("FP8_CB_K{k}", "fp8", "product", 4),
     }
-    for family, entry in by_family.items():
+    # These four fields describe a CB *product-code* family and only that: a
+    # name pattern, a base grid, a signed/product mode and a sub-index count.
+    # From v12 the contract also publishes trellis families, whose entries
+    # carry a different shape entirely (candidate_rungs_q256,
+    # native_terminal_q256, reader_rate_range_q256, residency_modes -- and no
+    # grid, mode, n_sub or rungs). They are out of scope here BY SHAPE, not by
+    # being skipped: the closure assert below still fails if the runtime ever
+    # publishes a cb_product family this test has no expectation for.
+    # ``kind`` arrived with v11; contracts before it published CB families
+    # only, so its absence means cb_product and the check is unchanged there.
+    cb_families = {
+        family for family, entry in by_family.items()
+        if entry.get("kind", "cb_product") == "cb_product"
+    }
+    assert cb_families <= set(expected_family_fields), (
+        "the pinned runtime publishes a CB family this test does not pin: "
+        f"{sorted(cb_families - set(expected_family_fields))}"
+    )
+    for family in cb_families:
+        entry = by_family[family]
         pattern, grid, mode, n_sub = expected_family_fields[family]
         assert (entry["name_pattern"], entry["grid"], entry["mode"],
                 entry["n_sub"]) == (pattern, grid, mode, n_sub)
@@ -317,7 +362,10 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
         ("fp4", 2, SCALE_CODING_TWO_TIER): 9,
         ("fp8", 1, SCALE_CODING_V1): 0,
     }
-    for family, entry in by_family.items():
+    # Same scoping as the shape check above: layout_versions/grid/rungs are
+    # CB product-code fields; a trellis family publishes none of them.
+    for family in cb_families:
+        entry = by_family[family]
         for version in entry["layout_versions"]:
             coding = (SCALE_CODING_TWO_TIER
                       if entry["grid"] == "fp4" and version == 2

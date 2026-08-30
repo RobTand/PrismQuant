@@ -60,7 +60,10 @@ def _architecture_84_rows() -> list[dict[str, str]]:
         "gridbook opt-in",
         "MTP",
     ], f"ARCHITECTURE.md §8.4 table headers drifted: {headers!r}"
-    assert re.fullmatch(r"\|(?:\s*:?-+:?\s*\|)+", lines[header_index + 1])
+    separator = lines[header_index + 1]
+    assert re.fullmatch(r"\|(?:\s*:?-+:?\s*\|)+", separator), (
+        f"ARCHITECTURE.md §8.4 table separator is invalid: {separator!r}"
+    )
 
     rows: list[dict[str, str]] = []
     for line in lines[header_index + 2:]:
@@ -104,17 +107,32 @@ def _documented_profile_file(row: dict[str, str]) -> str:
     return match.group(1)
 
 
-def _documented_serving_profile(row_name: str, cell: str) -> str | None:
+def _documented_serving_profile(
+    row_name: str,
+    cell: str,
+) -> tuple[str | None, tuple[str, ...] | None]:
     identifiers = re.findall(r"`([^`]+)`", cell)
     if identifiers:
+        extends_match = re.search(
+            r"\(extends\s+(`[^`]+`(?:\s*,\s*`[^`]+`)*)\)",
+            cell,
+        )
+        documented_extends = (
+            tuple(re.findall(r"`([^`]+)`", extends_match.group(1)))
+            if extends_match else None
+        )
+        expected_identifiers = 1 + len(documented_extends or ())
         _assert_84_cell(
             row=row_name,
             column="default_serving_profile",
             documented=cell,
-            actual="one serving-profile ID",
-            matches=len(identifiers) == 1,
+            actual=(
+                "one serving-profile ID plus an optional "
+                "'(extends `id`, ...)' claim"
+            ),
+            matches=len(identifiers) == expected_identifiers,
         )
-        return identifiers[0]
+        return identifiers[0], documented_extends
     plain = _plain_markdown_cell(cell).lower()
     is_none = "spec declares none" in plain or plain.startswith("—")
     _assert_84_cell(
@@ -124,7 +142,7 @@ def _documented_serving_profile(row_name: str, cell: str) -> str | None:
         actual="a backticked serving-profile ID or an explicit none marker",
         matches=is_none,
     )
-    return None
+    return None, None
 
 
 def _documented_lane_claim(
@@ -268,9 +286,8 @@ def test_model_profile_conformance_table_matches_registered_profiles():
         )
         rows_by_name[row_name] = row
 
-    # Coverage is intentionally checked in both directions. The first loop
-    # catches a newly registered profile omitted from the matrix; the second
-    # catches stale rows left behind after a profile is removed or renamed.
+    # This is deliberately bidirectional: an omitted new profile and an old
+    # row whose profile was removed are independent documentation failures.
     for name, profile_class, _ in registered:
         expected_file = f"{profile_class.__module__.rsplit('.', 1)[-1]}.py"
         _assert_84_cell(
@@ -295,10 +312,14 @@ def test_model_profile_conformance_table_matches_registered_profiles():
             matches=name in profiles,
         )
 
-    serving_profile_ids = {
-        str(json.loads(path.read_text(encoding="utf-8"))["id"])
-        for path in (ROOT / "prismaquant" / "serving_profile_specs").glob("*.json")
-    }
+    serving_specs: dict[str, dict[str, object]] = {}
+    for path in (ROOT / "prismaquant" / "serving_profile_specs").glob("*.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        serving_id = str(payload["id"])
+        assert serving_id not in serving_specs, (
+            f"serving-profile specs have duplicate id {serving_id!r}"
+        )
+        serving_specs[serving_id] = payload
 
     for name, (profile_class, profile) in profiles.items():
         row = rows_by_name[name]
@@ -349,7 +370,9 @@ def test_model_profile_conformance_table_matches_registered_profiles():
                 column="prio",
                 documented=priority_cell,
                 actual="terminal fallback",
-                matches=priority_text.startswith("—") and "terminal" in priority_text,
+                matches=(
+                    priority_text.startswith("—") and "terminal" in priority_text
+                ),
             )
         else:
             priority_match = re.fullmatch(r"\d+", priority_text)
@@ -369,17 +392,20 @@ def test_model_profile_conformance_table_matches_registered_profiles():
                 actual=profile_class.priority,
                 matches=documented_priority == profile_class.priority,
             )
-            assert spec is not None
-            _assert_84_cell(
-                row=name,
-                column="prio",
-                documented=documented_priority,
-                actual=spec.priority,
-                matches=documented_priority == spec.priority,
-            )
+            if spec is not None:
+                _assert_84_cell(
+                    row=name,
+                    column="prio",
+                    documented=documented_priority,
+                    actual=spec.priority,
+                    matches=documented_priority == spec.priority,
+                )
 
         serving_cell = row["default_serving_profile"]
-        documented_serving = _documented_serving_profile(name, serving_cell)
+        documented_serving, documented_extends = _documented_serving_profile(
+            name,
+            serving_cell,
+        )
         actual_serving = profile.serving_profile_id()
         _assert_84_cell(
             row=name,
@@ -397,17 +423,28 @@ def test_model_profile_conformance_table_matches_registered_profiles():
                 matches=documented_serving == spec.default_serving_profile,
             )
         if actual_serving is not None:
+            actual_serving_spec = serving_specs.get(actual_serving)
             _assert_84_cell(
                 row=name,
                 column="default_serving_profile",
                 documented=serving_cell,
                 actual=(
                     actual_serving
-                    if actual_serving in serving_profile_ids
+                    if actual_serving_spec is not None
                     else f"{actual_serving} (missing serving-profile spec)"
                 ),
-                matches=actual_serving in serving_profile_ids,
+                matches=actual_serving_spec is not None,
             )
+            if documented_extends is not None:
+                assert actual_serving_spec is not None
+                actual_extends = tuple(actual_serving_spec.get("extends") or ())
+                _assert_84_cell(
+                    row=name,
+                    column="default_serving_profile",
+                    documented=f"extends={documented_extends!r}",
+                    actual=f"extends={actual_extends!r}",
+                    matches=documented_extends == actual_extends,
+                )
 
         lane_cell = row["supported_lanes (preferred)"]
         documented_lanes, documented_preferred, claims_no_lanes = (
@@ -439,18 +476,19 @@ def test_model_profile_conformance_table_matches_registered_profiles():
                 row=name,
                 column="supported_lanes (preferred)",
                 documented=lane_cell,
-                actual=(None if spec is None else spec.supported_lanes),
+                actual=None if spec is None else spec.supported_lanes,
                 matches=spec is not None and not spec.supported_lanes,
             )
 
         mtp_cell = row["MTP"]
         documented_has_mtp = _documented_has_mtp(name, mtp_cell)
+        actual_has_mtp = profile.has_mtp()
         _assert_84_cell(
             row=name,
             column="MTP",
             documented=documented_has_mtp,
-            actual=profile.has_mtp(),
-            matches=documented_has_mtp == profile.has_mtp(),
+            actual=actual_has_mtp,
+            matches=documented_has_mtp == actual_has_mtp,
         )
         source_prefix = re.search(
             r'mtp_source_prefix\s+"([^"]+)"',
@@ -466,23 +504,26 @@ def test_model_profile_conformance_table_matches_registered_profiles():
             )
         if "in passthrough_prefixes" in _plain_markdown_cell(mtp_cell):
             prefix = profile.mtp_source_prefix()
+            passthrough_prefixes = profile.source_passthrough_prefixes()
             _assert_84_cell(
                 row=name,
                 column="MTP",
                 documented=mtp_cell,
-                actual=profile.source_passthrough_prefixes(),
-                matches=prefix is not None and prefix in profile.source_passthrough_prefixes(),
+                actual=passthrough_prefixes,
+                matches=(
+                    prefix is not None and prefix in passthrough_prefixes
+                ),
             )
 
-        # `Arch` is a human-facing label with aliases and smoke-checkpoint
-        # examples; no profile/spec field canonically serializes that prose.
-        # `gridbook opt-in` mixes an external consumer contract with dated
-        # validation status and loader commentary, none of which follows from
-        # the model or serving specs. The MTP capability, source prefix, and
-        # explicit passthrough claim above are checkable; class names, routes,
-        # evidence tags, and history elsewhere in that cell remain prose.
-        # Parenthetical L1/R22 notes in other cells are history for the same
-        # reason, while their underlying IDs and values are asserted above.
+        # `Arch` is a human label containing aliases and smoke examples; no
+        # profile/spec field canonically serializes that prose. `gridbook
+        # opt-in` combines an external consumer contract with dated validation
+        # status and loader commentary, none of which is derivable from the
+        # model or serving specs. The MTP capability, explicit source prefix,
+        # and passthrough claim above are checkable; class names, routes,
+        # evidence tags, and historical notes elsewhere in that cell are not.
+        # The R22/L1 annotations and "all 8 overrides" count are audit history,
+        # not schema fields; their underlying spec presence and IDs are pinned.
 
 
 def test_selection_mode_default_documented():

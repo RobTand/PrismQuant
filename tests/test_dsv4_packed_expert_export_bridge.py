@@ -42,6 +42,15 @@ needs_real_source = pytest.mark.skipif(
     reason="DSv4-Flash checkpoint index is not mounted on this box",
 )
 
+# This module builds synthetic CB bodies on CPU and never serves them.
+# Gridbook 0.9.1's v12 table names no CB cell on sm_121, so the route gate
+# refuses these exports unless the artifact declares what it is.  See
+# tests/cb_synthetic_target.py; the real sm_121 refusal stays asserted in
+# tests/test_cb_route_status_gate.py.
+pytestmark = pytest.mark.usefixtures("synthetic_cb_target")
+
+
+
 
 def _dsv4_profile():
     return detect_profile(str(REAL_SOURCE))

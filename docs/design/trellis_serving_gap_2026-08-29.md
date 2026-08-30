@@ -15,7 +15,19 @@ Evidence: `dq-runs/trellis-kernel-20260829/route_probe.py` →
 
 ## 1. The finding, in one line
 
-**Gridbook can decode the trellis wire but cannot serve it.** `trellis` appears
+**No *released* Gridbook decodes the trellis wire at all, and the unreleased
+tree that does cannot serve it.** The release half is read out of git, not
+inferred: a sweep of all 31 tags (`v0.1.0`..`v0.9.0`) finds no tag carrying any
+trellis file, and `git ls-tree -r 187c721 | grep -ci trellis` returns **0** at
+PrismaQuant's own pin (0.8.11, contract `gridbook.runtime-contract.v4`, which
+lists exactly `NVFP4_CB_K` / `NVFP4_CB_S` / `FP8_CB_K` and nothing else). So
+every wire arm — v1, row-indexed, or v2 — crosses a release boundary regardless
+of which is chosen; the choice is *what to publish in a release that must
+happen anyway*, never whether to pay for one. Everything below is measured on
+the **unreleased, unpinned** working tree, and inherits that scope
+(principle 14 corollary).
+
+Inside that tree, `trellis` appears
 in exactly three modules — `gridbook/trellis.py`, `gridbook/trellis_ops.py`,
 `gridbook/cuda_ext.py` — and **none of them is a serving path**. There is no
 `TrellisLinearMethod`, no `config.py` scheme that recognises a trellis payload,
@@ -137,6 +149,31 @@ decision whether they mean to or not: give the facts a rate field, or let
 Contract v11 → v12 remains **release-keyed** (the version is duplicated across
 five files) and therefore Rob's call — and it is the *last* step, behind both
 (a) and the v2 parser.
+
+> **UPDATE 2026-08-30 — item 3 is DONE; the trellis decision was made.**
+> The parser is rewritten straight to **v3** (gridbook `30287aa` publishes
+> `gridbook.lane-eligibility.v3`, not v2; item 3's "v2" is superseded), and the
+> fork above was resolved the first way: `UnitStructuralFacts` gained
+> **`rate_q256`**, and `k` and `rate_q256` are mutually exclusive by
+> construction. Letting `rungs` carry the rate was rejected — a codebook K and
+> body-bits-per-256 are different quantities on the same axis, and the v3 shape
+> already separates them (`rungs` vs `rungs_q256`, dispatched on each family's
+> `formats[].kind`). See `docs/ARCHITECTURE.md` §9.2.1.
+>
+> Two consequences worth carrying forward. **(i)** A v3 table has no `unbacked`
+> cell — the runtime does not enumerate what it cannot serve — so *absence* is
+> its only negative signal; an uncovered unit resolves `unattested` and the
+> export gate now fails closed on it, scoped to families the contract publishes.
+> **(ii)** The published v12 table names CB cells on `sm_89` and `sm_120` only;
+> on `sm_121` it publishes **trellis cells alone**. So the pin bump will make a
+> GB10 *CB* export refuse until either gridbook publishes sm_121 CB cells or the
+> artifact declares a non-native target — the table reporting a serving gap,
+> which is the signal it exists to carry.
+>
+> Still owed before the bump, and unchanged in kind: the release decision
+> (`30287aa` carries no tag, `__version__` 0.9.1, CHANGELOG `## Unreleased`, and
+> the serving pin needs a fresh `wheel_sha256` read from the served image), and
+> a `target_platform` declaration on `nvfp4_cb.json`, which has none.
 
 ---
 

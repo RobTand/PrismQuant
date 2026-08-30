@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from prismaquant.gridbook_serving_runtime_pin import (
+    GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA,
     GRIDBOOK_SERVING_RUNTIME_RELEASE_VERSION,
 )
 
@@ -53,7 +54,7 @@ _RELEASED_SERVING_PIN = {
     "version": GRIDBOOK_SERVING_RUNTIME_RELEASE_VERSION,
     "version_is_release": True,
     "wheel_sha256": "b" * 64,
-    "runtime_contract_schema": "gridbook.runtime-contract.v4",
+    "runtime_contract_schema": GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA,
     "required_abi_features": {
         "routed_moe_per_role_codebook_lut": 1,
         "source_fp8_block128_w8a16": 1,

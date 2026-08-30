@@ -104,7 +104,7 @@ def test_gridbook_pins_separate_immutable_producer_from_current_serving():
         "version": GRIDBOOK_SERVING_RUNTIME_RELEASE_VERSION,
         "version_is_release": True,
         "wheel_sha256": GRIDBOOK_SERVING_RUNTIME_RELEASE_WHEEL_SHA256,
-        "runtime_contract_schema": "gridbook.runtime-contract.v4",
+        "runtime_contract_schema": "gridbook.runtime-contract.v12",
         "required_abi_features": {
             "routed_moe_per_role_codebook_lut": 1,
             "source_fp8_block128_w8a16": 1,

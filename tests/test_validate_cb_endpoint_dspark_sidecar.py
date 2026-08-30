@@ -11,6 +11,9 @@ import torch
 from safetensors.torch import save_file
 
 import prismaquant.artifact_completeness as artifact_completeness
+from prismaquant.gridbook_serving_runtime_pin import (
+    GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA,
+)
 import prismaquant.validate_cb_endpoint as cbv
 from prismaquant.cb_export_config import (
     _two_tier_scale_coding,
@@ -418,7 +421,8 @@ def test_sidecar_closes_exact_27_targets_47_glue_and_8_source_planes(
         root,
         quant,
         runtime_pin={
-            "runtime_contract_schema": "gridbook.runtime-contract.v4",
+            "runtime_contract_schema":
+                GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA,
             "required_abi_features": {
                 cbv.DSPARK_CB_RUNTIME_FEATURE:
                     cbv.DSPARK_CB_RUNTIME_FEATURE_VERSION,
@@ -435,7 +439,7 @@ def test_sidecar_closes_exact_27_targets_47_glue_and_8_source_planes(
             cbv.DSPARK_CB_SOURCE_FP8_RUNTIME_FEATURE_VERSION,
     }
     assert receipt["required_runtime_contract_schema"] == (
-        "gridbook.runtime-contract.v4"
+        GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA
     )
     cbv._validate_artifact_decode_record(receipt)
 
@@ -811,7 +815,8 @@ def test_sidecar_receipt_rejects_runtime_without_required_feature(
             root,
             quant,
             runtime_pin={
-                "runtime_contract_schema": "gridbook.runtime-contract.v4",
+                "runtime_contract_schema":
+                    GRIDBOOK_SERVING_RUNTIME_CONTRACT_SCHEMA,
                 "required_abi_features": features,
             },
         )
@@ -843,6 +848,7 @@ def test_sidecar_receipt_rejects_runtime_contract_v3_even_with_feature(
 def test_sidecar_rejects_incomplete_source_group_or_construction_units(
     sidecar_case,
 ):
+
     _root, _config, quant, _header = sidecar_case
     quant["config_groups"]["group_1"]["targets"].pop()
     with pytest.raises(

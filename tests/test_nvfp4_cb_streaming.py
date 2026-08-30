@@ -52,6 +52,14 @@ from prismaquant.shipcard import (  # noqa: E402
     verify,
 )
 
+# This module builds synthetic CB bodies on CPU and never serves them.
+# Gridbook 0.9.1's v12 table names no CB cell on sm_121, so the route gate
+# refuses these exports unless the artifact declares what it is.  See
+# tests/cb_synthetic_target.py; the real sm_121 refusal stays asserted in
+# tests/test_cb_route_status_gate.py.
+pytestmark = pytest.mark.usefixtures("synthetic_cb_target")
+
+
 
 def export_nvfp4_cb(*args, **kwargs):
     """This module's synthetic direct calls are explicit research renders."""
@@ -2712,6 +2720,7 @@ def _embedding_model(mdl: Path, vocab: int = 64, hid: int = 256) -> None:
 def test_streaming_ships_the_quantized_embedding_like_the_in_memory_exporter(
     workdir,
 ):
+
     """The 13.0 GB card lane needs a quantized embedding AND streaming.
 
     The embedding declaration lived only in the in-memory exporter, which

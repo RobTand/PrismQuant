@@ -50,6 +50,14 @@ from prismaquant.nvfp4_cb_footprint import (
     cb_tensor_serialization_stamp,
 )
 
+# This module builds synthetic CB bodies on CPU and never serves them.
+# Gridbook 0.9.1's v12 table names no CB cell on sm_121, so the route gate
+# refuses these exports unless the artifact declares what it is.  See
+# tests/cb_synthetic_target.py; the real sm_121 refusal stays asserted in
+# tests/test_cb_route_status_gate.py.
+pytestmark = pytest.mark.usefixtures("synthetic_cb_target")
+
+
 
 class _FusedProfile:
     @staticmethod
@@ -379,6 +387,7 @@ def _production_layer_config(
     extra_assignment=None,
     context=None,
 ):
+
     from prismaquant.production_weight_cache import (
         bind_cb_render_identity_source_weights,
         build_production_cache_cb_render_identity,

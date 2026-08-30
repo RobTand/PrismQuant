@@ -190,9 +190,11 @@ _PUBLISHED_FILES = frozenset({
 #     halves are the only spelling the ABI permits. Gridbook 0.8.5 resolved it
 #     (as read at that release: `config.py:1487-1503` `_moe_target_keys`
 #     accepts the half leaves, `:1401-1454` builds `codebook_ref_by_role`,
-#     `moe.py:512-527` consumes it); the currently pinned 0.8.11 carries the
-#     same three mechanisms forward at shifted line numbers
-#     (`config.py:1729`, `:1694`, `moe.py:574`), and covers it with its tests
+#     `moe.py:512-527` consumes it); 0.8.11 carried the same three mechanisms
+#     forward at shifted line numbers (`config.py:1729`, `:1694`,
+#     `moe.py:574`), and so does the currently pinned 0.9.1 (`config.py:2161`
+#     `_moe_target_keys`, `:2126` `codebook_ref_by_role`, `moe.py:673`
+#     consuming it), and covers it with its tests
 #     (`test_routed_per_role_codebooks.py`). Correspondingly, 1ccdf58's message
 #     calls the dual spelling a "real inconsistency" -- that framing is wrong
 #     and is retracted here; lattice layers share one book and legally name the
@@ -577,7 +579,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "e2d947fe9ba98c612e13a9abe66dbb70aaadde83b0b0db394d100cbff82378c1"
     ),
     "prismaquant/production_weight_cache.py": (
-        "c0c2aa9c322e2c5aa264d786d8df26166908fc47290ab14ae996c207370d7263"
+        "69e29daf21ec8fcfb6ee86375dc6a9792750f38e32337c931b26be64bb0c9fc7"
     ),
     "prismaquant/nvfp4_cb_footprint.py": (
         "96bc38a7ab18c6d2401ed2b66141eef9809409c78468f8ceb16c0891b9701547"

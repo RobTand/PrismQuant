@@ -74,9 +74,9 @@ version = pin["version"]
 if not isinstance(version, str) or re.fullmatch(
         r"[0-9]+(?:[.][0-9]+)*(?:[A-Za-z0-9.+-]*)?", version) is None:
     raise SystemExit(f"{path}: invalid package version {version!r}")
-if version != "0.8.11":
+if version != "0.9.1":
     raise SystemExit(
-        f"{path}: runtime-contract v4 release must be version 0.8.11")
+        f"{path}: runtime-contract v12 release must be version 0.9.1")
 # True only when `commit` IS the release tag commit for `version`. A pin that
 # advances to a post-release master commit keeps the same `version` string (the
 # runtime self-reports it until the next bump), so the version alone cannot say
@@ -87,7 +87,7 @@ if not isinstance(pin["version_is_release"], bool):
 if commit == pending and pin["version_is_release"]:
     raise SystemExit(f"{path}: unresolved commit cannot be marked released")
 contract_schema = pin["runtime_contract_schema"]
-if contract_schema != "gridbook.runtime-contract.v4":
+if contract_schema != "gridbook.runtime-contract.v12":
     raise SystemExit(f"{path}: unsupported runtime contract schema")
 features = pin["required_abi_features"]
 required_features = {
@@ -121,12 +121,12 @@ PY
         <<<"$values"
     if ! _gridbook_runtime_is_commit "$GRIDBOOK_RUNTIME_COMMIT"; then
         _gridbook_runtime_error \
-            "Gridbook v0.8.11 exact release commit is unresolved; replace the tracked placeholder"
+            "Gridbook v0.9.1 exact release commit is unresolved; replace the tracked placeholder"
         return
     fi
     if [[ "$GRIDBOOK_RUNTIME_VERSION_IS_RELEASE" != 1 ]]; then
         _gridbook_runtime_error \
-            "Gridbook v0.8.11 pin is not an exact released commit"
+            "Gridbook v0.9.1 pin is not an exact released commit"
         return
     fi
     export GRIDBOOK_RUNTIME_PIN_SCHEMA GRIDBOOK_RUNTIME_REPOSITORY \

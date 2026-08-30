@@ -83,6 +83,7 @@ import torch.nn as nn
 
 from prismaquant.activation_sampling import update_priority_reservoir
 from prismaquant.build_rtn_cache import iter_quantizable_tensors
+from prismaquant.cost_stage_checkpoint import atomic_write_bytes
 from prismaquant.render_score import (
     gate_render_candidate,
     normalize_row_weights,
@@ -1531,19 +1532,28 @@ def _local_forward_render_score(
 def _load_render_score_sidecar(path: Path | None) -> dict[str, dict[str, object]]:
     if path is None or not path.is_file():
         return {}
-    import json as _json
 
     try:
-        raw = _json.loads(path.read_text())
-    except Exception:
-        return {}
+        raw = json.loads(path.read_text())
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to load render-score sidecar {path}: {exc}; "
+            "refusing resume"
+        ) from exc
     records = raw.get("records") if isinstance(raw, Mapping) else None
     if not isinstance(records, Mapping):
-        return {}
+        raise RuntimeError(
+            f"render-score sidecar {path} does not contain a records object; "
+            "refusing resume"
+        )
     out: dict[str, dict[str, object]] = {}
     for key, value in records.items():
-        if isinstance(value, Mapping):
-            out[str(key)] = dict(value)
+        if not isinstance(value, Mapping):
+            raise RuntimeError(
+                f"render-score sidecar {path} has a non-object record for "
+                f"{key!r}; refusing resume"
+            )
+        out[str(key)] = dict(value)
     return out
 
 
@@ -1562,6 +1572,37 @@ def _write_render_score_sidecar(
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(_json.dumps(payload, indent=2, sort_keys=True))
     os.replace(tmp, path)
+
+
+def _load_activation_max_abs_sidecar(path: Path) -> dict[str, float]:
+    try:
+        raw = json.loads(path.read_text())
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to load activation max-abs sidecar {path}: {exc}; "
+            "refusing resume"
+        ) from exc
+    if not isinstance(raw, Mapping):
+        raise RuntimeError(
+            f"activation max-abs sidecar {path} is not a JSON object; "
+            "refusing resume"
+        )
+
+    values: dict[str, float] = {}
+    for qname, value in raw.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(
+                f"activation max-abs sidecar {path} has a non-numeric value "
+                f"for {qname!r}; refusing resume"
+            )
+        numeric = float(value)
+        if not math.isfinite(numeric) or numeric <= 0.0:
+            raise RuntimeError(
+                f"activation max-abs sidecar {path} has an invalid value "
+                f"for {qname!r}: {value!r}; refusing resume"
+            )
+        values[str(qname)] = numeric
+    return values
 
 
 def _format_supports_render_mechanism(fmt: str, mechanism: str) -> bool:
@@ -5213,21 +5254,15 @@ def fill_production_weight_cache(
     # rendered qnames.  ``sidecar_path`` was defined earlier (before the
     # forward-skip decision); re-using it here.
     if sidecar_path is not None and sidecar_path.is_file():
-        import json as _json
-        try:
-            activation_max_abs.update(_json.loads(sidecar_path.read_text()))
-            if progress:
-                print(
-                    f"[prod-cache] resume: loaded {len(activation_max_abs)} "
-                    f"max_abs entries from sidecar",
-                    flush=True,
-                )
-        except Exception as e:
-            if progress:
-                print(
-                    f"[prod-cache] sidecar load failed ({e}); recomputing",
-                    flush=True,
-                )
+        activation_max_abs.update(
+            _load_activation_max_abs_sidecar(sidecar_path)
+        )
+        if progress:
+            print(
+                f"[prod-cache] resume: loaded {len(activation_max_abs)} "
+                f"max_abs entries from sidecar",
+                flush=True,
+            )
 
     if "NVFP4" in render_base_fmt_set:
         # Group by fused sibling key for max-across-siblings unification.
@@ -5281,8 +5316,10 @@ def fill_production_weight_cache(
         # Persist max_abs to sidecar so future resume runs can skip
         # activation collection entirely for completed qnames.
         if sidecar_path is not None and activation_max_abs:
-            import json as _json
-            sidecar_path.write_text(_json.dumps(activation_max_abs, indent=2))
+            atomic_write_bytes(
+                sidecar_path,
+                json.dumps(activation_max_abs, indent=2).encode("utf-8"),
+            )
 
     # MEM: free per-Linear activation tensors after each render so peak
     # memory stays bounded.  On 27B, 497 Linears × ~10K in_features × 512

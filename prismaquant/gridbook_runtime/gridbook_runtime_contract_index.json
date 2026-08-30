@@ -4,6 +4,15 @@
   "packaged_path": "gridbook/runtime_contract.json",
   "contracts": [
     {
+      "version": "0.9.1",
+      "commit": "227420f9821bab7089632ee914f0ba050f82b817",
+      "runtime_contract_schema": "gridbook.runtime-contract.v12",
+      "path": "gridbook_runtime_contract.0.9.1.json",
+      "sha256": "836b7831aa8bbad30170bcae56a1b01e08031ac3159914973f0a1bd15edc4f24",
+      "lane_eligibility": "present",
+      "lane_eligibility_detail": "Gridbook 0.9.1 packages a lane-eligibility table at schema gridbook.lane-eligibility.v3 -- the first pinned release that does. Sixteen platform-scoped cells: two FP8-CB on sm_89 and ten CB on sm_120, every one of them qualification 'compile_only' (the kernels cross-compile for that capability; no device has been seen to take the route), plus four 'device_qualified' dense trellis cells on sm_121 from the 2026-08-29 GB10 receipt. A v3 cell is scoped to one platform, one payload family and an explicit rung list, and the table carries NO 'unbacked' cell: the runtime does not enumerate what it refuses, so ABSENCE is its only negative signal and an uncovered unit resolves UNATTESTED. CONSEQUENCE PrismaQuant must not paper over: sm_121 carries no CB cell at all. Both CB preflights hardcode their capability (sm89_preflight.SM89_CAPABILITY = (8, 9), sm120_preflight.SM120_CAPABILITY = (12, 0)), so no CB receipt for compute 12.1 exists to publish, and a CB export declaring target_platform sm_121 refuses at the route-status gate until Gridbook receipts one or the artifact declares a non-native target. That refusal is the table honestly reporting a serving gap (principle 1's carve-out, principle 9), not a gate defect. This entry replaces the 'absent' claim that held from 0.8.10 through 0.8.11 and the local proposal in docs/design/gridbook_lane_eligibility_contract.md, which the published v3 supersedes."
+    },
+    {
       "version": "0.8.11",
       "commit": "187c7216b9d4882321c1923de0b4c49dc139743c",
       "runtime_contract_schema": "gridbook.runtime-contract.v4",
