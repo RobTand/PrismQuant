@@ -3764,7 +3764,7 @@ defaulting; it now delegates to `production_weight_cache._resolve_production_ren
 
 ### 5.4 The single rendered-weight store
 
-`ProductionWeightCache` (`production_weight_cache.py:137`) is the only store for rendered
+`ProductionWeightCache` (`production_weight_cache.py:198`) is the only store for rendered
 weights and `render_production_weight` (`:1785`) the only producer. Not tidiness: the
 surrogate, the KL validation, and the exported bytes must be the *same* rendering, or every A/B
 carries a rendering confound. Levers are recorded on the cache (`:165`, `:835-858`), which is
