@@ -76,16 +76,46 @@ def test_kl_fisher_probe_covariance_closed_form():
 
 
 def test_fisher_quadratic_form_exact():
+    """`fisher_quadratic_form` equals 0.5 * dz~^T (diag(p~) - p~p~^T) dz~.
+
+    The reference is computed in **float64**, and the tolerance is derived from
+    float32 precision rather than pinned to a magic constant.
+
+    Both choices are load-bearing.  The implementation evaluates the variance
+    form ``sum p (dz - mean)^2`` while the identity above is the explicit
+    matrix form; they are algebraically identical but reassociate differently
+    in float32.  An earlier version of this test compared the two *float32*
+    expressions against an absolute ``1e-10``.  That bound sits BELOW the
+    float32 noise floor of the quantity itself -- at the T=0.5 scale of 0.2509
+    one float32 ulp is ~1.5e-8 -- so it asserted nothing about the math and
+    everything about summation order.  It passed on aarch64, where the two
+    paths happen to reassociate bit-identically (observed |lhs - rhs| = 0), and
+    failed on x86-64 CI at 7.45e-09, which is sub-ulp and therefore not an
+    error at all.
+
+    Comparing against float64 instead makes the assertion the real claim -- the
+    float32 implementation is correct to float32 precision -- and is strictly
+    stronger than the old one, which could not catch both float32 paths being
+    wrong together.  16 ulps covers the softmax plus a 6-element reduction
+    chain; the observed error is ~5.5e-09 against a 4.8e-07 bound, and any
+    genuine algebraic error would be larger by orders of magnitude.
+    """
     probs = torch.tensor([0.4, 0.25, 0.15, 0.1, 0.06, 0.04])
     z = torch.log(probs).view(1, 6)
     dz = torch.tensor([0.31, -0.52, 0.17, 0.02, -0.44, 0.63]).view(1, 6)
+    float32_eps = torch.finfo(torch.float32).eps
     for temperature in (1.0, 0.5):
         lhs = fisher_quadratic_form(z, dz, temperature=temperature)
-        p_tilde = torch.softmax(z / temperature, dim=-1).squeeze(0)
-        dz_tilde = (dz / temperature).squeeze(0)
+
+        p_tilde = torch.softmax(z.double() / temperature, dim=-1).squeeze(0)
+        dz_tilde = (dz.double() / temperature).squeeze(0)
         fisher = torch.diag(p_tilde) - torch.outer(p_tilde, p_tilde)
-        rhs = 0.5 * (dz_tilde @ fisher @ dz_tilde)
-        assert abs(lhs.item() - rhs.item()) <= 1e-10
+        exact = 0.5 * (dz_tilde @ fisher @ dz_tilde)
+
+        tolerance = 16.0 * float32_eps * abs(exact.item())
+        assert abs(lhs.item() - exact.item()) <= tolerance, (
+            f"T={temperature}: |{lhs.item():.10g} - {exact.item():.10g}| "
+            f"exceeds {tolerance:.4g} (16 float32 ulps at this scale)")
 
 
 def test_bit_split_ceil_first_pinned():
