@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import pickle
 import re
-import subprocess
 import sys
 from pathlib import Path
 

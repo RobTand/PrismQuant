@@ -379,3 +379,41 @@ def test_export_refuses_a_trellis_assignment():
     text = pathlib.Path(ex.__file__).read_text()
     assert "parse_trellis_format_name(fmt_canonical) is not None" in text
     assert "ProductionWeightCache renders no trellis wire" in text
+
+
+def test_every_entry_that_cites_a_line_range_still_points_at_its_code():
+    """A file:line the refusal quotes must point at the code it describes.
+
+    This ledger is read by a human deciding what is safe to re-enable, so a
+    citation that drifts is worse than no citation: it sends the reader to
+    unrelated code and quietly reads as "already handled".  Editing the file
+    an entry cites is exactly what shifts it -- closing links #5 and #7 added
+    ~230 lines above the assignment-payload filter and moved this one.  So
+    each entry that names a line range is checked against a token drawn from
+    its own "why", and only entries whose file this branch owns are checked:
+    the ``allocator_candidates.py`` citations move under another agent's
+    edits, and restamping those is that agent's to do on merge.
+    """
+
+    owned = {
+        "allocator.py": "_memory_bytes_by_format",
+        "trellis_rate_surface.py": "KL-adjoint",
+    }
+    root = pathlib.Path(tm.__file__).parent
+    checked = 0
+    for site, _why in tm.UNWIRED_LINKS:
+        if ":" not in site:
+            continue
+        name, _, span = site.partition(":")
+        token = owned.get(name)
+        if token is None or not span[:1].isdigit():
+            continue
+        first, _, last = span.partition("-")
+        lines = (root / name).read_text().splitlines()
+        window = "\n".join(lines[int(first) - 1:int(last or first)])
+        assert token in window, (
+            f"{site} no longer contains {token!r} -- the entry's citation "
+            f"drifted; restamp it against the code it describes"
+        )
+        checked += 1
+    assert checked >= 1, "no owned entry was actually checked"

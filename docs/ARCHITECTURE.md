@@ -3441,7 +3441,7 @@ assignment-payload filter falling through to `fr.get_format` because nothing
 writes `_memory_bytes_by_format` for a TCQ row, which kills the allocator
 inside the Pareto sweep **before** `layer_config.json` and makes the pointed
 refusals in `layer_config` and the exporter unreachable
-(`allocator.py:3369-3386`); fused-sibling aggregation building super-item menus
+(`allocator.py:3596-3615`); fused-sibling aggregation building super-item menus
 by iterating `FormatSpec` objects (`allocator_candidates.py:2464`); the
 identical packed-expert construction (`:2701`); the byte-budget path's own
 registry lookup (`footprint.py:1183`); and the anchors' currency being weighted

@@ -140,7 +140,7 @@ class TrellisSeamUnwiredError(TrellisMenuError):
 #:     contract travel into selection.json and layer_config.json
 #:     (``tests/test_allocator_cost_mode_and_rank.py``).
 UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
-    ("allocator.py:3369-3386",
+    ("allocator.py:3596-3615",
      "the exact assignment-payload filter finds no '_memory_bytes_by_format' "
      "entry for a TCQ row and falls through to fr.get_format -- the allocator "
      "dies inside the Pareto sweep, before layer_config.json is written; the "
