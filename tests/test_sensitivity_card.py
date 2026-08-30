@@ -7,6 +7,8 @@ formula fed the same numbers. Any drift there is a bug, not a modelling choice.
 
 from __future__ import annotations
 
+import pickle
+
 import numpy as np
 import pytest
 
@@ -30,6 +32,7 @@ from prismaquant.sensitivity_card import (
     SensitivityUnit,
     UnitTopology,
 )
+from prismaquant.sensitivity_card_build import card_from_probe
 
 OUT, IN, TOKENS = 8, 6, 100
 
@@ -99,6 +102,36 @@ def test_validate_rejects_wrong_shape():
     bad = SensitivityUnit(**{**u.__dict__, "fisher_col": np.ones(IN + 1)})
     with pytest.raises(ValueError, match="expected"):
         bad.validate()
+
+
+def test_card_builder_can_bind_the_probe_receipt_commit(tmp_path):
+    """A card must not call its own checkout the Fisher producer."""
+    probe = tmp_path / "probe.pkl"
+    with probe.open("wb") as handle:
+        pickle.dump({
+            "meta": {
+                "model": "test/model",
+                "calib_hash": "a" * 32,
+                "nsamples": 8,
+                "seqlen": 512,
+            },
+            "stats": {
+                "model.layers.0.mlp.down_proj": {
+                    "out_features": 2,
+                    "in_features": 3,
+                    "n_params": 6,
+                    "n_tokens_seen": 8,
+                    "h_trace_raw": 1.0,
+                    "h_w2_sum_raw": 0.5,
+                    "w_norm_sq": 2.0,
+                    "w_max_abs": 1.0,
+                },
+            },
+        }, handle)
+
+    commit = "0123456789abcdef" * 2 + "01234567"
+    card = card_from_probe(str(probe), probe_commit=commit)
+    assert card.provenance.probe_commit == commit
 
 
 # ------------------------------------------------- backward-compatibility gate

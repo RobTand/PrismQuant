@@ -151,6 +151,7 @@ def card_from_probe(
     probe_path: str,
     *,
     model_id: str | None = None,
+    probe_commit: str | None = None,
     render_basis: RenderBasis = RenderBasis.RTN,
     notes: str = "",
 ) -> SensitivityCard:
@@ -245,7 +246,15 @@ def card_from_probe(
         calib_hash=_calib_hash(meta),
         n_calib_samples=int(meta.get("nsamples", 0) or 0),
         seq_len=int(meta.get("seqlen", 0) or 0),
-        probe_commit=str(meta.get("git_commit") or _git_commit()),
+        # A probe payload made by the incremental/sharded driver may not carry
+        # its producer commit.  Falling back to this card-builder checkout is
+        # not evidence of what produced the Fisher: the two can be unrelated
+        # revisions, and the existing GLM card demonstrated the failure by
+        # persisting ``probe_commit="unknown"``.  Campaign drivers that have a
+        # separately stamped probe receipt can bind that exact producer here.
+        probe_commit=str(
+            probe_commit or meta.get("git_commit") or _git_commit()
+        ),
         render_basis=render_basis,
         notes=notes or (
             "converted from probe.pkl; no per-channel vectors present "
@@ -301,6 +310,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("probe", help="path to probe.pkl, or to an existing .npz card")
     ap.add_argument("-o", "--out", help="write the card to this .npz path")
     ap.add_argument("--model-id", default=None)
+    ap.add_argument(
+        "--probe-commit", default=None,
+        help="exact commit from the probe producer receipt; overrides a "
+             "missing probe meta.git_commit instead of misattributing the "
+             "card-builder checkout to the Fisher producer")
     ap.add_argument("--render-basis", default="rtn", choices=[b.value for b in RenderBasis],
                     help="how a consumer should render weight error. 'rtn' is the "
                          "only basis a shareable card can promise: compensated "
@@ -316,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         card = card_from_probe(
             args.probe, model_id=args.model_id,
+            probe_commit=args.probe_commit,
             render_basis=RenderBasis(args.render_basis), notes=args.notes)
 
     if not args.no_validate:

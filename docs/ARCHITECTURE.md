@@ -11,7 +11,11 @@ activation quantization lacks `act_dloss`. This deliberately catches the
 recorded `FP8_SOURCE` descriptor-vs-lane disagreement. Only after that complete
 coverage is established is an inherited `activation_blindness_limitation`
 moved under the AQUA block as superseded history, rather than left beside the
-new prices as a contradictory current claim. Re-stamped (2026-08-30,
+new prices as a contradictory current claim. The sensitivity-card builder also
+accepts the exact probe-producer commit from an external probe receipt; this
+closes the case where a sharded probe omits `meta.git_commit` and the card would
+otherwise misattribute its own builder checkout (or persist `unknown`) as the
+Fisher producer. Re-stamped (2026-08-30,
 `claude/aqua-packed-expert-pricing`) for **AQUA's packed routed-expert A-side
 and the `holes` report semantics** (§"AQUA-AURA"): `aqua_activation_cost.py`
 now assembles packed decision units whose checkpoints store experts
