@@ -67,3 +67,36 @@ python -m research.qtip_native_nvfp4_2026-08-30.native_nvfp4_ldlq \
   --artifacts-dir native-fields --profile-dir profile \
   --qtip-checkout /path/to/qtip
 ```
+
+## First matched one-Linear result (Sparky, 2026-08-30)
+
+Source was Qwen3-0.6B BF16
+`model.layers.0.self_attn.q_proj.weight`, shape `[2048, 1024]`. The 256 FP32
+activation rows came from the existing UltraChat calibration capture
+(`nsamples=8`, `seqlen=512`, BF16 capture, calibration hash
+`41d25e036f3aaea2d3dafcf37831018a`). All four artifacts contain 2,097,152
+quantized weights and exactly 1,179,656 payload bytes: 4.5000305 bpw including
+the two float32 scalars.
+
+| Arm | output NSSE on X | damped H proxy NSSE | weight SNR dB | payload bpw |
+|---|---:|---:|---:|---:|
+| A RTN + final JSO | 0.002579497 | 0.003893172 | 21.1268 | 4.5000305 |
+| B GPTQ + static order + JSO | 0.002579497 | 0.003893172 | 21.1268 | 4.5000305 |
+| C QTIP BlockLDLQ + native terminal | 0.001043210 | 0.002936581 | 20.7342 | 4.5000305 |
+| C2 C + existing full JSO grid | 0.001043210 | 0.002936581 | 20.7342 | 4.5000305 |
+
+On this calibration isolate, C reduced activation-output NSSE by **59.56%**
+(+3.93 dB) and the exact regularized-H proxy by **24.57%** (+1.22 dB) versus
+A/B, while weight-only SNR fell 0.39 dB. B's final bytes equal A's because the
+existing do-no-harm gate rejected its candidate on this Linear. C2's final
+field digest equals C's, so searching the wider legal scale grid found no
+additional scale-plane gain here. This is encouraging evidence for the QTIP
+feedback seam, not held-out KL/PPL or a served-quality claim.
+
+Immutable receipt:
+`sparky:/home/rob/dq-runs/qtip-native-nvfp4-20260830/qwen3_0p6b_l0_qproj.json`
+(SHA-256 `2cb266f637e6bcf2cd60cbdd63490a62c00d8d746bc59b1d08eac663464edba4`).
+The stock-field safetensors are beside it under `fields/`; the in-process
+trace is `profile/one_linear_trace.json`. Queue log:
+`/mnt/shared/pq-queue/logs/qtip-native-nvfp4-qwen06-l0q-v4.log`. No timing or
+energy claim is made from this run.
