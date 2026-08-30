@@ -137,7 +137,18 @@ the runtime.
   `dcf9fa3a1d08186ee37984929396637641e90c0c82ab36650fb49211f73be5f3`,
   with an explicit 2026-08-30 reviewer note in
   `dsv4_w8a16_export_handoff.py`; its targeted handoff tests pass.
-- Mutation checks: pending final committed tree.
+- Mutation checks (detached worktree at `68cf1ef`):
+  1. Changed the sink length predicate to `False and len(blob) != expected`.
+     `test_sink_is_single_assignment_and_checks_priced_length` failed because
+     the undersized blob did not raise.
+  2. Changed the durable shard write from `torch.save(wire, ...)` to
+     `torch.save(decoded_tensor, ...)`.
+     `test_wire_blob_is_primary_across_store_load_and_lru` failed on the
+     observed `bfloat16` matrix instead of a one-dimensional `uint8` wire.
+  3. Changed the KL pre-hook from `quantize(value)` to `value`.
+     `test_inplace_kl_executes_trellis_a_equals_w_hook` failed with KL
+     `2.9145763619453646e-05` against the native teacher (required `<1e-7`).
+  Each mutation was reverted and the detached worktree returned clean.
 - Full suite before failure set (current PR #110 baseline): empty.
 - Full suite after failure set: pending queued receipt.
 
