@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from prismaquant import format_registry as fr
+from prismaquant.name_projection import strip_weight_leaf
 
 if TYPE_CHECKING:
     from prismaquant.source_class_format_plan import SourceClassFormatPlan
@@ -32,9 +33,20 @@ SCHEMA = "prismaquant.production_render_score_cost.v1"
 
 
 def canonical_cost_name(qname: str) -> str:
-    name = str(qname)
-    if name.endswith(".weight"):
-        name = name[:-len(".weight")]
+    """Normalize a producer-recorded qname to the recipe-unit spelling.
+
+    The leaf half is the shared layer's one leaf function
+    (`name_projection.strip_weight_leaf`). The umbrella-infix half mirrors
+    the base profile's checkpoint→live rule (`model.language_model.` →
+    `model.`, `model_profiles/base.py` `checkpoint_to_live_name`) and is
+    deliberately NOT routed through a projection: this module never sees a
+    profile, and a checkpoint/live projection may DECLINE a key (visual,
+    scale siblings) while cost/render payloads legitimately carry rows this
+    normalizer must keep — DSv4's MTP units are costed and keyed under their
+    physical spelling (deepseek_v4 fp8_scale_pairs retains it for the same
+    reason). Total by contract: every input comes back, spelled one way.
+    """
+    name = strip_weight_leaf(str(qname))
     prefix = "model.language_model."
     if name.startswith(prefix):
         name = "model." + name[len(prefix):]

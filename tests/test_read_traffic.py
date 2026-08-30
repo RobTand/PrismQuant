@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from prismaquant import footprint as fp
+from prismaquant import name_projection as npx
 from prismaquant import read_traffic as rt
 from prismaquant.model_profiles import detect_profile_with_warning
 
@@ -497,3 +498,86 @@ def test_untied_declaration_without_an_lm_head_refuses(tmp_path: Path):
     with pytest.raises(rt.ReadTrafficError, match="tie_word_embeddings=false"):
         rt.assignment_read_traffic(
             ASSIGNMENT, STATS, model_path=str(root), profile=profile)
+
+
+# ---------------------------------------------------------------------------
+# The checkpoint->live bridge is the shared name-projection layer.
+# ---------------------------------------------------------------------------
+
+def test_the_private_leaf_helper_is_gone():
+    """The `.weight` leaf rule lives in the name-projection layer only.
+
+    A second copy here is how namespace mappings drift apart between
+    consumers; the mechanical pin keeps it deleted (R5: one mechanism).
+    """
+    assert not hasattr(rt, "_strip_weight")
+
+
+def test_declared_out_of_graph_keys_route_through_the_layer(tmp_path: Path):
+    """A key the profile DECLINES to map lands `excluded_non_text_graph`.
+
+    The layer surfaces the profile's declared drop as
+    ``ProjectedName.outcome == declared_out_of_graph`` -- data the classifier
+    branches on -- so vision/audio bytes are itemized at p=0 rather than
+    silently skipped or priced as always-active.
+    """
+    root = tmp_path / "with-visual"
+    root.mkdir()
+    tensors = dict(_TENSORS)
+    tensors["model.visual.blocks.0.attn.q.weight"] = (HIDDEN, HIDDEN)  # 128 B
+    _write_safetensors(root / "model.safetensors", tensors)
+    (root / "config.json").write_text(json.dumps({
+        "model_type": "qwen3_moe",
+        "architectures": ["Qwen3MoeForCausalLM"],
+        "hidden_size": HIDDEN,
+        "num_hidden_layers": 1,
+        "num_experts": N_EXPERTS,
+        "num_experts_per_tok": TOPK,
+    }))
+    profile = detect_profile_with_warning(str(root), entrypoint="test")
+
+    projected = npx.NameProjection(profile).checkpoint_to_live(
+        "model.visual.blocks.0.attn.q.weight")
+    assert projected.outcome == npx.DECLARED_OUT_OF_GRAPH
+
+    # The classifier consumes exactly that outcome -- with and without a
+    # caller-supplied projection instance.
+    for kwargs in ({}, {"projection": npx.NameProjection(profile)}):
+        assert rt.classify_read_class(
+            "model.visual.blocks.0.attn.q", profile=profile,
+            checkpoint_key="model.visual.blocks.0.attn.q.weight",
+            **kwargs) == "excluded_non_text_graph"
+
+    report = rt.exported_checkpoint_read_traffic(str(root), profile=profile)
+    assert report["classes"]["excluded_non_text_graph"]["stored_bytes"] == 128
+    # The ledger still partitions every shipped byte, visual keys included.
+    assert report["reconciliation"]["ledger_stored_bytes"] == (
+        SOURCE_TOTAL_BYTES + 128)
+
+
+def test_a_failing_profile_mapping_refuses_rather_than_passing_through(
+        model_dir: Path, profile):
+    """A broken mapping accessor is a refusal, not a raw-key passthrough.
+
+    The pre-projection code caught every accessor exception and fell back to
+    the checkpoint key itself, so a misbehaving profile would have re-priced
+    every unmappable tensor as an always-active operand instead of failing.
+    Through the shared layer the refusal propagates; the advisory claim form
+    reports it as a reason, never as a value.
+    """
+    class _BrokenMapping:
+        def __getattr__(self, item):
+            return getattr(profile, item)
+
+        def checkpoint_to_live_name(self, ckpt_key, *, multimodal=False):
+            raise RuntimeError("broken mapping")
+
+    broken = _BrokenMapping()
+    with pytest.raises(npx.NameProjectionError) as err:
+        rt.exported_checkpoint_read_traffic(str(model_dir), profile=broken)
+    assert err.value.code == "profile_accessor_failed"
+
+    claim = rt.read_traffic_claim(str(model_dir), profile=broken)
+    assert claim["value"] is None
+    assert claim["source"] is None
+    assert "profile_accessor_failed" in claim["reason"]

@@ -39,6 +39,10 @@ from .footprint import (
     plain_source_dtype_tensor_payload_breakdown,
 )
 from . import trellis_menu
+from .name_projection import (
+    MAPPED,
+    NameProjection,
+)
 from .serving_profiles import (
     SERVING_LANE_SCHEMA,
     check_serving_format,
@@ -2991,95 +2995,19 @@ def _scan_source_dtype_manifest(
         except Exception:
             continue
 
-    def _strip_weight_suffix(name: str) -> str:
-        return name[:-7] if name.endswith(".weight") else name
+    # R5: every namespace mapping below routes through the ONE shared
+    # projection (`name_projection.NameProjection`); this consumer keeps no
+    # private checkpoint->live->recipe builder. A caller with no profile
+    # gets the repo's declared generic baseline — the same substitution
+    # `measure_quant_cost.resolve_cost_target_name` has always made — whose
+    # default `checkpoint_to_live_name` reproduces exactly the hardcoded
+    # visual/audio/MTP-decline + language_model-infix rules this function
+    # used to inline. Unlike those inlined fallbacks, a profile accessor
+    # that now FAILS raises `NameProjectionError` instead of silently
+    # skipping the row (fail-closed; a silent skip here is the wo_a shape).
+    from .model_profiles import DefaultProfile
 
-    def _to_recipe_name(ck_base: str) -> str:
-        if ck_base.startswith("mtp."):
-            # MTP tensors are REAL source tensors stored under the recipe
-            # namespace itself (transformers v5 drops the module; prismaquant
-            # synthesizes it back under the same names, and probe/cost rows
-            # use them verbatim). The historical skip left MTP names with no
-            # source kind, so the BF16 passthrough was dropped
-            # (source_dtype_mismatch) and --mtp-format=BF16 hard-failed the
-            # moment MTP rows were actually costed (35B frontier, 2026-07-02).
-            return ck_base
-        weight_key = f"{ck_base}.weight"
-        if profile is not None:
-            mapper = getattr(profile, "checkpoint_to_live_name", None)
-            if callable(mapper):
-                try:
-                    live_param = mapper(weight_key, multimodal=False)
-                except TypeError:
-                    live_param = mapper(weight_key)
-                except Exception:
-                    live_param = None
-                if live_param is None:
-                    return ""
-                live_qname = _strip_weight_suffix(str(live_param))
-                recipe_mapper = getattr(profile, "live_to_recipe_name", None)
-                if callable(recipe_mapper):
-                    try:
-                        return str(recipe_mapper(live_qname))
-                    except Exception:
-                        return live_qname
-                return live_qname
-        if (ck_base.startswith("model.visual.")
-                or ck_base.startswith("model.audio_tower.")
-                or ck_base.startswith("model.vision_tower.")
-                or ck_base.startswith("model.embed_vision.")
-                or ck_base.startswith("model.embed_audio.")):
-            return ""
-        if ck_base.startswith("model.language_model."):
-            return "model." + ck_base[len("model.language_model."):]
-        return ck_base
-
-    def _packed_to_recipe_name(ck_key: str) -> str:
-        # Packed expert params have no ``.weight`` to fabricate for
-        # checkpoint_to_live_name; checkpoint name == live name modulo the
-        # language_model prefix, then the profile's live->recipe mapping.
-        name = ck_key
-        if name.startswith("model.language_model."):
-            name = "model." + name[len("model.language_model."):]
-        if profile is not None:
-            recipe_mapper = getattr(profile, "live_to_recipe_name", None)
-            if callable(recipe_mapper):
-                try:
-                    return str(recipe_mapper(name))
-                except Exception:
-                    return name
-        return name
-
-    def _per_expert_packed_recipe_name(recipe_name: str) -> str | None:
-        """Map ``experts.E.proj`` source names to the packed recipe unit.
-
-        A per-expert checkpoint and a packed live Transformers module name
-        the same weights at different granularities.  Source-passthrough
-        legality is checked against the live probe/cost key, so recording
-        only the indexed source names makes its source kind look unknown and
-        incorrectly removes BF16 from the expert menu.  The profile owns the
-        projection-to-parent mapping; mixed source kinds fold to ``other`` so
-        no byte-copy format can be admitted for a heterogeneous stack.
-        """
-        if profile is None:
-            return None
-        parent_for = getattr(
-            profile, "packed_expert_parent_for_projection", None)
-        if not callable(parent_for):
-            return None
-        parts = str(recipe_name).split(".")
-        try:
-            experts_idx = len(parts) - 1 - list(reversed(parts)).index(
-                "experts")
-        except ValueError:
-            return None
-        tail = parts[experts_idx + 1:]
-        if len(tail) != 2 or not tail[0].isdigit():
-            return None
-        packed_leaf = parent_for(tail[1])
-        if packed_leaf is None:
-            return None
-        return ".".join(parts[:experts_idx + 1] + [str(packed_leaf)])
+    proj = NameProjection(profile if profile is not None else DefaultProfile())
 
     def _record_source_kind(name: str, source_kind: str) -> None:
         previous = manifest.get(name)
@@ -3124,16 +3052,44 @@ def _scan_source_dtype_manifest(
             source_kind = "unknown"
         else:
             source_kind = dtype.lower()
-        recipe_name = (
-            _packed_to_recipe_name(base) if base in packed_bases
-            else _to_recipe_name(base)
-        )
-        if not recipe_name:
-            continue
+        # MTP tensors are REAL source tensors stored under the recipe
+        # namespace itself (transformers v5 drops the module; prismaquant
+        # synthesizes it back under the same names, and probe/cost rows use
+        # them verbatim — physical key IS the recipe key, the same retention
+        # DSv4's fp8_scale_pairs applies). The historical skip left MTP names
+        # with no source kind, so the BF16 passthrough was dropped
+        # (source_dtype_mismatch) and --mtp-format=BF16 hard-failed the
+        # moment MTP rows were actually costed (35B frontier, 2026-07-02).
+        # This short-circuit is universe-membership policy, not name
+        # projection: no profile accessor declares "which checkpoint
+        # prefixes are recipe-native rows" yet (`source_passthrough_prefixes`
+        # is an EXPORT contract and admits visual prefixes this manifest must
+        # keep declining), so the narrow literal stays until that declaration
+        # exists. Packed expert keys are the suffix-less 3-D spellings
+        # (LFM2.5, Qwen3.6-35B) with no ``.weight`` leaf to fabricate.
+        if base.startswith("mtp."):
+            recipe_name = base
+        else:
+            projected = proj.checkpoint_to_live(
+                base if base in packed_bases else f"{base}.weight")
+            if projected.outcome != MAPPED:
+                continue  # declared out-of-graph: no recipe row exists
+            recipe_name = proj.recipe_unit(projected.target)
         _record_source_kind(recipe_name, source_kind)
-        packed_recipe_name = _per_expert_packed_recipe_name(recipe_name)
-        if packed_recipe_name is not None:
-            _record_source_kind(packed_recipe_name, source_kind)
+        # Fold a per-expert source name's kind onto its packed parent: a
+        # per-expert checkpoint and a packed live module name the same
+        # weights at different granularities, and source-passthrough legality
+        # is checked against the live probe/cost key. The layer reuses
+        # `footprint.packed_expert_alias` with the profile's own mapping;
+        # mixed kinds fold to ``other`` so no byte-copy format can be
+        # admitted for a heterogeneous stack. With NO caller-supplied
+        # profile there is no declared mapping and nothing folds
+        # (historical behavior).
+        packed_parent = (
+            None if profile is None
+            else proj.packed_parent_of_expert_param(recipe_name))
+        if packed_parent is not None:
+            _record_source_kind(packed_parent, source_kind)
     fp8_pairs = None
     if profile is not None:
         pairs_fn = getattr(profile, "fp8_scale_pairs", None)
@@ -3143,14 +3099,8 @@ def _scan_source_dtype_manifest(
             except Exception:
                 fp8_pairs = None
     if fp8_pairs:
-        recipe_mapper = getattr(profile, "live_to_recipe_name", None)
         for live_param in fp8_pairs:
-            live_qname = _strip_weight_suffix(str(live_param))
-            if callable(recipe_mapper):
-                try:
-                    live_qname = str(recipe_mapper(live_qname))
-                except Exception:
-                    pass
+            live_qname = proj.recipe_unit(str(live_param))
             # A profile's ``fp8_scale_pairs`` answers "does this weight have a
             # serialized scale sibling the dequant pass must read", which is
             # true of EVERY block-scaled format — DSv4's MXFP4 experts and its

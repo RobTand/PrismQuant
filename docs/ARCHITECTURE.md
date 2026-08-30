@@ -1,8 +1,72 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `rescue/walker-export-gate` — stamps follow, newest
+As of: 2026-08-29 · `rescue/name-projection` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-29,
-`rescue/walker-export-gate`) for
+`rescue/name-projection`) for
+**the cost consumer migrating onto the shared name-projection layer** (§8.8.1):
+`_scan_source_dtype_manifest` lost its private checkpoint→live→recipe builders
+(`_strip_weight_suffix`, `_to_recipe_name`, `_packed_to_recipe_name`,
+`_per_expert_packed_recipe_name`) and now projects every source-kind row
+through `NameProjection.checkpoint_to_live` / `recipe_unit` /
+`packed_parent_of_expert_param` (`prismaquant/allocator_candidates.py`);
+`decision_units._recipe_name` is retired for
+`name_projection.strip_weight_leaf`, as is the inline leaf surgery in
+`production_render_cost.canonical_cost_name` (whose umbrella-infix half stays
+a total normalizer — render/cost payloads key costed MTP rows physically,
+which a declining projection must never drop) and `measure_quant_cost`'s
+act-cache candidate builder. Emitted values are UNCHANGED for existing
+profiles and artifacts — the manifest's profile=None convention now builds
+over the repo's declared generic baseline (`DefaultProfile`, the substitution
+`resolve_cost_target_name` always made) instead of inlined string surgery.
+One deliberate behavior change, fail-closed only: a profile accessor that
+RAISES now propagates `NameProjectionError` instead of silently skipping the
+row (the wo_a shape); MTP rows stay recipe-native verbatim by an explicit,
+commented short-circuit pending a profile declaration of recipe-native
+checkpoint prefixes. Probe, footprint, and read-traffic remain unmigrated.
+Previously re-stamped (2026-08-22, `walker/consumer-probe`) for **the probe
+consumer migrating onto the shared name-projection layer** (§8.8.1): `FisherAccumulator`
+now builds one `NameProjection`, and the probe holds no private name mapping — the
+packed-expert shard-scope filter reads its block id through `NameProjection.block_id`
+(previously a positional `[:3]` qname slice of its own; value-identical on every qname
+shape reachable at that site, pinned by `tests/test_consumer_probe_name_projection.py`),
+and the Fisher skip set keys its embedding clause on the profile's declared
+`ModelProfile.embedding_name()` (previously a hardcoded `"model.embed_tokens"` substring
+test). Probe stats keys, inventories, and shard regexes are untouched, and the regression
+baseline is byte-identical; the walk-edge-list migration itself stays open for all four
+consumers.
+Previously re-stamped (2026-08-22, `walker/consumer-footprint`) for **the
+second R5 consumer migration**: `footprint.py` holds no private name mapping anymore — its
+private `.weight` strips and its packed-expert parser (`packed_expert_alias` + the legacy
+parent fallback, now defined in `name_projection.py` and re-exported) are the shared
+layer's; `source_tensor_bytes_manifest` / `floor_bytes_for_model` accept a prebuilt
+`NameProjection` (keyword-only, mutually exclusive with the raw accessor kwargs), map
+checkpoint keys through `checkpoint_to_live`, keep the profile's DECLARED drops as raw-key
+floor entries (data, not exceptions), and propagate layer refusals instead of swallowing
+them. Emitted bytes are unchanged — projection/accessor parity is pinned test-side.
+Previously re-stamped (2026-08-22, `walker/consumer-readtraffic`) for
+**the first name-projection consumer migration: read-traffic**
+(`prismaquant/read_traffic.py`). Both entry points build one
+`NameProjection(profile)` and route every checkpoint→live question through
+it: the classifier's decline-to-map rule branches on
+`ProjectedName.outcome == declared_out_of_graph` (`excluded_non_text_graph`),
+the private `_strip_weight` leaf helper is deleted in favor of
+`strip_weight_leaf`, and a profile accessor that fails now refuses as
+`NameProjectionError` instead of silently passing the raw key through
+(previously it would have re-priced unmappable tensors at p=1). No emitted
+number moves; the class table, byte authorities, and refusals are pinned
+byte-identical by `tests/test_read_traffic.py`. Previously re-stamped
+(2026-08-22, `walker/name-projection`) for
+**the shared name-projection layer** (§8.8.1, `prismaquant/name_projection.py`):
+one profile-routed projection between the live/recipe/checkpoint/export/vLLM
+namespaces, fail-closed with structured refusal codes, explicit
+many→one/one→many shapes for fused siblings and packed experts, round-trip
+identity pinned where the profile's rules are total (Qwen3, Qwen3.5
+multimodal, DSv4 — including the surfaced `hc_head` inverse gap), and no
+rank/shard/degree anywhere in the API (the TP seam stays in
+`model_walk.per_device_bytes`). Consumers are not migrated; the module ships
+with its conformance tests only.
+
+Earlier stamp (2026-08-29, `rescue/walker-export-gate`) for
 **the discovery walker as a fail-closed export gate** (§8.8,
 `prismaquant/model_walk.py`): the R5 design contract's remaining open half —
 wiring the walk as an export gate — is closed; the probe/cost/footprint/
@@ -4663,7 +4727,9 @@ embedding (one row is gathered per token, not the table), **indexed lookup table
 the MTP/draft sidecar (read every token under spec-decode and never without it — the honest
 default is excluded, and `excluded.mtp_bytes` lets a spec-decode serve add it back exactly),
 and anything the model profile's own `checkpoint_to_live_name` declines to map into the live
-text graph (vision/audio towers). `ModelProfile.embedding_name()` (`model_profiles/base.py`, spec key
+text graph (vision/audio towers) — read through the shared name-projection
+layer (§8.8.1), whose `declared_out_of_graph` outcome is what that rule
+branches on. `ModelProfile.embedding_name()` (`model_profiles/base.py`, spec key
 `shard_regexes.embedding_name`) is the twin of `lm_head_name()` and exists so "which
 tensor is the embedding" is a declaration rather than a substring test.
 
@@ -6269,9 +6335,84 @@ inside the claim table — is pinned like every other router; the gate's
 `find_decided_but_unpriced` checker turns that contradiction class into a
 refusal so it cannot recur silently.
 
-Still open per the design doc: migrating probe/cost/footprint/read-traffic
-onto the walker's edge list — separate, deliberate work (the consumption-API
-design lives in the R5 reports).
+Two distinct migrations are in play here, and only one has landed. The
+first wave is the shared **name-projection layer** (below), and as of
+2026-08-29 **all four consumers route their private NAME mappings through
+it**: read-traffic (`walker/consumer-readtraffic`), footprint
+(`walker/consumer-footprint`), probe (`walker/consumer-probe`) and cost
+(`walker/consumer-cost`). No consumer holds its own checkpoint→live→recipe
+string surgery any more. One deliberate exception remains and is not a
+projection: `production_render_cost.canonical_cost_name`'s umbrella-infix half
+stays a **total** normalizer, because render/cost payloads key costed MTP rows
+physically and a projection that may decline must never drop them.
+
+The **edge-list migration proper is still open for all four**, and is the
+larger of the two: every consumer's INVENTORY remains its own enumeration —
+the probe still builds its tracked set from `named_modules()` plus shard
+regexes — so the walker's edge list is not yet the single enumeration the
+stages derive from. Sharing a name projection is not the same as sharing a
+requirement set; the first makes the four agree on what a unit is *called*,
+the second would make them agree on which units *exist*.
+
+#### 8.8.1 The shared name-projection layer
+
+`prismaquant/name_projection.py` (2026-08-22, `walker/name-projection`)
+lands the ONE projection between the pipeline's parameter-name namespaces
+that the R5 consumer analyses each said they were re-deriving ad hoc: a
+Linear's live name (`WalkNode.name`), its allocator/probe recipe name,
+its source-checkpoint key, its exported-artifact key, and its vLLM
+scheme-dispatch qname (`NameProjection`, five `LIVE/RECIPE/CHECKPOINT/
+EXPORT/VLLM` constants). The contract, pinned by
+`tests/test_name_projection.py`:
+
+- **The profile owns the knowledge; the layer owns the discipline.**
+  Every mapping routes through existing `ModelProfile` accessors
+  (`checkpoint_to_live_name`, `live_to_recipe_name`,
+  `to_vllm_internal_name`, `source_tensor_name`, `export_tensor_name`,
+  `fused_sibling_group`, `packed_expert_format_group`) — no second
+  mapping lives anywhere, and consumers keep no private
+  `_recipe_name`/`_strip_weight` helpers (the leaf rule itself is
+  `strip_weight_leaf` here).
+- **Fail closed and loud.** An unmappable or ambiguous name raises
+  `NameProjectionError` with structured fields — `code`
+  (`unmapped_in_universe`, `ambiguous`, `no_universe_supplied`,
+  `malformed_profile_result`, `profile_accessor_failed`,
+  `unknown_namespace`, `unsupported_pair`, `uncovered_unit`),
+  source/target namespace, and what was tried. Unlike
+  `decision_units.fused_group_key`, nothing swallows a profile failure
+  into an identity fallback. The profile's DECLARED drops (visual/MTP/
+  scale keys) are data instead: `project()` returns a `ProjectedName`
+  whose `outcome == declared_out_of_graph`, so read-traffic can classify
+  `excluded_non_text_graph` by branching on a field.
+- **Non-totality is in the type.** Fused siblings and packed experts
+  surface as `ServingGroup(kind, key, members)` with packed precedence
+  over fused for expert stacks; reverse lookups refuse group KEYS rather
+  than returning an arbitrary member; the coverage index mirrors
+  footprint's dual-entry manifest convention so one logical tensor
+  covered by many split checkpoint spellings answers under either
+  naming (`checkpoint_keys_for` / `require_checkpoint_span`, the
+  coverage assertion footprint.md asked for).
+- **Round-trip property tested where the profile's rules are total**:
+  Qwen3 dense (identity), Qwen3.5 multimodal (umbrella-infix rewrite),
+  DSv4 flat naming — plus the recorded gap the round trip SURFACED:
+  DSv4's spec generates `hc_head.hc_*` source spellings while the real
+  checkpoint stores flat `hc_head_*`, so that family's inverse declines;
+  the layer reports it, it does not guess.
+- **TP seam held**: names are logical, whole-tensor facts; no rank,
+  shard index, or degree exists in any signature (a constructor-kwarg
+  refusal test pins this). Byte accounting stays in
+  `model_walk.per_device_bytes`.
+
+Still open per the design doc: migrating the consumers onto the walker's
+EDGE LIST. The first wave of that migration is the shared
+**name-projection layer** (below), and as of 2026-08-29 all four
+consumers route their NAME derivations through it — cost
+(`walker/consumer-cost`), probe (`walker/consumer-probe`), footprint
+(`walker/consumer-footprint`) and read-traffic
+(`walker/consumer-readtraffic`). Their INVENTORIES are still their own
+enumerations — the probe still builds its tracked set from
+`named_modules()` plus shard regexes — so the edge-list migration
+proper remains open for all four.
 
 ## 9. Serving lanes
 
