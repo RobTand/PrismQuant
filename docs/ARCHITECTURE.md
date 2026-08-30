@@ -7106,6 +7106,15 @@ distinguishable from one that came back clean. Principle 12 requires whichever i
 next to any bpp or KL claim: report "route status not attested for this lane", never "0 units on
 a fallback route".
 
+The same rule reaches one field deeper. Each `by_unit` row carries `in_scope` — "does the pinned
+contract publish this unit's payload family" — and under an absent attestation that question is
+never asked, because the resolver returns before it consults the formats table. So `in_scope` is
+tri-state (`UnitRoute.in_scope: bool | None`) and `as_dict` **omits** the key when it was never
+evaluated, rather than defaulting it to `True`. A default would have every BF16 and stock-CT unit
+stamp `in_scope: true` while no table was open at all — the `units_on_fallback_route=0` defect in
+miniature. Omission means "not asked"; on a present table the field is always an explicit
+boolean, and the gate raises rather than partitions if a `None` ever reaches it.
+
 **The lane-v3 parser (2026-08-30).** Gridbook publishes the table at `30287aa` — contract v12,
 `lane_eligibility.schema = gridbook.lane-eligibility.v3` — and `gridbook_lane_eligibility.py` now
 reads that shape. The earlier claim in this section, that flipping the index to `present` needed
