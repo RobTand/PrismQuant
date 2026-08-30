@@ -16,6 +16,7 @@ The NVFP4 comparison uses ATTESTED only.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 from pathlib import Path
@@ -38,11 +39,21 @@ def db(nsse: float) -> float:
     return -10.0 * math.log10(nsse)
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--published", type=Path, default=PUBLISHED)
+    parser.add_argument("--highrate", type=Path, default=HIGHRATE)
+    parser.add_argument("--scalar", type=Path, default=SCALAR)
+    parser.add_argument("--out", type=Path, default=OUT)
+    return parser.parse_args()
+
+
 def main() -> int:
-    pub = json.loads(PUBLISHED.read_text())["per_tensor"]
-    hr_doc = json.loads(HIGHRATE.read_text())
+    args = _parse_args()
+    pub = json.loads(args.published.read_text())["per_tensor"]
+    hr_doc = json.loads(args.highrate.read_text())
     hr = hr_doc["per_tensor"]
-    sc = json.loads(SCALAR.read_text())
+    sc = json.loads(args.scalar.read_text())
     spt = sc["per_tensor"]
     names = sorted(pub)
     assert set(names) == set(hr) == set(spt), "corpus mismatch"
@@ -153,13 +164,14 @@ def main() -> int:
             "the trellis two-tier scale plane does not exist on the wire",
         ],
         "inputs": {
-            "published": str(PUBLISHED),
-            "highrate": str(HIGHRATE),
+            "published": str(args.published),
+            "highrate": str(args.highrate),
             "highrate_receipt": hr_doc["receipt"],
-            "scalar": str(SCALAR),
+            "scalar": str(args.scalar),
         },
     }
-    OUT.write_text(json.dumps(payload, indent=1))
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(payload, indent=1))
 
     print(f"NVFP4 incumbent: {nv_corpus_bpw:.4f} bpw  "
           f"{nv_corpus_db:.4f} dB corpus / {nv_median_db:.4f} dB median\n")
@@ -188,7 +200,7 @@ def main() -> int:
              "crossover_research_render_research_price_median")):
         c = payload[key]
         print(f"crossover ({label}): {c['bpw']:.4f} bpw -- {c['kind']}")
-    print(f"\nwrote {OUT}")
+    print(f"\nwrote {args.out}")
     return 0
 
 
