@@ -270,12 +270,10 @@ def test_the_ladders_own_currency_is_the_surviving_refusal(tmp_path):
     assert not [c for c in menu[UNIT_A] if c.fmt.startswith("TCQ_")]
 
 
-def test_the_live_ledger_retains_aggregation_proof_and_currency():
-    """Only #3/#4 entry-point proof and the genuine dW gap remain."""
+def test_the_only_remaining_unwired_link_is_the_currency():
+    """#3/#4 have real-entry-point proof; only the genuine dW gap remains."""
 
     assert [where for where, _ in tm.UNWIRED_LINKS] == [
-        "allocator_candidates.py:2434-2453",
-        "allocator_candidates.py:2782-2800",
         "trellis_rate_surface.py:43-52",
     ]
 
@@ -354,7 +352,8 @@ def test_unit_absent_from_the_scalar_menu_is_reported(tmp_path):
     assert prov["candidates_added"] == 0
 
 
-def test_a_packed_expert_row_is_refused_not_underpriced(tmp_path):
+def test_a_packed_expert_row_without_a_model_profile_is_refused_not_underpriced(
+        tmp_path):
     """The 128x underprice, which was silent.
 
     The seam used to build a 2-tuple shape and read a ``packed_expert`` key
@@ -368,14 +367,15 @@ def test_a_packed_expert_row_is_refused_not_underpriced(tmp_path):
     stats = stats_for(units)
     stats[UNIT_A] = dict(stats[UNIT_A], num_experts=128)
     menu = scalar_menu(units)
-    prov: dict = {}
-    tm.build_trellis_menu(
-        menu, stats, cost_mode=COST_MODE,
-        manifest_path=write_manifest(tmp_path, units),
-        provenance_out=prov,
-    )
+    with pytest.raises(
+        tm.TrellisPackedExpertLayoutError,
+        match=r"resolved ModelProfile.*flattening",
+    ):
+        tm.build_trellis_menu(
+            menu, stats, cost_mode=COST_MODE,
+            manifest_path=write_manifest(tmp_path, units),
+        )
     assert not [c for c in menu[UNIT_A] if c.fmt.startswith("TCQ_")]
-    assert "packed-expert" in prov["units_skipped"][UNIT_A]
 
 
 def test_bad_schema_is_refused(tmp_path):
@@ -436,11 +436,14 @@ def test_no_tcq_spec_supplies_bytes_and_that_is_the_design():
 
 
 def test_the_closed_links_are_gone_from_the_ledger():
-    """Closed entries leave only aggregation proof and currency in the ledger."""
+    """All closed entries are gone; only the currency source site remains."""
 
     where = {site for site, _why in tm.UNWIRED_LINKS}
     assert not [site for site in where if site.startswith("format_registry.py")]
     assert not [site for site in where if site.startswith("allocator.py")]
+    assert not [
+        site for site in where if site.startswith("allocator_candidates.py")
+    ]
     assert not [site for site in where if site.startswith("allocator_solver.py")]
     assert not [site for site in where if site.startswith("footprint.py")]
 
@@ -525,16 +528,18 @@ def test_footprint_refuses_a_trellis_row_it_has_no_measured_bytes_for():
 
 
 # ---------------------------------------------------------------------------
-# Links 3 and 4: super-item aggregation over MEMBER menus
+# Closed links 3 and 4: isolated helper contracts over MEMBER menus
 # ---------------------------------------------------------------------------
 def test_fused_aggregation_offers_the_rung_its_members_share(tmp_path):
-    """The direct aggregation contract for link 3.
+    """The isolated fused intersection/exact-sum helper contract.
 
     Before this, ``aggregate_fused_siblings`` built each super item's menu by
     iterating FormatSpec OBJECTS, so a rung both members offered was dropped
     from the group with no error -- on a dense model that left only
     ``o_proj`` and ``down_proj`` able to hold one.  This test calls the menu
-    builder and aggregator directly; it does not license the ledger entry.
+    builder and aggregator directly; by itself it does not license deletion.
+    The real ``allocator.main()`` test in
+    ``test_trellis_aggregation_entrypoint.py`` supplies that proof.
     """
 
     from prismaquant import format_registry as fr
@@ -588,13 +593,13 @@ class _PackedProfile:
 
 
 def test_packed_aggregation_offers_a_registry_free_format_members_share():
-    """The direct injected aggregation contract for link 4.
+    """The isolated packed intersection/exact-sum helper contract.
 
-    The seam REFUSES packed-expert rows (no per-expert trellis render
-    exists), so no manifest can put a rung on a packed group today. The
-    aggregation contract is still the thing under test, and it is exercised
-    with synthetic registry-free candidates: what must not happen is a
-    format every member offers vanishing from the group's menu.
+    This deliberately injects registry-free candidates, so it proves the
+    local aggregation helper but not production reach.  The deletion license
+    for #4 is the real ``allocator.main()`` test in
+    ``test_trellis_aggregation_entrypoint.py``.  Here, what must not happen is
+    a format every member offers vanishing from the group's menu.
     """
 
     from prismaquant import format_registry as fr

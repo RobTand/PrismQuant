@@ -2,11 +2,19 @@
 
 As of: 2026-08-30 · `codex/trellis-unwired-3-4-v2` — integration of
 `claude/trellis-link57` (`7300b7e`) and `claude/trellis-unwired-2-6`
-(`d69a505`). Re-stamped for the authorized union of complementary trellis
-mechanisms (§4.9): exact byte-map pricing closes entries #2/#6; named rank
-refusal plus exact candidate-rate extension closes #5; registry resolution
-and cost/provenance threading remain closed; fused and packed aggregation
-entries remain until real `allocator.main()` mutation proof licenses them.
+(`d69a505`). Re-stamped for **UNWIRED_LINKS #3/#4 closed** (§4.9): real
+`allocator.main()` tests drive fused and packed super-item aggregation through
+the real solver, and eleven deliberate mutations prove rung reachability, exact
+member-byte addition, exact member-dloss addition, typed whole-parent loss
+scope and physical recipe identity. Packed rank-3 parents reuse the resolved
+architecture `ModelProfile`'s native-export decomposition — one rank-2 wire
+per expert/projection — while each manifest anchor's typed `packed_parent`
+record must declare `dloss_scope=whole_packed_parent` and match that exact
+decomposition. Only bytes multiply by wire count; parent dloss is applied once.
+The actual GLM layer-3 census geometry (576 gate/up + 288 down wires) is pinned
+at 3,634,946,208 bytes and 4.01221625 bpw for E4M3 R1024. This remains a
+research-only allocation recipe (`exportable:false`), not a Gridbook/runtime
+attestation. Only the weighted-SSE-vs-AURA currency/`dW` entry remains live.
 Stamps follow, newest first, each recording its own branch and date.
 
 Prior stamp: 2026-08-30 · `claude/trellis-link57`. Re-stamped (2026-08-30,
@@ -3490,7 +3498,9 @@ is now the ONE seam that does, and it is off by default.
 Unset, `augment_candidates` returns its input object unchanged, so a run
 without the flag executes exactly the path it executed before the seam existed
 — the `PRISMAQUANT_FISHER_CAP_MULTIPLIER` precedent (§ P6). **Set, it builds
-the menu, and refuses only on the anchors' currency.**
+the menu. The only live ledger refusal is the anchors' currency; structural
+inputs such as an exact packed-parent wire decomposition still fail closed
+when absent or contradictory.**
 
 > **Correction (2026-08-29, same day).** The first version of this section said
 > the seam's placement inside `allocator_candidates.build_candidates` meant
@@ -3505,23 +3515,23 @@ the menu, and refuses only on the anchors' currency.**
 > eight entries at that stamp, each with a file:line — and it is the text of
 > the refusal.
 
-**Entries still open before #3/#4 entry-point proof:** fused-sibling
-aggregation at `allocator_candidates.py:2434-2453`, packed-expert aggregation
-at `allocator_candidates.py:2782-2800`, and the anchors' currency at
-`trellis_rate_surface.py:43-52`. The aggregation implementations and direct
-helper tests exist, but the ledger's rule requires a real `allocator.main()`
-run that kills a mutation in the production path. The currency entry is a
-different class: weighted SSE under an activation second moment is an
-output-MSE proxy, not the AURA KL-adjoint, and no plumbing supplies the missing
-AURA-priced dW.
+**Only one entry is still open:** the anchors' currency at
+`trellis_rate_surface.py:43-52`. Weighted SSE under an activation second
+moment is an output-MSE proxy, not the AURA KL-adjoint, and no plumbing
+supplies the missing AURA-priced dW. Fused-sibling (#3) and packed-expert (#4)
+aggregation are closed by real-entry-point mutation proof, not by the older
+direct helper tests.
 
 **Entries closed**, each by a test that exercises the behaviour it named —
 which is the ledger's own rule for deletion: registry resolution (#1,
 `tests/test_trellis_format_spec.py`); exact assignment-payload and target-disk
 byte paths (#2/#6, `tests/test_trellis_byte_budget_path.py`, driven through
 `allocator.main --target-disk-gb`); promotion-rank refusal and exact rate
-extension (#5); and attested cost/provenance call-site threading (#7). The
-last two are exercised in `tests/test_allocator_cost_mode_and_rank.py`.
+extension (#5); fused and packed aggregation (#3/#4,
+`tests/test_trellis_aggregation_entrypoint.py`, driven through
+`allocator.main()` and the real solver); and attested cost/provenance
+call-site threading (#7). #5/#7 are exercised in
+`tests/test_allocator_cost_mode_and_rank.py`.
 
 > **Update (2026-08-30, `claude/trellis-get-format`).** Entry #1 is **wired**:
 > `format_registry.get_format` parse-resolves `TCQ_{E2M1,E4M3}_R<q256>` to a
@@ -3543,9 +3553,16 @@ aggregation gaps silently dropped rungs and returned a plausible frontier. A
 hand-rolled two-dimensional shape also priced a 128-expert row as one expert,
 a 128× underprice, while the guard read a key no producer wrote. The packed-row
 shape/refusal defect is fixed with `allocator_solver._shape_from_stats` and
-`allocator_candidates._stats_indicates_packed_expert`. The member-menu
-aggregation implementations are present, but their ledger closure still
-awaits the real-entry-point mutation proof described above.
+`allocator_candidates._stats_indicates_packed_expert`. The resolved
+architecture `ModelProfile` now supplies the missing physical bridge from a
+rank-3 packed parent to the per-expert/per-projection rank-2 wires native
+export declares. It is not sufficient by itself: each packed manifest anchor
+must carry the typed `prismaquant.trellis_packed_parent_anchor.v1` record,
+declare `dloss_scope=whole_packed_parent`, and match the profile-derived source
+shape, packed role, ordered projections, projection shape and wire count. This
+binds a measured whole-parent loss to the byte recipe; a missing declaration or
+per-wire point refuses before pricing. The real-entry-point proofs below
+license the member-menu aggregation implementations.
 
 **Merged mechanism status.**
 
@@ -3553,8 +3570,8 @@ awaits the real-entry-point mutation proof described above.
 |---|---|
 | no TCQ `FormatSpec`; `fr.get_format('TCQ_*')` `KeyError`s (`format_registry.py:1267-1272`) | `get_format` **parse-resolves** the name to a memoized `TrellisFormatSpec` — never a `REGISTRY` insertion, because the rate axis is dense — that is **exact-or-refuse**: exact activation triple (A=W, read off the family's `terminal_format` entry: E2M1 W4A4, E4M3 W8A8), exact capability floor (SM120+/SM89+), `producer_eligible=False`; every RTN-shaped field (`weight_bits`, `scale_bits`, `group_size`, …) raises `TrellisSpecFieldRefused` **at attribute read** and every byte/bpp helper (`memory_bytes_for_shape`, `effective_bits_for_shape`) raises it **when called** — in both cases a non-`AttributeError`, so `getattr(spec, …, None)` probes cannot swallow it (checked field by field against a real `FormatSpec`'s surface: nothing degrades to a plain `AttributeError`) (`tests/test_trellis_format_spec.py`). So a caller may learn what a rung EXECUTES; it still may not learn what it WEIGHS — exact bytes travel only in `_memory_bytes_by_format`, and every byte site refuses pointedly without it. |
 | the exact assignment-payload filter falls through to `fr.get_format` (`allocator.py:3369-3386`) | prefers the recorded map (it always did); a TCQ row with no recorded bytes now raises a pointed `AssertionError` naming what is missing, instead of a registry `KeyError`. `layer_config.canonicalize_format` round-trips `TCQ_*`, so the exporter's own refusal is REACHABLE — and that is now **executed, not asserted**: `tests/test_trellis_byte_budget_path.py::test_the_exporter_refusal_a_tcq_layer_config_hits_is_the_pointed_one` drives the prefix of `export_native_compressed.main()` between reading `--layer-config` and the first `_coerce_runtime_legal_assignment` (schema validation, the research-cost gate, `_canonicalize_assignment`, profile detection) on a `layer_config.json` the real allocator wrote, and asserts all four PASS and the first exception is the pointed one. A refusal nobody reaches is a comment, not a gate — block-output-match sat behind an earlier `continue` for months. |
-| fused-sibling aggregation iterates `FormatSpec` objects | `_super_menu_format_names(formats, member_intersection)` carries registry-free formats every member offers and prices exact summed bytes/Δloss. Its direct test is useful but does not yet license #3; the required proof drives `allocator.main()`. |
-| the identical packed-expert construction | the same helper and exact-sum contract are implemented. The existing test injects candidates and does not establish the packed production path, so #4 remains live pending `allocator.main()` mutation proof. |
+| fused-sibling aggregation iterates `FormatSpec` objects | `_super_menu_format_names(formats, member_intersection)` carries registry-free formats every member offers and prices exact summed bytes/Δloss. `test_allocator_main_carries_trellis_rung_through_fused_aggregation` drives the real solver and kills mutations that drop the rung, omit sibling bytes, or omit sibling dloss; #3 is closed. |
+| the identical packed-expert construction, with packed parents skipped upstream | the seam receives the resolved `ModelProfile`, reuses native export's `split_packed_experts_for_format` + `packed_expert_projection_names` policy, and requires the manifest's typed `packed_parent` record to match that exact per-expert/per-projection rank-2 decomposition and declare whole-parent dloss. It multiplies bytes by wire count, applies each parent dloss once, and hashes the physical repeated-wire recipe. The packed super-item then intersects member menus and sums the two parent candidates. `test_allocator_main_carries_trellis_rung_through_packed_expert_aggregation` uses the actual GLM `(288,4096,4096)` gate_up and `(288,4096,2048)` down shapes and drives the real solver; the two refusal tests prove missing/per-wire scope fails closed. Mutations kill dropped-profile, wrong-multiplicity, dropped-rung, omitted-parent-byte, omitted-parent-dloss, trusted-per-wire-scope and omitted-packed-role identity defects; #4 is closed. This is allocation metadata, not a Gridbook contract or serving claim. |
 | `promote_serving_units`' `format_rank` lookup | `allocator.extend_format_rank_from_candidates` derives each added format's exact aggregate serialized rate (`8·Σbytes/Σparams`) and re-enumerates before promotion. `_rank_of` raises named `FormatRankUnknownError` with the format, serving unit, table and missing input if that ordering was not supplied. |
 | the byte-budget path's own registry lookup (`footprint.py:1183`) | a TCQ branch before the final `else` reads `_memory_bytes_by_format` and **refuses** when it is absent — same doctrine as the CB branch above it, no closed-form fallback. |
 | `build_candidates` called with neither `cost_mode=` nor `trellis_provenance=` (`allocator.py:2756`) | both are passed. The cost mode is the **attested** one: `cost_data["provenance"]["cost_mode"]` (re-vet R2), never `os.environ` — `run-pipeline.sh` assigns `COST_MODE` with `:=` and never exports it. The provenance (manifest **sha256**, declared currency, the run's objective currency, the anchor activation contract, lane/route status) lands in `layer_config.json`'s `__prismaquant__` block under `trellis_surface`, present only when the seam contributed (§§ P12/P14, § P6). |
@@ -3563,11 +3580,13 @@ awaits the real-entry-point mutation proof described above.
 **Reach: allocation-time only, and deliberately.** `_memory_bytes_by_format` is
 written into the in-memory probe stats; nothing rewrites `probe.pkl`, so the
 exact bytes do not survive the allocator process. Every later stage
-(`kl_measurement.assignment_bit_total`, `production_recache`, export) resolves a
-format through the registry first, so a TCQ assignment that escapes into one
-fails at that lookup rather than being priced by a closed form. Wiring the seam
-did not make a trellis rung shippable and was not meant to: an exportable rung
-needs a render and a P14 runtime attestation, neither of which exists.
+(`kl_measurement.assignment_bit_total`, `production_recache`, export) lacks
+either that in-process exact-byte map or a render path. A TCQ name now
+parse-resolves to an exact-or-refuse spec, so those paths fail at the first
+pointed byte/render refusal rather than being priced by a closed form. Wiring
+the seam did not make a trellis rung shippable and was not meant to: an
+exportable rung needs a render and a P14 runtime attestation, neither of which
+exists.
 
 **Why the currency entry stays a refusal.** It is not plumbing. The ladder's measured
 anchors are weighted SSE under a per-input-channel activation second moment —
@@ -3592,12 +3611,20 @@ packed-expert case was worse still: a hand-rolled 2-tuple shape priced a
 skipped"), while the guard meant to catch it read a stats key nothing writes.
 The packed-row underprice is fixed — the seam uses
 `allocator_solver._shape_from_stats` and
-`allocator_candidates._stats_indicates_packed_expert`, and refuses a packed row
-with a counted reason.
+`allocator_candidates._stats_indicates_packed_expert`, then requires a
+non-default resolved architecture profile and prices exactly the same
+per-expert/per-projection 2-D decomposition native export declares. It raises
+`TrellisPackedExpertLayoutError` instead of flattening or applying a guessed
+expert multiplier when that policy is absent or contradictory. Separately,
+the surface manifest must carry an exact typed `packed_parent` declaration for
+that decomposition and `dloss_scope=whole_packed_parent`; absent or per-wire
+loss scope refuses instead of silently applying a wire-level loss once. The
+profile-derived recipe and manifest declaration are allocation inputs, not a
+runtime attestation; the stamped surface remains `exportable:false`.
 
-**The seam now installs the menu.** Exact-byte, rank and call-site links are
-closed; the two aggregation entries remain until the required entry-point
-mutation proof lands. Currency mismatch still refuses inside the build.
+**The seam now installs the menu.** Exact-byte, rank, call-site, fused and
+packed aggregation links are closed. Currency mismatch still refuses inside
+the build and is the only remaining `UNWIRED_LINKS` entry.
 
 > **Update (2026-08-30, `claude/trellis-link57`).** Two more entries closed.
 >
@@ -3648,7 +3675,32 @@ mutation proof lands. Currency mismatch still refuses inside the build.
 > Both are exercised by `tests/test_allocator_cost_mode_and_rank.py`
 > (21 tests), and every check in it was verified by breaking the source and
 > confirming a test dies. The aggregation entries remain open because their
-> existing tests stop below `allocator.main()`.
+> existing tests stop below `allocator.main()` **at that stamp**.
+
+> **Update (2026-08-30, `codex/trellis-unwired-3-4-v2`).** Entries #3/#4
+> are closed. `tests/test_trellis_aggregation_entrypoint.py` drives
+> `allocator.main()` with real arguments, observes the post-aggregation menu
+> with a wrapper that calls the real `solve_with_promotion`, and verifies the
+> emitted per-member assignment. The fused proof kills registry-only menu,
+> omitted-sibling-byte and omitted-sibling-dloss mutations. The packed proof
+> kills a dropped `ModelProfile` thread, an omitted projection multiplier, a
+> registry-only packed menu, an omitted packed-parent byte term and an omitted
+> packed-parent dloss term. Three further mutations prove that an absent typed
+> contract and a `per_wire` dloss declaration cannot reach pricing, and that
+> omitting the packed role changes the golden composite identity. Its GLM
+> fixture uses the production census shapes:
+> gate_up `(288,4096,4096)` becomes 576 `(2048,4096)` wires; down
+> `(288,4096,2048)` becomes 288 `(4096,2048)` wires. E4M3 R1024/tight-offsets
+> is therefore 3,634,946,208 bytes / 4.01221625 bpw for the routed layer —
+> neither the cheaper flattened-parent answer nor an arbitrary expert
+> multiplier. `TrellisPackedExpertLayoutError` refuses absent/default profile
+> evidence, undeclared packed parameters, non-splitting formats, indivisible
+> projections, shape/census disagreement, an absent typed `packed_parent`
+> declaration, or any declaration other than
+> `dloss_scope=whole_packed_parent`. The composite candidate digest binds the
+> source shape, packed role, ordered projections, wire counts and each rank-2
+> recipe identity; the surface provenance carries the exact manifest contract.
+
 **Why no TCQ spec answers for bytes.** The obvious alternative — register a
 minimal spec so every registry lookup just works — is unavailable as a
 matter of arithmetic, not taste. `FormatSpec.memory_bytes_for_shape` is a closed form over
@@ -3682,8 +3734,9 @@ scenarios covering both aggregators, `PRISMAQUANT_COST_UCB_Z` at 0 and 1.5,
 calibrated gains, activation fair pricing and the role-split packed profile.
 Golden digest `033adb45e71a51b831f5335047fa56e5fb00dc3137894a983fa0146bf456197d`,
 unchanged after the change. This proves registry-only default menus did not
-change; it does not prove #3/#4 execute through `allocator.main()`. A passing
-golden is not yet evidence, so
+change; by itself it does not prove #3/#4 execute through `allocator.main()`.
+That separate proof is `tests/test_trellis_aggregation_entrypoint.py` above.
+A passing golden is not yet evidence, so
 `test_the_golden_is_load_bearing` mutates the aggregators' menu-order helper at
 runtime — the same SET of formats in a different DP order, the minimal
 perturbation an order-blind record would miss — and asserts the digest MOVES
@@ -3708,10 +3761,14 @@ used: it embeds the pre-render recipe digest, which hashes the SHAPE, so q_proj
 and k_proj would share no format at any rung and `aggregate_fused_siblings` /
 `aggregate_packed_serving_groups` — which intersect member menus BY FORMAT NAME
 — would silently collapse every fused and packed group back to individual rows.
-The per-tensor recipe digest still travels, on `Candidate.serialized_identity`,
-which is where per-member layout identity belongs.
+For dense rank-2 members the per-tensor recipe digest still travels on
+`Candidate.serialized_identity`, which is where per-member layout identity
+belongs. For a packed parent that identity is a SHA-256 over the source shape,
+ordered projection split, per-projection expert count and underlying rank-2
+wire recipe; the packed super-item then carries the deterministic set of its
+parents' composite identities.
 
-**Three refusals, each closing a specific hole.**
+**Four refusals, each closing a specific hole.**
 
 1. *A profile that declares no `target_platform`.* `trellis_allocator._capability_gate`
    (`:578-586`) returns **legal** when the platform is `None` — deliberately,
@@ -3740,6 +3797,23 @@ which is where per-member layout identity belongs.
    identity without execution identity priced a real A-side at zero once
    already (NVFP4_CB, 2026-08-17); the stamp is what stops a future A=W lane
    inheriting a W\*A16 loss.
+4. *A packed parent with no exact architecture-owned rank-2 decomposition or
+   typed whole-parent loss scope.* Probe stats describe packed experts as
+   `(E,M,N)`; the trellis footprint describes one matrix. `allocator.main()`
+   therefore threads its resolved `ModelProfile`, and the seam reuses native
+   export's
+   `split_packed_experts_for_format` and
+   `packed_expert_projection_names`: `P` declared projections become `E·P`
+   wires of shape `(M/P,N)`. The anchor's typed `packed_parent` record must
+   exact-match that source shape, packed role, projection order/shape and wire
+   count and declare `dloss_scope=whole_packed_parent`; bytes then multiply by
+   `E·P`, while the measured parent dloss is applied once. Missing/default
+   profile evidence, an undeclared packed parameter, a format the profile keeps
+   rank 3, indivisible rows, `n_params != E·M·N`, a missing typed record or a
+   per-wire loss declaration raises `TrellisPackedExpertLayoutError`.
+   Flattening, blind expert multiplication and inferred loss scope are
+   deliberately not fallbacks. This is research allocation metadata, not a
+   Gridbook/runtime attestation.
 
 **Export fails closed, and says why.** `export_native_compressed` refuses any
 `TCQ_*` assignment with a pointed message rather than the generic
@@ -3756,13 +3830,15 @@ render mechanism and a runtime attestation first; both are open (§12).
 Gate: `tests/test_trellis_menu.py`,
 `tests/test_super_item_menu_byte_identity.py`,
 `tests/test_trellis_byte_budget_path.py`, and
-`tests/test_allocator_cost_mode_and_rank.py`. They exercise seam installation,
-exact byte-map preference/refusal, rank extension, cost/provenance threading,
-export refusal reachability, and legacy-menu identity. The direct fused-helper
-and packed-injection tests establish only their local aggregation contracts;
-they do not license #3/#4 deletion. `UNWIRED_LINKS` is asserted to retain those
-two proof gaps plus the currency entry until real `allocator.main()` mutation
-tests land, so a stale ledger fails the suite.
+`tests/test_allocator_cost_mode_and_rank.py`, plus the deletion-license tests
+in `tests/test_trellis_aggregation_entrypoint.py`. They exercise seam
+installation, exact byte-map preference/refusal, rank extension,
+cost/provenance threading, export refusal reachability, legacy-menu identity,
+and real-solver fused/packed aggregation through `allocator.main()`. The older
+direct fused-helper and packed-injection tests still establish only their
+local aggregation contracts. `UNWIRED_LINKS` is asserted to contain only the
+currency/`dW` entry, so a stale open/closed split or line citation fails the
+suite.
 
 ## 5. Formats & render
 

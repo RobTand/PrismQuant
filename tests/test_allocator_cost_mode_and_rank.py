@@ -313,7 +313,7 @@ def _stamping_seam(monkeypatch, payload):
     from prismaquant import trellis_menu
 
     def stamper(candidates, stats, *, cost_mode, manifest_path=None,
-                provenance_out=None):
+                provenance_out=None, model_profile=None):
         if provenance_out is not None:
             provenance_out.update(payload)
         return candidates

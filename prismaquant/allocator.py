@@ -2971,6 +2971,7 @@ def main():
         stats, costs, specs_sorted, calibrated_gains,
         source_manifest=source_manifest,
         target_profile=target_profile,
+        model_profile=model_profile,
         mask_records=candidate_mask_records,
         cb_serialization_context=cb_serialization_context,
         activation_pricing=activation_pricing,

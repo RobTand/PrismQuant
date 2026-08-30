@@ -17,10 +17,16 @@ STATUS: WIRED FOR ALLOCATION, NEVER EXPORTED
 bytes travel in ``_memory_bytes_by_format``; the payload and footprint paths
 prefer that map, the rank table is extended from candidates' exact serialized
 rates, and the run's attested objective plus surface provenance travel with
-the assignment.  The fused and packed aggregation implementations build from
-their members' menus, but their ledger entries remain until a real
-``allocator.main()`` run kills a mutation in each production path.  The
-ledger therefore records proof still owed, not an invitation to guess.
+the assignment.  Fused and packed aggregation build from their members'
+menus; real ``allocator.main()`` tests drive both paths through the real
+solver and kill rung-loss, byte-loss and dloss-loss mutations.  Packed parent
+bytes use the resolved architecture profile's native-export decomposition:
+one rank-2 wire per expert and projection, never a flattened rank-3 guess.
+Each packed anchor must additionally carry a typed ``packed_parent`` contract
+that declares ``dloss_scope=whole_packed_parent`` and repeats that exact wire
+decomposition.  Only bytes multiply by expert/projection count; the measured
+parent loss is applied once.  Missing or contradictory scope refuses before a
+rung can enter the menu.
 
 The currency entry is different: no plumbing turns a weighted-SSE anchor into
 an AURA-priced one, so :func:`_require_run_currency` remains a genuine
@@ -61,8 +67,8 @@ this module densifies them.  The names the DP and ``layer_config.json`` see
 are the closed ``TCQ_{E2M1,E4M3}_R<q256>`` spelling that
 ``trellis_formats.parse_trellis_format_name`` round-trips.
 
-THE THREE THINGS THIS REFUSES, AND WHY
---------------------------------------
+THE FOUR THINGS THIS REFUSES, AND WHY
+-------------------------------------
 1. **A profile with no ``target_platform``.**  ``trellis_allocator``'s
    ``_capability_gate`` returns *legal* when the profile declares no exact
    platform (:578-586) -- deliberately, because admission is then the
@@ -89,6 +95,24 @@ THE THREE THINGS THIS REFUSES, AND WHY
    case at the producer pin today -- the lane resolves ``unattested`` and
    that word travels with the candidate rather than being rounded to
    ``backed``.
+
+4. **A packed parent with no exact architecture-owned wire decomposition and
+   no typed parent-level loss scope.**  The trellis footprint describes one
+   rank-2 matrix, while packed probe rows are rank 3.  ``allocator.main()``
+   threads its resolved ``ModelProfile``; the seam reuses the same
+   ``split_packed_experts_for_format`` and
+   ``packed_expert_projection_names`` policy native export uses, and prices
+   one wire per expert/projection.  The campaign manifest must independently
+   bind each packed point to that exact repeated-wire recipe and declare
+   ``dloss_scope=whole_packed_parent``.  A missing/default profile, an
+   undeclared packed parameter, a non-splitting format, an indivisible
+   projection, a missing typed contract, or a per-wire loss declaration raises
+   ``TrellisPackedExpertLayoutError``.  Flattening or multiplying one arbitrary
+   wire by ``num_experts`` would give different answers at the campaign's
+   4.0117-bpw boundary, while reusing a per-wire loss once would underprice
+   quality by the wire count, so neither is a fallback.  This is a research
+   allocation recipe, not a Gridbook/runtime attestation; export remains
+   explicitly disabled below.
 
 WHAT THIS DOES NOT DO
 ---------------------
@@ -130,6 +154,16 @@ TRELLIS_SURFACE_ENV = "PRISMAQUANT_TRELLIS_SURFACE"
 
 TRELLIS_SURFACE_MANIFEST_SCHEMA = "prismaquant.trellis_surface_manifest.v1"
 TRELLIS_MENU_PROVENANCE_SCHEMA = "prismaquant.trellis_menu_provenance.v1"
+TRELLIS_PACKED_WIRE_RECIPE_SCHEMA = (
+    "prismaquant.trellis_packed_wire_recipe.v1"
+)
+TRELLIS_PACKED_PARENT_ANCHOR_SCHEMA = (
+    "prismaquant.trellis_packed_parent_anchor.v1"
+)
+PACKED_PARENT_DLOSS_SCOPE = "whole_packed_parent"
+PACKED_WIRE_DECOMPOSITION = (
+    "model_profile_per_expert_per_projection_rank2"
+)
 
 #: Rungs densified per unit when the manifest does not say.  The anchors
 #: themselves are always included on top of this count.
@@ -144,7 +178,12 @@ class TrellisSeamUnwiredError(TrellisMenuError):
     """The production seam is enabled but the DP cannot honour a TCQ rung."""
 
 
-#: The links whose production behaviour is not yet proved.  This is the live
+class TrellisPackedExpertLayoutError(TrellisMenuError):
+    """A packed row has no exact architecture-owned 2-D wire decomposition."""
+
+
+#: The links whose production behaviour or required input remains unwired.
+#: This is the live
 #: re-enable checklist cited by ``docs/ARCHITECTURE.md`` §4.9.  Delete an entry
 #: only when a test drives the entry point and exercises the behaviour it names
 #: -- code that merely looks present does not license deletion.
@@ -155,19 +194,12 @@ class TrellisSeamUnwiredError(TrellisMenuError):
 #:     ``tests/test_trellis_byte_budget_path.py``;
 #:   * named promotion-rank refusal plus exact candidate-rate extension (#5):
 #:     ``tests/test_allocator_cost_mode_and_rank.py``;
+#:   * fused-sibling and packed-expert aggregation (#3/#4), including exact
+#:     summed bytes/dloss and the architecture-owned packed wire layout:
+#:     ``tests/test_trellis_aggregation_entrypoint.py``;
 #:   * attested cost mode and surface provenance at the allocator call site
 #:     (#7): ``tests/test_allocator_cost_mode_and_rank.py``.
 UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
-    ("allocator_candidates.py:2434-2453",
-     "fused-sibling aggregation must build each super-item menu from the "
-     "members' candidate intersection, including registry-free trellis rungs; "
-     "the merged implementation is not licensed for deletion until a real "
-     "allocator.main() run kills a mutation that drops the rung"),
-    ("allocator_candidates.py:2782-2800",
-     "packed-expert aggregation must carry a registry-free trellis rung shared "
-     "by every member into the packed super-item at the exact summed bytes and "
-     "predicted_dloss; the merged implementation is not licensed for deletion "
-     "until a real allocator.main() run kills a mutation in this path"),
     ("trellis_rate_surface.py:43-52",
      "the anchors' currency is weighted SSE under a per-input-channel "
      "activation second moment -- an output-MSE proxy, explicitly NOT the "
@@ -208,7 +240,8 @@ class TrellisSurfaceManifest:
     activation_contract: str
     layout: str
     rungs_per_unit: int
-    #: unit name -> {"family", "alphabets": {rate: codes}, "points": [...]}
+    #: unit name -> {"family", "alphabets": {rate: codes}, "points": [...],
+    #:               "packed_parent": {...} when the probe row is packed}
     anchors: Mapping[str, Mapping[str, object]]
     provenance: Mapping[str, object]
 
@@ -464,6 +497,280 @@ def _unit_candidates(
     )
 
 
+def _packed_expert_wire_plan(
+    unit_name: str,
+    shape: Sequence[int],
+    model_profile,
+    packed_param: object = None,
+) -> tuple[tuple[int, int], tuple[str, ...], int, str]:
+    """Resolve the export-owned physical wires for one packed parent.
+
+    Packed probe rows are rank 3, but the trellis wire is rank 2.  The model
+    profile already owns the exact bridge: native export consults
+    ``split_packed_experts_for_format`` and
+    ``packed_expert_projection_names`` before emitting one 2-D tensor per
+    expert and projection.  Reusing that contract keeps allocation bytes and
+    the architecture's on-disk decomposition identical.  Flattening the
+    parent would erase hundreds of wire headers and alphabet directories and
+    is materially wrong at the campaign's 4.0117-bpw boundary.
+
+    The split decision itself is checked per concrete TCQ name after the
+    rungs are built.  This helper resolves the shape shared by those rungs.
+    """
+
+    dims = tuple(int(value) for value in shape)
+    if len(dims) != 3 or min(dims) <= 0:
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: packed-expert trellis pricing requires a positive "
+            f"rank-3 source shape, got {dims}"
+        )
+    profile_name = str(getattr(model_profile, "name", ""))
+    if model_profile is None or profile_name == "default":
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: packed-expert source shape {dims} cannot be priced "
+            "without a non-default resolved ModelProfile. The trellis wire "
+            "is rank 2, and flattening a packed parent or merely multiplying "
+            "one wire by num_experts would guess its header/alphabet "
+            "multiplicity. Drive allocator.main() with a detectable model "
+            "profile or --model-override."
+        )
+
+    projection_fn = getattr(
+        model_profile, "packed_expert_projection_names", None)
+    split_fn = getattr(model_profile, "split_packed_experts_for_format", None)
+    param_names_fn = getattr(model_profile, "packed_expert_param_names", None)
+    if (
+        not callable(projection_fn)
+        or not callable(split_fn)
+        or not callable(param_names_fn)
+    ):
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: model profile "
+            f"{getattr(model_profile, 'name', type(model_profile).__name__)!r} "
+            "does not expose the packed-expert projection/split contract "
+            "native export uses"
+        )
+
+    param_name = (
+        str(packed_param)
+        if isinstance(packed_param, str) and packed_param
+        else unit_name.rsplit(".", 1)[-1]
+    )
+    try:
+        declared_params = tuple(str(value) for value in param_names_fn())
+    except Exception as exc:
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: model profile could not enumerate packed "
+            f"parameters: {type(exc).__name__}: {exc}"
+        ) from exc
+    if param_name not in declared_params:
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: packed parameter {param_name!r} is not declared by "
+            f"model profile {profile_name!r}; declared parameters are "
+            f"{declared_params!r}"
+        )
+    try:
+        projections = tuple(str(value) for value in projection_fn(param_name))
+    except Exception as exc:
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: model profile could not resolve packed projection "
+            f"names for {param_name!r}: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not projections or any(not value for value in projections):
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: model profile returned no usable projection names "
+            f"for packed parameter {param_name!r}"
+        )
+    if len(set(projections)) != len(projections):
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: model profile returned duplicate packed projection "
+            f"names {projections!r}"
+        )
+
+    experts, packed_rows, columns = dims
+    if packed_rows % len(projections):
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: {packed_rows} packed rows cannot split evenly "
+            f"across declared projections {projections!r}; native export "
+            "would refuse the same decomposition"
+        )
+    projection_shape = (packed_rows // len(projections), columns)
+    return projection_shape, projections, experts, param_name
+
+
+def _validate_packed_parent_anchor(
+    unit_name: str,
+    entry: Mapping[str, object],
+    *,
+    source_shape: Sequence[int],
+    projection_shape: Sequence[int],
+    projection_names: Sequence[str],
+    experts: int,
+    packed_param: str,
+    model_profile,
+) -> dict[str, object]:
+    """Bind packed-parent dloss anchors to the exact repeated-wire recipe.
+
+    The rate-surface point belongs to the WHOLE packed parent exactly once;
+    only bytes multiply by expert/projection wire count.  Without this typed
+    statement a per-wire ``dloss`` is indistinguishable from a parent-level
+    one and would be underpriced by ``E * P``.  The manifest is the campaign's
+    measurement contract, so it must also repeat the profile-derived physical
+    decomposition and match it field for field.
+    """
+
+    raw = entry.get("packed_parent")
+    if not isinstance(raw, Mapping):
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: packed manifest anchor is missing the typed "
+            f"'packed_parent' contract ({TRELLIS_PACKED_PARENT_ANCHOR_SCHEMA}). "
+            f"Its points must declare dloss_scope={PACKED_PARENT_DLOSS_SCOPE!r} "
+            "and the exact per-expert/per-projection wire decomposition; "
+            "otherwise a per-wire loss would be silently underpriced as one "
+            "whole parent."
+        )
+    expected_fields = {
+        "schema",
+        "dloss_scope",
+        "wire_decomposition",
+        "model_profile",
+        "source_shape",
+        "packed_param",
+        "projection_names",
+        "projection_shape",
+        "wire_count",
+    }
+    observed_fields = {str(key) for key in raw}
+    if observed_fields != expected_fields:
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: packed_parent fields must be exactly "
+            f"{sorted(expected_fields)}, got {sorted(observed_fields)}"
+        )
+
+    profile_name = str(getattr(model_profile, "name", ""))
+    expected: dict[str, object] = {
+        "schema": TRELLIS_PACKED_PARENT_ANCHOR_SCHEMA,
+        "dloss_scope": PACKED_PARENT_DLOSS_SCOPE,
+        "wire_decomposition": PACKED_WIRE_DECOMPOSITION,
+        "model_profile": profile_name,
+        "source_shape": [int(value) for value in source_shape],
+        "packed_param": packed_param,
+        "projection_names": [str(value) for value in projection_names],
+        "projection_shape": [int(value) for value in projection_shape],
+        "wire_count": int(experts) * len(tuple(projection_names)),
+    }
+    for field, wanted in expected.items():
+        observed = raw.get(field)
+        if observed != wanted:
+            detail = ""
+            if field == "dloss_scope":
+                detail = (
+                    " A per-wire/per-projection point cannot be reused: this "
+                    "path applies the point once to the whole packed parent."
+                )
+            raise TrellisPackedExpertLayoutError(
+                f"{unit_name}: packed_parent.{field} must be {wanted!r}, "
+                f"got {observed!r}.{detail}"
+            )
+    return expected
+
+
+def _packed_solver_candidate(
+    record: TrellisAllocatorCandidate,
+    *,
+    unit_name: str,
+    source_shape: Sequence[int],
+    projection_shape: Sequence[int],
+    projection_names: Sequence[str],
+    experts: int,
+    packed_param: str,
+    model_profile,
+) -> Candidate:
+    """Price one parent rung as its exact per-expert/projection wire set."""
+
+    fmt = str(record.footprint["format"])
+    split_fn = getattr(model_profile, "split_packed_experts_for_format")
+    try:
+        should_split = split_fn(fmt)
+    except Exception as exc:
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: model profile could not decide the packed wire "
+            f"layout for {fmt}: {type(exc).__name__}: {exc}"
+        ) from exc
+    if should_split is not True:
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: model profile "
+            f"{getattr(model_profile, 'name', type(model_profile).__name__)!r} "
+            f"does not split packed experts for {fmt}. The declared source "
+            f"shape {tuple(source_shape)} would remain rank 3, but the "
+            "trellis footprint contract is rank 2; refusing rather than "
+            "flattening it and guessing the wire multiplicity."
+        )
+
+    projection_count = len(tuple(projection_names))
+    wire_count = int(experts) * projection_count
+    total_bytes = int(record.memory_bytes) * wire_count
+    source_params = 1
+    for value in source_shape:
+        source_params *= int(value)
+    component_params = (
+        int(projection_shape[0])
+        * int(projection_shape[1])
+        * wire_count
+    )
+    if component_params != source_params:
+        raise TrellisPackedExpertLayoutError(
+            f"{unit_name}: packed wire decomposition covers "
+            f"{component_params} params but source shape "
+            f"{tuple(source_shape)} contains {source_params}"
+        )
+
+    recipe = {
+        "schema": TRELLIS_PACKED_WIRE_RECIPE_SCHEMA,
+        "format": fmt,
+        "family": record.family,
+        "body_rate_q256": record.body_rate_q256,
+        "layout": record.layout,
+        "source_shape": [int(value) for value in source_shape],
+        "packed_param": packed_param,
+        "projections": [
+            {
+                "name": str(name),
+                "wire_shape": [int(value) for value in projection_shape],
+                "wire_count": int(experts),
+                "wire_payload_bytes": int(record.memory_bytes),
+                "per_wire_pre_render_recipe_identity_sha256": (
+                    record.pre_render_recipe_identity_sha256
+                ),
+            }
+            for name in projection_names
+        ],
+        "experts": int(experts),
+        "wire_count": wire_count,
+        "total_wire_bytes": total_bytes,
+        "identity_scope": (
+            "physical per-expert/per-projection pre-render wire recipes and "
+            "multiplicity; excludes encoded body and scale values"
+        ),
+    }
+    encoded = json.dumps(
+        recipe,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    serialized_identity = hashlib.sha256(encoded).hexdigest()
+    base = record.to_solver_candidate()
+    return replace(
+        base,
+        fmt=fmt,
+        bits_per_param=8.0 * total_bytes / max(source_params, 1),
+        memory_bytes=total_bytes,
+        serialized_identity=serialized_identity,
+    )
+
+
 def build_trellis_menu(
     candidates: dict[str, list[Candidate]],
     stats: Mapping[str, Mapping[str, object]],
@@ -471,6 +778,7 @@ def build_trellis_menu(
     cost_mode: str,
     manifest_path: str | None = None,
     provenance_out: dict | None = None,
+    model_profile=None,
 ) -> dict[str, list[Candidate]]:
     """Add trellis rungs to an already-built menu, or return it unchanged.
 
@@ -510,6 +818,7 @@ def build_trellis_menu(
     added = 0
     covered: list[str] = []
     skipped: dict[str, str] = {}
+    packed_wire_layouts: dict[str, dict[str, object]] = {}
     for unit_name, entry in manifest.anchors.items():
         if unit_name not in candidates:
             skipped[unit_name] = "unit has no priced scalar menu in this run"
@@ -527,24 +836,54 @@ def build_trellis_menu(
         if len(shape) < 2 or min(shape) <= 0:
             skipped[unit_name] = f"unusable shape {shape}"
             continue
-        if _is_packed_expert(stat):
-            # Refuse rather than price num_experts x per-expert bytes: that
-            # pricing would assert a per-expert trellis render coherent with
-            # the packed unit's single-format constraint, which no measurement
-            # supports.  Counted, not silent.
-            skipped[unit_name] = (
-                f"packed-expert row (shape {shape}); no per-expert trellis "
-                f"render exists, and pricing one would be an unmeasured claim"
+        packed_expert = _is_packed_expert(stat)
+        projection_shape: tuple[int, int] | None = None
+        projection_names: tuple[str, ...] = ()
+        experts = 0
+        packed_param = ""
+        packed_wire_layout: dict[str, object] | None = None
+        unit_added = False
+        candidate_shape = shape
+        if packed_expert:
+            projection_shape, projection_names, experts, packed_param = (
+                _packed_expert_wire_plan(
+                    unit_name,
+                    shape,
+                    model_profile,
+                    stat.get("_packed_param"),
+                )
             )
-            continue
+            candidate_shape = projection_shape
+            declared_params = int(stat.get("n_params", 0) or 0)
+            source_params = int(shape[0]) * int(shape[1]) * int(shape[2])
+            if declared_params and declared_params != source_params:
+                raise TrellisPackedExpertLayoutError(
+                    f"{unit_name}: probe declares n_params={declared_params} "
+                    f"but packed source shape {shape} contains "
+                    f"{source_params}; exact bytes need one physical census"
+                )
+            packed_anchor = _validate_packed_parent_anchor(
+                unit_name,
+                entry,
+                source_shape=shape,
+                projection_shape=projection_shape,
+                projection_names=projection_names,
+                experts=experts,
+                packed_param=packed_param,
+                model_profile=model_profile,
+            )
+            packed_wire_layout = {
+                **packed_anchor,
+                "experts": experts,
+            }
         try:
             records = _unit_candidates(
                 unit_name,
-                shape,
+                candidate_shape,
                 entry,
                 manifest,
                 qname=unit_name,
-                packed_expert=None,   # refused above; never reached packed
+                packed_expert=True if packed_expert else None,
             )
         except (TrellisFormatError, TrellisMenuError, KeyError) as exc:
             skipped[unit_name] = f"{type(exc).__name__}: {exc}"
@@ -571,9 +910,29 @@ def build_trellis_menu(
                     f"cannot offer one rung twice under one manifest"
                 )
             seen.add(fmt)
-            base = record.to_solver_candidate()
-            cand = replace(base, fmt=fmt)
+            if packed_expert:
+                assert projection_shape is not None
+                cand = _packed_solver_candidate(
+                    record,
+                    unit_name=unit_name,
+                    source_shape=shape,
+                    projection_shape=projection_shape,
+                    projection_names=projection_names,
+                    experts=experts,
+                    packed_param=packed_param,
+                    model_profile=model_profile,
+                )
+            else:
+                base = record.to_solver_candidate()
+                cand = replace(base, fmt=fmt)
             candidates[unit_name].append(cand)
+            unit_added = True
+            if packed_wire_layout is not None:
+                # Stamp only a layout that actually contributed a legal rung.
+                # A planned layout whose candidates were skipped must not look
+                # like part of the menu in the assignment provenance.
+                packed_wire_layouts.setdefault(
+                    unit_name, packed_wire_layout)
             # The SAME exact-bytes channel build_candidates writes for a
             # FormatSpec row (allocator_candidates:1950), and the reason no
             # TCQ FormatSpec is needed: a rung's serialized size is not a
@@ -606,7 +965,7 @@ def build_trellis_menu(
                     f"cannot be recorded must not be built."
                 )
             added += 1
-        if records:
+        if unit_added:
             covered.append(unit_name)
 
     payload = {
@@ -636,6 +995,7 @@ def build_trellis_menu(
         "units_in_menu": len(candidates),
         "candidates_added": added,
         "units_skipped": skipped,
+        "packed_wire_layouts": packed_wire_layouts,
         "research_only": True,
         "exportable": False,
         "export_note": (
@@ -683,6 +1043,7 @@ def augment_candidates(
     cost_mode: str,
     manifest_path: str | None = None,
     provenance_out: dict | None = None,
+    model_profile=None,
 ) -> dict[str, list[Candidate]]:
     """The production seam: a no-op when unset, a built menu when set.
 
@@ -690,11 +1051,10 @@ def augment_candidates(
     byte-identical to one built without this module -- that half was always
     real and is what ships.
 
-    Set, it builds the menu.  Exact-byte, rank and call-site links are closed.
-    The fused and packed aggregation entries remain in :data:`UNWIRED_LINKS`
-    until real-entry-point mutation tests prove those implementations execute;
-    the currency entry remains a genuine refusal inside the build because no
-    plumbing changes the anchors' objective.
+    Set, it builds the menu.  Exact-byte, rank, call-site and fused/packed
+    aggregation links are closed.  The currency entry remains a genuine
+    refusal inside the build because no plumbing changes the anchors'
+    objective.
     Two things this still does not do: render and export.
     ``ProductionWeightCache`` has no trellis mechanism and
     ``export_native_compressed`` refuses a TCQ assignment outright.  A
@@ -712,6 +1072,7 @@ def augment_candidates(
         cost_mode=cost_mode,
         manifest_path=resolved_path,
         provenance_out=provenance_out,
+        model_profile=model_profile,
     )
 
 
@@ -729,9 +1090,14 @@ def assignment_has_trellis(assignment: Mapping[str, str]) -> list[str]:
 __all__ = [
     "DEFAULT_RUNGS_PER_UNIT",
     "TRELLIS_MENU_PROVENANCE_SCHEMA",
+    "TRELLIS_PACKED_PARENT_ANCHOR_SCHEMA",
+    "TRELLIS_PACKED_WIRE_RECIPE_SCHEMA",
+    "PACKED_PARENT_DLOSS_SCOPE",
+    "PACKED_WIRE_DECOMPOSITION",
     "TRELLIS_SURFACE_ENV",
     "TRELLIS_SURFACE_MANIFEST_SCHEMA",
     "TrellisMenuError",
+    "TrellisPackedExpertLayoutError",
     "TrellisSeamUnwiredError",
     "TrellisSurfaceManifest",
     "assignment_has_trellis",

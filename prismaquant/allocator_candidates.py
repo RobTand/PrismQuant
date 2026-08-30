@@ -1781,6 +1781,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      cost_mode: str | None = None,
                      trellis_provenance: dict | None = None,
                      apply_trellis_surface: bool = True,
+                     model_profile=None,
                      ) -> dict[str, list[Candidate]]:
     """Build runtime-legal format candidates for every measured Linear.
 
@@ -1807,7 +1808,10 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     format is an operator declaration rather than a DP choice: building a
     research menu the caller will never consult would record bytes and count
     rungs for a decision nobody makes. It is not a format ban — the body menu,
-    which is what the DP solves, always sees the surface.
+    which is what the DP solves, always sees the surface. ``model_profile`` is
+    the already-resolved architecture contract; packed rank-3 rows require it
+    so the seam can price the same per-expert/per-projection rank-2 wires native
+    export declares instead of guessing a flattened layout.
     """
     gains = calibrated_gains or {}
     out: dict[str, list[Candidate]] = {}
@@ -2050,6 +2054,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                 else os.environ.get("COST_MODE", "")
             ),
             provenance_out=trellis_provenance,
+            model_profile=model_profile,
         )
     return out
 
