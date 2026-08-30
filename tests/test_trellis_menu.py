@@ -298,16 +298,25 @@ def test_the_production_seam_refuses_when_the_flag_is_set(tmp_path, monkeypatch)
 
 
 def test_the_unwired_links_are_still_unwired():
-    """The ledger is a claim about the code; check the two cheapest entries.
+    """The ledger is a claim about the code; check the cheapest entries.
 
-    If either of these starts passing, the corresponding UNWIRED_LINKS entry is
+    If one of these starts passing, the corresponding UNWIRED_LINKS entry is
     stale and must be deleted along with -- not before -- its refusal.
+
+    Entry #1 (format_registry.py get_format) is WIRED as of this commit:
+    ``get_format`` parse-resolves TCQ names to an exact-or-refuse
+    ``TrellisFormatSpec`` (tests/test_trellis_format_spec.py exercises the
+    behaviour, which per the ledger's own rule licenses the deletion). The
+    UNWIRED_LINKS tuple in trellis_menu.py still lists it; delete that entry
+    there, then drop this resolution check in favour of the dedicated test
+    module.
     """
 
     from prismaquant import format_registry as fr
 
-    with pytest.raises(KeyError):
-        fr.get_format("TCQ_E2M1_R640")
+    assert isinstance(
+        fr.get_format("TCQ_E2M1_R640"), fr.TrellisFormatSpec
+    ), "entry #1 regressed: get_format no longer resolves trellis rungs"
     from prismaquant import allocator_candidates as ac
 
     aggregation = pathlib.Path(ac.__file__).read_text().count(
