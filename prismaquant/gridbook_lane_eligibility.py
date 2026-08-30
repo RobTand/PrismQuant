@@ -473,8 +473,14 @@ class UnitRoute:
     regimes: tuple[RegimeRoute, ...] = ()
     requires_serve_flags: tuple[str, ...] = ()
     #: True when the pinned contract publishes this unit's payload family, i.e.
-    #: when the eligibility table is the authority for these bytes.
-    in_scope: bool = True
+    #: when the eligibility table is the authority for these bytes; False when
+    #: it does not. ``None`` means the question was never asked, which is the
+    #: only honest value when no table was consulted at all (an absent index,
+    #: an unreadable contract). It is NOT a synonym for True: a default that
+    #: rides into provenance unevaluated is the same defect class as a zero
+    #: that reads as a verdict, and ``as_dict`` omits the key rather than
+    #: publish one.
+    in_scope: bool | None = None
     #: Why no claim was made. Empty unless the status is ``unattested``.
     unattested_reason: str = ""
 
@@ -513,10 +519,11 @@ class UnitRoute:
         payload = {
             **self.facts.as_dict(),
             "route_status": self.route_status,
-            "in_scope": self.in_scope,
             "requires_serve_flags": list(self.requires_serve_flags),
             "regime_routes": [r.as_dict() for r in self.regimes],
         }
+        if self.in_scope is not None:
+            payload["in_scope"] = self.in_scope
         if self.attested:
             payload["announced_fallback_regimes"] = list(self.fallback_regimes)
             payload["qualifications"] = list(self.qualifications)
@@ -568,6 +575,7 @@ def resolve_unit_route(
         return UnitRoute(
             facts=facts,
             route_status=ROUTE_STATUS_UNATTESTED,
+            in_scope=True,
             unattested_reason=(
                 "no declared target platform; v3 cells are platform-scoped, so "
                 "no route can be named without one. Declare "
@@ -579,6 +587,7 @@ def resolve_unit_route(
         return UnitRoute(
             facts=facts,
             route_status=ROUTE_STATUS_UNATTESTED,
+            in_scope=True,
             unattested_reason=(
                 f"the pinned release publishes no lane cells for platform "
                 f"{platform!r} (it publishes {list(table.platforms)}); an "
@@ -656,6 +665,7 @@ def resolve_unit_route(
             facts=facts,
             route_status=status,
             regimes=tuple(regimes),
+            in_scope=True,
             unattested_reason=reason,
         )
 
@@ -673,6 +683,7 @@ def resolve_unit_route(
         facts=facts,
         route_status=status,
         regimes=tuple(regimes),
+        in_scope=True,
         requires_serve_flags=flags,
     )
 

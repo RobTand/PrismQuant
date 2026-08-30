@@ -180,8 +180,17 @@ def evaluate_cb_route_status(
     # payload family the pinned release publishes is one the lane table is the
     # authority for; anything else (BF16, a SOURCE passthrough, a stock CT
     # rung) is outside its remit and is reported, never refused.
-    in_scope = [r for r in routes if r.in_scope]
-    out_of_scope = [r for r in routes if not r.in_scope]
+    unevaluated = [r for r in routes if r.in_scope is None]
+    if unevaluated:  # pragma: no cover - a resolver bug, not a data case
+        raise ValueError(
+            "resolve_unit_route returned an unevaluated scope for "
+            f"{[r.facts.qname for r in unevaluated]} while the table is "
+            "present. Every route resolved against a real table has been "
+            "asked whether the contract governs its family; a None here "
+            "would be counted as out-of-scope and silently escape refusal."
+        )
+    in_scope = [r for r in routes if r.in_scope is True]
+    out_of_scope = [r for r in routes if r.in_scope is False]
     unbacked = [r for r in in_scope if r.route_status == ROUTE_STATUS_UNBACKED]
     unclaimed = [
         r for r in in_scope if r.route_status == ROUTE_STATUS_UNATTESTED

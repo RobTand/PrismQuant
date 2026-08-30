@@ -1176,3 +1176,42 @@ def test_unit_facts_reject_an_unknown_structure():
             qname="x", format_name="FP8_CB_K28", payload_family="FP8_CB_K",
             k=28, n_sub=4, structure="sparse_moe", role_split=False,
             in_features=256, out_features=16)
+
+
+def test_an_unconsulted_scope_is_omitted_not_defaulted():
+    """The same defect class as `units_on_fallback_route=0`, one field down.
+
+    `in_scope` answers "does the pinned contract publish this unit's payload
+    family". Under an ABSENT table that question is never asked -- the resolver
+    returns before `governs()` runs. A field defaulting to True would have
+    every BF16 and stock-CT unit stamp `in_scope: true` into provenance,
+    claiming a table that was never opened had ruled them in. The honest
+    payload omits the key.
+    """
+    units = [_facts("l0.experts", "FP8_CB_K28"),
+             _facts("attn.q_proj", "BF16")]
+    p = evaluate_cb_route_status(units).provenance  # real pin => ABSENT
+
+    for row in p["by_unit"]:
+        assert "in_scope" not in row, (
+            f"{row['qname']}: an absent table asked nothing about scope; "
+            "stamping a default is the units_on_fallback_route=0 defect")
+
+
+def test_a_consulted_scope_is_always_stated(attested_table):
+    """Conversely: every row resolved against a real table states its scope.
+
+    Omission must mean "never asked", so a present table may never omit it --
+    otherwise a reader cannot tell the two apart and the field carries no
+    information.
+    """
+    units = [_facts("l0.experts", "FP8_CB_K28"),   # published family
+             _facts("attn.q_proj", "BF16")]        # outside the remit
+    p = evaluate_cb_route_status(
+        units, table=attested_table, target_platform=TEST_PLATFORM).provenance
+
+    scopes = {row["qname"]: row["in_scope"] for row in p["by_unit"]}
+    assert set(scopes) == {"l0.experts", "attn.q_proj"}
+    assert all(isinstance(v, bool) for v in scopes.values())
+    assert scopes["l0.experts"] is True
+    assert scopes["attn.q_proj"] is False
