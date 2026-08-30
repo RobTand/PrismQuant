@@ -1,7 +1,24 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
+As of: 2026-08-29 · `rescue/small-fixes` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-29,
+`rescue/small-fixes`) for the
+**registry learning of gridbook's dense FP4-v2 round-2 arm**:
+`GRIDBOOK_ENVIRONMENT_REGISTRY` gained `PRISMAQUANT_CB_FP4V2_DENSE_R2`
+(execution, canonical `"0"`, `pq_env_bool01` strict boolean in
+`cb_gemv.cu`, unset/`0` = legacy arm — gridbook d4df36e's opt-in backport),
+and `_GRIDBOOK_EXPECTED_SOURCE_IDENTIFIERS` learned the name so source scans
+classify it as known ahead of any producer-pin advance. The closed gold
+measurement environment grows 31 → 32 names, execution 21 → 22; the 29-name
+historical projection still hashes to its original digest and the full map
+was re-digested (`test_gold_environment_grew_additively_over_the_historical_0_8_5_set`).
+The name has since graduated into the shared registry, so the RTX 4090
+lane's profile-specific freeze is restated on the one name still in no
+registry (`PRISMAQUANT_CB_BF16_SWIZZLE`) and gains two assertions: the
+graduated name must still be in the shared allowlist, and the RTX 4090
+tuple must contain no duplicates.
+
+Earlier stamp (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
 rather than by a test — the two doc gates were green across both drifts. (i) The
@@ -19,8 +36,9 @@ quantized formats outside the three module families PR #53906 wires a
 `b4a8846` refresh, so it is the § P13 "currency is not truth" case: this file
 was re-stamped in lockstep while carrying a false statement about a serving
 default. Nothing else in the window crossed the trigger; the reasoning is in the
-commit message. Re-stamped (2026-08-29,
-`claude/trellis-continuous-surface`) for the **trellis seam correction**
+commit message.
+
+Earlier stamp (2026-08-29, `claude/trellis-continuous-surface`) for the **trellis seam correction**
 (§4.9): the seam that landed earlier the same day is now **fail-closed** when
 enabled, and this document's claim that it made trellis rungs "pass the same
 legality, aggregation and byte accounting every other candidate does" is
@@ -5189,9 +5207,9 @@ seed 0, eager execution, and log stats disabled; speculative decoding is off.
 `source_passthrough` or `per_expert_format_groups` assignment declares
 `mxfp4_e2m1_ue8m0_g32`. Menus, provenance strings, and other metadata cannot
 select that backend (`prismaquant.gridbook_assignment`). The closed relevant
-environment is the complete 31-name Gridbook-0.8.11 snapshot in
+environment is the complete 32-name Gridbook-0.8.11 snapshot in
 `prismaquant.gridbook_environment`, not a two-variable subset. Gold clears the namespace first,
-sets its 14 canonical values (including `VLLM_USE_DEEP_GEMM=0` and
+sets its 15 canonical values (including `VLLM_USE_DEEP_GEMM=0` and
 `PRISMAQUANT_PRELOAD_FUSED=0`), and carries all 17 required
 absences as explicit nulls. In particular retired `PRISMAQUANT_CB_DECODE` is absent, never
 inherited and `GRIDBOOK_MXFP8_DENSE` is absent so the direct W8A8 route cannot replace the
@@ -6385,17 +6403,20 @@ honoured and the operator is CUTLASS, FlashInfer being only the wrapper. This
 matters for artifact A's recipe: a mixed CB artifact containing any stock NVFP4
 W4A4 Linear would otherwise have failed at load, after the export.
 
-**Closed Gridbook-0.8.11 measurement environment (31 names).** This is a PrismaQuant release-
+**Closed Gridbook-0.8.11 measurement environment (32 names).** This is a PrismaQuant release-
 evidence profile, not a second catalog of Gridbook's general runtime defaults. The authority is
 `prismaquant.gridbook_environment.GRIDBOOK_ENVIRONMENT_REGISTRY`, whose exact pin/source scan
 fails if the pinned version, its required W8A16 feature, or its environment namespace changes.
 It described 0.8.5 with 29 names until the 2026-08-21 producer-pin advance, which added the two
-0.8.9-era selectors marked below. Every snapshot includes values **and
+0.8.9-era selectors marked below; the 2026-08-22 registry update then added
+`PRISMAQUANT_CB_FP4V2_DENSE_R2` (canonical `0`, gridbook d4df36e's opt-in dense round-2 arm,
+default off) ahead of any pin advance so the source scan classifies it as known. Every
+snapshot includes values **and
 nulls** for all names:
 
 | Category | Count | Exact names |
 |---|---:|---|
-| execution | 21 | `GRIDBOOK_MXFP8_DENSE`, `PRISMAQUANT_CB_GEMV`, **`PRISMAQUANT_CB_FP8_GEMV_V2`**, `PRISMAQUANT_CB_FUSED_FP4`, `PRISMAQUANT_CB_FUSED_FP4_MOE`, `PRISMAQUANT_CB_BF16_SM120`, `PRISMAQUANT_CB_FP4_FUSED_MIDM`, `PRISMAQUANT_CB_MOE_PERSISTENT_B`, `PRISMAQUANT_CB_MOE_PERSISTENT_B_CFG`, **`PRISMAQUANT_CB_MOE_PERSISTENT_B_D2R`**, `PRISMAQUANT_CB_FUSED_MIDM`, `PRISMAQUANT_CB_GROUPED_TRIM`, `PRISMAQUANT_CB_PREFILL_EXPERT_CHUNK`, `PRISMAQUANT_CB_PREFILL_CHUNK_BYTES`, `PRISMAQUANT_CB_DECODE_CONTRACT`, `PRISMAQUANT_CB_FP8_SCHED`, `PRISMAQUANT_CB_FP4V2_SCHED`, `PRISMAQUANT_CB_W2_SCHED`, `PRISMAQUANT_CB_W2_ROWS`, `PRISMAQUANT_CB_W2_WARPS`, `VLLM_USE_DEEP_GEMM` |
+| execution | 22 | `GRIDBOOK_MXFP8_DENSE`, `PRISMAQUANT_CB_GEMV`, **`PRISMAQUANT_CB_FP8_GEMV_V2`**, `PRISMAQUANT_CB_FUSED_FP4`, `PRISMAQUANT_CB_FUSED_FP4_MOE`, `PRISMAQUANT_CB_BF16_SM120`, `PRISMAQUANT_CB_FP4_FUSED_MIDM`, `PRISMAQUANT_CB_MOE_PERSISTENT_B`, `PRISMAQUANT_CB_MOE_PERSISTENT_B_CFG`, **`PRISMAQUANT_CB_MOE_PERSISTENT_B_D2R`**, `PRISMAQUANT_CB_FUSED_MIDM`, `PRISMAQUANT_CB_GROUPED_TRIM`, `PRISMAQUANT_CB_PREFILL_EXPERT_CHUNK`, `PRISMAQUANT_CB_PREFILL_CHUNK_BYTES`, `PRISMAQUANT_CB_DECODE_CONTRACT`, `PRISMAQUANT_CB_FP8_SCHED`, `PRISMAQUANT_CB_FP4V2_SCHED`, **`PRISMAQUANT_CB_FP4V2_DENSE_R2`**, `PRISMAQUANT_CB_W2_SCHED`, `PRISMAQUANT_CB_W2_ROWS`, `PRISMAQUANT_CB_W2_WARPS`, `VLLM_USE_DEEP_GEMM` |
 | correctness bypass | 1 | `PRISMAQUANT_SKIP_CB_CAST_CHECK` |
 | residency/build | 5 | `PRISMAQUANT_PRELOAD_FUSED`, `PRISMAQUANT_CB_EXT_DIR`, `PRISMAQUANT_CUTLASS_INCLUDE`, `CUDACXX`, `CXX` |
 | retired | 3 | `PRISMAQUANT_CB_DECODE`, `PRISMAQUANT_CB_EXPAND`, `PRISMAQUANT_CB_PREFILL` |
@@ -6403,26 +6424,28 @@ nulls** for all names:
 
 The canonical gold set leaves `GRIDBOOK_MXFP8_DENSE` **absent** and sets exactly
 `PRISMAQUANT_CB_GEMV=inherited`, `PRISMAQUANT_CB_BF16_SM120=0`,
-`PRISMAQUANT_CB_FP4_FUSED_MIDM=0`, `PRISMAQUANT_CB_MOE_PERSISTENT_B=0`,
+`PRISMAQUANT_CB_FP4_FUSED_MIDM=0`, `PRISMAQUANT_CB_FP4V2_DENSE_R2=0`, `PRISMAQUANT_CB_MOE_PERSISTENT_B=0`,
 `PRISMAQUANT_CB_MOE_PERSISTENT_B_CFG=0`,
 `PRISMAQUANT_CB_MOE_PERSISTENT_B_D2R=0`, `PRISMAQUANT_CB_FP8_GEMV_V2=0`,
 `PRISMAQUANT_CB_FUSED_MIDM=1`,
 `PRISMAQUANT_CB_GROUPED_TRIM=1`,
 `PRISMAQUANT_CB_PREFILL_CHUNK_BYTES=1073741824`,
 `PRISMAQUANT_CB_DECODE_CONTRACT=v1`, `VLLM_USE_DEEP_GEMM=0`,
-`PRISMAQUANT_SKIP_CB_CAST_CHECK=0`, and `PRISMAQUANT_PRELOAD_FUSED=0` — 14 set
+`PRISMAQUANT_SKIP_CB_CAST_CHECK=0`, and `PRISMAQUANT_PRELOAD_FUSED=0` — 15 set
 values; the other
 17 names must be absent. The two added in 2026-08-21 are pinned `0` for the
 same reason every other dispatch selector here is: 0.8.9 moved their unset
 default to `auto`, and the gold lane pins the kernel its evidence was measured
-on rather than following a runtime default. Absence is semantic: the MXFP8 override would select the distinct
+on rather than following a runtime default. The R2 arm joins them pinned `0`
+because it is opt-in whose unset default is the legacy kernel — the explicit
+off spelling cannot drift even if gridbook later flips its default. Absence is semantic: the MXFP8 override would select the distinct
 direct group-32 W8A8 lane; literal `0` is invalid for the two fused-FP4
 selectors and expert-chunk override, and the retired `PRISMAQUANT_CB_DECODE` must never
 reappear. Gold clears and applies that state before the first tokenizer/runtime import.
 Endpoint and matched-performance profiles change preload to `1` so compared arms have the
 same extension residency; the endpoint also sets
 `PRISMAQUANT_CB_EXT_DIR=/opt/gridbook/ext-cache`. Server manifests inspect the complete process
-tree using the same 31-name allowlist plus the two immutable runtime-pin transport variables,
+tree using the same 32-name allowlist plus the two immutable runtime-pin transport variables,
 `PYTHONSAFEPATH`, and `PYTHONPATH`; the last must be affirmatively absent, while the
 short-lived `/repo` fingerprint writer is not part of the inspected server process set.
 Every readable serving process must agree.
@@ -6442,7 +6465,7 @@ knob, a differing value/null, or a process-tree disagreement refuses. This later
 therefore evolve visibly without changing the semantics of the target-only authority. The
 regression digest is now stated on the scope it protects: the 29-name **historical
 projection** of the gold environment must still hash to its original literal, proving no
-pre-existing canonical value moved, and the full 31-name map carries its own digest
+pre-existing canonical value moved, and the full 32-name map carries its own digest
 (`test_gold_environment_grew_additively_over_the_historical_0_8_5_set`).
 
 The self-digesting runtime receipt binds image digest `sha256:58862b…869`, vLLM
@@ -6485,7 +6508,7 @@ profile/runtime receipt through only the paired-DSpark endpoint validator while 
 shared artifact, session, listener, launch, and residency checks. Every selected environment,
 package/capability/cache, launch, and route field has a mutation refusal test; a static digest
 test separately proves the old 0.8.5 environment is unchanged — since 2026-08-21 as the
-29-name historical projection of the grown 31-name map.
+29-name historical projection of the grown 32-name map.
 
 **One machine-readable contract, not parallel tables.** Gridbook packages
 `gridbook/runtime_contract.json`; it is authoritative for the runtime's quantization aliases,

@@ -224,35 +224,45 @@ _ADDED_BY_THE_0_8_11_PIN_ADVANCE = (
     "PRISMAQUANT_CB_FP8_GEMV_V2",
     "PRISMAQUANT_CB_MOE_PERSISTENT_B_D2R",
 )
+# Registered 2026-08-22 ahead of any pin advance: gridbook d4df36e's opt-in
+# dense FP4-v2 round-2 arm, a pq_env_bool01 strict boolean defaulting OFF.
+_ADDED_BY_THE_R2_FLAG_REGISTRATION = ("PRISMAQUANT_CB_FP4V2_DENSE_R2",)
 
 
 def test_gold_environment_grew_additively_over_the_historical_0_8_5_set():
-    """The 0.8.5-era gold environment is unchanged; 0.8.11 only extended it.
+    """The 0.8.5-era gold environment is unchanged; later growth is additive.
 
     2026-08-21: the producer pin advanced 0.8.5 -> 0.8.11 and this module's
     registry had to describe the newer namespace.  Freezing one digest would
     then either block the advance or hide it, so the freeze is stated on the
     scope it was written to protect: the 29-name HISTORICAL projection must
     still hash to its original literal, proving no pre-existing canonical
-    value moved, while the full 31-name map carries its own digest.  A silent
-    edit to any old entry still fails, which was the original point.
+    value moved, while the full map carries its own digest.  A silent edit to
+    any old entry still fails, which was the original point.  2026-08-22: the
+    registry learned gridbook's opt-in PRISMAQUANT_CB_FP4V2_DENSE_R2 the same
+    way, again without moving any pre-existing value.
     """
     historical = {
         name: value for name, value in CANONICAL_GOLD_ENVIRONMENT.items()
         if name not in _ADDED_BY_THE_0_8_11_PIN_ADVANCE
+        and name not in _ADDED_BY_THE_R2_FLAG_REGISTRATION
     }
     assert len(historical) == 29
     assert _sha(historical) == (
         "41dd44c5365d961b58f1fb94db9af32243bdbe1a1863cbdea60618f42e88397e"
     )
-    assert len(CANONICAL_GOLD_ENVIRONMENT) == 31
+    assert len(CANONICAL_GOLD_ENVIRONMENT) == 32
     assert _sha(dict(CANONICAL_GOLD_ENVIRONMENT)) == (
-        "e101a445656d000ac2a64614f5009635d41ec3bd5e36c4052da659db269c9df9"
+        "60af3a0728a08478b893c0360cfcb05edfa4aaa47839c39252162a925732c2d5"
     )
     # Both additions are dispatch kill switches, consistent with every other
     # selector in the table: the runtime's own default moved to "auto" in
     # 0.8.9, and gold stays pinned to the kernel its evidence was measured on.
     for name in _ADDED_BY_THE_0_8_11_PIN_ADVANCE:
+        assert CANONICAL_GOLD_ENVIRONMENT[name] == "0"
+    # The R2 arm is opt-in with the legacy kernel as its unset default, so
+    # gold pins the explicit off value for the same reason.
+    for name in _ADDED_BY_THE_R2_FLAG_REGISTRATION:
         assert CANONICAL_GOLD_ENVIRONMENT[name] == "0"
     assert CANONICAL_GOLD_ENVIRONMENT["PRISMAQUANT_CB_GEMV"] == "inherited"
     assert CANONICAL_GOLD_ENVIRONMENT["PRISMAQUANT_PRELOAD_FUSED"] == "0"

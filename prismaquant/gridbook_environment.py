@@ -92,6 +92,10 @@ def _var(
 # evidence was measured on, precisely so a runtime-default change cannot move
 # the gold lane's executed kernels without a reviewed decision.  Re-baselining
 # gold onto the 0.8.9+ auto dispatch is such a decision; a pin bump is not.
+#
+# 2026-08-22: PRISMAQUANT_CB_FP4V2_DENSE_R2 was registered ahead of any pin
+# advance so the source scan classifies gridbook d4df36e's opt-in dense
+# round-2 arm; no existing canonical value moved.
 GRIDBOOK_ENVIRONMENT_REGISTRY = (
     _var(
         "GRIDBOOK_MXFP8_DENSE", CATEGORY_EXECUTION, None, "disabled",
@@ -174,6 +178,13 @@ GRIDBOOK_ENVIRONMENT_REGISTRY = (
     _var(
         "PRISMAQUANT_CB_FP4V2_SCHED", CATEGORY_EXECUTION, None, "single-buffer",
         "unset for single-buffer or db for the double-buffer A/B arm",
+    ),
+    # An opt-in second instantiation of the dense FP4-v2 GEMV kernels
+    # (gridbook d4df36e): pq_env_bool01 parses only unset/0/1 and unset runs
+    # the legacy arm, so "0" is the self-consistent gold value until promotion.
+    _var(
+        "PRISMAQUANT_CB_FP4V2_DENSE_R2", CATEGORY_EXECUTION, "0",
+        "disabled", "strict boolean: unset, 0, or 1",
     ),
     _var(
         "PRISMAQUANT_CB_W2_SCHED", CATEGORY_EXECUTION, None,
@@ -385,6 +396,7 @@ _GRIDBOOK_EXPECTED_SOURCE_IDENTIFIERS = frozenset({
     "PRISMAQUANT_CB_BF16_SM120",
     "PRISMAQUANT_CB_DECODE_CONTRACT",
     "PRISMAQUANT_CB_EXT_DIR",
+    "PRISMAQUANT_CB_FP4V2_DENSE_R2",
     "PRISMAQUANT_CB_FP4V2_SCHED",
     "PRISMAQUANT_CB_FP4_FUSED_MIDM",
     "PRISMAQUANT_CB_FP8_GEMV_V2",

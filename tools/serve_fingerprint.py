@@ -206,10 +206,22 @@ SERVER_ENV_ALLOWLIST = (
 # historical manifest contract.  Keeping the projection profile-specific
 # preserves byte-for-byte replay of existing Gridbook release evidence while
 # proving that neither v10 diagnostic selector entered the RTX 4090 server.
+#
+# 2026-08-29 (merge of `merge/proven-rescues`): one of the two selectors
+# graduated.  ``PRISMAQUANT_CB_FP4V2_DENSE_R2`` was registered in
+# ``GRIDBOOK_ENVIRONMENT_REGISTRY`` on 2026-08-22 (65bde48), two days before
+# this lane landed (c6ab745), and ``SERVER_ENV_ALLOWLIST`` is by contract the
+# full registry -- see
+# ``test_serve_fingerprint_descendants.
+# test_server_environment_allowlist_is_the_full_gridbook_registry``.  It
+# therefore now arrives through the shared projection.  Naming it again here
+# would put a duplicate in the tuple and hand every consumer a repeated name;
+# dropping it leaves this profile's set of names exactly what the lane shipped
+# with.  ``PRISMAQUANT_CB_BF16_SWIZZLE`` is in no registry and remains the
+# profile-specific selector this projection exists to prove absent.
 RTX4090_SERVER_ENV_ALLOWLIST = (
     *SERVER_ENV_ALLOWLIST,
     "PRISMAQUANT_CB_BF16_SWIZZLE",
-    "PRISMAQUANT_CB_FP4V2_DENSE_R2",
 )
 
 #: The extensions whose residency moves the numbers (§7.4).

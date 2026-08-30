@@ -2665,7 +2665,11 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
   # {qname: (in_features,) tensor} pickle (e.g. Fisher col-weights, exp-4).
   harvest_cb_col_weights "[4/4]"
 
-  # Streaming exporter for 200-300B-class sources (Hy3 ~557GB, DSv4 ~295GB):
+  # Streaming exporter for 200-300B-class sources (Hy3 ~557GB, DSv4 166.9GB
+  # on disk / 155.4GiB, 48 shards, 72,317 tensors -- measured from the source
+  # index 2026-08-23; the "~295GB" this comment used to carry was wrong. The
+  # 284B parameter count is NOT wrong with it: routed experts are int4-packed
+  # two-per-int8-byte, so param math undercounts the bytes 2x on those rows):
   # export_nvfp4_cb loads EVERY shard resident + accumulates EVERY output tensor
   # -> OOM on the 121GB box (dsv4_readiness.md gap 2). export_nvfp4_cb_streaming
   # holds ~one source tensor (one MoE layer's expert stack) + the codebooks.
