@@ -78,6 +78,7 @@ def encode_trellis_one_linear(
     tailbite_candidates: int,
     backend: str,
     point_route: str,
+    global_scale_real_override: float | None = None,
 ) -> TrellisOneLinearArtifact:
     """Encode, serialize, reparse, and decode one dense Linear.
 
@@ -98,6 +99,7 @@ def encode_trellis_one_linear(
         tailbite_candidates=tailbite_candidates,
         backend=backend,
         point_route=point_route,
+        global_scale_real_override=global_scale_real_override,
     )
     wire = pack_planes(
         family=family,
@@ -150,6 +152,7 @@ def encode_trellis_one_linear(
         "tailbite_candidates": int(tailbite_candidates),
         "backend": backend,
         "point_route": point_route,
+        "global_scale_real_override": global_scale_real_override,
         "encoder_source_sha256": encoder_source_sha256(),
     }
     receipt_body: dict[str, object] = {

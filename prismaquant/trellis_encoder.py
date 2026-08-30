@@ -590,6 +590,7 @@ def _scale_context(
     *,
     family: str,
     scale_rule: str,
+    global_scale_real_override: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, bytes, float]:
     """Return normalized weight, objective, per-element scale, wire plane."""
     rows, columns = map(int, weight.shape)
@@ -602,13 +603,33 @@ def _scale_context(
     importance = col_weights.reshape(1, columns).to(
         device=weight.device, dtype=torch.float32
     ).clamp_min(1.0e-12)
+    if family != E2M1_FAMILY and global_scale_real_override is not None:
+        raise TrellisEncoderError(
+            "global_scale_real_override is defined only for E2M1"
+        )
     if family == E2M1_FAMILY:
         grouped = source.reshape(rows, columns // 16, 16)
         real_scale = grouped.abs().amax(dim=-1).clamp_min(1.0e-12) / 6.0
-        global_scale = (real_scale.amax() / E4M3_MAX).clamp_min(1.0e-12)
-        fp8_scale = (real_scale / global_scale).clamp(
-            0.0, E4M3_MAX
-        ).to(torch.float8_e4m3fn)
+        if global_scale_real_override is None:
+            global_scale = (real_scale.amax() / E4M3_MAX).clamp_min(1.0e-12)
+            scale_ratio = (real_scale / global_scale).clamp(0.0, E4M3_MAX)
+        else:
+            requested = float(global_scale_real_override)
+            if not math.isfinite(requested) or requested <= 0.0:
+                raise TrellisEncoderError(
+                    "E2M1 global_scale_real_override must be finite and positive"
+                )
+            global_scale = torch.tensor(
+                requested, dtype=torch.float32, device=weight.device
+            )
+            # Wire-v1 rejects zero E4M3 scale codes.  The minimum positive
+            # E4M3FN subnormal is 2^-9.  This floor affects only the explicit
+            # cross-superblock override; the established default path above
+            # remains byte-for-byte unchanged.
+            scale_ratio = (real_scale / global_scale).clamp(
+                2.0 ** -9, E4M3_MAX
+            )
+        fp8_scale = scale_ratio.to(torch.float8_e4m3fn)
         effective = (fp8_scale.to(torch.float32) * global_scale).clamp_min(
             1.0e-12
         )
@@ -687,6 +708,7 @@ def encode_trellis_planes(
     tailbite_candidates: int,
     backend: str,
     point_route: str,
+    global_scale_real_override: float | None = None,
 ) -> EncodedTrellisPlanes:
     """Encode one dense Linear and return the exact wire planes."""
     spec = get_trellis_family(family)
@@ -726,7 +748,11 @@ def encode_trellis_planes(
         raise TrellisEncoderError("point route must be full or windowed")
 
     normalized, objective, per_element, scale_blob, global_real = _scale_context(
-        weight, vector, family=spec.family, scale_rule=scale_rule
+        weight,
+        vector,
+        family=spec.family,
+        scale_rule=scale_rule,
+        global_scale_real_override=global_scale_real_override,
     )
     reconstructed_normalized = torch.empty_like(normalized)
     u_bits = torch.zeros(rows, columns, dtype=torch.uint8, device=weight.device)
