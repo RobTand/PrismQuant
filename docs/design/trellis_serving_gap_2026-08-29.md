@@ -15,7 +15,19 @@ Evidence: `dq-runs/trellis-kernel-20260829/route_probe.py` →
 
 ## 1. The finding, in one line
 
-**Gridbook can decode the trellis wire but cannot serve it.** `trellis` appears
+**No *released* Gridbook decodes the trellis wire at all, and the unreleased
+tree that does cannot serve it.** The release half is read out of git, not
+inferred: a sweep of all 31 tags (`v0.1.0`..`v0.9.0`) finds no tag carrying any
+trellis file, and `git ls-tree -r 187c721 | grep -ci trellis` returns **0** at
+PrismaQuant's own pin (0.8.11, contract `gridbook.runtime-contract.v4`, which
+lists exactly `NVFP4_CB_K` / `NVFP4_CB_S` / `FP8_CB_K` and nothing else). So
+every wire arm — v1, row-indexed, or v2 — crosses a release boundary regardless
+of which is chosen; the choice is *what to publish in a release that must
+happen anyway*, never whether to pay for one. Everything below is measured on
+the **unreleased, unpinned** working tree, and inherits that scope
+(principle 14 corollary).
+
+Inside that tree, `trellis` appears
 in exactly three modules — `gridbook/trellis.py`, `gridbook/trellis_ops.py`,
 `gridbook/cuda_ext.py` — and **none of them is a serving path**. There is no
 `TrellisLinearMethod`, no `config.py` scheme that recognises a trellis payload,
