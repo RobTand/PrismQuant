@@ -172,6 +172,13 @@ enforces per-container limits
 KAI's scheduling cycle has allocate, consolidate, reclaim, preempt, and stale
 gang-eviction phases; priority governs lower-priority preemption
 ([KAI scheduling deep dive](https://github.com/kai-scheduler/KAI-Scheduler/blob/main/docs/scheduling-deep-dive/README.md)).
+Its shard configuration also supports a **minimum runtime before
+preemption/reclaim**, so a job that has just started is not immediately eligible
+to be evicted
+([minimum-runtime configuration](https://github.com/kai-scheduler/KAI-Scheduler/blob/main/docs/operator/scheduling-shards.md)).
+That knob is the direct analogue of `pqwork`'s `--evict-horizon-s`: both exist
+because eviction that fires faster than a job can make progress converts
+oversubscription into a livelock rather than into throughput.
 Run:ai's dynamic-fractions contract is closer to this task: a workload gets a
 GPU-memory/compute **Request**, may borrow up to a larger **Limit**, and an
 extendable GPU OOM killer reclaims the loan when necessary
