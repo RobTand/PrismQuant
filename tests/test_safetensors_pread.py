@@ -11,7 +11,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from prismaquant import safetensors_pread as pread
-from prismaquant.layer_streaming import _read_layer_to_device
+from prismaquant.layer_streaming import _materialize, _read_layer_to_device
 from prismaquant.streaming_model import _estimate_layer_cache_bytes
 
 
@@ -166,6 +166,67 @@ def test_layer_reader_env_selects_pread_without_touching_safe_open(
         torch.bfloat16, torch.device("cpu"),
     )
     torch.testing.assert_close(got[name], torch.arange(6, dtype=torch.bfloat16))
+
+
+def test_resident_materializer_pread_does_not_touch_safe_open(
+    tmp_path, monkeypatch,
+):
+    from prismaquant import layer_streaming
+
+    path = tmp_path / "model.safetensors"
+    expected = torch.arange(12, dtype=torch.bfloat16).reshape(3, 4)
+    save_file({"weight": expected}, str(path))
+    model = torch.nn.Linear(4, 3, bias=False, dtype=torch.bfloat16)
+
+    def forbidden_safe_open(*_args, **_kwargs):
+        raise AssertionError("pread resident load must not call safe_open")
+
+    monkeypatch.setattr(layer_streaming, "safe_open", forbidden_safe_open)
+    loaded = _materialize(
+        model,
+        ["weight"],
+        {"weight": str(path)},
+        {"weight": "weight"},
+        torch.device("cpu"),
+        torch.bfloat16,
+        safetensors_backend="pread",
+    )
+    assert loaded == 1
+    torch.testing.assert_close(model.weight, expected, rtol=0, atol=0)
+
+
+def test_pread_reads_fp8_scale_payload_without_safe_open(tmp_path, monkeypatch):
+    from prismaquant import layer_streaming
+
+    dtype = getattr(torch, "float8_e4m3fn", None)
+    if dtype is None:
+        pytest.skip("torch lacks float8_e4m3fn")
+    path = tmp_path / "model.safetensors"
+    name = "model.layers.0.weight"
+    scale_name = "model.layers.0.weight_scale_inv"
+    save_file({
+        name: torch.ones((128, 128), dtype=torch.float32).to(dtype),
+        scale_name: torch.full((1, 1), 2.0, dtype=torch.float32),
+    }, str(path))
+
+    def forbidden_safe_open(*_args, **_kwargs):
+        raise AssertionError("pread FP8 scale load must not call safe_open")
+
+    monkeypatch.setattr(layer_streaming, "safe_open", forbidden_safe_open)
+    got = _read_layer_to_device(
+        "model.layers.0.",
+        {name: str(path)},
+        {name: name},
+        torch.bfloat16,
+        torch.device("cpu"),
+        fp8_scale_inv_map={name: (str(path), scale_name)},
+        safetensors_backend="pread",
+    )
+    assert got[name].dtype == torch.bfloat16
+    torch.testing.assert_close(
+        got[name], torch.full((128, 128), 2.0, dtype=torch.bfloat16),
+        rtol=0, atol=0,
+    )
 
 
 def test_threaded_layer_pread_matches_serial_safe_open(tmp_path, monkeypatch):
