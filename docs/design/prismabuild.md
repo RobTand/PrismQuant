@@ -24,39 +24,54 @@ Utilization is bursty; dispatch is manual (ssh + systemd-run). We want
 independent work to run the moment its inputs exist, across a heterogeneous
 fleet, without hand dispatch — and with strong observability.
 
-## Fleet inventory (2026-08)
+## Target fleet inventory (design only; not deployed, 2026-08)
+
+This table is a proposed PrismaBuild placement inventory, not discovered or
+enforced cluster state. In particular, PrismaBuild has not installed a SLURM
+controller or node daemon, created the named partitions/reservations, or
+attested these machines through a live allocation.
 
 | host class | machines | role |
 |---|---|---|
-| `gb10` | sparky, sparklina (GB10, 128 GB unified, sm_121) | gold path: probes, validated KL, ship gates, big renders. sparky default-**reserved** for interactive/campaign use (reservation, NOT cluster exclusion). |
+| `gb10` | sparky, sparklina (GB10, 128 GB unified, sm_121) | proposed gold path: probes, validated KL, ship gates, big renders. The design reserves sparky for interactive/campaign use; no PrismaBuild reservation is live. |
 | `rocm-16g` | Rob's + son's 9800X3D/9070 XT desktops | 0.6B screen tier; brute-force search/encode (trellis Viterbi, permutation/gauge searches, CB training) |
 | `strix-32g` | son's AI Max laptop (32 GB unified, opportunistic) | 4B screen tier (the size 16 GB cards can't hold) |
 | `cpu-x86-large` | dl380g10 (80 cores, 300 GB, NFS server) | page-cache pre-warm (vmtouch), data-gravity work (hashing, repacking, shard merges), fp64 references, bootstraps, CPU encode farms. Batch niced/cgroup-capped: storage QoS outranks batch. |
 | — | M5 Mac mini | below the value line; not a tier |
 
-Data plane: /mnt/shared (NFS, dl380, 38 T, ~1 GB/s). Code plane: git SHA
-checkout per job + per-arch venvs (envs cannot be shared across
-aarch64-CUDA / x86-ROCm / Strix). Trust plane: munge-authenticated SLURM =
-trusted-cluster model; joining a machine puts it inside the boundary.
+The intended data plane is `/mnt/shared` (NFS, dl380, 38 T, ~1 GB/s); it is not
+a PrismaBuild-deployed shared CAS today. The intended code plane is a git-SHA
+checkout per job plus per-architecture venvs (envs cannot be shared across
+aarch64-CUDA / x86-ROCm / Strix). The proposed trust plane is
+munge-authenticated SLURM: joining a machine would put it inside that trusted
+cluster boundary.
 
-## Chosen stack (industry-standard per layer; no roll-your-own queue)
+## Target stack (design only; no services installed)
 
-1. **SLURM** — resource layer. Partitions = host classes; GRES = GPU slots;
-   QOS/priority = gold-path-never-waits; standing reservation on sparky;
-   slurmdbd accounting. Handles nodes joining/leaving (laptops).
-2. **Dagster** — DAG + memoization layer. Chosen over Snakemake because two
+The components below are the selected deployment design. The repository
+implements and tests the PrismaBuild core, SLURM command adapter, and optional
+Dagster definitions, but it does not install or operate SLURM, `slurmdbd`, a
+Dagster daemon/webserver, a shared PrismaBuild CAS, or the listed telemetry
+services.
+
+1. **SLURM** — resource layer. The deployment would use partitions as host
+   classes, GRES as GPU slots, QOS/priority for the gold path, a standing
+   reservation on sparky, and `slurmdbd` accounting. It would handle nodes
+   joining and leaving (laptops).
+2. **Dagster** — DAG + memoization layer. Selected over Snakemake because two
    hard requirements point at it: (a) native asset memoization keyed by
    `code_version` + upstream input versions — exactly the cache model below;
    (b) best-in-class live observability (run timelines, per-step logs, asset
    lineage/staleness UI). Known seam we own: Dagster→sbatch run-launcher
    glue is community-grade (~100 LoC).
-3. **CAS on /mnt/shared** — content-addressed store; payload path = key
-   hash. A naming convention + hashing helper, not a system.
-4. **Prometheus + Grafana + Loki + Alertmanager** on dl380 — node_exporter,
-   dcgm-exporter (GB10), AMD SMI exporter, slurm-exporter; job logs via
-   promtail; **our receipts pushed as metrics** so campaign progress (KL per
-   point, stage durations, gate outcomes) is graphable, not just machine
-   health. Orchestrator-independent; build once.
+3. **CAS on /mnt/shared** — intended content-addressed store; payload path =
+   key hash. A naming convention + hashing helper, not a deployed service.
+4. **Prometheus + Grafana + Loki + Alertmanager** on dl380 — the proposed
+   stack would use node_exporter, dcgm-exporter (GB10), AMD SMI exporter, and
+   slurm-exporter, with job logs via promtail. Receipts would be pushed as
+   metrics so campaign progress (KL per point, stage durations, gate outcomes)
+   is graphable, not just machine health. It would remain orchestrator-
+   independent.
 
 ## Cache/action-key semantics (the Bazel steal)
 
@@ -75,8 +90,9 @@ matters). Rules:
 - **Deterministic vs stochastic** task classes: deterministic entries may be
   verified by recompute; stochastic (probe backward is recorded
   non-bit-reproducible) get run-once / first-result-wins.
-- Re-enqueue of an existing key = cache hit = no-op. Speculative enqueueing
-  is therefore safe: superseded keys are simply never requested again.
+- Re-enqueue of an existing verified key is a tested cache-hit no-op. A future
+  speculative policy could build on that property, but no such enqueueing or
+  superseded-key scheduler exists yet.
 
 ### Worker preflight and execution attestation
 
@@ -122,22 +138,24 @@ The attestation becomes `producer` in the self-hashed
 scope, platform derivation, host-class evidence, executable identity, verified
 toolchain, verified-input subset, and self-digest before accepting the result.
 The `preflight` CLI prints the same machine-readable record without executing
-the action. This is process/platform provenance, not a cryptographic quote: the
-trust boundary remains the munge-authenticated, cgroup-enforced cluster and its
-shared CAS.
+the action. This is process/platform provenance, not a cryptographic quote. In
+the target deployment, the trust boundary would be the munge-authenticated,
+cgroup-enforced cluster and its shared CAS; that boundary is not live today.
 
-**Restart economics + provenance (Rob, 2026-08-26).** Reruns become replays:
-after a failure or a code fix, re-enqueueing the whole campaign returns
-cached results for every task whose key is unchanged and recomputes only
-what the edit actually invalidated. The stage-7 trellis chain is the
-motivating counter-example: its contract binds ONE closure over the whole
-chain, so each of the eight 2026-08 re-arms re-ran plan + preflight +
-calibration (~10 min each) even when the edit touched only the spotcheck
-gate — the calibration was recomputed byte-identical to v2 four consecutive
-times, empirical proof that per-task closures would have made those re-arms
-near-instant. The key is also the provenance: hash(inputs, code closure,
-params, env) is machine-checkable identity, stronger than prose receipts,
-and deterministic-class entries can be audited by recompute-and-compare.
+**Intended restart economics + provenance (Rob, 2026-08-26).** Unit-tested
+local/CAS semantics are designed so a rerun can become a replay: after a
+failure or code fix, re-enqueueing a campaign should return cached results for
+unchanged keys and recompute only what the edit invalidated. No end-to-end
+SLURM/Dagster campaign replay has run, so this is not a measured deployment
+claim. The stage-7 trellis chain is a motivating counterexample from the
+pre-PrismaBuild workflow: its contract bound one closure over the whole chain,
+so each of the eight 2026-08 re-arms re-ran plan + preflight + calibration
+(~10 min each) even when the edit touched only the spotcheck gate. Four
+calibrations were byte-identical to v2; that supports the value of finer task
+closures but does not prove the timing or reliability of a deployed
+PrismaBuild replay. The key is also intended as provenance: hash(inputs, code
+closure, params, env) is machine-checkable identity, and deterministic-class
+entries can be audited by recompute-and-compare.
 Honest caveats: stochastic tasks (probe backward is recorded
 non-bit-reproducible) get run-once/first-result-wins — their entry is the
 *canonical* result, pinned but not re-derivable; and a cached measurement is
@@ -166,7 +184,11 @@ extra is `prismaquant[prismabuild]` (supported `>=1.13,<2`, checked against
 1.13.20); no daemon, webserver, workspace, or scheduler installation is
 performed by the repository.
 
-## Speculative tier (pre-probe parallelism)
+## Proposed speculative tier (not implemented)
+
+There is no `speculative` field, idle-hardware router, or disk-budget policy in
+the current action schema or adapters. The following is target behavior for a
+future scheduler policy, not a capability of the tested implementation.
 
 The probe is the true DAG barrier — everything decision-relevant consumes
 its outputs. Input-complete before it, enqueue-able the moment a model's
@@ -176,36 +198,42 @@ tensor inventory exists:
 - Candidate GENERATION under weight-only scores (doctrine-legal proposals).
 - Staging, hashing, FP8 source-map verification, census metadata,
   page-cache pre-warm.
-Marked `speculative: true`, routed only to idle non-gold hardware, governed
-by a disk budget (≥10 % free is non-negotiable).
+Such actions would be marked explicitly, routed only to idle non-gold hardware,
+and governed by a disk budget (≥10 % free is non-negotiable). The spelling
+`speculative: true` is illustrative, not a currently accepted schema field.
 
-## Memory-pressure corollary (Rob, 2026-08-26)
+## Memory-pressure hypothesis (not live-validated; Rob, 2026-08-26)
 
-SLURM's cgroup enforcement (`--mem` per job) eliminates the **inter-job** OOM
-class: work that doesn't fit is never placed, and a job exceeding its declared
-budget is killed by its own cgroup instead of the kernel OOM-killing a random
-victim (or, worse, /tmp). Lowering worker counts/capacity per node is exactly
-that knob. This is allocation-time enforcement, not a reactive monitor — the
-opposite of the recorded Ray landmine, where a userspace memory monitor on
-unified memory killed healthy ranks. On GB10, `--mem` must be sized for GPU
-allocations too (one physical pool).
+The adapter emits SLURM `--mem`, but this repository has not validated a live
+controller/cgroup configuration or GB10 unified-memory accounting. With
+correctly requested limits and a correctly configured cluster, cgroups should
+isolate an over-budget job instead of letting the kernel OOM-kill an unrelated
+victim. The current code and mocked tests do **not** establish that work which
+does not fit is never placed, that requested limits are correctly sized, or
+that GPU allocations in GB10's unified physical pool are isolated. Those
+claims require a live allocation plus cgroup and Netdata evidence. Lowering
+worker counts/capacity per node is the intended allocation-time knob, not a
+reactive userspace monitor like the recorded Ray landmine.
 
-It does NOT retire the **intra-job** LRU: layer streaming exists because one
-task's working set (a 328 GB model through a 128 GB box) exceeds physical
-memory, and no scheduler shrinks a model. What sharding does buy: per-layer /
-per-tensor tasks have few-GB working sets, so as heavy stages shard, the OS
-page cache + dl380's 300 GB NFS backing absorb re-reads and the LRU's *role*
-shrinks. The floor that remains: order-dependent monolithic forwards (the
-sequential probe on a 314B teacher) keep streaming regardless.
+Even a validated scheduler limit would not retire the **intra-job** LRU: layer
+streaming exists because one task's working set (a 328 GB model through a
+128 GB box) exceeds physical memory, and no scheduler shrinks a model. What
+sharding may buy: per-layer/per-tensor tasks have few-GB working sets, so as
+heavy stages shard, the OS page cache plus dl380's 300 GB NFS backing may
+absorb re-reads and shrink the LRU's role. The floor that remains:
+order-dependent monolithic forwards (the sequential probe on a 314B teacher)
+keep streaming regardless.
 
-## Boundaries that do not move
+## Target boundaries that do not move
 
-- **Certification stays PrismaQuant's.** Shipcards, fail-closed gates,
-  receipts, provenance stamps run inside jobs. The orchestrator schedules
-  and remembers; it never certifies.
-- run-pipeline.sh survives as the per-run executor inside jobs (v0: one
-  task = one pipeline run; later versions shard heavy stages: per-point KL,
-  per-tensor encodes, per-expert measurements, parallel coord-descent).
+- **Certification stays PrismaQuant's.** When deployed, shipcards, fail-closed
+  gates, receipts, and provenance stamps would run inside jobs. The
+  orchestrator would schedule and remember; it would never certify.
+- `run-pipeline.sh` remains the intended per-run executor when PrismaBuild is
+  deployed (v0: one task = one pipeline run; later versions may shard heavy
+  stages: per-point KL, per-tensor encodes, per-expert measurements, parallel
+  coord-descent). No live pipeline run currently executes inside a PrismaBuild
+  SLURM or Dagster job.
 
 ## Rejected alternatives (with reasons)
 

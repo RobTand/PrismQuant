@@ -1,9 +1,12 @@
 # QTIP-informed optimizer, native NVFP4 output
 
-Status: **research-only one-Linear isolate; no production registration, QTIP
-runtime, or new serving lane.** It tests which QTIP mechanisms survive when
-the final artifact must remain vanilla native NVFP4. Schema v2 requires a
-fresh no-clobber result root and a receipt that binds both source trees,
+Status: **implemented Arm C research-only one-Linear isolate; no production
+registration, QTIP runtime, or new serving lane.** It tests QTIP-derived
+BlockLDLQ with a stock native-NVFP4 terminal. It is not the combined rotated
+PrismaQuant/Gridbook trellis producer, which does not exist. An external,
+unpinned Gridbook research reference implements the online-transform runtime
+seam, but it is outside the current Gridbook 0.9.1 contract. Schema v2 requires
+a fresh no-clobber result root and a receipt that binds both source trees,
 inputs, calibration, container, host, GPU/driver, command, and quality levers.
 
 Pinned reference: official QTIP checkout
@@ -26,8 +29,14 @@ for `math_utils.py`, `ldlq.py`, `finetune.py`, and `bitshift.py` as well.
 - QTIP's tail-biting Viterbi codebook correlates choices across a 256-element
   tile and serializes trellis state. Native NVFP4 independently decodes each
   E2M1 nibble under one E4M3 scale per group of 16, so the QTIP trellis is not
-  representable as standard native bytes. Serving that terminal would require
-  the existing Gridbook codebook runtime, not this stock-native lane.
+  representable as standard native bytes. That QTIP wire is excluded and is
+  not decoded by Gridbook. The intended combined follow-on would retain
+  PrismaQuant/Gridbook's existing `TCQ_E2M1_R256` trellis wire while borrowing
+  QTIP-derived optimizer and rotation ideas; it would not emit QTIP bytes.
+
+Quartet II is literature motivation only: no Quartet II source, implementation,
+or result is used here. EXL3 was source-reading context only and is neither a
+dependency nor an implemented or measured arm.
 
 ## The NVFP4 scale byte
 
@@ -42,8 +51,9 @@ The harness reuses the exporter's existing search rather than creating a new
 codec. Arm C uses the production FourOverSix candidates `{6, 4}`. Arm C2 uses
 seven existing max-to-E2M1-level heuristics
 `{6, 4, 3, 2, 1.5, 1, 0.5}`. This is **not** an exhaustive search over positive
-E4M3 byte values, and snapped-scale scoring remains disabled to match the
-production recipe. C2 therefore tests only whether those five extra heuristic
+E4M3 byte values, a Quartet II implementation, or a Quartet II reproduction,
+and snapped-scale scoring remains disabled to match the production recipe. C2
+therefore tests only whether those five extra existing PrismaQuant heuristic
 candidates help the QTIP-derived recurrence at the same native payload rate.
 
 ## Matched arms
@@ -63,8 +73,10 @@ full QTIP model-quality claim.
 The receipt labels the ordinary activation-output proxy and the damped proxy
 as **untransformed original-Linear space**. No transformed-Hessian number is
 reported because this stock-native isolate has no online rotation. Any later
-rotation arm must transform both weight and Hessian consistently and belongs
-to the explicit Gridbook follow-on.
+rotation arm must transform both weight and Hessian consistently. The runtime
+transform reference exists only in an external, unpinned Gridbook research
+branch; the corresponding combined PrismaQuant producer and pinned contract
+do not exist.
 
 ```bash
 python -m research.qtip_native_nvfp4_2026-08-30.native_nvfp4_ldlq \

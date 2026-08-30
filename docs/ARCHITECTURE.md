@@ -2,6 +2,16 @@
 
 As of: 2026-08-30 · `codex/prismabuild-attestation-20260830` — stamps follow,
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/prismabuild-attestation-20260830`) for a **documentation-only boundary
+correction** (§10.1–§10.2): PrismaBuild remains code and mocked/in-process tests,
+not a deployed SLURM/Dagster/CAS/telemetry system; its replay, speculative-tier,
+and OOM-isolation benefits remain unvalidated target behavior. The
+QTIP-derived NVFP4 work currently consists of an implemented stock-native Arm
+C isolate and an external unpinned Gridbook transform reference; no combined
+rotated PrismaQuant/Gridbook trellis producer exists. QTIP's wire is excluded,
+Quartet II is literature-only, and EXL3 is source-reading-only. No code,
+pipeline default, format menu, or serving topology changed. Re-stamped
+(2026-08-30,
 `codex/prismabuild-attestation-20260830`) for the **PrismaBuild worker
 attestation/preflight contract** (§10.1): worker platform and host class are no
 longer caller-supplied CLI labels; the worker derives OS/architecture/NVIDIA
@@ -7396,13 +7406,14 @@ GPU identity.
 
 PrismaBuild's dependency-free core (`prismaquant.prismabuild`) owns the
 canonical action key, declared code closure, local execution contract, and
-immutable `/mnt/shared` CAS. `prismaquant.prismabuild_slurm` is now the narrow
-SLURM resource adapter. `prismaquant.prismabuild_dagster` is the optional DAG
-layer above it. Neither layer creates another queue, cache, or certification
-path. Each submission publishes
-one canonical read-only action request at its action-key address and passes
-that path to `tools/prismabuild_worker.py`; task argv remains inside the sealed
-request and is never interpolated into a shell command.
+immutable configurable CAS. `/mnt/shared` is the intended deployment root, not
+a shared PrismaBuild CAS installed by this repository.
+`prismaquant.prismabuild_slurm` is now the narrow SLURM resource adapter.
+`prismaquant.prismabuild_dagster` is the optional DAG layer above it. Neither
+layer creates another queue, cache, or certification path. Each submission
+publishes one canonical read-only action request at its action-key address and
+passes that path to `tools/prismabuild_worker.py`; task argv remains inside the
+sealed request and is never interpolated into a shell command.
 
 The submission argv uses `sbatch --parsable --export=NONE --requeue` with one
 explicit node/task, append-only retry logs, CPU count, memory MiB, an optional
@@ -7468,6 +7479,38 @@ tampered, wrong-scope, or points at changed blob bytes. Bounded retries call
 Dagster-level retries are zero to avoid accidentally submitting a second live
 allocation after loss of orchestrator state. Dagster remains an optional
 `prismaquant[prismabuild]` dependency and is not imported by the base module.
+
+All current PrismaBuild evidence is code-level: core behavior is exercised
+locally, SLURM command/state behavior uses fake command paths and patched
+subprocess responses, and the optional Dagster graph is exercised in process.
+No `sbatch`/`squeue`/`sacct` call has been validated against a live controller,
+no daemon-backed Dagster materialization has run, no shared-NFS campaign replay
+has been measured, and no PrismaBuild Prometheus/Grafana/Loki/Alertmanager
+pipeline is deployed. These tests establish deterministic contracts, not the
+availability, throughput, restart economics, placement enforcement, or OOM
+behavior of the target fleet.
+
+### 10.2 QTIP-derived native NVFP4 research boundary
+
+The current tree implements only the stock-native Arm C isolate: QTIP-derived
+BlockLDLQ makes each decision against ordinary group-16 E2M1/E4M3 NVFP4 fields.
+It is research-only and is not registered as a production format. An external
+Gridbook research reference implements online sign/Hadamard execution, but it
+is unpinned; the current Gridbook 0.9.1 contract does not expose that transform
+ABI. No PrismaQuant producer combines transformed weights and Hessians with
+the existing Gridbook trellis carrier, so the desired rotated-trellis Arm E is
+absent rather than measured or served.
+
+The carrier distinction is load-bearing. QTIP's bitshift/tail-biting serialized
+wire is excluded and Gridbook does not decode it. The proposed Arm E would
+retain PrismaQuant/Gridbook's existing `TCQ_E2M1_R256` wire and native W4A4
+endpoint while borrowing QTIP-derived BlockLDLQ and rotation ideas. Arm D, a
+rotated stock-native supporting ablation, is also not implemented. Quartet II
+is literature motivation only, with no bound source, implementation, or result;
+EXL3 was read only as source context and is not a dependency, comparator run,
+or measurement claim. The full research contract and implemented isolate
+boundary live in `docs/design/qtip_native_nvfp4.md` and
+`research/qtip_native_nvfp4_2026-08-30/README.md`.
 
 **OOM discipline.** The pool has no evictable slack, so an allocation that would merely swap on
 a discrete-GPU box kills the machine instead. Rules, all learned from kills: serve at util
@@ -7596,7 +7639,7 @@ walls live under `docs/archive/`; code walls under repo-root `archive/`.
 | L3-polish-of-many DP | Per-Linear L3 costs measured under L2 context do not sum when many units flip at once. | `archive/polish_2026-05-15/` |
 | Top-down / ceiling-start polish | Spends its budget on cheap ~12-bit flips, never reaches the knee bpp range. | same wall |
 | Coordinate-descent polish (as a shipped stage) | Overfits at n=8 (train→val sign flip); provable only under its own polish-time evaluator. | same wall |
-| HALO / Hadamard-Fisher rotations | Worked once on Qwen3.5 dense, never on a production model; cut in the 2026-05-15 consolidation. ParoQuant (`2511.10645`) is the tracked replacement. | `archive/halo_2026-05-15/` |
+| HALO / Hadamard-Fisher rotations | Worked once on Qwen3.5 dense, never on a production model; cut in the 2026-05-15 consolidation. ParoQuant (`2511.10645`) is the tracked replacement. This verdict does not validate or promote §10.2's separate research-only QTIP/Gridbook contract. | `archive/halo_2026-05-15/` |
 | ReSpinQuant / layer-wise rotations | Needs a residual-transition adapter (a custom kernel) at serve time — forbidden in the vanilla-vLLM container. | `archive/respinquant_2026-05-13/` |
 | Fold-scale / OrthoG, DuQuant++ fold | Preconditioner family, no served win at matched bpp. | `archive/foldscale_orthog_2026-05-13/`, `archive/duquant_dqpp_2026-05-13/` |
 | PrismaClip / PrismaFisherClip | Subsumed by JSO's per-block scale grid — clipping is another way of asking what the right scale is. | `archive/prismaclip_2026-05-14/` |
