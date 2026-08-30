@@ -21,7 +21,9 @@ book costs. Reporting only `as_run` would hand the learned arm a discount it
 does not get in an artifact -- the mirror of the plane-grant error recorded in
 removing_a_confound_can_install_its_mirror.md.
 
-WHAT IT CANNOT DECIDE. 24 GLM MoE expert tensors, w1/w2/w3 over 8 layers. No
+WHAT IT CANNOT DECIDE. 24 DeepSeek-V4-Flash MoE expert tensors (corrected
+2026-08-29 from "GLM"; `stage6_inputs_manifest.json` `source_shard_sha256` names
+the `dsv4-flash-0731` shards), w1/w2/w3 over 8 layers. No
 attention weight and no dense Linear is in this corpus.
 """
 from __future__ import annotations
