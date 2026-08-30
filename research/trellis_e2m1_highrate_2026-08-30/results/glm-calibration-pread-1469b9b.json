@@ -1,0 +1,13 @@
+{
+  "dataset": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+  "dataset_sha256": "e09a138a4903c4af66a3bf2f9367185f3432224391f1dfe8c94ccc29d99315ba",
+  "identity_sha256": "45d126bca6b3a8ce75f03f29f85cc4d891a7af3c923ee26372a81e04b91bf5bf",
+  "modality": "text-only",
+  "nsamples": 8,
+  "probe_calib_hash": "2aaba2d6cc67bc147d668a8094cd4806",
+  "probe_receipt_sha256": "6fdbc1bca6c84f2b880e28733dd8ac648d2d8283d0bea7ee8e3f4fea1e1cf996",
+  "probe_sha256": "d206363dd585176496e8c645f1e00e0b3086723be35c638ac3939812f43c5e9b",
+  "seed": 42,
+  "seqlen": 512,
+  "tokens": 4096
+}

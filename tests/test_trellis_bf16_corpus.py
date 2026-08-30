@@ -222,6 +222,36 @@ def test_adapter_maps_packed_gate_up_and_down_without_population_pooling(
             assert item.denominator == 4
 
 
+def test_adapter_ignores_unrouted_nonselected_experts_but_requires_expert_zero(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(corpus, "_expected_shape", _small_shape)
+    incomplete, _source, _ = _source_fixture(tmp_path)
+    probe, expected = _probe_fixture(tmp_path)
+    with probe.open("rb") as handle:
+        payload = pickle.load(handle)
+    for raw in payload["stats"].values():
+        if "expert_tokens" in raw:
+            raw["expert_tokens"][1] = 0
+            raw["expert_act_sq_sum"][1].zero_()
+    with probe.open("wb") as handle:
+        pickle.dump(payload, handle)
+    values, _identity = corpus.adapt_glm_importance_from_probe(incomplete, probe)
+    for name, item in values.items():
+        assert torch.equal(item.value, expected[name])
+
+    with probe.open("rb") as handle:
+        payload = pickle.load(handle)
+    first = next(raw for raw in payload["stats"].values()
+                 if "expert_tokens" in raw)
+    first["expert_tokens"][0] = 0
+    first["expert_act_sq_sum"][0].zero_()
+    with probe.open("wb") as handle:
+        pickle.dump(payload, handle)
+    with pytest.raises(corpus.CorpusContractError, match="positive integer"):
+        corpus.adapt_glm_importance_from_probe(incomplete, probe)
+
+
 def test_finalizer_preserves_weights_and_strict_loader_separates_populations(
     tmp_path, monkeypatch,
 ):

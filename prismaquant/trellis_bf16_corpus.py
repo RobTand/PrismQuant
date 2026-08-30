@@ -26,7 +26,7 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
-from .cb_imatrix import canonical_imatrix_sha256, imatrix_from_probe_stats
+from .cb_imatrix import canonical_imatrix_sha256
 
 
 FINALIZED_SCHEMA = "trellis.bf16_corpus.v2"
@@ -708,9 +708,8 @@ def adapt_glm_importance_from_probe(
         raise CorpusContractError(f"cannot read trusted probe {probe}: {exc}") from exc
     stats, meta = _probe_stats(payload, source=probe)
     calibration_hash = _calibration_hash(meta, source=probe)
-    imatrix, provenance = imatrix_from_probe_stats(stats)
-
     result: dict[str, ImportanceVector] = {}
+    source_values: dict[str, torch.Tensor] = {}
     for name in sorted(raw_tensors):
         population, layer, projection, expert = _classify_glm_name(name)
         expected_shape = _expected_shape(population, projection)
@@ -724,8 +723,12 @@ def adapt_glm_importance_from_probe(
             source_expert = None
             denominator_name = "n_tokens_seen"
             raw_stat = stats.get(source_qname)
-            value = imatrix.get(source_qname)
             denominator_raw = raw_stat.get(denominator_name) if raw_stat else None
+            numerator = raw_stat.get("act_sq_sum") if raw_stat else None
+            value = (
+                torch.as_tensor(numerator, dtype=torch.float32).detach().cpu()
+                if numerator is not None else None
+            )
         else:
             prefix = name.split(".experts.0.", 1)[0]
             packed_projection = "down_proj" if projection == "down_proj" else "gate_up_proj"
@@ -733,18 +736,44 @@ def adapt_glm_importance_from_probe(
             source_expert = expert
             denominator_name = "expert_tokens"
             raw_stat = stats.get(source_qname)
-            packed_value = imatrix.get(source_qname)
-            value = (
-                packed_value[source_expert, 0]
-                if packed_value is not None and packed_value.ndim == 3
-                else None
-            )
+            sums_raw = raw_stat.get("expert_act_sq_sum") if raw_stat else None
             tokens = raw_stat.get(denominator_name) if raw_stat else None
-            denominator_raw = (
-                torch.as_tensor(tokens).reshape(-1)[source_expert].item()
-                if tokens is not None
-                else None
+            sums = (
+                torch.as_tensor(sums_raw, dtype=torch.float32).detach().cpu()
+                if sums_raw is not None else None
             )
+            token_values = (
+                torch.as_tensor(tokens).detach().cpu()
+                if tokens is not None else None
+            )
+            if (
+                sums is None or token_values is None
+                or sums.ndim != 2 or token_values.ndim != 1
+                or sums.shape[0] != token_values.shape[0]
+                or source_expert is None or source_expert >= sums.shape[0]
+            ):
+                raise CorpusContractError(
+                    f"{name}: packed probe source has invalid expert shapes"
+                )
+            if (
+                token_values.dtype == torch.bool
+                or not bool(torch.isfinite(token_values).all())
+                or not torch.equal(
+                    token_values, token_values.to(torch.int64).to(token_values.dtype)
+                )
+                or bool((token_values < 0).any())
+            ):
+                raise CorpusContractError(
+                    f"{name}: expert_tokens must be finite nonnegative integers"
+                )
+            if not bool(torch.isfinite(sums).all()) or bool((sums < 0).any()):
+                raise CorpusContractError(
+                    f"{name}: expert_act_sq_sum must be finite and nonnegative"
+                )
+            denominator_raw = (
+                token_values[source_expert].item()
+            )
+            value = sums[source_expert]
         if raw_stat is None or value is None:
             raise CorpusContractError(f"{name}: missing probe source {source_qname!r}")
         denominator = _require_positive_int(
@@ -753,7 +782,7 @@ def adapt_glm_importance_from_probe(
         vector = (
             torch.as_tensor(value, dtype=torch.float32)
             .detach().cpu().reshape(-1).contiguous()
-        )
+        ) / float(denominator)
         if vector.numel() != expected_shape[1]:
             raise CorpusContractError(
                 f"{name}: importance width {vector.numel()} differs from {expected_shape[1]}"
@@ -768,6 +797,16 @@ def adapt_glm_importance_from_probe(
             denominator_name=denominator_name,
             denominator=denominator,
         )
+        source_key = (
+            source_qname if source_expert is None
+            else f"{source_qname}#expert={source_expert}"
+        )
+        previous = source_values.get(source_key)
+        if previous is not None and not torch.equal(previous, vector):
+            raise CorpusContractError(
+                f"{name}: repeated probe source normalized inconsistently"
+            )
+        source_values[source_key] = vector
     counts = {
         population: sum(_classify_glm_name(name)[0] == population for name in result)
         for population in ("dense", "routed")
@@ -781,7 +820,7 @@ def adapt_glm_importance_from_probe(
         "schema": IMPORTANCE_SCHEMA,
         "probe_file_sha256": _sha256_file(probe),
         "probe_calibration_hash": calibration_hash,
-        "probe_imatrix_value_sha256": provenance["value_sha256"],
+        "probe_imatrix_value_sha256": canonical_imatrix_sha256(source_values),
         "value_sha256": value_hash,
         "dense_normalization": "act_sq_sum / n_tokens_seen",
         "routed_normalization": "expert_act_sq_sum[expert] / expert_tokens[expert]",
