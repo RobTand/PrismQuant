@@ -188,6 +188,64 @@ class FusedGroupSpec:
 
 
 @dataclass(frozen=True)
+class ConcatMergeSpec:
+    """One N->1 source-tensor concatenation the live module expects.
+
+    Some checkpoints store a live parameter as several separate tensors that
+    the modelling code concatenates on load — the transformers conversion
+    table's ``Concatenate(dim=...)`` merges. ``checkpoint_to_live_name`` is a
+    1:1-or-drop contract and cannot express that, so the merge is declared
+    here and executed by the streaming loader's concat bridge
+    (``layer_streaming._merge_concat_sources``).
+
+    Suffixes, like :class:`FusedGroupSpec`: ``target_suffix`` and each entry of
+    ``source_suffixes`` are matched against the tail of a live-namespace key,
+    so one declaration covers every layer. ``source_suffixes`` order **is** the
+    concatenation order and is load-bearing — it must match what the modelling
+    code's own conversion mapping declares.
+
+    This is deliberately NOT ``fused_groups``: a fused group is a claim about
+    what a *serving runtime* fuses (principle 14, attested or refused), while a
+    concat merge is a fact about the checkpoint's own on-disk layout versus the
+    HF modelling class, readable from the conversion table.
+    """
+
+    target_suffix: str
+    source_suffixes: tuple[str, ...]
+    dim: int = 0
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "ConcatMergeSpec":
+        unknown = sorted(set(payload) - {"target", "sources", "dim"})
+        if unknown:
+            raise ValueError(
+                f"unsupported concat_merges keys: {unknown}; "
+                "vocabulary is ['target', 'sources', 'dim']"
+            )
+        target = str(payload["target"])
+        sources = tuple(str(v) for v in (payload.get("sources") or ()))
+        if len(sources) < 2:
+            raise ValueError(
+                f"concat_merges[{target!r}] declares {len(sources)} source(s); "
+                "a concat merge needs at least two (a 1:1 rename belongs in "
+                "`naming`)"
+            )
+        if len(set(sources)) != len(sources):
+            raise ValueError(
+                f"concat_merges[{target!r}] repeats a source suffix: {sources}"
+            )
+        if target in sources:
+            raise ValueError(
+                f"concat_merges[{target!r}] lists its own target as a source"
+            )
+        return cls(
+            target_suffix=target,
+            source_suffixes=sources,
+            dim=int(payload.get("dim", 0)),
+        )
+
+
+@dataclass(frozen=True)
 class PackedExpertSpec:
     param_names: tuple[str, ...] = ()
     module_class_names: tuple[str, ...] = ()
@@ -317,6 +375,7 @@ class ModelStructureSpec:
     recipe_to_vllm: tuple[NameRewriteRule, ...] = ()
     naming_variants: tuple[NamingVariant, ...] = ()
     fused_groups: tuple[FusedGroupSpec, ...] = ()
+    concat_merges: tuple[ConcatMergeSpec, ...] = ()
     packed_experts: PackedExpertSpec = field(default_factory=PackedExpertSpec)
     unpacked_expert_projection_names: tuple[str, ...] = ()
     per_expert_moe_regex: str | None = None
@@ -379,6 +438,10 @@ class ModelStructureSpec:
             fused_groups=tuple(
                 FusedGroupSpec.from_dict(entry)
                 for entry in payload.get("fused_groups", ())
+            ),
+            concat_merges=tuple(
+                ConcatMergeSpec.from_dict(entry)
+                for entry in payload.get("concat_merges", ())
             ),
             packed_experts=PackedExpertSpec.from_dict(
                 packed_payload or {},

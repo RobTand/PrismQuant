@@ -32,20 +32,26 @@ class _FakeStreamingContext:
         self.active: set[int] = set()
         self.max_active = 0
         self.install_calls = 0
+        self.install_require_prefetched: list[bool] = []
+        self.events: list[tuple[str, int]] = []
 
-    def install(self, layer):
+    def install(self, layer, *, require_prefetched=False):
         self.install_calls += 1
+        self.install_require_prefetched.append(bool(require_prefetched))
+        self.events.append(("install", int(layer)))
         self.active.add(int(layer))
         self.layers[int(layer)]._fixture_stream_resident = True
         self.max_active = max(self.max_active, len(self.active))
         return "fixture"
 
     def unload(self, layer):
+        self.events.append(("unload", int(layer)))
         self.active.discard(int(layer))
         self.layers[int(layer)]._fixture_stream_resident = False
         return 0
 
-    def schedule_prefetch(self, _layer):
+    def schedule_prefetch(self, layer):
+        self.events.append(("prefetch", int(layer)))
         return None
 
     def shutdown(self):
@@ -155,6 +161,80 @@ def _dense_runner(state):
         layer._fixture_requires_stream_residency = True
     context = _FakeStreamingContext(model)
     return model, context, StreamedCausalLM(context, DefaultProfile())
+
+
+def test_streamed_aura_schedules_next_reverse_layer_before_compute():
+    torch.manual_seed(114)
+    seed_model = _DenseTinyLM().eval()
+    state = {
+        name: tensor.detach().clone()
+        for name, tensor in seed_model.state_dict().items()
+    }
+    model = _DenseTinyLM(state).eval()
+    for layer in model.model.layers:
+        layer._fixture_requires_stream_residency = True
+    context = _FakeStreamingContext(model)
+    runner = StreamedCausalLM(
+        context,
+        DefaultProfile(),
+        prefetch_lookahead=1,
+        require_prefetched_residency=True,
+    )
+    capture_boundaries = runner.capture_boundaries
+
+    def capture_then_start_reverse_audit(input_ids):
+        batch = capture_boundaries(input_ids)
+        context.events.clear()
+        return batch
+
+    isolated_layer = runner.isolated_layer
+
+    def audited_isolated_layer(batch, layer, hidden, *, pass_state):
+        context.events.append(("compute", int(layer)))
+        return isolated_layer(
+            batch, layer, hidden, pass_state=pass_state
+        )
+
+    runner.capture_boundaries = capture_then_start_reverse_audit
+    runner.isolated_layer = audited_isolated_layer
+    aura.compute_aura_cost_streamed(
+        runner,
+        torch.tensor([[1, 2, 3, 4]]),
+        ["NVFP4"],
+        n_probes=1,
+        min_free_gib=0.0,
+        production_cache=_RenderedCache(model, "NVFP4"),
+        require_production_cache=True,
+        dw_dtype="float32",
+        profile=DefaultProfile(),
+    )
+
+    assert context.events == [
+        ("install", 1),
+        ("prefetch", 0),
+        ("compute", 1),
+        ("unload", 1),
+        ("install", 0),
+        ("compute", 0),
+        ("unload", 0),
+    ]
+    assert context.install_require_prefetched == [True, True, True, True]
+
+
+def test_streamed_causal_lm_forward_uses_explicit_residency_contract():
+    torch.manual_seed(115)
+    model = _DenseTinyLM().eval()
+    context = _FakeStreamingContext(model)
+    runner = StreamedCausalLM(
+        context,
+        DefaultProfile(),
+        prefetch_lookahead=1,
+        require_prefetched_residency=True,
+    )
+
+    runner(torch.tensor([[1, 2, 3, 4]]))
+
+    assert context.install_require_prefetched == [True, True]
 
 
 def test_streamed_aura_cost_rows_are_exactly_resident_rows():
@@ -1109,6 +1189,78 @@ def test_production_anchor_resolves_raw_named_expert_activation_cache(
     assert calls == [("NVFP4_CB_K12", [qname])]
 
 
+def test_production_anchor_stock_plan_binds_source_identity_lazily(
+    monkeypatch,
+):
+    """A CB-free (stock) plan runs no CB source binding at all.
+
+    ``source_weight_identity_for`` must then bind the identity from the live
+    source weight -- the GLM-5.3 harvest crashed on exactly this at its first
+    reverse layer (2026-08-27) because the method only read the CB binding.
+    A unit outside the plan stays refused.
+    """
+    import prismaquant.streaming_production_cache as streaming
+    from prismaquant.production_weight_cache import (
+        _source_weight_value_identity,
+    )
+
+    torch.manual_seed(112)
+    model = _ExpertTinyLM().eval()
+    profile = DeepseekV4Profile()
+    qname = "model.layers.0.mlp.experts.1.gate_proj"
+
+    class _CoveredActivations:
+        def __contains__(self, name):
+            return name == qname
+
+        def load_with_row_indices(self, name):
+            cols = int(model.get_submodule(qname).weight.shape[1])
+            return torch.ones(4, cols), None
+
+    def render(weight, fmt, **_kw):
+        return weight.detach().clone() + 0.03125
+
+    monkeypatch.setattr(streaming, "render_production_weight", render)
+    renderer = streaming.StreamedProductionAnchorRenderer(
+        model,
+        act_index=_CoveredActivations(),
+        formats_by_qname={qname: ("NVFP4",)},
+        levers={"gptq": True, "static_act_order": True,
+                "joint_scale_opt": True, "weighted_vq": True},
+        profile=profile,
+        device="cpu",
+        col_weights={},
+        cb_serialization_context=None,
+        calibration_hash="c" * 64,
+        arm_identity={"arm": "fixture-stock-plan"},
+        model_identity=_model_identity("stock-plan-source"),
+        max_act_rows=8,
+    )
+    rendered = renderer.render_layer(
+        layer=0,
+        modules={qname: model.get_submodule(qname)},
+        formats_by_qname={qname: ("NVFP4",)},
+    )
+    assert set(rendered) == {(qname, "NVFP4")}
+    identity = renderer.source_weight_identity_for(qname)
+    shape, digest = _source_weight_value_identity(
+        model.get_submodule(qname).weight.data
+    )
+    assert identity == {
+        "shape": [int(dim) for dim in shape],
+        "sha256": str(digest).lower(),
+    }
+    # Second call reads the lazy binding, not a rehash of a mutated tensor.
+    assert renderer.source_weight_identity_for(qname) == identity
+    with pytest.raises(RuntimeError, match="unplanned unit"):
+        renderer.source_weight_identity_for("model.layers.0.not_planned")
+    completed = renderer.bind_completed_source_weight_identities({
+        qname: identity,
+    })
+    assert completed["source_weights"]["complete"] is True
+    assert completed["source_weights"]["records"][qname] == identity
+
+
 def test_streamed_expert_cost_rows_are_exactly_resident_rows():
     torch.manual_seed(106)
     seed_model = _ExpertTinyLM().eval()
@@ -1216,3 +1368,64 @@ def test_streamed_expert_interrupt_resume_and_identity_refusal(
             model_identity=_model_identity("tiny-model-v2"),
         )
     assert mismatch_context.install_calls == 0
+
+
+def test_streamed_aura_non_cb_checkpointing_needs_anchor_identity(
+    tmp_path, monkeypatch
+):
+    """Non-CB menus have no CB identity to bear: checkpointing refuses
+    without an anchor renderer, and runs on the anchor's exact identity."""
+    torch.manual_seed(116)
+    monkeypatch.setattr(aura, "_checkpoint_git_commit", lambda: "1" * 40)
+    seed_model = _DenseTinyLM().eval()
+    state = {
+        name: tensor.detach().clone()
+        for name, tensor in seed_model.state_dict().items()
+    }
+    calib = torch.tensor([[1, 2, 3, 4]])
+
+    refused_model, refused_context, refused_runner = _dense_runner(state)
+    with pytest.raises(RuntimeError, match="value-bearing render identity"):
+        aura.compute_aura_cost_streamed(
+            refused_runner,
+            calib,
+            ["NVFP4"],
+            n_probes=2,
+            min_free_gib=0.0,
+            production_cache=_RenderedCache(refused_model, "NVFP4"),
+            require_production_cache=True,
+            dw_dtype="float32",
+            checkpoint_dir=tmp_path / "refused",
+            model_identity=_model_identity("dense-v1"),
+            profile=DefaultProfile(),
+        )
+    assert refused_context.install_calls == 0
+
+    q0 = "model.layers.0.proj"
+    q1 = "model.layers.1.proj"
+    plan = {q0: ("NVFP4",), q1: ("NVFP4",)}
+
+    def _anchored(checkpoint_dir, *, resume):
+        _model, context, runner = _dense_runner(state)
+        result = aura.compute_aura_cost_streamed(
+            runner,
+            calib,
+            ["NVFP4"],
+            n_probes=2,
+            min_free_gib=0.0,
+            dw_dtype="float32",
+            formats_by_qname=plan,
+            anchor_renderer=_ExactAnchorRenderer(plan),
+            checkpoint_dir=checkpoint_dir,
+            resume=resume,
+            model_identity=_model_identity("dense-v1"),
+            profile=DefaultProfile(),
+        )
+        return result, context
+
+    expected, _ = _anchored(tmp_path / "whole", resume=False)
+    assert (tmp_path / "whole" / "manifest.json").exists()
+
+    complete, complete_context = _anchored(tmp_path / "whole", resume=True)
+    assert complete["costs"] == expected["costs"]
+    assert complete_context.install_calls == 0

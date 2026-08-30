@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import json
+import os
 from pathlib import Path
 import sys
 from dataclasses import replace
@@ -702,6 +703,37 @@ def test_allocator_late_resume_reuses_exact_and_refuses_identity_mismatch(
             invocation_provenance=provenance,
             resume=False,
         )
+
+
+def test_allocator_child_inherits_explicit_read_descriptor(tmp_path):
+    script = tmp_path / "fd-allocator.py"
+    script.write_text("""
+import json
+from pathlib import Path
+import sys
+
+output = Path(sys.argv[1])
+inherited = Path(sys.argv[2])
+(output / "layer_config.json").write_text(json.dumps({"unit": "A1"}))
+(output / "selection.json").write_text(json.dumps({"feasible": True}))
+(output / "inherited.bin").write_bytes(inherited.read_bytes())
+""")
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"exact inherited bytes")
+    descriptor = os.open(payload, os.O_RDONLY)
+    try:
+        output = tmp_path / "allocator-output"
+        run_allocator_once(
+            command=(
+                sys.executable, str(script), str(output),
+                f"/proc/self/fd/{descriptor}",
+            ),
+            output_dir=output,
+            pass_fds=(descriptor,),
+        )
+    finally:
+        os.close(descriptor)
+    assert (output / "inherited.bin").read_bytes() == b"exact inherited bytes"
 
 
 def test_allocator_late_resume_preserves_interrupted_output_before_retry(

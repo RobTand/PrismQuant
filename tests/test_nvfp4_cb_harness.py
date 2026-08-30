@@ -18,6 +18,12 @@ from pathlib import Path
 import pytest
 import torch
 
+from prismaquant.cb_layout import (
+    FP8_ACCEPTED_RUNGS,
+    FP8_PRODUCT_RUNGS,
+    NVFP4_PRODUCT_RUNGS,
+)
+
 from prismaquant.index_entropy import index_entropy
 from prismaquant.nvfp4_cb_footprint import (
     CB_SERIALIZED_PAYLOAD_SCHEMA,
@@ -50,7 +56,7 @@ def _learned_context(fmt: str, role: str = "w") -> CBSerializationContext:
         },
     )
 
-@pytest.mark.parametrize("k", range(12, 25))
+@pytest.mark.parametrize("k", NVFP4_PRODUCT_RUNGS)
 def test_footprint_production_fp4_v2_is_4k_plus_9(k):
     shape = (128, 256)
     n = shape[0] * shape[1]
@@ -129,7 +135,7 @@ def test_footprint_shared_codebook_charged_once():
     assert fp["sidecar_bytes"] == codebook_sidecar_payload_bytes(fmt) == 1024
 
 
-@pytest.mark.parametrize("k", [36, 40, 44, 48])
+@pytest.mark.parametrize("k", FP8_PRODUCT_RUNGS)
 def test_footprint_fp8_cb_bpw_exact(k):
     out_f, in_f = 128, 256
     n = out_f * in_f
@@ -174,9 +180,43 @@ def test_odd_product_k_splits_larger_subtables_first():
 
 
 _REGISTERED_CB_FORMATS = (
-    [f"NVFP4_CB_K{k}" for k in range(12, 25)]
-    + [f"FP8_CB_K{k}" for k in range(28, 49)]
+    [f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS]
+    + [f"FP8_CB_K{k}" for k in FP8_ACCEPTED_RUNGS]
 )
+
+
+@pytest.mark.parametrize(
+    ("fmt", "shapes", "sidecar_bytes"),
+    [
+        ("NVFP4_CB_K1", ((2, 4), (1, 4)), 24),
+        ("NVFP4_CB_K25", ((8192, 4), (4096, 4)), 98_304),
+    ],
+)
+def test_nvfp4_endpoint_sidecar_geometry(fmt, shapes, sidecar_bytes):
+    assert codebook_subtable_shapes(fmt) == shapes
+    assert codebook_sidecar_payload_bytes(fmt) == sidecar_bytes
+
+
+@pytest.mark.parametrize("k", [29, 47])
+def test_legacy_fp8_cb_footprint_remains_exact_but_not_producible(k):
+    from prismaquant.format_registry import format_is_producer_eligible
+
+    out_f, in_f = 32, 512
+    fmt = f"FP8_CB_K{k}"
+    payload = cb_tensor_payload_breakdown(
+        fmt,
+        (out_f, in_f),
+        qname="legacy.weight",
+        context=CBSerializationContext.production(),
+    )
+    expected_index = out_f * (in_f // 256) * 4 * k
+    assert payload["index_bytes"] == expected_index
+    assert payload["fp8_row_scale_bytes"] == 4 * out_f
+    assert payload["tensor_payload_bytes"] == expected_index + 4 * out_f
+    assert payload["sidecar_identity"]["payload_bytes"] == (
+        codebook_sidecar_payload_bytes(fmt)
+    )
+    assert not format_is_producer_eligible(fmt)
 
 
 @pytest.mark.parametrize("fmt", _REGISTERED_CB_FORMATS)

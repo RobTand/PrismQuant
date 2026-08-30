@@ -26,7 +26,11 @@ from prismaquant.model_profiles.structure import (
     canonical_export_lane,
     load_structure_spec,
 )
-from prismaquant.serving_profiles import require_lane_supported
+from prismaquant.serving_profiles import (
+    load_serving_profile,
+    require_lane_supported,
+    require_profile_export_lane,
+)
 
 # Gridbook support is intentionally not duplicated here. The separately pinned
 # runtime publishes its supported producer IDs in runtime_contract.json, and
@@ -136,6 +140,27 @@ def test_require_lane_supported_is_inert_without_the_accessor():
         name = "legacy"
 
     assert require_lane_supported(_Legacy(), "gguf") == "gguf"
+
+
+def test_narrow_4090_profile_inherits_cb_serializer_by_lane_identity():
+    profile = load_serving_profile("qwen38_rtx4090_fp8_cb")
+    assert profile.export_lane is not None
+    assert profile.export_lane.id == "nvfp4_cb"
+    assert profile.target_platform == "sm_89"
+    assert profile.producer_policy == "qwen38_27b_rtx4090_fp8_cb"
+    assert require_profile_export_lane(profile.id, "nvfp4_cb") == "nvfp4_cb"
+    with pytest.raises(ValueError, match="not requested container"):
+        require_profile_export_lane(profile.id, "compressed-tensors")
+
+    validation = load_serving_profile(
+        "qwen38_rtx4090_fp8_cb_validation_only"
+    )
+    assert validation.export_lane is not None
+    assert validation.export_lane.id == "nvfp4_cb"
+    assert validation.target_platform == "sm_89"
+    assert validation.producer_policy == (
+        "qwen38_27b_rtx4090_fp8_cb_validation_only"
+    )
 
 
 def test_no_shipped_lane_run_becomes_illegal():

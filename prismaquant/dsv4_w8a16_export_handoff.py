@@ -401,15 +401,251 @@ _PUBLISHED_FILES = frozenset({
 # allocator choose a format for `wo_a` instead of inheriting source precision.
 # That is the reviewed change. It means the 92 GB budget split (87.403 body +
 # 4.597 draft) must be re-checked on the next export rather than inherited.
+# RE-FROZEN 2026-08-24 (K1..K25 NVFP4 public producer scaffolding), after enumerating
+# the whole closure and reviewing reachability against THIS handoff:
+#   cb_export_config.py + nvfp4_cb_footprint.py -- the authoritative NVFP4
+#     product domain and exact codebook-sidecar accounting now include K1..K25.
+#     This handoff assigns only block-FP8 W8A16 source passthrough, no CB rung,
+#     so neither a CB scheme nor its sidecar/accounting branch is reached.
+#   nvfp4_cb_formats.py -- adds the digest-pinned nested d4 tables and uint32
+#     K32 direct research codec surface while preserving every historical
+#     lattice tensor hash. K26..K32 have no registry/export identity.
+#     W8A16 copies its checkpoint element/scale planes verbatim and never calls
+#     the CB field quantizer, lattice resolver, or bit packer.
+#   export_nvfp4_cb_streaming.py -- updates only the strict external Gridbook
+#     contract help text from v10 to v11. It cannot change exported bytes.
+# RE-FROZEN 2026-08-24 (producer assignment preflight), after enumerating the
+# whole closure and reviewing reachability against THIS handoff:
+#   export_nvfp4_cb_streaming.py -- adds the shared assignment parser as an
+#     outer decorator, before the transactional output wrapper. A valid W8A16
+#     assignment is parsed once more and then follows the byte-identical export
+#     body; an invalid/research-only CB spelling now refuses before creating a
+#     destination or preserved `.tmp-*` tree. The decorator neither rewrites
+#     the assignment nor touches tensor data, source discovery, or W8A16
+#     passthrough emission.
+# RE-FROZEN 2026-08-24 (strict compiled CB scoring from the refreshed RTX4090
+# parent), after reviewing the only changed closure file against THIS legacy
+# handoff:
+#   nvfp4_cb_formats.py -- imports the closed compiled-helper contract and
+#     routes CB VQ/scale-scoring reductions through it when strict campaign
+#     compilation is requested. The W8A16 handoff copies published source-FP8
+#     element/scale planes verbatim and never enters those CB scoring helpers;
+#     no wire, tensor-name, source-discovery, or passthrough branch changed.
+#     Keeping this frozen reproduction gate green is legacy compatibility, not
+#     maintained target eligibility: hardware-scoped production profiles must
+#     admit W8A16 separately, and the SM120 profile explicitly denies it.
+#
+# RE-FROZEN 2026-08-28 for three `93d340a` changes, each reviewed against THIS
+# handoff rather than merely re-hashed.  All three are inert on the DSv4 W8A16
+# lane; DeepSeek-v4 overrides none of the new accessors and inherits their
+# fail-closed defaults.
+#   export_nvfp4_cb_streaming.py -- adds the PrismaSnap lane refusals
+#     (`@refuse_prismasnap_lane_before_output(lane="Gridbook/codebook")` and
+#     the `main()` precheck).  Both fire only when the source directory carries
+#     PrismaSnap provenance.  A DSv4 W8A16 source is never Snap-prepared
+#     (PrismaSnap refuses non-BF16 sources outright), so both are inert here
+#     and the emitted bytes are unchanged.
+#   model_profiles/base.py -- adds `_declared_model_path` private intake plus
+#     two accessors, `rms_norm_parameter_offset()` and
+#     `prismasnap_moe_layer_contract()`, each defaulting to `None`.  `None` is
+#     the fail-closed value: an offline source transform refuses rather than
+#     inferring a gamma encoding or an MoE graph.  DeepSeek-v4 declares
+#     neither, and this lane performs no offline transform.
+#   model_profiles/registry.py -- attaches the resolved checkpoint root to the
+#     profile as private intake evidence.  The sole consumer is
+#     `qwen3_5.py:155`; DeepSeek-v4 never reads it.
+#
+# Every digest above is a HEAD blob, so the closure is exact at HEAD.  FOUR of
+# the fifteen additionally differ in the working tree and are deliberately NOT
+# stamped to their worktree bytes; the gate hashes the worktree, so it refuses
+# until each lands and is reviewed:
+#   base.py, registry.py -- re-stamped ABOVE for `93d340a` only.  The worktree
+#     has since changed them again (base.py: `concat_merge_groups`,
+#     `runtime_loads_source_fp8`, `requires_multimodal_skeleton`; registry.py:
+#     two profile registrations).  Those newer edits are NOT covered by the
+#     review recorded above and need their own before the next stamp.
+#   layer_streaming.py, production_weight_cache.py -- unchanged since their
+#     last freeze at HEAD; the worktree edits need real review rather than a
+#     re-hash, because DSv4 W8A16 executes both paths: the default-ON threaded
+#     gather in the streamed read, and `fill_packed_expert_cache_entries` for
+#     packed experts.
+# Sequencing: because these four span several commits, the re-stamp covering
+# them belongs in the LAST commit that touches any of them, or the gate is red
+# at every intermediate commit.
+#
+# RE-FROZEN 2026-08-29 for five changes -- the four the 2026-08-28 note left
+# deliberately unstamped, plus the export file's post-merge delta -- each
+# reviewed against THIS handoff rather than merely re-hashed.  This section
+# closes that note's open item: every digest below is again a HEAD blob on a
+# clean worktree.  For each file the reviewed delta is exactly
+# `git diff 93d340a..HEAD -- <file>`, because `93d340a` is the blob every
+# previous stamp named.  This commit touches no other closure file, so it IS
+# the last commit touching any of them and the sequencing rule holds.
+#   export_nvfp4_cb_streaming.py -- the origin/main side of merge `24366aa`,
+#     i.e. PR #86 (`09bc72a`): three hunks, all written for a WRAPPED-MoE
+#     (Qwen3.5-VLM) source whose skeleton speaks a live namespace.
+#     (1) Expert-group keys in that live namespace are rekeyed to the recipe
+#     spelling.  DSv4's per-expert regex
+#     `^model[.]layers[.]N[.]mlp[.]experts[.]i[.](gate|up|down)_proj$` matches
+#     ONLY the live-bridge spelling, so `_plan_expert_stacks` already keys
+#     DSv4 groups by exactly that recipe prefix; `_prefix in (_recipe, _ck)`
+#     holds and nothing is rekeyed.  The recipe->checkpoint map the hunk
+#     builds is injective on this lane (`layers.N.ffn.experts` <-
+#     `model.layers.N.mlp.experts`, N preserved), so neither ambiguity
+#     `raise` can fire.
+#     (2) A packed-stack export name is now taken from that map.  Verified
+#     directly against `DeepseekV4Profile`: for both stacks the new
+#     `f"{ckpt_prefix}.{leaf}"` and the old `_export_base_name(...,
+#     assume_resolvable=True)` return the SAME string
+#     (`layers.3.ffn.experts.gate_up_proj`, `...down_proj`).
+#     (3) `_delegated_target_name` rewrites only names beginning
+#     `language_model.`; DSv4's `to_vllm_internal_name` never emits that
+#     prefix, and the hunk deliberately leaves the bare-`layers.`
+#     DSv4-class case alone.  No emitted tensor name, config target or byte
+#     changes on this lane.
+#   model_profiles/base.py -- `b35ed53` adds three accessors:
+#     `concat_merge_groups()` (empty unless the spec declares
+#     `concat_merges`), `runtime_loads_source_fp8()` (False) and
+#     `requires_multimodal_skeleton()` (False).  Each default is the
+#     fail-closed value: no concat bridge, no runtime-side FP8 dequant
+#     carve-out, no multimodal skeleton.  `Glm5NextProfile` is the ONLY
+#     override of any of the three; `DeepseekV4Profile` subclasses
+#     `ModelProfile` directly and all three resolve to the base
+#     implementation (verified by attribute lookup on the MRO), and
+#     `specs/glm5_next.json` is the only spec in the tree declaring
+#     `concat_merges` -- so `concat_merge_groups()` returns `()` here and
+#     every consumer (`layer_streaming._build_concat_merger`,
+#     `export_native_compressed`) is a no-op on this lane.
+#   model_profiles/registry.py -- `b35ed53` registers `Qwen4ExpProfile`
+#     (priority 200) and `Glm5NextProfile` (priority 210), both AFTER
+#     DeepSeek-v4's 170, and each `matches()` claims only `qwen4_exp*` /
+#     `glm5_next*` model types and `Qwen4Exp*` / `Glm5Next*` architectures --
+#     disjoint from `deepseek_v4`, so detection is unchanged.  The same
+#     commit makes `detect_profile` refuse a `model_path` that is not an
+#     existing directory.  That can only turn an absent-path run into a loud
+#     refusal, and an absent path was never a valid DSv4 export (it would
+#     have fallen through to `DefaultProfile` and mis-named every tensor).
+#   layer_streaming.py -- `0c87d8d`.  This lane DOES execute the streamed
+#     read, so each piece is argued, not dismissed as unreached.
+#     * Threaded intra-layer gather (default ON).  The job list is built in
+#       `by_shard` order and `_split_pairs` cuts each shard's pairs into
+#       CONTIGUOUS chunks, and `out.update(fut.result())` consumes futures in
+#       that same order -- so the assembled dict has identical contents AND
+#       identical key order to the serial loop.  Each worker opens its own
+#       `safe_open` handle and applies the same dtype cast and contiguity
+#       fix; `.result()` re-raises, and a new count check refuses a partially
+#       gathered layer rather than installing it.
+#       `PRISMAQUANT_LAYER_READ_THREADS=1` restores the byte-identical serial
+#       read.  Only the order pages fault in changes; no tensor value can.
+#     * Post-gather view compaction: clones any tensor whose storage exceeds
+#       2x its own bytes.  `detach().clone().contiguous()` preserves dtype,
+#       shape and every element, and it runs AFTER the last in-place step
+#       (the batched FP8 dequant, then the expert packer), so nothing
+#       downstream loses a write-through it relied on.  Resident bytes
+#       change; read bytes do not.
+#     * `LayerCache` pressure-eviction rework (`_drop`, the new prefetch-pin
+#       phase, the `_pinned_until_read` discard and `evicted_pinned`
+#       counter).  It decides WHICH cached layers are dropped under host
+#       memory pressure; a dropped layer is re-read from the same shards.
+#       This moves cache hit/miss/eviction telemetry and wall-clock, never a
+#       weight.
+#     * `has_dsa` in `_compute_attention_mask` is doubly inert.
+#       `deepseek_sparse_attention` is transformers' `glm5_next` layer type;
+#       DSv4-Flash's own `DEEPSEEK_V4_LAYER_TYPES` is `{sliding_attention,
+#       compressed_sparse_attention, heavily_compressed_attention}`, so
+#       `has_dsa` is False -- and `sliding_attention` already made
+#       `has_sliding` True, so the guarded early return was not taken before
+#       the change either.  The added `masks` entry is unreachable here.
+#   production_weight_cache.py -- `f7970e7`.  This lane DOES call
+#     `fill_packed_expert_cache_entries`, so likewise argued.
+#     * Packed experts now carry their own render-score and render-gate
+#       records (`_packed_expert_render_score_record` /
+#       `_packed_expert_render_gate_record`, summing the dense path's own
+#       `_render_score_record` over experts).  Scoring is READ-ONLY: every
+#       access is `detach().to(...)`, `.t()`, `.pow(2).mean()`; no in-place
+#       write reaches `packed_param` or `rendered`, so the tensor stored is
+#       the tensor that was rendered.  All four helpers it leans on
+#       (`_render_score_record`, `_render_score_record_key`,
+#       `_write_render_score_sidecar`, `_summarize_render_gate_records`)
+#       already existed at the previous freeze, and the CB-pair admission's
+#       `render_score=` kwarg was already the dense path's.
+#     * `_needs_work` now also counts a missing render score.  On a resumed
+#       build that runs an activation capture it previously skipped, but the
+#       resume branch still `continue`s WITHOUT re-rendering: it scores the
+#       shard bytes already on disk (a `torch.load(...,
+#       weights_only=True)` read).  `activation_max_abs` keeps its "first
+#       calibrated scale wins" `is None` guard, so the scale the shipped
+#       rung calibrated cannot be clobbered by the extra pass either.
+#     * `_finalize_packed_expert_cache_metadata` recomputes
+#       `requested_entries` and the `render_scores` / `render_gates` /
+#       `packed_expert_coverage` scopes from the cache.  It rewrites cache
+#       METADATA only, and it can turn a stale-counter refusal of the exact
+#       union into a pass, never the reverse -- the same direction the
+#       2026-08-15 `artifact_completeness.py` bullet accepted.  Pruning is
+#       bounded to `all_packed_fullnames`, so dense and MTP records are
+#       outside its reach by construction.
+#     * Device probe: the first NON-meta parameter instead of
+#       `next(model.parameters())`.  Identical whenever the first parameter
+#       is non-meta, which is every case a DSv4 export ever completed; where
+#       it differs the old value was a `meta` device, which no successful
+#       render used.
+#     * `del src, overrides, render_acts, eval_acts, eval_gw` (and `w_rtn`
+#       when `E > 0`) at the end of the batched branch.  Every one of those
+#       names is dead at that point -- verified by scanning the remainder of
+#       the function for a read -- and each is reassigned at the top of the
+#       next iteration, so a mistake would be a loud `NameError`, never a
+#       silent byte.  It frees GPU transients; `rendered` and `packed_param`,
+#       the two tensors the score and the store consume, survive.
+# RE-FROZEN 2026-08-29 (merge of `origin/main` 1ca4c7d into
+# `merge/proven-rescues`), for ONE file, and NOT re-frozen for a second.
+#   The merge is not a new delta. Two closure files are merge products of two
+#   deltas that were each reviewed above -- `model_profiles/base.py` and
+#   `production_weight_cache.py` -- and the union was verified per file rather
+#   than assumed: for both, `git diff origin/main -- <file>` on the merged tree
+#   is byte-identical to this branch's delta (`git diff 90cd143
+#   origin/merge/proven-rescues -- <file>`), and `git diff
+#   origin/merge/proven-rescues -- <file>` is byte-identical to main's
+#   (`git diff 90cd143 origin/main -- <file>`). The merge therefore introduces
+#   no third delta on either file. No other closure file is a merge product:
+#   the six main-only files carry main's already-stamped bytes, and
+#   `deepseek_v4.py` / `specs/deepseek_v4.json` carry this branch's.
+#   model_profiles/base.py -- RE-FROZEN to the merged bytes. Both halves are
+#     already reviewed: this branch's two claim rules plus the
+#     `probe_grouped_module_class_names()` accessor (RE-FROZEN 2026-08-22 and
+#     2026-08-23 above, the latter signed off by Rob), and main's three
+#     fail-closed accessors `concat_merge_groups()` /
+#     `runtime_loads_source_fp8()` / `requires_multimodal_skeleton()`
+#     (RE-FROZEN 2026-08-29 above). The two deltas touch disjoint regions and
+#     neither changes an existing method body. Combining two reviews is
+#     bookkeeping; it is not a third review.
+#   production_weight_cache.py -- DELIBERATELY NOT RE-FROZEN. The digest below
+#     is main's reviewed value (`c0c2aa9c...`), so this gate is RED and names
+#     this file, on purpose. Main's half is reviewed (RE-FROZEN 2026-08-29
+#     above). This branch's half -- the unit-sharded render (`5a8303b`,
+#     +150 lines: the `unit_shard` / `render_qnames` parameters, the shard
+#     stamp, and the `_LinearActivationCollector` reservoir-draw change) --
+#     has NEVER been reviewed against THIS handoff. The branch shipped it red;
+#     its own commit `a2e1ae1` uses the same idiom for the profile files
+#     ("reported, not re-frozen here"), and the re-freeze that followed
+#     (`d635677`) was taken only after Rob signed it off. The two pieces that
+#     are NOT gated behind an unset parameter are the reservoir draw and the
+#     `prerendered` early `continue`, and both live in
+#     `fill_production_weight_cache` / `_LinearActivationCollector`, neither of
+#     which `fill_packed_expert_cache_entries` -- the function this lane
+#     executes -- reaches (it carries its own module reservoirs and its own
+#     generator). That is a lead toward "inert", not a review of one, and it
+#     is not this worker's to sign. A reviewed re-freeze to
+#     `03bb1aa4c71b59f2cc92c830b561b3911d19120600c18052c95c5c7607ea0894`
+#     closes it.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
-        "3380385f601623fc5d5b31147a226da15928b77b99dc15d2719e0ccb54232d1b"
+        "dfffc634a7275e76a4c4b3bd0299e8b0775673dca23f6f5c56ca31f8b748b8a5"
     ),
     "prismaquant/cb_export_config.py": (
-        "2bca669278cc1f3195c27747c05facea497e7b6ff2912bad7f917a184d1d6f94"
+        "3aa767bba9e689d50234730846a1671088ec0b16278d18aa6fa2693815294412"
     ),
     "prismaquant/nvfp4_cb_formats.py": (
-        "1f29d3c08af0272f8a709a1b820da9caeafa4e27865fa552e1d99432d4cb74f9"
+        "9f886165d4495f8e93615ac3804b41d87a69c8c4526833c196817366147d23d1"
     ),
     "prismaquant/dspark_source_metadata.py": (
         "94fac4b16922f381cffe989d7b9b1d00f211bb93d9479dfde30eb0c02ef167f7"
@@ -418,10 +654,10 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "fb20303ed1b017a5a7f3a035d5ef43880822d775e252c28a08f32a67f8104c95"
     ),
     "prismaquant/model_profiles/base.py": (
-        "c380bba84e244c922b19e3e444fcdd29c9c3653641ecdc4b1043234871b734ca"
+        "0f7ff9245a03e5b937223f3143efd2aafccbd5d797561c32cbeb8821c0fc3b64"
     ),
     "prismaquant/model_profiles/registry.py": (
-        "2fb8bcc01fbfd3b89870d387d335f804b05378f9853f223469c619e7ab766b90"
+        "5da03be05dafd7e804be9588854bfeabed2aec29b76ea2f6c6cbef2c6067188d"
     ),
     "prismaquant/model_profiles/deepseek_v4.py": (
         "06cf8a5ed7bc0a11cca415147110465ffa9030e65fa5cb6fa65cfe28085d562f"
@@ -433,13 +669,13 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "d9a06483d008bf2361b0522bc258ab291db870d1c2432f9d4cd8d7a8cbacefbe"
     ),
     "prismaquant/layer_streaming.py": (
-        "5344f30043be08baf0c1509d77be511f6d2fbe963ce4d7b32afd8072a48a9da4"
+        "e2d947fe9ba98c612e13a9abe66dbb70aaadde83b0b0db394d100cbff82378c1"
     ),
     "prismaquant/production_weight_cache.py": (
-        "1cc27e3b64043f9873da528ae2aa128e37c15be303109509f713b8d738c59f36"
+        "c0c2aa9c322e2c5aa264d786d8df26166908fc47290ab14ae996c207370d7263"
     ),
     "prismaquant/nvfp4_cb_footprint.py": (
-        "68fa72cfb7274ceb8152db31940b2401e3d25485ea4b5a589ee8366b52997b93"
+        "96bc38a7ab18c6d2401ed2b66141eef9809409c78468f8ceb16c0891b9701547"
     ),
     "prismaquant/artifact_completeness.py": (
         "7f0c6c74733c2503b1e9607383264479007f49ae04e41700327bf0e97ab59767"

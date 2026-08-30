@@ -5976,6 +5976,367 @@ class _PackedExpertActivationCollector:
         return out
 
 
+PACKED_EXPERT_RENDER_SCORE_SCHEMA = (
+    "prismaquant.production_render_scores.packed_expert.v1"
+)
+PACKED_EXPERT_RENDER_GATE_SCHEMA = (
+    "prismaquant.production_render_gates.packed_expert.v1"
+)
+
+
+def _packed_expert_score_rows(
+    per_expert_acts: Sequence[torch.Tensor | None] | None,
+    expert: int,
+    *,
+    eval_rows: int,
+    device: torch.device,
+) -> torch.Tensor | None:
+    """Return the scoring rows for one packed expert, or ``None``.
+
+    The tail of the expert's routed fit rows is used, capped at
+    ``eval_rows`` — the same slice the batched do-no-harm gate holds out
+    when a same-corpus holdout is available.  Experts the router never
+    sent a token to have no activation evidence and score weight-only.
+    """
+    if per_expert_acts is None or expert >= len(per_expert_acts):
+        return None
+    rows_tensor = per_expert_acts[expert]
+    if rows_tensor is None or rows_tensor.numel() == 0:
+        return None
+    n_rows = int(rows_tensor.shape[0])
+    cap = int(eval_rows) if int(eval_rows) > 0 else n_rows
+    tail = rows_tensor[max(0, n_rows - cap):]
+    return tail.detach().to(device=device, dtype=torch.float32)
+
+
+def _packed_expert_render_score_record(
+    *,
+    qname: str,
+    fmt: str,
+    render_format: str,
+    reference: torch.Tensor,
+    rendered: torch.Tensor,
+    per_expert_acts: Sequence[torch.Tensor | None] | None,
+    activation_max_abs: float | None,
+    eval_rows: int,
+    device: torch.device,
+    score_rows_source: str,
+) -> dict[str, object]:
+    """Score one packed 3-D expert cache entry honestly.
+
+    Every expert in the stack is scored with the SAME scorer the dense path
+    uses (``_render_score_record`` on ``[out, in]`` slices), against its own
+    routed rows; the per-expert records are then summed into the one record
+    the cache key owns.  Sums, not means-of-means: ``score`` is
+    ``sum(score_sum) / sum(normalizer)`` so an expert with more routed rows
+    weighs proportionally, exactly as a single dense Linear's rows do.
+
+    Experts with no routed rows have no activation evidence.  They are
+    excluded from the output metric (averaging an undefined error in would
+    be a fabrication) and counted in ``experts_without_activations``;
+    ``weight_mse`` is activation-independent and always covers every expert.
+    """
+    if reference.dim() != 3:
+        raise RuntimeError(
+            f"packed expert render score for {qname}@{fmt} needs a 3-D "
+            f"[E, out, in] reference, got shape {tuple(reference.shape)}"
+        )
+    if tuple(rendered.shape) != tuple(reference.shape):
+        raise RuntimeError(
+            f"packed expert render score for {qname}@{fmt}: rendered shape "
+            f"{tuple(rendered.shape)} differs from reference "
+            f"{tuple(reference.shape)}"
+        )
+    n_experts = int(reference.shape[0])
+    per_expert: list[dict[str, object]] = []
+    for expert in range(n_experts):
+        acts_e = _packed_expert_score_rows(
+            per_expert_acts, expert, eval_rows=eval_rows, device=device,
+        )
+        per_expert.append(
+            _render_score_record(
+                qname=f"{qname}.e{expert}",
+                fmt=fmt,
+                render_format=render_format,
+                reference_weight=reference[expert].detach().to(
+                    device=device, dtype=torch.float32,
+                ),
+                rendered_weight=rendered[expert].detach().to(device=device),
+                activations=acts_e,
+                activation_max_abs=activation_max_abs,
+            )
+        )
+        del acts_e
+    if not per_expert:
+        raise RuntimeError(
+            f"packed expert render score for {qname}@{fmt} has zero experts"
+        )
+    with_acts = [
+        record for record in per_expert
+        if int(record["activation_rows"]) > 0  # type: ignore[arg-type]
+    ]
+    scored = with_acts or per_expert
+    metrics = {str(record["metric"]) for record in scored}
+    raw_metrics = {str(record["raw_render_metric"]) for record in scored}
+    if len(metrics) != 1 or len(raw_metrics) != 1:
+        raise RuntimeError(
+            f"packed expert render score for {qname}@{fmt} mixes metrics: "
+            f"metric={sorted(metrics)} raw={sorted(raw_metrics)}"
+        )
+    normalizer = sum(float(record["normalizer"]) for record in scored)
+    score_sum = sum(float(record["score_sum"]) for record in scored)
+    raw_score_sum = sum(
+        float(record["raw_render_score_sum"]) for record in scored
+    )
+    weight_mse_sum = sum(
+        float(record["weight_mse_sum"]) for record in per_expert
+    )
+    n_weights = sum(int(record["n_weights"]) for record in per_expert)
+    activation_rows = sum(int(record["activation_rows"]) for record in scored)
+    clip_values = {
+        float(record["activation_max_abs"])
+        for record in scored
+        if record["activation_max_abs"] is not None
+    }
+    return {
+        "qname": str(qname),
+        "format": str(fmt).upper(),
+        "render_format": str(render_format).upper(),
+        "schema": PACKED_EXPERT_RENDER_SCORE_SCHEMA,
+        "metric": next(iter(metrics)),
+        "score": float(score_sum / normalizer) if normalizer > 0 else 0.0,
+        "score_sum": float(score_sum),
+        "raw_render_metric": next(iter(raw_metrics)),
+        "raw_render_score": (
+            float(raw_score_sum / normalizer) if normalizer > 0 else 0.0
+        ),
+        "raw_render_score_sum": float(raw_score_sum),
+        "weight_mse": (
+            float(weight_mse_sum / n_weights) if n_weights > 0 else 0.0
+        ),
+        "weight_mse_sum": float(weight_mse_sum),
+        "n_weights": int(n_weights),
+        "normalizer": float(normalizer),
+        "activation_rows": int(activation_rows),
+        "activation_quantized": any(
+            bool(record["activation_quantized"]) for record in scored
+        ),
+        "activation_clipped": any(
+            bool(record["activation_clipped"]) for record in scored
+        ),
+        "activation_max_abs": (
+            float(max(clip_values)) if clip_values else None
+        ),
+        "out_features": int(reference.shape[1]),
+        "in_features": int(reference.shape[2]),
+        "packed_experts": int(n_experts),
+        "experts_scored_with_activations": int(len(with_acts)),
+        "experts_without_activations": int(n_experts - len(with_acts)),
+        "expert_score_aggregation": "sum_over_experts",
+        "score_rows_source": str(score_rows_source),
+        "score_rows_per_expert_cap": int(eval_rows),
+    }
+
+
+def _packed_expert_render_gate_record(
+    *,
+    qname: str,
+    fmt: str,
+    render_format: str,
+    render_mode: str,
+    batched: bool,
+    resumed: bool,
+    coverage_record: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Return the truthful render-gate record for a packed expert entry.
+
+    The packed path runs NO progressive-gate mechanism, so this record
+    carries an EMPTY trace: synthesizing a step would claim a gate evaluated
+    candidates it never saw.  What it records instead is what actually
+    executed, plus the per-expert GPTQ-vs-RTN do-no-harm decision counts the
+    render did measure.
+    """
+    if resumed:
+        mechanism = "resumed_shard"
+        progressive_gate = "not-run"
+        detail = (
+            "packed-MoE expert entry resumed from an existing shard; no "
+            "render mechanism ran in this process. Render telemetry is the "
+            "producing run's, carried in packed_expert_coverage."
+        )
+    elif batched:
+        mechanism = "batched_gptq_fixed_damp"
+        progressive_gate = "not-run"
+        detail = (
+            "packed-MoE expert render: no progressive-gate mechanism ran. "
+            "The batched path applies one fixed-damp GPTQ column update "
+            "across the layer's experts; joint_scale_opt, static_act_order "
+            "and the damp sweep are deliberately not run (each forces a "
+            "per-expert loop). The GPTQ-vs-RTN do-no-harm decision recorded "
+            "below WAS measured, per expert."
+        )
+    else:
+        mechanism = "render_production_weight_per_expert"
+        progressive_gate = "ran-untraced"
+        detail = (
+            "packed-MoE expert render in per_expert mode: progressive gates "
+            "ran inside render_production_weight for each expert, but the "
+            "packed path collects no per-expert gate trace, so no mechanism "
+            "step is claimed here."
+        )
+    record: dict[str, object] = {
+        "qname": str(qname),
+        "format": str(fmt).upper(),
+        "render_format": str(render_format).upper(),
+        "schema": PACKED_EXPERT_RENDER_GATE_SCHEMA,
+        "trace": [],
+        "progressive_gate": progressive_gate,
+        "mechanism": mechanism,
+        "render_mode": str(render_mode),
+        "detail": detail,
+    }
+    if isinstance(coverage_record, Mapping):
+        record["expert_do_no_harm"] = {
+            field: coverage_record[field]
+            for field in (
+                "n_experts",
+                "empty_experts",
+                "rtn_fallbacks",
+                "heldout_reverts",
+                "gptq_experts",
+                "cross_gated_experts",
+                "gate_mode",
+            )
+            if field in coverage_record
+        }
+    return record
+
+
+def _packed_expert_metadata_scope(
+    metadata: Mapping[str, object],
+    key: str,
+) -> dict[str, object]:
+    value = metadata.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise RuntimeError(
+            f"ProductionWeightCache metadata.{key} is not a mapping"
+        )
+    return dict(value)
+
+
+def _finalize_packed_expert_cache_metadata(
+    cache: ProductionWeightCache,
+    *,
+    packed_scope_names: set[str],
+    score_records: Mapping[str, Mapping[str, object]],
+    gate_records: Mapping[tuple[str, str], Mapping[str, object]],
+    coverage: Mapping[str, Mapping[str, object]],
+    cache_dir_path: Path | None,
+) -> None:
+    """Restore the cache's render-identity invariants after a packed append.
+
+    ``union_production_cache`` treats three counters as invariants of a
+    materialized cache: ``requested_entries == len(cache)``, one
+    ``render_scores`` record per cache key, and one ``render_gates`` record
+    per non-MTP cache key.  A packed-expert append that only pushes keys
+    into ``cache.weights`` leaves all three stale and the exact union
+    refuses at its first subcommand.
+
+    The packed append is replaced as ONE exact scope (the MTP doctrine at
+    ``mtp_production_cache``): records for packed-expert tensor names that
+    are no longer cache keys are dropped, records for the keys present are
+    upserted, and every counter is RECOMPUTED from the cache rather than
+    incremented — the M4 lazy gap-fill calls this path repeatedly with
+    overlapping assignments, and an increment drifts on every rerun.
+    """
+    if cache.metadata is None:
+        cache.metadata = {}
+    metadata = cache.metadata
+    live_keys = set(cache.weights)
+
+    def _is_orphan_packed_key(qname: str, fmt: str) -> bool:
+        return (
+            qname in packed_scope_names
+            and (qname, fmt) not in live_keys
+        )
+
+    score_meta = _packed_expert_metadata_scope(metadata, "render_scores")
+    existing_scores = score_meta.get("records", {})
+    if not isinstance(existing_scores, Mapping):
+        raise RuntimeError(
+            "ProductionWeightCache render_scores.records is not a mapping"
+        )
+    merged_scores: dict[str, dict[str, object]] = {}
+    for raw_key, value in existing_scores.items():
+        if not isinstance(value, Mapping):
+            raise RuntimeError(
+                f"ProductionWeightCache render score is not a mapping: "
+                f"{raw_key!r}"
+            )
+        parts = str(raw_key).rsplit("|", 1)
+        if len(parts) == 2 and _is_orphan_packed_key(parts[0], parts[1]):
+            continue
+        merged_scores[str(raw_key)] = dict(value)
+    for raw_key, value in score_records.items():
+        merged_scores[str(raw_key)] = dict(value)
+    score_meta.setdefault(
+        "schema", "prismaquant.production_render_scores.v1"
+    )
+    score_meta["entries"] = int(len(merged_scores))
+    score_meta["records"] = dict(sorted(merged_scores.items()))
+    metadata["render_scores"] = score_meta
+
+    # render_gates is written by the non-streaming dense fill only. When it is
+    # absent the union skips its coverage check entirely; creating a
+    # packed-only structure here would turn that skip into a guaranteed
+    # refusal, so absence is preserved.
+    if "render_gates" in metadata:
+        gate_meta = _packed_expert_metadata_scope(metadata, "render_gates")
+        existing_gate_records = gate_meta.get("records", [])
+        if not isinstance(existing_gate_records, list):
+            raise RuntimeError(
+                "ProductionWeightCache render_gates.records is not a list"
+            )
+        merged_gates: dict[tuple[str, str], dict[str, object]] = {}
+        for value in existing_gate_records:
+            if not isinstance(value, Mapping):
+                raise RuntimeError(
+                    "ProductionWeightCache render gate record is not a mapping"
+                )
+            pair = (str(value.get("qname", "")), str(value.get("format", "")))
+            if _is_orphan_packed_key(*pair):
+                continue
+            merged_gates[pair] = dict(value)
+        for pair, value in gate_records.items():
+            merged_gates[pair] = dict(value)
+        ordered_gates = [
+            merged_gates[pair] for pair in sorted(merged_gates)
+        ]
+        enabled = gate_meta.get("enabled", True)
+        summary = _summarize_render_gate_records(ordered_gates)
+        summary["enabled"] = enabled
+        metadata["render_gates"] = {**summary, "records": ordered_gates}
+
+    if coverage or "packed_expert_coverage" in metadata:
+        merged_coverage = _packed_expert_metadata_scope(
+            metadata, "packed_expert_coverage"
+        )
+        merged_coverage.update({
+            str(qname): dict(record) for qname, record in coverage.items()
+        })
+        metadata["packed_expert_coverage"] = dict(
+            sorted(merged_coverage.items())
+        )
+
+    metadata["requested_entries"] = int(len(cache.weights))
+    if cache_dir_path is not None:
+        _write_render_score_sidecar(
+            cache_dir_path / "render_scores.json", merged_scores,
+        )
+
+
 def fill_packed_expert_cache_entries(
     cache: ProductionWeightCache,
     model: nn.Module,
@@ -6080,7 +6441,19 @@ def fill_packed_expert_cache_entries(
     )
     from prismaquant import format_registry as fr
 
-    device = next(model.parameters()).device
+    # Device probe: the streamed export materializes ONLY the current
+    # decoder layer (+ head) — on a multimodal-forced skeleton
+    # (glm5_next) the module-order-first parameter is a META visual-tower
+    # weight, so `next(model.parameters())` is not a valid device probe
+    # (it silently .to(meta)'d the activation snapshot and crashed the
+    # router forward). Use the first NON-meta parameter instead.
+    device = None
+    for _probe_param in model.parameters():
+        if not _probe_param.is_meta:
+            device = _probe_param.device
+            break
+    if device is None:
+        device = next(model.parameters()).device
     cache_dir_path = Path(cache_dir) if cache_dir is not None else None
     if cache_dir_path is not None:
         cache_dir_path.mkdir(parents=True, exist_ok=True)
@@ -6109,6 +6482,12 @@ def fill_packed_expert_cache_entries(
     #    Each entry: (experts_qname, mod, parent, pn, full, fmt).
     in_scope: list[tuple[str, nn.Module, nn.Module, str, str, str]] = []
     experts_qnames: set[str] = set()
+    # Every packed-expert tensor name this call can SEE, BF16 and
+    # out-of-assignment included. This is the exact scope inside which stale
+    # render-score / render-gate records may be pruned at the end of the call;
+    # dense and MTP records, and other layers' packed records on the streaming
+    # path, are never in it.
+    all_packed_fullnames: set[str] = set()
     modules_seen = 0
     for experts_qname, mod in model.named_modules():
         if not _is_packed_experts_module(mod, profile):
@@ -6127,6 +6506,7 @@ def fill_packed_expert_cache_entries(
         parent = _packed_experts_parent_module(model, experts_qname)
         for pn in _packed_experts_param_names(mod, profile):
             full = f"{experts_qname}.{pn}" if experts_qname else pn
+            all_packed_fullnames.add(full)
             if force_format is not None:
                 # Force-format mode: render every packed expert at one format,
                 # ignoring render_assignment. Used by the format-menu frontier
@@ -6154,6 +6534,32 @@ def fill_packed_expert_cache_entries(
             print("[prod-cache/experts] no non-BF16 packed experts in scope",
                   flush=True)
         return coverage
+
+    # Render-identity bookkeeping for this append. Every packed key that ends
+    # up in ``cache.weights`` owes a render-score record and a render-gate
+    # record, and the counters are recomputed from the cache at the end of the
+    # call (``_finalize_packed_expert_cache_metadata``). Records already on the
+    # cache are honored as-is so a repeat call with an overlapping assignment
+    # neither re-renders nor re-scores.
+    existing_score_records = _packed_expert_metadata_scope(
+        cache.metadata or {}, "render_scores",
+    ).get("records", {})
+    if not isinstance(existing_score_records, Mapping):
+        raise RuntimeError(
+            "ProductionWeightCache render_scores.records is not a mapping"
+        )
+    packed_score_records: dict[str, dict[str, object]] = {}
+    packed_gate_records: dict[tuple[str, str], dict[str, object]] = {}
+    existing_coverage_records = _packed_expert_metadata_scope(
+        cache.metadata or {}, "packed_expert_coverage",
+    )
+
+    def _has_render_score(qname: str, fmt: str) -> bool:
+        score_key = _render_score_record_key(qname, fmt)
+        return (
+            score_key in packed_score_records
+            or score_key in existing_score_records
+        )
 
     packed_formats_by_qname = {
         full: (fmt,)
@@ -6299,6 +6705,14 @@ def fill_packed_expert_cache_entries(
                 )
                 coverage[full] = dict(packed_state["coverage"])
                 admitted_packed_cb_pairs[key] = admitted
+                # An identity-admitted pair carries the render score its own
+                # render measured. Reuse it; a legacy sidecar without one
+                # falls through to the resume-score path below.
+                admitted_score = admitted.get("render_score")
+                if isinstance(admitted_score, Mapping):
+                    packed_score_records[
+                        _render_score_record_key(full, fmt)
+                    ] = dict(admitted_score)
 
     if progress:
         print(
@@ -6360,12 +6774,21 @@ def fill_packed_expert_cache_entries(
     # missing its calibrated scale — a fully-resumed build with a complete
     # sidecar skips the forward entirely.
     def _needs_work(full: str, fmt: str) -> bool:
+        # A missing render score is work too: scoring needs this module's
+        # routed activations, so the capture below must run for it exactly as
+        # the dense path's ``missing_activation_score`` makes it run there.
         if (full, fmt) in cache.weights:
-            return cache.activation_max_abs.get(full) is None
+            return (
+                cache.activation_max_abs.get(full) is None
+                or not _has_render_score(full, fmt)
+            )
         if cache_dir_path is not None:
             shard = cache_dir_path / _cache_weight_filename(full, fmt)
             if shard.is_file():
-                return cache.activation_max_abs.get(full) is None
+                return (
+                    cache.activation_max_abs.get(full) is None
+                    or not _has_render_score(full, fmt)
+                )
         return True
 
     work_remaining = any(_needs_work(full, fmt) for full, fmt in in_scope_keys)
@@ -6499,10 +6922,26 @@ def fill_packed_expert_cache_entries(
                 "reuse or re-render"
             )
         need_scale = cache.activation_max_abs.get(full) is None
-        # Fully done (shard + calibrated scale): just register the path.
-        if shard_exists and not need_scale:
+        score_key = _render_score_record_key(full, fmt)
+        gate_key = (full, str(fmt).upper())
+        need_score = not _has_render_score(full, fmt)
+        # Fully done (shard + calibrated scale + render score): register the
+        # path and re-stamp this entry's gate record, which the union counts
+        # per cache key on every rerun.
+        if shard_exists and not need_scale and not need_score:
             if key not in weights and fname is not None:
                 weights[key] = fname
+            packed_gate_records[gate_key] = _packed_expert_render_gate_record(
+                qname=full,
+                fmt=fmt,
+                render_format=fmt,
+                render_mode=render_mode,
+                batched=False,
+                resumed=True,
+                coverage_record=(
+                    coverage.get(full) or existing_coverage_records.get(full)
+                ),
+            )
             continue
 
         X = module_acts.get(experts_qname)
@@ -6571,11 +7010,48 @@ def fill_packed_expert_cache_entries(
             cache.activation_max_abs[full] = param_max_abs
             _persist_expert_sidecar()
 
-        # Resume with a missing scale: shard already on disk, we only needed to
-        # recompute + persist the calibrated scale. Don't re-render.
+        # Resume with a missing scale and/or a missing render score: the shard
+        # is already on disk, so score the bytes it holds. Never re-render.
         if shard_exists:
             if key not in weights and fname is not None:
                 weights[key] = fname
+            if need_score:
+                stored_value = weights.get(key)
+                resumed_render = (
+                    stored_value
+                    if isinstance(stored_value, torch.Tensor)
+                    else torch.load(
+                        cache._path_for_value(stored_value),
+                        map_location="cpu",
+                        weights_only=True,
+                    )
+                )
+                packed_score_records[score_key] = (
+                    _packed_expert_render_score_record(
+                        qname=full,
+                        fmt=fmt,
+                        render_format=fmt,
+                        reference=packed_param,
+                        rendered=resumed_render,
+                        per_expert_acts=per_expert_acts,
+                        activation_max_abs=cache.activation_max_abs.get(full),
+                        eval_rows=eval_rows_per_expert,
+                        device=device,
+                        score_rows_source="fit_corpus_tail",
+                    )
+                )
+                del resumed_render
+            packed_gate_records[gate_key] = _packed_expert_render_gate_record(
+                qname=full,
+                fmt=fmt,
+                render_format=fmt,
+                render_mode=render_mode,
+                batched=False,
+                resumed=True,
+                coverage_record=(
+                    coverage.get(full) or existing_coverage_records.get(full)
+                ),
+            )
             continue
 
         # Per-expert global: for split gate/up the joint is max over slices so
@@ -6729,6 +7205,13 @@ def fill_packed_expert_cache_entries(
                     rtn_fallbacks += 1
                     if ev is not None:
                         heldout_reverts += 1
+            # Free the render-phase GPU transients before the CPU store copy
+            # below: `src` alone is 18G fp32 for a GLM-class gate_up stack and
+            # would otherwise survive into the NEXT param's render (peak
+            # doubling on the 118G unified pool).
+            if E > 0:
+                del w_rtn
+            del src, overrides, render_acts, eval_acts, eval_gw
         else:
             # Per-expert full-stack render (fmt != NVFP4, or the A/B mode).
             rendered = torch.empty_like(packed_param)
@@ -6779,6 +7262,30 @@ def fill_packed_expert_cache_entries(
             "rendered": True,
             "had_activations": True,
         }
+        # Score every packed expert honestly, on the tensors already
+        # materialized here — the source param and the render that is about to
+        # be stored. No re-render, and the record covers the whole stack.
+        packed_score_records[score_key] = _packed_expert_render_score_record(
+            qname=full,
+            fmt=fmt,
+            render_format=fmt,
+            reference=packed_param,
+            rendered=rendered,
+            per_expert_acts=per_expert_acts,
+            activation_max_abs=cache.activation_max_abs.get(full),
+            eval_rows=eval_rows_per_expert,
+            device=device,
+            score_rows_source="fit_corpus_tail",
+        )
+        packed_gate_records[gate_key] = _packed_expert_render_gate_record(
+            qname=full,
+            fmt=fmt,
+            render_format=fmt,
+            render_mode=render_mode,
+            batched=bool(use_batched),
+            resumed=False,
+            coverage_record=coverage_record,
+        )
         if timed_cb_pair:
             pair_identity = packed_cb_pair_identities.get(key)
             if pair_identity is None:
@@ -6802,6 +7309,7 @@ def fill_packed_expert_cache_entries(
                 identity=pair_identity,
                 tensor=rendered,
                 encode_seconds=encode_seconds,
+                render_score=packed_score_records[score_key],
                 packed_state={
                     "activation_max_abs": float(activation_scale),
                     "coverage": coverage_record,
@@ -6920,6 +7428,15 @@ def fill_packed_expert_cache_entries(
                 for pair in pair_identities.values()
             }),
         }
+
+    _finalize_packed_expert_cache_metadata(
+        cache,
+        packed_scope_names=all_packed_fullnames,
+        score_records=packed_score_records,
+        gate_records=packed_gate_records,
+        coverage=coverage,
+        cache_dir_path=cache_dir_path,
+    )
 
     if progress:
         print(

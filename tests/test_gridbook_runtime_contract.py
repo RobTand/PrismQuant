@@ -224,7 +224,7 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
         bit_split,
         type_size,
     )
-    from prismaquant.format_registry import list_formats
+    from prismaquant.format_registry import list_formats, list_producer_formats
 
     contract = _runtime_contract()
     assert contract["quant_method"]["canonical"] == "gridbook"
@@ -232,7 +232,7 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
     by_family = {entry["family"]: entry for entry in contract["formats"]}
 
     names = {spec.name for spec in list_formats()}
-    producer_k = {
+    accepted_k = {
         int(name.rsplit("K", 1)[1]) for name in names
         if name.startswith("NVFP4_CB_K")
     }
@@ -240,13 +240,42 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
         int(name.rsplit("S", 1)[1]) for name in names
         if name.startswith("NVFP4_CB_S")
     }
-    producer_fp8 = {
+    accepted_fp8 = {
         int(name.rsplit("K", 1)[1]) for name in names
         if name.startswith("FP8_CB_K")
     }
-    assert producer_k == set(by_family["NVFP4_CB_K"]["rungs"])
-    assert producer_s <= set(by_family["NVFP4_CB_S"]["rungs"])
-    assert producer_fp8 == set(by_family["FP8_CB_K"]["rungs"])
+    # Reader compatibility is directional while the producer and consumer are
+    # released independently. The installed pin's public rows must all remain
+    # understood by this producer; a validation branch may additionally stage
+    # candidate rows whose exact target profile remains unreleasable until the
+    # external pin advances. Candidate equality is checked separately against
+    # the candidate Gridbook checkout, never asserted against this old pin.
+    assert set(by_family["NVFP4_CB_K"]["rungs"]) <= accepted_k
+    if "NVFP4_CB_S" in by_family:
+        assert producer_s <= set(by_family["NVFP4_CB_S"]["rungs"])
+    else:
+        assert not producer_s
+    # Registry membership is likewise the backwards-compatible FP8 reader
+    # inventory. The current v4 wheel knows only historical K28..K48; future
+    # v11 contracts explicitly distinguish their wider reader domain from
+    # producer_rungs.
+    assert set(by_family["FP8_CB_K"]["rungs"]) <= accepted_fp8
+    if "producer_rungs" in by_family["FP8_CB_K"]:
+        producer_fp8 = {
+            int(spec.name.rsplit("K", 1)[1])
+            for spec in list_producer_formats("fp8_cb")
+        }
+        assert producer_fp8 == set(
+            by_family["FP8_CB_K"]["producer_rungs"]
+        )
+    if "producer_rungs" in by_family["NVFP4_CB_K"]:
+        producer_nvfp4 = {
+            int(spec.name.rsplit("K", 1)[1])
+            for spec in list_producer_formats("nvfp4_cb")
+        }
+        assert producer_nvfp4 == set(
+            by_family["NVFP4_CB_K"]["producer_rungs"]
+        )
 
     packing = contract["packing"]
     assert packing == {
@@ -267,8 +296,8 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
         "NVFP4_CB_S": ("NVFP4_CB_S{k}", "fp4", "signed", 1),
         "FP8_CB_K": ("FP8_CB_K{k}", "fp8", "product", 4),
     }
-    for family, (pattern, grid, mode, n_sub) in expected_family_fields.items():
-        entry = by_family[family]
+    for family, entry in by_family.items():
+        pattern, grid, mode, n_sub = expected_family_fields[family]
         assert (entry["name_pattern"], entry["grid"], entry["mode"],
                 entry["n_sub"]) == (pattern, grid, mode, n_sub)
 
@@ -301,7 +330,8 @@ def test_cb_rungs_layouts_and_quant_method_fit_the_runtime_contract():
 
     assert by_family["NVFP4_CB_K"]["layout_versions"] == [1, 2]
     assert by_family["NVFP4_CB_K"]["moe_layout_versions"] == [2]
-    assert by_family["NVFP4_CB_S"]["layout_versions"] == [1, 2]
-    assert by_family["NVFP4_CB_S"]["moe_layout_versions"] == [2]
+    if "NVFP4_CB_S" in by_family:
+        assert by_family["NVFP4_CB_S"]["layout_versions"] == [1, 2]
+        assert by_family["NVFP4_CB_S"]["moe_layout_versions"] == [2]
     assert by_family["FP8_CB_K"]["layout_versions"] == [1]
     assert by_family["FP8_CB_K"]["moe_layout_versions"] == [1]

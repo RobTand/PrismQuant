@@ -30,6 +30,16 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from prismaquant import nvfp4_cb_formats as cb
+from prismaquant.cb_imatrix import canonical_imatrix_sha256
+from prismaquant.cb_learned_promotion import (
+    CBL_STEP4_RUNGS,
+    CBL_V2_TRAINER_SCHEMA,
+    ValidatedCBLPromotionReceipt,
+    receipt_rung_policy,
+    role_census_for_qnames,
+    validate_promotion_receipt,
+)
+from prismaquant.cost_streaming import validate_streamed_model_identity
 from prismaquant.cb_layout import (
     codebook_subtable_shapes,
     family_for,
@@ -55,6 +65,8 @@ from prismaquant.routed_moe_codebooks import (
 CB_LEARNED_BUNDLE_SCHEMA = "prismaquant.cb_learned_codebook_bundle.v1"
 CB_LEARNED_BUNDLE_METADATA_KEY = "prismaquant_cb_learned_bundle"
 CB_LEARNED_TRAINER_SCHEMA = "prismaquant.fp8_cbl_poolb.v1"
+CB_LEARNED_TRAINER_V2_SCHEMA = CBL_V2_TRAINER_SCHEMA
+CB_LEARNED_V2_SAMPLING_SCHEMA = "prismaquant.fp8_cbl_sampling.v2"
 
 LLOYD_ROW_SAMPLE = 64
 LLOYD_ROW_SEED = 4321
@@ -160,13 +172,63 @@ CB_LEARNED_TRAINER_STAMP: dict[str, object] = {
     "materialization_dtype": "float16",
 }
 
+CB_LEARNED_TRAINER_V2_STAMP: dict[str, object] = {
+    "schema": CB_LEARNED_TRAINER_V2_SCHEMA,
+    "grid": "fp8",
+    "mode": "product",
+    "sampling_schema": CB_LEARNED_V2_SAMPLING_SCHEMA,
+    "entries": "2**max(subtable_bit_widths)",
+    "vectors_per_entry": 64,
+    "target_rows": "ceil(64*entries/(in_features/8))",
+    "sample_rows": "min(output_rows,max(64,target_rows))",
+    "row_selection": "sha256(qname)-seeded_cpu_randperm_prefix",
+    "vector_cap": LLOYD_CAP,
+    "vector_cap_selection": "sha256(qname,rung)-seeded_cpu_randperm_prefix",
+    "lloyd_iters": LLOYD_ITERS,
+    "lloyd_seed": LLOYD_SEED,
+    "initializer": "fixed_lattice",
+    "normalization": "cand0_v1",
+    "assignment": "imatrix_weighted",
+    "centroid_accumulation": "stable_sort_segment_sum",
+    "materialization_dtype": "float16",
+}
+
+
+def _default_v2_rung_policy() -> dict[int, dict[str, object]]:
+    return {
+        rung: {
+            "enabled": False,
+            "status": "default_lattice_unpromoted",
+            "provenance": CB_LEARNED_TRAINER_V2_SCHEMA,
+        }
+        for rung in CBL_STEP4_RUNGS
+    }
+
+
+@dataclass(frozen=True)
+class LearnedV2PoolResult:
+    tables: tuple[torch.Tensor, ...]
+    provenance: Mapping[str, object]
+
+
+def _trainer_stamp(version: str) -> dict[str, object]:
+    normalized = str(version).strip().lower().replace("learned-", "")
+    if normalized == "v1":
+        return dict(CB_LEARNED_TRAINER_STAMP)
+    if normalized == "v2":
+        return dict(CB_LEARNED_TRAINER_V2_STAMP)
+    raise ValueError(f"learned bundle trainer_version must be v1 or v2, got {version!r}")
+
 
 def _canonical_format(format_name: str) -> tuple[str, object, int]:
     parsed = parse_format_name(str(format_name).strip().upper())
     if parsed is None:
         raise ValueError(f"{format_name!r} is not a producer CB format")
     family, rung = parsed
-    return family.name(rung), family, int(rung)
+    # Readers and the v1 compatibility trainer retain legacy off-law FP8
+    # bundle compatibility.  Learned-v2 applies an explicit producer-rung
+    # gate before selecting sources.
+    return family.accepted_name(rung), family, int(rung)
 
 
 def require_cbl_rung_enabled(rung_or_format: int | str) -> int:
@@ -366,6 +428,354 @@ def learn_pool(
     )
 
 
+def _stable_qname_generator(qname: str, *, purpose: str) -> torch.Generator:
+    name = str(qname).strip()
+    if not name:
+        raise ValueError("learned-v2 row selection needs a nonempty qname")
+    digest = hashlib.sha256(
+        (CB_LEARNED_V2_SAMPLING_SCHEMA + "\0" + purpose + "\0" + name).encode(
+            "utf-8"
+        )
+    ).digest()
+    # ``manual_seed`` accepts signed 64-bit values on every supported torch.
+    seed = int.from_bytes(digest[:8], byteorder="little") & ((1 << 63) - 1)
+    return torch.Generator(device="cpu").manual_seed(seed)
+
+
+def _index_sha256(value: torch.Tensor) -> str:
+    raw = (
+        torch.as_tensor(value)
+        .detach()
+        .to(device="cpu", dtype=torch.int64)
+        .contiguous()
+        .numpy()
+        .astype("<i8", copy=False)
+        .tobytes(order="C")
+    )
+    return hashlib.sha256(raw).hexdigest()
+
+
+def learned_v2_sampling_plan(
+    *,
+    qname: str,
+    output_rows: int,
+    in_features: int,
+    population: int,
+    rung: int,
+) -> tuple[torch.Tensor, dict[str, object]]:
+    """Return stable selected rows and the complete learned-v2 density record."""
+
+    output_rows = int(output_rows)
+    in_features = int(in_features)
+    population = int(population)
+    rung = int(rung)
+    if output_rows <= 0 or in_features <= 0 or population <= 0:
+        raise ValueError(
+            "learned-v2 sampling dimensions must be positive, got "
+            f"population={population}, output_rows={output_rows}, "
+            f"in_features={in_features}"
+        )
+    if in_features % cb.VEC_DIM:
+        raise ValueError(
+            f"learned-v2 in_features={in_features} is not divisible by "
+            f"{cb.VEC_DIM}"
+        )
+    canonical, family, _ = _canonical_format(f"FP8_CB_K{rung}")
+    if family.grid != "fp8" or family.mode != "product":
+        raise ValueError(f"{canonical}: learned-v2 requires an FP8 product rung")
+    widths = subtable_bit_widths(rung, family.mode, family.n_sub)
+    entries = 1 << max(widths)
+    vectors_per_row = in_features // cb.VEC_DIM
+    target_rows = (
+        64 * entries + vectors_per_row - 1
+    ) // vectors_per_row
+    requested_rows = max(64, target_rows)
+    sample_rows = min(output_rows, requested_rows)
+    selected_rows = torch.randperm(
+        output_rows,
+        generator=_stable_qname_generator(qname, purpose="rows"),
+    )[:sample_rows]
+    available_vectors = population * sample_rows * vectors_per_row
+    selected_vectors = min(available_vectors, LLOYD_CAP)
+    target_vectors = 64 * entries
+    density_shortfall_vectors = max(0, target_vectors - selected_vectors)
+    provenance: dict[str, object] = {
+        "schema": CB_LEARNED_V2_SAMPLING_SCHEMA,
+        "source": "trained",
+        "qname": str(qname),
+        "rung": rung,
+        "population": population,
+        "output_rows": output_rows,
+        "in_features": in_features,
+        "subtable_bit_widths": list(widths),
+        "entries": entries,
+        "vectors_per_entry_target": 64,
+        "vectors_per_row": vectors_per_row,
+        "target_rows": target_rows,
+        "requested_rows": requested_rows,
+        "sample_rows": sample_rows,
+        "row_selection_sha256": _index_sha256(selected_rows),
+        "available_vectors": available_vectors,
+        "vector_cap": LLOYD_CAP,
+        "selected_vectors": selected_vectors,
+        "target_vectors": target_vectors,
+        "density_shortfall": density_shortfall_vectors > 0,
+        "density_shortfall_vectors": density_shortfall_vectors,
+        "achieved_vectors_per_entry": selected_vectors / entries,
+        "centroid_accumulation": "stable_sort_segment_sum",
+    }
+    return selected_rows, provenance
+
+
+def learn_pool_v2(
+    weight: torch.Tensor,
+    col_weights: torch.Tensor,
+    rung: int,
+    *,
+    qname: str,
+) -> LearnedV2PoolResult:
+    """Density-aware, qname-stable learned FP8 product-codebook trainer.
+
+    This is opt-in and receipt-gated at bundle construction.  The v1 trainer
+    above remains untouched for old artifacts and legacy studies.
+    """
+
+    weight = torch.as_tensor(weight)
+    col_weights = torch.as_tensor(col_weights)
+    if weight.ndim != 3:
+        raise ValueError(
+            "learn_pool_v2 weight must have shape "
+            "[population, rows, in_features], got "
+            f"{tuple(weight.shape)}"
+        )
+    population, rows, in_features = (int(dim) for dim in weight.shape)
+    if col_weights.ndim == 3 and int(col_weights.shape[1]) == 1:
+        col_weights = col_weights[:, 0, :]
+    if tuple(col_weights.shape) != (population, in_features):
+        raise ValueError(
+            "learn_pool_v2 col_weights must have shape "
+            "[population, in_features], got "
+            f"{tuple(col_weights.shape)} for weight {tuple(weight.shape)}"
+        )
+    selected_rows, provenance = learned_v2_sampling_plan(
+        qname=qname,
+        output_rows=rows,
+        in_features=in_features,
+        population=population,
+        rung=rung,
+    )
+    device = weight.device
+    cuda_capability = (
+        list(torch.cuda.get_device_capability(device))
+        if device.type == "cuda"
+        else None
+    )
+    provenance["repeat_scope"] = {
+        "policy": "exact_within_fixed_build_device",
+        "torch_version": str(torch.__version__),
+        "cuda_version": (
+            None if torch.version.cuda is None else str(torch.version.cuda)
+        ),
+        "device_type": device.type,
+        "cuda_capability": cuda_capability,
+    }
+    device_rows = selected_rows.to(device=device)
+    vectors: list[torch.Tensor] = []
+    vector_weights: list[torch.Tensor] = []
+    for population_index in range(population):
+        values, _, _ = cb._scale_and_vectorize(
+            weight[population_index].index_select(0, device_rows).to(
+                torch.float32
+            ),
+            "fp8",
+        )
+        vectors.append(values)
+        pattern = _wq_pattern(
+            col_weights[population_index].to(device)
+        ).unsqueeze(0).expand(
+            len(selected_rows), in_features // cb.VEC_DIM, cb.VEC_DIM
+        ).reshape(-1, cb.VEC_DIM)
+        vector_weights.append(pattern)
+    pooled_values = torch.cat(vectors)
+    pooled_weights = torch.cat(vector_weights)
+    if pooled_values.shape[0] > LLOYD_CAP:
+        selected_vectors = torch.randperm(
+            pooled_values.shape[0],
+            generator=_stable_qname_generator(
+                qname,
+                purpose=f"vector-cap-K{int(rung)}",
+            ),
+        )[:LLOYD_CAP]
+        provenance["vector_selection_sha256"] = _index_sha256(selected_vectors)
+        device_vectors = selected_vectors.to(device=device)
+        pooled_values = pooled_values.index_select(0, device_vectors)
+        pooled_weights = pooled_weights.index_select(0, device_vectors)
+    else:
+        provenance["vector_selection_sha256"] = _index_sha256(
+            torch.arange(pooled_values.shape[0], dtype=torch.int64)
+        )
+
+    family = family_for("fp8", "product")
+    widths = subtable_bit_widths(int(rung), "product", family.n_sub)
+    sub_dim = cb.VEC_DIM // family.n_sub
+    tables = tuple(
+        cb.learn_codebook(
+            pooled_values[:, index * sub_dim:(index + 1) * sub_dim],
+            bits,
+            grid="fp8",
+            col_weights=pooled_weights[
+                :, index * sub_dim:(index + 1) * sub_dim
+            ],
+            init=cb.fixed_lattice(bits, "fp8", sub_dim).to(device),
+            iters=LLOYD_ITERS,
+            seed=LLOYD_SEED,
+            accumulation="fixed_order",
+        )
+        for index, bits in enumerate(widths)
+    )
+    return LearnedV2PoolResult(tables=tables, provenance=provenance)
+
+
+def _validate_v2_training_provenance(
+    value: object,
+    *,
+    qname: str,
+    rung: int,
+    where: str,
+) -> Mapping[str, object]:
+    record = _require_mapping(value, where=where)
+    common = {"schema", "source", "qname", "rung"}
+    if record.get("schema") != CB_LEARNED_V2_SAMPLING_SCHEMA:
+        raise ValueError(f"{where}: learned-v2 sampling schema differs")
+    if record.get("qname") != qname or record.get("rung") != rung:
+        raise ValueError(f"{where}: learned-v2 sampling coordinates differ")
+    source = record.get("source")
+    if source == "pretrained":
+        if set(record) != common:
+            raise ValueError(f"{where}: pretrained provenance members differ")
+        return record
+    trained_members = common | {
+        "population",
+        "output_rows",
+        "in_features",
+        "subtable_bit_widths",
+        "entries",
+        "vectors_per_entry_target",
+        "vectors_per_row",
+        "target_rows",
+        "requested_rows",
+        "sample_rows",
+        "row_selection_sha256",
+        "available_vectors",
+        "vector_cap",
+        "selected_vectors",
+        "target_vectors",
+        "density_shortfall",
+        "density_shortfall_vectors",
+        "achieved_vectors_per_entry",
+        "centroid_accumulation",
+        "vector_selection_sha256",
+        "repeat_scope",
+    }
+    if source != "trained" or set(record) != trained_members:
+        raise ValueError(f"{where}: trained provenance members differ")
+
+    def positive_int(name: str) -> int:
+        raw = record.get(name)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+            raise ValueError(f"{where}.{name} must be a positive integer")
+        return raw
+
+    population = positive_int("population")
+    rows = positive_int("output_rows")
+    in_features = positive_int("in_features")
+    entries = positive_int("entries")
+    vectors_per_row = positive_int("vectors_per_row")
+    target_rows = positive_int("target_rows")
+    requested_rows = positive_int("requested_rows")
+    sample_rows = positive_int("sample_rows")
+    available_vectors = positive_int("available_vectors")
+    vector_cap = positive_int("vector_cap")
+    selected_vectors = positive_int("selected_vectors")
+    target_vectors = positive_int("target_vectors")
+    if in_features % cb.VEC_DIM:
+        raise ValueError(f"{where}: in_features is not vector aligned")
+    widths = subtable_bit_widths(rung, "product", 4)
+    expected_entries = 1 << max(widths)
+    expected_vectors_per_row = in_features // cb.VEC_DIM
+    expected_target_rows = (
+        64 * expected_entries + expected_vectors_per_row - 1
+    ) // expected_vectors_per_row
+    expected_sample_rows = min(rows, max(64, expected_target_rows))
+    expected_available = population * expected_sample_rows * expected_vectors_per_row
+    expected_selected = min(expected_available, LLOYD_CAP)
+    expected_target_vectors = 64 * expected_entries
+    expected_shortfall = max(0, expected_target_vectors - expected_selected)
+    if (
+        record.get("subtable_bit_widths") != list(widths)
+        or entries != expected_entries
+        or record.get("vectors_per_entry_target") != 64
+        or vectors_per_row != expected_vectors_per_row
+        or target_rows != expected_target_rows
+        or requested_rows != max(64, expected_target_rows)
+        or sample_rows != expected_sample_rows
+        or available_vectors != expected_available
+        or vector_cap != LLOYD_CAP
+        or selected_vectors != expected_selected
+        or target_vectors != expected_target_vectors
+        or record.get("density_shortfall") != (expected_shortfall > 0)
+        or record.get("density_shortfall_vectors") != expected_shortfall
+        or record.get("centroid_accumulation") != "stable_sort_segment_sum"
+    ):
+        raise ValueError(f"{where}: learned-v2 sampling arithmetic differs")
+    if expected_shortfall > 0:
+        raise ValueError(
+            f"{where}: promoted learned-v2 cell has a density shortfall; "
+            "lattice wins"
+        )
+    achieved = record.get("achieved_vectors_per_entry")
+    if isinstance(achieved, bool) or not isinstance(achieved, (int, float)):
+        raise ValueError(f"{where}: achieved density is not numeric")
+    if float(achieved) != selected_vectors / entries:
+        raise ValueError(f"{where}: achieved density differs")
+    for name in ("row_selection_sha256", "vector_selection_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(record.get(name, ""))):
+            raise ValueError(f"{where}.{name} is not a SHA-256")
+    repeat_scope = _require_mapping(
+        record.get("repeat_scope"), where=f"{where}.repeat_scope"
+    )
+    if set(repeat_scope) != {
+        "policy",
+        "torch_version",
+        "cuda_version",
+        "device_type",
+        "cuda_capability",
+    }:
+        raise ValueError(f"{where}.repeat_scope members differ")
+    if (
+        repeat_scope.get("policy") != "exact_within_fixed_build_device"
+        or not isinstance(repeat_scope.get("torch_version"), str)
+        or not repeat_scope["torch_version"]
+        or repeat_scope.get("device_type") not in {"cpu", "cuda"}
+        or (
+            repeat_scope.get("cuda_version") is not None
+            and not isinstance(repeat_scope.get("cuda_version"), str)
+        )
+    ):
+        raise ValueError(f"{where}.repeat_scope is malformed")
+    capability = repeat_scope.get("cuda_capability")
+    if repeat_scope["device_type"] == "cuda":
+        if (
+            not isinstance(capability, list)
+            or len(capability) != 2
+            or any(isinstance(item, bool) or not isinstance(item, int) for item in capability)
+        ):
+            raise ValueError(f"{where}.repeat_scope CUDA capability is malformed")
+    elif capability is not None:
+        raise ValueError(f"{where}.repeat_scope CPU capability must be null")
+    return record
+
+
 def canonical_codebook_refs(
     qname: str,
     format_name: str,
@@ -428,6 +838,35 @@ def _canonical_json(value: object) -> str:
     )
 
 
+def _validated_complete_source_identity(
+    identity: object,
+    *,
+    where: str,
+) -> dict[str, object]:
+    """Require the value-bearing, full indexed-checkpoint identity contract."""
+
+    try:
+        validated = validate_streamed_model_identity(identity, where=where)
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+    source = validated.get("source")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError(f"{where} requires a nonempty source model id")
+    checkpoint_weight_map = validated.get("checkpoint_weight_map")
+    if not isinstance(checkpoint_weight_map, dict) or not checkpoint_weight_map:
+        raise ValueError(
+            f"{where} requires a complete checkpoint_weight_map; a decoder-"
+            "only or name-only identity cannot authorize learned-v2 promotion"
+        )
+    return validated
+
+
+def _nonempty_binding(value: object, *, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{where} must be a nonempty string")
+    return value.strip()
+
+
 def _strict_json_loads(raw: str, *, where: str) -> object:
     def reject_duplicates(pairs):
         out = {}
@@ -468,7 +907,8 @@ def _normalize_formats_by_qname(
         raise ValueError(f"bundle formats name missing weight(s): {missing[:8]}")
     normalized: dict[str, tuple[str, ...]] = {}
     for qname, names in sorted(raw.items()):
-        canonical = tuple(sorted({_canonical_format(name)[0] for name in names}))
+        parsed_names = tuple(_canonical_format(name) for name in names)
+        canonical = tuple(sorted({entry[0] for entry in parsed_names}))
         if not canonical:
             raise ValueError(f"{qname}: bundle has no CB formats")
         normalized[qname] = canonical
@@ -730,6 +1170,13 @@ def train_and_save_bundle(
     col_weights: Mapping[str, torch.Tensor],
     formats: Sequence[str] | Mapping[str, Sequence[str]],
     learned_formats: Iterable[str] | None = None,
+    trainer_version: str = "v1",
+    promotion_receipt: (
+        Mapping[str, object] | ValidatedCBLPromotionReceipt | None
+    ) = None,
+    source_model_identity: Mapping[str, object] | None = None,
+    probe_calibration_hash: str | None = None,
+    imatrix_value_sha256: str | None = None,
     routed_moe_qnames: Iterable[str] = (),
     routed_book_keying: str | Mapping[str, str] | None = None,
     pretrained_codebooks: Mapping[tuple[str, str], object] | None = None,
@@ -743,11 +1190,13 @@ def train_and_save_bundle(
 ) -> CBLearnedBundle:
     """Train cells, canonicalize FP16 values, and publish one immutable bundle.
 
-    By default every policy-enabled supplied FP8-CB format is learned and all
-    other supplied formats are canonical lattice.  ``learned_formats`` can
-    explicitly narrow the learned FP8 set (an empty iterable produces an
-    all-lattice bundle); an explicit disabled rung is still refused.  The
-    formats may be common to all qnames or supplied per qname.  For large
+    The default ``trainer_version="v1"`` preserves the historical policy and
+    artifact identity.  Version 2 defaults every K4..K48 step-4 rung to
+    lattice and promotes a rung only when a complete two-holdout
+    ``promotion_receipt`` says learned.  With v2, an explicit
+    ``learned_formats`` must exactly match the receipt-derived sources; it
+    cannot override them.  The formats may be common to all qnames or supplied
+    per qname.  For large
     models, pass ``qnames`` plus ``weight_provider`` instead of ``weights``:
     each decoded weight is requested once, all of its rung cells are trained,
     and it is released before the next qname.  This keeps residency to one
@@ -796,12 +1245,77 @@ def train_and_save_bundle(
         if not target_names:
             raise ValueError("bundle training qnames must be non-empty")
         provide_weight = weight_provider
-    normalized_col = {str(name): torch.as_tensor(value) for name, value in col_weights.items()}
+    selected_trainer = _trainer_stamp(trainer_version)
+    trainer_schema = str(selected_trainer["schema"])
+    is_v2 = trainer_schema == CB_LEARNED_TRAINER_V2_SCHEMA
+    if not is_v2 and promotion_receipt is not None:
+        raise ValueError("promotion_receipt is valid only with trainer_version='v2'")
+    normalized_col = {
+        str(name): torch.as_tensor(value)
+        for name, value in col_weights.items()
+    }
     formats_by_qname = _normalize_formats_by_qname(target_names, formats)
     target_qnames = set(formats_by_qname)
     missing_col = sorted(target_qnames - set(normalized_col))
     if missing_col:
         raise ValueError(f"bundle cells are missing col_weights: {missing_col[:8]}")
+    validated_receipt: ValidatedCBLPromotionReceipt | None = None
+    validated_source_identity: dict[str, object] | None = None
+    bound_probe_calibration_hash: str | None = None
+    bound_imatrix_sha256: str | None = None
+    if promotion_receipt is not None:
+        validated_source_identity = _validated_complete_source_identity(
+            source_model_identity,
+            where="learned-v2 promotion source model identity",
+        )
+        bound_probe_calibration_hash = _nonempty_binding(
+            probe_calibration_hash,
+            where="learned-v2 actual probe calibration hash",
+        )
+        observed_imatrix_sha256 = canonical_imatrix_sha256(normalized_col)
+        bound_imatrix_sha256 = _nonempty_binding(
+            imatrix_value_sha256,
+            where="learned-v2 actual imatrix value_sha256",
+        ).lower()
+        if bound_imatrix_sha256 != observed_imatrix_sha256:
+            raise ValueError(
+                "learned-v2 supplied imatrix value_sha256 differs from the "
+                "bundle col_weights"
+            )
+        raw_receipt = (
+            promotion_receipt.payload
+            if isinstance(promotion_receipt, ValidatedCBLPromotionReceipt)
+            else promotion_receipt
+        )
+        qname_census = role_census_for_qnames(target_qnames)
+        validated_receipt = validate_promotion_receipt(
+            raw_receipt,
+            expected_model_id=str(validated_source_identity["source"]),
+            expected_model_content_sha256=str(
+                validated_source_identity["content_sha256"]
+            ),
+            expected_calibration_hash=bound_probe_calibration_hash,
+            expected_imatrix_sha256=bound_imatrix_sha256,
+            expected_role_census=qname_census,
+            expected_qnames=target_qnames,
+        )
+    elif any(
+        value is not None
+        for value in (
+            source_model_identity,
+            probe_calibration_hash,
+            imatrix_value_sha256,
+        )
+    ):
+        raise ValueError(
+            "learned-v2 promotion bindings are valid only with a promotion "
+            "receipt"
+        )
+    active_rung_policy = (
+        receipt_rung_policy(validated_receipt)
+        if validated_receipt is not None
+        else (_default_v2_rung_policy() if is_v2 else CBL_RUNG_POLICY)
+    )
     routed = {str(name) for name in routed_moe_qnames}
     if routed_book_keying is None or isinstance(routed_book_keying, str):
         declared_keying: dict[str, object] = {
@@ -867,18 +1381,38 @@ def train_and_save_bundle(
     supplied_formats = {
         fmt for names in formats_by_qname.values() for fmt in names
     }
-    if learned_formats is None:
-        learned = {
-            fmt for fmt in supplied_formats
-            if (
-                _canonical_format(fmt)[1].grid == "fp8"
-                and CBL_RUNG_POLICY.get(
-                    _canonical_format(fmt)[2], {}
-                ).get("enabled") is True
+    if is_v2:
+        off_ladder = sorted({
+            fmt
+            for fmt in supplied_formats
+            if not _canonical_format(fmt)[1].is_producer_rung(
+                _canonical_format(fmt)[2]
             )
-        }
+        })
+        if off_ladder:
+            raise ValueError(
+                "learned-v2 cannot produce legacy off-law rung(s): "
+                f"{off_ladder}"
+            )
+    policy_learned = {
+        fmt for fmt in supplied_formats
+        if (
+            _canonical_format(fmt)[1].grid == "fp8"
+            and active_rung_policy.get(
+                _canonical_format(fmt)[2], {}
+            ).get("enabled") is True
+        )
+    }
+    if learned_formats is None:
+        learned = policy_learned
     else:
         learned = {_canonical_format(fmt)[0] for fmt in learned_formats}
+        if is_v2 and learned != policy_learned:
+            raise ValueError(
+                "learned-v2 learned_formats must equal the promotion "
+                "receipt-derived source set: "
+                f"expected={sorted(policy_learned)}, got={sorted(learned)}"
+            )
     unknown_learned = sorted(learned - supplied_formats)
     if unknown_learned:
         raise ValueError(
@@ -891,7 +1425,21 @@ def train_and_save_bundle(
                 f"{fmt}: production learned bundle refuses NVFP4 CBL; it is "
                 "measured NO-GO"
             )
-        require_cbl_rung_enabled(rung)
+        if is_v2:
+            if rung not in CBL_STEP4_RUNGS:
+                raise ValueError(
+                    f"{fmt}: learned-v2 supports only the K4..K48 step-4 ladder"
+                )
+            if validated_receipt is None:
+                raise ValueError(
+                    f"{fmt}: learned-v2 requires a validated promotion receipt"
+                )
+            if active_rung_policy[rung]["enabled"] is not True:
+                raise ValueError(
+                    f"{fmt}: learned-v2 receipt did not promote this rung"
+                )
+        else:
+            require_cbl_rung_enabled(rung)
 
     inputs: dict[str, dict[str, object]] = {}
     aliases: dict[str, dict[str, object]] = {}
@@ -959,6 +1507,7 @@ def train_and_save_bundle(
                     f"{qname}/{canonical}: a pretrained book was supplied for "
                     "a lattice cell"
                 )
+            training_provenance: Mapping[str, object] | None = None
             if source == "learned":
                 refuse_routed_moe_learned(
                     qname,
@@ -978,8 +1527,29 @@ def train_and_save_bundle(
                         f"{qname}: learned CBL col_weights has {cw.numel()} "
                         f"values, expected {population}x{in_features}"
                     )
+                if is_v2:
+                    _rows, preview_provenance = learned_v2_sampling_plan(
+                        qname=qname,
+                        output_rows=int(weight.shape[-2]),
+                        in_features=in_features,
+                        population=population,
+                        rung=rung,
+                    )
+                    if preview_provenance["density_shortfall"] is True:
+                        raise ValueError(
+                            f"{qname}/{canonical}: promotion receipt says "
+                            "learned but the current source matrix has a "
+                            "learned-v2 density shortfall; lattice wins"
+                        )
                 if supplied is not None:
                     tables = _codebook_sequence(canonical, supplied)
+                    if is_v2:
+                        training_provenance = {
+                            "schema": CB_LEARNED_V2_SAMPLING_SCHEMA,
+                            "source": "pretrained",
+                            "qname": qname,
+                            "rung": rung,
+                        }
                 elif weight.ndim == 3:
                     raise ValueError(
                         f"{qname}/{canonical}: routed-MoE learned CBL requires "
@@ -987,18 +1557,46 @@ def train_and_save_bundle(
                         "retraining is forbidden"
                     )
                 else:
-                    trained = learn_pool(
-                        weight.unsqueeze(0),
-                        cw.reshape(1, in_features),
-                        rung,
-                    )
+                    if is_v2:
+                        trained_v2 = learn_pool_v2(
+                            weight.unsqueeze(0),
+                            cw.reshape(1, in_features),
+                            rung,
+                            qname=qname,
+                        )
+                        training_provenance = trained_v2.provenance
+                        if training_provenance["density_shortfall"] is True:
+                            raise ValueError(
+                                f"{qname}/{canonical}: learned-v2 trainer "
+                                "reported a density shortfall after preview; "
+                                "lattice wins"
+                            )
+                        trained = trained_v2.tables
+                    else:
+                        trained = learn_pool(
+                            weight.unsqueeze(0),
+                            cw.reshape(1, in_features),
+                            rung,
+                        )
                     tables = _codebook_sequence(canonical, trained)
             else:
                 tables = _lattice_codebook(canonical)
             refs = canonical_codebook_refs(qname, canonical, source=source)
-            digests: list[str] = []
-            for ref, table in zip(refs, tables, strict=True):
-                digest = codebook_table_sha256(table)
+            digests = [codebook_table_sha256(table) for table in tables]
+            if is_v2 and source == "learned":
+                assert validated_receipt is not None
+                expected_candidate_digests = (
+                    validated_receipt.candidate_digests(qname, rung)
+                )
+                if tuple(digests) != expected_candidate_digests:
+                    raise ValueError(
+                        f"{qname}/{canonical}: materialized learned table "
+                        "digests differ from the exact promotion candidate; "
+                        "refusing arbitrary retraining or bank substitution"
+                    )
+            for ref, table, digest in zip(
+                refs, tables, digests, strict=True
+            ):
                 previous = tensors.get(ref)
                 if previous is not None and not torch.equal(previous, table):
                     raise ValueError(
@@ -1017,14 +1615,16 @@ def train_and_save_bundle(
                     )
                 tensors.setdefault(ref, table)
                 owners.setdefault(ref, owner)
-                digests.append(digest)
             cells[qname][canonical] = {
                 "source": source,
                 "codebook_ref": list(refs),
                 "content_sha256": digests,
                 **({
-                    "rung_policy": dict(CBL_RUNG_POLICY[rung]),
+                    "rung_policy": dict(active_rung_policy[rung]),
                 } if source == "learned" else {}),
+                **({
+                    "training_provenance": dict(training_provenance),
+                } if training_provenance is not None else {}),
                 **({
                     "routed_book_keying": keying_by_qname[qname],
                 } if source == "learned" and qname in keying_by_qname else {}),
@@ -1042,11 +1642,19 @@ def train_and_save_bundle(
     }
     manifest: dict[str, object] = {
         "schema": CB_LEARNED_BUNDLE_SCHEMA,
-        "trainer": dict(CB_LEARNED_TRAINER_STAMP),
+        "trainer": selected_trainer,
         "rung_policy": {
             str(rung): dict(policy)
-            for rung, policy in sorted(CBL_RUNG_POLICY.items())
+            for rung, policy in sorted(active_rung_policy.items())
         },
+        **({
+            "promotion_receipt": dict(validated_receipt.payload),
+            "promotion_bindings": {
+                "source_model_identity": validated_source_identity,
+                "probe_calibration_hash": bound_probe_calibration_hash,
+                "imatrix_value_sha256": bound_imatrix_sha256,
+            },
+        } if validated_receipt is not None else {}),
         "inputs": inputs,
         **({"aliases": aliases} if aliases else {}),
         "cells": cells,
@@ -1093,6 +1701,13 @@ def train_and_save_bundle_streaming(
     col_weights: Mapping[str, torch.Tensor],
     formats: Sequence[str] | Mapping[str, Sequence[str]],
     learned_formats: Iterable[str] | None = None,
+    trainer_version: str = "v1",
+    promotion_receipt: (
+        Mapping[str, object] | ValidatedCBLPromotionReceipt | None
+    ) = None,
+    source_model_identity: Mapping[str, object] | None = None,
+    probe_calibration_hash: str | None = None,
+    imatrix_value_sha256: str | None = None,
     routed_moe_qnames: Iterable[str] = (),
     routed_book_keying: str | Mapping[str, str] | None = None,
     pretrained_codebooks: Mapping[tuple[str, str], object] | None = None,
@@ -1113,6 +1728,11 @@ def train_and_save_bundle_streaming(
         col_weights=col_weights,
         formats=formats,
         learned_formats=learned_formats,
+        trainer_version=trainer_version,
+        promotion_receipt=promotion_receipt,
+        source_model_identity=source_model_identity,
+        probe_calibration_hash=probe_calibration_hash,
+        imatrix_value_sha256=imatrix_value_sha256,
         routed_moe_qnames=routed_moe_qnames,
         routed_book_keying=routed_book_keying,
         pretrained_codebooks=pretrained_codebooks,
@@ -1159,7 +1779,11 @@ def load_bundle(path: str | Path) -> CBLearnedBundle:
         "codebook_content_sha256",
         "bundle_content_sha256",
     }
-    allowed_top_level = required_top_level | {"aliases"}
+    allowed_top_level = required_top_level | {
+        "aliases",
+        "promotion_receipt",
+        "promotion_bindings",
+    }
     if not required_top_level <= set(manifest) or not set(manifest) <= allowed_top_level:
         raise ValueError(
             f"{path}: learned bundle manifest members differ: "
@@ -1167,14 +1791,82 @@ def load_bundle(path: str | Path) -> CBLearnedBundle:
             f"unknown={sorted(set(manifest) - allowed_top_level)}"
         )
     trainer = _require_mapping(manifest.get("trainer"), where=f"{path} trainer")
-    if dict(trainer) != CB_LEARNED_TRAINER_STAMP:
+    receipt: ValidatedCBLPromotionReceipt | None = None
+    if dict(trainer) == CB_LEARNED_TRAINER_STAMP:
+        is_v2 = False
+        if "promotion_receipt" in manifest or "promotion_bindings" in manifest:
+            raise ValueError(
+                f"{path}: v1 bundle cannot carry learned-v2 promotion data"
+            )
+        load_rung_policy = CBL_RUNG_POLICY
+    elif dict(trainer) == CB_LEARNED_TRAINER_V2_STAMP:
+        is_v2 = True
+        raw_receipt = manifest.get("promotion_receipt")
+        if raw_receipt is None:
+            if "promotion_bindings" in manifest:
+                raise ValueError(
+                    f"{path}: learned-v2 lattice-default bundle cannot carry "
+                    "orphaned promotion bindings"
+                )
+            load_rung_policy = _default_v2_rung_policy()
+        else:
+            bindings = _require_mapping(
+                manifest.get("promotion_bindings"),
+                where=f"{path} promotion_bindings",
+            )
+            expected_binding_members = {
+                "source_model_identity",
+                "probe_calibration_hash",
+                "imatrix_value_sha256",
+            }
+            if set(bindings) != expected_binding_members:
+                raise ValueError(
+                    f"{path}: promotion binding members differ"
+                )
+            source_identity = _validated_complete_source_identity(
+                bindings.get("source_model_identity"),
+                where=f"{path} promotion source model identity",
+            )
+            calibration_hash = _nonempty_binding(
+                bindings.get("probe_calibration_hash"),
+                where=f"{path} promotion probe calibration hash",
+            )
+            imatrix_sha256 = _nonempty_binding(
+                bindings.get("imatrix_value_sha256"),
+                where=f"{path} promotion imatrix value_sha256",
+            ).lower()
+            if re.fullmatch(r"[0-9a-f]{64}", imatrix_sha256) is None:
+                raise ValueError(
+                    f"{path}: promotion imatrix value_sha256 is malformed"
+                )
+            raw_cells_for_census = _require_mapping(
+                manifest.get("cells"), where=f"{path} cells"
+            )
+            cell_qnames = tuple(str(name) for name in raw_cells_for_census)
+            role_census = role_census_for_qnames(cell_qnames)
+            receipt = validate_promotion_receipt(
+                _require_mapping(
+                    raw_receipt,
+                    where=f"{path} promotion_receipt",
+                ),
+                expected_model_id=str(source_identity["source"]),
+                expected_model_content_sha256=str(
+                    source_identity["content_sha256"]
+                ),
+                expected_calibration_hash=calibration_hash,
+                expected_imatrix_sha256=imatrix_sha256,
+                expected_role_census=role_census,
+                expected_qnames=cell_qnames,
+            )
+            load_rung_policy = receipt_rung_policy(receipt)
+    else:
         raise ValueError(f"{path}: learned bundle trainer identity differs")
     observed_policy = _require_mapping(
         manifest.get("rung_policy"), where=f"{path} rung_policy"
     )
     expected_policy = {
         str(rung): dict(policy)
-        for rung, policy in sorted(CBL_RUNG_POLICY.items())
+        for rung, policy in sorted(load_rung_policy.items())
     }
     if dict(observed_policy) != expected_policy:
         raise ValueError(f"{path}: learned bundle rung policy differs")
@@ -1288,6 +1980,8 @@ def load_bundle(path: str | Path) -> CBLearnedBundle:
             expected_cell_members = {
                 "source", "codebook_ref", "content_sha256"
             } | ({"rung_policy"} if source == "learned" else set())
+            if is_v2 and source == "learned":
+                expected_cell_members.add("training_provenance")
             if "routed_book_keying" in cell:
                 # Absent means a pre-R1 bundle, whose routed books ARE per
                 # role; present, it must name a keying this producer knows.
@@ -1314,11 +2008,40 @@ def load_bundle(path: str | Path) -> CBLearnedBundle:
                 raise ValueError(
                     f"{path}: cell members differ for {qname}/{canonical}"
                 )
+            if is_v2 and family.grid == "fp8":
+                if rung not in CBL_STEP4_RUNGS:
+                    raise ValueError(
+                        f"{path}: learned-v2 has off-ladder cell "
+                        f"{qname}/{canonical}"
+                    )
+                receipt_source = (
+                    "learned" if load_rung_policy[rung]["enabled"] else "lattice"
+                )
+                if source != receipt_source:
+                    raise ValueError(
+                        f"{path}: learned-v2 source for {qname}/{canonical} "
+                        f"is {source}, receipt policy requires {receipt_source}"
+                    )
             if source == "learned":
                 if family.grid != "fp8" or family.mode != "product":
                     raise ValueError(f"{path}: learned non-FP8 cell {qname}/{canonical}")
-                require_cbl_rung_enabled(rung)
-                if cell.get("rung_policy") != CBL_RUNG_POLICY[rung]:
+                if is_v2:
+                    if load_rung_policy[rung]["enabled"] is not True:
+                        raise ValueError(
+                            f"{path}: learned-v2 rung K{rung} is not promoted"
+                        )
+                    _validate_v2_training_provenance(
+                        cell.get("training_provenance"),
+                        qname=str(qname),
+                        rung=rung,
+                        where=(
+                            f"{path} cells[{qname!r}]"
+                            f"[{canonical!r}].training_provenance"
+                        ),
+                    )
+                else:
+                    require_cbl_rung_enabled(rung)
+                if cell.get("rung_policy") != load_rung_policy[rung]:
                     raise ValueError(
                         f"{path}: learned rung policy differs for {qname}/{canonical}"
                     )
@@ -1383,6 +2106,20 @@ def load_bundle(path: str | Path) -> CBLearnedBundle:
                 )
             if len(cell_digests) != len(expected_refs):
                 raise ValueError(f"{path}: digest count differs for {qname}/{canonical}")
+            if is_v2 and source == "learned":
+                if receipt is None:
+                    raise ValueError(
+                        f"{path}: learned-v2 cell lacks a validated promotion "
+                        "receipt"
+                    )
+                candidate_digests = receipt.candidate_digests(
+                    str(qname), rung
+                )
+                if tuple(map(str, cell_digests)) != candidate_digests:
+                    raise ValueError(
+                        f"{path}: learned table digests for {qname}/{canonical} "
+                        "differ from the exact promotion candidate"
+                    )
             expected_shapes = codebook_subtable_shapes(
                 rung, family.mode, family.n_sub
             )
@@ -1473,6 +2210,9 @@ __all__ = [
     "CB_LEARNED_BUNDLE_SCHEMA",
     "CB_LEARNED_TRAINER_SCHEMA",
     "CB_LEARNED_TRAINER_STAMP",
+    "CB_LEARNED_TRAINER_V2_SCHEMA",
+    "CB_LEARNED_TRAINER_V2_STAMP",
+    "CB_LEARNED_V2_SAMPLING_SCHEMA",
     "CBLearnedBundle",
     "GRIDBOOK_ROUTED_MOE_PER_ROLE_CODEBOOK_LUT_MIN_VERSION",
     "LLOYD_CAP",
@@ -1480,11 +2220,14 @@ __all__ = [
     "LLOYD_ROW_SAMPLE",
     "LLOYD_ROW_SEED",
     "PretrainedCodebookCell",
+    "LearnedV2PoolResult",
     "LLOYD_SEED",
     "canonical_codebook_refs",
     "canonical_fp16_table",
     "codebook_table_sha256",
     "learn_pool",
+    "learn_pool_v2",
+    "learned_v2_sampling_plan",
     "load_bundle",
     "load_bundle_cached",
     "refuse_routed_moe_learned",

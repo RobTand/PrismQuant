@@ -54,6 +54,14 @@ _DSV4_GRIDBOOK_CONTRACT: dict | None = None
 _DSV4_GRIDBOOK_KWARGS: dict | None = None
 
 
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while block := handle.read(16 << 20):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _strict_json_text(value: object) -> str:
     """Serialize release evidence without JavaScript NaN/Infinity tokens."""
     try:
@@ -652,6 +660,7 @@ def _student_all_positions(args, payload, teacher_evidence=None) -> int:
         "model": args.model,
         "teacher_model": payload.get("model"),
         "teacher_payload": str(args.teacher_payload),
+        "teacher_payload_sha256": args.teacher_payload_sha256,
         "quantization": args.quantization,
         "n_samples": len(prompts),
         "seqlen": int(payload["seqlen"]),
@@ -676,6 +685,7 @@ def _student_all_positions(args, payload, teacher_evidence=None) -> int:
 
 def _student(args) -> int:
     started = time.monotonic()
+    teacher_payload_sha256 = _file_sha256(args.teacher_payload)
     teacher_evidence = None
     if args.teacher_meta:
         payload, teacher_evidence = load_teacher_evidence(
@@ -683,6 +693,9 @@ def _student(args) -> int:
         )
     else:
         payload = safe_load_torch_payload(args.teacher_payload)
+    if _file_sha256(args.teacher_payload) != teacher_payload_sha256:
+        raise RuntimeError("teacher payload changed while the student loaded it")
+    args.teacher_payload_sha256 = teacher_payload_sha256
     _assert_teacher_matches_candidate_source(args, teacher_evidence)
     if payload.get("score_positions") == "all":
         return _student_all_positions(args, payload, teacher_evidence)
@@ -705,6 +718,7 @@ def _student(args) -> int:
         "model": args.model,
         "teacher_model": payload.get("model"),
         "teacher_payload": str(args.teacher_payload),
+        "teacher_payload_sha256": teacher_payload_sha256,
         "quantization": args.quantization,
         "n_samples": len(prompts),
         "seqlen": int(payload["seqlen"]),

@@ -60,6 +60,13 @@ def test_dense_probe_unaffected(tmp_path):
     prepare_cost_context(p, act, "NVFP4", True)
 
 
+def test_reader_only_fp8_cb_rung_is_refused_by_explicit_cost_menu(tmp_path):
+    p = _write_probe(tmp_path, {}, DENSE)
+    act = _write_act_cache(tmp_path, DENSE)
+    with pytest.raises(SystemExit, match="reader-only"):
+        prepare_cost_context(p, act, "FP8_CB_K29", True)
+
+
 def test_escape_env_accepts_stale(tmp_path, monkeypatch):
     monkeypatch.setenv("PRISMAQUANT_ALLOW_SUMSQ_PACKED_FISHER", "1")
     p = _write_probe(tmp_path, {}, PACKED)

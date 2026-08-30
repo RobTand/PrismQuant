@@ -316,6 +316,29 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
     own spec files disagreed about one runtime; the runtime was never
     ambiguous.*
 
+15. **Measurement is first-class, and telemetry counts as measurement.**
+    Every claim about speed, cost, residency, or *where the time went* is
+    carried by a measurement, never by log-line reasoning. **Profile before
+    the change and after it — the delta is the claim**, and a bench number
+    without a profile does not establish where the time went. Two instruments,
+    both required, because they answer different questions: an **in-process
+    profiler** (`torch.profiler`, py-spy, `/proc/PID/io`, `nsys`) says where
+    time goes *inside* a run; the **Netdata series on both boxes** says whether
+    the box was actually loaded, which no in-process tool can see. Perf
+    delegations put profiler evidence in the acceptance criteria.
+    *Why it matters:* on 2026-08-28 the trellis encoder ran at 96% GPU
+    utilization and 47 W of a ~140 W envelope. Utilization said "saturated";
+    power said "one-third loaded". Power was right — fusing the step gave
+    **5.83× throughput, bit-exact**, while utilization read 96% on both sides
+    of the change and would have read 96% on an encoder ten times worse.
+    On GB10, **`gpu_utilization` is non-diagnostic under load** (it means "a
+    kernel is resident", not "the SMs are working") and `utilization.memory`
+    returns a fake hard 0. **Read power against the envelope; rank by work per
+    joule.** The envelope fraction also estimates remaining headroom, which
+    wall-clock cannot. This is the measurement half of principle 7: GPU-first
+    is a claim, and an unmeasured claim about a hot path is not evidence.
+
+
 ---
 
 ## 5. What counts as a win (measures of success)

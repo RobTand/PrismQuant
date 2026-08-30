@@ -820,6 +820,10 @@ class StreamedProductionAnchorRenderer:
         )
         self.render_count = 0
         self.max_live_rendered = 0
+        # Lazily bound source identities for units outside any CB scope
+        # (stock plans run no CB source binding); see
+        # source_weight_identity_for.
+        self._stock_source_identities: dict[str, dict[str, object]] = {}
 
     def render_layer(
         self,
@@ -1069,7 +1073,16 @@ class StreamedProductionAnchorRenderer:
     def source_weight_identity_for(
         self, qname: str,
     ) -> dict[str, object]:
-        """Return the source hash already computed by CB source binding."""
+        """Return the unit's source-weight value identity.
+
+        A CB render binds it during source binding and this method reads it
+        back rather than hashing twice.  A stock (non-CB) unit runs no CB
+        source binding at all, so its identity is bound here lazily from the
+        live source weight -- the render is transient and the live module
+        weight is never mutated, so the tensor hashed is exactly the source.
+        A unit *inside* a CB scope with no binding stays a hard refusal: that
+        is a lost identity, not a stock plan.
+        """
         identity = self.cache.metadata.get(CB_RENDER_IDENTITY_METADATA_KEY)
         shapes = (
             identity.get("source_weights_shapes")
@@ -1081,19 +1094,44 @@ class StreamedProductionAnchorRenderer:
         )
         name = str(qname)
         if (
-            not isinstance(shapes, Mapping)
-            or not isinstance(content, Mapping)
-            or name not in shapes
-            or name not in content
+            isinstance(shapes, Mapping)
+            and isinstance(content, Mapping)
+            and name in shapes
+            and name in content
         ):
+            return {
+                "shape": [int(dim) for dim in shapes[name]],
+                "sha256": str(content[name]).lower(),
+            }
+        cb_scope = (
+            identity.get("cb_formats_by_qname")
+            if isinstance(identity, Mapping) else None
+        )
+        if isinstance(cb_scope, Mapping) and name in cb_scope:
             raise RuntimeError(
                 f"production anchor renderer has no bound source identity "
                 f"for {name}"
             )
-        return {
-            "shape": [int(dim) for dim in shapes[name]],
-            "sha256": str(content[name]).lower(),
+        if name not in self.formats_by_qname:
+            raise RuntimeError(
+                f"production anchor renderer was asked for the source "
+                f"identity of unplanned unit {name}"
+            )
+        cached = self._stock_source_identities.get(name)
+        if cached is not None:
+            return dict(cached)
+        from prismaquant.production_weight_cache import (
+            _source_weight_value_identity,
+        )
+
+        weight = self.model.get_submodule(name).weight
+        shape, digest = _source_weight_value_identity(weight.data)
+        bound = {
+            "shape": [int(dim) for dim in shape],
+            "sha256": str(digest).lower(),
         }
+        self._stock_source_identities[name] = bound
+        return dict(bound)
 
     def bind_completed_source_weight_identities(
         self,
@@ -1644,11 +1682,28 @@ def run_streaming_render(
             where="streaming ProductionWeightCache final source binding",
         )
 
-    if coverage:
-        cache.metadata["packed_expert_coverage"] = coverage
+    # The packed-expert append writes its own render-score records, coverage
+    # and counters onto the cache as each layer is rendered
+    # (``_finalize_packed_expert_cache_metadata``). This finalizer must MERGE
+    # with them: ``render_formats_by_qname`` is dense-only (it is built from
+    # ``dense_modules``), so a plain overwrite would drop every packed record
+    # and under-count ``requested_entries`` by the packed key count — the
+    # exact union then refuses the shard it just built.
+    if coverage or "packed_expert_coverage" in cache.metadata:
+        merged_coverage = dict(cache.metadata.get("packed_expert_coverage") or {})
+        merged_coverage.update(coverage)
+        cache.metadata["packed_expert_coverage"] = merged_coverage
+    existing_scores = cache.metadata.get("render_scores")
+    packed_score_records = (
+        dict(existing_scores.get("records") or {})
+        if isinstance(existing_scores, Mapping) else {}
+    )
+    merged_score_records = {**packed_score_records, **render_score_records}
+    # Keep the dense plan sum as the dense-hole detector it is; add only the
+    # packed records the packed path actually produced.
     requested_entries = sum(
         len(fmts) for fmts in render_formats_by_qname.values()
-    )
+    ) + len(packed_score_records)
     cache.metadata.update({
         "render_scope": render_scope,
         "render_retention": (
@@ -1670,8 +1725,8 @@ def run_streaming_render(
         ],
         "render_scores": {
             "schema": "prismaquant.production_render_scores.v1",
-            "entries": int(len(render_score_records)),
-            "records": dict(sorted(render_score_records.items())),
+            "entries": int(len(merged_score_records)),
+            "records": dict(sorted(merged_score_records.items())),
         },
     })
     if not retain_rendered:

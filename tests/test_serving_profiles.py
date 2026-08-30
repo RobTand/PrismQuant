@@ -413,9 +413,11 @@ def test_vllm_lane_denies_the_a16_rungs_with_a_structural_reason():
 
 
 def test_nvfp4_cb_all_product_rungs_remain_in_every_production_scope():
+    from prismaquant.cb_layout import NVFP4_PRODUCT_RUNGS
+
     product_rungs = (
-        *(f"NVFP4_CB_K{k}" for k in range(12, 25)),
-        *(f"FP8_CB_K{k}" for k in range(28, 49)),
+        *(f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS),
+        *(f"FP8_CB_K{k}" for k in range(4, 49, 4)),
     )
     for qname, packed_expert in (
         (DENSE_QNAME, False),

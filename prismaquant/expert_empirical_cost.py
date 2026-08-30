@@ -154,11 +154,18 @@ def _baseline_logprobs(
     try:
         out = []
         bs = _calib_batch()
-        for i in range(0, calib_ids.shape[0], bs):
+        n_total = calib_ids.shape[0]
+        t0 = time.time()
+        for i in range(0, n_total, bs):
             logits = (forward_model or model)(
                 calib_ids[i:i + bs]
             ).logits.float()
             out.append(F.log_softmax(logits, dim=-1).cpu())
+            done = min(i + bs, n_total)
+            dt = time.time() - t0
+            tps = done * calib_ids.shape[1] / max(dt, 1e-9)
+            _log(f"baseline forward {done}/{n_total} windows "
+                 f"(batch={bs}, {dt:.0f}s elapsed, {tps:.0f} tok/s)")
     finally:
         for h in handles:
             h.remove()
@@ -673,6 +680,16 @@ def _unpacked_unit_kl(
             sample_idx=sample_idx,
         )
         _scatter_virtual_packed_module(unit, packed, expert_ids)
+        # The packed stacks are a full copy of the unit's expert mass
+        # (~25 GB on a GLM-5.3 layer) and are redundant once scattered
+        # back into the live members. Holding them through the forward
+        # streams stacked a third expert-mass copy on top of `originals`
+        # + resident weights and wedged the box twice; free the blocks
+        # back to the shared pool before the eval forwards.
+        for parent, _projections in unit.roles:
+            delattr(packed, parent)
+        del packed
+        torch.cuda.empty_cache()
         total = 0.0
         n_tok = 0
         windows: list[float] = []
@@ -697,6 +714,11 @@ def _unpacked_unit_kl(
             original = originals.get(member.qname)
             if original is not None:
                 member.module.weight.data.copy_(original)
+        # Return the clone's ~25 GB to the shared pool before the next
+        # format's eval clones again (unified memory: allocator-cached
+        # blocks are invisible to `avail` and to other processes).
+        originals.clear()
+        torch.cuda.empty_cache()
 
 
 def _cb_ladder_split(measured_fmts: Sequence[str]):
@@ -1788,9 +1810,11 @@ def measure_expert_unit_costs_streamed(
         )
 
     results: dict[str, dict[str, object]] = dict(completed)
-    for qname in pending:
+    t_units0 = time.time()
+    for u_i, qname in enumerate(pending):
         if progress:
-            _log(f"streamed unit {qname}")
+            _log(f"streamed unit {qname} ({u_i + 1}/{len(pending)})")
+        t_unit0 = time.time()
         exact_filter = rf"\A{re.escape(qname)}\Z"
         unit_menu = menu_by_unit[qname]
         with runner.pin_layer_for_qname(qname):
@@ -1833,6 +1857,13 @@ def measure_expert_unit_costs_streamed(
                 identity_sha256=journal_identity_sha256,
                 state=state,
             )
+        if progress:
+            dt = time.time() - t_unit0
+            rate = (time.time() - t_units0) / (u_i + 1)
+            eta_min = rate * (len(pending) - u_i - 1) / 60.0
+            _log(f"unit {qname} done in {dt:.0f}s "
+                 f"({sorted(unit_kls[qname])}); "
+                 f"~{eta_min:.0f} min left for {len(pending) - u_i - 1} units")
 
     stats: dict = {}
     costs: dict = {}
@@ -1848,6 +1879,467 @@ def measure_expert_unit_costs_streamed(
         )
     else:
         measure_expert_unit_costs.last_cross_family_verdict = None
+    measure_expert_unit_costs.last_added_col_weights = []
+    return stats, costs, unit_kls
+
+
+@torch.no_grad()
+def _fork_quantized_unit(
+    runner,
+    batch,
+    layer: int,
+    unit_kind: str,
+    storage,
+    qn: str,
+    fmt: str,
+    *,
+    profile,
+    expert_chunk: int,
+    col_weights: Mapping[str, torch.Tensor],
+    rows_meta: dict,
+) -> torch.Tensor:
+    """One fork step: run this unit's layer with an export-equivalent
+    quantized COPY of its expert weights on the baseline boundary input.
+
+    The live module is never mutated — each expert Parameter attribute is
+    swapped for the quantized copy for exactly one layer call and the
+    ORIGINAL Parameter object is reattached in ``finally`` (so the
+    streaming cache's install/unload bookkeeping sees the same objects).
+    The only transient is the quantized copy itself (~one unit of expert
+    mass); there is no restore clone.
+
+    Also captures ``rows_meta[qn]`` (member names/shapes/metadata) on the
+    first call, while the layer is resident.
+    """
+    from prismaquant.sensitivity_probe import _packed_experts_param_names
+
+    device = runner.device
+    swaps: list[tuple] = []
+    holder = nn.Module()
+    if unit_kind == "packed":
+        mod = storage
+        pnames = list(_packed_experts_param_names(mod, profile))
+        for pn in pnames:
+            live = getattr(mod, pn)
+            if not bool((live != 0).any()):
+                raise RuntimeError(
+                    f"{qn}.{pn}: packed-expert stack is ALL ZERO at fork "
+                    "time — the zero-expert calibration bug; a unit KL "
+                    "measured now would read exactly 0 for every format"
+                )
+            setattr(holder, pn, nn.Parameter(
+                live.data.clone(), requires_grad=False))
+        _quantize_unit_inplace(
+            holder, pnames, fmt,
+            expert_chunk=expert_chunk, col_weights=col_weights,
+            unit_qname=qn,
+        )
+        if qn not in rows_meta:
+            num_experts = int(getattr(mod, pnames[0]).shape[0])
+            members = []
+            for pn in pnames:
+                shape = list(getattr(mod, pn).shape)
+                members.append((
+                    f"{qn}.{pn}" if qn else pn,
+                    int(getattr(mod, pn).numel()),
+                    int(shape[2]),
+                    int(shape[1]),
+                    {
+                        "num_experts": num_experts,
+                        "_packed_experts_module": qn,
+                        "_packed_param": pn,
+                    },
+                ))
+            rows_meta[qn] = {
+                "n_params_unit": sum(m[1] for m in members),
+                "members": members,
+            }
+        for pn in pnames:
+            swaps.append((mod, pn, getattr(mod, pn),
+                          getattr(holder, pn)))
+    else:
+        unit = storage
+        packed = _virtual_packed_module(unit)
+        param_names = [parent for parent, _projections in unit.roles]
+        _quantize_unit_inplace(
+            packed, param_names, fmt,
+            expert_chunk=expert_chunk, col_weights=col_weights,
+            unit_qname=qn,
+        )
+        for parent, _projections in unit.roles:
+            setattr(holder, parent, getattr(packed, parent))
+            delattr(packed, parent)
+        del packed
+        if qn not in rows_meta:
+            members = [(
+                member.qname,
+                int(member.module.weight.numel()),
+                int(member.module.weight.shape[1]),
+                int(member.module.weight.shape[0]),
+                {"_unpacked_expert_unit": qn},
+            ) for member in unit.members]
+            rows_meta[qn] = {
+                "n_params_unit": sum(m[1] for m in members),
+                "members": members,
+            }
+        by_key = {
+            (member.projection_name, member.expert_id): member
+            for member in unit.members
+        }
+        for parent, projections in unit.roles:
+            stack = getattr(holder, parent)
+            offset = 0
+            for projection in projections:
+                width = int(by_key[(projection, 0)].module.weight.shape[0])
+                for expert_id in range(unit.num_experts):
+                    mod = by_key[(projection, expert_id)].module
+                    swaps.append((
+                        mod, "weight", mod.weight,
+                        nn.Parameter(
+                            stack[expert_id, offset:offset + width],
+                            requires_grad=False),
+                    ))
+                offset += width
+    try:
+        for mod, attr, _orig, q in swaps:
+            setattr(mod, attr, q if isinstance(q, nn.Parameter)
+                    else nn.Parameter(q, requires_grad=False))
+        fork_h = runner.isolated_layer(
+            batch, layer,
+            batch.activations_cpu[layer].to(device),
+            pass_state=None,
+        )
+    finally:
+        for mod, attr, orig, _q in swaps:
+            setattr(mod, attr, orig)
+    del swaps, holder
+    return fork_h
+
+
+@torch.no_grad()
+def measure_expert_unit_costs_forked(
+    runner,
+    profile,
+    calib_ids: torch.Tensor,
+    formats: Sequence[str],
+    *,
+    expert_chunk: int = 16,
+    progress: bool = True,
+    col_weights: Mapping[str, torch.Tensor] | None = None,
+    max_units: int = 0,
+    unit_filter: str | None = None,
+    checkpoint_dir: str | Path | None = None,
+    resume: bool = False,
+    model_identity: Mapping[str, object] | None = None,
+    checkpoint_identity_extra: Mapping[str, object] | None = None,
+) -> tuple[dict, dict, dict]:
+    """Forked-stream expert unit KLs: O(1) body streams instead of O(units).
+
+    The window-major streamed driver re-streams the whole body for EVERY
+    forward (a 306 GB source at 16 windows = ~1.1 TB of disk per unit,
+    ~47 TB for a 42-unit run — measured 2026-08-26 on GLM-5.3-Flash, GPU
+    idling at ~25% while the nvme pinned at 2 GB/s). This driver streams
+    the body THREE times total: one boundary-capture pass (baseline
+    activations at every decoder boundary + baseline logits), then one
+    pass per measured format in which every unit's quantized stream is
+    forked from its layer's baseline boundary and advanced through the
+    live layers together with all other forks.
+
+    Semantics per unit are identical to the window-major path: exactly one
+    unit quantized (export-equivalent packed render), everything else at
+    source precision, KL(BF16 || quantized) from fp32 log-softmax at the
+    head. Downstream route-flips propagate through the fork's own suffix,
+    so the empirical route-flip floor is preserved. Differences are
+    reassociation-class only (all windows forward in one batch instead of
+    ``_calib_batch()`` chunks).
+
+    The live model is NEVER mutated: the fork's layer call swaps each
+    member Linear's ``weight`` Parameter for a view into the quantized
+    packed stacks and reattaches the ORIGINAL Parameter objects in
+    ``finally`` — no restore clone exists, so the triple-expert-mass peak
+    that wedged the window-major runs (resident + clone + packed) cannot
+    recur; the transient is the packed render alone.
+
+    Fail-closed scope (v1): profiles with per-pass layer state, CB
+    formats (imatrix synthesis not wired), expert subsampling and the CB
+    ladder are refused — use the window-major driver for those. Packed
+    and unpacked units are both handled; the packed all-zero-stack guard
+    fires at fork time (the unpacked variant relies on the window driver's
+    discovery-time check if you re-enable it there).
+    Checkpoint granularity is the whole run: per-unit rows are journaled
+    only after every format pass completes, so a mid-pass crash re-pays
+    the passes (~1 h at GLM scale), never the journal identity.
+    """
+    if profile.new_forward_pass_state() != {}:
+        raise RuntimeError(
+            "forked expert eval requires stateless layer passes; profile "
+            f"{type(profile).__name__} declares per-pass state — use the "
+            "window-major streamed driver"
+        )
+    profile = resolve_routed_expert_profile(runner.model, profile)
+    menu = _canon_formats(formats)
+    measured_fmts = [f for f in menu if f not in PASSTHROUGH_FORMATS]
+    cb_fmts = [f for f in measured_fmts
+               if fr.get_format(f).family in _CB_FAMILIES]
+    if cb_fmts:
+        raise RuntimeError(
+            f"forked expert eval does not support CB formats {cb_fmts}; "
+            "use the window-major streamed driver"
+        )
+    weights = {
+        str(name): torch.as_tensor(value)
+        for name, value in dict(col_weights or {}).items()
+    }
+    records, unit_identities = _streamed_expert_unit_records(
+        runner.model,
+        profile,
+        unit_filter=unit_filter,
+        max_units=max_units,
+    )
+    for kind, qname, _storage in records:
+        if kind not in ("packed", "unpacked"):
+            raise RuntimeError(
+                f"forked expert eval got unknown unit kind {kind!r} for "
+                f"{qname}"
+            )
+    qnames = [str(record[1]) for record in records]
+    if len(qnames) != len(set(qnames)):
+        raise RuntimeError(
+            "forked expert discovery produced duplicate serving-unit qnames"
+        )
+    unit_by_qname = {str(qn): unit for _kind, qn, unit in records}
+    kind_by_qname = {str(qn): kind for kind, qn, _unit in records}
+    layer_of = {qn: runner.layer_index_for_qname(qn) for qn in qnames}
+
+    completed: dict[str, dict[str, object]] = {}
+    journal_root: Path | None = None
+    journal_identity_sha256: str | None = None
+    if checkpoint_dir is not None:
+        if model_identity is None:
+            raise RuntimeError(
+                "forked expert checkpointing requires exact model_identity; "
+                "refusing model-name-gated resume"
+            )
+        extra = dict(checkpoint_identity_extra or {})
+        if "eval_driver" in extra:
+            raise ValueError(
+                "checkpoint_identity_extra cannot override eval_driver"
+            )
+        extra["eval_driver"] = "forked-stream/1"
+        identity = _expert_checkpoint_identity(
+            runner=runner,
+            profile=profile,
+            calib_ids=calib_ids,
+            formats=menu,
+            col_weights=weights,
+            unit_identities=unit_identities,
+            model_identity=model_identity,
+            expert_chunk=expert_chunk,
+            ladder_interp=False,
+            ladder_tol=0.0,
+            expert_sample=0,
+            max_units=max_units,
+            unit_filter=unit_filter,
+            identity_extra=extra,
+        )
+        from prismaquant.cost_stage_checkpoint import prepare_journal
+
+        journal_root, journal_identity_sha256, raw_completed = prepare_journal(
+            checkpoint_dir,
+            stage=EXPERT_CHECKPOINT_STAGE,
+            resume=resume,
+            identity=identity,
+            qnames=qnames,
+        )
+        completed = {
+            qname: _validate_expert_checkpoint_state(qname, state)
+            for qname, state in raw_completed.items()
+        }
+    pending = [qn for qn in qnames if qn not in completed]
+
+    device = runner.device
+    num_layers = runner.num_layers
+
+    def _avail_swap_gb() -> tuple[float, float]:
+        vals = {}
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                key = line.split(":", 1)[0]
+                if key in ("MemAvailable", "SwapTotal", "SwapFree"):
+                    vals[key] = int(line.split()[1])
+        swap = (vals.get("SwapTotal", 0) - vals.get("SwapFree", 0)) / 1048576
+        return vals.get("MemAvailable", 0) / 1048576, swap
+
+    unit_kl_means: dict[str, dict[str, float]] = {qn: {} for qn in pending}
+    unit_kl_windows: dict[str, dict[str, list[float]]] = {
+        qn: {} for qn in pending
+    }
+    # Row-shape metadata captured at fork time (first format pass), while
+    # the unit's layer is resident — by row-building time it is unloaded.
+    rows_meta: dict[str, dict[str, object]] = {}
+    baseline_lp: list[torch.Tensor] | None = None
+    batch = None
+
+    if pending:
+        n_windows = int(calib_ids.shape[0])
+        _log(f"forked driver: {len(pending)}/{len(qnames)} units pending, "
+             f"formats {measured_fmts}, {n_windows} windows in one batch")
+        t0 = time.time()
+        batch = runner.capture_boundaries(calib_ids)
+        avail, swap = _avail_swap_gb()
+        _log(f"boundary pass done in {time.time() - t0:.0f}s "
+             f"({len(batch.activations_cpu)} boundaries, "
+             f"avail {avail:.0f}G, swap {swap:.1f}G)")
+        logits = runner.tail_logits(
+            batch, batch.activations_cpu[-1].to(device)
+        )
+        baseline_lp = [
+            F.log_softmax(logits[w].float(), dim=-1).cpu()
+            for w in range(n_windows)
+        ]
+        del logits
+        torch.cuda.empty_cache()
+
+        for f_i, fmt in enumerate(measured_fmts):
+            t_pass0 = time.time()
+            forks: dict[str, torch.Tensor] = {}
+            for depth in range(runner.prefetch_lookahead):
+                runner.context.schedule_prefetch(depth)
+            for layer in range(num_layers):
+                runner.context.install(
+                    layer,
+                    require_prefetched=runner.require_prefetched_residency,
+                )
+                runner.context.schedule_prefetch(
+                    layer + runner.prefetch_lookahead
+                )
+                try:
+                    # Advance every existing fork through this live layer
+                    # BEFORE forking at it, so a new fork's hidden is not
+                    # double-advanced.
+                    for qn in list(forks):
+                        forks[qn] = runner.isolated_layer(
+                            batch, layer, forks[qn], pass_state=None
+                        )
+                    for qn in pending:
+                        if layer_of[qn] != layer:
+                            continue
+                        forks[qn] = _fork_quantized_unit(
+                            runner,
+                            batch,
+                            layer,
+                            kind_by_qname[qn],
+                            unit_by_qname[qn],
+                            qn,
+                            fmt,
+                            profile=profile,
+                            expert_chunk=expert_chunk,
+                            col_weights=weights,
+                            rows_meta=rows_meta,
+                        )
+                        torch.cuda.empty_cache()
+                finally:
+                    runner.context.unload(layer)
+                if progress and (
+                    layer % 5 == 4 or layer == num_layers - 1
+                ):
+                    avail, swap = _avail_swap_gb()
+                    rate = (time.time() - t_pass0) / (layer + 1)
+                    eta_min = rate * (num_layers - layer - 1) / 60.0
+                    _log(f"fork pass {fmt} ({f_i + 1}/"
+                         f"{len(measured_fmts)}): layer "
+                         f"{layer + 1}/{num_layers}, {len(forks)} forks "
+                         f"live, avail {avail:.0f}G swap {swap:.1f}G, "
+                         f"~{eta_min:.0f} min left in pass")
+            for qn in pending:
+                logits = runner.tail_logits(batch, forks.pop(qn))
+                total = 0.0
+                n_tok = 0
+                windows: list[float] = []
+                for w in range(n_windows):
+                    lp = F.log_softmax(logits[w].float(), dim=-1)
+                    bl = baseline_lp[w].to(lp.device)
+                    kl = (bl.exp() * (bl - lp)).sum(-1)
+                    wsum = float(kl.sum().item())
+                    total += wsum
+                    n_tok += kl.numel()
+                    windows.append(wsum / max(kl.numel(), 1))
+                    del lp, bl, kl
+                del logits
+                unit_kl_means[qn][fmt] = total / max(n_tok, 1)
+                unit_kl_windows[qn][fmt] = windows
+            torch.cuda.empty_cache()
+            _log(f"fork pass {fmt} done in "
+                 f"{(time.time() - t_pass0) / 60.0:.1f} min")
+
+    stats: dict = {}
+    costs: dict = {}
+    unit_kls: dict = {}
+    results: dict[str, dict[str, object]] = dict(completed)
+    for qn in pending:
+        kls = unit_kl_means[qn]
+        # Row construction mirrors measure_expert_unit_costs field for
+        # field — the merge and the allocator must not be able to tell the
+        # drivers apart. Shapes come from rows_meta (captured at fork time,
+        # while the layer was resident).
+        meta = rows_meta[qn]
+        n_params_unit = int(meta["n_params_unit"])
+        unit_stats: dict = {}
+        unit_costs: dict = {}
+        for full, npm, in_features, out_features, member_meta in (
+            meta["members"]
+        ):
+            unit_stats[full] = {
+                "h_trace": 0.0,
+                "n_params": npm,
+                "in_features": in_features,
+                "out_features": out_features,
+                **member_meta,
+                "n_probes": 0,
+            }
+            row: dict = {}
+            for fmt in measured_fmts:
+                row[fmt] = {
+                    "predicted_dloss": kls[fmt] * npm / n_params_unit,
+                    "cost_source": "empirical_unit_kl",
+                    "output_mse_measured": False,
+                }
+            for fmt in menu:
+                if fmt in PASSTHROUGH_FORMATS:
+                    row[fmt] = {
+                        "predicted_dloss": 0.0,
+                        "cost_source": "passthrough_zero",
+                        "output_mse_measured": False,
+                    }
+            unit_costs[full] = row
+        state = {
+            "stats": unit_stats,
+            "costs": unit_costs,
+            "unit_kls": {qn: dict(kls)},
+            "kl_windows": {
+                fmt: list(vals)
+                for fmt, vals in unit_kl_windows[qn].items()
+            },
+        }
+        results[qn] = state
+        if journal_root is not None:
+            assert journal_identity_sha256 is not None
+            _write_expert_unit_checkpoint(
+                journal_root,
+                qname=qn,
+                identity_sha256=journal_identity_sha256,
+                state=state,
+            )
+        if progress:
+            _log(f"  {qn}: " + "  ".join(
+                f"{fmt} unit KL = {kls[fmt]:.4e}"
+                for fmt in measured_fmts))
+    for qn in qnames:
+        state = results[qn]
+        stats.update(state["stats"])
+        costs.update(state["costs"])
+        unit_kls.update(state["unit_kls"])
+    measure_expert_unit_costs.last_cross_family_verdict = None
     measure_expert_unit_costs.last_added_col_weights = []
     return stats, costs, unit_kls
 
@@ -2175,34 +2667,72 @@ def main(argv: Sequence[str] | None = None) -> int:
                         / "streamed_model_identity.json"
                     ),
                 )
-            stats, costs, unit_kls = measure_expert_unit_costs_streamed(
-                streamed_runner,
-                profile,
-                calib,
-                formats,
-                expert_chunk=args.expert_chunk,
-                col_weights=col_weights,
-                ladder_interp=ladder_interp,
-                ladder_tol=args.ladder_holdout_tol,
-                expert_sample=args.expert_sample,
-                max_units=args.max_units,
-                unit_filter=args.unit_filter,
-                checkpoint_dir=args.checkpoint_dir,
-                resume=args.resume,
-                model_identity=streamed_model_identity,
-                checkpoint_identity_extra=(
-                    {
-                        "source_format_plan_identity_sha256": (
-                            source_format_plan.identity_sha256
-                        )
-                    }
-                    if source_format_plan is not None else None
-                ),
-                formats_by_qname=(
-                    source_format_plan.formats_by_qname()
-                    if source_format_plan is not None else None
-                ),
-            )
+            eval_driver = os.environ.get(
+                "PRISMAQUANT_EXPERT_EVAL_DRIVER", "window"
+            ).strip().lower()
+            if eval_driver not in ("window", "forked"):
+                raise SystemExit(
+                    f"PRISMAQUANT_EXPERT_EVAL_DRIVER={eval_driver!r} is not "
+                    "one of: window, forked"
+                )
+            if eval_driver == "forked":
+                # O(1) body streams instead of O(units): see
+                # measure_expert_unit_costs_forked. Scope guards live in the
+                # driver (stateless pass, no CB, unpacked units); the CLI
+                # features it does not take are refused here, loudly.
+                refused = {
+                    "--expert-sample": args.expert_sample,
+                    "--cb-ladder-interp": ladder_interp,
+                    "--format-plan": source_format_plan is not None,
+                }
+                on = sorted(k for k, v in refused.items() if v)
+                if on:
+                    raise SystemExit(
+                        "PRISMAQUANT_EXPERT_EVAL_DRIVER=forked does not "
+                        f"support {on}; unset them or use the window driver"
+                    )
+                stats, costs, unit_kls = measure_expert_unit_costs_forked(
+                    streamed_runner,
+                    profile,
+                    calib,
+                    formats,
+                    expert_chunk=args.expert_chunk,
+                    col_weights=col_weights,
+                    max_units=args.max_units,
+                    unit_filter=args.unit_filter,
+                    checkpoint_dir=args.checkpoint_dir,
+                    resume=args.resume,
+                    model_identity=streamed_model_identity,
+                )
+            else:
+                stats, costs, unit_kls = measure_expert_unit_costs_streamed(
+                    streamed_runner,
+                    profile,
+                    calib,
+                    formats,
+                    expert_chunk=args.expert_chunk,
+                    col_weights=col_weights,
+                    ladder_interp=ladder_interp,
+                    ladder_tol=args.ladder_holdout_tol,
+                    expert_sample=args.expert_sample,
+                    max_units=args.max_units,
+                    unit_filter=args.unit_filter,
+                    checkpoint_dir=args.checkpoint_dir,
+                    resume=args.resume,
+                    model_identity=streamed_model_identity,
+                    checkpoint_identity_extra=(
+                        {
+                            "source_format_plan_identity_sha256": (
+                                source_format_plan.identity_sha256
+                            )
+                        }
+                        if source_format_plan is not None else None
+                    ),
+                    formats_by_qname=(
+                        source_format_plan.formats_by_qname()
+                        if source_format_plan is not None else None
+                    ),
+                )
         finally:
             streamed_runner.shutdown()
     else:

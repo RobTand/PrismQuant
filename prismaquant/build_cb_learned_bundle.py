@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import os
 import pickle
 import re
 from pathlib import Path
@@ -21,6 +22,17 @@ from .cb_learned_bundle import (
     CBL_RUNG_POLICY,
     PretrainedCodebookCell,
     train_and_save_bundle_streaming,
+)
+from .cb_imatrix import canonical_imatrix_sha256, imatrix_from_probe_file
+from .cb_learned_promotion import (
+    ValidatedCBLPromotionReceipt,
+    read_promotion_receipt_payload,
+    role_census_for_qnames,
+    validate_promotion_receipt,
+)
+from .cost_streaming import (
+    validate_cached_streamed_model_identity,
+    validate_streamed_model_identity,
 )
 from .cb_banked_books import (
     BankedCBLBookRequest,
@@ -346,6 +358,13 @@ def build_bundle_from_model(
     formats: Sequence[str],
     output: str | Path,
     device: str | torch.device,
+    trainer_version: str = "v1",
+    promotion_receipt: (
+        Mapping[str, object] | ValidatedCBLPromotionReceipt | None
+    ) = None,
+    source_model_identity: Mapping[str, object] | None = None,
+    probe_calibration_hash: str | None = None,
+    imatrix_value_sha256: str | None = None,
     routed_moe_book_selection: str | Path | None = None,
     routed_book_keying: str = DEFAULT_ROUTED_BOOK_KEYING,
 ) -> object:
@@ -374,22 +393,54 @@ def build_bundle_from_model(
 
     routed_book_keying = normalize_routed_book_keying(routed_book_keying)
     canonical_formats = _canonical_cb_formats(formats)
-    learned_formats = tuple(
-        name for name in canonical_formats
-        if name.startswith("FP8_CB_")
-        and CBL_RUNG_POLICY.get(
-            int(name.rsplit("K", 1)[1]), {}
-        ).get("enabled") is True
+    normalized_col = {
+        str(name): torch.as_tensor(value)
+        for name, value in col_weights.items()
+    }
+    raw_imatrix_sha256 = canonical_imatrix_sha256(normalized_col)
+    if imatrix_value_sha256 is not None:
+        declared_imatrix_sha256 = str(imatrix_value_sha256).strip().lower()
+        if declared_imatrix_sha256 != raw_imatrix_sha256:
+            raise ValueError(
+                "declared probe imatrix value_sha256 differs from the exact "
+                "input col_weights"
+            )
+    trainer_version = str(trainer_version).strip().lower().replace(
+        "learned-", ""
     )
+    raw_receipt: Mapping[str, object] | None = None
+    if trainer_version == "v1":
+        if promotion_receipt is not None:
+            raise ValueError(
+                "promotion_receipt is valid only with trainer_version='v2'"
+            )
+        learned_formats = tuple(
+            name for name in canonical_formats
+            if name.startswith("FP8_CB_")
+            and CBL_RUNG_POLICY.get(
+                int(name.rsplit("K", 1)[1]), {}
+            ).get("enabled") is True
+        )
+    elif trainer_version == "v2":
+        if promotion_receipt is not None:
+            raw_receipt = (
+                promotion_receipt.payload
+                if isinstance(
+                    promotion_receipt, ValidatedCBLPromotionReceipt
+                )
+                else promotion_receipt
+            )
+        learned_formats = ()
+    else:
+        raise ValueError(
+            "trainer_version must be v1 or v2, got "
+            f"{trainer_version!r}"
+        )
     if not any(name.startswith("FP8_CB_") for name in canonical_formats):
         raise ValueError(
             "CB_CODEBOOK_SOURCE_SCOPE enables FP8 learned books, but the "
             "requested format menu contains no FP8_CB rung"
         )
-    normalized_col = {
-        str(name): torch.as_tensor(value)
-        for name, value in col_weights.items()
-    }
     routed_col_qnames = {
         name for name in normalized_col if _ROUTED_MOE_QNAME.search(name)
     }
@@ -406,14 +457,6 @@ def build_bundle_from_model(
         or not str(routed_moe_book_selection).strip()
         else load_routed_moe_cbl_selection(routed_moe_book_selection)
     )
-    if selection is not None:
-        selected_formats = {cell.format_name for cell in selection.cells}
-        absent = sorted(selected_formats - set(learned_formats))
-        if absent:
-            raise ValueError(
-                "routed-MoE book selection names format(s) outside the "
-                f"requested learned FP8-CB menu: {absent}"
-            )
     routed_plans = (
         {}
         if selection is None
@@ -449,6 +492,77 @@ def build_bundle_from_model(
         normalized_col[qname] = plan.col_weights
     if not dense_qnames and not routed_plans:
         raise ValueError("learned bundle build found no target Linear qnames")
+
+    receipt_target_qnames = tuple(sorted((*dense_qnames, *routed_plans)))
+    actual_imatrix_sha256 = canonical_imatrix_sha256(normalized_col)
+    validated_receipt: ValidatedCBLPromotionReceipt | None = None
+    validated_source_identity: Mapping[str, object] | None = None
+    bound_calibration_hash: str | None = None
+    if raw_receipt is not None:
+        validated_source_identity = validate_streamed_model_identity(
+            source_model_identity,
+            where="learned-v2 bundle source identity",
+        )
+        checkpoint_weight_map = validated_source_identity.get(
+            "checkpoint_weight_map"
+        )
+        if (
+            not isinstance(checkpoint_weight_map, dict)
+            or not checkpoint_weight_map
+        ):
+            raise ValueError(
+                "learned-v2 bundle source identity must cover the complete "
+                "checkpoint tensor-to-shard map"
+            )
+        if (
+            not isinstance(probe_calibration_hash, str)
+            or not probe_calibration_hash.strip()
+        ):
+            raise ValueError(
+                "learned-v2 promotion requires the actual probe calibration "
+                "hash"
+            )
+        bound_calibration_hash = probe_calibration_hash.strip()
+        role_census = role_census_for_qnames(receipt_target_qnames)
+        validated_receipt = validate_promotion_receipt(
+            raw_receipt,
+            expected_model_id=str(validated_source_identity["source"]),
+            expected_model_content_sha256=str(
+                validated_source_identity["content_sha256"]
+            ),
+            expected_calibration_hash=bound_calibration_hash,
+            expected_imatrix_sha256=actual_imatrix_sha256,
+            expected_role_census=role_census,
+            expected_qnames=receipt_target_qnames,
+        )
+        learned_formats = tuple(
+            name for name in canonical_formats
+            if name.startswith("FP8_CB_")
+            and validated_receipt.source_for_rung(
+                int(name.rsplit("K", 1)[1])
+            ) == "learned"
+        )
+    elif any(
+        value is not None
+        for value in (
+            source_model_identity,
+            probe_calibration_hash,
+            imatrix_value_sha256,
+        )
+    ):
+        raise ValueError(
+            "source/probe/imatrix promotion bindings require a learned-v2 "
+            "promotion receipt"
+        )
+
+    if selection is not None:
+        selected_formats = {cell.format_name for cell in selection.cells}
+        absent = sorted(selected_formats - set(learned_formats))
+        if absent:
+            raise ValueError(
+                "routed-MoE book selection names format(s) outside the "
+                f"requested learned FP8-CB menu: {absent}"
+            )
 
     resolved: dict[str, str] = {}
     for qname in dense_qnames:
@@ -629,6 +743,15 @@ def build_bundle_from_model(
         col_weights=normalized_col,
         formats=formats_by_qname,
         learned_formats=learned_formats,
+        trainer_version=trainer_version,
+        promotion_receipt=validated_receipt,
+        source_model_identity=validated_source_identity,
+        probe_calibration_hash=bound_calibration_hash,
+        imatrix_value_sha256=(
+            actual_imatrix_sha256
+            if validated_receipt is not None
+            else None
+        ),
         routed_moe_qnames=routed_plans,
         routed_book_keying={
             qname: plan.keying for qname, plan in routed_plans.items()
@@ -641,10 +764,48 @@ def build_bundle_from_model(
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", required=True)
-    parser.add_argument("--col-weights", required=True)
+    imatrix_group = parser.add_mutually_exclusive_group(required=True)
+    imatrix_group.add_argument(
+        "--col-weights",
+        help="existing trusted qname -> imatrix tensor pickle",
+    )
+    imatrix_group.add_argument(
+        "--imatrix-probe",
+        help=(
+            "existing trusted sensitivity probe.pkl; derive imatrix values "
+            "from full-corpus act_sq_sum/n_tokens_seen"
+        ),
+    )
     parser.add_argument("--formats", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--trainer-version",
+        choices=("v1", "v2"),
+        default="v1",
+        help=(
+            "v1 preserves legacy behavior; v2 uses density-aware deterministic "
+            "sampling and defaults every rung to lattice"
+        ),
+    )
+    parser.add_argument(
+        "--promotion-receipt",
+        default=None,
+        help=(
+            "strict learned-v2 two-holdout receipt; without it v2 emits only "
+            "lattice cells"
+        ),
+    )
+    parser.add_argument(
+        "--source-model-identity-cache",
+        default=os.environ.get(
+            "PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE"
+        ),
+        help=(
+            "existing complete streamed-model identity cache; required for "
+            "learned-v2 promotion receipts"
+        ),
+    )
     parser.add_argument(
         "--routed-moe-book-selection",
         default=None,
@@ -670,20 +831,79 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     from .gpu_guard import require_cuda_hot_path
 
-    require_cuda_hot_path("build_cb_learned_bundle")
-    with open(args.col_weights, "rb") as handle:
-        raw_col_weights = pickle.load(handle)
+    require_cuda_hot_path("build_cb_learned_bundle", args.device)
+    imatrix_provenance = None
+    if args.imatrix_probe:
+        raw_col_weights, imatrix_provenance = imatrix_from_probe_file(
+            args.imatrix_probe
+        )
+    else:
+        with open(args.col_weights, "rb") as handle:
+            raw_col_weights = pickle.load(handle)
     if not isinstance(raw_col_weights, Mapping):
-        raise ValueError("--col-weights must contain a qname -> tensor mapping")
+        raise ValueError("imatrix input must contain a qname -> tensor mapping")
+    receipt = None
+    source_model_identity = None
+    probe_calibration_hash = None
+    imatrix_value_sha256 = None
+    if args.promotion_receipt is not None:
+        if args.trainer_version != "v2":
+            raise ValueError(
+                "--promotion-receipt requires --trainer-version v2"
+            )
+        if not args.imatrix_probe or imatrix_provenance is None:
+            raise ValueError(
+                "learned-v2 promotion requires --imatrix-probe so the actual "
+                "calibration and act_sq_sum provenance are bound"
+            )
+        probe_calibration_hash = imatrix_provenance.get(
+            "calibration_hash"
+        )
+        if (
+            not isinstance(probe_calibration_hash, str)
+            or not probe_calibration_hash.strip()
+        ):
+            raise ValueError(
+                "learned-v2 promotion probe has no calibration hash"
+            )
+        if not args.source_model_identity_cache:
+            raise ValueError(
+                "learned-v2 promotion requires "
+                "--source-model-identity-cache"
+            )
+        source_model_identity = validate_cached_streamed_model_identity(
+            args.model_dir,
+            args.source_model_identity_cache,
+            require_complete_checkpoint=True,
+        )
+        imatrix_value_sha256 = str(imatrix_provenance["value_sha256"])
+        receipt = read_promotion_receipt_payload(
+            args.promotion_receipt
+        )
     bundle = build_bundle_from_model(
         model_dir=args.model_dir,
         col_weights=raw_col_weights,
         formats=[item for item in args.formats.split(",") if item.strip()],
         output=args.output,
         device=args.device,
+        trainer_version=args.trainer_version,
+        promotion_receipt=receipt,
+        source_model_identity=source_model_identity,
+        probe_calibration_hash=probe_calibration_hash,
+        imatrix_value_sha256=imatrix_value_sha256,
         routed_moe_book_selection=args.routed_moe_book_selection,
         routed_book_keying=args.routed_book_keying,
     )
+    print(
+        f"[cbl-bundle] trainer: {args.trainer_version}",
+        flush=True,
+    )
+    if imatrix_provenance is not None:
+        print(
+            "[cbl-bundle] imatrix: full-probe act_sq_sum/n_tokens_seen "
+            f"sha256={imatrix_provenance['value_sha256']}",
+            flush=True,
+        )
     print(
         f"[cbl-bundle] routed book keying: {args.routed_book_keying}",
         flush=True,

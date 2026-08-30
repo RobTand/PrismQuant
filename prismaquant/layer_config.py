@@ -11,7 +11,7 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from prismaquant.cb_layout import CB_FORMAT_NAMES
+from prismaquant.cb_layout import ACCEPTED_CB_FORMAT_NAMES
 from prismaquant.schemas import validate_layer_config_payload
 
 
@@ -55,8 +55,9 @@ _GGUF_FORMAT_NAMES = frozenset(
 )
 
 # Backwards-compatible private name used by exporters. The canonical producer
-# ladder is torch-free ``cb_layout.CB_FORMAT_NAMES``; do not rebuild it here.
-_NVFP4_CB_FORMAT_NAMES = CB_FORMAT_NAMES
+# reader surface is torch-free ``cb_layout.ACCEPTED_CB_FORMAT_NAMES``; do not
+# rebuild it here. Producer menus use ``PRODUCT_CB_FORMAT_NAMES`` instead.
+_NVFP4_CB_FORMAT_NAMES = ACCEPTED_CB_FORMAT_NAMES
 
 # Checkpoint ``quantization_config.scale_fmt`` spellings that mean a one-byte
 # UE8M0 block exponent. Kept as a literal so this module stays torch-free;

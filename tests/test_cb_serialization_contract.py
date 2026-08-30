@@ -30,6 +30,8 @@ from prismaquant.nvfp4_cb_footprint import (
     cb_tensor_serialization_stamp,
     codebook_subtable_shapes,
     cb_export_artifact_inventory,
+    cb_payload_summary,
+    cb_serialization_context_from_env,
     cb_serialization_context_from_stamp,
     cb_serialization_context_stamp,
     enforce_whole_artifact_budget,
@@ -40,6 +42,59 @@ from prismaquant.nvfp4_cb_footprint import (
     validate_cb_cost_provenance,
 )
 from prismaquant.validate_assignments_kl import _assignment_bpp_details
+
+
+def test_fp8_only_activation_scope_uses_no_activation_schema_and_bytes():
+    context = cb_serialization_context_from_env({
+        "CB_SCALE_CODING": "v1",
+        "CB_CODEBOOK_SOURCE": "lattice",
+        "CB_CODEBOOK_SOURCE_SCOPE": "none",
+        "CB_SCALE_SWEEP": "1",
+        "CB_SCALE_SWEEP_SCOPE": "fp8",
+        "CB_ACTIVATION_SCOPE": "none",
+        "PRISMAQUANT_CB_LDLQ": "0",
+        "PRISMAQUANT_CB_MINCHAIN": "0",
+        "PRISMAQUANT_CB_ENCODE_TIER": "balanced",
+    })
+    assert context.activation_contract is None
+    assert context.activation_execution is None
+
+    stamp = cb_serialization_context_stamp(
+        context, formats=["FP8_CB_K4"]
+    )
+    assert stamp["schema"] == "prismaquant.cb_serialized_payload.v2"
+    assert "activation_contract" not in stamp
+    assert "activation_execution" not in stamp
+    restored = cb_serialization_context_from_stamp(stamp, where="FP8 unit")
+    assert restored.activation_contract is None
+    assert restored.activation_execution is None
+    assert cb_serialization_context_stamp(
+        restored, formats=["FP8_CB_K4"]
+    ) == stamp
+
+    breakdown = cb_assignment_payload_breakdown(
+        {"model.layers.0.mlp.down_proj": "FP8_CB_K4"},
+        {"model.layers.0.mlp.down_proj": (2, 256)},
+        context=restored,
+    )
+    summary = cb_payload_summary(breakdown)
+    assert summary["schema"] == "prismaquant.cb_serialized_payload.v2"
+    assert "activation_contract" not in summary["context"]
+    assert "activation_execution" not in summary["context"]
+    assert summary["fp4_scale_bytes"] == 0
+    assert summary["input_global_scale_bytes"] == 0
+
+
+def test_cb_activation_scope_default_is_historical_and_unknown_is_refused():
+    historical = cb_serialization_context_from_env({})
+    assert historical.activation_contract is not None
+    assert historical.activation_execution is not None
+    assert cb_serialization_context_stamp(historical)["schema"] == (
+        "prismaquant.cb_serialized_payload.v3"
+    )
+
+    with pytest.raises(ValueError, match="CB_ACTIVATION_SCOPE"):
+        cb_serialization_context_from_env({"CB_ACTIVATION_SCOPE": "fp8"})
 
 
 @pytest.mark.parametrize("mode,k", [("product", 12)])

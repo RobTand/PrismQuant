@@ -119,8 +119,8 @@ and index-body bytes are diagnostics, not the acceptance gate.
 
 The relevant serialized contracts are:
 
-- production NVFP4-CB K12..K24 uses two-tier layout v2: `4k + 9` bytes per
-  256-weight superblock, about 1.78125..3.28125 bpw before shared sidecars;
+- production NVFP4-CB K1..K25 uses two-tier layout v2: `4k + 9` bytes per
+  256-weight superblock, 0.40625..3.40625 bpw before shared sidecars;
 - FP8-CB uses a `4k`-byte index body per superblock **plus** one FP32
   `weight_scale` per output row; and
 - product-VQ FP16 subtable sidecars are serialized once per codebook
@@ -143,12 +143,16 @@ encodes:
   fallback route it takes when it does not. The backed rung set is spec data
   keyed by the pinned Gridbook version in
   `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`; a pinned version
-  the spec does not declare backs nothing. The pinned Gridbook (0.8.11) instantiates
-  FP8-CB fused mid-M for K ∈ {28,32,36,40,44,48} while production permits
-  every K28..K48, so the allocator can no longer price an unbacked fast path
-  without recording that it did (the producer-side mirror of gridbook K1.2).
-  That gap is permanent, not pending: K1.2 resolved to `k % 4 == 0` as a
-  format+TMA law, so the off-law rungs will never gain a fused lane.
+  the spec does not declare backs nothing. The legacy 0.8.11 contract names
+  fused mid-M K ∈ {28,32,36,40,44,48}; new production obeys the generalized
+  K%4 ladder K4..K48. Every historical off-law K28..K48 wire id remains a
+  reader input only and can no longer enter allocator or exporter menus. Low
+  rungs and Ada remain unshippable: the current Gridbook v11 candidate carries
+  only `compile_only` exact-sm89 dense cells. Strict publication requires
+  `device_qualified` decode and batch cells for the complete twelve-rung
+  producer ladder, even when one assignment selects fewer rungs, plus the
+  separate physical 4090 graph/device receipt. The strict artifact is
+  lattice-only, sets `CB_ACTIVATION_SCOPE=none`, and contains no NVFP4 family.
 - **which estimator priced its activation contract**
   (`Candidate.activation_pricing`): the measured `output_mse` branch, a
   weight-only branch corrected by the per-family activation calibration, or a
@@ -212,7 +216,8 @@ loss and phase-specific latency gain; never compare an isolated promoted layer
 against an unfunded baseline.
 
 NVFP4-CB v2 is the capacity backbone in the approximately
-1.78125..3.28125-bpw band, but it does not yet have teacher-backed same-rate
+0.40625..3.40625-bpw body band, but the newly scaffolded K1..K11 and K25
+endpoints do not yet have teacher-backed same-rate
 quality validation. Keep its fused native-FP4 prefill paths explicit opt-ins
 until served KL/PPL and routing/shape gates pass; the path changes activation
 scales from the fp32-emulated bucket to native ue4m3 factors.
@@ -222,11 +227,14 @@ profile. The native-versus-CB mixed frontier is therefore feasible only for
 dense and shared units. Packed experts require a lane-level native/CB A/B and
 native expert delegation before the allocator may claim that frontier.
 
-Signed S13..S16 remain registered, exportable, decodable, and shape-compatible
-for legacy and explicitly research-scoped use. They are excluded from the
-production `nvfp4_cb` allow-list after losing 609/776 (78.48%, conventionally
-rounded to 79%) matched weight-MSE comparisons. Every product rung remains in
-the production menu: NVFP4-CB K12..K24 and FP8-CB K28..K48.
+Signed S13..S16 remain a legacy Gridbook reader concern and are excluded from
+PrismaQuant's producer registry. Every current product rung remains in the
+production menu: NVFP4-CB K1..K25 and FP8-CB K4..K48 with K%4. K26..K32 have
+no public reader or producer id; width-14..16 lattice/direct-codec work is
+research-only. Registry admission is scaffolding, not release evidence:
+endpoint artifacts require an exact Gridbook producer-rung contract and the
+widened dense campaign's low/mid/endpoint holdout gate. Old K12..K24
+interpolation receipts cannot price or promote the new bands.
 
 ## 5. Evidence boundaries
 

@@ -7,13 +7,13 @@ is either a rule set it points at, a lane record, or history.
 backs it; every normative statement carries a `file:line` or commit hash, and when a
 doc and the code disagree the doc is wrong — fix it or flag it, never propagate it.
 
-As of 2026-07-30 (tree reorganised in `87c749e`). Status tags: **CURRENT** =
+As of 2026-08-25 (tree reorganised in `87c749e`). Status tags: **CURRENT** =
 describes the live system · **HISTORICAL** = dated record, true when written, not
 guidance · **ARCHIVED** = superseded narrative, kept for provenance.
 
 Three things older docs get wrong and this index does not:
-`COST_MODE` defaults to `production-render-score` (`prismaquant/run-pipeline.sh:187`)
-and AURA is opt-in (`COST_MODE=aura`, `:314-336`, `:825-956`);
+`COST_MODE` defaults to `aura`; `production-render-score` is the
+explicit/legacy spelling (`docs/ARCHITECTURE.md` §3.3–§4.3);
 `SELECTION_MODE` defaults to `surrogate` (`:250`);
 `run-pipeline.sh` lives at `prismaquant/run-pipeline.sh`, not the repo root.
 
@@ -23,6 +23,9 @@ and AURA is opt-in (`COST_MODE=aura`, `:314-336`, `:825-956`);
 
 | Path | What it is | Status |
 |---|---|---|
+| `design/prismasnap.md` | Normative contract for the optional, purely additive PrismaSnap BF16 source-preparation lane: canonical measured-fast `stage,polish` semantics, exact dense seams, content-bound lifecycle and two-Spark campaign collation, served fold-fidelity admission, native-only lane boundary, and ordered dense-then-MoE promotion gates. | CURRENT candidate contract — implementation and contract tests exist, but the Qwen3.8-27B text-only strict-20-GB served A/B is still running; no 27B, MoE, 20% improvement, or Qwen3.8-125B release claim yet |
+| `design/artifact_collections.md` | Content-addressed, format-agnostic control plane for probe-once/export-many collections: explicit candidate and target records, immutable stage receipts, shared-resource accounting, and a legacy Qwen artifact census. | CURRENT foundation — schemas and tests ship offline; ModelSnapshot/Probe/Cost/Solve/Export/Qualification adapters and pipeline wiring remain open |
+| `design/sample_parallel_probe.md` | Exact opt-in sample-axis map/reduce for the incremental probe: immutable calibration/run identity, the two-stage global-CE barrier, complete-model raw sufficient-stat reduction, and deterministic dense-body activation-cache union. It reuses the streamed model and existing activation-cache path and changes no serving runtime. | CURRENT implementation contract; CPU-tested producer lane, not yet GPU-launched or release-qualified |
 | `design/model_coverage_ledgers.md` | Requirement discovery by traversal: one walk over the loaded model tree plus a traced forward discovers every parameter->op edge; each node is claimed at discovery (decide / pin+reason / exclude+reason) and an unclaimed node fails the walk. All consumers (probe, cost, footprint, read-bytes, routes) derive from the one enumeration; four stamped views reconcile against the checkpoint header. Adopted after the `wo_a` finding. The walker landed 2026-08-21 (`prismaquant/model_walk.py` + `ModelProfile.walk_claim_rules()`, ARCHITECTURE.md §8.8); intake walks are usable, but export-gate wiring and consumer migration onto the edge list are still open. | CURRENT |
 | `design/gridbook_lane_eligibility_contract.md` | The `lane_eligibility` table Gridbook must package inside `runtime_contract.json` so CB serving-lane route status becomes attested rather than asserted (campaign R3, principles 9 and 14): the schema, the closed set of structural facts a predicate may name, and the four rules the DSv4 per-role case needs. Records what Gridbook 0.8.10 actually publishes and why none of it answers the lane question. | CURRENT — proposal to the Gridbook repository; the PrismaQuant consumption half ships (ARCHITECTURE.md §9.2.1), so every CB lane resolves `unattested` until the table lands |
 | `design/design_guidelines.md` | The terse rule set: non-negotiables, measurement discipline, promotion ladder, rotation-transform rule, exception rule. Makes almost no code-line claims, so nothing has gone stale. | CURRENT |
@@ -44,7 +47,7 @@ and AURA is opt-in (`COST_MODE=aura`, `:314-336`, `:825-956`);
 
 | Path | What it is | Status |
 |---|---|---|
-| `lanes/nvfp4-cb/STANDARDS.md` | The producer lane's normative format/kernel/cost contract: rung ladders, scale coding, kernel standards, the split-aware floored RD cost law, the served-A/B rule. Runtime behavior is owned by the external Gridbook repository and its packaged contract. | CURRENT — production exports default to two-tier/v2; v1 is explicit legacy read compatibility |
+| `lanes/nvfp4-cb/STANDARDS.md` | The producer lane's normative format/kernel/cost contract: NVFP4 K1..K25 and FP8 step-four ladders, scale coding, kernel standards, the split-aware floored RD cost law, and the served-A/B rule. Runtime behavior is owned by the external Gridbook repository and its packaged contract. | CURRENT — production exports default to two-tier/v2; v1 is explicit legacy read compatibility; newly widened NVFP4 bands remain external-contract and measurement gated |
 | `lanes/nvfp4-cb/LAYOUT.md` | The on-disk byte/container contract a third-party plugin implements against: production fp4 `type_size = 4k+9` (explicit legacy v1 `4k+16`), fp8 `4k` plus FP32 row scales, superblock 256, and exact FP16 product-codebook sidecars. The public spec. | CURRENT |
 | `lanes/nvfp4-cb/two-tier-scale-spec.md` | The v2 scale-coding spec: per-256 E8M0 super + per-16 4-bit sub composing exactly onto E4M3; reduces fp4 scale cost 0.500 → 0.28125 bpw. | CURRENT and implemented |
 | `lanes/nvfp4-cb/encode_tiers.md` | Measured speed/accuracy curve of the CB encoder tiers (`fast`/`balanced`/`max`, default `balanced`, `nvfp4_cb_formats.py:129-130`) plus the 27B-scale launch/volume fix. | CURRENT |
@@ -84,6 +87,7 @@ before citing anything.
 
 | Path | What it is | Status / superseded by |
 |---|---|---|
+| `results/qwen38_prismasnap_20gb_ab_2026-08-25.md` | Frozen running ledger for the first apples-to-apples PrismaSnap production gate: Qwen3.8-27B text-only/no-vision, strict decimal 20 GB, control identities/metrics, exact two-Spark protocol, and evidence paths. | RUNNING — protocol and thresholds only; result section is pending and makes no promotion or 20% improvement claim |
 | `results/gridbook_0p8p5_w8a16_gate_2026-08-12.md` | Exact Gridbook 0.8.5 installed-wheel GB10/sm121 gate: immutable commit, wheel, image, command, 91-pass/0-skip JUnit, and raw evidence paths for block-FP8 W8A16. | CURRENT route-existence, residency, and operator evidence; not full-artifact serving, performance, KL, or PPL evidence |
 | `results/qwen3_30b_a3b_profile_census_2026-08-03.md` | Contract/vLLM-qualified Qwen3-30B-A3B selection, complete safetensors census, unified `qwen3` producer bridge, and verified probe capture points. | CURRENT profile-onboarding evidence; not a quantization or serving result |
 | `results/aura_4b_dense_frontier_2026-06-05.md` | Dense 4.5→8.0 bpp AURA RD sweep on Qwen3-4B, fp32 vs bf16; frontier clean and log-linear, kneedle unstable (fp32 5.00 in 454/1000 bootstraps). | HISTORICAL — its conclusion won: selection moved off kneedle to a byte-budget + saturation-B* rule |
@@ -128,6 +132,7 @@ so a citation is never mistaken for a result of ours.
 
 | Path | What it is | Status |
 |---|---|---|
+| `research/nvidia_ampere_int8_gridbook_feasibility_2026-08-24.md` | Native INT8 Gridbook feasibility on RTX 30-series/SM86: instruction and resource facts, numeric/wire-format implications, and the minimum graph/physical qualification sequence if the lane is ever reopened. | CURRENT decision note — technically feasible, but explicit NO-GO for implementation, a dedicated prototype, registry/runtime work, or a hardware campaign under the present demand signal |
 | `research/calibration-data/SURVEY.md` | Calibration data for PTQ, with emphasis on sparse MoE: where the ~0.25M-token dense convention comes from (GPTQ 128×2048, AutoAWQ 128×512, SmoothQuant 512×512) and why it is a convention rather than a measured optimum; what the controlled size and composition studies do and do not establish. Every claim carries a source link and an evidence grade. | CURRENT — evidence checked through 2026-08-03; the MoE-specific gap it identifies (none of the dense size results transfer to rare experts) is still open |
 | `research/rotation-codebooks/SURVEY.md` | Rotations, learned codebooks and second-order compensation: why a change of basis and a codebook solve different problems, and how much of incoherence a flexible per-tensor codebook can absorb. Mechanistic inference from QuIP / QuIP# / QTIP / AQLM, labelled as inference. | CURRENT — evidence checked through 2026-08-03; records an explicit NEGATIVE finding: no measured evidence was found that holds a per-tensor learned, FP-grid-constrained product codebook fixed in capacity and ablates rotation on/off at 2–3 bits, which is exactly the comparison the CB formats would need |
 
@@ -172,6 +177,6 @@ Absent from a fresh clone. Do not cite outward; treat every claim in them as a l
 | [Gridbook repository](https://github.com/RobTand/gridbook) | Canonical runtime, CUDA sources, tests, packaging, plugin documentation, and releases. PrismaQuant consumes one immutable pin plus the packaged runtime contract; no source copy lives here. |
 | `prismaquant/README.md` | 17-line package note listing six `python -m` entrypoints. **STALE** — omits the AURA, GGUF and CB stage modules, and never says that `prismaquant/run-pipeline.sh` is the orchestrator, so a `pip install` reader has no route to the entry point that matters |
 | `README.md` (repo root) | Public README: AURA framing, served results, quickstarts, format/architecture/artifact tables, and the external pinned Gridbook boundary. **CURRENT** — container-specific kernel ownership is stated explicitly |
-| `AGENTS.md` | Normative agent rules: 9 core principles plus a before-editing / before-finishing checklist. **CURRENT** — rule 4 should read "the target serving profile's gate" now that two of three containers are not plain vLLM-native, and rule 6's MXFP8 example is a de-menued format |
+| `AGENTS.md` | Normative agent rules: 10 core principles plus a before-editing / before-finishing checklist. **CURRENT** — three container-specific ship gates, GPU-bound resident-prefetched production paths, exact quantizable-parameter bpp accounting, and same-commit architecture maintenance are explicit |
 | `CLAUDE.md` | The working agreement and project brain: how Robert works, the methodological spine, the graveyard, the operational landmines. **CURRENT** as intent; its snapshot sections (§6 file map, §8 current state) drift and are subordinate to code |
 | `archive/` (repo root, 17 walls) | The graveyard: one dated directory per rejected method, each with a `README.md` banner stating why it lost. **Load-bearing — never move.** Four walls are cited by path in `run-pipeline.sh` `exit 2` messages (`grouped_kl_2026-05-28`, `hdq_2026-05-14`, `fisher_2026-05-15`, `multi_shot_2026-05-19`). Convention is dated directory name + top-level banner, and as of 2026-07-30 every wall satisfies both |

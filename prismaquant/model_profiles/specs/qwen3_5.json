@@ -98,6 +98,40 @@
       }
     ]
   },
+  "naming_variants": [
+    {
+      "when": {
+        "architectures": [
+          "Qwen3_5MoeForCausalLM", "Qwen3_6MoeForCausalLM",
+          "Qwen3.5MoeForCausalLM", "Qwen3.6MoeForCausalLM",
+          "Qwen3_5MoeTextModel", "Qwen3_6MoeTextModel",
+          "Qwen3.5MoeTextModel", "Qwen3.6MoeTextModel"
+        ]
+      },
+      "naming": {
+        "recipe_to_source": [
+          { "prefix": "mtp.", "replace": "mtp.", "stop": true },
+          { "exact": "lm_head", "replace": "lm_head", "stop": true },
+          {
+            "prefix": "model.language_model.",
+            "replace": "model.",
+            "stop": true
+          },
+          { "prefix": "model.", "replace": "model.", "stop": true }
+        ],
+        "recipe_to_vllm": [
+          { "prefix": "mtp.", "replace": "mtp.", "stop": true },
+          { "exact": "lm_head", "replace": "lm_head", "stop": true },
+          {
+            "prefix": "model.language_model.",
+            "replace": "model.",
+            "stop": true
+          },
+          { "prefix": "model.", "replace": "model.", "stop": true }
+        ]
+      }
+    }
+  ],
   "fused_groups": [
     {
       "target": "self_attn.qkv_proj",
@@ -134,7 +168,7 @@
     ]
   },
   "moe": {
-    "per_expert_regex": "re:^language_model[.]model[.]layers[.][0-9]+[.]mlp[.]experts[.][0-9]+[.](gate|up|down)_proj$",
+    "per_expert_regex": "re:^(?:model|language_model[.]model)[.]layers[.][0-9]+[.]mlp[.]experts[.][0-9]+[.](gate|up|down)_proj$",
     "per_expert_mtp_regex": "re:^mtp[.]layers[.][0-9]+[.]mlp[.]experts[.][0-9]+[.](gate|up|down)_proj$"
   },
   "passthrough_prefixes": ["model.visual.", "mtp."],

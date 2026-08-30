@@ -110,6 +110,36 @@ ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT = {
     "DeepseekV4Profile",
 }
 
+# Ratchet, currently empty (opened 2026-08-26, discharged 2026-08-28).
+#
+# A profile belongs here when its family has NO importable vLLM class and NO
+# fusion in its HF modelling code, so it has nothing it may honestly declare:
+# `fused_groups` states what a serving runtime fuses, and principle 14 refuses
+# an unattested statement. `glm5_next` was that case and is no longer, so the
+# set is empty rather than deleted — the mechanism is the point.
+#
+# What discharged it: glm5_next now declares two MLP fused groups
+# (`mlp.gate_up_proj`, `mlp.shared_experts.gate_up_proj`) in its structure
+# spec, and both are backed by real evidence rather than a name in someone's
+# tree. The checkpoint index carries separate `mlp.gate_proj`/`mlp.up_proj`
+# (dense layers) and `mlp.shared_experts.gate_proj`/`up_proj` (MoE layers)
+# with no pre-fused tensor, and the 4.683-bpp artifact built under this
+# profile served on vLLM TP=2 with the validator passing — i.e. the fused
+# load the declaration predicts is one that actually happened. That is an
+# empirical attestation, not a published runtime table; it is sound here
+# because union-find promotion only ever CONSTRAINS (forces one format across
+# the group), so over-declaring is conservative while under-declaring is the
+# serving break.
+#
+# The original exemption was scoped to ATTENTION: glm5_next's KDA attention
+# exposes separate q/k/v Linears live, and the only qkv fusion evidence was
+# the checkpoint's `quantization_config.modules_to_not_convert` naming
+# `self_attn.qkv_proj` / `self_attn.fused_qkvbfg_a_proj`, names that appear in
+# no index key. That lead is still unattested — and still harmless, because
+# every fusable attention projection remains pinned (see `pinned_names`), so
+# no attention group can be split across formats.
+UNATTESTED_FUSED_SOURCE_XFAIL: set[str] = set()
+
 FUSED_PROBE_NAMES = (
     "model.layers.0.self_attn.q_proj",
     "model.layers.0.self_attn.k_proj",
@@ -225,6 +255,23 @@ def test_profile_has_a_fused_sibling_source(profile):
         )
         assert "nvfp4_cb" in profile.supported_export_lanes()
         return
+    if name in UNATTESTED_FUSED_SOURCE_XFAIL:
+        assert not has_source, (
+            f"{name} now has a fused-sibling source — remove it from "
+            "UNATTESTED_FUSED_SOURCE_XFAIL")
+        # The gap is only harmless while every fusable projection is pinned.
+        pinned = set(profile.pinned_names())
+        unpinned = [
+            n for n in FUSED_PROBE_NAMES
+            if not any(n.endswith(p) for p in pinned)
+        ]
+        assert not unpinned, (
+            f"{name} is exempt from declaring fused groups only because its "
+            f"attention projections are pinned, but {unpinned} no longer are; "
+            "declare fused_groups or drop the exemption")
+        pytest.xfail(
+            f"{name} has no attestable fusion source (no vLLM class, no HF "
+            "fusion); every fusable projection is pinned")
     assert has_source
 
 

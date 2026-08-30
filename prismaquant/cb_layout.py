@@ -40,7 +40,13 @@ class CBFamily:
     grid: str
     mode: str
     n_sub: int
+    # ``rungs`` is the producer surface: menus, new assignments, and exports
+    # may contain only these values. ``accepted_rungs`` is the wider reader
+    # surface retained for already-materialized artifacts.  Keeping the two
+    # sets on the family itself prevents a permissive parser from accidentally
+    # becoming a producer menu.
     rungs: tuple[int, ...]
+    accepted_rungs: tuple[int, ...]
     layout_versions: tuple[int, ...]
     moe_layout_versions: tuple[int, ...]
 
@@ -49,9 +55,32 @@ class CBFamily:
             raise ValueError(f"{self.prefix}{k} is not a producer rung")
         return f"{self.prefix}{int(k)}"
 
+    def accepted_name(self, k: int) -> str:
+        """Return a wire name accepted by readers, including legacy rungs."""
 
-NVFP4_PRODUCT_RUNGS = tuple(range(12, 25))
-FP8_PRODUCT_RUNGS = tuple(range(28, 49))
+        if int(k) not in self.accepted_rungs:
+            raise ValueError(f"{self.prefix}{k} is not an accepted rung")
+        return f"{self.prefix}{int(k)}"
+
+    def is_producer_rung(self, k: int) -> bool:
+        return int(k) in self.rungs
+
+
+# The unsigned FP4 wire ABI carries one k-bit codeword for every 8 weights.
+# The public reader and producer domain stops at K25. K1 has the ceil-first
+# split (1, 0); K25 has split (13, 12). Width-14..16 lattice assets and the
+# direct uint32 codec endpoint remain available only to explicit low-level
+# research code. They have no public format id, registry entry, contract rung,
+# chooser candidate, assignment, bundle, or export path.
+NVFP4_PRODUCT_RUNGS = tuple(range(1, 26))
+NVFP4_ACCEPTED_RUNGS = NVFP4_PRODUCT_RUNGS
+FP8_PRODUCT_RUNGS = tuple(range(4, 49, 4))
+# Gridbook artifacts produced before the K%4/TMA rule was made a producer
+# invariant used every integer rung from K28 through K48.  They remain valid
+# serialized inputs and must stay parseable/reportable, but the off-law rungs
+# must never re-enter a new producer menu.
+FP8_LEGACY_RUNGS = tuple(range(28, 49))
+FP8_ACCEPTED_RUNGS = tuple(sorted(set(FP8_PRODUCT_RUNGS) | set(FP8_LEGACY_RUNGS)))
 
 # The signed sign-magnitude family (``NVFP4_CB_S13..S16``, mode="signed",
 # n_sub=1) was DELETED on 2026-08-17 (Rob: "we can get entirely rid of the
@@ -77,6 +106,7 @@ FAMILIES = (
         mode="product",
         n_sub=2,
         rungs=NVFP4_PRODUCT_RUNGS,
+        accepted_rungs=NVFP4_ACCEPTED_RUNGS,
         layout_versions=(1, 2),
         moe_layout_versions=(2,),
     ),
@@ -86,6 +116,7 @@ FAMILIES = (
         mode="product",
         n_sub=4,
         rungs=FP8_PRODUCT_RUNGS,
+        accepted_rungs=FP8_ACCEPTED_RUNGS,
         layout_versions=(1,),
         moe_layout_versions=(1,),
     ),
@@ -98,6 +129,12 @@ CB_FORMATS = tuple(
     family.name(k) for family in FAMILIES for k in family.rungs
 )
 CB_FORMAT_NAMES = frozenset(CB_FORMATS)
+ACCEPTED_CB_FORMATS = tuple(
+    family.accepted_name(k)
+    for family in FAMILIES
+    for k in family.accepted_rungs
+)
+ACCEPTED_CB_FORMAT_NAMES = frozenset(ACCEPTED_CB_FORMATS)
 PRODUCT_CB_FORMATS = tuple(
     family.name(k)
     for family in FAMILIES
@@ -121,6 +158,12 @@ FP8_CB_FORMAT_NAMES = frozenset(
     for family in FAMILIES
     if family.grid == "fp8"
     for k in family.rungs
+)
+FP8_ACCEPTED_FORMAT_NAMES = frozenset(
+    family.accepted_name(k)
+    for family in FAMILIES
+    if family.grid == "fp8"
+    for k in family.accepted_rungs
 )
 _FORMAT_RE = re.compile(r"^(NVFP4_CB_K|FP8_CB_K)(\d+)$")
 
@@ -208,14 +251,32 @@ def type_size(
 
 
 def parse_format_name(name: str) -> tuple[CBFamily, int] | None:
+    """Parse any supported CB wire name, including historical reader rungs."""
+
     match = _FORMAT_RE.fullmatch(str(name).upper())
     if match is None:
         return None
     family = FAMILY_BY_PREFIX[match.group(1)]
     k = int(match.group(2))
-    if k not in family.rungs:
+    if k not in family.accepted_rungs:
         return None
     return family, k
+
+
+def parse_producer_format_name(name: str) -> tuple[CBFamily, int] | None:
+    """Parse a format only when it is eligible for a newly produced artifact."""
+
+    parsed = parse_format_name(name)
+    if parsed is None:
+        return None
+    family, k = parsed
+    return parsed if family.is_producer_rung(k) else None
+
+
+def is_producer_format_name(name: str) -> bool:
+    """Whether ``name`` belongs in a producer menu or new assignment."""
+
+    return parse_producer_format_name(name) is not None
 
 
 def codebook_subtable_shapes(
@@ -243,6 +304,8 @@ def product_format_menu(*additional_formats: str) -> str:
 
 
 __all__ = [
+    "ACCEPTED_CB_FORMATS",
+    "ACCEPTED_CB_FORMAT_NAMES",
     "CBFamily",
     "CB_FORMATS",
     "CB_FORMAT_NAMES",
@@ -253,9 +316,13 @@ __all__ = [
     "FP4_GROUP",
     "FP4_SCALE_GROUPS_PER_SUPERBLOCK",
     "FP8_PRODUCT_RUNGS",
+    "FP8_ACCEPTED_RUNGS",
+    "FP8_ACCEPTED_FORMAT_NAMES",
+    "FP8_LEGACY_RUNGS",
     "INDEX_BIT_ORDER",
     "INDEX_BYTES_PER_K",
     "LAYOUT_FOR_SCALE_CODING",
+    "NVFP4_ACCEPTED_RUNGS",
     "NVFP4_PRODUCT_RUNGS",
     "PRODUCT_CB_FORMAT_NAMES",
     "PRODUCT_CB_FORMATS",
@@ -270,6 +337,8 @@ __all__ = [
     "codebook_subtable_shapes",
     "family_for",
     "parse_format_name",
+    "parse_producer_format_name",
+    "is_producer_format_name",
     "product_format_menu",
     "scale_coding_layout_version",
     "subtable_bit_widths",

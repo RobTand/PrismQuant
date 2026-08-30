@@ -17,8 +17,8 @@ from prismaquant.source_class_format_plan import (
 )
 
 
-EXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(28, 34))
-NONEXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(28, 49))
+EXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(4, 33, 4))
+NONEXPERT_FORMATS = tuple(f"FP8_CB_K{k}" for k in range(4, 49, 4))
 # The DSv4 on-law menus: the fused mid-M rungs nvfp4_cb backs at the pinned
 # runtime, intersected with the byte-exact source-payload ceiling (K33 for a
 # routed expert, K48 for a dense row).
@@ -83,9 +83,9 @@ def test_source_derived_split_prices_no_illegal_expert_cells_and_keeps_k48():
         for qname, formats in plan.formats_by_qname().items()
         for fmt in formats
     }
-    assert len(scheduled) == 6 + 21
+    assert len(scheduled) == 8 + 12
     assert not any(
-        qname == expert and int(fmt.rsplit("K", 1)[1]) > 33
+        qname == expert and int(fmt.rsplit("K", 1)[1]) > 32
         for qname, fmt in scheduled
     )
     assert (nonexpert, "FP8_CB_K48") in scheduled
@@ -158,11 +158,10 @@ def test_plan_round_trip_is_identity_bound(tmp_path):
 
 # --- serving-backed restriction (the DSv4 on-law menu) ---------------------
 #
-# Off-law FP8-CB rungs are registered and legal to *render*, but the fused
-# mid-M kernel instantiates only k % 4 == 0, so an artifact that ships them
-# is served through expand+GEMM.  The restriction is therefore a serving
-# legality bound read off the pinned runtime's backed set -- not a demand or
-# disk one, which the tests below pin down from both sides.
+# Off-law FP8-CB rungs remain registered for historical reads, but they are no
+# longer legal producer inputs.  This further restriction intersects the full
+# K%4 producer family with the pinned runtime's backed set; it is a serving
+# legality bound, not a demand- or disk-driven truncation.
 
 
 def _on_law_plan(profile=None):
@@ -201,7 +200,8 @@ def test_serving_backed_restriction_admits_exactly_the_on_law_menu():
     assert restriction["family"] == "fp8_cb"
     assert restriction["runtime_version"] == gridbook_runtime_version()
     assert restriction["fused_mid_m_rungs"] == [28, 32, 36, 40, 44, 48]
-    assert "FP8_CB_K29" in restriction["restricted_out"]
+    assert "FP8_CB_K4" in restriction["restricted_out"]
+    assert "FP8_CB_K24" in restriction["restricted_out"]
 
 
 def test_on_law_menu_without_the_restriction_is_still_refused():
@@ -218,7 +218,7 @@ def test_on_law_menu_without_the_restriction_is_still_refused():
             nonexpert_formats=ON_LAW_NONEXPERT_FORMATS,
             cb_serialization_context=CONTEXT,
         )
-    assert "FP8_CB_K29" in str(caught.value)
+    assert "FP8_CB_K4" in str(caught.value)
 
 
 def test_serving_backed_restriction_still_refuses_truncation():
@@ -241,7 +241,11 @@ def test_serving_backed_restriction_refuses_an_unbacked_family():
     # restricting that family empties it. An empty menu is an error, never a
     # silent truncation.
     qname = "model.layers.0.self_attn.q_proj"
-    nvfp4_cb_formats = tuple(f"NVFP4_CB_K{k}" for k in range(12, 25))
+    from prismaquant.cb_layout import NVFP4_PRODUCT_RUNGS
+
+    nvfp4_cb_formats = tuple(
+        f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS
+    )
     with pytest.raises(ValueError, match="backs no fused mid-M rung"):
         build_source_class_format_plan(
             {qname: _stats((4096, 4096))},

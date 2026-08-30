@@ -86,3 +86,22 @@ def test_main_invokes_candidate_membership_validator(tmp_path, monkeypatch):
     )
     assert emitted_names & set(final.keys()), (
         "validator must see the assignment that is emitted")
+
+
+def test_main_refuses_reader_only_fp8_cb_rung_before_allocation(
+    tmp_path, monkeypatch
+):
+    probe_p, cost_p = _write_fixture(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "allocator",
+        "--probe", str(probe_p),
+        "--costs", str(cost_p),
+        "--formats", "FP8_CB_K29,BF16",
+        "--target-bits", "8.0",
+        "--layer-config", str(tmp_path / "layer_config.json"),
+        "--pareto-csv", str(tmp_path / "pareto.csv"),
+        "--allow-default-profile",
+    ])
+
+    with pytest.raises(SystemExit, match="reader-only.*FP8_CB_K29"):
+        alloc.main()

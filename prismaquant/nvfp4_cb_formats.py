@@ -17,8 +17,9 @@ Three VQ modes:
   argmin (chunked). Only feasible for k<=14; raises above without an explicit
   codebook.
 * ``product`` (default) — the 8-dim vector splits into two 4-dim halves, each
-  with its own ``2^(k/2)`` sub-codebook (ceil/floor bit split for odd k). Feasible
-  for the whole NVFP4-CB ladder (k=12..24).
+  with its own ``2^(k/2)`` sub-codebook (ceil/floor bit split for odd k). The
+  public NVFP4-CB ladder is k=1..25. Direct low-level research can exercise
+  wider codewords through k=32, but those values have no registry or export id.
 * ``signed`` — DELETED 2026-08-17. Sign-magnitude factorization (the
   IQ-family move) was a real serialized mode until then, but Gridbook's native
   FP4 path is written against the UNSIGNED two-tier product layout
@@ -73,10 +74,21 @@ from pathlib import Path
 
 import torch
 
+from .cb_compile_contract import (
+    ENCODE_SCORE_ARGMIN,
+    ENCODE_SCORE_MIN,
+    ENCODE_SCORE_MIN_BATCHED,
+    ENCODE_SCORE_MINARGMIN_BATCHED,
+    ENCODE_VQ_ARGMIN,
+    cb_compile_fail_closed,
+    compile_cb_callable,
+    refuse_cb_compile_fallback,
+)
 from .cb_layout import (
     CODEWORDS_PER_SUPERBLOCK,
     FP4_GROUP,
     FP4_SCALE_GROUPS_PER_SUPERBLOCK,
+    FAMILIES,
     INDEX_BYTES_PER_K,
     SCALE_CODING_TWO_TIER,
     SCALE_CODING_V1,
@@ -91,8 +103,10 @@ from .cb_layout import (
 
 FP8_ELEMENT_MAX = 448.0
 NVFP4_GRID_MAX = 6.0            # max(|E2M1|); amax/6 == no-clip one-shot scale
-# Flat-table feasibility ceiling (encode-side exhaustive argmin + serve-side
-# LUT). Above this a structured/learned codebook must be supplied explicitly.
+# Flat-table feasibility ceiling for the research full-d8 Lloyd path. The
+# production fp4/d4 product lattice has a separate exact structured
+# construction through width 16; raising this global ceiling would accidentally
+# invite an infeasible 2^15/2^16 dense Lloyd solve for unrelated full tables.
 MAX_FLAT_K = 14
 # Slice stacked/huge tensors along the leading dim to bound VQ temporaries
 # (mirrors gguf_slice_max_elems' 64M IQ threshold — UMA swap-kill guard).
@@ -179,9 +193,33 @@ def _resolve_encode_tier(tier: str | None) -> str:
     return t
 
 _DATA = Path(__file__).resolve().parent / "data" / "nvfp4_cb_lattices.pt"
+_LATTICE_ASSET_SHA256 = (
+    "e54db775e7d68028c1f50296c53602b0b703dd6c0c0e4a77910e5255f5d94b4b"
+)
 _LATTICE_SEED = 1234
 _LATTICE_SAMPLES = 1 << 17
 _LATTICE_ITERS = 12
+
+# Canonical structured fp4/d4 extension, version 3. Low widths 0..5 are nested
+# prefixes of a deterministic progressive-farthest ordering of the immutable
+# width-6 table (starting at its nearest-zero row), so each new rung is a set
+# superset and width 6 remains a superset without changing one historical byte.
+# At the high end, widths 13..16 are prefixes of one master table: the
+# historical digest-bound width-12 tensor is the exact first 4,096 rows, then a
+# deterministic permutation adds every missing E2M1^4 vector, and a
+# deterministic prefix cycle fills the unavoidable duplicate rows. Therefore
+# distortion cannot increase solely because either new ladder grew, and width
+# 16 covers all 15^4 numeric vectors. Widths 6..12 retain their existing tensor
+# bytes. Every production lookup is asset-only; these constructors exist for
+# the reviewed generator and invariant tests, never as a runtime cache fallback.
+STRUCTURED_FP4_D4_LATTICE_VERSION = "fp4-d4-nested-e2m1-v3"
+STRUCTURED_FP4_D4_LOW_BASE_K = 6
+STRUCTURED_FP4_D4_LOW_MAX_K = 5
+STRUCTURED_FP4_D4_HIGH_MIN_K = 13
+STRUCTURED_FP4_D4_MAX_K = 16
+_STRUCTURED_FP4_D4_BASE_K = 12
+_STRUCTURED_FP4_D4_PERMUTATION_MULTIPLIER = 104729
+_STRUCTURED_FP4_D4_PERMUTATION_OFFSET = 1234
 
 # E2M1: {0, +-0.5, +-1, +-1.5, +-2, +-3, +-4, +-6}
 _E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
@@ -235,6 +273,13 @@ def _vq_dist_argmin_compiled():
     return torch.compile(_vq_dist_argmin_eager, dynamic=True)
 
 
+@lru_cache(maxsize=None)
+def _vq_dist_argmin_compiled_strict():
+    return compile_cb_callable(
+        _vq_dist_argmin_eager, helper=ENCODE_VQ_ARGMIN, dynamic=True,
+    )
+
+
 def _vq_dist_argmin(term2: torch.Tensor, term1: torch.Tensor) -> torch.Tensor:
     """Fused distance + argmin.
 
@@ -246,7 +291,17 @@ def _vq_dist_argmin(term2: torch.Tensor, term1: torch.Tensor) -> torch.Tensor:
     first-occurrence tie rule, so the chosen codewords are unchanged."""
     if _compiled_encode_route(term1):
         _raise_encode_recompile_limit()
-        return _vq_dist_argmin_compiled()(term2, term1)
+        compiled = (
+            _vq_dist_argmin_compiled_strict()
+            if cb_compile_fail_closed()
+            else _vq_dist_argmin_compiled()
+        )
+        return compiled(term2, term1)
+    if _encode_compile_on() and cb_compile_fail_closed():
+        refuse_cb_compile_fallback(
+            ENCODE_VQ_ARGMIN,
+            reason="index-producing CB compile is CUDA-only",
+        )
     return _vq_dist_argmin_eager(term2, term1)
 
 
@@ -301,12 +356,54 @@ def _vq_assign(x: torch.Tensor, cb: torch.Tensor,
 # Fixed lattice + learned codebook (weighted Lloyd on the element grid).
 # ---------------------------------------------------------------------------
 
+def _fixed_order_segment_sum(
+    assign: torch.Tensor,
+    values: torch.Tensor,
+    segments: int,
+) -> torch.Tensor:
+    """Sum rows by assignment without floating-point atomic accumulation.
+
+    Learned-v2 sorts assignments stably, preserving source-row order inside
+    every centroid, and then performs one contiguous segmented reduction.  It
+    is more expensive than ``index_add_`` but has a fixed reduction topology
+    on one build/device and avoids CUDA's unordered floating-point atomics.
+    Integer ``bincount`` supplies segment lengths and is exact.
+    """
+
+    if assign.ndim != 1 or values.ndim != 2:
+        raise ValueError(
+            "fixed-order centroid accumulation expects 1-D assignments "
+            "and 2-D values"
+        )
+    if assign.shape[0] != values.shape[0]:
+        raise ValueError("fixed-order assignments and values have different row counts")
+    segment_reduce = getattr(torch, "segment_reduce", None)
+    if segment_reduce is None:
+        raise RuntimeError(
+            "learned-v2 fixed-order accumulation requires torch.segment_reduce"
+        )
+    order = torch.argsort(assign, stable=True)
+    lengths = torch.bincount(assign, minlength=int(segments))
+    return segment_reduce(
+        values.index_select(0, order),
+        "sum",
+        lengths=lengths,
+    )
+
+
 def _lloyd(samples: torch.Tensor, init: torch.Tensor, grid: str,
            weights: torch.Tensor | None, iters: int, seed: int,
-           positive: bool = False) -> torch.Tensor:
+           positive: bool = False,
+           accumulation: str = "atomic") -> torch.Tensor:
     """Grid-snapped weighted Lloyd. Every centroid coordinate is projected
     onto the element grid after each update, so codewords stay grid-valued
     (the positive half-grid for magnitude codebooks)."""
+    accumulation = str(accumulation).strip().lower()
+    if accumulation not in {"atomic", "fixed_order"}:
+        raise ValueError(
+            "Lloyd accumulation must be 'atomic' or 'fixed_order', got "
+            f"{accumulation!r}"
+        )
     cb = _snap_to_grid(init.to(torch.float32), grid, positive=positive)
     K, d = cb.shape
     gen = torch.Generator(device="cpu").manual_seed(int(seed))
@@ -316,17 +413,30 @@ def _lloyd(samples: torch.Tensor, init: torch.Tensor, grid: str,
         # 27B-Linear scale (m~3.1M, K=4096) and swap-kills a UMA box.
         counts = torch.bincount(assign, minlength=K).to(samples.dtype)
         if weights is None:
-            summ = torch.zeros(K, d, dtype=samples.dtype,
-                               device=samples.device)
-            summ.index_add_(0, assign, samples)
+            if accumulation == "fixed_order":
+                summ = _fixed_order_segment_sum(assign, samples, K)
+            else:
+                summ = torch.zeros(K, d, dtype=samples.dtype,
+                                   device=samples.device)
+                summ.index_add_(0, assign, samples)
             new = summ / counts.clamp_min(1.0).unsqueeze(-1)
         else:
-            wsum = torch.zeros(K, d, dtype=samples.dtype,
-                               device=samples.device)
-            wsum.index_add_(0, assign, weights)
-            summ = torch.zeros(K, d, dtype=samples.dtype,
-                               device=samples.device)
-            summ.index_add_(0, assign, weights * samples)
+            if accumulation == "fixed_order":
+                # Reduce both numerators in one sorted pass so they share the
+                # same fixed row order and segment topology.
+                reduced = _fixed_order_segment_sum(
+                    assign,
+                    torch.cat((weights, weights * samples), dim=1),
+                    K,
+                )
+                wsum, summ = reduced.split(d, dim=1)
+            else:
+                wsum = torch.zeros(K, d, dtype=samples.dtype,
+                                   device=samples.device)
+                wsum.index_add_(0, assign, weights)
+                summ = torch.zeros(K, d, dtype=samples.dtype,
+                                   device=samples.device)
+                summ.index_add_(0, assign, weights * samples)
             new = summ / wsum.clamp_min(1e-12)
         empty = counts == 0
         if bool(empty.any()):
@@ -341,6 +451,12 @@ def _lloyd(samples: torch.Tensor, init: torch.Tensor, grid: str,
 @lru_cache(maxsize=None)
 def _lattice_file() -> dict[str, torch.Tensor]:
     if _DATA.exists():
+        observed = hashlib.sha256(_DATA.read_bytes()).hexdigest()
+        if observed != _LATTICE_ASSET_SHA256:
+            raise RuntimeError(
+                "canonical CB lattice asset digest differs: expected "
+                f"{_LATTICE_ASSET_SHA256}, observed {observed}"
+            )
         return torch.load(_DATA, map_location="cpu", weights_only=True)
     return {}
 
@@ -349,24 +465,179 @@ def _lattice_key(k: int, grid: str, d: int, positive: bool = False) -> str:
     return f"{grid}{'pos' if positive else ''}_d{d}_k{k}"
 
 
+def _is_structured_fp4_d4_key(
+    k: int,
+    grid: str,
+    d: int,
+    positive: bool = False,
+) -> bool:
+    return (
+        str(grid) == "fp4"
+        and int(d) == 4
+        and not bool(positive)
+        and (
+            0 <= int(k) <= STRUCTURED_FP4_D4_LOW_MAX_K
+            or STRUCTURED_FP4_D4_HIGH_MIN_K
+            <= int(k)
+            <= STRUCTURED_FP4_D4_MAX_K
+        )
+    )
+
+
+@lru_cache(maxsize=1)
+def _structured_fp4_d4_low_master() -> torch.Tensor:
+    """Order the immutable width-6 rows by progressive farthest point."""
+
+    base_key = _lattice_key(
+        STRUCTURED_FP4_D4_LOW_BASE_K, "fp4", 4, False
+    )
+    base = _lattice_file().get(base_key)
+    expected_shape = (1 << STRUCTURED_FP4_D4_LOW_BASE_K, 4)
+    if base is None or tuple(base.shape) != expected_shape:
+        raise RuntimeError(
+            f"{STRUCTURED_FP4_D4_LATTICE_VERSION} requires canonical "
+            f"{base_key} with shape {expected_shape}"
+        )
+    base = base.to(torch.float32).contiguous()
+    first = int((base * base).sum(dim=1).argmin())
+    order = [first]
+    available = torch.ones(base.shape[0], dtype=torch.bool)
+    available[first] = False
+    min_distance = ((base - base[first]) ** 2).sum(dim=1)
+    while len(order) < base.shape[0]:
+        scores = min_distance.clone()
+        scores[~available] = -1.0
+        selected = int(scores.argmax())
+        order.append(selected)
+        available[selected] = False
+        distance = ((base - base[selected]) ** 2).sum(dim=1)
+        min_distance = torch.minimum(min_distance, distance)
+    return base.index_select(0, torch.tensor(order)).contiguous()
+
+
+@lru_cache(maxsize=1)
+def _structured_fp4_d4_high_master() -> torch.Tensor:
+    """Build the nested width-16 master from the canonical width-12 asset."""
+
+    base_key = _lattice_key(
+        _STRUCTURED_FP4_D4_BASE_K, "fp4", 4, False
+    )
+    base = _lattice_file().get(base_key)
+    expected_shape = (1 << _STRUCTURED_FP4_D4_BASE_K, 4)
+    if base is None or tuple(base.shape) != expected_shape:
+        raise RuntimeError(
+            f"{STRUCTURED_FP4_D4_LATTICE_VERSION} requires canonical "
+            f"{base_key} with shape {expected_shape}"
+        )
+    base = base.to(torch.float32).contiguous()
+    levels = tuple(sorted({
+        value
+        for magnitude in _E2M1_VALUES
+        for value in ({magnitude, -magnitude} if magnitude else {0.0})
+    }))
+    universe_size = len(levels) ** 4
+    seen = {tuple(float(value) for value in row) for row in base.tolist()}
+    additions: list[tuple[float, float, float, float]] = []
+    for ordinal in range(universe_size):
+        linear = (
+            _STRUCTURED_FP4_D4_PERMUTATION_MULTIPLIER * ordinal
+            + _STRUCTURED_FP4_D4_PERMUTATION_OFFSET
+        ) % universe_size
+        digits: list[int] = []
+        for _coordinate in range(4):
+            linear, digit = divmod(linear, len(levels))
+            digits.append(digit)
+        row = tuple(levels[digit] for digit in digits)
+        if row not in seen:
+            additions.append(row)
+            seen.add(row)
+    if len(seen) != universe_size:
+        raise RuntimeError(
+            f"nested fp4/d4 construction covered {len(seen)} of "
+            f"{universe_size} E2M1 vectors"
+        )
+    complete = torch.cat(
+        (base, torch.tensor(additions, dtype=torch.float32)), dim=0
+    ).contiguous()
+    target_rows = 1 << STRUCTURED_FP4_D4_MAX_K
+    remaining = target_rows - int(complete.shape[0])
+    if remaining < 0:
+        raise RuntimeError("nested fp4/d4 unique prefix exceeds width-16 table")
+    if remaining:
+        duplicate_indices = torch.arange(remaining) % complete.shape[0]
+        complete = torch.cat(
+            (complete, complete.index_select(0, duplicate_indices)), dim=0
+        ).contiguous()
+    return complete
+
+
+@lru_cache(maxsize=None)
+def _structured_fp4_d4_lattice(k: int) -> torch.Tensor:
+    """Return a nested low- or high-width E2M1 d4 generator table."""
+
+    k = int(k)
+    if 0 <= k <= STRUCTURED_FP4_D4_LOW_MAX_K:
+        return _structured_fp4_d4_low_master()[:1 << k].clone()
+    if STRUCTURED_FP4_D4_HIGH_MIN_K <= k <= STRUCTURED_FP4_D4_MAX_K:
+        return _structured_fp4_d4_high_master()[:1 << k].clone()
+    raise ValueError(
+        "structured fp4/d4 lattice width must be 0.."
+        f"{STRUCTURED_FP4_D4_LOW_MAX_K} or "
+        f"{STRUCTURED_FP4_D4_HIGH_MIN_K}.."
+        f"{STRUCTURED_FP4_D4_MAX_K}, got {k}"
+    )
+
+
+@lru_cache(maxsize=1)
+def _production_lattice_keys() -> frozenset[str]:
+    """Canonical table keys needed by every producer-eligible CB rung."""
+
+    keys: set[str] = set()
+    for family in FAMILIES:
+        for rung in family.rungs:
+            widths = subtable_bit_widths(rung, family.mode, family.n_sub)
+            shapes = codebook_subtable_shapes(
+                rung, family.mode, family.n_sub
+            )
+            for width, (_, dimension) in zip(widths, shapes):
+                keys.add(_lattice_key(width, family.grid, dimension, False))
+    return frozenset(keys)
+
+
 @lru_cache(maxsize=None)
 def _fixed_lattice_cpu(k: int, grid: str, d: int,
                        positive: bool = False) -> torch.Tensor:
-    if k > MAX_FLAT_K:
+    structured = _is_structured_fp4_d4_key(k, grid, d, positive)
+    if k > MAX_FLAT_K and not structured:
         raise ValueError(
             f"flat codebook infeasible at k={k} (2^{k} codewords > "
             f"2^{MAX_FLAT_K}); provide an explicit/structured codebook")
     cached = _lattice_file().get(_lattice_key(k, grid, d, positive))
     if cached is not None:
         return cached.to(torch.float32).contiguous()
+    key = _lattice_key(k, grid, d, positive)
+    if key in _production_lattice_keys():
+        raise RuntimeError(
+            f"canonical producer lattice {key!r} is missing from the "
+            "digest-bound asset; refusing device-dependent synthesis"
+        )
     return _build_lattice(k, grid, d, positive=positive)
 
 
-def _build_lattice(k: int, grid: str, d: int,
-                   positive: bool = False) -> torch.Tensor:
+def _build_lattice(
+    k: int,
+    grid: str,
+    d: int,
+    positive: bool = False,
+    *,
+    device: str | torch.device | None = None,
+) -> torch.Tensor:
     """Deterministic universal lattice: grid-snapped Lloyd on seeded samples
     drawn from the *post-normalization* distribution each grid's encoder
-    actually produces. Regenerated on cache miss.
+    actually produces. Regenerated on cache miss.  This is a research-only,
+    noncanonical fallback: production keys must come from the digest-pinned
+    asset.  ``device=None`` preserves the historical GPU-when-available
+    behavior; the canonical asset generator requests CPU explicitly.
 
     Both families must train at the data scale or the codewords cluster far
     from the data and reconstruction collapses (2026-07-15: the original fp4
@@ -381,6 +652,8 @@ def _build_lattice(k: int, grid: str, d: int,
         ``_scale_and_vectorize`` (no hand-tuned scale constant), so the
         lattice matches the exact distribution the encoder feeds it.
     """
+    if _is_structured_fp4_d4_key(k, grid, d, positive):
+        return _structured_fp4_d4_lattice(int(k)).clone()
     K = 1 << k
     gen = torch.Generator(device="cpu").manual_seed(_LATTICE_SEED + k * 131 + d)
     m = max(_LATTICE_SAMPLES, K * 16)
@@ -397,8 +670,12 @@ def _build_lattice(k: int, grid: str, d: int,
         # Magnitude lattice: train on |x| of the same post-normalization
         # distribution.
         samples = samples.abs()
-    if torch.cuda.is_available():
-        samples = samples.cuda()
+    target_device = torch.device(
+        device
+        if device is not None
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    samples = samples.to(target_device)
     perm = torch.randperm(samples.shape[0], generator=gen).to(samples.device)[:K]
     init = samples[perm]
     return _lloyd(samples, init, grid, None, _LATTICE_ITERS, _LATTICE_SEED,
@@ -415,13 +692,16 @@ def fixed_lattice(k: int, grid: str, d: int = 8,
 def learn_codebook(vectors: torch.Tensor, k: int, *, grid: str,
                    col_weights: torch.Tensor | None = None,
                    init: torch.Tensor | None = None, iters: int = 4,
-                   seed: int = 0, positive: bool = False) -> torch.Tensor:
+                   seed: int = 0, positive: bool = False,
+                   accumulation: str = "atomic") -> torch.Tensor:
     """Weighted Lloyd codebook on the element grid. Returns a (2^k, d)
     grid-valued tensor (positive half-grid when ``positive=True`` — pass
     ``|vectors|`` to learn a magnitude-only codebook). Deterministic
-    given ``seed`` + ``init`` on CPU; on CUDA the index_add_ float atomics
-    can flip grid-snap ties across runs, so ship the resulting codebook
-    rather than regenerating it."""
+    given ``seed`` + ``init`` on CPU.  The default ``"atomic"`` preserves the
+    legacy trainer exactly; ``"fixed_order"`` uses stable assignment sorting
+    plus contiguous segment reductions for learned-v2 repeatability on one
+    fixed build/device.  Shipped codebooks remain value-bearing artifacts;
+    regeneration digests are not promised across architectures."""
     vectors = vectors.to(torch.float32)
     d = vectors.shape[-1]
     vectors = vectors.reshape(-1, d)
@@ -436,8 +716,16 @@ def learn_codebook(vectors: torch.Tensor, k: int, *, grid: str,
         weights = torch.broadcast_to(
             col_weights.to(vectors.device, torch.float32), vectors.shape
         ).contiguous()
-    return _lloyd(vectors, init, grid, weights, iters, seed,
-                  positive=positive)
+    return _lloyd(
+        vectors,
+        init,
+        grid,
+        weights,
+        iters,
+        seed,
+        positive=positive,
+        accumulation=accumulation,
+    )
 
 
 def _resolve_codebook(k: int, grid: str, mode: str,
@@ -682,8 +970,22 @@ def _score_min_compiled():
 
 
 @lru_cache(maxsize=None)
+def _score_min_compiled_strict():
+    return compile_cb_callable(
+        _score_min_eager, helper=ENCODE_SCORE_MIN, dynamic=True,
+    )
+
+
+@lru_cache(maxsize=None)
 def _score_argmin_compiled():
     return torch.compile(_score_argmin_eager, dynamic=True)
+
+
+@lru_cache(maxsize=None)
+def _score_argmin_compiled_strict():
+    return compile_cb_callable(
+        _score_argmin_eager, helper=ENCODE_SCORE_ARGMIN, dynamic=True,
+    )
 
 
 def _encode_compile_on() -> bool:
@@ -729,6 +1031,9 @@ def _raise_encode_recompile_limit() -> None:
 
 def _score_min(A, B, s):
     if _encode_compile_on():
+        if cb_compile_fail_closed():
+            _raise_encode_recompile_limit()
+            return _score_min_compiled_strict()(A, B, s)
         try:
             _raise_encode_recompile_limit()
             return _score_min_compiled()(A, B, s)
@@ -784,14 +1089,42 @@ def _score_min_batched_compiled():
 
 
 @lru_cache(maxsize=None)
+def _score_min_batched_compiled_strict():
+    return compile_cb_callable(
+        _score_min_batched_eager,
+        helper=ENCODE_SCORE_MIN_BATCHED,
+        dynamic=True,
+    )
+
+
+@lru_cache(maxsize=None)
 def _score_minargmin_batched_compiled():
     return torch.compile(_score_minargmin_batched_eager, dynamic=True)
+
+
+@lru_cache(maxsize=None)
+def _score_minargmin_batched_compiled_strict():
+    return compile_cb_callable(
+        _score_minargmin_batched_eager,
+        helper=ENCODE_SCORE_MINARGMIN_BATCHED,
+        dynamic=True,
+    )
 
 
 def _score_minargmin_batched(A, B, s):
     if _compiled_encode_route(B):
         _raise_encode_recompile_limit()
-        return _score_minargmin_batched_compiled()(A, B, s)
+        compiled = (
+            _score_minargmin_batched_compiled_strict()
+            if cb_compile_fail_closed()
+            else _score_minargmin_batched_compiled()
+        )
+        return compiled(A, B, s)
+    if _encode_compile_on() and cb_compile_fail_closed():
+        refuse_cb_compile_fallback(
+            ENCODE_SCORE_MINARGMIN_BATCHED,
+            reason="index-producing CB compile is CUDA-only",
+        )
     vs, is_ = [], []
     for i in range(s.shape[-1]):
         v, ix = _score_argmin_eager(A, B, s[:, i:i + 1])
@@ -802,6 +1135,9 @@ def _score_minargmin_batched(A, B, s):
 
 def _score_min_batched(A, B, s):
     if _encode_compile_on():
+        if cb_compile_fail_closed():
+            _raise_encode_recompile_limit()
+            return _score_min_batched_compiled_strict()(A, B, s)
         try:
             _raise_encode_recompile_limit()
             return _score_min_batched_compiled()(A, B, s)
@@ -818,7 +1154,17 @@ def _score_min_batched(A, B, s):
 def _score_argmin(A, B, s):
     if _compiled_encode_route(B):
         _raise_encode_recompile_limit()
-        return _score_argmin_compiled()(A, B, s)
+        compiled = (
+            _score_argmin_compiled_strict()
+            if cb_compile_fail_closed()
+            else _score_argmin_compiled()
+        )
+        return compiled(A, B, s)
+    if _encode_compile_on() and cb_compile_fail_closed():
+        refuse_cb_compile_fallback(
+            ENCODE_SCORE_ARGMIN,
+            reason="index-producing CB compile is CUDA-only",
+        )
     return _score_argmin_eager(A, B, s)
 
 

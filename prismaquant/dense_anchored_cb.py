@@ -17,8 +17,8 @@ WHY ANCHORED RATHER THAN THE STOCK ``COST_MODE=aura`` PATH
 ``run-pipeline.sh`` [2b/4] renders EVERY non-BF16 format in ``FORMATS`` into a
 retained format-menu production cache.  Measured on Qwen3.8-27B, a retained
 rung costs 45.5 GB (the cache stores the *rendered* ~bf16 weight, 2.002
-B/qparam, K-independent), so a 19-rung CB ladder is ~865 GB -- more than the
-box has -- and the cache has no downstream consumer, because the exporter
+B/qparam, K-independent), so the complete 37-rung public CB menu is ~1.68 TB
+-- more than the box has -- and the cache has no downstream consumer, because the exporter
 re-encodes from source.  Truncating the ladder to fit that budget would be a
 render-budget heuristic deciding the allocator's candidate set, which is what
 ``PRODUCTION_CACHE_UNION`` was archived for (principle 1).
@@ -97,52 +97,62 @@ from prismaquant.cb_anchored_cost import (
     run_streamed_cb_anchor_aura,
     write_cb_cost_payload,
 )
+from prismaquant.cb_layout import FP8_PRODUCT_RUNGS, NVFP4_PRODUCT_RUNGS
 from prismaquant.cost_stage_checkpoint import (
     atomic_write_bytes,
     canonical_json_sha256,
 )
 
-CAMPAIGN_SCHEMA = "prismaquant.dense_anchored_cb.campaign.v1"
-TARGET_PROFILE = "nvfp4_cb"
+CAMPAIGN_SCHEMA = "prismaquant.dense_anchored_cb.campaign.v3"
+DEFAULT_TARGET_PROFILE = "qwen38_sm120_cb_validation_only"
 
 # NVFP4-CB is outside the gridbook fused mid-M kernel law (its lane backs no
 # fused rungs at any version; every rung rides the fallback route), so the
-# ladder is the exporter's contiguous production range.
-NVFP4_CB_LADDER = tuple(f"NVFP4_CB_K{k}" for k in range(12, 25))
-# FP8-CB IS bound by that law: k % 4 == 0 and nothing else, because
-# type_size = 4k must be a 16-byte multiple and the fused mainloop's uniform
-# CbSubW = k/4 is wrong for ragged off-law sub-tables.  This is the set
-# serving_profile_specs/nvfp4_cb.json backs for the pinned runtime, verified
-# against the resolved plan below rather than trusted from this constant.
-FP8_CB_LADDER = tuple(f"FP8_CB_K{k}" for k in (28, 32, 36, 40, 44, 48))
-FP8_CB_RUNGS = tuple(cb_rung(name) for name in FP8_CB_LADDER)
+# campaign follows the authoritative contiguous producer range. The v3
+# campaign schema is intentionally incompatible with the old K12..K24 fit.
+NVFP4_CB_LADDER = tuple(
+    f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS
+)
+# FP8-CB follows its authoritative producer law, not the narrower fused-mid-M
+# performance subset of the historical Gridbook pin.  K4..K48 step 4 is the
+# public producer ladder; a rung without a fused mid-M route can still use the
+# correctness bridge.  This validation-only campaign does not turn either
+# route into a release or device-qualification claim.
+FP8_CB_LADDER = tuple(f"FP8_CB_K{k}" for k in FP8_PRODUCT_RUNGS)
 
 # One anchor per (family, basis), rendered for EVERY unit of that segment, so
 # it must be legal everywhere the segment reaches and interior enough to keep
 # the worst extrapolation short.
-#   nvfp4_cb: K12..K24 -> K18 is the midpoint.
-#   fp8_cb:   the 6 on-law rungs -> K36 is interior (worst distance 3 steps,
-#             tied with K40) and sits nearer the low rungs a tight byte budget
-#             actually selects.
+#   nvfp4_cb: K1..K25 -> K13 is the central integer rung.
+#   fp8_cb:   K4..K48 step 4 -> K24 is one of the two central rungs (worst
+#             distance 24, tied with K28) and is the lower one, nearer the
+#             compressed candidates this campaign exists to study.
 # Learned codebooks are a measured NULL on Qwen dense (holdout ~1.00 across
 # K28-K43), so this lane declares ONE basis and there is no learned segment.
 ANCHOR_FORMATS = {
-    ("nvfp4_cb", LATTICE_BASIS): "NVFP4_CB_K18",
-    ("fp8_cb", LATTICE_BASIS): "FP8_CB_K36",
+    ("nvfp4_cb", LATTICE_BASIS): "NVFP4_CB_K13",
+    ("fp8_cb", LATTICE_BASIS): "FP8_CB_K24",
 }
 
 # Panel rungs must (a) stay inside the segment's legal ladder and (b) give the
-# shape design full rank after per-unit centering.  That second condition is
-# what fixes the parity choice: NVFP4-CB spans both parities, so its design is
-# (rung, rung_parity) and a panel of all-even rungs would centre the parity
-# column to zero and fail closed at rank 1 of 2.  K13/K16/K20/K23 spans the
-# ladder AND both parities.  Every legal FP8-CB rung is k % 4 == 0, so parity
-# is constant there, the design drops to (rung,) alone, and any two distinct
-# rungs suffice -- K28..K48 is chosen to span rather than to satisfy rank.
+# shape design full rank after per-unit centering. The expanded NVFP4 design is
+# (rung, parity, below-K12 hinge, above-K24 hinge): it fits separate low-band
+# and endpoint effects and cannot reuse the old K12..K24 line as endpoint
+# evidence. The panel
+# brackets both hinges, both parities, and the exact K1/K25 endpoints. K25 is
+# the only producer rung above the high hinge, so its coefficient is honestly
+# a measured endpoint shoulder rather than an extrapolated high-band slope.
+# Every legal FP8-CB rung is k % 4 == 0, so parity is constant there, the
+# design drops to (rung,) alone, and any two distinct rungs suffice.  The
+# three-point K4/K28/K48 panel spans both endpoints and an interior point;
+# this is a measured straight-line proposal whose curvature is challenged by
+# four off-panel validation rungs below and above the K24 anchor.
 PANEL_RUNGS = {
-    "nvfp4_cb": ("NVFP4_CB_K13", "NVFP4_CB_K16",
-                 "NVFP4_CB_K20", "NVFP4_CB_K23"),
-    "fp8_cb": ("FP8_CB_K28", "FP8_CB_K40", "FP8_CB_K48"),
+    "nvfp4_cb": (
+        "NVFP4_CB_K1", "NVFP4_CB_K2", "NVFP4_CB_K11", "NVFP4_CB_K12",
+        "NVFP4_CB_K23", "NVFP4_CB_K24", "NVFP4_CB_K25",
+    ),
+    "fp8_cb": ("FP8_CB_K4", "FP8_CB_K28", "FP8_CB_K48"),
 }
 # Held-out UNITS are the primary generalization axis (the fit is applied to
 # every unit, not just panel members).  A validation rung must never be the
@@ -160,15 +170,22 @@ PANEL_RUNGS = {
 # all.  This lane has rungs to spare and takes the stronger design anyway; the
 # report tags each cell's `held_out_axes` so a reader can tell which was used.
 #
-# NVFP4-CB is validated at the extremes AND two interior rungs, so the report
-# separates the worst extrapolation from the typical one -- validating only at
-# K12/K24 makes a fit look worse than it is everywhere the DP actually selects.
-# FP8-CB has six legal rungs; one is the anchor, so the panel gives up a rung to
-# leave two genuine held-out rungs straddling it.
+# NVFP4-CB validation is off-panel on both sides of the low hinge and within
+# the historical band. K25 is deliberately repeated on held-out units because
+# there is no second producer rung above K24: this tests transfer of the
+# measured endpoint shoulder without pretending that a held-out high-band
+# slope exists. The report's ``held_out_axes`` records that distinction.
+# FP8-CB validation covers the low shoulder, the compressed side immediately
+# below the anchor, and two high-side points.  All four are off-panel and none
+# is the anchor, so every cell holds out both unit and rung.
 VALIDATION_RUNGS = {
-    "nvfp4_cb": ("NVFP4_CB_K12", "NVFP4_CB_K15",
-                 "NVFP4_CB_K21", "NVFP4_CB_K24"),
-    "fp8_cb": ("FP8_CB_K32", "FP8_CB_K44"),
+    "nvfp4_cb": (
+        "NVFP4_CB_K3", "NVFP4_CB_K10", "NVFP4_CB_K14",
+        "NVFP4_CB_K22", "NVFP4_CB_K25",
+    ),
+    "fp8_cb": (
+        "FP8_CB_K8", "FP8_CB_K20", "FP8_CB_K36", "FP8_CB_K44",
+    ),
 }
 # The smallest role on a hybrid-attention dense model is the full-attention
 # block count (16 on Qwen3.8-27B), and plan_cb_panel_and_validation refuses a
@@ -393,13 +410,17 @@ class DensePlan:
     ladders: Mapping[str, tuple[str, ...]]
     serving_groups: tuple[tuple[str, ...], ...]
     serving_restrictions: Mapping[str, object]
+    target_profile: str
+    target_platform: str | None
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema": "prismaquant.dense_anchored_cb.format_plan.v1",
+            "schema": "prismaquant.dense_anchored_cb.format_plan.v2",
             "ladders": {k: list(v) for k, v in sorted(self.ladders.items())},
             "serving_groups": [list(g) for g in self.serving_groups],
             "serving_restrictions": dict(self.serving_restrictions),
+            "target_profile": self.target_profile,
+            "target_platform": self.target_platform,
         }
 
     @property
@@ -409,8 +430,13 @@ class DensePlan:
         )
 
 
-def _derive_dense_plan(profile, body: Sequence[str]) -> DensePlan:
-    """Derive both ladders from the registry AND the pinned serving runtime.
+def _derive_dense_plan(
+    profile,
+    body: Sequence[str],
+    *,
+    target_profile: str,
+) -> DensePlan:
+    """Derive both ladders from the registry and selected target profile.
 
     Neither ladder is a CLI opinion or a constant taken on trust:
 
@@ -421,32 +447,25 @@ def _derive_dense_plan(profile, body: Sequence[str]) -> DensePlan:
       Gridbook FP4 route requires the unsigned two-tier product layout
       (``n_sub == 2 and type_size == 4*k + 9``), so the narrowing now has no
       signed rung left to drop;
-    * ``fp8_cb`` is narrowed again to the fused mid-M rungs the pinned Gridbook
-      release backs -- ``k % 4 == 0``, because ``type_size = 4k`` must be a
-      16-byte multiple and the fused mainloop's uniform ``CbSubW = k/4`` is
-      *wrong*, not merely unaligned, on a ragged sub-table;
-    * ``nvfp4_cb`` declares no fused rung at any version, so every rung rides
-      the documented fallback route. That is a speed property, not a
-      correctness one, and it restricts nothing.
+    * the selected profile then closes that producer registry.  Fused-mid-M
+      eligibility is deliberately NOT an admission filter: it is a
+      performance route for one batch regime, while unfused rungs retain a
+      correctness bridge.  Treating the historical fused set as the format
+      set was what hid FP8-CB K4..K24 from AQUA despite their public producer
+      identity.
 
-      Read that bullet narrowly: ``fused_mid_m`` is ONE lane for ONE
-      batch-size regime. It is not a whole-unit verdict, and reading it as one
-      is how a gate came to report a 73.7% "unbacked" share for an artifact
-      whose decode path is 100% native and default-on (``cb_moe_gemv_fp4_v2``
-      for routed ``T <= 16``; the FP4-v2 GEMV for dense ``M <= 8``). Above
-      those thresholds NVFP4-CB does ride a BF16 bridge unless
-      ``PRISMAQUANT_CB_FUSED_FP4[_MOE]`` is set, and the mid-M fused lane is
-      DENSE-ONLY -- it can never cover a routed expert. Report native
-      execution per regime or not at all.
-
-    The module constants are then asserted against what was derived, so a
-    runtime pin bump that moves a rung set refuses here instead of silently
-    allocating onto rungs the artifact cannot serve.
+    The module constants are asserted against the selected profile's exact
+    producer intersection.  This proves structural candidate registration;
+    release pinning and device-qualified route evidence remain separate,
+    fail-closed shipping gates.
     """
-    from prismaquant.serving_profiles import check_serving_format
-    from prismaquant.source_class_format_plan import (
-        _serving_backed_family, _serving_components,
+    from prismaquant.serving_profiles import (
+        check_serving_format,
+        load_serving_profile,
     )
+    from prismaquant.source_class_format_plan import _serving_components
+
+    selected = load_serving_profile(target_profile)
 
     ladders: dict[str, tuple[str, ...]] = {}
     restrictions: dict[str, object] = {}
@@ -454,48 +473,40 @@ def _derive_dense_plan(profile, body: Sequence[str]) -> DensePlan:
         ("nvfp4_cb", NVFP4_CB_LADDER), ("fp8_cb", FP8_CB_LADDER),
     ):
         legal = tuple(
-            spec.name for spec in fr.list_formats(family)
-            if check_serving_format(TARGET_PROFILE, None, spec.name).legal
+            spec.name for spec in fr.list_producer_formats(family)
+            if check_serving_format(target_profile, None, spec.name).legal
         )
         if not legal:
             raise DenseCampaignError(
-                f"serving profile {TARGET_PROFILE!r} declares no production "
+                f"serving profile {target_profile!r} declares no production "
                 f"format of family {family!r}"
             )
-        try:
-            backed, provenance = _serving_backed_family(
-                family, legal, TARGET_PROFILE
-            )
-        except ValueError as exc:
-            # "backs no fused mid-M rung" is the DECLARED state for nvfp4_cb,
-            # not a failure: an empty fused set means every rung takes the
-            # fallback route, which is honest current state rather than a data
-            # gap. Only a family that declares fused rungs may be narrowed by
-            # them, so record the absence and keep the full legal ladder.
-            if "backs no fused mid-M rung" not in str(exc):
-                raise DenseCampaignError(
-                    f"{family}: serving-backed resolution failed: {exc}"
-                ) from exc
-            backed, provenance = legal, {
-                "profile_id": TARGET_PROFILE,
-                "fused_mid_m_rungs": [],
-                "note": "lane declares no fused mid-M rung; all rungs "
-                        "ride the fallback route",
-            }
-        if tuple(backed) != tuple(expected):
+        if legal != tuple(expected):
             raise DenseCampaignError(
-                f"{family}: the pinned serving runtime backs "
-                f"{list(backed)}, campaign declares {list(expected)}. A "
-                "runtime pin bump moved the rung set; update the ladder "
-                "deliberately rather than allocating onto it."
+                f"{family}: selected profile {target_profile!r} admits "
+                f"{list(legal)}, campaign declares {list(expected)}. Update "
+                "the profile and ladder together rather than silently "
+                "truncating or widening the candidate set."
             )
-        ladders[family] = tuple(backed)
-        restrictions[family] = provenance
+        ladders[family] = legal
+        restrictions[family] = {
+            "profile_id": target_profile,
+            "target_platform": selected.target_platform,
+            "admission": "producer_registry_intersect_selected_profile",
+            "producer_formats": list(legal),
+            "fused_mid_m_is_performance_metadata_not_format_admission": True,
+            "shipping_gate": (
+                "immutable release pin plus exact device-qualified route "
+                "contract; not claimed by this validation plan"
+            ),
+        }
 
     return DensePlan(
         ladders=ladders,
         serving_groups=_serving_components(profile, tuple(body)),
         serving_restrictions=restrictions,
+        target_profile=target_profile,
+        target_platform=selected.target_platform,
     )
 
 
@@ -571,21 +582,19 @@ def _panel_policy(roles: Mapping[str, str]) -> CBPanelPolicy:
     )
 
 
-def prepare_campaign(args: argparse.Namespace) -> PreparedCampaign:
-    """Every CPU identity/legality check, before any GPU work."""
-    work_dir = _safe_work_dir(args.work_dir)
-    stats, probe_meta = _load_probe(args)
+def _require_bf16_body_source_manifest(
+    body: Sequence[str],
+    source_census: Mapping[str, str],
+) -> dict[str, str]:
+    """Bind this SM120 campaign to its single maintained source class.
 
-    from prismaquant.model_profiles import detect_profile
-    from prismaquant.allocator_candidates import _scan_source_dtype_manifest
-    from prismaquant.nvfp4_cb_footprint import (
-        cb_serialization_context_from_env, cb_serialization_context_stamp,
-    )
+    The generic registry deliberately retains source-FP8/W8A16 compatibility
+    for already-published source-quantized artifacts.  This dense Qwen3.8
+    campaign is a different product line: its body source is BF16, and admitting
+    any source-FP8 unit would silently reopen the legacy W8A16 lane that the
+    target profile excludes.  Refuse before the plan, allocator, or GPU work.
+    """
 
-    profile = detect_profile(args.model)
-    body, roles = _body_census(profile, stats, args)
-
-    source_census = _scan_source_dtype_manifest(args.model, profile)
     missing_source = sorted(set(body) - set(source_census))
     if missing_source:
         raise DenseCampaignError(
@@ -600,14 +609,39 @@ def prepare_campaign(args: argparse.Namespace) -> PreparedCampaign:
             f"{len(off_source)} others, sample="
             f"{[(q, source_census[q]) for q in off_source[:4]]}"
         )
-    source_manifest = {qname: source_census[qname] for qname in body}
+    return {qname: source_census[qname] for qname in body}
+
+
+def prepare_campaign(args: argparse.Namespace) -> PreparedCampaign:
+    """Every CPU identity/legality check, before any GPU work."""
+    work_dir = _safe_work_dir(args.work_dir)
+    stats, probe_meta = _load_probe(args)
+
+    from prismaquant.model_profiles import detect_profile
+    from prismaquant.allocator_candidates import _scan_source_dtype_manifest
+    from prismaquant.nvfp4_cb_footprint import (
+        cb_serialization_context_from_env, cb_serialization_context_stamp,
+    )
+
+    profile = detect_profile(args.model)
+    body, roles = _body_census(profile, stats, args)
+    target_profile = str(
+        getattr(args, "target_profile", DEFAULT_TARGET_PROFILE) or ""
+    ).strip()
+    if not target_profile:
+        raise DenseCampaignError("target-profile must be a non-empty identity")
+
+    source_census = _scan_source_dtype_manifest(args.model, profile)
+    source_manifest = _require_bf16_body_source_manifest(body, source_census)
 
     cb_context = cb_serialization_context_from_env(
         require_explicit=True, where="dense anchored CB AURA campaign"
     )
     source_map = _authoritative_source_map(cb_context)
 
-    format_plan = _derive_dense_plan(profile, body)
+    format_plan = _derive_dense_plan(
+        profile, body, target_profile=target_profile,
+    )
     format_plan_path = work_dir / "checkpoints" / "dense_format_plan.json"
     format_plan_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(
@@ -631,6 +665,8 @@ def prepare_campaign(args: argparse.Namespace) -> PreparedCampaign:
             cb_context, formats=(*NVFP4_CB_LADDER, *FP8_CB_LADDER)
         ),
         "render_levers": render_levers,
+        "target_profile": format_plan.target_profile,
+        "target_platform": format_plan.target_platform,
         "production_arm_only": True,
         "rtn_anchor_allowed": False,
     }
@@ -654,6 +690,8 @@ def prepare_campaign(args: argparse.Namespace) -> PreparedCampaign:
     plan_report = {
         **dict(union_report),
         "campaign_schema": CAMPAIGN_SCHEMA,
+        "target_profile": format_plan.target_profile,
+        "target_platform": format_plan.target_platform,
         "units": len(units),
         "roles": dict(sorted(Counter(roles.values()).items())),
         "anchor_renders": len(anchor_requests),
@@ -890,13 +928,17 @@ def _allocator_command(
     prepared: PreparedCampaign, *, cost_path: Path, output_dir: Path,
 ) -> list[str]:
     args = prepared.args
-    formats = (*NVFP4_CB_LADDER, *FP8_CB_LADDER, "BF16")
+    formats = (
+        *prepared.format_plan.ladders["nvfp4_cb"],
+        *prepared.format_plan.ladders["fp8_cb"],
+        "BF16",
+    )
     command = [
         sys.executable, "-m", "prismaquant.allocator",
         "--probe", str(args.probe),
         "--costs", str(cost_path),
         "--model-override", str(args.model),
-        "--target-profile", TARGET_PROFILE,
+        "--target-profile", prepared.format_plan.target_profile,
         "--target-disk-gb", f"{args.target_disk_gb:.9f}",
         "--artifact-overhead-reserve-bytes",
         str(int(args.artifact_overhead_reserve_bytes)),
@@ -1042,6 +1084,8 @@ def finish_campaign(
         invocation_provenance={
             "cost_currency": AURA_CURRENCY,
             "campaign_schema": CAMPAIGN_SCHEMA,
+            "target_profile": prepared.format_plan.target_profile,
+            "target_platform": prepared.format_plan.target_platform,
             # P5a's per-family multiply is an estimator TRANSFER from weight
             # space to output space. An anchored projection is already in the
             # right currency, so cost_entry_predicted_dloss reads this table's
@@ -1159,6 +1203,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="substrings marking units the DP may not allocate",
     )
     parser.add_argument("--target-disk-gb", type=float, required=True)
+    parser.add_argument(
+        "--target-profile",
+        default=DEFAULT_TARGET_PROFILE,
+        help="closed serving-profile identity used for plan derivation and "
+             "allocator legality (default: validation-only SM120 candidate "
+             "registration; this is not a release qualification)",
+    )
     parser.add_argument(
         "--artifact-overhead-reserve-bytes", type=int, default=40_000_000
     )

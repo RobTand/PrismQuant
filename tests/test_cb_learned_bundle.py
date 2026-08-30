@@ -93,8 +93,9 @@ def test_rung_policy_is_measurement_gated_not_the_2048_rule():
         bundle.require_cbl_rung_enabled(47)
     with pytest.raises(ValueError, match=r"K48.*measured_no_go"):
         bundle.require_cbl_rung_enabled("FP8_CB_K48")
-    with pytest.raises(ValueError, match="NVFP4 CBL is measured NO-GO"):
-        bundle.require_cbl_rung_enabled("NVFP4_CB_K16")
+    for fmt in ("NVFP4_CB_K1", "NVFP4_CB_K16", "NVFP4_CB_K25"):
+        with pytest.raises(ValueError, match="NVFP4 CBL is measured NO-GO"):
+            bundle.require_cbl_rung_enabled(fmt)
 
 
 def test_bundle_has_distinct_learned_cells_and_complete_mixed_sidecar(mixed_bundle):

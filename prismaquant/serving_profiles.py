@@ -698,6 +698,14 @@ class ServingProfile:
     # packed MoE, where CompressedTensorsMoEMethod selects ONE scheme per
     # FusedMoE layer. Gates --packed-role-split.
     supports_per_role_expert_schemes: bool = False
+    # Exact Gridbook platform id for hardware-scoped producer profiles.  This
+    # is an identity (e.g. ``sm_89``), never a minimum capability or a GPU-name
+    # heuristic. Generic profiles leave it unset.
+    target_platform: str | None = None
+    # Optional producer-side policy id. The exporter remains the inherited
+    # container serializer, while this narrower policy supplies additional
+    # model/device/manifest gates.
+    producer_policy: str | None = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ServingProfile":
@@ -738,6 +746,8 @@ class ServingProfile:
             supports_per_role_expert_schemes=bool(
                 payload.get("supports_per_role_expert_schemes", False)
             ),
+            target_platform=_optional_str(payload.get("target_platform")),
+            producer_policy=_optional_str(payload.get("producer_policy")),
         )
 
     def check_format(self, qname: str | None, fmt: str,
@@ -956,6 +966,22 @@ def load_serving_profile(profile_id: str | None) -> ServingProfile:
                     base.supports_per_role_expert_schemes for base in bases
                 )
             ),
+            target_platform=(
+                profile.target_platform
+                or next(
+                    (base.target_platform for base in bases
+                     if base.target_platform),
+                    None,
+                )
+            ),
+            producer_policy=(
+                profile.producer_policy
+                or next(
+                    (base.producer_policy for base in bases
+                     if base.producer_policy),
+                    None,
+                )
+            ),
         )
     _CACHE[profile_name] = profile
     return profile
@@ -1041,6 +1067,34 @@ def require_lane_supported(
         f"it in model_profiles/specs/{name}.json (`supported_lanes`) together "
         "with the loader wiring that makes it true."
     )
+
+
+def require_profile_export_lane(
+    profile_id: str | None,
+    export_container: str,
+) -> str:
+    """Require a profile's inherited exporter lane to match the container.
+
+    This is intentionally keyed by ``export_lane.id`` rather than profile id:
+    a narrow hardware policy may extend the historical CB profile while using
+    the same serializer/container contract.
+    """
+
+    from .model_profiles.structure import canonical_export_lane
+
+    requested = canonical_export_lane(export_container)
+    profile = load_serving_profile(profile_id)
+    if profile.export_lane is None:
+        raise ValueError(
+            f"serving profile {profile.id!r} declares no artifact export lane"
+        )
+    declared = canonical_export_lane(profile.export_lane.id)
+    if declared != requested:
+        raise ValueError(
+            f"serving profile {profile.id!r} exports through {declared!r}, not "
+            f"requested container {requested!r}"
+        )
+    return declared
 
 
 def require_per_role_expert_scheme_support(

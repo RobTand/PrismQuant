@@ -305,3 +305,117 @@ def test_nvfp4_cb_profile_denies_stock_formats_on_packed_experts():
     assert check_format_applicability(stack, "FP8_CB_K36", **kw).legal
     assert check_format_applicability(stack, "FP8_CB_K28", **kw).legal
     assert check_format_applicability(dense, "FP8_CB_K44", **kw).legal
+
+
+def test_load_tensors_dequantizes_fp8_with_serialized_scale_contract(tmp_path):
+    """An FP8-source MoE checkpoint carries block-wise `weight_scale_inv`
+    companions; `_load_tensors` must fulfill that contract (exact block
+    dequant) rather than refusing every float8 tensor -- and the refusal
+    must stand for a tensor whose companion is genuinely absent.
+
+    First FP8-source MoE through the packed-expert replay path
+    (Qwen3.6-35B-A3B-FP8, fmt e4m3, 128x128 block scales); verified
+    block-exact against a manual dequant before the fix shipped a build."""
+    import json
+
+    import pytest
+    import torch
+    from safetensors.torch import save_file
+
+    from prismaquant.moe_imatrix import _WEIGHT_BLOCK_CACHE, _load_tensors
+
+    torch.manual_seed(0)
+    w = torch.randn(256, 384)
+    scale = torch.rand(2, 3) + 0.5              # 128x128 blocks
+    q = (w / scale.repeat_interleave(128, 0)[:256]
+         .repeat_interleave(128, 1)[:384]).to(torch.float8_e4m3fn)
+    good = "model.layers.0.mlp.experts.0.gate_proj.weight"
+    bare = "model.layers.0.mlp.experts.1.gate_proj.weight"
+    shard = "model.safetensors"
+    save_file({good: q, good + "_scale_inv": scale,
+               bare: q.clone()}, str(tmp_path / shard))
+    wm = {good: shard, good + "_scale_inv": shard, bare: shard}
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"quantization_config": {"quant_method": "fp8",
+                                 "weight_block_size": [128, 128]}}))
+    _WEIGHT_BLOCK_CACHE.clear()
+
+    out = _load_tensors(tmp_path, wm, [good], dtype=torch.float32)
+    expect = (q.to(torch.float32)
+              * scale.repeat_interleave(128, 0)[:256]
+              .repeat_interleave(128, 1)[:384])
+    assert torch.equal(out[good], expect)
+
+    with pytest.raises(ValueError, match="serialized scale contract"):
+        _load_tensors(tmp_path, wm, [bare])
+
+
+def test_load_tensors_partial_trailing_block_with_declared_size(tmp_path):
+    """With the checkpoint's declared weight_block_size, a partial trailing
+    block dequantizes exactly (128-blocks over 200 rows: rows 128-199 get
+    scale row 1, not a uniformly mis-inferred 100-row tiling).
+
+    Undeclared, the replay REFUSES -- it does not fall back to inferring the
+    grid by division. 200 rows over a 2-row scale plane divides exactly at
+    100 and is equally a 128-block tiling with a partial trailing block, and
+    the two dequants differ on every row from 128 up, so an inferred grid is
+    a silent calibration corruption. The refusal is the streaming loader's
+    `_declared_weight_block_size` -- one contract for one checkpoint, shared
+    with the layer-streaming load path."""
+    import json
+
+    import pytest
+    import torch
+    from safetensors.torch import save_file
+
+    from prismaquant.moe_imatrix import _WEIGHT_BLOCK_CACHE, _load_tensors
+
+    torch.manual_seed(1)
+    q = torch.randn(200, 384).to(torch.float8_e4m3fn)
+    scale = torch.rand(2, 3) + 0.5
+    k = "model.layers.0.mlp.experts.0.up_proj.weight"
+    save_file({k: q, k + "_scale_inv": scale}, str(tmp_path / "m.safetensors"))
+    wm = {k: "m.safetensors", k + "_scale_inv": "m.safetensors"}
+
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"quantization_config": {"quant_method": "fp8",
+                                 "weight_block_size": [128, 128]}}))
+    _WEIGHT_BLOCK_CACHE.clear()
+    out = _load_tensors(tmp_path, wm, [k], dtype=torch.float32)
+    expect = (q.to(torch.float32)
+              * scale.repeat_interleave(128, 0)[:200]
+              .repeat_interleave(128, 1)[:384])
+    assert torch.equal(out[k], expect)
+
+    # Same tensors, no declaration: exactly the ambiguous case above.
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"quantization_config": {"quant_method": "fp8"}}))
+    _WEIGHT_BLOCK_CACHE.clear()
+    with pytest.raises(RuntimeError, match="weight_block_size"):
+        _load_tensors(tmp_path, wm, [k])
+    _WEIGHT_BLOCK_CACHE.clear()
+
+
+def test_load_tensors_refuses_scale_plane_that_does_not_tile(tmp_path):
+    """A declared grid that does not tile the weight is a transposed or
+    mismatched scale plane; it must refuse rather than broadcast."""
+    import json
+
+    import pytest
+    import torch
+    from safetensors.torch import save_file
+
+    from prismaquant.moe_imatrix import _WEIGHT_BLOCK_CACHE, _load_tensors
+
+    q = torch.randn(256, 384).to(torch.float8_e4m3fn)
+    scale = torch.rand(3, 2) + 0.5               # transposed grid
+    k = "model.layers.0.mlp.experts.0.down_proj.weight"
+    save_file({k: q, k + "_scale_inv": scale}, str(tmp_path / "m.safetensors"))
+    wm = {k: "m.safetensors", k + "_scale_inv": "m.safetensors"}
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"quantization_config": {"quant_method": "fp8",
+                                 "weight_block_size": [128, 128]}}))
+    _WEIGHT_BLOCK_CACHE.clear()
+    with pytest.raises(ValueError, match="does not tile"):
+        _load_tensors(tmp_path, wm, [k])
+    _WEIGHT_BLOCK_CACHE.clear()

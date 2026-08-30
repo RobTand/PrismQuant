@@ -11,6 +11,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import os
 import pathlib
 import types
 
@@ -26,6 +27,8 @@ from prismaquant.shipcard import (
     CB_REQUIRED_SLOTS,
     GOLD_SLOTS,
     REQUIRED_SLOTS,
+    RTX4090_REQUIRED_SLOTS,
+    WEIGHT_CONTENT_MANIFEST_SCHEMA,
     build_shipcard,
     compute_model_sha,
     fill_slot,
@@ -33,6 +36,7 @@ from prismaquant.shipcard import (
     make_record,
     write_shipcard,
 )
+from prismaquant.shard_layout import tensor_payload_identity
 import tools.publish_artifact as publisher
 from tools.publish_artifact import main as publish_cli
 
@@ -43,6 +47,75 @@ def _artifact(tmp_path, name="exported"):
     (model_dir / "config.json").write_text('{"model_type": "qwen3"}')
     (model_dir / "model-00001-of-00001.safetensors").write_bytes(b"weights")
     card = build_shipcard(model_dir, build={"achieved_bpp": {"value": 4.75}})
+    write_shipcard(model_dir / "shipcard.json", card)
+    return model_dir
+
+
+def _safetensors_bytes(tensors):
+    offset = 0
+    header = {}
+    payloads = []
+    for tensor_name, payload in tensors.items():
+        payload = bytes(payload)
+        header[tensor_name] = {
+            "dtype": "U8",
+            "shape": [len(payload)],
+            "data_offsets": [offset, offset + len(payload)],
+        }
+        payloads.append(payload)
+        offset += len(payload)
+    raw_header = json.dumps(
+        header,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    raw_header += b" " * (-len(raw_header) % 8)
+    return (
+        len(raw_header).to_bytes(8, "little")
+        + raw_header
+        + b"".join(payloads)
+    )
+
+
+def _strict_rtx4090_artifact(tmp_path, name="strict-ada"):
+    model_dir = tmp_path / name
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        '{"model_type":"qwen3_5_text"}', encoding="utf-8"
+    )
+    tensor_name = "model.layers.0.self_attn.q_proj.weight"
+    tensor_payload = b"weights"
+    weight_bytes = _safetensors_bytes({tensor_name: tensor_payload})
+    weight_name = "model.safetensors"
+    (model_dir / weight_name).write_bytes(weight_bytes)
+    tensor_sha256 = {tensor_name: hashlib.sha256(tensor_payload).hexdigest()}
+    (model_dir / "quant_config.json").write_text(json.dumps({
+        "quant_method": "gridbook",
+        "format": "fp8_cb",
+        "provenance": {
+            "producer_policy": {
+                "id": publisher.RTX4090_FP8_CB_POLICY_ID,
+            },
+            "weight_content_manifest": {
+                "schema": WEIGHT_CONTENT_MANIFEST_SCHEMA,
+                "algorithm": "sha256",
+                "files": {
+                    weight_name: {
+                        "bytes": len(weight_bytes),
+                        "sha256": hashlib.sha256(weight_bytes).hexdigest(),
+                    },
+                },
+            },
+            "tensor_payload_identity": tensor_payload_identity(
+                tensor_sha256,
+                include_tensor_sha256=True,
+            ),
+        },
+    }), encoding="utf-8")
+    card = build_shipcard(model_dir, build={
+        "producer_policy": publisher.RTX4090_FP8_CB_POLICY_ID,
+        "serving_profile": publisher.RTX4090_FP8_CB_SERVING_PROFILE,
+    })
     write_shipcard(model_dir / "shipcard.json", card)
     return model_dir
 
@@ -452,6 +525,102 @@ def test_force_unverified_stamps_the_frozen_card_and_proceeds(tmp_path, capsys):
     assert history[0]["model_sha"] == compute_model_sha(model_dir)
 
 
+@pytest.mark.parametrize("confirm_name", ("strict-ada", "wrong-name"))
+@pytest.mark.parametrize("strict_slot_state", ("unfilled", "invalid"))
+def test_strict_rtx4090_evidence_is_never_force_overrideable_or_stamped(
+    tmp_path, capsys, confirm_name, strict_slot_state,
+):
+    model_dir = _strict_rtx4090_artifact(tmp_path)
+    path = model_dir / "shipcard.json"
+    if strict_slot_state == "invalid":
+        card = load_shipcard(path)
+        slot = RTX4090_REQUIRED_SLOTS[0]
+        card["slots"][slot] = make_record(
+            slot=slot,
+            tool="not-the-specialized-validator",
+            passed=False,
+            model_sha=card["model_sha"],
+        )
+        write_shipcard(path, card)
+
+    assert publish_cli(_argv(
+        model_dir,
+        "--force-unverified",
+        "--confirm-name",
+        confirm_name,
+    )) == 1
+    captured = capsys.readouterr()
+    assert "strict RTX4090 FP8-CB evidence failures are non-forceable" in (
+        captured.err
+    )
+    assert "frozen snapshot" not in captured.out + captured.err
+    card = load_shipcard(path)
+    assert "forced_unverified" not in card
+    assert "forced_unverified_history" not in card
+
+
+def test_validation_only_rtx4090_artifact_is_never_publishable(
+    tmp_path, capsys,
+):
+    model_dir = _strict_rtx4090_artifact(tmp_path, name="validation-only")
+    quant_path = model_dir / "quant_config.json"
+    quant = json.loads(quant_path.read_text(encoding="utf-8"))
+    quant["provenance"]["producer_policy"] = {
+        "schema": "prismaquant.rtx4090_qwen38_fp8_validation_only_policy.v1",
+        "id": "qwen38_27b_rtx4090_fp8_cb_validation_only",
+        "artifact_disposition": "UNRELEASABLE_VALIDATION_ONLY",
+    }
+    quant_path.write_text(json.dumps(quant), encoding="utf-8")
+
+    assert publish_cli(_argv(
+        model_dir,
+        "--force-unverified",
+        "--confirm-name",
+        "validation-only",
+    )) == 1
+    captured = capsys.readouterr()
+    assert "UNRELEASABLE_VALIDATION_ONLY" in captured.err
+    assert "can never be uploaded" in captured.err
+
+
+@pytest.mark.parametrize("confirm_name", ("strict-ada", "wrong-name"))
+def test_frozen_strict_rtx4090_replay_failure_is_non_forceable(
+    tmp_path, capsys, monkeypatch, confirm_name,
+):
+    model_dir = _strict_rtx4090_artifact(tmp_path)
+    path = model_dir / "shipcard.json"
+    real_check = publisher.check_shipcard
+    calls = 0
+
+    def staged_check(artifact_dir, shipcard_path):
+        nonlocal calls
+        calls += 1
+        card, problems = real_check(artifact_dir, shipcard_path)
+        if calls == 1:
+            # Exercise the second, authoritative frozen replay independently
+            # of mutable preflight.  The strict classifier still reads the
+            # real card and quantization bytes at both boundaries.
+            return card, []
+        assert card is not None
+        return card, [f"{RTX4090_REQUIRED_SLOTS[0]}: replay FAILED"]
+
+    monkeypatch.setattr(publisher, "check_shipcard", staged_check)
+
+    assert publish_cli(_argv(
+        model_dir,
+        "--force-unverified",
+        "--confirm-name",
+        confirm_name,
+    )) == 1
+    captured = capsys.readouterr()
+    assert "frozen strict RTX4090 FP8-CB snapshot" in captured.err
+    assert "non-forceable" in captured.err
+    assert "replay FAILED" in captured.err
+    card = load_shipcard(path)
+    assert "forced_unverified" not in card
+    assert "forced_unverified_history" not in card
+
+
 def test_external_or_symlinked_shipcard_is_never_publication_authority(
     tmp_path, capsys,
 ):
@@ -777,3 +946,287 @@ def test_json_round_trip_of_a_forced_card(tmp_path):
     ))
     raw = json.loads((model_dir / "shipcard.json").read_text())
     assert raw["forced_unverified"] is True
+
+
+def test_rtx4090_whole_publication_ceiling_includes_post_export_files(
+    tmp_path, monkeypatch,
+):
+    model_dir = _artifact(tmp_path, name="strict-ada")
+    quant = {
+        "quant_method": "gridbook",
+        "format": "fp8_cb",
+        "provenance": {
+            "producer_policy": {
+                "id": "qwen38_27b_rtx4090_fp8_cb",
+            },
+        },
+    }
+    (model_dir / "quant_config.json").write_text(json.dumps(quant))
+    card = load_shipcard(model_dir / "shipcard.json")
+    monkeypatch.setattr(
+        publisher, "RTX4090_FP8_CB_ARTIFACT_CEILING_BYTES", 32
+    )
+
+    problem = publisher._rtx4090_publication_size_problem(
+        model_dir,
+        card,
+        total_bytes=33,
+    )
+    assert problem is not None
+    assert "including documentation/evidence" in problem
+    assert "non-forceable" in problem
+    assert publisher._rtx4090_publication_size_problem(
+        model_dir,
+        card,
+        total_bytes=32,
+    ) is None
+
+
+def test_strict_frozen_replay_consumes_one_pass_container_and_tensor_hashes(
+    tmp_path, monkeypatch,
+):
+    model_dir = _strict_rtx4090_artifact(tmp_path)
+    weight = model_dir / "model.safetensors"
+    weight_stat = weight.stat()
+    real_pread = publisher._pread_exact
+    weight_reads = []
+
+    def counted_pread(fd, size, offset):
+        opened = os.fstat(fd)
+        if (
+            opened.st_dev == weight_stat.st_dev
+            and opened.st_ino == weight_stat.st_ino
+        ):
+            weight_reads.append((size, offset))
+        return real_pread(fd, size, offset)
+
+    monkeypatch.setattr(publisher, "_pread_exact", counted_pread)
+    real_check = publisher.check_shipcard
+
+    def evidence_closed_for_fixture(artifact_dir, shipcard_path):
+        card, _problems = real_check(artifact_dir, shipcard_path)
+        return card, []
+
+    monkeypatch.setattr(
+        publisher,
+        "check_shipcard",
+        evidence_closed_for_fixture,
+    )
+    replay_calls = 0
+    real_replay = publisher._verify_strict_frozen_safetensors_content
+
+    def counted_replay(snapshot):
+        nonlocal replay_calls
+        replay_calls += 1
+        return real_replay(snapshot)
+
+    monkeypatch.setattr(
+        publisher,
+        "_verify_strict_frozen_safetensors_content",
+        counted_replay,
+    )
+
+    assert publish_cli(_argv(model_dir)) == 0
+    assert replay_calls == 1
+    assert weight_reads == [(weight_stat.st_size, 0)]
+
+
+def test_strict_frozen_tensor_digest_mismatch_refuses_without_a_second_scan(
+    tmp_path, monkeypatch, capsys,
+):
+    model_dir = _strict_rtx4090_artifact(tmp_path)
+    quant_path = model_dir / "quant_config.json"
+    quant = json.loads(quant_path.read_text(encoding="utf-8"))
+    tensor_name = next(iter(
+        quant["provenance"]["tensor_payload_identity"]["tensor_sha256"]
+    ))
+    forged_ledger = {tensor_name: "0" * 64}
+    quant["provenance"]["tensor_payload_identity"] = tensor_payload_identity(
+        forged_ledger,
+        include_tensor_sha256=True,
+    )
+    quant_path.write_text(json.dumps(quant), encoding="utf-8")
+
+    weight = model_dir / "model.safetensors"
+    weight_stat = weight.stat()
+    real_pread = publisher._pread_exact
+    weight_bytes_read = 0
+
+    def counted_pread(fd, size, offset):
+        nonlocal weight_bytes_read
+        opened = os.fstat(fd)
+        if (
+            opened.st_dev == weight_stat.st_dev
+            and opened.st_ino == weight_stat.st_ino
+        ):
+            weight_bytes_read += size
+        return real_pread(fd, size, offset)
+
+    monkeypatch.setattr(publisher, "_pread_exact", counted_pread)
+    real_check = publisher.check_shipcard
+
+    def evidence_closed_for_fixture(artifact_dir, shipcard_path):
+        card, _problems = real_check(artifact_dir, shipcard_path)
+        return card, []
+
+    monkeypatch.setattr(
+        publisher,
+        "check_shipcard",
+        evidence_closed_for_fixture,
+    )
+
+    assert publish_cli(_argv(model_dir)) == 1
+    assert weight_bytes_read == weight_stat.st_size
+    err = capsys.readouterr().err
+    assert "frozen strict RTX4090 FP8-CB snapshot" in err
+    assert "tensor digest ledger differs from payload bytes" in err
+    assert "non-forceable" in err
+
+
+def test_strict_freeze_rejects_noncontiguous_safetensors_geometry(
+    tmp_path, monkeypatch, capsys,
+):
+    model_dir = _strict_rtx4090_artifact(tmp_path)
+    tensor_name = "model.layers.0.self_attn.q_proj.weight"
+    header = json.dumps({
+        tensor_name: {
+            "dtype": "U8",
+            "shape": [7],
+            "data_offsets": [1, 8],
+        },
+    }, separators=(",", ":")).encode("utf-8")
+    header += b" " * (-len(header) % 8)
+    (model_dir / "model.safetensors").write_bytes(
+        len(header).to_bytes(8, "little") + header + b"xweights"
+    )
+    real_check = publisher.check_shipcard
+
+    def evidence_closed_for_fixture(artifact_dir, shipcard_path):
+        card, _problems = real_check(artifact_dir, shipcard_path)
+        return card, []
+
+    monkeypatch.setattr(
+        publisher,
+        "check_shipcard",
+        evidence_closed_for_fixture,
+    )
+
+    assert publish_cli(_argv(model_dir)) == 1
+    err = capsys.readouterr().err
+    assert "artifact freeze failed" in err
+    assert "leaves a gap" in err
+
+
+def test_strict_frozen_receipt_binds_exact_shard_index_map(tmp_path):
+    model_dir = _strict_rtx4090_artifact(tmp_path)
+    (model_dir / "model.safetensors").unlink()
+    tensors = {
+        "model.layers.0.self_attn.q_proj.weight": b"query",
+        "model.layers.0.self_attn.k_proj.weight": b"key",
+    }
+    shard_names = (
+        "model-00001-of-00002.safetensors",
+        "model-00002-of-00002.safetensors",
+    )
+    shard_payloads = {
+        shard_names[0]: _safetensors_bytes({next(iter(tensors)): b"query"}),
+        shard_names[1]: _safetensors_bytes({list(tensors)[1]: b"key"}),
+    }
+    for name, payload in shard_payloads.items():
+        (model_dir / name).write_bytes(payload)
+    weight_map = dict(zip(tensors, shard_names, strict=True))
+    index_path = model_dir / "model.safetensors.index.json"
+    index_path.write_text(json.dumps({
+        "metadata": {"total_size": sum(map(len, tensors.values()))},
+        "weight_map": weight_map,
+    }), encoding="utf-8")
+    quant_path = model_dir / "quant_config.json"
+    quant = json.loads(quant_path.read_text(encoding="utf-8"))
+    tensor_ledger = {
+        name: hashlib.sha256(payload).hexdigest()
+        for name, payload in tensors.items()
+    }
+    quant["provenance"]["tensor_payload_identity"] = tensor_payload_identity(
+        tensor_ledger,
+        include_tensor_sha256=True,
+    )
+    quant["provenance"]["weight_content_manifest"] = {
+        "schema": WEIGHT_CONTENT_MANIFEST_SCHEMA,
+        "algorithm": "sha256",
+        "files": {
+            name: {
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            for name, payload in shard_payloads.items()
+        },
+    }
+    quant_path.write_text(json.dumps(quant), encoding="utf-8")
+    shipcard_sha = hashlib.sha256(
+        (model_dir / "shipcard.json").read_bytes()
+    ).hexdigest()
+
+    with publisher._freeze_artifact(
+        model_dir,
+        expected_shipcard_sha256=shipcard_sha,
+        capture_safetensors_content=True,
+    ) as snapshot:
+        publisher._verify_strict_frozen_safetensors_content(snapshot)
+        assert set(snapshot.safetensors_content_receipt["files"]) == set(
+            shard_names
+        )
+
+    index_path.write_text(json.dumps({
+        "metadata": {"total_size": sum(map(len, tensors.values()))},
+        "weight_map": {
+            tensor_name: shard_names[1 - index]
+            for index, tensor_name in enumerate(tensors)
+        },
+    }), encoding="utf-8")
+    with publisher._freeze_artifact(
+        model_dir,
+        expected_shipcard_sha256=shipcard_sha,
+        capture_safetensors_content=True,
+    ) as snapshot:
+        with pytest.raises(
+            publisher.FrozenSnapshotError,
+            match="index differs from payload headers",
+        ):
+            publisher._verify_strict_frozen_safetensors_content(snapshot)
+
+
+def test_strict_one_pass_scanner_handles_header_and_tensor_block_boundaries(
+    tmp_path, monkeypatch,
+):
+    model_dir = _strict_rtx4090_artifact(tmp_path)
+    weight = model_dir / "model.safetensors"
+    weight_stat = weight.stat()
+    monkeypatch.setattr(publisher, "SNAPSHOT_BLOCK_BYTES", 32)
+    real_pread = publisher._pread_exact
+    weight_reads = []
+
+    def counted_pread(fd, size, offset):
+        opened = os.fstat(fd)
+        if (
+            opened.st_dev == weight_stat.st_dev
+            and opened.st_ino == weight_stat.st_ino
+        ):
+            weight_reads.append((offset, size))
+        return real_pread(fd, size, offset)
+
+    monkeypatch.setattr(publisher, "_pread_exact", counted_pread)
+    shipcard_sha = hashlib.sha256(
+        (model_dir / "shipcard.json").read_bytes()
+    ).hexdigest()
+    with publisher._freeze_artifact(
+        model_dir,
+        expected_shipcard_sha256=shipcard_sha,
+        capture_safetensors_content=True,
+    ) as snapshot:
+        publisher._verify_strict_frozen_safetensors_content(snapshot)
+
+    assert weight_reads
+    assert [offset for offset, _size in weight_reads] == list(
+        range(0, weight_stat.st_size, 32)
+    )
+    assert sum(size for _offset, size in weight_reads) == weight_stat.st_size

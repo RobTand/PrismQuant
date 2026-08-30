@@ -45,6 +45,8 @@ EXPECTED_ORDER = [
     "DeepseekV4Profile",
     "HyV3Profile",
     "LagunaProfile",
+    "Qwen4ExpProfile",
+    "Glm5NextProfile",
 ]
 
 # Every (model_type, architectures) pair the registered profiles must agree
@@ -85,6 +87,12 @@ CONFIGS: list[tuple[str, list[str]]] = [
     ("", ["HYV3MTPForCausalLM"]),
     ("laguna", ["LagunaForCausalLM"]),
     ("", ["LagunaSForCausalLM"]),
+    ("qwen4_exp", ["Qwen4ExpForConditionalGeneration"]),
+    ("qwen4_exp_text", ["Qwen4ExpForCausalLM"]),
+    ("", ["Qwen4ExpForCausalLM"]),
+    ("glm5_next", ["Glm5NextForConditionalGeneration"]),
+    ("glm5_next_text", ["Glm5NextForCausalLM"]),
+    ("", ["Glm5NextTextModel"]),
     # nobody's
     ("llama", ["LlamaForCausalLM"]),
     ("", []),

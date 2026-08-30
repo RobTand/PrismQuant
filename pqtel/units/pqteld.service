@@ -1,0 +1,45 @@
+# pqteld -- crash-proof box telemetry recorder.
+#
+# Install (sparky, and lina once linger is enabled):
+#   mkdir -p ~/.config/systemd/user
+#   cp /home/rob/prismaquant/pqtel/units/pqteld.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pqteld
+#
+# Process-name safety: the ExecStart line below must not match any pattern in
+# /mnt/shared/mem-guard-glm53.sh, which runs
+#   pkill -9 -f "ray::RayWorkerP"; pkill -9 -f "vllm serve";
+#   pkill -9 -f "sglang.launch_server"
+# `pkill -f` matches the whole command line, so the check is on the full line,
+# not just the executable. Verified 2026-08-28: no substring match.
+#
+# A user unit CANNOT set a negative OOMScoreAdjust -- that needs
+# CAP_SYS_RESOURCE. The hardening here is Restart=always plus a resident set
+# small enough (a few MB) that the OOM killer has no reason to pick it, and
+# the append-only page-cached CSV, which survives the kill regardless.
+
+[Unit]
+Description=pqteld box telemetry recorder (GB10 unified memory)
+Documentation=file:///home/rob/prismaquant/scratch/observability/OBSERVABILITY_PLAN.md
+After=default.target
+
+[Service]
+Type=simple
+Environment=PYTHONPATH=/home/rob/prismaquant
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m pqtel.recorder --csv-dir /home/rob/pqtel/csv
+Restart=always
+RestartSec=2
+# Restart even after SIGKILL from the OOM killer, which is the one event this
+# recorder exists to survive. Restart=always alone covers signals; naming the
+# policy makes the intent unmissable.
+OOMPolicy=continue
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pqteld
+
+[Install]
+WantedBy=default.target

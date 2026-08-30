@@ -168,7 +168,7 @@ def test_a_naming_variant_must_declare_a_condition_and_a_map():
             "when": {"architectures": ["X"]}, "nameing": {}})
 
 
-def test_qwen3_5_dense_is_the_only_spec_with_naming_variants():
+def test_qwen3_5_dense_and_moe_are_the_only_specs_with_naming_variants():
     """Every OTHER spec is untouched by the mechanism — checked over all of them.
 
     The DSv4 W8A16 export handoff's frozen-source review cites this exact
@@ -190,14 +190,17 @@ def test_qwen3_5_dense_is_the_only_spec_with_naming_variants():
         p.name for p in files
         if json.loads(p.read_text()).get("naming_variants")
     )
-    assert with_variants == ["qwen3_5_dense.json"], with_variants
+    assert with_variants == [
+        "qwen3_5.json",
+        "qwen3_5_dense.json",
+    ], with_variants
 
 
 def test_specs_without_variants_are_returned_unchanged():
     """`for_config` is a no-op — identically `self` — without variants."""
     from prismaquant.model_profiles.structure import load_structure_spec
 
-    for spec_id in ("qwen3_5", "gemma4", "minimax_m2", "deepseek_v4"):
+    for spec_id in ("gemma4", "minimax_m2", "deepseek_v4"):
         spec = load_structure_spec(spec_id)
         if spec is None:
             continue

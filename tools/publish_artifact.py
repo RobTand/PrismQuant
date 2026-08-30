@@ -46,14 +46,24 @@ from typing import Any, BinaryIO, Mapping
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from prismaquant.shipcard import (  # noqa: E402
+    RTX4090_REQUIRED_SLOTS,
+    SAFETENSORS_CONTENT_RECEIPT_SCHEMA,
     SCHEMA as SHIPCARD_SCHEMA,
     SHIPCARD_FILENAME,
+    WEIGHT_CONTENT_MANIFEST_SCHEMA,
     compute_model_sha,
     load_shipcard,
     required_slots,
+    safetensors_header_spans,
     unfilled_slots,
     verify,
     write_shipcard,
+)
+from prismaquant.rtx4090_qwen38_policy import (  # noqa: E402
+    RTX4090_CONTEXT_FIRST_ARTIFACT_CEILING_BYTES,
+    RTX4090_QWEN38_POLICY_ID as RTX4090_FP8_CB_POLICY_ID,
+    RTX4090_QWEN38_SERVING_PROFILE as RTX4090_FP8_CB_SERVING_PROFILE,
+    is_rtx4090_validation_only_policy,
 )
 
 REPO_TYPES = ("model", "dataset", "space")
@@ -61,10 +71,44 @@ SNAPSHOT_BLOCK_BYTES = 8 * 1024 * 1024
 SNAPSHOT_INLINE_BYTES = 16 * 1024 * 1024
 SNAPSHOT_PREFIX = ".prismaquant-publish-snapshot-"
 _FULL_COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024
+# Backward-compatible local spelling retained for operator tests and callers;
+# the value itself comes from the canonical campaign policy.
+RTX4090_FP8_CB_ARTIFACT_CEILING_BYTES = (
+    RTX4090_CONTEXT_FIRST_ARTIFACT_CEILING_BYTES
+)
 
 
 class FrozenSnapshotError(RuntimeError):
     """The local tree could not be frozen or changed after it was frozen."""
+
+
+def _strict_json_mapping(raw: bytes, *, where: str) -> Mapping[str, Any]:
+    """Decode security-sensitive JSON without duplicate/nonfinite ambiguity."""
+
+    def pairs_hook(pairs):
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"nonfinite JSON constant {value!r}")
+
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=pairs_hook,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise FrozenSnapshotError(f"{where} is not strict JSON: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise FrozenSnapshotError(f"{where} must be a JSON object")
+    return payload
 
 
 @dataclasses.dataclass(frozen=True)
@@ -144,6 +188,90 @@ def check_shipcard(
     except Exception as exc:
         return None, [f"{shipcard_path} is not a readable shipcard: {exc!r}"]
     return card, problems
+
+
+def _is_rtx4090_fp8_cb_publication(
+    root: Path,
+    card: Mapping[str, Any],
+) -> bool:
+    """Re-derive the strict publication policy from card and artifact bytes.
+
+    This deliberately does not trust one mutable echo.  The canonical policy
+    and serving-profile identities, the specialized slot topology, and the
+    identity-bearing quantization manifest can each independently make the
+    publication strict.
+    """
+
+    build = card.get("build")
+    if isinstance(build, Mapping) and (
+        build.get("producer_policy") == RTX4090_FP8_CB_POLICY_ID
+        or build.get("serving_profile") == RTX4090_FP8_CB_SERVING_PROFILE
+    ):
+        return True
+    slots = card.get("slots")
+    if isinstance(slots, Mapping) and any(
+        slot in slots for slot in RTX4090_REQUIRED_SLOTS
+    ):
+        return True
+
+    quant_path = root / "quant_config.json"
+    try:
+        quant = json.loads(quant_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        quant = None
+    if isinstance(quant, Mapping):
+        provenance = quant.get("provenance")
+        policy = provenance.get("producer_policy") if isinstance(
+            provenance, Mapping
+        ) else None
+        return quant.get("format") == "fp8_cb" or (
+            isinstance(policy, Mapping)
+            and policy.get("id") == RTX4090_FP8_CB_POLICY_ID
+        )
+    return False
+
+
+def _is_rtx4090_validation_only_publication(root: Path) -> bool:
+    """Detect the immutable compile-only stamp before any override path."""
+
+    try:
+        quant = json.loads(
+            (root / "quant_config.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    provenance = quant.get("provenance") if isinstance(quant, Mapping) else None
+    policy = provenance.get("producer_policy") if isinstance(
+        provenance, Mapping
+    ) else None
+    return is_rtx4090_validation_only_policy(policy)
+
+
+def _rtx4090_publication_size_problem(
+    root: Path,
+    card: Mapping[str, Any],
+    *,
+    total_bytes: int,
+) -> str | None:
+    """Apply the strict Ada ceiling to the complete frozen upload tree.
+
+    The exporter inventory intentionally predates README/figures/shipcard
+    authoring.  That is useful for stable model identity, but it cannot be the
+    authority for a *whole published artifact* limit.  Enforce the decimal
+    18 GB ceiling after the publisher has frozen every regular file.  This is
+    a structural publication invariant and is never forceable.
+    """
+
+    if (
+        _is_rtx4090_fp8_cb_publication(root, card)
+        and total_bytes > RTX4090_FP8_CB_ARTIFACT_CEILING_BYTES
+    ):
+        return (
+            "strict RTX4090 FP8-CB publication is "
+            f"{total_bytes} bytes including documentation/evidence, above the "
+            f"non-forceable {RTX4090_FP8_CB_ARTIFACT_CEILING_BYTES}-byte ceiling"
+        )
+    return None
 
 
 def _shipcard_structure_problems(
@@ -267,6 +395,29 @@ def _file_state(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
     )
 
 
+def _content_stat(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(info.st_dev),
+        int(info.st_ino),
+        int(info.st_size),
+        int(info.st_mtime_ns),
+        int(info.st_ctime_ns),
+    )
+
+
+def _content_stat_payload(
+    value: tuple[int, int, int, int, int],
+) -> dict[str, int]:
+    device, inode, size, mtime_ns, ctime_ns = value
+    return {
+        "device": device,
+        "inode": inode,
+        "bytes": size,
+        "mtime_ns": mtime_ns,
+        "ctime_ns": ctime_ns,
+    }
+
+
 def _pread_exact(fd: int, size: int, offset: int) -> bytes:
     chunks: list[bytes] = []
     remaining = size
@@ -292,6 +443,9 @@ class _FrozenEntry:
     block_sha256: tuple[str, ...]
     content: bytes | None
     fd: int | None
+    content_stat: tuple[int, int, int, int, int]
+    tensor_sha256: Mapping[str, str] | None = None
+    scan_read_calls: int = 0
 
     def close(self) -> None:
         if self.fd is not None:
@@ -400,11 +554,13 @@ class _VerifiedBlockReader(io.BufferedIOBase):
 @dataclasses.dataclass
 class _FrozenSnapshot:
     source_root: Path
+    source_root_identity: tuple[int, int]
     root: Path
     root_identity: tuple[int, int]
     entries: list[_FrozenEntry]
     manifest_sha256: str
     total_bytes: int
+    safetensors_content_receipt: Mapping[str, Any] | None = None
     _readers: list[BinaryIO] = dataclasses.field(default_factory=list)
 
     @property
@@ -448,27 +604,130 @@ class _FrozenSnapshot:
         self.close()
 
 
-def _scan_file(fd: int, size: int) -> tuple[bytes | None, str, bytes, tuple[str, ...]]:
-    if size <= SNAPSHOT_INLINE_BYTES:
-        content = _pread_exact(fd, size, 0) if size else b""
-        digest = hashlib.sha256(content).hexdigest()
-        blocks = tuple(
-            hashlib.sha256(content[offset:offset + SNAPSHOT_BLOCK_BYTES]).hexdigest()
-            for offset in range(0, size, SNAPSHOT_BLOCK_BYTES)
-        )
-        return content, digest, content[:512], blocks
+@dataclasses.dataclass(frozen=True)
+class _ScannedFile:
+    content: bytes | None
+    sha256: str
+    sample: bytes
+    block_sha256: tuple[str, ...]
+    tensor_sha256: Mapping[str, str] | None
+    read_calls: int
+
+
+def _scan_file(
+    fd: int,
+    size: int,
+    *,
+    safetensors_name: str | None = None,
+) -> _ScannedFile:
+    """Hash one file once; optionally hash every safetensors payload span.
+
+    Whole-file, fixed-block, and per-tensor hashes are updated from the same
+    bytes returned by each ``pread``. The only retained data are inline files
+    and the capped safetensors header needed to learn payload boundaries.
+    """
 
     whole = hashlib.sha256()
-    blocks_list: list[str] = []
+    blocks: list[str] = []
     sample = b""
+    inline_chunks: list[bytes] | None = [] if size <= SNAPSHOT_INLINE_BYTES else None
+    header_buffer = bytearray() if safetensors_name is not None else None
+    header_total: int | None = None
+    data_offset: int | None = None
+    spans: list[tuple[int, int, str]] | None = None
+    tensor_hashers: dict[str, Any] = {}
+    tensor_bytes: dict[str, int] = {}
+    read_calls = 0
+
     for offset in range(0, size, SNAPSHOT_BLOCK_BYTES):
         length = min(SNAPSHOT_BLOCK_BYTES, size - offset)
         data = _pread_exact(fd, length, offset)
+        read_calls += 1
         if offset == 0:
             sample = data[:512]
         whole.update(data)
-        blocks_list.append(hashlib.sha256(data).hexdigest())
-    return None, whole.hexdigest(), sample, tuple(blocks_list)
+        blocks.append(hashlib.sha256(data).hexdigest())
+        if inline_chunks is not None:
+            inline_chunks.append(data)
+
+        if header_buffer is not None and spans is None:
+            header_buffer.extend(data)
+            if header_total is None and len(header_buffer) >= 8:
+                header_length = int.from_bytes(
+                    header_buffer[:8], byteorder="little", signed=False
+                )
+                if (
+                    header_length <= 0
+                    or header_length > _MAX_SAFETENSORS_HEADER_BYTES
+                    or header_length > size - 8
+                ):
+                    raise FrozenSnapshotError(
+                        f"{safetensors_name}: invalid safetensors header length "
+                        f"{header_length}"
+                    )
+                header_total = 8 + header_length
+            if header_total is not None and len(header_buffer) >= header_total:
+                data_offset = header_total
+                try:
+                    spans = list(safetensors_header_spans(
+                        bytes(header_buffer[8:header_total]),
+                        data_bytes=size - header_total,
+                        where=str(safetensors_name),
+                    ))
+                except ValueError as exc:
+                    raise FrozenSnapshotError(str(exc)) from exc
+                tensor_hashers = {
+                    tensor_name: hashlib.sha256()
+                    for _start, _end, tensor_name in spans
+                }
+                tensor_bytes = {tensor_name: 0 for tensor_name in tensor_hashers}
+                header_buffer.clear()
+
+        if spans is not None and data_offset is not None:
+            payload_lo = max(offset, data_offset)
+            payload_hi = offset + len(data)
+            if payload_lo < payload_hi:
+                relative_lo = payload_lo - data_offset
+                relative_hi = payload_hi - data_offset
+                for start, end, tensor_name in spans:
+                    if end <= relative_lo:
+                        continue
+                    if start >= relative_hi:
+                        break
+                    overlap_lo = max(start, relative_lo)
+                    overlap_hi = min(end, relative_hi)
+                    if overlap_lo < overlap_hi:
+                        block_lo = data_offset + overlap_lo - offset
+                        block_hi = data_offset + overlap_hi - offset
+                        tensor_hashers[tensor_name].update(data[block_lo:block_hi])
+                        tensor_bytes[tensor_name] += overlap_hi - overlap_lo
+
+    if safetensors_name is not None:
+        if spans is None:
+            raise FrozenSnapshotError(
+                f"{safetensors_name}: truncated safetensors header"
+            )
+        for start, end, tensor_name in spans:
+            if tensor_bytes[tensor_name] != end - start:
+                raise FrozenSnapshotError(
+                    f"{safetensors_name}: incomplete payload for {tensor_name!r}"
+                )
+        tensor_sha256: Mapping[str, str] | None = {
+            tensor_name: tensor_hashers[tensor_name].hexdigest()
+            for tensor_name in sorted(tensor_hashers)
+        }
+    else:
+        tensor_sha256 = None
+
+    content = b"".join(inline_chunks) if inline_chunks is not None else None
+    return _ScannedFile(
+        content=content,
+        sha256=whole.hexdigest(),
+        sample=sample,
+        block_sha256=tuple(blocks),
+        tensor_sha256=tensor_sha256,
+        read_calls=read_calls,
+    )
 
 
 def _write_snapshot_bytes(path: Path, content: bytes) -> None:
@@ -492,6 +751,7 @@ def _freeze_artifact(
     artifact_dir: Path,
     *,
     expected_shipcard_sha256: str,
+    capture_safetensors_content: bool = False,
 ) -> _FrozenSnapshot:
     """Freeze one stable, regular-file-only artifact tree without data copying.
 
@@ -593,7 +853,18 @@ def _freeze_artifact(
                     raise FrozenSnapshotError(
                         f"artifact file changed during freeze: {relative_text}"
                     )
-                content, digest, sample, blocks = _scan_file(fd, int(opened.st_size))
+                capture_tensor_hashes = (
+                    capture_safetensors_content
+                    and relative.parent == PurePosixPath(".")
+                    and relative.name.endswith(".safetensors")
+                )
+                scanned = _scan_file(
+                    fd,
+                    int(opened.st_size),
+                    safetensors_name=(
+                        relative_text if capture_tensor_hashes else None
+                    ),
+                )
                 after = os.fstat(fd)
                 if _file_state(after) != _file_state(opened):
                     raise FrozenSnapshotError(
@@ -602,15 +873,18 @@ def _freeze_artifact(
                 entry = _FrozenEntry(
                     relative_path=relative_text,
                     size=int(opened.st_size),
-                    sha256=digest,
-                    sample=sample,
-                    block_sha256=blocks,
-                    content=content,
-                    fd=None if content is not None else fd,
+                    sha256=scanned.sha256,
+                    sample=scanned.sample,
+                    block_sha256=scanned.block_sha256,
+                    content=scanned.content,
+                    fd=None if scanned.content is not None else fd,
+                    content_stat=_content_stat(after),
+                    tensor_sha256=scanned.tensor_sha256,
+                    scan_read_calls=scanned.read_calls,
                 )
                 entries.append(entry)
-                if content is not None:
-                    _write_snapshot_bytes(destination, content)
+                if scanned.content is not None:
+                    _write_snapshot_bytes(destination, scanned.content)
                 else:
                     os.symlink(f"/proc/self/fd/{fd}", destination)
                     retained_file_fds.append(fd)
@@ -622,6 +896,11 @@ def _freeze_artifact(
     try:
         root_fd = os.open(root, directory_flags)
         directory_fds.append(root_fd)
+        source_root_stat = os.fstat(root_fd)
+        source_root_identity = (
+            int(source_root_stat.st_dev),
+            int(source_root_stat.st_ino),
+        )
         walk(root_fd, PurePosixPath("."))
 
         # A mutation in a directory already walked changes that directory's
@@ -657,13 +936,52 @@ def _freeze_artifact(
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")).hexdigest()
+        safetensors_entries = [
+            entry for entry in entries if entry.tensor_sha256 is not None
+        ]
+        if capture_safetensors_content and not safetensors_entries:
+            raise FrozenSnapshotError(
+                "strict publication has no root safetensors containers"
+            )
+        content_receipt = (
+            {
+                "schema": SAFETENSORS_CONTENT_RECEIPT_SCHEMA,
+                "source": "verified_read",
+                "content_read_passes": 1,
+                "content_bytes_read": sum(
+                    entry.size for entry in safetensors_entries
+                ),
+                "read_calls": sum(
+                    entry.scan_read_calls for entry in safetensors_entries
+                ),
+                "root": {
+                    "device": source_root_identity[0],
+                    "inode": source_root_identity[1],
+                },
+                "files": {
+                    entry.relative_path: {
+                        "stat": _content_stat_payload(entry.content_stat),
+                        "sha256": entry.sha256,
+                        "tensor_sha256": dict(entry.tensor_sha256 or {}),
+                    }
+                    for entry in sorted(
+                        safetensors_entries,
+                        key=lambda item: item.relative_path,
+                    )
+                },
+            }
+            if capture_safetensors_content
+            else None
+        )
         snapshot = _FrozenSnapshot(
             source_root=root,
+            source_root_identity=source_root_identity,
             root=snapshot_root,
             root_identity=snapshot_root_identity,
             entries=sorted(entries, key=lambda item: item.relative_path),
             manifest_sha256=manifest_sha,
             total_bytes=sum(entry.size for entry in entries),
+            safetensors_content_receipt=content_receipt,
         )
         retained_file_fds.clear()  # ownership transferred to entries/snapshot
         return snapshot
@@ -721,6 +1039,263 @@ def _verify_declared_weight_hashes(snapshot: _FrozenSnapshot) -> None:
             raise FrozenSnapshotError(
                 f"frozen bytes differ from declared weight hash: {name}"
             )
+
+
+def _frozen_entry_bytes(
+    snapshot: _FrozenSnapshot,
+    relative_path: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    entry = next(
+        (
+            item for item in snapshot.entries
+            if item.relative_path == relative_path
+        ),
+        None,
+    )
+    if entry is None:
+        raise FrozenSnapshotError(
+            f"frozen strict artifact has no {relative_path}"
+        )
+    if entry.size > max_bytes:
+        raise FrozenSnapshotError(
+            f"frozen {relative_path} exceeds the {max_bytes}-byte parser cap"
+        )
+    if entry.content is not None:
+        return entry.content
+    if entry.fd is None:
+        raise FrozenSnapshotError(
+            f"frozen descriptor is unavailable for {relative_path}"
+        )
+    try:
+        return _pread_exact(entry.fd, entry.size, 0)
+    except (OSError, FrozenSnapshotError) as exc:
+        raise FrozenSnapshotError(
+            f"frozen {relative_path} became unreadable: {exc}"
+        ) from exc
+
+
+def _strict_frozen_tensor_to_file(
+    snapshot: _FrozenSnapshot,
+    *,
+    observed_files: Mapping[str, Mapping[str, Any]],
+) -> dict[str, str]:
+    index_name = "model.safetensors.index.json"
+    index_entry = next(
+        (entry for entry in snapshot.entries if entry.relative_path == index_name),
+        None,
+    )
+    if index_entry is None:
+        if len(observed_files) != 1:
+            raise FrozenSnapshotError(
+                "strict sharded safetensors artifact has no canonical index"
+            )
+        only_file = next(iter(observed_files))
+        return {
+            str(tensor_name): only_file
+            for tensor_name in observed_files[only_file]["tensor_sha256"]
+        }
+    index = _strict_json_mapping(
+        _frozen_entry_bytes(snapshot, index_name, max_bytes=100 * 1024 * 1024),
+        where=f"frozen {index_name}",
+    )
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, Mapping) or not weight_map:
+        raise FrozenSnapshotError(
+            "frozen safetensors index has no nonempty weight_map"
+        )
+    normalized = {
+        str(tensor_name): str(filename)
+        for tensor_name, filename in weight_map.items()
+    }
+    if (
+        len(normalized) != len(weight_map)
+        or any(not tensor_name for tensor_name in normalized)
+        or any(filename not in observed_files for filename in normalized.values())
+    ):
+        raise FrozenSnapshotError(
+            "frozen safetensors index maps outside the frozen shard set"
+        )
+    return dict(sorted(normalized.items()))
+
+
+def _verify_strict_frozen_safetensors_content(
+    snapshot: _FrozenSnapshot,
+) -> None:
+    """Consume the freeze's one-pass hashes as strict publication evidence.
+
+    This is publisher-specific receipt replay: the authoritative small JSON
+    files come from the private frozen tree, while weight facts come from the
+    O_NOFOLLOW descriptors/copies that populated that same tree. Reopening the
+    mutable source paths would add a race and a redundant full payload pass.
+    """
+
+    receipt = snapshot.safetensors_content_receipt
+    if (
+        not isinstance(receipt, Mapping)
+        or set(receipt) != {
+            "schema",
+            "source",
+            "content_read_passes",
+            "content_bytes_read",
+            "read_calls",
+            "root",
+            "files",
+        }
+        or receipt.get("schema") != SAFETENSORS_CONTENT_RECEIPT_SCHEMA
+        or receipt.get("source") != "verified_read"
+        or receipt.get("content_read_passes") != 1
+    ):
+        raise FrozenSnapshotError(
+            "strict frozen snapshot has no one-pass safetensors content receipt"
+        )
+    root_record = receipt.get("root")
+    if root_record != {
+        "device": snapshot.source_root_identity[0],
+        "inode": snapshot.source_root_identity[1],
+    }:
+        raise FrozenSnapshotError(
+            "strict safetensors receipt is bound to a different source root"
+        )
+    files = receipt.get("files")
+    if not isinstance(files, Mapping) or not files:
+        raise FrozenSnapshotError(
+            "strict safetensors receipt has no container rows"
+        )
+    captured_entries = {
+        entry.relative_path: entry
+        for entry in snapshot.entries
+        if entry.tensor_sha256 is not None
+    }
+    if set(files) != set(captured_entries):
+        raise FrozenSnapshotError(
+            "strict safetensors receipt differs from the captured shard set"
+        )
+    if (
+        receipt.get("content_bytes_read")
+        != sum(entry.size for entry in captured_entries.values())
+        or receipt.get("read_calls")
+        != sum(entry.scan_read_calls for entry in captured_entries.values())
+        or type(receipt.get("read_calls")) is not int
+        or receipt.get("read_calls", 0) <= 0
+    ):
+        raise FrozenSnapshotError(
+            "strict safetensors receipt has invalid one-pass accounting"
+        )
+
+    observed_tensors: dict[str, str] = {}
+    observed_tensor_to_file: dict[str, str] = {}
+    for name, entry in sorted(captured_entries.items()):
+        row = files.get(name)
+        expected_row = {
+            "stat": _content_stat_payload(entry.content_stat),
+            "sha256": entry.sha256,
+            "tensor_sha256": dict(entry.tensor_sha256 or {}),
+        }
+        if row != expected_row:
+            raise FrozenSnapshotError(
+                f"strict safetensors receipt row differs from frozen bytes: {name}"
+            )
+        if entry.fd is not None and _content_stat(os.fstat(entry.fd)) != (
+            entry.content_stat
+        ):
+            raise FrozenSnapshotError(
+                f"held strict weight changed after the frozen scan: {name}"
+            )
+        for tensor_name, digest in expected_row["tensor_sha256"].items():
+            if tensor_name in observed_tensors or _SHA256_RE.fullmatch(
+                str(digest)
+            ) is None:
+                raise FrozenSnapshotError(
+                    f"invalid or duplicate frozen tensor digest: {tensor_name!r}"
+                )
+            observed_tensors[tensor_name] = str(digest)
+            observed_tensor_to_file[tensor_name] = name
+
+    quant = _strict_json_mapping(
+        _frozen_entry_bytes(
+            snapshot,
+            "quant_config.json",
+            max_bytes=100 * 1024 * 1024,
+        ),
+        where="frozen quant_config.json",
+    )
+    provenance = quant.get("provenance")
+    manifest = provenance.get("weight_content_manifest") if isinstance(
+        provenance, Mapping
+    ) else None
+    manifest_files = manifest.get("files") if isinstance(
+        manifest, Mapping
+    ) else None
+    if (
+        not isinstance(manifest, Mapping)
+        or set(manifest) != {"schema", "algorithm", "files"}
+        or manifest.get("schema") != WEIGHT_CONTENT_MANIFEST_SCHEMA
+        or manifest.get("algorithm") != "sha256"
+        or not isinstance(manifest_files, Mapping)
+        or set(manifest_files) != set(files)
+    ):
+        raise FrozenSnapshotError(
+            "strict frozen weight_content_manifest is not the exact closed shard set"
+        )
+    for name, row in manifest_files.items():
+        observed = files[name]
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != {"bytes", "sha256"}
+            or row.get("bytes") != observed["stat"]["bytes"]
+            or row.get("sha256") != observed["sha256"]
+        ):
+            raise FrozenSnapshotError(
+                f"strict frozen container bytes differ from the manifest: {name}"
+            )
+
+    tensor_identity = provenance.get("tensor_payload_identity")
+    tensor_ledger = tensor_identity.get("tensor_sha256") if isinstance(
+        tensor_identity, Mapping
+    ) else None
+    if not isinstance(tensor_ledger, Mapping) or not tensor_ledger:
+        raise FrozenSnapshotError(
+            "strict frozen tensor_payload_identity has no digest ledger"
+        )
+    normalized_ledger = {
+        str(tensor_name): str(digest)
+        for tensor_name, digest in tensor_ledger.items()
+    }
+    if (
+        len(normalized_ledger) != len(tensor_ledger)
+        or any(_SHA256_RE.fullmatch(digest) is None for digest in normalized_ledger.values())
+        or dict(sorted(normalized_ledger.items()))
+        != dict(sorted(observed_tensors.items()))
+    ):
+        raise FrozenSnapshotError(
+            "strict frozen tensor digest ledger differs from payload bytes"
+        )
+    try:
+        from prismaquant.shard_layout import tensor_payload_identity
+
+        expected_identity = tensor_payload_identity(
+            normalized_ledger,
+            include_tensor_sha256=True,
+        )
+    except ValueError as exc:
+        raise FrozenSnapshotError(
+            f"strict frozen tensor identity is malformed: {exc}"
+        ) from exc
+    if dict(tensor_identity) != expected_identity:
+        raise FrozenSnapshotError(
+            "strict frozen tensor_payload_identity is not canonical"
+        )
+
+    indexed_tensor_to_file = _strict_frozen_tensor_to_file(
+        snapshot,
+        observed_files=files,
+    )
+    if indexed_tensor_to_file != dict(sorted(observed_tensor_to_file.items())):
+        raise FrozenSnapshotError(
+            "strict frozen safetensors index differs from payload headers"
+        )
 
 
 def _replay_frozen_digests(snapshot: _FrozenSnapshot) -> None:
@@ -1123,6 +1698,15 @@ def main(argv: list[str] | None = None) -> int:
     if canonical_problem is not None:
         print(f"[publish] ERROR: {canonical_problem}", file=sys.stderr)
         return 2
+    if _is_rtx4090_validation_only_publication(artifact_dir):
+        print(
+            "[publish] REFUSED: artifact is stamped "
+            "UNRELEASABLE_VALIDATION_ONLY; compile_only SM89 structural "
+            "artifacts can never be uploaded, even with --force-unverified "
+            "and --confirm-name",
+            file=sys.stderr,
+        )
+        return 1
     card, problems = check_shipcard(artifact_dir, shipcard_path)
     if card is None:
         print(
@@ -1135,6 +1719,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     forced_override_confirmed = False
+    strict_publication = _is_rtx4090_fp8_cb_publication(artifact_dir, card)
     if problems:
         print(
             f"[publish] REFUSED — {len(problems)} problem(s) with "
@@ -1143,6 +1728,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
+        if strict_publication:
+            print(
+                "[publish] strict RTX4090 FP8-CB evidence failures are "
+                "non-forceable; --force-unverified and --confirm-name cannot "
+                "waive, stamp, or publish this artifact",
+                file=sys.stderr,
+            )
+            return 1
         if not args.force_unverified:
             print(
                 "[publish] nothing was uploaded and no upload command was "
@@ -1208,6 +1801,7 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_cm = _freeze_artifact(
             artifact_dir,
             expected_shipcard_sha256=expected_shipcard_sha,
+            capture_safetensors_content=strict_publication,
         )
     except Exception as exc:
         print(
@@ -1222,6 +1816,10 @@ def main(argv: list[str] | None = None) -> int:
             snapshot.root,
             frozen_card_path,
         )
+        frozen_strict_publication = _is_rtx4090_fp8_cb_publication(
+            snapshot.root,
+            frozen_card if isinstance(frozen_card, Mapping) else {},
+        )
         if frozen_card is None:
             print(
                 "[publish] ERROR: frozen canonical shipcard is malformed; "
@@ -1229,11 +1827,43 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        try:
-            _verify_declared_weight_hashes(snapshot)
-        except FrozenSnapshotError as exc:
-            print(f"[publish] REFUSED: {exc}", file=sys.stderr)
+        if frozen_strict_publication:
+            try:
+                _verify_strict_frozen_safetensors_content(snapshot)
+            except (OSError, FrozenSnapshotError, ValueError) as exc:
+                frozen_problems.append(
+                    "strict finalized safetensors content replay failed: "
+                    f"{exc}"
+                )
+        if frozen_problems and frozen_strict_publication:
+            print(
+                "[publish] REFUSED: frozen strict RTX4090 FP8-CB snapshot "
+                "failed authoritative shipcard replay; these failures are "
+                "non-forceable and --force-unverified/--confirm-name cannot "
+                "waive, stamp, or publish them:",
+                file=sys.stderr,
+            )
+            for problem in frozen_problems:
+                print(f"  - {problem}", file=sys.stderr)
             return 1
+        size_problem = _rtx4090_publication_size_problem(
+            snapshot.root,
+            frozen_card,
+            total_bytes=snapshot.total_bytes,
+        )
+        if size_problem is not None:
+            print(
+                f"[publish] REFUSED: {size_problem}; this whole-artifact "
+                "ceiling cannot be overridden",
+                file=sys.stderr,
+            )
+            return 1
+        if not frozen_strict_publication:
+            try:
+                _verify_declared_weight_hashes(snapshot)
+            except FrozenSnapshotError as exc:
+                print(f"[publish] REFUSED: {exc}", file=sys.stderr)
+                return 1
         if frozen_problems and not forced_override_confirmed:
             print(
                 "[publish] REFUSED: frozen snapshot failed authoritative "

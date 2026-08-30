@@ -344,7 +344,7 @@ def _displaced_artifact(root: Path, budget: int) -> dict:
         "config_groups": {
             "group_0": {
                 "targets": ["re:^model[.]layers[.]0[.]self_attn[.]q_proj$"],
-                "format": "NVFP4_CB_K32",
+                "format": "NVFP4_CB_K25",
                 "scheme": {"grid": "fp4", "mode": "product", "k": 32},
             }
         },
@@ -352,7 +352,7 @@ def _displaced_artifact(root: Path, budget: int) -> dict:
             "assignment_sha256": assignment_sha,
             "source_model_identity": dict(_SOURCE_IDENTITY),
             "tensor_formats": {
-                "model.layers.0.self_attn.q_proj": "NVFP4_CB_K32"
+                "model.layers.0.self_attn.q_proj": "NVFP4_CB_K25"
             },
             "weight_content_manifest": build_weight_content_manifest(artifact),
             "artifact_inventory": {
@@ -708,7 +708,7 @@ def _report(
                 "byte_scope": "whole served artifact",
             },
             "execution_identity": {
-                "format_rung": "FP8_CB_K36" if candidate else "NVFP4_CB_K32",
+                "format_rung": "FP8_CB_K36" if candidate else "NVFP4_CB_K25",
                 "serialization": {
                     "layout": "product-codebook-indices-v1",
                     "scale_coding": "v1",
@@ -727,7 +727,7 @@ def _report(
                     "assignments": [
                         {
                             "unit": "model.layers.0.self_attn.q_proj",
-                            "format_rung": "FP8_CB_K36" if candidate else "NVFP4_CB_K32",
+                            "format_rung": "FP8_CB_K36" if candidate else "NVFP4_CB_K25",
                             "serialized_layout": "product-codebook-indices-v1",
                             "scale_coding": "v1",
                             "quant_contract": "W8A8" if candidate else "W4A4",
