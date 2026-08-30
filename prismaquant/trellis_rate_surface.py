@@ -51,6 +51,28 @@ activation second moment, which is an output-MSE proxy, **not** the AURA
 KL-adjoint objective the production DP prices in.  Those are different
 currencies and must not be mixed.
 
+There is one legitimate bridge: a **measured** per-unit currency conversion.
+The trellis-currency campaign (``dq-runs/trellis-currency-20260829`` on
+sparklina, schema ``prismaquant.trellis.currency_gap.analysis.*``) measured
+``kappa(L, rate) = D_aura / D_sse`` per Linear per rung on real weights and
+established two facts this module encodes:
+
+* a **per-Linear** scalar kappa (the geometric mean of the per-rate ratios)
+  allocates within the probe-noise floor -- converting a unit's SSE surface
+  by its own measured kappa is licensed;
+* a **global** scalar kappa is refused by the same measurement -- its
+  allocation regret is an order of magnitude worse than per-Linear.  There
+  is therefore no broadcast path here: :func:`convert_surface_currency`
+  takes one unit's own rate-resolved evidence and binds it to that unit by
+  name.
+
+The conversion does not weaken the menu refusal.  A converted surface passes
+:func:`rate_surface_solver_menu` only because its ``currency`` string now
+genuinely equals the DP's, and it carries a structured
+:class:`CurrencyConversionStamp` recording the source objective, the target
+objective, the kappa used, its per-rate spread, and the measurement identity
+-- a gate reads the stamp, never prose.
+
 Provenance
 ----------
 Every emitted candidate is stamped ``interpolated`` unless its rung exactly
@@ -83,8 +105,11 @@ from .trellis_formats import (
 )
 
 __all__ = [
+    "CurrencyConversionStamp",
+    "TrellisKappaEvidence",
     "TrellisRateSurface",
     "allocation_regret",
+    "convert_surface_currency",
     "densify_rate_surface",
     "fit_rate_surface",
     "leave_one_anchor_out",
@@ -95,6 +120,11 @@ __all__ = [
 
 PROVENANCE_MEASURED = "measured"
 PROVENANCE_INTERPOLATED = "interpolated"
+
+# Suffix appended to a candidate's variant_label when its surface was
+# currency-converted, so no candidate leaves a converted surface unmarked.
+# The full structured record is the surface's `conversion` stamp.
+CONVERTED_LABEL_SUFFIX = ".converted"
 
 
 def uniform_column_schedule(
@@ -169,6 +199,146 @@ def uniform_column_schedule(
 
 
 @dataclass(frozen=True, slots=True)
+class TrellisKappaEvidence:
+    """One unit's OWN measured currency ratios, rate-resolved.
+
+    ``kappa[j]`` is ``D_target / D_source`` measured at rung
+    ``rate_q256[j]`` for this unit, exactly as the currency-gap campaign
+    defines it (``D_aura / D_sse`` per Linear per rung).  The conversion
+    collapses the vector to the campaign's per-Linear scalar -- the
+    geometric mean over rates -- itself, so a pre-collapsed scalar cannot
+    be passed: rate-resolved evidence is required, both to compute the
+    scalar the measured way and because the per-rate spread is the carrier
+    of the conversion's own uncertainty.
+
+    ``measurement_source`` and ``measurement_schema`` identify the analysis
+    artifact the kappas came from (path plus schema string), so the stamp on
+    a converted surface traces back to the measurement.
+    """
+
+    unit_name: str
+    source_currency: str
+    target_currency: str
+    rate_q256: tuple[int, ...]
+    kappa: tuple[float, ...]
+    measurement_source: str
+    measurement_schema: str
+
+    def __post_init__(self) -> None:
+        for label in ("unit_name", "source_currency", "target_currency",
+                      "measurement_source", "measurement_schema"):
+            value = getattr(self, label)
+            if not isinstance(value, str) or not value:
+                raise TrellisFormatError(
+                    f"kappa evidence {label} must be a nonempty string"
+                )
+        if self.source_currency == self.target_currency:
+            raise TrellisFormatError(
+                "kappa evidence converts between two DIFFERENT objectives; "
+                "source and target currency are the same string"
+            )
+        if len(self.rate_q256) < 2:
+            raise TrellisFormatError(
+                "kappa evidence needs ratios at two or more rates; a single "
+                "number is a scalar, not rate-resolved evidence, and its "
+                "per-rate spread -- the carrier of the conversion's own "
+                "uncertainty -- would be unmeasurable"
+            )
+        if len(self.rate_q256) != len(self.kappa):
+            raise TrellisFormatError(
+                "kappa evidence rates and ratios must agree in length"
+            )
+        for left, right in zip(self.rate_q256, self.rate_q256[1:]):
+            if type(left) is not int or type(right) is not int:
+                raise TrellisFormatError(
+                    "kappa evidence rates must be integers on the q256 axis"
+                )
+            if left >= right:
+                raise TrellisFormatError(
+                    "kappa evidence rates must be strictly increasing"
+                )
+        for value in self.kappa:
+            if not math.isfinite(value) or value <= 0.0:
+                raise TrellisFormatError(
+                    "kappa evidence ratios must be positive and finite"
+                )
+
+    @property
+    def kappa_geomean(self) -> float:
+        """The campaign's per-Linear scalar: geometric mean over rates."""
+
+        return float(
+            math.exp(math.fsum(math.log(k) for k in self.kappa)
+                     / len(self.kappa))
+        )
+
+    @property
+    def kappa_log_sd(self) -> float:
+        """Sample standard deviation (ddof=1) of ``log kappa`` over rates."""
+
+        logs = [math.log(k) for k in self.kappa]
+        mean = math.fsum(logs) / len(logs)
+        return math.sqrt(
+            math.fsum((v - mean) ** 2 for v in logs) / (len(logs) - 1)
+        )
+
+    @property
+    def kappa_predictive_log_sd(self) -> float:
+        """Predictive log-sd of kappa at one rung: ``s * sqrt(1 + 1/m)``.
+
+        The measured near-zero log-log slope licenses treating the per-rate
+        kappas as exchangeable draws around the unit's level; the error of
+        pricing one rung with the estimated level is then the draw's own
+        variance plus the level estimate's, ``s^2 * (1 + 1/m)``.  Both
+        terms come from that model and the data -- no tuned constant.
+        """
+
+        return self.kappa_log_sd * math.sqrt(1.0 + 1.0 / len(self.kappa))
+
+    @property
+    def kappa_spread_maxmin(self) -> float:
+        return max(self.kappa) / min(self.kappa)
+
+
+@dataclass(frozen=True, slots=True)
+class CurrencyConversionStamp:
+    """Structured record of one surface's currency conversion.
+
+    This is what a gate reads (never prose): which objective the anchors
+    were measured in, which objective they are now denominated in, the
+    per-unit kappa actually applied, its per-rate spread, and the identity
+    of the measurement that produced it.
+    """
+
+    unit_name: str
+    source_currency: str
+    target_currency: str
+    kappa: float
+    kappa_log_sd: float
+    kappa_predictive_log_sd: float
+    kappa_spread_maxmin: float
+    evidence_rate_q256: tuple[int, ...]
+    evidence_kappa: tuple[float, ...]
+    measurement_source: str
+    measurement_schema: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "unit_name": self.unit_name,
+            "source_currency": self.source_currency,
+            "target_currency": self.target_currency,
+            "kappa": self.kappa,
+            "kappa_log_sd": self.kappa_log_sd,
+            "kappa_predictive_log_sd": self.kappa_predictive_log_sd,
+            "kappa_spread_maxmin": self.kappa_spread_maxmin,
+            "evidence_rate_q256": list(self.evidence_rate_q256),
+            "evidence_kappa": list(self.evidence_kappa),
+            "measurement_source": self.measurement_source,
+            "measurement_schema": self.measurement_schema,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TrellisRateSurface:
     """One unit's monotone rate surface, interpolated between measured anchors."""
 
@@ -179,6 +349,7 @@ class TrellisRateSurface:
     anchor_q256: tuple[int, ...]
     anchor_dloss: tuple[float, ...]
     anchor_stderr: tuple[float, ...]
+    conversion: CurrencyConversionStamp | None = None
 
     def __post_init__(self) -> None:
         if len(self.anchor_q256) < 2:
@@ -210,6 +381,12 @@ class TrellisRateSurface:
                     "non-monotone anchor set is a measurement problem, and "
                     "interpolating through it would launder it into a cost"
                 )
+        if self.conversion is not None and not isinstance(
+            self.conversion, CurrencyConversionStamp
+        ):
+            raise TrellisFormatError(
+                "conversion must be a CurrencyConversionStamp or None"
+            )
 
     @property
     def q256_range(self) -> tuple[int, int]:
@@ -319,6 +496,129 @@ def fit_rate_surface(
     )
 
 
+def convert_surface_currency(
+    surface: TrellisRateSurface,
+    evidence: TrellisKappaEvidence,
+) -> TrellisRateSurface:
+    """Re-denominate one surface into another objective, per measured kappa.
+
+    The conversion applies the currency-gap campaign's per-Linear scalar:
+    the geometric mean over rates of this unit's OWN measured
+    ``D_target / D_source`` ratios.  Anchor values scale by that kappa;
+    anchor stderr propagates BOTH the scaled measurement error and the
+    conversion's own uncertainty:
+
+        stderr' = kappa * dloss * sqrt((stderr / dloss)^2 + sigma^2)
+
+    where ``sigma = s * sqrt(1 + 1/m)`` is the predictive log-sd of kappa
+    at one rung (``s`` the ddof-1 sample sd of ``log kappa`` over the
+    ``m`` measured rates).  Derivation: the target-currency cost at rung r
+    is ``kappa_r * D_source(r)``; the measured near-zero log-log slope of
+    kappa licenses modelling the per-rate kappas as exchangeable draws
+    around the unit's level, so pricing rung r with the estimated level
+    errs in log space with variance ``s^2`` (the draw) plus ``s^2 / m``
+    (the level estimate).  First-order propagation combines that log-sd in
+    quadrature with the source measurement's relative error; it understates
+    the width for extreme spreads (delta method), but is monotone in the
+    spread and assumes no distribution.  The same kappa and sigma apply at
+    every anchor, including rates where kappa was directly observed --
+    per-rate conversion was not the measured arm; the per-Linear scalar
+    was.
+
+    Refusals, all structural (scope rules, no tuned constant):
+
+    * evidence for a DIFFERENT unit -- kappa is per-unit by measurement;
+      broadcasting one unit's scalar is the global-scalar arm the campaign
+      refused outright (an order of magnitude worse allocation regret than
+      per-Linear; see the ``measurement_source`` analysis artifact);
+    * evidence whose source currency is not the surface's -- the ratios
+      measure a different bridge;
+    * a surface that is ALREADY converted -- chaining conversions would
+      multiply scalars whose joint error nothing measured; convert from
+      the surface denominated in the objective the evidence measured;
+    * anchors outside the evidence's rate envelope -- kappa's
+      near-rate-independence is a measured fact about the rates it was
+      measured at, and applying it beyond them is the same extrapolation
+      :meth:`TrellisRateSurface.predict` refuses (a claim inherits the
+      scope of the artifact it was measured on).
+    """
+
+    if not isinstance(surface, TrellisRateSurface):
+        raise TrellisFormatError("surface must be a TrellisRateSurface")
+    if not isinstance(evidence, TrellisKappaEvidence):
+        raise TrellisFormatError(
+            "evidence must be a TrellisKappaEvidence carrying this unit's "
+            "own rate-resolved kappa measurements"
+        )
+    if evidence.unit_name != surface.unit_name:
+        raise TrellisFormatError(
+            f"kappa evidence for {evidence.unit_name!r} cannot convert "
+            f"{surface.unit_name!r}: currency conversion is per-unit only. "
+            f"A shared (global) kappa scalar is refused by measurement -- "
+            f"the currency-gap campaign found its allocation regret an "
+            f"order of magnitude worse than per-Linear kappa (see "
+            f"{evidence.measurement_source}, schema "
+            f"{evidence.measurement_schema}). Measure this unit's own "
+            f"kappa instead"
+        )
+    if surface.conversion is not None:
+        raise TrellisFormatError(
+            "surface is already currency-converted; chaining conversions "
+            "would multiply scalars whose joint error nothing measured. "
+            "Convert from the surface denominated in the objective the "
+            "evidence actually measured"
+        )
+    if evidence.source_currency != surface.currency:
+        raise TrellisFormatError(
+            f"kappa evidence measures {evidence.source_currency!r} -> "
+            f"{evidence.target_currency!r} but the surface is denominated "
+            f"in {surface.currency!r}; the ratios do not price this bridge"
+        )
+    low, high = surface.q256_range
+    if low < evidence.rate_q256[0] or high > evidence.rate_q256[-1]:
+        raise TrellisFormatError(
+            f"surface anchors span [{low}, {high}] q256 but kappa was "
+            f"measured on [{evidence.rate_q256[0]}, "
+            f"{evidence.rate_q256[-1]}]; applying a measured ratio beyond "
+            f"its measured rate envelope is extrapolation and is refused "
+            f"-- measure kappa at the missing rates instead"
+        )
+    kappa = evidence.kappa_geomean
+    sigma = evidence.kappa_predictive_log_sd
+    converted_dloss = tuple(
+        kappa * value for value in surface.anchor_dloss
+    )
+    converted_stderr = tuple(
+        kappa
+        * dloss
+        * math.sqrt((stderr / dloss) ** 2 + sigma**2)
+        for dloss, stderr in zip(surface.anchor_dloss, surface.anchor_stderr)
+    )
+    stamp = CurrencyConversionStamp(
+        unit_name=surface.unit_name,
+        source_currency=surface.currency,
+        target_currency=evidence.target_currency,
+        kappa=kappa,
+        kappa_log_sd=evidence.kappa_log_sd,
+        kappa_predictive_log_sd=sigma,
+        kappa_spread_maxmin=evidence.kappa_spread_maxmin,
+        evidence_rate_q256=tuple(evidence.rate_q256),
+        evidence_kappa=tuple(evidence.kappa),
+        measurement_source=evidence.measurement_source,
+        measurement_schema=evidence.measurement_schema,
+    )
+    return TrellisRateSurface(
+        unit_name=surface.unit_name,
+        family=surface.family,
+        layout=surface.layout,
+        currency=evidence.target_currency,
+        anchor_q256=surface.anchor_q256,
+        anchor_dloss=converted_dloss,
+        anchor_stderr=converted_stderr,
+        conversion=stamp,
+    )
+
+
 def densify_rate_surface(
     surface: TrellisRateSurface,
     shape: Sequence[int],
@@ -345,6 +645,13 @@ def densify_rate_surface(
         raise TrellisFormatError("shape must be two dimensions")
     columns = dims[1]
     spec = get_trellis_family(surface.family)
+    # A candidate from a converted surface must say so: the interpolation
+    # provenance keeps its measured/interpolated stamp and the label gains
+    # a suffix, so no candidate leaves a conversion unmarked.  The full
+    # structured record is the surface's `conversion` stamp.
+    label_suffix = (
+        CONVERTED_LABEL_SUFFIX if surface.conversion is not None else ""
+    )
     built: list[TrellisAllocatorCandidate] = []
     for rate in sorted(set(int(value) for value in q256_values)):
         schedule = (
@@ -380,7 +687,7 @@ def densify_rate_surface(
                 qname=qname,
                 packed_expert=packed_expert,
                 sidecar_header_bytes=sidecar_header_bytes,
-                variant_label=surface.provenance(rate),
+                variant_label=surface.provenance(rate) + label_suffix,
             )
         )
     return tuple(built)
