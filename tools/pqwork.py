@@ -221,8 +221,29 @@ def reserved_gpu_slots(host: str) -> tuple[int, str]:
 # eligibility
 
 
+def receipt_satisfied(path: str) -> bool:
+    """Is this receipt genuinely present and non-empty?
+
+    Opened and read rather than stat'd, for two reasons. An empty file is not
+    a receipt -- a shell redirect creates one the instant it opens the target,
+    before the work has produced anything, and a job that writes its receipt
+    as its final act can be interrupted mid-write. And on NFS a stat can be
+    served from the attribute cache, while an open forces a fresh lookup
+    under close-to-open consistency.
+
+    This must agree exactly with whatever a job's own command tests. When the
+    queue gated on ``exists()`` while jobs gated on ``test -s``, the two
+    disagreed and an item reached ``done/`` carrying no receipt at all.
+    """
+    try:
+        with open(path, "rb") as fh:
+            return bool(fh.read(1))
+    except OSError:
+        return False
+
+
 def receipts_present(paths: list[str]) -> bool:
-    return all(Path(p).exists() for p in paths)
+    return all(receipt_satisfied(p) for p in paths)
 
 
 def is_runnable(item: dict, host: str, tags: set[str], has_gpu: bool) -> bool:
@@ -319,7 +340,7 @@ def reap(verbose: bool = False) -> int:
         if item is None:
             continue
         receipt = item.get("receipt")
-        if receipt and Path(receipt).exists():
+        if receipt and receipt_satisfied(receipt):
             # It finished; only the bookkeeping was lost.
             if move_item(item_id, CLAIMED, DONE, {"finished_at": time.time(),
                                                   "outcome": "receipt_found_after_lease_loss"}):
@@ -437,7 +458,7 @@ class Job:
     def _run(self) -> None:
         item, host = self.item, self.host
         receipt = item.get("receipt")
-        if receipt and Path(receipt).exists():
+        if receipt and receipt_satisfied(receipt):
             # Idempotency gate.  This is what makes requeue-on-eviction and
             # requeue-on-stale-lease safe, and what lets a partially finished
             # campaign be re-enqueued wholesale without redoing its finished
@@ -500,7 +521,7 @@ class Job:
 
         receipt = item.get("receipt")
         if receipt:
-            ok = Path(receipt).exists()
+            ok = receipt_satisfied(receipt)
             outcome = "receipt_present" if ok else f"no_receipt (rc={rc})"
         else:
             ok = rc == 0
@@ -897,7 +918,7 @@ def cmd_status(a: argparse.Namespace) -> int:
                 stale = " STALE" if lease_is_stale(i["id"]) else ""
                 bits.append(f"on {where} {_fmt_age(i.get('claimed_at'))}{stale}")
             elif state == READY:
-                pending = [p for p in (i.get("after") or []) if not Path(p).exists()]
+                pending = [p for p in (i.get("after") or []) if not receipt_satisfied(p)]
                 if pending:
                     bits.append(f"blocked on {len(pending)} receipt(s)")
                 cool = float(i.get("not_before") or 0) - time.time()

@@ -140,7 +140,7 @@ def test_exit_zero_without_receipt_retries_before_failing(queue, tmp_path):
 def test_nonzero_exit_with_receipt_is_done(queue, tmp_path):
     # The converse: the exit code is not the authority in either direction.
     receipt = tmp_path / "landed"
-    enqueue("badrc", cmd=f"touch {receipt}; exit 3", receipt=str(receipt),
+    enqueue("badrc", cmd=f"echo landed > {receipt}; exit 3", receipt=str(receipt),
             cwd=tmp_path)
     item = pqwork.try_claim("badrc", "mine")
     assert _run_sync(item) == "done"
@@ -327,3 +327,58 @@ def test_child_tmpdir_is_box_local_not_slash_tmp(queue, tmp_path, monkeypatch):
     assert value != "/tmp"
     assert Path(value).is_relative_to(Path.home())
     assert Path(value).is_dir()
+
+
+def test_empty_receipt_is_not_a_receipt(queue):
+    """A zero-byte file must not count as completion.
+
+    A shell redirect creates its target the instant it opens it, so
+    `cmd > out` produces a "receipt" before the work has done anything. The
+    queue gated on existence while jobs gated on `test -s`; the two disagreed
+    and an item reached done/ with no real receipt.
+    """
+    receipt = queue / "empty.receipt"
+    item = _enqueue(queue, "hollow", cmd=f"touch {receipt}", receipt=str(receipt),
+                    max_attempts=1)
+    pqwork.try_claim("hollow", "mine")
+    assert _run_sync(item) == "failed"
+    assert receipt.exists(), "the command did create the file"
+    assert (pqwork.qdir(pqwork.FAILED) / "hollow.json").exists()
+    assert not (pqwork.qdir(pqwork.DONE) / "hollow.json").exists()
+
+
+def test_empty_receipt_does_not_satisfy_a_dependency(queue):
+    """`--after` uses the same predicate, or a dependent starts on nothing."""
+    dep = queue / "dep.receipt"
+    dep.touch()
+    item = {"id": "waiter", "after": [str(dep)], "cmd": "true"}
+    assert not pqwork.is_runnable(item, "mine", set(), True)
+    dep.write_text("1")
+    assert pqwork.is_runnable(item, "mine", set(), True)
+
+
+def test_empty_receipt_is_not_a_receipt(queue, tmp_path):
+    """A zero-byte file must not count as completion.
+
+    A shell redirect creates its target the instant it opens it, so
+    ``cmd > out`` produces a "receipt" before the work has done anything. The
+    queue once gated on existence while jobs gated on ``test -s``; the two
+    disagreed and an item reached done/ carrying no real receipt.
+    """
+    receipt = tmp_path / "empty.receipt"
+    enqueue("hollow", cmd=f"touch {receipt}", receipt=str(receipt),
+            max_attempts=1, cwd=tmp_path)
+    item = pqwork.try_claim("hollow", "mine")
+    assert _run_sync(item) == "failed"
+    assert receipt.exists(), "the command really did create the file"
+    assert state_of("hollow") == pqwork.FAILED
+
+
+def test_empty_receipt_does_not_satisfy_a_dependency(queue, tmp_path):
+    """``--after`` shares the predicate, or a dependent starts on nothing."""
+    dep = tmp_path / "dep.receipt"
+    dep.touch()
+    item = {"id": "waiter", "after": [str(dep)], "cmd": "true"}
+    assert not pqwork.is_runnable(item, "mine", set(), True)
+    dep.write_text("1")
+    assert pqwork.is_runnable(item, "mine", set(), True)
