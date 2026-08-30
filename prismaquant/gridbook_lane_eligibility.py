@@ -857,6 +857,53 @@ def _name_prefix(entry: Mapping[str, Any]) -> str:
     return head.upper()
 
 
+def resolve_payload_rung(
+    format_name: str,
+    published_formats: Mapping[str, Mapping[str, Any]] | None = None,
+) -> tuple[str, int | None, int | None]:
+    """``(payload_family, k, rate_q256)`` for a format name, DERIVED.
+
+    The one place a format name is turned into the runtime's own vocabulary,
+    so the export gate and the serving-lane resolver cannot disagree about
+    what ``FP8_CB_K44`` or ``TCQ_E2M1_R512`` is. Both rung fields are ``None``
+    when the pinned release publishes no such rung, which is what makes every
+    downstream match fail closed instead of admitting an unlisted rate.
+
+    Returns the raw upper-cased name as the family when the contract publishes
+    no codec for it (BF16, a SOURCE passthrough, a stock CT rung), which is
+    also the signal that the lane table is not the authority for those bytes.
+    """
+    if published_formats is None:
+        published_formats = load_published_formats()
+
+    upper = str(format_name).upper()
+    candidates = sorted(
+        ((_name_prefix(entry), str(fam), entry)
+         for fam, entry in published_formats.items()),
+        key=lambda item: -len(item[0]),
+    )
+    for prefix, fam, entry in candidates:
+        if not prefix or not upper.startswith(prefix):
+            continue
+        suffix = upper[len(prefix):]
+        if not suffix.isdigit():
+            continue
+        value = int(suffix)
+        if str(entry.get("kind", FORMAT_KIND_CB_PRODUCT)) == (
+                FORMAT_KIND_TCQ_TRELLIS):
+            lo, hi = (int(v) for v in entry["reader_rate_range_q256"])
+            # Outside the published reader range the rate stays None, so every
+            # cell's rung list fails to cover it and the unit is unattested.
+            return fam, None, (value if lo <= value <= hi else None)
+        if value in {int(r) for r in entry.get("rungs", ())}:
+            return fam, value, None
+        # The pinned release does not instantiate this rung: leaving k None
+        # makes every k-predicate and every cell match fail closed rather than
+        # pass silently.
+        return fam, None, None
+    return upper, None, None
+
+
 def unit_structural_facts(
     qname: str,
     format_name: str,
@@ -877,45 +924,11 @@ def unit_structural_facts(
     if published_formats is None:
         published_formats = load_published_formats()
 
-    family = ""
-    k: int | None = None
+    family, k, rate_q256 = resolve_payload_rung(format_name, published_formats)
     n_sub: int | None = None
-    rate_q256: int | None = None
-    upper = str(format_name).upper()
-
-    candidates = sorted(
-        ((_name_prefix(entry), str(fam), entry)
-         for fam, entry in published_formats.items()),
-        key=lambda item: -len(item[0]),
-    )
-    for prefix, fam, entry in candidates:
-        if not prefix or not upper.startswith(prefix):
-            continue
-        suffix = upper[len(prefix):]
-        if not suffix.isdigit():
-            continue
-        value = int(suffix)
-        family = fam
-        if str(entry.get("kind", FORMAT_KIND_CB_PRODUCT)) == (
-                FORMAT_KIND_TCQ_TRELLIS):
-            lo, hi = (int(v) for v in entry["reader_rate_range_q256"])
-            if lo <= value <= hi:
-                rate_q256 = value
-            # Outside the published reader range the rate stays None, so every
-            # cell's rung list fails to cover it and the unit is unattested.
-            break
-        if value in {int(r) for r in entry.get("rungs", ())}:
-            k, n_sub = value, int(entry["n_sub"])
-        # The pinned release does not instantiate this rung: leaving k None
-        # makes every k-predicate and every cell match fail closed rather than
-        # pass silently.
-        break
-    else:
-        # Not a payload the pinned contract publishes (BF16, a SOURCE
-        # passthrough, a stock CT rung). It has a lane, so it still gets facts;
-        # it just has no published family, rung or n_sub, and resolves outside
-        # the eligibility table's scope.
-        family = upper
+    if k is not None:
+        entry = published_formats.get(family, {})
+        n_sub = int(entry["n_sub"])
 
     return UnitStructuralFacts(
         qname=str(qname),
@@ -1173,5 +1186,6 @@ __all__ = [
     "load_eligibility_table",
     "load_published_formats",
     "materialized_contract_path",
+    "resolve_payload_rung",
     "unit_structural_facts",
 ]

@@ -674,6 +674,89 @@ def test_the_resolved_lane_exposes_structured_route_status():
     assert "0.8.11" in payload["route_status_source"]
 
 
+@pytest.fixture()
+def present_pin(monkeypatch):
+    """Resolve serving lanes against the PUBLISHED v12 table, not the pin.
+
+    Nothing exercised ``ServingLaneSpec.route_status_for`` on a present table
+    before this: the real pin's table is absent, so the function returned at
+    its first branch and every line past it was unreached. That is how it kept
+    reading ``table.rules`` -- a name lane-eligibility v3 does not have -- and
+    would have raised AttributeError the moment the pin advanced. Unused
+    because unmeasured is a gap, not evidence.
+    """
+    from prismaquant import gridbook_lane_eligibility as le
+    from prismaquant import serving_profiles as sp
+
+    formats = {
+        str(entry["family"]): dict(entry)
+        for entry in json.loads(V12_FIXTURE.read_text())["formats"]
+    }
+    monkeypatch.setattr(
+        le, "load_eligibility_table",
+        lambda *a, **kw: load_eligibility_table(
+            "0.9.1-fixture", contract_path=V12_FIXTURE))
+    monkeypatch.setattr(le, "load_published_formats",
+                        lambda *a, **kw: formats)
+    sp._reset_eligibility_table_cache()
+    yield
+    sp._reset_eligibility_table_cache()
+
+
+def _cb_lane(fmt):
+    from prismaquant.serving_profiles import load_serving_profile
+
+    profile = load_serving_profile("nvfp4_cb")
+    chosen = None
+    for lane in profile.serving_lanes:
+        if lane.covers(fmt):
+            chosen = lane
+    assert chosen is not None, f"no CB lane covers {fmt}"
+    return chosen
+
+
+def test_a_present_table_resolves_a_lane_without_touching_table_rules(
+        present_pin):
+    """The v3 rename is followed through into the serving-lane resolver."""
+    status, flags, source = _cb_lane("FP8_CB_K44").route_status_for(
+        "FP8_CB_K44", platform="sm_120")
+    # sm_120/FP8_CB_K/K44 is covered in both regimes, and the routed_moe batch
+    # cell predicates on role_split -- a fact only the export gate holds. The
+    # lane says so rather than guessing a lane-wide verdict.
+    assert status == "unit_dependent"
+    assert flags == ()
+    assert source == ("gridbook_runtime_contract:0.9.1-fixture"
+                      ":unit_dependent(cb_route_status_gate)")
+
+
+def test_a_lane_resolved_without_a_platform_stays_unattested(present_pin):
+    """BITE: v3 cells are platform-scoped even at lane granularity."""
+    status, flags, source = _cb_lane("FP8_CB_K44").route_status_for(
+        "FP8_CB_K44", platform=None)
+    assert status == ROUTE_STATUS_UNATTESTED
+    assert flags == ()
+    assert source.endswith(":no_target_platform")
+
+
+def test_a_lane_whose_rung_no_cell_lists_stays_unattested(present_pin):
+    """K32 is a published codec rung; no lane cell covers it."""
+    lane = _cb_lane("FP8_CB_K32")
+    assert lane.route_status_for("FP8_CB_K32", platform="sm_120")[2].endswith(
+        ":rung_not_listed")
+    # ...and a rung that IS listed does not take that branch.
+    assert not lane.route_status_for(
+        "FP8_CB_K44", platform="sm_120")[2].endswith(":rung_not_listed")
+
+
+def test_a_lane_on_an_unpublished_platform_stays_unattested(present_pin):
+    status, _, source = _cb_lane("FP8_CB_K44").route_status_for(
+        "FP8_CB_K44", platform="sm_121")
+    assert status == ROUTE_STATUS_UNATTESTED
+    assert source.endswith(":no_cell"), (
+        "the published table names no CB cell on sm_121; saying so is the "
+        "table reporting a serving gap, which is the signal it carries")
+
+
 def test_selection_provenance_distinguishes_unattested_from_zero():
     """The vllm-lane twin: no spec declares route status, so say so."""
     from prismaquant.allocator_candidates import (
