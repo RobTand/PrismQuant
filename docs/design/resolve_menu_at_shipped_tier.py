@@ -56,6 +56,15 @@ measured bound at three index widths, not a proof at all eighteen.  And this is
 corpus SSE on 24 DeepSeek-V4-Flash MoE expert tensors -- a screen, per
 principle 3, not a serving result.
 
+It also emits, unconditionally, the per-tensor learned-fp8-CB-versus-E4M3-
+trellis comparison at matched bytes (`learned_fp8_vs_trellis_matched_bytes`).
+The Lagrangian sweep answers "what does a budget select"; that block answers
+"at the same byte count, which wire is more accurate", which is the claim
+section 1 of the format-menu doc makes.  A pair counts as byte-matched only
+when the two arms' median `exact_bpw` agree to 0.05; when a bracket holds no
+matched pair the nearest one per rung is reported and tagged
+`byte_matched: false`, so an unmatched pair can never be read as dominance.
+
 `--with-learned-fp8` additionally puts the per-tensor learned fp8-CB book on the
 menu.  That arm is EXPOSURE-SIZING ONLY and must not be read as a menu change:
 its K44/K48 rungs sit above this corpus's ~4.7-bit content ceiling, so the
@@ -206,6 +215,53 @@ def load(bracket, tier_ab, with_learned):
     return tensors, swapped, deltas
 
 
+def matched_byte_pairs(bracket, tier_ab, tol_bpw=0.05):
+    """Per-tensor learned-fp8-CB versus E4M3-trellis comparison at matched bytes.
+
+    The Lagrangian sweep answers "what does a budget select"; it does not answer
+    "at the same byte count, which wire is more accurate".  This does, pairwise
+    and per tensor, so the crossover claim has a producer rather than a
+    recollection.  Only pairs whose median bpw agree to `tol_bpw` are called
+    byte-matched; the rest are reported with their gap so no one reads an
+    unmatched pair as a dominance result.
+    """
+    fp8 = json.loads(FP8[bracket].read_text())["per_tensor"]
+    out = []
+    for k in FP8_CB_RUNGS:
+        for rate in ("2.0", "3.0", "4.0", "5.0", "6.0"):
+            ddb, dbpw = [], []
+            for name, rec in fp8.items():
+                book = tier_ab[name]["arms"][f"fp8_cb_learned@{k}|{SHIPPED_TIER}"]
+                wire = rec["arms"][f"tcq_e4m3@{rate}"]
+                ddb.append(float(book["weighted_snr_db"])
+                           - float(wire["weighted_snr_db"]))
+                dbpw.append(float(book["footprint"]["exact_bpw"])
+                            - float(wire["footprint"]["exact_bpw"]))
+            ddb.sort()
+            dbpw.sort()
+            n = len(ddb)
+            median_bpw = dbpw[n // 2]
+            out.append({"book": f"fp8_cb_learned@{k}", "wire": f"tcq_e4m3@{rate}",
+                        "byte_matched": abs(median_bpw) <= tol_bpw,
+                        "book_wins_db": sum(1 for d in ddb if d > 0), "n": n,
+                        "median_delta_db": ddb[n // 2],
+                        "min_delta_db": ddb[0], "max_delta_db": ddb[-1],
+                        "median_delta_bpw": median_bpw})
+    matched = [r for r in out if r["byte_matched"]]
+    if matched:
+        return matched
+    # No pair lands within tolerance -- report the nearest one per book rung so
+    # the absence is legible.  An unmatched pair is not a dominance result and
+    # is tagged as such.
+    nearest = {}
+    for r in out:
+        cur = nearest.get(r["book"])
+        if cur is None or abs(r["median_delta_bpw"]) < abs(
+                cur["median_delta_bpw"]):
+            nearest[r["book"]] = r
+    return sorted(nearest.values(), key=lambda r: r["book"])
+
+
 def solve(tensors, lam):
     """Ties break to FEWER bits -- conservative for a retirement argument."""
     picks, bits, cost = [], 0.0, 0.0
@@ -322,6 +378,20 @@ def main():
         print("  NO CHANGE: the same rungs are retired, contested and "
               "selected at the shipped tier as at max.")
     reports["verdict_changed"] = flipped
+
+    pairs = {b: matched_byte_pairs(b, tier_ab) for b in ("production", "penalty")}
+    reports["learned_fp8_vs_trellis_matched_bytes"] = pairs
+    print("\n=== learned fp8-CB book vs E4M3 trellis, per tensor, "
+          "matched bytes (NOT a verdict: exposure sizing, and the corpus "
+          "content ceiling scopes the MAGNITUDE) ===")
+    for bracket, rows in pairs.items():
+        for r in rows:
+            print(f"  {bracket:10s} {r['book']:20s} vs {r['wire']:14s} "
+                  f"book wins {r['book_wins_db']}/{r['n']}  "
+                  f"median {r['median_delta_db']:+7.3f} dB "
+                  f"[{r['min_delta_db']:+.3f},{r['max_delta_db']:+.3f}]  "
+                  f"median Dbpw {r['median_delta_bpw']:+.4f}"
+                  f"{'' if r['byte_matched'] else '  NOT byte-matched'}")
 
     out = Path(args.out) if args.out else PUBLISHED_VERDICT.with_suffix(
         ".shipped_tier.learned.json" if args.with_learned_fp8

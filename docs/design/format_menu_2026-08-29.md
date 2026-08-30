@@ -41,7 +41,7 @@ shipped-tier render. **No verdict cell changes.**
 | Can the trellis go below 1.283 bpw? | **No — structurally.** The v1 wire requires ≥1 coded bit per weight. | §2 |
 | Does the trellis have a runtime kernel? | **Yes, and it is landed** (gridbook `1a57b31`, ABI 3). In-tree: **5.37×** the scan-free decoder on E2M1, **2.46×** on E4M3, **5.80×/3.18× work per joule**; 24/24 external golden vectors through the landed path; **rate-insensitive**. Landed as *research ops* — no runtime-contract cell, so every trellis rung is still **unbacked** until a release attests a route (principle 14). | §5 |
 | Is the low-rate FP8 trellis viable for AMD / pre-Blackwell? | **Yes.** Decode + `_scaled_mm` is 2.22× faster than the BF16 matmul it replaces, decode cost included. | §4 |
-| Is the 8-bit trellis competitive with the FP8 books on quality? | **Against the fixed-lattice book, yes below ≈5.0 bpw** — trellis +2.3 dB at 4.0, book +8.8 dB at 6.0 on the shipped-tier render (+7.8 as published, §6.4). **Against the learned book, measured 2026-08-29, the crossover collapses**: at matched bytes the learned book beats `tcq_e4m3@4.0` on 24/24 tensors in the production bracket. The two brackets disagree there, so that is an exposure, not a verdict. | §6, §7 |
+| Is the 8-bit trellis competitive with the FP8 books on quality? | **Against the fixed-lattice book, yes below ≈5.0 bpw** — trellis +2.3 dB at 4.0, book +8.8 dB at 6.0 on the shipped-tier render (+7.8 as published, §6.4). **Against the learned book, measured 2026-08-29, the crossover collapses where the brackets let the comparison be made**: in the production bracket `fp8_cb_learned@32` beats `tcq_e4m3@4.0` on 24/24 tensors at matched bytes, median **+2.34 dB** for +0.002 bpw. The penalty bracket charges the trellis +0.273 bpw, so it holds no byte-matched pairing at all and its nearest one reverses. The two brackets do not agree, so that is an exposure, not a verdict. | §6, §7 |
 | Does the 8-bit book beat raw FP8? | **Yes, by more than published.** `fp8_cb@48` = **35.14 dB** at 6.008 bpw on the shipped-tier render (34.15 dB at the tier the ladder used, §6.4) vs a plain e4m3 cast at 31.57 dB and 8.008 bpw — **+3.57 dB at 75% of the bytes**. | §6.1 |
 | Does a learned CB book change anything? | **On fp4 no, on fp8 yes — and the fp8 half is an exposure, not a verdict.** fp4: the book decays to +0.008…+0.013 dB in the production band and never beats one more index bit. fp8: `learned@44` dominates `fixed@48` on quality *and* bytes, 24/24, median +8.09 dB for ~0.47 bpw less. K44/K48 sit above this corpus's ~4.7-bit content ceiling, so the direction holds and the size does not travel; a bf16-corpus re-check is owed before any menu change. | §7 |
 | Are the high E4M3 trellis rungs usable? | **Still no, and the cause is now known.** The clipping was a *Lloyd local optimum*, not E4M3: an exact grid DP gains +9.05 dB as a scalar book. But it does **not** transfer to the trellis — +2.45 dB at R6 on the shipping bracket, *negative on every rung of the penalty bracket*, and negative at R2 on both. R6 still sits ~2.7 dB below its own rate-8 bypass. Retirement **weakened, not overturned**; `exact_dp` stays research. | §6.2 |
@@ -677,6 +677,21 @@ baseline — but it has to land between runs, not during one
      dominates 21/24. Only `learned@28`-vs-`fixed@32` fails, 0/24, at both
      tiers. The tier moves magnitudes, not directions: the verdict file records
      that **no domination verdict flips between tiers**.
+
+  3. **Against the E4M3 trellis the book wins at matched bytes in the
+     production bracket, and the penalty bracket holds no matched pair to
+     check.** Two pairings land within 0.05 bpw under production pricing:
+     `learned@32` versus `tcq_e4m3@4.0`, book 24/24, median **+2.34 dB** for
+     +0.0017 bpw; and `learned@40` versus `tcq_e4m3@5.0`, 24/24, median
+     **+7.80 dB** for +0.013 bpw. The penalty bracket charges the trellis
+     +0.273 bpw, which puts every pairing off matched bytes; its nearest one at
+     4 bpw reverses — the book spends 0.27 bpw fewer and loses, 5/24, median
+     −1.10 dB. The two brackets therefore do not agree, and the +7.80 dB figure
+     sits above the corpus ceiling besides. Producer:
+     `resolve_menu_at_shipped_tier.py`, block
+     `learned_fp8_vs_trellis_matched_bytes` in both report JSONs, which tags
+     every pair `byte_matched` true or false rather than dropping the
+     unmatched ones.
 
   One tier interaction is worth stating precisely, because it runs the other
   way: **K40 is the single rung where the shipped tier hurts the learned arm**
