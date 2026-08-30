@@ -1408,8 +1408,17 @@ class ModelProfile(ABC):
         8. **exclude** — 0-D/1-D floating tensors (norm scales, biases,
            rotary frequency tables): never a GEMM multiplicand; immutable
            floor bytes.
-        9. **decide** — every remaining ``nn.Linear`` weight (subclasses
-           included, matched through the MRO): the allocator's domain.
+        9. **pin** — MoE router gates, matched by router-class family:
+           the routing logits are matmul-fed but never priced (a route flip
+           is not a smooth cost). DSv4's per-class pins predate this and
+           keep their own reasons; this rule covers every other family the
+           R5 sweep found (hy_v3, qwen3_5, laguna, minimax_m2, qwen3-moe)
+           plus name-excluded Linear routers (gemma4).
+        10. **decide** — packed expert stacks on an ``*Experts`` owner:
+            priced through the packed-expert Fisher path, so they are
+            allocator decisions like any other unit.
+        11. **decide** — every remaining ``nn.Linear`` weight (subclasses
+            included, matched through the MRO): the allocator's domain.
 
         Override to extend, not to weaken: profiles append architecture
         rules (or prepend more specific ones) and return the base list for
@@ -1476,6 +1485,32 @@ class ModelProfile(ABC):
             "0-D/1-D tensor (norm scale, bias, rotary table): never a GEMM "
             "multiplicand; immutable floor bytes",
             max_ndim=1,
+        ))
+        # Router gates, universal form (R5 sweep 2026-08-22): every packed-MoE
+        # family in current transformers carries its router as a bare
+        # Parameter (or a name-excluded Linear — gemma4's Gemma4TextRouter)
+        # whose routing logits are matmul-fed but never priced. DSv4 pinned
+        # exactly this slot per-class; the pattern is universal, so the base
+        # table claims it once by class-name family. A route flip is not a
+        # smooth cost: pin, with the debt named.
+        rules.append(ClaimRule(
+            "pin",
+            "MoE router gate: routing logits are matmul-fed but never "
+            "priced — a route flip is not a smooth cost; held at source "
+            "precision as a named debt",
+            predicate=lambda node: "router" in node.module_class.lower(),
+        ))
+        # Packed expert stacks (R5 sweep finding 2): one 3-D Parameter per
+        # stack on an `*Experts` module, priced through the packed-expert
+        # Fisher path (install_packed_expert_hooks), not by per-Linear
+        # enumeration. They ARE allocator decisions — so `decide`, not a pin.
+        rules.append(ClaimRule(
+            "decide",
+            "packed expert stack: priced through the packed-expert Fisher "
+            "path (install_packed_expert_hooks), not by per-Linear "
+            "enumeration",
+            predicate=lambda node: node.kind == "parameter"
+            and "expert" in node.module_class.lower(),
         ))
         rules.append(ClaimRule(
             "decide",

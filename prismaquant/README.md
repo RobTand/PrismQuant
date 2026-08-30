@@ -15,6 +15,7 @@ declarative contract layer, not the executor.
 | Probe | `incremental_probe` |
 | Cost | `incremental_measure_quant_cost`, `production_render_cost`, `aura_cost` (`COST_MODE=aura`), `expert_empirical_cost` (MoE hybrid), `aura_additivity_gate` (trust-region check) |
 | Allocate | `allocator` |
+| Walk gate | `model_walk` (R5 discovery walker: intake walk + fail-closed export gate, `python3 -m prismaquant.model_walk --model <dir>`) |
 | Cache | `build_production_cache`, `production_recache` |
 | Select | `validate_assignments_kl`, `select_validated_frontier` |
 | Export | `export_native_compressed` (compressed-tensors), `export_gguf` / `export_gguf_direct` (GGUF), `export_nvfp4_cb` / `export_nvfp4_cb_streaming` (codebook, served by the separately released [Gridbook](https://github.com/RobTand/gridbook) package) |

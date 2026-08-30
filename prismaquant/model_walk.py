@@ -95,14 +95,50 @@ Intake for a new architecture
    reason, or an exclusion to declare. Do not silence a failure without
    writing the reason down — the reasons land on the shipcard.
 
+The export gate
+---------------
+:func:`evaluate_walk_gate` projects a :class:`WalkResult` onto a STRUCTURED
+verdict (:class:`WalkGateVerdict`): ``refused``, a tuple of machine-readable
+``refusal_kinds``, and a provenance payload whose lists carry
+``(node, op, equation, module)`` as fields a gate can read. Prose — a
+:class:`WalkFailure` ``detail``, the ``refusal_reason`` — explains to humans;
+nothing branches on it. ``prismaquant/run-pipeline.sh`` invokes this module's
+CLI (``python3 -m prismaquant.model_walk``) immediately before every export
+lane, so an unclaimed matmul-fed parameter refuses the export instead of
+shipping by omission. Three properties are policy, not implementation
+accident:
+
+* An explicit override (:data:`WALK_GATE_OVERRIDE_ENV`, reason required and
+  stamped) excuses **trace incompleteness only — never a claim failure**.
+  Claims have a first-class mechanism (``pin(reason)`` in the profile's
+  rules); a bypass around it would be the silent-green this gate exists to
+  kill.
+* An UNKNOWN :class:`WalkFailure` ``kind`` refuses. Today the walk emits
+  ``unclaimed`` and ``unresolved``; a future category (for example the
+  Tensor-Parallel one — a quantization group boundary that does not align
+  with a shard boundary at TP degree N, which would land as
+  ``kind == "tp_group_boundary_misaligned"``) must make even an UNUPGRADED
+  gate refuse rather than pass silently.
+* The decision unit is the WHOLE LOGICAL tensor. Node names are module-tree
+  names of the unsharded model, so Tensor-Parallel degree cannot change the
+  walk's universe, and a disposition is a property of the logical tensor:
+  sharding never turns a ``pin`` into anything else. ``stored_bytes`` fields
+  are **total bytes of the logical tensor** (convention recorded in the
+  verdict as ``byte_accounting.convention``); per-device accounting arrives
+  with TP as an additive ``shard_policy`` annotation, never as node identity.
+
 This module imports only torch and the standard library, so it can wrap any
 torch model; the prismaquant-specific claim policy lives on the model profile.
 """
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
+import os
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -111,17 +147,32 @@ import torch.nn.functional as F
 from torch.overrides import TorchFunctionMode
 
 __all__ = [
+    "BYTE_POLICY_REPLICATED",
+    "BYTE_POLICY_SHARDED_EVENLY",
     "Claim",
     "ClaimRule",
     "EmbeddingUse",
+    "LoadedWalk",
+    "SCHEMA",
     "TraceCoverage",
     "UnresolvedOperand",
     "WalkEdge",
     "WalkError",
     "WalkFailure",
+    "WalkGateRefusal",
+    "WalkGateVerdict",
     "WalkNode",
+    "WalkProvenance",
     "WalkResult",
     "WeightUseInterceptor",
+    "WALK_GATE_OVERRIDE_ENV",
+    "WALK_GATE_SCHEMA",
+    "claim_rules_to_json",
+    "evaluate_walk_gate",
+    "load_walk",
+    "per_device_bytes",
+    "require_walk_coverage",
+    "save_walk",
     "walk_model",
 ]
 
@@ -180,6 +231,57 @@ _CONTAINER_CLASSES = (
     nn.ModuleList, nn.ModuleDict, nn.ParameterList, nn.ParameterDict,
 )
 
+# ---------------------------------------------------------------------------
+# Artifact identity + the TP byte seam
+# ---------------------------------------------------------------------------
+
+#: Identity of the serialized walk artifact written by :func:`save_walk`.
+#: ``load_walk`` refuses any other value (parse-time refusal, same pattern as
+#: ``decision_units.parse_payload``). The gate verdict carries its own
+#: sibling schema (:data:`WALK_GATE_SCHEMA`).
+SCHEMA = "prismaquant.model_walk.v1"
+
+#: Byte policies accepted by :func:`per_device_bytes`. They are the ONLY two
+#: honest readings of a logical-total under a Tensor-Parallel degree: a
+#: replicated tensor is read/held whole on every rank; an evenly sharded one
+#: divides exactly. There is deliberately no default policy and no inferred
+#: replication class yet — nothing in current code can populate one honestly,
+#: and a speculative enum invites silent defaulting.
+BYTE_POLICY_REPLICATED = "replicated"
+BYTE_POLICY_SHARDED_EVENLY = "sharded_evenly"
+BYTE_POLICIES = (BYTE_POLICY_REPLICATED, BYTE_POLICY_SHARDED_EVENLY)
+
+
+def per_device_bytes(total: int, tp_degree: int, policy: str) -> int:
+    """Device-local bytes for a logical total under a TP degree and policy.
+
+    This is THE seam the Tensor-Parallel campaign builds on. Every
+    ``stored_bytes`` field in this module is LOGICAL-TOTAL bytes of the whole
+    parameter; per-device accounting exists only through this explicit-policy
+    accessor, so a per-device reading can never be silently conflated with
+    the total. ``tp_degree=1`` is the identity for every policy. An evenly
+    sharded total that does not divide by the degree raises — a non-dividing
+    shard boundary is exactly the misalignment class that must be loud
+    (cf. the future ``tp_group_boundary_misaligned`` walk-failure kind).
+    """
+    if tp_degree < 1:
+        raise ValueError(f"tp_degree must be >= 1, got {tp_degree}")
+    if policy not in BYTE_POLICIES:
+        raise ValueError(
+            f"policy must be one of {list(BYTE_POLICIES)}, got {policy!r}; "
+            "there is deliberately no default — say which reading you want")
+    total = int(total)
+    if tp_degree == 1:
+        return total
+    if policy == BYTE_POLICY_REPLICATED:
+        return total
+    if total % tp_degree:
+        raise ValueError(
+            f"logical total {total} does not divide by tp_degree={tp_degree} "
+            f"under policy {policy!r}; a shard boundary would cross a tensor "
+            "granularity boundary — refuse rather than round")
+    return total // tp_degree
+
 
 def _storage_key(tensor: torch.Tensor) -> int | None:
     """Identity key of a tensor's underlying storage.
@@ -222,7 +324,9 @@ class WalkNode:
     persistent: bool                # False only for non-persistent buffers
     shape: tuple[int, ...]
     dtype: str
-    stored_bytes: int
+    stored_bytes: int               # LOGICAL-TOTAL bytes of the whole tensor;
+                                    # per-device readings go through
+                                    # per_device_bytes(total, degree, policy)
     owner_module: str               # qualified name of the owning module
     module_class: str               # class name of the owning module
     module_class_mro: tuple[str, ...]  # class names, most-derived first
@@ -250,7 +354,8 @@ class WalkEdge:
     operand_shape: tuple[int, ...]  # shape as consumed (view/slice shape)
     operand_dtype: str
     operand_shapes: tuple[tuple[int, ...], ...]  # every tensor operand's shape
-    stored_bytes: int               # bytes of the full parameter node
+    stored_bytes: int               # LOGICAL-TOTAL bytes of the full parameter
+                                    # node (see WalkNode.stored_bytes)
     module: str                     # module executing the op ("" = root)
     via: tuple[str, ...]            # alias/cast hops from parameter to operand
     calls: int = 1                  # identical consumptions in the trace
@@ -357,6 +462,11 @@ class WalkResult:
     failures: tuple[WalkFailure, ...]
     trace_coverage: TraceCoverage
     execution: str                  # "fake" | "real"
+    #: Captured at trace time by :func:`walk_model`. Deliberately NOT
+    #: serialized by :meth:`to_json_dict` — its timestamps would break the
+    #: run-to-run byte-determinism the conformance tests pin; it travels in
+    #: :func:`save_walk`'s envelope instead.
+    provenance: "WalkProvenance | None" = None
 
     @property
     def ok(self) -> bool:
@@ -391,6 +501,88 @@ class WalkResult:
             "failures": [f.to_json_dict() for f in self.failures],
             "trace_coverage": self.trace_coverage.to_json_dict(),
         }
+
+    @classmethod
+    def from_json_dict(cls, d: dict) -> "WalkResult":
+        """Rehydrate the inner result payload of a saved walk artifact.
+
+        Provenance is NOT part of this payload (see the field comment); it is
+        reloaded from the envelope by :func:`load_walk` and attached there.
+        """
+        nodes = tuple(
+            WalkNode(
+                name=n["name"], kind=n["kind"], persistent=n["persistent"],
+                shape=tuple(n["shape"]), dtype=n["dtype"],
+                stored_bytes=int(n["stored_bytes"]),
+                owner_module=n["owner_module"],
+                module_class=n["module_class"],
+                module_class_mro=tuple(n["module_class_mro"]),
+                aliases=tuple(n["aliases"]),
+            )
+            for n in d["nodes"]
+        )
+        edges = tuple(
+            WalkEdge(
+                param=e["param"], param_aliases=tuple(e["param_aliases"]),
+                op=e["op"], equation=e.get("equation"), role=e["role"],
+                operand_index=int(e["operand_index"]),
+                operand_shape=tuple(e["operand_shape"]),
+                operand_dtype=e["operand_dtype"],
+                operand_shapes=tuple(tuple(s) for s in e["operand_shapes"]),
+                stored_bytes=int(e["stored_bytes"]), module=e["module"],
+                via=tuple(e.get("via", ())), calls=int(e.get("calls", 1)),
+            )
+            for e in d["edges"]
+        )
+        claims = {
+            k: Claim(
+                disposition=v["disposition"], reason=v["reason"],
+                rule_index=int(v["rule_index"]),
+            )
+            for k, v in d["claims"].items()
+        }
+        embedding_uses = tuple(
+            EmbeddingUse(
+                param=u["param"],
+                param_aliases=tuple(u["param_aliases"]),
+                module=u["module"],
+            )
+            for u in d["embedding_uses"]
+        )
+        unresolved = tuple(
+            UnresolvedOperand(
+                op=u["op"], equation=u.get("equation"), module=u["module"],
+                operand_index=int(u["operand_index"]),
+                operand_shape=tuple(u["operand_shape"]),
+                operand_dtype=u["operand_dtype"], role=u["role"],
+                is_floating=bool(u["is_floating"]),
+            )
+            for u in d["unresolved_operands"]
+        )
+        failures = tuple(
+            WalkFailure(
+                kind=f["kind"], node=f.get("node"), op=f["op"],
+                equation=f.get("equation"), module=f["module"],
+                detail=f.get("detail", ""),
+            )
+            for f in d["failures"]
+        )
+        coverage = d["trace_coverage"]
+        return cls(
+            nodes=nodes,
+            edges=edges,
+            claims=claims,
+            unclaimed=tuple(d["unclaimed"]),
+            embedding_uses=embedding_uses,
+            unresolved_operands=unresolved,
+            failures=failures,
+            trace_coverage=TraceCoverage(
+                executed=tuple(coverage["executed"]),
+                not_executed=tuple(coverage["not_executed"]),
+                containers=tuple(coverage["containers"]),
+            ),
+            execution=str(d["execution"]),
+        )
 
 
 class WalkError(RuntimeError):
@@ -494,6 +686,318 @@ def apply_claim_rules(
                 )
                 break
     return claims
+
+
+# ---------------------------------------------------------------------------
+# Artifact provenance (captured at trace time) + applied-rule serialization
+#
+# `Claim.rule_index` points into the rule list that was applied, but only the
+# resolved claims used to survive serialization — so a reloaded artifact could
+# not audit WHY a node is pinned beyond its reason string. The envelope below
+# carries the rules themselves (matchers JSON-native; `predicate` recorded by
+# name/identity, never dropped silently) plus everything a cached walk must be
+# able to prove about what produced it. All of it is captured AT TRACE TIME;
+# none of it is reconstructible afterward.
+# ---------------------------------------------------------------------------
+
+
+def _callable_identity(fn: Callable | None) -> dict | None:
+    """Name/identity marker for a ClaimRule predicate.
+
+    Predicates are code, not data: the artifact records WHAT ran (name,
+    qualname, module, owner class, and for lambdas the defining source
+    line) so an auditor can find it — never a pickle. The digest over the
+    serialized list still changes if a different predicate object is swapped
+    in, because the identity strings change with it.
+    """
+    if fn is None:
+        return None
+    owner = getattr(fn, "__self__", None)
+    identity = {
+        "name": getattr(fn, "__name__", "") or repr(fn),
+        "qualname": getattr(fn, "__qualname__", "") or "",
+        "module": getattr(fn, "__module__", "") or "",
+        "owner": type(owner).__name__ if owner is not None else "",
+        "location": "",
+    }
+    code = getattr(fn, "__code__", None)
+    if code is not None and identity["name"] == "<lambda>":
+        identity["location"] = f"{code.co_filename}:{code.co_firstlineno}"
+    return identity
+
+
+def claim_rules_to_json(rules: Sequence[ClaimRule]) -> tuple[dict, ...]:
+    """Serialize an applied :class:`ClaimRule` list for the artifact.
+
+    ``predicate`` is the one non-JSON-native matcher field; it is recorded by
+    name/identity rather than dropped. The sha256 over this tuple's canonical
+    JSON is :attr:`WalkProvenance.claim_rules_digest`.
+    """
+    out: list[dict] = []
+    for index, rule in enumerate(rules):
+        out.append({
+            "index": index,
+            "disposition": rule.disposition,
+            "reason": rule.reason,
+            "name_regex": rule.name_regex,
+            "leaf": rule.leaf,
+            "module_class": rule.module_class,
+            "kind": rule.kind,
+            "persistent": rule.persistent,
+            "max_ndim": rule.max_ndim,
+            "min_ndim": rule.min_ndim,
+            "floating": rule.floating,
+            "predicate": _callable_identity(rule.predicate),
+        })
+    return tuple(out)
+
+
+def _canonical(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _claim_rules_digest(rules: Sequence[ClaimRule]) -> str:
+    return hashlib.sha256(
+        _canonical(list(claim_rules_to_json(rules))).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclasses.dataclass(frozen=True)
+class WalkProvenance:
+    """Everything a reloaded walk artifact must prove about its origin.
+
+    Captured at trace time by :func:`walk_model`. Load-bearing, not
+    decoration: two walks of the same weights under different input contracts
+    can differ in ``trace_coverage`` when data-dependent control flow
+    executes shape-wise under fake tensors, so the example-input spec travels
+    with the result and ``load_walk`` refuses mismatches.
+    """
+
+    created_utc: str                    # ISO 8601, UTC
+    model_identity: str                 # architecture + config-content digest
+    torch_version: str
+    transformers_version: str | None
+    prismaquant_version: str            # "" when not installed as a dist
+    prismaquant_git: str                # git describe; "" when unavailable
+    execution: str                      # mirrors WalkResult.execution
+    example_inputs_spec: str
+    seq_len: int | None                 # set only for the synthesized default
+    claim_rules_digest: str             # sha256 over `claim_rules`
+    claim_rules: tuple[dict, ...]       # claim_rules_to_json() output
+
+    def to_json_dict(self) -> dict:
+        d = dataclasses.asdict(self)
+        d["claim_rules"] = list(self.claim_rules)
+        return d
+
+    @classmethod
+    def from_json_dict(cls, d: dict) -> "WalkProvenance":
+        return cls(
+            created_utc=str(d["created_utc"]),
+            model_identity=str(d["model_identity"]),
+            torch_version=str(d["torch_version"]),
+            transformers_version=(
+                None if d.get("transformers_version") is None
+                else str(d["transformers_version"])),
+            prismaquant_version=str(d.get("prismaquant_version", "")),
+            prismaquant_git=str(d.get("prismaquant_git", "")),
+            execution=str(d["execution"]),
+            example_inputs_spec=str(d["example_inputs_spec"]),
+            seq_len=(None if d.get("seq_len") is None else int(d["seq_len"])),
+            claim_rules_digest=str(d["claim_rules_digest"]),
+            claim_rules=tuple(dict(r) for r in d.get("claim_rules", ())),
+        )
+
+    def rules_digest_matches(self, rules: Sequence[ClaimRule]) -> bool:
+        return self.claim_rules_digest == _claim_rules_digest(rules)
+
+
+def _model_identity(model: nn.Module) -> str:
+    cfg = getattr(model, "config", None)
+    if cfg is not None:
+        try:
+            blob = _canonical(cfg.to_dict())
+            model_type = getattr(cfg, "model_type", "") or ""
+            digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+            return (
+                f"{model_type or type(model).__name__}:sha256:{digest}"
+            )
+        except Exception:
+            pass
+    try:
+        n_params = sum(int(p.numel()) for p in model.parameters())
+    except Exception:
+        n_params = -1
+    return f"{type(model).__name__}:params:{n_params}"
+
+
+def _package_version(name: str) -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version(name)
+    except (PackageNotFoundError, Exception):  # noqa: BLE001 - best effort
+        return ""
+
+
+def _transformers_version() -> str | None:
+    try:
+        import transformers
+
+        return str(getattr(transformers, "__version__", "") or "")
+    except Exception:  # noqa: BLE001 - optional dependency of the walker
+        return None
+
+
+def _git_describe() -> str:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "describe", "--always", "--dirty"],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True, text=True, timeout=10,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        return out.stdout.strip()
+    except Exception:  # noqa: BLE001 - provenance degrades to "", never fails
+        return ""
+
+
+def _example_inputs_spec(example_inputs, seq_len: int,
+                         used_default: bool) -> str:
+    if used_default:
+        return f"default:input_ids(1,{seq_len})+use_cache_if_accepted"
+    parts: list[str] = []
+    if isinstance(example_inputs, Mapping):
+        items = sorted(example_inputs.items(), key=lambda kv: str(kv[0]))
+        for key, value in items:
+            for tensor in _iter_tensors(value):
+                parts.append(f"{key}:{list(tensor.shape)}@{tensor.dtype}")
+    elif isinstance(example_inputs, tuple):
+        for i, value in enumerate(example_inputs):
+            for tensor in _iter_tensors(value):
+                parts.append(f"[{i}]:{list(tensor.shape)}@{tensor.dtype}")
+    else:
+        for tensor in _iter_tensors(example_inputs):
+            parts.append(f"in:{list(tensor.shape)}@{tensor.dtype}")
+    blob = ";".join(parts)
+    digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+    return f"provided:{digest}:{blob[:160]}"
+
+
+def capture_walk_provenance(
+    model: nn.Module,
+    *,
+    execution: str,
+    example_inputs,
+    seq_len: int | None,
+    claim_rules: Sequence[ClaimRule],
+    used_default_inputs: bool = False,
+) -> WalkProvenance:
+    """Snapshot at trace time what no later reader can reconstruct."""
+    import datetime
+
+    return WalkProvenance(
+        created_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(
+            timespec="seconds"),
+        model_identity=_model_identity(model),
+        torch_version=str(torch.__version__),
+        transformers_version=_transformers_version(),
+        prismaquant_version=_package_version("prismaquant"),
+        prismaquant_git=_git_describe(),
+        execution=execution,
+        example_inputs_spec=_example_inputs_spec(
+            example_inputs, seq_len or 0, used_default_inputs),
+        seq_len=None if seq_len is None else int(seq_len),
+        claim_rules_digest=_claim_rules_digest(claim_rules),
+        claim_rules=claim_rules_to_json(claim_rules),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Artifact save/load (the cache: one walk per model/config/input-contract,
+# consumed many times). The envelope WRAPS today's payload — result bytes stay
+# exactly what the determinism ratchet pins; timestamps live only in
+# provenance.
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class LoadedWalk:
+    """One reloaded walk artifact: the result plus its trace-time proof."""
+
+    path: str
+    result: WalkResult
+    provenance: WalkProvenance
+
+
+def save_walk(
+    result: WalkResult,
+    path: str | os.PathLike,
+    *,
+    provenance: WalkProvenance,
+) -> Path:
+    """Atomically write ``{schema, provenance, result}`` as one JSON document.
+
+    Refuses a provenance that contradicts the one already attached to
+    ``result``. Plain JSON on purpose: size at DSv4 scale is unmeasured, so
+    no gzip claim is made here — measure before optimizing.
+    """
+    if result.provenance is not None and result.provenance != provenance:
+        raise ValueError(
+            "save_walk: provenance argument disagrees with the provenance "
+            "captured on this WalkResult")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": SCHEMA,
+        "provenance": provenance.to_json_dict(),
+        "result": result.to_json_dict(),
+    }
+    blob = (json.dumps(payload, indent=1, sort_keys=True) + "\n").encode(
+        "utf-8")
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_bytes(blob)
+    os.replace(tmp, target)
+    return target
+
+
+def load_walk(
+    path: str | os.PathLike,
+    *,
+    expect_claim_rules: Sequence[ClaimRule] | None = None,
+) -> LoadedWalk:
+    """Load a saved walk artifact, refusing anything it cannot prove.
+
+    Fail-closed on: a foreign schema (parse-time refusal, same pattern as
+    ``decision_units.parse_payload``); a provenance whose ``execution``
+    disagrees with the result's own record; and — when the caller passes
+    ``expect_claim_rules`` — a claim-rules digest that does not match the
+    rules the caller is about to trust. A mismatch means the cached claims
+    were written by a different policy and must not be served silently.
+    """
+    artifact = Path(path)
+    payload = json.loads(artifact.read_text())
+    if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
+        found = payload.get("schema") if isinstance(payload, dict) else None
+        raise ValueError(
+            f"unsupported model-walk schema at {artifact}: {found!r} "
+            f"(expected {SCHEMA!r})")
+    provenance = WalkProvenance.from_json_dict(payload["provenance"])
+    result = WalkResult.from_json_dict(payload["result"])
+    result = dataclasses.replace(result, provenance=provenance)
+    if provenance.execution != result.execution:
+        raise ValueError(
+            f"{artifact}: provenance execution {provenance.execution!r} "
+            f"disagrees with the result's own {result.execution!r}")
+    if expect_claim_rules is not None and \
+            not provenance.rules_digest_matches(expect_claim_rules):
+        raise ValueError(
+            f"{artifact}: produced under different claim rules (digest "
+            f"{provenance.claim_rules_digest[:12]}); refusing to serve "
+            "claims this caller did not write")
+    return LoadedWalk(path=str(artifact), result=result, provenance=provenance)
 
 
 # ---------------------------------------------------------------------------
@@ -778,8 +1282,19 @@ def walk_model(
         raise ValueError(
             "execution='real' needs materialized weights; this model is on "
             "the meta device. Use execution='fake', or load real weights.")
-    if example_inputs is None:
+    default_inputs = example_inputs is None
+    if default_inputs:
         example_inputs = _default_example_inputs(model, seq_len, device)
+    # Trace-time provenance: captured before the forward, because none of it
+    # is reconstructible afterward (see WalkProvenance).
+    provenance = capture_walk_provenance(
+        model,
+        execution=execution,
+        example_inputs=example_inputs,
+        seq_len=seq_len if default_inputs else None,
+        claim_rules=claim_rules,
+        used_default_inputs=default_inputs,
+    )
 
     interceptor = WeightUseInterceptor(named_storages)
     input_tensors = list(_iter_tensors(
@@ -826,7 +1341,8 @@ def walk_model(
             handle.remove()
 
     result = _assemble(
-        nodes, interceptor, executed, module_names, claim_rules, execution)
+        nodes, interceptor, executed, module_names, claim_rules, execution,
+        provenance=provenance)
     interceptor.release()
     if strict:
         result.raise_if_failed()
@@ -840,6 +1356,7 @@ def _assemble(
     module_names: dict[str, nn.Module],
     claim_rules: Sequence[ClaimRule],
     execution: str,
+    provenance: WalkProvenance | None = None,
 ) -> WalkResult:
     node_by_name = {n.name: n for n in nodes}
 
@@ -963,4 +1480,577 @@ def _assemble(
             containers=containers,
         ),
         execution=execution,
+        provenance=provenance,
     )
+
+
+# ---------------------------------------------------------------------------
+# The export gate
+#
+# A STRUCTURED verdict over a WalkResult. The refusal branches on fields —
+# refusal_kinds, failure kind, node/op/equation/module lists — never on the
+# prose `detail` strings, which exist for the human reading the log.
+#
+# Tensor-Parallel stance (invariants, 2026-08-22): the decision unit is the
+# whole logical tensor, so node identity and dispositions are TP-degree
+# invariant by construction; `stored_bytes` everywhere here is TOTAL bytes of
+# the logical tensor with per-device accounting deferred to an additive
+# `shard_policy` annotation; and KNOWN_FAILURE_KINDS is a closed set whose
+# unknown members refuse, so a future TP category (e.g.
+# "tp_group_boundary_misaligned" — quantization group boundary vs shard
+# boundary at degree N) makes even an unupgraded gate fail closed.
+# ---------------------------------------------------------------------------
+
+WALK_GATE_SCHEMA = "prismaquant.model_walk_gate.v1"
+
+#: Per-run escape hatch for TRACE INCOMPLETENESS ONLY. Same doctrine as the CB
+#: route-status override: the value must be the REASON, and it is stamped into
+#: the verdict's provenance. It never excuses an unclaimed node or an
+#: unresolved multiplicand — claims have a first-class mechanism
+#: (`pin(reason)` / `exclude(reason)` in ModelProfile.walk_claim_rules()) and
+#: a side channel around it would be the silent-green this gate exists to kill.
+WALK_GATE_OVERRIDE_ENV = "PRISMAQUANT_WALK_GATE_OVERRIDE"
+
+TRACE_COMPLETE = "complete"
+TRACE_INCOMPLETE = "incomplete"
+
+#: The closed vocabulary of WalkFailure.kind this gate understands. Anything
+#: else refuses (fail-closed catch-all for future categories).
+KNOWN_FAILURE_KINDS = frozenset({"unclaimed", "unresolved"})
+
+_KIND_UNCLAIMED = "unclaimed_node"
+_KIND_UNRESOLVED = "unresolved_floating_multiplicand"
+_KIND_UNKNOWN_FAILURE = "unknown_walk_failure_kind"
+_KIND_TRACE_INCOMPLETE = "incomplete_trace"
+_KIND_DECIDED_UNPRICED = "decided_but_unpriced_node"
+
+
+class WalkGateRefusal(RuntimeError):
+    """Export refused by the discovery-walker coverage gate."""
+
+
+@dataclasses.dataclass(frozen=True)
+class WalkGateVerdict:
+    """The gate's result: structured provenance plus what it decided.
+
+    ``refusal_reason`` is prose for humans; every consumer (the CLI exit
+    code, run-pipeline.sh, a future shipcard stamp) branches only on
+    :attr:`refused` and the structured fields of :attr:`provenance`.
+    """
+
+    provenance: dict
+    refused: bool
+    refusal_kinds: tuple[str, ...]
+    refusal_reason: str = ""
+
+
+def evaluate_walk_gate(
+    result: WalkResult | None,
+    *,
+    trace_status: str = TRACE_COMPLETE,
+    trace_error_class: str = "",
+    override_reason: str | None = None,
+    unpriced_decides: Sequence[Mapping] = (),
+    scope: Mapping | None = None,
+) -> WalkGateVerdict:
+    """Project one walk onto the fail-closed export verdict.
+
+    Args:
+        result: the walk output; ``None`` means the traced forward itself
+            aborted (``trace_status`` is then forced to
+            ``TRACE_INCOMPLETE``) and no coverage claim is possible.
+        trace_status: ``"complete"`` or ``"incomplete"``. An incomplete trace
+            discovers only what executed before the abort, so gating on it
+            would under-discover exactly like the pipeline enumerations this
+            walker replaces: it refuses unless ``override_reason`` is given.
+        trace_error_class: exception class name when the trace aborted
+            (recorded, never branched on).
+        override_reason: explicit per-run reason excusing trace incompleteness
+            only. Defaults to :data:`WALK_GATE_OVERRIDE_ENV`. Claim failures
+            refuse regardless of any override.
+        unpriced_decides: structured entries for the contradiction class —
+            a node claimed ``decide`` that no pricing consumer can actually
+            reach (probe-skip class, probe-exclude regex). The gemma4 router
+            shipped exactly this way: decided by rule 9, excluded from probe
+            inventory by name. Each entry carries node/module_class/reason_code;
+            presence refuses, with no override.
+        scope: structured declaration of what this gate run asserts over
+            (profile name, rules source, rule-family census) — enabling is
+            provable per profile from the report itself, never prose.
+
+    Returns:
+        A :class:`WalkGateVerdict` whose ``provenance`` is JSON-serializable
+        and self-describing (decision unit, byte-accounting convention).
+    """
+    if result is None:
+        trace_status = TRACE_INCOMPLETE
+
+    unclaimed_nodes: list[dict] = []
+    unresolved_operands: list[dict] = []
+    kinds_seen: set[str] = set()
+    if result is not None:
+        kinds_seen.update(f.kind for f in result.failures)
+        seen: set[tuple] = set()
+        for f in result.failures:
+            if f.kind == "unclaimed":
+                entry = {
+                    "node": f.node,
+                    "op": f.op,
+                    "equation": f.equation,
+                    "module": f.module,
+                }
+                key = tuple(sorted(entry.items()))
+                if key not in seen:
+                    seen.add(key)
+                    unclaimed_nodes.append(entry)
+        unresolved_operands = [
+            {
+                "op": u.op,
+                "equation": u.equation,
+                "module": u.module,
+                "operand_index": u.operand_index,
+                "operand_shape": list(u.operand_shape),
+                "operand_dtype": u.operand_dtype,
+            }
+            for u in result.unresolved_operands
+            if u.is_floating and u.role == "multiplicand"
+        ]
+
+    disposition_counts = {"decide": 0, "pin": 0, "exclude": 0}
+    if result is not None:
+        for claim in result.claims.values():
+            disposition_counts[claim.disposition] += 1
+
+    fed_unclaimed = len(unclaimed_nodes)
+    unfed_unclaimed = (
+        len(result.unclaimed) - fed_unclaimed if result is not None else 0
+    )
+
+    base: dict = {
+        "schema": WALK_GATE_SCHEMA,
+        "policy": "fail_closed",
+        # TP invariant 1: identity is the logical tensor; sharding is a
+        # load-time concern and never renames or re-claims a node.
+        "decision_unit": "whole_logical_tensor",
+        # TP invariant 2: say which byte convention the schema carries.
+        "byte_accounting": {
+            "convention": "total_logical_tensor_bytes",
+            "shard_policy": None,  # reserved; additive when TP lands
+        },
+        "trace_status": trace_status,
+        "trace_error_class": trace_error_class,
+        "nodes_total": len(result.nodes) if result is not None else None,
+        "edges_total": len(result.edges) if result is not None else None,
+        "claims_by_disposition": disposition_counts,
+        "matmul_fed_unclaimed_total": fed_unclaimed,
+        "unclaimed_matmul_fed_nodes": sorted(
+            unclaimed_nodes,
+            key=lambda e: (e["node"] or "", e["op"], e["equation"] or ""),
+        ),
+        # Visible, non-fatal: nodes nothing consumed in the trace (a bias, a
+        # dormant module). Reported so silence can never masquerade as
+        # coverage, but they are not refusals.
+        "unclaimed_unfed_total": max(unfed_unclaimed, 0),
+        "unresolved_floating_multiplicands": unresolved_operands,
+        "failure_kinds_seen": sorted(kinds_seen),
+        "decided_but_unpriced_nodes": [dict(e) for e in unpriced_decides],
+        "scope": dict(scope or {}),
+        "override": _gate_override_record(override_reason),
+    }
+
+    kinds: list[str] = []
+    unknown = sorted(kinds_seen - KNOWN_FAILURE_KINDS)
+    if unknown:
+        kinds.append(_KIND_UNKNOWN_FAILURE)
+    if unclaimed_nodes:
+        kinds.append(_KIND_UNCLAIMED)
+    if unresolved_operands:
+        kinds.append(_KIND_UNRESOLVED)
+    if unpriced_decides:
+        kinds.append(_KIND_DECIDED_UNPRICED)
+    if trace_status != TRACE_COMPLETE:
+        kinds.append(_KIND_TRACE_INCOMPLETE)
+
+    base["refused"] = bool(kinds)
+    base["refusal_kinds"] = list(kinds)
+
+    if not kinds:
+        return WalkGateVerdict(
+            provenance=base, refused=False, refusal_kinds=())
+
+    claim_refusals = [
+        k for k in kinds
+        if k in (_KIND_UNKNOWN_FAILURE, _KIND_UNCLAIMED, _KIND_UNRESOLVED,
+                 _KIND_DECIDED_UNPRICED)
+    ]
+    if claim_refusals:
+        # No override reaches here, ever: claims are pinned/excluded/decided
+        # with reasons in the profile rules, not waived at export time.
+        refused = True
+    elif override_reason:
+        base["override_excused_trace_only"] = True
+        refused = False
+    else:
+        refused = True
+
+    return WalkGateVerdict(
+        provenance=base,
+        refused=refused,
+        refusal_kinds=tuple(kinds),
+        refusal_reason=_refusal_text(base, kinds, unknown, bool(override_reason)),
+    )
+
+
+def find_decided_but_unpriced(
+    result: WalkResult,
+    model: nn.Module,
+    profile,
+) -> tuple[dict, ...]:
+    """Surface the contradiction the gemma4 router shipped under: a node
+    claimed ``decide`` that no pricing consumer can reach.
+
+    A ``decide`` claim is a promise — "the allocator prices this tensor".
+    When the probe's own enumeration cannot see the node (owner class in
+    ``probe_skip_module_class_names``, or the node's name matches the
+    baseline/profile Linear-exclude regexes), and it is not priced through
+    the packed-expert path either, that promise is false and this returns a
+    structured entry for it. The gate refuses on any entry; the fix is to
+    correct the CLAIM (usually to a router-style pin), never to widen the
+    probe.
+
+    Imports prismaquant lazily so the walker core stays torch-only.
+    """
+    from prismaquant.incremental_probe import _BASE_LINEAR_EXCLUDE
+    from prismaquant.sensitivity_probe import _is_packed_experts_module
+
+    try:
+        extra = str(profile.probe_linear_exclude_extra() or "")
+    except AttributeError:
+        extra = ""
+    excludes = (_BASE_LINEAR_EXCLUDE,) if not extra else (
+        _BASE_LINEAR_EXCLUDE, extra)
+
+    entries: list[dict] = []
+    for node in result.nodes:
+        claim = result.claims.get(node.name)
+        if claim is None or claim.disposition != "decide":
+            continue
+        try:
+            module = model.get_submodule(node.owner_module)
+        except (AttributeError, KeyError):
+            entries.append({
+                "node": node.name,
+                "owner_module": node.owner_module,
+                "module_class": node.module_class,
+                "reason_code": "owner_module_missing",
+            })
+            continue
+        if profile.should_probe_linear(node.owner_module, module):
+            # The hook gate accepts the module; the NAME regexes are the
+            # remaining way pricing can silently skip it.
+            if not any(re.search(rx, node.name) for rx in excludes):
+                continue
+            reason_code = "probe_linear_excluded"
+        elif _is_packed_experts_module(module, profile):
+            # Priced through install_packed_expert_hooks instead.
+            continue
+        else:
+            reason_code = "owner_not_probe_priceable"
+        entries.append({
+            "node": node.name,
+            "owner_module": node.owner_module,
+            "module_class": node.module_class,
+            "reason_code": reason_code,
+        })
+    return tuple(sorted(entries, key=lambda e: e["node"]))
+
+
+def require_walk_coverage(
+    result: WalkResult | None,
+    **kwargs,
+) -> dict:
+    """Run the gate and raise :class:`WalkGateRefusal` on a refusal.
+
+    Returns the provenance payload for stamping next to the artifact's other
+    gate records.
+    """
+    verdict = evaluate_walk_gate(result, **kwargs)
+    if verdict.refused:
+        raise WalkGateRefusal(verdict.refusal_reason)
+    return verdict.provenance
+
+
+def _gate_override_record(reason: str | None) -> dict | None:
+    if not reason:
+        return None
+    return {"env": WALK_GATE_OVERRIDE_ENV, "reason": reason}
+
+
+def _refusal_text(base: dict, kinds: Sequence[str],
+                  unknown: Sequence[str], overridden: bool) -> str:
+    lines = [f"model-walk export gate refused [{', '.join(kinds)}]:"]
+    for entry in base["unclaimed_matmul_fed_nodes"]:
+        where = entry["op"] + (
+            f" '{entry['equation']}'" if entry["equation"] else "")
+        lines.append(
+            f"  [unclaimed] {entry['node']} fed to {where} "
+            f"in module '{entry['module'] or '<root>'}'"
+        )
+    for op in base["unresolved_floating_multiplicands"]:
+        where = op["op"] + (f" '{op['equation']}'" if op["equation"] else "")
+        lines.append(
+            f"  [unresolved] floating operand #{op['operand_index']} "
+            f"(shape {op['operand_shape']}) fed to {where} "
+            f"in module '{op['module'] or '<root>'}'"
+        )
+    for entry in base["decided_but_unpriced_nodes"]:
+        lines.append(
+            f"  [decided-but-unpriced] {entry.get('node')} "
+            f"(class {entry.get('module_class') or '?'}, "
+            f"reason_code {entry.get('reason_code')}) is claimed decide but "
+            "no pricing consumer can reach it"
+        )
+    if _KIND_UNKNOWN_FAILURE in kinds:
+        lines.append(
+            f"  [unknown-kind] walk emitted failure kinds outside the known "
+            f"vocabulary {sorted(KNOWN_FAILURE_KINDS)}: {list(unknown)} — "
+            "refusing without interpreting them"
+        )
+    if _KIND_TRACE_INCOMPLETE in kinds:
+        lines.append(
+            "  [incomplete-trace] the traced forward aborted, so coverage "
+            f"was evaluated over a partial discovery (last error class: "
+            f"{base['trace_error_class'] or 'n/a'})"
+        )
+    if overridden and not any(
+        k in (_KIND_UNCLAIMED, _KIND_UNRESOLVED, _KIND_UNKNOWN_FAILURE,
+              _KIND_DECIDED_UNPRICED)
+        for k in kinds
+    ):
+        lines.append(
+            f"  override {WALK_GATE_OVERRIDE_ENV} excuses trace "
+            "incompleteness ONLY; it is stamped into the report"
+        )
+    lines.append(
+        "Fixes, in order of preference: pin/exclude/decide the named node "
+        "with a reasoned ClaimRule in ModelProfile.walk_claim_rules(); make "
+        "the fake trace executable; or --execution real with materialized "
+        f"weights. Trace-incompleteness alone may ship via "
+        f"{WALK_GATE_OVERRIDE_ENV}=<reason> (stamped). Claim failures have "
+        "no override."
+    )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# CLI entrypoint (intake + export gate)
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Walk a checkpoint directory and apply the fail-closed export gate.
+
+    Exit codes follow the repo's guard convention: 0 passed, 2 refused.
+    """
+    import argparse
+    import json
+    import os
+    import pathlib
+    import sys
+
+    ap = argparse.ArgumentParser(
+        prog="python3 -m prismaquant.model_walk",
+        description=(
+            "Discovery walker (R5): enumerate every named tensor, trace one "
+            "forward, resolve matmul operands by storage identity, claim "
+            "every node, and refuse on any unclaimed matmul-fed parameter "
+            "or unresolved floating multiplicand."
+        ),
+    )
+    ap.add_argument("--model", required=True,
+                    help="Source HF checkpoint directory.")
+    ap.add_argument("--output", default=None,
+                    help="Write the walk + structured gate verdict JSON here.")
+    ap.add_argument("--seq-len", type=int, default=8,
+                    help="Length of the synthesized default input_ids.")
+    ap.add_argument("--execution", choices=("fake", "real"), default="fake",
+                    help="'fake' traces under FakeTensorMode (meta model, no "
+                         "weight I/O); 'real' runs a plain forward and "
+                         "requires --materialize.")
+    ap.add_argument("--materialize", action="store_true",
+                    help="Load real weights instead of meta-loading (needed "
+                         "for --execution real; sized like the checkpoint).")
+    ap.add_argument("--dtype", default="bf16",
+                    help="dtype for --materialize loads (default bf16).")
+    ap.add_argument("--rules", choices=("profile", "none"), default="profile",
+                    help="'profile' applies detect_profile().walk_claim_rules(); "
+                         "'none' applies no rules (every matmul-fed node "
+                         "refuses — useful as a self-test of the gate).")
+    ap.add_argument("--trust-remote-code", action="store_true")
+    ap.add_argument("--override-reason", default=None,
+                    help="Explicit reason excusing TRACE INCOMPLETENESS only "
+                         f"(same record as {WALK_GATE_OVERRIDE_ENV}). Never "
+                         "valid against claim failures.")
+    args = ap.parse_args(argv)
+
+    from prismaquant.model_profiles.registry import (
+        detect_profile_with_warning,
+    )
+
+    profile = detect_profile_with_warning(args.model, entrypoint="model_walk")
+
+    import torch
+    from transformers import AutoConfig, AutoModel
+
+    try:
+        from transformers import AutoModelForCausalLM
+        have_causal_lm = True
+    except Exception:  # pragma: no cover - transformers always ships it
+        have_causal_lm = False
+
+    cfg = AutoConfig.from_pretrained(
+        args.model, trust_remote_code=args.trust_remote_code)
+    load_kwargs: dict = {"trust_remote_code": args.trust_remote_code}
+    if args.materialize:
+        load_kwargs["dtype"] = getattr(torch, args.dtype)
+        load_kwargs["low_cpu_mem_usage"] = True
+        model_class_used = ""
+        if have_causal_lm:
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    args.model, **load_kwargs)
+                model_class_used = "causal_lm"
+            except Exception:
+                model = None
+        if not have_causal_lm or model is None:
+            model = AutoModel.from_pretrained(args.model, **load_kwargs)
+            model_class_used = model_class_used or "base"
+    else:
+        device_ctx = torch.device("meta")
+        model = None
+        model_class_used = ""
+        if have_causal_lm:
+            try:
+                with device_ctx:
+                    model = AutoModelForCausalLM.from_config(cfg, **load_kwargs)
+                model_class_used = "causal_lm"
+            except Exception:
+                model = None
+        if model is None:
+            with device_ctx:
+                model = AutoModel.from_config(cfg, **load_kwargs)
+            model_class_used = model_class_used or "base"
+    model.eval()
+
+    rules = profile.walk_claim_rules() if args.rules == "profile" else ()
+    print(f"[model-walk] profile={getattr(profile, 'name', type(profile).__name__)}"
+          f" model_class={model_class_used} rules={len(rules)}"
+          f" execution={args.execution}")
+
+    trace_status = TRACE_COMPLETE
+    trace_error_class = ""
+    result = None
+    try:
+        result = walk_model(
+            model,
+            claim_rules=rules,
+            execution=args.execution,
+            strict=False,
+            seq_len=args.seq_len,
+        )
+    except Exception as exc:  # noqa: BLE001 - the abort IS the finding
+        trace_status = TRACE_INCOMPLETE
+        trace_error_class = type(exc).__name__
+        print(f"[model-walk] trace aborted: {type(exc).__name__}: {exc}",
+              flush=True)
+
+    override_reason = args.override_reason or os.environ.get(
+        WALK_GATE_OVERRIDE_ENV) or None
+
+    # The gemma4-router contradiction class: a decide claim no pricing
+    # consumer can reach. Computed against the live profile + module tree,
+    # fed to the gate as structured entries.
+    unpriced_decides: tuple[dict, ...] = ()
+    scope: dict = {}
+    if result is not None:
+        try:
+            unpriced_decides = find_decided_but_unpriced(
+                result, model, profile)
+        except Exception as exc:  # noqa: BLE001 - checker failure is loud
+            print(f"[model-walk] WARNING: decided-but-unpriced check failed "
+                  f"({type(exc).__name__}: {exc}); treating as refusal input",
+                  file=sys.stderr)
+            unpriced_decides = ({
+                "node": "<checker>",
+                "module_class": "",
+                "reason_code": f"check_failed:{type(exc).__name__}",
+            },)
+        rules_json = result.provenance.claim_rules if \
+            result.provenance is not None else ()
+        scope = {
+            "profile": getattr(profile, "name", type(profile).__name__),
+            "rules_source": args.rules,
+            "claim_rule_count": len(rules),
+            "router_pin_rules": sum(
+                1 for r in rules_json
+                if r.get("disposition") == "pin"
+                and "router" in json.dumps(r).lower()),
+            "packed_expert_decide_rules": sum(
+                1 for r in rules_json
+                if r.get("disposition") == "decide"
+                and "expert" in json.dumps(r).lower()),
+        }
+
+    verdict = evaluate_walk_gate(
+        result,
+        trace_status=trace_status,
+        trace_error_class=trace_error_class,
+        override_reason=override_reason,
+        unpriced_decides=unpriced_decides,
+        scope=scope,
+    )
+
+    report = {
+        "schema": WALK_GATE_SCHEMA,
+        "walk_artifact_schema": SCHEMA,
+        "context": {
+            "model_path": args.model,
+            "profile": getattr(profile, "name", type(profile).__name__),
+            "auto_model_class": model_class_used,
+            "execution": args.execution,
+            "materialized": bool(args.materialize),
+            "rules_source": args.rules,
+        },
+        "gate": verdict.provenance,
+        "provenance": (
+            result.provenance.to_json_dict()
+            if result is not None and result.provenance is not None
+            else None
+        ),
+        "walk": result.to_json_dict() if result is not None else None,
+    }
+    if args.output:
+        out = pathlib.Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, indent=1, sort_keys=True) + "\n")
+        print(f"[model-walk] wrote {out}")
+
+    counts = verdict.provenance["claims_by_disposition"]
+    print(
+        "[model-walk] nodes="
+        f"{verdict.provenance['nodes_total']} "
+        f"claims={counts} "
+        f"unclaimed_matmul_fed={verdict.provenance['matmul_fed_unclaimed_total']} "
+        f"unresolved={len(verdict.provenance['unresolved_floating_multiplicands'])} "
+        f"trace={verdict.provenance['trace_status']}"
+    )
+    if verdict.refused:
+        print(verdict.refusal_reason, file=sys.stderr)
+        print("[model-walk] GATE: REFUSED", file=sys.stderr)
+        return 2
+    print("[model-walk] GATE: PASSED")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
