@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-29,
+As of: 2026-08-30 · `claude/trellis-link57` — stamps follow, newest first,
+each recording its own branch and date. Re-stamped (2026-08-30,
+`claude/trellis-link57`) for **three UNWIRED_LINKS entries closed** (§4.9):
+the registry entry (deleted here, wired by `claude/trellis-get-format`), the
+promotion-rank entry, and the `build_candidates` call-site entry. The allocator
+gains `--cost-mode`; `run-pipeline.sh` passes the run's objective to it instead
+of leaving the candidate-menu currency gate to read an environment variable the
+script never exported. The ledger no longer quotes its own length. Prior stamp
+(2026-08-30, `claude/trellis-get-format`) for **the registry link wired**:
+`format_registry.get_format` parse-resolves `TCQ_{E2M1,E4M3}_R<q256>` to an
+exact-or-refuse `TrellisFormatSpec` (§4.9 note). Prior stamp: 2026-08-29,
+`docs/architecture-currency-20260829`. Re-stamped (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
 rather than by a test — the two doc gates were green across both drifts. (i) The
@@ -26,8 +36,9 @@ enabled, and this document's claim that it made trellis rungs "pass the same
 legality, aggregation and byte accounting every other candidate does" is
 **retracted** — it was false on all three counts, written in the same commit as
 the code it described (§ P13, "currency is not truth"). `trellis_menu.
-UNWIRED_LINKS` is the authoritative eight-entry ledger of what is missing and
-is the text of the refusal; `build_trellis_menu` still builds a correctly
+UNWIRED_LINKS` is the authoritative ledger of what is missing and is the text
+of the refusal (it listed eight entries at that stamp; entries leave as links
+land, so neither the module nor this document quotes a count any more); `build_trellis_menu` still builds a correctly
 priced menu for research, now using the repo's own `_shape_from_stats` and
 `_stats_indicates_packed_expert` (the hand-rolled 2-tuple underpriced a
 128-expert row **128×**, silently, and the guard meant to catch it read a stats
@@ -3422,29 +3433,47 @@ without the flag executes exactly the path it executed before the seam existed
 > `check_stats_format_applicability` nor the `_memory_bytes_by_format` write at
 > `allocator_candidates.py:1950`; aggregation drops every rung; byte accounting
 > `KeyError`s. `trellis_menu.UNWIRED_LINKS` is now the authoritative list —
-> eight entries, each with a file:line — and it is the text of the refusal.
+> eight entries at that stamp, each with a file:line — and it is the text of
+> the refusal.
 
-The eight, in the order a run would hit them: no TCQ `FormatSpec`
-(`format_registry.py:1267-1272`); the exact assignment-payload filter falling
-through to `fr.get_format` because nothing writes `_memory_bytes_by_format` for
-a TCQ row, which kills the allocator inside the Pareto sweep **before**
-`layer_config.json` and makes the pointed refusals in `layer_config` and the
-exporter unreachable (`allocator.py:3369-3386`); fused-sibling aggregation
-building super-item menus by iterating `FormatSpec` objects
-(`allocator_candidates.py:2464`); the identical packed-expert construction
-(`:2701`); `promote_serving_units`' `format_rank` lookup, which does not crash
-today only because aggregation guarantees a TCQ unit is a lone ungrouped
-Linear (`allocator_solver.py:340-342`); the byte-budget path's own registry
-lookup (`footprint.py:1183`); `build_candidates` being called with neither
-`cost_mode=` nor `trellis_provenance=`, so the currency gate compares against
-`os.environ.get("COST_MODE","aura")` — a variable `run-pipeline.sh` sets with
-`:=` and never exports — and the manifest identity and anchor contract are
-discarded rather than travelling with the assignment (`allocator.py:2756`,
-§§ P12/P14); and the anchors' currency being weighted SSE under an activation
-second moment, an output-MSE proxy and **not** the AURA KL-adjoint the DP ranks
-in (`trellis_rate_surface.py:43-52`).
+**Entries still open**, in the order a run would hit them: the exact
+assignment-payload filter falling through to `fr.get_format` because nothing
+writes `_memory_bytes_by_format` for a TCQ row, which kills the allocator
+inside the Pareto sweep **before** `layer_config.json` and makes the pointed
+refusals in `layer_config` and the exporter unreachable
+(`allocator.py:3596-3615`); fused-sibling aggregation building super-item menus
+by iterating `FormatSpec` objects (`allocator_candidates.py:2464`); the
+identical packed-expert construction (`:2701`); the byte-budget path's own
+registry lookup (`footprint.py:1183`); and the anchors' currency being weighted
+SSE under an activation second moment, an output-MSE proxy and **not** the AURA
+KL-adjoint the DP ranks in (`trellis_rate_surface.py:43-52`).
 
-**Why refuse as a whole rather than wire it halfway.** The eight do not fail
+**Entries closed**, each by a test that exercises the behaviour it named —
+which is the ledger's own rule for deletion, and the reason neither the module
+nor this section quotes a count: the registry lookup
+(`format_registry.py`, see the note below); the promotion-rank lookup
+(`allocator_solver.py`); and the `build_candidates` call site
+(`allocator.py`). The last two are described next.
+
+> **Update (2026-08-30, `claude/trellis-get-format`).** Entry #1 is **wired**:
+> `format_registry.get_format` parse-resolves `TCQ_{E2M1,E4M3}_R<q256>` to a
+> memoized `TrellisFormatSpec` — never a `REGISTRY` insertion, because the
+> rate axis is dense. The spec is exact-or-refuse: exact activation contract
+> (A=W, derived from the family's `terminal_format` registry entry — E2M1
+> W4A4, E4M3 W8A8), exact capability floor (SM120+/SM89+),
+> `producer_eligible=False`; every RTN-shaped field (`weight_bits`,
+> `group_size`, `scale_bits`, `quantize_dequantize`, ...) and every byte/bpp
+> helper raises `TrellisSpecFieldRefused` **at attribute read**, as a
+> non-`AttributeError` so `getattr(spec, ..., None)` probes cannot swallow it
+> (`tests/test_trellis_format_spec.py`, 33 tests). Consequences for the
+> ledger: the registry-lookup halves of #2 and #6 no longer `KeyError` — they
+> hit the same pointed byte-formula refusal CB formats use — but both entries
+> stay open (nothing yet supplies `_memory_bytes_by_format` for a TCQ row,
+> and the byte-budget path still has no trellis bytes source). The
+> `trellis_menu.UNWIRED_LINKS` entry for #1 awaits deletion by that file's
+> owner under the ledger's own rule; the other seven entries stand.
+
+**Why refuse as a whole rather than wire it halfway.** The entries do not fail
 alike. The registry gaps crash **loudly**; the aggregation gaps are **silent** —
 they drop every rung from every fused and packed group and hand back a
 plausible frontier in which only `o_proj` and `down_proj` could carry one. A
@@ -3459,8 +3488,59 @@ with a counted reason — but the fix is inside `build_trellis_menu`, which is
 research-reachable and cannot reach an artifact.
 
 **So: `build_trellis_menu` builds a correctly priced menu; `augment_candidates`
-refuses.** Enabling the surface means landing the eight links with tests that
-exercise behaviour and then deleting the refusal — not passing a flag.
+refuses.** Enabling the surface means landing the remaining links with tests
+that exercise behaviour and then deleting the refusal — not passing a flag.
+
+> **Update (2026-08-30, `claude/trellis-link57`).** Two more entries closed.
+>
+> **The promotion-rank entry** (`allocator_solver.py`). `format_rank` is a
+> dense ordinal over the run's `--formats` menu, fixed *before*
+> `build_candidates` runs, so anything menu construction adds per unit is
+> absent from the table promotion reads. Both halves landed. `_rank_of`
+> refuses with `FormatRankUnknownError`, naming the format, the serving unit,
+> the table it did have and the input it lacked — because a rank invented for
+> an unknown format silently reorders the promotion decision and every member
+> of the unit then ships in whatever that wrong order picked, reporting
+> nothing. And `allocator.extend_format_rank_from_candidates` supplies that
+> input: it derives each added format's rate from the exact serialized bytes
+> its own candidates declare (`8·Σbytes / Σparams`, the corpus-weighted
+> quantity `_serialized_format_rates` computes for a `FormatSpec`, read off
+> the bytes rather than a shape formula — the only way to rank a rung whose
+> bytes are a property of its descriptor), then re-enumerates. It asserts the
+> already-ranked formats keep their order rather than assuming it, refuses a
+> format whose units have no readable shape instead of dropping it, and
+> returns the input mapping unchanged when the menus add nothing. So the
+> aggregation work in the two open entries no longer detonates here: a rung
+> inside a fused or packed group promotes on a real rank.
+>
+> **The call-site entry** (`allocator.py`). Two defects. *(i) The currency
+> gate could not see its input.* It answered "what objective does this run
+> price in?" with `os.environ.get("COST_MODE", "aura")`, and `run-pipeline.sh`
+> assigns `COST_MODE` with `:=` (`:438`), never exports it, and passed the
+> allocator no such flag — while feeding every other stage
+> `--cost-mode "$COST_MODE"` explicitly. The gate therefore read the default
+> on every pipeline run, or, worse because it is invocation-dependent,
+> whatever a caller's own shell leaked, since `:=` keeps an inherited variable
+> exported. `allocator.resolve_run_cost_mode` now takes the answer from the
+> new `--cost-mode` flag or from the objective stamped on the cost table
+> itself (`provenance["cost_mode"]`, written since re-vet R2 — the objective
+> the numbers in front of the DP were actually measured under), refuses when
+> the two disagree, and is threaded into all four `build_candidates` call
+> sites. `run-pipeline.sh` passes the flag. With the surface enabled and
+> neither source available, the allocator refuses rather than guessing.
+> *(ii) The surface's identity was built and dropped.* Manifest path, anchor
+> currency, serving profile, exact target platform and the activation contract
+> the anchors' dloss was measured under now travel into `selection.json` and
+> `layer_config.json`'s `__prismaquant__` block — conditionally, so a run with
+> the surface off writes byte-identical artifacts (§ P6). That is § P12 (a
+> size or quality claim carries its activation-contract history) and § P14 (a
+> claim about what a runtime executes is structured data a gate can read, not
+> prose) applied to the rungs before they can reach an artifact.
+>
+> Both are exercised by `tests/test_allocator_cost_mode_and_rank.py`
+> (21 tests), and every check in it was verified by breaking the source and
+> confirming a test dies. The refusal still stands: the aggregation entries
+> are the silent ones, and they are still open.
 
 **Why a manifest, not a `FORMATS` enum entry.** A trellis rung is
 `(family, body_rate_q256, layout, schedule, alphabets)`, and the wire carries
@@ -3495,9 +3575,11 @@ which is where per-member layout identity belongs.
    platform. `serving_profile_specs/trellis_research_sm121.json` is that
    profile — `target_platform: sm_121`, `emulation_only: true`, no export lane,
    and deliberately **no `format_rules`**: naming 2546 TCQ rungs in an allow
-   list would assert they are `format_registry` entries, and they are not (a
-   trellis rung has no `FormatSpec` and no RTN `quantize_dequantize`, because
-   nothing renders one).
+   list would assert they are enumerable `format_registry` entries, and they
+   are not (a TCQ name parse-resolves to an exact-or-refuse
+   `TrellisFormatSpec` since 2026-08-30 — never a `REGISTRY` row — and its
+   RTN `quantize_dequantize` refuses rather than renders, because nothing
+   renders one).
 2. *An objective the run is not pricing in.* The manifest declares `cost_mode`
    and `currency`; a mismatch with the run refuses. One DP prices in one
    currency.
