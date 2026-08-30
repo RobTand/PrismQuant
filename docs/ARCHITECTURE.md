@@ -4,10 +4,11 @@ As of: 2026-08-30 · `codex/finish-numeric-prismabuild-20260830` — stamps foll
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
 `codex/finish-numeric-prismabuild-20260830`) for the **QTIP-derived native
 NVFP4 research producer and PrismaBuild publication boundary** (§10.1–§10.2):
-PrismaBuild rechecks its code closure and executable immediately before CAS
-receipt publication, but remains code and mocked/in-process tests rather than
-a deployed SLURM/Dagster/CAS/telemetry system. A physical one-Linear Arm E
-producer now combines randomized orthogonal transforms, the canonical
+PrismaBuild rechecks its code closure, task executable, worker core, and script
+launcher immediately before CAS receipt publication, but remains code and
+mocked/in-process tests rather than a deployed SLURM/Dagster/CAS/telemetry
+system. A physical one-Linear Arm E producer now combines randomized
+orthogonal transforms, the canonical
 PrismaQuant/Gridbook trellis wire, same-byte decode, and full cross-block
 BlockLDL feedback. Its local terminal is Frobenius- or diagonal-D-weighted;
 dense-D optimization refuses because the current Viterbi state cannot carry
@@ -7463,15 +7464,27 @@ fields do not become a new refusal. For portable actions executable identity
 is receipt provenance rather than a newly mandatory action-key field. Input
 preflight verifies declared CAS bytes but cannot prove which paths the child
 later reads; the sealed argv/code owns that resolution. The `preflight` CLI
-emits the same `prismaquant.prismabuild.worker_attestation.v1` object without
+emits the same `prismaquant.prismabuild.worker_attestation.v2` object without
 execution.
 
 SLURM is not result authority. A valid, content-verified CAS receipt for the
 exact action is the sole success state. Receipt schema
-`prismaquant.prismabuild.cas_receipt.v2` embeds the self-hashed worker
+`prismaquant.prismabuild.cas_receipt.v3` embeds the self-hashed worker
 attestation as `producer`; every lookup replays its action binding, derived
-platform/host scope, executable/toolchain/input evidence, and result-blob
-bytes.
+platform/host scope, worker-runtime, executable/toolchain/input evidence, and
+result-blob bytes. Worker attestation v2 contains a closed
+`prismaquant.prismabuild.worker_runtime.v1` record for the exact
+`prismaquant/prismabuild.py` bytes plus the exact script launcher when present;
+direct API use records `in_process` with a null launcher. Both sources are
+rehashed after execution and at the pre-link publication callback.
+
+Worker-runtime identity is receipt provenance, not part of the action key. A
+cache hit therefore retains the producer revision recorded by its canonical
+receipt. SLURM submission checks that the configured launcher is a regular
+executable but does not pin its submission-time digest into the action request;
+if it changes while queued, the worker binds and rechecks the bytes that
+actually launched it. No equivalence to the earlier submission-time bytes is
+claimed.
 `COMPLETED` without a receipt is failure; scheduler retries are idempotent
 because the worker checks the same CAS before running. A dirty partial result
 still refuses in the core worker instead of being guessed away. No SLURM
@@ -7521,6 +7534,20 @@ terminal is either QTIP-style Frobenius or diagonal-D-weighted. Exact dense-D
 local minimization is not implemented: its pairwise error terms are not
 coordinate-additive in the current 256-state Viterbi state, and that requested
 mode fails closed.
+
+The Arm E receipt binds the local BlockLDL/transform producer and trellis-
+encoder sources, rechecking both import-time hashes around final receipt
+construction, plus the audited QTIP commit and source-file digests; that
+provenance imports neither QTIP code nor its wire. Its dense-`D` record
+distinguishes diagonal consumption from the separately false off-diagonal,
+full-matrix, and exact dense-objective claims. The prepared-receipt validator
+requires closed root and nested field sets plus the exact fixed basis, wire,
+seam, scope, and
+production-ineligibility constants, so recomputing its self-digest after a
+semantic or unknown-field mutation does not grant authority.
+The prepared source hashes are labelled preparation-time provenance, not
+encode-time reauthentication; the transformed tensors are the values the
+encode boundary reauthenticates.
 
 Both implementations remain unregistered and production-ineligible. The
 online sign/Hadamard execution reference lives on an external, unpinned
