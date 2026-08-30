@@ -36,6 +36,10 @@ from atomic_publication import (
     file_sha256,
     publish_file_no_replace,
 )
+from numeric_checkpoint_contract import (
+    CheckpointContractError,
+    validate_fp8_checkpoint,
+)
 
 EXPECTED_FP8_LADDER_SHA256 = (
     "f9c5167905b98fe98a3389a9471cb9bea06e6ced9a1288329ce1b0fb6a92d2a3"
@@ -190,44 +194,17 @@ def _strict_json_object(path: Path) -> dict[str, object]:
 
 def _resume_report(path: Path, *, settings, corpus) -> dict[str, object]:
     sealed = _strict_json_object(path)
-    digest = sealed.pop("checkpoint_sha256", None)
-    if digest != _identity_sha256(sealed):
+    body = {key: value for key, value in sealed.items()
+            if key != "checkpoint_sha256"}
+    if sealed.get("checkpoint_sha256") != _identity_sha256(body):
         raise CampaignError("partial checkpoint self-digest differs")
-    if sealed.get("schema") != SCHEMA or sealed.get("settings") != settings:
-        raise CampaignError("partial checkpoint identity differs")
-    if sealed.get("partial") is not True:
-        raise CampaignError("resume checkpoint is not marked partial")
-    per_tensor = sealed.get("per_tensor")
-    if not isinstance(per_tensor, dict):
-        raise CampaignError("partial per_tensor must be an object")
-    if sealed.get("tensors_done") != len(per_tensor):
-        raise CampaignError("partial tensor count differs")
-    names = [entry.name for entry in corpus.entries]
-    if set(per_tensor) != set(names[:len(per_tensor)]):
-        raise CampaignError("partial checkpoint is not an exact tensor prefix")
-    entries = {entry.name: entry for entry in corpus.entries}
-    expected_arms = {
-        f"{family}@{rung}"
-        for rung in RUNGS
-        for family in ("fp8_cb", "fp8_cb_learned")
-    }
-    for name, cell in per_tensor.items():
-        entry = entries[name]
-        if not isinstance(cell, dict) or set(cell) != CELL_KEYS:
-            raise CampaignError(f"{name}: partial cell members differ")
-        if (
-            cell.get("population") != entry.population
-            or cell.get("source_weight_sha256") != entry.source_weight_sha256
-            or cell.get("importance_sha256") != entry.importance_sha256
-            or cell.get("shape") != list(entry.source_weight_shape)
-            or not isinstance(cell.get("arms"), dict)
-            or set(cell["arms"]) != expected_arms
-        ):
-            raise CampaignError(f"{name}: partial cell identity differs")
-    started = sealed.get("started_at_unix_s")
-    if not isinstance(started, (int, float)) or not math.isfinite(started):
-        raise CampaignError("partial start time is invalid")
-    return sealed
+    try:
+        validate_fp8_checkpoint(
+            sealed, settings=settings, entries=corpus.entries
+        )
+    except CheckpointContractError as exc:
+        raise CampaignError(f"partial checkpoint contract differs: {exc}") from exc
+    return body
 
 
 def _repo_commit() -> str | None:
@@ -433,13 +410,21 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
                 }
         per_tensor[entry.name] = cell
         report["tensors_done"] = len(per_tensor)
-        _atomic_json(partial, _sealed_report(report))
+        sealed = _sealed_report(report)
+        try:
+            validate_fp8_checkpoint(
+                sealed, settings=settings, entries=corpus.entries
+            )
+        except CheckpointContractError as exc:
+            raise CampaignError(
+                f"refusing invalid generated checkpoint: {exc}"
+            ) from exc
+        _atomic_json(partial, sealed)
         print(f"[{index}/{len(corpus.entries)}] {entry.population} {entry.name}",
               flush=True)
         del raw, importance, weight, metric
         torch.cuda.empty_cache()
 
-    _verify_final_bindings(args=args, settings=settings, ladder=ladder)
     report.update({
         "partial": False,
         "completed_at_unix_s": time.time(),
@@ -450,7 +435,16 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
             "and both-host Netdata/power evidence before any performance claim"
         ),
     })
-    _atomic_json(partial, _sealed_report(report))
+    sealed = _sealed_report(report)
+    try:
+        validate_fp8_checkpoint(
+            sealed, settings=settings, entries=corpus.entries,
+            require_partial=False,
+        )
+    except CheckpointContractError as exc:
+        raise CampaignError(f"refusing invalid final result: {exc}") from exc
+    _atomic_json(partial, sealed)
+    _verify_final_bindings(args=args, settings=settings, ladder=ladder)
     try:
         publish_file_no_replace(partial, args.out)
     except PublicationError as exc:

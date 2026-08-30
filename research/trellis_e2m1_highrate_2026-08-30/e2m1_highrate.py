@@ -51,6 +51,10 @@ from atomic_publication import (
     publish_file_no_replace,
 )
 from isolated_glm_corpus import load_active_glm_corpus
+from numeric_checkpoint_contract import (
+    CheckpointContractError,
+    validate_e2m1_checkpoint,
+)
 
 W, C, P, S4, TF = H.W, H.C, H.P, H.S4, H.TF
 
@@ -149,43 +153,14 @@ def _resume_partial(
     body = {key: document[key] for key in ("receipt", "per_tensor")}
     if document["checkpoint_sha256"] != identity_sha256(body):
         raise SystemExit("FATAL: partial checkpoint self-digest differs")
+    try:
+        validate_e2m1_checkpoint(
+            document, current_receipt=receipt, names=names
+        )
+    except CheckpointContractError as exc:
+        raise SystemExit(f"FATAL: partial checkpoint contract differs: {exc}") from exc
     saved_receipt = document["receipt"]
     per_tensor = document["per_tensor"]
-    if not isinstance(saved_receipt, dict) or not isinstance(per_tensor, dict):
-        raise SystemExit("FATAL: partial checkpoint payload types differ")
-    if saved_receipt.get("schema") != "trellis.e2m1_highrate.v3":
-        raise SystemExit("FATAL: only self-bound E2M1 v3 checkpoints can resume")
-    comparable_saved = {
-        key: value for key, value in saved_receipt.items()
-        if key not in {"started_at_unix_s", "partial", "tensors_done"}
-    }
-    comparable_current = {
-        key: value for key, value in receipt.items()
-        if key != "started_at_unix_s"
-    }
-    if comparable_saved != comparable_current:
-        raise SystemExit("FATAL: partial checkpoint identity differs")
-    if saved_receipt.get("partial") is not True:
-        raise SystemExit("FATAL: resume checkpoint is not marked partial")
-    if saved_receipt.get("tensors_done") != len(per_tensor):
-        raise SystemExit("FATAL: partial checkpoint tensor count differs")
-    done = len(per_tensor)
-    if set(per_tensor) != set(names[:done]):
-        raise SystemExit("FATAL: partial checkpoint is not an exact tensor prefix")
-    for name, cell in per_tensor.items():
-        if not isinstance(cell, dict) or set(cell) != CELL_KEYS:
-            raise SystemExit(f"FATAL: {name}: partial cell members differ")
-        shape = cell.get("shape")
-        if (
-            not isinstance(shape, list)
-            or len(shape) != 2
-            or any(not isinstance(value, int) or value <= 0 for value in shape)
-            or cell.get("numel") != math.prod(shape)
-            or not isinstance(cell.get("arms"), dict)
-            or not isinstance(cell.get("unreachable_rungs"), list)
-            or not isinstance(cell.get("control"), dict)
-        ):
-            raise SystemExit(f"FATAL: {name}: partial cell structure differs")
     started = saved_receipt.get("started_at_unix_s")
     if not isinstance(started, (int, float)) or not math.isfinite(started):
         raise SystemExit("FATAL: partial checkpoint start time is invalid")
@@ -262,17 +237,60 @@ def _active_source_identity() -> dict[str, object]:
     }
 
 
-def _claim_identity(args: argparse.Namespace) -> dict[str, object]:
-    glm_manifest = (
-        args.glm_manifest.resolve(strict=True)
-        if args.glm_manifest is not None else None
-    )
+def _bf16_ladder_module():
+    import bf16_ladder as module
+    expected = (LOCKED_HULL_ROOT / "bf16_ladder.py").resolve(strict=True)
+    actual = Path(module.__file__).resolve(strict=True)
+    if actual != expected:
+        raise SystemExit("FATAL: bf16_ladder import escaped the locked hull")
+    return module
+
+
+def _corpus_binding(args: argparse.Namespace, *, glm_corpus=None) -> dict[str, object]:
+    if args.corpus == "glm":
+        if args.glm_manifest is None:
+            raise SystemExit("--corpus glm requires --glm-manifest")
+        fresh = glm_corpus or load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
+        return {
+            "manifest_path": str(fresh.manifest_path),
+            "manifest_sha256": file_sha256(fresh.manifest_path),
+            "artifact_path": str(fresh.artifact_path),
+            "artifact_sha256": file_sha256(fresh.artifact_path),
+            "importance_value_sha256": fresh.manifest["importance_identity"]["value_sha256"],
+            "corpus_prismaquant_commit": fresh.manifest["prismaquant_commit"],
+        }
+    if args.corpus == "dsv4":
+        return {
+            "manifest_path": str(H.INPUT_MANIFEST.resolve(strict=True)),
+            "manifest_sha256": file_sha256(H.INPUT_MANIFEST),
+            "input_path": str(H.INPUT.resolve(strict=True)),
+            "input_sha256": file_sha256(H.INPUT),
+            "control_path": str(PUBLISHED.resolve(strict=True)),
+            "control_sha256": file_sha256(PUBLISHED),
+        }
+    module = _bf16_ladder_module()
+    control_present = BF16_PUBLISHED.exists()
+    return {
+        "bf16_ladder_path": str(Path(module.__file__).resolve(strict=True)),
+        "bf16_ladder_sha256": file_sha256(Path(module.__file__)),
+        "manifest_path": str(Path(module.MANIFEST).resolve(strict=True)),
+        "manifest_sha256": file_sha256(Path(module.MANIFEST)),
+        "input_path": str(Path(module.INPUT).resolve(strict=True)),
+        "input_sha256": file_sha256(Path(module.INPUT)),
+        "control_path": str(BF16_PUBLISHED.resolve()),
+        "control_present": control_present,
+        "control_sha256": file_sha256(BF16_PUBLISHED) if control_present else None,
+    }
+
+
+def _claim_identity(
+    args: argparse.Namespace, corpus_binding: Mapping[str, object]
+) -> dict[str, object]:
     return {
         "schema": "trellis.e2m1_highrate.publication.v1",
         "output": str(args.out.resolve()),
         "corpus": args.corpus,
-        "glm_manifest": str(glm_manifest) if glm_manifest else None,
-        "glm_manifest_sha256": file_sha256(glm_manifest) if glm_manifest else None,
+        "corpus_binding": corpus_binding,
         "glm_rate_plan": args.glm_rate_plan,
         "limit": args.limit,
         "allow_control_drift": bool(args.allow_control_drift),
@@ -286,50 +304,75 @@ def _verify_final_bindings(
     receipt: Mapping[str, object],
     publication_identity: Mapping[str, object],
 ) -> None:
-    if _claim_identity(args) != publication_identity:
+    if _claim_identity(args, _corpus_binding(args)) != publication_identity:
         raise SystemExit("FATAL: publication identity drifted during run")
     if receipt.get("active_source_identity") != _active_source_identity():
         raise SystemExit("FATAL: active/frozen source identity drifted during run")
     binding = receipt.get("corpus_binding")
     if not isinstance(binding, dict):
         raise SystemExit("FATAL: result corpus binding is missing")
-    if args.corpus == "glm":
-        if args.glm_manifest is None:
-            raise SystemExit("FATAL: GLM manifest disappeared from arguments")
-        fresh = load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
-        if (
-            file_sha256(fresh.manifest_path) != binding.get("manifest_sha256")
-            or fresh.manifest.get("file_sha256") != binding.get("artifact_sha256")
-            or file_sha256(fresh.artifact_path) != binding.get("artifact_sha256")
-            or fresh.manifest.get("importance_identity", {}).get("value_sha256")
-            != binding.get("importance_value_sha256")
-            or fresh.manifest.get("prismaquant_commit")
-            != binding.get("corpus_prismaquant_commit")
-        ):
-            raise SystemExit("FATAL: bound GLM corpus drifted during run")
+    if _corpus_binding(args) != binding:
+        raise SystemExit("FATAL: bound corpus/input/control identity drifted during run")
+
+
+def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
+    """Load and bind every input before acquiring the output claim."""
+
+    glm_corpus = None
+    bf16_ladder = None
+    if args.corpus == "dsv4":
+        published = json.loads(PUBLISHED.read_text())["per_tensor"]
+        entries = {
+            str(entry["name"]): entry
+            for entry in json.loads(H.INPUT_MANIFEST.read_text())["entries"]
+        }
+        rate_plan = (*MID_RATES, CONTROL_RATE, *NEW_RATES)
+        control_keys = (
+            f"tcq_two_tier@{CONTROL_RATE}", "tcq_two_tier@2.5", "tcq_v1@2.5",
+        )
+    elif args.corpus == "bf16":
+        bf16_ladder = _bf16_ladder_module()
+        _manifest, _names, entries = bf16_ladder.load_corpus()
+        published = (
+            json.loads(BF16_PUBLISHED.read_text())["cells"]
+            if BF16_PUBLISHED.exists() else {}
+        )
+        rate_plan = BF16_RATES
+        control_keys = ("tcq_two_tier@2.0",)
     else:
-        manifest_path = binding.get("manifest_path")
-        if manifest_path is not None and (
-            file_sha256(Path(str(manifest_path)))
-            != binding.get("manifest_sha256")
-        ):
-            raise SystemExit("FATAL: bound corpus manifest drifted during run")
-        control_path = binding.get("control_path")
-        control_hash = binding.get("control_sha256")
-        if control_hash is not None and (
-            file_sha256(Path(str(control_path))) != control_hash
-        ):
-            raise SystemExit("FATAL: bound control result drifted during run")
+        if args.glm_manifest is None:
+            raise SystemExit("--corpus glm requires --glm-manifest")
+        glm_corpus = load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
+        entries = {entry.name: entry for entry in glm_corpus.entries}
+        published = {}
+        rate_plan = GLM_RATE_PLANS[args.glm_rate_plan]
+        control_keys = ()
+    names = list(entries)
+    if args.limit:
+        names = names[:args.limit]
+    return {
+        "entries": entries,
+        "names": names,
+        "rate_plan": rate_plan,
+        "published": published,
+        "control_keys": control_keys,
+        "glm_corpus": glm_corpus,
+        "bf16_ladder": bf16_ladder,
+        "corpus_binding": _corpus_binding(args, glm_corpus=glm_corpus),
+    }
 
 
 def main() -> int:
     args = _parse_args()
-    publication_identity = _claim_identity(args)
+    if args.corpus != "glm" and args.glm_rate_plan != "scaffold":
+        raise SystemExit("--glm-rate-plan is valid only with --corpus glm")
+    prepared = _prepare_campaign(args)
+    publication_identity = _claim_identity(args, prepared["corpus_binding"])
     try:
         with exclusive_publication_claim(
             args.out, identity=publication_identity
         ):
-            return _run_claimed(args, publication_identity)
+            return _run_claimed(args, publication_identity, prepared)
     except PublicationError as exc:
         raise SystemExit(f"FATAL: {exc}") from exc
 
@@ -337,6 +380,7 @@ def main() -> int:
 def _run_claimed(
     args: argparse.Namespace,
     publication_identity: Mapping[str, object],
+    prepared: Mapping[str, object],
 ) -> int:
 
     partial_path = args.out.with_name(args.out.name + ".partial")
@@ -349,73 +393,17 @@ def _run_claimed(
         raise SystemExit("FATAL: CUDA required (principle 7)")
     device = torch.device("cuda")
 
-    if args.corpus == "dsv4":
-        published = json.loads(PUBLISHED.read_text())["per_tensor"]
-        entries = {str(e["name"]): e
-                   for e in json.loads(
-                       H.INPUT_MANIFEST.read_text())["entries"]}
-        names = list(entries)
-        rate_plan = (*MID_RATES, CONTROL_RATE, *NEW_RATES)
-        control_keys = (f"tcq_two_tier@{CONTROL_RATE}",
-                        "tcq_two_tier@2.5", "tcq_v1@2.5")
-    elif args.corpus == "bf16":
-        import bf16_ladder as B
-        _m, _n, entries = B.load_corpus()
-        names = list(entries)
-        rate_plan = BF16_RATES
-        # The bf16 W4A4 ladder publishes arm C at 1.0-2.25 on the two-tier
-        # plane.  2.0 is in BOTH it and our plan, so it is the control.  Arm D
-        # has no published bf16 row and is therefore uncontrolled here; that is
-        # stated, not hidden.
-        published = (json.loads(BF16_PUBLISHED.read_text())["cells"]
-                     if BF16_PUBLISHED.exists() else {})
-        control_keys = ("tcq_two_tier@2.0",)
-        glm_corpus = None
-    else:
-        if args.glm_manifest is None:
-            raise SystemExit("--corpus glm requires --glm-manifest")
-        glm_corpus = load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
-        entries = {entry.name: entry for entry in glm_corpus.entries}
-        names = list(entries)
-        rate_plan = GLM_RATE_PLANS[args.glm_rate_plan]
-        published = {}
-        control_keys = ()
-    if args.corpus != "glm" and args.glm_rate_plan != "scaffold":
-        raise SystemExit("--glm-rate-plan is valid only with --corpus glm")
-    if args.limit:
-        names = names[:args.limit]
+    entries = prepared["entries"]
+    names = list(prepared["names"])
+    rate_plan = prepared["rate_plan"]
+    published = prepared["published"]
+    control_keys = prepared["control_keys"]
+    glm_corpus = prepared["glm_corpus"]
+    B = prepared["bf16_ladder"]
 
     env = H.current_env()
     active_sources = publication_identity["active_sources"]
-    corpus_binding: dict[str, object]
-    if args.corpus == "glm":
-        assert glm_corpus is not None and args.glm_manifest is not None
-        corpus_binding = {
-            "manifest_path": str(glm_corpus.manifest_path),
-            "manifest_sha256": file_sha256(glm_corpus.manifest_path),
-            "artifact_path": str(glm_corpus.artifact_path),
-            "artifact_sha256": glm_corpus.manifest["file_sha256"],
-            "importance_value_sha256": glm_corpus.manifest[
-                "importance_identity"
-            ]["value_sha256"],
-            "corpus_prismaquant_commit": glm_corpus.manifest[
-                "prismaquant_commit"
-            ],
-        }
-    elif args.corpus == "dsv4":
-        corpus_binding = {
-            "manifest_path": str(H.INPUT_MANIFEST.resolve(strict=True)),
-            "manifest_sha256": file_sha256(H.INPUT_MANIFEST),
-            "control_path": str(PUBLISHED.resolve(strict=True)),
-            "control_sha256": file_sha256(PUBLISHED),
-        }
-    else:
-        corpus_binding = {
-            "control_path": str(BF16_PUBLISHED.resolve()),
-            "control_sha256": (
-                file_sha256(BF16_PUBLISHED) if BF16_PUBLISHED.exists() else None
-            ),
-        }
+    corpus_binding = prepared["corpus_binding"]
     receipt = {
         "schema": "trellis.e2m1_highrate.v3",
         "started_at_unix_s": time.time(),
@@ -481,7 +469,7 @@ def _run_claimed(
             weight = W.dequant_mxfp4(packed, raw_scale, device)
             importance = importance.to(device, torch.float32)
         elif args.corpus == "bf16":
-            import bf16_ladder as B
+            assert B is not None
             raw, imp = B.load_tensor(entry)   # hashes checked inside
             weight = raw.to(device, torch.float32)
             importance = imp.to(device, torch.float32)
@@ -682,7 +670,7 @@ def _run_claimed(
                 == theirs["footprint"]["body_rate_q256"])
         measured = [c["rel"] for c in checks.values()
                     if c["mine"] is not None]
-        worst = max(measured) if measured else float("nan")
+        worst = max(measured) if measured else None
         if not measured:
             footprint_equal = False
         status = ("pass" if (measured and worst <= CONTROL_RTOL
@@ -691,8 +679,9 @@ def _run_claimed(
         cell["control"] = {"status": status, "worst_relative": worst,
                            "footprint_equal": footprint_equal,
                            "checks": checks}
+        worst_text = f"{worst:.3e}" if worst is not None else "unmeasured"
         print(f"[{index}/{len(names)}] {name}: control {status.upper()} "
-              f"(worst rel {worst:.3e})", flush=True)
+              f"(worst rel {worst_text})", flush=True)
         for rate in rate_plan:
             c_row = cell["arms"].get(f"tcq_two_tier@{rate}")
             d_row = cell["arms"].get(f"tcq_v1@{rate}")
@@ -709,14 +698,23 @@ def _run_claimed(
         if status == "fail" and not args.allow_control_drift:
             raise SystemExit(
                 f"FATAL: {name}: a control rung does not reproduce the "
-                f"published row (worst relative {worst:.3e}, footprint_equal "
+                f"published row (worst relative {worst_text}, footprint_equal "
                 f"{footprint_equal}). These rows are NOT comparable to the "
                 f"published ladder; re-run under the pinned environment "
                 f"(hull_sweep.py --print-container-command).")
         out[name] = cell
+        checkpoint = _checkpoint_document(receipt, out, partial=True)
+        try:
+            validate_e2m1_checkpoint(
+                checkpoint, current_receipt=receipt, names=names
+            )
+        except CheckpointContractError as exc:
+            raise SystemExit(
+                f"FATAL: refusing invalid generated checkpoint: {exc}"
+            ) from exc
         _atomic_json(
             partial_path,
-            _checkpoint_document(receipt, out, partial=True),
+            checkpoint,
         )
 
     receipt["completed_at_unix_s"] = time.time()
@@ -728,14 +726,19 @@ def _run_claimed(
         population: sum(cell["population"] == population for cell in out.values())
         for population in sorted({cell["population"] for cell in out.values()})
     }
+    final_checkpoint = _checkpoint_document(receipt, out, partial=False)
+    try:
+        validate_e2m1_checkpoint(
+            final_checkpoint, current_receipt=receipt, names=names,
+            require_partial=False,
+        )
+    except CheckpointContractError as exc:
+        raise SystemExit(f"FATAL: refusing invalid final result: {exc}") from exc
+    _atomic_json(partial_path, final_checkpoint)
     _verify_final_bindings(
         args=args,
         receipt=receipt,
         publication_identity=publication_identity,
-    )
-    _atomic_json(
-        partial_path,
-        _checkpoint_document(receipt, out, partial=False),
     )
     try:
         publish_file_no_replace(partial_path, args.out)

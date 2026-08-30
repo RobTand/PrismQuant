@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterator, Mapping
 
 
-CLAIM_SCHEMA = "trellis.numeric_publication_claim.v1"
+CLAIM_SCHEMA = "trellis.numeric_publication_claim.v2"
 
 
 class PublicationError(RuntimeError):
@@ -82,12 +82,40 @@ def exclusive_publication_claim(
     destination = destination.absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination = _canonical_destination(destination)
+    owner_identity_sha256 = identity_sha256(identity)
     claim = destination.with_name(f".{destination.name}.partial-claim")
     expected = canonical_json_bytes({
         "schema": CLAIM_SCHEMA,
+        "kind": "result",
         "destination": destination.name,
-        "identity_sha256": identity_sha256(identity),
+        "identity_sha256": owner_identity_sha256,
     })
+    partial_destination = destination.with_name(destination.name + ".partial")
+    partial_claim = partial_destination.with_name(
+        f".{partial_destination.name}.partial-claim"
+    )
+    partial_expected = canonical_json_bytes({
+        "schema": CLAIM_SCHEMA,
+        "kind": "reserved_partial",
+        "destination": partial_destination.name,
+        "owner_destination": destination.name,
+        "owner_identity_sha256": owner_identity_sha256,
+    })
+
+    descriptor = _lock_claim(claim, expected)
+    partial_descriptor: int | None = None
+    try:
+        partial_descriptor = _lock_claim(partial_claim, partial_expected)
+        yield claim
+    finally:
+        if partial_descriptor is not None:
+            _unlock_claim(partial_descriptor)
+        _unlock_claim(descriptor)
+
+
+def _lock_claim(claim: Path, expected: bytes) -> int:
+    """Open, exclusively lock, and identity-check one persistent claim."""
+
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(claim, flags, 0o600)
@@ -112,13 +140,18 @@ def exclusive_publication_claim(
             if written != len(expected):
                 raise PublicationError("short publication-claim write")
             os.fsync(descriptor)
-            _fsync_directory(destination.parent)
-        yield claim
+            _fsync_directory(claim.parent)
+        return descriptor
+    except BaseException:
+        _unlock_claim(descriptor)
+        raise
+
+
+def _unlock_claim(descriptor: int) -> None:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(descriptor)
+        os.close(descriptor)
 
 
 def atomic_checkpoint_json(path: Path, value: Mapping[str, object]) -> None:

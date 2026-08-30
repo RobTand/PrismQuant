@@ -50,9 +50,16 @@ def test_future_result_binds_active_and_frozen_source_closures():
     assert '"active_corpus_reader_sha256"' in source
     assert '"snapshot_tree_sha256": H.snapshot_tree_sha256()' in source
     assert '"source_sha256": H.source_hashes()' in source
+    assert '"bf16_ladder_sha256"' in source
+    assert 'Path(module.MANIFEST)' in source
+    assert 'Path(module.INPUT)' in source
+    assert '"input_sha256"' in source
+    assert '"control_sha256"' in source
+    assert '_claim_identity(args, prepared["corpus_binding"])' in source
+    assert '_corpus_binding(args) != binding' in source
 
 
-def test_self_bound_v3_partial_resumes_exact_prefix_in_isolated_process(tmp_path):
+def test_self_bound_v3_partial_rejects_fake_full_prefix_in_isolated_process(tmp_path):
     program = textwrap.dedent(
         f"""
         import importlib.util, json, sys
@@ -86,11 +93,14 @@ def test_self_bound_v3_partial_resumes_exact_prefix_in_isolated_process(tmp_path
             partial,
             module._checkpoint_document(receipt, {{"tensor-a": cell}}, partial=True),
         )
-        resumed, started = module._resume_partial(
-            partial, receipt=receipt, names=["tensor-a", "tensor-b"]
-        )
-        assert resumed == {{"tensor-a": cell}}
-        assert started == 1.0
+        try:
+            module._resume_partial(
+                partial, receipt=receipt, names=["tensor-a", "tensor-b"]
+            )
+        except SystemExit as exc:
+            assert "contract differs" in str(exc)
+        else:
+            raise AssertionError("fake empty-arm prefix was accepted")
         """
     )
     result = subprocess.run(

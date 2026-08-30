@@ -114,3 +114,71 @@ with module.exclusive_publication_claim(destination, identity=identity):
         if child.poll() is None:
             child.kill()
             child.wait(timeout=10)
+
+
+def test_result_claim_reserves_its_partial_namespace_exact_interleaving(tmp_path):
+    destination = tmp_path / "result.json"
+    partial = tmp_path / "result.json.partial"
+    identity = {"schema": "owner.v1", "input_sha256": "a" * 64}
+    competitor = {"schema": "competitor.v1", "input_sha256": "b" * 64}
+
+    with P.exclusive_publication_claim(destination, identity=identity):
+        P.atomic_checkpoint_json(partial, {"owner": "result"})
+        with pytest.raises(P.PublicationError, match="competing producer"):
+            with P.exclusive_publication_claim(partial, identity=competitor):
+                raise AssertionError("competitor entered reserved namespace")
+        assert json.loads(partial.read_text()) == {"owner": "result"}
+
+
+def test_existing_partial_producer_blocks_parent_result_without_clobber(tmp_path):
+    destination = tmp_path / "result.json"
+    partial = tmp_path / "result.json.partial"
+    partial_identity = {"schema": "partial-owner.v1", "seed": 1}
+    result_identity = {"schema": "result-owner.v1", "seed": 2}
+
+    with P.exclusive_publication_claim(partial, identity=partial_identity):
+        P.atomic_checkpoint_json(partial.with_name(partial.name + ".partial"), {
+            "owner": "partial-producer",
+        })
+        with pytest.raises(P.PublicationError, match="competing producer"):
+            with P.exclusive_publication_claim(destination, identity=result_identity):
+                raise AssertionError("parent result entered reserved namespace")
+        P.publish_file_no_replace(
+            partial.with_name(partial.name + ".partial"), partial
+        )
+
+    assert json.loads(partial.read_text()) == {"owner": "partial-producer"}
+    assert not destination.exists()
+
+
+def test_partial_namespace_reservation_excludes_separate_process(tmp_path):
+    destination = tmp_path / "result.json"
+    partial = tmp_path / "result.json.partial"
+    identity = {"schema": "parent-result.v1", "seed": 7}
+    program = f"""
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("child_atomic", Path({str(_PATH)!r}))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with module.exclusive_publication_claim(Path({str(destination)!r}), identity={identity!r}):
+    print("READY", flush=True)
+    sys.stdin.readline()
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", program], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert child.stdout is not None
+        ready, _, _ = select.select([child.stdout], [], [], 10)
+        assert ready and child.stdout.readline().strip() == "READY"
+        with pytest.raises(P.PublicationError, match="competing producer"):
+            with P.exclusive_publication_claim(
+                partial, identity={"schema": "partial-result.v1", "seed": 8}
+            ):
+                raise AssertionError("separate process escaped partial reservation")
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)

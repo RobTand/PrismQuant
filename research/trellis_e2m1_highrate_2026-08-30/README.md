@@ -117,9 +117,16 @@ fact, so none is fabricated and the result files remain untouched.
 
 Future E2M1 v3 and learned-FP8 v2 outputs bind the corpus manifest, artifact
 and importance hashes; active driver, isolated loader, corpus reader and Git
-identity; and the frozen hull source/tree closure. They use an identity-bound
-exclusive claim, self-digested exact-prefix resume, final-time identity replay,
-and hard-link no-replace publication with the completed result published last.
+identity; and the frozen hull source/tree closure. The BF16 lane additionally
+binds the imported `bf16_ladder.py`, `B.MANIFEST`, `B.INPUT`, and its control
+result; DSv4 binds its manifest, input, and control; GLM binds its finalized
+manifest, artifact, importance identity, and source commit. They use an
+identity-bound exclusive claim which also reserves the result's `.partial`
+namespace, closed-schema and semantic exact-prefix resume validation,
+final-time identity replay, and hard-link no-replace publication with the
+completed result published last. The checkpoint SHA is only a checksum; it is
+not accepted as evidence that cells, metrics, footprints, or arm coverage are
+valid.
 
 ### Same-grid coding gain
 

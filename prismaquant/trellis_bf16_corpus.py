@@ -24,6 +24,7 @@ import re
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -47,6 +48,9 @@ GLM_DENSE_COUNT = len(GLM_DENSE_LAYERS) * len(GLM_PROJECTIONS)
 GLM_ROUTED_COUNT = len(GLM_ROUTED_LAYERS) * len(GLM_PROJECTIONS)
 GLM_ENTRY_COUNT = GLM_DENSE_COUNT + GLM_ROUTED_COUNT
 GLM_EXPERT = 0
+GLM_CORPUS_LABEL = (
+    "GLM-5.3-Flash routed expert 0 + dense MLP, BF16 source"
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -310,6 +314,27 @@ def _require_nonnegative_int(value: object, *, where: str) -> int:
     return parsed
 
 
+def _require_nonempty_string(value: object, *, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise CorpusContractError(f"{where} must be a nonempty string")
+    return value
+
+
+def _require_generated_timestamp(value: object, *, where: str) -> str:
+    text = _require_nonempty_string(value, where=where)
+    if "T" not in text:
+        raise CorpusContractError(f"{where} must be an ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CorpusContractError(
+            f"{where} must be an ISO-8601 timestamp"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise CorpusContractError(f"{where} must include a timezone")
+    return text
+
+
 @dataclass(frozen=True)
 class _SafetensorsLayout:
     path: Path
@@ -532,6 +557,10 @@ def load_finalized_bf16_corpus(
     _require_exact_keys(manifest, _FINALIZED_MANIFEST_KEYS, where=str(path))
     if manifest.get("status") != "finalized":
         raise CorpusContractError(f"{path}: status must be 'finalized'")
+    _require_generated_timestamp(manifest.get("generated"), where="generated")
+    _require_nonempty_string(manifest.get("host"), where="host")
+    if manifest.get("corpus_label") != GLM_CORPUS_LABEL:
+        raise CorpusContractError("corpus_label differs from the exact GLM contract")
     if manifest.get("model_profile") != GLM_MODEL_PROFILE:
         raise CorpusContractError(f"{path}: model_profile must be {GLM_MODEL_PROFILE!r}")
     if manifest.get("num_hidden_layers") != GLM_NUM_HIDDEN_LAYERS:
@@ -1131,6 +1160,8 @@ def finalize_glm_bf16_corpus(
     source_layout = _read_safetensors_layout(source_path)
 
     calibration_out = _canonical_calibration(calibration)
+    generated_out = _require_generated_timestamp(generated, where="generated")
+    host_out = _require_nonempty_string(host, where="host")
     config_hash = _require_sha256(model_config_sha256, where="model_config_sha256")
     if not _COMMIT_RE.fullmatch(str(prismaquant_commit)):
         raise CorpusContractError("prismaquant_commit must be a lowercase 40-hex commit")
@@ -1179,8 +1210,8 @@ def finalize_glm_bf16_corpus(
             identity=identity,
             actual_source_file_hash=actual_source_file_hash,
             prismaquant_commit=str(prismaquant_commit),
-            generated=str(generated),
-            host=str(host),
+            generated=generated_out,
+            host=host_out,
             adopt_existing_artifact=adopt_existing_artifact,
         )
 
@@ -1316,9 +1347,9 @@ def _finalize_glm_bf16_corpus_claimed(
         manifest: dict[str, object] = {
             "schema": FINALIZED_SCHEMA,
             "status": "finalized",
-            "generated": str(generated),
-            "host": str(host),
-            "corpus_label": "GLM-5.3-Flash routed expert 0 + dense MLP, BF16 source",
+            "generated": generated,
+            "host": host,
+            "corpus_label": GLM_CORPUS_LABEL,
             "model_profile": GLM_MODEL_PROFILE,
             "model": incomplete.get("model"),
             "model_config_sha256": config_hash,

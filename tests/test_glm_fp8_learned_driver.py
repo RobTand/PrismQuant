@@ -127,7 +127,7 @@ def test_final_binding_recheck_refuses_midrun_corpus_mutation(
         _DRIVER._verify_final_bindings(args=args, settings=settings, ladder=ladder)
 
 
-def test_fp8_self_bound_partial_resumes_only_exact_identity(tmp_path):
+def test_fp8_self_bound_partial_checks_digest_before_closed_semantics(tmp_path):
     entry = SimpleNamespace(
         name="tensor-a",
         population="dense",
@@ -162,9 +162,8 @@ def test_fp8_self_bound_partial_resumes_only_exact_identity(tmp_path):
     }
     path = tmp_path / "fp8.partial"
     path.write_text(json.dumps(_DRIVER._sealed_report(report)))
-    assert _DRIVER._resume_report(
-        path, settings=settings, corpus=corpus
-    ) == report
+    with pytest.raises(_DRIVER.CampaignError, match="contract differs"):
+        _DRIVER._resume_report(path, settings=settings, corpus=corpus)
 
     mutated = json.loads(path.read_text())
     mutated["per_tensor"]["tensor-a"]["weighted_energy"] = 2.0

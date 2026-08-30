@@ -287,7 +287,7 @@ def test_finalizer_is_no_clobber_and_never_mutates_incomplete_artifact(
             calibration=_calibration(),
             model_config_sha256="b" * 64,
             prismaquant_commit="c" * 40,
-            generated="now",
+            generated="2026-08-30T00:00:01+00:00",
             host="host",
         )
     assert hashlib.sha256(source.read_bytes()).hexdigest() == source_hash
@@ -312,7 +312,7 @@ def test_concurrent_finalizers_have_exactly_one_live_owner(
         calibration=_calibration(),
         model_config_sha256="b" * 64,
         prismaquant_commit="c" * 40,
-        generated="first",
+        generated="2026-08-30T00:00:01+00:00",
         host="host-a",
     )
     entered_copy = threading.Event()
@@ -357,7 +357,7 @@ def test_artifact_only_crash_is_adopted_by_same_identity_retry(
         calibration=_calibration(),
         model_config_sha256="b" * 64,
         prismaquant_commit="c" * 40,
-        generated="first-attempt",
+        generated="2026-08-30T00:00:01+00:00",
         host="host-a",
     )
     original_publish = corpus._publish_staged_file_no_replace
@@ -389,10 +389,29 @@ def test_artifact_only_crash_is_adopted_by_same_identity_retry(
         corpus.finalize_glm_bf16_corpus(**kwargs)
     output.write_bytes(orphan_bytes)
     output.chmod(0o444)
-    kwargs.update(generated="retry-time", host="host-b")
+    kwargs.update(generated="2026-08-30T00:00:02+00:00", host="host-b")
     assert corpus.finalize_glm_bf16_corpus(**kwargs) == manifest.resolve()
     assert hashlib.sha256(output.read_bytes()).hexdigest() == orphan_hash
-    assert corpus.load_finalized_bf16_corpus(manifest).manifest["generated"] == "retry-time"
+    assert corpus.load_finalized_bf16_corpus(manifest).manifest["generated"] == "2026-08-30T00:00:02+00:00"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("corpus_label", "some other GLM corpus", "corpus_label"),
+        ("generated", "", "nonempty string"),
+        ("generated", "sometime", "ISO-8601"),
+        ("generated", "2026-08-30T00:00:00", "timezone"),
+        ("host", "", "nonempty string"),
+    ],
+)
+def test_loader_refuses_semantically_unbound_manifest_identity_fields(
+    tmp_path, monkeypatch, field, value, match,
+):
+    manifest, *_ = _finalized(tmp_path, monkeypatch)
+    _rewrite_manifest(manifest, lambda payload: payload.__setitem__(field, value))
+    with pytest.raises(corpus.CorpusContractError, match=match):
+        corpus.load_finalized_bf16_corpus(manifest)
 
 
 def test_loader_refuses_incomplete_and_duplicate_entries(tmp_path, monkeypatch):
