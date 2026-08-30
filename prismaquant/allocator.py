@@ -289,35 +289,45 @@ def extend_format_rank_from_candidates(
 
     byte_totals: dict[str, int] = {}
     param_totals: dict[str, int] = {}
+    # Every format the menus add, whether or not its units turned out to be
+    # priceable. A format seen only on rows with no readable shape must be
+    # REPORTED, not quietly dropped: dropping it hands promotion a table that
+    # is silently missing an entry, and the run then fails much later with a
+    # message about the wrong thing.
+    added_formats: set[str] = set()
     for unit, menu in candidates.items():
         entry = stats.get(unit)
-        if not isinstance(entry, Mapping):
-            continue
-        shape = _shape_from_stats(dict(entry))
-        if len(shape) < 2 or any(int(dim) <= 0 for dim in shape):
-            continue
-        n_params = int(math.prod(int(dim) for dim in shape))
-        if n_params <= 0:
-            continue
+        shape = (
+            _shape_from_stats(dict(entry))
+            if isinstance(entry, Mapping) else ()
+        )
+        n_params = (
+            int(math.prod(int(dim) for dim in shape))
+            if len(shape) >= 2 and all(int(dim) > 0 for dim in shape)
+            else 0
+        )
         for cand in menu:
             fmt = str(cand.fmt)
             if fmt in format_rank:
                 continue
+            added_formats.add(fmt)
+            if n_params <= 0:
+                continue
             byte_totals[fmt] = byte_totals.get(fmt, 0) + int(cand.memory_bytes)
             param_totals[fmt] = param_totals.get(fmt, 0) + n_params
-    if not byte_totals:
+    if not added_formats:
         return dict(format_rank)
 
     unpriceable = sorted(
-        fmt for fmt in byte_totals if param_totals.get(fmt, 0) <= 0
+        fmt for fmt in added_formats if param_totals.get(fmt, 0) <= 0
     )
     if unpriceable:
         raise SystemExit(
-            f"[alloc] ERROR: the candidate menus offer {unpriceable} on units "
-            f"whose parameter count could not be read from the probe stats, "
-            f"so no exact serialized rate -- and therefore no promotion rank "
-            f"-- can be derived for them. Refusing rather than ranking them "
-            f"by guess: a wrong rank silently reorders every fused and "
+            f"[alloc] ERROR: the candidate menus offer {unpriceable} only on "
+            f"units whose parameter count could not be read from the probe "
+            f"stats, so no exact serialized rate -- and therefore no promotion "
+            f"rank -- can be derived for them. Refusing rather than ranking "
+            f"them by guess: a wrong rank silently reorders every fused and "
             f"packed-expert promotion decision that touches one."
         )
 

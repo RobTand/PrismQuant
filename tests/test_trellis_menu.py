@@ -303,28 +303,48 @@ def test_the_unwired_links_are_still_unwired():
     If one of these starts passing, the corresponding UNWIRED_LINKS entry is
     stale and must be deleted along with -- not before -- its refusal.
 
-    Entry #1 (format_registry.py get_format) is WIRED as of this commit:
-    ``get_format`` parse-resolves TCQ names to an exact-or-refuse
-    ``TrellisFormatSpec`` (tests/test_trellis_format_spec.py exercises the
-    behaviour, which per the ledger's own rule licenses the deletion). The
-    UNWIRED_LINKS tuple in trellis_menu.py still lists it; delete that entry
-    there, then drop this resolution check in favour of the dedicated test
-    module.
+    The registry entry's resolution check has moved to
+    ``tests/test_trellis_format_spec.py``, which owns that behaviour now that
+    ``get_format`` parse-resolves TCQ names; the entry is gone from the ledger.
+    So are the promotion-rank and call-site entries, exercised by
+    ``tests/test_allocator_cost_mode_and_rank.py``.
     """
 
-    from prismaquant import format_registry as fr
-
-    assert isinstance(
-        fr.get_format("TCQ_E2M1_R640"), fr.TrellisFormatSpec
-    ), "entry #1 regressed: get_format no longer resolves trellis rungs"
     from prismaquant import allocator_candidates as ac
 
     aggregation = pathlib.Path(ac.__file__).read_text().count(
         "for spec in formats:")
     assert aggregation >= 2, (
         "fused and packed aggregation still iterate FormatSpec objects; if "
-        "this changed, re-verify links 3 and 4 before deleting them"
+        "this changed, re-verify the two aggregation entries before deleting "
+        "them"
     )
+
+
+def test_the_closed_links_are_gone_from_the_ledger():
+    """A closed link must leave, or the refusal keeps naming a fixed thing.
+
+    Each of these is licensed by a test module that exercises the behaviour
+    the entry named -- the ledger's own rule for deletion.
+    """
+
+    where = {site for site, _why in tm.UNWIRED_LINKS}
+    assert not [site for site in where if site.startswith("format_registry.py")]
+    assert not [site for site in where if site.startswith("allocator_solver.py")]
+    assert "allocator.py:2756" not in where
+
+
+def test_the_refusal_never_quotes_a_count():
+    """Entries leave as links land; a hardcoded count goes stale on the spot."""
+
+    import re
+
+    source = pathlib.Path(tm.__file__).read_text()
+    assert "len(UNWIRED_LINKS)" in source
+    stale = re.findall(
+        r"\b(?:two|three|four|five|six|seven|eight|nine|ten)\s+links?\b",
+        source, re.I)
+    assert not stale, f"the module still quotes a link count: {stale}"
 
 
 def test_a_packed_expert_row_is_refused_not_underpriced(tmp_path):

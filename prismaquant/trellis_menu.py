@@ -14,9 +14,10 @@ STATUS: THE MENU IS BUILT, THE SEAM IS NOT WIRED
 ------------------------------------------------
 :func:`build_trellis_menu` produces a correctly priced menu.  The production
 seam :func:`augment_candidates` **refuses** when the flag is set, because
-eight links between that menu and a shipped assignment do not exist -- see
+links between that menu and a shipped assignment are still missing -- see
 :data:`UNWIRED_LINKS`, which is the refusal message and the re-enable
-checklist.  The first version of this module (40d3e15) claimed the seam's
+checklist.  The list shrinks as links land, so nothing here or in the refusal
+quotes a count.  The first version of this module (40d3e15) claimed the seam's
 placement inside ``build_candidates`` meant trellis rungs "pass the same
 legality, aggregation and byte accounting every other candidate does".  That
 was false on all three counts and is the reason the refusal exists: the
@@ -117,15 +118,28 @@ class TrellisSeamUnwiredError(TrellisMenuError):
 
 
 #: Every link between a built trellis menu and a shipped assignment that does
-#: NOT exist yet, verified at 58eb69d.  This list is the refusal message and
-#: the re-enable checklist; it is also what ``docs/ARCHITECTURE.md`` 4.9 cites
-#: instead of the claim it used to make.  Delete an entry only when a test
-#: exercises the behaviour it names -- not when the code merely looks present.
+#: NOT exist yet.  This list is the refusal message and the re-enable
+#: checklist; it is also what ``docs/ARCHITECTURE.md`` 4.9 cites instead of the
+#: claim it used to make.  Delete an entry only when a test exercises the
+#: behaviour it names -- not when the code merely looks present.  Nothing
+#: quotes its length: entries leave as links land, and a hardcoded count goes
+#: stale the moment one does.
+#:
+#: Closed so far (each with the test that licensed the deletion):
+#:   * ``format_registry.py`` get_format -- parse-resolves TCQ names to an
+#:     exact-or-refuse ``TrellisFormatSpec`` (``tests/test_trellis_format_spec.py``).
+#:   * ``allocator_solver.py`` promote_serving_units' rank lookup -- refuses by
+#:     name instead of KeyErroring, and ``allocator.extend_format_rank_from_candidates``
+#:     supplies the rate-derived rank so a rung inside a fused or packed group
+#:     promotes rather than crashing
+#:     (``tests/test_allocator_cost_mode_and_rank.py``).
+#:   * ``allocator.py`` build_candidates' call site -- the run's objective now
+#:     reaches the currency gate from the cost table and the new --cost-mode
+#:     flag rather than from an unexported environment variable, and the
+#:     surface's identity, currency, target platform and anchor activation
+#:     contract travel into selection.json and layer_config.json
+#:     (``tests/test_allocator_cost_mode_and_rank.py``).
 UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
-    ("format_registry.py:1267-1272",
-     "no TCQ name is a FormatSpec; fr.get_format('TCQ_E2M1_R640') KeyErrors, "
-     "so every site that resolves an assigned format through the registry "
-     "fails on a selected rung"),
     ("allocator.py:3369-3386",
      "the exact assignment-payload filter finds no '_memory_bytes_by_format' "
      "entry for a TCQ row and falls through to fr.get_format -- the allocator "
@@ -141,20 +155,9 @@ UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
      "packed-expert aggregation has the identical construction, so no MoE "
      "expert group can carry a rung either; between the two, on a dense model "
      "only o_proj and down_proj could ever hold one"),
-    ("allocator_solver.py:340-342",
-     "promote_serving_units' format_rank lookup does not KeyError today only "
-     "because aggregation guarantees a TCQ unit is a lone ungrouped Linear; "
-     "fixing aggregation without it makes that crash live"),
     ("footprint.py:1183",
      "the byte-budget (--target-disk-gb) path has its own registry lookup "
      "that KeyErrors on TCQ independently of the payload filter"),
-    ("allocator.py:2756",
-     "build_candidates is called with neither cost_mode= nor "
-     "trellis_provenance=, so the currency gate below compares against "
-     "os.environ.get('COST_MODE','aura') -- a variable run-pipeline.sh sets "
-     "with := and never exports (:438) -- and the manifest identity, anchor "
-     "currency and anchor activation contract are discarded instead of "
-     "travelling with the assignment (principles 12 and 14)"),
     ("trellis_rate_surface.py:43-52",
      "the anchors' currency is weighted SSE under a per-input-channel "
      "activation second moment -- an output-MSE proxy, explicitly NOT the "
@@ -559,8 +562,8 @@ def augment_candidates(
     is what ships.
 
     Set, it refuses.  :func:`build_trellis_menu` builds a correctly priced
-    menu, but eight links between that menu and a shipped assignment do not
-    exist (:data:`UNWIRED_LINKS`), and they do not fail the same way: the
+    menu, but the links between that menu and a shipped assignment listed in
+    :data:`UNWIRED_LINKS` do not exist, and they do not fail the same way: the
     registry gaps crash loudly inside the Pareto sweep, while the aggregation
     gaps are SILENT -- they would drop every rung from every fused and packed
     group and hand back a plausible-looking frontier in which only o_proj and
@@ -582,7 +585,8 @@ def augment_candidates(
     links = "\n".join(f"  - {where}: {what}" for where, what in UNWIRED_LINKS)
     raise TrellisSeamUnwiredError(
         f"{TRELLIS_SURFACE_ENV}={resolved_path} was set, but the allocator "
-        f"cannot honour a trellis rung end-to-end. Eight links are missing:\n"
+        f"cannot honour a trellis rung end-to-end. "
+        f"{len(UNWIRED_LINKS)} link(s) are missing:\n"
         f"{links}\n"
         f"Build the menu directly with trellis_menu.build_trellis_menu() for "
         f"research. Do not remove this refusal to reach a selectable run: the "
