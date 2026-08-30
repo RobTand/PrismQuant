@@ -1,6 +1,8 @@
-"""``UNWIRED_LINKS`` #2 and #6, exercised where the ledger names them.
+"""``UNWIRED_LINKS`` #2 and #6, exercised where the ledger named them.
 
-Both entries name a site inside a *run*, not a helper:
+The wiring merge deleted both entries, and the ledger's own rule is that an
+entry closes when "a test exercises the behaviour it names". Both named a
+site inside a *run*, not a helper:
 
   * #2 ``allocator.py:3369-3386`` -- "the allocator dies inside the Pareto
     sweep, before layer_config.json is written".
@@ -9,7 +11,8 @@ Both entries name a site inside a *run*, not a helper:
 
 The wiring commit's own tests call ``build_trellis_menu`` and
 ``footprint.assignment_artifact_bytes`` directly. That proves the two
-functions, and it is worth proving; it does not prove the *run*. Between a
+functions, and it is worth proving; it does not prove the *run*, which is
+what those two entries actually named. Between a
 built menu and a priced selection sit the Pareto sweep, the super-item
 expansion, ``promote_serving_units``, the merged
 ``{**accounting_stats, **fixed_stats, **stats}`` view the footprint pricer is
@@ -459,3 +462,82 @@ def test_a_resolvable_tcq_spec_declares_activation_quant_and_nothing_else():
     assert cost_entry_is_bit_exact({"weight_mse": 0.0}, name) is False
     assert cost_entry_is_source_passthrough(
         {"cost_source": "source_passthrough"}, name) is False
+
+
+# ---------------------------------------------------------------------------
+# The refusal at the other end of the same layer_config.json
+# ---------------------------------------------------------------------------
+def test_the_exporter_refusal_a_tcq_layer_config_hits_is_the_pointed_one(
+        monkeypatch, tmp_path):
+    """A refusal nobody reaches is not a gate; it is a comment.
+
+    The surface is allocation-time reach only, so a TCQ ``layer_config.json``
+    must be stopped at export. ``export_native_compressed`` carries a pointed
+    refusal for exactly that case -- but a refusal is only worth its wording
+    if it is the one that actually fires, and this repo has shipped an
+    unreachable mechanism before (block-output-match sat behind an earlier
+    ``continue`` for months, 0 hits in two real export logs).
+
+    Reading the source cannot settle it, because four things run first and
+    any of them could refuse with a different diagnosis:
+
+      1. ``validate_layer_config_payload`` -- the schema check,
+      2. ``enforce_research_export_acknowledgement`` -- the research-cost
+         gate, which this run trips the surface's currency through,
+      3. ``_canonicalize_assignment`` -> ``layer_config.canonicalize_format``,
+         whose refusal is the generic ``ValueError("unsupported format
+         string")``, and
+      4. profile detection.
+
+    So this drives that prefix in order, on a ``layer_config.json`` the real
+    allocator wrote, and asserts the first exception is the TCQ one. If a
+    future change makes step 3 stop round-tripping ``TCQ_*``, the pointed
+    message becomes dead code and this test says so.
+    """
+    from prismaquant.export_native_compressed import (
+        _canonicalize_assignment,
+        _coerce_runtime_legal_assignment,
+    )
+    from prismaquant.layer_config import validate_layer_config_payload
+    from prismaquant.model_profiles import detect_profile
+    from prismaquant.research_cost_acceptance import (
+        enforce_research_export_acknowledgement,
+    )
+
+    model_dir, probe_p, cost_p, manifest_p, stats = _fixture(tmp_path)
+    probe = _run(
+        monkeypatch, tmp_path, probe_p, cost_p, manifest_p,
+        disk_gb=1.0, fmt_for_target=lambda _t: "NVFP4",
+    )[2]
+    rung = _a_rung_on_offer(probe)
+    exact = _descriptor_bytes(rung)
+    floor = fp.floor_bytes_for_model(str(model_dir), _NAMES, stats)["floor_bytes"]
+    _selection, payload, _seen = _run(
+        monkeypatch, tmp_path, probe_p, cost_p, manifest_p,
+        disk_gb=(floor + len(_NAMES) * exact + _OVERHEAD_RESERVE + 10_000) / fp.GB,
+        fmt_for_target=lambda _target: rung,
+    )
+    assert any(v == rung for v in payload.values()), payload
+
+    lc_path = str(tmp_path / "layer_config.json")
+    # Steps 1-4: each must PASS, or the pointed refusal below is dead code
+    # and the diagnosis an operator gets comes from somewhere else.
+    validate_layer_config_payload(payload, lc_path)
+    enforce_research_export_acknowledgement(
+        payload, acknowledged=False, where="export_native_compressed")
+    assignment = _canonicalize_assignment(payload)
+    assert assignment[_NAMES[0]] == rung, (
+        "canonicalize_format no longer round-trips a trellis rung, so export "
+        "now refuses with the generic 'unsupported format string' and the "
+        "pointed message below is unreachable")
+    profile = detect_profile(str(model_dir))
+
+    with pytest.raises(ValueError) as excinfo:
+        _coerce_runtime_legal_assignment(str(model_dir), assignment, profile)
+    message = str(excinfo.value)
+    assert "Gridbook trellis rung" in message, message
+    assert "PRISMAQUANT_TRELLIS_SURFACE" in message, message
+    # Not the generic no-emit-path message, which would blame the serving
+    # profile's export lane -- the wrong diagnosis for a rung whose problem
+    # is that nothing renders it.
+    assert "regression in that bound" not in message, message
