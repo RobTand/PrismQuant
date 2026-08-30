@@ -69,11 +69,15 @@ def main() -> int:
     nv_median_db = statistics.median(db(nv[n]) for n in names)
     nv_corpus_bpw = (sum(nv_bpw[n] * numel[n] for n in names) / total_numel)
 
+    arm_c_rates, arm_c_incomplete = complete_rates(
+        pub, hr, names, "tcq_two_tier", (*LOW_RATES, *HIGH_RATES), LOW_RATES)
     rungs = build_rungs(pub, hr, names, numel, total_numel, nv, nv_bpw,
-                        "tcq_two_tier", (*LOW_RATES, *HIGH_RATES), LOW_RATES)
+                        "tcq_two_tier", arm_c_rates, LOW_RATES)
+    arm_d_rates, arm_d_incomplete = complete_rates(
+        pub, hr, names, "tcq_v1", (*ARM_D_LOW, 3.0, *HIGH_RATES), ARM_D_LOW)
     rungs_attested_render = build_rungs(
         pub, hr, names, numel, total_numel, nv, nv_bpw,
-        "tcq_v1", (*ARM_D_LOW, 3.0, *HIGH_RATES), ARM_D_LOW)
+        "tcq_v1", arm_d_rates, ARM_D_LOW)
 
     def crossing(key_db: str, key_bpw: str, target_db: float,
                  table=None):
@@ -129,6 +133,10 @@ def main() -> int:
         "plane_ab": plane_ab(pub, names),
         "rungs_research_render": rungs,
         "rungs_attested_render": rungs_attested_render,
+        "incomplete_rungs_excluded": {
+            "tcq_two_tier": arm_c_incomplete,
+            "tcq_v1": arm_d_incomplete,
+        },
         "primary_comparison": (
             "rungs_attested_render (arm D / tcq_v1): rendered AND priced on "
             "group16_fp8_e4m3_0p5_bpw, the same plane scalar NVFP4 is priced "
@@ -202,6 +210,30 @@ def main() -> int:
         print(f"crossover ({label}): {c['bpw']:.4f} bpw -- {c['kind']}")
     print(f"\nwrote {args.out}")
     return 0
+
+
+def complete_rates(pub, hr, names, lane, rates, low_rates):
+    """Keep only corpus-complete rungs and record every missing tensor.
+
+    A high-rate schedule may be unreachable for one tensor because the minimum
+    trellis-length guard cannot be rebalanced.  Such a rung is not a 24-tensor
+    comparison and must never be silently averaged over the remaining rows.
+    """
+    available = []
+    incomplete = []
+    for rate in rates:
+        src = pub if rate in low_rates else hr
+        key = f"{lane}@{rate}"
+        missing = [name for name in names if key not in src[name]["arms"]]
+        if missing:
+            incomplete.append({
+                "body_rate": rate,
+                "missing_tensors": missing,
+                "reason": "rung is not corpus-complete",
+            })
+        else:
+            available.append(rate)
+    return tuple(available), incomplete
 
 
 def build_rungs(pub, hr, names, numel, total_numel, nv, nv_bpw,
