@@ -247,6 +247,11 @@ def _run(monkeypatch, tmp_path, probe_p, cost_p, manifest_p, *, disk_gb,
         "--target-disk-gb", repr(disk_gb),
         "--layer-config", str(layer_config),
         "--pareto-csv", str(tmp_path / "pareto.csv"),
+        # Also exercises `_artifact_size_for`, the SECOND exact-pricing path
+        # in main(): it prices each Pareto seed assignment through the same
+        # shared footprint function but off a DIFFERENT merged stats view,
+        # and under a card a pricing failure there is a hard SystemExit.
+        "--pareto-output-dir", str(tmp_path / "pareto_seeds"),
         "--artifact-overhead-reserve-bytes", str(_OVERHEAD_RESERVE),
         "--allow-default-profile",
     ])
@@ -333,6 +338,19 @@ def test_the_byte_budget_run_prices_a_trellis_rung_at_descriptor_bytes(
     )
     assert selection["grid"][0]["tensor_payload_gb"] * fp.GB != pytest.approx(
         float(floor + len(_NAMES) * closed_form), abs=1.0)
+
+    # ...and the Pareto seed manifest, priced off the other merged stats
+    # view, agrees to the byte. Two independent pricing paths in one run;
+    # a rung that lost its descriptor bytes on either would show up here.
+    manifest = json.loads(
+        (tmp_path / "pareto_seeds" / "manifest.json").read_text())
+    priced_rows = [
+        row for row in manifest["candidates"]
+        if row.get("artifact_tensor_payload_bytes") is not None
+    ]
+    assert priced_rows, "no Pareto seed assignment was exactly priced"
+    for row in priced_rows:
+        assert int(row["artifact_tensor_payload_bytes"]) == expected_payload
 
     # #2: the sweep survived and layer_config.json was written, carrying the
     # closed TCQ spelling that layer_config.canonicalize_format round-trips --
