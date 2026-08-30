@@ -509,7 +509,7 @@ class Job:
             fh.write(f"cwd={item.get('cwd')}\ncmd={item['cmd']}\n"
                      f"mem_available_at_start={self.avail_at_start:.1f}GB\n\n")
             cwd = item.get("cwd") or str(Path.home())
-            if self.declared_gb > 0:
+            if self.declared_gb > 0 and capping_supported():
                 # A declared budget buys real enforcement: exceed it and your
                 # own cgroup kills you, rather than the kernel picking a
                 # victim from the whole box.
@@ -550,6 +550,11 @@ class Job:
                 # start_new_session so the whole job -- and anything it spawns
                 # -- is one process group we can signal as a unit. Killing only
                 # the shell would leave the actual worker holding the memory.
+                if self.declared_gb > 0:
+                    fh.write("[pqwork] UNCAPPED: this box cannot start a "
+                             "transient user unit, so the declared "
+                             f"{self.declared_gb:.0f}G budget is a hint only\n")
+                    fh.flush()
                 self.proc = subprocess.Popen(
                     ["bash", "-lc", item["cmd"]],
                     cwd=cwd, env=env,
@@ -649,6 +654,32 @@ class Job:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
+
+
+_CAP_SUPPORTED: bool | None = None
+
+
+def capping_supported() -> bool:
+    """Whether this box can actually start a capped transient user unit.
+
+    Probed once, at worker startup, rather than assumed. Capping needs cgroup
+    delegation to the user manager, which is a property of the box. Without
+    the probe a box that lacks it would fail every capped job the instant it
+    started, and receipt-gating would faithfully requeue each one forever --
+    a capability gap wearing the costume of a flaky job.
+    """
+    global _CAP_SUPPORTED
+    if _CAP_SUPPORTED is None:
+        try:
+            out = subprocess.run(
+                ["systemd-run", "--user", "--quiet", "--wait",
+                 "-p", "MemoryMax=64M", "-p", "MemoryAccounting=yes",
+                 "--", "/bin/true"],
+                capture_output=True, timeout=60)
+            _CAP_SUPPORTED = out.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _CAP_SUPPORTED = False
+    return _CAP_SUPPORTED
 
 
 def unit_result(unit: str) -> tuple[int, bool]:
@@ -834,6 +865,7 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
           f"gpu_slots={gpu_slots} cpu_slots={cpu_slots} "
           f"mem_reserve={reserve_gb:.0f}GB horizon={horizon_s:.0f}s "
           f"admission={admission} swap_free={swap_free_gb():.0f}GB "
+          f"caps={'on' if capping_supported() else 'UNAVAILABLE'} "
           f"queue={QUEUE_ROOT}", flush=True)
     last_held = None
     last_mem_hold = 0.0
