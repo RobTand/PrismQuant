@@ -208,3 +208,77 @@ re-run a no-op for whatever already finished. One recovery path, not two.
 To add a box: mount `/mnt/shared`, copy the unit, `systemctl --user enable
 --now pqwork`. Tag it (`--tag rocm`) and items can require the tag. That is
 the seam a real scheduler would slot into if the fleet ever justifies one.
+
+## Migrating hand-launched campaigns
+
+The default migration is to enqueue the synchronous campaign payload with
+`pqwork enqueue --gpu`. Do not reserve the host first: the worker owns GPU
+admission for a queued item, keeps its lease alive, retries it, and closes it
+only when the work-produced receipt is non-empty.
+
+For a concrete example, `tools/run_glm53_stock_harvest.sh` defines its remote
+paths and source identity at lines 55-91, then generates a synchronous payload,
+checks it, and hand-launches it as a transient user unit at lines 197-286. The
+payload's final command writes
+`work/artifacts/cost_stock_anchored.pkl`; that is a real campaign output, not a
+wrapper-created marker. Once the preparation block has produced
+`stock_harvest_payload.sh`, replace that script's `systemd-run` block with the
+queue submission below. The command, working directory, environment, host-local
+paths, and receipt are taken from
+[`tools/run_glm53_stock_harvest.sh:55-91`](../../tools/run_glm53_stock_harvest.sh#L55-L91)
+and
+[`tools/run_glm53_stock_harvest.sh:197-286`](../../tools/run_glm53_stock_harvest.sh#L197-L286).
+
+```bash
+Q=/mnt/shared/pq-queue/bin/pqwork.py
+COMMIT=$(git rev-parse HEAD)
+
+python3 "$Q" enqueue \
+  --id glm53-stock-harvest \
+  --desc "GLM-5.3 stock-anchor harvest and campaign pricing" \
+  --cmd "bash /home/rob/dq-runs/glm53-flash/stock_harvest_payload.sh" \
+  --cwd /home/rob/prismaquant-glm53-gate \
+  --gpu --host gx10-6b77 \
+  --env PYTHONPATH=/home/rob/prismaquant-glm53-gate \
+  --env LD_LIBRARY_PATH=/home/rob/dq-runs/glm53-flash/lib \
+  --env TMPDIR=/home/rob/dq-runs/glm53-flash/tmp \
+  --env HF_HUB_OFFLINE=1 \
+  --env TRANSFORMERS_OFFLINE=1 \
+  --env CACHE_HEADROOM_GB=90 \
+  --env PREFETCH_WORKERS=1 \
+  --env PRISMAQUANT_IDENTITY_GIT_COMMIT="$COMMIT" \
+  --receipt /home/rob/dq-runs/glm53-flash/work/artifacts/cost_stock_anchored.pkl
+```
+
+If a campaign truly cannot run through the queue and must use
+`pqwork reserve`, releasing the reservation is part of the campaign's own
+lifecycle. Install the `EXIT` trap immediately after a successful reservation,
+preserve the campaign's exit status, and do not `exec` the campaign out of the
+shell that owns the trap:
+
+```bash
+set -euo pipefail
+Q=/mnt/shared/pq-queue/bin/pqwork.py
+HOST=sparky
+
+python3 "$Q" reserve --host "$HOST" --slots 1 \
+  --why "hand-launched <campaign-id>"
+release_gpu_reservation() {
+  rc=$?
+  trap - EXIT
+  python3 "$Q" reserve --host "$HOST" --release || true
+  exit "$rc"
+}
+trap release_gpu_reservation EXIT
+
+bash /absolute/path/to/campaign.sh
+test -s /absolute/path/to/work-produced-receipt
+```
+
+An `EXIT` trap cannot survive `SIGKILL` or a host loss, which is another reason
+the queue is the recommended launcher. When retrofitting a campaign that is
+already running, use a separate user unit that waits on the task-owned receipt
+file and then releases the reservation. Never wait or clean up with
+`pgrep -cf PATTERN` or `pkill -f PATTERN`: both can match the waiter's own
+command line. Do not use `systemd-run --collect` as evidence; a collected unit's
+reported state is not a completion receipt.
