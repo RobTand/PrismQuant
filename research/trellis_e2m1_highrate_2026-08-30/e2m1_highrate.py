@@ -329,8 +329,13 @@ def main() -> int:
                 continue
             mine = cell["arms"][control_key]
             theirs = published[name]["arms"][control_key]
+            # ``bf16_w4a4_results.json`` predates ``plain_snr_db``.  The
+            # published row does carry the primitive plain-domain quantities
+            # (SSE and normalized SSE), so compare those directly instead of
+            # requiring a derived field which cannot add information.  Keep
+            # the weighted SNR because that is the study's decision metric.
             for field in ("weighted_sse", "weighted_nsse", "weighted_snr_db",
-                          "plain_sse", "plain_snr_db"):
+                          "plain_sse", "plain_nsse"):
                 a, b = float(mine[field]), float(theirs[field])
                 checks[f"{control_key}.{field}"] = {
                     "mine": a, "published": b,
