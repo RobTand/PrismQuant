@@ -8,6 +8,7 @@ an exit code all put the queue back to losing work silently.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import json
 import time
 from pathlib import Path
@@ -382,3 +383,79 @@ def test_empty_receipt_does_not_satisfy_a_dependency(queue, tmp_path):
     assert not pqwork.is_runnable(item, "mine", set(), True)
     dep.write_text("1")
     assert pqwork.is_runnable(item, "mine", set(), True)
+
+
+def _systemd_user_available() -> bool:
+    """Whether transient user units can actually be started here.
+
+    The cap depends on cgroup delegation to the user manager, which is a
+    property of the box, not of the code. Skipping where it is absent keeps
+    the check honest: a pass has to mean the cap fired, never that the
+    machinery was unavailable and the test quietly agreed.
+    """
+    try:
+        out = subprocess.run(["systemd-run", "--user", "--quiet", "--wait",
+                              "--", "/bin/true"], capture_output=True,
+                             timeout=30)
+        return out.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def test_unit_name_is_a_legal_unit_name():
+    assert pqwork.unit_name("probe-27b") == "pqjob-probe-27b"
+    # Item ids are free-form; a unit name is not.
+    assert pqwork.unit_name("a/b c#d") == "pqjob-a-b-c-d"
+
+
+def test_a_job_without_a_declared_budget_stays_a_direct_child(queue):
+    """No declaration, no cap -- and no unit.
+
+    The cap is what a declared budget buys. Leaving undeclared jobs on the
+    plain child path keeps them evictable by the governor, which is the only
+    lever that reaches a job whose appetite was never stated.
+    """
+    item = {"id": "plain", "cmd": "true", "attempts": 1, "max_attempts": 1,
+            "enqueued_at": time.time()}
+    (pqwork.qdir(pqwork.CLAIMED) / "plain.json").write_text(json.dumps(item))
+    job = pqwork.Job(item, "testhost")
+    job.start()
+    for _ in range(100):
+        if not job.alive():
+            break
+        time.sleep(0.1)
+    assert job.unit is None
+
+
+@pytest.mark.skipif(not _systemd_user_available(),
+                    reason="no delegated user cgroup on this box")
+def test_a_job_that_exceeds_its_budget_is_killed_and_not_retried(queue):
+    """The offender dies, and it dies once.
+
+    Retrying is what a transient failure earns. A job that asked for 1 GB and
+    wanted 3 is not transient -- the declaration is wrong, and two more
+    attempts only reproduce it. The recorded outcome has to name the fix.
+    """
+    hog = Path(queue) / "hog.py"
+    hog.write_text(
+        "buf = []\n"
+        "for _ in range(60):\n"
+        "    buf.append(bytearray(64 * 1024 * 1024))\n")
+    receipt = str(Path(queue) / "hog.receipt")
+    item = {"id": "hog", "cmd": f"python3 {hog}", "mem_gb": 1.0,
+            "receipt": receipt, "attempts": 1, "max_attempts": 3,
+            "enqueued_at": time.time()}
+    (pqwork.qdir(pqwork.CLAIMED) / "hog.json").write_text(json.dumps(item))
+    job = pqwork.Job(item, "testhost")
+    job.start()
+    for _ in range(600):
+        if not job.alive():
+            break
+        time.sleep(0.1)
+    assert not job.alive(), "capped job never terminated"
+    assert job.oomed, "the cgroup did not kill it -- the cap is not enforcing"
+    assert not Path(receipt).exists()
+    assert state_of("hog") == pqwork.FAILED, "a wrong budget must not be retried"
+    rec = json.loads((pqwork.qdir(pqwork.FAILED) / "hog.json").read_text())
+    assert "budget_exceeded" in rec["outcome"]
+    assert "--mem-gb" in rec["outcome"], "the outcome must name the fix"

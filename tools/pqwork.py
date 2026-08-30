@@ -430,14 +430,39 @@ def mem_available_gb() -> float:
     return float("inf")
 
 
+def unit_name(item_id: str) -> str:
+    """systemd unit name for a job. Only [A-Za-z0-9:_.\\-] survive."""
+    safe = "".join(c if (c.isalnum() or c in ":_.-") else "-" for c in item_id)
+    return f"pqjob-{safe}"
+
+
 class Job:
-    """One claimed item executing as a child process group."""
+    """One claimed item, run either as a child process group or, when it
+    declares ``mem_gb``, inside a transient systemd scope with a hard cgroup
+    memory cap.
+
+    The cap is the important half. A userspace monitor that watches memory and
+    kills something is the wrong shape -- it is reactive, it can only evict
+    what it started, and on unified memory it is the recorded Ray failure mode
+    (a monitor killing healthy ranks). ``MemoryMax`` inverts that: the job
+    that exceeds its own declared budget is killed by its own cgroup, and
+    nothing else on the box is a candidate. Measured here: a 300 M cap against
+    a runaway allocator gave ``memory.events oom-kill 2`` and exit 9, with no
+    other process disturbed.
+
+    ``--scope`` was tried first, because it keeps the job as a direct child
+    and so keeps ``killpg`` working; it hung under the cap rather than
+    killing. The transient service form enforces correctly, so eviction of a
+    capped job goes through ``systemctl --user stop`` instead.
+    """
 
     def __init__(self, item: dict, host: str):
         self.item = item
         self.id = item["id"]
         self.host = host
         self.proc: subprocess.Popen | None = None
+        self.unit: str | None = None
+        self.oomed = False
         self.started = time.time()
         self.avail_at_start = mem_available_gb()
         self.evicted = False
@@ -483,15 +508,54 @@ class Job:
                      f"{time.strftime('%F %T')} ====\n")
             fh.write(f"cwd={item.get('cwd')}\ncmd={item['cmd']}\n"
                      f"mem_available_at_start={self.avail_at_start:.1f}GB\n\n")
-            # start_new_session so the whole job -- and anything it spawns --
-            # is one process group we can signal as a unit. Killing only the
-            # shell would leave the actual worker holding the memory.
-            self.proc = subprocess.Popen(
-                ["bash", "-lc", item["cmd"]],
-                cwd=item.get("cwd") or str(Path.home()), env=env,
-                stdout=fh, stderr=subprocess.STDOUT, start_new_session=True,
-            )
-            rc = self.proc.wait()
+            cwd = item.get("cwd") or str(Path.home())
+            if self.declared_gb > 0:
+                # A declared budget buys real enforcement: exceed it and your
+                # own cgroup kills you, rather than the kernel picking a
+                # victim from the whole box.
+                self.unit = unit_name(self.id)
+                subprocess.run(["systemctl", "--user", "reset-failed",
+                                self.unit], capture_output=True)
+                cmd = [
+                    "systemd-run", "--user", "--quiet", "--wait",
+                    f"--unit={self.unit}",
+                    "-p", f"MemoryMax={self.declared_gb:.0f}G",
+                    "-p", "MemorySwapMax=0",
+                    "-p", "MemoryAccounting=yes",
+                    "-p", f"WorkingDirectory={cwd}",
+                    "-p", f"StandardOutput=append:{log}",
+                    "-p", f"StandardError=append:{log}",
+                ]
+                for k, v in env.items():
+                    if k in ("TMPDIR", "PQ_ITEM_ID", "PQ_WORKER_HOST", "PATH",
+                             "HOME", "PYTHONPATH"):
+                        cmd += ["--setenv", f"{k}={v}"]
+                cmd += ["--", "/bin/bash", "-lc", item["cmd"]]
+                fh.write(f"[pqwork] capped at {self.declared_gb:.0f}G "
+                         f"in unit {self.unit}\n")
+                fh.flush()
+                self.proc = subprocess.Popen(cmd, env=env,
+                                             stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.STDOUT,
+                                             start_new_session=True)
+                self.proc.wait()
+                rc, self.oomed = unit_result(self.unit)
+                if self.oomed:
+                    fh.write(f"[pqwork] killed by its own cgroup: exceeded the "
+                             f"declared {self.declared_gb:.0f}G budget\n")
+                    fh.flush()
+                subprocess.run(["systemctl", "--user", "reset-failed",
+                                self.unit], capture_output=True)
+            else:
+                # start_new_session so the whole job -- and anything it spawns
+                # -- is one process group we can signal as a unit. Killing only
+                # the shell would leave the actual worker holding the memory.
+                self.proc = subprocess.Popen(
+                    ["bash", "-lc", item["cmd"]],
+                    cwd=cwd, env=env,
+                    stdout=fh, stderr=subprocess.STDOUT, start_new_session=True,
+                )
+                rc = self.proc.wait()
             elapsed = time.time() - self.started
             if self.evicted:
                 fh.write(f"\n[pqwork] evicted to avoid OOM after {elapsed:.0f}s\n")
@@ -517,6 +581,18 @@ class Job:
                        "not_before": time.time() + backoff,
                        "attempts": max(0, int(item.get("attempts", 1)) - 1)})
             self.state = f"evicted (backoff {backoff:.0f}s)"
+            return
+
+        if self.oomed and not receipt_satisfied(item.get("receipt") or ""):
+            # Retrying is pointless: the same command under the same budget
+            # dies the same way. Say what the fix is instead of burning two
+            # more attempts on it.
+            move_item(self.id, CLAIMED, FAILED, {
+                "outcome": f"budget_exceeded (declared {self.declared_gb:.0f}GB"
+                           f"; re-enqueue with a larger --mem-gb)",
+                "exit_code": rc, "elapsed_s": round(elapsed, 1),
+                "finished_at": time.time()})
+            self.state = "budget exceeded"
             return
 
         receipt = item.get("receipt")
@@ -553,6 +629,11 @@ class Job:
         the tens of gigabytes.
         """
         self.evicted = True
+        if self.unit:
+            # A capped job lives in its own unit, not in our process group.
+            subprocess.run(["systemctl", "--user", "stop", self.unit],
+                           capture_output=True)
+            return
         proc = self.proc
         if proc is None or proc.poll() is not None:
             return
@@ -568,6 +649,28 @@ class Job:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
+
+
+def unit_result(unit: str) -> tuple[int, bool]:
+    """``(exit_code, was_oom_killed)`` for a finished transient unit.
+
+    ``systemd-run --wait`` returns its own success, not the service's, so the
+    status has to be read back. Neither value decides whether the work
+    succeeded -- that is the receipt's job, and a unit's reported Result is
+    not evidence of anything but how the process ended. The OOM flag is used
+    for one narrow purpose: to say why, and to stop retrying a job whose
+    declared budget is simply too small.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "show", unit, "-p", "ExecMainStatus",
+             "-p", "Result", "--value"],
+            capture_output=True, text=True, timeout=15)
+        lines = [ln.strip() for ln in (out.stdout or "").splitlines()]
+        rc = next((int(ln) for ln in lines if ln.lstrip("-").isdigit()), -1)
+        return rc, any(ln == "oom-kill" for ln in lines)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return -1, False
 
 
 class MemoryGovernor:

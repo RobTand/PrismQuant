@@ -104,10 +104,43 @@ python3 $Q cancel <id>     # ready/claimed -> failed
    can evict everything on the box**; where a non-evictable neighbour exists,
    admission has to be conservative.
 
-   `reserved/<host>.gpu` also holds The alternative — inferring "the GPU
-   is busy" from telemetry — is unavailable here: on GB10 `gpu_utilization`
-   reads 96% for a stalled kernel and a saturated one alike, so such a check
-   would be a guess wearing a measurement's clothes.
+   The alternative — inferring "the box is busy" from telemetry — is
+   unavailable here: on GB10 `gpu_utilization` reads 96% for a stalled kernel
+   and a saturated one alike, so such a check would be a guess wearing a
+   measurement's clothes.
+
+6. **A declared memory budget is enforced, not trusted.** An item with
+   `--mem-gb N` runs inside a transient systemd unit with `MemoryMax=NG` and
+   `MemorySwapMax=0`, so a job that outgrows its own declaration is killed by
+   its own cgroup. This is the half the governor cannot do. A governor picks
+   a victim by policy and can only reach jobs it started; a cgroup limit
+   reaches the one process that is actually over budget, and reaches it
+   whoever started it. It is also the shape the PrismaBuild spec asked for —
+   allocation-time enforcement rather than a reactive monitor — because a
+   userspace memory monitor on unified memory is the recorded Ray failure,
+   where the monitor killed healthy ranks.
+
+   Measured on sparky: a 1 GB cap against a runaway allocator gives
+   `memory.events oom-kill` and exit 9 with nothing else on the box
+   disturbed; an under-budget job completes normally through the same path,
+   keeping its `cwd`, its environment and its log. Two consequences worth
+   knowing:
+
+   * **A budget-exceeded job fails once and is not retried.** The same
+     command under the same budget dies the same way, so the outcome names
+     the fix (`re-enqueue with a larger --mem-gb`) instead of spending two
+     more attempts reproducing it.
+   * **Undeclared jobs stay on the plain child path**, uncapped and
+     governor-evictable. The cap is what declaring buys; an undeclared
+     appetite can only be managed reactively, which is the weaker tool and
+     should read as the weaker option.
+
+   The scope form (`systemd-run --user --scope`) would have been more
+   convenient — the job stays a direct child, so stdout inherits and
+   `killpg` still evicts. It was tried first and hangs under the cap rather
+   than killing, twice. The service form enforces, so eviction of a capped
+   job goes through `systemctl --user stop` instead; that path is tested to
+   terminate in well under a second and leave no orphaned children.
 
 ## What it deliberately does not do
 

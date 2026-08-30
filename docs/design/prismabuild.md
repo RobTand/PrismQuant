@@ -1,41 +1,70 @@
 # PrismaBuild — distributed campaign execution (spec, deferred)
 
-**Status: STACK SUPERSEDED 2026-08-29. The problem statement below still
-stands; the chosen stack does not.** Filed 2026-08-26 from a design
-conversation with Robert. Nothing in the live pipeline depends on this
-document.
+**Status: SCHEDULED, not superseded. Filed 2026-08-26; deferred 2026-08-29
+behind the numeric experiments.** Robert, 2026-08-29: *"I would say to queue
+up prismabuild to run after we've completed our numeric experiments but
+before we go to quantize another model."* That is the slot. Nothing in the
+live pipeline depends on this document yet.
 
-Robert, 2026-08-29: *"I am not married to the spec. We need to maximize
-utilization of this hardware for quantization, lower coordination overhead
-and remove agents from the critical path of work distribution."* Those three
-goals are the requirement; SLURM and Dagster were one answer to them.
+An earlier version of this header claimed the stack here was superseded. It
+was written after reading the first 40 of these 152 lines, and it was wrong
+on the substance -- correcting it below rather than deleting it, because the
+error is the useful part.
 
-What shipped instead is `tools/pqwork.py` — a shared pull-queue on
-`/mnt/shared`, with a worker loop per box (`pqwork.service`, a systemd user
-unit). Agents enqueue work items; boxes pull the ones they are eligible for.
-It clears all three bars at a fraction of the setup cost, and it did so the
-same day it was specified, which SLURM partitions and a Dagster→sbatch
-run-launcher would not have.
+### What shipped in the meantime, and what it is not
 
-The reasoning, so it is not relitigated from scratch:
+`tools/pqwork.py` -- a shared pull-queue on `/mnt/shared`, one worker loop
+per box as a systemd user unit. Agents enqueue; boxes claim what they are
+eligible for. Robert's read of it, 2026-08-29: *"for the work we're doing
+now, this seems sufficient at keeping both boxes occupied."* Note the scope
+of that sentence. It is an assessment of the current workload, not a verdict
+on this spec.
 
-* **The bottleneck was never scheduling.** With two GB10s and one big job per
-  box (unified memory makes stacking expensive), the scheduling problem is
-  nearly trivial. The bottleneck was that an agent *was* the queue: work only
-  moved when a session was awake to move it.
-* **SLURM's value is proportional to fleet size and heterogeneity**, and the
-  ROCm desktops and the Strix laptop have not joined. Standing up munge,
-  slurmd, partitions and GRES for machines that do not yet participate is
-  building the abstraction before the thing it abstracts.
-* **Dagster's memoization is what receipts already do here.** Every campaign
-  in this repo is already receipt-gated and skip-if-done; that is the same
-  cache model, and the queue reuses it directly rather than reimplementing it
-  behind an asset graph.
+It answers the three goals Robert restated on 2026-08-29 -- maximize hardware
+utilization, lower coordination overhead, remove agents from the critical
+path of work distribution -- for a two-box fleet running whole pipeline runs.
+It does not answer what this spec was written to answer:
 
-The `host class` concept from the fleet table below survives verbatim as the
-work item's `hosts` and `requires` fields, which is the seam SLURM would slot
-into if the fleet ever grows enough to want it. Revisit when a third machine
-class actually joins, not before.
+* **Action keys are not receipts.** The Cache/action-key section below hashes
+  input artifacts, the code closure, params, and the environment that
+  matters, so re-enqueueing an identical unit of work is a cache *hit* --
+  free, and correct to request. A pqwork receipt is weaker: it records that a
+  named file exists, so it can skip an item that already ran under that id,
+  but it cannot tell you a rebuild is unnecessary because the inputs are
+  unchanged, and it cannot recognize the same work arriving under a different
+  id. My earlier claim that "Dagster's memoization is what receipts already
+  do here" collapsed those two, and they are not the same mechanism.
+* **The generation/measurement split has no equivalent in the queue.**
+  Keying generation tasks without the host (any box's bytes are valid) while
+  keying measurement tasks with the host class (numerics do not transfer) is
+  a correctness property. pqwork's `--host`/`--require` are placement hints,
+  and a hint is not a key.
+* **A roll-your-own queue dir was explicitly declined here** (Rejected
+  alternatives, Robert 2026-08-26). I built one anyway. Robert has since
+  accepted it for the current workload, per the quote above -- but the
+  sequence was build-then-accept, not spec-then-build, and the record should
+  say so.
+
+### The one part of this spec that has already been paid for
+
+The **Memory-pressure corollary** below called the lina outage before it
+happened: allocation-time enforcement, not a reactive monitor. On 2026-08-29
+a job with a ~85 GB peak drove lina into a four-minute swap livelock with the
+OOM killer never firing, and pqwork's memory governor -- precisely the
+reactive monitor this section warns against -- could not evict it, because it
+had not started it.
+
+pqwork now caps each job that declares `--mem-gb` with a real cgroup limit
+(`systemd-run --user -p MemoryMax=... -p MemorySwapMax=0`), so the process
+that exceeds its own budget is the one that dies. Measured on sparky: a 1 GB
+cap against a runaway allocator gave `oom-kill` and exit 9 with nothing else
+disturbed; an under-budget job completed normally through the same path.
+That is this spec's idea, implemented ahead of this spec.
+
+The `host class` concept from the fleet table below survives as the work
+item's `hosts`/`requires` fields. When PrismaBuild lands in its slot, the
+open questions are the CAS keys and the generation/measurement split, not
+the queue.
 
 See `docs/design/work_queue.md` for the shipped design.
 
