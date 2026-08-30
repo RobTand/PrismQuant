@@ -141,6 +141,35 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     os.rename(tmp, path)
 
 
+def reserved_memory_gb(host: str) -> tuple[float, str]:
+    """Memory on this box held by something outside the queue, in GB.
+
+    The governor can evict its own items, but it cannot evict a job it did
+    not start -- and on 2026-08-30 a hand-launched job took sparklina from
+    68 GB to 4 GB in 100 seconds, filled swap, and left the box unreachable
+    over SSH for five minutes. No admission policy over MemAvailable alone
+    can prevent that, because MemAvailable does not say how much more the
+    neighbour intends to take.
+
+    So the neighbour declares it, the same way it declares a GPU slot. The
+    declared amount is held out of headroom for as long as the file exists,
+    which makes the queue conservative exactly where it cannot police the
+    outcome.
+    """
+    f = qdir(RESERVED) / f"{host}.mem"
+    try:
+        text = f.read_text().strip()
+    except (FileNotFoundError, NotADirectoryError):
+        return 0.0, ""
+    if not text:
+        return 0.0, ""
+    head, _, rest = text.partition("\n")
+    try:
+        return max(0.0, float(head.strip())), rest.strip()
+    except ValueError:
+        return 0.0, text
+
+
 def reserved_gpu_slots(host: str) -> tuple[int, str]:
     """GPU slots on this box held by something outside the queue.
 
@@ -525,6 +554,7 @@ class MemoryGovernor:
         self.horizon_s = horizon_s
         self.settle_s = settle_s
         self.admission = admission
+        self.external_hold_gb = 0.0
         self.samples: collections.deque = collections.deque()
 
     def sample(self) -> float:
@@ -542,6 +572,9 @@ class MemoryGovernor:
         dt = t1 - t0
         return (a0 - a1) / dt if dt > 0 else 0.0
 
+    def set_external_hold(self, gb: float) -> None:
+        self.external_hold_gb = gb
+
     def headroom(self, jobs: list) -> float:
         """Memory we may still commit, after unrealized declarations.
 
@@ -555,7 +588,10 @@ class MemoryGovernor:
             j.declared_gb for j in jobs
             if j.declared_gb and (now - j.started) < self.settle_s
         )
-        return self.samples[-1][1] - self.reserve_gb - unrealized if self.samples else 0.0
+        if not self.samples:
+            return 0.0
+        return (self.samples[-1][1] - self.reserve_gb
+                - self.external_hold_gb - unrealized)
 
     def may_admit(self, item: dict, jobs: list) -> bool:
         """Optimistic by default: start it and find out.
@@ -631,6 +667,7 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
           f"admission={admission} swap_free={swap_free_gb():.0f}GB "
           f"queue={QUEUE_ROOT}", flush=True)
     last_held = None
+    last_mem_hold = 0.0
     last_beat = 0.0
     while True:
         avail = gov.sample()
@@ -658,6 +695,14 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
         mine = claimed_on_host(host)
         gpu_busy = sum(1 for i in mine if i.get("needs_gpu"))
         cpu_busy = len(mine) - gpu_busy
+        held_mem, held_mem_why = reserved_memory_gb(host)
+        gov.set_external_hold(held_mem)
+        if held_mem != last_mem_hold:
+            if held_mem:
+                print(f"[pqwork] {held_mem:.0f}GB held outside the queue"
+                      f"{': ' + held_mem_why.splitlines()[0] if held_mem_why else ''}",
+                      flush=True)
+            last_mem_hold = held_mem
         held, held_why = reserved_gpu_slots(host)
         gpu_capacity = max(0, gpu_slots - held)
         if held != last_held:
@@ -770,7 +815,9 @@ def cmd_status(a: argparse.Namespace) -> int:
     for f in sorted(qdir(RESERVED).glob("*.gpu")):
         host = f.stem
         n, why = reserved_gpu_slots(host)
-        print(f"RESERVED  {host}: {n} GPU slot(s) -- {why.splitlines()[0] if why else '?'}")
+        mem, _ = reserved_memory_gb(host)
+        held = f"{n} GPU slot(s)" + (f" + {mem:.0f}GB" if mem else "")
+        print(f"RESERVED  {host}: {held} -- {why.splitlines()[0] if why else '?'}")
     for state in (CLAIMED, READY, FAILED, DONE):
         items = [read_item(p) for p in sorted(qdir(state).glob("*.json"))]
         items = [i for i in items if i]
@@ -854,12 +901,17 @@ def cmd_reserve(a: argparse.Namespace) -> int:
     if a.release:
         existed = f.exists()
         f.unlink(missing_ok=True)
+        (qdir(RESERVED) / f"{a.host}.mem").unlink(missing_ok=True)
         print(f"released GPU reservation on {a.host}" if existed
               else f"no GPU reservation held on {a.host}")
         return 0
-    body = f"{a.slots}\n{a.why or 'unattributed'}\n"
-    f.write_text(body)
-    print(f"reserved {a.slots} GPU slot(s) on {a.host}: {a.why or 'unattributed'}")
+    f.write_text(f"{a.slots}\n{a.why or 'unattributed'}\n")
+    msg = f"reserved {a.slots} GPU slot(s) on {a.host}"
+    if a.mem_gb:
+        (qdir(RESERVED) / f"{a.host}.mem").write_text(
+            f"{a.mem_gb}\n{a.why or 'unattributed'}\n")
+        msg += f" and {a.mem_gb:.0f}GB"
+    print(f"{msg}: {a.why or 'unattributed'}")
     return 0
 
 
@@ -949,6 +1001,10 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("reserve", help="hold GPU slots for work outside the queue")
     v.add_argument("--host", default=None)
     v.add_argument("--slots", type=int, default=1)
+    v.add_argument("--mem-gb", type=float, default=None, dest="mem_gb",
+                   help="memory this off-queue job will take. Held out of "
+                        "headroom so the queue does not admit work onto "
+                        "memory a neighbour has not allocated yet.")
     v.add_argument("--why", help="who holds it and why; shown by status")
     v.add_argument("--release", action="store_true", help="give the slots back")
     v.set_defaults(func=cmd_reserve)

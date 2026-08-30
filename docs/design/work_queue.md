@@ -86,8 +86,25 @@ python3 $Q cancel <id>     # ready/claimed -> failed
    exists skips without executing, so a stale-lease requeue cannot
    double-run finished work, and a whole campaign can be re-enqueued after a
    partial run without redoing its finished arms.
-5. **Out-of-queue GPU work declares itself.** `reserved/<host>.gpu` holds
-   slots for jobs the queue cannot see. The alternative — inferring "the GPU
+5. **Out-of-queue work declares itself — memory as well as GPU slots.**
+   `reserved/<host>.gpu` holds slots and `reserved/<host>.mem` holds
+   gigabytes, for jobs the queue cannot see. The memory half exists because
+   of a failure: on 2026-08-30 a hand-launched job took sparklina from 68 GB
+   to 4 GB in about 100 seconds, filled 16 GB of swap, and left the box
+   unreachable over SSH for five minutes. The governor could not evict it --
+   it was not a queue item -- and no admission policy over MemAvailable alone
+   could have prevented it, because MemAvailable does not say how much more a
+   neighbour intends to take. Only a declaration can.
+
+   Two things that failure also settled. **Swap makes it worse, not better:**
+   MemAvailable sat pinned at 4.0 GB for four minutes and the OOM killer
+   never fired, because swap absorbed the pressure, so the box never
+   self-healed. Without swap the kernel kills one process in seconds and
+   stays reachable. And **aggressive admission is only safe when the governor
+   can evict everything on the box**; where a non-evictable neighbour exists,
+   admission has to be conservative.
+
+   `reserved/<host>.gpu` also holds The alternative — inferring "the GPU
    is busy" from telemetry — is unavailable here: on GB10 `gpu_utilization`
    reads 96% for a stalled kernel and a saturated one alike, so such a check
    would be a guess wearing a measurement's clothes.

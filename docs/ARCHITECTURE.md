@@ -1,8 +1,14 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `claude/trellis-continuous-surface` — stamps follow, newest
+As of: 2026-08-29 · `codex/arch84-profile-table-pin` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-29,
-`claude/trellis-continuous-surface`) for the **trellis seam correction**
+`codex/arch84-profile-table-pin`) for the **§8.4 model-profile conformance
+pin**: the matrix is now parsed in CI and checked in both directions against
+the Python profile registry, model-structure specs and serving-profile specs.
+The `glm5_next` row's default is corrected from generic `vllm_packed_moe` to
+the spec's `vllm_glm5_next_packed_moe`, and its lanes from CT + unattested
+NVFP4-CB to the spec's sole `compressed-tensors` lane. Earlier same-day stamp
+(`claude/trellis-continuous-surface`) for the **trellis seam correction**
 (§4.9): the seam that landed earlier the same day is now **fail-closed** when
 enabled, and this document's claim that it made trellis rungs "pass the same
 legality, aggregation and byte accounting every other candidate does" is
@@ -5948,7 +5954,7 @@ artifacts exported before the rename.
 | hy_v3 | `hy_v3.py` | 180 | ✅ | `gguf` (overridden, L1) | CT, nvfp4_cb, **gguf** (gguf) | declared by pinned Gridbook contract | `has_mtp → False`; MTP passthrough + out-of-band CB scripts |
 | laguna (poolside S/XS 2.x) | `laguna.py` | 190 | ✅ | `nvfp4_cb` (overridden, L1) | CT, **nvfp4_cb** (nvfp4_cb) | declared by pinned Gridbook contract; drafter still separate | `has_mtp → False` |
 | qwen4_exp (Qwen3.8-Flash-Next 177B) | `qwen4_exp.py` | 200 | ✅ | ⚠ **spec declares none** | ⚠ **spec declares none** → accessor default CT | ⚠ none | `has_mtp → False`; `mtp_source_prefix "mtp."` + `mtp.` in `passthrough_prefixes` |
-| glm5_next (GLM-5.3-Flash 314B) | `glm5_next.py` | 210 | ✅ | `vllm_packed_moe` | CT, nvfp4_cb (CT) | ⚠ none | `has_mtp → False`; body-indexed nextn at layer 45, passthrough (hy_v3 route) |
+| glm5_next (GLM-5.3-Flash 314B) | `glm5_next.py` | 210 | ✅ | `vllm_glm5_next_packed_moe` | CT | ⚠ none | `has_mtp → False`; body-indexed nextn at layer 45, passthrough (hy_v3 route) |
 | default | `default.py` | — (terminal) | n/a by design | — | CT (default) | n/a | none |
 
 `prio` = detection priority, lower first (§8.1); the same number is declared on the Python class
