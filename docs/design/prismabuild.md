@@ -1,8 +1,43 @@
 # PrismaBuild — distributed campaign execution (spec, deferred)
 
-**Status: SPEC / NOT BUILT.** Filed 2026-08-26 from a design conversation with
-Robert; return to this after GLM-5.3-Flash v1 ships. Nothing in the live
-pipeline depends on this document.
+**Status: STACK SUPERSEDED 2026-08-29. The problem statement below still
+stands; the chosen stack does not.** Filed 2026-08-26 from a design
+conversation with Robert. Nothing in the live pipeline depends on this
+document.
+
+Robert, 2026-08-29: *"I am not married to the spec. We need to maximize
+utilization of this hardware for quantization, lower coordination overhead
+and remove agents from the critical path of work distribution."* Those three
+goals are the requirement; SLURM and Dagster were one answer to them.
+
+What shipped instead is `tools/pqwork.py` — a shared pull-queue on
+`/mnt/shared`, with a worker loop per box (`pqwork.service`, a systemd user
+unit). Agents enqueue work items; boxes pull the ones they are eligible for.
+It clears all three bars at a fraction of the setup cost, and it did so the
+same day it was specified, which SLURM partitions and a Dagster→sbatch
+run-launcher would not have.
+
+The reasoning, so it is not relitigated from scratch:
+
+* **The bottleneck was never scheduling.** With two GB10s and one big job per
+  box (unified memory makes stacking expensive), the scheduling problem is
+  nearly trivial. The bottleneck was that an agent *was* the queue: work only
+  moved when a session was awake to move it.
+* **SLURM's value is proportional to fleet size and heterogeneity**, and the
+  ROCm desktops and the Strix laptop have not joined. Standing up munge,
+  slurmd, partitions and GRES for machines that do not yet participate is
+  building the abstraction before the thing it abstracts.
+* **Dagster's memoization is what receipts already do here.** Every campaign
+  in this repo is already receipt-gated and skip-if-done; that is the same
+  cache model, and the queue reuses it directly rather than reimplementing it
+  behind an asset graph.
+
+The `host class` concept from the fleet table below survives verbatim as the
+work item's `hosts` and `requires` fields, which is the seam SLURM would slot
+into if the fleet ever grows enough to want it. Revisit when a third machine
+class actually joins, not before.
+
+See `docs/design/work_queue.md` for the shipped design.
 
 ## Problem
 

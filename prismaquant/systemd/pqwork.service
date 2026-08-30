@@ -1,0 +1,21 @@
+[Unit]
+Description=PrismaQuant shared work-queue worker (pull side)
+Documentation=file:///mnt/shared/pq-queue/bin/pqwork.py
+After=network-online.target remote-fs.target
+
+[Service]
+Type=simple
+# The loop's only job is to stay alive and pull. Whether a *job* succeeded is
+# judged by its receipt, never by unit state -- a unit can report success for
+# work that did not happen, which is why nothing here uses --collect and why
+# nothing downstream reads the unit's Result.
+ExecStart=/usr/bin/python3 /mnt/shared/pq-queue/bin/pqwork.py run --gpu-slots 1 --cpu-slots 2 --tag gb10 --tag cuda
+Restart=always
+RestartSec=15
+# One GPU item at a time by default: unified memory means two large jobs
+# contend for a single physical pool. An item that genuinely wants to share
+# says so with its own flag rather than the worker relaxing globally.
+Nice=0
+
+[Install]
+WantedBy=default.target
