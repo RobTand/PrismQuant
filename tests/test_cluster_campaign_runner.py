@@ -612,16 +612,37 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
             if observed_running:
                 break
         time.sleep(0.02)
-    assert observed_running
+    assert observed_running, (
+        "coordinator never recorded slow-stage as running with a pid; "
+        f"state={state_path.read_text(encoding='utf-8') if state_path.is_file() else '(absent)'}"
+    )
     coordinator.terminate()
     coordinator.wait(timeout=5)
+
+    # Wait for the orphaned helper to finish, on its receipt rather than on
+    # the clock. What this test asserts is that a resume ADOPTS a completed
+    # helper's work instead of redoing it -- so the helper has to have
+    # completed. Probing the instant the coordinator dies asserts something
+    # else: that the helper wins a race against the resume. It usually did,
+    # and lost under load, which is how this arrived in CI as a flake.
+    helper_deadline = time.monotonic() + 30.0
+    while time.monotonic() < helper_deadline and not receipt_path.is_file():
+        time.sleep(0.02)
+    assert receipt_path.is_file(), (
+        "the orphaned helper never wrote its receipt, so there is nothing "
+        "for the resume to adopt -- the coordinator's termination most "
+        "likely took the helper with it"
+    )
 
     state = campaign.run_campaign_v2(
         manifest, state_path, poll_interval=0.02
     )
 
     attempts = state["stages"]["slow-stage"]["attempts"]
-    assert len(attempts) == 1
+    assert len(attempts) == 1, (
+        "the resume started a second attempt instead of adopting the "
+        f"completed helper's work: {attempts}"
+    )
     assert attempts[0]["status"] == "succeeded"
     assert "exact receipts recovered" in attempts[0]["detail"]
     assert receipt_path.read_bytes() == b"slow-done"
