@@ -1,12 +1,13 @@
 # QTIP-informed optimizer, native NVFP4 output
 
-Status: **implemented Arm C research-only one-Linear isolate; no production
-registration, QTIP runtime, or new serving lane.** It tests QTIP-derived
-BlockLDLQ with a stock native-NVFP4 terminal. It is not the combined rotated
-PrismaQuant/Gridbook trellis producer, which does not exist. An external,
-unpinned Gridbook research reference implements the online-transform runtime
-seam, but it is outside the current Gridbook 0.9.1 contract. Schema v2 requires
-a fresh no-clobber result root and a receipt that binds both source trees,
+Status: **implemented and measured Arm C research-only one-Linear isolate,
+plus a physical transformed-basis PrismaQuant/Gridbook trellis producer; no
+production registration, QTIP runtime, or new serving lane.** Arm C tests
+QTIP-derived BlockLDLQ with a stock native-NVFP4 terminal. The combined
+producer emits canonical `gridbook.trellis.wire.v1` bytes and validates the
+online sign/Hadamard algebra against an external, unpinned Gridbook research
+reference outside the current Gridbook 0.9.1 contract. Schema v2 requires a
+fresh no-clobber result root and a receipt that binds both source trees,
 inputs, calibration, container, host, GPU/driver, command, and quality levers.
 
 Pinned reference: official QTIP checkout
@@ -23,14 +24,15 @@ for `math_utils.py`, `ldlq.py`, `finetune.py`, and `bitshift.py` as well.
   same local objective.
 - QTIP's random signs, input/output Hadamards, and `SU`/`SV` factors require
   inverse transforms during execution. They cannot decorate one native-NVFP4
-  Linear without runtime sidecars. A separately proved model-wide fold could
-  be tested only as a Gridbook arm; this isolate intentionally does not claim
-  or implement one in PrismaQuant.
+  Linear without runtime sidecars. PrismaQuant now has a strict research
+  producer for Gridbook's `gridbook.qtip-online-hadamard.v1` sidecar and its
+  existing trellis wire; the stock-native Arm C isolate intentionally remains
+  unrotated so its mechanism stays attributable.
 - QTIP's tail-biting Viterbi codebook correlates choices across a 256-element
   tile and serializes trellis state. Native NVFP4 independently decodes each
   E2M1 nibble under one E4M3 scale per group of 16, so the QTIP trellis is not
   representable as standard native bytes. That QTIP wire is excluded and is
-  not decoded by Gridbook. The intended combined follow-on would retain
+  not decoded by Gridbook. The combined research producer retains
   PrismaQuant/Gridbook's existing `TCQ_E2M1_R256` trellis wire while borrowing
   QTIP-derived optimizer and rotation ideas; it would not emit QTIP bytes.
 
@@ -70,13 +72,13 @@ All arms emit only `weight_packed`, `weight_scale`, `weight_global_scale`, and
 metric is a BF16/FP32 activation-Hessian weight isolate, not a served W4A4 or
 full QTIP model-quality claim.
 
-The receipt labels the ordinary activation-output proxy and the damped proxy
+The Arm-C receipt labels the ordinary activation-output proxy and the damped proxy
 as **untransformed original-Linear space**. No transformed-Hessian number is
-reported because this stock-native isolate has no online rotation. Any later
-rotation arm must transform both weight and Hessian consistently. The runtime
-transform reference exists only in an external, unpinned Gridbook research
-branch; the corresponding combined PrismaQuant producer and pinned contract
-do not exist.
+reported because this stock-native isolate has no online rotation. The
+separate combined producer transforms both weight and Hessian consistently
+and proves the post-decode serve algebra. Its runtime transform exists only in
+an external, unpinned Gridbook research branch and is not a production
+contract.
 
 ```bash
 python -m research.qtip_native_nvfp4_2026-08-30.native_nvfp4_ldlq \
@@ -103,13 +105,69 @@ individually without clobber; the receipt publishes last and is the commit
 marker. A directory containing fields or a trace but no receipt is incomplete
 and must be abandoned rather than resumed in place.
 
+## Accepted schema-v2 one-Linear result (Sparky, 2026-08-30)
+
+The accepted r3 run uses Qwen3-0.6B BF16
+`model.layers.0.self_attn.q_proj.weight`, shape `[2048, 1024]`, and the same
+256 FP32 UltraChat activation rows as the historical isolate. The publication
+binds PrismaQuant commit `64679a7`, QTIP commit
+`e90c6688c8dfae326a3a81b5eb032db7c6680ec0`, the calibration identity,
+container, command, device/driver, exact quality environment, field hashes,
+Torch trace, py-spy profile, and both-host Netdata series. Every arm is exactly
+4.500030517578125 bpw over 2,097,152 quantizable weights.
+
+| Arm | activation-output NSSE | regularized-H NSSE | weight SNR | bpw |
+|---|---:|---:|---:|---:|
+| A native RTN + JSO | 0.002579497 | 0.003893172 | 21.1268 dB | 4.5000305 |
+| B current GPTQ + static order + JSO | 0.002579497 | 0.003893172 | 21.1268 dB | 4.5000305 |
+| C QTIP BlockLDLQ + native terminal | **0.001043210** | **0.002936581** | 20.7342 dB | 4.5000305 |
+| C2 C + seven-level scale heuristic | **0.001043210** | **0.002936581** | 20.7342 dB | 4.5000305 |
+
+Against A/B, C reduces activation-output NSSE by **59.56%** (+3.9316 dB)
+and the regularized-H proxy by **24.57%** (+1.2246 dB), despite losing 0.3925
+dB of weight-only SNR. The result therefore isolates the value of error
+direction under a non-diagonal activation metric. C2 is byte-identical to C:
+the five additional max-to-level scale heuristics add no value on this
+Linear. This is not an exhaustive legal E4M3 scale search.
+
+The raw receipt is
+`sparky:/home/rob/dq-runs/qtip-native-nvfp4-v2-r3-64679a7/receipt.v2.json`
+(SHA-256
+`77912b7def1a0951dbeb067c50d0d617bd2458945ffd8170938d480828d1a54b`).
+The independent acceptance receipt is
+`sparky:/home/rob/dq-runs/qtip-native-nvfp4-v2-r3-64679a7-telemetry/acceptance.v2.json`
+(SHA-256
+`98ad857d0addac04d22c318bbd0dffff3fb62cebacf83b35dda356b2208cd8ca`).
+Its Netdata manifest SHA-256 is
+`3026abf638434b34492c0ea55626959a74289f770b2de15a3a408bad4bc9aabb`.
+The approximately 23-second isolate is quality evidence only; it is not a
+throughput or work-per-joule benchmark.
+
+## Gridbook online-transform reference
+
+The separate Gridbook research branch at commit
+`84a78c745e53676f87397e937456d7f2fc6ddd3f` implements strict
+`gridbook.qtip-online-hadamard.v1` metadata and reference transforms without a
+core-vLLM patch or PrismaQuant import. At M=32, K=N=4096, block size 256, and
+20,000 iterations on Sparky, the input transform measured 0.150208 ms median
+and the inverse output transform 0.153952 ms median; the pair adds 0.304160 ms
+in this launch-heavy Torch reference. Pqteld measured 21.104 W mean, 26.33 W
+maximum, 166.57 J, 240.13 transforms/J, and 31.475 million values/J. This is a
+transform-only reference—not a fused kernel, graph, GEMM, or serving result.
+The authoritative directory is
+`/mnt/shared/dq-runs/gridbook-qtip-hadamard-ref-84a78c7-20260830T1747EDT-r5`.
+
+The PrismaQuant combined producer uses that exact metadata contract, emits
+canonical `gridbook.trellis.wire.v1` bytes, reparses and decodes those same
+bytes, and proves original-basis serve algebra. It remains one-Linear,
+unregistered, unpinned, and production-ineligible.
+
 ## Preliminary v1 one-Linear result (Sparky, 2026-08-30; superseded)
 
 The following run discovered a promising seam, but its v1 receipt did not bind
 the PrismaQuant source commit, full calibration identity, container/device
 identity, or all quality-affecting configuration. It is retained as historical
-evidence only and is **not an accepted v2 result**. A fresh run must use a new
-no-clobber publication root after the active Sparky probe completes.
+evidence only and is **not an accepted v2 result**; r3 above supersedes it.
 
 Source was Qwen3-0.6B BF16
 `model.layers.0.self_attn.q_proj.weight`, shape `[2048, 1024]`. The 256 FP32

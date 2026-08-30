@@ -1,14 +1,16 @@
 # QTIP-derived native NVFP4
 
 **Status (2026-08-30): research contract, not a production format or serving
-claim.** The stock-native Arm C BlockLDLQ isolate is implemented. An external
-Gridbook research reference implements online sign/Hadamard transforms, but it
-is unpinned and is not part of Gridbook 0.9.1's runtime contract. No producer
-currently combines those rotations with PrismaQuant's existing Gridbook
-trellis carrier. QTIP is method lineage; its serialized trellis wire is
-explicitly excluded and is distinct from PrismaQuant/Gridbook's wire. Quartet
-II is literature only, and EXL3 was read only as source context. Neither has an
-implementation, measurement arm, or runtime dependency here.
+claim.** The stock-native Arm C BlockLDLQ isolate and a physical one-Linear
+rotated-trellis producer are implemented. An external Gridbook research
+reference implements online sign/Hadamard transforms, but it is unpinned and
+is not part of Gridbook 0.9.1's runtime contract. The producer emits the
+existing canonical Gridbook trellis carrier, reparses and reference-decodes
+the same bytes, and proves the original-basis serve algebra. QTIP is method
+lineage; its serialized trellis wire is explicitly excluded and is distinct
+from PrismaQuant/Gridbook's wire. Quartet II is literature only, and EXL3 was
+read only as source context. Neither has an implementation, measurement arm,
+or runtime dependency here.
 
 This note defines what “QTIP on native NVFP4” means in PrismaQuant. It keeps
 three mechanisms separate so an improvement can be attributed rather than
@@ -23,8 +25,9 @@ The first mechanism is implemented by the research Arm C isolate and produces
 ordinary native NVFP4 fields; it is not registered as a production format. The
 existing unrotated version of the third mechanism is served by the separately
 versioned Gridbook runtime. An external, unpinned Gridbook research reference
-implements the online-transform half, but the combined rotated-trellis
-producer is absent. PrismaQuant does not import or vendor that runtime.
+implements the online-transform half. PrismaQuant's research producer now
+combines that exact metadata contract with its existing physical trellis wire,
+without importing or vendoring the Gridbook runtime.
 
 ## Pinned sources and claims
 
@@ -50,9 +53,10 @@ encoding: one E2M1 nibble per weight, one E4M3 scale byte per 16 weights, and
 the existing scalar globals. The pinned Gridbook E2M1 trellis lane already
 decodes PrismaQuant/Gridbook's own `TCQ_E2M1_R256` wire into this E2M1/E4M3
 operand pair and calls Blackwell `_scaled_mm`; it does not decode QTIP's
-bitshift/tail-biting wire. The external transform reference is unpinned, and no
-PrismaQuant producer currently emits a rotated artifact for the existing
-trellis lane.
+bitshift/tail-biting wire. The external transform reference is unpinned.
+PrismaQuant's combined producer emits a research-only rotated artifact for the
+existing trellis lane, but the current production pin neither declares nor
+loads that transform sidecar.
 
 No result reported by upstream QTIP, no EXL3 or Quartet II result, no synthetic
 source-coding result, and no weight-only SSE number is a served PrismaQuant
@@ -185,16 +189,17 @@ terminal, quantizable-parameter denominator, and deterministic seeds.
 | A | RTN + existing JSO | none | stock NVFP4 | native scalar control | implemented in the isolate |
 | B | current GPTQ + static activation order + JSO | none | stock NVFP4 | current optimizer control | implemented in the isolate |
 | C | QTIP-style BlockLDLQ, native terminal at every decision | none | stock NVFP4 | isolates transferable second-order feedback | implemented in the isolate; not production-registered |
-| D | same as C in the rotated basis | input + output sign/Hadamard | stock NVFP4 fields served by Gridbook | supporting incoherence ablation with native W4A4 compute | proposed; no producer and no pinned runtime contract |
-| E | same transformed Hessian contract | input + output sign/Hadamard | existing PrismaQuant/Gridbook E2M1 trellis wire | target combined rotated-trellis arm | external unpinned runtime reference only; producer absent |
+| D | same as C in the rotated basis | input + output sign/Hadamard | stock NVFP4 fields served by Gridbook | supporting incoherence ablation with native W4A4 compute | no stock-field producer and no pinned runtime contract |
+| E | transformed-Hessian optimizer | input + output sign/Hadamard | existing PrismaQuant/Gridbook E2M1 trellis wire | target combined rotated-trellis arm | physical one-Linear producer implemented; external runtime reference unpinned |
 
 Arm D would not be a new compressed-tensors scheme: it needs Gridbook metadata
 and runtime transforms even though its matrix operand is ordinary native
 NVFP4. Arm E is the actual project target and would retain the existing
 PrismaQuant/Gridbook trellis and Gridbook's resident/streamed modes. The
 external Gridbook transform reference demonstrates only the runtime-side seam;
-it is not the current immutable pin, and no combined Arm E producer exists.
-Neither proposed arm may silently fall back to BF16 GEMM, materialize a
+it is not the current immutable pin. The Arm E producer closes the physical
+wire and reference-algebra seam but not Gridbook loading or serving. Neither
+arm may silently fall back to BF16 GEMM, materialize a
 parallel weight cache, or choose a residency mode at runtime.
 
 The first gate is a one-Linear isolate reporting serialized bpw, weight error,
@@ -217,8 +222,8 @@ research-only and opt-in.
   graph capture, residency, and its immutable runtime contract.
 - The intended producer/runtime boundary is a versioned manifest plus a future
   immutable Gridbook pin. The current 0.9.1 pin has no online-transform ABI;
-  the available external implementation is a research reference only. Neither
-  repository imports the other.
+  the available external implementation and producer pairing is research-only.
+  Neither repository imports the other.
 - Transform identities include algorithm, normalization, block geometry,
   input/output dimensions, seed, sign-vector digests, and padding. A mismatch
   refuses at load.
@@ -233,6 +238,7 @@ The promotion question is empirical: how much of QTIP-derived BlockLDLQ's
 advantage survives the native E2M1 terminal, how much comes back from
 incoherence, and how much additional value PrismaQuant/Gridbook's stateful
 E2M1 wire supplies after both are present. Arm C answers only the first
-question. Arms D and E are not yet producer-backed experiments, and E—not D—is
-the intended combined target. EXL3 remains source-reading context only, not an
-imported implementation or measured comparison arm.
+question. Arm E now has a physical producer and exact reference checks, but it
+still lacks a matched GPU quality campaign and a pinned served runtime; E—not
+D—is the intended combined target. EXL3 remains source-reading context only,
+not an imported implementation or measured comparison arm.

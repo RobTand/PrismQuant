@@ -1,7 +1,7 @@
 # E2M1 trellis: the high-rate band, and the coding gain against an honest scalar
 
-Status: **drivers preserved; GLM corpus/fixed-vs-learned scaffolding added;
-GPU runs STAGED BUT UNRUN.** 2026-08-30.
+Status: **numeric scaffold complete and measured on the immutable GLM BF16
+corpus; research evidence only, with no serving verdict.** 2026-08-30.
 
 These drivers live in the repo; the corpora and result caches they read live
 under `/home/rob/dq-runs/` and are not checked in. Paths are absolute inside
@@ -66,7 +66,7 @@ does not transfer to a bf16-source model.**
 unfair baseline.** Against the measured same-rate, same-grid, same-plane
 scalar, 24/24 tensors positive at every rate:
 
-| body rate | DSv4 gain | bf16 gain (preliminary, 18/24) |
+| body rate | DSv4 gain | bf16 gain (historical preliminary, 18/24) |
 |---|---|---|
 | 1.0 | +1.339 dB | +1.833 dB |
 | 2.0 | +1.880 dB | +2.446 dB |
@@ -80,42 +80,90 @@ exploit than a 27-value discrete source does.
 
 ## Scope limits
 
-Weight-only corpus SSE (W*A16). RTN render on both sides, so the NVFP4
-incumbent is a lower bound on production NVFP4 (which renders under GPTQ+JSO).
-No served A/B, no kernel measurement, no activation side. The bf16 corpus is
-Qwen3-4B **dense** MLP -- not MoE, not GLM. The two-tier scale plane is a
-research pricing and does not exist on the wire.
+Weight-only importance-weighted SSE (W*A16). RTN render on both sides, so the
+NVFP4 incumbent is a lower bound on production NVFP4 (which renders under
+GPTQ+JSO). No served A/B or activation-side quality gate was run. The early
+BF16 rows are Qwen3-4B dense MLP; the completed immutable corpus is GLM-5.3 Flash
+dense plus selected routed-expert Linears and reports those populations
+separately. The two-tier scale plane is research pricing and does not exist on
+the production wire. Profiler and power records characterize the offline
+drivers, not a serving kernel.
 
-## STAGED BUT UNRUN
+## Completed GLM campaigns
 
-Nothing below was launched; the box was owned by `bf16-w4a4-24t` all session
-and the session closed before it cleared.
+The original `/home/rob/dq-runs/glm-corpus-20260830/` remains deliberately
+unloadable as `trellis.glm_corpus.v0-INCOMPLETE`. The completed campaign reads
+only the immutable `trellis.bf16_corpus.v2` artifact at
+`final-bf16-pread-1469b9b-v2/manifest.json`: 33 BF16 tensors, split into 9
+dense and 24 routed tensors, with FP32 importance vectors. The safetensors
+artifact SHA-256 is
+`0d3c08aed48e8d0b540d0705c305cc3197f77c250b07dd7a07e55345f5ddd94e`;
+the manifest-file SHA-256 is
+`a66f800827b92383985ce205004cd2d70b63bcc5e19cada6b05a8162401ee5b0`.
+Finalization copies through `os.pread`; the numeric drivers isolate their live
+corpus reader from the deliberately frozen historical encoder modules.
 
-1. `e2m1_highrate.py --corpus bf16` -- arms C and D at R in {1.0, 2.0, 2.5,
-   3.0}. Would replace the preliminary bf16 gains above with class-restricted
-   ones and add R=2.5/3.0.
-2. `e2m1_highrate.py --corpus dsv4` -- the high band, 3.25/3.5/3.75/3.9375,
-   plus 3.96875 where reachable.
-3. `coding_gain_table.py --rows <each rows file>` -- the single matched-rate
-   table over both corpora.
-4. The GLM arm is now contract-complete in code but **UNRUN**.  The original
-   `/home/rob/dq-runs/glm-corpus-20260830/` remains deliberately unloadable as
-   `trellis.glm_corpus.v0-INCOMPLETE`: it has 33 sound weight tensors but no
-   importance vectors.  `prismaquant.trellis_bf16_corpus` maps the existing
-   packed-probe `expert_act_sq_sum / expert_tokens` (expert 0) and dense
-   `act_sq_sum / n_tokens_seen` marginals, and
-   `tools/finalize_glm_bf16_trellis_corpus.py` byte-copies those weights into a
-   new immutable `trellis.bf16_corpus.v2` artifact using `os.pread` only.
-   `e2m1_highrate.py --corpus glm --glm-manifest <final-v2.json>` consumes only
-   that strict artifact.  Every result cell carries `population=dense|routed`,
-   and `coding_gain_table.py` refuses to pool their summaries.
+### Same-grid coding gain
 
-5. `fp8_learned_glm.py --manifest <final-v2.json> --out <rows.json>` is the
-   provenance-locked K32/K40/K48 fixed-vs-learned FP8-CB campaign. Both arms
-   render at the production `balanced` tier; dense and routed results are
-   summarized separately. Its `--dry-run` validates the corpus and the exact
-   locked ladder/hull source hashes without touching CUDA or writing output.
-   It is also **UNRUN** and makes no serving or performance claim.
+The completed matched-rate result covers every tensor. Each median below is
+trellis SNR minus the exhaustive same-rate E2M1 scalar-subgrid SNR. It is a
+code gain, not a comparison with full scalar NVFP4.
+
+| population | R=1 | R=2 | R=3 |
+|---|---:|---:|---:|
+| dense (9) | +2.263 dB | +1.455 dB | +2.104 dB |
+| routed (24) | +1.369 dB | +1.473 dB | +2.123 dB |
+
+At R=3, the median trellis points are 17.833 dB at 3.50036 bpw for dense and
+17.796 dB at 3.50213 bpw for routed weights. The corresponding full four-bit
+scalar-NVFP4 medians are 20.595 dB and 20.678 dB, so the same-grid code gain
+does not erase the missing body bit.
+
+The result receipt is `glm-e2m1-highrate.json` (SHA-256
+`097b1863ff6c1ba27cecc0fb897e825bc360edb8d09e9b3596951c9bc5730bcd`),
+and its derived table is `glm-e2m1-coding-gain.json` (SHA-256
+`8b873d2bcc16a8da311591eb1f0b340ed8f4addc65acd3275283b2db299e3c79`).
+The 258.4-second run has an in-process py-spy speedscope trace (SHA-256
+`edc6bc486132703ca47e9da9f374fb82986144350623d291d9043addde165450`)
+and aligned Netdata evidence from both boxes. Sparky's Netdata power mean was
+37.85 W, 27.0% of the approximately 140 W envelope, with a 63 W maximum;
+its independent pqteld series measured 39.87 W mean and 11.00 kJ. These
+measurements characterize the offline driver only and do not establish served
+kernel performance.
+
+### The near-four-bit boundary
+
+The explicit high plan measures body rates 3.25, 3.5, 3.75, 3.9375, and
+3.96875. The best common rung is R=3.9375. It reaches a median 20.177 dB at
+4.43785 bpw for dense weights, 0.417 dB below scalar NVFP4; routed weights
+reach 20.408 dB at 4.43962 bpw, 0.270 dB below scalar NVFP4. All 33 tensors
+reach that rung. R=3.96875 regresses to 19.897/20.285 dB and one dense tensor
+is unreachable.
+
+This is the measured form of the fixed-support boundary. Above shaped rate 3,
+the current wire can only mix rate-3 trellis columns with rate-4 scalar bypass
+columns. It approaches the scalar endpoint but does not create new E2M1
+reconstruction support. The result is `glm-e2m1-near4.json` (SHA-256
+`d9356eee75f94c07fe11cfdab4f70a72357e2092a7e6846677aec0668211e3cd`)
+with py-spy trace SHA-256
+`f4c879e1ba040adf364c9c0cfd03cecdf5793d9dcf8d89fa64bc487bb38ff645`.
+Its first roughly 20 seconds overlapped the rejected QTIP r2 attempt because
+the work queue admitted both. Quality is deterministic, but this window must
+not be used for a performance or energy claim.
+
+### Learned FP8-CB scale control
+
+The provenance-locked K32/K40/K48 fixed-vs-learned campaign completed for all
+33 tensors at the production `balanced` tier. Learned-minus-fixed median SNR
+gains were +0.061/+0.037/+0.051 dB for dense and +0.083/+0.073/+0.125 dB for
+routed weights, with every tensor positive at every K. The result is
+`glm-fp8-learned-balanced.json` (SHA-256
+`3437be1473e1a880d5a6d338bc93f85902ea661be982d040681834426baf1a94`)
+and the 1,125.8-second algorithm trace has SHA-256
+`f7ef868f00d55794b7f16f34d09880f682f5bd63991a3e6880764172820662ad`.
+Sparky Netdata measured 55.93 W mean and 82 W maximum (40.0% of the 140 W
+envelope); pqteld measured 57.21 W mean and 65.73 kJ. This is a small,
+unanimous offline numeric gain, not a serving verdict.
 
 ## Known reachability limit
 
