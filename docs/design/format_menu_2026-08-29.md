@@ -15,6 +15,18 @@ verdict labelled with the wrong model is a scope claim that does not inherit
 the artifact it was measured on.)* Dense and attention tensors are not in that corpus. A
 corpus hull is corpus-scoped; see §6.
 
+**Second scope warning — the encode tier.** Every CB cell below was rendered at
+`encode_tier="max"`, hardcoded in both ladder drivers (`fp8_ladder.py:568`,
+`:715`; `hull_sweep.py:995`, `:1046`) and stamped in neither results file, so
+the tier is unrecoverable from the artifacts. Production ships `balanced`: the
+library default (`prismaquant/nvfp4_cb_formats.py:173`), the pipeline default
+(`prismaquant/run-pipeline.sh:217`), and the explicit setting in every shipped
+driver that names the variable — 10 under `scripts/`, 2 under `tools/`, none set
+`max`. `max` is the exhaustive *sweep*, not an exhaustive *search*, so it is not
+an upper bound: on the fp8 grid `balanced` beats it, by up to +1.686 dB. §6.4
+measures the gap, marks every cell it moves, and re-solves the menu on the
+shipped-tier render. **No verdict cell changes.**
+
 ---
 
 ## 1. The verdicts, in one place
@@ -23,13 +35,15 @@ corpus hull is corpus-scoped; see §6.
 |---|---|---|
 | Can the fp4 lattice CB be retired? | **15 of 18 rungs: yes**, under *both* price brackets, now against all four families over 1.30–6.50 bpw. K2 and K5–K18 are never selected. | §6.3 |
 | What survives? | **K1 and K4**, plus **contested K3**. All three sit *below* the 1.283 bpw trellis floor — the fp4 lattice CB has **no surviving rung anywhere the trellis can reach**. | §6.3 |
-| Can the fp8 lattice CB be retired? | **No — it owns the top of the menu.** K48 is selected under both brackets; K28/K32/K36 retire under both; K40/K44 contested. | §6 |
+| Can the fp8 lattice CB be retired? | **No — it owns the top of the menu.** K48 is selected under both brackets; K28/K32/K36 retire under both; K40/K44 contested. Unchanged when the whole ladder is re-solved on the shipped-tier render. | §6, §6.4 |
+| Were the CB cells rendered at the tier production ships? | **No — at `max`, which is not an upper bound.** fp8 CB gains a median +0.998 dB at K48 under `balanced`, 24 of 24 tensors; fp4 CB is unaffected (≤2.6e-10 dB). Re-solving the four-family menu on the shipped-tier render moves **no** selected, retired, or contested cell. | §6.4 |
 | Why do they survive? | Not quality — position. They are the only rungs that exist below the 1.283 bpw trellis floor. Under an unweighted metric **zero** CB rungs are ever selected. | §3.2 |
 | Can the trellis go below 1.283 bpw? | **No — structurally.** The v1 wire requires ≥1 coded bit per weight. | §2 |
 | Does the trellis have a runtime kernel? | **Yes, and it is landed** (gridbook `1a57b31`, ABI 3). In-tree: **5.37×** the scan-free decoder on E2M1, **2.46×** on E4M3, **5.80×/3.18× work per joule**; 24/24 external golden vectors through the landed path; **rate-insensitive**. Landed as *research ops* — no runtime-contract cell, so every trellis rung is still **unbacked** until a release attests a route (principle 14). | §5 |
 | Is the low-rate FP8 trellis viable for AMD / pre-Blackwell? | **Yes.** Decode + `_scaled_mm` is 2.22× faster than the BF16 matmul it replaces, decode cost included. | §4 |
-| Is the 8-bit trellis competitive with the FP8 books on quality? | **Measured. Crossover ≈5.0 bpw** — trellis +2.3 dB at 4.0, book +7.8 dB at 6.0. Books measured are *fixed lattice*. Learning the book is now measured on the **4-bit** axis and changes nothing (§7); the **8-bit** learned arm does not exist yet and is the live exposure. | §6 |
-| Does the 8-bit book beat raw FP8? | **Yes.** `fp8_cb@48` = 34.15 dB at 6.008 bpw vs a plain e4m3 cast at 31.57 dB and 8.008 bpw — **+2.57 dB at 75% of the bytes**. | §6.1 |
+| Is the 8-bit trellis competitive with the FP8 books on quality? | **Against the fixed-lattice book, yes below ≈5.0 bpw** — trellis +2.3 dB at 4.0, book +8.8 dB at 6.0 on the shipped-tier render (+7.8 as published, §6.4). **Against the learned book, measured 2026-08-29, the crossover collapses**: at matched bytes the learned book beats `tcq_e4m3@4.0` on 24/24 tensors in the production bracket. The two brackets disagree there, so that is an exposure, not a verdict. | §6, §7 |
+| Does the 8-bit book beat raw FP8? | **Yes, by more than published.** `fp8_cb@48` = **35.14 dB** at 6.008 bpw on the shipped-tier render (34.15 dB at the tier the ladder used, §6.4) vs a plain e4m3 cast at 31.57 dB and 8.008 bpw — **+3.57 dB at 75% of the bytes**. | §6.1 |
+| Does a learned CB book change anything? | **On fp4 no, on fp8 yes — and the fp8 half is an exposure, not a verdict.** fp4: the book decays to +0.008…+0.013 dB in the production band and never beats one more index bit. fp8: `learned@44` dominates `fixed@48` on quality *and* bytes, 24/24, median +8.09 dB for ~0.47 bpw less. K44/K48 sit above this corpus's ~4.7-bit content ceiling, so the direction holds and the size does not travel; a bf16-corpus re-check is owed before any menu change. | §7 |
 | Are the high E4M3 trellis rungs usable? | **Still no, and the cause is now known.** The clipping was a *Lloyd local optimum*, not E4M3: an exact grid DP gains +9.05 dB as a scalar book. But it does **not** transfer to the trellis — +2.45 dB at R6 on the shipping bracket, *negative on every rung of the penalty bracket*, and negative at R2 on both. R6 still sits ~2.7 dB below its own rate-8 bypass. Retirement **weakened, not overturned**; `exact_dp` stays research. | §6.2 |
 
 ---
@@ -300,14 +314,21 @@ That is what makes the two files joinable rather than merely comparable.
 
 **Terminology correction.** The previous revision called the `FP8_CB_K` rungs
 "the learned Lloyd books of the intended regime". They are not learned — every
-arm here stamps `"codebook": "fixed_lattice"`. The **learned** book is still
-unmeasured on both axes (§7). This matters in one direction only: a learned book
-can only be ≥ a fixed one, so every result below where CB *wins* is safe
-*a fortiori*, and every result where the trellis wins is the one exposed.
+arm here stamps `"codebook": "fixed_lattice"`. The **learned** book is measured
+on both axes as of 2026-08-29 (§7), and the ladder below stays fixed-lattice.
+The *a fortiori* reading is measured rather than argued: a learned book is ≥ a
+fixed one at the same index width on 24 of 24 tensors, at every fp8 rung, under
+both encode tiers and both book price brackets
+(`fp8_learned_tier_verdict.json`, `same_rung_margin`). So every result below
+where CB *wins* is safe, and every result where the trellis wins is the one
+exposed — and on the fp8 axis that exposure is large. §7 sizes it.
 
 ### 6.1 The measured ladder
 
-Corpus median weighted SNR, 24 tensors, production bracket. **Both lanes carry the
+Corpus median weighted SNR, 24 tensors, production bracket, **CB arms at
+`encode_tier="max"`** — the tier the ladder hardcoded, kept here because every
+reproduction gate in this study keys on these cells. §6.4 gives the shipped-tier
+reading of the same rungs. **Both lanes carry the
 same scale contract** — one fp32 per output row — and both are charged for it here
 (see the accounting note below), so the bpw column is a range across the corpus's
 two shapes rather than a single number:
@@ -337,15 +358,23 @@ driver, because the driver was mid-flight across two brackets when it was found
 and editing it would have left the brackets on different accounting; the driver
 fix is staged in `apply_cb_scale_fix.py` and is **owed**.
 
-**The crossover is ~5.0 bpw.** Below it the trellis wins (+2.3 dB at 4.0 bpw);
-above it the book wins, and decisively (+7.8 dB at 6.0). This is the low-trellis /
-high-book regime, measured rather than assumed.
+**The crossover is ~5.0 bpw against the fixed-lattice book.** Below it the
+trellis wins (+2.3 dB at 4.0 bpw); above it the book wins, and decisively
+(+7.8 dB at 6.0 as tabulated, **+8.8 dB on the shipped-tier render**, §6.4).
+This is the low-trellis / high-book regime, measured rather than assumed. The
+crossover itself barely moves with the tier: at 5.008 bpw the book leads
+`tcq_e4m3@5` by +0.50 dB at `max` and +0.46 dB at `balanced`. Against the
+*learned* book it moves a long way, and §7 sizes that separately.
 
 **One result worth stating on its own:** `fp8_cb@48` reaches **34.15 dB at 6.008
-bpw**, while a plain RTN cast of the same weights onto the full e4m3 grid — the
+bpw** as tabulated, and **35.14 dB** on the render production ships (§6.4),
+while a plain RTN cast of the same weights onto the full e4m3 grid — the
 8.008 bpw reference the whole family degenerates to at bypass — reaches only
-**31.57 dB** (min 30.90, max 31.68, all 24). *The fixed-lattice book beats raw FP8
-at 75% of the bytes.* A learned book can only widen that.
+**31.57 dB** (min 30.90, max 31.68, all 24). The RTN cast has no encode tier, so
+that baseline is unmoved and the margin widens from +2.57 to **+3.57 dB at 75%
+of the bytes**. *The fixed-lattice book beats raw FP8.* The learned book widens
+it much further (46.84 dB median at K48), and that number is where the corpus
+content ceiling stops being ignorable — see §7.
 
 ### 6.2 The E4M3 trellis rungs above ~4 bpw are not menu-eligible
 
@@ -492,6 +521,88 @@ So `cb_two_tier@3` is displaced specifically by the arrival of the fp8 trellis
 lane, not by widening the budget range — which is why it lands in the contested
 column rather than the retired one.
 
+**Every list in this subsection survives the encode-tier correction unchanged.**
+The sweep was re-solved with the six `fp8_cb@K` arms taking their error from the
+shipped-tier render and everything else held byte-identical: the same 20 rungs
+retire under both brackets, the same 6 stay contested, the same 9 are selected
+under both. §6.4 has the method and the gates.
+
+### 6.4 The encode tier the ladder used is not the tier production ships
+
+`encode_tier` selects how hard the CB encoder searches for each group's scale.
+It is a parameter of the CB encoder alone: neither ladder passes it to a
+`tcq_*` arm, so every trellis cell in this document is tier-independent and
+only the CB families are in question here.
+Both ladder drivers hardcode `max` — `fp8_ladder.py:568` (`cb_arm_fp8`), `:715`
+(`cb_arm_fp8_learned`), `hull_sweep.py:995` and `:1046` (`cb_arm_two_tier`) —
+and neither `hull_results.json` nor `fp8_ladder_*.json` records the tier
+anywhere, so it cannot be recovered from the artifact. That absence is the
+defect; `hull_sweep.py:3550` names the deviation and says a tier A/B "is a
+separate question this study does not answer". This subsection answers it.
+
+**`max` is a sweep, not a search, and on fp8 the sweep's window is binding.**
+`max` is an argmin over `_candidate_scales`, which on the fp8 grid offers
+`amax / linspace(448, 448·4/6, 16)` — scales in [1.0, 1.5] × amax/448, anchored
+on the *fixed lattice's* grid-max (`prismaquant/nvfp4_cb_formats.py:872-883`).
+`balanced` initialises from a usage-calibrated second moment and hill-climbs
+with a reach that is not tied to that anchor
+(`_sweep_encode_moment`, `:1373`), so it can leave the window; the module's own
+note predicts the consequence — "the reach, not granularity, sets quality …
+BEATS max at ±34%" (`:180`). Measured, `max` puts 0.0–0.2% of rows outside its
+own window while `balanced` puts 55–85% of them outside it at K44/K48
+(`fp8_tier_scale_diag.json`). So on this grid `max` is a **lower** bound.
+
+**What the tier is worth, paired per tensor** (`balanced` − `max`, 24 tensors,
+`fp8_learned_tier_verdict.json` `tier_delta_per_arm`; the max cells reproduce
+the published ladder to 1e-9, gate 288/288 PASS):
+
+| rung | median Δ dB | min / max Δ dB | tensors where `balanced` wins |
+|---|---|---|---|
+| `fp8_cb@28` | −0.003 | −0.009 / +0.023 | 11/24 |
+| `fp8_cb@32` | +0.007 | −0.026 / +0.094 | 13/24 |
+| `fp8_cb@36` | **+0.095** | +0.024 / +0.156 | **24/24** |
+| `fp8_cb@40` | +0.013 | −0.073 / +0.124 | 13/24 |
+| `fp8_cb@44` | −0.026 | −0.149 / +0.236 | 10/24 |
+| `fp8_cb@48` | **+0.998** | +0.517 / +1.686 | **24/24** |
+
+Only `@36` and `@48` move with one sign on every tensor. The other four are
+washes whose sign depends on the tensor, and the two aggregations §6.2
+distinguishes disagree on them: read as medians *of the values* rather than
+medians *of the paired deltas*, the shipped-tier ladder is 17.91 / 20.70 /
+23.50 / 26.38 / 30.32 / **35.14** dB against the 17.91 / 20.71 / 23.37 / 26.42 /
+30.42 / 34.15 in §6.1. Both readings agree that the only material move is K48,
+and that it is upward.
+
+**fp4 CB is untouched, so no fp4 retirement in this document depends on the
+tier.** Over {k=8, 13, 18} × 3 tensors the two tiers differ by −2.6e-10 to
++0 dB, and at k=18 the renders are bit-identical on 24 of 24
+(`encode_tier_fidelity.json`, `encode_tier_fidelity_full24.json`). That is a
+measured bound at three index widths, not a proof at all eighteen.
+
+**The flip check — nothing flips.** `docs/design/resolve_menu_at_shipped_tier.py`
+re-solves the identical §6.3 Lagrangian — same corpus, same metric, same
+1.30–6.50 budgets, same tie-break to fewer bits — substituting only the six
+`fp8_cb@K` error values with their shipped-tier render. It refuses unless the
+published joinability gates hold, every `max` cell of the A/B reproduces the
+ladder to 1e-9 in dB, and the row-scale plane costs the same on both paths
+(`ladder exact_bpw + cb_scale_correction_bpw == A/B exact_bpw`, per cell —
+which independently confirms open item 4). Result: the retired-under-both,
+contested, and selected-under-both sets are **identical** to the published
+verdict, rung for rung
+(`verdict/menu_selection_4families.shipped_tier.json`,
+`"verdict_changed": false`).
+
+**What the correction does change** is the size of three published figures, all
+in fp8 CB's favour: `fp8_cb@48` ships at 35.14 dB rather than 34.15, its win over
+raw FP8 is +3.57 dB rather than +2.57, and its win over `tcq_e4m3@6` at 6.0 bpw
+is +8.8 dB rather than +7.8. The comparison as published was unfair to fp8 CB at
+its own best rung. Nothing that was retired becomes selectable, and nothing that
+was selected retires.
+
+**Owed:** stamp `encode_tier` into both ladders' results provenance. That is a
+pure provenance addition — it changes no rendering and cannot invalidate a
+baseline — but it has to land between runs, not during one
+(`ENCODE_TIER_ANNOTATION.md`).
 
 ---
 
@@ -505,13 +616,24 @@ column rather than the retired one.
   manifest evidence). Dense and attention tensors are
   uncovered, and the retirement verdict does not extend to them without a sweep
   that includes them.
+- **Encode-tier scope.** Every CB cell was rendered at `encode_tier="max"`,
+  which production does not ship and which is a *lower* bound on the fp8 grid
+  (§6.4). The correction is measured on all 24 tensors for fp8 and bounded for
+  fp4, the menu re-solves unchanged, and the affected figures are marked. What
+  is **not** covered: fp4 CB was measured at three index widths (k=8, 13, 18),
+  not all eighteen; the `fast` tier was measured only on the 3-tensor probe; and
+  no ladder file stamps the tier it used, so this document is the only place the
+  tier is recorded until that provenance lands.
 - **Backing.** `FP8_CB_K` rungs are backed on sm120 with a cited preflight row.
   The trellis rungs have a *research-proven kernel as of today* and remain
   **unbacked in gridbook** until it is landed and attested per principle 14.
-- **The learned-CB question is CLOSED on the 4-bit axis, still open on the
-  8-bit one** (measured 2026-08-29 on sparklina, `hull_results.learnedcb-20260829
-  .json`, 24/24 tensors, reproduction gate PASS on every tensor against the
-  published cells; analysis `analyze_learned_cb.py`).
+- **The learned-CB question is CLOSED on the 4-bit axis and MEASURED on the
+  8-bit one, where it inverts** (fp4: measured 2026-08-29 on sparklina,
+  `hull_results.learnedcb-20260829.json`, 24/24 tensors, reproduction gate PASS
+  on every tensor against the published cells; analysis
+  `analyze_learned_cb.py`. fp8: `fp8_learned_tier_ab.json` +
+  `fp8_learned_tier_verdict.json`, 24/24 tensors, reproduction gate 288/288
+  PASS against the published ladder cells).
 
   A per-tensor weighted-Lloyd book helps, and the help **decays to nothing
   exactly where the menu is decided**: mean +0.11…+0.49 dB at K1–K7, collapsing
@@ -522,28 +644,69 @@ column rather than the retired one.
   4 bits/element would hand the learned arm a discount no artifact gets — the
   mirror-confound this house has installed before.
 
-  Two measured consequences, both under **both** brackets:
+  Two measured consequences **on the 4-bit axis**, both under **both** brackets:
 
   1. **Learned@K never beats fixed@K+1** — 0/17 rungs, losing by −0.26…−0.87 dB.
-     One more index bit is always a better use of the book's bytes than the book.
+     One more index bit is a better use of the book's bytes than the book.
+     **This is an fp4 law, not a general one. It inverts on fp8** — see below.
   2. **Learned CB never reaches the trellis frontier** — 0/24 tensors at every
      rung K9–K18, compared at *that tensor's own byte count* against a
      piecewise-linear frontier over its own measured `tcq_two_tier` +
      `tcq_two_tier_jso` rungs (no extrapolation). The learned book closes
      **0.01–0.12 dB of a 0.64–1.00 dB gap**.
 
-  So the fp4 retirements were never at risk, and this is now measured rather
-  than argued: the exposure the previous paragraph named is real in direction
-  and an order of magnitude too small in size. **The 8-bit axis remains open and
-  is the one that can still move** — the fp8 book charge at K48 is
-  0.031–0.0625 bpw (8-bit wire / 16-bit FP16 book, 32768 codeword elements over
-  an 8388608-element tensor), an order of magnitude larger against the same
-  grid, so it can flip the fp8-CB-owns-the-top verdict in either direction.
-  *(Update 2026-08-29: the arm now EXISTS —
-  `fp8_ladder.cb_arm_fp8_learned`, behind `--with-learned-fp8-cb`, default off,
-  charged explicitly under both brackets. It has not been RUN, so every fp8
-  number in this document is still fixed-lattice and this exposure is still
-  open. Landed is not measured.)*
+  So the fp4 retirements were never at risk, and that is measured rather than
+  argued: the exposure is real in direction and an order of magnitude too small
+  in size.
+
+  **On the 8-bit axis both consequences reverse, and the exposure resolves in
+  the book's favour.** The fp8 book charge is an order of magnitude larger against the same
+  grid — 0.031–0.0625 bpw at K48 (8-bit wire / 16-bit FP16 book, 32768 codeword
+  elements over an 8388608-element tensor) — and the arm buys far more than it
+  costs. Measured under both book price brackets and both encode tiers:
+
+  1. **Learned@K beats fixed@K at every rung** — 24/24 tensors at K28 through
+     K48, by a median +1.74…+12.96 dB on the shipped-tier render, for a byte
+     premium of +0.002…+0.063 bpw under the FP16 book charge.
+  2. **Learned@K beats fixed@K+4 — the next rung, since the fp8 ladder steps by
+     4 — dominating on quality *and* bytes at four of the five adjacent
+     pairs.** `learned@44` versus `fixed@48` dominates on
+     24/24 tensors by a median **+8.09 dB while spending ~0.47 bpw fewer**
+     (+3.53 dB at the ladder's own `max` tier); `learned@36`-vs-`fixed@40` and
+     `learned@40`-vs-`fixed@44` also dominate 24/24; `learned@32`-vs-`fixed@36`
+     dominates 21/24. Only `learned@28`-vs-`fixed@32` fails, 0/24, at both
+     tiers. The tier moves magnitudes, not directions: the verdict file records
+     that **no domination verdict flips between tiers**.
+
+  One tier interaction is worth stating precisely, because it runs the other
+  way: **K40 is the single rung where the shipped tier hurts the learned arm**
+  (`balanced` − `max` = −2.46 dB median, 0/24). A menu cell built from the
+  `max`-tier `learned@40` number would overstate production by ~2.4 dB. It does
+  not break the domination chain above, which is reported at the shipped tier.
+
+  **Exposure sizing, and it is only that.** Re-solving §6.3's sweep with the
+  learned fp8 arm added — `resolve_menu_at_shipped_tier.py --with-learned-fp8`,
+  FP16 book charge, both brackets — the learned rungs take the whole top of the
+  menu: all six are selected under both brackets, **all six fixed `fp8_cb` rungs
+  retire including K48**, `tcq_e4m3@5.0` retires, and `tcq_e4m3@4.0` drops from
+  selected-under-both to contested
+  (`verdict/menu_selection_4families.shipped_tier.learned.json`). What is at
+  risk is therefore not "the fp8 CB family owns the top" — that gets stronger —
+  but *which rung of it*, and the E4M3 trellis's 8-bit cells.
+
+  **No menu cell is changed on this, and the reason is the corpus.** K44 and K48
+  sit at 5.51–6.07 bpw, **above this corpus's ~4.7-bit content ceiling**
+  ([[trellis_corpus_ceiling_is_4p7_bits]]): the DSv4 experts are MXFP4-sourced
+  and carry ~21–27 distinct values, so a per-tensor book of 4×(4096×2) entries
+  can approach memorising the source alphabet where a fixed lattice cannot. The
+  tell is unmissable: `learned@44`/`@48` reach **43.7 / 46.8 dB**, far above the
+  **31.57 dB** of the 8.008 bpw lossless-degenerate cast. No format beats its
+  own lossless ceiling on general data; a book memorising a low-entropy source
+  can. The **direction** of the learned-book win is valid — it is measured under
+  both brackets and both tiers, and the same-rung result is guaranteed
+  *a fortiori* — but its **size is corpus-scoped**, and a bf16-corpus re-check
+  is owed before any menu change. Do not read the exposure-sizing sweep as a
+  verdict.
 - **The E4M3 trellis rungs were measured under a known-suboptimal alphabet**
   (§6.2), and that exposure is now **measured, with a split verdict**. The scalar
   alphabet is solved exactly (`e4m3_alphabet_dp`, +9.05 dB median at k=16, full
@@ -563,10 +726,17 @@ column rather than the retired one.
   **partition-aware** candidate selector (subset distance under Ungerboeck
   partitioning); nobody has built one.
   Evidence: `dq-runs/trellis-hull-20260828/alphabet_span_pathology.json`.
-- **The fp8-CB per-output-row scale charge is now in the driver**, so
-  `fp8_ladder.py` and `verdict/menu_selection_4families.py` agree natively
-  instead of via a post-hoc correction; the selected menu is unchanged, which is
-  the evidence the two paths were already consistent.
+- **The fp8-CB per-output-row scale charge is in the driver**, so `fp8_ladder.py`
+  and `verdict/menu_selection_4families.py` agree natively instead of via a
+  post-hoc correction; the selected menu is unchanged, which is the evidence the
+  two paths were already consistent. *(Precision added 2026-08-29: the two
+  **canonical** bracket files the verdict reads — `fp8_ladder_two_tier.json` and
+  `fp8_ladder_production_row_fp32.json` — predate the driver fix and carry
+  `exact_bpw` = `k/8` with `scale_bpw` = 0, so the post-hoc correction is still
+  the code path that fires when you re-run the published verdict. Every
+  post-fix ladder file charges `row_scale_bytes = rows*4` natively. The two
+  paths were checked cell by cell against each other and agree exactly; see the
+  bpw identity gate in §6.4.)*
 - **JSO is closed** (§8), not open: R≥3 ON, R=2 OFF.
 
 ---
@@ -608,7 +778,11 @@ column rather than the retired one.
    sibling bpw identity assertion was updated to include the row plane. Both
    brackets re-run, `SELFCHECK PASS 96/96`. The verdict re-solves to the same
    13 selected / 20 retired-both / 6 contested as the post-hoc correction gave —
-   which is the evidence the two paths were already consistent.
+   which is the evidence the two paths were already consistent. **Still owed:**
+   the two canonical bracket files this document cites are the pre-fix pair, so
+   `menu_selection_4families.py` reaches its verdict through the post-hoc
+   correction. Re-point it at post-fix files, or keep the correction, but do not
+   read the doc as saying the correction is dead code (§7).
 5. Re-measure the E4M3-vs-FP8_CB_K36 negative — **half done**: v2 E4M3 at
    q256=1152 (4.512 bpw, 1024×4096, lina) is `0.06254 ms`, **2.94×** the research
    decoder, parity `all_green`. The matched `FP8_CB_K36` half on the same box is
@@ -619,8 +793,20 @@ column rather than the retired one.
    quarantine lifted (`RETRACTION_tcq_r2_jso_20260828.md`, closed section).
 7. Decide whether a v2 sub-1.0-bit wire family is worth designing — it is the only
    thing that would retire the last fp4 lattice CB rungs (§6.3).
-8. Run the learned-CB arms on **both** axes (§7) — the one open question that
-   could move the trellis-side verdicts.
+8. ~~Run the learned-CB arms on **both** axes~~ — **DONE, and the 8-bit half
+   inverts the 4-bit finding** (§7). fp4: the book decays to +0.008…+0.013 dB in
+   the production band and no retirement was at risk. fp8: the learned book
+   dominates the fixed one on quality *and* bytes at four of five adjacent
+   rung pairs, and would take the whole top of the menu. Successor item 10.
+9. **Stamp `encode_tier` into both ladders' results provenance** (§6.4). Pure
+   provenance: it changes no rendering and cannot invalidate a baseline, but it
+   must land between runs, not during one.
+10. **Re-check the learned fp8 book on a bf16 corpus before any menu change**
+    (§7). K44/K48 sit above this corpus's ~4.7-bit content ceiling and the
+    learned arm reaches 43.7/46.8 dB — above the lossless 8.008 bpw cast — so
+    the direction is measured but the size is corpus-scoped. The four-family
+    sweep is re-runnable in seconds once a bf16-corpus ladder exists
+    (`docs/design/resolve_menu_at_shipped_tier.py --with-learned-fp8`).
 
 ---
 
