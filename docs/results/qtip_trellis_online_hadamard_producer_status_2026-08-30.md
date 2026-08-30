@@ -50,7 +50,9 @@ a dated run or imported from Gridbook:
 
 - `prismaquant/trellis_encoder.py` owns the exact 256-state tail-biting
   Viterbi encoder and emits coded-bit, point-index, bypass-code, and scale
-  planes;
+  planes. Its default scale path is unchanged; the BlockLDL follow-up adds an
+  explicit positive E2M1 global-scale override, with a test proving that the
+  default one-block global supplied explicitly reproduces identical bytes;
 - `prismaquant/trellis_wire.py` independently packs, validates, parses,
   decodes native codes, and reconstructs values for
   `gridbook.trellis.wire.v1`; and
@@ -76,12 +78,64 @@ and verifies
 The combined receipt is
 `prismaquant.research.qtip_trellis_online_hadamard_artifact.v1`.
 
+## Full off-diagonal feedback follow-up
+
+The research module also exposes
+`require_blockldl_trellis_wire_round_trip()`. It factors the transformed
+Hessian as `H_tilde = L D L.T` with unit 256-by-256 block-lower `L`, then
+processes physical trellis superblocks in reverse:
+
+```text
+A_j = W_tilde_j + sum(k > j) (W_tilde_k - Q_k) L[k,j]
+Q_j = trellis_terminal(A_j)
+```
+
+For `E = W_tilde - Q`, this gives `(E L)_j = A_j - Q_j` and therefore the
+exact algebraic decomposition
+`tr(E H_tilde E.T) = sum_j tr((A_j-Q_j) D_j (A_j-Q_j).T)`. The implementation
+checks both the factorization and this objective identity, and compares the
+QTIP-shaped buffered recurrence against an unbuffered oracle.
+
+The atomic block is 256 input columns, not QTIP's original 16-output by
+16-input tile. Gridbook's cyclic trellis state spans one output row by 256
+input positions; committing 16-column fragments would cut that cycle and
+produce a different codec. Schedule and alphabets are fixed before feedback.
+One E2M1 tensor-global scale is selected from the complete transformed weight
+and frozen across the reverse pass. Per-block `[rows,16]` E4M3 scale planes
+are assembled in row-major `[rows,blocks*16]` order before the planes are
+packed once into one wire. Each feedback step first packs and reference-decodes
+its terminal bytes; that same-byte decoded tensor, never the encoder's
+pre-serialization float reconstruction, feeds the earlier blocks. The final
+assembled wire must decode FP32-exactly to those terminal decodes.
+Temporary terminal wires use each block's local schedule sum and only its
+locally used shaped-rate alphabets. The final wire retains the declared
+tensor-wide rate and complete alphabet union; tests cover fixed-quota blocks
+with differing rate sets and tight-offset blocks with local rates 368 and 656
+that average to tensor rate 512.
+
+Two honest additive terminal metrics are available:
+
+- `qtip_frobenius` matches the pinned QTIP recurrence's unweighted terminal;
+- `diag_block_D` uses the diagonal of the correct local LDL block `D_j`.
+
+Neither mode claims to minimize the dense `D_j`. A general local cost contains
+pairwise residual terms `2 D_j[s,t] e_s e_t`; those are not summarized by the
+current convolutional eight-bit state or its coordinate-additive Viterbi
+cost. `dense_block_D` therefore fails closed. Receipts record
+`terminal_dense_D_consumed=false` and `terminal_dense_D_exact=false` while
+separately binding the complete `L`, dense `D`, feedback targets, decoded
+terminals, shared scale, encoder source, final wire, and transform metadata.
+
+At width 256 there is no cross-block feedback. A full-feedback experiment
+requires at least two physical superblocks; the API remains valid for one but
+does not reinterpret its dense `D_0` as information consumed by the terminal.
+
 ## Remaining boundaries
 
-- The existing trellis encoder consumes a nonnegative column-diagonal
-  importance vector. This scaffold supplies `diag(H_tilde)` and explicitly
-  records `full_off_diagonal_blockldlq_applied=false`; it does not fabricate a
-  claim that the encoder consumes the complete transformed Hessian.
+- The simple non-BlockLDL entry point still consumes `diag(H_tilde)` and
+  records `full_off_diagonal_blockldlq_applied=false`. The new BlockLDL entry
+  point consumes all cross-block feedback in `L`, but its terminal remains an
+  explicitly labelled additive approximation to each dense local `D_j`.
 - The reference artifact is one dense Linear only. It is not connected to the
   production cache, allocator handoff, exporter, or Gridbook loader.
 - The physical wire proves producer codec closure, not served native W4A4
@@ -104,6 +158,7 @@ CPU reference command:
   tests/test_qtip_trellis_online_hadamard_producer.py
 ```
 
-Result: `100 passed` in 5.89 seconds. This is codec and reference-algebra
-evidence only. No GPU performance, energy, graph, or production-serving claim
-is made.
+Result after the BlockLDL follow-up: `111 passed`; the separate documentation
+and architecture guards add `20 passed` (`131 passed` together). This is codec
+and reference-algebra evidence only. No GPU performance, energy, graph, or
+production-serving claim is made.

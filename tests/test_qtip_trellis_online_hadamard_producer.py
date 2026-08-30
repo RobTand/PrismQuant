@@ -9,12 +9,31 @@ import pytest
 import torch
 
 from prismaquant import format_registry
+from prismaquant.trellis_formats import E2M1_FAMILY, native_code_value
+from prismaquant.trellis_wire import TrellisWire, decode_values_torch
 
 
 M = importlib.import_module(
     "research.qtip_native_nvfp4_2026-08-30."
     "trellis_online_hadamard_producer"
 )
+NATIVE = importlib.import_module(
+    "research.qtip_native_nvfp4_2026-08-30.native_nvfp4_ldlq"
+)
+
+
+def _e2_alphabet(rate):
+    ordered = tuple(sorted(
+        range(16),
+        key=lambda code: (native_code_value(E2M1_FAMILY, code), code),
+    ))
+    count = 1 << (rate + 1)
+    if rate == 2:
+        return (15, 13, 11, 9, 8, 2, 4, 7)
+    return tuple(
+        ordered[index * (len(ordered) - 1) // (count - 1)]
+        for index in range(count)
+    )
 
 
 def _contract(rows: int = 8, columns: int = 16):
@@ -351,3 +370,212 @@ def test_combined_producer_refuses_prepared_tensor_identity_drift():
             point_route="full",
             research_opt_in=M.RESEARCH_OPT_IN,
         )
+
+
+@pytest.mark.parametrize("buffer_blocks", [1, 2, 3])
+def test_buffered_blockldl_recurrence_matches_unbuffered_oracle(buffer_blocks):
+    generator = torch.Generator().manual_seed(20260831)
+    basis = torch.randn(6, 6, generator=generator)
+    hessian = basis @ basis.T + 0.5 * torch.eye(6)
+    feedback, diagonal = M.qtip_block_ldl_factors(hessian, block_size=2)
+    assert torch.allclose(
+        feedback,
+        NATIVE.qtip_block_unit_lower(hessian, block_size=2),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    unit_lower = feedback.clone()
+    for first in range(0, 6, 2):
+        unit_lower[first:first + 2, first:first + 2] = torch.eye(2)
+    assert torch.allclose(
+        unit_lower @ torch.block_diag(*diagonal.unbind()) @ unit_lower.T,
+        hessian,
+        rtol=2e-5,
+        atol=2e-5,
+    )
+    weight = torch.randn(3, 6, generator=generator)
+
+    def terminal(_index, target):
+        return torch.round(target * 4) / 4
+
+    reference_q, reference_targets = M.reverse_block_feedback_reference(
+        weight, feedback, terminal, block_size=2
+    )
+    buffered_q, buffered_targets = M.reverse_block_feedback_buffered(
+        weight,
+        feedback,
+        terminal,
+        block_size=2,
+        buffer_blocks=buffer_blocks,
+    )
+    assert torch.equal(buffered_q, reference_q)
+    assert all(
+        torch.allclose(actual, expected, rtol=1e-6, atol=1e-6)
+        for actual, expected in zip(
+            buffered_targets, reference_targets, strict=True
+        )
+    )
+
+
+def test_blockldl_trellis_terminal_refuses_dense_D_claim():
+    weight = torch.zeros(1, 512)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        torch.eye(512),
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=1,
+        input_seed=1,
+        output_seed=2,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    with pytest.raises(ValueError, match="dense_block_D is unsupported"):
+        M.require_blockldl_trellis_wire_round_trip(
+            prepared,
+            torch.zeros(1, 512),
+            body_rate_q256=512,
+            schedule=[2] * 512,
+            layout="fixed_quota_per_256",
+            alphabets={2: (15, 13, 11, 9, 8, 2, 4, 7)},
+            scale_rule="static_6",
+            sb_chunk=1,
+            determinism_mode="on",
+            tailbite_candidates=4,
+            backend="eager",
+            point_route="full",
+            terminal_metric_mode="dense_block_D",
+            buffer_blocks=1,
+            research_opt_in=M.RESEARCH_OPT_IN,
+        )
+
+
+def test_blockldl_factorization_refuses_non_positive_definite_hessian():
+    hessian = torch.eye(256)
+    hessian[-1, -1] = -1
+    with pytest.raises(ValueError, match="positive definite"):
+        M.qtip_block_ldl_factors(hessian)
+
+
+@pytest.mark.parametrize(("terminal_metric_mode", "buffer_blocks"), [
+    ("diag_block_D", 1),
+    ("qtip_frobenius", 2),
+])
+def test_blockldl_trellis_uses_full_feedback_and_one_same_byte_wire(
+    terminal_metric_mode,
+    buffer_blocks,
+):
+    generator = torch.Generator().manual_seed(20260901)
+    weight = torch.randn(2, 512, generator=generator)
+    activations = torch.randn(9, 512, generator=generator)
+    hessian = activations.T @ activations + 0.5 * torch.eye(512)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        hessian,
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=2,
+        input_seed=0x1234,
+        output_seed=0x5678,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    before = set(format_registry.REGISTRY)
+    artifact = M.require_blockldl_trellis_wire_round_trip(
+        prepared,
+        activations,
+        body_rate_q256=512,
+        schedule=[2] * 512,
+        layout="fixed_quota_per_256",
+        alphabets={2: (15, 13, 11, 9, 8, 2, 4, 7)},
+        scale_rule="static_6",
+        sb_chunk=2,
+        determinism_mode="on",
+        tailbite_candidates=4,
+        backend="eager",
+        point_route="full",
+        terminal_metric_mode=terminal_metric_mode,
+        buffer_blocks=buffer_blocks,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    assert set(format_registry.REGISTRY) == before
+    wire = TrellisWire.from_bytes(artifact.wire_bytes)
+    assert wire.to_bytes() == artifact.wire_bytes
+    assert wire.columns == 512 and wire.rows == 2
+    assert torch.equal(
+        artifact.decoded_transformed_weight,
+        decode_values_torch(artifact.wire_bytes),
+    )
+    receipt = artifact.receipt
+    assert receipt["schema"] == M.BLOCKLDL_COMBINED_ARTIFACT_SCHEMA
+    assert receipt["block_ldl"][
+        "full_cross_block_feedback_matrix_consumed"
+    ] is True
+    assert receipt["block_ldl"]["terminal_dense_D_consumed"] is False
+    assert receipt["block_ldl"][
+        "terminal_metric_mode"
+    ] == terminal_metric_mode
+    assert receipt["block_ldl"]["block_size"] == 256
+    assert receipt["block_ldl"]["buffer_blocks"] == buffer_blocks
+    assert receipt["same_byte_reparse_verified"] is True
+    assert receipt["serve_algebra"]["wire_identity_verified"] is True
+    assert receipt["producer_eligible"] is False
+    first_target = receipt["terminal_blocks"][0]["feedback_target_sha256"]
+    assert first_target != M._tensor_sha256(
+        prepared.transformed_weight[:, :256]
+    )
+
+
+@pytest.mark.parametrize(("layout", "schedule"), [
+    (
+        "fixed_quota_per_256",
+        [2] * 256 + [1] * 128 + [3] * 128,
+    ),
+    (
+        "tight_offsets",
+        [1] * 144 + [2] * 112 + [2] * 112 + [3] * 144,
+    ),
+])
+def test_blockldl_trellis_uses_block_local_recipe_and_full_union(
+    layout,
+    schedule,
+):
+    generator = torch.Generator().manual_seed(20260902)
+    weight = torch.randn(1, 512, generator=generator)
+    activations = torch.randn(5, 512, generator=generator)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        activations.T @ activations + 0.5 * torch.eye(512),
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=1,
+        input_seed=3,
+        output_seed=4,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    artifact = M.require_blockldl_trellis_wire_round_trip(
+        prepared,
+        activations,
+        body_rate_q256=512,
+        schedule=schedule,
+        layout=layout,
+        alphabets={rate: _e2_alphabet(rate) for rate in (1, 2, 3)},
+        scale_rule="static_6",
+        sb_chunk=1,
+        determinism_mode="on",
+        tailbite_candidates=4,
+        backend="eager",
+        point_route="full",
+        terminal_metric_mode="diag_block_D",
+        buffer_blocks=1,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    wire = TrellisWire.from_bytes(artifact.wire_bytes)
+    assert wire.schedule == tuple(schedule)
+    assert set(wire.alphabets) == {1, 2, 3}
+    assert [
+        block["local_body_rate_q256"]
+        for block in artifact.receipt["terminal_blocks"]
+    ] == [sum(schedule[:256]), sum(schedule[256:])]
+    assert torch.equal(
+        artifact.decoded_transformed_weight,
+        decode_values_torch(artifact.wire_bytes),
+    )
