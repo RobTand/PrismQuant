@@ -51,6 +51,7 @@ import json
 import os
 import signal
 import socket
+import statistics
 import subprocess
 import sys
 import threading
@@ -65,6 +66,7 @@ DONE = "done"
 FAILED = "failed"
 LOGS = "logs"
 RESERVED = "reserved"
+DEPLOY_HOLD = ".deploying"
 STATE_DIRS = (READY, CLAIMED, DONE, FAILED, LOGS, RESERVED)
 
 # A lease is refreshed this often and considered abandoned after this long.
@@ -83,18 +85,20 @@ POLL_S = 10
 # means the kernel OOM killer picks a victim immediately, with no cushion and
 # by its own heuristic.  It has picked wrong here before.  Evicting early is
 # how we choose the victim ourselves.
-# An evicted item must not be re-admitted immediately.  Aggressive
-# admission and zero backoff together are a livelock: the box evicts, sees
-# headroom, re-admits the same job, and evicts it again, forever, making no
-# progress while looking busy.  Backoff is the necessary complement to
-# "start it and find out" -- observed doing exactly this on 2026-08-29
-# before the cooldown existed.
-EVICT_BACKOFF_BASE_S = 60.0
-EVICT_BACKOFF_CAP_S = 1800.0
-MAX_EVICTIONS = 5
+# An evicted item must not be re-admitted immediately.  Aggressive admission
+# and zero cooldown together are a livelock, but exponential backoff merely
+# makes the same losing race take longer.  Every policy eviction therefore
+# earns scheduler age; after two, the next attempt reserves its footprint and
+# is non-evictable.  The fixed cooldown damps immediate churn without turning
+# lost races into an ever-longer bench.
+EVICT_BACKOFF_S = 60.0
+EVICTIONS_BEFORE_PROTECTION = 2
 
 MEM_SAMPLE_S = 2.0
 MEM_RATE_WINDOW_S = 30.0
+MIN_TREND_INTERVALS = 3
+ATTRIBUTION_MIN_FRACTION = 0.5
+CGROUP_LOOKUP_RETRY_S = 5.0
 EVICT_GRACE_S = 10.0
 
 
@@ -104,6 +108,10 @@ EVICT_GRACE_S = 10.0
 
 def qdir(name: str) -> Path:
     return QUEUE_ROOT / name
+
+
+def deployment_hold_path() -> Path:
+    return QUEUE_ROOT / DEPLOY_HOLD
 
 
 def queue_reachable() -> bool:
@@ -285,6 +293,20 @@ def sort_key(item: dict) -> tuple:
     return (-int(item.get("priority", 50)), float(item.get("enqueued_at", 0)))
 
 
+def ready_candidates(host: str, tags: set, has_gpu: bool,
+                     only_declared: bool = False) -> list[dict]:
+    """Runnable items, or none while a deployment holds claim boundaries."""
+    if deployment_hold_path().exists():
+        return []
+    candidates = []
+    for path in qdir(READY).glob("*.json"):
+        item = read_item(path)
+        if item and is_runnable(item, host, tags, has_gpu, only_declared):
+            candidates.append(item)
+    candidates.sort(key=sort_key)
+    return candidates
+
+
 # --------------------------------------------------------------------------
 # lease bookkeeping
 
@@ -443,6 +465,94 @@ def mem_available_gb() -> float:
     return float("inf")
 
 
+def mem_total_gb() -> float:
+    """Physical memory governed by this worker, in GB."""
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / (1024.0 * 1024.0)
+    except OSError:
+        pass
+    return float("inf")
+
+
+def _positive_item_gb(item: dict, key: str) -> float | None:
+    try:
+        value = float(item.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def item_eviction_count(item: dict) -> int:
+    """Policy evictions earned by an item; never a fit verdict."""
+    try:
+        return max(0, int(item.get("evictions", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def item_is_protected(item: dict) -> bool:
+    """Whether scheduler aging guarantees this item's next attempt."""
+    return item_eviction_count(item) >= EVICTIONS_BEFORE_PROTECTION
+
+
+def _median_consecutive_slope(samples) -> float | None:
+    """Return the median value-growth slope, or ``None`` without a trend.
+
+    Consecutive-pair slopes are used instead of an endpoint difference so
+    every sample in the window participates.  Their median was chosen over a
+    least-squares fit because a single interior outlier contributes one steep
+    rise and one steep fall, while an endpoint outlier contributes only one
+    bad interval; neither can dominate the median.  Requiring at least three
+    valid intervals also means one sample pair can never constitute a trend.
+    """
+    ordered = list(samples)
+    slopes = []
+    for (t0, value0), (t1, value1) in zip(ordered, ordered[1:]):
+        dt = t1 - t0
+        if dt > 0:
+            slopes.append((value1 - value0) / dt)
+    if len(slopes) < MIN_TREND_INTERVALS:
+        return None
+    return float(statistics.median(slopes))
+
+
+def _process_tree_rss_gb(root_pid: int) -> float | None:
+    """Resident bytes for a direct child and its descendants.
+
+    An uncapped job is launched as a process group, but Linux exposes RSS per
+    process rather than per group.  Walking ``children`` captures the shell
+    and the workload it launched without charging unrelated processes to the
+    victim.  Races with process exit are expected and simply omit that sample.
+    """
+    pending = [root_pid]
+    seen = set()
+    resident_pages = 0
+    observed = False
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        proc_root = Path("/proc") / str(pid)
+        try:
+            children = (proc_root / "task" / str(pid) / "children").read_text()
+            pending.extend(int(child) for child in children.split())
+        except (OSError, ValueError):
+            pass
+        try:
+            fields = (proc_root / "statm").read_text().split()
+            resident_pages += int(fields[1])
+            observed = True
+        except (IndexError, OSError, ValueError):
+            pass
+    if not observed:
+        return None
+    return resident_pages * os.sysconf("SC_PAGE_SIZE") / (1024.0 ** 3)
+
+
 def unit_name(item_id: str) -> str:
     """systemd unit name for a job. Only [A-Za-z0-9:_.\\-] survive."""
     safe = "".join(c if (c.isalnum() or c in ":_.-") else "-" for c in item_id)
@@ -479,6 +589,11 @@ class Job:
         self.started = time.time()
         self.avail_at_start = mem_available_gb()
         self.evicted = False
+        self.eviction_attribution: dict | None = None
+        self.footprint_samples: collections.deque = collections.deque()
+        self.footprint_source: str | None = None
+        self._memory_current_path: Path | None = None
+        self._next_cgroup_lookup_at = 0.0
         self.state: str | None = None
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -491,7 +606,130 @@ class Job:
 
     @property
     def evictable(self) -> bool:
-        return bool(self.item.get("evictable", True))
+        return (bool(self.item.get("evictable", True))
+                and not item_is_protected(self.item))
+
+    def sunk_runtime_s(self, now: float | None = None) -> float:
+        """Measured runtime discarded across this and earlier attempts."""
+        try:
+            earlier = max(0.0, float(self.item.get("evicted_runtime_s") or 0.0))
+        except (TypeError, ValueError):
+            earlier = 0.0
+        current = max(0.0, (time.time() if now is None else now) - self.started)
+        return earlier + current
+
+    def _cgroup_footprint_gb(self) -> float | None:
+        """Read this transient service's ``memory.current`` when available."""
+        path = self._memory_current_path
+        if path is None:
+            now = time.monotonic()
+            if now < self._next_cgroup_lookup_at:
+                return None
+            self._next_cgroup_lookup_at = now + CGROUP_LOOKUP_RETRY_S
+            try:
+                out = subprocess.run(
+                    ["systemctl", "--user", "show", self.unit,
+                     "-p", "ControlGroup", "--value"],
+                    capture_output=True, text=True, timeout=5)
+                control_group = (out.stdout or "").strip()
+                relative = Path(control_group.lstrip("/"))
+                if (out.returncode == 0 and control_group not in ("", "/")
+                        and control_group.startswith("/")
+                        and ".." not in relative.parts):
+                    path = Path("/sys/fs/cgroup") / relative / "memory.current"
+                    self._memory_current_path = path
+            except (OSError, subprocess.SubprocessError):
+                return None
+        if path is None:
+            return None
+        try:
+            return int(path.read_text().strip()) / (1024.0 ** 3)
+        except (OSError, ValueError):
+            # A unit may disappear between ``systemctl show`` and the read.
+            self._memory_current_path = None
+            return None
+
+    def _read_footprint_gb(self) -> tuple[float, str] | None:
+        if self.unit is not None:
+            value = self._cgroup_footprint_gb()
+            if value is None:
+                return None
+            return value, f"cgroup:{self._memory_current_path}"
+        proc = self.proc
+        if proc is None or proc.poll() is not None:
+            return None
+        value = _process_tree_rss_gb(proc.pid)
+        if value is None:
+            return None
+        return value, f"rss_tree:{proc.pid}"
+
+    def sample_footprint(self, now: float | None = None) -> float | None:
+        """Sample this job's own resident footprint for later attribution."""
+        reading = self._read_footprint_gb()
+        if reading is None:
+            return None
+        value, source = reading
+        if self.footprint_source is not None and source != self.footprint_source:
+            # A source change is a different accounting boundary; joining the
+            # values would manufacture a slope at the seam.
+            self.footprint_samples.clear()
+        self.footprint_source = source
+        sampled_at = time.time() if now is None else now
+        self.footprint_samples.append((sampled_at, value))
+        while (self.footprint_samples
+               and sampled_at - self.footprint_samples[0][0]
+               > MEM_RATE_WINDOW_S):
+            self.footprint_samples.popleft()
+        return value
+
+    def classify_eviction(self, box_drop_rate_gb_s: float) -> dict:
+        """Attribute pressure only when this victim measurably drove it.
+
+        A growing victim is not automatically the cause: unrelated work can
+        consume most of the box while the selected job grows slowly.  A
+        ``victim_growth`` classification therefore requires a sustained own-
+        footprint slope that explains at least half of the sustained box-wide
+        MemAvailable fall.  Flat, recovering, or minority growth is recorded
+        as collateral.  Missing samples are recorded as unknown, never turned
+        into a factual fit verdict.
+        """
+        growth = _median_consecutive_slope(self.footprint_samples)
+        sample_count = len(self.footprint_samples)
+        window_s = (self.footprint_samples[-1][0]
+                    - self.footprint_samples[0][0]) if sample_count >= 2 else 0.0
+        record = {
+            "classification": "unknown",
+            "box_drop_gb_s": round(float(box_drop_rate_gb_s), 6),
+            "victim_growth_gb_s": (None if growth is None
+                                     else round(float(growth), 6)),
+            "victim_growth_share": None,
+            "victim_footprint_start_gb": (
+                round(float(self.footprint_samples[0][1]), 3)
+                if sample_count else None),
+            "victim_footprint_gb": (
+                round(float(self.footprint_samples[-1][1]), 3)
+                if sample_count else None),
+            "sample_count": sample_count,
+            "window_s": round(window_s, 3),
+            "source": self.footprint_source,
+            "measured_at": time.time(),
+        }
+        if growth is None:
+            record["reason"] = "insufficient_footprint_samples"
+            return record
+        if box_drop_rate_gb_s <= 0:
+            record.update(classification="collateral",
+                          reason="box_not_falling")
+            return record
+        share = max(0.0, growth) / box_drop_rate_gb_s
+        record["victim_growth_share"] = round(share, 6)
+        if growth > 0 and share >= ATTRIBUTION_MIN_FRACTION:
+            record.update(classification="victim_growth",
+                          reason="victim_growth_explains_box_drop")
+        else:
+            record.update(classification="collateral",
+                          reason="victim_not_growing_enough_to_explain_drop")
+        return record
 
     def _run(self) -> None:
         item, host = self.item, self.host
@@ -576,29 +814,13 @@ class Job:
                 rc = self.proc.wait()
             elapsed = time.time() - self.started
             if self.evicted:
-                fh.write(f"\n[pqwork] evicted to avoid OOM after {elapsed:.0f}s\n")
+                classification = (self.eviction_attribution or {}).get(
+                    "classification", "unknown")
+                fh.write(f"\n[pqwork] evicted to avoid OOM after {elapsed:.0f}s "
+                         f"(attribution={classification})\n")
 
         if self.evicted:
-            # An eviction is not a failure of the work, so it does not spend
-            # an attempt -- a box under memory pressure would otherwise burn
-            # through max_attempts on items that never got to run. It does
-            # spend an *eviction*, which backs the item off and eventually
-            # concludes it does not fit here.
-            evictions = int(item.get("evictions", 0)) + 1
-            if evictions >= MAX_EVICTIONS:
-                move_item(self.id, CLAIMED, FAILED,
-                          {"outcome": f"evicted_{evictions}x_does_not_fit",
-                           "evictions": evictions, "finished_at": time.time()})
-                self.state = "does_not_fit"
-                return
-            backoff = min(EVICT_BACKOFF_BASE_S * (2 ** (evictions - 1)),
-                          EVICT_BACKOFF_CAP_S)
-            move_item(self.id, CLAIMED, READY,
-                      {"outcome": "evicted_for_memory",
-                       "evictions": evictions,
-                       "not_before": time.time() + backoff,
-                       "attempts": max(0, int(item.get("attempts", 1)) - 1)})
-            self.state = f"evicted (backoff {backoff:.0f}s)"
+            self._finish_eviction()
             return
 
         if self.oomed and not receipt_satisfied(item.get("receipt") or ""):
@@ -632,13 +854,72 @@ class Job:
             move_item(self.id, CLAIMED, FAILED, patch)
             self.state = "failed"
 
+    def _finish_eviction(self) -> bool:
+        """Requeue with more scheduler protection, never a fit verdict."""
+        if not self.evicted:
+            return False
+        item = self.item
+        attribution = self.eviction_attribution or {
+            "classification": "unknown",
+            "reason": "eviction_without_attribution_measurement",
+            "box_drop_gb_s": None,
+            "victim_growth_gb_s": None,
+            "victim_growth_share": None,
+            "victim_footprint_start_gb": None,
+            "victim_footprint_gb": None,
+            "sample_count": len(self.footprint_samples),
+            "window_s": 0.0,
+            "source": self.footprint_source,
+            "measured_at": time.time(),
+        }
+        now = time.time()
+        evictions = item_eviction_count(item) + 1
+        observed = [value for _, value in self.footprint_samples]
+        prior_peak = _positive_item_gb(item, "observed_peak_gb")
+        if prior_peak is not None:
+            observed.append(prior_peak)
+        common = {
+            "eviction_attribution": attribution,
+            "last_evicted_at": now,
+            "attempts": max(0, int(item.get("attempts", 1)) - 1),
+            "evictions": evictions,
+            "evicted_runtime_s": round(self.sunk_runtime_s(now), 3),
+            "protection_earned": (
+                evictions >= EVICTIONS_BEFORE_PROTECTION),
+        }
+        if observed:
+            common["observed_peak_gb"] = round(max(observed), 3)
+
+        classification = attribution.get("classification")
+        if classification == "victim_growth":
+            field = "attributed_evictions"
+            outcome = "evicted_for_own_memory_growth"
+            state = "evicted for own growth"
+        elif classification == "collateral":
+            field = "collateral_evictions"
+            outcome = "evicted_as_collateral"
+            state = "evicted as collateral"
+        else:
+            field = "unattributed_evictions"
+            outcome = "evicted_without_attribution"
+            state = "evicted without attribution"
+        common[field] = int(item.get(field, 0)) + 1
+        moved = move_item(
+            self.id, CLAIMED, READY,
+            {**common, "outcome": outcome,
+             "not_before": now + EVICT_BACKOFF_S})
+        if common["protection_earned"]:
+            state += "; next attempt protected"
+        self.state = f"{state} (cooldown {EVICT_BACKOFF_S:.0f}s)"
+        return moved
+
     def start(self) -> None:
         self.thread.start()
 
     def alive(self) -> bool:
         return self.thread.is_alive()
 
-    def evict(self) -> None:
+    def evict(self, attribution: dict | None = None) -> None:
         """Stop this job so its memory comes back, and requeue it.
 
         SIGTERM to the process group first so a job with a cleanup handler
@@ -646,6 +927,7 @@ class Job:
         rather than the shell matters: the shell is not the process holding
         the tens of gigabytes.
         """
+        self.eviction_attribution = attribution
         self.evicted = True
         if self.unit:
             # A capped job lives in its own unit, not in our process group.
@@ -731,13 +1013,19 @@ class MemoryGovernor:
     """
 
     def __init__(self, reserve_gb: float, horizon_s: float, settle_s: float,
-                 admission: str = "optimistic"):
+                 admission: str = "optimistic", total_gb: float | None = None):
         self.reserve_gb = reserve_gb
         self.horizon_s = horizon_s
         self.settle_s = settle_s
         self.admission = admission
+        self.total_gb = mem_total_gb() if total_gb is None else total_gb
         self.external_hold_gb = 0.0
         self.samples: collections.deque = collections.deque()
+
+    @property
+    def capacity_gb(self) -> float:
+        """Absolute job capacity after the worker's operating reserve."""
+        return max(0.0, self.total_gb - self.reserve_gb)
 
     def sample(self) -> float:
         now, avail = time.time(), mem_available_gb()
@@ -747,15 +1035,70 @@ class MemoryGovernor:
         return avail
 
     def drop_rate_gb_s(self) -> float:
-        """GB/s at which MemAvailable is falling; negative means recovering."""
-        if len(self.samples) < 2:
-            return 0.0
-        (t0, a0), (t1, a1) = self.samples[0], self.samples[-1]
-        dt = t1 - t0
-        return (a0 - a1) / dt if dt > 0 else 0.0
+        """Sustained GB/s fall; negative means sustained recovery.
+
+        This is the negative median consecutive-pair slope.  See
+        :func:`_median_consecutive_slope` for the outlier and minimum-interval
+        contract.
+        """
+        slope = _median_consecutive_slope(self.samples)
+        return -slope if slope is not None else 0.0
+
+    def projection_horizon_s(self) -> float:
+        horizon = self.horizon_s
+        if swap_free_gb() <= 0.5:
+            horizon *= 2.0
+        return horizon
+
+    def projected_available_gb(self) -> float:
+        if not self.samples:
+            return float("inf")
+        return (self.samples[-1][1]
+                - self.drop_rate_gb_s() * self.projection_horizon_s())
 
     def set_external_hold(self, gb: float) -> None:
         self.external_hold_gb = gb
+
+    def reservation_gb(self, item: dict) -> float | None:
+        """Measured/declarative reservation, or ``None`` for exclusive run."""
+        return (_positive_item_gb(item, "mem_gb")
+                or _positive_item_gb(item, "observed_peak_gb"))
+
+    def measured_impossibility(self, item: dict) -> dict | None:
+        """Evidence that this item exceeds absolute capacity on this box."""
+        if item.get("receipt") and receipt_satisfied(item["receipt"]):
+            return None
+        for source, key in (("declared", "mem_gb"),
+                            ("observed", "observed_peak_gb")):
+            footprint = _positive_item_gb(item, key)
+            if footprint is not None and footprint > self.capacity_gb:
+                return {
+                    "source": source,
+                    "footprint_gb": round(footprint, 3),
+                    "box_total_gb": round(self.total_gb, 3),
+                    "reserve_gb": round(self.reserve_gb, 3),
+                    "capacity_gb": round(self.capacity_gb, 3),
+                    "measured_at": time.time(),
+                }
+        return None
+
+    def admission_candidates(self, candidates: list[dict]) -> list[dict]:
+        """Let the most-aged protected item hold admission until it can start.
+
+        Once an item has earned protection, admitting another arrival ahead of
+        it would recreate starvation one layer earlier.  Returning only the
+        most-aged reservation drains existing work without letting a stream of
+        newcomers consume the memory or slot it is waiting for.
+        """
+        protected = [item for item in candidates if item_is_protected(item)]
+        if not protected:
+            return candidates
+        reserved = min(
+            protected,
+            key=lambda item: (-item_eviction_count(item),
+                              -int(item.get("priority", 50)),
+                              float(item.get("enqueued_at", 0))))
+        return [reserved]
 
     def headroom(self, jobs: list) -> float:
         """Memory we may still commit, after unrealized declarations.
@@ -792,11 +1135,16 @@ class MemoryGovernor:
         work is genuinely expensive.
         """
         headroom = self.headroom(jobs)
+        if item_is_protected(item):
+            reservation = self.reservation_gb(item)
+            if reservation is None:
+                # No declared or observed size: drain the box and give the
+                # protected item an exclusive attempt rather than inventing a
+                # number that MemAvailable cannot support.
+                return not jobs and headroom > 0
+            return headroom >= reservation
         if self.admission == "strict":
-            try:
-                want = float(item.get("mem_gb") or 0.0)
-            except (TypeError, ValueError):
-                want = 0.0
+            want = _positive_item_gb(item, "mem_gb") or 0.0
             return headroom >= want
         return headroom > 0
 
@@ -814,26 +1162,38 @@ class MemoryGovernor:
         avail = self.samples[-1][1]
         if avail <= self.reserve_gb:
             return True
-        horizon = self.horizon_s
-        if swap_free_gb() <= 0.5:
-            horizon *= 2.0
-        projected = avail - self.drop_rate_gb_s() * horizon
-        return projected < self.reserve_gb
+        return self.projected_available_gb() < self.reserve_gb
+
+
+def fail_measured_impossibility(item: dict, governor: MemoryGovernor) -> bool:
+    """Fail a ready item only from an explicit absolute-capacity measurement."""
+    measurement = governor.measured_impossibility(item)
+    if measurement is None:
+        return False
+    return move_item(
+        item["id"], READY, FAILED,
+        {"outcome": "measured_footprint_exceeds_box_capacity",
+         "fit_measurement": measurement,
+         "finished_at": time.time()})
 
 
 def choose_victim(jobs: list):
-    """The newest, lowest-priority evictable job.
+    """The lowest-priority job with the least measured sunk runtime.
 
-    Newest because it is the one that pushed the box over and has the least
-    sunk compute to lose; lowest priority first so gold-path work outlives
-    speculative work. A job marked non-evictable is never chosen -- which
-    means a box can still OOM if everything running is pinned, and that is
-    the operator's declared choice rather than a surprise.
+    ``started`` is not a sunk-work measurement: a restarted victim is newest
+    by construction, so newest-first selects the output of its own eviction
+    again.  ``sunk_runtime_s`` carries discarded runtime across attempts and
+    makes restart history protective.  After the bounded aging threshold the
+    job is non-evictable altogether. A user-pinned item remains non-evictable
+    independently of scheduler protection.
     """
     victims = [j for j in jobs if j.evictable and j.alive()]
     if not victims:
         return None
-    return sorted(victims, key=lambda j: (int(j.item.get("priority", 50)), -j.started))[0]
+    now = time.time()
+    return min(victims,
+               key=lambda job: (int(job.item.get("priority", 50)),
+                                job.sunk_runtime_s(now), job.id))
 
 
 def wait_for_queue(once: bool) -> None:
@@ -884,6 +1244,8 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
           f"queue={QUEUE_ROOT}", flush=True)
     last_held = None
     last_mem_hold = 0.0
+    last_reservation = None
+    last_deploy_hold = False
     last_beat = 0.0
     while True:
         if not queue_reachable():
@@ -893,6 +1255,9 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
             ensure_layout()
         avail = gov.sample()
         jobs = [j for j in jobs if j.alive()]
+        sampled_at = gov.samples[-1][0]
+        for job in jobs:
+            job.sample_footprint(sampled_at)
 
         # Memory policing comes before admission: give the box back its
         # headroom before considering whether to take on more.
@@ -900,11 +1265,17 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
             victim = choose_victim(jobs)
             if victim is not None:
                 rate = gov.drop_rate_gb_s()
+                attribution = victim.classify_eviction(rate)
+                growth = attribution["victim_growth_gb_s"]
+                growth_text = ("unmeasured" if growth is None
+                               else f"{growth:.2f}GB/s")
                 print(f"[pqwork] EVICT {victim.id}: MemAvailable {avail:.1f}GB "
                       f"falling {rate:.2f}GB/s -> projected "
-                      f"{avail - rate * horizon_s:.1f}GB below the "
-                      f"{reserve_gb:.0f}GB reserve", flush=True)
-                victim.evict()
+                      f"{gov.projected_available_gb():.1f}GB below the "
+                      f"{reserve_gb:.0f}GB reserve; victim growth "
+                      f"{growth_text} ({attribution['classification']})",
+                      flush=True)
+                victim.evict(attribution)
 
         now = time.time()
         if now - last_beat >= HEARTBEAT_S:
@@ -933,13 +1304,42 @@ def worker_loop(host: str, tags: set, gpu_slots: int, cpu_slots: int,
                       f" -> gpu capacity {gpu_capacity}", flush=True)
             last_held = held
 
-        candidates = []
-        for p in qdir(READY).glob("*.json"):
-            item = read_item(p)
-            if item and is_runnable(item, host, tags, has_gpu,
-                                    only_declared):
-                candidates.append(item)
-        candidates.sort(key=sort_key)
+        deploy_held = deployment_hold_path().exists()
+        if deploy_held != last_deploy_hold:
+            if deploy_held:
+                print("[pqwork] deployment hold active; admitting no new claims",
+                      flush=True)
+            else:
+                print("[pqwork] deployment hold released", flush=True)
+            last_deploy_hold = deploy_held
+
+        candidates = ready_candidates(host, tags, has_gpu, only_declared)
+
+        possible = []
+        for item in candidates:
+            impossibility = gov.measured_impossibility(item)
+            if impossibility is None:
+                possible.append(item)
+                continue
+            if fail_measured_impossibility(item, gov):
+                print(f"[pqwork] FAIL {item['id']}: "
+                      f"{impossibility['source']} footprint "
+                      f"{impossibility['footprint_gb']:.1f}GB exceeds "
+                      f"box capacity {impossibility['capacity_gb']:.1f}GB",
+                      flush=True)
+        candidates = gov.admission_candidates(possible)
+        reservation = (candidates[0] if len(candidates) == 1
+                       and item_is_protected(candidates[0]) else None)
+        reservation_id = reservation["id"] if reservation else None
+        if reservation_id != last_reservation:
+            if reservation is not None:
+                want = gov.reservation_gb(reservation)
+                requirement = (f"{want:.1f}GB" if want is not None
+                               else "an exclusive slot")
+                print(f"[pqwork] protecting {reservation_id} after "
+                      f"{item_eviction_count(reservation)} policy evictions; "
+                      f"reserving {requirement}", flush=True)
+            last_reservation = reservation_id
 
         started_any = False
         for item in candidates:
@@ -1020,6 +1420,11 @@ def cmd_enqueue(a: argparse.Namespace) -> int:
         "enqueued_at": time.time(),
         "attempts": 0,
         "evictions": 0,
+        "attributed_evictions": 0,
+        "collateral_evictions": 0,
+        "unattributed_evictions": 0,
+        "evicted_runtime_s": 0.0,
+        "protection_earned": False,
         "not_before": 0,
     }
     write_json_atomic(item_path(READY, a.id), item)
@@ -1068,14 +1473,18 @@ def cmd_status(a: argparse.Namespace) -> int:
                 where = lease.get("host") if lease else "?"
                 stale = " STALE" if lease_is_stale(i["id"]) else ""
                 bits.append(f"on {where} {_fmt_age(i.get('claimed_at'))}{stale}")
+                if item_is_protected(i):
+                    bits.append("protected")
             elif state == READY:
                 pending = [p for p in (i.get("after") or []) if not receipt_satisfied(p)]
                 if pending:
                     bits.append(f"blocked on {len(pending)} receipt(s)")
+                if item_is_protected(i):
+                    bits.append("protected reservation")
                 cool = float(i.get("not_before") or 0) - time.time()
                 if cool > 0:
-                    bits.append(f"cooling {int(cool)}s after "
-                                f"{i.get('evictions')} eviction(s)")
+                    cause = str(i.get("outcome") or "eviction").replace("_", " ")
+                    bits.append(f"cooling {int(cool)}s after {cause}")
                 bits.append(f"waiting {_fmt_age(i.get('enqueued_at'))}")
             elif state in (DONE, FAILED):
                 bits.append(str(i.get("outcome")))
@@ -1116,7 +1525,13 @@ def cmd_requeue(a: argparse.Namespace) -> int:
     for state in (FAILED, DONE):
         if item_path(state, a.id).exists():
             move_item(a.id, state, READY, {"outcome": None, "attempts": 0,
-                                           "evictions": 0, "not_before": 0})
+                                           "evictions": 0,
+                                           "attributed_evictions": 0,
+                                           "collateral_evictions": 0,
+                                           "unattributed_evictions": 0,
+                                           "evicted_runtime_s": 0.0,
+                                           "protection_earned": False,
+                                           "not_before": 0})
             print(f"requeued {a.id} (was {state})")
             return 0
     print(f"error: no failed/done item '{a.id}'", file=sys.stderr)
