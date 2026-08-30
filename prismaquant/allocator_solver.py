@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from math import inf
 from typing import TYPE_CHECKING
@@ -209,6 +210,71 @@ def _serving_group_common_formats(
     return common
 
 
+class FormatRankUnknownError(KeyError):
+    """Promotion had to order a format the run's rank table does not cover.
+
+    ``format_rank`` is a DENSE ORDINAL over the run's format menu, built in
+    ``allocator.main`` by sorting that menu's specs by exact serialized rate.
+    Promotion reads it to answer exactly one question -- "which of this
+    serving unit's members' formats is the most expensive?" -- and for a
+    format missing from the table that question has no answer.
+
+    The lookup was a bare subscript until 2026-08-30, and it did not raise
+    only because candidate aggregation guaranteed that a trellis (TCQ) rung
+    reached promotion as a lone ungrouped Linear, which promotion skips
+    (``len(members) < 2``).  Wiring aggregation so a rung can join a fused or
+    packed group makes the lookup live.
+
+    Refusing is the deliberate choice.  A rank invented for an unknown format
+    silently REORDERS the promotion decision, and every member of the unit
+    then ships in whatever format that wrong order picked -- a wrong artifact
+    that reports nothing.  A refusal costs a run and names its own cause.
+    The repair is upstream: cover every format the candidate menus actually
+    offer (``allocator.extend_format_rank_from_candidates``).
+    """
+
+    def __str__(self) -> str:
+        # KeyError's inherited __str__ is repr(args[0]), which turns a
+        # multi-line diagnostic into one escaped blob.
+        return str(self.args[0]) if self.args else ""
+
+
+def _rank_of(
+    format_rank: dict[str, int],
+    fmt: str,
+    *,
+    members: Sequence[str],
+    where: str,
+) -> int:
+    """``format_rank[fmt]``, or a refusal that names what is missing."""
+
+    try:
+        return format_rank[fmt]
+    except KeyError:
+        listed = sorted(members)
+        shown = listed[:8]
+        raise FormatRankUnknownError(
+            f"promotion cannot order format {fmt!r}: it is absent from this "
+            f"run's format rank table, so 'which of this unit's formats is "
+            f"the most expensive' has no answer.\n"
+            f"    where: {where}\n"
+            f"    serving unit ({len(listed)} members, representative "
+            f"{listed[0]!r}): {shown}"
+            f"{' ...' if len(listed) > len(shown) else ''}\n"
+            f"    rank table (low->high rate): "
+            f"{sorted(format_rank, key=lambda name: (format_rank[name], name))}\n"
+            f"    missing input: an exact serialized rate for {fmt!r} over "
+            f"this run's shapes. The rank table is built from the format "
+            f"menu's FormatSpec rates, and a rung whose exact bytes live on "
+            f"its candidate descriptor rather than in a shape-driven "
+            f"FormatSpec formula (trellis/TCQ) has to be ranked from the "
+            f"BUILT candidate menus instead: "
+            f"allocator.extend_format_rank_from_candidates does that, and a "
+            f"caller that reached promotion without it is the defect. "
+            f"Do not paper over this with a default rank."
+        ) from None
+
+
 def _serving_group_menu_error(
     members: list[str],
     assigned: dict[str, str],
@@ -284,7 +350,9 @@ def _choose_group_format(
             _serving_group_menu_error(
                 members, assigned, legal_formats, format_rank, common)
         )
-    best_rank = format_rank[best_fmt]
+    best_rank = _rank_of(
+        format_rank, best_fmt, members=members,
+        where="_choose_group_format: ranking the unit's max-rank assignment")
     for fmt in ranked:
         if format_rank[fmt] >= best_rank:
             return fmt
@@ -340,7 +408,13 @@ def _promote_group_components(
     for members in components.values():
         if len(members) < 2:
             continue
-        best_fmt = max((out[member] for member in members), key=lambda fmt: format_rank[fmt])
+        best_fmt = max(
+            (out[member] for member in members),
+            key=lambda fmt: _rank_of(
+                format_rank, fmt, members=members,
+                where="_promote_group_components: choosing the unit's "
+                      "highest-rank assigned format"),
+        )
         if all(_member_allows(best_fmt, member, legal_formats)
                for member in members):
             best_rank = format_rank[best_fmt]
@@ -445,7 +519,11 @@ def promote_fused(assignment: dict[str, str],
     for members_present in groups.values():
         if len(members_present) < 2:
             continue
-        ranks = [format_rank[out[m]] for m in members_present]
+        ranks = [
+            _rank_of(format_rank, out[m], members=members_present,
+                     where="promote_fused: legacy per-group rank repass")
+            for m in members_present
+        ]
         best = max(ranks)
         best_fmt = next(k for k, v in format_rank.items() if v == best)
         for m in members_present:

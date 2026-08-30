@@ -298,24 +298,53 @@ def test_the_production_seam_refuses_when_the_flag_is_set(tmp_path, monkeypatch)
 
 
 def test_the_unwired_links_are_still_unwired():
-    """The ledger is a claim about the code; check the two cheapest entries.
+    """The ledger is a claim about the code; check the cheapest entries.
 
-    If either of these starts passing, the corresponding UNWIRED_LINKS entry is
+    If one of these starts passing, the corresponding UNWIRED_LINKS entry is
     stale and must be deleted along with -- not before -- its refusal.
+
+    The registry entry's resolution check has moved to
+    ``tests/test_trellis_format_spec.py``, which owns that behaviour now that
+    ``get_format`` parse-resolves TCQ names; the entry is gone from the ledger.
+    So are the promotion-rank and call-site entries, exercised by
+    ``tests/test_allocator_cost_mode_and_rank.py``.
     """
 
-    from prismaquant import format_registry as fr
-
-    with pytest.raises(KeyError):
-        fr.get_format("TCQ_E2M1_R640")
     from prismaquant import allocator_candidates as ac
 
     aggregation = pathlib.Path(ac.__file__).read_text().count(
         "for spec in formats:")
     assert aggregation >= 2, (
         "fused and packed aggregation still iterate FormatSpec objects; if "
-        "this changed, re-verify links 3 and 4 before deleting them"
+        "this changed, re-verify the two aggregation entries before deleting "
+        "them"
     )
+
+
+def test_the_closed_links_are_gone_from_the_ledger():
+    """A closed link must leave, or the refusal keeps naming a fixed thing.
+
+    Each of these is licensed by a test module that exercises the behaviour
+    the entry named -- the ledger's own rule for deletion.
+    """
+
+    where = {site for site, _why in tm.UNWIRED_LINKS}
+    assert not [site for site in where if site.startswith("format_registry.py")]
+    assert not [site for site in where if site.startswith("allocator_solver.py")]
+    assert "allocator.py:2756" not in where
+
+
+def test_the_refusal_never_quotes_a_count():
+    """Entries leave as links land; a hardcoded count goes stale on the spot."""
+
+    import re
+
+    source = pathlib.Path(tm.__file__).read_text()
+    assert "len(UNWIRED_LINKS)" in source
+    stale = re.findall(
+        r"\b(?:two|three|four|five|six|seven|eight|nine|ten)\s+links?\b",
+        source, re.I)
+    assert not stale, f"the module still quotes a link count: {stale}"
 
 
 def test_a_packed_expert_row_is_refused_not_underpriced(tmp_path):
@@ -350,3 +379,41 @@ def test_export_refuses_a_trellis_assignment():
     text = pathlib.Path(ex.__file__).read_text()
     assert "parse_trellis_format_name(fmt_canonical) is not None" in text
     assert "ProductionWeightCache renders no trellis wire" in text
+
+
+def test_every_entry_that_cites_a_line_range_still_points_at_its_code():
+    """A file:line the refusal quotes must point at the code it describes.
+
+    This ledger is read by a human deciding what is safe to re-enable, so a
+    citation that drifts is worse than no citation: it sends the reader to
+    unrelated code and quietly reads as "already handled".  Editing the file
+    an entry cites is exactly what shifts it -- closing links #5 and #7 added
+    ~230 lines above the assignment-payload filter and moved this one.  So
+    each entry that names a line range is checked against a token drawn from
+    its own "why", and only entries whose file this branch owns are checked:
+    the ``allocator_candidates.py`` citations move under another agent's
+    edits, and restamping those is that agent's to do on merge.
+    """
+
+    owned = {
+        "allocator.py": "_memory_bytes_by_format",
+        "trellis_rate_surface.py": "KL-adjoint",
+    }
+    root = pathlib.Path(tm.__file__).parent
+    checked = 0
+    for site, _why in tm.UNWIRED_LINKS:
+        if ":" not in site:
+            continue
+        name, _, span = site.partition(":")
+        token = owned.get(name)
+        if token is None or not span[:1].isdigit():
+            continue
+        first, _, last = span.partition("-")
+        lines = (root / name).read_text().splitlines()
+        window = "\n".join(lines[int(first) - 1:int(last or first)])
+        assert token in window, (
+            f"{site} no longer contains {token!r} -- the entry's citation "
+            f"drifted; restamp it against the code it describes"
+        )
+        checked += 1
+    assert checked >= 1, "no owned entry was actually checked"

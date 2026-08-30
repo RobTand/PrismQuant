@@ -86,10 +86,11 @@ import csv
 import hashlib
 import json
 import math
+import os
 import pickle
 import re
 from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from . import format_registry as fr
@@ -251,6 +252,171 @@ def _sort_specs_by_serialized_rate(
         sorted(specs, key=lambda spec: (rates[spec.name], spec.name)),
         rates,
     )
+
+
+def extend_format_rank_from_candidates(
+    format_rank: dict[str, int],
+    rank_rates: Mapping[str, float],
+    candidates: Mapping[str, Sequence[Candidate]],
+    stats: Mapping[str, Mapping],
+) -> dict[str, int]:
+    """Rank every format the BUILT menus offer, by its exact serialized rate.
+
+    ``format_rank`` is a dense ordinal over the run's ``--formats`` menu, and
+    it is fixed before ``build_candidates`` runs.  Anything menu construction
+    ADDS per unit is therefore missing from the table promotion reads -- the
+    continuous trellis rate surface is the live case -- and promotion's
+    question ("which of this serving unit's formats is the most expensive?")
+    has no answer for it (``allocator_solver.FormatRankUnknownError``).
+
+    The added rank is DERIVED, not invented.  Every candidate already carries
+    the exact serialized tensor payload it would ship
+    (``Candidate.memory_bytes``) for a unit of known parameter count, so a
+    format's rate over this run's shapes is ``8 * sum(bytes) / sum(params)``
+    across the units that offer it.  That is the same corpus-weighted
+    quantity ``_serialized_format_rates`` computes for a ``FormatSpec``, read
+    off the bytes instead of off a shape formula -- which is the only way to
+    rank a rung whose bytes are a property of its descriptor (schedule,
+    layout, alphabets, scale plane) rather than of ``(name, shape)``.
+
+    The union is re-enumerated in rate order.  Formats already in the table
+    keep their relative order, because that table was itself built in rate
+    order and every promotion comparison is relative; the function asserts
+    this rather than assuming it.  When the menus offer nothing new the
+    returned mapping equals the input, so a run without an augmented menu is
+    unchanged.
+    """
+
+    byte_totals: dict[str, int] = {}
+    param_totals: dict[str, int] = {}
+    # Every format the menus add, whether or not its units turned out to be
+    # priceable. A format seen only on rows with no readable shape must be
+    # REPORTED, not quietly dropped: dropping it hands promotion a table that
+    # is silently missing an entry, and the run then fails much later with a
+    # message about the wrong thing.
+    added_formats: set[str] = set()
+    for unit, menu in candidates.items():
+        entry = stats.get(unit)
+        shape = (
+            _shape_from_stats(dict(entry))
+            if isinstance(entry, Mapping) else ()
+        )
+        n_params = (
+            int(math.prod(int(dim) for dim in shape))
+            if len(shape) >= 2 and all(int(dim) > 0 for dim in shape)
+            else 0
+        )
+        for cand in menu:
+            fmt = str(cand.fmt)
+            if fmt in format_rank:
+                continue
+            added_formats.add(fmt)
+            if n_params <= 0:
+                continue
+            byte_totals[fmt] = byte_totals.get(fmt, 0) + int(cand.memory_bytes)
+            param_totals[fmt] = param_totals.get(fmt, 0) + n_params
+    if not added_formats:
+        return dict(format_rank)
+
+    unpriceable = sorted(
+        fmt for fmt in added_formats if param_totals.get(fmt, 0) <= 0
+    )
+    if unpriceable:
+        raise SystemExit(
+            f"[alloc] ERROR: the candidate menus offer {unpriceable} only on "
+            f"units whose parameter count could not be read from the probe "
+            f"stats, so no exact serialized rate -- and therefore no promotion "
+            f"rank -- can be derived for them. Refusing rather than ranking "
+            f"them by guess: a wrong rank silently reorders every fused and "
+            f"packed-expert promotion decision that touches one."
+        )
+
+    merged: dict[str, float] = dict(rank_rates)
+    for fmt, total_bytes in byte_totals.items():
+        merged[fmt] = 8.0 * float(total_bytes) / float(param_totals[fmt])
+    ordered = sorted(merged, key=lambda name: (merged[name], name))
+
+    before = sorted(format_rank, key=lambda name: (format_rank[name], name))
+    after = [name for name in ordered if name in format_rank]
+    if after != before:
+        raise SystemExit(
+            f"[alloc] ERROR: re-ranking the format menu against the built "
+            f"candidates would REORDER formats that were already ranked "
+            f"(before={before}, after={after}). The two orderings must be the "
+            f"same measurement; a disagreement means the rank table and the "
+            f"candidate bytes were priced against different shapes, and "
+            f"promoting under either one would be arbitrary."
+        )
+    extended = {name: index for index, name in enumerate(ordered)}
+    print(
+        f"[alloc] format rank extended with "
+        f"{[f'{fmt}({merged[fmt]:.4f}b)' for fmt in sorted(byte_totals)]} "
+        f"from the built candidate menus",
+        flush=True,
+    )
+    return extended
+
+
+# ---------------------------------------------------------------------------
+# The run's cost objective, read from data instead of from the environment
+# ---------------------------------------------------------------------------
+def resolve_run_cost_mode(
+    cost_data: Mapping[str, object],
+    *,
+    flag: str | None,
+    costs_path: str,
+) -> str | None:
+    """Return the objective ``--costs`` was measured under, or ``None``.
+
+    ``build_candidates``' currency gate compares a trellis surface manifest's
+    declared ``cost_mode`` against the run's.  It used to answer "what is the
+    run's?" with ``os.environ.get("COST_MODE", "aura")``, and that answer was
+    never this run's: ``run-pipeline.sh`` assigns ``COST_MODE`` with ``:=``
+    (:448), never exports it, and used to hand the allocator no such flag,
+    while every other stage was fed ``--cost-mode "$COST_MODE"`` explicitly
+    (:1593, :1662, :1776, :1816, :1901).  So the gate read the ``"aura"``
+    default on every pipeline run, or -- worse, because it is
+    invocation-dependent -- whatever a caller's own shell leaked, since ``:=``
+    keeps an inherited variable exported.  A gate that cannot see its input is
+    not a gate.
+
+    Resolution order, strongest first:
+
+    1. ``--cost-mode``, which ``run-pipeline.sh`` now passes the same way it
+       feeds every other stage.
+    2. the objective stamped on the cost table itself
+       (``provenance['cost_mode']``, written for every table since re-vet R2).
+       This is the objective the numbers in front of the DP were actually
+       measured under, which is the question the gate is asking.
+
+    Present together they must agree.  A shell that says ``aura`` over a table
+    measured under ``local`` is exactly the confusion re-vet R2's rebuild rule
+    exists to prevent, and the allocator should not have to trust the shell to
+    have applied it.  A table predating the R2 stamp resolves to the flag
+    alone; an unstamped table with no flag resolves to ``None``, and the
+    caller decides whether its consumer can proceed without an answer.
+    """
+
+    stamped: str | None = None
+    if isinstance(cost_data, Mapping):
+        payload_provenance = cost_data.get("provenance")
+        if isinstance(payload_provenance, Mapping):
+            raw = payload_provenance.get("cost_mode")
+            if isinstance(raw, str) and raw.strip():
+                stamped = raw.strip()
+    declared = flag.strip() if isinstance(flag, str) and flag.strip() else None
+    if declared is not None and stamped is not None and declared != stamped:
+        raise SystemExit(
+            f"[alloc] ERROR: --cost-mode={declared!r} disagrees with the "
+            f"objective stamped on {costs_path} "
+            f"(provenance['cost_mode']={stamped!r}). One DP prices in one "
+            f"currency, and these numbers were measured under the other "
+            f"estimator. Rebuild the cost table under {declared!r}, or run "
+            f"the allocator under {stamped!r}."
+        )
+    return declared or stamped
+
+
 _RD_LOG_LINEAR_R2_THRESHOLD = 0.99
 
 
@@ -1615,6 +1781,17 @@ def main():
     ap.add_argument("--probe", required=True, help="sensitivity_probe pickle")
     ap.add_argument("--costs", required=True, help="measure_quant_cost pickle")
     ap.add_argument(
+        "--cost-mode",
+        default=None,
+        help="The objective --costs was measured under (local | "
+             "production-render-score | aura). run-pipeline.sh passes the "
+             "run's value, the same way it feeds every other stage; omitted, "
+             "it is read from the cost table's own provenance stamp. When "
+             "both exist they must agree. Consumed by the candidate-menu "
+             "currency gate, which must never guess this from the "
+             "environment.",
+    )
+    ap.add_argument(
         "--accept-research-cost-table",
         action="store_true",
         help="Explicitly accept a table stamped as the sanctioned study-grade "
@@ -2135,7 +2312,10 @@ def main():
         )
 
     if args.threads > 0:
-        import os
+        # NOTE: no local `import os` here. A function-local import binds the
+        # name for the WHOLE function, so a conditional one left every earlier
+        # `os.` read in main() raising UnboundLocalError whenever the branch
+        # was not taken. The module-level import is the only one.
         os.environ["OMP_NUM_THREADS"] = str(args.threads)
         os.environ["MKL_NUM_THREADS"] = str(args.threads)
 
@@ -2246,6 +2426,31 @@ def main():
             "remain unchanged outside this exact stamped table",
             flush=True,
         )
+    # The run's pricing objective, resolved from the cost table in front of
+    # the DP (and the explicit flag) rather than from an environment variable
+    # the pipeline never exported. See resolve_run_cost_mode.
+    run_cost_mode = resolve_run_cost_mode(
+        cost_data, flag=args.cost_mode, costs_path=args.costs)
+    if run_cost_mode is None:
+        from .trellis_menu import TRELLIS_SURFACE_ENV as _TRELLIS_SURFACE_ENV
+
+        if os.environ.get(_TRELLIS_SURFACE_ENV):
+            raise SystemExit(
+                f"[alloc] ERROR: {_TRELLIS_SURFACE_ENV} is set, but this run "
+                f"cannot say which objective it prices in: --cost-mode was "
+                f"not given and {args.costs} carries no "
+                f"provenance['cost_mode'] stamp. The trellis surface's "
+                f"currency gate compares the manifest's declared cost_mode "
+                f"against the run's, and a guessed answer would let anchors "
+                f"measured under one objective be ranked against candidates "
+                f"priced in another. Pass --cost-mode, or rebuild the cost "
+                f"table so it stamps its own."
+            )
+    else:
+        print(f"[alloc] cost objective: {run_cost_mode} "
+              f"(source: {'--cost-mode' if args.cost_mode else 'cost table stamp'})",
+              flush=True)
+
     stats = probe["stats"]
     costs = cost_data["costs"]
     print(f"[alloc] stats: {len(stats)} Linears, costs: {len(costs)} Linears")
@@ -2552,7 +2757,7 @@ def main():
     )
     rank_specs.setdefault(mtp_format_canonical, fr.get_format(mtp_format_canonical))
     rank_specs.setdefault(visual_format_canonical, fr.get_format(visual_format_canonical))
-    rank_specs_sorted, _rank_serialized_rates = _sort_specs_by_serialized_rate(
+    rank_specs_sorted, rank_serialized_rates = _sort_specs_by_serialized_rate(
         list(rank_specs.values()),
         accounting_stats,
         cb_serialization_context,
@@ -2753,6 +2958,14 @@ def main():
             print(line, flush=True)
 
     candidate_mask_records: list[dict] = []
+    # The trellis surface's identity, anchor currency and anchor activation
+    # contract land here and then travel with the assignment into
+    # selection.json and layer_config.json. Only the BODY menu collects them:
+    # this dict describes the surface the shipped body assignment was chosen
+    # from, and the head/MTP/visual menus are single-format and carry no
+    # trellis rung. Left empty when the surface is off, and stamped only when
+    # non-empty, so an unset run writes byte-identical artifacts.
+    trellis_surface_stamp: dict = {}
     candidates = build_candidates(
         stats, costs, specs_sorted, calibrated_gains,
         source_manifest=source_manifest,
@@ -2760,8 +2973,18 @@ def main():
         mask_records=candidate_mask_records,
         cb_serialization_context=cb_serialization_context,
         activation_pricing=activation_pricing,
+        cost_mode=run_cost_mode,
+        trellis_provenance=trellis_surface_stamp,
     )
     print(f"[alloc] candidates built for {len(candidates)} Linears")
+
+    # The menus can carry formats the --formats rank table never saw (the
+    # trellis rate surface densifies per unit). Promotion orders serving-unit
+    # members by rank, so extend the table from the bytes the candidates
+    # actually declare before anything reads it. A no-op when the menus offer
+    # nothing new.
+    format_rank = extend_format_rank_from_candidates(
+        format_rank, rank_serialized_rates, candidates, stats)
 
     fixed_format_assignment: dict[str, str] = {}
     fixed_stats: dict[str, dict] = {}
@@ -2811,6 +3034,7 @@ def main():
             # own predicted_dloss/cost_source precedence while making the
             # absence of body activation transfer explicit.
             activation_pricing=None,
+            cost_mode=run_cost_mode,
         )
         missing_head_candidates = [
             name for name in head_probe_names
@@ -2897,6 +3121,7 @@ def main():
             mask_records=candidate_mask_records,
             cb_serialization_context=cb_serialization_context,
             activation_pricing=activation_pricing,
+            cost_mode=run_cost_mode,
         )
         missing_mtp_candidates = [
             name for name in mtp_names
@@ -2969,6 +3194,7 @@ def main():
                 mask_records=candidate_mask_records,
                 cb_serialization_context=cb_serialization_context,
                 activation_pricing=activation_pricing,
+                cost_mode=run_cost_mode,
             )
             visual_aux_candidates = {
                 name: cand for name in visual_cost_names
@@ -4757,6 +4983,17 @@ def main():
             "cb_ladder_cross_family_verdict": cross_family_verdict,
             "serving_lane_provenance": selection_serving_lane_provenance(
                 chosen_info["assignment"], candidates, target_profile),
+            # The trellis rate surface this menu offered, when it was on:
+            # manifest identity, the currency and objective its anchors were
+            # measured in, the serving profile and exact target platform its
+            # capability gate compared against, and the activation contract
+            # the anchors' dloss was measured under. Principle 12 wants every
+            # size/quality claim to carry its activation-contract history, and
+            # principle 14 wants a claim about what a runtime executes to be
+            # structured data a gate can read rather than prose. Absent when
+            # the surface is off, so an unset run's artifacts are unchanged.
+            **({"trellis_surface": dict(trellis_surface_stamp)}
+               if trellis_surface_stamp else {}),
             # Ultraplan P5c: which hard serving constraints were active, which
             # probed assignments the axis REJECTED and for which SLO, and
             # which constraint binds at the shipped optimum. Present on every
@@ -5138,6 +5375,12 @@ def main():
             "additive_candidate_proposal_then_exact_assignment_filter"
         ),
         "global_optimality_claimed": False,
+        # Same stamp as selection.json's: the recipe an exporter or a reader
+        # picks up must be able to say which rate surface offered the rungs in
+        # it and what those rungs' numbers were measured on, without going
+        # back to the manifest file. Absent when the surface is off.
+        **({"trellis_surface": dict(trellis_surface_stamp)}
+           if trellis_surface_stamp else {}),
         # The artifact-wide CB context the per-tensor identities above were
         # computed under. Without it the exporter cannot know which contract
         # produced them: it reads this key

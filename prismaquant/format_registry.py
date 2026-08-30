@@ -47,6 +47,11 @@ from prismaquant.fp8_dynamic import (
 )
 from prismaquant.gguf_formats import make_gguf_qdq
 from prismaquant.nvfp4_cb_formats import make_nvfp4_cb_qdq
+from prismaquant.trellis_formats import (
+    TrellisFamily,
+    TrellisFormatError,
+    parse_trellis_format_name,
+)
 from prismaquant.mx_formats import (
     e8m0_to_scale,
     mxfp8_e4m3_activation_qdq_vllm,
@@ -185,6 +190,240 @@ class FormatSpec:
     def effective_bits_for_shape(self, shape: tuple[int, ...]) -> float:
         n_params = int(math.prod(shape)) if len(shape) else 1
         return 8.0 * self.memory_bytes_for_shape(shape) / max(n_params, 1)
+
+
+class TrellisSpecFieldRefused(TypeError):
+    """An RTN-shaped ``FormatSpec`` field was read on a trellis (TCQ) rung.
+
+    Deliberately NOT an ``AttributeError``: consumers probe specs with
+    ``getattr(spec, "quantize_dequantize", None)`` (``aura_cost._delta_w``)
+    and wrap the *call* in ``except Exception``, so a refusal expressed as a
+    missing attribute or a raising callable would be swallowed into
+    ``None`` — the silent-zero failure class that already priced a real
+    A-side at zero once (NVFP4_CB, 2026-08-17).  A ``TypeError`` raised at
+    the attribute READ propagates through ``getattr``-with-default, so the
+    wrong call site fails loudly before any try/except around the call can
+    eat it.
+    """
+
+
+def _trellis_refused_field(field_name: str, why: str) -> property:
+    def _raise(self: "TrellisFormatSpec"):
+        raise TrellisSpecFieldRefused(
+            f"{self.name}: FormatSpec.{field_name} has no exact value for a "
+            f"Gridbook trellis rung, and a plausible-looking default would "
+            f"be consumed silently. {why}"
+        )
+
+    return property(_raise)
+
+
+_TRELLIS_BYTES_WHY = (
+    "Serialized tensor-payload bytes are the PRIMARY quantity for a trellis "
+    "wire and they are not a function of (format name, shape): the schedule, "
+    "layout, alphabets, block offsets, row padding, and the family scale "
+    "plane all contribute, and they travel on the candidate/manifest "
+    "descriptor, not in the shape-free TCQ name. Use "
+    "trellis_footprint.trellis_tensor_payload_breakdown (or the "
+    "descriptor-carried byte totals) — the same reason CB formats refuse "
+    "the legacy FormatSpec byte formula in "
+    "footprint.format_tensor_payload_breakdown."
+)
+
+
+class TrellisFormatSpec(FormatSpec):
+    """Parse-resolved spec for one Gridbook trellis (TCQ) rung.
+
+    ``get_format`` resolves ``TCQ_{E2M1,E4M3}_R<q256>`` by PARSING
+    (``trellis_formats.parse_trellis_format_name``), never by registry
+    enumeration: the wire's rate resolution is ``SUPERBLOCK_WEIGHTS/columns``
+    q256 — effectively continuous — and the name is shape-free on purpose so
+    fused-sibling/packed-group aggregation can intersect member menus by
+    format name (see ``trellis_menu`` "WHY A MANIFEST AND NOT A FORMATS ENUM
+    ENTRY").  Instances never enter ``REGISTRY``.
+
+    The contract is exact-or-refuse (principles 1 and 2):
+
+    * **Exact** — ``name``, ``act_bits``/``act_dtype_name``/
+      ``act_group_size`` (the native executed routes are A=W, forced by
+      ``torch._scaled_mm`` on the declared targets: E2M1 → W4A4, E4M3 →
+      W8A8; derived from the family's ``terminal_format`` registry entry so
+      the two cannot drift apart), ``min_capability_sm`` (E2M1 SM120+, E4M3
+      SM89+), ``family="tcq"``, ``producer_eligible=False`` (no
+      ``ProductionWeightCache`` mechanism and export refuses TCQ), plus the
+      trellis-native truth: ``trellis_family``, ``body_rate_q256``,
+      ``scale_contract``.
+    * **Refused** — every RTN-shaped field whose honest answer does not
+      exist (``weight_bits``, ``group_size``, ``scale_bits``,
+      ``scale_dtype_name``, ``scale_block_shape``, ``autoround_config``,
+      ``quantize_dequantize``, ``activation_quantize_dequantize``) and every
+      byte/bpp helper built on them (``memory_bytes_for_shape``,
+      ``effective_bits``, ``effective_bits_for_shape``,
+      ``scale_count_for_shape``).  Refusals raise
+      :class:`TrellisSpecFieldRefused` at attribute access.
+    """
+
+    def __init__(self, family: TrellisFamily, body_rate_q256: int) -> None:
+        # Deliberately does NOT call the dataclass __init__: most base fields
+        # must not exist on the instance so the refusing class properties
+        # above them stay in charge of every read.
+        self.name = family.format_name(body_rate_q256)  # validates the rate
+        self.trellis_family = family
+        self.body_rate_q256 = int(body_rate_q256)
+        self.scale_contract = family.scale_contract
+        # A spelling no RTN/codebook/int dispatch table knows, so a batched
+        # render that reaches a trellis rung raises "Unknown
+        # weight_element_dtype" instead of rounding on the wrong grid.
+        self.weight_element_dtype = f"trellis_{family.grid}"
+        self.family = "tcq"
+        self.min_capability_sm = int(family.minimum_capability_sm)
+        self.producer_eligible = False
+        # The executed activation contract is the terminal scalar format's:
+        # the native _scaled_mm routes are A=W (fp4xfp4, fp8xfp8), so the
+        # A-side operand structure is exactly the one NVFP4 / FP8_E4M3
+        # already declare. Reading it from the registry keeps a future edit
+        # to those entries and this one from diverging.
+        terminal = get_format(family.terminal_format)
+        if terminal.act_bits is None or int(terminal.act_bits) >= 16:
+            raise TrellisFormatError(
+                f"{self.name}: terminal format {family.terminal_format!r} "
+                f"declares no activation quantization, but the trellis "
+                f"executed contract is A=W; the registry entry and the "
+                f"family contract disagree"
+            )
+        self.act_bits = int(terminal.act_bits)
+        self.act_dtype_name = terminal.act_dtype_name
+        self.act_group_size = terminal.act_group_size
+
+    weight_bits = _trellis_refused_field(
+        "weight_bits",
+        "The body rate is body_rate_q256/256 bits per weight — generally not "
+        "an integer, and body-only (no scale plane, schedule, offsets, or "
+        "alphabets). Known silent consumers: the generic "
+        "ceil(n_params*weight_bits/8) byte formula "
+        "(FormatSpec.memory_bytes_for_shape), "
+        "FormatDescriptor bits_per_param/memory_bytes "
+        "(format_cost_protocol), and the integer-RTN batched render "
+        "(measure_quant_cost). " + _TRELLIS_BYTES_WHY,
+    )
+    group_size = _trellis_refused_field(
+        "group_size",
+        "Per-group RTN scale granularity has no trellis referent; the "
+        "trellis truth is TrellisFormatSpec.scale_contract.",
+    )
+    scale_bits = _trellis_refused_field(
+        "scale_bits",
+        "Per-scale bit width has no trellis referent; the trellis truth is "
+        "TrellisFormatSpec.scale_contract and the payload breakdown's "
+        "scale_bytes.",
+    )
+    scale_dtype_name = _trellis_refused_field(
+        "scale_dtype_name",
+        "The scale plane is named by TrellisFormatSpec.scale_contract "
+        "(e.g. group16_fp8_e4m3_0p5_bpw, per_output_row_fp32), not by an "
+        "RTN scale dtype field.",
+    )
+    scale_block_shape = _trellis_refused_field(
+        "scale_block_shape",
+        "Block-scale geometry has no trellis referent; the trellis truth is "
+        "TrellisFormatSpec.scale_contract.",
+    )
+    autoround_config = _trellis_refused_field(
+        "autoround_config",
+        "No AutoRound layer_config exists for a trellis wire; the encoder is "
+        "a Viterbi search over a shared alphabet, not a rounding rule "
+        "AutoRound can express.",
+    )
+    quantize_dequantize = _trellis_refused_field(
+        "quantize_dequantize",
+        "Trellis encode is a Viterbi search over a shared alphabet requiring "
+        "column weights; it is not pointwise and cannot be the dataclass "
+        "identity default, which would price trellis reconstruction error at "
+        "exactly zero (the silent-zero failure class). Supply dW from a "
+        "measured trellis render (the anchor campaign), never from an RTN "
+        "stand-in.",
+    )
+    activation_quantize_dequantize = _trellis_refused_field(
+        "activation_quantize_dequantize",
+        "The DECLARED activation contract (act_bits/act_dtype_name/"
+        "act_group_size) is exact, but a numerical emulation callable would "
+        "assert the Gridbook lane's exact A-side scaling algorithm, which "
+        "nothing at the producer pin attests (principle 14). Until a "
+        "measurement blesses the identity with the terminal format's "
+        "activation path, refusing beats a plausible stand-in.",
+    )
+
+    @property
+    def effective_bits(self) -> float:  # type: ignore[override]
+        raise TrellisSpecFieldRefused(
+            f"{self.name}: effective_bits is derived from weight_bits/"
+            f"scale_bits, neither of which exists for a trellis rung. "
+            + _TRELLIS_BYTES_WHY
+        )
+
+    def scale_count_for_shape(self, shape: tuple[int, ...]) -> int:
+        raise TrellisSpecFieldRefused(
+            f"{self.name}: scale_count_for_shape is an RTN-group construct; "
+            f"trellis scale bytes come from the payload breakdown "
+            f"(scale_contract={self.scale_contract!r}). " + _TRELLIS_BYTES_WHY
+        )
+
+    def memory_bytes_for_shape(self, shape: tuple[int, ...]) -> int:
+        raise TrellisSpecFieldRefused(
+            f"{self.name}: memory_bytes_for_shape cannot be exact for a "
+            f"trellis rung. " + _TRELLIS_BYTES_WHY
+        )
+
+    def effective_bits_for_shape(self, shape: tuple[int, ...]) -> float:
+        raise TrellisSpecFieldRefused(
+            f"{self.name}: effective_bits_for_shape is derived from "
+            f"memory_bytes_for_shape, which cannot be exact for a trellis "
+            f"rung. " + _TRELLIS_BYTES_WHY
+        )
+
+    def __repr__(self) -> str:
+        # The dataclass __repr__ walks every field and would raise on the
+        # refused ones; a raising repr poisons logging and debuggers.
+        return (
+            f"TrellisFormatSpec(name={self.name!r}, "
+            f"body_rate_q256={self.body_rate_q256}, "
+            f"scale_contract={self.scale_contract!r}, "
+            f"act_bits={self.act_bits}, "
+            f"min_capability_sm={self.min_capability_sm})"
+        )
+
+    def __eq__(self, other: object) -> bool:
+        # The dataclass __eq__ compares field tuples and would raise on the
+        # refused ones. The name encodes (family, q256) completely.
+        if not isinstance(other, TrellisFormatSpec):
+            return NotImplemented
+        return self.name == other.name
+
+    # Defining __eq__ resets __hash__ to None, matching the base dataclass
+    # (eq=True, frozen=False), which is also unhashable.
+
+
+_TRELLIS_SPEC_CACHE: dict[str, TrellisFormatSpec] = {}
+
+
+def _resolve_trellis_format(canonical: str) -> TrellisFormatSpec | None:
+    """Parse-resolve a canonical ``TCQ_*`` name, or return None.
+
+    Raises ``TrellisFormatError`` (a ``ValueError``) for a well-spelled TCQ
+    name whose rate is outside the family's mathematical bounds — that is a
+    corrupt input deserving a pointed message, not an "unknown format".
+    """
+
+    cached = _TRELLIS_SPEC_CACHE.get(canonical)
+    if cached is not None:
+        return cached
+    parsed = parse_trellis_format_name(canonical)
+    if parsed is None:
+        return None
+    family, rate = parsed
+    spec = TrellisFormatSpec(family, rate)
+    _TRELLIS_SPEC_CACHE[canonical] = spec
+    return spec
 
 
 REGISTRY: dict[str, FormatSpec] = {}
@@ -1265,11 +1504,27 @@ def require_producer_formats(
 
 
 def get_format(name: str) -> FormatSpec:
+    """Resolve a format name to its spec.
+
+    Registered formats come from ``REGISTRY``.  Gridbook trellis rungs
+    (``TCQ_{E2M1,E4M3}_R<q256>``) are resolved by PARSING — the rate axis is
+    effectively continuous, so there are no enumerated entries and the
+    returned :class:`TrellisFormatSpec` answers exactly or raises
+    :class:`TrellisSpecFieldRefused`.  A well-spelled TCQ name with an
+    out-of-law rate raises ``TrellisFormatError`` (a ``ValueError``), not
+    ``KeyError``.
+    """
+
     canonical = canonical_format_name(name)
-    if canonical not in REGISTRY:
-        raise KeyError(f"Unknown format '{name}'. Available: "
-                       f"{sorted((*REGISTRY.keys(), *FORMAT_ALIASES.keys()))}")
-    return REGISTRY[canonical]
+    if canonical in REGISTRY:
+        return REGISTRY[canonical]
+    trellis = _resolve_trellis_format(canonical)
+    if trellis is not None:
+        return trellis
+    raise KeyError(f"Unknown format '{name}'. Available: "
+                   f"{sorted((*REGISTRY.keys(), *FORMAT_ALIASES.keys()))} "
+                   f"plus parse-resolved trellis rungs "
+                   f"'TCQ_{{E2M1,E4M3}}_R<q256>'")
 
 
 def nvfp4_activation_qdq_served(
