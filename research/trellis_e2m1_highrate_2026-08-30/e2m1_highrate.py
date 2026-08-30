@@ -72,6 +72,10 @@ BF16_PUBLISHED = Path("/home/rob/dq-runs/trellis-bf16-20260829/"
 # (the gain RISES with rate on DSv4: 1.34 -> 1.88 -> 2.18, and whether that
 # survives on a continuous-density source is what the estimate assumed).
 BF16_RATES = (1.0, 2.0, 2.5, 3.0)
+GLM_RATE_PLANS = {
+    "scaffold": BF16_RATES,
+    "high": NEW_RATES,
+}
 # Deterministic given the same encoder/inputs/device.  A torch/triton skew
 # flips DISCRETE encode decisions and shows at ~1e-3, which no tolerance
 # absorbs -- it is diagnosed, not tolerated.  Same bar hull_sweep uses.
@@ -86,6 +90,11 @@ def main() -> int:
         "--glm-manifest", type=Path,
         help=("finalized trellis.bf16_corpus.v2 manifest; required for glm. "
               "The explicit path is part of the result provenance."),
+    )
+    ap.add_argument(
+        "--glm-rate-plan", choices=tuple(GLM_RATE_PLANS), default="scaffold",
+        help=("GLM-only rate set: scaffold preserves the 1/2/2.5/3 contract; "
+              "high measures the near-four-bit band without rerunning it"),
     )
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--limit", type=int, default=None)
@@ -125,9 +134,11 @@ def main() -> int:
         glm_corpus = load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
         entries = {entry.name: entry for entry in glm_corpus.entries}
         names = list(entries)
-        rate_plan = BF16_RATES
+        rate_plan = GLM_RATE_PLANS[args.glm_rate_plan]
         published = {}
         control_keys = ()
+    if args.corpus != "glm" and args.glm_rate_plan != "scaffold":
+        raise SystemExit("--glm-rate-plan is valid only with --corpus glm")
     if args.limit:
         names = names[:args.limit]
 
@@ -152,6 +163,7 @@ def main() -> int:
         "corpus_manifest": (
             str(args.glm_manifest.resolve()) if args.corpus == "glm" else None
         ),
+        "glm_rate_plan": args.glm_rate_plan if args.corpus == "glm" else None,
         "aggregation_contract": (
             "dense and routed populations are summarized independently; "
             "no pooled median is valid" if args.corpus == "glm" else

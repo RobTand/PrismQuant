@@ -138,6 +138,8 @@ crashing.
     $PY e2m1_highrate.py --corpus dsv4 --out <rows.json>   # GPU
     $PY e2m1_highrate.py --corpus glm --glm-manifest <final-v2.json> \
       --out <glm-rows.json>                                # GPU
+    $PY e2m1_highrate.py --corpus glm --glm-manifest <final-v2.json> \
+      --glm-rate-plan high --out <glm-high-rate-rows.json> # GPU
     $PY fp8_learned_glm.py --manifest <final-v2.json> \
       --out <glm-fp8-learned.json> --dry-run               # CPU validation
     $PY coding_gain_table.py --rows <rows.json>
