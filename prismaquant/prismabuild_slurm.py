@@ -443,7 +443,10 @@ class SlurmAdapter:
             f"--comment=prismabuild:{key}",
             f"--cpus-per-task={resources.cpus}",
             f"--mem={resources.memory_mib}M",
-            f"--gpus={resources.gpus}",
+        ]
+        if resources.gpus:
+            argv.append(f"--gpus={resources.gpus}")
+        argv.extend([
             f"--constraint={resources.constraint}",
             f"--partition={resources.partition}",
             f"--account={resources.account}",
@@ -454,7 +457,7 @@ class SlurmAdapter:
             f"--error={log_directory / (key + '-%j.err')}",
             str(self.worker_script),
             *worker_argv[1:],
-        ]
+        ])
         completed = self._run(argv)
         output = completed.stdout.strip()
         if "\n" in output or "\r" in output:
@@ -498,9 +501,15 @@ class SlurmAdapter:
         ]
         accounting = self._run(accounting_argv)
         rows = [line.strip() for line in accounting.stdout.splitlines() if line.strip()]
+        if not rows:
+            # A newly submitted or requeued allocation can briefly be absent
+            # from both controllers while sacct ingests it. This is neither
+            # success nor a terminal verdict. The orchestrator's bounded poll
+            # budget owns the fail-closed timeout.
+            return "NOT_VISIBLE", "pending"
         if len(rows) != 1:
             raise SlurmProtocolError(
-                f"sacct returned {'no' if not rows else 'ambiguous'} allocation rows "
+                "sacct returned ambiguous allocation rows "
                 f"for job {job_id}: {rows!r}"
             )
         return self._parse_state_line(rows[0], job_id=job_id, source="sacct")
@@ -538,12 +547,17 @@ class SlurmAdapter:
 
         raw_state, category = self._query_state(job)
         if category == "pending":
+            reason = (
+                "SLURM allocation is not yet visible in squeue or sacct"
+                if raw_state == "NOT_VISIBLE"
+                else "SLURM allocation has not finished"
+            )
             return SlurmResolution(
                 status="pending",
                 action_key=str(normalized["action_key"]),
                 job_id=job,
                 slurm_state=raw_state,
-                reason="SLURM allocation has not finished",
+                reason=reason,
                 receipt=None,
                 payload_path=None,
             )

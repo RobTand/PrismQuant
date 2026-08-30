@@ -575,6 +575,8 @@ class _Adapter(Protocol):
 
     def requeue(self, action: object, job_id: ps.SlurmJobId | str) -> bool: ...
 
+    def cancel(self, job_id: ps.SlurmJobId | str) -> None: ...
+
 
 class DagsterActionRunner:
     """Execute graph nodes while treating verified CAS state as sole truth."""
@@ -669,6 +671,7 @@ class DagsterActionRunner:
 
         polls = 0
         requeues = 0
+        awaiting_requeue_transition = False
         while True:
             resolution = self.adapter.resolve(spec.action, submission.job_id)
             if resolution.action_key != spec.action_key:
@@ -685,10 +688,27 @@ class DagsterActionRunner:
                     )
                 return result
             if resolution.status in {"pending", "running"}:
+                awaiting_requeue_transition = False
                 polls += 1
                 if polls >= spec.max_polls:
+                    self.adapter.cancel(submission.job_id)
                     raise DagsterActionError(
-                        f"action {spec.action_key} exceeded its explicit poll budget"
+                        f"action {spec.action_key} exceeded its explicit poll budget; "
+                        "the allocation was cancelled"
+                    )
+                self.sleep(spec.poll_interval_seconds)
+                continue
+            if awaiting_requeue_transition:
+                # squeue/sacct may retain the previous terminal state while a
+                # same-job requeue moves back to PENDING. Wait for a positive
+                # pending/running transition instead of burning retries in a
+                # tight loop. The same explicit poll budget bounds this grace.
+                polls += 1
+                if polls >= spec.max_polls:
+                    self.adapter.cancel(submission.job_id)
+                    raise DagsterActionError(
+                        f"action {spec.action_key} did not enter pending or running "
+                        "after requeue; the allocation was cancelled"
                     )
                 self.sleep(spec.poll_interval_seconds)
                 continue
@@ -707,6 +727,8 @@ class DagsterActionRunner:
                     return result
                 requeues += 1
                 polls = 0
+                awaiting_requeue_transition = True
+                self.sleep(spec.poll_interval_seconds)
                 continue
             raise DagsterActionError(
                 f"action {spec.action_key} ended {resolution.status}: "

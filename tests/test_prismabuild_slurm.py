@@ -170,6 +170,31 @@ def test_submit_uses_exact_argv_closed_environment_and_content_request(
     assert json.loads(request.read_text(encoding="utf-8")) == action
 
 
+def test_cpu_submission_omits_zero_gpu_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _completed(argv, "12345\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    adapter.submit(
+        action,
+        checkout_root=checkout,
+        resources=_resources(gpus=0),
+        placement=ps.SlurmPlacement(
+            worker_id="slurm/cpu", platform_key=None, host_class=None
+        ),
+    )
+    assert not any(argument.startswith("--gpus=") for argument in calls[0])
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -254,6 +279,24 @@ def test_completed_without_receipt_is_failure_not_success(
     assert result.status == "failed"
     assert result.slurm_state == "COMPLETED"
     assert "no valid CAS receipt" in result.reason
+
+
+def test_new_job_absent_from_both_controllers_is_bounded_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return _completed(argv, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = adapter.resolve(action, "91")
+    assert result.status == "pending"
+    assert result.slurm_state == "NOT_VISIBLE"
+    assert "not yet visible" in result.reason
 
 
 @pytest.mark.parametrize(

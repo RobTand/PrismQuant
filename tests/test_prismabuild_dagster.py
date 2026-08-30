@@ -120,6 +120,9 @@ class _NeverAdapter:
     def requeue(self, *args: object, **kwargs: object) -> bool:
         raise AssertionError("cache hit must not call SLURM")
 
+    def cancel(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("cache hit must not call SLURM")
+
 
 def test_import_has_no_dagster_dependency_or_import_time_side_effect():
     code = (
@@ -351,6 +354,9 @@ class _RequeueAdapter:
         self.requeued = True
         return True
 
+    def cancel(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("successful retry must not cancel")
+
 
 def test_retry_requeues_same_job_and_preserves_exact_action_identity(tmp_path: Path):
     spec = _spec(_action(tmp_path, "root"), tmp_path, max_requeues=1)
@@ -365,6 +371,78 @@ def test_retry_requeues_same_job_and_preserves_exact_action_identity(tmp_path: P
     assert result.action_key == spec.action_key
     assert adapter.action_keys == [spec.action_key] * len(adapter.action_keys)
     assert adapter.job_ids == [adapter.job, adapter.job, adapter.job]
+
+
+class _LaggingRequeueAdapter:
+    def __init__(self, action_key: str):
+        self.action_key = action_key
+        self.job = ps.SlurmJobId(74)
+        self.states = iter(["failed", "failed", "pending", "failed"])
+        self.requeues = 0
+        self.cancelled = False
+
+    def submit(self, *args: object, **kwargs: object) -> ps.SlurmSubmission:
+        return ps.SlurmSubmission("submitted", self.action_key, self.job, None)
+
+    def resolve(self, *args: object, **kwargs: object) -> ps.SlurmResolution:
+        state = next(self.states)
+        return ps.SlurmResolution(
+            state, self.action_key, self.job, "NODE_FAIL", "test state", None, None
+        )
+
+    def requeue(self, *args: object, **kwargs: object) -> bool:
+        self.requeues += 1
+        return True
+
+    def cancel(self, *args: object, **kwargs: object) -> None:
+        self.cancelled = True
+
+
+def test_requeue_waits_for_scheduler_transition_before_terminal_retry(tmp_path: Path):
+    spec = _spec(_action(tmp_path, "root"), tmp_path, max_requeues=1)
+    adapter = _LaggingRequeueAdapter(spec.action_key)
+    sleeps: list[float] = []
+    runner = pd.DagsterActionRunner(
+        cas_root=tmp_path / "cas", adapter=adapter, sleep=sleeps.append
+    )
+    with pytest.raises(pd.DagsterActionError, match="ended failed"):
+        runner.execute(pd.ActionGraph([spec]), spec.action_key)
+    assert adapter.requeues == 1
+    assert adapter.cancelled is False
+    assert len(sleeps) == 3
+
+
+class _PollingAdapter:
+    def __init__(self, action_key: str):
+        self.action_key = action_key
+        self.job = ps.SlurmJobId(75)
+        self.cancelled: list[ps.SlurmJobId | str] = []
+
+    def submit(self, *args: object, **kwargs: object) -> ps.SlurmSubmission:
+        return ps.SlurmSubmission("submitted", self.action_key, self.job, None)
+
+    def resolve(self, *args: object, **kwargs: object) -> ps.SlurmResolution:
+        return ps.SlurmResolution(
+            "pending", self.action_key, self.job, "NOT_VISIBLE",
+            "accounting lag", None, None,
+        )
+
+    def requeue(self, *args: object, **kwargs: object) -> bool:
+        raise AssertionError("pending allocation must not requeue")
+
+    def cancel(self, job_id: ps.SlurmJobId | str) -> None:
+        self.cancelled.append(job_id)
+
+
+def test_poll_budget_cancels_exact_allocation_before_failing(tmp_path: Path):
+    spec = _spec(_action(tmp_path, "root"), tmp_path)
+    adapter = _PollingAdapter(spec.action_key)
+    runner = pd.DagsterActionRunner(
+        cas_root=tmp_path / "cas", adapter=adapter, sleep=lambda _: None
+    )
+    with pytest.raises(pd.DagsterActionError, match="allocation was cancelled"):
+        runner.execute(pd.ActionGraph([spec]), spec.action_key)
+    assert adapter.cancelled == [adapter.job]
 
 
 def test_missing_upstream_receipt_fails_before_downstream_submission(tmp_path: Path):
