@@ -22,3 +22,14 @@ def test_glm_high_rate_plan_is_explicit_and_does_not_replace_default():
     assert 'default="scaffold"' in source
     assert 'rate_plan = GLM_RATE_PLANS[args.glm_rate_plan]' in source
     assert '"glm_rate_plan": args.glm_rate_plan' in source
+
+
+def test_final_receipt_is_published_only_after_complete_result():
+    source = DRIVER.read_text()
+
+    assert 'partial_path = args.out.with_name(args.out.name + ".partial")' in source
+    assert 'if args.out.exists()' in source
+    assert 'if partial_path.exists()' in source
+    assert source.count("_atomic_json(") >= 2
+    assert 'os.rename(partial_path, args.out)' in source
+    assert "args.out.write_text" not in source

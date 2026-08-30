@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -82,6 +83,12 @@ GLM_RATE_PLANS = {
 CONTROL_RTOL = 1e-9
 
 
+def _atomic_json(path: Path, value: dict) -> None:
+    temporary = path.with_name(f".{path.name}.write-{os.getpid()}")
+    temporary.write_text(json.dumps(value, indent=1) + "\n")
+    os.replace(temporary, path)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", choices=("dsv4", "bf16", "glm"),
@@ -101,6 +108,14 @@ def main() -> int:
     ap.add_argument("--allow-control-drift", action="store_true",
                     help="record a failed 3.0 control instead of refusing")
     args = ap.parse_args()
+
+    partial_path = args.out.with_name(args.out.name + ".partial")
+    if args.out.exists():
+        raise SystemExit(f"final output already exists (immutable): {args.out}")
+    if partial_path.exists():
+        raise SystemExit(
+            f"partial output already exists; inspect before retry: {partial_path}"
+        )
 
     if not torch.cuda.is_available():
         raise SystemExit("FATAL: CUDA required (principle 7)")
@@ -429,10 +444,12 @@ def main() -> int:
                 f"published ladder; re-run under the pinned environment "
                 f"(hull_sweep.py --print-container-command).")
         out[name] = cell
-        args.out.write_text(json.dumps(
+        _atomic_json(
+            partial_path,
             {"receipt": {**receipt, "partial": True,
                          "tensors_done": len(out)},
-             "per_tensor": out}, indent=1))
+             "per_tensor": out},
+        )
 
     receipt["completed_at_unix_s"] = time.time()
     receipt["tensors_done"] = len(out)
@@ -443,9 +460,11 @@ def main() -> int:
         population: sum(cell["population"] == population for cell in out.values())
         for population in sorted({cell["population"] for cell in out.values()})
     }
-    args.out.write_text(json.dumps(
+    _atomic_json(
+        partial_path,
         {"receipt": {**receipt, "partial": False}, "per_tensor": out},
-        indent=1))
+    )
+    os.rename(partial_path, args.out)
     print(f"wrote {args.out}", flush=True)
     return 0
 
