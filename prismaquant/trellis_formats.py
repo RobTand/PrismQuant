@@ -516,8 +516,27 @@ def all_legal_trellis_format_names() -> tuple[str, ...]:
 
 
 #: Materialized once; ``serving_profiles`` resolves ``module:ATTR`` references
-#: at profile-load time and must see a concrete sequence, not a callable.
-ALL_LEGAL_TRELLIS_FORMAT_NAMES: tuple[str, ...] = all_legal_trellis_format_names()
+#: at profile-load time and must see concrete sequences, not callables.  The
+#: family splits let the research profile carry each native A=W activation
+#: contract and the fail-closed ``unattested`` route status on the candidate
+#: without conflating E2M1 W4A4 with E4M3 W8A8.
+E2M1_TRELLIS_FORMAT_NAMES: tuple[str, ...] = tuple(
+    E2M1_FAMILY.replace("_R256", f"_R{rate}")
+    for rate in range(
+        FAMILIES[E2M1_FAMILY].mathematical_q256_bounds[0],
+        FAMILIES[E2M1_FAMILY].mathematical_q256_bounds[1] + 1,
+    )
+)
+E4M3_TRELLIS_FORMAT_NAMES: tuple[str, ...] = tuple(
+    E4M3_FAMILY.replace("_R256", f"_R{rate}")
+    for rate in range(
+        FAMILIES[E4M3_FAMILY].mathematical_q256_bounds[0],
+        FAMILIES[E4M3_FAMILY].mathematical_q256_bounds[1] + 1,
+    )
+)
+ALL_LEGAL_TRELLIS_FORMAT_NAMES: tuple[str, ...] = (
+    E2M1_TRELLIS_FORMAT_NAMES + E4M3_TRELLIS_FORMAT_NAMES
+)
 
 
 def _schedule_values(schedule: Sequence[int]) -> tuple[int, ...]:
@@ -716,7 +735,9 @@ def format_contract_payload() -> dict[str, object]:
 
 __all__ = [
     "E2M1_FAMILY",
+    "E2M1_TRELLIS_FORMAT_NAMES",
     "E4M3_FAMILY",
+    "E4M3_TRELLIS_FORMAT_NAMES",
     "E4M3FN_NAN_CODES",
     "FAMILIES",
     "GENERATOR_OCTAL",

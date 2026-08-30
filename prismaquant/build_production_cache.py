@@ -107,6 +107,40 @@ def _load_col_weights(path, formats) -> dict | None:
     return loaded
 
 
+def _load_trellis_plans(path, formats):
+    """Load the explicit value-bearing handoff when a TCQ rung is requested."""
+    from prismaquant.trellis_formats import parse_trellis_format_name
+
+    trellis_formats = sorted({
+        str(fmt).strip().upper()
+        for fmt in formats
+        if parse_trellis_format_name(str(fmt).strip().upper()) is not None
+    })
+    if not trellis_formats:
+        if path:
+            raise SystemExit(
+                "[build-prod-cache] ERROR: --trellis-render-plans was supplied "
+                "but the render scope contains no trellis format"
+            )
+        return None
+    if not path:
+        raise SystemExit(
+            "[build-prod-cache] ERROR: the render scope contains trellis "
+            f"formats {trellis_formats} but no --trellis-render-plans was "
+            "supplied. Layer-config hashes cannot reconstruct schedules, "
+            "alphabets, or the E2M1 A-side scale."
+        )
+    from prismaquant.trellis_render import load_trellis_encode_plan_set
+
+    plans = load_trellis_encode_plan_set(path)
+    print(
+        f"[build-prod-cache] trellis plans: {len(plans)} exact pair records "
+        f"from {path}",
+        flush=True,
+    )
+    return plans
+
+
 def _explicit_cb_render_context(formats):
     """Resolve CB producer settings once, at the CLI boundary.
 
@@ -339,6 +373,9 @@ def _run_streaming(args, formats, levers, dtype) -> int:
         render_formats.extend(render_assignment.values())
     col_weights = _load_col_weights(args.col_weights, render_formats)
     cb_serialization_context = _explicit_cb_render_context(render_formats)
+    trellis_plans = _load_trellis_plans(
+        getattr(args, "trellis_render_plans", None), render_formats
+    )
 
     # Streaming consumes a probe activation cache instead of replaying the
     # calibration forward, but its pair stamps still bind the exact token
@@ -390,6 +427,7 @@ def _run_streaming(args, formats, levers, dtype) -> int:
         h_detail_dir=args.h_detail_dir,
         col_weights=col_weights,
         cb_serialization_context=cb_serialization_context,
+        trellis_plans=trellis_plans,
         render_scope=args.render_scope,
         retain_rendered=(args.render_scope == "assignment"),
         calibration_hash=calib_hash,
@@ -708,11 +746,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Per-input-column imatrix pickle ({qname: tensor}, e.g. "
         "artifacts/cb_col_weights.pkl) applied to the weighted-render "
-        "families ONLY (CB codebook rungs, GGUF k-quants) — re-vet R3 / CB "
+        "families ONLY (CB codebook rungs, GGUF k-quants, trellis) — re-vet R3 / CB "
         "Milestone C. Their exporters always render weighted, so without this "
         "a cached-menu render of those formats is unfaithful to the shipped "
         "bytes (the rendering confound the lane gates were written to avoid). "
         "NVFP4/FP8/MX/BF16 renders are bit-identical with or without it.",
+    )
+    p.add_argument(
+        "--trellis-render-plans",
+        default=None,
+        help="Versioned prismaquant.trellis_encode_plan_set.v1 JSON carrying "
+        "the exact schedule, alphabets, priced footprint, encoder recipe, "
+        "col_weights digest, native activation contract and E2M1 A-side "
+        "scale for each selected (qname, TCQ format). Required for trellis; "
+        "never inferred from an ambient surface manifest.",
     )
     args = p.parse_args(argv)
     if args.format_plan and not args.streaming:
@@ -879,6 +926,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         col_weights = _load_col_weights(args.col_weights, render_formats)
         cb_serialization_context = _explicit_cb_render_context(render_formats)
+        trellis_plans = _load_trellis_plans(
+            getattr(args, "trellis_render_plans", None), render_formats
+        )
         t0 = time.monotonic()
         cache = fill_production_weight_cache(
             model, calib_ids, qnames,
@@ -895,6 +945,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             h_detail_dir=args.h_detail_dir,
             col_weights=col_weights,
             cb_serialization_context=cb_serialization_context,
+            trellis_plans=trellis_plans,
         )
         # R14: stamp the calibration identity onto the cache so every artifact
         # derived from it (production_render_cost's cost table) can be checked

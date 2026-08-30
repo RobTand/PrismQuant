@@ -33,6 +33,9 @@ quantization path:
       pipeline
     * retired input-axis rotation experiments are not part of the production
       cache path.
+    * trellis rungs use the same cache and residency machinery, but store the
+      exact 1-D uint8 wire as the durable primary object.  The decoded matrix
+      is a derived, memoized resident view and is never written as a shard.
 
   KNOWN GAPS (v2 work, NOT implemented):
     * batched NVFP4 GPTQ + scale-sweep across same-shape Linears
@@ -94,7 +97,7 @@ from prismaquant.render_score import (
 from prismaquant.source_prefetch import prefetch_files_to_page_cache
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from prismaquant.trellis_render import TrellisWireSink
+    from prismaquant.trellis_render import TrellisEncodePlan, TrellisWireSink
 
 
 CB_RENDER_IDENTITY_SCHEMA = (
@@ -119,6 +122,9 @@ CB_CACHE_PAIR_SIDECAR_SCHEMA = (
 )
 CB_TRANSIENT_CONSUMER_RECEIPT_SCHEMA = (
     "prismaquant.production_weight_cache.cb_transient_consumer_receipt.v1"
+)
+TRELLIS_PAIR_ARTIFACT_SET_SCHEMA = (
+    "prismaquant.production_weight_cache.trellis_pair_artifact_set.v1"
 )
 
 
@@ -159,6 +165,38 @@ def _cache_weight_filename(qname: str, fmt: str) -> str:
 
 def _cache_pair_identity_filename(qname: str, fmt: str) -> str:
     return _cache_weight_filename(qname, fmt) + ".identity.json"
+
+
+def _is_trellis_format_name(fmt: str) -> bool:
+    from prismaquant.trellis_formats import parse_trellis_format_name
+
+    return parse_trellis_format_name(str(fmt).strip().upper()) is not None
+
+
+@dataclass
+class _TrellisResidentValue:
+    """One-cache resident representation: primary wire plus derived decode."""
+
+    wire: torch.Tensor
+    decoded: torch.Tensor
+
+    def nbytes(self) -> int:
+        return sum(
+            int(value.numel()) * int(value.element_size())
+            for value in (self.wire, self.decoded)
+        )
+
+
+def _is_resident_cache_value(value: object) -> bool:
+    return isinstance(value, (torch.Tensor, _TrellisResidentValue))
+
+
+def _resident_cache_value_nbytes(value: object) -> int:
+    if isinstance(value, _TrellisResidentValue):
+        return value.nbytes()
+    if isinstance(value, torch.Tensor):
+        return int(value.numel()) * int(value.element_size())
+    return 0
 
 
 _UNCACHED_PACKED_EXPERT_RE = re.compile(
@@ -244,6 +282,7 @@ class ProductionWeightCache:
     _lru_bytes: int = 0
     _lru_max_bytes: int = 0
     _cb_verified_keys: set[tuple[str, str]] | None = None
+    _trellis_verified_keys: set[tuple[str, str]] | None = None
 
     def __post_init__(self) -> None:
         # Normalize to ``activation_max_abs`` if a caller used the legacy
@@ -252,6 +291,453 @@ class ProductionWeightCache:
             self.activation_max_abs = self.activation_scales
         elif self.activation_scales is None and self.activation_max_abs is not None:
             self.activation_scales = self.activation_max_abs
+
+    def _trellis_pair_artifact_record(
+        self, key: tuple[str, str]
+    ) -> Mapping[str, object]:
+        metadata = self.metadata if isinstance(self.metadata, Mapping) else {}
+        artifact_set = metadata.get("trellis_cache_pair_artifacts")
+        records = (
+            artifact_set.get("records")
+            if isinstance(artifact_set, Mapping)
+            else None
+        )
+        record_key = f"{key[0]}|{key[1]}"
+        record = records.get(record_key) if isinstance(records, Mapping) else None
+        if isinstance(record, Mapping):
+            return record
+        if self.cache_dir:
+            sidecar_path = Path(self.cache_dir) / _cache_pair_identity_filename(
+                key[0], key[1]
+            )
+            if sidecar_path.is_file():
+                try:
+                    loaded = json.loads(sidecar_path.read_text())
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"ProductionWeightCache trellis sidecar is invalid "
+                        f"for {key[0]}@{key[1]}"
+                    ) from exc
+                if isinstance(loaded, Mapping):
+                    return loaded
+        raise RuntimeError(
+            f"ProductionWeightCache refuses unstamped trellis shard "
+            f"{key[0]}@{key[1]}; a blob without its recipe/hash identity "
+            "cannot be admitted"
+        )
+
+    def _validate_loaded_trellis_pair_wire(
+        self,
+        key: tuple[str, str],
+        wire_tensor: torch.Tensor,
+    ) -> Mapping[str, object]:
+        if not _is_trellis_format_name(key[1]):
+            return {}
+        if self._trellis_verified_keys is not None and key in (
+            self._trellis_verified_keys
+        ):
+            return self._trellis_pair_artifact_record(key)
+        from prismaquant.trellis_render import TRELLIS_PAIR_SIDECAR_SCHEMA
+        from prismaquant.trellis_wire import TrellisWire
+
+        record = self._trellis_pair_artifact_record(key)
+        if record.get("schema") != TRELLIS_PAIR_SIDECAR_SCHEMA:
+            raise RuntimeError(
+                f"ProductionWeightCache trellis sidecar schema differs for "
+                f"{key[0]}@{key[1]}"
+            )
+        observed = _trellis_wire_tensor_identity(wire_tensor)
+        difference = first_identity_difference(
+            record.get("wire"), observed, path="wire"
+        )
+        if difference is not None:
+            field, stored, current = difference
+            raise RuntimeError(
+                f"ProductionWeightCache trellis wire integrity refused for "
+                f"{key[0]}@{key[1]}: identity field '{field}' differs: "
+                f"stored={identity_value_for_error(stored)} "
+                f"current={identity_value_for_error(current)}"
+            )
+        if (
+            record.get("rendered_wire_identity_sha256")
+            != observed["content_sha256"]
+            or record.get("wire_bytes") != observed["logical_bytes"]
+        ):
+            raise RuntimeError(
+                f"ProductionWeightCache trellis rendered-wire stamp differs "
+                f"for {key[0]}@{key[1]}"
+            )
+        wire = TrellisWire.from_bytes(wire_tensor)
+        if wire.format_name != key[1]:
+            raise RuntimeError(
+                f"ProductionWeightCache trellis blob says {wire.format_name}, "
+                f"cache key says {key[1]}"
+            )
+        identity = record.get("identity")
+        if not isinstance(identity, Mapping):
+            raise RuntimeError(
+                f"ProductionWeightCache trellis pair identity is missing for "
+                f"{key[0]}@{key[1]}"
+            )
+        expected_binding = {
+            "qname": key[0],
+            "format": key[1],
+            "shape": [wire.rows, wire.columns],
+        }
+        observed_binding = {
+            field: identity.get(field) for field in expected_binding
+        }
+        difference = first_identity_difference(
+            observed_binding, expected_binding, path="identity"
+        )
+        if difference is not None:
+            field, stored, current = difference
+            raise RuntimeError(
+                f"ProductionWeightCache trellis pair binding differs at "
+                f"{field}: stored={identity_value_for_error(stored)} "
+                f"current={identity_value_for_error(current)}"
+            )
+        decoded = record.get("decoded")
+        if not isinstance(decoded, Mapping):
+            raise RuntimeError(
+                f"ProductionWeightCache trellis decoded identity is missing "
+                f"for {key[0]}@{key[1]}"
+            )
+        if decoded.get("shape") != [wire.rows, wire.columns]:
+            raise RuntimeError(
+                f"ProductionWeightCache trellis decoded shape differs from "
+                f"the primary wire for {key[0]}@{key[1]}"
+            )
+        decoded_dtype = self._decoded_dtype_from_trellis_record(record)
+        expected_dtype = self._expected_trellis_decoded_dtype(identity)
+        if decoded_dtype != expected_dtype:
+            raise RuntimeError(
+                f"ProductionWeightCache trellis decoded dtype differs from "
+                f"the cache narrowing contract for {key[0]}@{key[1]}: "
+                f"sidecar={decoded_dtype}, expected={expected_dtype}"
+            )
+        _validate_trellis_wire_recipe_identity(wire, identity)
+        if self._trellis_verified_keys is None:
+            self._trellis_verified_keys = set()
+        self._trellis_verified_keys.add(key)
+        return record
+
+    @staticmethod
+    def _decoded_dtype_from_trellis_record(
+        record: Mapping[str, object],
+    ) -> torch.dtype:
+        decoded = record.get("decoded")
+        raw = decoded.get("dtype") if isinstance(decoded, Mapping) else None
+        name = str(raw).removeprefix("torch.")
+        dtype = getattr(torch, name, None)
+        if not isinstance(dtype, torch.dtype):
+            raise RuntimeError(
+                f"trellis pair sidecar has unsupported decoded dtype {raw!r}"
+            )
+        return dtype
+
+    @staticmethod
+    def _expected_trellis_decoded_dtype(
+        identity: Mapping[str, object],
+    ) -> torch.dtype:
+        raw = identity.get("source_weight_dtype")
+        name = str(raw).removeprefix("torch.")
+        source_dtype = getattr(torch, name, None)
+        if not isinstance(source_dtype, torch.dtype):
+            raise RuntimeError(
+                f"trellis pair identity has unsupported source dtype {raw!r}"
+            )
+        # This is the existing cache narrowing contract: an fp32 render is
+        # persisted/installed as bf16, while every other source dtype is kept.
+        return torch.bfloat16 if source_dtype == torch.float32 else source_dtype
+
+    def _trellis_resident_nbytes(
+        self,
+        key: tuple[str, str],
+        *,
+        wire_bytes: int,
+    ) -> int:
+        """Count the primary wire plus the decoded view prefetch materializes."""
+        record = self._trellis_pair_artifact_record(key)
+        identity = record.get("identity")
+        decoded = record.get("decoded")
+        if not isinstance(identity, Mapping) or not isinstance(decoded, Mapping):
+            raise RuntimeError(
+                f"trellis pair sidecar is missing decoded identity for "
+                f"{key[0]}@{key[1]}"
+            )
+        shape = decoded.get("shape")
+        if (
+            not isinstance(shape, Sequence)
+            or isinstance(shape, (str, bytes))
+            or len(shape) != 2
+            or any(type(dim) is not int or dim <= 0 for dim in shape)
+        ):
+            raise RuntimeError(
+                f"trellis pair sidecar has invalid decoded shape for "
+                f"{key[0]}@{key[1]}"
+            )
+        dtype = self._decoded_dtype_from_trellis_record(record)
+        expected_dtype = self._expected_trellis_decoded_dtype(identity)
+        if dtype != expected_dtype:
+            raise RuntimeError(
+                f"trellis decoded dtype differs from the cache narrowing "
+                f"contract for {key[0]}@{key[1]}: sidecar={dtype}, "
+                f"expected={expected_dtype}"
+            )
+        element_size = torch.empty((), dtype=dtype).element_size()
+        return int(wire_bytes) + math.prod(int(dim) for dim in shape) * element_size
+
+    def store_trellis_render(
+        self,
+        *,
+        qname: str,
+        fmt: str,
+        sink: "TrellisWireSink",
+        decoded_tensor: torch.Tensor,
+        identity: Mapping[str, object],
+        encode_seconds: float = 0.0,
+        render_score: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Publish one rendered blob into the existing cache abstraction."""
+        from prismaquant.trellis_render import (
+            TRELLIS_PAIR_IDENTITY_SCHEMA,
+            TrellisWireSink,
+        )
+        from prismaquant.trellis_wire import decode_values_torch
+
+        canonical_fmt = str(fmt).strip().upper()
+        key = (str(qname), canonical_fmt)
+        if not isinstance(sink, TrellisWireSink) or not sink.filled:
+            raise RuntimeError(
+                f"{key[0]}@{key[1]}: cannot cache an empty trellis wire sink"
+            )
+        if sink.qname != key[0] or sink.fmt != key[1]:
+            raise RuntimeError("trellis sink/cache pair binding differs")
+        expected_identity = {
+            "schema": TRELLIS_PAIR_IDENTITY_SCHEMA,
+            "qname": key[0],
+            "format": key[1],
+            "shape": [int(dim) for dim in decoded_tensor.shape],
+            "recipe": sink.recipe.as_dict(),
+            "recipe_identity_sha256": sink.recipe.identity_sha256,
+            "col_weights_sha256": sink.plan.col_weights_sha256,
+            "activation_contract": sink.recipe.activation_contract,
+            "activation_input_global_scale": (
+                sink.plan.activation_input_global_scale
+            ),
+        }
+        observed_identity = {
+            field: identity.get(field) for field in expected_identity
+        }
+        difference = first_identity_difference(
+            observed_identity, expected_identity, path="identity"
+        )
+        if difference is not None:
+            field, stored, expected = difference
+            raise RuntimeError(
+                f"trellis cache pair identity differs at '{field}': "
+                f"stored={identity_value_for_error(stored)} "
+                f"expected={identity_value_for_error(expected)}"
+            )
+        wire_tensor = sink.as_wire_tensor().contiguous()
+        canonical_decoded = _canonical_rendered_weight_tensor(
+            decoded_tensor, weight_dtype=decoded_tensor.dtype
+        )
+        independently_decoded = decode_values_torch(
+            sink.blob,
+            device="cpu",
+            dtype=canonical_decoded.dtype,
+        )
+        if not torch.equal(canonical_decoded, independently_decoded):
+            raise RuntimeError(
+                f"{key[0]}@{key[1]}: cache decoded tensor differs from the "
+                "primary wire; refusing two representations that disagree"
+            )
+        expected_decoded_dtype = self._expected_trellis_decoded_dtype(identity)
+        if canonical_decoded.dtype != expected_decoded_dtype:
+            raise RuntimeError(
+                f"{key[0]}@{key[1]}: decoded cache dtype "
+                f"{canonical_decoded.dtype} differs from the source-dtype "
+                f"narrowing contract {expected_decoded_dtype}"
+            )
+        cache_dir_path = Path(self.cache_dir) if self.cache_dir else None
+        if cache_dir_path is not None:
+            cache_dir_path.mkdir(parents=True, exist_ok=True)
+            record = _write_trellis_cache_pair_sidecar(
+                cache_dir_path=cache_dir_path,
+                qname=key[0],
+                fmt=key[1],
+                identity=identity,
+                wire_tensor=wire_tensor,
+                decoded_tensor=canonical_decoded,
+                encode_seconds=float(encode_seconds),
+                render_score=render_score,
+            )
+        else:
+            from prismaquant.trellis_render import TRELLIS_PAIR_SIDECAR_SCHEMA
+
+            wire_identity = _trellis_wire_tensor_identity(wire_tensor)
+            record = {
+                "schema": TRELLIS_PAIR_SIDECAR_SCHEMA,
+                "identity": copy.deepcopy(dict(identity)),
+                "rendered_wire_identity_sha256": wire_identity[
+                    "content_sha256"
+                ],
+                "wire_bytes": wire_identity["logical_bytes"],
+                "wire": wire_identity,
+                "decoded": {
+                    "shape": [int(dim) for dim in canonical_decoded.shape],
+                    "dtype": str(canonical_decoded.dtype),
+                },
+                "measurement": {"encode_seconds": float(encode_seconds)},
+                **({
+                    "render_score": copy.deepcopy(dict(render_score)),
+                    "render_score_sha256": _canonical_json_sha256(
+                        dict(render_score), where="trellis render score"
+                    ),
+                } if render_score is not None else {}),
+            }
+        _store_trellis_wire_entry(
+            weights=self.weights,
+            cache_dir_path=cache_dir_path,
+            qname=key[0],
+            fmt=key[1],
+            wire_tensor=wire_tensor,
+            decoded_tensor=canonical_decoded,
+        )
+        if self.metadata is None:
+            self.metadata = {}
+        artifact_set = self.metadata.setdefault(
+            "trellis_cache_pair_artifacts",
+            {"schema": TRELLIS_PAIR_ARTIFACT_SET_SCHEMA, "records": {}},
+        )
+        if (
+            not isinstance(artifact_set, dict)
+            or artifact_set.get("schema") != TRELLIS_PAIR_ARTIFACT_SET_SCHEMA
+            or not isinstance(artifact_set.get("records"), dict)
+        ):
+            raise RuntimeError("trellis cache pair artifact metadata is malformed")
+        artifact_set["records"][f"{key[0]}|{key[1]}"] = copy.deepcopy(record)
+        return copy.deepcopy(record)
+
+    def _load_trellis_wire_for_identity(
+        self,
+        key: tuple[str, str],
+    ) -> tuple[torch.Tensor, Mapping[str, object]]:
+        """Load and authenticate a primary wire without decoding it.
+
+        Activation validation needs the exact A-side contract carried by the
+        pair identity after the one-way weight install has released decoded
+        cache tensors.  Loading only the uint8 wire avoids repopulating the
+        much larger derived matrix merely to authenticate that sidecar.
+        """
+        if not _is_trellis_format_name(key[1]):
+            raise ValueError(
+                f"{key[0]}@{key[1]} is not a trellis cache pair"
+            )
+        value = self.weights.get(key)
+        if value is None:
+            raise RuntimeError(
+                f"ProductionWeightCache has no trellis wire for "
+                f"{key[0]}@{key[1]}"
+            )
+        if isinstance(value, _TrellisResidentValue):
+            wire = value.wire
+        elif isinstance(value, torch.Tensor):
+            wire = value
+        else:
+            wire = torch.load(
+                self._path_for_value(value),
+                map_location="cpu",
+                weights_only=True,
+            )
+        record = self._validate_loaded_trellis_pair_wire(key, wire)
+        return wire, record
+
+    def get_wire_blob(self, name: str, fmt: str) -> bytes | None:
+        """Return the exact primary blob; never reconstruct it from decode."""
+        key = self.resolve_key(name, fmt)
+        if key is None:
+            return None
+        if not _is_trellis_format_name(key[1]):
+            raise ValueError(
+                f"{key[0]}@{key[1]} is not a trellis pair and has no wire blob"
+            )
+        wire, _ = self._load_trellis_wire_for_identity(key)
+        return wire.detach().to(device="cpu").contiguous().numpy().tobytes()
+
+    def get_trellis_activation_identity(
+        self,
+        name: str,
+        fmt: str,
+    ) -> dict[str, object]:
+        """Return the authenticated native A-side contract for one wire.
+
+        Trellis is not a ``FormatSpec`` and must not acquire a synthetic one
+        merely to make KL validation convenient.  This method is the narrow
+        bridge from the one cache's primary wire/sidecar identity to the
+        activation-only emulation hook.  It validates the blob first and then
+        refuses any top-level contract or scale that differs from the native
+        A=W family contract.
+        """
+        key = self.resolve_key(name, fmt)
+        if key is None:
+            raise RuntimeError(
+                f"ProductionWeightCache has no trellis pair for {name}@{fmt}; "
+                "native A=W validation cannot fall back to A16"
+            )
+        _, record = self._load_trellis_wire_for_identity(key)
+        identity = record.get("identity")
+        if not isinstance(identity, Mapping):
+            raise RuntimeError(
+                f"ProductionWeightCache trellis pair identity is missing for "
+                f"{key[0]}@{key[1]}"
+            )
+        from prismaquant.trellis_formats import parse_trellis_format_name
+        from prismaquant.trellis_render import EXECUTED_ACTIVATION_CONTRACT
+
+        parsed = parse_trellis_format_name(key[1])
+        assert parsed is not None
+        family = parsed[0].family
+        expected_contract = EXECUTED_ACTIVATION_CONTRACT[family]
+        observed_contract = identity.get("activation_contract")
+        if observed_contract != expected_contract:
+            raise RuntimeError(
+                f"ProductionWeightCache trellis activation contract differs "
+                f"for {key[0]}@{key[1]}: stored={observed_contract!r}, "
+                f"native_A_equals_W={expected_contract!r}"
+            )
+        activation_scale = identity.get("activation_input_global_scale")
+        if family == "TCQ_E2M1_R256":
+            if (
+                isinstance(activation_scale, bool)
+                or not isinstance(activation_scale, (int, float))
+                or not math.isfinite(float(activation_scale))
+                or float(activation_scale) <= 0.0
+            ):
+                raise RuntimeError(
+                    f"ProductionWeightCache E2M1 trellis pair "
+                    f"{key[0]}@{key[1]} has no exact positive finite "
+                    "activation_input_global_scale; W4A4 validation refuses"
+                )
+            activation_scale = float(activation_scale)
+        elif activation_scale is not None:
+            raise RuntimeError(
+                f"ProductionWeightCache E4M3 trellis pair "
+                f"{key[0]}@{key[1]} carries a static activation scale, but "
+                "the native W8A8 route is per-token dynamic"
+            )
+        return {
+            "format": key[1],
+            "family": family,
+            "shape": copy.deepcopy(identity.get("shape")),
+            "activation_contract": expected_contract,
+            "activation_input_global_scale": activation_scale,
+            "rendered_wire_identity_sha256": record.get(
+                "rendered_wire_identity_sha256"
+            ),
+        }
 
     def validate_cb_render_identity(
         self,
@@ -294,13 +780,15 @@ class ProductionWeightCache:
         while self._lru_bytes > self._lru_max_bytes and self._lru_order:
             evict_key = self._lru_order.pop(0)
             t = self.weights.get(evict_key)
-            if isinstance(t, torch.Tensor):
-                self._lru_bytes -= t.element_size() * t.numel()
+            if _is_resident_cache_value(t):
+                self._lru_bytes -= _resident_cache_value_nbytes(t)
                 # Restore the filename so subsequent lookups still resolve.
                 if self._lru_paths is not None and evict_key in self._lru_paths:
                     self.weights[evict_key] = self._lru_paths[evict_key]
                 if self._cb_verified_keys is not None:
                     self._cb_verified_keys.discard(evict_key)
+                if self._trellis_verified_keys is not None:
+                    self._trellis_verified_keys.discard(evict_key)
 
     def compact_for_pickle(self) -> int:
         """Restore disk-backed resident tensors to path references.
@@ -313,13 +801,13 @@ class ProductionWeightCache:
         """
         compacted = 0
         for key, path in (self._lru_paths or {}).items():
-            if isinstance(self.weights.get(key), torch.Tensor):
+            if _is_resident_cache_value(self.weights.get(key)):
                 self.weights[key] = path
                 compacted += 1
         if self.cache_dir:
             cache_dir = Path(self.cache_dir)
             for key, value in list(self.weights.items()):
-                if not isinstance(value, torch.Tensor):
+                if not _is_resident_cache_value(value):
                     continue
                 fname = _cache_weight_filename(key[0], key[1])
                 if (cache_dir / fname).is_file():
@@ -328,6 +816,7 @@ class ProductionWeightCache:
         self._lru_order = [] if self._lru_order is not None else None
         self._lru_bytes = 0
         self._cb_verified_keys = None
+        self._trellis_verified_keys = None
         return compacted
 
     def release_resident_tensors(self) -> int:
@@ -397,10 +886,34 @@ class ProductionWeightCache:
             value = self.weights.get(key)
             if value is None:
                 continue
-            if isinstance(value, torch.Tensor):
-                total += value.element_size() * value.numel()
+            if isinstance(value, _TrellisResidentValue):
+                total += value.nbytes()
+            elif isinstance(value, torch.Tensor):
+                if _is_trellis_format_name(key[1]):
+                    total += self._trellis_resident_nbytes(
+                        key, wire_bytes=int(value.numel()) * value.element_size()
+                    )
+                else:
+                    total += _resident_cache_value_nbytes(value)
             else:
-                total += Path(self._path_for_value(value)).stat().st_size
+                shard_bytes = Path(self._path_for_value(value)).stat().st_size
+                if _is_trellis_format_name(key[1]):
+                    record = self._trellis_pair_artifact_record(key)
+                    wire = record.get("wire")
+                    logical_bytes = (
+                        wire.get("logical_bytes")
+                        if isinstance(wire, Mapping) else None
+                    )
+                    if type(logical_bytes) is not int or logical_bytes <= 0:
+                        raise RuntimeError(
+                            f"trellis sidecar has no logical wire size for "
+                            f"{key[0]}@{key[1]}"
+                        )
+                    total += self._trellis_resident_nbytes(
+                        key, wire_bytes=logical_bytes
+                    )
+                else:
+                    total += shard_bytes
         return total
 
     def assignment_keys(
@@ -479,7 +992,7 @@ class ProductionWeightCache:
             if value is None:
                 missing.append(key)
                 continue
-            if isinstance(value, torch.Tensor):
+            if _is_resident_cache_value(value):
                 path_value = (
                     self._lru_paths.get(key)
                     if self._lru_paths is not None else None
@@ -627,7 +1140,7 @@ class ProductionWeightCache:
         self,
         key: tuple[str, str],
         original_value: object,
-        tensor: torch.Tensor,
+        tensor: object,
     ) -> None:
         if self._lru_paths is None:
             self._lru_paths = {}
@@ -637,7 +1150,7 @@ class ProductionWeightCache:
             return
         if key in self._lru_order:
             self._lru_order.remove(key)
-        self._lru_bytes += tensor.element_size() * tensor.numel()
+        self._lru_bytes += _resident_cache_value_nbytes(tensor)
         self._lru_order.append(key)
         self._evict_to_budget()
 
@@ -711,16 +1224,16 @@ class ProductionWeightCache:
 
         if keys is None:
             keys = [k for k, v in self.weights.items()
-                    if not isinstance(v, torch.Tensor)]
+                    if not _is_resident_cache_value(v)]
         else:
             keys = [k for k in keys
-                    if not isinstance(self.weights.get(k), torch.Tensor)]
+                    if not _is_resident_cache_value(self.weights.get(k))]
         if not keys:
             return 0
 
         def _load_one(key):
             value = self.weights.get(key)
-            if value is None or isinstance(value, torch.Tensor):
+            if value is None or _is_resident_cache_value(value):
                 return None
             return (
                 key,
@@ -738,11 +1251,27 @@ class ProductionWeightCache:
                 if item is None:
                     continue
                 key, original_value, tensor = item
-                if isinstance(self.weights.get(key), torch.Tensor):
+                if _is_resident_cache_value(self.weights.get(key)):
                     continue
-                self._validate_loaded_cb_pair_tensor(key, tensor)
-                self.weights[key] = tensor
-                self._record_lru_load(key, original_value, tensor)
+                if _is_trellis_format_name(key[1]):
+                    record = self._validate_loaded_trellis_pair_wire(key, tensor)
+                    from prismaquant.trellis_wire import decode_values_torch
+
+                    resident: object = _TrellisResidentValue(
+                        wire=tensor.detach().to(
+                            device="cpu", dtype=torch.uint8
+                        ).contiguous(),
+                        decoded=decode_values_torch(
+                            tensor,
+                            device="cpu",
+                            dtype=self._decoded_dtype_from_trellis_record(record),
+                        ),
+                    )
+                else:
+                    self._validate_loaded_cb_pair_tensor(key, tensor)
+                    resident = tensor
+                self.weights[key] = resident
+                self._record_lru_load(key, original_value, resident)
                 loaded_count += 1
         return loaded_count
 
@@ -754,7 +1283,28 @@ class ProductionWeightCache:
         v = self.weights.get(key)
         if v is None:
             return None
+        if isinstance(v, _TrellisResidentValue):
+            self._validate_loaded_trellis_pair_wire(key, v.wire)
+            if self._lru_order is not None:
+                if key in self._lru_order:
+                    self._lru_order.remove(key)
+                self._lru_order.append(key)
+            return v.decoded
         if isinstance(v, torch.Tensor):
+            if _is_trellis_format_name(key[1]):
+                record = self._validate_loaded_trellis_pair_wire(key, v)
+                from prismaquant.trellis_wire import decode_values_torch
+
+                resident = _TrellisResidentValue(
+                    wire=v.detach().to(device="cpu", dtype=torch.uint8).contiguous(),
+                    decoded=decode_values_torch(
+                        v,
+                        device="cpu",
+                        dtype=self._decoded_dtype_from_trellis_record(record),
+                    ),
+                )
+                self.weights[key] = resident
+                return resident.decoded
             self._validate_loaded_cb_pair_tensor(key, v)
             # Refresh LRU position.
             if self._lru_order is not None:
@@ -765,6 +1315,23 @@ class ProductionWeightCache:
         # Treat anything non-tensor as a filename / path.
         path = self._path_for_value(v)
         loaded = torch.load(path, map_location="cpu", weights_only=True)
+        if _is_trellis_format_name(key[1]):
+            record = self._validate_loaded_trellis_pair_wire(key, loaded)
+            from prismaquant.trellis_wire import decode_values_torch
+
+            resident = _TrellisResidentValue(
+                wire=loaded.detach().to(
+                    device="cpu", dtype=torch.uint8
+                ).contiguous(),
+                decoded=decode_values_torch(
+                    loaded,
+                    device="cpu",
+                    dtype=self._decoded_dtype_from_trellis_record(record),
+                ),
+            )
+            self.weights[key] = resident
+            self._record_lru_load(key, v, resident)
+            return resident.decoded
         self._validate_loaded_cb_pair_tensor(key, loaded)
         self.weights[key] = loaded
         self._record_lru_load(key, v, loaded)
@@ -821,7 +1388,7 @@ class ProductionWeightCache:
             if v is None:
                 missing.append(key)
                 continue
-            if isinstance(v, torch.Tensor):
+            if _is_resident_cache_value(v):
                 in_memory.append(key)
                 continue
             path = str(v)
@@ -1275,6 +1842,251 @@ def _canonical_rendered_weight_tensor(
         device="cpu",
     ).contiguous()
 
+
+def _trellis_wire_tensor_identity(tensor: torch.Tensor) -> dict[str, object]:
+    wire = tensor.detach().to(device="cpu").contiguous()
+    if wire.dtype != torch.uint8 or wire.ndim != 1:
+        raise RuntimeError("trellis cache shard must be one-dimensional uint8")
+    raw = wire.numpy().tobytes()
+    return {
+        "shape": [int(wire.numel())],
+        "dtype": str(wire.dtype),
+        "logical_bytes": len(raw),
+        "content_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _validate_trellis_wire_recipe_identity(
+    wire,
+    identity: Mapping[str, object],
+) -> None:
+    """Prove that a primary blob contains the values its sidecar names."""
+    from prismaquant.trellis_footprint import trellis_tensor_payload_breakdown
+
+    recipe = identity.get("recipe")
+    if not isinstance(recipe, Mapping):
+        raise RuntimeError("trellis pair identity has no render recipe")
+    footprint = trellis_tensor_payload_breakdown(
+        (int(wire.rows), int(wire.columns)),
+        family=str(wire.family),
+        body_rate_q256=int(wire.body_rate_q256),
+        layout=str(wire.layout),
+        schedule=wire.schedule,
+        alphabets=wire.alphabets,
+    )
+    expected = {
+        "family": wire.family,
+        "body_rate_q256": int(wire.body_rate_q256),
+        "layout": wire.layout,
+        "schedule_identity_sha256": footprint[
+            "schedule_identity_sha256"
+        ],
+        "alphabet_identity_sha256": footprint[
+            "alphabet_identity_sha256"
+        ],
+        "pre_render_recipe_identity_sha256": footprint[
+            "pre_render_recipe_identity_sha256"
+        ],
+    }
+    observed = {field: recipe.get(field) for field in expected}
+    difference = first_identity_difference(
+        observed,
+        expected,
+        path="identity.recipe",
+    )
+    if difference is not None:
+        field, stored, encoded = difference
+        raise RuntimeError(
+            f"trellis wire recipe differs at '{field}': "
+            f"sidecar={identity_value_for_error(stored)} "
+            f"wire={identity_value_for_error(encoded)}"
+        )
+    recipe_digest = _canonical_json_sha256(
+        dict(recipe), where="trellis render recipe"
+    )
+    if identity.get("recipe_identity_sha256") != recipe_digest:
+        raise RuntimeError(
+            "trellis pair recipe identity digest differs from its recipe"
+        )
+
+
+def _validate_trellis_cache_pair_resume(
+    *,
+    cache_dir_path: Path,
+    qname: str,
+    fmt: str,
+    expected_identity: Mapping[str, object],
+    require_render_score: bool = True,
+) -> dict[str, object] | None:
+    """Admit an existing blob only under its exact value-bearing identity.
+
+    Unlike CB, a stamped trellis pair is never re-encoded when either file is
+    missing: the bytes that were scored are the artifact.  A partial pair is a
+    pointed recovery failure, not permission to create replacement bytes.
+    """
+    sidecar_path = cache_dir_path / _cache_pair_identity_filename(qname, fmt)
+    shard_path = cache_dir_path / _cache_weight_filename(qname, fmt)
+    sidecar_exists = sidecar_path.is_file()
+    shard_exists = shard_path.is_file()
+    if not sidecar_exists and not shard_exists:
+        return None
+    if sidecar_exists != shard_exists:
+        present = "sidecar" if sidecar_exists else "wire shard"
+        missing = "wire shard" if sidecar_exists else "sidecar"
+        raise RuntimeError(
+            f"production trellis cache pair {qname}@{fmt} has a {present} "
+            f"but no {missing}; re-encoding could change the bytes that were "
+            "priced, so automatic resume is refused"
+        )
+    try:
+        record = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"production trellis cache sidecar is invalid for {qname}@{fmt}"
+        ) from exc
+    if not isinstance(record, Mapping):
+        raise RuntimeError(
+            f"production trellis cache sidecar is not an object for "
+            f"{qname}@{fmt}"
+        )
+    difference = first_identity_difference(
+        record.get("identity"),
+        expected_identity,
+        path="identity",
+    )
+    if difference is not None:
+        field, stored, current = difference
+        raise RuntimeError(
+            f"production trellis cache resume identity differs for "
+            f"{qname}@{fmt} at '{field}': "
+            f"stored={identity_value_for_error(stored)} "
+            f"current={identity_value_for_error(current)}"
+        )
+    wire_tensor = torch.load(shard_path, map_location="cpu", weights_only=True)
+    verifier = ProductionWeightCache(
+        weights={(qname, fmt): _cache_weight_filename(qname, fmt)},
+        levers={},
+        cache_dir=str(cache_dir_path),
+        metadata={
+            "trellis_cache_pair_artifacts": {
+                "schema": TRELLIS_PAIR_ARTIFACT_SET_SCHEMA,
+                "records": {f"{qname}|{fmt}": dict(record)},
+            }
+        },
+    )
+    verifier._validate_loaded_trellis_pair_wire((qname, fmt), wire_tensor)
+    render_score = record.get("render_score")
+    if require_render_score:
+        if not isinstance(render_score, Mapping):
+            raise RuntimeError(
+                f"production trellis cache pair {qname}@{fmt} has no "
+                "identity-bound render score; refusing surrogate reuse"
+            )
+        if record.get("render_score_sha256") != _canonical_json_sha256(
+            dict(render_score), where="trellis render score"
+        ):
+            raise RuntimeError(
+                f"production trellis cache pair {qname}@{fmt} render-score "
+                "digest differs"
+            )
+    return copy.deepcopy(dict(record))
+
+
+def _write_trellis_cache_pair_sidecar(
+    *,
+    cache_dir_path: Path,
+    qname: str,
+    fmt: str,
+    identity: Mapping[str, object],
+    wire_tensor: torch.Tensor,
+    decoded_tensor: torch.Tensor,
+    encode_seconds: float,
+    render_score: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Durably stamp the primary wire before publishing its shard."""
+    from prismaquant.trellis_render import TRELLIS_PAIR_SIDECAR_SCHEMA
+
+    wire_identity = _trellis_wire_tensor_identity(wire_tensor)
+    payload: dict[str, object] = {
+        "schema": TRELLIS_PAIR_SIDECAR_SCHEMA,
+        "identity": copy.deepcopy(dict(identity)),
+        "rendered_wire_identity_sha256": wire_identity["content_sha256"],
+        "wire_bytes": wire_identity["logical_bytes"],
+        "wire": wire_identity,
+        "decoded": {
+            "shape": [int(dim) for dim in decoded_tensor.shape],
+            "dtype": str(decoded_tensor.dtype),
+        },
+        "measurement": {"encode_seconds": float(encode_seconds)},
+        **({
+            "render_score": copy.deepcopy(dict(render_score)),
+            "render_score_sha256": _canonical_json_sha256(
+                dict(render_score), where="trellis render score"
+            ),
+        } if render_score is not None else {}),
+    }
+    path = cache_dir_path / _cache_pair_identity_filename(qname, fmt)
+    tmp = path.with_name(path.name + ".tmp")
+    encoded = json.dumps(
+        payload,
+        indent=2,
+        sort_keys=True,
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    directory_fd = os.open(cache_dir_path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return payload
+
+
+def _store_trellis_wire_entry(
+    *,
+    weights: dict[tuple[str, str], object],
+    cache_dir_path: Path | None,
+    qname: str,
+    fmt: str,
+    wire_tensor: torch.Tensor,
+    decoded_tensor: torch.Tensor,
+    durable: bool = True,
+) -> None:
+    """Publish the blob as the cache shard; never write the decoded matrix."""
+    wire = wire_tensor.detach().to(device="cpu", dtype=torch.uint8).contiguous()
+    if wire.ndim != 1:
+        raise RuntimeError("trellis wire cache entry must be one-dimensional")
+    key = (str(qname), str(fmt).strip().upper())
+    if cache_dir_path is None:
+        weights[key] = _TrellisResidentValue(
+            wire=wire,
+            decoded=decoded_tensor.detach().to(device="cpu").contiguous(),
+        )
+        return
+    fname = _cache_weight_filename(key[0], key[1])
+    final_path = cache_dir_path / fname
+    tmp_path = cache_dir_path / (fname + ".tmp")
+    torch.save(wire, tmp_path)
+    if durable:
+        fd = os.open(tmp_path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    os.replace(tmp_path, final_path)
+    if durable:
+        directory_fd = os.open(cache_dir_path, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    weights[key] = fname
+
 @dataclass
 class _RenderedCandidate:
     label: str
@@ -1390,6 +2202,7 @@ def _render_score_record(
     rendered_weight: torch.Tensor,
     activations: torch.Tensor | None,
     activation_max_abs: float | None,
+    trellis_activation_input_global_scale: float | None = None,
 ) -> dict[str, object]:
     raw_score, raw_metric = _render_score_for_gate(
         reference_weight.detach().to(torch.float32),
@@ -1413,13 +2226,46 @@ def _render_score_record(
         try:
             from prismaquant import format_registry as fr
 
-            spec = fr.get_format(fr.canonical_format_name(fmt))
+            if _is_trellis_format_name(fmt):
+                from prismaquant.trellis_formats import parse_trellis_format_name
+
+                parsed = parse_trellis_format_name(str(fmt).strip().upper())
+                assert parsed is not None
+                if parsed[0].family == "TCQ_E2M1_R256":
+                    if trellis_activation_input_global_scale is None:
+                        raise RuntimeError(
+                            "E2M1 trellis render scoring requires the exact "
+                            "activation_input_global_scale"
+                        )
+                    from prismaquant.nvfp4_activation_contract import (
+                        nvfp4_activation_qdq_served,
+                    )
+
+                    activation_quantize = lambda value: (
+                        nvfp4_activation_qdq_served(
+                            value, trellis_activation_input_global_scale
+                        )
+                    )
+                else:
+                    if trellis_activation_input_global_scale is not None:
+                        raise RuntimeError(
+                            "E4M3 trellis scoring is per-token dynamic and "
+                            "refuses a static activation scale"
+                        )
+                    activation_quantize = fr.get_format(
+                        "FP8_E4M3"
+                    ).activation_quantize_dequantize
+            else:
+                score_format = fr.canonical_format_name(fmt)
+                activation_quantize = fr.get_format(
+                    score_format
+                ).activation_quantize_dequantize
             score, metric, activation_quantized, activation_clipped = (
                 _local_forward_render_score(
                     reference_weight=reference_weight,
                     rendered_weight=rendered_weight,
                     activations=activations,
-                    activation_quantize=spec.activation_quantize_dequantize,
+                    activation_quantize=activation_quantize,
                     activation_max_abs=activation_clip_max,
                 )
             )
@@ -1481,7 +2327,14 @@ def _format_uses_static_activation_clip(fmt: str) -> bool:
     """
     from prismaquant import format_registry as fr
 
-    return fr.canonical_format_name(str(fmt).strip().upper()) == "NVFP4"
+    raw = str(fmt).strip().upper()
+    if _is_trellis_format_name(raw):
+        # E2M1's static global is consumed inside
+        # ``nvfp4_activation_qdq_served``. Applying the cache's separate
+        # max-abs clamp would price a third activation contract.
+        return False
+    canonical = fr.canonical_format_name(raw)
+    return canonical == "NVFP4"
 
 
 def _local_forward_render_score(
@@ -1619,6 +2472,8 @@ def _format_supports_render_mechanism(fmt: str, mechanism: str) -> bool:
 
     fmt_u = str(fmt).strip().upper()
     mech = str(mechanism).strip()
+    if _is_trellis_format_name(fmt_u):
+        return mech == "weighted_vq"
     if fmt_u == "NVFP4":
         return mech in {
             "four_over_six",
@@ -1651,7 +2506,7 @@ def _format_supports_render_mechanism(fmt: str, mechanism: str) -> bool:
 # same per-input-column vector. Keyed off the family exactly as
 # `measure_quant_cost._cost_render_uses_imatrix` keys the inline cost render —
 # one invariant, two call sites, no third opinion.
-WEIGHTED_RENDER_FAMILIES = ("nvfp4_cb", "fp8_cb", "gguf")
+WEIGHTED_RENDER_FAMILIES = ("nvfp4_cb", "fp8_cb", "gguf", "trellis")
 
 
 def _expert_col_weights(
@@ -1676,6 +2531,8 @@ def _expert_col_weights(
 def _weighted_render_family(fmt: str) -> str | None:
     """The weighted-render family of ``fmt``, or ``None`` for every format
     whose render ignores ``col_weights`` (NVFP4/FP8/MX/BF16/INT)."""
+    if _is_trellis_format_name(fmt):
+        return "trellis"
     from prismaquant import format_registry as fr
 
     try:
@@ -4371,6 +5228,8 @@ def render_production_weight(
             qname=qname,
             col_weights=col_weights,
             trellis_wire_out=trellis_wire_out,
+            weighted_vq=bool(levers.get("weighted_vq", True)),
+            joint_global_real=joint_global_real,
         )
 
     from prismaquant import format_registry as fr
@@ -4834,6 +5693,9 @@ def fill_production_weight_cache(
     h_detail_dir: str | Path | None = None,
     col_weights: Mapping[str, torch.Tensor] | None = None,
     cb_serialization_context=None,
+    trellis_plans: Mapping[
+        tuple[str, str], "TrellisEncodePlan"
+    ] | None = None,
 ) -> ProductionWeightCache:
     """End-to-end fill: collect activations, render production δw per
     (qname, fmt), return a `ProductionWeightCache`.
@@ -4869,6 +5731,10 @@ def fill_production_weight_cache(
       cb_serialization_context: explicit artifact serialization identity for
         every CB render. Required when the scope contains a CB format; never
         inferred from the current environment.
+      trellis_plans: exact value-bearing encode plan for every requested
+        trellis ``(qname, fmt)``. Required because assignment hashes cannot
+        reconstruct a wire's schedule or alphabets. Plans are explicit inputs;
+        this function never looks them up from an ambient campaign manifest.
     """
     if recache_pass and not recache_assignment:
         raise ValueError(
@@ -4887,7 +5753,10 @@ def fill_production_weight_cache(
     from prismaquant import format_registry as fr
 
     def _canon(fmt: str) -> str:
-        return fr.canonical_format_name(str(fmt).strip().upper())
+        raw = str(fmt).strip().upper()
+        if _is_trellis_format_name(raw):
+            return raw
+        return fr.canonical_format_name(raw)
 
     requested_formats = tuple(
         dict.fromkeys(_canon(f) for f in formats if str(f).strip())
@@ -4916,6 +5785,46 @@ def fill_production_weight_cache(
             q for q, fmts in render_formats_by_qname.items() if fmts
         }
         render_scope = "format-menu"
+
+    trellis_scope = {
+        (str(qname), str(fmt).strip().upper())
+        for qname, fmts in render_formats_by_qname.items()
+        for fmt in fmts
+        if _is_trellis_format_name(fmt)
+    }
+    normalized_trellis_plans: dict[
+        tuple[str, str], "TrellisEncodePlan"
+    ] = {}
+    if trellis_plans is not None:
+        from prismaquant.trellis_render import TrellisEncodePlan
+
+        for raw_key, plan in trellis_plans.items():
+            if (
+                not isinstance(raw_key, tuple)
+                or len(raw_key) != 2
+                or not isinstance(plan, TrellisEncodePlan)
+            ):
+                raise TypeError(
+                    "trellis_plans must map (qname, fmt) tuples to "
+                    "TrellisEncodePlan values"
+                )
+            key = (str(raw_key[0]), str(raw_key[1]).strip().upper())
+            if key[1] != plan.fmt:
+                raise ValueError(
+                    f"trellis plan key {key[0]}@{key[1]} carries a "
+                    f"{plan.fmt} plan"
+                )
+            if key in normalized_trellis_plans:
+                raise ValueError(f"duplicate trellis plan for {key[0]}@{key[1]}")
+            normalized_trellis_plans[key] = plan
+    missing_trellis_plans = sorted(trellis_scope - set(normalized_trellis_plans))
+    if missing_trellis_plans:
+        raise ValueError(
+            "production cache trellis render is missing exact value-bearing "
+            f"plans for {len(missing_trellis_plans)} pair(s); "
+            f"sample={missing_trellis_plans[:4]}. A layer-config digest cannot "
+            "reconstruct the schedule or alphabets."
+        )
 
     cb_render_identity = build_production_cache_cb_render_identity(
         render_formats_by_qname,
@@ -4952,6 +5861,72 @@ def fill_production_weight_cache(
                 } if cb_render_identity is not None else {}),
             },
         )
+
+    trellis_pair_identities: dict[
+        tuple[str, str], dict[str, object]
+    ] = {}
+    trellis_pair_calibration_hash: str | None = None
+    if trellis_scope:
+        if col_weights is None:
+            raise ValueError(
+                "production trellis cache requires an explicit col_weights "
+                "mapping; every encoded objective is importance-weighted"
+            )
+        from prismaquant.perturbed_x_cache import calibration_data_hash
+        from prismaquant.trellis_render import (
+            build_trellis_pair_identity,
+            trellis_tensor_value_sha256,
+        )
+
+        trellis_pair_calibration_hash = calibration_data_hash(calib_ids)
+        trellis_git_commit = _production_cache_git_commit()
+        trellis_producer_source_sha256 = _production_cache_source_sha256()
+        named_modules_for_trellis = dict(model.named_modules())
+        for qname, fmt in sorted(trellis_scope):
+            mod = named_modules_for_trellis.get(qname)
+            if mod is None or not isinstance(mod, nn.Linear):
+                raise ValueError(
+                    f"production trellis cache supports rank-2 dense Linears "
+                    f"only; {qname}@{fmt} is missing or packed. Packed-MoE "
+                    "trellis rendering remains refused."
+                )
+            plan = normalized_trellis_plans[(qname, fmt)]
+            weight = mod.weight.detach()
+            if tuple(int(dim) for dim in weight.shape) != plan.shape:
+                raise ValueError(
+                    f"trellis plan shape {plan.shape} differs from live "
+                    f"weight {tuple(weight.shape)} for {qname}@{fmt}"
+                )
+            vector = col_weights.get(qname)
+            if vector is None:
+                raise ValueError(
+                    f"production trellis cache has no col_weights for "
+                    f"{qname}@{fmt}"
+                )
+            vector = torch.as_tensor(vector)
+            vector_digest = trellis_tensor_value_sha256(vector)
+            if vector_digest != plan.col_weights_sha256:
+                raise ValueError(
+                    f"trellis col_weights identity differs for {qname}@{fmt}: "
+                    f"plan={plan.col_weights_sha256} current={vector_digest}"
+                )
+            source_shape, source_digest = _source_weight_value_identity(weight)
+            trellis_pair_identities[(qname, fmt)] = build_trellis_pair_identity(
+                qname=qname,
+                fmt=fmt,
+                shape=source_shape,
+                recipe=plan.recipe,
+                source_weight_sha256=source_digest,
+                source_weight_dtype=str(weight.dtype),
+                col_weights_sha256=vector_digest,
+                col_weights_shape=tuple(int(dim) for dim in vector.shape),
+                activation_input_global_scale=(
+                    plan.activation_input_global_scale
+                ),
+                calibration_hash=trellis_pair_calibration_hash,
+                git_commit=trellis_git_commit,
+                producer_source_sha256=trellis_producer_source_sha256,
+            )
     model_profile = recache_profile
     if model_profile is None:
         try:
@@ -4982,12 +5957,27 @@ def fill_production_weight_cache(
     admitted_cb_pairs: dict[
         tuple[str, str], dict[str, object]
     ] = {}
+    admitted_trellis_pairs: dict[
+        tuple[str, str], dict[str, object]
+    ] = {}
     rerender_expected_cb_pairs: dict[
         tuple[str, str], dict[str, object]
     ] = {}
     if cache_dir is not None:
         cache_dir_path = Path(cache_dir)
         cache_dir_path.mkdir(parents=True, exist_ok=True)
+        for (qname, fmt), pair_identity in sorted(
+            trellis_pair_identities.items()
+        ):
+            admitted = _validate_trellis_cache_pair_resume(
+                cache_dir_path=cache_dir_path,
+                qname=qname,
+                fmt=fmt,
+                expected_identity=pair_identity,
+                require_render_score=True,
+            )
+            if admitted is not None:
+                admitted_trellis_pairs[(qname, fmt)] = admitted
         if cb_render_identity is not None:
             from prismaquant.perturbed_x_cache import calibration_data_hash
 
@@ -5080,6 +6070,19 @@ def fill_production_weight_cache(
             raise RuntimeError(
                 f"production CB cache resume internal score gate failure for "
                 f"{qname}@{fmt}; refusing reuse or re-render"
+            )
+        render_score_records[_render_score_record_key(qname, fmt)] = dict(score)
+    fresh_trellis_score_keys = {
+        _render_score_record_key(qname, fmt) for qname, fmt in trellis_scope
+    }
+    for score_key in fresh_trellis_score_keys:
+        render_score_records.pop(score_key, None)
+    for (qname, fmt), sidecar in admitted_trellis_pairs.items():
+        score = sidecar.get("render_score")
+        if not isinstance(score, Mapping):
+            raise RuntimeError(
+                f"identity-admitted trellis cache pair {qname}@{fmt} has no "
+                "render score; refusing surrogate reuse"
             )
         render_score_records[_render_score_record_key(qname, fmt)] = dict(score)
     if progress and render_score_records:
@@ -5232,6 +6235,26 @@ def fill_production_weight_cache(
     weights: dict[tuple[str, str], object] = {}
     failed: dict[tuple[str, str], str] = {}
     qname_to_module: dict[str, nn.Module] = {}
+    trellis_publisher: ProductionWeightCache | None = None
+    if trellis_scope:
+        trellis_publisher = ProductionWeightCache(
+            weights=weights,
+            levers=dict(levers),
+            cache_dir=(
+                str(cache_dir_path) if cache_dir_path is not None else None
+            ),
+            metadata={
+                "trellis_cache_pair_artifacts": {
+                    "schema": TRELLIS_PAIR_ARTIFACT_SET_SCHEMA,
+                    "records": {
+                        f"{qname}|{fmt}": copy.deepcopy(record)
+                        for (qname, fmt), record in sorted(
+                            admitted_trellis_pairs.items()
+                        )
+                    },
+                }
+            },
+        )
 
     if cache_dir_path is not None and progress:
         print(f"[prod-cache] streaming cache to {cache_dir_path}/", flush=True)
@@ -5416,6 +6439,7 @@ def fill_production_weight_cache(
             fmt_key = str(fmt).upper()
             render_fmt = _render_base_format(fmt_key)
             key = (qname, fmt_key)
+            trellis_plan = normalized_trellis_plans.get(key)
             if key in weights:
                 skipped_prewritten += 1
                 done += 1
@@ -5439,13 +6463,22 @@ def fill_production_weight_cache(
                                 f"{disk_path} was not identity-admitted; "
                                 "refusing reuse or re-render"
                             )
+                    if _is_trellis_format_name(fmt_key):
+                        if (qname, fmt_key) not in admitted_trellis_pairs:
+                            raise RuntimeError(
+                                "production trellis cache resume internal gate "
+                                f"failure for {qname}@{fmt_key}: wire shard "
+                                "was not identity-admitted"
+                            )
                     weights[(qname, fmt_key)] = fname
                     skipped_resumed += 1
                     score_key = _render_score_record_key(qname, fmt_key)
                     if score_key not in render_score_records:
-                        if _is_cb_format_name(fmt_key):
+                        if _is_cb_format_name(fmt_key) or _is_trellis_format_name(
+                            fmt_key
+                        ):
                             raise RuntimeError(
-                                f"identity-admitted CB cache pair "
+                                f"identity-admitted cache pair "
                                 f"{qname}@{fmt_key} has no admitted render "
                                 "score; refusing partial surrogate reuse"
                             )
@@ -5476,11 +6509,23 @@ def fill_production_weight_cache(
                     continue
             try:
                 gate_trace: list[dict[str, object]] = []
-                timed_cb_pair = (
+                trellis_sink = None
+                if trellis_plan is not None:
+                    from prismaquant.trellis_render import TrellisWireSink
+
+                    trellis_sink = TrellisWireSink(
+                        qname=qname,
+                        fmt=fmt_key,
+                        plan=trellis_plan,
+                    )
+                timed_pair = (
                     cache_dir_path is not None
-                    and _is_cb_format_name(fmt_key)
+                    and (
+                        _is_cb_format_name(fmt_key)
+                        or trellis_plan is not None
+                    )
                 )
-                if timed_cb_pair and weight.device.type == "cuda":
+                if timed_pair and weight.device.type == "cuda":
                     torch.cuda.synchronize(weight.device)
                 encode_started = time.perf_counter()
                 w_dq = render_production_weight(
@@ -5488,7 +6533,9 @@ def fill_production_weight_cache(
                     qname=qname,
                     activations=activations_local,
                     levers=levers,
-                    joint_global_real=joint,
+                    joint_global_real=(
+                        None if trellis_plan is not None else joint
+                    ),
                     input_global_scale=export_scale,
                     fisher_row_weights=row_weights,
                     col_weights=(
@@ -5497,12 +6544,13 @@ def fill_production_weight_cache(
                     ),
                     cb_serialization_context=cb_serialization_context,
                     gate_trace=gate_trace,
+                    trellis_wire_out=trellis_sink,
                 )
-                if timed_cb_pair and weight.device.type == "cuda":
+                if timed_pair and weight.device.type == "cuda":
                     torch.cuda.synchronize(weight.device)
                 encode_seconds = (
                     time.perf_counter() - encode_started
-                    if timed_cb_pair else 0.0
+                    if timed_pair else 0.0
                 )
                 render_score_records[_render_score_record_key(qname, fmt_key)] = (
                     _render_score_record(
@@ -5513,6 +6561,10 @@ def fill_production_weight_cache(
                         rendered_weight=w_dq,
                         activations=activations_local.get(qname),
                         activation_max_abs=max_abs,
+                        trellis_activation_input_global_scale=(
+                            trellis_plan.activation_input_global_scale
+                            if trellis_plan is not None else None
+                        ),
                     )
                 )
                 if gate_trace:
@@ -5535,7 +6587,29 @@ def fill_production_weight_cache(
             # fp32 but we always re-cast at install time, so storing fp32
             # is wasteful (2× memory).  On 27B this drops the cache from
             # ~25 GB to ~12 GB.
-            if cache_dir_path is not None and _is_cb_format_name(fmt_key):
+            if trellis_plan is not None:
+                if trellis_publisher is None or trellis_sink is None:
+                    raise RuntimeError(
+                        "production trellis cache publisher was not initialized"
+                    )
+                pair_identity = trellis_pair_identities.get(key)
+                if pair_identity is None:
+                    raise RuntimeError(
+                        f"production trellis pair identity missing before "
+                        f"publishing {qname}@{fmt_key}"
+                    )
+                trellis_publisher.store_trellis_render(
+                    qname=qname,
+                    fmt=fmt_key,
+                    sink=trellis_sink,
+                    decoded_tensor=w_dq,
+                    identity=pair_identity,
+                    encode_seconds=encode_seconds,
+                    render_score=render_score_records[
+                        _render_score_record_key(qname, fmt_key)
+                    ],
+                )
+            elif cache_dir_path is not None and _is_cb_format_name(fmt_key):
                 pair_identity = cb_pair_identities.get((qname, fmt_key))
                 if pair_identity is None:
                     raise RuntimeError(
@@ -5585,15 +6659,16 @@ def fill_production_weight_cache(
                         else None
                     ),
                 )
-            _store_rendered_weight_entry(
-                weights=weights,
-                cache_dir_path=cache_dir_path,
-                qname=qname,
-                fmt=fmt_key,
-                tensor=w_dq,
-                weight_dtype=weight.dtype,
-                durable=_is_cb_format_name(fmt_key),
-            )
+            if trellis_plan is None:
+                _store_rendered_weight_entry(
+                    weights=weights,
+                    cache_dir_path=cache_dir_path,
+                    qname=qname,
+                    fmt=fmt_key,
+                    tensor=w_dq,
+                    weight_dtype=weight.dtype,
+                    durable=_is_cb_format_name(fmt_key),
+                )
             done += 1
             del w_dq
             if progress and done % 25 == 0:
@@ -5695,6 +6770,60 @@ def fill_production_weight_cache(
                 for pair in canonical_pairs.values()
             }),
         }
+    trellis_pair_artifact_records: dict[str, dict[str, object]] = {}
+    trellis_pair_identity_summary: dict[str, object] | None = None
+    if trellis_pair_identities:
+        canonical_trellis_pairs = {
+            f"{qname}|{fmt}": pair
+            for (qname, fmt), pair in sorted(trellis_pair_identities.items())
+        }
+        if trellis_publisher is not None and isinstance(
+            trellis_publisher.metadata, Mapping
+        ):
+            artifact_set = trellis_publisher.metadata.get(
+                "trellis_cache_pair_artifacts"
+            )
+            records = (
+                artifact_set.get("records")
+                if isinstance(artifact_set, Mapping) else None
+            )
+            if isinstance(records, Mapping):
+                trellis_pair_artifact_records = {
+                    str(key): copy.deepcopy(dict(value))
+                    for key, value in records.items()
+                    if isinstance(value, Mapping)
+                }
+        trellis_pair_identity_summary = {
+            "schema": (
+                "prismaquant.production_weight_cache.trellis_pair_set.v1"
+            ),
+            "pair_schema": (
+                "prismaquant.production_weight_cache."
+                "trellis_pair_identity.v1"
+            ),
+            "entries": len(canonical_trellis_pairs),
+            "identity_sha256": _canonical_json_sha256(
+                canonical_trellis_pairs,
+                where="trellis cache pair identity set",
+            ),
+            "published_entries": len(trellis_pair_artifact_records),
+            "artifact_sha256": _canonical_json_sha256(
+                trellis_pair_artifact_records,
+                where="trellis cache pair artifact set",
+            ),
+            "calibration_hashes": sorted({
+                str(pair["calibration_hash"])
+                for pair in canonical_trellis_pairs.values()
+            }),
+            "git_commits": sorted({
+                str(pair["git_commit"])
+                for pair in canonical_trellis_pairs.values()
+            }),
+            "producer_source_sha256": sorted({
+                str(pair["producer_source_sha256"])
+                for pair in canonical_trellis_pairs.values()
+            }),
+        }
     cache = ProductionWeightCache(
         weights=weights,
         levers=dict(levers),
@@ -5768,8 +6897,24 @@ def fill_production_weight_cache(
             "requested_formats": list(requested_formats),
             "requested_entries": int(n),
             **({
-                "calib_hash": cb_pair_calibration_hash,
-            } if cb_pair_calibration_hash is not None else {}),
+                "calib_hash": (
+                    cb_pair_calibration_hash
+                    if cb_pair_calibration_hash is not None
+                    else trellis_pair_calibration_hash
+                ),
+            } if (
+                cb_pair_calibration_hash is not None
+                or trellis_pair_calibration_hash is not None
+            ) else {}),
+            **({
+                "trellis_cache_pair_identity": trellis_pair_identity_summary,
+            } if trellis_pair_identity_summary is not None else {}),
+            **({
+                "trellis_cache_pair_artifacts": {
+                    "schema": TRELLIS_PAIR_ARTIFACT_SET_SCHEMA,
+                    "records": trellis_pair_artifact_records,
+                },
+            } if trellis_pair_artifact_records else {}),
             **({
                 "cb_cache_pair_identity": cb_pair_identity_summary,
             } if cb_pair_identity_summary is not None else {}),
@@ -6403,7 +7548,10 @@ def fill_packed_expert_cache_entries(
         cache_dir_path.mkdir(parents=True, exist_ok=True)
 
     def _canon(fmt: str) -> str:
-        return fr.canonical_format_name(str(fmt).strip().upper())
+        raw = str(fmt).strip().upper()
+        if _is_trellis_format_name(raw):
+            return raw
+        return fr.canonical_format_name(raw)
 
     if force_format is None and render_assignment is None:
         raise ValueError(
@@ -6469,6 +7617,13 @@ def fill_packed_expert_cache_entries(
                 fmt = _canon(fmt)
             if fmt == "BF16":
                 continue
+            if _is_trellis_format_name(fmt):
+                raise ValueError(
+                    f"{full}@{fmt}: packed-MoE trellis rendering remains "
+                    "refused. The measured menu and Gridbook lanes are "
+                    "dense-only, and no contract defines how one row-shared "
+                    "schedule binds a packed [experts,out,in] tensor."
+                )
             in_scope.append((experts_qname, mod, parent, pn, full, fmt))
             experts_qnames.add(experts_qname)
 

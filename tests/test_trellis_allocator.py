@@ -27,7 +27,7 @@ from prismaquant.trellis_allocator import (
     trellis_rate_distortion_hull,
     trellis_solver_candidate_menu,
 )
-from prismaquant.serving_profiles import ResolvedServingLane
+from prismaquant.serving_profiles import ResolvedServingLane, serving_lane_route
 from prismaquant.trellis_formats import (
     E2M1_FAMILY,
     LAYOUT_FIXED_QUOTA,
@@ -118,6 +118,29 @@ def _canonical_digest(payload: dict[str, object]) -> str:
         allow_nan=False,
     ).encode("ascii")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def test_unattested_route_status_travels_with_research_candidate():
+    record = _fixed_candidate(
+        384, 0.09, target_profile="trellis_research_sm121"
+    )
+    lane = record.servability.serving_lane
+    assert lane is not None
+    assert lane.route_status == "unattested"
+    assert lane.activation_contract == "e2m1_group16_ue4m3_static"
+    assert record.as_dict()["servability"]["serving_lane"][
+        "route_status"
+    ] == "unattested"
+    solver_candidate = record.to_solver_candidate()
+    assert solver_candidate.serving_lane is not None
+    assert solver_candidate.serving_lane.route_status == "unattested"
+
+    e4_lane = serving_lane_route(
+        "trellis_research_sm121", "TCQ_E4M3_R1024"
+    )
+    assert e4_lane is not None
+    assert e4_lane.route_status == "unattested"
+    assert e4_lane.activation_contract == "fp8_per_token_dynamic"
 
 
 def _brute_force_choice(records, alpha: float):

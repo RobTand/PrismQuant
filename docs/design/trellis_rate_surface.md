@@ -48,8 +48,10 @@ alphabet values, layout, shape, scale contract, and all byte counts. It does
 not bind encoded body indices, scale-plane contents, or E2M1
 `global_scale_real`; candidate construction does not possess those rendered
 values. It is therefore never described as a physical wire identity, and
-`rendered_wire_identity_sha256` remains `null` until a future renderer hashes
-actual wire bytes. Trellis side planes are tensor-local, not a separately
+`rendered_wire_identity_sha256` remains `null` **in this pre-render footprint**.
+The value-bearing renderer now hashes actual wire bytes into the separate
+`ProductionWeightCache` pair sidecar; writing that output identity back into a
+candidate footprint remains forbidden. Trellis side planes are tensor-local, not a separately
 deduplicated physical codebook, so the solver bridge leaves
 `serialized_sidecar_identity` unset.
 

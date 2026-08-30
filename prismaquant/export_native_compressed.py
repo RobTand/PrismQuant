@@ -1656,30 +1656,20 @@ def _coerce_runtime_legal_assignment(
                     f"EXPORT_CONTAINER=gguf), not compressed-tensors"
                 )
             if parse_trellis_format_name(fmt_canonical) is not None:
-                # A trellis rung reached export. The generic message below
-                # would blame the serving profile's export lane, which is the
-                # wrong diagnosis: no lane bound is missing, the RENDER is.
-                # PRISMAQUANT_TRELLIS_SURFACE is allocation-time reach only --
-                # ProductionWeightCache has no trellis mechanism, so there are
-                # no rendered bytes to pack, and the producer Gridbook pin
-                # publishes no executed-activation-contract table for these
-                # families, so even a rendered wire could not be priced
-                # honestly against what the runtime would execute
-                # (principles 8 and 14).
+                # Wrong container, with an additional attestation gate. The
+                # primary wire can now exist in ProductionWeightCache, but a
+                # compressed-tensors scheme cannot express it. The pinned
+                # Gridbook contract publishes no trellis lane-eligibility
+                # table, so the future Gridbook-container route is
+                # ``unattested`` rather than silently rounded up to backed.
                 raise ValueError(
-                    f"{qname}: format {fmt_canonical} is a Gridbook trellis "
-                    f"rung from the research rate surface "
-                    f"(PRISMAQUANT_TRELLIS_SURFACE). It has no export path "
-                    f"and this is deliberate, not a missing feature: "
-                    f"ProductionWeightCache renders no trellis wire, so "
-                    f"there are no bytes to pack, and the producer Gridbook "
-                    f"pin publishes no executed-activation-contract table "
-                    f"for TCQ_E2M1/TCQ_E4M3, so an exported artifact could "
-                    f"not state what its own activation contract is. The "
-                    f"surface is an ALLOCATION-TIME report about where bytes "
-                    f"would go; promoting it to an artifact needs a render "
-                    f"mechanism and a runtime attestation first. Re-solve "
-                    f"without PRISMAQUANT_TRELLIS_SURFACE to export."
+                    f"{qname}: format {fmt_canonical} belongs to a Gridbook "
+                    f"trellis container, not compressed-tensors. PrismaQuant "
+                    f"can render and cache its exact primary wire, but export "
+                    f"is still refused: the pinned Gridbook runtime contract "
+                    f"publishes no trellis formats/lane_eligibility "
+                    f"attestation, so route_status=unattested, and no "
+                    f"attested Gridbook trellis exporter may be selected yet."
                 )
             raise ValueError(
                 f"{qname}: format {fmt_canonical} has no compressed-tensors "

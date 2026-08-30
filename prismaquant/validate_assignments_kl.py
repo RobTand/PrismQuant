@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -69,6 +69,8 @@ from prismaquant.kl_measurement import (
 )
 from prismaquant.perturbed_x_cache import (
     PerturbedActivationCache,
+    _first_tensor_location,
+    _replace_tensor_input,
     build_quantizable_map,
     calibration_data_hash,
 )
@@ -650,12 +652,205 @@ def _materialize_assignment_inplace(
 def _activation_quant_assignment(
     assignment: Mapping[str, str],
 ) -> dict[str, str]:
+    from prismaquant.trellis_formats import parse_trellis_format_name
+
     out: dict[str, str] = {}
     for name, fmt in assignment.items():
+        # Trellis is deliberately absent from FormatSpec.  Its native A=W
+        # contract is authenticated from the primary-wire cache sidecar and
+        # installed by _TrellisActivationHooks below.  Looking it up in the
+        # registry would be a generic KeyError; pretending it were BF16 would
+        # silently measure W*A16.
+        if parse_trellis_format_name(str(fmt).strip().upper()) is not None:
+            continue
         spec = fr.get_format(fmt)
         if spec.act_quant_changes_input:
             out[str(name)] = spec.name
     return out
+
+
+class _TrellisActivationHooks:
+    """Activation-only emulation for authenticated native trellis A=W lanes.
+
+    Weight installation remains the job of ``ProductionWeightCache``.  These
+    hooks consume only its authenticated pair identity and apply the matching
+    A-side QDQ before each dense Linear forward.  There is intentionally no
+    FormatSpec and no fallback: a missing wire, scale, contract, module, or
+    tensor input refuses validation before a student forward can be mistaken
+    for native W4A4/W8A8 quality.
+    """
+
+    def __init__(
+        self,
+        model,
+        assignment: Mapping[str, str],
+        production_cache,
+        *,
+        profile=None,
+    ) -> None:
+        from prismaquant.trellis_formats import parse_trellis_format_name
+        from prismaquant.trellis_render import EXECUTED_ACTIVATION_CONTRACT
+
+        self.plans: list[
+            tuple[torch.nn.Module, str, str, str, Callable[[torch.Tensor], torch.Tensor]]
+        ] = []
+        self.calls: Counter[str] = Counter()
+        self._handles: list[object] = []
+        trellis_assignment = {
+            str(name): str(fmt).strip().upper()
+            for name, fmt in assignment.items()
+            if parse_trellis_format_name(str(fmt).strip().upper()) is not None
+        }
+        if not trellis_assignment:
+            return
+        if production_cache is None:
+            raise RuntimeError(
+                "trellis assignment KL requires ProductionWeightCache wire "
+                "sidecars for the native A=W contract; refusing W*A16 fallback"
+            )
+        quant_map = build_quantizable_map(model, profile=profile)
+        by_module: dict[int, str] = {}
+        for name, fmt in trellis_assignment.items():
+            parsed = parse_trellis_format_name(fmt)
+            assert parsed is not None
+            target = quant_map.get(name)
+            if target is None:
+                raise RuntimeError(
+                    f"trellis assignment qname {name!r} does not resolve on "
+                    "the live model; native A=W validation refuses"
+                )
+            module, attr = target
+            param = getattr(module, attr, None)
+            if (
+                attr != "weight"
+                or not isinstance(param, torch.nn.Parameter)
+                or param.ndim != 2
+            ):
+                raise RuntimeError(
+                    f"trellis A=W validation supports only rank-2 dense "
+                    f"Linear weights; {name!r} resolves to attr={attr!r}, "
+                    f"shape={getattr(param, 'shape', None)}. Packed-MoE "
+                    "trellis remains refused."
+                )
+            prior = by_module.get(id(module))
+            if prior is not None and prior != name:
+                raise RuntimeError(
+                    "trellis assignment maps multiple qnames onto one live "
+                    f"module ({prior!r}, {name!r}); applying one A-side "
+                    "quantizer would make the other contract ambiguous"
+                )
+            by_module[id(module)] = name
+            identity = production_cache.get_trellis_activation_identity(
+                name, fmt
+            )
+            if identity.get("shape") != [int(dim) for dim in param.shape]:
+                raise RuntimeError(
+                    f"trellis activation identity shape differs for "
+                    f"{name}@{fmt}: cache={identity.get('shape')}, "
+                    f"live={list(param.shape)}"
+                )
+            family = parsed[0].family
+            expected_contract = EXECUTED_ACTIVATION_CONTRACT[family]
+            if (
+                identity.get("family") != family
+                or identity.get("activation_contract") != expected_contract
+            ):
+                raise RuntimeError(
+                    f"trellis activation identity differs for {name}@{fmt}; "
+                    "native A=W validation refuses"
+                )
+            if family == "TCQ_E2M1_R256":
+                scale = float(identity["activation_input_global_scale"])
+                from prismaquant.nvfp4_activation_contract import (
+                    nvfp4_activation_qdq_served,
+                )
+
+                def quantize(
+                    value: torch.Tensor,
+                    *,
+                    _scale: float = scale,
+                ) -> torch.Tensor:
+                    return nvfp4_activation_qdq_served(value, _scale)
+            else:
+                quantize = fr.get_format(
+                    "FP8_E4M3"
+                ).activation_quantize_dequantize
+            self.plans.append(
+                (module, name, fmt, expected_contract, quantize)
+            )
+
+        # Alias-heavy assignments must not put a normal FormatSpec hook on a
+        # module already governed by a trellis contract.  Refuse at setup,
+        # before either hook can quantize the same input twice.
+        for name, fmt in assignment.items():
+            if str(name) in trellis_assignment:
+                continue
+            target = quant_map.get(str(name))
+            if target is not None and id(target[0]) in by_module:
+                raise RuntimeError(
+                    f"live module for trellis qname {by_module[id(target[0])]!r} "
+                    f"is also assigned {name!r}={fmt!r}; activation contract "
+                    "is ambiguous"
+                )
+
+    def _make_hook(
+        self,
+        name: str,
+        quantize: Callable[[torch.Tensor], torch.Tensor],
+    ):
+        def _hook(_module, args, kwargs):
+            where, key, value = _first_tensor_location(args, kwargs)
+            if not isinstance(value, torch.Tensor):
+                raise RuntimeError(
+                    f"trellis A=W hook for {name!r} could not locate a tensor "
+                    "input; refusing an unquantized activation forward"
+                )
+            quantized = quantize(value)
+            if (
+                not isinstance(quantized, torch.Tensor)
+                or quantized.shape != value.shape
+                or quantized.dtype != value.dtype
+                or quantized.device != value.device
+            ):
+                raise RuntimeError(
+                    f"trellis A=W quantizer for {name!r} changed the tensor "
+                    "shape, dtype, or device"
+                )
+            self.calls[name] += 1
+            return _replace_tensor_input(
+                args, kwargs, where, key, quantized
+            )
+
+        return _hook
+
+    def install(self) -> None:
+        if self._handles:
+            raise RuntimeError("trellis activation hooks are already installed")
+        for module, name, _fmt, _contract, quantize in self.plans:
+            self._handles.append(
+                module.register_forward_pre_hook(
+                    self._make_hook(name, quantize), with_kwargs=True
+                )
+            )
+
+    def remove(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "plans": len(self.plans),
+            "calls": dict(sorted(self.calls.items())),
+            "contracts": dict(sorted(
+                (name, contract)
+                for _module, name, _fmt, contract, _quantize in self.plans
+            )),
+            "formats": dict(sorted(
+                (name, fmt)
+                for _module, name, fmt, _contract, _quantize in self.plans
+            )),
+        }
 
 
 def _load_calibration_repeats(tokenizer, args) -> list[torch.Tensor]:
@@ -988,6 +1183,16 @@ def _measure_inplace_assignment_kl(
     cal_hash = calibration_data_hash(calib_ids)
     calib_ids = calib_ids.to(device)
     full_sequence = kl_scope == "full_sequence"
+    # Authenticate every trellis wire and bind its native A-side quantizer
+    # before the one-way weight install mutates the model. A malformed or
+    # missing sidecar therefore cannot leave a half-installed model, and no
+    # student forward can silently become W*A16.
+    trellis_hooks = _TrellisActivationHooks(
+        model,
+        assignment,
+        production_cache,
+        profile=profile,
+    )
     if materialize:
         materialize_stats = _materialize_assignment_inplace(
             model,
@@ -1071,7 +1276,12 @@ def _measure_inplace_assignment_kl(
         registry = _KL_CUDA_GRAPH_REGISTRY
 
     with _temporary_env("PRISMAQUANT_EXTERNAL_WEIGHT_MANAGEMENT", "1"):
-        hooks.install()
+        trellis_hooks.install()
+        try:
+            hooks.install()
+        except Exception:
+            trellis_hooks.remove()
+            raise
         try:
             for i in range(calib_ids.size(0)):
                 batch = calib_ids[i:i + 1]
@@ -1090,7 +1300,7 @@ def _measure_inplace_assignment_kl(
                         batch,
                         enabled=True,
                         device=device,
-                        keepalive=(hooks,),
+                        keepalive=(hooks, trellis_hooks),
                     )
                 else:
                     logits = _forward(batch)
@@ -1105,12 +1315,14 @@ def _measure_inplace_assignment_kl(
                         nll_values.append(nll)
         finally:
             hooks.remove()
+            trellis_hooks.remove()
     stats = {
         "materialized": materialize_stats,
         "activation_hooks": {
             "plans": len(hooks.plans),
             "capture_inputs": False,
             "external_weight_management": True,
+            "trellis": trellis_hooks.summary(),
         },
         "cuda_graphs": bool(use_cuda_graphs),
         "n_sequences": len(values),

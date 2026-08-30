@@ -33,7 +33,8 @@ That seam has only two executable branches:
    ([`trellis_menu.py:582-590`](../../prismaquant/trellis_menu.py#L582-L590)).
 
 `build_trellis_menu` remains directly callable for research, but the production
-seam expressly does not render, export, or serve
+allocation seam expressly does not hand its digest-only candidate to the
+value-bearing renderer, export, or serve
 ([`trellis_menu.py:66-71`](../../prismaquant/trellis_menu.py#L66-L71)). Thus a
 normal production solve cannot write a TCQ selection to `layer_config.json`.
 The exporter refusals below are the second fail-closed wall for a hand-authored
@@ -54,7 +55,7 @@ branches:
 | `EXPORT_CONTAINER == "nvfp4_cb"`, with `EXPORT_STREAMING` true | `prismaquant.export_nvfp4_cb_streaming` ([`run-pipeline.sh:2674-2679`](../../prismaquant/run-pipeline.sh#L2674-L2679)) | The streaming classifier admits CB, declared passthrough, stock-CT, declared native-requant, and BF16 branches; everything else is appended to `illegal` and raises ([`export_nvfp4_cb_streaming.py:3236-3279`](../../prismaquant/export_nvfp4_cb_streaming.py#L3236-L3279)). TCQ reaches `illegal`. |
 | `EXPORT_CONTAINER == "nvfp4_cb"`, with `EXPORT_STREAMING` false | `prismaquant.export_nvfp4_cb` ([`run-pipeline.sh:2676-2680`](../../prismaquant/run-pipeline.sh#L2676-L2680)) | The in-memory classifier admits CB, `FP8_SOURCE`, delegated stock CT, and BF16; any other format raises ([`export_nvfp4_cb.py:853-880`](../../prismaquant/export_nvfp4_cb.py#L853-L880)). TCQ is not admitted. |
 | `EXPORT_CONTAINER == "nvfp4_cb"`, with `EXPORT_STREAMING` `auto` or empty | In-memory unless source size is known and at least `EXPORT_STREAMING_THRESHOLD_GB` (default 80), then streaming ([`run-pipeline.sh:2673-2685`](../../prismaquant/run-pipeline.sh#L2673-L2685)) | Either selected exporter takes one of the two refusal paths above. An unknown `EXPORT_STREAMING` spelling itself fails ([`run-pipeline.sh:2687-2690`](../../prismaquant/run-pipeline.sh#L2687-L2690)). |
-| Otherwise (therefore `compressed-tensors`) | `python3 -m prismaquant.export_native_compressed` ([`run-pipeline.sh:2791-2835`](../../prismaquant/run-pipeline.sh#L2791-L2835)) | The native preflight recognizes both TCQ families and raises the dedicated “no export path / no rendered wire” error ([`export_native_compressed.py:1658-1683`](../../prismaquant/export_native_compressed.py#L1658-L1683)). |
+| Otherwise (therefore `compressed-tensors`) | `python3 -m prismaquant.export_native_compressed` ([`run-pipeline.sh:2791-2835`](../../prismaquant/run-pipeline.sh#L2791-L2835)) | The native preflight recognizes both TCQ families and raises the dedicated wrong-container plus `route_status=unattested` error. A primary wire may exist in `ProductionWeightCache`, but compressed-tensors cannot express it and the pinned Gridbook contract attests no trellis lane ([`export_native_compressed.py:1658-1683`](../../prismaquant/export_native_compressed.py#L1658-L1683)). |
 
 The native path is the most direct trace from shipping entry point to the point
 where an alphabet-producing call would have had to occur:
@@ -82,7 +83,7 @@ Inside that preflight the complete non-exportable-format branch order is:
 3. A non-exportable CB format -> wrong-container error.
 4. A non-exportable GGUF format -> wrong-container error.
 5. A format for which `parse_trellis_format_name(...)` returns non-`None` ->
-   dedicated TCQ no-render/no-export error.
+   dedicated TCQ wrong-container/unattested-export error.
 6. Any other non-exportable format -> generic no-emit-path error.
 
 Those conditions and their order are executable at
@@ -91,8 +92,9 @@ The TCQ error occurs before CUDA is required and before
 `materialize_tensors_streaming` is called
 ([`export_native_compressed.py:9092-9098`](../../prismaquant/export_native_compressed.py#L9092-L9098),
 [`export_native_compressed.py:9127-9134`](../../prismaquant/export_native_compressed.py#L9127-L9134)).
-There is consequently no render, no alphabet construction, and no selector call
-below the shipping entry point.
+There is consequently no render, alphabet construction, or selector call
+*below that export entry point*. Rendering is an earlier explicit-plan cache
+operation; export never re-encodes the selected wire.
 
 ### 1.3 Both trellis families hit the same refusal
 

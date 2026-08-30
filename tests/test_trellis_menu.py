@@ -343,10 +343,11 @@ def test_a_packed_expert_row_is_refused_not_underpriced(tmp_path):
 
 
 def test_export_refuses_a_trellis_assignment():
-    """Allocation-time reach only: there is no render and no attestation."""
+    """A primary wire exists, but native export remains unattested/refused."""
 
     from prismaquant import export_native_compressed as ex
 
     text = pathlib.Path(ex.__file__).read_text()
     assert "parse_trellis_format_name(fmt_canonical) is not None" in text
-    assert "ProductionWeightCache renders no trellis wire" in text
+    assert "route_status=unattested" in text
+    assert "can render and cache its exact primary wire" in text

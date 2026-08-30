@@ -1,7 +1,27 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
-first, each recording its own branch and date. Re-stamped (2026-08-29,
+As of: 2026-08-30 · `codex/trellis-render-seam` — stamps follow, newest
+first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/trellis-render-seam`) for the **value-bearing trellis render/cache
+boundary** (§4.9, §5.4). PrismaQuant now owns an independent
+`gridbook.trellis.wire.v1` writer/decoder plus the promoted exact 256-state
+tail-biting encoder; neither imports Gridbook. A dense TCQ render requires an
+explicit `TrellisEncodePlan` carrying the schedule, alphabets, exact priced
+footprint, encoder knobs, column-weight digest, native A=W contract, and the
+E2M1 activation global that lives outside the wire. The wire blob is the
+durable primary object in the one `ProductionWeightCache`; the decoded matrix
+is a derived resident view, and resume never re-encodes. Render scoring and KL
+validation both apply the authenticated native A side (E2M1 static W4A4 or
+E4M3 dynamic W8A8); validation refuses before model mutation when the wire,
+contract, scale, shape, or dense module is unavailable, so W*A16 is never an
+implicit fallback. The allocation seam still refuses because candidates retain
+irreversible schedule/alphabet hashes rather than values; packed MoE still has
+no contract; and export/serve remain `unattested` at the pinned Gridbook
+contract. The native compressed-tensors refusal now says that accurately
+instead of claiming no render exists. The DSv4 W8A16 source closure is
+re-approved in its own reviewer note: every new branch is TCQ-gated and the
+frozen non-trellis byte vectors are unchanged.
+Re-stamped (2026-08-29,
 `docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
 correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
 rather than by a test — the two doc gates were green across both drifts. (i) The
@@ -46,8 +66,10 @@ format; the per-tensor recipe digest rides `serialized_identity`. New profile
 `target_platform: sm_121` for the one reason it exists: `_capability_gate`
 returns legal without comparing anything when a profile declares no platform,
 and six of ten specs declare none. Export refuses a `TCQ_*` assignment with a
-pointed message — there is no render mechanism and no runtime attestation, so
-this is allocation-time reach only.
+pointed message — at that stamp there was no render mechanism or runtime
+attestation, so it was allocation-time reach only. The 2026-08-30 stamp above
+supersedes the render half; allocator reach and runtime attestation remain
+refused.
 
 Re-stamped (2026-08-28,
 `claude/trellis-continuous-surface`) for the **PrismaSnap source-dtype
@@ -1511,7 +1533,7 @@ flowchart TD
   FR --> VAK
   VAK --> SVF
 
-  PCACHE["[4/4] D. build_production_cache / production_recache<br/>ProductionWeightCache -- the one rendered-weight store<br/>body + profile-synthesized MTP; levers: gptq, static_act_order, joint_scale_opt"]
+  PCACHE["[4/4] D. build_production_cache / production_recache<br/>ProductionWeightCache -- the one render store<br/>dequant tensors + primary TCQ wires; body + profile-synthesized MTP"]
 
   subgraph XUNION["optional exact multi-host cache build -- native materialized renders only"]
     SPLAN["production_cache_stripes<br/>probe-shaped LPT over whole decoder layers<br/>plus indivisible lm_head / MTP groups"]
@@ -3399,13 +3421,48 @@ small model, allocation churn against a shipped `cost.pkl` inside the known ~3%
 noise, and — for AQUA — a served W4A4-vs-W4A8 A/B. §12 D30 carries the honest
 gaps.
 
-### 4.9 The continuous trellis rate surface — opt-in, allocation-time only (2026-08-29)
+### 4.9 Trellis rate surface and value-bearing render boundary (2026-08-29/30)
 
 `prismaquant/trellis_{formats,footprint,allocator,rate_surface}.py` (3701 LoC,
 69 tests) address and exactly price the Gridbook rate-256 tail-biting trellis
 families. Until 2026-08-29 nothing in the pipeline imported them: no
 `run-pipeline.sh` stage, no format menu, no exporter. `prismaquant/trellis_menu.py`
 is now the ONE seam that does, and it is off by default.
+
+**Render/cache update (2026-08-30).** The final sentence above remains true of
+the *allocator seam*, not of the codec. `trellis_encoder.py`,
+`trellis_wire.py`, and `trellis_render.py` now render a dense TCQ rung from an
+explicit value-bearing `TrellisEncodePlan`. The plan carries the actual full
+schedule and per-rate native-code alphabets because the hashes retained by the
+allocator are irreversible. It also binds the exact footprint, encoder source,
+`sb_chunk`, determinism, tail-bite candidate count, backend/point route,
+column-weight values, and native activation contract. No ambient manifest is
+looked up. `build_production_cache --trellis-render-plans <json>` is the only
+CLI intake, and a TCQ render scope without that versioned plan set refuses.
+
+The independent writer matches Gridbook's frozen Stage-5 golden vector without
+importing that runtime. Rendering encodes once, packs once, independently
+decodes the blob, and returns that decode to existing score/KL consumers. The
+mandatory single-use sink carries the same blob into `ProductionWeightCache`;
+the exact priced length, parsed recipe, source/column/calibration identities,
+and SHA-256 are sidecar-bound. E2M1 also binds the positive static activation
+global that Gridbook stores outside the wire. The local render score therefore
+applies E2M1's served static W4A4 QDQ or E4M3's per-token dynamic W8A8 QDQ.
+`validate_assignments_kl` partitions TCQ away from the scalar format registry,
+authenticates that same pair identity before its one-way model install, and
+uses activation-only pre-hooks for the identical QDQ. It records the executed
+contract and call counts in validation stats. A missing cache/contract/scale,
+a packed target, or an ambiguous module refuses; neither path may inherit the
+W*A16 anchor contract.
+
+This does **not** make `PRISMAQUANT_TRELLIS_SURFACE` shippable. `UNWIRED_LINKS`
+now has nine entries: the new first entry says the chosen candidate still
+carries schedule/alphabet hashes, not the values needed to construct a plan;
+the prior eight allocator/currency links remain. Packed-MoE rendering is
+dense-only and refuses, and no exporter or serving lane is attested by the
+pinned Gridbook contract. The native compressed-tensors exporter remains the
+wrong container and reports `route_status=unattested` rather than emitting
+plausible bytes.
 
 **The flag, and what it does today.** `PRISMAQUANT_TRELLIS_SURFACE=<manifest.json>`.
 Unset, `augment_candidates` returns its input object unchanged, so a run
@@ -3422,9 +3479,10 @@ without the flag executes exactly the path it executed before the seam existed
 > `check_stats_format_applicability` nor the `_memory_bytes_by_format` write at
 > `allocator_candidates.py:1950`; aggregation drops every rung; byte accounting
 > `KeyError`s. `trellis_menu.UNWIRED_LINKS` is now the authoritative list —
-> eight entries, each with a file:line — and it is the text of the refusal.
+> nine entries, each with a file:line — and it is the text of the refusal.
 
-The eight, in the order a run would hit them: no TCQ `FormatSpec`
+The original eight, after the new value-transport refusal that a run would hit
+first: no TCQ `FormatSpec`
 (`format_registry.py:1267-1272`); the exact assignment-payload filter falling
 through to `fr.get_format` because nothing writes `_memory_bytes_by_format` for
 a TCQ row, which kills the allocator inside the Pareto sweep **before**
@@ -3444,7 +3502,7 @@ discarded rather than travelling with the assignment (`allocator.py:2756`,
 second moment, an output-MSE proxy and **not** the AURA KL-adjoint the DP ranks
 in (`trellis_rate_surface.py:43-52`).
 
-**Why refuse as a whole rather than wire it halfway.** The eight do not fail
+**Why refuse as a whole rather than wire it halfway.** The original eight do not fail
 alike. The registry gaps crash **loudly**; the aggregation gaps are **silent** —
 they drop every rung from every fused and packed group and hand back a
 plausible frontier in which only `o_proj` and `down_proj` could carry one. A
@@ -3459,7 +3517,7 @@ with a counted reason — but the fix is inside `build_trellis_menu`, which is
 research-reachable and cannot reach an artifact.
 
 **So: `build_trellis_menu` builds a correctly priced menu; `augment_candidates`
-refuses.** Enabling the surface means landing the eight links with tests that
+refuses.** Enabling the surface means landing all nine links with tests that
 exercise behaviour and then deleting the refusal — not passing a flag.
 
 **Why a manifest, not a `FORMATS` enum entry.** A trellis rung is
@@ -3496,8 +3554,14 @@ which is where per-member layout identity belongs.
    profile — `target_platform: sm_121`, `emulation_only: true`, no export lane,
    and deliberately **no `format_rules`**: naming 2546 TCQ rungs in an allow
    list would assert they are `format_registry` entries, and they are not (a
-   trellis rung has no `FormatSpec` and no RTN `quantize_dequantize`, because
-   nothing renders one).
+   trellis rung has no `FormatSpec` and no RTN `quantize_dequantize`; its
+   value-bearing renderer is deliberately independent of the scalar registry).
+   The profile does declare two research-only `serving_lanes`, split by family
+   solely so E2M1 W4A4 and E4M3 W8A8 execution identity travels on each
+   candidate. Neither lane declares a `route_status_source`; with no published
+   trellis eligibility table both resolve the structured status `unattested`,
+   which survives `TrellisAllocatorCandidate` → solver `Candidate` and is never
+   promoted to `backed` by profile prose.
 2. *An objective the run is not pricing in.* The manifest declares `cost_mode`
    and `currency`; a mismatch with the run refuses. One DP prices in one
    currency.
@@ -3512,16 +3576,16 @@ which is where per-member layout identity belongs.
 **Export fails closed, and says why.** `export_native_compressed` refuses any
 `TCQ_*` assignment with a pointed message rather than the generic
 "absent from FORMAT_SCHEME" one, because the generic message blames the serving
-profile's export lane and that is the wrong diagnosis. No lane bound is
-missing: `ProductionWeightCache` renders no trellis wire, so there are no bytes
-to pack, and the producer Gridbook pin publishes no executed-activation-contract
-table for these families, so an exported artifact could not state its own
-activation contract (§ P14). **This is allocation-time reach only** — the
-surface lets the DP see the continuum, report where bytes would go, and price
-the choice in exact serialized bytes. Promoting it to an artifact needs a
-render mechanism and a runtime attestation first; both are open (§12).
+profile's export lane and that is the wrong diagnosis. Exact wire bytes can now
+exist in `ProductionWeightCache`, but compressed-tensors cannot express them,
+and the pinned Gridbook contract publishes no trellis `lane_eligibility`
+attestation. The future route therefore resolves `unattested`, never `backed`.
+Promoting the allocator surface to an artifact still requires the value handoff,
+a Gridbook-container exporter that copies the selected blob verbatim, and a
+published runtime attestation; all remain refused.
 
-Gate: `tests/test_trellis_menu.py` (15), on top of the surface's own 69.
+Gates: `tests/test_trellis_menu.py`, `tests/test_trellis_render_seam.py`, and
+`tests/test_trellis_wire_codec.py`, on top of the surface's own tests.
 Two of the original 13 asserted on **source text** — that the string
 `trellis_menu.augment_candidates` appeared in `build_candidates` — which passes
 whether or not the call does anything, and did pass while the enabled path
@@ -3640,11 +3704,41 @@ defaulting; it now delegates to `production_weight_cache._resolve_production_ren
 
 ### 5.4 The single rendered-weight store
 
-`ProductionWeightCache` (`production_weight_cache.py:137`) is the only store for rendered
-weights and `render_production_weight` (`:1785`) the only producer. Not tidiness: the
+`ProductionWeightCache` (`production_weight_cache.py:240`) is the only store for rendered
+weights and `render_production_weight` (`:5123`) the only producer. Not tidiness: the
 surrogate, the KL validation, and the exported bytes must be the *same* rendering, or every A/B
-carries a rendering confound. Levers are recorded on the cache (`:165`, `:835-858`), which is
+carries a rendering confound. Levers are recorded on the cache (`:268`) and resolved once
+(`_resolve_production_render_levers`, `:5589`), which is
 what makes M19 (§6.1) possible.
+
+**Trellis uses the same store with a different primary representation.** For a
+dense TCQ pair, the durable `.pt` shard is the exact one-dimensional uint8 wire,
+not a bf16 matrix. Schedule, tight offsets, alphabets, scale plane, and encoded
+body therefore cannot diverge from the bytes later selected for export. The
+cache validates the pair sidecar and wire recipe before admission, then decodes
+and memoizes a derived matrix for existing consumers; LRU/resident-budget
+accounting includes both the primary blob and that decoded view. Eviction drops
+the derived view and restores the same shard path. `get_wire_blob` returns only
+the stored bytes and never reconstructs them from the narrowed matrix.
+
+The sidecar binds `(qname, format, shape)`, exact render recipe, source-weight,
+column-weight, calibration, producer-source and git identities, native A-side
+contract/scale, exact wire length and SHA-256, decoded dtype under the cache's
+fp32→bf16 narrowing rule, and the activation-aware render-score digest. A
+sidecar without a shard or a shard without a sidecar is a hard refusal. A
+complete matching resume reuses the scored wire; it never invokes the encoder,
+because a replacement encode can produce different bytes. Resident and
+streaming fills both publish through this one method. Packed `[E,out,in]` TCQ
+entries remain refused because neither measurement nor runtime defines how the
+row-shared schedule binds them.
+
+KL validation reads the native A-side contract through
+`get_trellis_activation_identity`, which authenticates the primary wire without
+reconstructing it or repopulating the decoded matrix. The validator installs
+E2M1's exact sidecar-bound static scale or E4M3's dynamic per-token QDQ as a
+dense-Linear input hook. Trellis remains absent from `FormatSpec`; a missing or
+malformed identity is a pointed refusal rather than a registry error or A16
+fallback.
 
 **Profile-synthesized MTP is an append scope of that same cache.** Transformers does not
 instantiate the Qwen3.5/3.6 MTP sidecar, so the ordinary resident body walk cannot discover

@@ -10,11 +10,11 @@ names a manifest file.  Unset, :func:`augment_candidates` returns its input
 unchanged and the run is byte-identical to one built without this module
 (principle 6, the ``PRISMAQUANT_FISHER_CAP_MULTIPLIER`` precedent).
 
-STATUS: THE MENU IS BUILT, THE SEAM IS NOT WIRED
-------------------------------------------------
+STATUS: THE MENU IS BUILT, ALLOCATION-TO-RENDER IS NOT WIRED
+------------------------------------------------------------
 :func:`build_trellis_menu` produces a correctly priced menu.  The production
 seam :func:`augment_candidates` **refuses** when the flag is set, because
-eight links between that menu and a shipped assignment do not exist -- see
+the links between that menu and a shipped assignment do not exist -- see
 :data:`UNWIRED_LINKS`, which is the refusal message and the re-enable
 checklist.  The first version of this module (40d3e15) claimed the seam's
 placement inside ``build_candidates`` meant trellis rungs "pass the same
@@ -65,10 +65,14 @@ THE THREE THINGS THIS REFUSES, AND WHY
 
 WHAT THIS DOES NOT DO
 ---------------------
-It does not render, export, or serve.  ``ProductionWeightCache`` has no
-trellis mechanism and ``export_native_compressed`` refuses a TCQ assignment
-outright.  This is allocation-time reach only: it lets the DP see the surface,
-report what it would choose, and price the choice in exact serialized bytes.
+It does not hand a chosen candidate to the renderer, export, or serve.  The
+independent encoder/wire writer and ``ProductionWeightCache`` blob path exist,
+but require an explicit value-bearing ``TrellisEncodePlan``; this manifest seam
+still emits only irreversible schedule/alphabet digests.  The native compressed
+exporter is the wrong container, and the pinned Gridbook contract attests no
+trellis lane, so export/serve remain ``unattested`` and refused.  This module is
+allocation-time reach only: it lets the DP see the surface, report what it
+would choose, and price the choice in exact serialized bytes.
 """
 from __future__ import annotations
 
@@ -122,6 +126,11 @@ class TrellisSeamUnwiredError(TrellisMenuError):
 #: instead of the claim it used to make.  Delete an entry only when a test
 #: exercises the behaviour it names -- not when the code merely looks present.
 UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
+    ("trellis_allocator.py:526-540",
+     "serialized candidates retain schedule/alphabet hashes but not their "
+     "actual values, so layer_config.json cannot construct the mandatory "
+     "value-bearing TrellisEncodePlan. Hashes are deliberately not inverted "
+     "or resolved through an ambient campaign path"),
     ("format_registry.py:1267-1272",
      "no TCQ name is a FormatSpec; fr.get_format('TCQ_E2M1_R640') KeyErrors, "
      "so every site that resolves an assigned format through the registry "

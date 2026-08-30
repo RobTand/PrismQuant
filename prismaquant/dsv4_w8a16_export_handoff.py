@@ -542,6 +542,31 @@ _PUBLISHED_FILES = frozenset({
 #       next iteration, so a mistake would be a loud `NameError`, never a
 #       silent byte.  It frees GPU transients; `rendered` and `packed_param`,
 #       the two tensors the score and the store consume, survive.
+#
+# RE-FROZEN 2026-08-30 for the value-bearing trellis render/cache seam, after
+# review against THIS DSv4 W8A16 handoff rather than a mechanical re-hash:
+#   production_weight_cache.py -- adds an independently encoded TCQ primary
+#     wire representation, its identity-bound sidecar, derived decoded LRU
+#     view, activation-aware score, and exact-plan fill/resume path.  Every
+#     value-bearing branch is gated by `_is_trellis_format_name(fmt)` or a
+#     non-empty `trellis_scope`; DSv4's assignment contains no TCQ name, no
+#     `TrellisEncodePlan`, and no trellis wire sink.  Its W8A16 source and CB
+#     keys therefore retain the prior tensor representation, admission checks,
+#     render mechanisms, cache filenames, and export reads.  The new
+#     `get_trellis_activation_identity` method is additive and itself refuses a
+#     non-TCQ key.  Generic residency methods branch only after resolving a
+#     concrete TCQ key, so their existing tensor/CB arms are unchanged.
+#
+#     The shared render entry adds one default-None sink argument and performs
+#     a closed-vocabulary TCQ parse before the old body.  For every registered
+#     DSv4 format the parse returns None and execution reaches that body without
+#     touching the weight.  Frozen pre/post vectors prove exact output bytes for
+#     BF16, FP8_E4M3, MXFP4 and NVFP4, including NVFP4's production render; CB
+#     is not re-encoded by this seam and none of its context/layout code moved.
+#     Packed-expert TCQ is explicitly refused before rendering, so it cannot
+#     enter DSv4's packed-CB path.  The DSv4 handoff remains approved because
+#     its reachable cache/render graph and emitted tensors are byte-identical;
+#     only an assignment containing a new TCQ spelling can reach the delta.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
         "dfffc634a7275e76a4c4b3bd0299e8b0775673dca23f6f5c56ca31f8b748b8a5"
@@ -577,7 +602,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "e2d947fe9ba98c612e13a9abe66dbb70aaadde83b0b0db394d100cbff82378c1"
     ),
     "prismaquant/production_weight_cache.py": (
-        "69e29daf21ec8fcfb6ee86375dc6a9792750f38e32337c931b26be64bb0c9fc7"
+        "dcf9fa3a1d08186ee37984929396637641e90c0c82ab36650fb49211f73be5f3"
     ),
     "prismaquant/nvfp4_cb_footprint.py": (
         "96bc38a7ab18c6d2401ed2b66141eef9809409c78468f8ceb16c0891b9701547"

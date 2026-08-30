@@ -47,6 +47,7 @@ from prismaquant.production_weight_cache import (
     CB_CACHE_PAIR_IDENTITY_SCHEMA,
     CB_RENDER_IDENTITY_METADATA_KEY,
     ProductionWeightCache,
+    TRELLIS_PAIR_ARTIFACT_SET_SCHEMA,
     _FisherRowWeightCache,
     _build_cb_transient_consumer_receipt,
     _cache_pair_identity_filename,
@@ -63,10 +64,13 @@ from prismaquant.production_weight_cache import (
     _cache_weight_filename,
     _extend_production_cache_cb_render_identity,
     _is_cb_format_name,
+    _is_trellis_format_name,
     _production_cache_git_commit,
     _production_cache_source_sha256,
+    _source_weight_value_identity,
     _combined_source_weights_sha256,
     _validate_cb_cache_pair_resume,
+    _validate_trellis_cache_pair_resume,
     _write_cb_cache_pair_sidecar,
     bind_production_cache_cb_source_weights,
     build_cb_cache_pair_identity,
@@ -80,7 +84,10 @@ from prismaquant.streaming_model import _build_streaming_context
 
 
 def _canon_fmt(fmt: str) -> str:
-    return fr.canonical_format_name(str(fmt).strip().upper())
+    raw = str(fmt).strip().upper()
+    if _is_trellis_format_name(raw):
+        return raw
+    return fr.canonical_format_name(raw)
 
 
 def _layer_index_of(qname: str, layers_prefix: str) -> int | None:
@@ -152,6 +159,11 @@ def _render_dense_layer(
     transient_results: dict[str, dict[str, object]],
     cb_git_commit: str | None,
     cb_producer_source_sha256: str | None,
+    trellis_plans,
+    trellis_pair_identities: dict[tuple[str, str], dict[str, object]],
+    trellis_pair_artifacts: dict[str, dict[str, object]],
+    trellis_git_commit: str | None,
+    trellis_producer_source_sha256: str | None,
     joint_scale_modules: Mapping[str, nn.Module] | None = None,
     declared_cold_qnames: frozenset[str] = frozenset(),
     progress: bool,
@@ -199,6 +211,114 @@ def _render_dense_layer(
 
     expected_rerenders: dict[tuple[str, str], dict[str, object]] = {}
     completed: set[tuple[str, str]] = set()
+    layer_trellis_scope = {
+        (qname, fmt)
+        for qname, fmts in layer_formats.items()
+        for fmt in fmts
+        if _is_trellis_format_name(fmt)
+    }
+    if layer_trellis_scope:
+        if not retain_rendered:
+            raise ValueError(
+                "a streamed trellis render must retain its primary wire blob"
+            )
+        if not calibration_hash:
+            raise ValueError(
+                "streaming trellis render requires an exact calibration_hash"
+            )
+        if col_weights is None:
+            raise ValueError(
+                "streaming trellis render requires exact col_weights"
+            )
+        if (
+            trellis_git_commit is None
+            or trellis_producer_source_sha256 is None
+        ):
+            raise RuntimeError(
+                "streaming trellis producer identity was not resolved"
+            )
+        from prismaquant.trellis_render import (
+            build_trellis_pair_identity,
+            trellis_tensor_value_sha256,
+        )
+
+        for qname, fmt in sorted(layer_trellis_scope):
+            key = (qname, fmt)
+            plan = trellis_plans.get(key)
+            if plan is None:
+                raise ValueError(
+                    f"streaming trellis render has no value-bearing plan for "
+                    f"{qname}@{fmt}"
+                )
+            weight = qname_to_module[qname].weight.detach()
+            if tuple(int(dim) for dim in weight.shape) != plan.shape:
+                raise ValueError(
+                    f"trellis plan shape {plan.shape} differs from live "
+                    f"weight {tuple(weight.shape)} for {qname}@{fmt}"
+                )
+            vector = col_weights.get(qname)
+            if vector is None:
+                raise ValueError(
+                    f"streaming trellis render has no col_weights for "
+                    f"{qname}@{fmt}"
+                )
+            vector = torch.as_tensor(vector)
+            vector_digest = trellis_tensor_value_sha256(vector)
+            if vector_digest != plan.col_weights_sha256:
+                raise ValueError(
+                    f"streaming trellis col_weights identity differs for "
+                    f"{qname}@{fmt}"
+                )
+            source_shape, source_digest = _source_weight_value_identity(weight)
+            pair_identity = build_trellis_pair_identity(
+                qname=qname,
+                fmt=fmt,
+                shape=source_shape,
+                recipe=plan.recipe,
+                source_weight_sha256=source_digest,
+                source_weight_dtype=str(weight.dtype),
+                col_weights_sha256=vector_digest,
+                col_weights_shape=tuple(int(dim) for dim in vector.shape),
+                activation_input_global_scale=(
+                    plan.activation_input_global_scale
+                ),
+                calibration_hash=calibration_hash,
+                git_commit=trellis_git_commit,
+                producer_source_sha256=trellis_producer_source_sha256,
+            )
+            trellis_pair_identities[key] = pair_identity
+            if cache_dir_path is None:
+                continue
+            shard_path = cache_dir_path / _cache_weight_filename(qname, fmt)
+            sidecar_path = (
+                cache_dir_path / _cache_pair_identity_filename(qname, fmt)
+            )
+            if not resume and (shard_path.exists() or sidecar_path.exists()):
+                raise RuntimeError(
+                    "streaming production cache destination is not fresh for "
+                    f"{qname}@{fmt}; trellis bytes cannot be overwritten"
+                )
+            if not resume:
+                continue
+            admitted = _validate_trellis_cache_pair_resume(
+                cache_dir_path=cache_dir_path,
+                qname=qname,
+                fmt=fmt,
+                expected_identity=pair_identity,
+                require_render_score=True,
+            )
+            if admitted is None:
+                continue
+            score = admitted.get("render_score")
+            if not isinstance(score, Mapping):
+                raise RuntimeError(
+                    f"admitted trellis pair {qname}@{fmt} has no render score"
+                )
+            score_key = _render_score_record_key(qname, fmt)
+            cache.weights[key] = _cache_weight_filename(qname, fmt)
+            completed.add(key)
+            render_score_records[score_key] = dict(score)
+            trellis_pair_artifacts[score_key] = dict(admitted)
     if dense_cb_source_weights:
         if not calibration_hash:
             raise ValueError(
@@ -418,11 +538,22 @@ def _render_dense_layer(
         )
         for fmt in pending_formats:
             render_fmt = _render_base_format(fmt)
+            trellis_plan = trellis_plans.get((qname, fmt))
+            trellis_sink = None
+            if trellis_plan is not None:
+                from prismaquant.trellis_render import TrellisWireSink
+
+                trellis_sink = TrellisWireSink(
+                    qname=qname,
+                    fmt=fmt,
+                    plan=trellis_plan,
+                )
             gate_trace: list[dict[str, object]] = []
-            timed_cb_pair = (
-                cache_dir_path is not None and _is_cb_format_name(fmt)
+            timed_pair = (
+                cache_dir_path is not None
+                and (_is_cb_format_name(fmt) or trellis_plan is not None)
             )
-            if timed_cb_pair and weight.device.type == "cuda":
+            if timed_pair and weight.device.type == "cuda":
                 torch.cuda.synchronize(weight.device)
             encode_started = time.perf_counter()
             w_dq = render_production_weight(
@@ -430,7 +561,9 @@ def _render_dense_layer(
                 qname=qname,
                 activations=activations,
                 levers=levers,
-                joint_global_real=joint,
+                joint_global_real=(
+                    None if trellis_plan is not None else joint
+                ),
                 input_global_scale=export_scale,
                 fisher_row_weights=row_weights,
                 col_weights=(
@@ -439,12 +572,13 @@ def _render_dense_layer(
                 cb_serialization_context=cb_serialization_context,
                 gate_trace=gate_trace,
                 ldlq_missing_activation_ok=cold_declared,
+                trellis_wire_out=trellis_sink,
             )
-            if timed_cb_pair and weight.device.type == "cuda":
+            if timed_pair and weight.device.type == "cuda":
                 torch.cuda.synchronize(weight.device)
             encode_seconds = (
                 time.perf_counter() - encode_started
-                if timed_cb_pair else 0.0
+                if timed_pair else 0.0
             )
             score_key = _render_score_record_key(qname, fmt)
             render_score = _render_score_record(
@@ -455,6 +589,10 @@ def _render_dense_layer(
                 rendered_weight=w_dq,
                 activations=X,
                 activation_max_abs=max_abs,
+                trellis_activation_input_global_scale=(
+                    trellis_plan.activation_input_global_scale
+                    if trellis_plan is not None else None
+                ),
             )
             render_score_records[score_key] = render_score
             canonical_render = _canonical_rendered_weight_tensor(
@@ -545,15 +683,35 @@ def _render_dense_layer(
                     "retained_weight": bool(retain_rendered),
                 }
             if retain_rendered:
-                _store_rendered_weight_entry(
-                    weights=cache.weights,
-                    cache_dir_path=cache_dir_path,
-                    qname=qname,
-                    fmt=fmt,
-                    tensor=w_dq,
-                    weight_dtype=weight.dtype,
-                    durable=_is_cb_format_name(fmt),
-                )
+                if trellis_plan is not None:
+                    if trellis_sink is None:
+                        raise RuntimeError("trellis wire sink was not created")
+                    pair_identity = trellis_pair_identities.get((qname, fmt))
+                    if pair_identity is None:
+                        raise RuntimeError(
+                            f"streaming trellis pair identity missing for "
+                            f"{qname}@{fmt}"
+                        )
+                    record = cache.store_trellis_render(
+                        qname=qname,
+                        fmt=fmt,
+                        sink=trellis_sink,
+                        decoded_tensor=w_dq,
+                        identity=pair_identity,
+                        encode_seconds=encode_seconds,
+                        render_score=render_score,
+                    )
+                    trellis_pair_artifacts[score_key] = record
+                else:
+                    _store_rendered_weight_entry(
+                        weights=cache.weights,
+                        cache_dir_path=cache_dir_path,
+                        qname=qname,
+                        fmt=fmt,
+                        tensor=w_dq,
+                        weight_dtype=weight.dtype,
+                        durable=_is_cb_format_name(fmt),
+                    )
             rendered += 1
             del canonical_render, w_dq
         del X
@@ -1351,6 +1509,7 @@ def run_streaming_render(
     h_detail_dir: str | Path | None = None,
     col_weights: Mapping[str, torch.Tensor] | None = None,
     cb_serialization_context=None,
+    trellis_plans=None,
     render_scope: str = "assignment",
     retain_rendered: bool | None = None,
     consume_render: Callable[..., Mapping[str, object]] | None = None,
@@ -1457,6 +1616,27 @@ def run_streaming_render(
         render_formats_by_qname = {
             qname: menu for qname in dense_modules if menu
         }
+    normalized_trellis_plans = {}
+    if trellis_plans is not None:
+        from prismaquant.trellis_render import TrellisEncodePlan
+
+        for raw_key, plan in trellis_plans.items():
+            if (
+                not isinstance(raw_key, tuple)
+                or len(raw_key) != 2
+                or not isinstance(plan, TrellisEncodePlan)
+            ):
+                raise TypeError(
+                    "trellis_plans must map (qname, fmt) tuples to exact "
+                    "TrellisEncodePlan values"
+                )
+            key = (str(raw_key[0]), str(raw_key[1]).strip().upper())
+            if key[1] != plan.fmt:
+                raise ValueError(
+                    f"trellis plan key {key[0]}@{key[1]} carries a "
+                    f"{plan.fmt} plan"
+                )
+            normalized_trellis_plans[key] = plan
     if format_plan is not None:
         canonical_plan = {
             str(qname): tuple(dict.fromkeys(
@@ -1499,6 +1679,24 @@ def run_streaming_render(
                 for qname, formats in render_formats_by_qname.items()
                 if formats
             }
+    trellis_scope = {
+        (qname, fmt)
+        for qname, fmts in render_formats_by_qname.items()
+        for fmt in fmts
+        if _is_trellis_format_name(fmt)
+    }
+    missing_trellis_plans = sorted(
+        trellis_scope - set(normalized_trellis_plans)
+    )
+    if missing_trellis_plans:
+        raise ValueError(
+            "streaming trellis render is missing exact value-bearing plans; "
+            f"sample={missing_trellis_plans[:4]}"
+        )
+    if trellis_scope and not calibration_hash:
+        raise ValueError(
+            "streaming trellis render requires an exact calibration_hash"
+        )
     per_layer_dense: dict[int | None, dict[str, nn.Module]] = defaultdict(dict)
     for qname, mod in dense_modules.items():
         per_layer_dense[_layer_index_of(qname, layers_prefix)][qname] = mod
@@ -1533,6 +1731,14 @@ def run_streaming_render(
     transient_results: dict[str, dict[str, object]] = {}
     cb_pair_identities: dict[tuple[str, str], dict[str, object]] = {}
     cb_pair_artifacts: dict[str, dict[str, object]] = {}
+    trellis_pair_identities: dict[tuple[str, str], dict[str, object]] = {}
+    trellis_pair_artifacts: dict[str, dict[str, object]] = {}
+    trellis_git_commit = (
+        _production_cache_git_commit() if trellis_scope else None
+    )
+    trellis_producer_source_sha256 = (
+        _production_cache_source_sha256() if trellis_scope else None
+    )
     coverage: dict[str, dict[str, object]] = {}
 
     def _process_layer(L: int | None) -> None:
@@ -1571,6 +1777,13 @@ def run_streaming_render(
                 transient_results=transient_results,
                 cb_git_commit=cb_git_commit,
                 cb_producer_source_sha256=cb_producer_source_sha256,
+                trellis_plans=normalized_trellis_plans,
+                trellis_pair_identities=trellis_pair_identities,
+                trellis_pair_artifacts=trellis_pair_artifacts,
+                trellis_git_commit=trellis_git_commit,
+                trellis_producer_source_sha256=(
+                    trellis_producer_source_sha256
+                ),
                 progress=progress,
             )
             if experts and render_scope == "assignment":
@@ -1701,6 +1914,46 @@ def run_streaming_render(
                 for pair in canonical_pairs.values()
             }),
         }
+    if trellis_pair_identities:
+        canonical_pairs = {
+            f"{qname}|{fmt}": pair
+            for (qname, fmt), pair in sorted(trellis_pair_identities.items())
+        }
+        cache.metadata["trellis_cache_pair_identity"] = {
+            "schema": (
+                "prismaquant.production_weight_cache.trellis_pair_set.v1"
+            ),
+            "pair_schema": (
+                "prismaquant.production_weight_cache."
+                "trellis_pair_identity.v1"
+            ),
+            "entries": len(canonical_pairs),
+            "identity_sha256": _canonical_json_sha256(
+                canonical_pairs,
+                where="streaming trellis cache pair identity set",
+            ),
+            "published_entries": len(trellis_pair_artifacts),
+            "artifact_sha256": _canonical_json_sha256(
+                trellis_pair_artifacts,
+                where="streaming trellis cache pair artifact set",
+            ),
+            "calibration_hashes": sorted({
+                str(pair["calibration_hash"])
+                for pair in canonical_pairs.values()
+            }),
+            "git_commits": sorted({
+                str(pair["git_commit"])
+                for pair in canonical_pairs.values()
+            }),
+            "producer_source_sha256": sorted({
+                str(pair["producer_source_sha256"])
+                for pair in canonical_pairs.values()
+            }),
+        }
+        cache.metadata["trellis_cache_pair_artifacts"] = {
+            "schema": TRELLIS_PAIR_ARTIFACT_SET_SCHEMA,
+            "records": dict(sorted(trellis_pair_artifacts.items())),
+        }
     if cache.failed:
         cache.metadata["render_failures"] = {
             f"{q}|{fmt}": str(err)
@@ -1736,6 +1989,7 @@ def fill_production_weight_cache_streaming(
     h_detail_dir: str | Path | None = None,
     col_weights: Mapping[str, torch.Tensor] | None = None,
     cb_serialization_context=None,
+    trellis_plans=None,
     render_scope: str = "assignment",
     retain_rendered: bool | None = None,
     consume_render: Callable[..., Mapping[str, object]] | None = None,
@@ -1802,6 +2056,7 @@ def fill_production_weight_cache_streaming(
             h_detail_dir=h_detail_dir,
             col_weights=col_weights,
             cb_serialization_context=cb_serialization_context,
+            trellis_plans=trellis_plans,
             render_scope=render_scope,
             retain_rendered=retain_rendered,
             consume_render=consume_render,
