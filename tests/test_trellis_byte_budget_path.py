@@ -452,7 +452,9 @@ def test_a_resolvable_tcq_spec_declares_activation_quant_and_nothing_else():
         exist to prevent -- and it would look like a fixed KeyError.
     """
     from prismaquant.allocator_candidates import (
+        BRANCH_ACTIVATION_IDENTITY,
         _format_act_quant_changes_input,
+        cost_entry_activation_pricing_branch,
         cost_entry_is_bit_exact,
         cost_entry_is_source_passthrough,
     )
@@ -462,6 +464,24 @@ def test_a_resolvable_tcq_spec_declares_activation_quant_and_nothing_else():
     assert cost_entry_is_bit_exact({"weight_mse": 0.0}, name) is False
     assert cost_entry_is_source_passthrough(
         {"cost_source": "source_passthrough"}, name) is False
+
+    # The predicate is not the point; what it DECIDES is. The A-side audit
+    # branch is the first consumer downstream, and while the lookup raised it
+    # labelled every trellis rung `activation_identity` -- the label BF16
+    # gets, and a structural claim that this rung leaves activations alone.
+    # Both trellis families execute A=W natively, so that was a zero where a
+    # cost belongs. It must now read the same branch NVFP4 and FP8 read.
+    def branch(fmt):
+        return cost_entry_activation_pricing_branch(
+            {"n_params": 1}, {"weight_mse": 1e-3},
+            format_name=fmt, activation_pricing=None)
+
+    assert branch(name) == branch("NVFP4") == branch("FP8_E4M3")
+    assert branch(name) != BRANCH_ACTIVATION_IDENTITY
+    assert branch("BF16") == BRANCH_ACTIVATION_IDENTITY, (
+        "the contrast is the assertion: a format that really does leave "
+        "activations alone still reads activation_identity, so the trellis "
+        "rows moved on the merits and not because the label went away")
 
 
 # ---------------------------------------------------------------------------
