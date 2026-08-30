@@ -1,7 +1,25 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-29 · `claude/trellis-continuous-surface` — stamps follow, newest
+As of: 2026-08-29 · `docs/architecture-currency-20260829` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-08-29,
+`docs/architecture-currency-20260829`) for a **§8.4 conformance-matrix
+correction on `glm5_next`**, found by a principle-13 sweep of `origin/main`
+rather than by a test — the two doc gates were green across both drifts. (i) The
+row claimed the CB lane. `58eb69d` withdrew it: the pinned Gridbook 0.8.11
+`producer_profiles.supported_ids` does not name `glm5_next` at any release
+through 0.9.0, so declaring it was the over-declaration that serves
+uninitialised expert memory rather than crashing, and the spec now carries the
+exact re-enable condition. That commit changed a serving-lane declaration
+without touching this file — a § P13 trigger missed, and `d2b4614` later
+updated this file and still did not catch it. (ii) The row named
+`vllm_packed_moe` as the default serving profile; the spec has said
+`vllm_glm5_next_packed_moe` since `b35ed53`, and that profile — which denies
+quantized formats outside the three module families PR #53906 wires a
+`quant_config` into — appeared nowhere in this document. Drift (ii) predates the
+`b4a8846` refresh, so it is the § P13 "currency is not truth" case: this file
+was re-stamped in lockstep while carrying a false statement about a serving
+default. Nothing else in the window crossed the trigger; the reasoning is in the
+commit message. Re-stamped (2026-08-29,
 `claude/trellis-continuous-surface`) for the **trellis seam correction**
 (§4.9): the seam that landed earlier the same day is now **fail-closed** when
 enabled, and this document's claim that it made trellis rungs "pass the same
@@ -5948,7 +5966,7 @@ artifacts exported before the rename.
 | hy_v3 | `hy_v3.py` | 180 | ✅ | `gguf` (overridden, L1) | CT, nvfp4_cb, **gguf** (gguf) | declared by pinned Gridbook contract | `has_mtp → False`; MTP passthrough + out-of-band CB scripts |
 | laguna (poolside S/XS 2.x) | `laguna.py` | 190 | ✅ | `nvfp4_cb` (overridden, L1) | CT, **nvfp4_cb** (nvfp4_cb) | declared by pinned Gridbook contract; drafter still separate | `has_mtp → False` |
 | qwen4_exp (Qwen3.8-Flash-Next 177B) | `qwen4_exp.py` | 200 | ✅ | ⚠ **spec declares none** | ⚠ **spec declares none** → accessor default CT | ⚠ none | `has_mtp → False`; `mtp_source_prefix "mtp."` + `mtp.` in `passthrough_prefixes` |
-| glm5_next (GLM-5.3-Flash 314B) | `glm5_next.py` | 210 | ✅ | `vllm_packed_moe` | CT, nvfp4_cb (CT) | ⚠ none | `has_mtp → False`; body-indexed nextn at layer 45, passthrough (hy_v3 route) |
+| glm5_next (GLM-5.3-Flash 314B) | `glm5_next.py` | 210 | ✅ | `vllm_glm5_next_packed_moe` (extends `vllm_packed_moe`) | CT (CT) | ⚠ none | `has_mtp → False`; body-indexed nextn at layer 45, passthrough (hy_v3 route) |
 | default | `default.py` | — (terminal) | n/a by design | — | CT (default) | n/a | none |
 
 `prio` = detection priority, lower first (§8.1); the same number is declared on the Python class
@@ -5978,7 +5996,24 @@ until then `require_lane_supported` refuses the arch rather than guessing. `glm5
 both, and its large `pinned_names` list is a principle-9 gate input recorded against vLLM PR
 #53906 (`ZJY0516/vllm@933876c`), which builds only routed experts, shared experts and dense
 MLPs with a `quant_config`; that citation must be re-attested against a pinned release before
-export. The one contradiction found in recon is recorded in the spec
+export. Its `default_serving_profile` is its own
+`serving_profile_specs/vllm_glm5_next_packed_moe.json`, which `extends`
+`vllm_packed_moe` and adds one rule denying every quantized format outside
+`mlp.{experts,shared_experts}` and the dense `mlp.{gate,up,down}_proj` — the
+same PR-#53906 fact as the pins, re-stated where the serving profile can act on
+it (defense in depth, principle 9). Its declared lane set is
+**`["compressed-tensors"]` only**: the CB lane was withdrawn on 2026-08-29
+(`58eb69d`) because the pinned Gridbook 0.8.11 contract's
+`producer_profiles.supported_ids` is
+`[deepseek_v4, hy_v3, laguna, qwen3, qwen3_5, qwen3_5_dense]` and `glm5_next` is
+absent from it in every release through 0.9.0 — the over-declaration this column
+exists to prevent, which does not crash but serves uninitialised expert memory.
+The exact re-enable condition (advance the pin to a release whose `supported_ids`
+contains `glm5_next`, in the same commit that re-adds the lane — never by
+widening the test) is recorded in the spec's `_supported_lanes_rationale`
+(`specs/glm5_next.json:6`). Nothing shipped is affected: the 2026-08-27
+GLM-5.3 campaign served through compressed-tensors.
+The one contradiction found in recon is recorded in the spec
 (`_verified_source_layout.serving_restriction.CONTRADICTION_to_resolve_before_export`): the PR
 comments that MLA projections are BF16, while the checkpoint ships them FP8 with
 `.weight_scale_inv`.

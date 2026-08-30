@@ -37,6 +37,7 @@ glm5 = pytest.importorskip(
     reason="glm5_next requires transformers >= 5.16",
 )
 
+from prismaquant import genuine_weight_initialization  # noqa: E402
 from prismaquant.cost_streaming import StreamedCausalLM  # noqa: E402
 from prismaquant.model_profiles.glm5_next import Glm5NextProfile  # noqa: E402
 
@@ -107,20 +108,59 @@ def _tiny_config():
     )
 
 
-def _build_tiny_model():
-    torch.manual_seed(20260826)
-    config = _tiny_config()
-    model = glm5.Glm5NextForConditionalGeneration(config)
+def _build_model(config):
+    """Construct the reference model with every parameter initialized.
+
+    `genuine_weight_initialization` is load-bearing, not decoration.
+    Importing anything from `prismaquant` no-ops
+    `PreTrainedModel._initialize_weights` process-wide
+    (`prismaquant/__init__.py::_polyfill_transformers`), which is sound for
+    PrismaQuant's own loaders -- they overwrite every parameter from a
+    checkpoint straight afterwards -- and unsound here, where the
+    from-config model IS the subject.  Without the restore, every tensor
+    the modeling file allocates as a bare `nn.Parameter(torch.empty(...))`
+    keeps whatever the allocator last left in that page: on this config the
+    routed-expert `mlp.experts.gate_up_proj` / `down_proj`, measured at
+    ~2e17 on one run and non-finite on another.  Those weights feed BOTH
+    sides of the parity comparison, so a bad page NaNs the reference and
+    the streamed pass alike and the divergence reads `nan` at every context
+    octave -- which is how it reached CI (run 33284249771, py3.11 failed
+    and py3.12 passed on the same commit, same torch and transformers).
+
+    A parity assertion cannot see that: `nan != nan` on both sides looks
+    exactly like a wiring defect.  So the finiteness check below fails
+    closed and names the mechanism instead.
+    """
+    with genuine_weight_initialization():
+        model = glm5.Glm5NextForConditionalGeneration(config)
     model = model.to(torch.float32).eval()
     for parameter in model.parameters():
         parameter.requires_grad_(False)
-    # `from_config` leaves several mHC / KDA parameters at whatever
-    # `_init_weights` produced; a degenerate (all-zero or all-equal) tensor
-    # would make a wrong wiring agree with a right one by accident.
+    # `_init_weights` leaves several mHC / KDA parameters at a constant;
+    # a degenerate (all-zero or all-equal) tensor would make a wrong wiring
+    # agree with a right one by accident.
     for name, parameter in model.named_parameters():
         if name.endswith((".fn", ".base", ".scale", ".dt_bias", ".A_log")):
             parameter.copy_(torch.randn_like(parameter) * 0.05)
+    unset = [
+        name
+        for name, tensor in (
+            list(model.named_parameters()) + list(model.named_buffers())
+        )
+        if tensor is not None and not torch.isfinite(tensor).all()
+    ]
+    assert not unset, (
+        "the reference model was built with non-finite tensors, so both "
+        "sides of the parity comparison are garbage and the divergence "
+        "below would read `nan` rather than localize a wiring defect; "
+        f"offending tensors: {unset[:8]}"
+    )
     return model
+
+
+def _build_tiny_model():
+    torch.manual_seed(20260826)
+    return _build_model(_tiny_config())
 
 
 def _streamed_runner(model):
@@ -350,13 +390,7 @@ def test_long_sequence_parity_per_layer_type(layer_types, mlp_layer_types):
     config.text_config.layer_types = list(layer_types)
     config.text_config.mlp_layer_types = list(mlp_layer_types)
     config.text_config.indexer_types = ["full", "full"]
-    model = glm5.Glm5NextForConditionalGeneration(config)
-    model = model.to(torch.float32).eval()
-    for parameter in model.parameters():
-        parameter.requires_grad_(False)
-    for name, parameter in model.named_parameters():
-        if name.endswith((".fn", ".base", ".scale", ".dt_bias", ".A_log")):
-            parameter.copy_(torch.randn_like(parameter) * 0.05)
+    model = _build_model(config)
 
     streamed, reference, profile = _long_parity(model)
     worst = max(block["max_abs_divergence"] for block in profile)
