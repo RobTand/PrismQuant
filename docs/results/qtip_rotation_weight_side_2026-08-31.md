@@ -54,6 +54,66 @@ was designed for.
 cost is ~1 dB. If the activation side prefers larger blocks, block size is a
 tuned parameter with opposing gradients, not a constant.
 
+## 3-bis. The damage tracks BYPASS fraction, not bit rate
+
+I predicted the delta would shrink monotonically toward low rate and reverse to
+a gain somewhere near 2 bits, on the reasoning that low-rate quantizers care
+most about outlier control. **That prediction was wrong**, and the real pattern
+is more useful. Same tensors, unweighted, delta = rotated - unrotated:
+
+| q256 | body bits | bypass b/w | blk 16 | blk 128 |
+|---|---|---|---|---|
+| 512 | 2.00 | 0.0 | −0.39 | −0.69 |
+| 768 | 3.00 | 0.0 | **−0.27** | −0.51 |
+| 896 | 3.50 | **0.5** | −0.77 | −0.93 |
+| scalar NVFP4 | 4.0 | (all scalar) | −0.72 | −1.04 |
+
+Not monotone in rate. The least-damaged rung is 3.0 -- fully shaped, zero
+bypass. The most-damaged trellis rung is 3.5, the only one carrying uncoded
+bypass, and pure scalar NVFP4 is worst of all.
+
+**Rotation hurts scalar quantization, not trellis shaping.** Bypass positions
+are raw E2M1 codes, so they take the full scalar penalty; genuinely shaped codes
+barely notice, at −0.27 to −0.39 dB. That matters because the band where the
+trellis is defensible at all (≤3 bits, zero bypass -- see the shaped-rate
+ceiling result) is exactly the band where rotation is nearly free.
+
+Block 16 beats block 128 at every rung, and the native warp kernel dispatches
+only at 128, so the current kernel geometry carries a standing ~0.2–0.3 dB tax.
+
+## 3-ter. Why EXL3 needs rotation and we may not
+
+From EXL3's own kernel contract (`exl3_gemm.cu:26-31`):
+
+```
+- B: EXL3-quantized B tensor, shape (k//16, n//16, 16*K), dtype uint16
+- suh: packed input scales/flips,  shape (k//16), dtype float16
+- svh: packed output scales/flips, shape (n//16), dtype float16
+```
+
+plus a **computed** codebook (`mul_const_u32<0x83DCD12D>`,
+`decode_mul1_product_2` in `codebook.cuh`) -- QTIP's multiply-hash Gaussian
+construction, not a table of native format values.
+
+So EXL3's entire scale structure is **two rank-1 vectors, `k/16 + n/16`
+scalars**: 128 scalars for a 1024x1024 Linear, effectively 0 bpw. NVFP4's is one
+FP8 scale per 16 contiguous weights **within each row** -- a 2-D grid of
+`rows x cols/16` = **65,536 scalars, 0.5 bpw**. Five hundred times more scale
+parameters.
+
+**Incoherence processing is EXL3's substitute for a fine-grained scale plane,
+not an addition to one.** Its codebook is fixed and Gaussian-matched, so a
+Gaussian source is a *precondition*, not an optimization. We adapt locally with
+the group-16 plane instead, and pay 0.5 bpw for the privilege -- which at 2 bits
+is a quarter of the entire budget, spent on scales that EXL3 spends on payload.
+
+The tension this creates is structural rather than incidental: **native NVFP4
+mandates the group-16 scale plane**, because that is what the
+`block_scaled_ue4m3xe2m1` mainloop consumes. The container requires the very
+mechanism that makes rotation redundant on scalar content. What the bypass
+finding above adds is that the redundancy is confined to the scalar parts, so
+the shaped band escapes most of it.
+
 ## 4. What this does NOT measure, which is the larger half
 
 **The activation side.** The transform's stated purpose in the runtime doc is
