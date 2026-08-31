@@ -40,6 +40,7 @@ CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
 CAS_RECEIPT_SCHEMA_V3 = "prismaquant.prismabuild.cas_receipt.v3"
 WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
 WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
+LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
 _CAS_RECEIPT_NAMESPACE = CAS_RECEIPT_SCHEMA_V3.rsplit(".", 1)[-1]
 
 _ACTION_BODY_KEYS = frozenset(
@@ -106,6 +107,17 @@ _RUNTIME_KEYS = frozenset(
     {"schema", "launch_kind", "core", "launcher", "runtime_sha256"}
 )
 _TOOLCHAIN_ATTESTATION_KEYS = frozenset({"declared", "verified"})
+_LOCAL_RESULT_CLAIM_BODY_KEYS = frozenset(
+    {
+        "schema",
+        "action_key",
+        "action_manifest_sha256",
+        "checkout_root",
+        "working_directory",
+        "result_path",
+    }
+)
+_LOCAL_RESULT_CLAIM_KEYS = _LOCAL_RESULT_CLAIM_BODY_KEYS | {"claim_sha256"}
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
 _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}\Z")
@@ -118,6 +130,7 @@ _TASK_CLASSES = frozenset({"generation", "measurement"})
 _DETERMINISM = frozenset({"deterministic", "stochastic"})
 _ARTIFACT_FAMILIES = frozenset({"generic", "codebook"})
 _PROCESS_GROUP_GRACE_SECONDS = 5.0
+_MAX_LOCAL_RESULT_STAGING_FILES = 64
 # NFS may return one internally inconsistent ctime/nlink snapshot while a
 # first-writer hard link becomes visible.  Never accept that read: reopen the
 # no-follow path and replay the entire read from byte zero, at most this many
@@ -2407,6 +2420,7 @@ class PrismaBuildCAS:
         *,
         attestation: object,
         precommit_verify: Callable[[], None] | None = None,
+        staging_namespace: str | None = None,
     ) -> tuple[dict[str, object], bool]:
         """Publish a result and return ``(canonical_receipt, won_publication)``.
 
@@ -2422,8 +2436,17 @@ class PrismaBuildCAS:
 
         normalized = validate_action(action)
         producer = validate_worker_attestation(attestation, action=normalized)
+        if staging_namespace is None:
+            staging_directory = self.root / ".staging"
+        else:
+            namespace = _sha256(
+                staging_namespace, where="result staging namespace"
+            )
+            staging_directory = (
+                self.root / ".staging" / "local-results" / namespace
+            )
         staging, digest, size = _copy_to_staging(
-            Path(result_path), self.root / ".staging"
+            Path(result_path), staging_directory
         )
         result = {"sha256": digest, "bytes": size}
         try:
@@ -2552,6 +2575,234 @@ def _refuse_existing_result_symlink_prefix(output: Path, cwd: Path) -> None:
             )
 
 
+def _local_result_claim_body(
+    action: Mapping[str, object], checkout: Path
+) -> dict[str, object]:
+    """Describe exclusive ownership of one action's live-checkout result path."""
+
+    task = action["task"]
+    if not isinstance(task, Mapping):
+        raise ActionContractError("validated action task is not an object")
+    return {
+        "schema": LOCAL_RESULT_CLAIM_SCHEMA_V1,
+        "action_key": action["action_key"],
+        "action_manifest_sha256": canonical_sha256(action),
+        "checkout_root": str(checkout.resolve(strict=True)),
+        "working_directory": task["working_directory"],
+        "result_path": task["result_path"],
+    }
+
+
+def _local_result_claim_path(
+    cas: PrismaBuildCAS, action: Mapping[str, object], checkout: Path
+) -> Path:
+    body = _local_result_claim_body(action, checkout)
+    digest = canonical_sha256(body)
+    return (
+        cas.root
+        / "local-results"
+        / "v1"
+        / digest[:2]
+        / f"{digest}.json"
+    )
+
+
+def _validate_local_result_claim(
+    value: object,
+    *,
+    action: Mapping[str, object],
+    checkout: Path,
+) -> dict[str, object]:
+    try:
+        raw = _exact_mapping(
+            value,
+            keys=_LOCAL_RESULT_CLAIM_KEYS,
+            where="local result claim",
+        )
+        expected = _local_result_claim_body(action, checkout)
+        body = {key: raw[key] for key in _LOCAL_RESULT_CLAIM_BODY_KEYS}
+        if body != expected:
+            _fail("local result claim differs from the action and checkout")
+        digest = _sha256(
+            raw["claim_sha256"], where="local result claim.claim_sha256"
+        )
+        if digest != canonical_sha256(body):
+            _fail("local result claim digest does not match its body")
+        return {**body, "claim_sha256": digest}
+    except ActionContractError as exc:
+        raise CASTamperError(str(exc)) from exc
+
+
+def _load_local_result_claim(
+    cas: PrismaBuildCAS,
+    action: Mapping[str, object],
+    checkout: Path,
+) -> dict[str, object] | None:
+    path = _local_result_claim_path(cas, action, checkout)
+    try:
+        raw = _read_regular_file_nofollow(
+            path, where="local result claim", require_readonly=True
+        )
+    except FileNotFoundError:
+        return None
+    value = _decode_strict_json(raw, where="local result claim")
+    claim = _validate_local_result_claim(
+        value, action=action, checkout=checkout
+    )
+    if raw != _canonical_file_bytes(claim):
+        raise CASTamperError("local result claim is not canonical JSON")
+    return claim
+
+
+def _ensure_local_result_claim(
+    cas: PrismaBuildCAS,
+    action: Mapping[str, object],
+    checkout: Path,
+) -> dict[str, object]:
+    body = _local_result_claim_body(action, checkout)
+    claim = {**body, "claim_sha256": canonical_sha256(body)}
+    path = _local_result_claim_path(cas, action, checkout)
+    won = _atomic_publish(path, _canonical_file_bytes(claim))
+    observed = _load_local_result_claim(cas, action, checkout)
+    if observed is None:
+        raise CASTamperError("local result claim vanished after publication")
+    if observed != claim:
+        raise CASTamperError(
+            "local result claim publication raced with conflicting state"
+        )
+    if won and path.name != f"{claim['claim_sha256']}.json":
+        raise AssertionError("local result claim address differs from its digest")
+    return observed
+
+
+def _reap_local_result_staging(
+    cas: PrismaBuildCAS, claim: Mapping[str, object]
+) -> int:
+    """Remove bounded private staging leaves left by a killed claimed run."""
+
+    namespace = _sha256(
+        claim["claim_sha256"], where="local result claim.claim_sha256"
+    )
+    directory = cas.root / ".staging" / "local-results" / namespace
+    try:
+        directory_fd = _open_directory_nofollow(
+            directory, where="local result staging directory"
+        )
+    except FileNotFoundError:
+        return 0
+    names: list[str] = []
+    try:
+        try:
+            with os.scandir(directory_fd) as entries:
+                for entry in entries:
+                    name = entry.name
+                    if not (name.startswith(".payload.") and name.endswith(".tmp")):
+                        raise CASTamperError(
+                            f"unexpected local result staging entry: {directory / name}"
+                        )
+                    names.append(name)
+                    if len(names) > _MAX_LOCAL_RESULT_STAGING_FILES:
+                        raise CASTamperError(
+                            "local result staging file count exceeds the recovery bound"
+                        )
+        except OSError as exc:
+            raise CASUnavailableError(
+                f"cannot list local result staging directory: {directory}: {exc}"
+            ) from exc
+        for name in sorted(names):
+            try:
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise CASTamperError(
+                    f"local result staging entry changed during recovery: {directory / name}"
+                ) from exc
+            if not stat.S_ISREG(info.st_mode):
+                raise CASTamperError(
+                    f"local result staging entry is not regular: {directory / name}"
+                )
+            if info.st_uid != os.geteuid():
+                raise CASTamperError(
+                    f"local result staging entry has a foreign owner: {directory / name}"
+                )
+            try:
+                os.unlink(name, dir_fd=directory_fd)
+            except OSError as exc:
+                raise CASUnavailableError(
+                    f"cannot remove local result staging entry: {directory / name}: {exc}"
+                ) from exc
+        if names:
+            os.fsync(directory_fd)
+        _assert_directory_identity(
+            directory_fd,
+            directory,
+            where="local result staging directory",
+        )
+        return len(names)
+    finally:
+        os.close(directory_fd)
+
+
+def _remove_claimed_local_result(output: Path, cwd: Path) -> None:
+    """Remove only a regular, contained result owned by a validated claim."""
+
+    _validate_result_containment(output, cwd)
+    _unlink_nofollow(output, where="claimed local result")
+    if output.exists() or output.is_symlink():
+        raise LocalActionError(
+            f"claimed local result remained after deterministic recovery: {output}"
+        )
+
+
+def repair_local_result(
+    action: object,
+    *,
+    cas_root: str | Path,
+    checkout_root: str | Path,
+) -> dict[str, object]:
+    """Remove a crash-left declared result only under its immutable claim.
+
+    This never removes an unclaimed path, a symlink, or a result whose action
+    already has a canonical receipt.  The same output lock used by execution
+    serializes repair with a live local producer.
+    """
+
+    normalized = validate_action(action)
+    root = Path(checkout_root)
+    if not root.is_absolute():
+        raise ActionContractError("checkout_root must be absolute")
+    cas = PrismaBuildCAS(cas_root)
+    if cas.lookup(normalized) is not None:
+        raise LocalActionError(
+            "cannot repair a declared result after its action has a CAS receipt"
+        )
+    task = normalized["task"]
+    if not isinstance(task, Mapping):
+        raise ActionContractError("validated action task is not an object")
+    cwd, output = _validate_execution_paths(
+        root, str(task["working_directory"]), str(task["result_path"])
+    )
+    with _local_output_lock(cas, root, output):
+        claim = _load_local_result_claim(cas, normalized, root)
+        if claim is None:
+            raise LocalActionError(
+                "declared result has no matching immutable recovery claim"
+            )
+        reaped_staging_files = _reap_local_result_staging(cas, claim)
+        if output.exists() or output.is_symlink():
+            _remove_claimed_local_result(output, cwd)
+            status = "removed"
+        else:
+            _refuse_existing_result_symlink_prefix(output, cwd)
+            status = "already_absent"
+    return {
+        "status": status,
+        "action_key": normalized["action_key"],
+        "claim_sha256": claim["claim_sha256"],
+        "result_path": str(output),
+        "reaped_staging_files": reaped_staging_files,
+    }
+
+
 @contextmanager
 def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
     """Serialize actions sharing one live-checkout result path."""
@@ -2644,6 +2895,8 @@ def run_local_action(
     )
     variables = environment["variables"]
     assert isinstance(variables, Mapping)
+    recovered_declared_result = False
+    reaped_staging_files = 0
     with _local_output_lock(cas, root, output):
         # A concurrent producer may have filled the cache while this worker
         # waited for the checkout/output lock.
@@ -2662,9 +2915,26 @@ def run_local_action(
             checkout_root=root,
             worker_launcher_identity=worker_launcher_identity,
         )
+        claim = _load_local_result_claim(cas, normalized, root)
+        if claim is not None:
+            reaped_staging_files = _reap_local_result_staging(cas, claim)
+        if output.exists() or output.is_symlink():
+            if claim is None:
+                raise LocalActionError(
+                    "declared result path must be absent before execution and "
+                    f"has no matching recovery claim: {output}"
+                )
+            _remove_claimed_local_result(output, cwd)
+            recovered_declared_result = True
+        _refuse_existing_result_symlink_prefix(output, cwd)
+        if claim is None:
+            claim = _ensure_local_result_claim(cas, normalized, root)
+        # The claim is durable before task argv. Recheck the owned path after
+        # publication so an out-of-protocol checkout writer cannot silently
+        # pre-populate the result in the claim-publication interval.
         if output.exists() or output.is_symlink():
             raise LocalActionError(
-                f"declared result path must be absent before execution: {output}"
+                f"declared result appeared before action execution: {output}"
             )
         _refuse_existing_result_symlink_prefix(output, cwd)
         try:
@@ -2709,11 +2979,15 @@ def run_local_action(
             output,
             attestation=attestation,
             precommit_verify=verify_publication_provenance,
+            staging_namespace=str(claim["claim_sha256"]),
         )
     return {
         "status": "published" if won else "canonical_result_reused",
         "receipt": receipt,
         "payload_path": str(cas.result_path(receipt, normalized)),
+        "recovered_declared_result": recovered_declared_result,
+        "reaped_staging_files": reaped_staging_files,
+        "local_result_claim_sha256": claim["claim_sha256"],
     }
 
 
@@ -2797,6 +3071,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-seconds", type=float)
     run.add_argument("--recompute", action="store_true")
     run.add_argument("--require-slurm-initial-start", action="store_true")
+    repair = commands.add_parser("repair-local-result")
+    repair.add_argument("--action", required=True, type=Path)
+    repair.add_argument("--cas-root", required=True, type=Path)
+    repair.add_argument("--checkout-root", required=True, type=Path)
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--action", required=True, type=Path)
     preflight.add_argument("--cas-root", required=True, type=Path)
@@ -2898,6 +3176,14 @@ def main(
         )
         print(json.dumps(result, sort_keys=True))
         return 0
+    if args.command == "repair-local-result":
+        result = repair_local_result(
+            action,
+            cas_root=args.cas_root,
+            checkout_root=args.checkout_root,
+        )
+        print(json.dumps(result, sort_keys=True))
+        return 0
     cas = PrismaBuildCAS(args.cas_root)
     if args.command == "verify":
         receipt = cas.lookup(action)
@@ -2922,6 +3208,7 @@ __all__ = [
     "ACTION_SCHEMA_V2",
     "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",
+    "LOCAL_RESULT_CLAIM_SCHEMA_V1",
     "WORKER_ATTESTATION_SCHEMA_V2",
     "WORKER_RUNTIME_SCHEMA_V1",
     "ActionContractError",
@@ -2936,6 +3223,7 @@ __all__ = [
     "identify_executable",
     "main",
     "preflight_action",
+    "repair_local_result",
     "run_local_action",
     "seal_action",
     "validate_action",

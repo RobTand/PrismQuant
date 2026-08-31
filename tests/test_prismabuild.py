@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import threading
@@ -1238,6 +1239,152 @@ def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: P
             missing,
             cas_root=tmp_path / "cas-missing",
             checkout_root=checkout,
+        )
+
+
+def test_sigkill_after_result_staging_is_reaped_and_retry_recomputes(
+    tmp_path: Path,
+):
+    """A killed worker cannot permanently wedge its declared result path."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    repository_root = Path(__file__).resolve().parents[1]
+    crash_worker = """
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+from prismaquant import prismabuild as pb
+
+action = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+real_atomic_publish = pb._atomic_publish
+
+def kill_after_receipt_staging(path, raw, *, prelink_verify=None):
+    if "/actions/v3/" in str(path):
+        def kill_at_prelink():
+            if prelink_verify is not None:
+                prelink_verify()
+            os.kill(os.getpid(), signal.SIGKILL)
+        return real_atomic_publish(path, raw, prelink_verify=kill_at_prelink)
+    return real_atomic_publish(path, raw, prelink_verify=prelink_verify)
+
+pb._atomic_publish = kill_after_receipt_staging
+pb.run_local_action(
+    action,
+    cas_root=Path(sys.argv[2]),
+    checkout_root=Path(sys.argv[3]),
+)
+"""
+    crashed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            crash_worker,
+            str(action_path),
+            str(cas_root),
+            str(checkout),
+        ],
+        cwd=repository_root,
+        check=False,
+    )
+    assert crashed.returncode == -signal.SIGKILL
+    assert (checkout / "result.bin").read_bytes() == b"result"
+    assert pb.PrismaBuildCAS(cas_root).lookup(action) is None
+    claims = list((cas_root / "local-results" / "v1").glob("*/*.json"))
+    assert len(claims) == 1
+    staging = list(
+        (cas_root / ".staging" / "local-results").glob("*/*.tmp")
+    )
+    assert len(staging) == 1
+
+    recovered = pb.run_local_action(
+        action,
+        cas_root=cas_root,
+        checkout_root=checkout,
+    )
+    assert recovered["status"] == "published"
+    assert recovered["recovered_declared_result"] is True
+    assert recovered["reaped_staging_files"] == 1
+    assert not list(
+        (cas_root / ".staging" / "local-results").glob("*/*.tmp")
+    )
+    assert Path(recovered["payload_path"]).read_bytes() == b"result"
+
+
+def test_local_result_repair_requires_exact_claim_and_refuses_symlink(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    output = checkout / "result.bin"
+    output.write_bytes(b"unclaimed")
+    with pytest.raises(pb.LocalActionError, match="no matching immutable"):
+        pb.repair_local_result(
+            action, cas_root=cas_root, checkout_root=checkout
+        )
+    assert output.read_bytes() == b"unclaimed"
+
+    output.unlink()
+    claim = pb._ensure_local_result_claim(cas, action, checkout)
+    target = checkout / "target.bin"
+    target.write_bytes(b"must remain")
+    output.symlink_to(target.name)
+    with pytest.raises(pb.LocalActionError, match="escapes|symlink"):
+        pb.repair_local_result(
+            action, cas_root=cas_root, checkout_root=checkout
+        )
+    assert output.is_symlink()
+    assert target.read_bytes() == b"must remain"
+
+    output.unlink()
+    output.write_bytes(b"claimed partial")
+    repaired = pb.repair_local_result(
+        action, cas_root=cas_root, checkout_root=checkout
+    )
+    assert repaired == {
+        "status": "removed",
+        "action_key": action["action_key"],
+        "claim_sha256": claim["claim_sha256"],
+        "result_path": str(output),
+        "reaped_staging_files": 0,
+    }
+    assert not output.exists()
+
+    output.write_bytes(b"claimed partial again")
+    action_path = tmp_path / "repair-action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    assert pb.main(
+        [
+            "repair-local-result",
+            "--action",
+            str(action_path),
+            "--cas-root",
+            str(cas_root),
+            "--checkout-root",
+            str(checkout),
+        ]
+    ) == 0
+    cli_repair = json.loads(capsys.readouterr().out)
+    assert cli_repair["status"] == "removed"
+    assert cli_repair["claim_sha256"] == claim["claim_sha256"]
+
+    published = pb.run_local_action(
+        action, cas_root=cas_root, checkout_root=checkout
+    )
+    assert published["status"] == "published"
+    with pytest.raises(pb.LocalActionError, match="has a CAS receipt"):
+        pb.repair_local_result(
+            action, cas_root=cas_root, checkout_root=checkout
         )
 
 

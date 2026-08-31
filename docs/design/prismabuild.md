@@ -24,6 +24,16 @@ re-reading that receipt and payload from the CAS. The SLURM daemons, Dagster
 service, and observability stack in the chosen design below are not deployed,
 and nothing in the live quantization pipeline depends on PrismaBuild yet.
 
+Local task output is now crash-recoverable without accepting unowned bytes.
+Before argv, the worker publishes an immutable claim for the exact action,
+resolved checkout, working directory, and declared result. Under the same
+output lock, a retry may discard and recompute only a regular contained result
+with that exact claim; it never adopts the old bytes under a new producer
+attestation. `repair-local-result` performs only that checked cleanup. One
+subprocess SIGKILL fault test covers death after result/blob and receipt-temp
+staging but before canonical receipt publication. This is process-fault
+coverage, not power-loss or deployed cross-host-lock evidence.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)
@@ -305,6 +315,20 @@ reads it through this anchored path after its restart guard. These guarantees
 depend on Linux `openat`/`O_NOFOLLOW` and `/proc/self/fd`; a returned payload
 `Path` is only evidence of the just-verified name, not a file descriptor held
 open for an arbitrary later consumer.
+
+The live-checkout output path has a separate recovery contract. A canonical
+`prismaquant.prismabuild.local_result_claim.v1` record below
+`local-results/v1/` binds the action key, full action-manifest digest, resolved
+checkout, normalized working directory, and normalized result path. It is
+durable before argv starts. A matching retry first holds the existing
+checkout/output lock, validates the claim byte-for-byte, rejects symlinks and
+non-regular paths, unlinks only the claimed leaf, removes at most 64 permitted
+same-UID files from the claim-private result-staging directory, and reruns argv
+to produce a new attestation. An unclaimed dirty result remains a hard error.
+A valid CAS receipt also blocks explicit repair. Claims are retained as
+immutable recovery authority; they are not success records and cannot satisfy
+`lookup()`.
+
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In
 the target deployment, the trust boundary would be the munge-authenticated,
@@ -531,6 +555,11 @@ Deployment still requires all of the following evidence:
 - Production-scale large-result NFS publication, host-loss directory
   durability, munge/cgroup worker attestation, launcher deployment, and the
   planned Netdata/Prometheus evidence on both boxes remain separate gates.
+- The local SIGKILL test proves deterministic cleanup while `flock` exclusion
+  is available in one filesystem/process environment. Deployment must still
+  prove that the shared checkout mount enforces that lock across hosts and
+  inject host/power loss at the claim, unlink, staging-reap, and recompute
+  fsync boundaries.
 
 ## Proposed speculative tier (not implemented)
 
