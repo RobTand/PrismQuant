@@ -242,6 +242,37 @@ wire**. The ~0.51 is the group-16 ue4m3 scale plane plus schedule, alphabets and
 row padding. Any comparison against NVFP4's 4.5 uses the 2.51-style number, from
 `trellis_footprint`, never the body rate.
 
+## 5-quinquies. What the first artifact costs, and the region it opens
+
+`trellis_tensor_payload_breakdown` over Qwen3-4B's real geometry (36 layers;
+merged `qkv_proj` [6144, 2560], `o_proj` [2560, 4096], `gate_up_proj`
+[19456, 2560], `down_proj` [2560, 9728]; 3.63 B body params):
+
+| assignment | wire bpw | body |
+|---|---|---|
+| BF16 | 16 | 6.768 GB |
+| uniform trellis E2M1 `q256=512` | **2.5008** | **1.058 GB** |
+
+That is 6.4x smaller than BF16 — and the point worth drawing out is that
+**2.5 bpw is a region the production menu cannot reach at all.** NVFP4 is
+4.5 bpp per Linear; FP8 is 8; BF16 is 16. There is no assignment of
+`{NVFP4, FP8, BF16}` that lands a dense body near 2.5 bpp without pushing
+Linears out of the model entirely. Whatever the quality turns out to be, the
+trellis is not competing for the same points on the rate axis — it extends the
+axis. The honest comparison is therefore trellis-at-2.5 against *nothing we
+currently ship*, and against EXL3/QTIP at matched bpw.
+
+**A producer gap this exposed.** Only `q256=512` factors as a uniform rate-2
+schedule (`512 = 2 x 256`). The other four candidate rungs — 384, 640, 768,
+896 — need a **mixed** per-column schedule, which gridbook builds with
+`trellis.build_q256_schedule(family, q256, 256)`. PrismaQuant has no
+equivalent: `trellis_formats` exposes `validate_schedule` but no builder, and a
+naive uniform schedule is refused (*"fixed-quota block 0 has 256 body bits;
+expected 384"*). Since only 512 is serving-attested, this does not block the
+first artifact — but any use of the other rungs owes a schedule builder that
+agrees with gridbook's **byte for byte**, which is exactly a golden-vector
+obligation, not a reimplementation to be eyeballed.
+
 ## 6. The A-side, stated honestly
 
 Every trellis quality number in the tree — the whole 4- and 8-bit ladder, the
