@@ -1,9 +1,9 @@
 # QTIP-native NVFP4 and GLM numeric telemetry audit — 2026-08-30
 
-**Status: accepted one-Linear QTIP result; GLM quality evidence remains
-research-only; the immutable GLM E2M1-v2/learned-FP8-v1 results have
-`execution_identity_attested=false`; no serving or comparative-performance
-verdict.** All hashes in this note were recomputed from the files on `sparky`.
+**Status: accepted one-Linear QTIP result; the historical GLM rows below are
+superseded by the authoritative 2026-08-31 addendum; GLM evidence remains
+research-only; no serving or comparative-performance verdict.** All hashes in
+the historical body were recomputed from the files on `sparky`.
 Power is reported because it was measured, but it is not converted into a
 speed, saturation, or work-per-joule claim.
 
@@ -114,3 +114,115 @@ attestation.
 Audit provenance: report authored against integration worktree commit
 `1f83b331a88d3cf512a858ee434d40ccde06f328`; the accepted QTIP producer run is
 pinned independently to `64679a7c0d2ee29fd5d76b0db4f35ede0190989e`.
+
+## 2026-08-31 authoritative GLM addendum
+
+This addendum supersedes the GLM result, profile, telemetry, and attribution
+rows above. It does not change the accepted one-Linear QTIP result. The three
+replacement baseline publications and the FP8-CB/TCQ publication all bind
+PrismaQuant producer commit
+`2f955fa7c073799e494110ff81029027955ee85d`, finalized manifest SHA-256
+`a66f800827b92383985ce205004cd2d70b63bcc5e19cada6b05a8162401ee5b0`,
+corpus artifact SHA-256
+`0d3c08aed48e8d0b540d0705c305cc3197f77c250b07dd7a07e55345f5ddd94e`,
+and importance SHA-256
+`dad7818dd11ea8f853bd1869f41189ca3de4a2d10deda52cfef563f63496a9dd`.
+Each is final, nonpartial, exit 0, and covers exactly 9 dense plus 24 routed
+tensors.
+
+### Replacement result and profiler receipts
+
+| Measurement | Authoritative result | Derived receipt or summary | In-process profile | Scope |
+|---|---|---|---|---|
+| E2M1 same-grid | `/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/e2m1-scaffold-v1/result.json` — `d7dd0478d5e3ef3b55946f42e161f46ab0c62c1fff2fd57babb5cb11704ee332` | `analysis/coding-gain.json` — `e4a2af3d734fa7266cc8eb790148be5a3d86b80979a14d47bf0e0fbea78d7d60`; V2 receipt file `3fc1e6650367bdcb33a5170c431a815050c00d629080b00343d9ea0904c08bfc`, internal `4fbf36e4f4ab0636d99c668feaf6c3924c86a3e850bf131a5c490df3fb955f43` | py-spy `c12cedcc550011649c76c125005a41ebedc7b9f988c55a98768bc8bf1fcd9175` (621.24 s main sample; 601.905 s algorithm) | Same-rate E2M1 coding gain only. |
+| E2M1 near-four | `/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/e2m1-high-v1/result.json` — `af0b0893401dc22c771ada019d181b2f4a09b64ea8797484543d45e877f21ac0` | `analysis/near-four-summary.json` — `08ae60d76d90a712cc8751ca76f13800a49834dee844a512fa7bf4eda85b0a48`; V2 receipt file `d17f8869dbeda7597148b8d60f2382edb4906ddb82444a2ee8a0af60d475a59e`, internal `bfe8214596bc685230f7ac657db400747614e657fe4bbf61b109611503632344` | py-spy `865e74d0e8a34d628acd0688ff3b737f58d7b336ea40ce3024716e95fc4fa065` (476.33 s main sample; 466.264 s algorithm) | Quality and offline-driver energy only. |
+| Learned FP8-CB | `/home/rob/dq-runs/numeric-authoritative-2f955fa/sparklina/fp8-learned-v1/result.json` — `6f717f53dbc3401c72c6fac978b2f36a68368fe76ede13f26efb24b6e2971d6a` | Population summaries are closed in the final result | py-spy `e6521fd7466a0894476d9d02aa27697a322ce95069c3acd9aa79f84f437cd9a3` (1,168.14 s main sample; 1,156.735 s algorithm) | Fixed-vs-learned offline quality only. |
+| FP8-CB vs E4M3-TCQ | `/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/fp8-cb-tcq-v1/result.json` — `3e37ebeb24f575d802461c14c8d844fe5ba0fd7029a0a3f0b2bfe4d2a9befe18` | `analysis/fp8-cb-tcq.analysis-receipt-v1.json` — file `f8d58799363bbb36f0b57d8c637a162931511015bf6604f87d352f6254890ec2`, internal `804bd192bdd41672c82fda3d772e88bbc480543cd4f8b545c0562b40cc530dc4` | py-spy `b13df57960f0042f2232f1c36ded7c5e6c2ba060be7d5d3bec674d8b07ef3c3f` (219,697 main-thread samples/2,196.97 s; 2,181.061 s algorithm) | Artifact-exact W\*A16 frontier closure only. |
+
+The V1 same-grid and near-four derived receipts remain retained but are
+superseded. Their V2 replacements bind analysis kind to plan and parse/hash
+each source from one stable `O_NOFOLLOW` descriptor; numeric values did not
+change.
+
+### Replacement telemetry and quarantine
+
+The following are the only admissible telemetry publications for the three
+replacement baselines:
+
+| Campaign | Manifest | Active-host Netdata power | Active-host pqteld power |
+|---|---|---|---|
+| E2M1 same-grid on Sparky | `telemetry-v3/` — `318505d2684bf64251207db8b9d80404f265e9dd662cca8f16e32898a1805772` (629 s) | 24.6024 W mean, 50 W max, 15.491 kJ; 17.57% of 140 W | 25.4434 W mean, 47.96 W max, 15.999 kJ |
+| E2M1 near-four on Sparky | `telemetry-v1/` — `37fac51b2d7874393e8f73d85de5e66903a339003b3008636d8c78a7961bc89c` (498 s) | 22.9359 W mean, 55 W max, 11.436 kJ | 21.0886 W mean, 39.28 W max, 10.498 kJ |
+| Learned FP8-CB on Sparklina | `telemetry-v1/` — `8f17d9523e45ce642cd1bfa6a8d0f74a7821b349a1a5f05101020697edb96933` (1,174 s) | 45.2677 W mean, 71 W max, 53.182 kJ; 32.33% of 140 W | 45.7926 W mean, 67.47 W max, 53.755 kJ |
+
+For E2M1 same-grid, the retained `telemetry/` directory is forbidden: a
+cross-date glob applied an older pqteld schema header to current rows and
+shifted `power_draw_w` onto temperature. `telemetry-v2/` is also forbidden:
+capture aborted on an older source containing nonnumeric rows and produced no
+manifest. Only hash-checked `telemetry-v3/` supports the replacement figures.
+The near-four replacement had no other Sparky GPU workload; the concurrent
+learned-FP8 run was on Sparklina and is peer context only. The learned-FP8
+replacement had no other Sparklina GPU workload; Sparky work is peer context.
+
+The completed FP8-CB/TCQ telemetry envelope is exactly
+`[1788148309, 1788150517]` (2,208 seconds), published at
+`/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/fp8-cb-tcq-v1/telemetry-v1/`.
+Its manifest SHA-256 is
+`a9c1e01bd12c11bf990c46db9fcd8c392be1edcaffdf188652ae86f0438644aa`;
+capture JSON SHA-256 is
+`55b027d5731fca260503c616ed7002334175d24a31b87af3ab198cf8a3350592`.
+This first CB/TCQ telemetry publication has no invalid or superseded sibling
+directory.
+
+| Host/instrument | Series SHA-256 | Samples | Mean / p95 / max | Energy |
+|---|---|---:|---|---:|
+| Sparky Netdata | `a13e96f4456c916e62284819935b9c515c14e6047d62caa2360152abcf922dec` | 2,209 | 23.0511 / 48.9 / 74 W | 50.914 kJ |
+| Sparky pqteld | `d7dd7ae83ca0dfe64c674936e761e36e5a60914fdcae9450f33a42883a29fa13` | 4,416 | 22.8822 / 48.39 / 72.97 W | 50.519 kJ |
+| Sparklina Netdata, peer context | `db8af9bbe3e4583f5f33101edbd2018a527f91f67c9babbecc0dfac1aa1b7fbf` | 2,209 | 6.4611 / 14.0 / 36 W | 14.268 kJ |
+| Sparklina pqteld, peer context | `b9b060989707918c5c4d5b702950f35ca4dc520e481de150c90f0cf1fd2ec6b2` | 4,416 | 6.8662 / 14.27 / 36.67 W | 15.158 kJ |
+
+The midnight-spanning pqteld extractor parsed each daily source under its own
+42-column header and required exact schema equality before concatenation.
+Sparky selected-row source hashes are `2ed0b04a927f708060455a471c6a58b049bce217c979bac56ae64a29e7c5eaa6`
+and `8bb4d703e0e5a1947301c810c74cddeb3a19aba9eddc5a4e55fdad36fde7e252`;
+Sparklina's are `df225a7fc0661a97e60e6159b52d0a70175471014f004e2b98c7b2239c74e66f`
+and `fde1b1b102ad02f8a02667b3dbb106e3a5f07d2aaa6a937d322b95b04584e247`.
+The capture helper SHA-256 is
+`f1d4153f9414a4d5e54e37a5aabc47d870b392bfa3392803af11e7ea50c41131`.
+
+### FP8-CB/TCQ numeric conclusion and execution identity
+
+All 264 tensor × rate × scale-bracket × learned-book-price exact-byte
+frontiers cross. All four dense/routed × 4/5-bit final cells are therefore
+`NO_VERDICT`: **no objective-free family replacement on this artifact-exact
+single draw**. FP8-CB supplies lower-byte points and TCQ higher-SNR points;
+this is neither equality nor TCQ domination, and it does not rule out a
+budget-specific preference. The independent theorem audit is
+`/home/rob/dq-runs/deliberation/numeric_closure_fable_2026-08-31.md`, SHA-256
+`36cffef74cea2a89f2784ba9bd94c8e1c37e502b6bc437500aad333491cce719`.
+The report's contemporaneous campaign-unrun and branch-status prose is
+superseded by the completed artifact and receipt above; its theorem-level
+frontier analysis remains the cited result.
+
+The final result has checkpoint self-digest
+`c1d6699de67bcac88b084cd10b0dc3cc9b418aa0568febf8612e4c7c034a86ff`
+and settings identity
+`913e070ff6bd74506bc0156f9105ed453fa2af86cb0bdbc39d6efcd675fd5712`.
+It ran in container
+`8d5a2b79f98d24f10635bbe6fa7c339a8361377f18926f281ad4e2503d4bac89`;
+the Docker client and container exited 0 and `OOMKilled=false`. Final Docker
+inspect SHA-256 is
+`bfa6e728e8805d2aa6efdef2e1710100b8dc85fa14db2d7b90507652e84dbc95`.
+Launch attestation file SHA-256 is
+`f495263965cba1a6b63d05c86fb328b8f488b3337d78a055090f6af9a84c6ee1`
+with internal identity
+`1cfad16122829dd0f3554a77d5b630a5005af78a57b706eca886bd756d8c510d`.
+The independent analyzer is tracked at commit
+`511385b5c916ee12f06771a68fb302d60e5e161a`, verifier SHA-256
+`3b28992cdf91893cc6de54d73ac9492b3935c002297debf760ccb8fa59cece2f`.
+
+All replacement telemetry is offline-driver box evidence. It establishes no
+served-kernel throughput, saturation, process-exclusive energy, work per
+joule, runtime parity, Gridbook readiness, or cross-implementation performance
+claim. The numeric result is a W\*A16 weighted-SSE screen and is not W8A8,
+KL/PPL, serving, or model-general evidence.
