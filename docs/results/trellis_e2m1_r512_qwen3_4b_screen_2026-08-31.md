@@ -1,6 +1,16 @@
 # Trellis E2M1 R512 on Qwen3-4B — weight-space screen
 
-**A screen, not a result** (principle 3). Read §3 before quoting anything here.
+**A screen, not a result** (principle 3), and a screen of the WRONG THING.
+Read §3 before quoting anything here.
+
+**The headline caveat, added after the fact.** This measures
+`trellis_encoder` — the bare TCQ codec, with **no incoherence processing and no
+LDLQ error feedback**. Those are the two mechanisms QTIP's low-bitrate quality
+actually comes from, and the 2026-08-30 direction wraps the first of them
+around this very lane as an online Hadamard transform
+(`gridbook/qtip_hadamard.py`, `docs/QTIP-NATIVE-NVFP4-RESEARCH.md`). So the
+numbers below are the **before arm of that ablation**, not the format's
+quality. They were originally written up as though they were the latter.
 
 Date 2026-08-31 · branch `claude/prismabuild-trellis-integration-20260831` ·
 GB10 sm_121, `prismaquant-cu130` · driver
@@ -21,8 +31,14 @@ Rung `TCQ_E2M1_R512` (`body_rate_q256=512` = 2.0 body bits/weight),
 `layout=fixed_quota_per_256`, `scale_rule=static_6`, `tailbite_candidates=4`,
 `determinism_mode=on`, `backend=triton`, `sb_chunk=rows`.
 
-Baseline arm: `format_registry` `NVFP4` `quantize_dequantize` on the same
-tensor, scored with the same importance weighting.
+~~Baseline arm: `format_registry` `NVFP4` `quantize_dequantize`.~~
+**STRUCK 2026-08-31.** Robert: *"What is the value in this trellis @ 2.50 vs
+nvfp4 rtn? I know it's significantly worse."* None — it is a rate-mismatched
+comparison (2.50 bpw vs 4.5) against an RTN strawman that understates the
+production NVFP4 render, and presenting it as a table column gave it a standing
+it never had. The NVFP4 numbers are left in the table below only so the record
+is not rewritten; **they carry no verdict and must not be quoted.** The one
+informative line here is the matched-rate control in the next paragraph.
 
 Metric: importance-weighted SNR, `10*log10( sum(w * W^2) / sum(w * (W-Ŵ)^2) )`.
 
