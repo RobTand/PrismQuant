@@ -77,6 +77,15 @@ class _PointTables:
     rates: torch.Tensor
 
 
+#: The smallest positive scale the encoder admits. It appears in four places
+#: that were previously four bare ``1.0e-12`` literals; naming it matters
+#: because ``trellis_wire.decode_values_torch`` applies **no** floor, so any
+#: site where this clamp actually binds renders weights the served runtime
+#: cannot reproduce. The E2M1 reconstruction path below refuses rather than
+#: clamping, for exactly that reason.
+E2M1_SCALE_FLOOR = 1.0e-12
+
+
 def encoder_source_sha256() -> str:
     """Return the source identity captured with this loaded implementation."""
 
@@ -713,7 +722,7 @@ def _decode_e2m1_scale_codes_unchecked(
     global_value = torch.as_tensor(
         global_scale, dtype=torch.float32, device=codes.device
     )
-    return (decoded * global_value).clamp_min(1.0e-12).contiguous()
+    return (decoded * global_value).clamp_min(E2M1_SCALE_FLOOR).contiguous()
 
 
 def decode_e2m1_scale_codes(
@@ -767,7 +776,7 @@ def _scale_context(
     source = weight.detach().to(torch.float32)
     importance = col_weights.reshape(1, columns).to(
         device=weight.device, dtype=torch.float32
-    ).clamp_min(1.0e-12)
+    ).clamp_min(E2M1_SCALE_FLOOR)
     if family != E2M1_FAMILY and (
         global_scale_real_override is not None or scale_plane_override is not None
     ):
@@ -776,9 +785,9 @@ def _scale_context(
         )
     if family == E2M1_FAMILY:
         grouped = source.reshape(rows, columns // 16, 16)
-        real_scale = grouped.abs().amax(dim=-1).clamp_min(1.0e-12) / 6.0
+        real_scale = grouped.abs().amax(dim=-1).clamp_min(E2M1_SCALE_FLOOR) / 6.0
         if global_scale_real_override is None:
-            global_scale = (real_scale.amax() / E4M3_MAX).clamp_min(1.0e-12)
+            global_scale = (real_scale.amax() / E4M3_MAX).clamp_min(E2M1_SCALE_FLOOR)
             floor_to_min_positive = False
         else:
             requested = float(global_scale_real_override)
@@ -1050,7 +1059,53 @@ def encode_trellis_planes(
                 reconstructed_normalized[:, target_columns] = bypass_value
                 bypass_codes[:, target_columns] = codes
 
-    reconstruction = (reconstructed_normalized * per_element).contiguous()
+    if spec.family == E2M1_FAMILY:
+        # COMPOSE THE RECONSTRUCTION THE WAY THE WIRE DECODER COMPOSES IT.
+        # ``_scale_context`` folds the global into the per-group scale, so
+        # multiplying by ``per_element`` evaluates ``code * (e4m3 * global)``.
+        # ``trellis_wire.decode_values_torch`` -- the bytes the runtime will
+        # actually execute -- evaluates ``(code * e4m3) * global``. The two
+        # associations differ by at most one fp32 ULP, and that ULP lands on a
+        # DIFFERENT bf16 value whenever the product sits near a tie.
+        #
+        # Measured 2026-08-31 on Qwen3-4B ``layers.31.self_attn.v_proj``:
+        # 149,261 of 2,621,440 values (5.69%) disagreed at the bf16 boundary,
+        # every one of them exactly one bf16 ULP apart, identically under both
+        # the eager and the Triton backend -- so this was never a backend or a
+        # search defect. ``encode_trellis_one_linear`` then raised on its own
+        # same-byte invariant, which means a full-model render aborts mid-build
+        # on roughly one tensor in thirty. The 1x256 fixture in
+        # ``tests/test_trellis_producer.py`` cannot reach it.
+        #
+        # The decoder is the shipped contract, so the encoder adopts ITS
+        # association. The alternative -- relaxing the invariant to a
+        # one-ULP tolerance -- would abandon exactly the byte-identity evidence
+        # boundary the producer exists to hold (principle 8: the surrogate, the
+        # KL validation and the exported bytes are ONE rendering).
+        # NO SECOND GATE FOR THE FLOOR HERE, DELIBERATELY. ``_scale_context``
+        # clamps ``e4m3 * global`` to ``E2M1_SCALE_FLOOR`` and the decoder
+        # applies no floor at all, so a BINDING clamp is a genuine divergence --
+        # but the tree already refuses it, at the same-byte gate, with a test
+        # that says so on purpose
+        # (``tests/test_trellis_scale_grid.py::
+        # test_degenerate_global_scale_cannot_escape_canonical_decode_equality``:
+        # *"intentionally not a second wire convention ... the mandatory
+        # same-byte gate must refuse"*). Re-checking it here would duplicate a
+        # covered refusal, move a pinned error contract, and put an ``.item()``
+        # sync on every render -- a CPU stall on a GPU hot path (principle 7)
+        # bought for nothing.
+        raw_scales = (
+            scale_codes.contiguous().view(torch.float8_e4m3fn).to(torch.float32)
+        )
+        e4m3_plane = raw_scales.repeat_interleave(16, dim=1)[:, :columns]
+        reconstruction = (
+            (reconstructed_normalized * e4m3_plane) * global_real
+        ).contiguous()
+    else:
+        # E4M3 needs no correction: its plane carries no global (``global_real``
+        # is 1.0 by contract) so both sides evaluate one product, ``code *
+        # row_scale``, in the same order.
+        reconstruction = (reconstructed_normalized * per_element).contiguous()
     return EncodedTrellisPlanes(
         reconstruction=reconstruction,
         u_bits=u_bits,

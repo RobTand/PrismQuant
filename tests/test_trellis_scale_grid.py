@@ -471,18 +471,60 @@ def test_render_recipe_refuses_string_subclass_alias_before_encode():
 
 
 def test_degenerate_global_scale_cannot_escape_canonical_decode_equality():
-    # The encoder's defensive 1e-12 effective-scale floor is intentionally
-    # not a second wire convention.  At this synthetic subnormal-scale edge,
-    # it differs from the E4M3-byte decoder and the mandatory same-byte gate
-    # must refuse instead of certifying the in-memory reconstruction.
+    """The subnormal-scale edge renders EXACTLY what the wire decodes.
+
+    THIS ASSERTION WAS INVERTED ON 2026-08-31, and the reason is the finding.
+    It used to expect a ``ScaleGridError`` -- "the encoder's defensive 1e-12
+    effective-scale floor ... differs from the E4M3-byte decoder and the
+    mandatory same-byte gate must refuse".  The refusal was real; the
+    attribution was wrong.
+
+    What actually made reconstruction differ from decode was a float
+    ASSOCIATION defect, unrelated to the floor: ``encode_trellis_planes``
+    composed ``code * (e4m3 * global)`` while ``trellis_wire`` decodes
+    ``(code * e4m3) * global``.  Those differ by up to one fp32 ULP and by one
+    bf16 ULP near a tie -- which aborted real renders (Qwen3-4B
+    ``layers.31.self_attn.v_proj``: 149,261 of 2,621,440 values, both backends
+    alike).  With the encoder on the decoder's association, this edge is
+    measured **fp32-exact, 256/256, max abs diff 0.0**, for the subnormal
+    weight below and for an all-zero weight.
+
+    So the floor does not cause an infidelity.  It means the SEARCH normalized
+    against a floored scale, which can make the encode suboptimal at a
+    degenerate edge -- a quality question, not a fidelity one, and not what
+    this gate protects.  Refusing here would have refused every legitimate
+    all-zero wire, which is how the over-broad version of the check was caught
+    (``test_qtip_arm_e_quality_campaign.py`` builds one on purpose).
+    """
     kwargs = _grid_kwargs()
     kwargs["multipliers"] = (1.0,)
     kwargs["global_scale_real_override"] = 1.0e-12
     weight = torch.full((1, 256), 6.0e-13)
-    with pytest.raises(
-        ScaleGridError, match="canonical arm decode differs from the encoder"
-    ):
-        encode_e2m1_scale_grid_two_arm(weight, torch.ones(256), **kwargs)
+    selection = encode_e2m1_scale_grid_two_arm(weight, torch.ones(256), **kwargs)
+    decoded = decode_values_torch(selection.wire_bytes, dtype=torch.float32)
+    assert torch.equal(decoded, selection.encoded_planes.reconstruction.float())
+
+
+def test_an_all_zero_weight_still_renders_faithfully():
+    """The all-zero wire is legitimate and must not be refused.
+
+    A dead or pruned Linear reaches the encoder as zeros; its global scale
+    lands on the floor. The rendering is still exactly what the wire decodes,
+    so there is nothing here to fail closed on.
+    """
+    kwargs = _grid_kwargs()
+    kwargs["multipliers"] = (1.0,)
+    selection = encode_e2m1_scale_grid_two_arm(
+        torch.zeros(1, 256), torch.ones(256), **kwargs
+    )
+    decoded = decode_values_torch(selection.wire_bytes, dtype=torch.float32)
+    assert torch.equal(decoded, selection.encoded_planes.reconstruction.float())
+    # NOT asserted: that the decode is exactly zero. Through the two-arm grid
+    # the selected scale codes do not all decode to zero, so an all-zero weight
+    # renders at ~3.4e-13 rather than 0. That is a quality curiosity at a
+    # degenerate edge -- the rendering is still exactly what the wire decodes,
+    # which is the property this gate owns. Asserting zero here would be
+    # asserting something measurably false.
 
 
 def test_selector_source_drift_after_import_refuses(monkeypatch):
