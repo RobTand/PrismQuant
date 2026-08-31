@@ -34,6 +34,17 @@ subprocess SIGKILL fault test covers death after result/blob and receipt-temp
 staging but before canonical receipt publication. This is process-fault
 coverage, not power-loss or deployed cross-host-lock evidence.
 
+`run-local` also has one qualification-only, opt-in causal hook:
+`--initial-miss-rendezvous /absolute/manifest.json`. It proves that two exact
+worker processes both observed an initial miss against the same configured CAS
+root before either can
+reach the output lock and publish. It is inert when unset, is not entered on an
+initial cache hit, and is incompatible with `--recompute`. This proves worker/
+miss contention; it makes no task-argv timing claim. The output lock serializes
+only workers sharing the same live checkout/output-lock identity. Workers in
+distinct validated checkouts may execute task argv concurrently and converge
+through ordinary CAS publication.
+
 ## Problem
 
 Campaign work (screens, per-point KL fan-outs, per-tensor encodes, A/Bs)
@@ -359,6 +370,64 @@ and an indefinitely uninterruptible task can retain the lock indefinitely.
 The proposed Slurm deployment's cgroup and sealed time limit remain required
 external containment; PrismaBuild has no durable local holder lease or
 lock-acquisition timeout today.
+
+#### Opt-in two-phase initial-miss rendezvous
+
+The qualification hook is called immediately after the ordinary first
+`PrismaBuildCAS.lookup(action)` returns `None` and before checkout/output path
+resolution or `_local_output_lock`. Its immutable, canonical, self-hashed
+`prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1` file binds one
+normalized non-root absolute rendezvous namespace, the exact normalized
+non-root absolute CAS root used by both workers, a 128-bit lowercase-hex run
+nonce, the exact action key, exactly two sorted unique lowercase hostnames, and
+a positive finite local-monotonic timeout no greater than one day. The manifest
+must be a read-only regular inode with exactly one link and is read through the
+existing bounded no-follow stable-file primitive. The namespace has exactly
+the `arrivals/` and `ready/` directories; each phase admits only the two exact
+`<hostname>.json` leaves (plus a bounded transient private publication name).
+
+For participant `i`, let `M_i` be its initial verified miss. It derives its
+hostname from `socket.gethostname().lower()`, and a self-hashed process identity
+from hostname, PID, Linux `/proc/<pid>/stat` start tick, a fresh invocation
+nonce, and the existing exact loaded-core plus optional launcher runtime
+identity. It no-clobber publishes an immutable
+`initial_miss_rendezvous_arrival.v1` record only after `M_i`. Both workers wait
+for and validate the exact complete arrival set while refusing a CAS receipt.
+Each then makes a fresh CAS-absence observation and publishes an immutable
+`initial_miss_rendezvous_ready.v1` record that binds its process/arrival and the
+canonical digest of that complete arrival set. The same absence/runtime check
+is the last userspace callback before the ready hard link. Only the exact
+complete ready set releases either worker to the output lock. Thus, for both
+participants, `M_i < arrival_i < ready_i < release < any in-protocol result
+publication`; no cross-host wall clock or realtime timestamp participates in
+the proof. A worker stopped after release may resume later and return the
+ordinary post-lock cache hit, carrying the same proof.
+
+Arrival, ready, manifest, process, and returned
+`initial_miss_rendezvous_receipt.v1` objects have closed schemas and canonical
+self-digests. Wrong action/run/manifest/host/runtime bindings, corrupt digests,
+duplicate/replayed participants, missing or extra entries, writable files,
+symlinks, special files, persistent hard links, source drift, and a CAS receipt
+visible during either worker's pre-release checks fail closed. The protocol
+does not claim atomic exclusion against an out-of-protocol receipt linked in
+the interval between the last ready pre-link callback and the ready link;
+workers released by that link may legitimately return proof-bearing hits.
+Polling and directory cardinality are bounded and use
+`time.monotonic()`; an unavailable peer times out without task argv. The second
+ready link is the logical release event. If the CAS receipt becomes visible
+while NFS still returns an incomplete ready-directory view, the worker keeps
+performing bounded exact scans through the original monotonic deadline; this
+does not misclassify a legitimate peer publication after release.
+
+This is an integrity protocol inside PrismaBuild's existing cooperative
+filesystem trust boundary, not authentication or a Byzantine quorum. SHA-256
+self-digests detect corruption and cross-contract mismatch but are unkeyed. A
+principal able to write arbitrary correctly formed files as another hostname,
+or to remove namespace entries, can fabricate or suppress the evidence.
+Qualification therefore requires the same isolated worker principal and
+ACL/WORM/retention controls already required for CAS and Slurm state. The hook
+has CPU-only hostile tests but no shared-NFS, host/power-loss, live Slurm, or
+deployment qualification yet.
 
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In

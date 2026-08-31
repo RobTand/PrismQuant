@@ -2,6 +2,26 @@
 
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `codex/prismabuild-initial-miss-rendezvous-20260831`) for the
+**opt-in PrismaBuild initial-miss causal rendezvous** (§10.1). `run-local` can
+consume one immutable strict manifest naming exactly two lowercase hosts, one
+action/run nonce, one absolute namespace, and one bounded monotonic timeout.
+After its ordinary first CAS miss and before the output lock, each exact worker
+durably publishes an arrival, observes the complete exact arrival set and a
+fresh CAS absence, then publishes a ready record binding that set. Neither may
+reach the lock until the complete exact ready set exists. This proves both
+run-local processes observed an initial miss before either in-protocol result
+publication, without cross-host clocks; it makes no task-argv timing claim.
+Task argv is serialized only for workers that share the same live checkout/
+output-lock identity. Distinct validated checkouts may execute concurrently and
+converge through CAS publication. The unset and initial-hit result contracts are
+unchanged. Closed self-hashed receipts are integrity evidence, not
+authentication: a namespace principal able to forge another host's fully
+formed record remains inside the undeployed ACL/WORM trust boundary. Hostile
+CPU tests cover stalls, timeout, replay/mismatch, unsafe topology and files,
+pre-release receipt publication, and legitimate post-release publication.
+There is no shared-NFS, host-loss, live-Slurm, GPU, or deployment claim.
+Re-stamped
 (2026-08-31, `codex/prismabuild-runtime-snapshot-immutability-20260831`) for
 the **exact-Git runtime-snapshot immutability boundary**. Published directories
 are exactly `0555`, non-executable regular files and the manifest are `0444`,
@@ -7708,6 +7728,39 @@ action-owned scratch, not evidence that the bytes were valid and never a
 substitute for a receipt.
 The output lock remains the concurrency boundary; deployed cross-host NFS
 lock semantics are still an external gate.
+
+For qualification runs only, canonical `run-local` now accepts
+`--initial-miss-rendezvous <absolute-manifest>`. The strict immutable v1
+manifest binds one absolute namespace, the exact normalized non-root absolute
+CAS root shared by the configured workers, a 128-bit run nonce, exact action
+key, exactly two sorted lowercase hostnames, and a positive finite local-
+monotonic timeout. Immediately after each worker's first verified miss and before
+`_local_output_lock`, it no-clobber publishes a self-hashed arrival carrying
+its hostname/PID/process-start/invocation identity and exact loaded core plus
+launcher runtime. After validating the exact complete arrival set, each
+rechecks CAS absence and no-clobber publishes a ready observation binding that
+set; the pre-link callback repeats CAS absence and runtime stability. The exact
+complete ready set is release. Therefore both initial misses and both fresh
+absence observations causally precede any in-protocol publication, with no
+realtime or cross-host clock premise. A post-release stopped worker may later
+take the lock and return a proof-bearing cache hit. This is process/initial-
+miss overlap evidence, not simultaneous task-argv execution.
+
+Manifest and phase files are canonical read-only single-link regular files
+read through the existing bounded no-follow stable-read machinery; exact
+directory topology, phase cardinality, schemas, self-digests, action/run/host/
+runtime bindings, and source stability fail closed. Missing peers and
+persistent link/transient state exhaust one monotonic deadline. The ordinary
+ready scan also keeps polling to that deadline when a post-release receipt is
+visible before NFS refreshes the complete ready-directory view. The ordinary
+unset path and an initial cache hit retain their existing result schemas; only
+a worker that completed the opt-in protocol gains the closed self-hashed
+`initial_miss_rendezvous_receipt.v1` result member. These unkeyed records prove
+integrity under cooperative isolated principals, not Byzantine authorship: a
+same-namespace writer can fabricate or delete another participant's state, so
+ACL/WORM/retention isolation remains a deployment prerequisite. Only hostile
+same-process CPU tests exist; shared-NFS, host/power loss and live Slurm remain
+unqualified.
 
 The worker passes that exact locked open-file description to task argv. Thus a
 worker `SIGKILL` cannot release exclusion while its direct action process can

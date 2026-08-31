@@ -101,6 +101,42 @@ def _attestation(
     )
 
 
+def _rendezvous_manifest(
+    path: Path,
+    *,
+    action: dict[str, object],
+    namespace: Path,
+    cas_root: Path | None = None,
+    participants: list[str] | None = None,
+    timeout_seconds: float = 1.0,
+    run_nonce: str = "1" * 32,
+) -> tuple[Path, dict[str, object]]:
+    body: dict[str, object] = {
+        "schema": pb.INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1,
+        "rendezvous_namespace": str(namespace),
+        "cas_root": str(cas_root or (path.parent / "cas")),
+        "run_nonce": run_nonce,
+        "action_key": action["action_key"],
+        "participants": participants or ["host-a", "host-b"],
+        "timeout_seconds": timeout_seconds,
+    }
+    manifest = {**body, "manifest_sha256": pb.canonical_sha256(body)}
+    path.write_bytes(pb._canonical_file_bytes(manifest))
+    path.chmod(0o444)
+    return path, manifest
+
+
+def _write_rendezvous_record(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(pb._canonical_file_bytes(value))
+    path.chmod(0o444)
+
+
+def _reseal(value: dict[str, object], digest_key: str) -> None:
+    body = {key: item for key, item in value.items() if key != digest_key}
+    value[digest_key] = pb.canonical_sha256(body)
+
+
 def _live_nonportable_body(
     checkout: Path,
     *,
@@ -1250,6 +1286,1038 @@ def test_cache_hit_skips_execution_and_fully_revalidates(tmp_path: Path):
     (checkout / "task_code.py").write_text("# closure changed\n", encoding="utf-8")
     with pytest.raises(pb.ActionContractError, match="live code closure differs"):
         pb.run_local_action(**arguments)
+
+
+def test_initial_miss_rendezvous_two_hosts_publish_once_then_hit_under_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    code = (
+        "import pathlib,time; "
+        "p=pathlib.Path('task-starts'); "
+        "p.write_text(p.read_text()+'x' if p.exists() else 'x'); "
+        "time.sleep(0.05); pathlib.Path('result.bin').write_bytes(b'ok')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    manifest_path, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "rendezvous-state",
+    )
+    monkeypatch.setattr(
+        pb, "_initial_miss_hostname", lambda: threading.current_thread().name
+    )
+    results: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+    start = threading.Barrier(2)
+
+    def run() -> None:
+        try:
+            start.wait()
+            results.append(
+                pb.run_local_action(
+                    action,
+                    cas_root=tmp_path / "cas",
+                    checkout_root=checkout,
+                    initial_miss_rendezvous=manifest_path,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, name=participant)
+        for participant in manifest["participants"]
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert sorted(result["status"] for result in results) == [
+        "cache_hit",
+        "published",
+    ]
+    assert (checkout / "task-starts").read_text(encoding="utf-8") == "x"
+    proofs = [result["initial_miss_rendezvous"] for result in results]
+    assert {proof["participant"] for proof in proofs} == {"host-a", "host-b"}
+    assert {proof["arrival_set_sha256"] for proof in proofs} == {
+        proofs[0]["arrival_set_sha256"]
+    }
+    assert {proof["ready_set_sha256"] for proof in proofs} == {
+        proofs[0]["ready_set_sha256"]
+    }
+    for proof in proofs:
+        body = {
+            key: proof[key]
+            for key in proof
+            if key != "receipt_sha256"
+        }
+        assert proof["schema"] == pb.INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1
+        assert proof["receipt_sha256"] == pb.canonical_sha256(body)
+
+
+def test_initial_miss_rendezvous_refuses_two_cas_roots_before_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkouts = {
+        "host-a": tmp_path / "checkout-a",
+        "host-b": tmp_path / "checkout-b",
+    }
+    for checkout in checkouts.values():
+        checkout.mkdir()
+        (checkout / "task_code.py").write_text(
+            "# closure member\n", encoding="utf-8"
+        )
+    action = _action(checkouts["host-a"])
+    cas_roots = {
+        "host-a": tmp_path / "cas-a",
+        "host-b": tmp_path / "cas-b",
+    }
+    manifest_path, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "rendezvous-state",
+        cas_root=cas_roots["host-a"],
+        timeout_seconds=0.1,
+    )
+    monkeypatch.setattr(
+        pb, "_initial_miss_hostname", lambda: threading.current_thread().name
+    )
+    results: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+    start = threading.Barrier(2)
+
+    def run(host: str) -> None:
+        try:
+            start.wait()
+            results.append(
+                pb.run_local_action(
+                    action,
+                    cas_root=cas_roots[host],
+                    checkout_root=checkouts[host],
+                    initial_miss_rendezvous=manifest_path,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, args=(host,), name=host)
+        for host in manifest["participants"]
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3.0)
+    assert not any(thread.is_alive() for thread in threads)
+    assert results == []
+    assert len(errors) == 2
+    assert any("CAS root differs" in str(error) for error in errors)
+    assert any("timed out waiting for exact arrivals" in str(error) for error in errors)
+    assert all(not (checkout / "result.bin").exists() for checkout in checkouts.values())
+    assert all(not (root / "actions").exists() for root in cas_roots.values())
+
+
+def test_initial_cache_hit_never_enters_or_parses_rendezvous(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    arguments = {
+        "action": action,
+        "cas_root": tmp_path / "cas",
+        "checkout_root": checkout,
+    }
+    first = pb.run_local_action(**arguments)
+    nonexistent_manifest = tmp_path / "must-not-be-read.json"
+    second = pb.run_local_action(
+        **arguments,
+        initial_miss_rendezvous=nonexistent_manifest,
+    )
+    assert first["status"] == "published"
+    assert second["status"] == "cache_hit"
+    assert "initial_miss_rendezvous" not in second
+    assert not nonexistent_manifest.exists()
+
+
+def test_initial_miss_rendezvous_rejects_recompute_through_api_and_cli(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    nonexistent_manifest = tmp_path / "must-not-be-read.json"
+
+    with pytest.raises(
+        pb.ActionContractError,
+        match="initial-miss rendezvous is incompatible with recompute",
+    ):
+        pb.run_local_action(
+            action,
+            cas_root=cas_root,
+            checkout_root=checkout,
+            recompute=True,
+            initial_miss_rendezvous=nonexistent_manifest,
+        )
+
+    with pytest.raises(
+        pb.ActionContractError,
+        match="initial-miss rendezvous is incompatible with recompute",
+    ):
+        pb.main(
+            [
+                "run-local",
+                "--action",
+                str(action_path),
+                "--cas-root",
+                str(cas_root),
+                "--checkout-root",
+                str(checkout),
+                "--recompute",
+                "--initial-miss-rendezvous",
+                str(nonexistent_manifest),
+            ]
+        )
+
+    assert not nonexistent_manifest.exists()
+    assert not (checkout / "result.bin").exists()
+
+
+def test_initial_miss_rendezvous_one_arrival_times_out_without_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    manifest_path, _ = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "rendezvous-state",
+        timeout_seconds=0.05,
+    )
+    monkeypatch.setattr(pb, "_initial_miss_hostname", lambda: "host-a")
+    with pytest.raises(
+        pb.InitialMissRendezvousError, match="timed out waiting for exact arrivals"
+    ):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            initial_miss_rendezvous=manifest_path,
+        )
+    assert not (checkout / "result.bin").exists()
+    assert {path.name for path in (tmp_path / "rendezvous-state/arrivals").iterdir()} == {
+        "host-a.json"
+    }
+    assert list((tmp_path / "rendezvous-state/ready").iterdir()) == []
+
+
+def test_initial_miss_rendezvous_defeats_post_wrapper_sigstop_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A wrapper marker cannot release a peer before the stalled worker enters."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(
+        checkout,
+        argv=[
+            sys.executable,
+            "-c",
+            (
+                "import pathlib; "
+                "pathlib.Path('task-entered').write_text('entered'); "
+                "pathlib.Path('result.bin').write_bytes(b'ok')"
+            ),
+        ],
+    )
+    manifest_path, _ = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "rendezvous-state",
+    )
+    monkeypatch.setattr(
+        pb, "_initial_miss_hostname", lambda: threading.current_thread().name
+    )
+    wrapper_marker = threading.Event()
+    release_stalled_wrapper = threading.Event()
+    results: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+
+    def worker_a() -> None:
+        try:
+            results.append(
+                pb.run_local_action(
+                    action,
+                    cas_root=tmp_path / "cas",
+                    checkout_root=checkout,
+                    initial_miss_rendezvous=manifest_path,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def stalled_worker_b() -> None:
+        wrapper_marker.set()  # V3 treated this pre-exec event as worker start.
+        release_stalled_wrapper.wait(timeout=2.0)  # deterministic SIGSTOP seam
+        worker_a()
+
+    first = threading.Thread(target=worker_a, name="host-a")
+    stalled = threading.Thread(target=stalled_worker_b, name="host-b")
+    first.start()
+    stalled.start()
+    assert wrapper_marker.wait(timeout=1.0)
+    time.sleep(0.08)
+    assert first.is_alive()
+    assert not (checkout / "task-entered").exists()
+    release_stalled_wrapper.set()
+    first.join(timeout=5.0)
+    stalled.join(timeout=5.0)
+    assert not first.is_alive() and not stalled.is_alive()
+    assert errors == []
+    assert sorted(result["status"] for result in results) == [
+        "cache_hit",
+        "published",
+    ]
+    assert (checkout / "task-entered").read_text(encoding="utf-8") == "entered"
+
+
+def test_unset_initial_miss_rendezvous_preserves_exact_result_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+
+    def must_not_run(**_: object) -> dict[str, object]:
+        raise AssertionError("unset rendezvous path was called")
+
+    monkeypatch.setattr(pb, "_run_initial_miss_rendezvous", must_not_run)
+    arguments = {
+        "action": action,
+        "cas_root": tmp_path / "cas",
+        "checkout_root": checkout,
+    }
+    first = pb.run_local_action(**arguments)
+    second = pb.run_local_action(**arguments)
+    assert set(first) == {
+        "status",
+        "receipt",
+        "payload_path",
+        "recovered_declared_result",
+        "reaped_staging_files",
+        "local_result_claim_sha256",
+    }
+    assert set(second) == {"status", "receipt", "payload_path"}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "cross_manifest",
+        "stale_nonce",
+        "wrong_action",
+        "wrong_host",
+        "wrong_runtime",
+        "forged_digest",
+    ],
+)
+def test_initial_miss_rendezvous_rejects_mismatched_or_corrupt_peer_arrival(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    namespace = tmp_path / "rendezvous-state"
+    manifest_path, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=namespace,
+        timeout_seconds=0.2,
+    )
+    runtime = pb._worker_runtime_identity(None)
+    peer_process = pb._initial_miss_process_identity(
+        hostname="host-b", worker_launcher_identity=None
+    )
+    peer_arrival = pb._initial_miss_arrival(
+        manifest=manifest,
+        participant="host-b",
+        process=peer_process,
+    )
+    if mutation == "cross_manifest":
+        peer_arrival["manifest_sha256"] = "6" * 64
+        _reseal(peer_arrival, "arrival_sha256")
+    elif mutation == "stale_nonce":
+        peer_arrival["run_nonce"] = "2" * 32
+        _reseal(peer_arrival, "arrival_sha256")
+    elif mutation == "wrong_action":
+        peer_arrival["action_key"] = "3" * 64
+        _reseal(peer_arrival, "arrival_sha256")
+    elif mutation == "wrong_host":
+        peer_arrival["participant"] = "host-a"
+        _reseal(peer_arrival, "arrival_sha256")
+    elif mutation == "wrong_runtime":
+        hostile_runtime = copy.deepcopy(runtime)
+        hostile_runtime["core"]["sha256"] = "4" * 64  # type: ignore[index]
+        _reseal(hostile_runtime, "runtime_sha256")
+        peer_process["runtime"] = hostile_runtime
+        _reseal(peer_process, "process_identity_sha256")
+        peer_arrival["process"] = peer_process
+        _reseal(peer_arrival, "arrival_sha256")
+    else:
+        peer_arrival["arrival_sha256"] = "5" * 64
+    _write_rendezvous_record(
+        namespace / "arrivals" / "host-b.json", peer_arrival
+    )
+    (namespace / "ready").mkdir()
+    monkeypatch.setattr(pb, "_initial_miss_hostname", lambda: "host-a")
+
+    with pytest.raises(
+        pb.PrismaBuildError,
+        match="manifest_sha256|run_nonce|action_key|participant|runtime|digest",
+    ):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            initial_miss_rendezvous=manifest_path,
+        )
+    assert not (checkout / "result.bin").exists()
+
+
+def test_initial_miss_rendezvous_post_release_stop_allows_peer_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A stop after exact ready release cannot invalidate the causal proof."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    manifest_path, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "rendezvous-state",
+    )
+    monkeypatch.setattr(
+        pb, "_initial_miss_hostname", lambda: threading.current_thread().name
+    )
+    original_rendezvous = pb._run_initial_miss_rendezvous
+    stopped_after_release = threading.Event()
+    resume_after_peer_publish = threading.Event()
+
+    def stop_host_b_after_release(**kwargs: object) -> dict[str, object]:
+        proof = original_rendezvous(**kwargs)
+        if threading.current_thread().name == "host-b":
+            stopped_after_release.set()
+            resume_after_peer_publish.wait(timeout=3.0)
+        return proof
+
+    monkeypatch.setattr(
+        pb, "_run_initial_miss_rendezvous", stop_host_b_after_release
+    )
+    results: dict[str, dict[str, object]] = {}
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            results[threading.current_thread().name] = pb.run_local_action(
+                action,
+                cas_root=tmp_path / "cas",
+                checkout_root=checkout,
+                initial_miss_rendezvous=manifest_path,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, name=participant)
+        for participant in manifest["participants"]
+    ]
+    for thread in threads:
+        thread.start()
+    assert stopped_after_release.wait(timeout=2.0)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    deadline = time.monotonic() + 3.0
+    while cas.lookup(action) is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert cas.lookup(action) is not None
+    assert threads[1].is_alive()
+    resume_after_peer_publish.set()
+    for thread in threads:
+        thread.join(timeout=3.0)
+    assert errors == []
+    assert results["host-a"]["status"] == "published"
+    assert results["host-b"]["status"] == "cache_hit"
+    proof = results["host-b"]["initial_miss_rendezvous"]
+    assert proof["participant"] == "host-b"
+
+
+def test_ready_wait_polls_through_multiple_stale_scans_after_post_release_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    _, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "rendezvous-state",
+    )
+    arrivals: dict[str, dict[str, object]] = {}
+    ready: dict[str, dict[str, object]] = {}
+    for participant in manifest["participants"]:
+        process = pb._initial_miss_process_identity(
+            hostname=participant, worker_launcher_identity=None
+        )
+        arrivals[participant] = pb._initial_miss_arrival(
+            manifest=manifest, participant=participant, process=process
+        )
+    arrival_set_sha256 = pb.canonical_sha256(
+        [arrivals[name] for name in manifest["participants"]]
+    )
+    for participant in manifest["participants"]:
+        ready[participant] = pb._initial_miss_ready(
+            manifest=manifest,
+            participant=participant,
+            process=arrivals[participant]["process"],
+            arrival=arrivals[participant],
+            arrival_set_sha256=arrival_set_sha256,
+        )
+    scans = iter([None, None, ready])
+    monkeypatch.setattr(
+        pb, "_scan_initial_miss_phase", lambda *args, **kwargs: next(scans)
+    )
+    fake_cas = SimpleNamespace(lookup=lambda _: {"receipt": "post-release"})
+    observed = pb._wait_initial_miss_ready(
+        directory=tmp_path / "not-read",
+        manifest=manifest,
+        arrivals=arrivals,
+        arrival_set_sha256=arrival_set_sha256,
+        cas=fake_cas,
+        action=action,
+        deadline=time.monotonic() + 1.0,
+    )
+    assert observed == ready
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["wrong_arrival", "wrong_arrival_set", "wrong_process", "forged_digest"],
+)
+def test_initial_miss_rendezvous_rejects_ready_not_bound_to_exact_arrivals(
+    tmp_path: Path, mutation: str
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    _, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "rendezvous-state",
+    )
+    runtime = pb._worker_runtime_identity(None)
+    arrivals: dict[str, dict[str, object]] = {}
+    for participant in manifest["participants"]:
+        process = pb._initial_miss_process_identity(
+            hostname=participant, worker_launcher_identity=None
+        )
+        arrivals[participant] = pb._initial_miss_arrival(
+            manifest=manifest,
+            participant=participant,
+            process=process,
+        )
+    arrival_set_sha256 = pb.canonical_sha256(
+        [arrivals[name] for name in manifest["participants"]]
+    )
+    peer = pb._initial_miss_ready(
+        manifest=manifest,
+        participant="host-b",
+        process=arrivals["host-b"]["process"],
+        arrival=arrivals["host-b"],
+        arrival_set_sha256=arrival_set_sha256,
+    )
+    if mutation == "wrong_arrival":
+        peer["arrival_sha256"] = "7" * 64
+        _reseal(peer, "ready_sha256")
+    elif mutation == "wrong_arrival_set":
+        peer["arrival_set_sha256"] = "8" * 64
+        _reseal(peer, "ready_sha256")
+    elif mutation == "wrong_process":
+        peer["process_identity_sha256"] = "9" * 64
+        _reseal(peer, "ready_sha256")
+    else:
+        peer["ready_sha256"] = "a" * 64
+    with pytest.raises(pb.PrismaBuildError, match="arrival|process|digest"):
+        pb._validate_initial_miss_ready(
+            peer,
+            manifest=manifest,
+            participant="host-b",
+            arrivals=arrivals,
+            arrival_set_sha256=arrival_set_sha256,
+        )
+    # The runtime used to construct both exact arrivals remains the live one.
+    assert arrivals["host-a"]["process"]["runtime"] == runtime
+
+
+def test_initial_miss_rendezvous_rejects_duplicate_replayed_participant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    namespace = tmp_path / "rendezvous-state"
+    manifest_path, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=namespace,
+    )
+    stale_process = pb._initial_miss_process_identity(
+        hostname="host-a", worker_launcher_identity=None
+    )
+    replay = pb._initial_miss_arrival(
+        manifest=manifest,
+        participant="host-a",
+        process=stale_process,
+    )
+    _write_rendezvous_record(namespace / "arrivals/host-a.json", replay)
+    (namespace / "ready").mkdir()
+    monkeypatch.setattr(pb, "_initial_miss_hostname", lambda: "host-a")
+    with pytest.raises(
+        pb.InitialMissRendezvousError, match="duplicate or replayed.*arrival"
+    ):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            initial_miss_rendezvous=manifest_path,
+        )
+
+
+def test_initial_miss_rendezvous_rejects_receipt_before_ready_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    namespace = tmp_path / "rendezvous-state"
+    manifest_path, _ = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=namespace,
+        timeout_seconds=1.0,
+    )
+    monkeypatch.setattr(pb, "_initial_miss_hostname", lambda: "host-a")
+    errors: list[BaseException] = []
+
+    def waiting_worker() -> None:
+        try:
+            pb.run_local_action(
+                action,
+                cas_root=tmp_path / "cas",
+                checkout_root=checkout,
+                initial_miss_rendezvous=manifest_path,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=waiting_worker)
+    thread.start()
+    arrival = namespace / "arrivals/host-a.json"
+    deadline = time.monotonic() + 2.0
+    while not arrival.exists() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert arrival.exists()
+    external = tmp_path / "external-result"
+    external.write_bytes(b"external")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    cas.publish_result(
+        action,
+        external,
+        attestation=_attestation(checkout, action, tmp_path / "cas"),
+    )
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], pb.InitialMissRendezvousError)
+    assert "CAS receipt appeared" in str(errors[0])
+    assert not (checkout / "result.bin").exists()
+
+
+def test_initial_miss_rendezvous_rejects_receipt_after_arrivals_before_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    namespace = tmp_path / "rendezvous-state"
+    manifest_path, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=namespace,
+        timeout_seconds=1.0,
+    )
+    monkeypatch.setattr(
+        pb, "_initial_miss_hostname", lambda: threading.current_thread().name
+    )
+    original_publish = pb._publish_initial_miss_record
+    ready_callers = 0
+    ready_callers_lock = threading.Lock()
+    both_ready_attempts = threading.Event()
+    release_ready_attempts = threading.Event()
+
+    def pause_ready(path: Path, record: object, **kwargs: object) -> None:
+        nonlocal ready_callers
+        if kwargs["phase"] == "ready":
+            with ready_callers_lock:
+                ready_callers += 1
+                if ready_callers == 2:
+                    both_ready_attempts.set()
+            release_ready_attempts.wait(timeout=2.0)
+        original_publish(path, record, **kwargs)
+
+    monkeypatch.setattr(pb, "_publish_initial_miss_record", pause_ready)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            pb.run_local_action(
+                action,
+                cas_root=tmp_path / "cas",
+                checkout_root=checkout,
+                initial_miss_rendezvous=manifest_path,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, name=participant)
+        for participant in manifest["participants"]
+    ]
+    for thread in threads:
+        thread.start()
+    assert both_ready_attempts.wait(timeout=2.0)
+    external = tmp_path / "external-result"
+    external.write_bytes(b"external")
+    pb.PrismaBuildCAS(tmp_path / "cas").publish_result(
+        action,
+        external,
+        attestation=_attestation(checkout, action, tmp_path / "cas"),
+    )
+    release_ready_attempts.set()
+    for thread in threads:
+        thread.join(timeout=3.0)
+    assert not any(thread.is_alive() for thread in threads)
+    assert len(errors) == 2
+    assert all(
+        isinstance(error, pb.InitialMissRendezvousError)
+        and "CAS receipt appeared before initial-miss rendezvous release" in str(error)
+        for error in errors
+    )
+    assert list((namespace / "ready").iterdir()) == []
+    assert not (checkout / "result.bin").exists()
+
+
+@pytest.mark.parametrize("phase", ["arrival", "ready"])
+@pytest.mark.parametrize(
+    "hostility", ["missing", "extra", "hardlink", "symlink", "special", "mutable"]
+)
+def test_initial_miss_phase_rejects_nonexact_or_unsafe_records(
+    tmp_path: Path,
+    phase: str,
+    hostility: str,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    _, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "unused-namespace",
+    )
+    runtime = pb._worker_runtime_identity(None)
+    arrivals: dict[str, dict[str, object]] = {}
+    for participant in manifest["participants"]:
+        process = pb._initial_miss_process_identity(
+            hostname=participant, worker_launcher_identity=None
+        )
+        arrivals[participant] = pb._initial_miss_arrival(
+            manifest=manifest,
+            participant=participant,
+            process=process,
+        )
+    arrival_set_sha256 = pb.canonical_sha256(
+        [arrivals[name] for name in manifest["participants"]]
+    )
+    if phase == "arrival":
+        records = arrivals
+
+        def validate(value: object, participant: str) -> dict[str, object]:
+            return pb._validate_initial_miss_arrival(
+                value,
+                manifest=manifest,
+                participant=participant,
+                runtime=runtime,
+            )
+
+    else:
+        records = {
+            participant: pb._initial_miss_ready(
+                manifest=manifest,
+                participant=participant,
+                process=arrivals[participant]["process"],
+                arrival=arrivals[participant],
+                arrival_set_sha256=arrival_set_sha256,
+            )
+            for participant in manifest["participants"]
+        }
+
+        def validate(value: object, participant: str) -> dict[str, object]:
+            return pb._validate_initial_miss_ready(
+                value,
+                manifest=manifest,
+                participant=participant,
+                arrivals=arrivals,
+                arrival_set_sha256=arrival_set_sha256,
+            )
+
+    directory = tmp_path / phase
+    for participant, record in records.items():
+        _write_rendezvous_record(directory / f"{participant}.json", record)
+    target = directory / "host-b.json"
+    if hostility == "missing":
+        target.unlink()
+    elif hostility == "extra":
+        _write_rendezvous_record(directory / "intruder.json", {"bad": True})
+    elif hostility == "hardlink":
+        raw = target.read_bytes()
+        target.unlink()
+        other = tmp_path / f"{phase}-hardlink-source"
+        other.write_bytes(raw)
+        other.chmod(0o444)
+        os.link(other, target)
+    elif hostility == "symlink":
+        target.unlink()
+        target.symlink_to(directory / "host-a.json")
+    elif hostility == "special":
+        target.unlink()
+        os.mkfifo(target)
+    else:
+        target.chmod(0o644)
+
+    if hostility in {"missing", "hardlink"}:
+        assert (
+            pb._scan_initial_miss_phase(
+                directory,
+                phase=phase,
+                participants=manifest["participants"],
+                validate=validate,
+            )
+            is None
+        )
+    else:
+        with pytest.raises(pb.PrismaBuildError):
+            pb._scan_initial_miss_phase(
+                directory,
+                phase=phase,
+                participants=manifest["participants"],
+                validate=validate,
+            )
+
+
+def test_regular_identity_fifo_swap_never_performs_blocking_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "record.json"
+    path.write_bytes(b"{}\n")
+    descriptor, parent_fd = pb._open_regular_nofollow(
+        path, where="FIFO-swap fixture"
+    )
+    path.unlink()
+    os.mkfifo(path)
+    real_open = pb.os.open
+
+    def guarded_open(candidate: object, *args: object, **kwargs: object) -> int:
+        if candidate == path.name and kwargs.get("dir_fd") == parent_fd:
+            raise AssertionError("blocking canonical FIFO reopen attempted")
+        return real_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(pb.os, "open", guarded_open)
+    try:
+        with pytest.raises(pb.CASTamperError, match="changed during operation"):
+            pb._assert_regular_identity(
+                descriptor, parent_fd, path, where="FIFO-swap fixture"
+            )
+    finally:
+        os.close(descriptor)
+        os.close(parent_fd)
+
+
+def test_atomic_publish_fifo_swap_never_performs_blocking_readback_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "published.json"
+    real_link = pb.os.link
+    real_open = pb.os.open
+    swapped = False
+
+    def swapping_link(*args: object, **kwargs: object) -> None:
+        nonlocal swapped
+        real_link(*args, **kwargs)
+        destination = args[1]
+        destination_directory = kwargs["dst_dir_fd"]
+        os.unlink(destination, dir_fd=destination_directory)
+        os.mkfifo(destination, dir_fd=destination_directory)
+        swapped = True
+
+    def guarded_open(candidate: object, *args: object, **kwargs: object) -> int:
+        if swapped and candidate == path.name:
+            raise AssertionError("blocking published FIFO readback open attempted")
+        return real_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(pb.os, "link", swapping_link)
+    monkeypatch.setattr(pb.os, "open", guarded_open)
+    with pytest.raises(pb.CASTamperError, match="changed before readback"):
+        pb._atomic_publish(path, b"immutable\n")
+
+
+@pytest.mark.parametrize(
+    "hostility", ["namespace_symlink", "arrival_symlink", "extra", "entry_bound"]
+)
+def test_initial_miss_rendezvous_rejects_hostile_namespace_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hostility: str
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    namespace = tmp_path / "rendezvous-state"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if hostility == "namespace_symlink":
+        namespace.symlink_to(outside, target_is_directory=True)
+    else:
+        namespace.mkdir()
+        if hostility == "arrival_symlink":
+            (namespace / "arrivals").symlink_to(outside, target_is_directory=True)
+            (namespace / "ready").mkdir()
+        else:
+            (namespace / "arrivals").mkdir()
+            (namespace / "ready").mkdir()
+            if hostility == "extra":
+                (namespace / "intruder").mkdir()
+            else:
+                for index in range(
+                    pb._MAX_INITIAL_MISS_RENDEZVOUS_DIRECTORY_ENTRIES + 1
+                ):
+                    (namespace / "arrivals" / f"extra-{index}").write_bytes(b"")
+    manifest_path, _ = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=namespace,
+        timeout_seconds=0.05,
+    )
+    monkeypatch.setattr(pb, "_initial_miss_hostname", lambda: "host-a")
+    with pytest.raises(pb.PrismaBuildError):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            initial_miss_rendezvous=manifest_path,
+        )
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("hostility", ["mutable", "hardlink", "symlink", "special"])
+def test_initial_miss_rendezvous_manifest_must_be_immutable_real_single_link(
+    tmp_path: Path, hostility: str
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    path, _ = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=tmp_path / "rendezvous-state",
+    )
+    if hostility == "mutable":
+        path.chmod(0o644)
+    elif hostility == "hardlink":
+        os.link(path, tmp_path / "second-manifest-link")
+    elif hostility == "symlink":
+        target = tmp_path / "manifest-target"
+        path.rename(target)
+        path.symlink_to(target)
+    else:
+        path.unlink()
+        os.mkfifo(path)
+    with pytest.raises(pb.PrismaBuildError):
+        pb._load_initial_miss_rendezvous_manifest(
+            path, action=action, cas=pb.PrismaBuildCAS(tmp_path / "cas")
+        )
+
+
+def test_initial_miss_rendezvous_does_not_mutate_manifest_source_or_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    namespace = tmp_path / "rendezvous-state"
+    manifest_path, manifest = _rendezvous_manifest(
+        tmp_path / "rendezvous.json",
+        action=action,
+        namespace=namespace,
+    )
+    source = Path(pb.__file__)
+    source_before = (source.read_bytes(), source.stat())
+    manifest_before = (manifest_path.read_bytes(), manifest_path.stat())
+    monkeypatch.setattr(
+        pb, "_initial_miss_hostname", lambda: threading.current_thread().name
+    )
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            pb.run_local_action(
+                action,
+                cas_root=tmp_path / "cas",
+                checkout_root=checkout,
+                initial_miss_rendezvous=manifest_path,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, name=participant)
+        for participant in manifest["participants"]
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    assert errors == []
+    assert source.read_bytes() == source_before[0]
+    assert (source.stat().st_dev, source.stat().st_ino, source.stat().st_mode) == (
+        source_before[1].st_dev,
+        source_before[1].st_ino,
+        source_before[1].st_mode,
+    )
+    assert manifest_path.read_bytes() == manifest_before[0]
+    assert (
+        manifest_path.stat().st_dev,
+        manifest_path.stat().st_ino,
+        manifest_path.stat().st_mode,
+    ) == (
+        manifest_before[1].st_dev,
+        manifest_before[1].st_ino,
+        manifest_before[1].st_mode,
+    )
+    assert not list(namespace.rglob("__pycache__"))
 
 
 def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: Path):

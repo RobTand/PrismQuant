@@ -33,6 +33,7 @@ import socket
 import stat
 import subprocess
 import tempfile
+import time
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 ACTION_SCHEMA_V2 = "prismaquant.prismabuild.action.v2"
@@ -41,6 +42,21 @@ CAS_RECEIPT_SCHEMA_V3 = "prismaquant.prismabuild.cas_receipt.v3"
 WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
 WORKER_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.worker_runtime.v1"
 LOCAL_RESULT_CLAIM_SCHEMA_V1 = "prismaquant.prismabuild.local_result_claim.v1"
+INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1 = (
+    "prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1"
+)
+INITIAL_MISS_RENDEZVOUS_PROCESS_SCHEMA_V1 = (
+    "prismaquant.prismabuild.initial_miss_rendezvous_process.v1"
+)
+INITIAL_MISS_RENDEZVOUS_ARRIVAL_SCHEMA_V1 = (
+    "prismaquant.prismabuild.initial_miss_rendezvous_arrival.v1"
+)
+INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1 = (
+    "prismaquant.prismabuild.initial_miss_rendezvous_ready.v1"
+)
+INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1 = (
+    "prismaquant.prismabuild.initial_miss_rendezvous_receipt.v1"
+)
 _CAS_RECEIPT_NAMESPACE = CAS_RECEIPT_SCHEMA_V3.rsplit(".", 1)[-1]
 
 _ACTION_BODY_KEYS = frozenset(
@@ -118,12 +134,94 @@ _LOCAL_RESULT_CLAIM_BODY_KEYS = frozenset(
     }
 )
 _LOCAL_RESULT_CLAIM_KEYS = _LOCAL_RESULT_CLAIM_BODY_KEYS | {"claim_sha256"}
+_INITIAL_MISS_RENDEZVOUS_MANIFEST_BODY_KEYS = frozenset(
+    {
+        "schema",
+        "rendezvous_namespace",
+        "cas_root",
+        "run_nonce",
+        "action_key",
+        "participants",
+        "timeout_seconds",
+    }
+)
+_INITIAL_MISS_RENDEZVOUS_MANIFEST_KEYS = (
+    _INITIAL_MISS_RENDEZVOUS_MANIFEST_BODY_KEYS | {"manifest_sha256"}
+)
+_INITIAL_MISS_RENDEZVOUS_PROCESS_BODY_KEYS = frozenset(
+    {
+        "schema",
+        "hostname",
+        "pid",
+        "proc_start_ticks",
+        "invocation_nonce",
+        "runtime",
+    }
+)
+_INITIAL_MISS_RENDEZVOUS_PROCESS_KEYS = (
+    _INITIAL_MISS_RENDEZVOUS_PROCESS_BODY_KEYS | {"process_identity_sha256"}
+)
+_INITIAL_MISS_RENDEZVOUS_ARRIVAL_BODY_KEYS = frozenset(
+    {
+        "schema",
+        "manifest_sha256",
+        "run_nonce",
+        "action_key",
+        "participant",
+        "process",
+        "observation",
+    }
+)
+_INITIAL_MISS_RENDEZVOUS_ARRIVAL_KEYS = (
+    _INITIAL_MISS_RENDEZVOUS_ARRIVAL_BODY_KEYS | {"arrival_sha256"}
+)
+_INITIAL_MISS_RENDEZVOUS_READY_BODY_KEYS = frozenset(
+    {
+        "schema",
+        "manifest_sha256",
+        "run_nonce",
+        "action_key",
+        "participant",
+        "process_identity_sha256",
+        "arrival_sha256",
+        "arrival_set_sha256",
+        "observation",
+    }
+)
+_INITIAL_MISS_RENDEZVOUS_READY_KEYS = (
+    _INITIAL_MISS_RENDEZVOUS_READY_BODY_KEYS | {"ready_sha256"}
+)
+_INITIAL_MISS_RENDEZVOUS_RECEIPT_BODY_KEYS = frozenset(
+    {
+        "schema",
+        "manifest_sha256",
+        "rendezvous_namespace",
+        "cas_root",
+        "run_nonce",
+        "action_key",
+        "participants",
+        "participant",
+        "process_identity_sha256",
+        "arrival_sha256",
+        "ready_sha256",
+        "arrival_set_sha256",
+        "ready_set_sha256",
+    }
+)
+_INITIAL_MISS_RENDEZVOUS_RECEIPT_KEYS = (
+    _INITIAL_MISS_RENDEZVOUS_RECEIPT_BODY_KEYS | {"receipt_sha256"}
+)
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
 _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}\Z")
 _SCOPE_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:/-]{0,255}\Z")
 _ENV_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_RUN_NONCE_RE = re.compile(r"[0-9a-f]{32}\Z")
+_INVOCATION_NONCE_RE = re.compile(r"[0-9a-f]{32}\Z")
+_HOSTNAME_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\Z"
+)
 
 _PORTABILITY = frozenset({"portable", "platform_keyed", "host_class_keyed"})
 _TASK_CLASSES = frozenset({"generation", "measurement"})
@@ -131,6 +229,10 @@ _DETERMINISM = frozenset({"deterministic", "stochastic"})
 _ARTIFACT_FAMILIES = frozenset({"generic", "codebook"})
 _PROCESS_GROUP_GRACE_SECONDS = 5.0
 _MAX_LOCAL_RESULT_STAGING_FILES = 64
+_MAX_INITIAL_MISS_RENDEZVOUS_BYTES = 64 * 1024
+_MAX_INITIAL_MISS_RENDEZVOUS_DIRECTORY_ENTRIES = 8
+_MAX_INITIAL_MISS_RENDEZVOUS_TIMEOUT_SECONDS = 24 * 60 * 60
+_INITIAL_MISS_RENDEZVOUS_POLL_SECONDS = 0.01
 # NFS may return one internally inconsistent ctime/nlink snapshot while a
 # first-writer hard link becomes visible.  Never accept that read: reopen the
 # no-follow path and replay the entire read from byte zero, at most this many
@@ -177,6 +279,14 @@ class CASConflictError(PrismaBuildError):
 
 class LocalActionError(PrismaBuildError):
     """A local action could not execute or did not produce its declared file."""
+
+
+class InitialMissRendezvousError(LocalActionError):
+    """An opt-in initial-cache-miss rendezvous failed closed."""
+
+
+class _FileLinkCountError(CASTamperError):
+    """A stable file did not have the required single canonical link."""
 
 
 def _fail(message: str) -> None:
@@ -357,7 +467,11 @@ def _decode_strict_json(raw: bytes, *, where: str) -> object:
 
 
 def _read_regular_file(path: Path, *, where: str) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
@@ -397,7 +511,11 @@ def _read_regular_file(path: Path, *, where: str) -> bytes:
 
 
 def _file_identity(path: Path, *, where: str) -> tuple[str, int]:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
@@ -1305,27 +1423,28 @@ def _atomic_publish(
             won = False
         os.fsync(directory_fd)
         if won:
-            flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
             try:
-                published_fd = os.open(path.name, flags, dir_fd=directory_fd)
+                published_identity = os.stat(
+                    path.name, dir_fd=directory_fd, follow_symlinks=False
+                )
             except OSError as exc:
                 raise CASTamperError(
                     f"published file changed before readback: {path}"
                 ) from exc
-            try:
-                published_identity = os.fstat(published_fd)
-                if (
+            if (
+                not stat.S_ISREG(published_identity.st_mode)
+                or (
                     temporary_identity.st_dev,
                     temporary_identity.st_ino,
-                ) != (
+                )
+                != (
                     published_identity.st_dev,
                     published_identity.st_ino,
-                ):
-                    raise CASTamperError(
-                        f"published file changed before readback: {path}"
-                    )
-            finally:
-                os.close(published_fd)
+                )
+            ):
+                raise CASTamperError(
+                    f"published file changed before readback: {path}"
+                )
         _assert_directory_identity(
             directory_fd, path.parent, where="publication directory"
         )
@@ -1427,7 +1546,25 @@ def _open_regular_nofollow(path: Path, *, where: str) -> tuple[int, int]:
 
     path = _absolute_nofollow_path(path, where=where)
     parent_fd = _open_directory_nofollow(path.parent, where=f"{where} parent")
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        candidate = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        os.close(parent_fd)
+        raise
+    except OSError as exc:
+        os.close(parent_fd)
+        raise CASUnavailableError(f"cannot inspect {where}: {path}: {exc}") from exc
+    if not stat.S_ISREG(candidate.st_mode):
+        os.close(parent_fd)
+        raise CASTamperError(
+            f"cannot open {where} as a real regular file: {path}"
+        )
+    flags = (
+        os.O_RDONLY
+        | os.O_CLOEXEC
+        | os.O_NOFOLLOW
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
         descriptor = os.open(path.name, flags, dir_fd=parent_fd)
     except FileNotFoundError:
@@ -1448,18 +1585,16 @@ def _assert_regular_identity(
 ) -> None:
     """Fail if a held regular inode is no longer its canonical leaf name."""
 
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
     try:
-        current = os.open(path.name, flags, dir_fd=parent_fd)
+        observed = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
     except OSError as exc:
         raise CASTamperError(f"{where} changed during operation: {path}") from exc
-    try:
-        held = os.fstat(descriptor)
-        observed = os.fstat(current)
-        if (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino):
-            raise CASTamperError(f"{where} changed during operation: {path}")
-    finally:
-        os.close(current)
+    held = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino)
+    ):
+        raise CASTamperError(f"{where} changed during operation: {path}")
 
 
 def _stable_file_read_identity(info: os.stat_result) -> tuple[int, ...]:
@@ -1490,6 +1625,7 @@ def _read_regular_file_nofollow(
     *,
     where: str,
     require_readonly: bool = False,
+    require_single_link: bool = False,
     max_bytes: int | None = None,
 ) -> bytes:
     """Read one stable inode without following any pathname component.
@@ -1510,6 +1646,10 @@ def _read_regular_file_nofollow(
                 raise CASTamperError(f"{where} is not a regular file: {path}")
             if require_readonly and before.st_mode & 0o222:
                 raise CASTamperError(f"{where} is writable: {path}")
+            if require_single_link and before.st_nlink != 1:
+                raise _FileLinkCountError(
+                    f"{where} must have exactly one link: {path}"
+                )
             if max_bytes is not None and before.st_size > max_bytes:
                 raise CASTamperError(f"{where} exceeds the byte bound: {path}")
             chunks: list[bytes] = []
@@ -1523,6 +1663,10 @@ def _read_regular_file_nofollow(
                     raise CASTamperError(f"{where} exceeds the byte bound: {path}")
                 chunks.append(chunk)
             after = os.fstat(descriptor)
+            if require_single_link and after.st_nlink != 1:
+                raise _FileLinkCountError(
+                    f"{where} must have exactly one link: {path}"
+                )
             if _stable_file_read_identity(before) != _stable_file_read_identity(after):
                 if _substantive_file_read_identity(
                     before
@@ -1645,7 +1789,11 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
     staging_fd = _open_directory_nofollow(
         staging_directory, where="CAS staging directory", create=True
     )
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
@@ -2212,7 +2360,12 @@ class PrismaBuildCAS:
                 won = False
             if won:
                 os.fsync(directory_fd)
-                flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+                flags = (
+                    os.O_RDONLY
+                    | os.O_CLOEXEC
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_NONBLOCK", 0)
+                )
                 try:
                     published_fd = os.open(
                         digest, flags, dir_fd=directory_fd
@@ -2569,6 +2722,751 @@ class PrismaBuildCAS:
             return canonical, False
         finally:
             _unlink_nofollow(staging, where="CAS staging file")
+
+
+def _validate_initial_miss_rendezvous_manifest(
+    value: object, *, action: Mapping[str, object], cas: PrismaBuildCAS
+) -> dict[str, object]:
+    raw = _exact_mapping(
+        value,
+        keys=_INITIAL_MISS_RENDEZVOUS_MANIFEST_KEYS,
+        where="initial-miss rendezvous manifest",
+    )
+    if raw["schema"] != INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1:
+        _fail(
+            "initial-miss rendezvous manifest.schema must be "
+            f"{INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1!r}"
+        )
+    namespace_text = _text(
+        raw["rendezvous_namespace"],
+        where="initial-miss rendezvous manifest.rendezvous_namespace",
+    )
+    namespace = Path(namespace_text)
+    if (
+        not namespace.is_absolute()
+        or namespace == Path("/")
+        or ".." in namespace.parts
+        or str(namespace) != namespace_text
+    ):
+        _fail(
+            "initial-miss rendezvous namespace must be a normalized, "
+            "non-root absolute path"
+        )
+    cas_root_text = _text(
+        raw["cas_root"],
+        where="initial-miss rendezvous manifest.cas_root",
+    )
+    cas_root = Path(cas_root_text)
+    if (
+        not cas_root.is_absolute()
+        or cas_root == Path("/")
+        or ".." in cas_root.parts
+        or str(cas_root) != cas_root_text
+    ):
+        _fail(
+            "initial-miss rendezvous CAS root must be a normalized, "
+            "non-root absolute path"
+        )
+    if cas_root != cas.root:
+        _fail("initial-miss rendezvous CAS root differs from the worker CAS")
+    run_nonce = _text(
+        raw["run_nonce"],
+        where="initial-miss rendezvous manifest.run_nonce",
+        pattern=_RUN_NONCE_RE,
+    )
+    action_key = _sha256(
+        raw["action_key"],
+        where="initial-miss rendezvous manifest.action_key",
+    )
+    if action_key != action["action_key"]:
+        _fail("initial-miss rendezvous manifest action_key differs from the action")
+    participants_raw = raw["participants"]
+    if type(participants_raw) is not list or len(participants_raw) != 2:
+        _fail(
+            "initial-miss rendezvous manifest.participants must contain "
+            "exactly two hostnames"
+        )
+    participants = [
+        _text(
+            participant,
+            where=f"initial-miss rendezvous manifest.participants[{index}]",
+            pattern=_HOSTNAME_RE,
+        )
+        for index, participant in enumerate(participants_raw)
+    ]
+    if participants != sorted(participants) or len(set(participants)) != 2:
+        _fail(
+            "initial-miss rendezvous participants must be exact, sorted, "
+            "unique lowercase hostnames"
+        )
+    timeout_raw = raw["timeout_seconds"]
+    if (
+        type(timeout_raw) not in {int, float}
+        or not math.isfinite(float(timeout_raw))
+        or float(timeout_raw) <= 0.0
+        or float(timeout_raw) > _MAX_INITIAL_MISS_RENDEZVOUS_TIMEOUT_SECONDS
+    ):
+        _fail(
+            "initial-miss rendezvous timeout_seconds must be a positive finite "
+            f"number no greater than {_MAX_INITIAL_MISS_RENDEZVOUS_TIMEOUT_SECONDS}"
+        )
+    body: dict[str, object] = {
+        "schema": INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1,
+        "rendezvous_namespace": namespace_text,
+        "cas_root": cas_root_text,
+        "run_nonce": run_nonce,
+        "action_key": action_key,
+        "participants": participants,
+        "timeout_seconds": timeout_raw,
+    }
+    manifest_sha256 = _sha256(
+        raw["manifest_sha256"],
+        where="initial-miss rendezvous manifest.manifest_sha256",
+    )
+    if manifest_sha256 != canonical_sha256(body):
+        _fail("initial-miss rendezvous manifest digest does not match its body")
+    return {**body, "manifest_sha256": manifest_sha256}
+
+
+def _load_initial_miss_rendezvous_manifest(
+    path: str | Path, *, action: Mapping[str, object], cas: PrismaBuildCAS
+) -> dict[str, object]:
+    manifest_path = Path(path)
+    if (
+        not manifest_path.is_absolute()
+        or manifest_path == Path("/")
+        or ".." in manifest_path.parts
+    ):
+        raise ActionContractError(
+            "initial-miss rendezvous manifest path must be a non-root absolute path"
+        )
+    raw = _read_regular_file_nofollow(
+        manifest_path,
+        where="initial-miss rendezvous manifest",
+        require_readonly=True,
+        require_single_link=True,
+        max_bytes=_MAX_INITIAL_MISS_RENDEZVOUS_BYTES,
+    )
+    value = _decode_strict_json(raw, where="initial-miss rendezvous manifest")
+    manifest = _validate_initial_miss_rendezvous_manifest(
+        value, action=action, cas=cas
+    )
+    if raw != _canonical_file_bytes(manifest):
+        raise ActionContractError(
+            "initial-miss rendezvous manifest bytes are not canonical JSON"
+        )
+    return manifest
+
+
+def _initial_miss_hostname() -> str:
+    """Derive the exact lowercase host participant; never trust environment."""
+
+    hostname = socket.gethostname().lower()
+    return _text(
+        hostname,
+        where="initial-miss rendezvous local hostname",
+        pattern=_HOSTNAME_RE,
+    )
+
+
+def _process_start_ticks() -> int:
+    """Return this process's Linux start tick, disambiguating PID reuse."""
+
+    pid = os.getpid()
+    raw = _read_regular_file(
+        Path(f"/proc/{pid}/stat"), where="initial-miss rendezvous process stat"
+    )
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise InitialMissRendezvousError(
+            "initial-miss rendezvous process stat is not ASCII"
+        ) from exc
+    close = text.rfind(")")
+    if close < 0 or text[:close].split("(", 1)[0].strip() != str(pid):
+        raise InitialMissRendezvousError(
+            "initial-miss rendezvous process stat has a mismatched PID"
+        )
+    fields = text[close + 1 :].split()
+    if len(fields) <= 19 or re.fullmatch(r"[1-9][0-9]*", fields[19]) is None:
+        raise InitialMissRendezvousError(
+            "initial-miss rendezvous process stat has no canonical start tick"
+        )
+    return int(fields[19])
+
+
+def _initial_miss_process_identity(
+    *, hostname: str, worker_launcher_identity: object | None
+) -> dict[str, object]:
+    runtime = _worker_runtime_identity(worker_launcher_identity)
+    body: dict[str, object] = {
+        "schema": INITIAL_MISS_RENDEZVOUS_PROCESS_SCHEMA_V1,
+        "hostname": hostname,
+        "pid": os.getpid(),
+        "proc_start_ticks": _process_start_ticks(),
+        "invocation_nonce": os.urandom(16).hex(),
+        "runtime": runtime,
+    }
+    return {**body, "process_identity_sha256": canonical_sha256(body)}
+
+
+def _validate_initial_miss_process_identity(
+    value: object,
+    *,
+    participant: str,
+    runtime: Mapping[str, object],
+) -> dict[str, object]:
+    raw = _exact_mapping(
+        value,
+        keys=_INITIAL_MISS_RENDEZVOUS_PROCESS_KEYS,
+        where="initial-miss rendezvous process identity",
+    )
+    if raw["schema"] != INITIAL_MISS_RENDEZVOUS_PROCESS_SCHEMA_V1:
+        _fail("initial-miss rendezvous process identity schema is unsupported")
+    hostname = _text(
+        raw["hostname"],
+        where="initial-miss rendezvous process identity.hostname",
+        pattern=_HOSTNAME_RE,
+    )
+    if hostname != participant:
+        _fail("initial-miss rendezvous process hostname differs from participant")
+    pid = raw["pid"]
+    start_ticks = raw["proc_start_ticks"]
+    if type(pid) is not int or pid <= 0:
+        _fail("initial-miss rendezvous process pid must be positive")
+    if type(start_ticks) is not int or start_ticks <= 0:
+        _fail("initial-miss rendezvous process start tick must be positive")
+    invocation_nonce = _text(
+        raw["invocation_nonce"],
+        where="initial-miss rendezvous process identity.invocation_nonce",
+        pattern=_INVOCATION_NONCE_RE,
+    )
+    observed_runtime = _validate_worker_runtime(raw["runtime"])
+    if observed_runtime != runtime:
+        _fail(
+            "initial-miss rendezvous participant runtime differs from the "
+            "loaded core and launcher identity"
+        )
+    body: dict[str, object] = {
+        "schema": INITIAL_MISS_RENDEZVOUS_PROCESS_SCHEMA_V1,
+        "hostname": hostname,
+        "pid": pid,
+        "proc_start_ticks": start_ticks,
+        "invocation_nonce": invocation_nonce,
+        "runtime": observed_runtime,
+    }
+    digest = _sha256(
+        raw["process_identity_sha256"],
+        where="initial-miss rendezvous process identity digest",
+    )
+    if digest != canonical_sha256(body):
+        _fail("initial-miss rendezvous process identity digest does not match")
+    return {**body, "process_identity_sha256": digest}
+
+
+def _initial_miss_arrival(
+    *,
+    manifest: Mapping[str, object],
+    participant: str,
+    process: Mapping[str, object],
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "schema": INITIAL_MISS_RENDEZVOUS_ARRIVAL_SCHEMA_V1,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "run_nonce": manifest["run_nonce"],
+        "action_key": manifest["action_key"],
+        "participant": participant,
+        "process": process,
+        "observation": "initial_cas_lookup_absent",
+    }
+    return {**body, "arrival_sha256": canonical_sha256(body)}
+
+
+def _validate_initial_miss_arrival(
+    value: object,
+    *,
+    manifest: Mapping[str, object],
+    participant: str,
+    runtime: Mapping[str, object],
+) -> dict[str, object]:
+    raw = _exact_mapping(
+        value,
+        keys=_INITIAL_MISS_RENDEZVOUS_ARRIVAL_KEYS,
+        where="initial-miss rendezvous arrival",
+    )
+    if raw["schema"] != INITIAL_MISS_RENDEZVOUS_ARRIVAL_SCHEMA_V1:
+        _fail("initial-miss rendezvous arrival schema is unsupported")
+    for key in ("manifest_sha256", "run_nonce", "action_key"):
+        if raw[key] != manifest[key]:
+            _fail(f"initial-miss rendezvous arrival {key} differs from manifest")
+    observed_participant = _text(
+        raw["participant"],
+        where="initial-miss rendezvous arrival.participant",
+        pattern=_HOSTNAME_RE,
+    )
+    if observed_participant != participant:
+        _fail("initial-miss rendezvous arrival participant differs from filename")
+    if raw["observation"] != "initial_cas_lookup_absent":
+        _fail("initial-miss rendezvous arrival observation is unsupported")
+    process = _validate_initial_miss_process_identity(
+        raw["process"], participant=participant, runtime=runtime
+    )
+    body: dict[str, object] = {
+        "schema": INITIAL_MISS_RENDEZVOUS_ARRIVAL_SCHEMA_V1,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "run_nonce": manifest["run_nonce"],
+        "action_key": manifest["action_key"],
+        "participant": participant,
+        "process": process,
+        "observation": "initial_cas_lookup_absent",
+    }
+    digest = _sha256(
+        raw["arrival_sha256"], where="initial-miss rendezvous arrival digest"
+    )
+    if digest != canonical_sha256(body):
+        _fail("initial-miss rendezvous arrival digest does not match")
+    return {**body, "arrival_sha256": digest}
+
+
+def _initial_miss_ready(
+    *,
+    manifest: Mapping[str, object],
+    participant: str,
+    process: Mapping[str, object],
+    arrival: Mapping[str, object],
+    arrival_set_sha256: str,
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "schema": INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "run_nonce": manifest["run_nonce"],
+        "action_key": manifest["action_key"],
+        "participant": participant,
+        "process_identity_sha256": process["process_identity_sha256"],
+        "arrival_sha256": arrival["arrival_sha256"],
+        "arrival_set_sha256": arrival_set_sha256,
+        "observation": "cas_absent_after_complete_arrival_set",
+    }
+    return {**body, "ready_sha256": canonical_sha256(body)}
+
+
+def _validate_initial_miss_ready(
+    value: object,
+    *,
+    manifest: Mapping[str, object],
+    participant: str,
+    arrivals: Mapping[str, Mapping[str, object]],
+    arrival_set_sha256: str,
+) -> dict[str, object]:
+    raw = _exact_mapping(
+        value,
+        keys=_INITIAL_MISS_RENDEZVOUS_READY_KEYS,
+        where="initial-miss rendezvous ready record",
+    )
+    if raw["schema"] != INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1:
+        _fail("initial-miss rendezvous ready schema is unsupported")
+    for key in ("manifest_sha256", "run_nonce", "action_key"):
+        if raw[key] != manifest[key]:
+            _fail(f"initial-miss rendezvous ready {key} differs from manifest")
+    observed_participant = _text(
+        raw["participant"],
+        where="initial-miss rendezvous ready.participant",
+        pattern=_HOSTNAME_RE,
+    )
+    if observed_participant != participant:
+        _fail("initial-miss rendezvous ready participant differs from filename")
+    arrival = arrivals[participant]
+    process = arrival["process"]
+    if not isinstance(process, Mapping):
+        _fail("initial-miss rendezvous arrival process is not an object")
+    if raw["process_identity_sha256"] != process["process_identity_sha256"]:
+        _fail("initial-miss rendezvous ready process differs from its arrival")
+    if raw["arrival_sha256"] != arrival["arrival_sha256"]:
+        _fail("initial-miss rendezvous ready record differs from its arrival")
+    if raw["arrival_set_sha256"] != arrival_set_sha256:
+        _fail("initial-miss rendezvous ready record binds the wrong arrival set")
+    if raw["observation"] != "cas_absent_after_complete_arrival_set":
+        _fail("initial-miss rendezvous ready observation is unsupported")
+    body: dict[str, object] = {
+        "schema": INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "run_nonce": manifest["run_nonce"],
+        "action_key": manifest["action_key"],
+        "participant": participant,
+        "process_identity_sha256": process["process_identity_sha256"],
+        "arrival_sha256": arrival["arrival_sha256"],
+        "arrival_set_sha256": arrival_set_sha256,
+        "observation": "cas_absent_after_complete_arrival_set",
+    }
+    digest = _sha256(
+        raw["ready_sha256"], where="initial-miss rendezvous ready digest"
+    )
+    if digest != canonical_sha256(body):
+        _fail("initial-miss rendezvous ready digest does not match")
+    return {**body, "ready_sha256": digest}
+
+
+def _rendezvous_directory_entries(path: Path, *, where: str) -> set[str]:
+    descriptor = _open_directory_nofollow(path, where=where)
+    try:
+        try:
+            names: list[str] = []
+            with os.scandir(descriptor) as entries:
+                for entry in entries:
+                    names.append(entry.name)
+                    if (
+                        len(names)
+                        > _MAX_INITIAL_MISS_RENDEZVOUS_DIRECTORY_ENTRIES
+                    ):
+                        raise InitialMissRendezvousError(
+                            f"{where} exceeds the bounded entry count"
+                        )
+        except InitialMissRendezvousError:
+            raise
+        except OSError as exc:
+            raise InitialMissRendezvousError(
+                f"cannot list {where}: {path}: {exc}"
+            ) from exc
+        if any(type(name) is not str for name in names):
+            raise InitialMissRendezvousError(
+                f"{where} returned a non-text directory entry"
+            )
+        _assert_directory_identity(descriptor, path, where=where)
+        return set(names)
+    finally:
+        os.close(descriptor)
+
+
+def _initial_miss_phase_temp_name(name: str, expected: set[str]) -> bool:
+    return any(
+        name.startswith(f".{leaf}.") and name.endswith(".tmp")
+        for leaf in expected
+    )
+
+
+def _scan_initial_miss_phase(
+    directory: Path,
+    *,
+    phase: str,
+    participants: Sequence[str],
+    validate: Callable[[object, str], dict[str, object]],
+) -> dict[str, dict[str, object]] | None:
+    expected = {f"{participant}.json" for participant in participants}
+    observed = _rendezvous_directory_entries(
+        directory, where=f"initial-miss rendezvous {phase} directory"
+    )
+    unexpected = {
+        name
+        for name in observed - expected
+        if not _initial_miss_phase_temp_name(name, expected)
+    }
+    if unexpected:
+        raise InitialMissRendezvousError(
+            f"initial-miss rendezvous {phase} directory has unexpected entries: "
+            f"{sorted(unexpected)}"
+        )
+    incomplete = observed != expected
+    records: dict[str, dict[str, object]] = {}
+    for participant in participants:
+        leaf = f"{participant}.json"
+        if leaf not in observed:
+            continue
+        path = directory / leaf
+        try:
+            raw = _read_regular_file_nofollow(
+                path,
+                where=f"initial-miss rendezvous {phase} record",
+                require_readonly=True,
+                require_single_link=True,
+                max_bytes=_MAX_INITIAL_MISS_RENDEZVOUS_BYTES,
+            )
+        except FileNotFoundError:
+            incomplete = True
+            continue
+        except _FileLinkCountError:
+            # A valid hard-link publication briefly has two names until its
+            # private temporary name is removed.  It may become acceptable,
+            # but a persistent or hostile hard link can only reach timeout.
+            incomplete = True
+            continue
+        value = _decode_strict_json(
+            raw, where=f"initial-miss rendezvous {phase} record"
+        )
+        record = validate(value, participant)
+        if raw != _canonical_file_bytes(record):
+            raise InitialMissRendezvousError(
+                f"initial-miss rendezvous {phase} record is not canonical JSON"
+            )
+        records[participant] = record
+    after = _rendezvous_directory_entries(
+        directory, where=f"initial-miss rendezvous {phase} directory"
+    )
+    after_unexpected = {
+        name
+        for name in after - expected
+        if not _initial_miss_phase_temp_name(name, expected)
+    }
+    if after_unexpected:
+        raise InitialMissRendezvousError(
+            f"initial-miss rendezvous {phase} directory has unexpected entries: "
+            f"{sorted(after_unexpected)}"
+        )
+    if after != expected or len(records) != len(expected):
+        incomplete = True
+    return None if incomplete else records
+
+
+def _publish_initial_miss_record(
+    path: Path,
+    record: Mapping[str, object],
+    *,
+    phase: str,
+    cas: PrismaBuildCAS,
+    action: Mapping[str, object],
+    runtime: Mapping[str, object],
+) -> None:
+    def verify_absence_and_runtime() -> None:
+        if cas.lookup(action) is not None:
+            raise InitialMissRendezvousError(
+                "CAS receipt appeared before initial-miss rendezvous release"
+            )
+        _verify_worker_runtime_unchanged(runtime)
+
+    if not _atomic_publish(
+        path,
+        _canonical_file_bytes(record),
+        prelink_verify=verify_absence_and_runtime,
+    ):
+        raise InitialMissRendezvousError(
+            f"duplicate or replayed initial-miss rendezvous {phase} participant: "
+            f"{path.stem}"
+        )
+
+
+def _wait_initial_miss_arrivals(
+    *,
+    directory: Path,
+    manifest: Mapping[str, object],
+    runtime: Mapping[str, object],
+    cas: PrismaBuildCAS,
+    action: Mapping[str, object],
+    deadline: float,
+) -> dict[str, dict[str, object]]:
+    participants = manifest["participants"]
+    if not isinstance(participants, list):
+        raise InitialMissRendezvousError(
+            "validated rendezvous participants are not an array"
+        )
+    while True:
+        records = _scan_initial_miss_phase(
+            directory,
+            phase="arrival",
+            participants=participants,
+            validate=lambda value, participant: _validate_initial_miss_arrival(
+                value,
+                manifest=manifest,
+                participant=participant,
+                runtime=runtime,
+            ),
+        )
+        # Complete arrivals are not a release. Every participant must make a
+        # fresh absence observation before publishing its second-phase ready.
+        if cas.lookup(action) is not None:
+            raise InitialMissRendezvousError(
+                "CAS receipt appeared before initial-miss arrivals completed"
+            )
+        if records is not None:
+            return records
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise InitialMissRendezvousError(
+                "initial-miss rendezvous timed out waiting for exact arrivals"
+            )
+        time.sleep(min(_INITIAL_MISS_RENDEZVOUS_POLL_SECONDS, remaining))
+
+
+def _wait_initial_miss_ready(
+    *,
+    directory: Path,
+    manifest: Mapping[str, object],
+    arrivals: Mapping[str, Mapping[str, object]],
+    arrival_set_sha256: str,
+    cas: PrismaBuildCAS,
+    action: Mapping[str, object],
+    deadline: float,
+) -> dict[str, dict[str, object]]:
+    participants = manifest["participants"]
+    if not isinstance(participants, list):
+        raise InitialMissRendezvousError(
+            "validated rendezvous participants are not an array"
+        )
+    receipt_observed = False
+    while True:
+        records = _scan_initial_miss_phase(
+            directory,
+            phase="ready",
+            participants=participants,
+            validate=lambda value, participant: _validate_initial_miss_ready(
+                value,
+                manifest=manifest,
+                participant=participant,
+                arrivals=arrivals,
+                arrival_set_sha256=arrival_set_sha256,
+            ),
+        )
+        # The exact second ready link is the logical release event. A fast
+        # peer may legitimately acquire the output lock and publish after it;
+        # do not turn that post-release receipt into a false refusal here.
+        if records is not None:
+            return records
+        if not receipt_observed and cas.lookup(action) is not None:
+            # Release may already have happened while NFS still returns a
+            # stale ready-directory view. Once a receipt is visible, continue
+            # bounded exact scans through the original monotonic deadline.
+            # An actually missing in-protocol ready cannot newly link after
+            # this observation because its pre-link CAS check fails closed.
+            receipt_observed = True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            if receipt_observed:
+                raise InitialMissRendezvousError(
+                    "CAS receipt appeared before initial-miss ready release"
+                )
+            raise InitialMissRendezvousError(
+                "initial-miss rendezvous timed out waiting for exact ready records"
+            )
+        time.sleep(min(_INITIAL_MISS_RENDEZVOUS_POLL_SECONDS, remaining))
+
+
+def _run_initial_miss_rendezvous(
+    *,
+    manifest_path: str | Path,
+    cas: PrismaBuildCAS,
+    action: Mapping[str, object],
+    worker_launcher_identity: object | None,
+) -> dict[str, object]:
+    """Prove exact peers observed one initial miss before either may publish."""
+
+    manifest = _load_initial_miss_rendezvous_manifest(
+        manifest_path, action=action, cas=cas
+    )
+    deadline = time.monotonic() + float(manifest["timeout_seconds"])
+    participant = _initial_miss_hostname()
+    participants = manifest["participants"]
+    if not isinstance(participants, list) or participant not in participants:
+        raise InitialMissRendezvousError(
+            "local lowercase hostname is not an exact rendezvous participant"
+        )
+    process = _initial_miss_process_identity(
+        hostname=participant,
+        worker_launcher_identity=worker_launcher_identity,
+    )
+    runtime = process["runtime"]
+    if not isinstance(runtime, Mapping):
+        raise InitialMissRendezvousError(
+            "initial-miss rendezvous runtime identity is not an object"
+        )
+    namespace = Path(str(manifest["rendezvous_namespace"]))
+    for directory, where in (
+        (namespace, "initial-miss rendezvous namespace"),
+        (namespace / "arrivals", "initial-miss rendezvous arrival directory"),
+        (namespace / "ready", "initial-miss rendezvous ready directory"),
+    ):
+        descriptor = _open_directory_nofollow(directory, where=where, create=True)
+        os.close(descriptor)
+    if _rendezvous_directory_entries(
+        namespace, where="initial-miss rendezvous namespace"
+    ) != {"arrivals", "ready"}:
+        raise InitialMissRendezvousError(
+            "initial-miss rendezvous namespace has missing or extra entries"
+        )
+    if time.monotonic() >= deadline:
+        raise InitialMissRendezvousError(
+            "initial-miss rendezvous timed out during manifest validation"
+        )
+    if cas.lookup(action) is not None:
+        raise InitialMissRendezvousError(
+            "CAS receipt appeared after the worker's initial miss"
+        )
+    arrival = _initial_miss_arrival(
+        manifest=manifest,
+        participant=participant,
+        process=process,
+    )
+    _publish_initial_miss_record(
+        namespace / "arrivals" / f"{participant}.json",
+        arrival,
+        phase="arrival",
+        cas=cas,
+        action=action,
+        runtime=runtime,
+    )
+    arrivals = _wait_initial_miss_arrivals(
+        directory=namespace / "arrivals",
+        manifest=manifest,
+        runtime=runtime,
+        cas=cas,
+        action=action,
+        deadline=deadline,
+    )
+    arrival_set_sha256 = canonical_sha256(
+        [arrivals[name] for name in participants]
+    )
+    # This is the second-phase observation required from every participant.
+    # The same check runs again as the final userspace operation before link.
+    if cas.lookup(action) is not None:
+        raise InitialMissRendezvousError(
+            "CAS receipt appeared before initial-miss ready publication"
+        )
+    ready = _initial_miss_ready(
+        manifest=manifest,
+        participant=participant,
+        process=process,
+        arrival=arrivals[participant],
+        arrival_set_sha256=arrival_set_sha256,
+    )
+    _publish_initial_miss_record(
+        namespace / "ready" / f"{participant}.json",
+        ready,
+        phase="ready",
+        cas=cas,
+        action=action,
+        runtime=runtime,
+    )
+    ready_records = _wait_initial_miss_ready(
+        directory=namespace / "ready",
+        manifest=manifest,
+        arrivals=arrivals,
+        arrival_set_sha256=arrival_set_sha256,
+        cas=cas,
+        action=action,
+        deadline=deadline,
+    )
+    _verify_worker_runtime_unchanged(runtime)
+    ready_set_sha256 = canonical_sha256(
+        [ready_records[name] for name in participants]
+    )
+    body: dict[str, object] = {
+        "schema": INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "rendezvous_namespace": manifest["rendezvous_namespace"],
+        "cas_root": manifest["cas_root"],
+        "run_nonce": manifest["run_nonce"],
+        "action_key": manifest["action_key"],
+        "participants": participants,
+        "participant": participant,
+        "process_identity_sha256": process["process_identity_sha256"],
+        "arrival_sha256": arrival["arrival_sha256"],
+        "ready_sha256": ready["ready_sha256"],
+        "arrival_set_sha256": arrival_set_sha256,
+        "ready_set_sha256": ready_set_sha256,
+    }
+    receipt = {**body, "receipt_sha256": canonical_sha256(body)}
+    if set(receipt) != set(_INITIAL_MISS_RENDEZVOUS_RECEIPT_KEYS):
+        raise InitialMissRendezvousError(
+            "initial-miss rendezvous receipt schema drifted"
+        )
+    return receipt
 
 
 def _validate_execution_paths(
@@ -2959,6 +3857,7 @@ def run_local_action(
     timeout_seconds: float | None = None,
     recompute: bool = False,
     worker_launcher_identity: object | None = None,
+    initial_miss_rendezvous: str | Path | None = None,
 ) -> dict[str, object]:
     """Execute one action locally and publish its declared file result."""
 
@@ -2967,6 +3866,11 @@ def run_local_action(
     if not root.is_absolute():
         raise ActionContractError("checkout_root must be absolute")
     cas = PrismaBuildCAS(cas_root)
+    if recompute and initial_miss_rendezvous is not None:
+        raise ActionContractError(
+            "initial-miss rendezvous is incompatible with recompute"
+        )
+    initial_miss_receipt: dict[str, object] | None = None
     if not recompute:
         cached = cas.lookup(normalized)
         if cached is not None:
@@ -2976,6 +3880,15 @@ def run_local_action(
                 "receipt": cached,
                 "payload_path": str(cas._verified_receipt_result_path(cached)),
             }
+        if initial_miss_rendezvous is not None:
+            # This call is deliberately adjacent to the first authoritative
+            # miss and precedes checkout/output resolution and its local lock.
+            initial_miss_receipt = _run_initial_miss_rendezvous(
+                manifest_path=initial_miss_rendezvous,
+                cas=cas,
+                action=normalized,
+                worker_launcher_identity=worker_launcher_identity,
+            )
     task = normalized["task"]
     environment = normalized["environment"]
     assert isinstance(task, Mapping)
@@ -2994,11 +3907,14 @@ def run_local_action(
             cached = cas.lookup(normalized)
             if cached is not None:
                 verify_code_closure(normalized["code_closure"], root)
-                return {
+                result: dict[str, object] = {
                     "status": "cache_hit",
                     "receipt": cached,
                     "payload_path": str(cas._verified_receipt_result_path(cached)),
                 }
+                if initial_miss_receipt is not None:
+                    result["initial_miss_rendezvous"] = initial_miss_receipt
+                return result
         attestation = preflight_action(
             normalized,
             cas_root=cas_root,
@@ -3087,7 +4003,7 @@ def run_local_action(
             precommit_verify=verify_publication_provenance,
             staging_namespace=str(claim["claim_sha256"]),
         )
-    return {
+    result = {
         "status": "published" if won else "canonical_result_reused",
         "receipt": receipt,
         # ``publish_result`` has already consumed or identity-proved the exact
@@ -3098,6 +4014,9 @@ def run_local_action(
         "reaped_staging_files": reaped_staging_files,
         "local_result_claim_sha256": claim["claim_sha256"],
     }
+    if initial_miss_receipt is not None:
+        result["initial_miss_rendezvous"] = initial_miss_receipt
+    return result
 
 
 def _read_json_mapping(path: Path, *, where: str) -> Mapping[str, object]:
@@ -3180,6 +4099,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-seconds", type=float)
     run.add_argument("--recompute", action="store_true")
     run.add_argument("--require-slurm-initial-start", action="store_true")
+    run.add_argument("--initial-miss-rendezvous", type=Path)
     repair = commands.add_parser("repair-local-result")
     repair.add_argument("--action", required=True, type=Path)
     repair.add_argument("--cas-root", required=True, type=Path)
@@ -3307,6 +4227,7 @@ def main(
         timeout_seconds=args.timeout_seconds,
         recompute=args.recompute,
         worker_launcher_identity=worker_launcher_identity,
+        initial_miss_rendezvous=args.initial_miss_rendezvous,
     )
     print(json.dumps(result, sort_keys=True))
     return 0
@@ -3317,6 +4238,11 @@ __all__ = [
     "ACTION_SCHEMA_V2",
     "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",
+    "INITIAL_MISS_RENDEZVOUS_ARRIVAL_SCHEMA_V1",
+    "INITIAL_MISS_RENDEZVOUS_MANIFEST_SCHEMA_V1",
+    "INITIAL_MISS_RENDEZVOUS_PROCESS_SCHEMA_V1",
+    "INITIAL_MISS_RENDEZVOUS_READY_SCHEMA_V1",
+    "INITIAL_MISS_RENDEZVOUS_RECEIPT_SCHEMA_V1",
     "LOCAL_RESULT_CLAIM_SCHEMA_V1",
     "WORKER_ATTESTATION_SCHEMA_V2",
     "WORKER_RUNTIME_SCHEMA_V1",
@@ -3324,6 +4250,7 @@ __all__ = [
     "CASConflictError",
     "CASTamperError",
     "CASUnavailableError",
+    "InitialMissRendezvousError",
     "LocalActionError",
     "PrismaBuildCAS",
     "PrismaBuildError",
