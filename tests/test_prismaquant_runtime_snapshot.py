@@ -1,11 +1,13 @@
 """Content-addressed PrismaQuant runtime snapshot boundary."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tarfile
@@ -256,17 +258,124 @@ def test_git_archive_extractor_refuses_hardlink_and_special_members(tmp_path):
         assert list(destination.iterdir()) == []
 
 
-def test_snapshot_directory_publication_never_replaces_an_incumbent(tmp_path):
+def _publication_candidate(root: Path, identity: str) -> Path:
+    root.mkdir()
+    nested = root / "nested"
+    nested.mkdir(mode=0o750)
+    nested.chmod(0o750)
+    payload = nested / "payload.bin"
+    payload.write_bytes(identity.encode())
+    payload.chmod(0o540)
+    os.symlink("/absolute/calibration.jsonl", root / "calibration.jsonl")
+    (root / ".prismaquant-runtime-snapshot.json").write_text(
+        json.dumps({"identity": identity}) + "\n"
+    )
+    return root
+
+
+def test_snapshot_tree_fallback_never_replaces_an_incumbent(tmp_path):
     snapshot_tool = _load_tool_module()
-    candidate = tmp_path / "candidate"
+    candidate = _publication_candidate(tmp_path / "candidate", "candidate")
     incumbent = tmp_path / "destination"
-    candidate.mkdir()
     incumbent.mkdir()
     (candidate / "identity").write_text("candidate\n")
     (incumbent / "identity").write_text("incumbent\n")
 
-    won = snapshot_tool._rename_directory_noreplace(candidate, incumbent)
+    won = snapshot_tool._populate_snapshot_tree_noreplace(candidate, incumbent)
 
     assert won is False
     assert (candidate / "identity").read_text() == "candidate\n"
     assert (incumbent / "identity").read_text() == "incumbent\n"
+
+
+def test_snapshot_tree_fallback_preserves_modes_links_and_manifest_last(tmp_path):
+    snapshot_tool = _load_tool_module()
+    candidate = _publication_candidate(tmp_path / "candidate", "exact")
+    destination = tmp_path / "destination"
+    phases = []
+
+    won = snapshot_tool._populate_snapshot_tree_noreplace(
+        candidate,
+        destination,
+        fault_inject=lambda phase, relative: phases.append((phase, relative)),
+    )
+
+    assert won is True
+    assert stat.S_IMODE((destination / "nested").stat().st_mode) == 0o750
+    assert stat.S_IMODE((destination / "nested" / "payload.bin").stat().st_mode) == 0o540
+    assert os.readlink(destination / "calibration.jsonl") == "/absolute/calibration.jsonl"
+    assert phases[0] == ("destination_claimed", None)
+    assert phases[-1] == ("before_manifest", None)
+    assert (destination / ".prismaquant-runtime-snapshot.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "fault_phase",
+    ["destination_claimed", "directory_published", "leaf_published", "before_manifest"],
+)
+def test_snapshot_tree_fallback_fault_leaves_unadoptable_incomplete_destination(
+    tmp_path, monkeypatch, fault_phase
+):
+    snapshot_tool = _load_tool_module()
+    source, commit = _repository(tmp_path)
+    tree = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", f"{commit}^{{tree}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    cache = tmp_path / "cache"
+    destination = cache / f"{commit}-{tree[:12]}"
+    original_populate = snapshot_tool._populate_snapshot_tree_noreplace
+
+    def injected(source_path, destination_path, *, fault_inject=None):
+        fired = False
+
+        def fault(phase, relative):
+            nonlocal fired
+            if phase == fault_phase and not fired:
+                fired = True
+                raise RuntimeError(f"injected {phase}")
+
+        return original_populate(
+            source_path, destination_path, fault_inject=fault
+        )
+
+    monkeypatch.setattr(
+        snapshot_tool, "_try_rename_directory_noreplace", lambda *_: None
+    )
+    monkeypatch.setattr(
+        snapshot_tool, "_populate_snapshot_tree_noreplace", injected
+    )
+    with pytest.raises(RuntimeError, match=fault_phase):
+        snapshot_tool.materialize_snapshot(source, cache, commit=commit)
+
+    assert destination.is_dir()
+    assert not (destination / ".prismaquant-runtime-snapshot.json").exists()
+    monkeypatch.setattr(
+        snapshot_tool, "_populate_snapshot_tree_noreplace", original_populate
+    )
+    with pytest.raises(snapshot_tool.SnapshotError, match="manifest"):
+        snapshot_tool.materialize_snapshot(source, cache, commit=commit)
+
+
+def test_snapshot_tree_fallback_concurrent_claim_has_one_winner(tmp_path):
+    snapshot_tool = _load_tool_module()
+    first = _publication_candidate(tmp_path / "first", "same")
+    second = _publication_candidate(tmp_path / "second", "same")
+    destination = tmp_path / "destination"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                snapshot_tool._populate_snapshot_tree_noreplace,
+                candidate,
+                destination,
+            )
+            for candidate in (first, second)
+        ]
+    outcomes = [future.result() for future in futures]
+
+    assert sorted(outcomes) == [False, True]
+    assert (destination / "nested" / "payload.bin").read_bytes() == b"same"
+    assert os.readlink(destination / "calibration.jsonl") == "/absolute/calibration.jsonl"
