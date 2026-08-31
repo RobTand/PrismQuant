@@ -152,6 +152,96 @@ The producer work, in dependency order:
 reference for the export shape — its own docstring says *"A real exporter
 substitutes an encoder here and changes nothing else."*
 
+## 5-bis. Two items that are Gridbook work, not producer work
+
+Neither is on the critical path to the first *measurement*; both are on the
+critical path to a first *ship*.
+
+**(i) The trellis lanes emit no route telemetry.** Confirmed twice, from both
+ends: a live serve produced no `emit_route` records, and source inspection of
+`trellis_e2m1_lane.py` / `trellis_e4m3_lane.py` at the pin returns zero hits for
+`emit_route`, while `gridbook/linear.py` and `gridbook/moe.py` call it at every
+CB dispatch site. The lanes do set `layer.gridbook_activation_contract`, but
+that is a *binding* recorded at `create_weights`, not a per-forward route
+record, and it is not the mechanism `validate_native_export` consumes.
+
+So principle 14's serve-side leg has nothing to compare against, and the
+correct disposition is to **refuse for lack of evidence** rather than pass by
+default — anything else recreates the 2026-08-17 defect, where provenance
+nothing consumed was mistaken for a gate.
+
+*The argument that could close this without new telemetry, recorded so it is
+argued rather than assumed:* the trellis lanes have **no fallback at all**
+(`NativeKernelUnavailableError`: *"There is no Triton or CB-symbol fallback"*),
+so lane construction implies the native route in a way CB's dispatch does not.
+If that no-fallback property is itself derived from the pinned runtime rather
+than asserted here, `gridbook_activation_contract` becomes admissible served
+evidence. Until someone makes that derivation explicit and testable, the
+refusal stands.
+
+**(ii) No `routed_moe` trellis cell, and the numbers make it decisive.** On
+GLM-5.3-Flash (45 layers, 288 routed experts, `first_k_dense_replace=3`, one
+shared expert) the routed experts are **98.5%** of the body. What a trellis can
+reach today is `o_proj` + three dense `down_proj` + the shared-expert
+`down_proj` — **0.4% of 309 B**. A trellis GLM is therefore not possible under
+this pin no matter how good the producer becomes.
+
+For contrast, on a dense architecture the whole body is reachable at TP=1, once
+the fused rule below is applied.
+
+## 5-ter. Fused modules ARE trellis-eligible — one wire, merged prefix
+
+`gridbook/tools/make_trellis_smoke_checkpoint.py` parks `q/k/v` and `gate/up` in
+`ignore`, which reads like a prohibition and is not one. `config.py::
+_build_trellis_method` refuses only a fused target **with per-role owners**, and
+its message ends: *"Export ONE wire covering the whole merged module and declare
+it against this prefix."* `_trellis_scheme_for_prefix` resolves a scheme
+declared against the merged name.
+
+So the supported form is: concatenate the siblings along the output-row axis in
+`packed_modules_mapping` order, encode **one** wire over the merged
+`[sum(out_features), in_features]` matrix, and declare it against
+`...qkv_proj` / `...gate_up_proj`. The allocator's union-find serving-unit
+promotion already forces one format across a fused group, which is exactly the
+precondition this needs.
+
+This distinction is worth 69% of a dense model: on Qwen3-4B the unfused Linears
+(`o_proj`, `down_proj`) are only **31.2%** of body parameters.
+
+**The real constraint in this area is TP=1.** `_require_tp1_serving` refuses
+every trellis target above one rank, because a sharded trellis needs per-rank
+wires rather than a byte range into a shared schedule. Any artifact carrying a
+trellis unit records `tp=1` in its serving-lane provenance.
+
+## 5-quater. Encoder throughput — measured, and it is not the risk
+
+`prismaquant/trellis_producer.encode_trellis_one_linear`, E2M1
+`body_rate_q256=512`, `layout=fixed_quota_per_256`, `tailbite_candidates=4`,
+`determinism_mode=on`, unweighted `col_weights`, random bf16 input, on this
+GB10:
+
+| shape | backend | wall | wSNR | wire bpw |
+|---|---|---|---|---|
+| 512x1024 | eager | 368 ms | 10.64 dB | 2.5093 |
+| 512x1024 | triton | 625 ms | 10.64 dB | 2.5093 |
+| 4096x4096 | triton | **0.84 s** | 10.65 dB | 2.5010 |
+
+~20 Mparam/s batched, so Qwen3-4B's whole body is on the order of **3 minutes**.
+The first artifact does not have to be 0.6B.
+
+Two cautions attached to those rows. **`sb_chunk` is the whole story**: the
+value in `tests/test_trellis_producer.py` is `1`, which runs one Viterbi row per
+launch; at that setting a 256x512 tensor did not finish in two minutes at 48%
+"utilization" and **14.3 W of a ~140 W envelope** — one-tenth loaded, the
+launch-overhead signature from 2026-08-28. Batch it. And **triton loses to eager
+at small shapes**, so the backend is a per-Linear decision, to be made on a
+profile plus power rather than on wall-clock (principle 15).
+
+Note the wire cost: `body_rate_q256=512` is 2.0 body bits and **2.51 bpw on the
+wire**. The ~0.51 is the group-16 ue4m3 scale plane plus schedule, alphabets and
+row padding. Any comparison against NVFP4's 4.5 uses the 2.51-style number, from
+`trellis_footprint`, never the body rate.
+
 ## 6. The A-side, stated honestly
 
 Every trellis quality number in the tree — the whole 4- and 8-bit ladder, the
