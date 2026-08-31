@@ -78,6 +78,20 @@ EXPECTED_ATTESTATION_IDENTITY_SHA256 = (
     "1cfad16122829dd0f3554a77d5b630a5005af78a57b706eca886bd756d8c510d"
 )
 EXPECTED_CONTAINER_ID = "8d5a2b79f98d24f10635bbe6fa7c339a8361377f18926f281ad4e2503d4bac89"
+EXPECTED_RESULT_PATH = (
+    "/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/"
+    "fp8-cb-tcq-v1/result.json"
+)
+EXPECTED_RESULT_SHA256 = (
+    "3e37ebeb24f575d802461c14c8d844fe5ba0fd7029a0a3f0b2bfe4d2a9befe18"
+)
+EXPECTED_RESULT_SIZE_BYTES = 3_109_750
+EXPECTED_CHECKPOINT_SHA256 = (
+    "c1d6699de67bcac88b084cd10b0dc3cc9b418aa0568febf8612e4c7c034a86ff"
+)
+EXPECTED_SETTINGS_IDENTITY_SHA256 = (
+    "913e070ff6bd74506bc0156f9105ed453fa2af86cb0bdbc39d6efcd675fd5712"
+)
 _ACTIVE_SOURCE_SUFFIX_HASHES = {
     "/research/trellis_e2m1_highrate_2026-08-30/fp8_cb_tcq_glm.py":
         "aab789872431108761da43a3eb50fa556f1526024e0ba0cea9d2ed1106aa88b4",
@@ -1377,6 +1391,15 @@ def _validate_source(
         raise AnalysisReceiptError(
             "source population summaries differ from canonical integer-bit recomputation"
         )
+    if (
+        source_binding.get("path") != EXPECTED_RESULT_PATH
+        or source_binding.get("sha256") != EXPECTED_RESULT_SHA256
+        or source_binding.get("size_bytes") != EXPECTED_RESULT_SIZE_BYTES
+        or source.get("checkpoint_sha256") != EXPECTED_CHECKPOINT_SHA256
+        or settings.get("identity_sha256")
+        != EXPECTED_SETTINGS_IDENTITY_SHA256
+    ):
+        raise AnalysisReceiptError("exact final result artifact identity differs")
     return settings, {**manifest_binding, "artifact": artifact_binding}
 
 
