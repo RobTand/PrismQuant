@@ -163,6 +163,13 @@ canonical `gridbook.trellis.wire.v1` bytes, reparses and decodes those same
 bytes, and proves original-basis serve algebra. It remains one-Linear,
 unregistered, unpinned, and production-ineligible.
 
+Prepared scaffold schemas v2 retain and re-transform the source weight at the
+encode boundary; exact equality to the retained transformed weight is
+mandatory. BlockLDL artifact schema v3 binds the producer/encoder/wire/format
+source set and the declared callable closure (plus the scale-grid closure when
+enabled). Module-level substitution of an execution or gateway callable fails
+closed rather than publishing under the original source hashes.
+
 ## Executable Arm E quality campaign
 
 `arm_e_quality_campaign.py` is the research-only matched runner for scalar
@@ -321,52 +328,23 @@ sha256sum "$PQ_RUN/profile/arm-e-qwen.nsys-rep" "$PQ_RUN"/netdata/*.json \
   > "$PQ_RUN/telemetry.sha256"
 ```
 
-Create the first measured GLM pilot from the Qwen manifest, preserving the
-same recipe and primary seed:
+The GLM pilot and full 33-tensor census subsequently completed. The largest
+`[4096,12288]` tensor used three ordered 4096-column factor groups without a
+global Hessian. Maximum allocated CUDA memory was `6,686,095,360` bytes; the
+profiled census window was 652 seconds. The full receipt SHA-256 is
+`84987783448da1db3aa6d0dcf8a409f7ab383de45fb2329f1bc667a58dd87b32`.
+Thus the structured implementation is physically feasible on the measured
+Sparky configuration.
 
-```bash
-GLM_RUN=/home/rob/dq-runs/arm-e-glm-pilot-${PQ_COMMIT:0:7}
-mkdir -p "$GLM_RUN/contract" "$GLM_RUN/output"
-jq --arg run "$GLM_RUN" '
-  .campaign_id=("arm-e-glm-pilot-" + (.execution.prismaquant_commit[0:7])) |
-  .mode="glm_corpus" |
-  .output={root:"/publication",durable_root_uri:("sparky:" + $run + "/output")} |
-  .input={kind:"glm_corpus",corpus_manifest:"/corpus/manifest.json",selected_tensors:["model.language_model.layers.0.mlp.gate_proj.weight","model.language_model.layers.3.mlp.experts.0.down_proj.weight"],limit:null} |
-  .seeds=[.seeds[0]]
-' "$PQ_RUN/contract/qwen.manifest.v1.json" > "$GLM_RUN/contract/glm-pilot.manifest.v1.json"
-docker run --rm --gpus all --ipc=host --entrypoint /usr/bin/python3 \
-  -e PYTHONPATH=/code -e PYTHONDONTWRITEBYTECODE=1 \
-  -v "$PQ_TREE:/code:ro" \
-  -v /home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2:/corpus:ro \
-  -v "$GLM_RUN/contract:/contract:ro" -v "$GLM_RUN/output:/publication" \
-  -w /code sha256:cf3f7f83e6820fa75aae249393e8fa4840af4562192203a1aed3f2082f3ea2f9 \
-  -m research.qtip_native_nvfp4_2026-08-30.arm_e_quality_campaign \
-  --manifest /contract/glm-pilot.manifest.v1.json
-```
-
-To exercise the full-census planning path without allocating K12288, change
-`selected_tensors` to `[]`, use a fresh output identity, and run
-`--preflight-only`. It must report
-`full_glm_census_shape_supported=true`,
-`full_glm_census_memory_gate_status=unmeasured_requires_cuda_peak`, and a
-three-group K12288 feasibility plan.
-That CPU-only result is a shape/reference-plan contract, not memory or
-execution evidence.
-Do not start the non-preflight census until the clean committed source identity,
-exclusive GPU window, and profiler/telemetry roots are fixed.
-
-The feasibility go gate is: no CPU fallback, peak allocated memory at most
-24 GiB, every tensor at most 1,800 seconds, projected 33-tensor total at most
-six GPU-hours, a usable in-process trace, and clean both-host Netdata. Capture
-the in-process profile and Sparky/Sparklina Netdata for the pilot as well as
-the eventual census; a preflight cannot satisfy either measurement. These
-are execution gates, not speed claims. Qwen advances when primary E beats or
-ties C on activation-output and regularized-H NSSE at lower exact bpw; robust
-advance additionally needs nonnegative median deltas across the three seeds
-and no activation delta below -0.1 dB. GLM's full-census gate remains
-the separately reported dense/routed paired raw-importance thresholds encoded
-in the receipt; no GLM activation-output, KL/PPL, serving, or performance
-claim is permitted here.
+Quality was negative under the preregistered separate population gates. Arm E
+minus Arm C median raw-importance SNR was `-0.442704 dB` for dense tensors
+(2/9 wins) and `-1.803932 dB` for routed tensors (3/24 wins); regularized-H
+medians were `-1.350010 dB` and `-1.944914 dB`. Arm E therefore remains a
+research ablation and must not replace Arm C. The full evidence, profile and
+both-host telemetry identities are recorded in
+`docs/results/qtip_native_nvfp4_arm_e_glm_2026-08-30.md`. This census contains
+activation second moments rather than activation rows, so it establishes no
+activation-output, KL/PPL, serving, throughput, or work-per-joule claim.
 
 ## Preliminary v1 one-Linear result (Sparky, 2026-08-30; superseded)
 

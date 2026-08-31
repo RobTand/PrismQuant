@@ -181,24 +181,12 @@ def test_encoder_override_refuses_nonpositive_or_nan_scale_cells(bad_code):
         )
 
 
-def test_two_full_arms_realized_gate_exact_min_and_zero_byte_rate_delta(monkeypatch):
-    import prismaquant.trellis_scale_grid as module
-
-    calls = 0
-    original = module.encode_trellis_planes
-
-    def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(module, "encode_trellis_planes", counted)
+def test_two_full_arms_realized_gate_exact_min_and_zero_byte_rate_delta():
     weight = _weight()
     metric = torch.ones(256)
     result = encode_e2m1_scale_grid_two_arm(
         weight, metric, **_grid_kwargs()
     )
-    assert calls == 2
     assert bool(result.candidate_wins.all())
     assert torch.equal(
         result.final_tile_sse,
@@ -214,20 +202,7 @@ def test_two_full_arms_realized_gate_exact_min_and_zero_byte_rate_delta(monkeypa
     assert result.receipt["producer_eligible"] is False
 
 
-def test_identity_only_menu_runs_both_arms_and_is_byte_identical_to_old_encoder(
-    monkeypatch,
-):
-    import prismaquant.trellis_scale_grid as module
-
-    calls = 0
-    original = module.encode_trellis_planes
-
-    def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(module, "encode_trellis_planes", counted)
+def test_identity_only_menu_runs_both_arms_and_is_byte_identical_to_old_encoder():
     weight = _weight(1)
     metric = torch.ones(256)
     kwargs = _grid_kwargs()
@@ -248,15 +223,12 @@ def test_identity_only_menu_runs_both_arms_and_is_byte_identical_to_old_encoder(
         backend="eager",
         point_route="full",
     )
-    assert calls == 2
     assert not bool(result.candidate_wins.any())
     assert result.wire_bytes == result.identity_wire_bytes == legacy.wire_bytes
     assert result.receipt["proof"]["no_win_byte_identical"] is True
 
 
-def test_realized_tie_keeps_identity_even_if_candidate_scale_bytes_differ(
-    monkeypatch,
-):
+def test_callable_substitution_cannot_forge_a_realized_tie(monkeypatch):
     import prismaquant.trellis_scale_grid as module
 
     original = module.propose_e2m1_scale_plane
@@ -279,15 +251,11 @@ def test_realized_tie_keeps_identity_even_if_candidate_scale_bytes_differ(
     weight = _weight(1)
     kwargs = _grid_kwargs()
     kwargs["multipliers"] = (1.0, 0.75)
-    result = encode_e2m1_scale_grid_two_arm(
-        weight, torch.ones(256), **kwargs
-    )
-    assert torch.equal(result.identity_tile_sse, result.candidate_tile_sse)
-    assert not bool(result.candidate_wins.any())
-    assert result.wire_bytes == result.identity_wire_bytes
+    with pytest.raises(ScaleGridError, match="callable closure changed"):
+        encode_e2m1_scale_grid_two_arm(weight, torch.ones(256), **kwargs)
 
 
-def test_uniformly_bad_legal_candidate_is_rejected_by_realized_gate(monkeypatch):
+def test_callable_substitution_cannot_force_a_bad_legal_candidate(monkeypatch):
     import prismaquant.trellis_scale_grid as module
 
     original = module.propose_e2m1_scale_plane
@@ -297,12 +265,10 @@ def test_uniformly_bad_legal_candidate_is_rejected_by_realized_gate(monkeypatch)
         return replace(proposal, scale_codes=torch.ones_like(proposal.scale_codes))
 
     monkeypatch.setattr(module, "propose_e2m1_scale_plane", bad_legal_plane)
-    result = encode_e2m1_scale_grid_two_arm(
-        _weight(), torch.ones(256), **_grid_kwargs()
-    )
-    assert not bool(result.candidate_wins.any())
-    assert result.wire_bytes == result.identity_wire_bytes
-    assert result.receipt["proof"]["no_win_byte_identical"] is True
+    with pytest.raises(ScaleGridError, match="callable closure changed"):
+        encode_e2m1_scale_grid_two_arm(
+            _weight(), torch.ones(256), **_grid_kwargs()
+        )
 
 
 def test_real_shaped_c2_witness_proves_rtn_proposal_needs_realized_gate():
@@ -350,20 +316,20 @@ def test_randomized_realized_nonregression(seed):
     assert bool((result.final_tile_sse <= result.identity_tile_sse).all())
 
 
-def test_splice_mutation_trips_exact_cf_minimum(monkeypatch):
+def test_splice_substitution_refuses_before_execution(monkeypatch):
     import prismaquant.trellis_scale_grid as module
 
     def wrong_splice(identity, _candidate, _wins):
         return identity
 
     monkeypatch.setattr(module, "_splice_encoded_planes", wrong_splice)
-    with pytest.raises(ScaleGridError, match=r"Cf is not exactly min\(C0, C1\)"):
+    with pytest.raises(ScaleGridError, match="callable closure changed"):
         encode_e2m1_scale_grid_two_arm(
             _weight(), torch.ones(256), **_grid_kwargs()
         )
 
 
-def test_scorer_disagreement_cannot_certify_a_wrong_winner(monkeypatch):
+def test_scorer_substitution_refuses_before_execution(monkeypatch):
     import prismaquant.trellis_scale_grid as module
 
     original = module.score_realized_tiles_fp64
@@ -378,13 +344,13 @@ def test_scorer_disagreement_cannot_certify_a_wrong_winner(monkeypatch):
         return actual
 
     monkeypatch.setattr(module, "score_realized_tiles_fp64", inconsistent)
-    with pytest.raises(ScaleGridError, match=r"Cf is not exactly min\(C0, C1\)"):
+    with pytest.raises(ScaleGridError, match="callable closure changed"):
         encode_e2m1_scale_grid_two_arm(
             _weight(), torch.ones(256), **_grid_kwargs()
         )
 
 
-def test_global_scale_drift_between_arms_is_refused(monkeypatch):
+def test_encoder_substitution_refuses_before_execution(monkeypatch):
     import prismaquant.trellis_scale_grid as module
 
     original = module.encode_trellis_planes
@@ -401,7 +367,7 @@ def test_global_scale_drift_between_arms_is_refused(monkeypatch):
         return encoded
 
     monkeypatch.setattr(module, "encode_trellis_planes", drifting)
-    with pytest.raises(ScaleGridError, match="immutable global scale"):
+    with pytest.raises(ScaleGridError, match="callable closure changed"):
         encode_e2m1_scale_grid_two_arm(
             _weight(), torch.ones(256), **_grid_kwargs()
         )
@@ -504,6 +470,21 @@ def test_render_recipe_refuses_string_subclass_alias_before_encode():
         )
 
 
+def test_degenerate_global_scale_cannot_escape_canonical_decode_equality():
+    # The encoder's defensive 1e-12 effective-scale floor is intentionally
+    # not a second wire convention.  At this synthetic subnormal-scale edge,
+    # it differs from the E4M3-byte decoder and the mandatory same-byte gate
+    # must refuse instead of certifying the in-memory reconstruction.
+    kwargs = _grid_kwargs()
+    kwargs["multipliers"] = (1.0,)
+    kwargs["global_scale_real_override"] = 1.0e-12
+    weight = torch.full((1, 256), 6.0e-13)
+    with pytest.raises(
+        ScaleGridError, match="canonical arm decode differs from the encoder"
+    ):
+        encode_e2m1_scale_grid_two_arm(weight, torch.ones(256), **kwargs)
+
+
 def test_selector_source_drift_after_import_refuses(monkeypatch):
     import prismaquant.trellis_scale_grid as module
 
@@ -525,6 +506,31 @@ def test_encoder_source_drift_after_scale_grid_import_refuses(monkeypatch):
         encoder_module.require_encoder_source_unchanged()
     with pytest.raises(ScaleGridError, match="encoder source changed"):
         module.require_scale_grid_encoder_source_unchanged()
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        "require_scale_grid_implementation_unchanged",
+        "scale_grid_implementation_closure",
+        "validate_scale_grid_receipt",
+        "_live_scale_grid_callables",
+        "_current_scale_grid_source_sha256",
+        "_current_wire_source_sha256",
+        "_current_formats_source_sha256",
+        "_scale_grid_execution_gateway",
+        "_BOUND_ENCODE_TRELLIS_PLANES",
+        "_BOUND_PUBLIC_VALIDATE_RECEIPT",
+    ],
+)
+def test_execution_gateway_helper_substitution_refuses(monkeypatch, helper):
+    import prismaquant.trellis_scale_grid as module
+
+    monkeypatch.setattr(module, helper, lambda *args, **kwargs: None)
+    with pytest.raises(ScaleGridError, match="gateway.*substitut"):
+        encode_e2m1_scale_grid_two_arm(
+            _weight(1), torch.ones(256), **_grid_kwargs()
+        )
 
 
 def test_coupled_or_unknown_scope_and_retired_group_selector_fail_closed():

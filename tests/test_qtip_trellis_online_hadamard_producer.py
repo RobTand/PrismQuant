@@ -92,6 +92,7 @@ def _rehashed_prepared(prepared, mutation):
     mutation(receipt)
     receipt["identity_sha256"] = M._canonical_sha256(receipt)
     return M.PreparedOneLinear(
+        source_weight=prepared.source_weight,
         transformed_weight=prepared.transformed_weight,
         transformed_hessian=prepared.transformed_hessian,
         online_transform=prepared.online_transform,
@@ -105,6 +106,7 @@ def _rehashed_structured_prepared(prepared, mutation):
     mutation(receipt)
     receipt["identity_sha256"] = M._canonical_sha256(receipt)
     return M.PreparedDiagonalHessianOneLinear(
+        source_weight=prepared.source_weight,
         transformed_weight=prepared.transformed_weight,
         source_hessian_diagonal=prepared.source_hessian_diagonal,
         online_transform=prepared.online_transform,
@@ -430,6 +432,7 @@ def test_combined_producer_refuses_prepared_tensor_identity_drift():
         research_opt_in=M.RESEARCH_OPT_IN,
     )
     tampered = M.PreparedOneLinear(
+        source_weight=prepared.source_weight,
         transformed_weight=prepared.transformed_weight + 1,
         transformed_hessian=prepared.transformed_hessian,
         online_transform=prepared.online_transform,
@@ -450,6 +453,73 @@ def test_combined_producer_refuses_prepared_tensor_identity_drift():
             backend="eager",
             point_route="full",
             research_opt_in=M.RESEARCH_OPT_IN,
+        )
+
+
+def test_prepared_source_to_transformed_weight_closure_rejects_rehashed_pair():
+    generator = torch.Generator().manual_seed(20260831)
+    weight = torch.randn(2, 16, generator=generator)
+    activations = torch.randn(4, 16, generator=generator)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        activations.T @ activations + 0.25 * torch.eye(16),
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=2,
+        input_seed=1,
+        output_seed=2,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    different_source = weight + 0.5
+    receipt = copy.deepcopy(prepared.receipt)
+    receipt.pop("identity_sha256")
+    receipt["source"]["weight"] = {
+        "dtype": str(different_source.dtype),
+        "sha256": M._tensor_sha256(different_source),
+    }
+    receipt["identity_sha256"] = M._canonical_sha256(receipt)
+    mismatched = M.PreparedOneLinear(
+        source_weight=different_source,
+        transformed_weight=prepared.transformed_weight,
+        transformed_hessian=prepared.transformed_hessian,
+        online_transform=prepared.online_transform,
+        receipt=receipt,
+    )
+    with pytest.raises(ValueError, match="source-to-transformed weight closure"):
+        M._validate_prepared_one_linear(mismatched, body_rate_q256=512)
+
+
+def test_structured_source_to_transformed_weight_closure_rejects_rehashed_pair():
+    generator = torch.Generator().manual_seed(20260831)
+    weight = torch.randn(1, 256, generator=generator)
+    prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
+        weight,
+        torch.ones(256),
+        body_rate_q256=512,
+        input_block_size=256,
+        output_block_size=1,
+        input_seed=1,
+        output_seed=2,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    different_source = weight - 0.25
+    receipt = copy.deepcopy(prepared.receipt)
+    receipt.pop("identity_sha256")
+    receipt["source"]["weight"] = {
+        "dtype": str(different_source.dtype),
+        "sha256": M._tensor_sha256(different_source),
+    }
+    receipt["identity_sha256"] = M._canonical_sha256(receipt)
+    mismatched = M.PreparedDiagonalHessianOneLinear(
+        source_weight=different_source,
+        transformed_weight=prepared.transformed_weight,
+        source_hessian_diagonal=prepared.source_hessian_diagonal,
+        online_transform=prepared.online_transform,
+        receipt=receipt,
+    )
+    with pytest.raises(ValueError, match="source-to-transformed weight closure"):
+        M._validate_prepared_diagonal_hessian_one_linear(
+            mismatched, body_rate_q256=512
         )
 
 
@@ -632,7 +702,6 @@ def test_blockldl_factorization_refuses_non_positive_definite_hessian():
 def test_blockldl_trellis_uses_full_feedback_and_one_same_byte_wire(
     terminal_metric_mode,
     buffer_blocks,
-    monkeypatch,
 ):
     generator = torch.Generator().manual_seed(20260901)
     weight = torch.randn(2, 512, generator=generator)
@@ -647,17 +716,6 @@ def test_blockldl_trellis_uses_full_feedback_and_one_same_byte_wire(
         input_seed=0x1234,
         output_seed=0x5678,
         research_opt_in=M.RESEARCH_OPT_IN,
-    )
-    source_rechecks = 0
-    original_source_recheck = M._require_implementation_sources_unchanged
-
-    def tracked_source_recheck():
-        nonlocal source_rechecks
-        source_rechecks += 1
-        return original_source_recheck()
-
-    monkeypatch.setattr(
-        M, "_require_implementation_sources_unchanged", tracked_source_recheck
     )
     before = set(format_registry.REGISTRY)
     artifact = M.require_blockldl_trellis_wire_round_trip(
@@ -711,8 +769,10 @@ def test_blockldl_trellis_uses_full_feedback_and_one_same_byte_wire(
     assert receipt["same_byte_reparse_verified"] is True
     assert receipt["serve_algebra"]["wire_identity_verified"] is True
     assert receipt["producer_eligible"] is False
-    assert source_rechecks == 2
     provenance = receipt["implementation_provenance"]
+    assert provenance["closure"] == M.blockldl_implementation_closure(
+        scale_grid_enabled=False
+    )
     assert provenance["producer_source"] == {
         "path": (
             "research/qtip_native_nvfp4_2026-08-30/"
@@ -1078,9 +1138,7 @@ def test_arm_e_render_recipe_refuses_string_subclass_alias():
         )
 
 
-def test_arm_e_identity_grid_runs_two_full_recurrences_and_is_old_bytes(
-    monkeypatch,
-):
+def test_arm_e_identity_grid_runs_two_full_recurrences_and_is_old_bytes():
     generator = torch.Generator().manual_seed(20260912)
     weight = torch.randn(2, 512, generator=generator)
     activations = torch.randn(5, 512, generator=generator)
@@ -1111,33 +1169,12 @@ def test_arm_e_identity_grid_runs_two_full_recurrences_and_is_old_bytes(
         "research_opt_in": M.RESEARCH_OPT_IN,
     }
     identity = M.require_blockldl_trellis_wire_round_trip(prepared, **kwargs)
-    calls = 0
-    reference_calls = 0
-    original = M.reverse_block_feedback_buffered
-    original_reference = M.reverse_block_feedback_reference
-
-    def counted(*args, **call_kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **call_kwargs)
-
-    def counted_reference(*args, **call_kwargs):
-        nonlocal reference_calls
-        reference_calls += 1
-        return original_reference(*args, **call_kwargs)
-
-    monkeypatch.setattr(M, "reverse_block_feedback_buffered", counted)
-    monkeypatch.setattr(
-        M, "reverse_block_feedback_reference", counted_reference
-    )
     gated = M.require_blockldl_trellis_wire_round_trip(
         prepared,
         **kwargs,
         scale_grid_multipliers=(1.0,),
         scale_grid_selection_scope="row_factor_group",
     )
-    assert calls == 2
-    assert reference_calls == 3
     assert gated.wire_bytes == identity.wire_bytes
     selection = gated.receipt["block_ldl"]["scale_selection"]
     assert selection["full_recurrence_arms"] == 2
@@ -1168,6 +1205,61 @@ def test_arm_e_identity_grid_runs_two_full_recurrences_and_is_old_bytes(
             scale_grid_multipliers=(1.0,),
             scale_grid_selection_scope="row_factor_group",
         )
+
+
+def test_arm_e_forced_bad_distinct_candidate_keeps_identity_bytes():
+    generator = torch.Generator().manual_seed(3)
+    weight = (
+        torch.randn(1, 256, generator=generator)
+        * torch.exp(torch.linspace(-3.0, 3.0, 256))[None, :]
+    )
+    importance = torch.rand(256, generator=generator).add_(0.1)
+    prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
+        weight,
+        importance,
+        body_rate_q256=976,
+        input_block_size=256,
+        output_block_size=1,
+        input_seed=7,
+        output_seed=11,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    artifact = M.require_blockldl_trellis_wire_round_trip(
+        prepared,
+        torch.zeros(1, 256),
+        body_rate_q256=976,
+        schedule=[1] * 16 + [4] * 240,
+        layout="tight_offsets",
+        alphabets={1: (15, 11, 8, 4)},
+        scale_rule="static_6",
+        sb_chunk=1,
+        determinism_mode="on",
+        tailbite_candidates=4,
+        backend="eager",
+        point_route="full",
+        terminal_metric_mode="diag_block_D",
+        buffer_blocks=1,
+        research_opt_in=M.RESEARCH_OPT_IN,
+        scale_grid_multipliers=(1.0, 0.55, 0.75, 1.25, 1.30),
+        scale_grid_selection_scope="row_factor_group",
+    )
+    selection = artifact.receipt["block_ldl"]["scale_selection"]
+    terminal = artifact.receipt["terminal_blocks"][0]["scale_selection"]
+    identity_sha = terminal["identity_arm"]["terminal_wire_identity_sha256"]
+    candidate_sha = terminal["candidate_arm"]["terminal_wire_identity_sha256"]
+    assert identity_sha == (
+        "2ab38465ccb760c589973739209abe1a42128ee6176c53de24d61077100b41d1"
+    )
+    assert candidate_sha == (
+        "1ead58c04bdc9a41d96fde7628c89bf6295d151d7c5dd7815b33f4fe87bc81f2"
+    )
+    assert candidate_sha != identity_sha
+    assert selection["candidate_win_rows"] == 0
+    assert selection["no_win_byte_identical"] is True
+    assert selection["identity_wire_sha256"] == identity_sha
+    assert selection["final_wire_sha256"] == identity_sha
+    assert selection["identity_wire_bytes"] == selection["final_wire_bytes"]
+    assert hashlib.sha256(artifact.wire_bytes).hexdigest() == identity_sha
 
 
 def test_arm_e_scale_grid_gates_one_mask_across_every_coupled_block():
@@ -1228,7 +1320,7 @@ def test_arm_e_scale_grid_gates_one_mask_across_every_coupled_block():
     )
 
 
-def test_arm_e_selected_recurrence_target_mutation_refuses(monkeypatch):
+def test_arm_e_recurrence_callable_substitution_refuses(monkeypatch):
     generator = torch.Generator().manual_seed(20260916)
     weight = torch.randn(1, 256, generator=generator)
     prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
@@ -1253,7 +1345,7 @@ def test_arm_e_selected_recurrence_target_mutation_refuses(monkeypatch):
         return decoded, targets
 
     monkeypatch.setattr(M, "reverse_block_feedback_reference", corrupt_selected)
-    with pytest.raises(AssertionError, match="selected Arm E targets differ"):
+    with pytest.raises(ValueError, match="callable closure changed"):
         M.require_blockldl_trellis_wire_round_trip(
             prepared,
             torch.zeros(1, 256),
@@ -1272,6 +1364,55 @@ def test_arm_e_selected_recurrence_target_mutation_refuses(monkeypatch):
             research_opt_in=M.RESEARCH_OPT_IN,
             scale_grid_multipliers=(1.0,),
             scale_grid_selection_scope="row_factor_group",
+        )
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        "_require_implementation_sources_unchanged",
+        "_require_blockldl_callable_closure_unchanged",
+        "_live_blockldl_callables",
+        "blockldl_implementation_closure",
+        "_current_producer_source_sha256",
+        "require_scale_grid_implementation_unchanged",
+        "_blockldl_execution_gateway",
+        "_BOUND_BLOCKLDL_EXECUTION_GATEWAY",
+        "_BOUND_BLOCKLDL_ENCODE",
+        "_BOUND_REQUIRE_IMPLEMENTATION_SOURCES",
+    ],
+)
+def test_arm_e_execution_gateway_helper_substitution_refuses(
+    monkeypatch, helper
+):
+    prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
+        torch.zeros(1, 256),
+        torch.ones(256),
+        body_rate_q256=512,
+        input_block_size=256,
+        output_block_size=1,
+        input_seed=7,
+        output_seed=11,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    monkeypatch.setattr(M, helper, lambda *args, **kwargs: None)
+    with pytest.raises(ValueError, match="gateway.*substitut|callable closure changed"):
+        M.require_blockldl_trellis_wire_round_trip(
+            prepared,
+            torch.zeros(1, 256),
+            body_rate_q256=512,
+            schedule=[2] * 256,
+            layout="fixed_quota_per_256",
+            alphabets={2: _e2_alphabet(2)},
+            scale_rule="static_6",
+            sb_chunk=1,
+            determinism_mode="on",
+            tailbite_candidates=4,
+            backend="eager",
+            point_route="full",
+            terminal_metric_mode="diag_block_D",
+            buffer_blocks=1,
+            research_opt_in=M.RESEARCH_OPT_IN,
         )
 
 

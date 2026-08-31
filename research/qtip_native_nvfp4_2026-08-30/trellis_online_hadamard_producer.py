@@ -43,22 +43,27 @@ from prismaquant.trellis_wire import (
 )
 from prismaquant.trellis_scale_grid import (
     propose_e2m1_scale_plane,
+    require_scale_grid_implementation_unchanged,
     require_scale_grid_source_unchanged as require_scale_grid_module_unchanged,
+    scale_grid_implementation_closure,
     scale_grid_source_sha256,
 )
 
 
 SCAFFOLD_SCHEMA = (
-    "prismaquant.research.qtip_trellis_online_hadamard_one_linear.v1"
+    "prismaquant.research.qtip_trellis_online_hadamard_one_linear.v2"
 )
 COMBINED_ARTIFACT_SCHEMA = (
     "prismaquant.research.qtip_trellis_online_hadamard_artifact.v1"
 )
 BLOCKLDL_COMBINED_ARTIFACT_SCHEMA = (
-    "prismaquant.research.qtip_blockldl_trellis_hadamard_artifact.v2"
+    "prismaquant.research.qtip_blockldl_trellis_hadamard_artifact.v3"
+)
+BLOCKLDL_IMPLEMENTATION_CLOSURE_SCHEMA = (
+    "prismaquant.research.qtip_blockldl_implementation_closure.v1"
 )
 DIAGONAL_HESSIAN_SCAFFOLD_SCHEMA = (
-    "prismaquant.research.qtip_trellis_online_hadamard_diagonal_hessian.v1"
+    "prismaquant.research.qtip_trellis_online_hadamard_diagonal_hessian.v2"
 )
 TRELLIS_FEEDBACK_BLOCK_SIZE = 256
 RESEARCH_OPT_IN = "qtip_trellis_online_hadamard_one_linear_v1"
@@ -151,25 +156,35 @@ _PREPARED_EXCLUDED_SUBSTITUTIONS = [
     "unparsed caller-asserted decoded weights",
 ]
 _PREPARED_SOURCE_AUTHORITY = {
-    "status": "preparation_time_provenance_only",
-    "reauthenticated_at_encode": False,
+    "status": "retained_source_weight_reauthenticated_at_encode",
+    "reauthenticated_at_encode": {"weight": True, "hessian": False},
     "reason": (
-        "original source tensors are not retained; transformed tensor "
-        "identities are reauthenticated at encode"
+        "the retained source weight is rehashed and transformed again at "
+        "encode; the source Hessian remains preparation-time provenance"
     ),
 }
 _PRODUCER_SOURCE_PATH = Path(__file__).resolve()
+_PRISMAQUANT_SOURCE_ROOT = _PRODUCER_SOURCE_PATH.parents[2] / "prismaquant"
+_TRELLIS_WIRE_SOURCE_PATH = _PRISMAQUANT_SOURCE_ROOT / "trellis_wire.py"
+_TRELLIS_FORMATS_SOURCE_PATH = _PRISMAQUANT_SOURCE_ROOT / "trellis_formats.py"
 _IMPORTED_PRODUCER_SOURCE_SHA256 = hashlib.sha256(
     _PRODUCER_SOURCE_PATH.read_bytes()
 ).hexdigest()
 _IMPORTED_ENCODER_SOURCE_SHA256 = encoder_source_sha256()
 _IMPORTED_SCALE_GRID_SOURCE_SHA256 = scale_grid_source_sha256()
+_IMPORTED_WIRE_SOURCE_SHA256 = hashlib.sha256(
+    _TRELLIS_WIRE_SOURCE_PATH.read_bytes()
+).hexdigest()
+_IMPORTED_FORMATS_SOURCE_SHA256 = hashlib.sha256(
+    _TRELLIS_FORMATS_SOURCE_PATH.read_bytes()
+).hexdigest()
 
 
 @dataclass(frozen=True)
 class PreparedOneLinear:
     """Basis-transformed inputs plus an unregistered, non-artifact receipt."""
 
+    source_weight: torch.Tensor
     transformed_weight: torch.Tensor
     transformed_hessian: torch.Tensor
     online_transform: Mapping[str, object]
@@ -186,6 +201,7 @@ class PreparedDiagonalHessianOneLinear:
     encode boundary can reauthenticate and derive every block itself.
     """
 
+    source_weight: torch.Tensor
     transformed_weight: torch.Tensor
     source_hessian_diagonal: torch.Tensor
     online_transform: Mapping[str, object]
@@ -263,6 +279,7 @@ def _require_encoder_source_unchanged() -> str:
 
 
 def _require_scale_grid_source_unchanged() -> str:
+    require_scale_grid_implementation_unchanged()
     module_identity = require_scale_grid_module_unchanged()
     current = scale_grid_source_sha256()
     if (
@@ -277,10 +294,26 @@ def _require_scale_grid_source_unchanged() -> str:
 
 
 def _require_implementation_sources_unchanged() -> tuple[str, str]:
-    return (
-        _require_producer_source_unchanged(),
-        _require_encoder_source_unchanged(),
-    )
+    producer_identity = _require_producer_source_unchanged()
+    encoder_identity = _require_encoder_source_unchanged()
+    if not hmac.compare_digest(
+        hashlib.sha256(_TRELLIS_WIRE_SOURCE_PATH.read_bytes()).hexdigest(),
+        _IMPORTED_WIRE_SOURCE_SHA256,
+    ):
+        raise ValueError(
+            "trellis wire source changed since producer import; refusing "
+            "to publish a mixed code closure"
+        )
+    if not hmac.compare_digest(
+        hashlib.sha256(_TRELLIS_FORMATS_SOURCE_PATH.read_bytes()).hexdigest(),
+        _IMPORTED_FORMATS_SOURCE_SHA256,
+    ):
+        raise ValueError(
+            "trellis format source changed since producer import; refusing "
+            "to publish a mixed code closure"
+        )
+    _require_blockldl_callable_closure_unchanged()
+    return producer_identity, encoder_identity
 
 
 def _checked_blockldl_render_inputs(
@@ -1025,6 +1058,7 @@ def prepare_one_linear_scaffold(
         "identity_sha256": _canonical_sha256(receipt_body),
     }
     return PreparedOneLinear(
+        source_weight=weight,
         transformed_weight=transformed_weight,
         transformed_hessian=transformed_hessian,
         online_transform=contract,
@@ -1112,13 +1146,13 @@ def prepare_one_linear_diagonal_hessian_scaffold(
     transformed_weight = transform_weight(weight, contract)
     structure = _diagonal_hessian_structure(diagonal, contract)
     source_authority = {
-        "status": "retained_positive_diagonal_reauthenticated_at_encode",
-        "weight_reauthenticated_at_encode": False,
+        "status": "retained_source_weight_and_diagonal_reauthenticated_at_encode",
+        "weight_reauthenticated_at_encode": True,
         "hessian_diagonal_reauthenticated_at_encode": True,
         "reason": (
-            "the original weight is represented by the transformed-weight "
-            "identity; the retained diagonal is hashed again before every "
-            "structured factorization"
+            "the retained source weight is rehashed and transformed again; "
+            "the retained diagonal is rehashed before every structured "
+            "factorization"
         ),
     }
     basis = {
@@ -1180,6 +1214,7 @@ def prepare_one_linear_diagonal_hessian_scaffold(
         "identity_sha256": _canonical_sha256(receipt_body),
     }
     return PreparedDiagonalHessianOneLinear(
+        source_weight=weight,
         transformed_weight=transformed_weight,
         source_hessian_diagonal=diagonal,
         online_transform=contract,
@@ -1261,6 +1296,19 @@ def _validate_prepared_one_linear(
             source_identity["sha256"],
             where=f"prepared receipt source.{kind}.sha256",
         )
+    if (
+        prepared.source_weight.ndim != 2
+        or tuple(prepared.source_weight.shape) != (rows, columns)
+        or not prepared.source_weight.is_floating_point()
+        or not bool(torch.isfinite(prepared.source_weight.float()).all().item())
+    ):
+        raise ValueError("prepared retained source weight is malformed")
+    expected_source_weight = {
+        "dtype": str(prepared.source_weight.dtype),
+        "sha256": _tensor_sha256(prepared.source_weight),
+    }
+    if not _json_exact_equal(source["weight"], expected_source_weight):
+        raise ValueError("prepared retained source weight identity mismatch")
     transformed = _require_exact_fields(
         body["transformed"],
         _PREPARED_TRANSFORMED_KINDS,
@@ -1324,6 +1372,13 @@ def _validate_prepared_one_linear(
         prepared.online_transform, rows=rows, columns=columns
     ):
         raise ValueError("prepared online-transform metadata mismatch")
+    retransformed_weight = _BOUND_BLOCKLDL_TRANSFORM_WEIGHT(
+        prepared.source_weight, contract
+    )
+    if not torch.equal(retransformed_weight, prepared.transformed_weight):
+        raise ValueError(
+            "prepared source-to-transformed weight closure mismatch"
+        )
     return body
 
 
@@ -1393,13 +1448,13 @@ def _validate_prepared_diagonal_hessian_one_linear(
         where="prepared receipt source",
     )
     expected_authority = {
-        "status": "retained_positive_diagonal_reauthenticated_at_encode",
-        "weight_reauthenticated_at_encode": False,
+        "status": "retained_source_weight_and_diagonal_reauthenticated_at_encode",
+        "weight_reauthenticated_at_encode": True,
         "hessian_diagonal_reauthenticated_at_encode": True,
         "reason": (
-            "the original weight is represented by the transformed-weight "
-            "identity; the retained diagonal is hashed again before every "
-            "structured factorization"
+            "the retained source weight is rehashed and transformed again; "
+            "the retained diagonal is rehashed before every structured "
+            "factorization"
         ),
     }
     if not _json_exact_equal(source["authority"], expected_authority):
@@ -1422,6 +1477,19 @@ def _validate_prepared_diagonal_hessian_one_linear(
     _require_sha256(
         source_weight["sha256"], where="prepared receipt source.weight.sha256"
     )
+    if (
+        prepared.source_weight.ndim != 2
+        or tuple(prepared.source_weight.shape) != (rows, columns)
+        or not prepared.source_weight.is_floating_point()
+        or not bool(torch.isfinite(prepared.source_weight.float()).all().item())
+    ):
+        raise ValueError("prepared retained source weight is malformed")
+    expected_source_weight = {
+        "dtype": str(prepared.source_weight.dtype),
+        "sha256": _tensor_sha256(prepared.source_weight),
+    }
+    if not _json_exact_equal(source_weight, expected_source_weight):
+        raise ValueError("prepared retained source weight identity mismatch")
     expected_diagonal = {
         "dtype": str(diagonal.dtype),
         "sha256": _tensor_sha256(diagonal),
@@ -1454,6 +1522,13 @@ def _validate_prepared_diagonal_hessian_one_linear(
     }
     if not _json_exact_equal(body["basis"], expected_basis):
         raise ValueError("prepared receipt basis mismatch")
+    retransformed_weight = _BOUND_BLOCKLDL_TRANSFORM_WEIGHT(
+        prepared.source_weight, contract
+    )
+    if not torch.equal(retransformed_weight, prepared.transformed_weight):
+        raise ValueError(
+            "prepared source-to-transformed weight closure mismatch"
+        )
 
     wire = _require_exact_fields(
         body["wire"], _PREPARED_WIRE_FIELDS, where="prepared receipt wire"
@@ -1786,6 +1861,281 @@ def require_combined_wire_round_trip(
     )
 
 
+def _callable_descriptor(value: object) -> dict[str, str]:
+    module = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    if not isinstance(module, str) or not isinstance(qualname, str):
+        raise RuntimeError("BlockLDL closure member lacks a stable callable identity")
+    return {"module": module, "qualname": qualname}
+
+
+def _live_blockldl_callables() -> dict[str, object]:
+    return {
+        "EncodedTrellisPlanes": EncodedTrellisPlanes,
+        "TrellisWire": TrellisWire,
+        "TrellisWire.from_bytes": TrellisWire.from_bytes.__func__,
+        "_canonical_sha256": _canonical_sha256,
+        "_current_producer_source_sha256": _current_producer_source_sha256,
+        "_diagonal_hessian_structure": _diagonal_hessian_structure,
+        "_require_encoder_source_unchanged": _require_encoder_source_unchanged,
+        "_require_implementation_sources_unchanged": (
+            _require_implementation_sources_unchanged
+        ),
+        "_require_producer_source_unchanged": _require_producer_source_unchanged,
+        "_require_scale_grid_source_unchanged": (
+            _require_scale_grid_source_unchanged
+        ),
+        "_tensor_sha256": _tensor_sha256,
+        "_validate_prepared_diagonal_hessian_one_linear": (
+            _validate_prepared_diagonal_hessian_one_linear
+        ),
+        "_validate_prepared_one_linear": _validate_prepared_one_linear,
+        "decode_codes_torch": decode_codes_torch,
+        "decode_values_torch": decode_values_torch,
+        "encode_trellis_planes": encode_trellis_planes,
+        "encoder_source_sha256": encoder_source_sha256,
+        "get_trellis_family": get_trellis_family,
+        "iter_transformed_diagonal_block_ldl_factors": (
+            iter_transformed_diagonal_block_ldl_factors
+        ),
+        "pack_planes": pack_planes,
+        "propose_e2m1_scale_plane": propose_e2m1_scale_plane,
+        "qtip_block_ldl_factors": qtip_block_ldl_factors,
+        "require_encoder_module_unchanged": require_encoder_module_unchanged,
+        "require_scale_grid_implementation_unchanged": (
+            require_scale_grid_implementation_unchanged
+        ),
+        "require_scale_grid_module_unchanged": (
+            require_scale_grid_module_unchanged
+        ),
+        "reverse_block_feedback_buffered": reverse_block_feedback_buffered,
+        "reverse_block_feedback_reference": reverse_block_feedback_reference,
+        "scale_grid_implementation_closure": scale_grid_implementation_closure,
+        "scale_grid_source_sha256": scale_grid_source_sha256,
+        "snap_e2m1_scale_codes": snap_e2m1_scale_codes,
+        "transform_weight": transform_weight,
+        "validate_online_transform": validate_online_transform,
+        "verify_post_decode_serve_algebra": verify_post_decode_serve_algebra,
+    }
+
+
+_IMPORTED_BLOCKLDL_CALLABLES = tuple(_live_blockldl_callables().items())
+_BOUND_BLOCKLDL_DECODE_CODES = decode_codes_torch
+_BOUND_BLOCKLDL_DECODE_VALUES = decode_values_torch
+_BOUND_BLOCKLDL_ENCODE = encode_trellis_planes
+_BOUND_BLOCKLDL_FACTOR = qtip_block_ldl_factors
+_BOUND_BLOCKLDL_ITER_STRUCTURED_FACTORS = (
+    iter_transformed_diagonal_block_ldl_factors
+)
+_BOUND_BLOCKLDL_PACK = pack_planes
+_BOUND_BLOCKLDL_PROPOSE_SCALE = propose_e2m1_scale_plane
+_BOUND_BLOCKLDL_REVERSE_BUFFERED = reverse_block_feedback_buffered
+_BOUND_BLOCKLDL_REVERSE_REFERENCE = reverse_block_feedback_reference
+_BOUND_BLOCKLDL_SNAP_SCALE = snap_e2m1_scale_codes
+_BOUND_BLOCKLDL_TRANSFORM_WEIGHT = transform_weight
+_BOUND_BLOCKLDL_VERIFY_SERVE = verify_post_decode_serve_algebra
+
+
+def _require_blockldl_callable_closure_unchanged() -> str:
+    expected = dict(_IMPORTED_BLOCKLDL_CALLABLES)
+    live = _live_blockldl_callables()
+    changed = sorted(
+        name for name, original in expected.items() if live.get(name) is not original
+    )
+    if changed:
+        raise ValueError(
+            "BlockLDL callable closure changed since module import; refusing "
+            f"substituted callables {changed}"
+        )
+    return _canonical_sha256({
+        name: _callable_descriptor(value)
+        for name, value in _IMPORTED_BLOCKLDL_CALLABLES
+    })
+
+
+def blockldl_implementation_closure(
+    *, scale_grid_enabled: bool
+) -> Mapping[str, object]:
+    callable_descriptors = {
+        name: _callable_descriptor(value)
+        for name, value in _IMPORTED_BLOCKLDL_CALLABLES
+    }
+    body: dict[str, object] = {
+        "schema": BLOCKLDL_IMPLEMENTATION_CLOSURE_SCHEMA,
+        "sources": {
+            "producer": {
+                "path": (
+                    "research/qtip_native_nvfp4_2026-08-30/"
+                    "trellis_online_hadamard_producer.py"
+                ),
+                "sha256": _IMPORTED_PRODUCER_SOURCE_SHA256,
+            },
+            "encoder": {
+                "path": "prismaquant/trellis_encoder.py",
+                "sha256": _IMPORTED_ENCODER_SOURCE_SHA256,
+            },
+            "wire": {
+                "path": "prismaquant/trellis_wire.py",
+                "sha256": _IMPORTED_WIRE_SOURCE_SHA256,
+            },
+            "formats": {
+                "path": "prismaquant/trellis_formats.py",
+                "sha256": _IMPORTED_FORMATS_SOURCE_SHA256,
+            },
+            "scale_grid": (
+                scale_grid_implementation_closure()
+                if scale_grid_enabled else None
+            ),
+        },
+        "callables": callable_descriptors,
+        "callable_identity_sha256": _canonical_sha256(callable_descriptors),
+    }
+    return {**body, "identity_sha256": _canonical_sha256(body)}
+
+
+_BOUND_REQUIRE_IMPLEMENTATION_SOURCES = _require_implementation_sources_unchanged
+_BOUND_REQUIRE_SCALE_GRID_SOURCE = _require_scale_grid_source_unchanged
+_BOUND_REQUIRE_BLOCKLDL_CALLABLES = _require_blockldl_callable_closure_unchanged
+_BOUND_LIVE_BLOCKLDL_CALLABLES = _live_blockldl_callables
+_BOUND_BLOCKLDL_IMPLEMENTATION_CLOSURE = blockldl_implementation_closure
+
+
+def _blockldl_execution_gateway(
+    *, scale_grid_enabled: bool
+) -> tuple[str, str, Mapping[str, object]]:
+    guarded = {
+        "_blockldl_execution_gateway": (
+            _blockldl_execution_gateway,
+            _BOUND_BLOCKLDL_EXECUTION_GATEWAY,
+        ),
+        "_require_implementation_sources_unchanged": (
+            _require_implementation_sources_unchanged,
+            _BOUND_REQUIRE_IMPLEMENTATION_SOURCES,
+        ),
+        "_require_scale_grid_source_unchanged": (
+            _require_scale_grid_source_unchanged,
+            _BOUND_REQUIRE_SCALE_GRID_SOURCE,
+        ),
+        "_require_blockldl_callable_closure_unchanged": (
+            _require_blockldl_callable_closure_unchanged,
+            _BOUND_REQUIRE_BLOCKLDL_CALLABLES,
+        ),
+        "_live_blockldl_callables": (
+            _live_blockldl_callables,
+            _BOUND_LIVE_BLOCKLDL_CALLABLES,
+        ),
+        "blockldl_implementation_closure": (
+            blockldl_implementation_closure,
+            _BOUND_BLOCKLDL_IMPLEMENTATION_CLOSURE,
+        ),
+    }
+    substituted = sorted(
+        name for name, (live, bound) in guarded.items() if live is not bound
+    )
+    expected_callables = dict(_IMPORTED_BLOCKLDL_CALLABLES)
+    execution_aliases = {
+        "_BOUND_BLOCKLDL_DECODE_CODES": (
+            _BOUND_BLOCKLDL_DECODE_CODES,
+            expected_callables["decode_codes_torch"],
+        ),
+        "_BOUND_BLOCKLDL_DECODE_VALUES": (
+            _BOUND_BLOCKLDL_DECODE_VALUES,
+            expected_callables["decode_values_torch"],
+        ),
+        "_BOUND_BLOCKLDL_ENCODE": (
+            _BOUND_BLOCKLDL_ENCODE,
+            expected_callables["encode_trellis_planes"],
+        ),
+        "_BOUND_BLOCKLDL_FACTOR": (
+            _BOUND_BLOCKLDL_FACTOR,
+            expected_callables["qtip_block_ldl_factors"],
+        ),
+        "_BOUND_BLOCKLDL_ITER_STRUCTURED_FACTORS": (
+            _BOUND_BLOCKLDL_ITER_STRUCTURED_FACTORS,
+            expected_callables["iter_transformed_diagonal_block_ldl_factors"],
+        ),
+        "_BOUND_BLOCKLDL_PACK": (
+            _BOUND_BLOCKLDL_PACK,
+            expected_callables["pack_planes"],
+        ),
+        "_BOUND_BLOCKLDL_PROPOSE_SCALE": (
+            _BOUND_BLOCKLDL_PROPOSE_SCALE,
+            expected_callables["propose_e2m1_scale_plane"],
+        ),
+        "_BOUND_BLOCKLDL_REVERSE_BUFFERED": (
+            _BOUND_BLOCKLDL_REVERSE_BUFFERED,
+            expected_callables["reverse_block_feedback_buffered"],
+        ),
+        "_BOUND_BLOCKLDL_REVERSE_REFERENCE": (
+            _BOUND_BLOCKLDL_REVERSE_REFERENCE,
+            expected_callables["reverse_block_feedback_reference"],
+        ),
+        "_BOUND_BLOCKLDL_SNAP_SCALE": (
+            _BOUND_BLOCKLDL_SNAP_SCALE,
+            expected_callables["snap_e2m1_scale_codes"],
+        ),
+        "_BOUND_BLOCKLDL_TRANSFORM_WEIGHT": (
+            _BOUND_BLOCKLDL_TRANSFORM_WEIGHT,
+            expected_callables["transform_weight"],
+        ),
+        "_BOUND_BLOCKLDL_VERIFY_SERVE": (
+            _BOUND_BLOCKLDL_VERIFY_SERVE,
+            expected_callables["verify_post_decode_serve_algebra"],
+        ),
+        "_BOUND_REQUIRE_IMPLEMENTATION_SOURCES": (
+            _BOUND_REQUIRE_IMPLEMENTATION_SOURCES,
+            _require_implementation_sources_unchanged,
+        ),
+        "_BOUND_REQUIRE_SCALE_GRID_SOURCE": (
+            _BOUND_REQUIRE_SCALE_GRID_SOURCE,
+            _require_scale_grid_source_unchanged,
+        ),
+        "_BOUND_REQUIRE_BLOCKLDL_CALLABLES": (
+            _BOUND_REQUIRE_BLOCKLDL_CALLABLES,
+            _require_blockldl_callable_closure_unchanged,
+        ),
+        "_BOUND_LIVE_BLOCKLDL_CALLABLES": (
+            _BOUND_LIVE_BLOCKLDL_CALLABLES,
+            _live_blockldl_callables,
+        ),
+        "_BOUND_BLOCKLDL_IMPLEMENTATION_CLOSURE": (
+            _BOUND_BLOCKLDL_IMPLEMENTATION_CLOSURE,
+            blockldl_implementation_closure,
+        ),
+    }
+    substituted.extend(
+        name for name, (live, original) in execution_aliases.items()
+        if live is not original
+    )
+    substituted.sort()
+    if substituted:
+        raise ValueError(
+            "BlockLDL execution gateway changed since module import; refusing "
+            f"substituted helpers {substituted}"
+        )
+    live_callables = _BOUND_LIVE_BLOCKLDL_CALLABLES()
+    changed = sorted(
+        name
+        for name, original in expected_callables.items()
+        if live_callables.get(name) is not original
+    )
+    if changed:
+        raise ValueError(
+            "BlockLDL callable closure changed since module import; refusing "
+            f"substituted callables {changed}"
+        )
+    producer, encoder = _BOUND_REQUIRE_IMPLEMENTATION_SOURCES()
+    if scale_grid_enabled:
+        _BOUND_REQUIRE_SCALE_GRID_SOURCE()
+    closure = _BOUND_BLOCKLDL_IMPLEMENTATION_CLOSURE(
+        scale_grid_enabled=scale_grid_enabled
+    )
+    return producer, encoder, closure
+
+
+_BOUND_BLOCKLDL_EXECUTION_GATEWAY = _blockldl_execution_gateway
+
+
 def require_blockldl_trellis_wire_round_trip(
     prepared: PreparedOneLinear | PreparedDiagonalHessianOneLinear,
     activations: torch.Tensor,
@@ -1814,6 +2164,16 @@ def require_blockldl_trellis_wire_round_trip(
     so the resulting planes can be represented by one canonical wire.
     """
 
+    if _blockldl_execution_gateway is not _BOUND_BLOCKLDL_EXECUTION_GATEWAY:
+        raise ValueError("BlockLDL execution gateway was substituted")
+    scale_grid_requested = scale_grid_multipliers is not None
+    (
+        implementation_source_at_start,
+        implementation_encoder_at_start,
+        implementation_closure,
+    ) = _BOUND_BLOCKLDL_EXECUTION_GATEWAY(
+        scale_grid_enabled=scale_grid_requested
+    )
     checked = _checked_blockldl_render_inputs(
         body_rate_q256=body_rate_q256,
         schedule=schedule,
@@ -1848,7 +2208,7 @@ def require_blockldl_trellis_wire_round_trip(
     )
     if research_opt_in != RESEARCH_OPT_IN:
         raise ValueError(f"research_opt_in must equal {RESEARCH_OPT_IN!r}")
-    scale_grid_enabled = scale_grid_multipliers is not None
+    scale_grid_enabled = scale_grid_requested
     if scale_grid_enabled:
         scale_grid_raw = tuple(scale_grid_multipliers)
         if any(
@@ -1873,7 +2233,7 @@ def require_blockldl_trellis_wire_round_trip(
                 "Arm E scale-grid selection must use row_factor_group; "
                 "splicing inside a coupled recurrence is forbidden"
             )
-        scale_grid_source_at_start = _require_scale_grid_source_unchanged()
+        scale_grid_source_at_start = _BOUND_REQUIRE_SCALE_GRID_SOURCE()
     else:
         scale_grid_menu = None
         scale_grid_source_at_start = None
@@ -1941,7 +2301,7 @@ def require_blockldl_trellis_wire_round_trip(
     def factor_groups() -> Iterator[BlockLDLFactorGroup]:
         if structured_diagonal:
             assert isinstance(prepared, PreparedDiagonalHessianOneLinear)
-            yield from iter_transformed_diagonal_block_ldl_factors(
+            yield from _BOUND_BLOCKLDL_ITER_STRUCTURED_FACTORS(
                 prepared.source_hessian_diagonal,
                 contract,
                 block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
@@ -1949,7 +2309,7 @@ def require_blockldl_trellis_wire_round_trip(
             return
         assert isinstance(prepared, PreparedOneLinear)
         dense_hessian = prepared.transformed_hessian.float()
-        feedback, diagonal = qtip_block_ldl_factors(
+        feedback, diagonal = _BOUND_BLOCKLDL_FACTOR(
             dense_hessian, block_size=TRELLIS_FEEDBACK_BLOCK_SIZE
         )
         yield BlockLDLFactorGroup(
@@ -2022,13 +2382,13 @@ def require_blockldl_trellis_wire_round_trip(
                         target.float().reshape(rows, 16, 16)
                         .abs().amax(-1).clamp_min(1.0e-12) / 6.0
                     )
-                    identity_codes = snap_e2m1_scale_codes(
+                    identity_codes = _BOUND_BLOCKLDL_SNAP_SCALE(
                         target_scales,
                         shared_global,
                         multiplier=1.0,
                         floor_to_min_positive=True,
                     )
-                    proposal = propose_e2m1_scale_plane(
+                    proposal = _BOUND_BLOCKLDL_PROPOSE_SCALE(
                         target,
                         metric,
                         global_scale_real=shared_global,
@@ -2052,7 +2412,7 @@ def require_blockldl_trellis_wire_round_trip(
                         ),
                         "rtn_floor_nonregression_verified": True,
                     }
-                encoded = encode_trellis_planes(
+                encoded = _BOUND_BLOCKLDL_ENCODE(
                     target,
                     metric,
                     family=E2M1_FAMILY,
@@ -2067,7 +2427,7 @@ def require_blockldl_trellis_wire_round_trip(
                     global_scale_real_override=shared_global,
                     scale_plane_override=scale_plane_override,
                 )
-                terminal_wire = pack_planes(
+                terminal_wire = _BOUND_BLOCKLDL_PACK(
                     family=E2M1_FAMILY,
                     body_rate_q256=local_body_rate_q256,
                     schedule=block_schedule,
@@ -2082,7 +2442,7 @@ def require_blockldl_trellis_wire_round_trip(
                 terminal_blob = terminal_wire.to_bytes()
                 if TrellisWire.from_bytes(terminal_blob).to_bytes() != terminal_blob:
                     raise AssertionError("terminal wire did not reserialize exactly")
-                decoded_terminal = decode_values_torch(
+                decoded_terminal = _BOUND_BLOCKLDL_DECODE_VALUES(
                     terminal_blob, device=target.device, dtype=target.dtype
                 )
                 if not torch.equal(
@@ -2130,7 +2490,7 @@ def require_blockldl_trellis_wire_round_trip(
                 }
                 return decoded_terminal
 
-            trajectory_q, trajectory_targets = reverse_block_feedback_buffered(
+            trajectory_q, trajectory_targets = _BOUND_BLOCKLDL_REVERSE_BUFFERED(
                 group_weight,
                 group.feedback_lower,
                 terminal,
@@ -2146,7 +2506,7 @@ def require_blockldl_trellis_wire_round_trip(
                     :, first:first + TRELLIS_FEEDBACK_BLOCK_SIZE
                 ]
 
-            oracle_q, oracle_targets = reverse_block_feedback_reference(
+            oracle_q, oracle_targets = _BOUND_BLOCKLDL_REVERSE_REFERENCE(
                 group_weight,
                 group.feedback_lower,
                 decoded_replay,
@@ -2228,7 +2588,7 @@ def require_blockldl_trellis_wire_round_trip(
                 ]
 
             selected_oracle_q, selected_oracle_targets = (
-                reverse_block_feedback_reference(
+                _BOUND_BLOCKLDL_REVERSE_REFERENCE(
                     group_weight,
                     group.feedback_lower,
                     selected_terminal,
@@ -2342,7 +2702,7 @@ def require_blockldl_trellis_wire_round_trip(
                 if rate < get_trellis_family(E2M1_FAMILY).bypass_rate
             })
             block_alphabets = {rate: alphabets[rate] for rate in block_rates}
-            final_terminal_wire = pack_planes(
+            final_terminal_wire = _BOUND_BLOCKLDL_PACK(
                 family=E2M1_FAMILY,
                 body_rate_q256=sum(block_schedule),
                 schedule=block_schedule,
@@ -2361,7 +2721,7 @@ def require_blockldl_trellis_wire_round_trip(
                 raise AssertionError(
                     "spliced Arm E terminal wire did not reserialize exactly"
                 )
-            final_terminal_decoded = decode_values_torch(
+            final_terminal_decoded = _BOUND_BLOCKLDL_DECODE_VALUES(
                 final_terminal_blob, device=weight.device, dtype=weight.dtype
             )
             expected_block = group_q[
@@ -2587,7 +2947,7 @@ def require_blockldl_trellis_wire_round_trip(
         scale_blob = torch.cat(
             scale_planes, dim=1
         ).contiguous().numpy().tobytes()
-        return pack_planes(
+        return _BOUND_BLOCKLDL_PACK(
             family=E2M1_FAMILY,
             body_rate_q256=body_rate_q256,
             schedule=schedule,
@@ -2612,8 +2972,8 @@ def require_blockldl_trellis_wire_round_trip(
     blob = wire.to_bytes()
     if TrellisWire.from_bytes(blob).to_bytes() != blob:
         raise AssertionError("BlockLDL trellis wire did not reserialize exactly")
-    decoded_codes = decode_codes_torch(blob, device=weight.device)
-    decoded_weight = decode_values_torch(
+    decoded_codes = _BOUND_BLOCKLDL_DECODE_CODES(blob, device=weight.device)
+    decoded_weight = _BOUND_BLOCKLDL_DECODE_VALUES(
         blob, device=weight.device, dtype=weight.dtype
     )
     if not torch.equal(decoded_weight, recurrence_q):
@@ -2628,11 +2988,11 @@ def require_blockldl_trellis_wire_round_trip(
         )
     if (
         scale_grid_enabled
-        and _require_scale_grid_source_unchanged() != scale_grid_source_at_start
+        and _BOUND_REQUIRE_SCALE_GRID_SOURCE() != scale_grid_source_at_start
     ):
         raise AssertionError("scale-grid selector source changed during Arm E encode")
 
-    serve = dict(verify_post_decode_serve_algebra(
+    serve = dict(_BOUND_BLOCKLDL_VERIFY_SERVE(
         decoded_weight, activations, contract
     ))
     wire_sha256 = hashlib.sha256(blob).hexdigest()
@@ -2754,9 +3114,17 @@ def require_blockldl_trellis_wire_round_trip(
     (
         implementation_source_sha256,
         implementation_encoder_sha256,
-    ) = _require_implementation_sources_unchanged()
-    if scale_grid_enabled:
-        _require_scale_grid_source_unchanged()
+        implementation_closure_before_receipt,
+    ) = _BOUND_BLOCKLDL_EXECUTION_GATEWAY(
+        scale_grid_enabled=scale_grid_enabled
+    )
+    if (
+        implementation_source_sha256 != implementation_source_at_start
+        or implementation_encoder_sha256 != implementation_encoder_at_start
+    ):
+        raise ValueError("BlockLDL implementation source changed during execution")
+    if implementation_closure_before_receipt != implementation_closure:
+        raise ValueError("BlockLDL implementation closure changed during execution")
     wire_recipe = {
         "schema": TRELLIS_WIRE_SCHEMA,
         "family": E2M1_FAMILY,
@@ -2771,6 +3139,9 @@ def require_blockldl_trellis_wire_round_trip(
         "global_scale_real": shared_global,
         "global_scale_selection": "pre_feedback_transformed_weight_static_6",
         "encoder_source_sha256": implementation_encoder_sha256,
+        "implementation_closure_identity_sha256": implementation_closure[
+            "identity_sha256"
+        ],
         "backend": backend,
         "point_route": point_route,
         "sb_chunk": int(sb_chunk),
@@ -2815,11 +3186,17 @@ def require_blockldl_trellis_wire_round_trip(
         "online_transform": contract,
         "prepared_receipt_identity_sha256": prepared.receipt["identity_sha256"],
         "prepared_receipt_status": prepared_receipt["status"],
+        "prepared_source_transform_closure": {
+            "source_weight_reauthenticated_at_encode": True,
+            "source_weight_retransformed_at_encode": True,
+            "transformed_weight_exact_torch_equal": True,
+        },
         "block_ldl": factor,
         "terminal_blocks": [block_receipts[index] for index in range(block_count)],
         "wire_recipe": wire_recipe,
         "wire_recipe_identity_sha256": _canonical_sha256(wire_recipe),
         "implementation_provenance": {
+            "closure": implementation_closure,
             "producer_source": {
                 "path": (
                     "research/qtip_native_nvfp4_2026-08-30/"
@@ -2861,9 +3238,23 @@ def require_blockldl_trellis_wire_round_trip(
         **receipt_body,
         "identity_sha256": _canonical_sha256(receipt_body),
     }
-    _require_implementation_sources_unchanged()
-    if scale_grid_enabled:
-        _require_scale_grid_source_unchanged()
+    (
+        implementation_source_at_end,
+        implementation_encoder_at_end,
+        implementation_closure_at_end,
+    ) = _BOUND_BLOCKLDL_EXECUTION_GATEWAY(
+        scale_grid_enabled=scale_grid_enabled
+    )
+    if (
+        implementation_source_at_end,
+        implementation_encoder_at_end,
+    ) != (
+        implementation_source_at_start,
+        implementation_encoder_at_start,
+    ):
+        raise ValueError("BlockLDL implementation source changed during execution")
+    if implementation_closure_at_end != implementation_closure:
+        raise ValueError("BlockLDL implementation closure changed during execution")
     return CombinedOneLinearArtifact(
         wire_bytes=blob,
         decoded_transformed_weight=decoded_weight,

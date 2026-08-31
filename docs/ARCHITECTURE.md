@@ -1,8 +1,20 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-31 · `codex/prismabuild-live-nfs-20260831` — stamps follow,
-newest first, each recording its own branch and date. Re-stamped (2026-08-31,
-`codex/prismabuild-live-nfs-20260831`) for the **bounded stable-pass CAS read
+As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
+follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `codex/scale-grid-closure-stage1-20260831`) for the **executable
+and source-to-transform closure of the scale-grid research boundary** (§10.2).
+Direct receipt/render schemas v2 now bind selector, encoder, canonical-wire,
+and format sources plus the declared callable closure; an import-bound gateway
+authenticates its own helpers and refuses module-level callable substitution.
+BlockLDL artifact schema v3 carries the analogous closure. Prepared scaffold
+schemas v2 retain the source weight, rehash and transform it again at every
+encode/replay boundary, and require exact equality to the retained transformed
+weight; a self-rehashed mismatched pair cannot enter Arm E. A degenerate-global
+fixture pins canonical byte-decode equality when the encoder's defensive scale
+floor would otherwise diverge. These are research integrity changes, not a
+quality, performance, runtime, format-menu, or serving claim. Re-stamped
+(2026-08-31, `codex/prismabuild-live-nfs-20260831`) for the **bounded stable-pass CAS read
 and scheduler-free two-host NFS qualification** (§10.1): exact-commit
 wall-clock overlap first exposed legitimate identical input/result writers
 failing on an NFS ctime rollback with otherwise identical inode, content, and
@@ -34,10 +46,11 @@ fixed-size E4M3 plane and wire ABI, keep identity on ties, and prove exact
 zero-byte-rate change and realized non-regression. Import-time selector and
 encoder file identities, complete render-recipe binding, live-file checks, and
 artifact-aware deterministic replay bind the declared file provenance and
-receipt semantics. Runtime callable-substitution closure is a separate pending
-gate and is not implied by those file hashes. This is unmeasured, opt-in,
-unregistered scaffolding; it changes no production recipe, menu, runtime pin,
-serving lane, or quality claim. Re-stamped (2026-08-30,
+receipt semantics. That v1 stamp did not imply runtime callable-substitution
+closure; the v2/v3 stamp above subsequently closes the declared clean-process
+callable boundary. The scale-grid lever itself remains unmeasured, opt-in, and
+unregistered; it changes no production recipe, menu, runtime pin, serving lane,
+or quality claim. Re-stamped (2026-08-30,
 `codex/finish-numeric-prismabuild-20260830`) for the **durable PrismaBuild
 submission/adoption and anchored CAS/state contract** (§10.1): a sealed,
 single-cluster intent now precedes `sbatch`; an immutable cluster-qualified
@@ -62,10 +75,9 @@ output rows, and never constructs the full `K`-by-`K` Hessian on this path.
 Dense Qwen Hessians retain the reviewed whole-matrix `K<=4096` boundary.
 Receipts and replay bind the source diagonal and ordered factor geometry and
 hashes; malformed rank-two diagonal inputs refuse before dtype/device
-conversion. The full GLM census is now shape-contract supported, but its
-recorded tensor quantity is neither a liveness upper bound nor a CUDA peak:
-the memory gate remains explicitly unmeasured until a profiled pilot with
-both-host telemetry. This changes no production format, runtime pin, pipeline
+conversion. This stamp records the then-current shape-only boundary; the later
+profiled census and negative quality result are recorded by the 2026-08-31
+stamp above and in §10.2. This changes no production format, runtime pin, pipeline
 default, or serving claim. Re-stamped (2026-08-30,
 `codex/finish-numeric-prismabuild-20260830`) for the **QTIP-derived native
 NVFP4 research producer and PrismaBuild input/publication boundary**
@@ -7805,9 +7817,16 @@ cross-group feedback is exactly zero. Any superblock-, group-16-, or other
 inside-recurrence scope refuses. The finalized GLM BF16 corpus v2 supplies
 hash-bound importance vectors; dense and routed populations remain separate.
 
-Scale-grid receipts bind the ordered menu, complete canonical render recipe,
-import-time selector and encoder identities, global scale, arm/final wire
-identities, winner masks, objectives, and exact-byte accounting. A mapping
+Scale-grid receipt/render schemas v2 bind the ordered menu, complete canonical
+render recipe, global scale, arm/final wire identities, winner masks,
+objectives, and exact-byte accounting. Their implementation record covers the
+selector, encoder, canonical-wire, and format source files plus the declared
+executable callable closure. An import-bound gateway authenticates the public
+guard, closure renderer, receipt validator, current-source readers, and the
+encoder/proposal/scorer/splice seams before execution and publication; an
+ordinary module-level callable substitution therefore refuses instead of being
+labelled by unchanged source hashes. This is a clean-process Python research
+boundary, not protection against arbitrary hostile process-memory mutation. A mapping
 self-digest checks structure, not opaque artifact truth. Recipe ingress is
 restricted to plain scalars and one validated schedule/alphabet snapshot used
 for both execution and the receipt; parsed wires are checked back against it.
@@ -7815,17 +7834,21 @@ Authoritative direct
 and Arm E replay revalidate the caller-owned tensors and full explicit recipe,
 rerun both encodes or feedback trajectories, and require exact canonical
 bytes, decoded tensors, scores, transform metadata, and receipt semantics.
-Selector or encoder bytes changed after their module import refuse rather than
-being misbound to cached executable code. The
+Any bound source bytes changed after module import refuse rather than being
+misbound to cached executable code. The
 implementation remains unregistered and production-ineligible, and no GLM
 quality, runtime, energy, Gridbook load, or serving claim follows until a
 matched profiled GPU pilot and the ordinary ship gates complete
 (`docs/design/trellis_scale_grid.md`).
 
-The Arm E receipt binds the local BlockLDL/transform producer and trellis-
-encoder sources, and grid-enabled runs additionally bind the scale selector;
-all executed sources are checked against their import-time hashes around final
-receipt construction. The receipt also binds the audited QTIP commit and
+BlockLDL artifact schema v3 binds the local producer, trellis encoder,
+canonical wire and format sources; grid-enabled runs additionally embed the
+complete scale-selector implementation closure. Its gateway authenticates its
+own guard/current-source/closure helpers plus the declared factorization,
+recurrence, terminal encoder, packer, decoder, and transform callables. Those
+declared sources and callables are checked around final receipt construction;
+the claim is deliberately limited to that recorded clean-process closure. The
+receipt also binds the audited QTIP commit and
 source-file digests; that
 provenance imports neither QTIP code nor its wire. Its dense-`D` record
 distinguishes diagonal consumption from the separately false off-diagonal,
@@ -7837,21 +7860,26 @@ semantic or unknown-field mutation does not grant authority. Structured
 receipts additionally bind the retained source diagonal and every ordered
 factor group's offsets, sizes, transformed-Hessian, feedback, and `D` hashes;
 semantic replay checks those bindings as well as the canonical wire.
-The prepared source hashes are labelled preparation-time provenance, not
-encode-time reauthentication; the transformed tensors are the values the
-encode boundary reauthenticates.
+Prepared scaffold schemas v2 retain the source weight. Encode and replay rehash
+it, recompute `R_out W R_in.T`, and require exact `torch.equal` identity with
+the retained transformed weight. Dense source-Hessian identity remains
+preparation-time provenance; structured receipts separately retain and
+reauthenticate the positive diagonal. Thus a manually rehashed but mismatched
+source/transformed pair refuses before Arm E execution.
 
-This closes the GLM *shape* seam, not its measured execution gate. A
-`[4096,12288]` plan uses three 4096-column factor groups and avoids the
-603,979,776-byte FP32 global Hessian. Its recorded
-`reference_tensor_bytes_estimate` is explicitly neither a live-storage upper
-bound nor a measured allocator peak; additional weight-shaped tensors and
-CUDA library workspaces exist. Full-census preflight therefore reports
-`shape_contract_ready` with
-`memory_gate_status=unmeasured_requires_cuda_peak`. A clean CUDA pilot must
-record the real peak, an in-process profile, wall time, and Netdata on both
-Sparks before the full census or any memory/runtime claim
-(`research/qtip_native_nvfp4_2026-08-30/arm_e_quality_campaign.py`).
+The GLM shape and measured feasibility seams are closed, but the quality gate
+is negative. The completed 33-tensor census (9 dense, 24 routed) ran the
+largest `[4096,12288]` tensor as three ordered 4096-column factor groups without
+a global Hessian. Maximum allocated CUDA memory was `6,686,095,360` bytes and
+the profiled census window was 652 seconds; receipt SHA-256 is
+`84987783448da1db3aa6d0dcf8a409f7ab383de45fb2329f1bc667a58dd87b32`.
+Arm E minus Arm C median raw-importance SNR was `-0.442704 dB` dense (2/9 wins)
+and `-1.803932 dB` routed (3/24 wins); both preregistered population gates
+failed. This proves physical feasibility of the measured structured path, not
+performance or model quality. The corpus has activation second moments rather
+than activation rows, so activation-output, KL/PPL, serving, throughput, and
+work-per-joule remain unmeasured (`docs/results/`
+`qtip_native_nvfp4_arm_e_glm_2026-08-30.md`).
 
 Both implementations remain unregistered and production-ineligible. The
 online sign/Hadamard execution reference lives on an external, unpinned

@@ -36,9 +36,12 @@ from .trellis_wire import (
 )
 
 
-SCALE_GRID_SCHEMA = "prismaquant.research.trellis_scale_grid_two_arm.v1"
+SCALE_GRID_SCHEMA = "prismaquant.research.trellis_scale_grid_two_arm.v2"
 SCALE_GRID_RENDER_RECIPE_SCHEMA = (
-    "prismaquant.research.trellis_scale_grid_render_recipe.v1"
+    "prismaquant.research.trellis_scale_grid_render_recipe.v2"
+)
+SCALE_GRID_IMPLEMENTATION_CLOSURE_SCHEMA = (
+    "prismaquant.research.trellis_scale_grid_implementation_closure.v1"
 )
 E2M1_LEVELS = (
     -6.0, -4.0, -3.0, -2.0, -1.5, -1.0, -0.5, 0.0,
@@ -64,10 +67,23 @@ def scale_grid_multipliers() -> tuple[float, ...]:
 
 SCALE_GRID_MULTIPLIERS = scale_grid_multipliers()
 _SCALE_GRID_SOURCE_PATH = Path(__file__).resolve()
+_TRELLIS_ENCODER_SOURCE_PATH = _SCALE_GRID_SOURCE_PATH.with_name(
+    "trellis_encoder.py"
+)
+_TRELLIS_WIRE_SOURCE_PATH = _SCALE_GRID_SOURCE_PATH.with_name("trellis_wire.py")
+_TRELLIS_FORMATS_SOURCE_PATH = _SCALE_GRID_SOURCE_PATH.with_name(
+    "trellis_formats.py"
+)
 _IMPORTED_SCALE_GRID_SOURCE_SHA256 = hashlib.sha256(
     _SCALE_GRID_SOURCE_PATH.read_bytes()
 ).hexdigest()
 _IMPORTED_ENCODER_SOURCE_SHA256 = encoder_source_sha256()
+_IMPORTED_WIRE_SOURCE_SHA256 = hashlib.sha256(
+    _TRELLIS_WIRE_SOURCE_PATH.read_bytes()
+).hexdigest()
+_IMPORTED_FORMATS_SOURCE_SHA256 = hashlib.sha256(
+    _TRELLIS_FORMATS_SOURCE_PATH.read_bytes()
+).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +146,14 @@ def _current_scale_grid_source_sha256() -> str:
     return hashlib.sha256(_SCALE_GRID_SOURCE_PATH.read_bytes()).hexdigest()
 
 
+def _current_wire_source_sha256() -> str:
+    return hashlib.sha256(_TRELLIS_WIRE_SOURCE_PATH.read_bytes()).hexdigest()
+
+
+def _current_formats_source_sha256() -> str:
+    return hashlib.sha256(_TRELLIS_FORMATS_SOURCE_PATH.read_bytes()).hexdigest()
+
+
 def require_scale_grid_source_unchanged() -> str:
     current = _current_scale_grid_source_sha256()
     if not hmac.compare_digest(current, _IMPORTED_SCALE_GRID_SOURCE_SHA256):
@@ -154,10 +178,16 @@ def require_scale_grid_encoder_source_unchanged() -> str:
 
 
 def require_scale_grid_implementation_unchanged() -> tuple[str, str]:
-    return (
-        require_scale_grid_source_unchanged(),
-        require_scale_grid_encoder_source_unchanged(),
-    )
+    """Revalidate every source and declared callable in the execution closure.
+
+    The two-element return is retained for callers written against v1.  The
+    complete closure is available from ``scale_grid_implementation_closure``.
+    """
+
+    if _scale_grid_execution_gateway is not _BOUND_SCALE_GRID_EXECUTION_GATEWAY:
+        raise ScaleGridError("trellis scale-grid execution gateway was substituted")
+    selector, encoder, _closure = _BOUND_SCALE_GRID_EXECUTION_GATEWAY()
+    return selector, encoder
 
 
 def _is_sha256(value: object) -> bool:
@@ -189,6 +219,8 @@ def validate_scale_grid_receipt(value: Mapping[str, object]) -> Mapping[str, obj
     this mapping-only check is deliberately not an authority boundary.
     """
 
+    if _scale_grid_execution_gateway is not _BOUND_SCALE_GRID_EXECUTION_GATEWAY:
+        raise ScaleGridError("trellis scale-grid execution gateway was substituted")
     if not isinstance(value, Mapping):
         raise ScaleGridError("scale-grid receipt must be an object")
     body = dict(value)
@@ -202,6 +234,7 @@ def validate_scale_grid_receipt(value: Mapping[str, object]) -> Mapping[str, obj
         "schema", "status", "scope", "mode", "selection_scope", "snap_path",
         "multipliers", "multipliers_sha256", "multiplier_count", "identity_index",
         "selector_source_sha256", "encoder_source_sha256",
+        "implementation_closure",
         "render_recipe", "render_recipe_identity_sha256",
         "global_scale_real_hex", "pricing", "arms", "final", "proof",
         "format_registry_entries_created", "runtime_pin_changed",
@@ -239,7 +272,11 @@ def validate_scale_grid_receipt(value: Mapping[str, object]) -> Mapping[str, obj
     _checked_multipliers(menu)
     if body["multipliers_sha256"] != _canonical_sha256(menu):
         raise ScaleGridError("scale-grid receipt multiplier identity mismatch")
-    current_selector, current_encoder = require_scale_grid_implementation_unchanged()
+    current_selector, current_encoder, current_closure = (
+        _BOUND_SCALE_GRID_EXECUTION_GATEWAY()
+    )
+    if body["implementation_closure"] != current_closure:
+        raise ScaleGridError("scale-grid receipt implementation closure mismatch")
     if (
         not _is_sha256(body["selector_source_sha256"])
         or body["selector_source_sha256"] != current_selector
@@ -256,7 +293,7 @@ def validate_scale_grid_receipt(value: Mapping[str, object]) -> Mapping[str, obj
         "alphabets", "scale_rule", "sb_chunk", "determinism_mode",
         "tailbite_candidates", "backend", "point_route",
         "global_scale_real_override_hex", "encoder_source_sha256",
-        "scale_selection",
+        "implementation_closure_identity_sha256", "scale_selection",
     }
     render_selection_fields = {
         "mode", "scope", "snap_path", "multipliers", "multipliers_sha256",
@@ -269,6 +306,8 @@ def validate_scale_grid_receipt(value: Mapping[str, object]) -> Mapping[str, obj
         or render["schema"] != SCALE_GRID_RENDER_RECIPE_SCHEMA
         or render["family"] != E2M1_FAMILY
         or render["encoder_source_sha256"] != current_encoder
+        or render["implementation_closure_identity_sha256"]
+        != current_closure["identity_sha256"]
         or not _nonnegative_int(render["body_rate_q256"])
         or render["body_rate_q256"] <= 0
         or not isinstance(render["schedule"], list)
@@ -541,6 +580,7 @@ def _scale_grid_render_recipe(
     selection_scope: str,
     selector_source_sha256: str,
     encoder_source_identity_sha256: str,
+    implementation_closure_identity_sha256: str,
 ) -> dict[str, object]:
     return {
         "schema": SCALE_GRID_RENDER_RECIPE_SCHEMA,
@@ -564,6 +604,9 @@ def _scale_grid_render_recipe(
             else float(global_scale_real_override).hex()
         ),
         "encoder_source_sha256": encoder_source_identity_sha256,
+        "implementation_closure_identity_sha256": (
+            implementation_closure_identity_sha256
+        ),
         "scale_selection": {
             "mode": "e4m3_grid_gated_v1",
             "scope": selection_scope,
@@ -684,7 +727,7 @@ def propose_e2m1_scale_plane(
         raise ScaleGridError("identity_scale_codes must reside on the weight device")
     menu = _checked_multipliers(multipliers)
     real_scale = _real_group_scales(value)
-    expected_identity = snap_e2m1_scale_codes(
+    expected_identity = _BOUND_SNAP_E2M1_SCALE_CODES(
         real_scale,
         global_scale_real,
         multiplier=1.0,
@@ -703,7 +746,7 @@ def propose_e2m1_scale_plane(
     identity_cost: torch.Tensor | None = None
     masked_cells_tensor = torch.zeros((), dtype=torch.int64, device=value.device)
     clipped_cells_tensor = torch.zeros((), dtype=torch.int64, device=value.device)
-    code_planes = iter_snapped_e2m1_scale_codes(
+    code_planes = _BOUND_ITER_SNAPPED_E2M1_SCALE_CODES(
         real_scale,
         global_scale_real,
         menu,
@@ -749,7 +792,7 @@ def propose_e2m1_scale_plane(
     assert best_cost is not None and identity_cost is not None
     if bool((best_cost > identity_cost).any().item()):
         raise AssertionError("proposal generator regressed its RTN identity floor")
-    decode_e2m1_scale_codes(best_codes, global_scale_real)
+    _BOUND_DECODE_E2M1_SCALE_CODES(best_codes, global_scale_real)
     masked_cells = int(masked_cells_tensor.item())
     clipped_cells = int(clipped_cells_tensor.item())
     return ScalePlaneProposal(
@@ -772,7 +815,7 @@ def _pack_reparse_decode(
     alphabets: Mapping[int, Sequence[int]],
     device: torch.device,
 ) -> tuple[bytes, TrellisWire, torch.Tensor, torch.Tensor]:
-    wire = pack_planes(
+    wire = _BOUND_PACK_PLANES(
         family=E2M1_FAMILY,
         body_rate_q256=body_rate_q256,
         schedule=schedule,
@@ -785,11 +828,13 @@ def _pack_reparse_decode(
         global_scale_real=encoded.global_scale_real,
     )
     blob = wire.to_bytes()
-    reparsed = TrellisWire.from_bytes(blob)
+    reparsed = _BOUND_TRELLIS_WIRE_FROM_BYTES(blob)
     if reparsed.to_bytes() != blob:
         raise ScaleGridError("canonical scale-grid wire did not reserialize exactly")
-    decoded_codes = decode_codes_torch(blob, device=device)
-    decoded_weight = decode_values_torch(blob, device=device, dtype=torch.float32)
+    decoded_codes = _BOUND_DECODE_CODES_TORCH(blob, device=device)
+    decoded_weight = _BOUND_DECODE_VALUES_TORCH(
+        blob, device=device, dtype=torch.float32
+    )
     if not torch.equal(
         decoded_weight.to(torch.bfloat16),
         encoded.reconstruction.to(torch.bfloat16),
@@ -870,6 +915,307 @@ def _splice_encoded_planes(
     )
 
 
+def _callable_descriptor(value: object) -> dict[str, str]:
+    module = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    if not isinstance(module, str) or not isinstance(qualname, str):
+        raise RuntimeError("scale-grid closure member lacks a stable callable identity")
+    return {"module": module, "qualname": qualname}
+
+
+def _live_scale_grid_callables() -> dict[str, object]:
+    return {
+        "EncodedTrellisPlanes": EncodedTrellisPlanes,
+        "TrellisWire": TrellisWire,
+        "TrellisWire.from_bytes": TrellisWire.from_bytes.__func__,
+        "_canonical_sha256": _canonical_sha256,
+        "_checked_multipliers": _checked_multipliers,
+        "_checked_render_inputs": _checked_render_inputs,
+        "_metric_vector": _metric_vector,
+        "_pack_reparse_decode": _pack_reparse_decode,
+        "_real_group_scales": _real_group_scales,
+        "_require_wire_matches_render_recipe": _require_wire_matches_render_recipe,
+        "_resident_scale_codes": _resident_scale_codes,
+        "_scale_grid_render_recipe": _scale_grid_render_recipe,
+        "_splice_encoded_planes": _splice_encoded_planes,
+        "_tensor_sha256": _tensor_sha256,
+        "_validated_weight": _validated_weight,
+        "decode_codes_torch": decode_codes_torch,
+        "decode_e2m1_scale_codes": decode_e2m1_scale_codes,
+        "decode_values_torch": decode_values_torch,
+        "encode_trellis_planes": encode_trellis_planes,
+        "iter_snapped_e2m1_scale_codes": iter_snapped_e2m1_scale_codes,
+        "pack_planes": pack_planes,
+        "propose_e2m1_scale_plane": propose_e2m1_scale_plane,
+        "require_encoder_source_unchanged": require_encoder_source_unchanged,
+        "score_realized_tiles_fp64": score_realized_tiles_fp64,
+        "snap_e2m1_scale_codes": snap_e2m1_scale_codes,
+        "validate_scale_grid_receipt": validate_scale_grid_receipt,
+    }
+
+
+_IMPORTED_SCALE_GRID_CALLABLES = tuple(_live_scale_grid_callables().items())
+_BOUND_ENCODE_TRELLIS_PLANES = encode_trellis_planes
+_BOUND_DECODE_CODES_TORCH = decode_codes_torch
+_BOUND_DECODE_E2M1_SCALE_CODES = decode_e2m1_scale_codes
+_BOUND_DECODE_VALUES_TORCH = decode_values_torch
+_BOUND_ITER_SNAPPED_E2M1_SCALE_CODES = iter_snapped_e2m1_scale_codes
+_BOUND_PACK_PLANES = pack_planes
+_BOUND_PACK_REPARSE_DECODE = _pack_reparse_decode
+_BOUND_PROPOSE_E2M1_SCALE_PLANE = propose_e2m1_scale_plane
+_BOUND_REQUIRE_WIRE_MATCHES_RENDER_RECIPE = _require_wire_matches_render_recipe
+_BOUND_SCORE_REALIZED_TILES_FP64 = score_realized_tiles_fp64
+_BOUND_SPLICE_ENCODED_PLANES = _splice_encoded_planes
+_BOUND_SNAP_E2M1_SCALE_CODES = snap_e2m1_scale_codes
+_BOUND_TRELLIS_WIRE_FROM_BYTES = TrellisWire.from_bytes
+
+
+def require_scale_grid_callable_closure_unchanged() -> str:
+    """Refuse module-level callable substitution at the research boundary."""
+
+    expected = dict(_IMPORTED_SCALE_GRID_CALLABLES)
+    live = _live_scale_grid_callables()
+    changed = sorted(
+        name for name, original in expected.items() if live.get(name) is not original
+    )
+    if changed:
+        raise ScaleGridError(
+            "trellis scale-grid callable closure changed since module import; "
+            f"refusing substituted callables {changed}"
+        )
+    return _canonical_sha256({
+        name: _callable_descriptor(value)
+        for name, value in _IMPORTED_SCALE_GRID_CALLABLES
+    })
+
+
+def scale_grid_implementation_closure() -> Mapping[str, object]:
+    """Return the import-bound source/callable closure named by v2 receipts."""
+
+    callable_descriptors = {
+        name: _callable_descriptor(value)
+        for name, value in _IMPORTED_SCALE_GRID_CALLABLES
+    }
+    body: dict[str, object] = {
+        "schema": SCALE_GRID_IMPLEMENTATION_CLOSURE_SCHEMA,
+        "sources": {
+            "selector": {
+                "path": "prismaquant/trellis_scale_grid.py",
+                "sha256": _IMPORTED_SCALE_GRID_SOURCE_SHA256,
+            },
+            "encoder": {
+                "path": "prismaquant/trellis_encoder.py",
+                "sha256": _IMPORTED_ENCODER_SOURCE_SHA256,
+            },
+            "wire": {
+                "path": "prismaquant/trellis_wire.py",
+                "sha256": _IMPORTED_WIRE_SOURCE_SHA256,
+            },
+            "formats": {
+                "path": "prismaquant/trellis_formats.py",
+                "sha256": _IMPORTED_FORMATS_SOURCE_SHA256,
+            },
+        },
+        "callables": callable_descriptors,
+        "callable_identity_sha256": _canonical_sha256(callable_descriptors),
+    }
+    return {**body, "identity_sha256": _canonical_sha256(body)}
+
+
+_BOUND_PUBLIC_REQUIRE_IMPLEMENTATION = require_scale_grid_implementation_unchanged
+_BOUND_PUBLIC_IMPLEMENTATION_CLOSURE = scale_grid_implementation_closure
+_BOUND_PUBLIC_VALIDATE_RECEIPT = validate_scale_grid_receipt
+_BOUND_REQUIRE_SELECTOR_SOURCE = require_scale_grid_source_unchanged
+_BOUND_REQUIRE_ENCODER_SOURCE = require_scale_grid_encoder_source_unchanged
+_BOUND_CURRENT_SELECTOR_SOURCE = _current_scale_grid_source_sha256
+_BOUND_CURRENT_WIRE_SOURCE = _current_wire_source_sha256
+_BOUND_CURRENT_FORMATS_SOURCE = _current_formats_source_sha256
+_BOUND_LIVE_SCALE_GRID_CALLABLES = _live_scale_grid_callables
+_BOUND_CALLABLE_DESCRIPTOR = _callable_descriptor
+
+
+def _scale_grid_execution_gateway(
+) -> tuple[str, str, Mapping[str, object]]:
+    """Authenticate the helpers used to authenticate the executable closure."""
+
+    guarded_helpers = {
+        "_scale_grid_execution_gateway": (
+            _scale_grid_execution_gateway,
+            _BOUND_SCALE_GRID_EXECUTION_GATEWAY,
+        ),
+        "require_scale_grid_implementation_unchanged": (
+            require_scale_grid_implementation_unchanged,
+            _BOUND_PUBLIC_REQUIRE_IMPLEMENTATION,
+        ),
+        "scale_grid_implementation_closure": (
+            scale_grid_implementation_closure,
+            _BOUND_PUBLIC_IMPLEMENTATION_CLOSURE,
+        ),
+        "validate_scale_grid_receipt": (
+            validate_scale_grid_receipt,
+            _BOUND_PUBLIC_VALIDATE_RECEIPT,
+        ),
+        "require_scale_grid_source_unchanged": (
+            require_scale_grid_source_unchanged,
+            _BOUND_REQUIRE_SELECTOR_SOURCE,
+        ),
+        "require_scale_grid_encoder_source_unchanged": (
+            require_scale_grid_encoder_source_unchanged,
+            _BOUND_REQUIRE_ENCODER_SOURCE,
+        ),
+        "_current_scale_grid_source_sha256": (
+            _current_scale_grid_source_sha256,
+            _BOUND_CURRENT_SELECTOR_SOURCE,
+        ),
+        "_current_wire_source_sha256": (
+            _current_wire_source_sha256,
+            _BOUND_CURRENT_WIRE_SOURCE,
+        ),
+        "_current_formats_source_sha256": (
+            _current_formats_source_sha256,
+            _BOUND_CURRENT_FORMATS_SOURCE,
+        ),
+        "_live_scale_grid_callables": (
+            _live_scale_grid_callables,
+            _BOUND_LIVE_SCALE_GRID_CALLABLES,
+        ),
+        "_callable_descriptor": (
+            _callable_descriptor,
+            _BOUND_CALLABLE_DESCRIPTOR,
+        ),
+    }
+    substituted = sorted(
+        name for name, (live, bound) in guarded_helpers.items() if live is not bound
+    )
+    expected_callables = dict(_IMPORTED_SCALE_GRID_CALLABLES)
+    execution_aliases = {
+        "_BOUND_ENCODE_TRELLIS_PLANES": (
+            _BOUND_ENCODE_TRELLIS_PLANES,
+            expected_callables["encode_trellis_planes"],
+        ),
+        "_BOUND_DECODE_CODES_TORCH": (
+            _BOUND_DECODE_CODES_TORCH,
+            expected_callables["decode_codes_torch"],
+        ),
+        "_BOUND_DECODE_E2M1_SCALE_CODES": (
+            _BOUND_DECODE_E2M1_SCALE_CODES,
+            expected_callables["decode_e2m1_scale_codes"],
+        ),
+        "_BOUND_DECODE_VALUES_TORCH": (
+            _BOUND_DECODE_VALUES_TORCH,
+            expected_callables["decode_values_torch"],
+        ),
+        "_BOUND_ITER_SNAPPED_E2M1_SCALE_CODES": (
+            _BOUND_ITER_SNAPPED_E2M1_SCALE_CODES,
+            expected_callables["iter_snapped_e2m1_scale_codes"],
+        ),
+        "_BOUND_PACK_PLANES": (
+            _BOUND_PACK_PLANES,
+            expected_callables["pack_planes"],
+        ),
+        "_BOUND_PACK_REPARSE_DECODE": (
+            _BOUND_PACK_REPARSE_DECODE,
+            expected_callables["_pack_reparse_decode"],
+        ),
+        "_BOUND_PROPOSE_E2M1_SCALE_PLANE": (
+            _BOUND_PROPOSE_E2M1_SCALE_PLANE,
+            expected_callables["propose_e2m1_scale_plane"],
+        ),
+        "_BOUND_REQUIRE_WIRE_MATCHES_RENDER_RECIPE": (
+            _BOUND_REQUIRE_WIRE_MATCHES_RENDER_RECIPE,
+            expected_callables["_require_wire_matches_render_recipe"],
+        ),
+        "_BOUND_SCORE_REALIZED_TILES_FP64": (
+            _BOUND_SCORE_REALIZED_TILES_FP64,
+            expected_callables["score_realized_tiles_fp64"],
+        ),
+        "_BOUND_SPLICE_ENCODED_PLANES": (
+            _BOUND_SPLICE_ENCODED_PLANES,
+            expected_callables["_splice_encoded_planes"],
+        ),
+        "_BOUND_SNAP_E2M1_SCALE_CODES": (
+            _BOUND_SNAP_E2M1_SCALE_CODES,
+            expected_callables["snap_e2m1_scale_codes"],
+        ),
+        "_BOUND_TRELLIS_WIRE_FROM_BYTES": (
+            getattr(_BOUND_TRELLIS_WIRE_FROM_BYTES, "__func__", None),
+            expected_callables["TrellisWire.from_bytes"],
+        ),
+        "_BOUND_PUBLIC_IMPLEMENTATION_CLOSURE": (
+            _BOUND_PUBLIC_IMPLEMENTATION_CLOSURE,
+            scale_grid_implementation_closure,
+        ),
+        "_BOUND_PUBLIC_VALIDATE_RECEIPT": (
+            _BOUND_PUBLIC_VALIDATE_RECEIPT,
+            validate_scale_grid_receipt,
+        ),
+        "_BOUND_REQUIRE_SELECTOR_SOURCE": (
+            _BOUND_REQUIRE_SELECTOR_SOURCE,
+            require_scale_grid_source_unchanged,
+        ),
+        "_BOUND_REQUIRE_ENCODER_SOURCE": (
+            _BOUND_REQUIRE_ENCODER_SOURCE,
+            require_scale_grid_encoder_source_unchanged,
+        ),
+        "_BOUND_CURRENT_SELECTOR_SOURCE": (
+            _BOUND_CURRENT_SELECTOR_SOURCE,
+            _current_scale_grid_source_sha256,
+        ),
+        "_BOUND_CURRENT_WIRE_SOURCE": (
+            _BOUND_CURRENT_WIRE_SOURCE,
+            _current_wire_source_sha256,
+        ),
+        "_BOUND_CURRENT_FORMATS_SOURCE": (
+            _BOUND_CURRENT_FORMATS_SOURCE,
+            _current_formats_source_sha256,
+        ),
+        "_BOUND_LIVE_SCALE_GRID_CALLABLES": (
+            _BOUND_LIVE_SCALE_GRID_CALLABLES,
+            _live_scale_grid_callables,
+        ),
+    }
+    substituted.extend(
+        name for name, (live, original) in execution_aliases.items()
+        if live is not original
+    )
+    substituted.sort()
+    if substituted:
+        raise ScaleGridError(
+            "trellis scale-grid gateway changed since module import; refusing "
+            f"substituted helpers {substituted}"
+        )
+    selector = _BOUND_REQUIRE_SELECTOR_SOURCE()
+    encoder = _BOUND_REQUIRE_ENCODER_SOURCE()
+    current_wire = _BOUND_CURRENT_WIRE_SOURCE()
+    if not hmac.compare_digest(current_wire, _IMPORTED_WIRE_SOURCE_SHA256):
+        raise ScaleGridError(
+            "trellis wire source changed since scale-grid import; refusing "
+            "to execute or publish a mixed implementation closure"
+        )
+    current_formats = _BOUND_CURRENT_FORMATS_SOURCE()
+    if not hmac.compare_digest(current_formats, _IMPORTED_FORMATS_SOURCE_SHA256):
+        raise ScaleGridError(
+            "trellis format source changed since scale-grid import; refusing "
+            "to execute or publish a mixed implementation closure"
+        )
+    live_callables = _BOUND_LIVE_SCALE_GRID_CALLABLES()
+    changed = sorted(
+        name
+        for name, original in expected_callables.items()
+        if live_callables.get(name) is not original
+    )
+    if changed:
+        raise ScaleGridError(
+            "trellis scale-grid callable closure changed since module import; "
+            f"refusing substituted callables {changed}"
+        )
+    closure = _BOUND_PUBLIC_IMPLEMENTATION_CLOSURE()
+    return selector, encoder, closure
+
+
+_BOUND_SCALE_GRID_EXECUTION_GATEWAY = _scale_grid_execution_gateway
+
+
 def encode_e2m1_scale_grid_two_arm(
     weight: torch.Tensor,
     metric_weight: torch.Tensor,
@@ -890,7 +1236,11 @@ def encode_e2m1_scale_grid_two_arm(
 ) -> ScaleGridSelection:
     """Run the two full encodes and prove exact diagonal non-regression."""
 
-    selector_source, encoder_source = require_scale_grid_implementation_unchanged()
+    if _scale_grid_execution_gateway is not _BOUND_SCALE_GRID_EXECUTION_GATEWAY:
+        raise ScaleGridError("trellis scale-grid execution gateway was substituted")
+    selector_source, encoder_source, implementation_closure = (
+        _BOUND_SCALE_GRID_EXECUTION_GATEWAY()
+    )
     checked = _checked_render_inputs(
         body_rate_q256=body_rate_q256,
         schedule=schedule,
@@ -946,6 +1296,9 @@ def encode_e2m1_scale_grid_two_arm(
         selection_scope=selection_scope,
         selector_source_sha256=selector_source,
         encoder_source_identity_sha256=encoder_source,
+        implementation_closure_identity_sha256=cast(
+            str, implementation_closure["identity_sha256"]
+        ),
     )
     encoder_kwargs = {
         "family": E2M1_FAMILY,
@@ -958,14 +1311,14 @@ def encode_e2m1_scale_grid_two_arm(
         "backend": backend,
         "point_route": point_route,
     }
-    identity = encode_trellis_planes(
+    identity = _BOUND_ENCODE_TRELLIS_PLANES(
         value,
         metric,
         **encoder_kwargs,
         global_scale_real_override=global_scale_real_override,
     )
     identity_blob, identity_wire, _identity_codes, identity_decoded = (
-        _pack_reparse_decode(
+        _BOUND_PACK_REPARSE_DECODE(
             identity,
             body_rate_q256=body_rate_q256,
             schedule=schedule,
@@ -974,14 +1327,14 @@ def encode_e2m1_scale_grid_two_arm(
             device=value.device,
         )
     )
-    _require_wire_matches_render_recipe(identity_wire, render_recipe)
+    _BOUND_REQUIRE_WIRE_MATCHES_RENDER_RECIPE(identity_wire, render_recipe)
     identity_scale_codes = _resident_scale_codes(
         identity,
         rows=rows,
         groups=columns // E2M1_GROUP_SIZE,
         device=value.device,
     )
-    proposal = propose_e2m1_scale_plane(
+    proposal = _BOUND_PROPOSE_E2M1_SCALE_PLANE(
         value,
         metric,
         global_scale_real=identity.global_scale_real,
@@ -989,7 +1342,7 @@ def encode_e2m1_scale_grid_two_arm(
         multipliers=menu,
         floor_to_min_positive=True,
     )
-    candidate = encode_trellis_planes(
+    candidate = _BOUND_ENCODE_TRELLIS_PLANES(
         value,
         metric,
         **encoder_kwargs,
@@ -999,7 +1352,7 @@ def encode_e2m1_scale_grid_two_arm(
     if candidate.global_scale_real != identity.global_scale_real:
         raise ScaleGridError("candidate arm changed the immutable global scale")
     candidate_blob, candidate_wire, _candidate_codes, candidate_decoded = (
-        _pack_reparse_decode(
+        _BOUND_PACK_REPARSE_DECODE(
             candidate,
             body_rate_q256=body_rate_q256,
             schedule=schedule,
@@ -1008,7 +1361,7 @@ def encode_e2m1_scale_grid_two_arm(
             device=value.device,
         )
     )
-    _require_wire_matches_render_recipe(candidate_wire, render_recipe)
+    _BOUND_REQUIRE_WIRE_MATCHES_RENDER_RECIPE(candidate_wire, render_recipe)
     if candidate_wire.global_scale_real != identity_wire.global_scale_real:
         raise ScaleGridError("candidate arm changed the immutable global scale")
     invariant_fields = (
@@ -1024,11 +1377,17 @@ def encode_e2m1_scale_grid_two_arm(
     if len(identity_blob) != len(candidate_blob):
         raise ScaleGridError("candidate arm changed the exact wire byte length")
 
-    identity_cost = score_realized_tiles_fp64(value, identity_decoded, metric)
-    candidate_cost = score_realized_tiles_fp64(value, candidate_decoded, metric)
+    identity_cost = _BOUND_SCORE_REALIZED_TILES_FP64(
+        value, identity_decoded, metric
+    )
+    candidate_cost = _BOUND_SCORE_REALIZED_TILES_FP64(
+        value, candidate_decoded, metric
+    )
     candidate_wins = candidate_cost < identity_cost
-    final_encoded = _splice_encoded_planes(identity, candidate, candidate_wins)
-    final_blob, final_wire, final_codes, final_decoded = _pack_reparse_decode(
+    final_encoded = _BOUND_SPLICE_ENCODED_PLANES(
+        identity, candidate, candidate_wins
+    )
+    final_blob, final_wire, final_codes, final_decoded = _BOUND_PACK_REPARSE_DECODE(
         final_encoded,
         body_rate_q256=body_rate_q256,
         schedule=schedule,
@@ -1036,12 +1395,12 @@ def encode_e2m1_scale_grid_two_arm(
         alphabets=alphabets,
         device=value.device,
     )
-    _require_wire_matches_render_recipe(final_wire, render_recipe)
+    _BOUND_REQUIRE_WIRE_MATCHES_RENDER_RECIPE(final_wire, render_recipe)
     if len(final_blob) != len(identity_blob):
         raise ScaleGridError("spliced wire changed the exact byte length")
     if final_wire.global_scale_real != identity_wire.global_scale_real:
         raise ScaleGridError("spliced wire changed the immutable global scale")
-    final_cost = score_realized_tiles_fp64(value, final_decoded, metric)
+    final_cost = _BOUND_SCORE_REALIZED_TILES_FP64(value, final_decoded, metric)
     exact_minimum = torch.minimum(identity_cost, candidate_cost)
     if not torch.equal(final_cost, exact_minimum):
         raise ScaleGridError("spliced Cf is not exactly min(C0, C1) per tile")
@@ -1087,6 +1446,7 @@ def encode_e2m1_scale_grid_two_arm(
         "identity_index": 0,
         "selector_source_sha256": selector_source,
         "encoder_source_sha256": encoder_source,
+        "implementation_closure": implementation_closure,
         "render_recipe": render_recipe,
         "render_recipe_identity_sha256": _canonical_sha256(render_recipe),
         "global_scale_real_hex": float(identity_wire.global_scale_real).hex(),
@@ -1140,8 +1500,8 @@ def encode_e2m1_scale_grid_two_arm(
         "producer_eligible": False,
     }
     receipt = {**receipt_body, "identity_sha256": _canonical_sha256(receipt_body)}
-    validate_scale_grid_receipt(receipt)
-    require_scale_grid_implementation_unchanged()
+    _BOUND_PUBLIC_VALIDATE_RECEIPT(receipt)
+    _BOUND_SCALE_GRID_EXECUTION_GATEWAY()
     return ScaleGridSelection(
         encoded_planes=final_encoded,
         wire_bytes=final_blob,
@@ -1174,7 +1534,7 @@ def require_scale_grid_selection_replay(
 
     if not isinstance(expected, ScaleGridSelection):
         raise ScaleGridError("expected replay artifact must be ScaleGridSelection")
-    receipt = validate_scale_grid_receipt(expected.receipt)
+    receipt = _BOUND_PUBLIC_VALIDATE_RECEIPT(expected.receipt)
     required_recipe_fields = {
         "body_rate_q256", "schedule", "layout", "alphabets", "scale_rule",
         "sb_chunk", "determinism_mode", "tailbite_candidates", "backend",
@@ -1208,7 +1568,9 @@ def require_scale_grid_selection_replay(
         global_scale_real_override=recipe.get("global_scale_real_override"),
         selection_scope=recipe.get("selection_scope", "row_superblock"),
     )
-    selector_source, encoder_source = require_scale_grid_implementation_unchanged()
+    selector_source, encoder_source, implementation_closure = (
+        _BOUND_SCALE_GRID_EXECUTION_GATEWAY()
+    )
     replay_recipe = _scale_grid_render_recipe(
         body_rate_q256=cast(int, checked["body_rate_q256"]),
         schedule=cast(tuple[int, ...], checked["schedule"]),
@@ -1227,6 +1589,9 @@ def require_scale_grid_selection_replay(
         selection_scope=cast(str, checked["selection_scope"]),
         selector_source_sha256=selector_source,
         encoder_source_identity_sha256=encoder_source,
+        implementation_closure_identity_sha256=cast(
+            str, implementation_closure["identity_sha256"]
+        ),
     )
     if (
         replay_recipe != receipt["render_recipe"]
@@ -1320,6 +1685,7 @@ def select_e2m1_scale_grid(*_args: object, **_kwargs: object) -> ScaleGridSelect
 __all__ = [
     "E2M1_LEVELS",
     "SCALE_GRID_MULTIPLIERS",
+    "SCALE_GRID_IMPLEMENTATION_CLOSURE_SCHEMA",
     "SCALE_GRID_RENDER_RECIPE_SCHEMA",
     "SCALE_GRID_SCHEMA",
     "SCALE_PLANE_RATE_Q256",
@@ -1329,10 +1695,12 @@ __all__ = [
     "encode_e2m1_scale_grid_two_arm",
     "propose_e2m1_scale_plane",
     "require_scale_grid_encoder_source_unchanged",
+    "require_scale_grid_callable_closure_unchanged",
     "require_scale_grid_implementation_unchanged",
     "require_scale_grid_selection_replay",
     "require_scale_grid_source_unchanged",
     "scale_grid_multipliers",
+    "scale_grid_implementation_closure",
     "scale_grid_source_sha256",
     "score_realized_tiles_fp64",
     "select_e2m1_scale_grid",

@@ -90,12 +90,19 @@ grid-gated measurements cannot share a curve identity.
 
 ## Evidence and non-claims
 
-Receipts bind the ordered multiplier menu, the complete canonical render
-recipe, import-time selector and encoder source identities, immutable global,
+Receipt/render schemas v2 bind the ordered multiplier menu, the complete
+canonical render recipe, immutable global,
 both arms, winner scope, canonical wire hashes, fp64 objective bit patterns,
 exact-byte accounting, and the non-regression assertions. Both loaded source
-identities are also checked against the live files around execution, so a
-cached implementation cannot be labelled with bytes written after its import.
+identities are checked against the live files around execution. The recorded
+implementation closure covers selector, encoder, canonical wire, and format
+sources plus the declared executable callables. Its gateway retains the
+import-bound guard, closure renderer, receipt validator, current-source
+readers, and encoder/proposal/scorer/splice functions; replacing any of those
+module globals refuses before a receipt can be emitted. This is a clean-process
+Python research boundary, not a claim of protection against arbitrary hostile
+memory mutation, but ordinary callable substitution cannot be labelled with
+the unchanged source bytes.
 Every recipe scalar must be a plain JSON-compatible type; schedule and
 alphabet containers are copied once into an immutable validated snapshot used
 by both execution and receipt construction, and each parsed wire is compared
@@ -111,8 +118,11 @@ feedback trajectories, and require every canonical byte, decoded tensor,
 score, proposal, winner, transform field, and receipt semantic to match.
 Well-formed receipt forgeries with recomputed self-digests, identity-code
 drift, illegal scale bytes, source drift after import, global drift, a wrong
-splice, scorer disagreement, and a finer Arm E scope all refuse in focused
-tests.
+splice/scorer/encoder substitution, guard-helper substitution, and a finer Arm
+E scope all refuse in focused tests. A degenerate-global fixture also pins the
+load-bearing canonical-decode equality: if the encoder's defensive `1e-12`
+effective-scale floor differs from the byte-decoder convention, the arm
+refuses instead of publishing an in-memory-only reconstruction.
 
 This construction proves only that the selected research wire is no worse
 than its realized identity arm under the bound objective. It does not prove a

@@ -276,11 +276,16 @@ producer implements all cross-block off-diagonal feedback, not an exact dense-
 `D` trellis minimizer. Its receipt describes local use literally: the
 `diag_block_D` mode records diagonal consumption, while both terminal modes
 record that off-diagonal and full-matrix `D` consumption and an exact dense
-objective are false. The same receipt binds the producer and trellis-encoder
-sources plus the audited QTIP commit and source digests. Both local source
-hashes are captured at module import and rechecked around final receipt
-construction; a self-rehashed prepared receipt cannot change or extend its
-fixed basis, wire, seam, scope, or eligibility semantics.
+objective are false. BlockLDL artifact schema v3 binds the producer, trellis
+encoder, canonical wire, format contract, and (when enabled) complete
+scale-grid implementation closure, plus the audited QTIP commit and source
+digests. Source hashes are captured at module import and rechecked around final
+receipt construction. An import-bound gateway also authenticates its own
+guard/current-source/closure helpers and the declared factorization,
+recurrence, terminal encoder, packer, decoder, and transform callables, so a
+module-level substitution refuses rather than being published under unchanged
+file hashes. A self-rehashed prepared receipt cannot change or extend its fixed
+basis, wire, seam, scope, or eligibility semantics.
 
 The structured receipt additionally binds the retained diagonal and its
 ordered factor groups, including offsets, sizes, transformed-block hashes,
@@ -301,8 +306,12 @@ measured Arm E promotion. A receipt self-digest is not artifact authority:
 inputs and explicit recipe, reruns both trajectories, and requires exact wire,
 decode, transform, and receipt identity.
 
-Original weight/Hessian hashes remain explicitly preparation-time provenance;
-the encode boundary reauthenticates the transformed tensors it actually owns.
+Prepared scaffold schemas v2 retain the source weight. At every encode/replay
+boundary they rehash it, recompute `R_out W R_in.T`, and require exact
+`torch.equal` identity with the retained transformed weight. The dense source
+Hessian hash remains explicitly preparation-time provenance; the structured
+path separately retains and reauthenticates its positive diagonal. A manually
+rehashed but mismatched `(W, W_tilde)` pair therefore cannot enter Arm E.
 
 Arm D would not be a new compressed-tensors scheme: it needs Gridbook metadata
 and runtime transforms even though its matrix operand is ordinary native
@@ -320,11 +329,13 @@ model all-position KL/PPL A/B. A production proposal requires exact served
 quality, graph capture, load correctness, resident footprint, and prefill and
 decode throughput against the displaced native/Gridbook lane.
 
-For every performance gate, collect an in-process profile plus Netdata from
-both Sparky and Sparklina. On GB10, report power against the approximately
-140 W envelope and work per joule; GPU utilization is not diagnostic. Until
-those measurements exist, the online-transform lanes remain explicitly
-research-only and opt-in.
+The completed GLM weight/importance census includes an in-process profile and
+both-host telemetry, but its low-power quality workload is not a performance
+comparison. Every future performance gate must again collect an in-process
+profile plus Netdata from both Sparky and Sparklina. On GB10, report power
+against the approximately 140 W envelope and work per joule; GPU utilization
+is not diagnostic. The online-transform lanes remain explicitly research-only
+and opt-in.
 
 ## Implementation boundaries
 
@@ -350,7 +361,12 @@ The promotion question is empirical: how much of QTIP-derived BlockLDLQ's
 advantage survives the native E2M1 terminal, how much comes back from
 incoherence, and how much additional value PrismaQuant/Gridbook's stateful
 E2M1 wire supplies after both are present. Arm C answers only the first
-question. Arm E now has a physical producer and exact reference checks, but it
-still lacks a matched GPU quality campaign and a pinned served runtime; E—not
-D—is the intended combined target. EXL3 remains source-reading context only,
-not an imported implementation or measured comparison arm.
+question. Arm E now has a physical producer, exact reference checks, and a
+matched 33-tensor GLM GPU weight/importance census. That census was physically
+feasible (6,686,095,360-byte maximum allocation; 652-second profiled window)
+but quality-negative: Arm E minus C median raw-importance SNR was -0.442704 dB
+dense and -1.803932 dB routed, failing both preregistered gates. Small-model
+activation-output KL/PPL and a pinned served runtime remain absent; E—not D—is
+the intended combined target, but this recipe cannot advance. EXL3 remains
+source-reading context only, not an imported implementation or measured
+comparison arm.
