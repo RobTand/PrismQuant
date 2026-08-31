@@ -13,6 +13,7 @@ from pathlib import Path
 
 from prismaquant.cb_layout import ACCEPTED_CB_FORMAT_NAMES
 from prismaquant.schemas import validate_layer_config_payload
+from prismaquant.trellis_formats import parse_trellis_format_name as _parse_trellis_for_config
 
 
 def strip_weight(name: str) -> str:
@@ -71,7 +72,20 @@ def canonicalize_format(entry: dict | str | int) -> str:
     This parser is runtime-neutral: research formats such as E5M2 are
     canonicalized here, then serving/export profiles decide whether they are
     legal for a concrete backend.
+
+    Trellis formats (TCQ_E2M1_Rxxx / TCQ_E4M3_Rxxx) are recognized here so a
+    recipe that selects them is not refused as an unsupported format before it
+    reaches the trellis lane.
     """
+    # Check string entries for trellis first — they are of the form
+    # TCQ_E2M1_R512 etc., which would otherwise fall through to the
+    # unsupported-format error below.
+    if isinstance(entry, str):
+        trellis = _parse_trellis_for_config(str(entry).strip().upper())
+        if trellis is not None:
+            # Return canonical upper-case spelling (TCQ_E*M*_R<q256>)
+            fam, rate = trellis
+            return fam.format_name(rate)
     if isinstance(entry, dict):
         dt = entry.get("data_type")
         bits = int(entry.get("bits", 0))

@@ -1,0 +1,24 @@
+{
+  "index": 9,
+  "family": "TCQ_E4M3_R256",
+  "layout": "fixed_quota_per_256",
+  "rows": 11,
+  "columns": 272,
+  "body_rate_q256": 1152,
+  "wire_sha256": "eb3421ec8c66ba0d6c03349f3f3b829c12ca5a8d3aae37c3173e76634668142a",
+  "decoded_sha256": "b38b7a681dae392dfed88bac16d688999979e8c6944320f95701751bcea47df6",
+  "global_scale_real": 1.0,
+  "wire_bytes": 2130,
+  "schedule": [
+    4,
+    5,
+    4,
+    5,
+    4,
+    5,
+    4,
+    5,
+    4,
+    5
+  ]
+}
