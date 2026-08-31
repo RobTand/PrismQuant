@@ -402,6 +402,35 @@ def _docker_diff(container_id: str) -> tuple[str, ...]:
     return changes
 
 
+def _canonical_inspection_recheck_bytes(
+    inspected: Mapping[str, object],
+) -> bytes:
+    """Canonicalize only Docker's set-semantic bind-mount list for recheck.
+
+    Docker 29.2.1 can asynchronously permute ``Mounts`` on a created
+    container after ``docker diff`` mounts and releases the rootfs. The launch
+    validator has already required four unique bind destinations and compared
+    their complete security fields as a mapping. Preserve every key and value
+    in every mount record, sort only those complete records, and retain the
+    otherwise-complete inspect object. Thus a mount mutation or a change in
+    even a currently unconsumed daemon field still fails the two-phase check.
+    Rootfs-diff evidence remains separately order-strict.
+    """
+
+    if not isinstance(inspected, dict):
+        raise NumericExecutionContractError("Docker inspect object is malformed")
+    mounts = inspected.get("Mounts")
+    if not isinstance(mounts, list) or any(
+        not isinstance(mount, dict) for mount in mounts
+    ):
+        raise NumericExecutionContractError("Docker inspect Mounts is malformed")
+    normalized = {
+        **inspected,
+        "Mounts": sorted(mounts, key=_canonical_json),
+    }
+    return _canonical_json(normalized)
+
+
 def _mapping(value: object, field: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise NumericExecutionContractError(f"Docker inspect {field} is malformed")
@@ -990,7 +1019,12 @@ def write_launch_attestation(
     # Recheck immediately before O_EXCL publication. This closes accidental
     # inspect/write races; a hostile host/daemon remains outside the stated
     # trust boundary and can always mutate state after this helper returns.
-    if _docker_inspect(resolved_container_id) != first_inspection:
+    first_recheck_bytes = _canonical_inspection_recheck_bytes(first_inspection)
+    second_inspection = _docker_inspect(resolved_container_id)
+    if (
+        _canonical_inspection_recheck_bytes(second_inspection)
+        != first_recheck_bytes
+    ):
         raise NumericExecutionContractError(
             "Docker container changed during launch-attestation inspection"
         )

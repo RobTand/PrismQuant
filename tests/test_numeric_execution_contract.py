@@ -785,6 +785,60 @@ def test_host_attestation_two_phase_inspection_detects_toctou(tmp_path, monkeypa
     assert not path.exists()
 
 
+def test_host_attestation_two_phase_inspection_accepts_only_mount_permutation(
+    tmp_path, monkeypatch,
+):
+    path, _repo, _git, _driver, inspected = _fixture(tmp_path)
+    reordered = copy.deepcopy(inspected)
+    reordered["Mounts"] = list(reversed(reordered["Mounts"]))
+    inspections = iter((inspected, reordered))
+    monkeypatch.setattr(
+        _CONTRACT, "_docker_inspect", lambda _container: next(inspections)
+    )
+    monkeypatch.setattr(_CONTRACT, "_docker_diff", lambda _container: ())
+
+    record = _CONTRACT.write_launch_attestation("c" * 64, "sparky", path)
+
+    assert path.exists()
+    assert record["container_id"] == "c" * 64
+
+
+def test_host_attestation_mount_permutation_does_not_hide_mount_mutation(
+    tmp_path, monkeypatch,
+):
+    path, _repo, _git, _driver, inspected = _fixture(tmp_path)
+    changed = copy.deepcopy(inspected)
+    changed["Mounts"] = list(reversed(changed["Mounts"]))
+    changed["Mounts"][0]["Source"] = "/usr/bin"
+    inspections = iter((inspected, changed))
+    monkeypatch.setattr(
+        _CONTRACT, "_docker_inspect", lambda _container: next(inspections)
+    )
+    monkeypatch.setattr(_CONTRACT, "_docker_diff", lambda _container: ())
+
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match="changed during"):
+        _CONTRACT.write_launch_attestation("c" * 64, "sparky", path)
+    assert not path.exists()
+
+
+def test_host_attestation_still_compares_unconsumed_inspect_fields(
+    tmp_path, monkeypatch,
+):
+    path, _repo, _git, _driver, inspected = _fixture(tmp_path)
+    inspected["DaemonDiagnostic"] = {"generation": 1}
+    changed = copy.deepcopy(inspected)
+    changed["DaemonDiagnostic"]["generation"] = 2
+    inspections = iter((inspected, changed))
+    monkeypatch.setattr(
+        _CONTRACT, "_docker_inspect", lambda _container: next(inspections)
+    )
+    monkeypatch.setattr(_CONTRACT, "_docker_diff", lambda _container: ())
+
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match="changed during"):
+        _CONTRACT.write_launch_attestation("c" * 64, "sparky", path)
+    assert not path.exists()
+
+
 def test_repo_commit_never_degrades_to_none(tmp_path, monkeypatch):
     monkeypatch.setattr(_CONTRACT, "_git", lambda *_args: "unknown")
     with pytest.raises(_CONTRACT.NumericExecutionContractError, match="not a full lowercase commit"):
