@@ -2888,7 +2888,13 @@ def repair_local_result(
 
 @contextmanager
 def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
-    """Serialize actions sharing one live-checkout result path."""
+    """Serialize actions sharing one live-checkout result path.
+
+    The yielded descriptor is the locked open-file description.  Local task
+    processes inherit it explicitly so abrupt worker death cannot release the
+    lock while the task (or an inherited descendant) can still write the
+    declared output.
+    """
 
     identity = hashlib.sha256(
         f"{checkout.resolve(strict=True)}\0{output}".encode("utf-8")
@@ -2913,7 +2919,7 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
             directory_fd, directory, where="local action lock directory"
         )
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
+        yield descriptor
     finally:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -2980,7 +2986,7 @@ def run_local_action(
     assert isinstance(variables, Mapping)
     recovered_declared_result = False
     reaped_staging_files = 0
-    with _local_output_lock(cas, root, output):
+    with _local_output_lock(cas, root, output) as output_lock_descriptor:
         # A concurrent producer may have filled the cache while this worker
         # waited for the checkout/output lock.
         if not recompute:
@@ -3028,6 +3034,10 @@ def run_local_action(
                 shell=False,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                # The action keeps exclusion alive if this worker is killed.
+                # ``pass_fds`` clears close-on-exec in the child while the
+                # parent's descriptor remains CLOEXEC for unrelated execs.
+                pass_fds=(output_lock_descriptor,),
             )
             try:
                 returncode = process.wait(timeout=timeout_seconds)

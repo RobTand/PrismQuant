@@ -1347,6 +1347,80 @@ pb.run_local_action(
     assert Path(recovered["payload_path"]).read_bytes() == b"result"
 
 
+def test_sigkill_during_action_keeps_output_locked_until_orphan_exits(
+    tmp_path: Path,
+):
+    """A retry cannot overlap an action child that survived worker death."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    task = (
+        "import os,pathlib,time; "
+        "f=open('starts.log','ab',buffering=0); "
+        "f.write((str(os.getpid())+'\\n').encode()); os.fsync(f.fileno()); "
+        "time.sleep(1.25); pathlib.Path('result.bin').write_bytes(b'result')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", task])
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    repository_root = Path(__file__).resolve().parents[1]
+    worker = repository_root / "tools" / "prismabuild_worker.py"
+    argv = [
+        sys.executable,
+        str(worker),
+        "run-local",
+        "--action",
+        str(action_path),
+        "--cas-root",
+        str(cas_root),
+        "--checkout-root",
+        str(checkout),
+    ]
+    first = subprocess.Popen(argv)
+    retry: subprocess.Popen[bytes] | None = None
+    action_process_groups: set[int] = set()
+    starts = checkout / "starts.log"
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if starts.exists():
+                lines = starts.read_text(encoding="utf-8").splitlines()
+                if len(lines) == 1:
+                    action_process_groups.add(int(lines[0]))
+                    break
+            time.sleep(0.02)
+        else:
+            pytest.fail("first action process did not start")
+
+        first.send_signal(signal.SIGKILL)
+        assert first.wait(timeout=2.0) == -signal.SIGKILL
+        retry = subprocess.Popen(argv)
+        time.sleep(0.25)
+
+        # The inherited flock must keep the retry outside the action body.
+        assert retry.poll() is None
+        assert starts.read_text(encoding="utf-8").splitlines() == lines
+
+        assert retry.wait(timeout=8.0) == 0
+        all_starts = starts.read_text(encoding="utf-8").splitlines()
+        assert len(all_starts) == 2
+        action_process_groups.update(int(value) for value in all_starts)
+        receipt = pb.PrismaBuildCAS(cas_root).lookup(action)
+        assert receipt is not None
+        assert (checkout / "result.bin").read_bytes() == b"result"
+    finally:
+        for process in (first, retry):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=2.0)
+        for process_group in action_process_groups:
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def test_local_result_repair_requires_exact_claim_and_refuses_symlink(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
