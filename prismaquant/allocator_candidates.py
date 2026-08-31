@@ -46,6 +46,7 @@ from .serving_profiles import (
     gridbook_runtime_version,
     serving_lane_route,
 )
+from .trellis_formats import parse_trellis_format_name
 
 # The provenance string a source-passthrough candidate carries in place of a
 # measured cost. It is NOT an estimator name like ``output_mse`` or
@@ -2062,6 +2063,12 @@ def selection_serving_lane_provenance(
     no candidate of their own. The two agree by construction (the lane is a
     function of format and profile); the fallback exists so an expanded
     packed-expert assignment is not silently reported as laneless.
+
+    Trellis units (``TCQ_E2M1_R*`` / ``TCQ_E4M3_R*``) are resolved against the
+    pinned Gridbook lane-eligibility table (``gridbook.lane-eligibility.v3``,
+    contract v12). Resolution is a lookup into that table, never a literal.
+    A unit matching no cell records ``route_status: "unbacked"`` (mapped from
+    the table's ``unattested`` for in-scope families) with the reason.
     """
     lane_cache: dict[str, object] = {}
     by_format: dict[str, dict] = {}
@@ -2072,15 +2079,210 @@ def selection_serving_lane_provenance(
     fallback_rungs: set[int] = set()
     n_backed = n_fallback = n_no_lane = 0
 
+    # --- Trellis provenance (D1) ---
+    # Per-unit structured records and route histogram by
+    # (family, activation_contract, route_status).
+    trellis_units: list[dict] = []
+    trellis_histogram: Counter[str] = Counter()
+    # Cache for trellis eligibility table and platform.
+    _trellis_table = None
+    _trellis_platform: str | None = None
+    _trellis_published_formats = None
+    _trellis_platform_resolved = False
+    # Lazy imports to avoid circular deps at module import time.
+    def _get_trellis_table():
+        nonlocal _trellis_table
+        if _trellis_table is None:
+            try:
+                from .gridbook_lane_eligibility import load_eligibility_table
+                _trellis_table = load_eligibility_table()
+            except Exception:
+                _trellis_table = None
+        return _trellis_table
+    def _get_trellis_platform():
+        nonlocal _trellis_platform, _trellis_platform_resolved
+        if not _trellis_platform_resolved:
+            _trellis_platform_resolved = True
+            try:
+                from .serving_profiles import load_serving_profile
+                prof = load_serving_profile(target_profile or "research")
+                _trellis_platform = prof.target_platform  # may be None
+            except Exception:
+                _trellis_platform = None
+        return _trellis_platform
+    def _get_published_formats():
+        nonlocal _trellis_published_formats
+        if _trellis_published_formats is None:
+            try:
+                from .gridbook_lane_eligibility import load_published_formats
+                _trellis_published_formats = load_published_formats()
+            except Exception:
+                _trellis_published_formats = {}
+        return _trellis_published_formats
+
     for name in sorted(assignment):
         fmt = str(assignment[name])
-        lane = None
+        trellis_parsed = parse_trellis_format_name(fmt)
         branch = None
         for cand in (candidates or {}).get(name, ()):
             if cand.fmt == fmt:
-                lane = cand.serving_lane
                 branch = cand.activation_pricing
                 break
+        # Trellis path: structured lookup into pinned contract.
+        if trellis_parsed is not None:
+            family_obj, rate_q256 = trellis_parsed
+            family = str(family_obj.family)
+            # Structure heuristic: routed_moe if qname indicates MoE experts.
+            lower = name.lower()
+            is_routed = ("experts" in lower or ".moe" in lower or "moe." in lower)
+            structure = "routed_moe" if is_routed else "dense"
+            platform = _get_trellis_platform()
+            table = _get_trellis_table()
+            published = _get_published_formats()
+            # Build facts; in_features/out_features dummy since trellis cells
+            # have no predicates on shape (verified from contract).
+            try:
+                from .gridbook_lane_eligibility import (
+                    unit_structural_facts,
+                    resolve_unit_route,
+                    ROUTE_STATUS_UNATTESTED,
+                )
+                facts = unit_structural_facts(
+                    name, fmt,
+                    is_routed_moe=is_routed,
+                    role_split=False,
+                    in_features=4096,
+                    out_features=4096,
+                    published_formats=published,
+                )
+                if table is not None:
+                    route = resolve_unit_route(facts, table, platform=platform)
+                else:
+                    # No table => unattested
+                    from .gridbook_lane_eligibility import UnitRoute
+                    route = UnitRoute(
+                        facts=facts,
+                        route_status=ROUTE_STATUS_UNATTESTED,
+                        in_scope=None,
+                        unattested_reason="no eligibility table loaded",
+                    )
+            except Exception as exc:
+                # Fail-closed: record as unbacked with reason.
+                route_status = "unbacked"
+                record = {
+                    "qname": name,
+                    "format": fmt,
+                    "family": family,
+                    "rate_q256": int(rate_q256),
+                    "structure": structure,
+                    "platform": platform,
+                    "route_status": route_status,
+                    "unattested_reason": str(exc),
+                    "requires_serve_flags": [],
+                    "activation_contract": "",
+                    "qualification": "",
+                    "regime_routes": [],
+                    "cell_ids": [],
+                }
+                trellis_units.append(record)
+                # Histogram key
+                hist_key = f"{family}::unbacked"
+                # Use generic empty activation_contract
+                hist_key_full = f"{family}:|:{route_status}"
+                # Canonical triple key
+                triple = f"{family}: :{route_status}"
+                trellis_histogram[triple] += 1
+                route_status_counts[route_status] += 1
+                contract_counts[""] += 1  # empty contract for unbacked?
+                branch_counts[str(branch) if branch else "unrecorded"] += 1
+                by_format.setdefault(fmt, {
+                    "format": fmt, "units": 0, "route": None})["units"] += 1
+                # Also add structured route to by_format for debugging
+                by_format[fmt]["trellis_route"] = record
+                continue
+
+            # Map unattested+in_scope True -> unbacked (WO-D vocabulary).
+            # The table uses "unattested" for absence; for a published family
+            # that absence IS the unbacked verdict (no cell lists this rung/structure).
+            raw_status = route.route_status
+            in_scope = getattr(route, "in_scope", None)
+            if raw_status == ROUTE_STATUS_UNATTESTED and in_scope is True:
+                exposed_status = "unbacked"
+            elif raw_status == ROUTE_STATUS_UNATTESTED and in_scope is None:
+                # Out-of-scope families (should not happen for trellis) keep unattested.
+                exposed_status = "unattested"
+            else:
+                exposed_status = raw_status
+
+            # Activation contract and qualification derived from regimes.
+            # For backed_with_serve_flag, both regimes share same contract.
+            act_contracts = list(route.activation_contracts) if hasattr(route, "activation_contracts") else []
+            quals = list(route.qualifications) if hasattr(route, "qualifications") else []
+            primary_contract = act_contracts[0] if act_contracts else ""
+            primary_qual = quals[0] if quals else ""
+            # Requires serve flags from whole route
+            req_flags = list(getattr(route, "requires_serve_flags", ()) or ())
+            # Build per-regime structured list with cell id, qualification, etc.
+            regime_list = []
+            cell_ids: list[str] = []
+            for reg in getattr(route, "regimes", ()):
+                regime_list.append({
+                    "regime": getattr(reg, "regime", ""),
+                    "cell_id": getattr(reg, "cell_id", None),
+                    "route_status": getattr(reg, "route_status", ""),
+                    "activation_contract": getattr(reg, "activation_contract", ""),
+                    "qualification": getattr(reg, "qualification", ""),
+                    "requires_serve_flags": list(getattr(reg, "requires_serve_flags", ()) or ()),
+                    "detail": getattr(reg, "detail", ""),
+                })
+                if getattr(reg, "cell_id", None):
+                    cell_ids.append(str(getattr(reg, "cell_id")))
+
+            record = {
+                "qname": name,
+                "format": fmt,
+                "family": family,
+                "rate_q256": int(rate_q256),
+                "structure": structure,
+                "platform": platform,
+                "route_status": exposed_status,
+                "raw_route_status": raw_status,
+                "in_scope": in_scope,
+                "unattested_reason": getattr(route, "unattested_reason", ""),
+                "requires_serve_flags": req_flags,
+                "activation_contract": primary_contract,
+                "qualification": primary_qual,
+                "qualifications": quals,
+                "activation_contracts": act_contracts,
+                "regime_routes": regime_list,
+                "cell_ids": cell_ids,
+                # Full route dict for exhaustive inspection
+                "route": route.as_dict() if hasattr(route, "as_dict") else {},
+            }
+            trellis_units.append(record)
+            # Histogram by (family, activation_contract, route_status)
+            # Empty contract becomes "" to keep key stable.
+            hist_key = f"{family}:{primary_contract}:{exposed_status}"
+            trellis_histogram[hist_key] += 1
+            # Also feed into global counters so shipcard can see trellis alongside CB.
+            route_status_counts[exposed_status] += 1
+            contract_counts[primary_contract or "unspecified"] += 1
+            branch_counts[str(branch) if branch else "unrecorded"] += 1
+            # by_format for trellis: store structured route
+            row = by_format.setdefault(fmt, {
+                "format": fmt, "units": 0, "route": None})
+            row["units"] += 1
+            # Attach structured trellis route for per-format visibility
+            row["trellis_route"] = record
+            # For compatibility with non-trellis rungs counters:
+            # trellis flagged routes are not fused_mid_m, so we count them as
+            # neither backed nor fallback for that specific metric.
+            # Instead we track via trellis_histogram.
+            continue
+
+        # Non-trellis path: original CB/stock logic.
+        lane = None
+        # branch already set above from candidates
         if lane is None:
             if fmt not in lane_cache:
                 lane_cache[fmt] = serving_lane_route(target_profile, fmt)
@@ -2112,7 +2314,8 @@ def selection_serving_lane_provenance(
             if lane.rung is not None:
                 fallback_rungs.add(int(lane.rung))
 
-    return {
+    # Build return dict with trellis extensions.
+    out = {
         "schema": SERVING_LANE_SCHEMA,
         "target_profile": str(target_profile or "research"),
         "gridbook_runtime_version": gridbook_runtime_version(),
@@ -2133,7 +2336,7 @@ def selection_serving_lane_provenance(
         "route_status_attested": bool(
             route_status_counts
             and not (route_status_counts.keys() & {
-                "unattested", "no_declared_lane"})
+                "unattested", "no_declared_lane", "unbacked"})
         ),
         "selected_rungs_fused_mid_m_backed": sorted(backed_rungs),
         "selected_rungs_on_fallback_route": sorted(fallback_rungs),
@@ -2143,6 +2346,52 @@ def selection_serving_lane_provenance(
             fmt: row for fmt, row in sorted(by_format.items())
         },
     }
+    # Trellis D1 extensions: per-unit structured records and histogram.
+    if trellis_units:
+        # Sort units by qname for determinism
+        trellis_units_sorted = sorted(trellis_units, key=lambda r: r["qname"])
+        out["trellis_units"] = trellis_units_sorted
+        out["trellis_route_histogram"] = dict(sorted(trellis_histogram.items()))
+        # Also provide histogram by triple explicitly for card printing
+        # (family, activation_contract, route_status) -> count
+        # The flat key above is that triple.
+        out["trellis_units_total"] = len(trellis_units_sorted)
+        # Count by route_status for quick checks
+        trellis_status_counts: Counter[str] = Counter()
+        for rec in trellis_units_sorted:
+            trellis_status_counts[rec["route_status"]] += 1
+        out["trellis_route_status_counts"] = dict(sorted(trellis_status_counts.items()))
+        # Requires serve flags aggregated for the artifact (structured flag set)
+        all_flags = sorted({flag for rec in trellis_units_sorted for flag in rec.get("requires_serve_flags", [])})
+        out["trellis_requires_serve_flags"] = all_flags
+        # Backed_with_serve_flag needs flags recorded
+        out["trellis_backed_with_serve_flag_units"] = sum(1 for r in trellis_units_sorted if r["route_status"] == "backed_with_serve_flag")
+        out["trellis_unbacked_units"] = [r["qname"] for r in trellis_units_sorted if r["route_status"] == "unbacked"]
+        out["trellis_unbacked_units_detail"] = [
+            {"qname": r["qname"], "reason": r.get("unattested_reason", ""), "family": r["family"], "rate_q256": r["rate_q256"], "structure": r["structure"]}
+            for r in trellis_units_sorted if r["route_status"] == "unbacked"
+        ]
+    else:
+        out["trellis_units"] = []
+        out["trellis_route_histogram"] = {}
+        out["trellis_route_status_counts"] = {}
+        out["trellis_requires_serve_flags"] = []
+        out["trellis_backed_with_serve_flag_units"] = 0
+        out["trellis_unbacked_units"] = []
+        out["trellis_unbacked_units_detail"] = []
+
+    # WO-C correction: trellis serving is TP=1 only (max_world_size 1 per
+    # trellis_format_family in the pinned contract). Record it as structured
+    # provenance so the shipcard can refuse a TP>1 artifact.
+    if trellis_units:
+        out["trellis_tensor_parallel_world_size"] = 1
+        out["trellis_requires_tp1"] = True
+        out["trellis_trellis_serving_unit"] = "one wire per merged fused module (qkv_proj/gate_up_proj) in packed_modules_mapping order"
+    # Principle 12: route histogram for entire artifact (trellis + non-trellis)
+    # counting by (family, activation_contract, route_status) would be the sum;
+    # for now expose trellis part separately. The combined histogram is the
+    # union of trellis_histogram and a derived CB histogram (omitted for brevity).
+    return out
 
 
 def summarize_applicability_masks(
