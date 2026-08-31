@@ -384,6 +384,11 @@ before `run-local` can reach task argv, the worker requires a real numeric
 count refuses even if a site administrator overrides the submission policy.
 Positive retry can return only with a new protocol that binds Slurm's actual
 restart counter/`Restarts` state to an authorized durable mutation claim.
+The v2 submit spec still seals the configured absolute `scontrol` path even
+though this zero-requeue protocol never executes it. That field is inert and
+over-broad provenance, not a hidden retry path. Removing it would change the
+canonical submit-spec digest and therefore requires an honest later schema/
+namespace boundary; D9 deliberately does not reinterpret v2.
 
 It also uses `--export=NIL`, not `NONE`: current Slurm defines `NONE` to invoke
 the implicit `--get-user-env` path, whereas `NIL` passes only scheduler/SPANK
@@ -417,6 +422,67 @@ the poll and filename counters are bounded to their eight-digit durable
 representation. Clock rollback refuses. A crash after a poll claim
 conservatively consumes it. This wall-clock protocol still requires deployed
 hosts to have bounded synchronized time; that is a live gate below.
+
+Poll replay is accelerated only by a process-local, non-authoritative snapshot.
+The first access in an adapter process (and therefore every adapter restart)
+replays and validates the complete append-only retry journal. An uncontended
+subsequent claim revalidates the exact canonical durable tail, preserves its
+timestamp for pacing, and attempts the next first-writer publication in O(1)
+journal work. A read-only progress query also probes the one expected successor;
+if another writer advanced it, the adapter invalidates the snapshot and derives
+a new one by full replay. A lost publication race follows the same invalidation
+and full-replay path before it refuses the loser. Striped process-local `RLock`s
+serialize threads sharing one adapter for the same action without globally
+serializing distinct actions, but are not—and are not presented as—cross-host
+filesystem locks. Cross-host serialization remains the no-clobber append
+itself. No durable record is compacted, rewritten, or deleted.
+
+That optimization is deliberately unavailable as terminal authority. Poll
+budget exhaustion, scheduler terminal resolution, cancellation, and success
+of an action with a durable Slurm intent all discard the cached view and audit
+the complete prefix before returning. Thus deletion/corruption hidden behind a
+still-valid tail can allow another nonterminal observation, but cannot license
+success, failure, cancellation, or budget exhaustion. Latest-step deletion or
+replacement refuses immediately in the hot loop. Complete replay remains the
+crash/restart recovery mechanism; the cache contains no state that must survive
+a process loss.
+
+The Slurm module contains no bare Python `assert` invariants. Durable-schema,
+runtime-identity, retry-policy, attempt-bound, cache-reconstruction, placement,
+worker-argv, and anchored-path assumptions all raise explicit contract,
+tamper, protocol, or local-action exceptions. An AST regression pins that
+property, so `python -O` cannot erase a refusal check.
+
+`SlurmAdapter.resolve()` itself remains an unbudgeted scheduler-observation API:
+it does **not** consume a poll claim. The native `DagsterActionRunner` enforces
+the intended pairing by calling `claim_poll()` immediately before each
+`resolve()`. A caller that invokes `resolve()` directly can issue scheduler RPCs
+without consuming the sealed `max_polls`; PrismaBuild does not yet implement a
+claim token or exact claim-to-observation consumption contract for that API.
+Accordingly the current bound applies to the native orchestrated loop, not to
+arbitrary direct `resolve()` calls. This is an explicit remaining contract gap,
+not a throughput claim.
+
+The CPU profile at 4,000 retained poll records is immutable under
+`/home/rob/dq-runs/prismabuild-d9-poll-cache-final-20260831` (manifest SHA-256
+`80f489dab3c4aa55a8a447ad0477c131de5c8f76a63e9033abbe8772671f49e9`,
+comparison SHA-256
+`6502450bc87cc264b107a47c33de4cd010f92c801b2c020a83a7203c6468ee23`).
+Against exact pre-change commit `a71680c`, eight claims after one warm replay
+fell from 13.003521138 s to 0.050925729 s (255.34x), `/proc/self/io` read
+syscalls from 128,226 to 162 (791.52x fewer), and `rchar` from 27,068,601 to
+65,769 bytes (411.57x less). First complete replay remained 1.597760866 s versus
+1.592751665 s, as required for restart/audit semantics. The before/after hot
+cProfile artifacts have SHA-256
+`5650df4b43aa8bf0698dd35b5ce6deb4ffb4dacc37a78818a3cbe9d569ff3d76`
+and `3a44a629ae006b81b7f58f584889525b54598f88ed9d322c5633e3e3b32e4d3a`.
+Raw `system.cpu`, `system.io`, `system.net`, and `nfs.rpc` Netdata windows from
+both active `gx10-6b77` and Sparky are included and individually hashed by the
+manifest. This is a local-filesystem CPU microprofile with host-context
+telemetry; it used no GPU or live Slurm service and does not qualify shared-NFS
+latency, a daemon, an allocation, or deployment.
+The final core/Slurm/Dagster/docs-focused suite passed `215 passed, 1 skipped`;
+the skip is the existing optional-dependency boundary.
 
 Scheduler mutations use one append-only ordinal journal. The active protocol
 emits only `cancel`: after proving the exact bound allocation is active, the
@@ -530,7 +596,9 @@ Deployment still requires all of the following evidence:
   retain that submit-host file descriptor across the allocation boundary.
 - Production-scale large-result NFS publication, host-loss directory
   durability, munge/cgroup worker attestation, launcher deployment, and the
-  planned Netdata/Prometheus evidence on both boxes remain separate gates.
+  production-run Netdata/Prometheus evidence on both boxes remain separate
+  gates. The D9 CPU microprofile's two-host context windows are not that live
+  scheduler/production telemetry qualification.
 
 ## Proposed speculative tier (not implemented)
 

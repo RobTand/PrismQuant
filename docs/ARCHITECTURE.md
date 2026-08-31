@@ -2,6 +2,29 @@
 
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `codex/prismabuild-d1-d10-20260831`) for the **bounded
+PrismaBuild Slurm poll-journal acceleration** (§10.1). An adapter process now
+derives a non-authoritative snapshot from one complete durable replay, then
+revalidates the canonical tail and atomically appends the next claim in O(1)
+journal work. A peer-won append invalidates the snapshot and forces full replay;
+restart, budget exhaustion, terminal resolution, cancellation, and submitted
+action success also replay the entire prefix, so the cache cannot license a
+terminal result or conceal historical corruption. Durable records remain
+append-only and cross-host serialization remains first-writer publication, not
+a process lock. All bare `assert` invariants were replaced by explicit
+fail-closed exceptions and an AST regression, so `python -O` cannot erase
+schema, path, runtime, retry, cache, or worker-argv refusals. Direct `resolve()`
+remains an unbudgeted observation RPC; only
+the native Dagster loop currently pairs each call with an exact durable claim.
+At 4,000 records, eight post-warm claims measured 13.003521138 s before and
+0.050925729 s after (255.34x), with read syscalls falling 128,226 to 162; the
+complete restart replay was retained. cProfile, `/proc/self/io`, and raw
+before/after Netdata windows for `system.cpu`, `system.io`, `system.net`, and
+`nfs.rpc` on both active `gx10-6b77` and Sparky are retained at
+`/home/rob/dq-runs/prismabuild-d9-poll-cache-final-20260831` (manifest SHA-256
+`80f489dab3c4aa55a8a447ad0477c131de5c8f76a63e9033abbe8772671f49e9`).
+This is CPU/local-filesystem evidence, not live Slurm, shared-NFS, host-loss,
+Dagster-daemon, GPU, or deployment qualification. Re-stamped
 (2026-08-31, `codex/prismabuild-d1-d10-20260831`) for the **PrismaBuild action
 classification and Slurm provenance closure** (§10.1). Action schema v2 adds a
 closed `artifact_family`; codebook portability is governed by that field rather
@@ -7650,6 +7673,10 @@ execution even if site policy overrides `--no-requeue`
 (`prismabuild._require_slurm_initial_start`, `prismabuild.main`). Positive
 retry can return only with a protocol that binds Slurm's actual restart count
 and accounting `Restarts` to a durable authorized restart claim.
+Submit-spec v2 still seals an absolute `scontrol` path although zero-requeue
+means no current code executes it. It is inert over-broad provenance; removing
+it changes canonical submission identity and is deferred to a later explicit
+schema/namespace boundary rather than silently reinterpreting v2.
 
 After `sbatch --parsable` returns, immutable `job.json` binds the intent to its
 exact cluster-qualified job id. A clusterless return is normalized only to the
@@ -7679,6 +7706,32 @@ most one cluster-qualified `scancel`. Concurrent callers have one ordinal
 winner. A crash, timeout, or command error after publication is deliberately
 ambiguous, and no restarted caller replays the RPC
 (`SlurmAdapter.claim_poll`, `_load_mutations`, `_claim_mutation`, `cancel`).
+
+Complete poll replay is now the first-use/restart and terminal-audit path, not
+the per-claim hot path. Each adapter process retains one non-authoritative
+snapshot per active action. A later claim revalidates the exact canonical tail
+and performs only the next atomic append; a progress read also probes the one
+expected successor. A peer-won successor invalidates the snapshot and forces
+complete replay before the loser refuses. Threads sharing an adapter are
+serialized per action by striped in-process locks, while unrelated actions are
+not globally serialized and cross-host correctness continues to come only from
+first-writer publication. Budget exhaustion, terminal scheduler
+state, cancellation, and CAS-success acceptance for a submitted action always
+replay the complete history, so historical deletion/corruption cannot be
+hidden by a valid cached tail at a terminal boundary. No journal entry is
+rewritten, compacted, or deleted (`SlurmAdapter._cached_retry_state`,
+`_retry_state`, `_claim_retry_transition`).
+
+This does not make the public `resolve()` method a budgeted operation:
+`resolve()` observes scheduler state without consuming a durable poll claim.
+The native Dagster runner calls `claim_poll()` immediately before every
+`resolve()`, but another caller can issue unclaimed observation RPCs. An exact
+claim-to-observation token/consumption contract remains unimplemented. The
+4,000-record CPU profile, `/proc/self/io` deltas, and both-host Netdata context
+are retained and hashed at
+`/home/rob/dq-runs/prismabuild-d9-poll-cache-final-20260831`; eight warm claims
+were 255.34x faster while first full replay remained unchanged. This does not
+qualify live Slurm, shared-NFS latency, daemon behavior, or deployment.
 
 The Slurm state tree uses the same anchored creation/read/publication protocol
 as the core CAS (`prismabuild_slurm._ensure_real_directory`,

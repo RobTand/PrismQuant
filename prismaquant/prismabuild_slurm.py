@@ -26,6 +26,7 @@ import shlex
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Literal
 
@@ -165,6 +166,7 @@ _MAX_POLL_INTERVAL_SECONDS = 86_400.0
 _MAX_STALE_TEMP_ENTRIES = 64
 _MAX_UNIX_NS = (1 << 63) - 1
 _MAX_STATE_BYTES = 16 * 1024 * 1024
+_RETRY_LOCK_STRIPES = 64
 
 # Capture the adapter implementation Python loaded, before any adapter method
 # accepts an action or inspects durable scheduler state. The sealed submit spec
@@ -393,6 +395,26 @@ class SlurmRetryProgress:
     latest_requeue_observed: bool
 
 
+@dataclass(frozen=True)
+class _RetryJournalSnapshot:
+    """Process-local acceleration over an append-only durable journal.
+
+    This is never authority.  A fresh adapter/full audit derives it from the
+    complete journal, every hot access revalidates the durable tail, and all
+    terminal decisions discard it and replay the complete history.
+    """
+
+    owner_pid: int
+    action_key: str
+    submission_key: str
+    job_id: str
+    attempt: int
+    current_polls: int
+    requeues: int
+    observations: int
+    latest_poll: Mapping[str, object] | None
+
+
 def parse_job_id(value: str) -> SlurmJobId:
     """Parse the exact output of ``sbatch --parsable``."""
 
@@ -567,7 +589,10 @@ def _validate_submit_spec(value: object) -> dict[str, object]:
         )
     runtime = _validate_slurm_runtime(raw["runtime"])
     worker_launcher = runtime["worker_launcher"]
-    assert isinstance(worker_launcher, Mapping)
+    if not isinstance(worker_launcher, Mapping):
+        raise pb.ActionContractError(
+            "SLURM runtime worker launcher must be an object"
+        )
     if worker_launcher["path"] != worker_script:
         raise pb.ActionContractError(
             "SLURM runtime worker launcher differs from the configured worker script"
@@ -692,7 +717,10 @@ def _validate_job_binding(
             raise pb.ActionContractError("SLURM job binding.job_id must be a string")
         parsed_job_id = parse_job_id(raw["job_id"])
         submit_spec = intent["submit_spec"]
-        assert isinstance(submit_spec, Mapping)
+        if not isinstance(submit_spec, Mapping):
+            raise pb.ActionContractError(
+                "SLURM submission intent submit_spec must be an object"
+            )
         if parsed_job_id.cluster != submit_spec["cluster"]:
             raise pb.ActionContractError(
                 "SLURM job binding differs from the sealed cluster"
@@ -937,7 +965,8 @@ def validate_placement_scope(
     resources: SlurmResources,
 ) -> None:
     scope = action["execution_scope"]
-    assert isinstance(scope, Mapping)
+    if not isinstance(scope, Mapping):
+        raise pb.ActionContractError("action execution_scope must be an object")
     portability = scope["portability"]
     if (
         portability == "platform_keyed"
@@ -1010,7 +1039,9 @@ def _real_directory_chain_exists(path: Path, *, where: str) -> bool:
     """Check every existing component with lstat; never accept a symlink hop."""
 
     if not path.is_absolute():
-        raise AssertionError("directory-chain validation requires an absolute path")
+        raise pb.ActionContractError(
+            "directory-chain validation requires an absolute path"
+        )
     current = Path(path.anchor)
     for part in path.parts[1:]:
         current /= part
@@ -1042,7 +1073,7 @@ def _ensure_real_directory(path: Path, *, root: Path, where: str) -> None:
     try:
         relative = path.relative_to(root)
     except ValueError as exc:
-        raise AssertionError(f"{where} escaped its configured root") from exc
+        raise pb.CASTamperError(f"{where} escaped its configured root") from exc
     if ".." in root.parts or ".." in relative.parts:
         raise pb.CASTamperError(f"{where} path contains parent traversal")
 
@@ -1242,6 +1273,29 @@ class SlurmAdapter:
                 )
             environment[name] = value
         self.submit_environment = dict(sorted(environment.items()))
+        self._retry_cache_lock = threading.RLock()
+        self._retry_cache: dict[str, _RetryJournalSnapshot] = {}
+        self._retry_action_locks = tuple(
+            threading.RLock() for _ in range(_RETRY_LOCK_STRIPES)
+        )
+
+    def _retry_action_lock(self, action_key: str):
+        stripe = int(action_key[:16], 16) % _RETRY_LOCK_STRIPES
+        return self._retry_action_locks[stripe]
+
+    def _retry_snapshot(self, action_key: str) -> _RetryJournalSnapshot | None:
+        with self._retry_cache_lock:
+            return self._retry_cache.get(action_key)
+
+    def _store_retry_snapshot(
+        self, action_key: str, snapshot: _RetryJournalSnapshot
+    ) -> None:
+        with self._retry_cache_lock:
+            self._retry_cache[action_key] = snapshot
+
+    def _invalidate_retry_snapshot(self, action_key: str) -> None:
+        with self._retry_cache_lock:
+            self._retry_cache.pop(action_key, None)
 
     def _run(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         try:
@@ -1323,8 +1377,12 @@ class SlurmAdapter:
         runtime = _validate_slurm_runtime(value)
         adapter = runtime["adapter"]
         worker_launcher = runtime["worker_launcher"]
-        assert isinstance(adapter, Mapping)
-        assert isinstance(worker_launcher, Mapping)
+        if not isinstance(adapter, Mapping):
+            raise pb.LocalActionError("sealed SLURM adapter identity is not an object")
+        if not isinstance(worker_launcher, Mapping):
+            raise pb.LocalActionError(
+                "sealed SLURM worker launcher identity is not an object"
+            )
         loaded_adapter = pb._normalize_runtime_source(
             _LOADED_SLURM_ADAPTER_IDENTITY,
             where="loaded PrismaBuild SLURM adapter",
@@ -1703,10 +1761,15 @@ class SlurmAdapter:
             )
         numbered: list[tuple[int, int, Path]] = []
         retry_policy = intent["submit_spec"]["retry_policy"]  # type: ignore[index]
-        assert isinstance(retry_policy, Mapping)
+        if not isinstance(retry_policy, Mapping):
+            raise pb.CASTamperError(
+                "SLURM submission retry policy is not an object"
+            )
         if kind == "poll":
             if max_poll_attempt is None:
-                raise AssertionError("poll transition validation requires max attempt")
+                raise SlurmProtocolError(
+                    "poll transition validation requires a maximum attempt"
+                )
             maximum_entries = int(retry_policy["max_polls"]) * (
                 max_poll_attempt + 1
             )
@@ -1764,7 +1827,10 @@ class SlurmAdapter:
                     "SLURM requeue transition ordinals are not a contiguous prefix"
                 )
         else:
-            assert max_poll_attempt is not None
+            if max_poll_attempt is None:
+                raise SlurmProtocolError(
+                    "poll transition validation lost its maximum attempt"
+                )
             by_attempt: dict[int, list[int]] = {}
             for attempt, ordinal, _ in numbered:
                 if attempt > max_poll_attempt:
@@ -1916,6 +1982,23 @@ class SlurmAdapter:
         list[dict[str, object]],
         list[dict[str, object]],
     ]:
+        with self._retry_action_lock(str(action["action_key"])):
+            return self._retry_state_locked(action, job_id)
+
+    def _retry_state_locked(
+        self, action: Mapping[str, object], job_id: SlurmJobId | str
+    ) -> tuple[
+        dict[str, object],
+        dict[str, object],
+        SlurmJobId,
+        list[dict[str, object]],
+        list[dict[str, object]],
+        list[dict[str, object]],
+    ]:
+        action_key = str(action["action_key"])
+        # A complete replay is also the cache-recovery boundary.  Never leave
+        # an older snapshot usable if this audit discovers hostile state.
+        self._invalidate_retry_snapshot(action_key)
         intent, job = self._bound_job(action, job_id)
         binding = self._load_job_binding(intent)
         if binding is None:
@@ -1933,7 +2016,10 @@ class SlurmAdapter:
             max_poll_attempt=len(requeues),
         )
         retry_policy = intent["submit_spec"]["retry_policy"]  # type: ignore[index]
-        assert isinstance(retry_policy, Mapping)
+        if not isinstance(retry_policy, Mapping):
+            raise pb.CASTamperError(
+                "SLURM submission retry policy is not an object"
+            )
         max_requeues = int(retry_policy["max_requeues"])
         max_polls = int(retry_policy["max_polls"])
         if len(requeues) > max_requeues:
@@ -1946,25 +2032,175 @@ class SlurmAdapter:
                 raise pb.CASTamperError(
                     "durable SLURM poll count exceeds the sealed maximum"
                 )
+        current_attempt = len(requeues)
+        current = [row for row in polls if row["attempt"] == current_attempt]
+        snapshot = _RetryJournalSnapshot(
+            owner_pid=os.getpid(),
+            action_key=action_key,
+            submission_key=str(intent["submission_key"]),
+            job_id=str(binding["job_id"]),
+            attempt=current_attempt,
+            current_polls=len(current),
+            requeues=len(requeues),
+            observations=len(observations),
+            latest_poll=(dict(current[-1]) if current else None),
+        )
+        self._store_retry_snapshot(action_key, snapshot)
         return intent, binding, job, polls, requeues, observations
+
+    def _load_expected_retry_transition(
+        self,
+        *,
+        path: Path,
+        intent: Mapping[str, object],
+        binding: Mapping[str, object],
+        kind: Literal["poll", "requeue"],
+        attempt: int,
+        ordinal: int,
+    ) -> dict[str, object]:
+        """Load and exactly validate one named durable journal step."""
+
+        value = self._read_state_file(
+            path, where=f"SLURM {kind} transition {ordinal}"
+        )
+        if value is None:
+            raise pb.CASTamperError(
+                f"SLURM {kind} transition {ordinal} disappeared"
+            )
+        transition = _validate_retry_transition(
+            value,
+            intent=intent,
+            binding=binding,
+            expected_kind=kind,
+            expected_attempt=attempt,
+            expected_ordinal=ordinal,
+        )
+        raw = self._read_state_bytes(
+            path, where=f"SLURM {kind} transition {ordinal}"
+        )
+        if raw is None:
+            raise pb.CASTamperError(
+                f"SLURM {kind} transition {ordinal} disappeared during read"
+            )
+        if raw != pb._canonical_file_bytes(transition):
+            raise pb.CASTamperError(
+                f"SLURM {kind} transition {ordinal} is not canonical JSON"
+            )
+        return transition
+
+    @staticmethod
+    def _retry_progress_from_snapshot(
+        snapshot: _RetryJournalSnapshot,
+    ) -> SlurmRetryProgress:
+        return SlurmRetryProgress(
+            polls=snapshot.current_polls,
+            requeues=snapshot.requeues,
+            latest_requeue_observed=(
+                snapshot.requeues == 0
+                or snapshot.observations == snapshot.requeues
+            ),
+        )
+
+    def _cached_retry_state(
+        self,
+        action: Mapping[str, object],
+        job_id: SlurmJobId | str,
+        *,
+        discover_remote_append: bool,
+    ) -> tuple[
+        dict[str, object],
+        dict[str, object],
+        SlurmJobId,
+        _RetryJournalSnapshot,
+    ]:
+        """Return an incrementally validated nonterminal journal snapshot.
+
+        The latest accepted poll remains the durable chain tip.  Re-reading it
+        detects deletion/replacement; probing the single successor lets a
+        read-only progress query discover another writer in O(1).  Anything
+        that changes the expected prefix shape falls back to a complete audit.
+        """
+
+        action_key = str(action["action_key"])
+        with self._retry_action_lock(action_key):
+            intent, job = self._bound_job(action, job_id)
+            binding = self._load_job_binding(intent)
+            if binding is None:
+                self._invalidate_retry_snapshot(action_key)
+                raise pb.CASTamperError(
+                    "SLURM job binding disappeared during retry-state load"
+                )
+            snapshot = self._retry_snapshot(action_key)
+            if (
+                snapshot is None
+                or snapshot.owner_pid != os.getpid()
+                or snapshot.action_key != action_key
+                or snapshot.submission_key != str(intent["submission_key"])
+                or snapshot.job_id != str(binding["job_id"])
+            ):
+                self._retry_state(action, job)
+                snapshot = self._retry_snapshot(action_key)
+                if snapshot is None:
+                    raise SlurmProtocolError(
+                        "full retry replay did not populate its process-local snapshot"
+                    )
+                return intent, binding, job, snapshot
+
+            if snapshot.current_polls:
+                path = self._transition_directory(action_key, "polls") / (
+                    f"{snapshot.attempt:08d}-{snapshot.current_polls:08d}.json"
+                )
+                observed = self._load_expected_retry_transition(
+                    path=path,
+                    intent=intent,
+                    binding=binding,
+                    kind="poll",
+                    attempt=snapshot.attempt,
+                    ordinal=snapshot.current_polls,
+                )
+                if snapshot.latest_poll is None or observed != snapshot.latest_poll:
+                    self._invalidate_retry_snapshot(action_key)
+                    raise pb.CASTamperError(
+                        "cached SLURM poll transition changed after validation"
+                    )
+
+            if discover_remote_append:
+                successor = self._transition_directory(action_key, "polls") / (
+                    f"{snapshot.attempt:08d}-{snapshot.current_polls + 1:08d}.json"
+                )
+                raw = self._read_state_bytes(
+                    successor,
+                    where="next SLURM poll transition",
+                )
+                if raw is not None:
+                    # A peer advanced the prefix.  Reconstruct from authority;
+                    # do not infer a new count from existence alone.
+                    self._invalidate_retry_snapshot(action_key)
+                    self._retry_state(action, job)
+                    snapshot = self._retry_snapshot(action_key)
+                    if snapshot is None:
+                        raise SlurmProtocolError(
+                            "full retry replay did not populate its process-local snapshot"
+                        )
+                    intent, job = self._bound_job(action, job)
+                    binding = self._load_job_binding(intent)
+                    if binding is None:
+                        self._invalidate_retry_snapshot(action_key)
+                        raise pb.CASTamperError(
+                            "SLURM job binding disappeared after retry replay"
+                        )
+            return intent, binding, job, snapshot
 
     def retry_progress(
         self, action: object, job_id: SlurmJobId | str
     ) -> SlurmRetryProgress:
         normalized = pb.validate_action(action)
-        _, _, _, polls, requeues, observations = self._retry_state(
-            normalized, job_id
+        _, _, _, snapshot = self._cached_retry_state(
+            normalized,
+            job_id,
+            discover_remote_append=True,
         )
-        current_polls = sum(
-            1 for transition in polls if transition["attempt"] == len(requeues)
-        )
-        return SlurmRetryProgress(
-            polls=current_polls,
-            requeues=len(requeues),
-            latest_requeue_observed=(
-                not requeues or len(observations) == len(requeues)
-            ),
-        )
+        return self._retry_progress_from_snapshot(snapshot)
 
     @staticmethod
     def _transition_body(
@@ -1997,7 +2233,7 @@ class SlurmAdapter:
         attempt: int,
         ordinal: int,
         claimed_unix_ns: int,
-    ) -> None:
+    ) -> tuple[bool, dict[str, object]]:
         transition = self._transition_body(
             intent=intent,
             binding=binding,
@@ -2015,25 +2251,23 @@ class SlurmAdapter:
             str(intent["action_key"]), f"{kind}s"
         ) / filename
         won = self._publish_state_file(path, transition)
-        value = self._read_state_file(
-            path, where=f"SLURM {kind} transition {ordinal}"
-        )
-        observed = _validate_retry_transition(
-            value,
+        if not won:
+            # The caller must invalidate its process-local view and conduct a
+            # complete replay before reporting the lost first-writer race.
+            return False, transition
+        observed = self._load_expected_retry_transition(
+            path=path,
             intent=intent,
             binding=binding,
-            expected_kind=kind,
-            expected_attempt=attempt,
-            expected_ordinal=ordinal,
+            kind=kind,
+            attempt=attempt,
+            ordinal=ordinal,
         )
-        if won and observed != transition:
+        if observed != transition:
             raise pb.CASTamperError(
                 f"SLURM {kind} transition race produced conflicting state"
             )
-        if not won:
-            raise SlurmAdoptionError(
-                f"another orchestrator already claimed SLURM {kind} transition {ordinal}"
-            )
+        return True, transition
 
     def claim_poll(
         self,
@@ -2046,101 +2280,152 @@ class SlurmAdapter:
 
         limit = _positive_integer(max_polls, where="max_polls")
         normalized = pb.validate_action(action)
-        intent, binding, _, polls, requeues, observations = self._retry_state(
-            normalized, job_id
-        )
-        retry_policy = intent["submit_spec"]["retry_policy"]  # type: ignore[index]
-        assert isinstance(retry_policy, Mapping)
-        if limit != retry_policy["max_polls"]:
-            raise SlurmAdoptionError(
-                "requested poll budget differs from the sealed submission policy"
+        action_key = str(normalized["action_key"])
+        with self._retry_action_lock(action_key):
+            intent, binding, job, snapshot = self._cached_retry_state(
+                normalized,
+                job_id,
+                discover_remote_append=False,
             )
-        attempt = len(requeues)
-        current_polls = sum(
-            1 for transition in polls if transition["attempt"] == attempt
-        )
-        if current_polls >= limit:
-            return None
-        now = time.time_ns()
-        if now < 0:
-            raise SlurmAdoptionError("wall clock is before the Unix epoch")
-        if now > _MAX_UNIX_NS:
-            raise SlurmAdoptionError(
-                "wall clock exceeds the signed 64-bit Unix-nanosecond range"
-            )
-        if current_polls:
-            previous = max(
-                (
-                    transition
-                    for transition in polls
-                    if transition["attempt"] == attempt
-                ),
-                key=lambda transition: int(transition["ordinal"]),
-            )
-            previous_ns = int(previous["claimed_unix_ns"])
-            if now < previous_ns:
-                raise SlurmAdoptionError(
-                    "wall clock moved behind the prior durable poll claim"
+            retry_policy = intent["submit_spec"]["retry_policy"]  # type: ignore[index]
+            if not isinstance(retry_policy, Mapping):
+                raise pb.CASTamperError(
+                    "SLURM submission retry policy is not an object"
                 )
-            interval_ns = math.ceil(float(retry_policy["poll_interval_seconds"]) * 1e9)
-            earliest = previous_ns + interval_ns
-            while now < earliest:
-                time.sleep((earliest - now) / 1e9)
-                next_now = time.time_ns()
-                if next_now < now:
-                    raise SlurmAdoptionError(
-                        "wall clock moved backwards while pacing a durable poll"
+            if limit != retry_policy["max_polls"]:
+                raise SlurmAdoptionError(
+                    "requested poll budget differs from the sealed submission policy"
+                )
+            if snapshot.current_polls >= limit:
+                # Exhaustion licenses cancellation, so cached state is never
+                # sufficient.  Audit the whole prefix at this boundary.
+                self._retry_state(normalized, job)
+                snapshot = self._retry_snapshot(action_key)
+                if snapshot is None:
+                    raise SlurmProtocolError(
+                        "full retry replay did not populate its process-local snapshot"
                     )
-                now = next_now
-        self._claim_retry_transition(
-            intent=intent,
-            binding=binding,
-            kind="poll",
-            attempt=attempt,
-            ordinal=current_polls + 1,
-            claimed_unix_ns=now,
-        )
-        return SlurmRetryProgress(
-            polls=current_polls + 1,
-            requeues=len(requeues),
-            latest_requeue_observed=(
-                not requeues or len(observations) == len(requeues)
-            ),
-        )
+                if snapshot.current_polls >= limit:
+                    return None
+
+            now = time.time_ns()
+            if now < 0:
+                raise SlurmAdoptionError("wall clock is before the Unix epoch")
+            if now > _MAX_UNIX_NS:
+                raise SlurmAdoptionError(
+                    "wall clock exceeds the signed 64-bit Unix-nanosecond range"
+                )
+            if snapshot.current_polls:
+                previous = snapshot.latest_poll
+                if previous is None:
+                    self._invalidate_retry_snapshot(action_key)
+                    raise pb.CASTamperError(
+                        "cached SLURM poll tail is internally inconsistent"
+                    )
+                previous_ns = int(previous["claimed_unix_ns"])
+                if now < previous_ns:
+                    raise SlurmAdoptionError(
+                        "wall clock moved behind the prior durable poll claim"
+                    )
+                interval_ns = math.ceil(
+                    float(retry_policy["poll_interval_seconds"]) * 1e9
+                )
+                earliest = previous_ns + interval_ns
+                while now < earliest:
+                    time.sleep((earliest - now) / 1e9)
+                    next_now = time.time_ns()
+                    if next_now < now:
+                        raise SlurmAdoptionError(
+                            "wall clock moved backwards while pacing a durable poll"
+                        )
+                    now = next_now
+            ordinal = snapshot.current_polls + 1
+            won, transition = self._claim_retry_transition(
+                intent=intent,
+                binding=binding,
+                kind="poll",
+                attempt=snapshot.attempt,
+                ordinal=ordinal,
+                claimed_unix_ns=now,
+            )
+            if not won:
+                self._invalidate_retry_snapshot(action_key)
+                # Exact durable replay is mandatory before refusing the loser;
+                # this also adopts the winner for a later safe retry.
+                self._retry_state(normalized, job)
+                raise SlurmAdoptionError(
+                    "another orchestrator already claimed SLURM poll "
+                    f"transition {ordinal}"
+                )
+            updated = _RetryJournalSnapshot(
+                owner_pid=os.getpid(),
+                action_key=snapshot.action_key,
+                submission_key=snapshot.submission_key,
+                job_id=snapshot.job_id,
+                attempt=snapshot.attempt,
+                current_polls=ordinal,
+                requeues=snapshot.requeues,
+                observations=snapshot.observations,
+                latest_poll=dict(transition),
+            )
+            self._store_retry_snapshot(action_key, updated)
+            return self._retry_progress_from_snapshot(updated)
 
     def _mark_latest_requeue_observed(
         self, action: Mapping[str, object], job_id: SlurmJobId
     ) -> None:
-        intent, binding, _, _, requeues, observations = self._retry_state(
-            action, job_id
-        )
-        if not requeues or len(observations) == len(requeues):
-            return
-        ordinal = len(requeues)
-        body: dict[str, object] = {
-            "schema": SLURM_REQUEUE_OBSERVED_SCHEMA_V1,
-            "action_key": intent["action_key"],
-            "submission_key": intent["submission_key"],
-            "job_id": binding["job_id"],
-            "ordinal": ordinal,
-        }
-        observation = {**body, "observed_sha256": pb.canonical_sha256(body)}
-        path = self._transition_directory(
-            str(intent["action_key"]), "requeue_observed"
-        ) / f"{ordinal:08d}.json"
-        self._publish_state_file(path, observation)
-        value = self._read_state_file(
-            path, where=f"SLURM requeue observation {ordinal}"
-        )
-        observed = _validate_requeue_observed(
-            value,
-            intent=intent,
-            binding=binding,
-            expected_ordinal=ordinal,
-        )
-        if observed != observation:
-            raise pb.CASTamperError(
-                "SLURM requeue observation race produced conflicting state"
+        action_key = str(action["action_key"])
+        with self._retry_action_lock(action_key):
+            intent, binding, _, snapshot = self._cached_retry_state(
+                action,
+                job_id,
+                discover_remote_append=False,
+            )
+            if (
+                snapshot.requeues == 0
+                or snapshot.observations == snapshot.requeues
+            ):
+                return
+            ordinal = snapshot.requeues
+            body: dict[str, object] = {
+                "schema": SLURM_REQUEUE_OBSERVED_SCHEMA_V1,
+                "action_key": intent["action_key"],
+                "submission_key": intent["submission_key"],
+                "job_id": binding["job_id"],
+                "ordinal": ordinal,
+            }
+            observation = {**body, "observed_sha256": pb.canonical_sha256(body)}
+            path = self._transition_directory(
+                str(intent["action_key"]), "requeue_observed"
+            ) / f"{ordinal:08d}.json"
+            self._publish_state_file(path, observation)
+            value = self._read_state_file(
+                path, where=f"SLURM requeue observation {ordinal}"
+            )
+            observed = _validate_requeue_observed(
+                value,
+                intent=intent,
+                binding=binding,
+                expected_ordinal=ordinal,
+            )
+            if observed != observation:
+                self._invalidate_retry_snapshot(action_key)
+                raise pb.CASTamperError(
+                    "SLURM requeue observation race produced conflicting state"
+                )
+            self._store_retry_snapshot(
+                action_key,
+                _RetryJournalSnapshot(
+                    owner_pid=snapshot.owner_pid,
+                    action_key=snapshot.action_key,
+                    submission_key=snapshot.submission_key,
+                    job_id=snapshot.job_id,
+                    attempt=snapshot.attempt,
+                    current_polls=snapshot.current_polls,
+                    requeues=snapshot.requeues,
+                    observations=ordinal,
+                    latest_poll=snapshot.latest_poll,
+                ),
             )
 
     def _mutation_directory(self, action_key: str) -> Path:
@@ -2158,7 +2443,10 @@ class SlurmAdapter:
         ):
             return []
         retry_policy = intent["submit_spec"]["retry_policy"]  # type: ignore[index]
-        assert isinstance(retry_policy, Mapping)
+        if not isinstance(retry_policy, Mapping):
+            raise pb.CASTamperError(
+                "SLURM submission retry policy is not an object"
+            )
         maximum_entries = int(retry_policy["max_requeues"]) + 1
         numbered: list[tuple[int, Path]] = []
         temporary_entries = 0
@@ -2253,7 +2541,10 @@ class SlurmAdapter:
                 "a final SLURM cancel claim already exists; scheduler replay is ambiguous"
             )
         retry_policy = intent["submit_spec"]["retry_policy"]  # type: ignore[index]
-        assert isinstance(retry_policy, Mapping)
+        if not isinstance(retry_policy, Mapping):
+            raise pb.CASTamperError(
+                "SLURM submission retry policy is not an object"
+            )
         if kind == "requeue":
             used = sum(1 for row in mutations if row["kind"] == "requeue")
             if used >= int(retry_policy["max_requeues"]):
@@ -2425,7 +2716,12 @@ class SlurmAdapter:
             f"--error={log_directory / (key + '-%j.err')}",
         ])
         worker_argv = submit_spec["worker_argv"]
-        assert isinstance(worker_argv, list)
+        if not isinstance(worker_argv, list) or any(
+            type(argument) is not str for argument in worker_argv
+        ):
+            raise SlurmProtocolError(
+                "sealed SLURM worker argv is not a string array"
+            )
         argv.append(f"--wrap=exec {shlex.join(worker_argv)}")
         self._verify_submission_runtime_unchanged(submit_spec["runtime"])
         completed = self._run(argv)
@@ -2530,14 +2826,22 @@ class SlurmAdapter:
         """Resolve an allocation, treating a valid CAS receipt as sole success."""
 
         normalized = pb.validate_action(action)
+        job = parse_job_id(job_id) if isinstance(job_id, str) else job_id
+        if not isinstance(job, SlurmJobId):
+            raise pb.ActionContractError(
+                "job_id must be a SlurmJobId or parsable string"
+            )
         cas = self._cas(create=False)
         receipt = _validated_receipt(cas, normalized)
         if receipt is not None:
-            job = parse_job_id(job_id) if isinstance(job_id, str) else job_id
-            if not isinstance(job, SlurmJobId):
-                raise pb.ActionContractError(
-                    "job_id must be a SlurmJobId or parsable string"
-                )
+            # A pre-existing cross-transport CAS result legitimately has no
+            # Slurm journal.  Once a Slurm intent exists, however, success may
+            # not hide damaged poll history.
+            if (
+                self._load_submission_intent(str(normalized["action_key"]))
+                is not None
+            ):
+                _, _, job, _, _, _ = self._retry_state(normalized, job)
             return SlurmResolution(
                 status="succeeded",
                 action_key=str(normalized["action_key"]),
@@ -2548,7 +2852,7 @@ class SlurmAdapter:
                 payload_path=cas.result_path(receipt, normalized),
             )
 
-        intent, job = self._bound_job(normalized, job_id)
+        intent, job = self._bound_job(normalized, job)
         raw_state, category = self._query_state(job, intent=intent)
         if category == "pending":
             if raw_state != "NOT_VISIBLE":
@@ -2587,6 +2891,10 @@ class SlurmAdapter:
         else:
             status = "failed"
             reason = f"SLURM allocation ended in {raw_state} without a CAS receipt"
+        # Scheduler terminality licenses an externally visible terminal
+        # result.  Re-audit every append-only retry record at that boundary;
+        # a process-local snapshot is intentionally insufficient.
+        self._retry_state(normalized, job)
         return SlurmResolution(
             status=status,
             action_key=str(normalized["action_key"]),
@@ -2608,6 +2916,11 @@ class SlurmAdapter:
         normalized = pb.validate_action(action)
         cas = self._cas(create=False)
         if _validated_receipt(cas, normalized) is not None:
+            if (
+                self._load_submission_intent(str(normalized["action_key"]))
+                is not None
+            ):
+                self._retry_state(normalized, job_id)
             return False
         intent, binding, job, _, _, _ = self._retry_state(normalized, job_id)
         mutations = self._load_mutations(intent=intent, binding=binding)
@@ -2621,9 +2934,11 @@ class SlurmAdapter:
                 "bound SLURM allocation is not visible; cancellation is ambiguous"
             )
         if category not in {"pending", "running"}:
+            self._retry_state(normalized, job)
             return False
         self._claim_mutation(intent=intent, binding=binding, kind="cancel")
         if _validated_receipt(cas, normalized) is not None:
+            self._retry_state(normalized, job)
             return False
         # The append is the sole mutation serialization point. Re-query after
         # winning it, then issue at most one RPC. A crash/timeout after this
@@ -2635,6 +2950,7 @@ class SlurmAdapter:
                 "bound SLURM allocation vanished after cancel claim"
             )
         if category not in {"pending", "running"}:
+            self._retry_state(normalized, job)
             return False
         self._run(
             [

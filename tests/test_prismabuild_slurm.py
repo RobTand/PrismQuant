@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -1071,6 +1072,283 @@ def test_poll_clock_rollback_refuses_without_consuming_a_claim(
     assert adapter.retry_progress(action, "830").polls == 1
 
 
+def test_poll_cache_preserves_clock_rollback_refusal_without_new_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    _record_submission(
+        adapter,
+        action,
+        checkout,
+        "8303",
+        max_polls=2,
+        poll_interval_seconds=1.0,
+    )
+    clock = [2_000_000_000]
+    monkeypatch.setattr(ps.time, "time_ns", lambda: clock[0])
+    adapter.claim_poll(action, "8303", max_polls=2)
+    clock[0] -= 1
+    with pytest.raises(ps.SlurmAdoptionError, match="behind the prior"):
+        adapter.claim_poll(action, "8303", max_polls=2)
+    polls = adapter._transition_directory(
+        str(action["action_key"]), "polls"
+    )
+    assert sorted(path.name for path in polls.iterdir()) == [
+        "00000000-00000001.json"
+    ]
+
+
+def test_restarted_poll_cache_full_replays_once_then_validates_only_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    _record_submission(
+        adapter,
+        action,
+        checkout,
+        "8304",
+        max_polls=2,
+        poll_interval_seconds=1e-9,
+    )
+    adapter.claim_poll(action, "8304", max_polls=2)
+    restarted = _restart_adapter(adapter)
+    loaded: list[str] = []
+    original = restarted._load_retry_transitions
+
+    def tracked_load(**kwargs: object) -> list[dict[str, object]]:
+        loaded.append(str(kwargs["kind"]))
+        return original(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(restarted, "_load_retry_transitions", tracked_load)
+    assert restarted.retry_progress(action, "8304").polls == 1
+    assert loaded == ["requeue", "poll"]
+    assert restarted.retry_progress(action, "8304").polls == 1
+    assert loaded == ["requeue", "poll"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("delete", "disappeared"),
+        ("rewrite", "changed after validation"),
+    ],
+)
+def test_poll_cache_refuses_deleted_or_rewritten_tail(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    _record_submission(
+        adapter,
+        action,
+        checkout,
+        "8305",
+        max_polls=2,
+        poll_interval_seconds=1e-9,
+    )
+    adapter.claim_poll(action, "8305", max_polls=2)
+    tail = adapter._transition_directory(
+        str(action["action_key"]), "polls"
+    ) / "00000000-00000001.json"
+    if mutation == "delete":
+        tail.unlink()
+    else:
+        value = json.loads(tail.read_text(encoding="utf-8"))
+        value["claimed_unix_ns"] = int(value["claimed_unix_ns"]) + 1
+        body = {key: item for key, item in value.items() if key != "transition_sha256"}
+        value["transition_sha256"] = pb.canonical_sha256(body)
+        tail.chmod(0o644)
+        tail.write_bytes(pb._canonical_file_bytes(value))
+        tail.chmod(0o444)
+    with pytest.raises(pb.CASTamperError, match=message):
+        adapter.retry_progress(action, "8305")
+
+
+def test_concurrent_poll_claim_has_one_winner_and_loser_full_replays(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    first, _ = _adapter(tmp_path)
+    _record_submission(
+        first,
+        action,
+        checkout,
+        "8306",
+        max_polls=2,
+        poll_interval_seconds=1e-9,
+    )
+    second = _restart_adapter(first)
+    assert first.retry_progress(action, "8306").polls == 0
+    assert second.retry_progress(action, "8306").polls == 0
+    barrier = threading.Barrier(2)
+
+    def claim(adapter: ps.SlurmAdapter) -> tuple[str, int | str]:
+        barrier.wait()
+        try:
+            progress = adapter.claim_poll(action, "8306", max_polls=2)
+        except ps.SlurmAdoptionError as exc:
+            return "lost", str(exc)
+        assert progress is not None
+        return "won", progress.polls
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, (first, second)))
+    assert sorted(status for status, _ in results) == ["lost", "won"]
+    assert next(value for status, value in results if status == "won") == 1
+    assert "already claimed" in str(
+        next(value for status, value in results if status == "lost")
+    )
+    # The losing adapter invalidated zero and reconstructed the winner's
+    # authoritative prefix before returning its refusal.
+    key = str(action["action_key"])
+    assert first._retry_cache[key].current_polls == 1
+    assert second._retry_cache[key].current_polls == 1
+    polls = first._transition_directory(key, "polls")
+    assert sorted(path.name for path in polls.iterdir()) == [
+        "00000000-00000001.json"
+    ]
+
+
+def test_terminal_resolve_full_audits_history_hidden_behind_valid_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    intent = _record_submission(
+        adapter,
+        action,
+        checkout,
+        "8307",
+        max_polls=3,
+        poll_interval_seconds=1e-9,
+    )
+    adapter.claim_poll(action, "8307", max_polls=3)
+    adapter.claim_poll(action, "8307", max_polls=3)
+    history = adapter._transition_directory(
+        str(action["action_key"]), "polls"
+    )
+    (history / "00000000-00000001.json").unlink()
+    states = iter(("RUNNING", "COMPLETED"))
+
+    def scheduler(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        state = next(states)
+        return _completed(argv, _state_row(intent, 8307, state))
+
+    monkeypatch.setattr(adapter, "_run", scheduler)
+    # Nonterminal polling only needs the still-valid tail.  It cannot license
+    # completion, and the subsequent terminal boundary audits the full prefix.
+    assert adapter.resolve(action, "8307").status == "running"
+    with pytest.raises(pb.CASTamperError, match="not a contiguous prefix"):
+        adapter.resolve(action, "8307")
+
+
+def test_direct_resolve_rpc_is_not_a_durable_poll_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    intent = _record_submission(
+        adapter,
+        action,
+        checkout,
+        "8310",
+        max_polls=2,
+        poll_interval_seconds=1e-9,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_run",
+        lambda argv: _completed(argv, _state_row(intent, 8310, "RUNNING")),
+    )
+    assert adapter.resolve(action, "8310").status == "running"
+    assert adapter.retry_progress(action, "8310").polls == 0
+
+
+def test_success_receipt_cannot_hide_corrupt_submitted_poll_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    _record_submission(
+        adapter,
+        action,
+        checkout,
+        "8308",
+        max_polls=3,
+        poll_interval_seconds=1e-9,
+    )
+    adapter.claim_poll(action, "8308", max_polls=3)
+    adapter.claim_poll(action, "8308", max_polls=3)
+    history = adapter._transition_directory(
+        str(action["action_key"]), "polls"
+    )
+    (history / "00000000-00000001.json").unlink()
+    monkeypatch.setattr(
+        ps,
+        "_validated_receipt",
+        lambda cas, normalized: {"test": "verified receipt"},
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_run",
+        lambda argv: (_ for _ in ()).throw(
+            AssertionError("receipt resolution must not query Slurm")
+        ),
+    )
+    with pytest.raises(pb.CASTamperError, match="not a contiguous prefix"):
+        adapter.resolve(action, "8308")
+
+
+def test_cancel_full_audits_poll_history_before_scheduler_rpc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    _record_submission(
+        adapter,
+        action,
+        checkout,
+        "8309",
+        max_polls=3,
+        poll_interval_seconds=1e-9,
+    )
+    adapter.claim_poll(action, "8309", max_polls=3)
+    adapter.claim_poll(action, "8309", max_polls=3)
+    history = adapter._transition_directory(
+        str(action["action_key"]), "polls"
+    )
+    (history / "00000000-00000001.json").unlink()
+    monkeypatch.setattr(
+        adapter,
+        "_run",
+        lambda argv: (_ for _ in ()).throw(
+            AssertionError("corrupt history must refuse before scheduler RPC")
+        ),
+    )
+    with pytest.raises(pb.CASTamperError, match="not a contiguous prefix"):
+        adapter.cancel(action, "8309")
+
+
 def test_negative_poll_clock_refuses_before_writing_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1172,6 +1450,35 @@ def test_durable_poll_count_beyond_sealed_maximum_is_tamper(tmp_path: Path):
     )
     with pytest.raises(pb.CASTamperError, match="exceeds the sealed maximum"):
         _restart_adapter(adapter).retry_progress(action, "832")
+
+
+def test_slurm_adapter_has_no_optimization_stripped_assert_invariants():
+    source = Path(ps.__file__).read_text(encoding="utf-8")
+    bare_asserts = [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assert)
+    ]
+    assert bare_asserts == []
+
+
+def test_poll_transition_audit_requires_explicit_attempt_bound(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    intent = _record_submission(adapter, action, checkout, "8322", max_polls=1)
+    binding = adapter._load_job_binding(intent)
+    assert binding is not None
+    adapter._transition_directory(
+        str(action["action_key"]), "polls"
+    ).mkdir(parents=True)
+    with pytest.raises(ps.SlurmProtocolError, match="requires a maximum attempt"):
+        adapter._load_retry_transitions(
+            intent=intent,
+            binding=binding,
+            kind="poll",
+        )
 
 
 def test_durable_poll_timestamp_beyond_signed_range_is_tamper(tmp_path: Path):
