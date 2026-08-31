@@ -544,6 +544,24 @@ _PUBLISHED_FILES = frozenset({
 #       next iteration, so a mistake would be a loud `NameError`, never a
 #       silent byte.  It frees GPU transients; `rendered` and `packed_param`,
 #       the two tensors the score and the store consume, survive.
+#
+# RE-FROZEN 2026-08-31 for the two reviewed pread commits `72b89b4` and
+# `2dc0771`; exactly one file in this release closure changed:
+#   layer_streaming.py -- adds a validated `PreadSafetensors` source-reader
+#     option and threads the selected backend through streamed layer reads,
+#     resident materialization, and FP8 scale-plane reads.  With no explicit
+#     argument or `PRISMAQUANT_SAFETENSORS_BACKEND` setting, resolution remains
+#     `safe_open`, so the prior DSv4 W8A16 path is unchanged.  Under the opt-in
+#     `pread` selection, only the file-access mechanism changes: the same
+#     tensor and scale keys enter the existing dtype conversion, block-FP8
+#     dequantization, expert packing, cache, and export code.  The reader
+#     validates the safetensors header and payload bounds and fails closed on
+#     malformed input.  `tests/test_safetensors_pread.py` pins byte-equal raw
+#     reads, exact safe_open/pread layer parity, deterministic key order under
+#     threaded reads, resident-materializer parity, FP8 scale consumption,
+#     backend defaulting, and corrupt-header refusal.  Neither commit changes
+#     a quantizer, scale calculation, emitted tensor name, footprint, or wire
+#     serializer; the handoff verdict and output bytes are therefore unchanged.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
         "dfffc634a7275e76a4c4b3bd0299e8b0775673dca23f6f5c56ca31f8b748b8a5"
@@ -576,7 +594,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "d9a06483d008bf2361b0522bc258ab291db870d1c2432f9d4cd8d7a8cbacefbe"
     ),
     "prismaquant/layer_streaming.py": (
-        "e2d947fe9ba98c612e13a9abe66dbb70aaadde83b0b0db394d100cbff82378c1"
+        "69f0a105f6a99f35b2200ec36a484c5795b2d1475b88c83522e56ed1021aa3d5"
     ),
     "prismaquant/production_weight_cache.py": (
         "69e29daf21ec8fcfb6ee86375dc6a9792750f38e32337c931b26be64bb0c9fc7"
