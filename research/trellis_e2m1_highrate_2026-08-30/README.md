@@ -327,10 +327,15 @@ CID=$(/usr/bin/docker create --pull=never --name "$NAME" \
   --env "HULL_REPO_ROOT=$REPO" \
   --env "HULL_GIT_COMMON_DIR=$GIT_COMMON" \
   --env PYTHONNOUSERSITE=1 --env PYTHONDONTWRITEBYTECODE=1 \
-  --env CUDA_CACHE_PATH=/tmp/cuda-cache --env TMPDIR=/tmp \
+  --env CUDA_CACHE_PATH=/tmp/cuda-cache \
+  --env PYTHONPYCACHEPREFIX=/tmp/pycache --env TMPDIR=/tmp \
   --env TORCH_EXTENSIONS_DIR=/tmp/torch-extensions \
+  --env TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor-cache \
   --env TRITON_CACHE_DIR=/tmp/triton-cache \
   --env XDG_CACHE_HOME=/tmp/cache \
+  --env HF_DATASETS_OFFLINE=1 \
+  --env PRISMAQUANT_NVFP4_SCALE_RULE=static_6 \
+  --env PRISMAQUANT_NVFP4_SNAPPED_SCALE_SCORING=0 \
   --mount "type=bind,src=$ATTEST_DIR,dst=$ATTEST_DIR,readonly" \
   --mount "type=bind,src=$REPO,dst=$REPO,readonly" \
   --mount "type=bind,src=$GIT_COMMON,dst=$GIT_COMMON,readonly" \
@@ -348,22 +353,35 @@ The host helper accepts only that closed launcher shape: UID/GID
 `1000:1000`, host UTS, private PID/cgroup/IPC, no network, all capabilities
 dropped, no-new-privileges, a read-only rootfs, the exact `/tmp` tmpfs, the
 exact four binds above, the pinned NVIDIA entrypoint, and the pinned image's
-complete environment plus only the five `HULL_*` and seven Python/scratch
-fields shown. Extra mounts, devices, groups, capabilities, security modes, or
-environment keys are refusals. In particular, additional source-code,
-`/usr/bin`, CUDA, site-packages, and dynamic-loader overlays cannot be added.
+complete environment plus only the five `HULL_*` and twelve fixed
+Python/scratch/study fields shown. The frozen ladder imports otherwise add or
+overwrite the five newly explicit cache/study fields; pinning them before
+Python starts prevents an import from expanding or changing the attested
+environment, and both writable caches remain on the ephemeral `/tmp` tmpfs.
+Extra mounts, devices, groups, capabilities, security modes, or environment
+keys are refusals. In particular, additional source-code, `/usr/bin`, CUDA,
+site-packages, and dynamic-loader overlays cannot be added.
 
 Direct `/usr/bin/python3 -B` is accepted only for
 `fp8_cb_tcq_glm.py --preflight-only` and `fp8_learned_glm.py --dry-run`.
 Every publication-capable invocation of `e2m1_highrate.py`,
 `fp8_learned_glm.py`, or `fp8_cb_tcq_glm.py` must replace the direct command
-above with this exact in-container profiler prefix and omit the preflight flag:
+above with this exact tracked in-container supervisor and omit the preflight
+flag:
 
 ```bash
-/usr/local/bin/py-spy record --output <path-below-/home/rob/dq-runs> \
-  --format speedscope -- /usr/bin/python3 -B <absolute-approved-driver> \
+/usr/bin/python3 -B "$STUDY/numeric_profiled_launcher.py" \
+  --profile <fresh-path-below-/home/rob/dq-runs> -- \
+  /usr/bin/python3 -B <absolute-approved-driver> \
   <that-driver's-arguments>
 ```
+
+The supervisor starts the pinned in-image `py-spy record` command itself. It
+refuses a pre-existing or symlinked profile/result path and reports success
+only when `py-spy` succeeds and both the new nonempty speedscope profile and
+the driver's new nonempty `--out` commit marker exist. This is load-bearing:
+the image's `py-spy` can return zero after a child failure, whereas a numeric
+driver publishes `--out` only after its own final validation.
 
 Do not wrap `docker run` or `docker start` in host-side `nsys profile`: that
 profiles the short-lived Docker client rather than the daemon-owned CUDA
@@ -435,7 +453,8 @@ cd "$REPO"
 The first four commands and `coding_gain_table.py` are offline derivations;
 the two GLM validation modes explicitly do no GPU work and write no result.
 For a publication run, place one of the following complete Python command
-suffixes after py-spy's `--` in the attested container recipe above:
+suffixes after the tracked supervisor's `--` in the attested container recipe
+above:
 
 ```bash
 /usr/bin/python3 -B "$STUDY/e2m1_highrate.py" \
@@ -453,5 +472,6 @@ suffixes after py-spy's `--` in the attested container recipe above:
 
 Those lines show driver argv only; invoking them directly is not a valid
 publication launch. All three GPU-capable drivers require the host attestation
-and in-container py-spy command. `e2m1_highrate.py` additionally reproduces
-published control rungs before trusting new rows and refuses on a mismatch.
+and tracked in-container profiling supervisor. `e2m1_highrate.py` additionally
+reproduces published control rungs before trusting new rows and refuses on a
+mismatch.

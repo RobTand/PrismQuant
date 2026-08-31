@@ -68,23 +68,31 @@ CAMPAIGN_TMPFS = {
 }
 CAMPAIGN_SCRATCH_ENVIRONMENT = {
     "CUDA_CACHE_PATH": "/tmp/cuda-cache",
+    "PYTHONPYCACHEPREFIX": "/tmp/pycache",
     "TMPDIR": "/tmp",
     "TORCH_EXTENSIONS_DIR": "/tmp/torch-extensions",
+    "TORCHINDUCTOR_CACHE_DIR": "/tmp/torchinductor-cache",
     "TRITON_CACHE_DIR": "/tmp/triton-cache",
     "XDG_CACHE_HOME": "/tmp/cache",
 }
+CAMPAIGN_STUDY_ENVIRONMENT = {
+    # Frozen ladder imports create or unconditionally assign these values.
+    # Pin them at container creation so imports cannot silently expand or
+    # change the attested process environment.
+    "HF_DATASETS_OFFLINE": "1",
+    "PRISMAQUANT_NVFP4_SCALE_RULE": "static_6",
+    "PRISMAQUANT_NVFP4_SNAPPED_SCALE_SCORING": "0",
+}
 # Canonical JSON digest of the complete 53-key Config.Env mapping embedded in
-# the pinned image.  Dynamic HULL fields and the seven reviewed Python/scratch
-# additions are removed before comparison.  This makes every other launch
+# the pinned image.  Dynamic HULL fields and the twelve reviewed Python,
+# scratch, and fixed-study additions are removed before comparison.  This
+# makes every other launch
 # knob closed: an unreviewed CUDA/CUBLAS/Torch/Triton/NCCL/OMP variable, or an
 # override of an image value, changes the digest and is refused.
 CAMPAIGN_IMAGE_ENVIRONMENT_SHA256 = (
     "347c08481fb3c7a5207a04f2e402add7a180ed5d28f9529ed1f306924a408e04"
 )
-CAMPAIGN_PYSPY_PREFIX = (
-    "/usr/local/bin/py-spy", "record", "--output", "<profile>",
-    "--format", "speedscope", "--", "/usr/bin/python3", "-B",
-)
+CAMPAIGN_PROFILED_LAUNCHER_NAME = "numeric_profiled_launcher.py"
 CAMPAIGN_DRIVER_NAMES = frozenset({
     "e2m1_highrate.py", "fp8_learned_glm.py", "fp8_cb_tcq_glm.py",
 })
@@ -94,7 +102,7 @@ _FORBIDDEN_ENVIRONMENT = frozenset({
     "PYTHONUSERBASE", "VIRTUAL_ENV",
 })
 _ALLOWED_PYTHON_ENVIRONMENT = frozenset({
-    "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE",
+    "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE", "PYTHONPYCACHEPREFIX",
 })
 _DYNAMIC_LAUNCH_ENVIRONMENT = frozenset({
     "HULL_CONTAINER_IMAGE", "HULL_GIT_COMMON_DIR",
@@ -438,6 +446,7 @@ def _require_safe_environment(environment: Mapping[str, str], *, live: bool) -> 
         "PYTHONNOUSERSITE": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         **CAMPAIGN_SCRATCH_ENVIRONMENT,
+        **CAMPAIGN_STUDY_ENVIRONMENT,
     }
     for key, expected in required.items():
         if environment.get(key) != expected:
@@ -497,6 +506,7 @@ def _require_safe_environment(environment: Mapping[str, str], *, live: bool) -> 
         *_DYNAMIC_LAUNCH_ENVIRONMENT,
         *_ALLOWED_PYTHON_ENVIRONMENT,
         *CAMPAIGN_SCRATCH_ENVIRONMENT,
+        *CAMPAIGN_STUDY_ENVIRONMENT,
     ):
         normalized.pop(key, None)
     if hashlib.sha256(_canonical_json(normalized)).hexdigest() != (
@@ -691,6 +701,23 @@ def _require_safe_host_config(host_config: Mapping[str, object]) -> None:
         )
 
 
+def _require_campaign_storage_file(path_text: str, *, field: str) -> PurePosixPath:
+    path = PurePosixPath(path_text)
+    storage = PurePosixPath(CAMPAIGN_STORAGE_ROOT)
+    if (
+        "\x00" in path_text
+        or not path.is_absolute()
+        or ".." in path.parts
+        or path == storage
+        or not path.is_relative_to(storage)
+        or path.name in {"", ".", ".."}
+    ):
+        raise NumericExecutionContractError(
+            f"Docker {field} must name a file below the campaign storage root"
+        )
+    return path
+
+
 def _require_launch_command(
     config: Mapping[str, object], repo_root: str,
 ) -> list[str]:
@@ -702,41 +729,70 @@ def _require_launch_command(
         raise NumericExecutionContractError(
             "Docker working directory must be the immutable numeric repository"
         )
-    command = _string_list(config.get("Cmd"), "Config.Cmd")
-    profiled = command[:2] == ["/usr/local/bin/py-spy", "record"]
-    if profiled:
-        if len(command) < 11 or command[2:3] != ["--output"] or command[4:7] != [
-            "--format", "speedscope", "--",
-        ]:
-            raise NumericExecutionContractError(
-                "Docker py-spy command differs from the pinned profiler contract"
-            )
-        profile = PurePosixPath(command[3])
-        storage = PurePosixPath(CAMPAIGN_STORAGE_ROOT)
-        if not profile.is_absolute() or not profile.is_relative_to(storage):
-            raise NumericExecutionContractError(
-                "Docker py-spy output must live below the campaign storage root"
-            )
-        python_index = 7
-    else:
-        python_index = 0
-    if (
-        len(command) <= python_index + 2
-        or command[python_index:python_index + 2] != ["/usr/bin/python3", "-B"]
-    ):
-        raise NumericExecutionContractError(
-            "Docker command must use py-spy or direct /usr/bin/python3 -B"
-        )
-    driver = PurePosixPath(command[python_index + 2])
     repo = PurePosixPath(repo_root)
+    study = repo / "research/trellis_e2m1_highrate_2026-08-30"
+    launcher = study / CAMPAIGN_PROFILED_LAUNCHER_NAME
+    command = _string_list(config.get("Cmd"), "Config.Cmd")
+    if any("\x00" in token for token in command):
+        raise NumericExecutionContractError(
+            "Docker command arguments must not contain NUL bytes"
+        )
+    if command[:3] == ["/usr/bin/python3", "-B", str(launcher)]:
+        profiled = True
+        if (
+            len(command) < 10
+            or command[3:4] != ["--profile"]
+            or command[5:8] != ["--", "/usr/bin/python3", "-B"]
+            or command.count("--") != 1
+            or any(
+                item == "--profile" or item.startswith("--profile=")
+                for item in command[4:]
+            )
+        ):
+            raise NumericExecutionContractError(
+                "Docker profiled-launcher command differs from the pinned contract"
+            )
+        profile = _require_campaign_storage_file(
+            command[4], field="profile output"
+        )
+        driver_index = 8
+    else:
+        profiled = False
+        profile = None
+        if len(command) < 4 or command[:2] != ["/usr/bin/python3", "-B"]:
+            raise NumericExecutionContractError(
+                "Docker command must use the tracked profiled launcher or direct "
+                "/usr/bin/python3 -B preflight"
+            )
+        driver_index = 2
+    driver = PurePosixPath(command[driver_index])
     if (
         not driver.is_absolute()
         or not driver.is_relative_to(repo)
         or driver.name not in CAMPAIGN_DRIVER_NAMES
-        or driver.parent != repo / "research/trellis_e2m1_highrate_2026-08-30"
+        or driver.parent != study
     ):
         raise NumericExecutionContractError(
             "Docker command does not name one approved numeric driver"
+        )
+    driver_arguments = command[driver_index + 1:]
+    out_positions = [
+        index for index, item in enumerate(driver_arguments) if item == "--out"
+    ]
+    if (
+        len(out_positions) != 1
+        or out_positions[0] + 1 >= len(driver_arguments)
+        or any(item.startswith("--out=") for item in driver_arguments)
+    ):
+        raise NumericExecutionContractError(
+            "Docker numeric driver command must contain one exact --out PATH"
+        )
+    result = _require_campaign_storage_file(
+        driver_arguments[out_positions[0] + 1], field="numeric result output"
+    )
+    if profile is not None and profile == result:
+        raise NumericExecutionContractError(
+            "Docker profile and numeric result outputs must be distinct"
         )
     if not profiled:
         preflight_flag = {
@@ -1321,15 +1377,28 @@ def require_numeric_execution_environment(
         raise NumericExecutionContractError(
             f"live numeric driver is unavailable: {exc}"
         ) from exc
-    if not driver_argv or not isinstance(driver_argv[0], str):
+    if (
+        isinstance(driver_argv, (str, bytes))
+        or not driver_argv
+        or any(type(item) is not str for item in driver_argv)
+    ):
         raise NumericExecutionContractError("live numeric driver argv is malformed")
-    expected_driver_command = [
-        "/usr/bin/python3", "-B", live_driver, *list(driver_argv[1:]),
-    ]
-    python_index = 7 if command[:2] == [
-        "/usr/local/bin/py-spy", "record"
-    ] else 0
-    if command[python_index:] != expected_driver_command:
+    live_driver_argv = list(driver_argv)
+    if live_driver_argv[0] != live_driver:
+        raise NumericExecutionContractError(
+            "live numeric driver argv[0] differs from the resolved driver path"
+        )
+    expected_driver_command = ["/usr/bin/python3", "-B", *live_driver_argv]
+    expected_launcher = str(
+        Path(live_repo_root)
+        / "research/trellis_e2m1_highrate_2026-08-30"
+        / CAMPAIGN_PROFILED_LAUNCHER_NAME
+    )
+    if command[:3] != ["/usr/bin/python3", "-B", expected_launcher]:
+        raise NumericExecutionContractError(
+            "live numeric publication was not started by the tracked profiled launcher"
+        )
+    if command[6:] != expected_driver_command:
         raise NumericExecutionContractError(
             "live numeric driver argv differs from the inspected Docker command"
         )

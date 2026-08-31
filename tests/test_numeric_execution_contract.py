@@ -75,10 +75,11 @@ def _inspect(
 ):
     container_id = "c" * 64
     storage = Path(_CONTRACT.CAMPAIGN_STORAGE_ROOT)
+    launcher = driver.with_name("numeric_profiled_launcher.py")
     command = [
-        "/usr/local/bin/py-spy", "record",
-        "--output", str(storage / "profiles" / "probe.speedscope.json"),
-        "--format", "speedscope", "--", "/usr/bin/python3", "-B",
+        "/usr/bin/python3", "-B", str(launcher),
+        "--profile", str(storage / "profiles" / "probe.speedscope.json"),
+        "--", "/usr/bin/python3", "-B",
         str(driver), "--manifest", str(storage / "manifest.json"),
         "--out", str(storage / "result.json"),
     ]
@@ -103,10 +104,15 @@ def _inspect(
                 "PYTHONNOUSERSITE=1",
                 "PYTHONDONTWRITEBYTECODE=1",
                 "CUDA_CACHE_PATH=/tmp/cuda-cache",
+                "PYTHONPYCACHEPREFIX=/tmp/pycache",
                 "TMPDIR=/tmp",
                 "TORCH_EXTENSIONS_DIR=/tmp/torch-extensions",
+                "TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor-cache",
                 "TRITON_CACHE_DIR=/tmp/triton-cache",
                 "XDG_CACHE_HOME=/tmp/cache",
+                "HF_DATASETS_OFFLINE=1",
+                "PRISMAQUANT_NVFP4_SCALE_RULE=static_6",
+                "PRISMAQUANT_NVFP4_SNAPPED_SCALE_SCORING=0",
                 "PATH=/workspace/vllm:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64",
                 "TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas",
@@ -200,10 +206,15 @@ def _process_environment(path: Path, repo: Path, git_common: Path, *, host="spar
         "PYTHONNOUSERSITE": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         "CUDA_CACHE_PATH": "/tmp/cuda-cache",
+        "PYTHONPYCACHEPREFIX": "/tmp/pycache",
         "TMPDIR": "/tmp",
         "TORCH_EXTENSIONS_DIR": "/tmp/torch-extensions",
+        "TORCHINDUCTOR_CACHE_DIR": "/tmp/torchinductor-cache",
         "TRITON_CACHE_DIR": "/tmp/triton-cache",
         "XDG_CACHE_HOME": "/tmp/cache",
+        "HF_DATASETS_OFFLINE": "1",
+        "PRISMAQUANT_NVFP4_SCALE_RULE": "static_6",
+        "PRISMAQUANT_NVFP4_SNAPPED_SCALE_SCORING": "0",
         "PATH": "/workspace/vllm:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "LD_LIBRARY_PATH": "/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64",
         "TRITON_PTXAS_PATH": "/usr/local/cuda/bin/ptxas",
@@ -256,7 +267,7 @@ def _require(tmp_path, monkeypatch, *, physical_host="sparky"):
     _live_host(monkeypatch, host=physical_host)
     host = _CONTRACT.PHYSICAL_HOSTS[physical_host]["uts_hostname"]
     process = _process_environment(path, repo, git_common, host=physical_host)
-    driver_argv = [str(driver), *inspected["Config"]["Cmd"][10:]]
+    driver_argv = [str(driver), *inspected["Config"]["Cmd"][9:]]
     return _CONTRACT.require_numeric_execution_environment(
         repo,
         _current_environment(host=host),
@@ -311,7 +322,7 @@ def test_spoofed_uts_hostname_on_wrong_physical_gpu_fails_closed(
             repo, _current_environment(),
             _process_environment(path, repo, git_common),
             require_cuda=True, driver_path=driver,
-            driver_argv=[str(driver), *inspected["Config"]["Cmd"][10:]],
+            driver_argv=[str(driver), *inspected["Config"]["Cmd"][9:]],
         )
 
 
@@ -342,11 +353,11 @@ def test_spoofed_uts_hostname_on_wrong_physical_gpu_fails_closed(
         (lambda v: v["Config"]["Env"].append("CUBLAS_WORKSPACE_CONFIG=:16:8"), "environment schema"),
         (lambda v: v["Config"]["Env"].append("NVIDIA_TF32_OVERRIDE=1"), "environment schema"),
         (lambda v: v["Config"]["Env"].append("CUDA_LAUNCH_BLOCKING=1"), "environment schema"),
-        (lambda v: v["Config"]["Env"].append("TORCHINDUCTOR_CACHE_DIR=/tmp/evil"), "environment schema"),
+        (lambda v: v["Config"]["Env"].append("TORCHINDUCTOR_CACHE_DIR=/tmp/evil"), "ambiguous"),
         (lambda v: v["Config"]["Env"].append("GENERIC_UNKNOWN_NUMERIC_KNOB=1"), "environment schema"),
         (lambda v: v["Config"].__setitem__("Entrypoint", ["/bin/sh"]), "entrypoint"),
         (lambda v: v["Config"].__setitem__("Healthcheck", {"Test": ["CMD", "/evil"]}), "healthcheck"),
-        (lambda v: v["Config"]["Cmd"].__setitem__(0, "/usr/bin/true"), "py-spy"),
+        (lambda v: v["Config"]["Cmd"].__setitem__(0, "/usr/bin/true"), "tracked profiled launcher"),
         (lambda v: v["Mounts"][0].__setitem__("RW", True), "allowlist"),
         (lambda v: v["Mounts"][0].__setitem__("Source", "/tmp/spoof"), "allowlist"),
         (lambda v: v["Mounts"].append({
@@ -394,7 +405,7 @@ def test_named_repo_and_git_mounts_cannot_hide_inside_writable_storage(tmp_path)
         for item in inspected["Config"]["Env"]
     ]
     inspected["Config"]["WorkingDir"] = str(nested_repo)
-    inspected["Config"]["Cmd"][9] = str(
+    inspected["Config"]["Cmd"][8] = str(
         nested_repo / driver.relative_to(repo)
     )
     inspected["Mounts"][1].update({
@@ -424,7 +435,7 @@ def test_named_repo_and_git_mounts_cannot_hide_inside_writable_storage(tmp_path)
 def test_direct_python_launch_is_limited_to_nonpublishing_preflight(tmp_path):
     path, _repo, _git, _driver, inspected = _fixture(tmp_path)
     inspected["Config"]["Cmd"] = [
-        *inspected["Config"]["Cmd"][7:], "--preflight-only"
+        *inspected["Config"]["Cmd"][6:], "--preflight-only"
     ]
     _CONTRACT.build_launch_attestation(
         inspected, "sparky", host_output_path=path, rootfs_changes=()
@@ -434,6 +445,117 @@ def test_direct_python_launch_is_limited_to_nonpublishing_preflight(tmp_path):
         _CONTRACT.build_launch_attestation(
             inspected, "sparky", host_output_path=path, rootfs_changes=()
         )
+
+
+def test_publication_requires_the_tracked_supervisor_not_bare_py_spy(tmp_path):
+    path, repo, _git, driver, inspected = _fixture(tmp_path)
+    storage = Path(_CONTRACT.CAMPAIGN_STORAGE_ROOT)
+    inspected["Config"]["Cmd"] = [
+        "/usr/local/bin/py-spy", "record", "--output",
+        str(storage / "profiles" / "probe.speedscope.json"),
+        "--format", "speedscope", "--", "/usr/bin/python3", "-B",
+        str(driver), "--manifest", str(storage / "manifest.json"),
+        "--out", str(storage / "result.json"),
+    ]
+    with pytest.raises(
+        _CONTRACT.NumericExecutionContractError,
+        match="tracked profiled launcher",
+    ):
+        _CONTRACT.build_launch_attestation(
+            inspected, "sparky", host_output_path=path, rootfs_changes=()
+        )
+
+
+def test_profiled_launcher_outputs_are_unique_scoped_and_unambiguous(tmp_path):
+    path, _repo, _git, _driver, inspected = _fixture(tmp_path)
+    storage = Path(_CONTRACT.CAMPAIGN_STORAGE_ROOT)
+
+    traversing = copy.deepcopy(inspected)
+    traversing["Config"]["Cmd"][4] = str(storage) + "/../escape.json"
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match="profile output"):
+        _CONTRACT.build_launch_attestation(
+            traversing, "sparky", host_output_path=path, rootfs_changes=()
+        )
+
+    same = copy.deepcopy(inspected)
+    same["Config"]["Cmd"][4] = str(storage / "result.json")
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match="must be distinct"):
+        _CONTRACT.build_launch_attestation(
+            same, "sparky", host_output_path=path, rootfs_changes=()
+        )
+
+    duplicate = copy.deepcopy(inspected)
+    duplicate["Config"]["Cmd"].extend([
+        "--out", str(storage / "second-result.json"),
+    ])
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match="one exact --out"):
+        _CONTRACT.build_launch_attestation(
+            duplicate, "sparky", host_output_path=path, rootfs_changes=()
+        )
+
+    for ambiguous in (
+        [*inspected["Config"]["Cmd"], "--"],
+        [*inspected["Config"]["Cmd"], "--profile", str(storage / "other.json")],
+        [*inspected["Config"]["Cmd"], "--profile=" + str(storage / "other.json")],
+    ):
+        changed = copy.deepcopy(inspected)
+        changed["Config"]["Cmd"] = ambiguous
+        with pytest.raises(
+            _CONTRACT.NumericExecutionContractError,
+            match="profiled-launcher command",
+        ):
+            _CONTRACT.build_launch_attestation(
+                changed, "sparky", host_output_path=path, rootfs_changes=()
+            )
+
+    nul_path = copy.deepcopy(inspected)
+    nul_path["Config"]["Cmd"][4] += "\x00suffix"
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match="NUL"):
+        _CONTRACT.build_launch_attestation(
+            nul_path, "sparky", host_output_path=path, rootfs_changes=()
+        )
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "PYTHONPYCACHEPREFIX",
+        "TORCHINDUCTOR_CACHE_DIR",
+        "HF_DATASETS_OFFLINE",
+        "PRISMAQUANT_NVFP4_SCALE_RULE",
+        "PRISMAQUANT_NVFP4_SNAPPED_SCALE_SCORING",
+    ],
+)
+def test_import_induced_environment_is_pinned_before_start(
+    tmp_path, monkeypatch, key,
+):
+    path, repo, git_common, driver, inspected, _ = _write_attestation(tmp_path)
+    _clean_git(monkeypatch, git_common)
+    _live_host(monkeypatch)
+    process = _process_environment(path, repo, git_common)
+    process[key] = "attacker-value"
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match=key):
+        _CONTRACT.require_numeric_execution_environment(
+            repo, _current_environment(), process, require_cuda=True,
+            driver_path=driver,
+            driver_argv=[str(driver), *inspected["Config"]["Cmd"][9:]],
+        )
+
+
+def test_exact_five_import_induced_environment_fields_are_launch_pinned():
+    assert {
+        key: value
+        for key, value in _CONTRACT.CAMPAIGN_SCRATCH_ENVIRONMENT.items()
+        if key in {"PYTHONPYCACHEPREFIX", "TORCHINDUCTOR_CACHE_DIR"}
+    } == {
+        "PYTHONPYCACHEPREFIX": "/tmp/pycache",
+        "TORCHINDUCTOR_CACHE_DIR": "/tmp/torchinductor-cache",
+    }
+    assert _CONTRACT.CAMPAIGN_STUDY_ENVIRONMENT == {
+        "HF_DATASETS_OFFLINE": "1",
+        "PRISMAQUANT_NVFP4_SCALE_RULE": "static_6",
+        "PRISMAQUANT_NVFP4_SNAPPED_SCALE_SCORING": "0",
+    }
 
 
 def test_cross_host_local_image_id_is_refused(tmp_path):
@@ -474,7 +596,7 @@ def test_resealed_attestation_image_id_spoof_is_refused(tmp_path, monkeypatch):
             repo, _current_environment(),
             _process_environment(path, repo, git_common),
             require_cuda=True, driver_path=driver,
-            driver_argv=[str(driver), *inspected["Config"]["Cmd"][10:]],
+            driver_argv=[str(driver), *inspected["Config"]["Cmd"][9:]],
         )
 
 
@@ -488,13 +610,19 @@ def test_live_container_id_and_driver_argv_must_match_inspection(tmp_path, monke
         _CONTRACT.require_numeric_execution_environment(
             repo, _current_environment(), process, require_cuda=True,
             driver_path=driver,
-            driver_argv=[str(driver), *inspected["Config"]["Cmd"][10:]],
+            driver_argv=[str(driver), *inspected["Config"]["Cmd"][9:]],
         )
     process["HOSTNAME"] = "c" * 12
     with pytest.raises(_CONTRACT.NumericExecutionContractError, match="driver argv"):
         _CONTRACT.require_numeric_execution_environment(
             repo, _current_environment(), process, require_cuda=True,
             driver_path=driver, driver_argv=[str(driver), "--different"],
+        )
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match=r"argv\[0\]"):
+        _CONTRACT.require_numeric_execution_environment(
+            repo, _current_environment(), process, require_cuda=True,
+            driver_path=driver,
+            driver_argv=["spoofed-argv-zero", *inspected["Config"]["Cmd"][9:]],
         )
 
 
@@ -509,26 +637,30 @@ def test_live_external_import_environment_is_refused(tmp_path, monkeypatch, key)
         _CONTRACT.require_numeric_execution_environment(
             repo, _current_environment(), process, require_cuda=True,
             driver_path=driver,
-            driver_argv=[str(driver), *inspected["Config"]["Cmd"][10:]],
+            driver_argv=[str(driver), *inspected["Config"]["Cmd"][9:]],
         )
 
 
-@pytest.mark.parametrize("key", [
-    "CUBLAS_WORKSPACE_CONFIG", "NVIDIA_TF32_OVERRIDE",
-    "CUDA_LAUNCH_BLOCKING", "TORCHINDUCTOR_CACHE_DIR",
-    "GENERIC_UNKNOWN_NUMERIC_KNOB",
+@pytest.mark.parametrize(("key", "match"), [
+    ("CUBLAS_WORKSPACE_CONFIG", "environment schema"),
+    ("NVIDIA_TF32_OVERRIDE", "environment schema"),
+    ("CUDA_LAUNCH_BLOCKING", "environment schema"),
+    ("TORCHINDUCTOR_CACHE_DIR", "requires TORCHINDUCTOR_CACHE_DIR"),
+    ("GENERIC_UNKNOWN_NUMERIC_KNOB", "environment schema"),
 ])
-def test_live_unreviewed_numeric_environment_is_refused(tmp_path, monkeypatch, key):
+def test_live_unreviewed_numeric_environment_is_refused(
+    tmp_path, monkeypatch, key, match,
+):
     path, repo, git_common, driver, inspected, _ = _write_attestation(tmp_path)
     _clean_git(monkeypatch, git_common)
     _live_host(monkeypatch)
     process = _process_environment(path, repo, git_common)
     process[key] = "1"
-    with pytest.raises(_CONTRACT.NumericExecutionContractError, match="environment schema"):
+    with pytest.raises(_CONTRACT.NumericExecutionContractError, match=match):
         _CONTRACT.require_numeric_execution_environment(
             repo, _current_environment(), process, require_cuda=True,
             driver_path=driver,
-            driver_argv=[str(driver), *inspected["Config"]["Cmd"][10:]],
+            driver_argv=[str(driver), *inspected["Config"]["Cmd"][9:]],
         )
 
 
@@ -568,7 +700,7 @@ def test_execution_identity_refuses_dirty_tree(tmp_path, monkeypatch):
             repo, _current_environment(),
             _process_environment(path, repo, git_common), require_cuda=True,
             driver_path=driver,
-            driver_argv=[str(driver), *inspected["Config"]["Cmd"][10:]],
+            driver_argv=[str(driver), *inspected["Config"]["Cmd"][9:]],
         )
 
 
@@ -582,7 +714,7 @@ def test_live_supplementary_group_cannot_publish(tmp_path, monkeypatch):
             repo, _current_environment(),
             _process_environment(path, repo, git_common), require_cuda=True,
             driver_path=driver,
-            driver_argv=[str(driver), *inspected["Config"]["Cmd"][10:]],
+            driver_argv=[str(driver), *inspected["Config"]["Cmd"][9:]],
         )
 
 
