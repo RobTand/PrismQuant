@@ -6,11 +6,12 @@ returns a fully verified receipt for that exact action.  This module therefore
 does not maintain a second result database or infer success from scheduler
 state.
 
-The adapter intentionally uses argv arrays, ``shell=False``, ``--export=NIL``,
-and a small closed submit environment.  The remote worker receives one
-content-addressed, immutable action request and invokes the ordinary
-``prismabuild run-local`` command; it does not receive task argv through shell
-text.
+The adapter intentionally uses a local argv array, ``shell=False``,
+``--export=NIL``, and a small closed submit environment.  Slurm's positional
+batch-script copy would relocate the Python launcher, so the sealed worker argv
+is POSIX-quoted into one ``--wrap=exec`` argument.  The remote worker receives
+one content-addressed, immutable action request and invokes the ordinary
+``prismabuild run-local`` command; task argv never enters shell text.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -43,6 +45,9 @@ _CANCELLED_RE = re.compile(r"CANCELLED(?: by [0-9]+)?\Z")
 SLURM_SUBMISSION_INTENT_SCHEMA_V1 = (
     "prismaquant.prismabuild.slurm_submission_intent.v1"
 )
+SLURM_SUBMISSION_INTENT_SCHEMA_V2 = (
+    "prismaquant.prismabuild.slurm_submission_intent.v2"
+)
 SLURM_JOB_BINDING_SCHEMA_V1 = "prismaquant.prismabuild.slurm_job_binding.v1"
 SLURM_RETRY_TRANSITION_SCHEMA_V1 = (
     "prismaquant.prismabuild.slurm_retry_transition.v1"
@@ -51,8 +56,9 @@ SLURM_REQUEUE_OBSERVED_SCHEMA_V1 = (
     "prismaquant.prismabuild.slurm_requeue_observed.v1"
 )
 SLURM_MUTATION_SCHEMA_V1 = "prismaquant.prismabuild.slurm_mutation.v1"
-_SLURM_SUBMIT_SPEC_SCHEMA_V1 = "prismaquant.prismabuild.slurm_submit_spec.v1"
-_SUBMISSION_NAMESPACE = "v1"
+_SLURM_SUBMIT_SPEC_SCHEMA_V2 = "prismaquant.prismabuild.slurm_submit_spec.v2"
+_SLURM_RUNTIME_SCHEMA_V1 = "prismaquant.prismabuild.slurm_runtime.v1"
+_SUBMISSION_NAMESPACE = "v2"
 _SUBMIT_SPEC_KEYS = frozenset(
     {
         "schema",
@@ -61,6 +67,7 @@ _SUBMIT_SPEC_KEYS = frozenset(
         "cas_root",
         "log_root",
         "worker_script",
+        "worker_argv",
         "checkout_root",
         "commands",
         "resources",
@@ -68,7 +75,11 @@ _SUBMIT_SPEC_KEYS = frozenset(
         "retry_policy",
         "recompute",
         "submit_environment",
+        "runtime",
     }
+)
+_SLURM_RUNTIME_KEYS = frozenset(
+    {"schema", "adapter", "worker_launcher", "runtime_sha256"}
 )
 _COMMAND_KEYS = frozenset({"sbatch", "squeue", "sacct", "scancel", "scontrol"})
 _RESOURCE_KEYS = frozenset(
@@ -154,6 +165,13 @@ _MAX_POLL_INTERVAL_SECONDS = 86_400.0
 _MAX_STALE_TEMP_ENTRIES = 64
 _MAX_UNIX_NS = (1 << 63) - 1
 _MAX_STATE_BYTES = 16 * 1024 * 1024
+
+# Capture the adapter implementation Python loaded, before any adapter method
+# accepts an action or inspects durable scheduler state. The sealed submit spec
+# carries this identity alongside the configured worker launcher identity.
+_LOADED_SLURM_ADAPTER_IDENTITY = pb._identify_runtime_source(
+    Path(__file__).resolve(), where="PrismaBuild SLURM adapter"
+)
 
 _PENDING_STATES = frozenset(
     {
@@ -413,11 +431,40 @@ def _path_string(value: object, *, where: str, root_ok: bool = False) -> str:
     return str(_absolute_path(value, where=where, root_ok=root_ok))
 
 
+def _validate_slurm_runtime(value: object) -> dict[str, object]:
+    raw = _exact_mapping(
+        value, keys=_SLURM_RUNTIME_KEYS, where="SLURM submit spec.runtime"
+    )
+    if raw["schema"] != _SLURM_RUNTIME_SCHEMA_V1:
+        raise pb.ActionContractError(
+            f"SLURM runtime schema must be {_SLURM_RUNTIME_SCHEMA_V1!r}"
+        )
+    adapter = pb._normalize_runtime_source(
+        raw["adapter"], where="SLURM runtime.adapter"
+    )
+    worker_launcher = pb._normalize_runtime_source(
+        raw["worker_launcher"], where="SLURM runtime.worker_launcher"
+    )
+    body: dict[str, object] = {
+        "schema": _SLURM_RUNTIME_SCHEMA_V1,
+        "adapter": adapter,
+        "worker_launcher": worker_launcher,
+    }
+    digest = _sha256(
+        raw["runtime_sha256"], where="SLURM runtime.runtime_sha256"
+    )
+    if digest != pb.canonical_sha256(body):
+        raise pb.ActionContractError(
+            "SLURM runtime digest does not match its source identities"
+        )
+    return {**body, "runtime_sha256": digest}
+
+
 def _validate_submit_spec(value: object) -> dict[str, object]:
     raw = _exact_mapping(value, keys=_SUBMIT_SPEC_KEYS, where="SLURM submit spec")
-    if raw["schema"] != _SLURM_SUBMIT_SPEC_SCHEMA_V1:
+    if raw["schema"] != _SLURM_SUBMIT_SPEC_SCHEMA_V2:
         raise pb.ActionContractError(
-            f"SLURM submit spec schema must be {_SLURM_SUBMIT_SPEC_SCHEMA_V1!r}"
+            f"SLURM submit spec schema must be {_SLURM_SUBMIT_SPEC_SCHEMA_V2!r}"
         )
     action_key = _sha256(raw["action_key"], where="SLURM submit spec.action_key")
     cluster = _token(
@@ -489,20 +536,51 @@ def _validate_submit_spec(value: object) -> dict[str, object]:
                 f"SLURM submit environment value for {name!r} is invalid"
             )
         environment[name] = raw_value
+    worker_script = _path_string(
+        raw["worker_script"],
+        where="SLURM submit spec.worker_script",
+        root_ok=True,
+    )
+    cas_root = _path_string(raw["cas_root"], where="SLURM submit spec.cas_root")
+    checkout_root = _path_string(
+        raw["checkout_root"], where="SLURM submit spec.checkout_root"
+    )
+    expected_worker_argv = [
+        worker_script,
+        "run-local",
+        "--require-slurm-initial-start",
+        "--action",
+        str(
+            Path(cas_root)
+            / "requests"
+            / action_key[:2]
+            / f"{action_key}.json"
+        ),
+        "--cas-root",
+        cas_root,
+        "--checkout-root",
+        checkout_root,
+    ]
+    if raw["worker_argv"] != expected_worker_argv:
+        raise pb.ActionContractError(
+            "SLURM submit spec.worker_argv is not the exact canonical worker launch"
+        )
+    runtime = _validate_slurm_runtime(raw["runtime"])
+    worker_launcher = runtime["worker_launcher"]
+    assert isinstance(worker_launcher, Mapping)
+    if worker_launcher["path"] != worker_script:
+        raise pb.ActionContractError(
+            "SLURM runtime worker launcher differs from the configured worker script"
+        )
     return {
-        "schema": _SLURM_SUBMIT_SPEC_SCHEMA_V1,
+        "schema": _SLURM_SUBMIT_SPEC_SCHEMA_V2,
         "action_key": action_key,
         "cluster": cluster,
-        "cas_root": _path_string(raw["cas_root"], where="SLURM submit spec.cas_root"),
+        "cas_root": cas_root,
         "log_root": _path_string(raw["log_root"], where="SLURM submit spec.log_root"),
-        "worker_script": _path_string(
-            raw["worker_script"],
-            where="SLURM submit spec.worker_script",
-            root_ok=True,
-        ),
-        "checkout_root": _path_string(
-            raw["checkout_root"], where="SLURM submit spec.checkout_root"
-        ),
+        "worker_script": worker_script,
+        "worker_argv": expected_worker_argv,
+        "checkout_root": checkout_root,
         "commands": commands,
         "resources": {
             "cpus": resources.cpus,
@@ -525,6 +603,7 @@ def _validate_submit_spec(value: object) -> dict[str, object]:
         },
         "recompute": raw["recompute"],
         "submit_environment": dict(sorted(environment.items())),
+        "runtime": runtime,
     }
 
 
@@ -533,7 +612,7 @@ def _validate_submission_intent(
 ) -> dict[str, object]:
     try:
         raw = _exact_mapping(value, keys=_INTENT_KEYS, where="SLURM submission intent")
-        if raw["schema"] != SLURM_SUBMISSION_INTENT_SCHEMA_V1:
+        if raw["schema"] != SLURM_SUBMISSION_INTENT_SCHEMA_V2:
             raise pb.ActionContractError(
                 "SLURM submission intent has an unsupported schema"
             )
@@ -575,7 +654,7 @@ def _validate_submission_intent(
                 "SLURM submission intent comment is not derived from its key"
             )
         body: dict[str, object] = {
-            "schema": SLURM_SUBMISSION_INTENT_SCHEMA_V1,
+            "schema": SLURM_SUBMISSION_INTENT_SCHEMA_V2,
             "action_key": action_key,
             "submission_key": submission_key,
             "job_name": job_name,
@@ -1210,6 +1289,70 @@ class SlurmAdapter:
                 f"worker script must be executable: {self.worker_script}"
             )
 
+    def _capture_submission_runtime(self) -> dict[str, object]:
+        """Seal the loaded adapter and configured worker source bytes."""
+
+        self._check_worker_script()
+        adapter = pb._normalize_runtime_source(
+            _LOADED_SLURM_ADAPTER_IDENTITY,
+            where="loaded PrismaBuild SLURM adapter",
+        )
+        pb._verify_runtime_source_unchanged(
+            adapter,
+            where="PrismaBuild SLURM adapter",
+            changed_message=(
+                "PrismaBuild SLURM adapter changed after module import"
+            ),
+        )
+        worker_launcher = pb._identify_runtime_source(
+            self.worker_script, where="PrismaBuild SLURM worker launcher"
+        )
+        self._check_worker_script()
+        body: dict[str, object] = {
+            "schema": _SLURM_RUNTIME_SCHEMA_V1,
+            "adapter": adapter,
+            "worker_launcher": worker_launcher,
+        }
+        return _validate_slurm_runtime(
+            {**body, "runtime_sha256": pb.canonical_sha256(body)}
+        )
+
+    def _verify_submission_runtime_unchanged(self, value: object) -> None:
+        """Recheck the sealed transport sources immediately before sbatch."""
+
+        runtime = _validate_slurm_runtime(value)
+        adapter = runtime["adapter"]
+        worker_launcher = runtime["worker_launcher"]
+        assert isinstance(adapter, Mapping)
+        assert isinstance(worker_launcher, Mapping)
+        loaded_adapter = pb._normalize_runtime_source(
+            _LOADED_SLURM_ADAPTER_IDENTITY,
+            where="loaded PrismaBuild SLURM adapter",
+        )
+        if adapter != loaded_adapter:
+            raise pb.LocalActionError(
+                "sealed SLURM adapter differs from the module import identity"
+            )
+        if worker_launcher["path"] != str(self.worker_script):
+            raise pb.LocalActionError(
+                "sealed SLURM worker launcher differs from adapter configuration"
+            )
+        pb._verify_runtime_source_unchanged(
+            adapter,
+            where="PrismaBuild SLURM adapter",
+            changed_message=(
+                "PrismaBuild SLURM adapter changed after submission sealing"
+            ),
+        )
+        pb._verify_runtime_source_unchanged(
+            worker_launcher,
+            where="PrismaBuild SLURM worker launcher",
+            changed_message=(
+                "PrismaBuild SLURM worker launcher changed after submission sealing"
+            ),
+        )
+        self._check_worker_script()
+
     @staticmethod
     def _cluster_args(job_id: SlurmJobId) -> list[str]:
         # ``--local`` defeats FederationParameters=fed_display for the only
@@ -1245,76 +1388,19 @@ class SlurmAdapter:
     def _read_state_bytes(path: Path, *, where: str) -> bytes | None:
         if not _real_directory_chain_exists(path.parent, where=where):
             return None
-        directory_fd = _open_directory_nofollow(path.parent, where=where)
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
-            try:
-                descriptor = os.open(path.name, flags, dir_fd=directory_fd)
-            except FileNotFoundError:
+            return pb._read_regular_file_nofollow(
+                path,
+                where=where,
+                require_readonly=True,
+                max_bytes=_MAX_STATE_BYTES,
+            )
+        except FileNotFoundError as exc:
+            if _real_directory_chain_exists(path.parent, where=where):
                 return None
-            except OSError as exc:
-                raise pb.CASTamperError(
-                    f"cannot open {where} without following links: {path}"
-                ) from exc
-            try:
-                before = os.fstat(descriptor)
-                if not stat.S_ISREG(before.st_mode):
-                    raise pb.CASTamperError(f"{where} is not a regular file: {path}")
-                if before.st_mode & 0o222:
-                    raise pb.CASTamperError(f"{where} is writable: {path}")
-                if before.st_size > _MAX_STATE_BYTES:
-                    raise pb.CASTamperError(
-                        f"{where} exceeds the durable state byte bound: {path}"
-                    )
-                chunks: list[bytes] = []
-                while True:
-                    chunk = os.read(descriptor, 1024 * 1024)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                after = os.fstat(descriptor)
-                if (
-                    before.st_dev,
-                    before.st_ino,
-                    before.st_size,
-                    before.st_mode,
-                    before.st_mtime_ns,
-                    before.st_ctime_ns,
-                ) != (
-                    after.st_dev,
-                    after.st_ino,
-                    after.st_size,
-                    after.st_mode,
-                    after.st_mtime_ns,
-                    after.st_ctime_ns,
-                ):
-                    raise pb.CASTamperError(f"{where} changed while read: {path}")
-                try:
-                    current = os.open(path.name, flags, dir_fd=directory_fd)
-                except OSError as exc:
-                    raise pb.CASTamperError(
-                        f"{where} changed during read: {path}"
-                    ) from exc
-                try:
-                    current_info = os.fstat(current)
-                    if (after.st_dev, after.st_ino) != (
-                        current_info.st_dev,
-                        current_info.st_ino,
-                    ):
-                        raise pb.CASTamperError(
-                            f"{where} changed during read: {path}"
-                        )
-                finally:
-                    os.close(current)
-                _assert_directory_identity(
-                    directory_fd, path.parent, where=where
-                )
-                return b"".join(chunks)
-            finally:
-                os.close(descriptor)
-        finally:
-            os.close(directory_fd)
+            raise pb.CASTamperError(
+                f"{where} parent disappeared during read: {path.parent}"
+            ) from exc
 
     @staticmethod
     def _read_state_file(path: Path, *, where: str) -> object | None:
@@ -1434,13 +1520,28 @@ class SlurmAdapter:
         poll_interval_seconds: float,
         recompute: bool,
     ) -> dict[str, object]:
+        expected_request = (
+            self.cas_root
+            / "requests"
+            / action_key[:2]
+            / f"{action_key}.json"
+        )
+        if request_path != expected_request:
+            raise pb.ActionContractError(
+                "published action request path differs from its canonical address"
+            )
         value: dict[str, object] = {
-            "schema": _SLURM_SUBMIT_SPEC_SCHEMA_V1,
+            "schema": _SLURM_SUBMIT_SPEC_SCHEMA_V2,
             "action_key": action_key,
             "cluster": self.cluster,
             "cas_root": str(self.cas_root),
             "log_root": str(self.log_root),
             "worker_script": str(self.worker_script),
+            "worker_argv": self._worker_argv(
+                request_path=request_path,
+                checkout_root=checkout_root,
+                recompute=recompute,
+            ),
             "checkout_root": str(checkout_root),
             "commands": {
                 "sbatch": str(self.sbatch),
@@ -1470,25 +1571,15 @@ class SlurmAdapter:
             },
             "recompute": recompute,
             "submit_environment": self.submit_environment,
+            "runtime": self._capture_submission_runtime(),
         }
-        normalized = _validate_submit_spec(value)
-        expected_request = (
-            self.cas_root
-            / "requests"
-            / action_key[:2]
-            / f"{action_key}.json"
-        )
-        if request_path != expected_request:
-            raise pb.ActionContractError(
-                "published action request path differs from its canonical address"
-            )
-        return normalized
+        return _validate_submit_spec(value)
 
     @staticmethod
     def _submission_intent(submit_spec: Mapping[str, object]) -> dict[str, object]:
         submission_key = pb.canonical_sha256(submit_spec)
         body: dict[str, object] = {
-            "schema": SLURM_SUBMISSION_INTENT_SCHEMA_V1,
+            "schema": SLURM_SUBMISSION_INTENT_SCHEMA_V2,
             "action_key": submit_spec["action_key"],
             "submission_key": submission_key,
             "job_name": f"pqb-{submission_key}",
@@ -2277,11 +2368,6 @@ class SlurmAdapter:
         _ensure_real_directory(
             log_directory, root=self.log_root, where="SLURM log root"
         )
-        worker_argv = self._worker_argv(
-            request_path=request,
-            checkout_root=root,
-            recompute=recompute,
-        )
         submit_spec = self._submit_spec(
             action_key=key,
             request_path=request,
@@ -2337,9 +2423,11 @@ class SlurmAdapter:
             f"--chdir={root}",
             f"--output={log_directory / (key + '-%j.out')}",
             f"--error={log_directory / (key + '-%j.err')}",
-            str(self.worker_script),
-            *worker_argv[1:],
         ])
+        worker_argv = submit_spec["worker_argv"]
+        assert isinstance(worker_argv, list)
+        argv.append(f"--wrap=exec {shlex.join(worker_argv)}")
+        self._verify_submission_runtime_unchanged(submit_spec["runtime"])
         completed = self._run(argv)
         output = completed.stdout.strip()
         if "\n" in output or "\r" in output:
@@ -2587,6 +2675,7 @@ __all__ = [
     "SLURM_REQUEUE_OBSERVED_SCHEMA_V1",
     "SLURM_RETRY_TRANSITION_SCHEMA_V1",
     "SLURM_SUBMISSION_INTENT_SCHEMA_V1",
+    "SLURM_SUBMISSION_INTENT_SCHEMA_V2",
     "SlurmAdapter",
     "SlurmAdoptionError",
     "SlurmAdapterError",

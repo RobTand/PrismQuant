@@ -9,8 +9,9 @@ links.
 
 Portable actions omit machine identity from their key.  Platform- and
 host-class-keyed actions bind the corresponding explicit execution scope.
-Measurement actions are never portable.  FP8-CB generation is also never
-portable because D29 records cross-architecture row-scale byte drift.
+Measurement actions are never portable.  Explicit codebook-family generation
+is also never portable because D29 records cross-architecture row-scale byte
+drift.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import subprocess
 import tempfile
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
+ACTION_SCHEMA_V2 = "prismaquant.prismabuild.action.v2"
 CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
 CAS_RECEIPT_SCHEMA_V3 = "prismaquant.prismabuild.cas_receipt.v3"
 WORKER_ATTESTATION_SCHEMA_V2 = "prismaquant.prismabuild.worker_attestation.v2"
@@ -58,6 +60,7 @@ _TASK_KEYS = frozenset(
         "definition_version",
         "task_class",
         "determinism",
+        "artifact_family",
         "artifact_kind",
         "argv",
         "working_directory",
@@ -113,6 +116,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _PORTABILITY = frozenset({"portable", "platform_keyed", "host_class_keyed"})
 _TASK_CLASSES = frozenset({"generation", "measurement"})
 _DETERMINISM = frozenset({"deterministic", "stochastic"})
+_ARTIFACT_FAMILIES = frozenset({"generic", "codebook"})
 _PROCESS_GROUP_GRACE_SECONDS = 5.0
 # NFS may return one internally inconsistent ctime/nlink snapshot while a
 # first-writer hard link becomes visible.  Never accept that read: reopen the
@@ -280,15 +284,6 @@ def _normalize_json_value(value: object, *, where: str) -> object:
             )
         return normalized
     _fail(f"{where} contains a value that is not JSON data")
-
-
-def _is_codebook_artifact_kind(value: str) -> bool:
-    """Recognize codebook spelling variants conservatively for D29."""
-
-    compact = re.sub(r"[^a-z0-9]", "", value.lower())
-    has_quant_family = "fp8" in compact or "nvfp4" in compact
-    has_codebook = "codebook" in compact or "cb" in compact
-    return has_quant_family and has_codebook
 
 
 def _normalize_argv(value: object) -> list[str]:
@@ -1026,6 +1021,14 @@ def _normalize_task(value: object) -> dict[str, object]:
     determinism = _text(task["determinism"], where="action.task.determinism")
     if determinism not in _DETERMINISM:
         _fail(f"action.task.determinism must be one of {sorted(_DETERMINISM)}")
+    artifact_family = _text(
+        task["artifact_family"], where="action.task.artifact_family"
+    )
+    if artifact_family not in _ARTIFACT_FAMILIES:
+        _fail(
+            "action.task.artifact_family must be one of "
+            f"{sorted(_ARTIFACT_FAMILIES)}"
+        )
     return {
         "definition_id": _text(
             task["definition_id"],
@@ -1039,6 +1042,7 @@ def _normalize_task(value: object) -> dict[str, object]:
         ),
         "task_class": task_class,
         "determinism": determinism,
+        "artifact_family": artifact_family,
         "artifact_kind": _text(
             task["artifact_kind"],
             where="action.task.artifact_kind",
@@ -1107,18 +1111,23 @@ def _normalize_scope(value: object) -> dict[str, object]:
 
 def _normalize_action_body(value: object) -> dict[str, object]:
     body = _exact_mapping(value, keys=_ACTION_BODY_KEYS, where="action body")
-    if body["schema"] != ACTION_SCHEMA_V1:
-        _fail(f"action.schema must be {ACTION_SCHEMA_V1!r}")
+    if body["schema"] == ACTION_SCHEMA_V1:
+        _fail(
+            "v1 actions must be redeclared and resealed with an explicit "
+            f"artifact_family under {ACTION_SCHEMA_V2!r}"
+        )
+    if body["schema"] != ACTION_SCHEMA_V2:
+        _fail(f"action.schema must be {ACTION_SCHEMA_V2!r}")
     task = _normalize_task(body["task"])
     scope = _normalize_scope(body["execution_scope"])
     if task["task_class"] == "measurement" and scope["portability"] == "portable":
         _fail("measurement actions must be platform_keyed or host_class_keyed")
     if (
-        _is_codebook_artifact_kind(str(task["artifact_kind"]))
+        task["artifact_family"] == "codebook"
         and scope["portability"] == "portable"
     ):
         _fail(
-            "FP8-CB actions cannot be portable: D29 records cross-architecture "
+            "codebook actions cannot be portable: D29 records cross-architecture "
             "row-scale byte drift"
         )
     params = body["params"]
@@ -1174,7 +1183,7 @@ def _normalize_action_body(value: object) -> dict[str, object]:
                 "and libc"
             )
     return {
-        "schema": ACTION_SCHEMA_V1,
+        "schema": ACTION_SCHEMA_V2,
         "task": task,
         "inputs": _normalize_inputs(body["inputs"]),
         "code_closure": validate_code_closure(body["code_closure"]),
@@ -1464,14 +1473,22 @@ def _substantive_file_read_identity(info: os.stat_result) -> tuple[int, ...]:
 
 
 def _read_regular_file_nofollow(
-    path: Path, *, where: str, require_readonly: bool = False
+    path: Path,
+    *,
+    where: str,
+    require_readonly: bool = False,
+    max_bytes: int | None = None,
 ) -> bytes:
     """Read one stable inode without following any pathname component.
 
     A ctime/nlink-only mismatch is discarded and retried through a fresh path
-    resolution and FD.  No bytes from an unstable attempt are returned.
+    resolution and FD.  No bytes from an unstable attempt are returned. When
+    ``max_bytes`` is set, both the opening size and streamed byte count are
+    bounded so a dishonest or racing size cannot cause unbounded allocation.
     """
 
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+        raise ActionContractError("stable regular-file read max_bytes is invalid")
     for attempt in range(_STABLE_FILE_READ_ATTEMPTS):
         descriptor, parent_fd = _open_regular_nofollow(path, where=where)
         try:
@@ -1480,11 +1497,17 @@ def _read_regular_file_nofollow(
                 raise CASTamperError(f"{where} is not a regular file: {path}")
             if require_readonly and before.st_mode & 0o222:
                 raise CASTamperError(f"{where} is writable: {path}")
+            if max_bytes is not None and before.st_size > max_bytes:
+                raise CASTamperError(f"{where} exceeds the byte bound: {path}")
             chunks: list[bytes] = []
+            size = 0
             while True:
                 chunk = os.read(descriptor, 1024 * 1024)
                 if not chunk:
                     break
+                size += len(chunk)
+                if max_bytes is not None and size > max_bytes:
+                    raise CASTamperError(f"{where} exceeds the byte bound: {path}")
                 chunks.append(chunk)
             after = os.fstat(descriptor)
             if _stable_file_read_identity(before) != _stable_file_read_identity(after):
@@ -2896,6 +2919,7 @@ def main(
 
 __all__ = [
     "ACTION_SCHEMA_V1",
+    "ACTION_SCHEMA_V2",
     "CAS_RECEIPT_SCHEMA_V3",
     "CODE_CLOSURE_SCHEMA_V1",
     "WORKER_ATTESTATION_SCHEMA_V2",

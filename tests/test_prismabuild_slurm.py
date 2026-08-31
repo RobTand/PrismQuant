@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import shlex
 import stat
 import subprocess
 import sys
@@ -50,12 +52,13 @@ def _action(
             )
     return pb.seal_action(
         {
-            "schema": pb.ACTION_SCHEMA_V1,
+            "schema": pb.ACTION_SCHEMA_V2,
             "task": {
                 "definition_id": "tests/slurm",
                 "definition_version": "v1",
                 "task_class": "generation",
                 "determinism": "deterministic",
+                "artifact_family": "generic",
                 "artifact_kind": "generic",
                 "argv": argv,
                 "working_directory": ".",
@@ -267,7 +270,8 @@ def test_submit_uses_exact_argv_closed_environment_and_content_request(
         f"--chdir={checkout}",
     ):
         assert expected in argv
-    assert argv[argv.index(str(worker)) + 1 :] == [
+    expected_worker_argv = [
+        str(worker),
         "run-local",
         "--require-slurm-initial-start",
         "--action",
@@ -277,17 +281,19 @@ def test_submit_uses_exact_argv_closed_environment_and_content_request(
         "--checkout-root",
         str(checkout),
     ]
+    assert str(worker) not in argv
+    assert argv[-1] == f"--wrap=exec {shlex.join(expected_worker_argv)}"
     assert kwargs["shell"] is False
     assert kwargs["check"] is False
     assert kwargs["env"] == {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
-    request = Path(argv[argv.index("--action") + 1])
+    request = tmp_path / "cas" / "requests" / key[:2] / f"{key}.json"
     assert request.stat().st_mode & 0o222 == 0
     assert json.loads(request.read_text(encoding="utf-8")) == action
     intent_path = (
         tmp_path
         / "cas"
         / "submissions"
-        / "v1"
+        / "v2"
         / key[:2]
         / key
         / "intent.json"
@@ -295,6 +301,25 @@ def test_submit_uses_exact_argv_closed_environment_and_content_request(
     binding_path = intent_path.with_name("job.json")
     assert intent_path.stat().st_mode & 0o222 == 0
     assert binding_path.stat().st_mode & 0o222 == 0
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    assert intent["schema"] == ps.SLURM_SUBMISSION_INTENT_SCHEMA_V2
+    submit_spec = intent["submit_spec"]
+    assert submit_spec["schema"] == ps._SLURM_SUBMIT_SPEC_SCHEMA_V2
+    assert submit_spec["worker_argv"] == expected_worker_argv
+    runtime = submit_spec["runtime"]
+    assert runtime["schema"] == ps._SLURM_RUNTIME_SCHEMA_V1
+    assert runtime["adapter"] == ps._LOADED_SLURM_ADAPTER_IDENTITY
+    assert runtime["worker_launcher"] == {
+        "path": str(worker),
+        "resolved_path": str(worker.resolve()),
+        "sha256": hashlib.sha256(worker.read_bytes()).hexdigest(),
+        "bytes": worker.stat().st_size,
+    }
+    runtime_body = {
+        key: runtime[key] for key in ("schema", "adapter", "worker_launcher")
+    }
+    assert runtime["runtime_sha256"] == pb.canonical_sha256(runtime_body)
+    assert intent["submission_key"] == pb.canonical_sha256(submit_spec)
     assert json.loads(binding_path.read_text(encoding="utf-8"))["job_id"] == (
         "12345;gold-cluster"
     )
@@ -321,6 +346,165 @@ def test_cpu_submission_omits_zero_gpu_request(
         placement=ps.SlurmPlacement(platform_key=None, host_class=None),
     )
     assert not any(argument.startswith("--gpus=") for argument in calls[0])
+
+
+def test_wrap_launch_roundtrips_shell_metacharacters_without_positional_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout '$HOME; touch should-not-exist"
+    checkout.mkdir()
+    action = _action(checkout)
+    worker = tmp_path / "worker '$HOME; touch should-not-exist"
+    worker.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    worker.chmod(0o555)
+    adapter = ps.SlurmAdapter(
+        cas_root=tmp_path / "cas",
+        log_root=tmp_path / "logs",
+        worker_script=worker,
+        cluster="gold-cluster",
+        sbatch="/slurm/bin/sbatch",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _completed(argv, "12345;gold-cluster\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    adapter.submit(
+        action,
+        checkout_root=checkout,
+        resources=_resources(),
+        placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+    )
+
+    assert len(calls) == 1
+    argv = calls[0]
+    wrap_arguments = [value for value in argv if value.startswith("--wrap=")]
+    assert len(wrap_arguments) == 1
+    assert str(worker) not in argv
+    command = wrap_arguments[0].removeprefix("--wrap=")
+    assert command.startswith("exec ")
+    expected = adapter._worker_argv(
+        request_path=(
+            adapter.cas_root
+            / "requests"
+            / str(action["action_key"])[:2]
+            / f"{action['action_key']}.json"
+        ),
+        checkout_root=checkout,
+        recompute=False,
+    )
+    assert shlex.split(command.removeprefix("exec ")) == expected
+    assert not (tmp_path / "should-not-exist").exists()
+
+
+def test_slurm_runtime_validation_is_exact_and_v1_intent_is_not_reinterpreted(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    intent = _record_intent(adapter, action, checkout)
+
+    tampered = json.loads(json.dumps(intent))
+    tampered["submit_spec"]["runtime"]["worker_launcher"]["sha256"] = "0" * 64
+    with pytest.raises(pb.CASTamperError, match="runtime digest"):
+        ps._validate_submission_intent(
+            tampered, expected_action_key=str(action["action_key"])
+        )
+
+    legacy = json.loads(json.dumps(intent))
+    legacy["schema"] = ps.SLURM_SUBMISSION_INTENT_SCHEMA_V1
+    with pytest.raises(pb.CASTamperError, match="unsupported schema"):
+        ps._validate_submission_intent(
+            legacy, expected_action_key=str(action["action_key"])
+        )
+
+    legacy_spec = json.loads(json.dumps(intent["submit_spec"]))
+    legacy_spec["schema"] = "prismaquant.prismabuild.slurm_submit_spec.v1"
+    with pytest.raises(pb.ActionContractError, match="submit spec schema must be"):
+        ps._validate_submit_spec(legacy_spec)
+
+
+def test_slurm_runtime_refuses_worker_path_disagreement_and_adapter_claim(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    request = ps.publish_action_request(action, cas_root=adapter.cas_root)
+    submit_spec = adapter._submit_spec(
+        action_key=str(action["action_key"]),
+        request_path=request,
+        checkout_root=checkout,
+        resources=_resources(),
+        placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+        max_polls=1,
+        max_requeues=0,
+        poll_interval_seconds=5.0,
+        recompute=False,
+    )
+
+    wrong_worker = json.loads(json.dumps(submit_spec))
+    runtime = wrong_worker["runtime"]
+    runtime["worker_launcher"]["path"] = str(tmp_path / "other-worker")
+    runtime_body = {
+        key: runtime[key] for key in ("schema", "adapter", "worker_launcher")
+    }
+    runtime["runtime_sha256"] = pb.canonical_sha256(runtime_body)
+    with pytest.raises(pb.ActionContractError, match="differs.*worker script"):
+        ps._validate_submit_spec(wrong_worker)
+
+    wrong_argv = json.loads(json.dumps(submit_spec))
+    wrong_argv["worker_argv"].append("--unexpected")
+    with pytest.raises(pb.ActionContractError, match="exact canonical worker launch"):
+        ps._validate_submit_spec(wrong_argv)
+
+    wrong_adapter_runtime = json.loads(json.dumps(submit_spec["runtime"]))
+    wrong_adapter_runtime["adapter"]["sha256"] = "0" * 64
+    runtime_body = {
+        key: wrong_adapter_runtime[key]
+        for key in ("schema", "adapter", "worker_launcher")
+    }
+    wrong_adapter_runtime["runtime_sha256"] = pb.canonical_sha256(runtime_body)
+    with pytest.raises(pb.LocalActionError, match="module import identity"):
+        adapter._verify_submission_runtime_unchanged(wrong_adapter_runtime)
+
+
+def test_worker_launcher_mutation_after_intent_seal_refuses_before_sbatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, worker = _adapter(tmp_path)
+    real_publish = adapter._publish_submission_intent
+
+    def publish_then_replace(intent: Mapping[str, object]) -> bool:
+        won = real_publish(intent)
+        worker.chmod(0o755)
+        worker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        worker.chmod(0o555)
+        return won
+
+    monkeypatch.setattr(adapter, "_publish_submission_intent", publish_then_replace)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("changed worker must refuse before sbatch")
+        ),
+    )
+    with pytest.raises(pb.LocalActionError, match="worker launcher changed"):
+        adapter.submit(
+            action,
+            checkout_root=checkout,
+            resources=_resources(),
+            placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+        )
 
 
 def test_submit_refuses_job_id_from_outside_sealed_cluster(
@@ -463,7 +647,7 @@ def test_crash_before_sbatch_leaves_ambiguous_intent_and_never_resubmits(
         argv: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         intent_path = (
-            tmp_path / "cas" / "submissions" / "v1" / key[:2] / key / "intent.json"
+            tmp_path / "cas" / "submissions" / "v2" / key[:2] / key / "intent.json"
         )
         assert intent_path.exists()
         assert not intent_path.with_name("job.json").exists()
@@ -1029,30 +1213,103 @@ def test_durable_state_file_size_is_bounded_before_reading(tmp_path: Path):
     with state.open("r+b") as handle:
         handle.truncate(ps._MAX_STATE_BYTES + 1)
     state.chmod(0o444)
-    with pytest.raises(pb.CASTamperError, match="state byte bound"):
+    with pytest.raises(pb.CASTamperError, match="byte bound"):
         ps.SlurmAdapter._read_state_file(state, where="oversized durable state")
 
 
-def test_durable_state_chmod_during_read_is_detected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_durable_state_reader_requires_readonly_file(tmp_path: Path):
     state = tmp_path / "state.json"
     state.write_bytes(b"{}\n")
+    state.chmod(0o644)
+    with pytest.raises(pb.CASTamperError, match="is writable"):
+        ps.SlurmAdapter._read_state_bytes(state, where="writable durable state")
+
+
+@pytest.mark.parametrize("transition", ["two-to-one", "one-to-one"])
+def test_durable_state_read_replays_transient_link_metadata_from_fresh_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: str,
+):
+    state = tmp_path / "state.json"
+    state_bytes = b"{}\n"
+    state.write_bytes(state_bytes)
     state.chmod(0o444)
-    real_read = ps.os.read
+    transient_link = tmp_path / "state-publication-link"
+    if transition == "two-to-one":
+        os.link(state, transient_link)
+
+    real_open = pb._open_regular_nofollow
+    real_read = pb.os.read
+    open_count = 0
     changed = False
 
-    def read_then_chmod(descriptor: int, count: int) -> bytes:
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return real_open(path, where=where)
+
+    def read_then_change_link_metadata(descriptor: int, count: int) -> bytes:
         nonlocal changed
         chunk = real_read(descriptor, count)
         if chunk and not changed:
             changed = True
-            state.chmod(0o644)
+            if transition == "two-to-one":
+                transient_link.unlink()
+            else:
+                time.sleep(0.001)
+                os.link(state, transient_link)
+                transient_link.unlink()
         return chunk
 
-    monkeypatch.setattr(ps.os, "read", read_then_chmod)
-    with pytest.raises(pb.CASTamperError, match="changed while read"):
-        ps.SlurmAdapter._read_state_file(state, where="racing durable state")
+    monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_change_link_metadata)
+
+    assert ps.SlurmAdapter._read_state_bytes(
+        state, where="racing durable state"
+    ) == state_bytes
+    assert open_count == 2
+
+
+@pytest.mark.parametrize("mutation", ["mode", "mtime"])
+def test_durable_state_substantive_mutation_refuses_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+):
+    state = tmp_path / "state.json"
+    state.write_bytes(b"{}\n")
+    state.chmod(0o444)
+    original = state.stat()
+    real_open = pb._open_regular_nofollow
+    real_read = pb.os.read
+    open_count = 0
+    changed = False
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return real_open(path, where=where)
+
+    def read_then_mutate(descriptor: int, count: int) -> bytes:
+        nonlocal changed
+        chunk = real_read(descriptor, count)
+        if chunk and not changed:
+            changed = True
+            if mutation == "mode":
+                state.chmod(0o400)
+            else:
+                os.utime(
+                    state,
+                    ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000_000),
+                )
+        return chunk
+
+    monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_mutate)
+    with pytest.raises(pb.CASTamperError, match="changed substantively"):
+        ps.SlurmAdapter._read_state_bytes(state, where="racing durable state")
+    assert open_count == 1
 
 
 def test_durable_requeue_count_beyond_sealed_maximum_is_tamper(tmp_path: Path):
@@ -1240,7 +1497,7 @@ def test_state_read_rejects_parent_swapped_to_symlink_after_validation(
         return result
 
     monkeypatch.setattr(ps, "_real_directory_chain_exists", validate_then_swap)
-    with pytest.raises(pb.CASTamperError, match="without following links"):
+    with pytest.raises(pb.CASTamperError, match="real directory"):
         adapter._read_state_file(intent_path, where="hostile read race")
 
 
