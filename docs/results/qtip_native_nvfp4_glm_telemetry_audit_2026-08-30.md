@@ -226,3 +226,32 @@ served-kernel throughput, saturation, process-exclusive energy, work per
 joule, runtime parity, Gridbook readiness, or cross-implementation performance
 claim. The numeric result is a W\*A16 weighted-SSE screen and is not W8A8,
 KL/PPL, serving, or model-general evidence.
+
+### 2026-08-31 frontier-geometry and durability addendum
+
+The immutable result's `NO_VERDICT_exact_byte_frontiers_cross` string is a
+legacy predicate label, not literal geometry. A from-scratch Fable audit of
+the completed artifact found zero true crossings in 264 comparisons: TCQ is
+strictly higher-SNR at every byte budget shared by the two families, while
+fixed FP8-CB remains the cheapest point just below TCQ's minimum footprint.
+That uncovered point is sufficient to refuse objective-free family
+replacement, so the four `NO_VERDICT` cells remain correct. The median
+minimum-footprint `CB−TCQ` offsets paired with the SNR table above are
+`-0.000432/-0.273869` bpw (dense R4, production/two-tier),
+`-0.000429/-0.273866` (dense R5), `-0.002217/-0.275655` (routed R4), and
+`-0.002324/-0.275762` (routed R5). The production sliver is
+0.0002–0.0023 bpw across tensors and narrows to 277 bytes; it must remain
+attached to any summary of the dB advantage.
+
+The audit is
+`/home/rob/dq-runs/deliberation/fp8_cb_tcq_actual_fable_2026-08-31.md`,
+SHA-256
+`b4f4b83380dcfaa1fba51a280ad00091c09f771818b70010995c97acd4616d11`.
+It independently reproduced all 264 verdicts, all integer footprints, and the
+complete provenance chain. The Sparky evidence directory was subsequently
+mirrored byte-for-byte onto Sparklina at the same absolute path. Its 31-file
+sorted hash manifest is stored beside the mirror and has SHA-256
+`4ac1df35ecccaa8cb203e92bf583b8cefec940a104df9df1d637231efa16525c`.
+The result and receipt are no-replace evidence files rather than git-tracked
+files; the analyzer/verifier source is what is tracked. No serving, runtime,
+KL/PPL, work-per-joule, replication, or family-replacement claim follows.

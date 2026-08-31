@@ -192,7 +192,8 @@ Its final result SHA-256 is
 `d7dd0478d5e3ef3b55946f42e161f46ab0c62c1fff2fd57babb5cb11704ee332`;
 the exactly recomputed coding-gain table SHA-256 is
 `e4a2af3d734fa7266cc8eb790148be5a3d86b80979a14d47bf0e0fbea78d7d60`.
-A tracked V2 recomputation receipt,
+A no-replace V2 recomputation receipt, verified by a tracked recomputation
+tool,
 `analysis/coding-gain.receipt-v2.json`, has file SHA-256
 `3fc1e6650367bdcb33a5170c431a815050c00d629080b00343d9ea0904c08bfc`
 and internal self-digest
@@ -234,7 +235,8 @@ Its result SHA-256 is
 `af0b0893401dc22c771ada019d181b2f4a09b64ea8797484543d45e877f21ac0`;
 the exact near-four summary SHA-256 is
 `08ae60d76d90a712cc8751ca76f13800a49834dee844a512fa7bf4eda85b0a48`.
-The tracked V2 recomputation receipt,
+The no-replace V2 recomputation receipt, verified by a tracked recomputation
+tool,
 `analysis/near-four-summary.receipt-v2.json`, has file SHA-256
 `d17f8869dbeda7597148b8d60f2382edb4906ddb82444a2ee8a0af60d475a59e`
 and internal self-digest
@@ -282,27 +284,35 @@ tier against TCQ_E4M3 R4/R5, both `production_row_fp32` and research-only
 and both honest learned-book accounting endpoints (`wire8` and the declared
 FP16 production sidecar).
 
-| population | body cell | FP8-CB rung | exact-byte tensor frontiers | final cell |
+| population | body cell | FP8-CB rung | strict family-coverage tests | final cell |
 |---|---:|---:|---:|---|
-| dense (9) | 4 | K32 | 36/36 cross | `NO_VERDICT` |
-| dense (9) | 5 | K40 | 36/36 cross | `NO_VERDICT` |
-| routed (24) | 4 | K32 | 96/96 cross | `NO_VERDICT` |
-| routed (24) | 5 | K40 | 96/96 cross | `NO_VERDICT` |
+| dense (9) | 4 | K32 | 36/36 refuse either-family coverage | `NO_VERDICT` |
+| dense (9) | 5 | K40 | 36/36 refuse either-family coverage | `NO_VERDICT` |
+| routed (24) | 4 | K32 | 96/96 refuse either-family coverage | `NO_VERDICT` |
+| routed (24) | 5 | K40 | 96/96 refuse either-family coverage | `NO_VERDICT` |
 
 Each count is tensor × two scale brackets × two book-price endpoints.
-Thus all 264 exact-byte family frontiers cross: FP8-CB supplies a lower-byte
-point while TCQ supplies a strictly higher-SNR point on every comparison.
-This is not TCQ Pareto domination. The descriptive median best-quality
-FP8-CB-minus-TCQ SNR deltas are:
+All 264 strict coverage tests therefore refuse a family verdict. The raw
+artifact's `NO_VERDICT_exact_byte_frontiers_cross` spelling names that
+predicate outcome; it is not a literal geometric description. Independent
+envelope reconstruction found zero true crossings: TCQ has strictly higher
+weighted SNR at every shared byte budget, while fixed FP8-CB retains the
+cheapest point in a budget sliver below TCQ's minimum footprint. This is still
+not TCQ family Pareto domination. The descriptive median best-quality
+FP8-CB-minus-TCQ SNR deltas and median minimum-footprint offsets are shown
+together below; negative `CB−TCQ bpw` means FP8-CB is cheaper.
 
-| population | body cell | production row-FP32 | research two-tier |
+| population | body cell | production row-FP32 (`ΔSNR`; `CB−TCQ bpw`) | research two-tier (`ΔSNR`; `CB−TCQ bpw`) |
 |---|---:|---:|---:|
-| dense | 4 | -1.509895 dB | -3.477842 dB |
-| dense | 5 | -1.948798 dB | -2.858964 dB |
-| routed | 4 | -1.283757 dB | -3.408104 dB |
-| routed | 5 | -1.787727 dB | -2.785978 dB |
+| dense | 4 | -1.509895 dB; -0.000432 bpw | -3.477842 dB; -0.273869 bpw |
+| dense | 5 | -1.948798 dB; -0.000429 bpw | -2.858964 dB; -0.273866 bpw |
+| routed | 4 | -1.283757 dB; -0.002217 bpw | -3.408104 dB; -0.275655 bpw |
+| routed | 5 | -1.787727 dB; -0.002324 bpw | -2.785978 dB; -0.275762 bpw |
 
-Book price changes bytes, not those quality deltas or any verdict. The strict
+Across individual tensors the production-bracket sliver is 0.0002–0.0023 bpw
+and is only 277 bytes at its narrowest; the research two-tier bracket makes it
+roughly 0.25–0.28 bpw. In this result, book price changes bytes but not those
+quality deltas or any verdict. The strict
 frontier theorem was independently audited in
 `/home/rob/dq-runs/deliberation/numeric_closure_fable_2026-08-31.md`
 (SHA-256
@@ -319,6 +329,13 @@ two-doctrine robustness. Strict quality comparisons remain one-ULP sensitive.
 
 The authoritative directory is
 `/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/fp8-cb-tcq-v1/`.
+The receipt and result are no-replace evidence files, not git-tracked files;
+their verifier is tracked. The complete 31-file directory is also mirrored
+byte-for-byte on Sparklina at the same absolute path. Its sorted file-hash
+manifest has SHA-256
+`4ac1df35ecccaa8cb203e92bf583b8cefec940a104df9df1d637231efa16525c`,
+stored beside the mirror as
+`fp8-cb-tcq-v1.sparklina-mirror-tree.sha256`.
 The result is final, nonpartial, `tensors_done=33`, and has status
 `measurement_complete_no_serving_verdict`; its SHA-256 is
 `3e37ebeb24f575d802461c14c8d844fe5ba0fd7029a0a3f0b2bfe4d2a9befe18`;
