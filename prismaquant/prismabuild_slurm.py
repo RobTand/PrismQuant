@@ -2392,6 +2392,19 @@ class SlurmAdapter:
                 receipt=None,
                 submission_key=str(intent["submission_key"]),
             )
+        # A surviving binding proves this deterministic intent existed before,
+        # even if its sibling intent file was removed out of protocol.  Reusing
+        # that binding is safe; invoking sbatch again would create a second live
+        # allocation before publication noticed the old binding.
+        binding = self._load_job_binding(intent)
+        if binding is not None:
+            return SlurmSubmission(
+                status="adopted",
+                action_key=key,
+                job_id=parse_job_id(str(binding["job_id"])),
+                receipt=None,
+                submission_key=str(intent["submission_key"]),
+            )
         argv = [
             str(self.sbatch),
             "--parsable",

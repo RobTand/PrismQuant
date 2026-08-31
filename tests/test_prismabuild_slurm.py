@@ -814,6 +814,43 @@ def test_existing_intent_refuses_changed_resources_without_second_submit(
         )
 
 
+def test_surviving_job_binding_prevents_resubmit_after_intent_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    adapter, _ = _adapter(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _completed(argv, "12345;gold-cluster\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    first = adapter.submit(
+        action,
+        checkout_root=checkout,
+        resources=_resources(),
+        placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+    )
+    assert first.status == "submitted"
+    intent_path, binding_path = adapter._submission_paths(str(action["action_key"]))
+    intent_path.unlink()
+    assert binding_path.exists()
+
+    second = _restart_adapter(adapter).submit(
+        action,
+        checkout_root=checkout,
+        resources=_resources(),
+        placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+    )
+
+    assert second.status == "adopted"
+    assert second.job_id == ps.SlurmJobId(number=12345, cluster="gold-cluster")
+    assert len(calls) == 1
+
+
 def test_existing_intent_refuses_changed_retry_policy_without_second_submit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
