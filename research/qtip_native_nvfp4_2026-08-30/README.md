@@ -205,6 +205,12 @@ values are noncomparative telemetry and are not replayed. This is a local
 integrity/recomputation contract, not an external signature or independent
 proof that the prior GPU execution occurred.
 
+For GLM, preflight opens one finalized-corpus descriptor, hashes that entire
+descriptor against the manifest once, retains the inode for every selected
+pair `pread`, and rechecks the whole descriptor before receipt publication.
+This closes pathname replacement without re-reading the multi-gigabyte corpus
+once per tensor.
+
 ### Current GLM feasibility boundary
 
 The existing producer accepts one dense K-by-K Hessian and performs a full

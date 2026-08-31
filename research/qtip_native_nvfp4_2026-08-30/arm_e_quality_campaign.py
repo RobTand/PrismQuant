@@ -324,60 +324,146 @@ def _load_qwen_tensor_bound(
         os.close(descriptor)
 
 
-def _load_glm_tensor_bound(
-    corpus: FinalizedBF16Corpus, unit: "InputUnit"
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pread one GLM pair from a hash-verified pinned corpus descriptor."""
+@dataclass
+class PinnedFinalizedCorpus:
+    """One whole-file-verified GLM corpus inode retained for a campaign."""
 
-    matches = [entry for entry in corpus.entries if entry.name == unit.name]
-    if len(matches) != 1:
-        raise ValueError(f"unknown GLM corpus tensor {unit.name!r}")
-    entry = matches[0]
+    corpus: FinalizedBF16Corpus
+    descriptor: int
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    file_sha256: str
+    closed: bool = False
+
+    def _require_open(self) -> os.stat_result:
+        if self.closed:
+            raise ValueError("pinned GLM corpus descriptor is closed")
+        current = os.fstat(self.descriptor)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or (
+                current.st_dev, current.st_ino, current.st_size,
+                current.st_mtime_ns, current.st_ctime_ns,
+            )
+            != (
+                self.device, self.inode, self.size,
+                self.mtime_ns, self.ctime_ns,
+            )
+        ):
+            raise ValueError("pinned GLM corpus descriptor identity changed")
+        try:
+            path_stat = os.stat(self.corpus.artifact_path, follow_symlinks=False)
+        except OSError as exc:
+            raise ValueError("GLM finalized corpus path changed after preflight") from exc
+        if (
+            not stat.S_ISREG(path_stat.st_mode)
+            or (
+                path_stat.st_dev, path_stat.st_ino, path_stat.st_size,
+                path_stat.st_mtime_ns, path_stat.st_ctime_ns,
+            )
+            != (
+                self.device, self.inode, self.size,
+                self.mtime_ns, self.ctime_ns,
+            )
+        ):
+            raise ValueError("GLM finalized corpus path changed after preflight")
+        return current
+
+    def verify_whole_file(self) -> None:
+        self._require_open()
+        if _fd_sha256(self.descriptor) != self.file_sha256:
+            raise ValueError("GLM finalized corpus bytes changed after preflight")
+        self._require_open()
+
+    def close(self) -> None:
+        if not self.closed:
+            os.close(self.descriptor)
+            self.closed = True
+
+
+def _pin_finalized_glm_corpus(
+    corpus: FinalizedBF16Corpus,
+) -> PinnedFinalizedCorpus:
     descriptor = os.open(
         corpus.artifact_path,
         os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
+        current = os.fstat(descriptor)
+        if not stat.S_ISREG(current.st_mode):
             raise ValueError("GLM finalized corpus artifact is not a regular file")
-        if unit.source_weight_sha256 != entry.source_weight_sha256:
-            raise ValueError(f"GLM preflight weight identity differs: {entry.name}")
-
-        def tensor_bytes(name: str) -> bytes:
-            header = corpus._layout.tensors[name]
-            start, end = map(int, header["data_offsets"])
-            raw = os.pread(
-                descriptor,
-                end - start,
-                int(corpus._layout.data_start) + start,
-            )
-            if len(raw) != end - start:
-                raise ValueError(f"GLM finalized corpus tensor is truncated: {name}")
-            return raw
-
-        weight_raw = tensor_bytes(entry.name)
-        importance_raw = tensor_bytes(entry.importance_key)
-        if hashlib.sha256(weight_raw).hexdigest() != entry.source_weight_sha256:
-            raise ValueError(f"GLM weight identity differs: {entry.name}")
-        if hashlib.sha256(importance_raw).hexdigest() != entry.importance_sha256:
-            raise ValueError(f"GLM importance identity differs: {entry.importance_key}")
-        after = os.fstat(descriptor)
-        if (
-            (before.st_dev, before.st_ino, before.st_size)
-            != (after.st_dev, after.st_ino, after.st_size)
-        ):
-            raise ValueError("GLM finalized corpus changed during pinned load")
-        return (
-            CORPUS_MODULE._tensor_from_bytes(
-                weight_raw, dtype="BF16", shape=entry.source_weight_shape
-            ),
-            CORPUS_MODULE._tensor_from_bytes(
-                importance_raw, dtype="F32", shape=entry.importance_shape
-            ),
+        expected_size = int(corpus.manifest["file_size_bytes"])
+        expected_sha256 = str(corpus.manifest["file_sha256"])
+        if current.st_size != expected_size:
+            raise ValueError("GLM finalized corpus size changed during preflight")
+        if _fd_sha256(descriptor) != expected_sha256:
+            raise ValueError("GLM finalized corpus bytes changed during preflight")
+        pinned = PinnedFinalizedCorpus(
+            corpus=corpus,
+            descriptor=descriptor,
+            device=int(current.st_dev),
+            inode=int(current.st_ino),
+            size=int(current.st_size),
+            mtime_ns=int(current.st_mtime_ns),
+            ctime_ns=int(current.st_ctime_ns),
+            file_sha256=expected_sha256,
         )
-    finally:
+        pinned._require_open()
+        return pinned
+    except Exception:
         os.close(descriptor)
+        raise
+
+
+def _load_glm_tensor_bound(
+    pinned: PinnedFinalizedCorpus, unit: "InputUnit"
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pread one GLM pair from the run-scoped verified corpus descriptor."""
+
+    corpus = pinned.corpus
+    matches = [entry for entry in corpus.entries if entry.name == unit.name]
+    if len(matches) != 1:
+        raise ValueError(f"unknown GLM corpus tensor {unit.name!r}")
+    entry = matches[0]
+    before = pinned._require_open()
+    if unit.source_weight_sha256 != entry.source_weight_sha256:
+        raise ValueError(f"GLM preflight weight identity differs: {entry.name}")
+
+    def tensor_bytes(name: str) -> bytes:
+        header = corpus._layout.tensors[name]
+        start, end = map(int, header["data_offsets"])
+        raw = os.pread(
+            pinned.descriptor,
+            end - start,
+            int(corpus._layout.data_start) + start,
+        )
+        if len(raw) != end - start:
+            raise ValueError(f"GLM finalized corpus tensor is truncated: {name}")
+        return raw
+
+    weight_raw = tensor_bytes(entry.name)
+    importance_raw = tensor_bytes(entry.importance_key)
+    if hashlib.sha256(weight_raw).hexdigest() != entry.source_weight_sha256:
+        raise ValueError(f"GLM weight identity differs: {entry.name}")
+    if hashlib.sha256(importance_raw).hexdigest() != entry.importance_sha256:
+        raise ValueError(f"GLM importance identity differs: {entry.importance_key}")
+    after = pinned._require_open()
+    if (
+        (before.st_dev, before.st_ino, before.st_size)
+        != (after.st_dev, after.st_ino, after.st_size)
+    ):
+        raise ValueError("GLM finalized corpus changed during pinned load")
+    return (
+        CORPUS_MODULE._tensor_from_bytes(
+            weight_raw, dtype="BF16", shape=entry.source_weight_shape
+        ),
+        CORPUS_MODULE._tensor_from_bytes(
+            importance_raw, dtype="F32", shape=entry.importance_shape
+        ),
+    )
 
 
 def _reject_duplicate_object(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
@@ -906,6 +992,23 @@ class PreflightInputs:
     units: tuple[InputUnit, ...]
     provenance: Mapping[str, object]
     corpus: FinalizedBF16Corpus | None = None
+    pinned_corpus: PinnedFinalizedCorpus | None = None
+
+    def verify_input_identity(self) -> None:
+        if self.mode == GLM_MODE:
+            if self.pinned_corpus is None:
+                raise ValueError("GLM inputs have no pinned finalized corpus")
+            self.pinned_corpus._require_open()
+
+    def verify_whole_file_inputs(self) -> None:
+        if self.mode == GLM_MODE:
+            if self.pinned_corpus is None:
+                raise ValueError("GLM inputs have no pinned finalized corpus")
+            self.pinned_corpus.verify_whole_file()
+
+    def close(self) -> None:
+        if self.pinned_corpus is not None:
+            self.pinned_corpus.close()
 
 
 def _selected_glm_entries(
@@ -958,7 +1061,13 @@ def preflight_inputs(manifest: Mapping[str, Any]) -> PreflightInputs:
         )
         return PreflightInputs(QWEN_MODE, (unit,), provenance)
 
-    corpus = CORPUS_MODULE.load_finalized_bf16_corpus(source["corpus_manifest"])
+    # The run-scoped descriptor below performs the one authoritative whole-
+    # artifact hash.  Avoid the loader's path-based full hash here; its schema,
+    # size, layout, and entry validation still run, and the pinned descriptor
+    # must then equal the manifest's exact whole-file SHA-256.
+    corpus = CORPUS_MODULE.load_finalized_bf16_corpus(
+        source["corpus_manifest"], verify_file_hash=False
+    )
     entries = _selected_glm_entries(
         corpus, source["selected_tensors"], source["limit"]
     )
@@ -979,7 +1088,8 @@ def preflight_inputs(manifest: Mapping[str, Any]) -> PreflightInputs:
         "selected_tensors": [unit.name for unit in units],
         "full_census_selected": len(units) == len(corpus.entries),
     }
-    return PreflightInputs(GLM_MODE, units, provenance, corpus)
+    pinned_corpus = _pin_finalized_glm_corpus(corpus)
+    return PreflightInputs(GLM_MODE, units, provenance, corpus, pinned_corpus)
 
 
 def preflight_report(
@@ -1311,7 +1421,9 @@ def _load_unit_tensors(
         "manifest_file_sha256"
     ):
         raise ValueError("GLM finalized corpus manifest changed after preflight")
-    return _load_glm_tensor_bound(inputs.corpus, unit)
+    if inputs.pinned_corpus is None:
+        raise ValueError("GLM finalized corpus is not pinned for execution")
+    return _load_glm_tensor_bound(inputs.pinned_corpus, unit)
 
 
 def run_unit(
@@ -2086,6 +2198,7 @@ def run_campaign(
     command: Sequence[str],
 ) -> dict[str, object]:
     device = require_gpu_campaign_execution(manifest)
+    inputs.verify_input_identity()
     execution_record = {
         "declared_host": manifest["execution"]["host"],
         "observed_hostname": socket.gethostname(),
@@ -2184,6 +2297,7 @@ def run_campaign(
                 manifest["execution"]["prismaquant_commit"],
             ) != source_closure:
                 raise ValueError("source closure changed during receipt resume")
+            inputs.verify_whole_file_inputs()
             return value
         results: list[dict[str, object]] = []
         result_paths: list[Path] = []
@@ -2247,6 +2361,7 @@ def run_campaign(
             manifest["execution"]["prismaquant_commit"],
         ) != source_closure:
             raise ValueError("source closure changed before receipt publication")
+        inputs.verify_whole_file_inputs()
         _publish_or_verify_json(final_path, receipt)
         return receipt
 
@@ -2267,23 +2382,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         checkout, manifest["execution"]["prismaquant_commit"]
     )
     inputs = preflight_inputs(manifest)
-    if args.preflight_only:
-        report = preflight_report(
-            manifest, manifest_provenance, inputs, source_closure
-        )
-    else:
-        device = torch.device(manifest["execution"]["device"])
-        if manifest["recipe"]["backend"] == "triton" and device.type != "cuda":
-            raise ValueError("the manifest requests Triton on a non-CUDA device")
-        report = run_campaign(
-            manifest,
-            manifest_provenance,
-            inputs,
-            source_closure,
-            command=actual_command,
-        )
-    print(_canonical_bytes(report, pretty=True).decode("utf-8"), end="")
-    return 0
+    try:
+        if args.preflight_only:
+            report = preflight_report(
+                manifest, manifest_provenance, inputs, source_closure
+            )
+        else:
+            device = torch.device(manifest["execution"]["device"])
+            if manifest["recipe"]["backend"] == "triton" and device.type != "cuda":
+                raise ValueError("the manifest requests Triton on a non-CUDA device")
+            report = run_campaign(
+                manifest,
+                manifest_provenance,
+                inputs,
+                source_closure,
+                command=actual_command,
+            )
+        print(_canonical_bytes(report, pretty=True).decode("utf-8"), end="")
+        return 0
+    finally:
+        inputs.close()
 
 
 if __name__ == "__main__":

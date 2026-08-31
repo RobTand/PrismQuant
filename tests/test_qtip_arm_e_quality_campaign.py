@@ -302,13 +302,16 @@ def test_qwen_safetensors_pinned_load_returns_owned_materialized_tensor(tmp_path
     assert loaded.untyped_storage().data_ptr() != replacement.untyped_storage().data_ptr()
 
 
-def test_glm_pinned_load_rechecks_weight_and_importance_hashes(tmp_path):
+def test_glm_pinned_load_refuses_whole_artifact_swap_with_same_pair(tmp_path):
     weight = torch.arange(8, dtype=torch.bfloat16).reshape(2, 4)
     importance = torch.arange(4, dtype=torch.float32)
     weight_raw = weight.view(torch.uint8).numpy().tobytes()
     importance_raw = importance.view(torch.uint8).numpy().tobytes()
     artifact = tmp_path / "corpus.safetensors"
-    artifact.write_bytes(weight_raw + importance_raw)
+    original_bytes = weight_raw + importance_raw + b"old"
+    artifact.write_bytes(original_bytes)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("fixture manifest\n")
     entry = SimpleNamespace(
         name="tensor.weight",
         importance_key="tensor.importance",
@@ -320,6 +323,11 @@ def test_glm_pinned_load_rechecks_weight_and_importance_hashes(tmp_path):
     corpus = SimpleNamespace(
         entries=(entry,),
         artifact_path=artifact,
+        manifest_path=manifest_path,
+        manifest={
+            "file_size_bytes": len(original_bytes),
+            "file_sha256": hashlib.sha256(original_bytes).hexdigest(),
+        },
         _layout=SimpleNamespace(
             data_start=0,
             tensors={
@@ -335,13 +343,30 @@ def test_glm_pinned_load_rechecks_weight_and_importance_hashes(tmp_path):
     unit = M.InputUnit(
         entry.name, "dense", (2, 4), entry.source_weight_sha256
     )
-    loaded_weight, loaded_importance = M._load_glm_tensor_bound(corpus, unit)
-    assert torch.equal(loaded_weight, weight)
-    assert torch.equal(loaded_importance, importance)
+    pinned = M._pin_finalized_glm_corpus(corpus)
+    inputs = M.PreflightInputs(
+        M.GLM_MODE,
+        (unit,),
+        {"manifest_file_sha256": M._file_sha256(manifest_path)},
+        corpus,
+        pinned,
+    )
+    try:
+        loaded_weight, loaded_importance = M._load_unit_tensors(
+            {"input": {}}, inputs, unit
+        )
+        assert torch.equal(loaded_weight, weight)
+        assert torch.equal(loaded_importance, importance)
 
-    artifact.write_bytes(bytes(len(weight_raw)) + importance_raw)
-    with pytest.raises(ValueError, match="GLM weight identity differs"):
-        M._load_glm_tensor_bound(corpus, unit)
+        # Preserve both selected tensors byte-for-byte while swapping only an
+        # unselected whole-artifact byte range under the original pathname.
+        replacement = tmp_path / "replacement.safetensors"
+        replacement.write_bytes(weight_raw + importance_raw + b"new")
+        replacement.replace(artifact)
+        with pytest.raises(ValueError, match="changed"):
+            M._load_unit_tensors({"input": {}}, inputs, unit)
+    finally:
+        inputs.close()
 
 
 def _semantic_result_fixture(*, wire_sha256: str, control_sha256: str):
