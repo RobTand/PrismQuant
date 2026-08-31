@@ -1,5 +1,39 @@
 # PrismaQuant Architecture
 
+As of: 2026-08-31 · `muse/wo-b-trellis-render-20260831` — stamps
+follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `muse/wo-b-trellis-render-20260831`) for the **Trellis TCQ render
+mechanism in ProductionWeightCache** (§4.9, WO-B). `TrellisSerializationContext`
+is the new artifact-wide producer choice (family, body_rate_q256, schedule,
+layout, alphabets, scale_rule, sb_chunk, determinism_mode,
+tailbite_candidates, backend, point_route) mirroring `CBSerializationContext`;
+every value-bearing encoder choice is explicit, there are no environment-derived
+defaults, and a missing context on a trellis render fails closed. The Viterbi
+is the new hot path and is GPU-bound by default: `backend="triton"` (four fused
+Triton launches per `sb_chunk`) is the production path, `eager` is the
+bit-exact CPU reference. `ProductionWeightCache` retains the immutable
+`gridbook.trellis.wire.v1` bytes per `(qname,fmt)` alongside the decoded
+tensor — the bytes the exporter ships are the bytes whose decode the surrogate
+priced and KL measured (one-encode invariant, principle 8). `WEIGHTED_RENDER_FAMILIES`
+adds `tcq_trellis` as the fourth imatrix-weighted family; the `trellis`
+render mechanism (phase 50, `weight_mse`) is registered in `render_score.py`
+and `render_production_weight` exposes `get_trellis_wire_bytes`/`get_trellis_wire_identity`
+with `wire_identity_sha256`/`recipe_identity_sha256` hash discipline. Entry
+shape change bumps `TRELLIS_RENDER_MECHANISM_ABI v1`; an old cache with `v0`
+or no trellis identity rebuilds loudly (COST_MODE precedent). Measured on Sparky
+GB10 sm_121, `prismaquant-cu130`: `torch.profiler` (CPU+CUDA) + `nvidia-smi`
+power sampling shows **16.6× speedup** eager→triton on [1024,1024] (2.466 s @
+27.7 W → 0.148 s @ 15.5 W, 29.8× work/J) and **0.806 s per [4096,4096] bf16
+@512 q256 triton tensor @ 41.9 W (29.9% of ~140 W envelope, 495k params/J)**;
+Qwen3-4B's 252 Linears extrapolate to 3.4 min (<30 min budget). `gpu_utilization`
+(60% here) and `utilization.memory` (fake 0) are not quoted; power fraction is
+the diagnostic. Evidence: `scratch/profile_trellis_small.py`,
+`scratch/eager_table.txt`, `scratch/triton_table.txt`,
+`scratch/triton4096_table.txt`, `scratch/b3_small.json`. No pipeline default,
+format menu, Gridbook pin, or serving topology changed; TCQ `FormatSpec`
+registration remains WO-A's domain and `export_native_compressed` packing remains
+WO-C's.
+
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
 (2026-08-31, `codex/prismabuild-v4-qualified-20260831`) for the **exact V4
