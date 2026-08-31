@@ -3,6 +3,7 @@
 As of: 2026-08-31 · `claude/prismabuild-trellis-integration-20260831` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
 (2026-08-31, `muse/wo-d-trellis-provenance-20260831`) for the **trellis serving-lane provenance, shipcard and served-route reconciliation** (WO-D, §9.2.1 → §4.9, §7.4): `selection_serving_lane_provenance` now resolves trellis units (`TCQ_E2M1_R256`/`TCQ_E4M3_R256`) against the pinned v12 `lane_eligibility` table (`sm_121` `dense` `device_qualified` `backed_with_serve_flag` at `512`/`1152`), recording per-unit `cell id`, `route_status`, `activation_contract`, `qualification`, `requires_serve_flags`, `platform`/`regime` and an artifact-level route histogram by `(family, activation_contract, route_status)` (principle 12), plus `trellis_tensor_parallel_world_size:1` / `trellis_requires_tp1:true` for the TP=1 lane; **correction:** fused modules are one wire per merged `qkv_proj`/`gate_up_proj` in `packed_modules_mapping` order (WO-C, `gridbook/config.py::_build_trellis_method` at `227420f`), not per-role, and TP=1 only (`max_world_size:1` per `trellis_format_family`; shipcard refuses `TP>1`). `shipcard.py` refuses unbacked trellis without a stamped non-native target or per-run override, refuses `backed_with_serve_flag` without exact `requires_serve_flags`, and refuses a bpp/quality claim without the histogram; `validate_native_export.py` compares the priced `activation_contracts` histogram against the `emit_route` telemetry and refuses on disagreement (leg 2), and refuses for lack of evidence when trellis lanes emit no route telemetry at all (finding in `WO-D-FINDINGS.md` — the `gridbook_activation_contract` attribute is set but `emit_route` is never called on trellis lanes, while CB lanes surface `read_route`). New lane `prismaquant/lane_specs/gridbook_trellis.json` (`vllm+gridbook_plugin`, `openai` on `127.0.0.1:8000/v1`, `serve` `scripts/serve_gridbook_trellis.sh` with `gridbook_runtime_prepare`/`GRIDBOOK_RUNTIME_DOCKER_ARGS`/in-container `install-container`, `--host 0.0.0.0 --port 8000` with `-p 8000:8000` and `GRIDBOOK_TRELLIS_*` pass-through) and its `validate_assignments_kl` evaluator. Documented in `docs/design/trellis_serving_lane_2026-08-31.md`. No pipeline default, format menu, or serving pin changed; this re-stamps provenance only. Re-stamped
+(2026-08-31, `muse/wo-a-trellis-format-20260831`) for the **WO-A trellis producer eligibility** (§4.9, §9.2.1). The pinned Gridbook 0.9.1 contract's `formats[TCQ_E2M1_R256].candidate_rungs_q256 = [384,512,640,768,896]` are now registered at import time as `tcq_trellis` FormatSpecs (`TCQ_E2M1_R*`) via `format_registry.load_trellis_candidate_rungs`; a future pin that adds/drops a rung adds/drops a format with no source edit (fixture test proves it). Each spec's `quantize_dequantize` is the unweighted Viterbi encode (`encode_trellis_one_linear` with `col_weights=ones`, expensive and intentionally so — a trellis rung has no cheap RTN) and `activation_quantize_dequantize` fails closed on the W4A4 contract `e2m1_group16_ue4m3_static`. Byte authority is `trellis_footprint.trellis_tensor_payload_breakdown` through the `footprint.format_tensor_payload_breakdown` seam (the same seam CB uses; `FormatSpec.effective_bits == q256/256` is nominal-and-unused). New shippable profile `serving_profile_specs/gridbook_trellis_dense_sm121.json` declares `target_platform: sm_121`, admits the five rungs plus `BF16/FP8_E4M3/NVFP4`, carries per-lane `route_status`/`requires_serve_flags` derived at load time from the pinned contract's `lane_eligibility` cells (`backed_with_serve_flag` with `GRIDBOOK_TRELLIS_E2M1` flags for 512 on sm_121; other rungs unattested; no `routed_moe` cell — a routed unit fails closed as dense-only), and declares an export lane (mixed trellis + CT; WO-C pack pending). The `trellis_menu.UNWIRED_LINKS` ledger shrinks from eight to six (registry and byte-budget links wired), the `export_native_compressed` trellis refusal no longer claims the pin publishes no activation table (true blocker is `ProductionWeightCache` missing the trellis wire, WO-B), and `tests/test_trellis_format_registration.py` pins the six required cases. No pipeline default, serving pin, or serving topology changed beyond the new profile; the file wins over the work order where they disagree (only 512 is device_qualified on sm_121 today). Design note in `docs/design/trellis_producer_eligibility_2026-08-31.md`. Re-stamped
 (2026-08-31, `claude/prismabuild-trellis-integration-20260831`) for the **trellis encoder reconstruction association fix**. `encode_trellis_planes` composed `code * (e4m3 * global)` while `trellis_wire.decode_values_torch` -- the bytes the runtime executes -- evaluates `(code * e4m3) * global`. Float multiplication is not associative, so the two differed by up to one fp32 ULP and by one bf16 ULP near a tie: measured 149,261 of 2,621,440 values (5.69%) on real Qwen3-4B `layers.31.self_attn.v_proj`, identically under eager and Triton, which made `encode_trellis_one_linear` raise on its own same-byte invariant and abort a render on roughly one tensor in thirty. The encoder now adopts the decoder's association (the decoder is the shipped contract, principle 8); the invariant was NOT relaxed to a one-ULP tolerance. `test_degenerate_global_scale_cannot_escape_canonical_decode_equality` was detecting this defect while attributing it to the encoder's 1e-12 scale floor and now asserts the fidelity that measurably holds at that edge; an added floor refusal was tried and removed because it refuses every legitimate all-zero wire. New `tests/test_trellis_scale_association.py`. No pipeline default, format menu, serving pin or stage graph changed.
 Re-stamped
 (2026-08-31, `muse/wo-b-trellis-render-20260831`) for the **Trellis TCQ render
@@ -39,6 +40,7 @@ WO-C's.
 
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `muse/wo-a-trellis-format-20260831`) for the **WO-A trellis producer eligibility** (§4.9, §9.2.1). The pinned Gridbook 0.9.1 contract's `formats[TCQ_E2M1_R256].candidate_rungs_q256 = [384,512,640,768,896]` are now registered at import time as `tcq_trellis` FormatSpecs (`TCQ_E2M1_R*`) via `format_registry.load_trellis_candidate_rungs`; a future pin that adds/drops a rung adds/drops a format with no source edit (fixture test proves it). Each spec's `quantize_dequantize` is the unweighted Viterbi encode (`encode_trellis_one_linear` with `col_weights=ones`, expensive and intentionally so — a trellis rung has no cheap RTN) and `activation_quantize_dequantize` fails closed on the W4A4 contract `e2m1_group16_ue4m3_static`. Byte authority is `trellis_footprint.trellis_tensor_payload_breakdown` through the `footprint.format_tensor_payload_breakdown` seam (the same seam CB uses; `FormatSpec.effective_bits == q256/256` is nominal-and-unused). New shippable profile `serving_profile_specs/gridbook_trellis_dense_sm121.json` declares `target_platform: sm_121`, admits the five rungs plus `BF16/FP8_E4M3/NVFP4`, carries per-lane `route_status`/`requires_serve_flags` derived at load time from the pinned contract's `lane_eligibility` cells (`backed_with_serve_flag` with `GRIDBOOK_TRELLIS_E2M1` flags for 512 on sm_121; other rungs unattested; no `routed_moe` cell — a routed unit fails closed as dense-only), and declares an export lane (mixed trellis + CT; WO-C pack pending). The `trellis_menu.UNWIRED_LINKS` ledger shrinks from eight to six (registry and byte-budget links wired), the `export_native_compressed` trellis refusal no longer claims the pin publishes no activation table (true blocker is `ProductionWeightCache` missing the trellis wire, WO-B), and `tests/test_trellis_format_registration.py` pins the six required cases. No pipeline default, serving pin, or serving topology changed beyond the new profile; the file wins over the work order where they disagree (only 512 is device_qualified on sm_121 today). Design note in `docs/design/trellis_producer_eligibility_2026-08-31.md`. Re-stamped
 (2026-08-31, `codex/prismabuild-v4-qualified-20260831`) for the **exact V4
 two-host shared-NFS CPU qualification** of the opt-in initial-miss rendezvous.
 The independently reviewed frozen harness ran source commit `452c6f6` (tree
@@ -3806,30 +3808,32 @@ without the flag executes exactly the path it executed before the seam existed
 > `check_stats_format_applicability` nor the `_memory_bytes_by_format` write at
 > `allocator_candidates.py:1950`; aggregation drops every rung; byte accounting
 > `KeyError`s. `trellis_menu.UNWIRED_LINKS` is now the authoritative list —
-> eight entries, each with a file:line — and it is the text of the refusal.
+> six entries after WO-A wired the loud registry and byte-budget links
+> (`format_registry` now registers the five E2M1 `tcq_trellis` rungs at import
+> time and `footprint.format_tensor_payload_breakdown` now handles TCQ via
+> `trellis_footprint.trellis_tensor_payload_breakdown`), each with a
+> file:line — and it is the text of the refusal.
 
-The eight, in the order a run would hit them: no TCQ `FormatSpec`
-(`format_registry.py:1267-1272`); the exact assignment-payload filter falling
-through to `fr.get_format` because nothing writes `_memory_bytes_by_format` for
-a TCQ row, which kills the allocator inside the Pareto sweep **before**
-`layer_config.json` and makes the pointed refusals in `layer_config` and the
-exporter unreachable (`allocator.py:3369-3386`); fused-sibling aggregation
-building super-item menus by iterating `FormatSpec` objects
-(`allocator_candidates.py:2464`); the identical packed-expert construction
-(`:2701`); `promote_serving_units`' `format_rank` lookup, which does not crash
-today only because aggregation guarantees a TCQ unit is a lone ungrouped
-Linear (`allocator_solver.py:340-342`); the byte-budget path's own registry
-lookup (`footprint.py:1183`); `build_candidates` being called with neither
-`cost_mode=` nor `trellis_provenance=`, so the currency gate compares against
-`os.environ.get("COST_MODE","aura")` — a variable `run-pipeline.sh` sets with
-`:=` and never exports — and the manifest identity and anchor contract are
-discarded rather than travelling with the assignment (`allocator.py:2756`,
-§§ P12/P14); and the anchors' currency being weighted SSE under an activation
-second moment, an output-MSE proxy and **not** the AURA KL-adjoint the DP ranks
-in (`trellis_rate_surface.py:43-52`).
+The six, in the order a run would hit them: the exact assignment-payload
+filter falling through to `fr.get_format` because nothing writes
+`_memory_bytes_by_format` for a TCQ row, which kills the allocator inside the
+Pareto sweep **before** `layer_config.json` and makes the pointed refusals in
+`layer_config` and the exporter unreachable (`allocator.py:3369-3386`);
+fused-sibling aggregation building super-item menus by iterating `FormatSpec`
+objects (`allocator_candidates.py:2464`); the identical packed-expert
+construction (`:2701`); `promote_serving_units`' `format_rank` lookup, which
+does not crash today only because aggregation guarantees a TCQ unit is a lone
+ungrouped Linear (`allocator_solver.py:340-342`); `build_candidates` being
+called with neither `cost_mode=` nor `trellis_provenance=`, so the currency
+gate compares against `os.environ.get("COST_MODE","aura")` — a variable
+`run-pipeline.sh` sets with `:=` and never exports — and the manifest
+identity and anchor contract are discarded rather than travelling with the
+assignment (`allocator.py:2756`, §§ P12/P14); and the anchors' currency being
+weighted SSE under an activation second moment, an output-MSE proxy and **not**
+the AURA KL-adjoint the DP ranks in (`trellis_rate_surface.py:43-52`).
 
-**Why refuse as a whole rather than wire it halfway.** The eight do not fail
-alike. The registry gaps crash **loudly**; the aggregation gaps are **silent** —
+**Why refuse as a whole rather than wire it halfway.** The six do not fail
+alike. The remaining gaps crash **loudly** or are **silent** —
 they drop every rung from every fused and packed group and hand back a
 plausible frontier in which only `o_proj` and `down_proj` could carry one. A
 partial fix that removed the crashes would trade the loud failure for the

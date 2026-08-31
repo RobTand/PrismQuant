@@ -545,6 +545,12 @@ def _source_bpp_applicability(
     # no such deferral.
     if is_cb_format(spec.name) and cb_serialization_context is None:
         return FormatApplicability(True)
+    # Trellis wire has no CB context to be missing — its byte payload
+    # is derived canonically from shape and rate via
+    # trellis_footprint.trellis_tensor_payload_breakdown (the authoritative
+    # seam). No deferral; the exact comparison runs below.
+    if spec.family == "tcq_trellis":
+        pass
 
     # Rate first, identity second.  A learned CB book is banked only for the
     # rungs a unit may actually use, so demanding a materialized codebook here
@@ -723,6 +729,23 @@ def check_format_applicability(
             f"group_size={spec.group_size} does not divide in_features="
             f"{in_features}",
         )
+    # Trellis wire: dense-only, superblock-aligned. The pinned
+    # contract publishes no routed_moe trellis cell, so a routed
+    # expert shape must fail closed with a message that says so.
+    if spec.family == "tcq_trellis":
+        if len(shape) != 2:
+            return FormatApplicability(
+                False,
+                "kernel_shape",
+                f"{fmt} is dense-only (the pinned Gridbook runtime publishes no "
+                f"routed trellis cell); got rank {len(shape)} shape {shape}",
+            )
+        if in_features % 256 != 0:
+            return FormatApplicability(
+                False,
+                "kernel_shape",
+                f"{fmt} requires in_features multiple of 256 (superblock), got {in_features}",
+            )
     if spec.scale_block_shape is not None:
         block_rows, block_cols = spec.scale_block_shape
         if out_features % int(block_rows) != 0 or in_features % int(block_cols) != 0:

@@ -1892,6 +1892,17 @@ def _format_supports_render_mechanism(fmt: str, mechanism: str) -> bool:
 
     fmt_u = str(fmt).strip().upper()
     mech = str(mechanism).strip()
+    # Trellis rungs have no scalar-column mechanisms (no GPTQ, scale
+    # sweep, act order, joint scale). Their render is the full
+    # tail-biting Viterbi encode (WO-B). This explicit branch prevents
+    # a silent fall-through to the scalar default.
+    try:
+        from prismaquant.trellis_formats import parse_trellis_format_name as _parse_trellis
+
+        if _parse_trellis(fmt_u) is not None:
+            return False
+    except Exception:
+        pass
     if fmt_u == "NVFP4":
         return mech in {
             "four_over_six",
@@ -1974,6 +1985,12 @@ def _weighted_render_family(fmt: str) -> str | None:
         family = fr.get_format(str(fmt).strip().upper()).family
     except Exception:
         return None
+    # Trellis rungs have no weighted path — the unweighted Viterbi
+    # encode is the truth (WO-A A1). They are explicitly not in
+    # WEIGHTED_RENDER_FAMILIES so col_weights stays inert and the
+    # render is bit-identical with or without a vector.
+    if family == "tcq_trellis":
+        return None
     return family if family in WEIGHTED_RENDER_FAMILIES else None
 
 
@@ -1982,9 +1999,12 @@ def _is_cb_format_name(fmt: str) -> bool:
     from prismaquant import format_registry as fr
 
     try:
-        return fr.get_format(
+        family = fr.get_format(
             fr.canonical_format_name(str(fmt).strip().upper())
-        ).family in {"nvfp4_cb", "fp8_cb"}
+        ).family
+        if family == "tcq_trellis":
+            return False
+        return family in {"nvfp4_cb", "fp8_cb"}
     except Exception:
         return False
 
@@ -5014,10 +5034,13 @@ def render_production_weight(
     from prismaquant import format_registry as fr
 
     raw_fmt = str(fmt).strip().upper()
-    # Seam for WO-B/WO-A: trellis formats may not yet be in the registry.
-    # Detect them via parse_trellis_format_name first, before the registry
-    # lookup that would KeyError. When the registry does carry them, both
-    # paths agree (parse validates the same family bounds the registry will).
+    # Detect trellis via parse_trellis_format_name BEFORE the registry lookup.
+    # WO-A's FormatSpecs are derived at import time from the pinned contract's
+    # candidate_rungs_q256, so the registry carries exactly the rungs that pin
+    # publishes -- and a legal-but-uncandidate rung (say q256=1000, inside the
+    # reader range) would KeyError here. The parse path validates the same
+    # family bounds the registry would, so the two agree wherever both apply
+    # and this one still resolves where the registry deliberately does not.
     is_trellis = _is_trellis_format_name(raw_fmt)
     if is_trellis:
         fmt = raw_fmt  # keep the TCQ spelling verbatim (e.g. TCQ_E2M1_R512)

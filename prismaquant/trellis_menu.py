@@ -106,15 +106,17 @@ class TrellisSeamUnwiredError(TrellisMenuError):
 
 
 #: Every link between a built trellis menu and a shipped assignment that does
-#: NOT exist yet, verified at 58eb69d.  This list is the refusal message and
-#: the re-enable checklist; it is also what ``docs/ARCHITECTURE.md`` 4.9 cites
-#: instead of the claim it used to make.  Delete an entry only when a test
+#: NOT exist yet, verified at 58eb69d and re-verified at WO-A
+#: (2026-08-31, muse/wo-a-trellis-format-20260831): two links are now wired
+#: — format_registry now registers the five E2M1 candidate rungs as
+#: tcq_trellis FormatSpecs derived at import time from the pinned
+#: contract, and footprint's exact byte seam now handles TCQ via
+#: trellis_footprint.trellis_tensor_payload_breakdown — so they are
+#: removed here. This list is the refusal message and the re-enable
+#: checklist; it is also what ``docs/ARCHITECTURE.md`` 4.9 cites instead
+#: of the claim it used to make. Delete an entry only when a test
 #: exercises the behaviour it names -- not when the code merely looks present.
 UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
-    ("format_registry.py:1267-1272",
-     "no TCQ name is a FormatSpec; fr.get_format('TCQ_E2M1_R640') KeyErrors, "
-     "so every site that resolves an assigned format through the registry "
-     "fails on a selected rung"),
     ("allocator.py:3369-3386",
      "the exact assignment-payload filter finds no '_memory_bytes_by_format' "
      "entry for a TCQ row and falls through to fr.get_format -- the allocator "
@@ -134,9 +136,6 @@ UNWIRED_LINKS: tuple[tuple[str, str], ...] = (
      "promote_serving_units' format_rank lookup does not KeyError today only "
      "because aggregation guarantees a TCQ unit is a lone ungrouped Linear; "
      "fixing aggregation without it makes that crash live"),
-    ("footprint.py:1183",
-     "the byte-budget (--target-disk-gb) path has its own registry lookup "
-     "that KeyErrors on TCQ independently of the payload filter"),
     ("allocator.py:2756",
      "build_candidates is called with neither cost_mode= nor "
      "trellis_provenance=, so the currency gate below compares against "
@@ -295,16 +294,18 @@ def augment_candidates(
 
     Set, it refuses.  The identity-complete in-memory research API can build
     an exactly priced menu covered by retrospective full-truth validation, but
-    that validation does not transfer to another allocator. Eight links
+    that validation does not transfer to another allocator. Six links
     between such a menu and a shipped assignment do not exist
-    (:data:`UNWIRED_LINKS`), and they do not fail the same way: the
-    registry gaps crash loudly inside the Pareto sweep, while the aggregation
-    gaps are SILENT -- they would drop every rung from every fused and packed
-    group and hand back a plausible-looking frontier in which only o_proj and
-    down_proj could carry a rung.  A partial fix that removed only the crashes
-    would convert the loud failures into that silent one, which is why this
-    refuses as a whole rather than being wired halfway (principle 1: the
-    measurement must be right, not the symptom suppressed).
+    (:data:`UNWIRED_LINKS`; WO-A wired the two loud registry/footprint
+    links, leaving the silent aggregation gaps), and they do not fail the
+    same way: the remaining registry gaps crash loudly inside the Pareto
+    sweep, while the aggregation gaps are SILENT -- they would drop every
+    rung from every fused and packed group and hand back a plausible-
+    looking frontier in which only o_proj and down_proj could carry a rung.
+    A partial fix that removed only the crashes would convert the loud
+    failures into that silent one, which is why this refuses as a whole
+    rather than being wired halfway (principle 1: the measurement must be
+    right, not the symptom suppressed).
 
     Enabling the surface therefore means landing those links with tests that
     exercise behaviour, then deleting this refusal -- not passing a flag.
@@ -320,7 +321,7 @@ def augment_candidates(
     links = "\n".join(f"  - {where}: {what}" for where, what in UNWIRED_LINKS)
     raise TrellisSeamUnwiredError(
         f"{TRELLIS_SURFACE_ENV}={resolved_path} was set, but the allocator "
-        f"cannot honour a trellis rung end-to-end. Eight links are missing:\n"
+        f"cannot honour a trellis rung end-to-end. Six links are missing:\n"
         f"{links}\n"
         f"Use the identity-bound trellis_rate_surface research API only. Do "
         f"not remove this refusal to reach a selectable run: the "

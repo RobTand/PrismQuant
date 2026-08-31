@@ -179,10 +179,21 @@ def test_candidate_uses_exact_payload_point_estimate_and_profile_gate():
 
 
 def test_trellis_surface_creates_no_public_or_producer_format_ids():
-    assert not any(spec.name.startswith("TCQ_") for spec in list_formats())
-    assert not any(
-        spec.name.startswith("TCQ_") for spec in list_producer_formats()
-    )
+    # WO-A (2026-08-31) registers the five E2M1 candidate rungs as
+    # tcq_trellis FormatSpecs derived at import time from the pinned
+    # Gridbook 0.9.1 contract (candidate_rungs_q256). The research
+    # surface's ephemeral allocator keys must remain distinct from those
+    # public producer ids, and the set of public TCQ ids must equal the
+    # contract's candidate set — no hard-coded drift.
+    from prismaquant.format_registry import load_trellis_candidate_rungs
+
+    expected = {f"TCQ_E2M1_R{q}" for q in load_trellis_candidate_rungs()}
+    observed = {spec.name for spec in list_formats() if spec.name.startswith("TCQ_")}
+    observed_producer = {
+        spec.name for spec in list_producer_formats() if spec.name.startswith("TCQ_")
+    }
+    assert observed == expected, f"public TCQ set drifted: {observed} vs {expected}"
+    assert observed_producer == expected
     record = _fixed_candidate(512, 0.01)
     assert record.allocator_key.startswith("__TRELLIS_RESEARCH__:")
     assert all(spec.name != record.allocator_key for spec in list_formats())

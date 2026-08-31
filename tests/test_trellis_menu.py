@@ -277,16 +277,23 @@ def test_the_production_seam_refuses_when_the_flag_is_set(tmp_path, monkeypatch)
 
 
 def test_the_unwired_links_are_still_unwired():
-    """The ledger is a claim about the code; check the two cheapest entries.
+    """The ledger is a claim about the code; check the two cheapest *remaining* entries.
 
-    If either of these starts passing, the corresponding UNWIRED_LINKS entry is
-    stale and must be deleted along with -- not before -- its refusal.
+    WO-A (2026-08-31) wired the two loud links — format_registry now
+    registers the five E2M1 candidate rungs and footprint's exact byte seam
+    now handles TCQ — so the ledger shrank from eight to six. This test
+    now asserts the wired half and the still-unwired half.
     """
 
     from prismaquant import format_registry as fr
 
+    # WO-A: TCQ_E2M1_R640 is now a registered tcq_trellis FormatSpec.
+    spec = fr.get_format("TCQ_E2M1_R640")
+    assert spec.family == "tcq_trellis"
+    assert spec.name == "TCQ_E2M1_R640"
+    # And a non-candidate remains unregistered.
     with pytest.raises(KeyError):
-        fr.get_format("TCQ_E2M1_R640")
+        fr.get_format("TCQ_E2M1_R1000")
     from prismaquant import allocator_candidates as ac
 
     aggregation = pathlib.Path(ac.__file__).read_text().count(
