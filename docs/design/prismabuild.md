@@ -1,14 +1,20 @@
 # PrismaBuild — distributed campaign execution
 
-**Status: DETERMINISTIC CORE + SLURM + OPTIONAL DAGSTER LAYER BUILT / NOT
-LIVE-DEPLOYED.** The
+**Status: DETERMINISTIC CORE + DURABLE SLURM ADOPTION + OPTIONAL DAGSTER LAYER
+BUILT / NOT LIVE-DEPLOYED.** The
 dependency-free action-key, immutable-CAS, and local-worker core lives in
 `prismaquant/prismabuild.py`; the fail-closed SLURM resource transport lives in
 `prismaquant/prismabuild_slurm.py`; and the optional asset/DAG adapter lives in
-`prismaquant/prismabuild_dagster.py`. The SLURM adapter submits a canonical
-immutable action request with exact argv, `--export=NONE`, and explicit
-resources, then accepts only a scope-correct CAS receipt as success. A SLURM
-`COMPLETED` state without that receipt is a failed action.
+`prismaquant/prismabuild_dagster.py`. Before `sbatch`, the SLURM adapter
+first-writer-publishes a sealed submission identity and bounded retry policy;
+after acceptance it binds the returned job id, and after an orchestrator
+restart it adopts only the unique scheduler allocation carrying that exact
+identity. Poll and scheduler-mutation claims are append-only durable state. The
+adapter submits a canonical immutable action request to one sealed cluster
+with exact argv,
+`--export=NIL`, and explicit resources, then accepts only a scope-correct CAS
+receipt as success. A SLURM `COMPLETED` state without that receipt is a failed
+action.
 `tools/prismabuild_worker.py` is the direct batch-script entry point. The
 Dagster adapter constructs deterministic assets from sealed action keys, binds
 each edge to an expected CAS output digest, and materializes only after
@@ -146,9 +152,27 @@ before returning the exact `{id, sha256, bytes}` action-input row. A concurrent
 identical writer is an independently verified cache hit; a conflicting,
 malformed, symlinked, truncated, or changed object refuses. `input_path()` and
 the `verify-input` CLI replay the same schema, size, and full-content check.
-This closes the code-level input-ingress gap; it does not claim that these
-operations, cross-host races, or directory fsync have been validated on the
-intended shared NFS deployment.
+This closes the code-level input-ingress gap. One narrow cross-host pilot was
+run on 2026-08-30 from repository commit `5bd2d2c`: Sparky and Sparklina used
+their direct stdlib launchers concurrently to ingest the same 2,601-byte
+`pyproject.toml` into the fresh NFS4 CAS
+`/mnt/shared/prismaquant-prismabuild-validation/5bd2d2c/input-cas-race4-direct`
+on the same export with `local_lock=none`. The source SHA-256 was
+`2a872eb7dfbe734920ec90e997a91460a33b725a8ab19372340e68d11f39a495`;
+Sparky returned `published` in about 3.2 seconds, Sparklina returned
+`already_present` in about 3.3 seconds, and both exited zero. This validates
+only that small-file concurrent input hard-link/readback case. It does not
+validate large-result publication, directory durability under host loss,
+submission/retry state races, SLURM, Dagster, or campaign replay.
+
+The dependency-free launcher for a bare host is direct script invocation, for
+example `/usr/bin/python3 /path/to/prismaquant/prismabuild.py ingest-input ...`.
+That form ran on both pilot hosts. `python -m prismaquant.prismabuild` first
+executes `prismaquant/__init__.py` and therefore requires the installed
+PrismaQuant environment; on bare Sparklina system Python it failed on the
+package's `compressed_tensors` dependency before reaching the stdlib-only
+core. The module form works in the `pq-cu130` environment, but must not be
+advertised as the dependency-free launcher.
 
 Two limits are explicit. For portable actions the observed executable hash is
 receipt provenance, not a newly required action-key field; callers that need
@@ -183,6 +207,19 @@ launcher as the final userspace check before the first-writer-wins hard link.
 There remains an unavoidable sequential interval between that final check
 returning and the `os.link` syscall; this design minimizes that interval rather
 than claiming a zero-gap filesystem snapshot.
+CAS staging, blob, request, and receipt directories are walked or created only
+through held `dir_fd` values with `O_NOFOLLOW`; new components use `mkdirat`
+semantics and are fsynced after their final mode is applied. Hard links,
+readback, hashing, and cleanup are relative to those held descriptors. Before
+accepting a read or completed publication, PrismaBuild reopens the configured
+parent path and canonical leaf and verifies their device/inode identities.
+Thus an ancestor rename-to-symlink race fails closed and never redirects a CAS
+read, write, or unlink outside the configured root. The Slurm worker likewise
+accepts only the canonical `requests/<prefix>/<action-key>.json` address and
+reads it through this anchored path after its restart guard. These guarantees
+depend on Linux `openat`/`O_NOFOLLOW` and `/proc/self/fd`; a returned payload
+`Path` is only evidence of the just-verified name, not a file descriptor held
+open for an arbitrary later consumer.
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In
 the target deployment, the trust boundary would be the munge-authenticated,
@@ -207,33 +244,180 @@ non-bit-reproducible) get run-once/first-result-wins — their entry is the
 *canonical* result, pinned but not re-derivable; and a cached measurement is
 valid only under its host-class key (a gb10 KL never answers an x86 query).
 
+### Durable SLURM submission, polling, and cancellation (implemented, not live-validated)
+
+Scheduler identity is shared CAS state, separate from result truth. For each
+action the adapter owns one immutable lineage:
+
+```text
+submissions/v1/<action-prefix>/<action-key>/
+  intent.json
+  job.json
+  transitions/polls/00000000-<ordinal>.json
+  mutations/<ordinal>.json
+```
+
+`intent.json` uses `prismaquant.prismabuild.slurm_submission_intent.v1`. It
+seals the action key; one cluster; CAS, log, checkout, worker, and SLURM
+executable paths; the closed submit environment; resources and placement; and
+the exact `max_polls`, `poll_interval_seconds`, and zero-`max_requeues` policy.
+SLURM recompute is also sealed false. Its canonical submit-spec digest
+derives both the full `pqb-<digest>` job name and
+`prismabuild:<digest>` comment. The read-only first-writer object is published
+and re-read before `sbatch`; a changed resource, path, environment, or retry
+limit on replay conflicts rather than creating another lineage.
+
+Submission uses `--no-requeue`, and positive same-job retry is deliberately
+unavailable. This is not a temporary command-line combination: current Slurm
+uses the job's single Requeue eligibility flag for both explicit
+`scontrol requeue` and automatic/site/admin restart. `--no-requeue` therefore
+also makes explicit requeue ineligible; changing it to `--requeue` would admit
+restarts that have no durable PrismaBuild authorization. The adapter and
+Dagster `ActionSpec` reject `max_requeues > 0`, and `SlurmAdapter.requeue()`
+never sends `scontrol`. The batch argv adds `--require-slurm-initial-start`;
+before `run-local` can reach task argv, the worker requires a real numeric
+`SLURM_JOB_ID` and absent-or-zero `SLURM_RESTART_COUNT`. A malformed or nonzero
+count refuses even if a site administrator overrides the submission policy.
+Positive retry can return only with a new protocol that binds Slurm's actual
+restart counter/`Restarts` state to an authorized durable mutation claim.
+
+It also uses `--export=NIL`, not `NONE`: current Slurm defines `NONE` to invoke
+the implicit `--get-user-env` path, whereas `NIL` passes only scheduler/SPANK
+variables to the already-required absolute worker path.
+
+`sbatch --clusters=<sealed-cluster>` restricts submission to one cluster rather
+than creating federation siblings. After `sbatch --parsable` returns,
+`job.json` binds that intent to its exact cluster-qualified job id; clusterless
+output is normalized only because the submission already selected exactly that
+one cluster, and a different returned cluster refuses. A restart first reuses a
+valid binding. If the process died after scheduler acceptance but before
+binding, recovery queries `sacct --clusters=<sealed-cluster>` from the Unix
+epoch by the sealed name, requests widths large enough not to truncate the
+name/comment, and binds only one allocation row whose name, comment, and
+cluster all match. Both adoption and bound accounting queries request
+`--duplicates`: Slurm documents duplicate records after requeue, federation,
+resize, or JobID rollover, so hiding all but the newest row could hide an
+ambiguous allocation lineage. Zero rows are ambiguous between a pre-`sbatch`
+death, accounting lag, or retention loss; multiple rows, malformed rows,
+identity drift, and unknown states also refuse without another `sbatch`.
+Bound state queries are cluster-qualified; the helper's only clusterless query
+form forces `--local`, preventing federation display defaults from silently
+widening it.
+
+The poll budget and cadence survive process loss. Each canonical self-digested
+poll record includes its append wall-clock nanoseconds. Ordinals must be a
+contiguous prefix, the count may not exceed sealed `max_polls`, and a restarted
+adapter waits out the remaining sealed interval before winning the next
+first-writer claim. The interval is positive, finite, and capped at one day;
+the poll and filename counters are bounded to their eight-digit durable
+representation. Clock rollback refuses. A crash after a poll claim
+conservatively consumes it. This wall-clock protocol still requires deployed
+hosts to have bounded synchronized time; that is a live gate below.
+
+Scheduler mutations use one append-only ordinal journal. The active protocol
+emits only `cancel`: after proving the exact bound allocation is active, the
+adapter first-writer-claims the next mutation ordinal, rechecks receipt and
+scheduler identity/state, and issues at most one cluster-qualified `scancel`.
+Cancel must be the unique final mutation. Concurrent contenders have one
+winner. A crash, timeout, or command error after the claim is deliberately
+ambiguous; a restarted caller sees the final claim and never replays the RPC.
+The schema admits a future `requeue` kind so cancel and retry cannot race in
+separate journals, but the current zero-requeue policy rejects any such record.
+SLURM state directories are created component-by-component relative to held
+directory descriptors (`mkdirat` semantics), and reads, listings, and
+first-writer publication use `O_NOFOLLOW`-anchored directory descriptors.
+New directory entries and final read-only file modes are fsynced before use.
+Symlinked directory hops, noncanonical/writable files, gaps, wrong ordinals,
+excess counters, wrong identities, and self-digest mismatches refuse. This is
+a Linux/procfs implementation contract: atomic temporary publication uses the
+held parent through `/proc/self/fd` rather than reopening its pathname.
+
+This remains one allocation lineage per action. `recompute=True` is de-menued
+in the SLURM adapter: launching a second allocation after the canonical receipt
+exists would make resolve/cancel short-circuit on that old receipt and strand
+the new allocation. The adapter never silently creates a fresh job or retries
+a terminal one. Repair after an irrecoverably ambiguous or exhausted lineage
+is an explicit operator/schema action. The verified CAS receipt remains the
+sole result authority throughout.
+
 ### Optional Dagster orchestration (implemented, not deployed)
 
 `prismaquant.prismabuild_dagster` is an optional-import adapter over the core
 and SLURM resource layer; importing PrismaQuant still does not import or require
 Dagster. `ActionSpec` binds the sealed action, checkout, exact SLURM resources
-and placement, bounded same-job requeue policy, and content-addressed upstream
+and placement, zero-requeue/durable-poll policy, and content-addressed upstream
 dependencies. An edge is the tuple `(upstream action key, downstream input id,
 result sha256, result bytes)`. Graph construction refuses an edge unless that
 tuple is also present exactly in the downstream action's sealed `inputs`, and
 uses a key-sorted topological order.
 
 Native definitions use one asset key per action key and set `code_version` to
-that full key. Dagster-level retries are disabled: the bounded retry path uses
-`SlurmAdapter.requeue` on the original allocation and sealed action within one
-live runner invocation, avoiding a second allocation on that in-memory retry
-path. The returned SLURM job id is not durably mapped to the action key. If the
-orchestrator dies after `sbatch` and before a CAS receipt, a fresh invocation
-cannot prove whether an exact-key allocation is still live and may submit
-again. Crash recovery therefore remains unimplemented and must fail closed or
-gain an externally durable/adoptable submission identity before deployment. A
-cache hit, upstream dependency, or successful SLURM resolution is accepted only
-after an independent `PrismaBuildCAS.lookup()` verifies the exact receipt,
-producer scope, and blob bytes. Therefore Dagster run state and materialization state
-are views of CAS truth, never certification themselves. The optional package
-extra is `prismaquant[prismabuild]` (supported `>=1.13,<2`, checked against
-1.13.20); no daemon, webserver, workspace, or scheduler installation is
-performed by the repository.
+that full key. The resource requires the single cluster name in addition to
+CAS/log/worker paths. Dagster-level retries and same-job requeues are disabled.
+`DagsterActionRunner` passes the action's poll maximum and interval into the
+sealed pre-submit identity, accepts either a new submission or adoption, loads
+durable progress, and lets the adapter pace and atomically claim every poll. A
+fresh runner therefore continues the remaining limit instead of resetting a
+Python counter. On poll exhaustion it cancels only the bound allocation and
+then re-reads the CAS, so a receipt published concurrently with a no-op or
+completed cancellation wins the race. A cache hit, upstream
+dependency, or successful SLURM resolution is accepted only after an independent
+`PrismaBuildCAS.lookup()` verifies the exact receipt, producer scope, and blob
+bytes. Dagster run and materialization state are views of CAS truth, never
+certification themselves. The optional package extra is
+`prismaquant[prismabuild]` (supported `>=1.13,<2`, checked against 1.13.20); no
+daemon, webserver, workspace, or scheduler installation is performed by the
+repository.
+
+### Remaining live-deployment gates
+
+The state machine above is covered by mocked crash/restart/corruption tests; it
+has not submitted, adopted, polled, or cancelled a live SLURM job.
+Deployment still requires all of the following evidence:
+
+- A shared-CAS two-host race for `intent.json`, `job.json`, poll claims, and the
+  unified mutation journal, plus host-loss tests around each fsync/link
+  boundary. The race4 evidence above covers only small input blobs.
+- Live `slurmctld`/`slurmd`/`slurmdbd` behavior with accounting configured to
+  retain job comments (`AccountingStoreFlags=job_comment`) for longer than the
+  adoption horizon. Exact `JobName`, `Comment`, `Cluster`, allocation-only
+  filtering, state widths, single-cluster selection, and permissions must be
+  verified on the deployed version. Purged accounting leaves an
+  intent-without-binding deliberately ambiguous; mutable/absent comments fail
+  adoption. Slurm permits an authorized user to mutate stored job comments,
+  including after completion, so the deployment must isolate the submission
+  principal or independently audit `Comment`/`JobName` mutations; these
+  scheduler fields are discovery evidence, not a cryptographic identity.
+- Crash injection immediately before/after `sbatch`, binding publication,
+  cancel-journal publication, and `scancel`, including accounting lag, stale
+  terminal jobs, numeric job-id reuse, command timeout, and concurrent
+  orchestrators. No live SLURM validation is claimed.
+- A live forced/admin restart must demonstrate that `SLURM_RESTART_COUNT` is
+  present and nonzero before the worker reaches task argv and that
+  `--no-requeue` blocks ordinary restart. Positive same-job retry remains
+  unavailable; a future implementation additionally needs trustworthy
+  scheduler `Restarts` reconciliation and exact claim-to-worker binding.
+- NTP/chrony monitoring must bound wall-clock offset between orchestrator hosts
+  because durable poll pacing uses append timestamps and refuses rollback.
+- A real Dagster daemon/webserver restart and concurrent-run pilot proving that
+  Dagster-level retry settings cannot escape through a second submission and
+  that the durable poll budget and pacing interval are preserved.
+- Storage retention and access control for the active submission namespace.
+  Read-only hard-linked files plus strict semantic/canonical validation reject
+  malformed, conflicting, writable, symlinked, and gapped state, but this is
+  not a keyed or WORM log. Individual Slurm state records are capped at 16 MiB,
+  and history/temp entry counts are bounded before loading their contents. An
+  authorized directory owner can still unlink the final member of an
+  append-only prefix; preventing or auditing that tail deletion requires the
+  deployed filesystem/ACL/backup policy.
+- The orchestrator hosts must expose Linux `openat`/`O_NOFOLLOW` semantics and
+  `/proc/self/fd`, and the worker/Slurm executable path ancestors must be
+  immutable to the submitting principal. The adapter verifies the worker leaf
+  immediately before submit, but a later scheduler launch cannot retain that
+  submit-host file descriptor across the allocation boundary.
+- Large-result NFS publication/directory durability, munge/cgroup worker
+  attestation, launcher deployment, and the planned Netdata/Prometheus evidence
+  on both boxes remain separate gates.
 
 ## Proposed speculative tier (not implemented)
 

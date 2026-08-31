@@ -1381,12 +1381,102 @@ def test_cache_detects_payload_and_receipt_tampering(tmp_path: Path):
     receipt_path = cas._receipt_path(str(action["action_key"]))
     receipt_path.chmod(0o644)
     receipt_path.write_text("{}\n", encoding="utf-8")
-    with pytest.raises(pb.CASTamperError, match="fields differ"):
+    with pytest.raises(pb.CASTamperError, match="writable|fields differ"):
         cas.lookup(action)
 
     receipt_path.write_text("{broken\n", encoding="utf-8")
-    with pytest.raises(pb.CASTamperError, match="strict UTF-8 JSON"):
+    with pytest.raises(pb.CASTamperError, match="writable|strict UTF-8 JSON"):
         cas.lookup(action)
+
+
+def test_cas_lookup_rejects_receipt_parent_swapped_after_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    output = tmp_path / "output"
+    output.write_bytes(b"trusted")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    receipt, _ = cas.publish_result(
+        action,
+        output,
+        attestation=_attestation(checkout, action, tmp_path / "cas"),
+    )
+    actions = cas.root / "actions"
+    parked = tmp_path / "parked-actions"
+    outside = tmp_path / "outside-actions"
+    hostile = (
+        outside
+        / "v3"
+        / str(action["action_key"])[:2]
+        / f"{action['action_key']}.json"
+    )
+    hostile.parent.mkdir(parents=True)
+    hostile.write_text("{}\n", encoding="utf-8")
+    hostile.chmod(0o444)
+    original_open = pb.os.open
+    swapped = False
+
+    def open_then_swap(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if path == "actions" and dir_fd is not None and not swapped:
+            swapped = True
+            actions.rename(parked)
+            actions.symlink_to(outside, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(pb.os, "open", open_then_swap)
+    with pytest.raises(pb.CASTamperError, match="not a real directory|changed"):
+        cas.lookup(action)
+    assert hostile.read_bytes() == b"{}\n"
+    assert receipt["action_key"] == action["action_key"]
+
+
+def test_cas_publish_result_parent_swap_never_writes_through_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    output = tmp_path / "output"
+    output.write_bytes(b"trusted")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    actions = cas.root / "actions"
+    parked = tmp_path / "parked-publish-actions"
+    outside = tmp_path / "outside-publish-actions"
+    outside.mkdir()
+    original_open = pb.os.open
+    swapped = False
+
+    def open_then_swap(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if path == "actions" and dir_fd is not None and not swapped:
+            swapped = True
+            actions.rename(parked)
+            actions.symlink_to(outside, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(pb.os, "open", open_then_swap)
+    with pytest.raises(pb.CASTamperError, match="not a real directory|changed"):
+        cas.publish_result(action, output, attestation=attestation)
+    assert list(outside.rglob("*")) == []
+    assert not list((cas.root / ".staging").glob("*.tmp"))
 
 
 def test_cache_structural_error_is_not_a_clean_miss(tmp_path: Path):

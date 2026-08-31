@@ -133,17 +133,54 @@ def _publish(
     return receipt
 
 
-class _NeverAdapter:
+class _RetryBudgetFake:
+    def retry_progress(
+        self, action: object, job_id: ps.SlurmJobId | str
+    ) -> ps.SlurmRetryProgress:
+        return ps.SlurmRetryProgress(
+            polls=getattr(self, "_durable_polls", 0),
+            requeues=getattr(self, "_durable_requeues", 0),
+            latest_requeue_observed=getattr(
+                self, "_latest_requeue_observed", True
+            ),
+        )
+
+    def claim_poll(
+        self,
+        action: object,
+        job_id: ps.SlurmJobId | str,
+        *,
+        max_polls: int,
+    ) -> ps.SlurmRetryProgress | None:
+        progress = self.retry_progress(action, job_id)
+        if progress.polls >= max_polls:
+            return None
+        self._durable_polls = progress.polls + 1
+        return self.retry_progress(action, job_id)
+
+    def _record_requeue(self) -> None:
+        self._durable_requeues = getattr(self, "_durable_requeues", 0) + 1
+        self._durable_polls = 0
+        self._latest_requeue_observed = False
+
+
+class _NeverAdapter(_RetryBudgetFake):
     def submit(self, *args: object, **kwargs: object) -> ps.SlurmSubmission:
         raise AssertionError("cache hit must not call SLURM")
 
     def resolve(self, *args: object, **kwargs: object) -> ps.SlurmResolution:
         raise AssertionError("cache hit must not call SLURM")
 
+    def retry_progress(self, *args: object, **kwargs: object) -> ps.SlurmRetryProgress:
+        raise AssertionError("cache hit must not call SLURM")
+
+    def claim_poll(self, *args: object, **kwargs: object) -> ps.SlurmRetryProgress:
+        raise AssertionError("cache hit must not call SLURM")
+
     def requeue(self, *args: object, **kwargs: object) -> bool:
         raise AssertionError("cache hit must not call SLURM")
 
-    def cancel(self, *args: object, **kwargs: object) -> None:
+    def cancel(self, *args: object, **kwargs: object) -> bool:
         raise AssertionError("cache hit must not call SLURM")
 
 
@@ -200,6 +237,7 @@ def test_native_definitions_materialize_only_from_verified_cache(tmp_path: Path)
                         "cas_root": str(cas_root),
                         "log_root": str(tmp_path / "logs"),
                         "worker_script": str(tmp_path / "missing-worker-is-unused"),
+                        "cluster": "gold-cluster",
                     }
                 }
             }
@@ -266,7 +304,7 @@ def test_graph_refuses_dependency_not_exactly_bound_in_action_inputs(tmp_path: P
 
 def test_action_spec_config_round_trip_binds_placement_and_retries(tmp_path: Path):
     action = _action(tmp_path, "root")
-    spec = _spec(action, tmp_path, max_requeues=2)
+    spec = _spec(action, tmp_path)
     rebuilt = pd.ActionSpec.from_config(action, spec.as_config())
     assert rebuilt.action_key == spec.action_key
     assert rebuilt.as_config() == spec.as_config()
@@ -278,6 +316,59 @@ def test_action_spec_config_round_trip_binds_placement_and_retries(tmp_path: Pat
     }
     with pytest.raises(pd.DagsterGraphError, match="fields differ"):
         pd.ActionSpec.from_config(action, malformed)
+
+
+def test_action_spec_rejects_positive_same_job_requeue(tmp_path: Path):
+    action = _action(tmp_path, "root")
+    with pytest.raises(pd.DagsterGraphError, match="max_requeues must be zero"):
+        _spec(action, tmp_path, max_requeues=1)
+    with pytest.raises(pd.DagsterGraphError, match="must not exceed 86400"):
+        pd.ActionSpec(
+            action=action,
+            checkout_root=tmp_path,
+            resources=_resources(),
+            placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+            poll_interval_seconds=86_401,
+        )
+    with pytest.raises(pd.DagsterGraphError, match="eight-digit counter"):
+        pd.ActionSpec(
+            action=action,
+            checkout_root=tmp_path,
+            resources=_resources(),
+            placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+            max_polls=100_000_000,
+        )
+    with pytest.raises(pd.DagsterGraphError, match="parent traversal"):
+        pd.ActionSpec(
+            action=action,
+            checkout_root=tmp_path / "checkout" / ".." / "elsewhere",
+            resources=_resources(),
+            placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+        )
+
+
+def test_dagster_resource_requires_and_seals_one_cluster(tmp_path: Path):
+    base = {
+        "cas_root": str(tmp_path / "cas"),
+        "log_root": str(tmp_path / "logs"),
+        "worker_script": str(tmp_path / "worker"),
+    }
+    with pytest.raises(pd.DagsterGraphError, match="missing=.*cluster"):
+        pd.DagsterResourceConfig.from_mapping(base)
+    config = pd.DagsterResourceConfig.from_mapping(
+        {**base, "cluster": "gold-cluster"}
+    )
+    assert config.make_adapter().cluster == "gold-cluster"
+    with pytest.raises(pd.DagsterGraphError, match="cluster has an invalid value"):
+        pd.DagsterResourceConfig.from_mapping({**base, "cluster": "all,bad"})
+    with pytest.raises(pd.DagsterGraphError, match="parent traversal"):
+        pd.DagsterResourceConfig.from_mapping(
+            {
+                **base,
+                "cas_root": str(tmp_path / "cas" / ".." / "other"),
+                "cluster": "gold-cluster",
+            }
+        )
 
 
 def test_verified_cache_hit_short_circuits_without_adapter(tmp_path: Path):
@@ -292,13 +383,19 @@ def test_verified_cache_hit_short_circuits_without_adapter(tmp_path: Path):
     assert result.result_sha256 == receipt["result"]["sha256"]  # type: ignore[index]
 
 
-class _FalseSuccessAdapter:
-    def __init__(self, action_key: str):
+class _FalseSuccessAdapter(_RetryBudgetFake):
+    def __init__(self, action_key: str, *, submission_status: str = "submitted"):
         self.action_key = action_key
         self.job = ps.SlurmJobId(41)
+        self.submission_status = submission_status
 
     def submit(self, *args: object, **kwargs: object) -> ps.SlurmSubmission:
-        return ps.SlurmSubmission("submitted", self.action_key, self.job, None)
+        return ps.SlurmSubmission(
+            self.submission_status,  # type: ignore[arg-type]
+            self.action_key,
+            self.job,
+            None,
+        )
 
     def resolve(self, *args: object, **kwargs: object) -> ps.SlurmResolution:
         return ps.SlurmResolution(
@@ -315,135 +412,40 @@ class _FalseSuccessAdapter:
         raise AssertionError("success path does not requeue")
 
 
-def test_orchestrator_success_without_receipt_fails_closed(tmp_path: Path):
+@pytest.mark.parametrize("submission_status", ["submitted", "adopted"])
+def test_orchestrator_success_without_receipt_fails_closed(
+    tmp_path: Path, submission_status: str
+):
     spec = _spec(_action(tmp_path, "root"), tmp_path)
     runner = pd.DagsterActionRunner(
         cas_root=tmp_path / "cas",
-        adapter=_FalseSuccessAdapter(spec.action_key),
+        adapter=_FalseSuccessAdapter(
+            spec.action_key, submission_status=submission_status
+        ),
     )
     with pytest.raises(pd.DagsterActionError, match="without a verified CAS receipt"):
         runner.execute(pd.ActionGraph([spec]), spec.action_key)
 
 
-class _RequeueAdapter:
-    def __init__(self, *, cas_root: Path, spec: pd.ActionSpec, source: Path):
-        self.cas_root = cas_root
-        self.spec = spec
-        self.source = source
-        self.job = ps.SlurmJobId(73)
-        self.action_keys: list[str] = []
-        self.job_ids: list[ps.SlurmJobId | str] = []
-        self.requeued = False
-
-    def submit(self, action: object, **kwargs: object) -> ps.SlurmSubmission:
-        normalized = pb.validate_action(action)
-        self.action_keys.append(str(normalized["action_key"]))
-        return ps.SlurmSubmission("submitted", self.spec.action_key, self.job, None)
-
-    def resolve(
-        self, action: object, job_id: ps.SlurmJobId | str
-    ) -> ps.SlurmResolution:
-        normalized = pb.validate_action(action)
-        self.action_keys.append(str(normalized["action_key"]))
-        self.job_ids.append(job_id)
-        if not self.requeued:
-            return ps.SlurmResolution(
-                "failed",
-                self.spec.action_key,
-                self.job,
-                "NODE_FAIL",
-                "test failure",
-                None,
-                None,
-            )
-        receipt = pb.PrismaBuildCAS(self.cas_root).lookup(self.spec.action)
-        assert receipt is not None
-        return ps.SlurmResolution(
-            "succeeded",
-            self.spec.action_key,
-            self.job,
-            None,
-            "verified CAS receipt exists",
-            receipt,
-            pb.PrismaBuildCAS(self.cas_root).result_path(receipt, self.spec.action),
-        )
-
-    def requeue(self, action: object, job_id: ps.SlurmJobId | str) -> bool:
-        normalized = pb.validate_action(action)
-        self.action_keys.append(str(normalized["action_key"]))
-        self.job_ids.append(job_id)
-        _publish(self.cas_root, self.spec, self.source, b"after-requeue")
-        self.requeued = True
-        return True
-
-    def cancel(self, *args: object, **kwargs: object) -> None:
-        raise AssertionError("successful retry must not cancel")
-
-
-def test_retry_requeues_same_job_and_preserves_exact_action_identity(tmp_path: Path):
-    spec = _spec(_action(tmp_path, "root"), tmp_path, max_requeues=1)
-    cas_root = tmp_path / "cas"
-    adapter = _RequeueAdapter(
-        cas_root=cas_root, spec=spec, source=tmp_path / "retry-source"
-    )
-    runner = pd.DagsterActionRunner(
-        cas_root=cas_root, adapter=adapter, sleep=lambda _: None
-    )
-    result = runner.execute(pd.ActionGraph([spec]), spec.action_key)
-    assert result.action_key == spec.action_key
-    assert adapter.action_keys == [spec.action_key] * len(adapter.action_keys)
-    assert adapter.job_ids == [adapter.job, adapter.job, adapter.job]
-
-
-class _LaggingRequeueAdapter:
-    def __init__(self, action_key: str):
-        self.action_key = action_key
-        self.job = ps.SlurmJobId(74)
-        self.states = iter(["failed", "failed", "pending", "failed"])
-        self.requeues = 0
-        self.cancelled = False
-
-    def submit(self, *args: object, **kwargs: object) -> ps.SlurmSubmission:
-        return ps.SlurmSubmission("submitted", self.action_key, self.job, None)
-
-    def resolve(self, *args: object, **kwargs: object) -> ps.SlurmResolution:
-        state = next(self.states)
-        return ps.SlurmResolution(
-            state, self.action_key, self.job, "NODE_FAIL", "test state", None, None
-        )
-
-    def requeue(self, *args: object, **kwargs: object) -> bool:
-        self.requeues += 1
-        return True
-
-    def cancel(self, *args: object, **kwargs: object) -> None:
-        self.cancelled = True
-
-
-def test_requeue_waits_for_scheduler_transition_before_terminal_retry(tmp_path: Path):
-    spec = _spec(_action(tmp_path, "root"), tmp_path, max_requeues=1)
-    adapter = _LaggingRequeueAdapter(spec.action_key)
-    sleeps: list[float] = []
-    runner = pd.DagsterActionRunner(
-        cas_root=tmp_path / "cas", adapter=adapter, sleep=sleeps.append
-    )
-    with pytest.raises(pd.DagsterActionError, match="ended failed"):
-        runner.execute(pd.ActionGraph([spec]), spec.action_key)
-    assert adapter.requeues == 1
-    assert adapter.cancelled is False
-    assert len(sleeps) == 3
-
-
-class _PollingAdapter:
+class _PollingAdapter(_RetryBudgetFake):
     def __init__(self, action_key: str):
         self.action_key = action_key
         self.job = ps.SlurmJobId(75)
         self.cancelled: list[ps.SlurmJobId | str] = []
+        self.cancelled_actions: list[str] = []
+        self.resolutions = 0
+        self.submitted_policy: tuple[int, int, float] | None = None
 
     def submit(self, *args: object, **kwargs: object) -> ps.SlurmSubmission:
+        self.submitted_policy = (
+            kwargs["max_polls"],  # type: ignore[arg-type]
+            kwargs["max_requeues"],  # type: ignore[arg-type]
+            kwargs["poll_interval_seconds"],  # type: ignore[arg-type]
+        )
         return ps.SlurmSubmission("submitted", self.action_key, self.job, None)
 
     def resolve(self, *args: object, **kwargs: object) -> ps.SlurmResolution:
+        self.resolutions += 1
         return ps.SlurmResolution(
             "pending", self.action_key, self.job, "NOT_VISIBLE",
             "accounting lag", None, None,
@@ -452,18 +454,79 @@ class _PollingAdapter:
     def requeue(self, *args: object, **kwargs: object) -> bool:
         raise AssertionError("pending allocation must not requeue")
 
-    def cancel(self, job_id: ps.SlurmJobId | str) -> None:
+    def cancel(self, action: object, job_id: ps.SlurmJobId | str) -> bool:
+        self.cancelled_actions.append(str(pb.validate_action(action)["action_key"]))
         self.cancelled.append(job_id)
+        return True
 
 
 def test_poll_budget_cancels_exact_allocation_before_failing(tmp_path: Path):
     spec = _spec(_action(tmp_path, "root"), tmp_path)
     adapter = _PollingAdapter(spec.action_key)
-    runner = pd.DagsterActionRunner(
-        cas_root=tmp_path / "cas", adapter=adapter, sleep=lambda _: None
-    )
+    runner = pd.DagsterActionRunner(cas_root=tmp_path / "cas", adapter=adapter)
     with pytest.raises(pd.DagsterActionError, match="allocation was cancelled"):
         runner.execute(pd.ActionGraph([spec]), spec.action_key)
+    assert adapter.cancelled == [adapter.job]
+    assert adapter.cancelled_actions == [spec.action_key]
+    assert adapter.resolutions == spec.max_polls
+    assert adapter.submitted_policy == (
+        spec.max_polls,
+        spec.max_requeues,
+        spec.poll_interval_seconds,
+    )
+
+
+def test_restart_does_not_reset_durable_dagster_poll_budget(tmp_path: Path):
+    spec = _spec(_action(tmp_path, "root"), tmp_path)
+    adapter = _PollingAdapter(spec.action_key)
+    adapter._durable_polls = spec.max_polls - 1
+    runner = pd.DagsterActionRunner(cas_root=tmp_path / "cas", adapter=adapter)
+    with pytest.raises(pd.DagsterActionError, match="allocation was cancelled"):
+        runner.execute(pd.ActionGraph([spec]), spec.action_key)
+    assert adapter.resolutions == 1
+    assert adapter.cancelled == [adapter.job]
+
+
+class _ReceiptDuringCancelAdapter(_PollingAdapter):
+    def __init__(self, *, cas_root: Path, spec: pd.ActionSpec, source: Path):
+        super().__init__(spec.action_key)
+        self.cas_root = cas_root
+        self.spec = spec
+        self.source = source
+
+    def cancel(self, action: object, job_id: ps.SlurmJobId | str) -> bool:
+        self.cancelled_actions.append(str(pb.validate_action(action)["action_key"]))
+        self.cancelled.append(job_id)
+        _publish(self.cas_root, self.spec, self.source, b"won-cancel-race")
+        return False
+
+
+def test_receipt_wins_cancel_race_after_final_pending_poll(tmp_path: Path):
+    spec = _spec(_action(tmp_path, "root"), tmp_path)
+    cas_root = tmp_path / "cas"
+    adapter = _ReceiptDuringCancelAdapter(
+        cas_root=cas_root, spec=spec, source=tmp_path / "cancel-source"
+    )
+    runner = pd.DagsterActionRunner(cas_root=cas_root, adapter=adapter)
+    result = runner.execute(pd.ActionGraph([spec]), spec.action_key)
+    assert result.action_key == spec.action_key
+    assert adapter.resolutions == spec.max_polls
+    assert adapter.cancelled == [adapter.job]
+
+
+def test_receipt_wins_cancel_race_when_durable_poll_budget_was_already_spent(
+    tmp_path: Path,
+):
+    spec = _spec(_action(tmp_path, "root"), tmp_path)
+    cas_root = tmp_path / "cas"
+    adapter = _ReceiptDuringCancelAdapter(
+        cas_root=cas_root, spec=spec, source=tmp_path / "cancel-source"
+    )
+    adapter._durable_polls = spec.max_polls
+    runner = pd.DagsterActionRunner(cas_root=cas_root, adapter=adapter)
+    result = runner.execute(pd.ActionGraph([spec]), spec.action_key)
+    assert result.action_key == spec.action_key
+    assert adapter.resolutions == 0
     assert adapter.cancelled == [adapter.job]
 
 
@@ -572,6 +635,7 @@ def test_wrong_scope_receipt_fails_closed_before_adapter(
         json.dumps(altered, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
+    receipt_path.chmod(0o444)
     runner = pd.DagsterActionRunner(cas_root=cas_root, adapter=_NeverAdapter())
     with pytest.raises(pb.CASTamperError, match="host_class"):
         runner.execute(pd.ActionGraph([spec]), spec.action_key)

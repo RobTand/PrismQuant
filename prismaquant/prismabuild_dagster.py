@@ -21,7 +21,6 @@ import json
 import math
 from pathlib import Path
 import re
-import time
 from typing import Any, Protocol
 
 from . import prismabuild as pb
@@ -60,6 +59,8 @@ _RETRY_KEYS = frozenset({"max_requeues", "poll_interval_seconds", "max_polls"})
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _INPUT_ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,255}\Z")
 _DEFINITION_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
+_CLUSTER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_MAX_DURABLE_COUNTER = 99_999_999
 
 
 class DagsterIntegrationError(pb.PrismaBuildError):
@@ -127,6 +128,8 @@ def _absolute_path(value: object, *, where: str, root_ok: bool = False) -> Path:
     path = Path(value)
     if not path.is_absolute() or (not root_ok and path == Path("/")):
         raise DagsterGraphError(f"{where} must be a non-root absolute path")
+    if ".." in path.parts:
+        raise DagsterGraphError(f"{where} must not contain parent traversal")
     return path
 
 
@@ -231,6 +234,8 @@ class ActionSpec:
         path = Path(checkout_root)
         if not path.is_absolute() or path == Path("/"):
             raise DagsterGraphError("checkout_root must be a non-root absolute path")
+        if ".." in path.parts:
+            raise DagsterGraphError("checkout_root must not contain parent traversal")
         self.checkout_root = path
         if not isinstance(resources, ps.SlurmResources):
             raise DagsterGraphError("resources must be SlurmResources")
@@ -249,10 +254,22 @@ class ActionSpec:
         self.max_requeues = _nonnegative_integer(
             max_requeues, where="retry.max_requeues"
         )
+        if self.max_requeues != 0:
+            raise DagsterGraphError(
+                "retry.max_requeues must be zero; Slurm same-job retry is disabled"
+            )
         self.poll_interval_seconds = _positive_finite(
             poll_interval_seconds, where="retry.poll_interval_seconds"
         )
+        if self.poll_interval_seconds > 86_400.0:
+            raise DagsterGraphError(
+                "retry.poll_interval_seconds must not exceed 86400 seconds"
+            )
         self.max_polls = _positive_integer(max_polls, where="retry.max_polls")
+        if self.max_polls > _MAX_DURABLE_COUNTER:
+            raise DagsterGraphError(
+                "retry.max_polls exceeds the durable eight-digit counter bound"
+            )
         ps.validate_placement_scope(
             normalized,
             placement=placement,
@@ -490,6 +507,7 @@ class DagsterResourceConfig:
     cas_root: Path
     log_root: Path
     worker_script: Path
+    cluster: str
     sbatch: Path = Path("/usr/bin/sbatch")
     squeue: Path = Path("/usr/bin/squeue")
     sacct: Path = Path("/usr/bin/sacct")
@@ -513,7 +531,14 @@ class DagsterResourceConfig:
                 name in {"cas_root", "log_root"} and value == Path("/")
             ):
                 raise DagsterGraphError(f"{name} must be an absolute path")
+            if ".." in value.parts:
+                raise DagsterGraphError(f"{name} must not contain parent traversal")
             object.__setattr__(self, name, value)
+        object.__setattr__(
+            self,
+            "cluster",
+            _text(self.cluster, where="cluster", pattern=_CLUSTER_RE),
+        )
         object.__setattr__(
             self,
             "command_timeout_seconds",
@@ -524,7 +549,7 @@ class DagsterResourceConfig:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "DagsterResourceConfig":
-        required = {"cas_root", "log_root", "worker_script"}
+        required = {"cas_root", "log_root", "worker_script", "cluster"}
         optional = {
             "sbatch",
             "squeue",
@@ -548,6 +573,7 @@ class DagsterResourceConfig:
             cas_root=self.cas_root,
             log_root=self.log_root,
             worker_script=self.worker_script,
+            cluster=self.cluster,
             sbatch=self.sbatch,
             squeue=self.squeue,
             sacct=self.sacct,
@@ -565,6 +591,9 @@ class _Adapter(Protocol):
         checkout_root: str | Path,
         resources: ps.SlurmResources,
         placement: ps.SlurmPlacement,
+        max_polls: int = 1,
+        max_requeues: int = 0,
+        poll_interval_seconds: float = 5.0,
         recompute: bool = False,
     ) -> ps.SlurmSubmission: ...
 
@@ -572,9 +601,27 @@ class _Adapter(Protocol):
         self, action: object, job_id: ps.SlurmJobId | str
     ) -> ps.SlurmResolution: ...
 
-    def requeue(self, action: object, job_id: ps.SlurmJobId | str) -> bool: ...
+    def retry_progress(
+        self, action: object, job_id: ps.SlurmJobId | str
+    ) -> ps.SlurmRetryProgress: ...
 
-    def cancel(self, job_id: ps.SlurmJobId | str) -> None: ...
+    def claim_poll(
+        self,
+        action: object,
+        job_id: ps.SlurmJobId | str,
+        *,
+        max_polls: int,
+    ) -> ps.SlurmRetryProgress | None: ...
+
+    def requeue(
+        self,
+        action: object,
+        job_id: ps.SlurmJobId | str,
+        *,
+        max_requeues: int,
+    ) -> bool: ...
+
+    def cancel(self, action: object, job_id: ps.SlurmJobId | str) -> bool: ...
 
 
 class DagsterActionRunner:
@@ -585,11 +632,9 @@ class DagsterActionRunner:
         *,
         cas_root: str | Path,
         adapter: _Adapter,
-        sleep: Callable[[float], None] = time.sleep,
     ):
         self.cas = pb.PrismaBuildCAS(cas_root)
         self.adapter = adapter
-        self.sleep = sleep
 
     def _verified_result(self, spec: ActionSpec) -> BoundActionResult | None:
         receipt = self.cas.lookup(spec.action)
@@ -637,6 +682,20 @@ class DagsterActionRunner:
                     "the dependency-bound CAS result"
                 )
 
+    def _cancel_then_verify(
+        self, spec: ActionSpec, job_id: ps.SlurmJobId | str
+    ) -> BoundActionResult | None:
+        """Cancel the bound allocation, then resolve a concurrent CAS win."""
+
+        try:
+            self.adapter.cancel(spec.action, job_id)
+        except Exception:
+            result = self._verified_result(spec)
+            if result is not None:
+                return result
+            raise
+        return self._verified_result(spec)
+
     def execute(
         self,
         graph: ActionGraph,
@@ -655,6 +714,9 @@ class DagsterActionRunner:
             checkout_root=spec.checkout_root,
             resources=spec.resources,
             placement=spec.placement,
+            max_polls=spec.max_polls,
+            max_requeues=spec.max_requeues,
+            poll_interval_seconds=spec.poll_interval_seconds,
         )
         if submission.action_key != spec.action_key:
             raise DagsterActionError("SLURM submission returned a different action key")
@@ -665,13 +727,34 @@ class DagsterActionRunner:
                     "SLURM adapter reported cache_hit without a verified CAS receipt"
                 )
             return cached
-        if submission.status != "submitted" or submission.job_id is None:
+        if submission.status not in {"submitted", "adopted"} or submission.job_id is None:
             raise DagsterActionError("SLURM submission did not return a job id")
 
-        polls = 0
-        requeues = 0
-        awaiting_requeue_transition = False
+        progress = self.adapter.retry_progress(spec.action, submission.job_id)
+        polls = progress.polls
+        if progress.requeues != 0:
+            raise DagsterActionError(
+                "durable SLURM state contains a disabled requeue transition"
+            )
         while True:
+            claimed_poll = self.adapter.claim_poll(
+                spec.action,
+                submission.job_id,
+                max_polls=spec.max_polls,
+            )
+            if claimed_poll is None:
+                result = self._cancel_then_verify(spec, submission.job_id)
+                if result is not None:
+                    return result
+                raise DagsterActionError(
+                    f"action {spec.action_key} exhausted its durable poll budget; "
+                    "the exact allocation was cancelled if it remained active"
+                )
+            polls = claimed_poll.polls
+            if claimed_poll.requeues != 0:
+                raise DagsterActionError(
+                    "durable SLURM state contains a disabled requeue transition"
+                )
             resolution = self.adapter.resolve(spec.action, submission.job_id)
             if resolution.action_key != spec.action_key:
                 raise DagsterActionError(
@@ -687,49 +770,14 @@ class DagsterActionRunner:
                     )
                 return result
             if resolution.status in {"pending", "running"}:
-                awaiting_requeue_transition = False
-                polls += 1
                 if polls >= spec.max_polls:
-                    self.adapter.cancel(submission.job_id)
+                    result = self._cancel_then_verify(spec, submission.job_id)
+                    if result is not None:
+                        return result
                     raise DagsterActionError(
                         f"action {spec.action_key} exceeded its explicit poll budget; "
                         "the allocation was cancelled"
                     )
-                self.sleep(spec.poll_interval_seconds)
-                continue
-            if awaiting_requeue_transition:
-                # squeue/sacct may retain the previous terminal state while a
-                # same-job requeue moves back to PENDING. Wait for a positive
-                # pending/running transition instead of burning retries in a
-                # tight loop. The same explicit poll budget bounds this grace.
-                polls += 1
-                if polls >= spec.max_polls:
-                    self.adapter.cancel(submission.job_id)
-                    raise DagsterActionError(
-                        f"action {spec.action_key} did not enter pending or running "
-                        "after requeue; the allocation was cancelled"
-                    )
-                self.sleep(spec.poll_interval_seconds)
-                continue
-            if requeues < spec.max_requeues:
-                # Requeue the same SLURM allocation with the exact sealed action.
-                # Dagster-level retries are disabled by the native definition
-                # factory so this live invocation cannot escape through submit.
-                # The job id is not durably recoverable after process loss; a
-                # fresh invocation can still duplicate a live allocation, so
-                # crash-safe adoption remains a deployment gate.
-                requeued = self.adapter.requeue(spec.action, submission.job_id)
-                if not requeued:
-                    result = self._verified_result(spec)
-                    if result is None:
-                        raise DagsterActionError(
-                            "SLURM declined requeue without a verified CAS receipt"
-                        )
-                    return result
-                requeues += 1
-                polls = 0
-                awaiting_requeue_transition = True
-                self.sleep(spec.poll_interval_seconds)
                 continue
             raise DagsterActionError(
                 f"action {spec.action_key} ended {resolution.status}: "
@@ -779,10 +827,11 @@ def build_dagster_definitions(
     """Build Dagster assets and one asset job from an explicit action graph.
 
     The returned definitions require a ``prismabuild`` resource configured
-    with ``cas_root``, ``log_root``, and ``worker_script``.  Every materialized
+    with ``cas_root``, ``log_root``, ``worker_script``, and one sealed
+    ``cluster``. Every materialized
     asset is emitted only after :class:`DagsterActionRunner` independently
     verifies the CAS.  Dagster retry count is zero; bounded retries use
-    ``SlurmAdapter.requeue`` on the original action/job identity.
+    no same-job retry until Slurm restart causes can be durably authorized.
     """
 
     dg = dagster_module if dagster_module is not None else _import_dagster()
@@ -792,6 +841,7 @@ def build_dagster_definitions(
             "cas_root": str,
             "log_root": str,
             "worker_script": str,
+            "cluster": str,
             "sbatch": dg.Field(str, default_value="/usr/bin/sbatch"),
             "squeue": dg.Field(str, default_value="/usr/bin/squeue"),
             "sacct": dg.Field(str, default_value="/usr/bin/sacct"),

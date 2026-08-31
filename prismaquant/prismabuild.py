@@ -333,7 +333,13 @@ def _decode_strict_json(raw: bytes, *, where: str) -> object:
             object_pairs_hook=pairs_hook,
             parse_constant=reject_constant,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except ActionContractError:
+        raise
+    except (UnicodeDecodeError, ValueError) as exc:
+        # ``json.loads`` can raise a plain ValueError when an integer exceeds
+        # Python's configured digit limit.  Durable hostile input must stay in
+        # the fail-closed PrismaBuild error vocabulary instead of escaping as
+        # an implementation-specific parser exception.
         raise ActionContractError(f"{where} is not strict UTF-8 JSON") from exc
 
 
@@ -360,12 +366,16 @@ def _read_regular_file(path: Path, *, where: str) -> bytes:
             before.st_dev,
             before.st_ino,
             before.st_size,
+            before.st_mode,
             before.st_mtime_ns,
+            before.st_ctime_ns,
         ) != (
             after.st_dev,
             after.st_ino,
             after.st_size,
+            after.st_mode,
             after.st_mtime_ns,
+            after.st_ctime_ns,
         ):
             raise ActionContractError(f"{where} changed while it was read: {path}")
         return b"".join(chunks)
@@ -400,12 +410,16 @@ def _file_identity(path: Path, *, where: str) -> tuple[str, int]:
             before.st_dev,
             before.st_ino,
             before.st_size,
+            before.st_mode,
             before.st_mtime_ns,
+            before.st_ctime_ns,
         ) != (
             after.st_dev,
             after.st_ino,
             after.st_size,
+            after.st_mode,
             after.st_mtime_ns,
+            after.st_ctime_ns,
         ):
             raise ActionContractError(f"{where} changed while it was read: {path}")
         return digest.hexdigest(), size
@@ -1229,54 +1243,333 @@ def _atomic_publish(
     *,
     prelink_verify: Callable[[], None] | None = None,
 ) -> bool:
-    """Publish immutable bytes with an NFS-safe first-writer-wins hard link."""
+    """Publish immutable bytes relative to a held no-follow parent FD."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_raw = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    path = _absolute_nofollow_path(path, where="publication path")
+    directory_fd = _open_directory_nofollow(
+        path.parent, where="publication directory", create=True
     )
-    temporary = Path(temporary_raw)
+    temporary_name: str | None = None
     try:
+        descriptor, temporary_raw = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=f"/proc/self/fd/{directory_fd}",
+        )
+        temporary_name = Path(temporary_raw).name
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(raw)
             handle.flush()
-            os.fsync(handle.fileno())
             os.fchmod(handle.fileno(), 0o444)
+            os.fsync(handle.fileno())
+            temporary_identity = os.fstat(handle.fileno())
         if prelink_verify is not None:
             prelink_verify()
         try:
-            os.link(temporary, path)
+            os.link(
+                temporary_name,
+                path.name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
             won = True
         except FileExistsError:
             won = False
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        os.fsync(directory_fd)
+        if won:
+            flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+            try:
+                published_fd = os.open(path.name, flags, dir_fd=directory_fd)
+            except OSError as exc:
+                raise CASTamperError(
+                    f"published file changed before readback: {path}"
+                ) from exc
+            try:
+                published_identity = os.fstat(published_fd)
+                if (
+                    temporary_identity.st_dev,
+                    temporary_identity.st_ino,
+                ) != (
+                    published_identity.st_dev,
+                    published_identity.st_ino,
+                ):
+                    raise CASTamperError(
+                        f"published file changed before readback: {path}"
+                    )
+            finally:
+                os.close(published_fd)
+        _assert_directory_identity(
+            directory_fd, path.parent, where="publication directory"
+        )
         return won
     finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+        os.close(directory_fd)
+
+
+def _absolute_nofollow_path(path: Path, *, where: str) -> Path:
+    """Return an absolute lexical path that cannot walk through ``..``."""
+
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    if ".." in candidate.parts:
+        raise ActionContractError(f"{where} must not contain parent traversal")
+    return candidate
+
+
+def _open_directory_nofollow(
+    path: Path,
+    *,
+    where: str,
+    create: bool = False,
+    mode: int = 0o755,
+) -> int:
+    """Open/create an absolute directory using only mkdirat/openat operations."""
+
+    path = _absolute_nofollow_path(path, where=where)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path.anchor, flags)
+    except OSError as exc:
+        raise CASUnavailableError(f"cannot open {where} filesystem root: {exc}") from exc
+    try:
+        for part in path.parts[1:]:
+            created = False
+            if create:
+                try:
+                    os.mkdir(part, mode=mode, dir_fd=descriptor)
+                    created = True
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise CASUnavailableError(
+                        f"cannot create {where} component {part!r}: {exc}"
+                    ) from exc
+            try:
+                child = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                raise
+            except OSError as exc:
+                if exc.errno in {errno.ENOTDIR, errno.ELOOP}:
+                    raise CASTamperError(
+                        f"{where} ancestor is not a real directory: {path}"
+                    ) from exc
+                raise CASUnavailableError(
+                    f"cannot open {where} component {part!r}: {exc}"
+                ) from exc
+            try:
+                if created:
+                    os.fchmod(child, mode)
+                    os.fsync(child)
+                    os.fsync(descriptor)
+            except OSError as exc:
+                os.close(child)
+                raise CASUnavailableError(
+                    f"cannot durably create {where} component {part!r}: {exc}"
+                ) from exc
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _assert_directory_identity(descriptor: int, path: Path, *, where: str) -> None:
+    """Fail if the held directory is no longer the configured pathname."""
+
+    try:
+        current = _open_directory_nofollow(path, where=where)
+    except FileNotFoundError as exc:
+        raise CASTamperError(f"{where} disappeared during operation: {path}") from exc
+    try:
+        held = os.fstat(descriptor)
+        observed = os.fstat(current)
+        if (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino):
+            raise CASTamperError(f"{where} changed during operation: {path}")
+    finally:
+        os.close(current)
+
+
+def _open_regular_nofollow(path: Path, *, where: str) -> tuple[int, int]:
+    """Open a regular-file candidate relative to its held no-follow parent."""
+
+    path = _absolute_nofollow_path(path, where=where)
+    parent_fd = _open_directory_nofollow(path.parent, where=f"{where} parent")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        os.close(parent_fd)
+        raise
+    except OSError as exc:
+        os.close(parent_fd)
+        if exc.errno in {errno.ENOTDIR, errno.ELOOP, errno.EISDIR}:
+            raise CASTamperError(
+                f"cannot open {where} as a real regular file: {path}"
+            ) from exc
+        raise CASUnavailableError(f"cannot open {where}: {path}: {exc}") from exc
+    return descriptor, parent_fd
+
+
+def _assert_regular_identity(
+    descriptor: int, parent_fd: int, path: Path, *, where: str
+) -> None:
+    """Fail if a held regular inode is no longer its canonical leaf name."""
+
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        current = os.open(path.name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise CASTamperError(f"{where} changed during operation: {path}") from exc
+    try:
+        held = os.fstat(descriptor)
+        observed = os.fstat(current)
+        if (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino):
+            raise CASTamperError(f"{where} changed during operation: {path}")
+    finally:
+        os.close(current)
+
+
+def _read_regular_file_nofollow(
+    path: Path, *, where: str, require_readonly: bool = False
+) -> bytes:
+    """Read one stable inode without following any pathname component."""
+
+    descriptor, parent_fd = _open_regular_nofollow(path, where=where)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise CASTamperError(f"{where} is not a regular file: {path}")
+        if require_readonly and before.st_mode & 0o222:
+            raise CASTamperError(f"{where} is writable: {path}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mode,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mode,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise CASTamperError(f"{where} changed while it was read: {path}")
+        _assert_regular_identity(
+            descriptor, parent_fd, path, where=where
+        )
+        _assert_directory_identity(parent_fd, path.parent, where=f"{where} parent")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+        os.close(parent_fd)
+
+
+def _file_identity_nofollow(path: Path, *, where: str) -> tuple[str, int, int]:
+    """Hash one stable inode reached through a held no-follow parent."""
+
+    descriptor, parent_fd = _open_regular_nofollow(path, where=where)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise CASTamperError(f"{where} is not a regular file: {path}")
+        while True:
+            chunk = os.read(descriptor, 4 * 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mode,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mode,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise CASTamperError(f"{where} changed while it was read: {path}")
+        _assert_regular_identity(
+            descriptor, parent_fd, path, where=where
+        )
+        _assert_directory_identity(parent_fd, path.parent, where=f"{where} parent")
+        return digest.hexdigest(), size, before.st_mode
+    finally:
+        os.close(descriptor)
+        os.close(parent_fd)
+
+
+def _unlink_nofollow(path: Path, *, where: str) -> None:
+    """Unlink a leaf only through its current no-follow parent directory."""
+
+    try:
+        directory_fd = _open_directory_nofollow(path.parent, where=f"{where} parent")
+    except FileNotFoundError:
+        return
+    try:
         try:
-            temporary.unlink()
+            os.unlink(path.name, dir_fd=directory_fd)
         except FileNotFoundError:
-            pass
+            return
+        os.fsync(directory_fd)
+        _assert_directory_identity(
+            directory_fd, path.parent, where=f"{where} parent"
+        )
+    finally:
+        os.close(directory_fd)
 
 
 def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, int]:
     """Take a stable regular-file snapshot into the CAS filesystem."""
 
-    staging_directory.mkdir(parents=True, exist_ok=True)
+    staging_directory = _absolute_nofollow_path(
+        staging_directory, where="CAS staging directory"
+    )
+    staging_fd = _open_directory_nofollow(
+        staging_directory, where="CAS staging directory", create=True
+    )
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
         source_fd = os.open(source, flags)
     except OSError as exc:
+        os.close(staging_fd)
         raise LocalActionError(f"result is not a readable regular file: {source}") from exc
-    descriptor, temporary_raw = tempfile.mkstemp(
-        prefix=".payload.", suffix=".tmp", dir=staging_directory
-    )
-    temporary = Path(temporary_raw)
+    try:
+        descriptor, temporary_raw = tempfile.mkstemp(
+            prefix=".payload.", suffix=".tmp", dir=f"/proc/self/fd/{staging_fd}"
+        )
+    except BaseException:
+        os.close(source_fd)
+        os.close(staging_fd)
+        raise
+    temporary_name = Path(temporary_raw).name
+    temporary = staging_directory / temporary_name
     digest = hashlib.sha256()
     size = 0
     try:
@@ -1292,30 +1585,38 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
                 digest.update(chunk)
                 size += len(chunk)
             destination.flush()
-            os.fsync(destination.fileno())
             os.fchmod(destination.fileno(), 0o444)
+            os.fsync(destination.fileno())
         after = os.fstat(source_fd)
         if (
             before.st_dev,
             before.st_ino,
             before.st_size,
+            before.st_mode,
             before.st_mtime_ns,
+            before.st_ctime_ns,
         ) != (
             after.st_dev,
             after.st_ino,
             after.st_size,
+            after.st_mode,
             after.st_mtime_ns,
+            after.st_ctime_ns,
         ):
             raise LocalActionError(f"result changed while it was copied: {source}")
+        _assert_directory_identity(
+            staging_fd, staging_directory, where="CAS staging directory"
+        )
         return temporary, digest.hexdigest(), size
     except BaseException:
         try:
-            temporary.unlink()
+            os.unlink(temporary_name, dir_fd=staging_fd)
         except FileNotFoundError:
             pass
         raise
     finally:
         os.close(source_fd)
+        os.close(staging_fd)
 
 
 def _normalize_worker_evidence(value: object) -> dict[str, object]:
@@ -1730,6 +2031,8 @@ class PrismaBuildCAS:
         self.root = Path(root)
         if not self.root.is_absolute() or self.root == Path("/"):
             raise ActionContractError("CAS root must be a non-root absolute path")
+        if ".." in self.root.parts:
+            raise ActionContractError("CAS root must not contain parent traversal")
 
     def _receipt_path(self, action_key: str) -> Path:
         # Receipt schemas are immutable interpretation domains.  v2 occupied
@@ -1752,44 +2055,12 @@ class PrismaBuildCAS:
     def _open_input_blob_shard(self, digest: str) -> tuple[Path, int]:
         """Open a real CAS shard directory without following CAS symlinks."""
 
-        directories = (
-            self.root,
-            self.root / "blobs",
-            self.root / "blobs" / digest[:2],
+        shard = self.root / "blobs" / digest[:2]
+        descriptor = _open_directory_nofollow(
+            shard,
+            where="CAS input directory",
+            create=True,
         )
-        for directory in directories:
-            try:
-                directory.mkdir()
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise CASUnavailableError(
-                    f"cannot create CAS input directory: {directory}: {exc}"
-                ) from exc
-            try:
-                mode = directory.lstat().st_mode
-            except OSError as exc:
-                raise CASUnavailableError(
-                    f"cannot inspect CAS input directory: {directory}: {exc}"
-                ) from exc
-            if not stat.S_ISDIR(mode):
-                raise CASTamperError(
-                    f"CAS input directory is not a real directory: {directory}"
-                )
-        shard = directories[-1]
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        try:
-            descriptor = os.open(shard, flags)
-        except OSError as exc:
-            if exc.errno in {errno.ENOTDIR, errno.ELOOP}:
-                raise CASTamperError(
-                    f"CAS input shard changed or became a symlink: {shard}"
-                ) from exc
-            raise CASUnavailableError(
-                f"cannot open CAS input shard: {shard}: {exc}"
-            ) from exc
         return shard / digest, descriptor
 
     def _publish_staged_input_blob(
@@ -1800,10 +2071,18 @@ class PrismaBuildCAS:
         digest = str(contract["sha256"])
         blob_path, directory_fd = self._open_input_blob_shard(digest)
         try:
+            source_fd = _open_directory_nofollow(
+                staging.parent, where="CAS staging directory"
+            )
+        except BaseException:
+            os.close(directory_fd)
+            raise
+        try:
             try:
                 os.link(
-                    staging,
+                    staging.name,
                     digest,
+                    src_dir_fd=source_fd,
                     dst_dir_fd=directory_fd,
                     follow_symlinks=False,
                 )
@@ -1812,7 +2091,14 @@ class PrismaBuildCAS:
                 won = False
             if won:
                 os.fsync(directory_fd)
+            _assert_directory_identity(
+                source_fd, staging.parent, where="CAS staging directory"
+            )
+            _assert_directory_identity(
+                directory_fd, blob_path.parent, where="CAS blob directory"
+            )
         finally:
+            os.close(source_fd)
             os.close(directory_fd)
         # A successful hard link is not sufficient evidence: re-open and hash
         # the canonical name after its directory entry has been synchronized.
@@ -1866,10 +2152,7 @@ class PrismaBuildCAS:
             _, won = self._publish_staged_input_blob(staging, contract)
             return entry, won
         finally:
-            try:
-                staging.unlink()
-            except FileNotFoundError:
-                pass
+            _unlink_nofollow(staging, where="CAS staging file")
 
     def input_path(self, input_contract: object) -> Path:
         """Return an action input's CAS path after full content verification."""
@@ -1888,20 +2171,22 @@ class PrismaBuildCAS:
         raw = _canonical_file_bytes(normalized)
         won = _atomic_publish(path, raw)
         if not won:
-            try:
-                observed = _read_regular_file(path, where="PrismaBuild action request")
-            except ActionContractError as exc:
-                raise CASTamperError(str(exc)) from exc
+            observed = _read_regular_file_nofollow(
+                path,
+                where="PrismaBuild action request",
+                require_readonly=True,
+            )
             if observed != raw:
                 raise CASTamperError(
                     "existing PrismaBuild action request differs from its action key"
                 )
         # Re-read after either side of a publication race.  A scheduler must
         # never send a path whose bytes the submitter merely assumes.
-        try:
-            verified = _read_regular_file(path, where="PrismaBuild action request")
-        except ActionContractError as exc:
-            raise CASTamperError(str(exc)) from exc
+        verified = _read_regular_file_nofollow(
+            path,
+            where="PrismaBuild action request",
+            require_readonly=True,
+        )
         if verified != raw:
             raise CASTamperError(
                 "published PrismaBuild action request failed canonical readback"
@@ -1910,18 +2195,11 @@ class PrismaBuildCAS:
 
     def _load_receipt_bytes(self, path: Path) -> bytes:
         try:
-            return _read_regular_file(path, where="CAS receipt")
-        except ActionContractError as exc:
-            cause = exc.__cause__
-            if isinstance(cause, OSError):
-                if cause.errno == errno.ENOENT:
-                    raise FileNotFoundError(path) from cause
-                if cause.errno in {errno.ENOTDIR, errno.ELOOP, errno.EISDIR}:
-                    raise CASTamperError(str(exc)) from exc
-                raise CASUnavailableError(
-                    f"CAS receipt is unavailable: {path}: {cause}"
-                ) from exc
-            raise CASTamperError(str(exc)) from exc
+            return _read_regular_file_nofollow(
+                path, where="CAS receipt", require_readonly=True
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(path) from exc
 
     def _validate_receipt(
         self, value: object, *, action: Mapping[str, object]
@@ -1974,52 +2252,34 @@ class PrismaBuildCAS:
         except ActionContractError as exc:
             raise CASTamperError(str(exc)) from exc
 
-    def _verify_blob(self, result: Mapping[str, object]) -> Path:
+    def _verify_blob(
+        self,
+        result: Mapping[str, object],
+        *,
+        writable_label: str = "CAS payload",
+    ) -> Path:
         digest = str(result["sha256"])
         path = self._blob_path(digest)
         try:
-            observed = path.lstat()
+            observed_digest, observed_size, observed_mode = _file_identity_nofollow(
+                path, where="CAS payload"
+            )
         except FileNotFoundError as exc:
             raise CASTamperError(f"CAS payload is missing: {path}") from exc
-        except OSError as exc:
-            raise CASUnavailableError(
-                f"CAS payload is unavailable: {path}: {exc}"
-            ) from exc
-        if not stat.S_ISREG(observed.st_mode):
-            raise CASTamperError(f"CAS payload is not a regular file: {path}")
-        if observed.st_size != result["bytes"]:
+        if observed_size != result["bytes"]:
             raise CASTamperError(
                 f"CAS payload content differs from receipt (size mismatch): {path}"
             )
-        try:
-            observed_digest, observed_size = _file_identity(path, where="CAS payload")
-        except ActionContractError as exc:
-            cause = exc.__cause__
-            if isinstance(cause, OSError) and cause.errno not in {
-                errno.ENOENT,
-                errno.ENOTDIR,
-                errno.ELOOP,
-                errno.EISDIR,
-            }:
-                raise CASUnavailableError(str(exc)) from exc
-            raise CASTamperError(str(exc)) from exc
         if observed_digest != digest or observed_size != result["bytes"]:
             raise CASTamperError(
                 f"CAS payload content differs from receipt: {path}"
             )
+        if observed_mode & 0o222:
+            raise CASTamperError(f"{writable_label} is writable: {path}")
         return path
 
     def _verify_input_blob(self, contract: Mapping[str, object]) -> Path:
-        path = self._verify_blob(contract)
-        try:
-            mode = path.lstat().st_mode
-        except OSError as exc:
-            raise CASUnavailableError(
-                f"CAS input is unavailable: {path}: {exc}"
-            ) from exc
-        if mode & 0o222:
-            raise CASTamperError(f"CAS input payload is writable: {path}")
-        return path
+        return self._verify_blob(contract, writable_label="CAS input payload")
 
     def lookup(self, action: object) -> dict[str, object] | None:
         """Return a verified v3 receipt, or ``None`` on a v3 miss.
@@ -2084,21 +2344,7 @@ class PrismaBuildCAS:
         )
         result = {"sha256": digest, "bytes": size}
         try:
-            blob_path = self._blob_path(digest)
-            blob_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(staging, blob_path)
-                blob_won = True
-            except FileExistsError:
-                blob_won = False
-            if not blob_won:
-                self._verify_blob(result)
-            else:
-                directory_fd = os.open(blob_path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
+            _, blob_won = self._publish_staged_input_blob(staging, result)
             body: dict[str, object] = {
                 "schema": CAS_RECEIPT_SCHEMA_V3,
                 "action_key": normalized["action_key"],
@@ -2122,11 +2368,15 @@ class PrismaBuildCAS:
                 _canonical_file_bytes(candidate),
                 prelink_verify=verify_publication_provenance,
             )
-            if won:
-                return candidate, True
             canonical = self.lookup(normalized)
-            if canonical is None:  # pragma: no cover - impossible absent deletion/tamper
-                raise CASTamperError("CAS receipt vanished after losing publication race")
+            if canonical is None:
+                raise CASTamperError("CAS receipt vanished after publication race")
+            if won:
+                if canonical != candidate:
+                    raise CASTamperError(
+                        "published CAS receipt failed canonical readback"
+                    )
+                return canonical, True
             task = normalized["task"]
             assert isinstance(task, Mapping)
             canonical_result = canonical["result"]
@@ -2137,10 +2387,7 @@ class PrismaBuildCAS:
                 )
             return canonical, False
         finally:
-            try:
-                staging.unlink()
-            except FileNotFoundError:
-                pass
+            _unlink_nofollow(staging, where="CAS staging file")
 
 
 def _validate_execution_paths(
@@ -2230,20 +2477,24 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
         f"{checkout.resolve(strict=True)}\0{output}".encode("utf-8")
     ).hexdigest()
     directory = cas.root / ".worker-locks"
-    directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{identity}.lock"
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    directory_fd = _open_directory_nofollow(
+        directory, where="local action lock directory", create=True
+    )
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
     try:
-        descriptor = os.open(path, flags, 0o600)
+        descriptor = os.open(path.name, flags, 0o600, dir_fd=directory_fd)
     except OSError as exc:
+        os.close(directory_fd)
         raise LocalActionError(f"cannot open local action lock: {path}") from exc
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise LocalActionError(
                 f"local action lock is not a regular file: {path}"
             )
+        _assert_directory_identity(
+            directory_fd, directory, where="local action lock directory"
+        )
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
@@ -2251,6 +2502,7 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
+            os.close(directory_fd)
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
@@ -2403,6 +2655,34 @@ def _atomic_write_new_json(path: Path, value: Mapping[str, object]) -> None:
         raise ActionContractError(f"output appeared concurrently: {path}")
 
 
+def _require_slurm_initial_start(
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse a requeued/admin-restarted batch process before task argv runs.
+
+    PrismaBuild's Slurm adapter currently seals ``max_requeues=0`` and submits
+    with ``--no-requeue``. Slurm nevertheless exposes the actual restart count
+    to the launched process; this worker-side gate is the final defense if an
+    administrator or site policy restarts the allocation anyway.
+    """
+
+    env = os.environ if environment is None else environment
+    job_id = env.get("SLURM_JOB_ID")
+    if type(job_id) is not str or re.fullmatch(r"[1-9][0-9]{0,19}", job_id) is None:
+        raise ActionContractError(
+            "Slurm worker requires a positive numeric SLURM_JOB_ID"
+        )
+    restart_count = env.get("SLURM_RESTART_COUNT", "0")
+    if type(restart_count) is not str or re.fullmatch(
+        r"(?:0|[1-9][0-9]{0,8})", restart_count
+    ) is None:
+        raise ActionContractError("SLURM_RESTART_COUNT is malformed")
+    if int(restart_count) != 0:
+        raise ActionContractError(
+            "restarted Slurm allocation is not authorized to execute task argv"
+        )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -2433,6 +2713,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--checkout-root", required=True, type=Path)
     run.add_argument("--timeout-seconds", type=float)
     run.add_argument("--recompute", action="store_true")
+    run.add_argument("--require-slurm-initial-start", action="store_true")
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--action", required=True, type=Path)
     preflight.add_argument("--cas-root", required=True, type=Path)
@@ -2446,6 +2727,15 @@ def main(
     worker_launcher_identity: object | None = None,
 ) -> int:
     args = _build_parser().parse_args(argv)
+    if args.command == "run-local" and args.require_slurm_initial_start:
+        if args.recompute:
+            raise ActionContractError(
+                "Slurm worker protocol does not permit recompute"
+            )
+        # This is deliberately before reading even the immutable action
+        # request: a forced/admin-restarted allocation must reach no worker or
+        # task-side input processing beyond argument parsing.
+        _require_slurm_initial_start()
     if args.command == "seal-closure":
         closure = build_code_closure(args.root, args.file)
         _atomic_write_new_json(args.output, closure)
@@ -2485,13 +2775,34 @@ def main(
         )
         return 0
     action_path = args.action if hasattr(args, "action") else args.body
-    action_data = _read_json_mapping(action_path, where="action")
+    if args.command == "run-local" and args.require_slurm_initial_start:
+        raw_action = _read_regular_file_nofollow(
+            action_path, where="action request", require_readonly=True
+        )
+        action_data_value = _decode_strict_json(raw_action, where="action request")
+        if not isinstance(action_data_value, Mapping):
+            raise ActionContractError("action request root must be an object")
+        action_data = action_data_value
+    else:
+        action_data = _read_json_mapping(action_path, where="action")
     if args.command == "seal-action":
         sealed = seal_action(action_data)
         _atomic_write_new_json(args.output, sealed)
         print(args.output)
         return 0
     action = validate_action(action_data)
+    if args.command == "run-local" and args.require_slurm_initial_start:
+        cas = PrismaBuildCAS(args.cas_root)
+        expected_request = (
+            cas.root
+            / "requests"
+            / str(action["action_key"])[:2]
+            / f"{action['action_key']}.json"
+        )
+        if action_path != expected_request:
+            raise ActionContractError(
+                "Slurm worker action path differs from its canonical CAS request"
+            )
     if args.command == "key":
         print(action["action_key"])
         return 0
