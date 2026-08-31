@@ -160,10 +160,78 @@ their direct stdlib launchers concurrently to ingest the same 2,601-byte
 on the same export with `local_lock=none`. The source SHA-256 was
 `2a872eb7dfbe734920ec90e997a91460a33b725a8ab19372340e68d11f39a495`;
 Sparky returned `published` in about 3.2 seconds, Sparklina returned
-`already_present` in about 3.3 seconds, and both exited zero. This validates
-only that small-file concurrent input hard-link/readback case. It does not
-validate large-result publication, directory durability under host loss,
-submission/retry state races, SLURM, Dagster, or campaign replay.
+`already_present` in about 3.3 seconds, and both exited zero. That historical
+pilot validated only the small-file concurrent input hard-link/readback case;
+the larger evidence and its remaining limits are recorded below.
+
+#### Scheduler-free live-NFS qualification (2026-08-31)
+
+A larger wall-clock-overlap run at exact commit `568eeb4` found a real CAS
+false refusal before qualification. In simultaneous identical 128 MiB input
+and 8 MiB deterministic-result publication, one losing reader raised
+`CASTamperError` even though the canonical bytes were correct. The retained
+trace held device, inode, size, mode, uid, gid, mtime, and `nlink == 2`
+constant while NFS reported ctime moving backward from
+`1788148069334890999` to `1788148069099740663`. The before-run, timed reports,
+and trace are retained under the `timed-overlap` and `ctime-trace` directories
+of `/mnt/shared/prismaquant-prismabuild-validation/568eeb4/run-20260831T034200Z-codex-live-nfs-v2`.
+
+Commit `7acf3ad` closes that defect without a ctime exception. A CAS read has at
+most `_STABLE_FILE_READ_ATTEMPTS = 3` attempts. Each attempt resolves the path
+again through held no-follow directory descriptors, opens a fresh leaf FD, and
+replays the entire read or SHA-256 from byte zero. PrismaBuild accepts only an
+attempt whose complete identity (device, inode, size, mode, uid, gid, mtime,
+nlink, and ctime) is identical before and after the read and whose expected
+byte count and content address match. A ctime/nlink-only within-read mismatch
+discards that attempt and retries; a substantive identity change, wrong
+content address or byte count, non-regular/writable object, changed path, or
+symlink hop refuses immediately. Three unstable reads refuse. Deterministic
+regressions cover transient `2 -> 1` publication-link cleanup, transient
+`1 -> 1` link/unlink ctime churn followed by a stable pass, perpetual `1 -> 1`
+churn, and immediate content/mode/mtime/owner refusal. The focused core,
+Slurm-adapter, and Dagster-adapter suite passed `174 passed, 1 skipped`.
+
+The exact-fix rerun is retained without overwrite at
+`/mnt/shared/prismaquant-prismabuild-validation/7acf3ad/run-20260831T035517Z-codex-live-nfs-fix`.
+Both clean checkouts reported exact
+commit `7acf3adec56a44cb909297938fd6a860e0c1a78b` and identical core SHA-256
+`733b1515af957e08bcb9ff2f51dba5c4e338e3cbda7330d5936e238f55acbe69`.
+Sparky and Sparklina mounted the same NFSv4.2 export with `local_lock=none` and
+reported NTP synchronized. Sequential clock samples placed the remote sample
+0.30--0.56 seconds after the local one (including SSH latency), so races used
+absolute wall-clock starts rather than NFS marker visibility.
+
+The retained verifier (`facts/verification.json`, SHA-256
+`f1e3d40eb6072244aa8817f3bdcaf31611710b1424c3d89fdf448eb9fb0324d7`)
+establishes the following scheduler-free cases:
+
+- Both 128 MiB identical-input operations overlapped, returned successfully,
+  and observed exactly one winner at content address
+  `254bcc3fc4f27172636df4bf32de9f107f620d559b20d760197e452b97453917`.
+  Both 8 MiB identical-result operations also overlapped and returned one
+  winner plus one verified hit with receipt
+  `60051d82481570da096e91c643a19dd170a0c3548e4ef6385599fed360d4a302`.
+- Conflicting deterministic writers overlapped and produced one result plus
+  one `CASConflictError`; independent reads on both hosts agreed on the
+  canonical receipt, payload SHA-256, inode, and read-only mode.
+- Both continuous readers saw misses (`592` and `559`) before publication,
+  then each completed 100 fully verified hits with no hit-to-miss or identity
+  regression. Both parent rename-to-symlink traps raised `CASTamperError`, and
+  the outside directory remained empty.
+- With retained fake executables only, concurrent Slurm adapters produced one
+  `submitted` and one `adopted` result for the same job, unique poll ordinals 1
+  and 2, and one successful cancel claim plus one fail-closed concurrent
+  refusal. The command log contains exactly one `sbatch`, one `sacct`, two
+  `squeue`, and one `scancel`; no real scheduler was contacted. Both durable
+  readbacks were identical except for the client-local NFS device number.
+
+The final 173-file manifests read independently on both hosts are byte-identical
+at SHA-256
+`ba8f70879b8f198ed989335172399a51cfbc4c0189be4444d9b1df2425a29f06`.
+This qualifies the exercised scheduler-free CAS and durable-state races on the
+current NFS mount. It does not qualify host/power loss at a durability
+boundary, ACL/WORM retention, a production-scale result, real Slurm services
+or allocation identity, a Dagster daemon, GPU execution, or deployment.
 
 The dependency-free launcher for a bare host is direct script invocation, for
 example `/usr/bin/python3 /path/to/prismaquant/prismabuild.py ingest-input ...`.
@@ -367,17 +435,26 @@ bytes. Dagster run and materialization state are views of CAS truth, never
 certification themselves. The optional package extra is
 `prismaquant[prismabuild]` (supported `>=1.13,<2`, checked against 1.13.20); no
 daemon, webserver, workspace, or scheduler installation is performed by the
-repository.
+repository. A native-import package-level run against Dagster 1.13.20 passed
+all 18 adapter tests on 2026-08-31 (14 Torch deprecation warnings):
+
+```bash
+PYTHONPATH=/home/rob/venvs/pq-cu130/lib/python3.12/site-packages /tmp/pq-prismabuild-dagster-1.13.20/bin/python -m pytest -q tests/test_prismabuild_dagster.py
+```
+
+This is adapter compatibility evidence, not a daemon, workspace,
+materialization, or restart pilot.
 
 ### Remaining live-deployment gates
 
-The state machine above is covered by mocked crash/restart/corruption tests; it
-has not submitted, adopted, polled, or cancelled a live SLURM job.
+The state machine above is covered by mocked crash/restart/corruption tests and
+the scheduler-free two-host NFS race above; it has not submitted, adopted,
+polled, or cancelled a live SLURM job.
 Deployment still requires all of the following evidence:
 
-- A shared-CAS two-host race for `intent.json`, `job.json`, poll claims, and the
-  unified mutation journal, plus host-loss tests around each fsync/link
-  boundary. The race4 evidence above covers only small input blobs.
+- The fake-command race above covers shared-CAS `intent.json`, `job.json`, poll
+  claims, and the unified mutation journal. Host/power-loss injection around
+  every file, link, directory, and scheduler-RPC boundary remains required.
 - Live `slurmctld`/`slurmd`/`slurmdbd` behavior with accounting configured to
   retain job comments (`AccountingStoreFlags=job_comment`) for longer than the
   adoption horizon. Exact `JobName`, `Comment`, `Cluster`, allocation-only
@@ -415,9 +492,9 @@ Deployment still requires all of the following evidence:
   immutable to the submitting principal. The adapter verifies the worker leaf
   immediately before submit, but a later scheduler launch cannot retain that
   submit-host file descriptor across the allocation boundary.
-- Large-result NFS publication/directory durability, munge/cgroup worker
-  attestation, launcher deployment, and the planned Netdata/Prometheus evidence
-  on both boxes remain separate gates.
+- Production-scale large-result NFS publication, host-loss directory
+  durability, munge/cgroup worker attestation, launcher deployment, and the
+  planned Netdata/Prometheus evidence on both boxes remain separate gates.
 
 ## Proposed speculative tier (not implemented)
 

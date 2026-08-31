@@ -1,7 +1,27 @@
 # PrismaQuant Architecture
 
-As of: 2026-08-30 · `codex/finish-numeric-prismabuild-20260830` — stamps follow,
-newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+As of: 2026-08-31 · `codex/prismabuild-live-nfs-20260831` — stamps follow,
+newest first, each recording its own branch and date. Re-stamped (2026-08-31,
+`codex/prismabuild-live-nfs-20260831`) for the **bounded stable-pass CAS read
+and scheduler-free two-host NFS qualification** (§10.1): exact-commit
+wall-clock overlap first exposed legitimate identical input/result writers
+failing on an NFS ctime rollback with otherwise identical inode, content, and
+metadata. CAS reads now discard only a ctime/nlink-only unstable attempt,
+re-resolve through held no-follow dirfds, open a fresh FD, and replay all bytes
+or hashing from byte zero; three attempts are the bound, and acceptance still
+requires one completely stable identity plus the expected content address and
+size. Substantive metadata, content, path, type, mode, and ownership changes
+remain immediate refusal. Deterministic transient/perpetual/hostile tests and
+the broad PrismaBuild suite pass. On exact fix commit `7acf3ad`, Sparky and
+Sparklina then passed overlapping identical/conflicting CAS races, continuous
+miss-to-verified-hit reads, the parent symlink trap, and fake-command-only
+durable Slurm state races on their shared NFSv4.2 mount. This is
+scheduler-free filesystem/protocol evidence, not host/power-loss durability,
+ACL/WORM retention, a production-scale result, a real Slurm allocation,
+daemon-backed Dagster, GPU execution, or deployment. The native Dagster 1.13.20
+adapter suite separately passed 18/18, which is package-level compatibility
+only. No pipeline default, production format, serving pin, or serving topology
+changed. Re-stamped (2026-08-30,
 `codex/finish-numeric-prismabuild-20260830`) for the **durable PrismaBuild
 submission/adoption and anchored CAS/state contract** (§10.1): a sealed,
 single-cluster intent now precedes `sbatch`; an immutable cluster-qualified
@@ -7478,11 +7498,33 @@ that independent readback; an invalid incumbent is tamper, not a cache hit.
 Receipt v3 remains at
 `actions/v3/<prefix>/<action-key>.json`; incompatible unversioned v2 receipts
 are preserved as history and are neither interpreted nor migrated.
-One narrow cross-host NFS4 pilot at commit `5bd2d2c` had Sparky and Sparklina
+One initial cross-host NFS4 pilot at commit `5bd2d2c` had Sparky and Sparklina
 concurrently ingest the same 2,601-byte `pyproject.toml`; one published and one
-returned independently verified `already_present`. That establishes only the
-small-input hard-link/readback case, not large-result durability, state races,
-or host-loss recovery (`docs/design/prismabuild.md`, race4 record).
+returned independently verified `already_present`. A true wall-clock-overlap
+matrix at `568eeb4` then exposed a false refusal: NFS reported ctime rolling
+backward with device/inode/size/mode/owner/mtime/content and `nlink == 2`
+unchanged. Commit `7acf3ad` replaced the single strict read with at most three
+fresh, full stable-pass reads. Every attempt re-resolves through held no-follow
+dirfds and starts from byte zero. Only a ctime/nlink-only within-read mismatch
+is discarded; content/size/address or substantive identity mismatch refuses
+immediately, bounded exhaustion fails closed, and only one identical complete
+before/after identity can be accepted.
+
+The exact-fix scheduler-free rerun on the same NFSv4.2 `local_lock=none` export
+had true overlap for two 128 MiB identical inputs and two 8 MiB identical
+results: both callers succeeded and exactly one won each. A conflicting pair
+returned one winner/one `CASConflictError`; two continuous clients saw misses
+then 100 verified hits each without regression; and both parent
+rename-to-symlink reads refused without touching the outside directory. Fake
+Slurm commands yielded one submit/one adoption of the same binding, poll
+ordinals 1 and 2, one cancel winner/one refusal, and exactly one `sbatch` and
+one `scancel`. Retained commands, reports, identities, hashes, both-host
+readbacks, mount/time facts, and verifier are under
+`/mnt/shared/prismaquant-prismabuild-validation/7acf3ad/run-20260831T035517Z-codex-live-nfs-fix`;
+the pre-fix reports/trace remain
+under the parallel `568eeb4/run-20260831T034200Z-codex-live-nfs-v2` root.
+This qualifies only those scheduler-free races, not production-scale result or
+host-loss durability (`docs/design/prismabuild.md`).
 
 CAS staging, blob, request, receipt, and worker-lock directories are traversed
 from `/` through held directory descriptors. Existing components use
@@ -7492,7 +7534,10 @@ then have child and parent durability synchronized in that order. Temporary
 publication, first-writer hard links, canonical readback, and cleanup are
 relative to those held descriptors. Reads retain both leaf and parent FDs,
 verify a stable regular inode and read-only mode, reopen the canonical leaf,
-and compare the configured parent's device/inode before accepting bytes
+and compare the configured parent's device/inode before accepting bytes. A
+ctime/nlink-only within-read inconsistency is never accepted: the entire read
+is discarded and replayed through a fresh no-follow path/FD, up to three
+attempts, until one pass has an identical full before/after identity
 (`prismabuild._open_directory_nofollow`, `_atomic_publish`,
 `_read_regular_file_nofollow`). An ancestor rename-to-symlink therefore fails
 closed rather than redirecting lookup, publication, or cleanup outside the
@@ -7650,14 +7695,15 @@ journals cancellation of only the bound allocation, then re-reads the CAS so a
 concurrent result publication wins. Dagster run/materialization state remains
 a view, never certification (`prismabuild_dagster.DagsterActionRunner.execute`,
 `build_dagster_definitions`). The optional `prismaquant[prismabuild]`
-dependency is not imported by the base module.
+dependency is not imported by the base module. A native-import run against
+Dagster 1.13.20 passed all 18 adapter tests on 2026-08-31; that is package-level
+compatibility, not daemon/materialization/restart evidence.
 
-All scheduler and Dagster protocol evidence remains mocked or in-process. Core
-and adversarial CAS tests cover local filesystems, plus the narrow input pilot
-above; they do not establish shared-NFS large-result or directory durability.
-No PrismaBuild call has submitted, adopted, paced, or cancelled a live Slurm
-allocation, and no daemon-backed Dagster materialization or concurrent restart
-has run. Deployment still requires:
+Scheduler interactions remain fake-command-only, but the CAS and durable Slurm
+file protocols now also have the bounded scheduler-free two-host NFS evidence
+above. No PrismaBuild call has submitted, adopted, paced, or cancelled a live
+Slurm allocation, and no daemon-backed Dagster materialization or concurrent
+restart has run. Deployment still requires:
 
 - live `slurmctld`/`slurmd`/`slurmdbd` validation of the exact argv, state
   vocabulary and widths, allocation-only duplicate accounting, single-cluster
@@ -7672,13 +7718,14 @@ has run. Deployment still requires:
   positive requeue additionally requires trustworthy `Restarts` reconciliation;
 - bounded NTP/chrony skew for durable wall-clock pacing, Linux
   `openat`/`O_NOFOLLOW`/`/proc/self/fd` behavior on the deployed filesystem,
-  and cross-host failure injection around every file/link/directory fsync;
+  and host/power-loss injection around every file/link/directory fsync;
 - filesystem ACL/WORM/backup policy for the append-only namespace: semantic
   validation detects malformed state, but an authorized directory owner can
   still remove an append-only tail; worker, checkout, and SLURM executable
   ancestors likewise must be immutable to the submission principal; and
-- real Dagster daemon restart/concurrency, large-result publication,
-  munge/cgroup attestation, placement and OOM isolation, plus both-host
+- real Dagster daemon restart/concurrency, production-scale large-result
+  publication and host-loss directory durability, munge/cgroup attestation,
+  placement and OOM isolation, plus both-host
   Netdata/Prometheus evidence. No PrismaBuild observability service is deployed.
 
 These tests establish deterministic fail-closed transitions, not availability,
