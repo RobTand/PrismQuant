@@ -67,9 +67,36 @@ So a prediction that rotation destroys the low-rank structure fails not because
 rotation fails to homogenize, but because **the trellis got there first**. The
 negative is evidence the trellis is doing its job.
 
+## 2-bis. Replicated across rungs (2026-08-31, same session)
+
+The one-rung scope above was the weakest part of this evidence, so the sweep
+was repeated at `q256` 512 / 768 / 896 — a 1.75x span of body rate, covering a
+fully-shaped rung, the shaped cap, and a rung carrying 0.5 bits of bypass:
+
+| q256 | body bits | state | s1/s2 | top-4 share | effective rank |
+|---|---|---|---|---|---|
+| 512 | 2.00 | unrotated | 1.066 | 0.00911 | 864.9 |
+| 512 | 2.00 | rotated | 1.163 | 0.00760 | 882.8 |
+| 768 | 3.00 | unrotated | 1.013 | 0.00880 | 865.7 |
+| 768 | 3.00 | rotated | 1.006 | 0.00733 | 883.2 |
+| 896 | 3.50 | unrotated | 1.019 | 0.00896 | 853.6 |
+| 896 | 3.50 | rotated | 1.009 | 0.00775 | 866.7 |
+
+**Six of six cells white.** `s1/s2` in [1.006, 1.163], effective rank 854-883 of
+~1024, rank-4 energy share 0.73-0.91% throughout. `q256=512` takes the reviewed
+rate-2 fixture alphabet and the other two the blessed rate-3 alphabet; within a
+rung both arms share one alphabet, so no cell is confounded by that, and no
+cross-rung *level* comparison is made — the quantity of interest is spectrum
+shape.
+
+So the residual is not white at one operating point; it is white **wherever
+this trellis operates**, which is what a gate on segment-3a eligibility
+actually needs. Sidedness reproduced identically in the same run (rows 2.03x,
+columns 1.76x).
+
 ## 3. Scope
 
-21 tensors, three layers, one 0.6B model, one seed pair, one rung
-(`q256=768`), weight-space only, unweighted encode. Neither test touches the
-activation side. Replication at other rungs and on GLM5.3-flash tensors is
-owed before either is treated as settled.
+21 tensors, three layers, one 0.6B model, one seed pair, weight-space only,
+unweighted encode. Neither test touches the activation side. **Rung scope is
+now closed** (§2-bis); what remains owed is replication on GLM5.3-flash
+tensors and a second seed pair.
