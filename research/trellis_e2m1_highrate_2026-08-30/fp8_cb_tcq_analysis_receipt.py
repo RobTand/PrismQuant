@@ -20,12 +20,12 @@ import statistics
 import stat
 from typing import Mapping, Sequence
 
+import atomic_publication as _ATOMIC_PUBLICATION
 from atomic_publication import (
     PublicationError,
     atomic_checkpoint_json,
     canonical_json_bytes,
     exclusive_publication_claim,
-    file_sha256,
     publish_file_no_replace,
 )
 
@@ -49,6 +49,7 @@ CLAIM_BOUNDARY = {
 }
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+_MAX_BOUND_BYTES = 64 << 20
 
 
 class AnalysisReceiptError(RuntimeError):
@@ -67,9 +68,9 @@ def _read_bound_file(path: Path) -> tuple[bytes, dict[str, object]]:
     """Read one stable regular-file inode and bind its exact bytes once."""
 
     candidate = path.absolute()
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise AnalysisReceiptError("O_NOFOLLOW is required for bound inputs")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
     try:
         descriptor = os.open(candidate, flags)
     except OSError as exc:
@@ -78,9 +79,19 @@ def _read_bound_file(path: Path) -> tuple[bytes, dict[str, object]]:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise AnalysisReceiptError(f"bound input is not regular: {candidate}")
+        if before.st_size < 0 or before.st_size > _MAX_BOUND_BYTES:
+            raise AnalysisReceiptError(
+                f"bound input exceeds {_MAX_BOUND_BYTES} bytes: {candidate}"
+            )
         chunks = []
-        while chunk := os.read(descriptor, 8 << 20):
+        total = 0
+        while chunk := os.read(descriptor, min(8 << 20, _MAX_BOUND_BYTES + 1 - total)):
             chunks.append(chunk)
+            total += len(chunk)
+            if total > _MAX_BOUND_BYTES:
+                raise AnalysisReceiptError(
+                    f"bound input exceeds {_MAX_BOUND_BYTES} bytes: {candidate}"
+                )
         after = os.fstat(descriptor)
         try:
             path_after = os.stat(candidate, follow_symlinks=False)
@@ -111,6 +122,12 @@ def _read_bound_file(path: Path) -> tuple[bytes, dict[str, object]]:
 
 def _stable_file_sha256(path: Path) -> str:
     return str(_read_bound_file(path)[1]["sha256"])
+
+
+_VERIFIER_PATH = Path(__file__).absolute()
+_DEPENDENCY_PATH = Path(_ATOMIC_PUBLICATION.__file__).absolute()
+_IMPORT_VERIFIER_BINDING = _read_bound_file(_VERIFIER_PATH)[1]
+_IMPORT_DEPENDENCY_BINDING = _read_bound_file(_DEPENDENCY_PATH)[1]
 
 
 def _strict_json_object(
@@ -539,13 +556,15 @@ def _validate_source(source: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def build_receipt(source_path: Path) -> dict[str, object]:
+    verifier_binding = _read_bound_file(_VERIFIER_PATH)[1]
+    dependency_binding = _read_bound_file(_DEPENDENCY_PATH)[1]
+    if verifier_binding != _IMPORT_VERIFIER_BINDING:
+        raise AnalysisReceiptError("verifier bytes changed after module import")
+    if dependency_binding != _IMPORT_DEPENDENCY_BINDING:
+        raise AnalysisReceiptError("publication dependency changed after module import")
     source, source_binding = _strict_json_object(source_path)
     settings = _validate_source(source)
     per_tensor = source["per_tensor"]
-    verifier = Path(__file__).absolute()
-    dependency = verifier.parent / "atomic_publication.py"
-    verifier_binding = _read_bound_file(verifier)[1]
-    dependency_binding = _read_bound_file(dependency)[1]
     body: dict[str, object] = {
         "schema": SCHEMA,
         "status": "verified_exact_recomputation",

@@ -111,7 +111,7 @@ def _source(tmp_path: Path) -> Path:
             "files": {
                 "driver": {
                     "path": str(active_file.resolve()),
-                    "sha256": M.file_sha256(active_file),
+                    "sha256": M._stable_file_sha256(active_file),
                 }
             },
         },
@@ -124,7 +124,7 @@ def _source(tmp_path: Path) -> Path:
         "image_id": environment["container_image_id"],
         "gpu_uuid": environment["gpu_uuid"],
         "launch_attestation_path": str(attestation.resolve()),
-        "launch_attestation_sha256": M.file_sha256(attestation),
+        "launch_attestation_sha256": M._stable_file_sha256(attestation),
         "launch_command_sha256": "d" * 64,
     }
     segment = {**segment_body, "segment_sha256": M._identity_sha256(segment_body)}
@@ -152,7 +152,7 @@ def test_exact_frontiers_are_recomputed_and_self_sealed(tmp_path: Path):
     receipt = M.build_receipt(source)
     M.validate_receipt(receipt)
     assert receipt["population_counts"] == {"dense": 9, "routed": 24}
-    assert receipt["source"]["sha256"] == M.file_sha256(source)
+    assert receipt["source"]["sha256"] == M._stable_file_sha256(source)
     assert receipt["population_summaries"]["dense"]["tensors"] == 9
     diagnostic = receipt["frontier_diagnostics"]["dense"][0]
     assert diagnostic["tcq_best_quality_higher"] == 9
@@ -221,3 +221,29 @@ def test_bound_reader_rejects_path_swap_during_one_fd_read(
     monkeypatch.setattr(M.os, "read", swapping_read)
     with pytest.raises(M.AnalysisReceiptError, match="identity changed"):
         M._strict_json_object(source)
+
+
+def test_bound_reader_requires_nofollow_and_enforces_size_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "source.json"
+    source.write_text("{}\n")
+    monkeypatch.delattr(M.os, "O_NOFOLLOW")
+    with pytest.raises(M.AnalysisReceiptError, match="O_NOFOLLOW is required"):
+        M._read_bound_file(source)
+
+    monkeypatch.undo()
+    monkeypatch.setattr(M, "_MAX_BOUND_BYTES", 2)
+    with pytest.raises(M.AnalysisReceiptError, match="exceeds 2 bytes"):
+        M._read_bound_file(source)
+
+
+def test_verifier_drift_after_import_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = _source(tmp_path)
+    changed = dict(M._IMPORT_VERIFIER_BINDING)
+    changed["sha256"] = "f" * 64
+    monkeypatch.setattr(M, "_IMPORT_VERIFIER_BINDING", changed)
+    with pytest.raises(M.AnalysisReceiptError, match="changed after module import"):
+        M.build_receipt(source)
