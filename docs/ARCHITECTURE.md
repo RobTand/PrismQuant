@@ -2,6 +2,20 @@
 
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `codex/prismabuild-runtime-snapshot-immutability-20260831`) for
+the **exact-Git runtime-snapshot immutability boundary**. Published directories
+are exactly `0555`, non-executable regular files and the manifest are `0444`,
+and Git executables are `0555`; public verification checks those modes and the
+exact real-directory set as well as the tracked file/symlink ledger. Atomic
+publication freezes the private candidate before rename. The no-replace NFS
+fallback builds through private `0700` directories, finalizes nested
+directories bottom-up, links the already-read-only manifest last, then freezes
+and fsyncs the root and parent. Linking requires a transient manifest-plus-
+`0700` root; that state is explicitly invalid, and a crash leaves an incumbent
+that later materialization refuses rather than repairs or adopts. No-bytecode
+launch settings remain defense in depth rather than the snapshot's integrity
+mechanism. This is local process/filesystem fault coverage, not NFS host/power-
+loss, ACL/WORM, or hostile-same-UID qualification. Re-stamped
 (2026-08-31, `codex/prismabuild-d1-d10-20260831`) for the **bounded
 PrismaBuild Slurm poll-journal acceleration** (§10.1). An adapter process now
 derives a non-authoritative snapshot from one complete durable replay, then
@@ -5198,9 +5212,19 @@ commit/tree-addressed runtime-source cache, re-executes the launcher from that s
 `PYTHONPATH`, and requires safe-path mode plus exact bootstrap import origin. The complete
 snapshot closure is re-hashed before Gridbook preparation, before and after host validators,
 inside the serving container before evidence capture, and around the terminal deferred shipcard
-mutation; `/repo` is that read-only snapshot, never the live checkout. Host and container
-bootstrap interpreters additionally require active no-bytecode and disabled-user-site modes, so
-validation cannot mutate the cached snapshot with `__pycache__` or import user packages. The
+mutation; `/repo` is that read-only snapshot, never the live checkout. Its public filesystem
+contract is exact: all real directories are `0555`, ordinary files and the manifest are `0444`,
+and tracked Git executables are `0555`. Verification derives the only legal real directories
+from tracked-ledger ancestors, so an extra empty directory refuses just like an extra file or
+`__pycache__`. Atomic publication freezes the complete candidate before rename. The NFS
+fallback populates private `0700` directories, finalizes nested directories bottom-up, links the
+already-`0444` manifest after every other leaf, then freezes the root and fsyncs its parent.
+Because the manifest link itself needs directory write permission, a crash can leave a transient
+manifest-plus-`0700` root; public verification rejects it and a later materializer refuses that
+incumbent rather than repairing or adopting it. Host and container bootstrap interpreters
+additionally require active no-bytecode and disabled-user-site modes as defense in depth, so
+validation neither attempts bytecode writes nor imports user packages; integrity does not rely
+on that setting. The
 container's stdlib-only fingerprint writer runs through the bootstrap's explicit
 `serve-fingerprint` tool allowlist from neutral `/`, with no `PYTHONPATH`, and proves its lazy
 `prismaquant.shipcard` import resolves to `/repo` before inspecting or writing evidence. Each arm starts a separate ephemeral container

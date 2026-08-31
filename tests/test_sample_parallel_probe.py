@@ -731,12 +731,16 @@ def test_local_producer_snapshot_rehash_refuses_manifested_file_tamper(tmp_path)
         require_current_module_inside=False,
     )
     assert verified["closure_sha256"] == snapshot["closure_sha256"]
-    (Path(snapshot["snapshot"]) / "prismaquant" / "__init__.py").write_text(
-        "VALUE = 2\n"
-    )
+    package_init = Path(snapshot["snapshot"]) / "prismaquant" / "__init__.py"
+    package_init.chmod(0o644)
+    package_init.write_text("VALUE = 2\n")
     # Replacing the candidate verifier with an always-success function cannot
     # hide the other tamper: validation never executes snapshot-owned code.
-    (Path(snapshot["snapshot"]) / "tools" / "prismaquant_runtime_snapshot.py").write_text(
+    snapshot_verifier = (
+        Path(snapshot["snapshot"]) / "tools" / "prismaquant_runtime_snapshot.py"
+    )
+    snapshot_verifier.chmod(0o644)
+    snapshot_verifier.write_text(
         "def verify_snapshot(*args, **kwargs):\n"
         "    return {'closure_sha256': kwargs['expected_closure_sha256']}\n"
     )

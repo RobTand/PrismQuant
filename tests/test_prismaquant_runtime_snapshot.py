@@ -43,6 +43,9 @@ def _repository(root: Path) -> tuple[Path, str]:
     (source / "prismaquant" / "__init__.py").write_text("VALUE = 1\n")
     (source / "tools" / "container_runtime_identity.py").write_text("# tool\n")
     (source / "tools" / "prismaquant_runtime_snapshot.py").write_text("# self\n")
+    executable = source / "tools" / "tracked_executable.py"
+    executable.write_text("#!/usr/bin/env python3\n")
+    executable.chmod(0o755)
     subprocess.run(["git", "init", "-q", str(source)], check=True)
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
     subprocess.run(
@@ -85,6 +88,153 @@ def test_materialize_is_content_addressed_and_ignores_live_worktree(tmp_path):
     assert (snapshot / "prismaquant" / "__init__.py").read_text() == "VALUE = 1\n"
 
 
+def test_materialized_snapshot_has_exact_modes_and_import_cannot_write(tmp_path):
+    source, commit = _repository(tmp_path)
+    created = _run(
+        "materialize", "--source-root", source,
+        "--cache-root", tmp_path / "cache", "--commit", commit,
+    )
+    assert created.returncode == 0, created.stderr
+    payload = json.loads(created.stdout)
+    snapshot = Path(payload["snapshot"])
+
+    assert snapshot.stat().st_uid == os.geteuid()
+    assert stat.S_IMODE(snapshot.stat().st_mode) == 0o555
+    assert stat.S_IMODE((snapshot / "prismaquant").stat().st_mode) == 0o555
+    assert stat.S_IMODE(
+        (snapshot / "prismaquant" / "__init__.py").stat().st_mode
+    ) == 0o444
+    assert stat.S_IMODE(
+        (snapshot / "tools" / "tracked_executable.py").stat().st_mode
+    ) == 0o555
+    assert stat.S_IMODE(
+        (snapshot / ".prismaquant-runtime-snapshot.json").stat().st_mode
+    ) == 0o444
+    if os.geteuid() == 0:
+        pytest.skip("uid 0 bypasses POSIX write permission checks")
+
+    environment = os.environ.copy()
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
+    environment.pop("PYTHONPYCACHEPREFIX", None)
+    used = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import pathlib, sys; "
+                "assert not sys.dont_write_bytecode; "
+                "root = pathlib.Path(sys.argv[1]); "
+                "sys.path.insert(0, str(root)); "
+                "import prismaquant; "
+                "assert prismaquant.VALUE == 1; "
+                "probe = root / 'write-probe'; "
+                "\ntry:\n probe.write_text('forbidden\\n')"
+                "\nexcept OSError:\n pass"
+                "\nelse:\n raise SystemExit('snapshot write unexpectedly succeeded')"
+            ),
+            str(snapshot),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert used.returncode == 0, used.stderr
+    assert not (snapshot / "write-probe").exists()
+    assert list(snapshot.rglob("__pycache__")) == []
+
+
+@pytest.mark.parametrize(
+    ("relative", "writable_mode"),
+    [
+        (".", 0o755),
+        ("prismaquant", 0o755),
+        ("prismaquant/__init__.py", 0o644),
+        ("tools/tracked_executable.py", 0o755),
+        (".prismaquant-runtime-snapshot.json", 0o644),
+    ],
+)
+def test_verify_refuses_every_writable_snapshot_inode(
+    tmp_path, relative, writable_mode
+):
+    source, commit = _repository(tmp_path)
+    created = _run(
+        "materialize", "--source-root", source,
+        "--cache-root", tmp_path / "cache", "--commit", commit,
+    )
+    assert created.returncode == 0, created.stderr
+    payload = json.loads(created.stdout)
+    snapshot = Path(payload["snapshot"])
+    target = snapshot if relative == "." else snapshot / relative
+    target.chmod(writable_mode)
+
+    refused = _run(
+        "verify", "--snapshot", snapshot,
+        "--expected-commit", commit,
+        "--expected-tree", payload["tree"],
+        "--expected-closure-sha256", payload["closure_sha256"],
+    )
+
+    assert refused.returncode == 2
+    assert "mode must be" in refused.stderr
+
+
+def test_verify_refuses_untracked_read_only_pycache(tmp_path):
+    source, commit = _repository(tmp_path)
+    created = _run(
+        "materialize", "--source-root", source,
+        "--cache-root", tmp_path / "cache", "--commit", commit,
+    )
+    assert created.returncode == 0, created.stderr
+    payload = json.loads(created.stdout)
+    snapshot = Path(payload["snapshot"])
+    package = snapshot / "prismaquant"
+    package.chmod(0o755)
+    pycache = package / "__pycache__"
+    pycache.mkdir()
+    bytecode = pycache / "untracked.pyc"
+    bytecode.write_bytes(b"untracked bytecode")
+    bytecode.chmod(0o444)
+    pycache.chmod(0o555)
+    package.chmod(0o555)
+
+    refused = _run(
+        "verify", "--snapshot", snapshot,
+        "--expected-commit", commit,
+        "--expected-tree", payload["tree"],
+        "--expected-closure-sha256", payload["closure_sha256"],
+    )
+
+    assert refused.returncode == 2
+    assert "files differ" in refused.stderr
+
+
+def test_verify_refuses_untracked_read_only_empty_directory(tmp_path):
+    source, commit = _repository(tmp_path)
+    created = _run(
+        "materialize", "--source-root", source,
+        "--cache-root", tmp_path / "cache", "--commit", commit,
+    )
+    assert created.returncode == 0, created.stderr
+    payload = json.loads(created.stdout)
+    snapshot = Path(payload["snapshot"])
+    snapshot.chmod(0o755)
+    extra = snapshot / "untracked-empty"
+    extra.mkdir()
+    extra.chmod(0o555)
+    snapshot.chmod(0o555)
+
+    refused = _run(
+        "verify", "--snapshot", snapshot,
+        "--expected-commit", commit,
+        "--expected-tree", payload["tree"],
+        "--expected-closure-sha256", payload["closure_sha256"],
+    )
+
+    assert refused.returncode == 2
+    assert "directories differ" in refused.stderr
+
+
 def test_verify_refuses_mutation_extra_files_and_wrong_transport_hash(tmp_path):
     source, commit = _repository(tmp_path)
     created = _run(
@@ -109,7 +259,9 @@ def test_verify_refuses_mutation_extra_files_and_wrong_transport_hash(tmp_path):
     assert "caller-attested" in refused_hash.stderr
 
     snapshot = Path(payload["snapshot"])
+    snapshot.chmod(0o755)
     (snapshot / "untracked.txt").write_text("unexpected\n")
+    snapshot.chmod(0o555)
     refused_extra = _run(*verify_args)
     assert refused_extra.returncode == 2
     assert "files differ" in refused_extra.stderr
@@ -129,6 +281,7 @@ def test_materialize_preserves_absolute_git_symlink_without_following_it(tmp_pat
     source, _ = _repository(tmp_path)
     outside = tmp_path / "outside-calibration.jsonl"
     outside.write_text("must not be copied into the snapshot\n")
+    outside.chmod(0o640)
     calibration = source / "calibration"
     calibration.mkdir()
     link = calibration / "diverse-v1.jsonl"
@@ -159,6 +312,7 @@ def test_materialize_preserves_absolute_git_symlink_without_following_it(tmp_pat
     snapshot_link = Path(payload["snapshot"]) / "calibration" / "diverse-v1.jsonl"
     assert snapshot_link.is_symlink()
     assert os.readlink(snapshot_link) == str(outside.resolve())
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o640
     manifest = json.loads(
         (Path(payload["snapshot"]) / ".prismaquant-runtime-snapshot.json").read_text()
     )
@@ -270,6 +424,10 @@ def _publication_candidate(root: Path, identity: str) -> Path:
     (root / ".prismaquant-runtime-snapshot.json").write_text(
         json.dumps({"identity": identity}) + "\n"
     )
+    payload.chmod(0o555)
+    (root / ".prismaquant-runtime-snapshot.json").chmod(0o444)
+    nested.chmod(0o555)
+    root.chmod(0o555)
     return root
 
 
@@ -278,13 +436,12 @@ def test_snapshot_tree_fallback_never_replaces_an_incumbent(tmp_path):
     candidate = _publication_candidate(tmp_path / "candidate", "candidate")
     incumbent = tmp_path / "destination"
     incumbent.mkdir()
-    (candidate / "identity").write_text("candidate\n")
     (incumbent / "identity").write_text("incumbent\n")
 
     won = snapshot_tool._populate_snapshot_tree_noreplace(candidate, incumbent)
 
     assert won is False
-    assert (candidate / "identity").read_text() == "candidate\n"
+    assert (candidate / "nested" / "payload.bin").read_bytes() == b"candidate"
     assert (incumbent / "identity").read_text() == "incumbent\n"
 
 
@@ -294,24 +451,64 @@ def test_snapshot_tree_fallback_preserves_modes_links_and_manifest_last(tmp_path
     destination = tmp_path / "destination"
     phases = []
 
+    def observe(phase, relative):
+        phases.append((phase, relative))
+        if phase == "directory_published":
+            assert relative is not None
+            assert stat.S_IMODE((destination / relative).stat().st_mode) == 0o700
+        elif phase == "directory_finalized":
+            assert relative is not None
+            assert stat.S_IMODE((destination / relative).stat().st_mode) == 0o555
+        elif phase == "before_manifest":
+            assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+            assert not (
+                destination / ".prismaquant-runtime-snapshot.json"
+            ).exists()
+        elif phase == "manifest_published":
+            assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+            assert stat.S_IMODE(
+                (destination / ".prismaquant-runtime-snapshot.json").stat().st_mode
+            ) == 0o444
+        elif phase == "root_finalized":
+            assert stat.S_IMODE(destination.stat().st_mode) == 0o555
+
     won = snapshot_tool._populate_snapshot_tree_noreplace(
         candidate,
         destination,
-        fault_inject=lambda phase, relative: phases.append((phase, relative)),
+        fault_inject=observe,
     )
 
     assert won is True
-    assert stat.S_IMODE((destination / "nested").stat().st_mode) == 0o750
-    assert stat.S_IMODE((destination / "nested" / "payload.bin").stat().st_mode) == 0o540
-    assert os.readlink(destination / "calibration.jsonl") == "/absolute/calibration.jsonl"
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o555
+    assert stat.S_IMODE((destination / "nested").stat().st_mode) == 0o555
+    assert stat.S_IMODE(
+        (destination / "nested" / "payload.bin").stat().st_mode
+    ) == 0o555
+    assert stat.S_IMODE(
+        (destination / ".prismaquant-runtime-snapshot.json").stat().st_mode
+    ) == 0o444
+    assert (
+        os.readlink(destination / "calibration.jsonl")
+        == "/absolute/calibration.jsonl"
+    )
     assert phases[0] == ("destination_claimed", None)
-    assert phases[-1] == ("before_manifest", None)
+    assert phases[-1] == ("root_finalized", None)
+    assert phases.index(("before_manifest", None)) < phases.index(
+        ("manifest_published", None)
+    )
     assert (destination / ".prismaquant-runtime-snapshot.json").is_file()
 
 
 @pytest.mark.parametrize(
     "fault_phase",
-    ["destination_claimed", "directory_published", "leaf_published", "before_manifest"],
+    [
+        "destination_claimed",
+        "directory_published",
+        "leaf_published",
+        "directory_finalized",
+        "before_manifest",
+        "manifest_published",
+    ],
 )
 def test_snapshot_tree_fallback_fault_leaves_unadoptable_incomplete_destination(
     tmp_path, monkeypatch, fault_phase
@@ -351,12 +548,216 @@ def test_snapshot_tree_fallback_fault_leaves_unadoptable_incomplete_destination(
         snapshot_tool.materialize_snapshot(source, cache, commit=commit)
 
     assert destination.is_dir()
-    assert not (destination / ".prismaquant-runtime-snapshot.json").exists()
+    manifest_exists = (
+        destination / ".prismaquant-runtime-snapshot.json"
+    ).exists()
+    assert manifest_exists is (fault_phase == "manifest_published")
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    assert list(cache.glob(f".{commit[:12]}.tmp-*")) == []
+    assert list(cache.glob(f".{commit[:12]}.archive-*")) == []
     monkeypatch.setattr(
         snapshot_tool, "_populate_snapshot_tree_noreplace", original_populate
     )
-    with pytest.raises(snapshot_tool.SnapshotError, match="manifest"):
+    expected_error = "directory mode" if manifest_exists else "manifest"
+    with pytest.raises(snapshot_tool.SnapshotError, match=expected_error):
         snapshot_tool.materialize_snapshot(source, cache, commit=commit)
+
+
+def test_snapshot_tree_fallback_crash_after_root_freeze_is_exact_but_not_returned(
+    tmp_path, monkeypatch
+):
+    snapshot_tool = _load_tool_module()
+    source, commit = _repository(tmp_path)
+    tree = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", f"{commit}^{{tree}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    cache = tmp_path / "cache"
+    destination = cache / f"{commit}-{tree[:12]}"
+    original_populate = snapshot_tool._populate_snapshot_tree_noreplace
+
+    def injected(source_path, destination_path, *, fault_inject=None):
+        def fault(phase, relative):
+            if phase == "root_finalized":
+                raise RuntimeError("injected root_finalized")
+
+        return original_populate(
+            source_path, destination_path, fault_inject=fault
+        )
+
+    monkeypatch.setattr(
+        snapshot_tool, "_try_rename_directory_noreplace", lambda *_: None
+    )
+    monkeypatch.setattr(
+        snapshot_tool, "_populate_snapshot_tree_noreplace", injected
+    )
+    with pytest.raises(RuntimeError, match="root_finalized"):
+        snapshot_tool.materialize_snapshot(source, cache, commit=commit)
+
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o555
+    assert list(cache.glob(f".{commit[:12]}.tmp-*")) == []
+    assert list(cache.glob(f".{commit[:12]}.archive-*")) == []
+    monkeypatch.setattr(
+        snapshot_tool, "_populate_snapshot_tree_noreplace", original_populate
+    )
+    adopted = snapshot_tool.materialize_snapshot(source, cache, commit=commit)
+    assert adopted["snapshot"] == str(destination.resolve())
+
+
+def test_snapshot_tree_fallback_manifest_window_never_verifies(
+    tmp_path, monkeypatch
+):
+    snapshot_tool = _load_tool_module()
+    source, commit = _repository(tmp_path)
+    cache = tmp_path / "cache"
+    original_populate = snapshot_tool._populate_snapshot_tree_noreplace
+    observed = []
+
+    def instrumented(source_path, destination_path, *, fault_inject=None):
+        manifest = json.loads(
+            (source_path / ".prismaquant-runtime-snapshot.json").read_text()
+        )
+
+        def observe(phase, relative):
+            if phase == "manifest_published":
+                with pytest.raises(
+                    snapshot_tool.SnapshotError, match="directory mode"
+                ):
+                    snapshot_tool.verify_snapshot(
+                        destination_path,
+                        expected_commit=manifest["commit"],
+                        expected_tree=manifest["tree"],
+                        expected_closure_sha256=manifest["closure_sha256"],
+                    )
+                observed.append("manifest_rejected")
+            elif phase == "root_finalized":
+                snapshot_tool.verify_snapshot(
+                    destination_path,
+                    expected_commit=manifest["commit"],
+                    expected_tree=manifest["tree"],
+                    expected_closure_sha256=manifest["closure_sha256"],
+                )
+                observed.append("root_accepted")
+
+        return original_populate(
+            source_path, destination_path, fault_inject=observe
+        )
+
+    monkeypatch.setattr(
+        snapshot_tool, "_try_rename_directory_noreplace", lambda *_: None
+    )
+    monkeypatch.setattr(
+        snapshot_tool, "_populate_snapshot_tree_noreplace", instrumented
+    )
+
+    created = snapshot_tool.materialize_snapshot(source, cache, commit=commit)
+
+    assert created["commit"] == commit
+    assert observed == ["manifest_rejected", "root_accepted"]
+
+
+def test_atomic_rename_receives_only_a_fully_immutable_candidate(
+    tmp_path, monkeypatch
+):
+    snapshot_tool = _load_tool_module()
+    source, commit = _repository(tmp_path)
+    observed = []
+
+    def inspect_then_rename(candidate, destination):
+        manifest = json.loads(
+            (candidate / ".prismaquant-runtime-snapshot.json").read_text()
+        )
+        snapshot_tool.verify_snapshot(
+            candidate,
+            expected_commit=manifest["commit"],
+            expected_tree=manifest["tree"],
+            expected_closure_sha256=manifest["closure_sha256"],
+        )
+        assert stat.S_IMODE(candidate.stat().st_mode) == 0o555
+        assert stat.S_IMODE(
+            (candidate / ".prismaquant-runtime-snapshot.json").stat().st_mode
+        ) == 0o444
+        observed.append("frozen_before_rename")
+        candidate.rename(destination)
+        return True
+
+    monkeypatch.setattr(
+        snapshot_tool, "_try_rename_directory_noreplace", inspect_then_rename
+    )
+
+    created = snapshot_tool.materialize_snapshot(
+        source, tmp_path / "cache", commit=commit
+    )
+
+    assert created["commit"] == commit
+    assert observed == ["frozen_before_rename"]
+
+
+def test_materialize_lost_atomic_race_cleans_frozen_candidate_only(
+    tmp_path, monkeypatch
+):
+    snapshot_tool = _load_tool_module()
+    source, commit = _repository(tmp_path)
+    cache = tmp_path / "cache"
+    original_populate = snapshot_tool._populate_snapshot_tree_noreplace
+
+    def publish_other_winner_then_lose(candidate, destination):
+        assert original_populate(candidate, destination) is True
+        return False
+
+    monkeypatch.setattr(
+        snapshot_tool,
+        "_try_rename_directory_noreplace",
+        publish_other_winner_then_lose,
+    )
+
+    created = snapshot_tool.materialize_snapshot(source, cache, commit=commit)
+    snapshot = Path(created["snapshot"])
+
+    assert list(cache.glob(f".{commit[:12]}.tmp-*")) == []
+    assert list(cache.glob(f".{commit[:12]}.archive-*")) == []
+    leaf = snapshot / "prismaquant" / "__init__.py"
+    assert stat.S_IMODE(leaf.stat().st_mode) == 0o444
+    assert leaf.stat().st_nlink == 1
+    snapshot_tool.verify_snapshot(
+        snapshot,
+        expected_commit=commit,
+        expected_tree=created["tree"],
+        expected_closure_sha256=created["closure_sha256"],
+    )
+
+
+def test_private_cleanup_never_follows_candidate_or_nested_symlinks(tmp_path):
+    snapshot_tool = _load_tool_module()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o750)
+    outside.chmod(0o750)
+    outside_payload = outside / "keep.bin"
+    outside_payload.write_bytes(b"keep")
+    outside_payload.chmod(0o640)
+
+    root_link = cache / ".candidate-root-link"
+    os.symlink(outside, root_link)
+    with pytest.raises(snapshot_tool.SnapshotError, match="not one real directory"):
+        snapshot_tool._remove_private_snapshot_tree(
+            root_link, trusted_parent=cache
+        )
+    assert root_link.is_symlink()
+
+    candidate = cache / ".candidate-real"
+    candidate.mkdir()
+    os.symlink(outside, candidate / "nested-link")
+    candidate.chmod(0o555)
+    snapshot_tool._remove_private_snapshot_tree(candidate, trusted_parent=cache)
+
+    assert not candidate.exists()
+    assert outside_payload.read_bytes() == b"keep"
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o750
+    assert stat.S_IMODE(outside_payload.stat().st_mode) == 0o640
 
 
 def test_snapshot_tree_fallback_concurrent_claim_has_one_winner(tmp_path):
@@ -378,4 +779,12 @@ def test_snapshot_tree_fallback_concurrent_claim_has_one_winner(tmp_path):
 
     assert sorted(outcomes) == [False, True]
     assert (destination / "nested" / "payload.bin").read_bytes() == b"same"
-    assert os.readlink(destination / "calibration.jsonl") == "/absolute/calibration.jsonl"
+    assert (
+        os.readlink(destination / "calibration.jsonl")
+        == "/absolute/calibration.jsonl"
+    )
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o555
+    assert stat.S_IMODE((destination / "nested").stat().st_mode) == 0o555
+    assert stat.S_IMODE(
+        (destination / "nested" / "payload.bin").stat().st_mode
+    ) == 0o555

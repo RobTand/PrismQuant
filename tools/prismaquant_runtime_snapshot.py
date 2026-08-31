@@ -31,6 +31,10 @@ MANIFEST = ".prismaquant-runtime-snapshot.json"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TREE = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_IMMUTABLE_DIRECTORY_MODE = 0o555
+_IMMUTABLE_FILE_MODE = 0o444
+_IMMUTABLE_EXECUTABLE_MODE = 0o555
+_PRIVATE_DIRECTORY_MODE = 0o700
 
 
 class SnapshotError(ValueError):
@@ -363,6 +367,202 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _fsync_regular_file(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise SnapshotError(f"snapshot leaf is not a regular file: {path}")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _finalize_snapshot_modes(root: Path) -> None:
+    """Freeze one private candidate before any public name can accept it."""
+
+    root_info = root.lstat()
+    if not stat.S_ISDIR(root_info.st_mode) or root.is_symlink():
+        raise SnapshotError(f"snapshot candidate is not one real directory: {root}")
+    directories, leaves = _snapshot_publication_tree(root)
+    manifest_relative = Path(MANIFEST)
+    if [row for row in leaves if row[0] == manifest_relative] != [
+        (manifest_relative, "file")
+    ]:
+        raise SnapshotError("snapshot candidate has no regular manifest")
+
+    # Git records only the executable distinction for regular files. Remove
+    # every write bit and normalize the remaining bits to that exact contract.
+    # Symlink targets are deliberately never followed or chmod'd.
+    for relative, kind in leaves:
+        if kind == "symlink":
+            continue
+        path = root / relative
+        info = path.lstat()
+        mode = (
+            _IMMUTABLE_EXECUTABLE_MODE
+            if relative != manifest_relative and info.st_mode & stat.S_IXUSR
+            else _IMMUTABLE_FILE_MODE
+        )
+        path.chmod(mode, follow_symlinks=False)
+        _fsync_regular_file(path)
+
+    # A child is made immutable only after its complete namespace is durable.
+    # The root is last so an interrupted private candidate remains removable by
+    # the narrowly scoped cleanup path below.
+    for relative in reversed(directories):
+        path = root / relative
+        _fsync_directory(path)
+        path.chmod(_IMMUTABLE_DIRECTORY_MODE, follow_symlinks=False)
+        _fsync_directory(path)
+    _fsync_directory(root)
+    root.chmod(_IMMUTABLE_DIRECTORY_MODE, follow_symlinks=False)
+    _fsync_directory(root)
+
+
+def _verify_immutable_publication_modes(root: Path) -> None:
+    """Require generic immutable modes before hard-link fallback publication."""
+
+    if root.is_symlink():
+        raise SnapshotError(f"snapshot path must not be a symlink: {root}")
+    root_info = root.lstat()
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_IMODE(root_info.st_mode) != _IMMUTABLE_DIRECTORY_MODE
+    ):
+        raise SnapshotError(f"snapshot directory mode must be 0555: {root}")
+    directories, leaves = _snapshot_publication_tree(root)
+    for relative in directories:
+        path = root / relative
+        if stat.S_IMODE(path.lstat().st_mode) != _IMMUTABLE_DIRECTORY_MODE:
+            raise SnapshotError(f"snapshot directory mode must be 0555: {path}")
+    for relative, kind in leaves:
+        if kind == "symlink":
+            continue
+        path = root / relative
+        mode = stat.S_IMODE(path.lstat().st_mode)
+        allowed = (
+            {_IMMUTABLE_FILE_MODE}
+            if relative == Path(MANIFEST)
+            else {_IMMUTABLE_FILE_MODE, _IMMUTABLE_EXECUTABLE_MODE}
+        )
+        if mode not in allowed:
+            expected = "0444" if relative == Path(MANIFEST) else "0444 or 0555"
+            raise SnapshotError(
+                f"snapshot regular-file mode must be {expected}: {path}"
+            )
+
+
+def _verify_exact_snapshot_modes(
+    root: Path, payload: Mapping[str, Any]
+) -> None:
+    """Require the public exact-Git permission contract for every real inode."""
+
+    _verify_immutable_publication_modes(root)
+    expected_directories: set[Path] = set()
+    for entry in payload["entries"]:
+        relative = Path(str(entry["path"]))
+        expected_directories.update(
+            parent for parent in relative.parents if parent != Path(".")
+        )
+    expected_files = {
+        Path(str(entry["path"])): (
+            _IMMUTABLE_EXECUTABLE_MODE
+            if entry.get("type") == "file" and entry.get("executable") is True
+            else _IMMUTABLE_FILE_MODE
+        )
+        for entry in payload["entries"]
+        if entry.get("type") == "file"
+    }
+    directories, leaves = _snapshot_publication_tree(root)
+    if set(directories) != expected_directories:
+        raise SnapshotError(
+            "snapshot directories differ from the exact tracked ledger"
+        )
+    for relative, kind in leaves:
+        if kind == "symlink":
+            continue
+        expected = (
+            _IMMUTABLE_FILE_MODE
+            if relative == Path(MANIFEST)
+            else expected_files.get(relative)
+        )
+        if expected is None:
+            raise SnapshotError(
+                f"snapshot regular file is absent from its exact ledger: {relative}"
+            )
+        path = root / relative
+        observed = stat.S_IMODE(path.lstat().st_mode)
+        if observed != expected:
+            raise SnapshotError(
+                f"snapshot regular-file mode must be {expected:04o}: {path}"
+            )
+
+
+def _make_private_directory_writable(path: Path) -> None:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise SnapshotError("private snapshot cleanup requires O_NOFOLLOW")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_DIRECTORY
+    flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):
+            raise SnapshotError(f"private cleanup entry is not a directory: {path}")
+        os.fchmod(descriptor, _PRIVATE_DIRECTORY_MODE)
+    finally:
+        os.close(descriptor)
+
+
+def _remove_private_snapshot_tree(path: Path, *, trusted_parent: Path) -> None:
+    """Remove only a directly-owned private candidate, including frozen trees.
+
+    Fallback publication hard-links regular files into the public winner. This
+    cleanup therefore restores owner-write on directories only; chmod'ing a
+    leaf here would also make the public hard link writable.
+    """
+
+    if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+        raise SnapshotError("private snapshot cleanup requires safe fd-based rmtree")
+    parent = trusted_parent.resolve(strict=True)
+    candidate = Path(os.path.abspath(path))
+    if candidate.parent != parent:
+        raise SnapshotError(
+            f"private snapshot cleanup escaped its trusted parent: {candidate}"
+        )
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode) or candidate.is_symlink():
+        raise SnapshotError(
+            f"private snapshot cleanup target is not one real directory: {candidate}"
+        )
+
+    _make_private_directory_writable(candidate)
+    for directory, directory_names, _file_names in os.walk(
+        candidate, topdown=True, followlinks=False
+    ):
+        current = Path(directory)
+        kept: list[str] = []
+        for name in directory_names:
+            child = current / name
+            child_info = child.lstat()
+            if stat.S_ISLNK(child_info.st_mode):
+                continue
+            if not stat.S_ISDIR(child_info.st_mode):
+                raise SnapshotError(
+                    f"private snapshot cleanup found unsupported entry: {child}"
+                )
+            _make_private_directory_writable(child)
+            kept.append(name)
+        directory_names[:] = kept
+    shutil.rmtree(candidate)
+
+
 def _populate_snapshot_tree_noreplace(
     source: Path,
     destination: Path,
@@ -373,15 +573,17 @@ def _populate_snapshot_tree_noreplace(
 
     The destination ``mkdir`` is the atomic ownership claim.  Directories,
     regular-file hard links, and symlinks are all created with no-clobber
-    primitives.  The manifest is the last link and therefore the completeness
-    marker.  An interruption before it leaves an invalid destination that a
-    future materializer refuses rather than repairs or adopts.
+    primitives. The manifest is the last namespace link; the subsequent exact
+    0555 root mode is the acceptance seal. An interruption before either
+    boundary leaves an invalid destination that a future materializer refuses
+    rather than repairs or adopts.
     """
 
     def inject(phase: str, relative: Path | None = None) -> None:
         if fault_inject is not None:
             fault_inject(phase, None if relative is None else relative.as_posix())
 
+    _verify_immutable_publication_modes(source)
     directories, leaves = _snapshot_publication_tree(source)
     manifest_relative = Path(MANIFEST)
     manifest_rows = [row for row in leaves if row[0] == manifest_relative]
@@ -389,18 +591,17 @@ def _populate_snapshot_tree_noreplace(
         raise SnapshotError("validated snapshot candidate has no regular manifest")
     ordinary_leaves = [row for row in leaves if row[0] != manifest_relative]
     try:
-        destination.mkdir(mode=stat.S_IMODE(source.lstat().st_mode))
+        destination.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
     except FileExistsError:
         return False
-    destination.chmod(stat.S_IMODE(source.lstat().st_mode))
+    destination.chmod(_PRIVATE_DIRECTORY_MODE)
     inject("destination_claimed")
 
     for relative in directories:
-        source_path = source / relative
         destination_path = destination / relative
         try:
-            destination_path.mkdir(mode=stat.S_IMODE(source_path.lstat().st_mode))
-            destination_path.chmod(stat.S_IMODE(source_path.lstat().st_mode))
+            destination_path.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+            destination_path.chmod(_PRIVATE_DIRECTORY_MODE)
         except FileExistsError as exc:
             raise SnapshotError(
                 f"snapshot destination collision at directory {relative.as_posix()!r}"
@@ -421,10 +622,15 @@ def _populate_snapshot_tree_noreplace(
             ) from exc
         inject("leaf_published", relative)
 
-    # Make every non-manifest namespace update durable before the completeness
-    # marker.  This is ordered evidence, not a host/power-loss qualification.
+    # Make every nested directory immutable bottom-up only after its complete
+    # namespace is durable. The root must remain private/writable until the
+    # manifest link is created, because linking itself requires write access.
     for relative in reversed(directories):
-        _fsync_directory(destination / relative)
+        destination_path = destination / relative
+        _fsync_directory(destination_path)
+        destination_path.chmod(_IMMUTABLE_DIRECTORY_MODE)
+        _fsync_directory(destination_path)
+        inject("directory_finalized", relative)
     _fsync_directory(destination)
     inject("before_manifest")
     try:
@@ -435,7 +641,14 @@ def _populate_snapshot_tree_noreplace(
         )
     except FileExistsError as exc:
         raise SnapshotError("snapshot destination manifest collision") from exc
+    # A crash here deliberately leaves a manifest plus a 0700 root. Public
+    # verification rejects that fail-closed state, and a later materializer
+    # refuses rather than repairing or adopting it.
     _fsync_directory(destination)
+    inject("manifest_published")
+    destination.chmod(_IMMUTABLE_DIRECTORY_MODE)
+    _fsync_directory(destination)
+    inject("root_finalized")
     _fsync_directory(destination.parent)
     return True
 
@@ -461,6 +674,8 @@ def _publish_snapshot_directory_noreplace(
         won = _populate_snapshot_tree_noreplace(source, destination)
     else:
         won = renamed
+        if won:
+            _fsync_directory(destination.parent)
     # A false result is adoption only after complete exact verification.  An
     # incomplete incumbent is never repaired or replaced.
     verified = verify_snapshot(
@@ -469,8 +684,6 @@ def _publish_snapshot_directory_noreplace(
         expected_tree=expected_tree,
         expected_closure_sha256=expected_closure_sha256,
     )
-    if won and source.exists():
-        shutil.rmtree(source)
     if verified["closure_sha256"] != expected_closure_sha256:
         raise SnapshotError("published snapshot verification changed identity")
     return won
@@ -561,6 +774,7 @@ def verify_snapshot(
     ):
         if not required.is_file() or required.is_symlink():
             raise SnapshotError(f"snapshot runtime entry is absent or unsafe: {required}")
+    _verify_exact_snapshot_modes(root, payload)
     return {
         "schema": SCHEMA,
         "snapshot": str(root),
@@ -635,36 +849,28 @@ def materialize_snapshot(
                 json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n",
                 encoding="utf-8",
             )
+            _finalize_snapshot_modes(temporary)
             verify_snapshot(
                 temporary,
                 expected_commit=resolved_commit,
                 expected_tree=tree,
                 expected_closure_sha256=payload["closure_sha256"],
             )
-            published = _publish_snapshot_directory_noreplace(
+            _publish_snapshot_directory_noreplace(
                 temporary,
                 destination,
                 expected_commit=resolved_commit,
                 expected_tree=tree,
                 expected_closure_sha256=payload["closure_sha256"],
             )
-            if not published:
-                # The helper already adopted only after exact validation.
-                shutil.rmtree(temporary)
-                return verify_snapshot(
-                    destination,
-                    expected_commit=resolved_commit,
-                    expected_tree=tree,
-                    expected_closure_sha256=payload["closure_sha256"],
-                )
-        except BaseException:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
         finally:
             try:
-                archive.unlink()
-            except FileNotFoundError:
-                pass
+                _remove_private_snapshot_tree(temporary, trusted_parent=cache)
+            finally:
+                try:
+                    archive.unlink()
+                except FileNotFoundError:
+                    pass
     return verify_snapshot(
         destination,
         expected_commit=resolved_commit,
