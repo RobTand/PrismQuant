@@ -3026,6 +3026,7 @@ def run_local_action(
                 f"declared result appeared before action execution: {output}"
             )
         _refuse_existing_result_symlink_prefix(output, cwd)
+        process: subprocess.Popen[bytes] | None = None
         try:
             process = subprocess.Popen(
                 list(task["argv"]),
@@ -3039,13 +3040,23 @@ def run_local_action(
                 # parent's descriptor remains CLOEXEC for unrelated execs.
                 pass_fds=(output_lock_descriptor,),
             )
-            try:
-                returncode = process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired as exc:
+            returncode = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            if process is not None:
                 _terminate_process_group(process)
-                raise LocalActionError(f"action execution timed out: {exc}") from exc
+            raise LocalActionError(f"action execution timed out: {exc}") from exc
         except OSError as exc:
+            if process is not None:
+                _terminate_process_group(process)
             raise LocalActionError(f"action execution failed: {exc}") from exc
+        except BaseException:
+            # A handled signal (notably SIGINT/KeyboardInterrupt) unwinds this
+            # process while its new-session child keeps running.  Reap the
+            # entire action group before the context manager explicitly
+            # unlocks the descriptor shared with that child.
+            if process is not None:
+                _terminate_process_group(process)
+            raise
         if returncode != 0:
             raise LocalActionError(
                 f"action argv exited with status {returncode}"

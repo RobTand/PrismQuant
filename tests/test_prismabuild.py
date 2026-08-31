@@ -1421,6 +1421,79 @@ def test_sigkill_during_action_keeps_output_locked_until_orphan_exits(
                 pass
 
 
+def test_sigint_worker_reaps_action_group_before_releasing_output_lock(
+    tmp_path: Path,
+):
+    """Handled worker interruption cannot leave an unlocked action writer."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    task = (
+        "import os,pathlib,time; "
+        "first=pathlib.Path('first-attempt'); "
+        "f=open('starts.log','ab',buffering=0); "
+        "f.write((str(os.getpid())+'\\n').encode()); os.fsync(f.fileno()); "
+        "is_retry=first.exists(); first.touch(); "
+        "time.sleep(0 if is_retry else 10); "
+        "pathlib.Path('result.bin').write_bytes(b'result')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", task])
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    repository_root = Path(__file__).resolve().parents[1]
+    worker = repository_root / "tools" / "prismabuild_worker.py"
+    argv = [
+        sys.executable,
+        str(worker),
+        "run-local",
+        "--action",
+        str(action_path),
+        "--cas-root",
+        str(cas_root),
+        "--checkout-root",
+        str(checkout),
+    ]
+    interrupted = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    retry: subprocess.Popen[bytes] | None = None
+    starts = checkout / "starts.log"
+    action_pid: int | None = None
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if starts.exists():
+                lines = starts.read_text(encoding="utf-8").splitlines()
+                if len(lines) == 1:
+                    action_pid = int(lines[0])
+                    break
+            time.sleep(0.02)
+        else:
+            pytest.fail("interrupted action process did not start")
+
+        interrupted.send_signal(signal.SIGINT)
+        assert interrupted.wait(timeout=4.0) != 0
+        assert action_pid is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(action_pid, 0)
+
+        retry = subprocess.Popen(argv)
+        assert retry.wait(timeout=5.0) == 0
+        assert len(starts.read_text(encoding="utf-8").splitlines()) == 2
+        assert pb.PrismaBuildCAS(cas_root).lookup(action) is not None
+    finally:
+        for process in (interrupted, retry):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=2.0)
+        if action_pid is not None:
+            try:
+                os.killpg(action_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def test_local_result_repair_requires_exact_claim_and_refuses_symlink(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
