@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 SCHEMA = "prismaquant.runtime_source_snapshot.v1"
@@ -266,15 +266,20 @@ def _extract_git_archive(archive: Path, destination: Path) -> None:
         raise SnapshotError("could not safely extract runtime archive") from exc
 
 
-def _rename_directory_noreplace(source: Path, destination: Path) -> bool:
-    """Atomically publish one directory without replacing an incumbent."""
+def _try_rename_directory_noreplace(
+    source: Path, destination: Path
+) -> bool | None:
+    """Try atomic directory publication.
+
+    ``None`` means the mounted filesystem does not implement the rename flag;
+    callers must use the no-clobber tree fallback rather than weakening to an
+    ordinary replacing rename.
+    """
 
     try:
         renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
-    except AttributeError as exc:
-        raise SnapshotError(
-            "runtime snapshot publication requires Linux renameat2"
-        ) from exc
+    except AttributeError:
+        return None
     renameat2.argtypes = [
         ctypes.c_int,
         ctypes.c_char_p,
@@ -295,10 +300,180 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> bool:
     error = ctypes.get_errno()
     if error in {errno.EEXIST, errno.ENOTEMPTY}:
         return False
+    if error in {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP}:
+        return None
     raise SnapshotError(
         f"could not publish runtime snapshot without replacement: "
         f"{os.strerror(error)}"
     )
+
+
+def _snapshot_publication_tree(
+    source: Path,
+) -> tuple[list[Path], list[tuple[Path, str]]]:
+    """Census real directories and non-directory leaves without following links."""
+
+    directories: list[Path] = []
+    leaves: list[tuple[Path, str]] = []
+    for directory, directory_names, file_names in os.walk(
+        source, topdown=True, followlinks=False
+    ):
+        current = Path(directory)
+        kept: list[str] = []
+        for name in sorted(directory_names):
+            path = current / name
+            relative = path.relative_to(source)
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                leaves.append((relative, "symlink"))
+            elif stat.S_ISDIR(info.st_mode):
+                directories.append(relative)
+                kept.append(name)
+            else:
+                raise SnapshotError(
+                    f"unsupported snapshot publication entry: {path}"
+                )
+        directory_names[:] = kept
+        for name in sorted(file_names):
+            path = current / name
+            relative = path.relative_to(source)
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                leaves.append((relative, "symlink"))
+            elif stat.S_ISREG(info.st_mode):
+                leaves.append((relative, "file"))
+            else:
+                raise SnapshotError(
+                    f"unsupported snapshot publication entry: {path}"
+                )
+    return (
+        sorted(directories, key=lambda path: (len(path.parts), path.as_posix())),
+        sorted(leaves, key=lambda row: row[0].as_posix()),
+    )
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _populate_snapshot_tree_noreplace(
+    source: Path,
+    destination: Path,
+    *,
+    fault_inject: Callable[[str, str | None], None] | None = None,
+) -> bool:
+    """Publish a validated candidate on filesystems lacking renameat2 flags.
+
+    The destination ``mkdir`` is the atomic ownership claim.  Directories,
+    regular-file hard links, and symlinks are all created with no-clobber
+    primitives.  The manifest is the last link and therefore the completeness
+    marker.  An interruption before it leaves an invalid destination that a
+    future materializer refuses rather than repairs or adopts.
+    """
+
+    def inject(phase: str, relative: Path | None = None) -> None:
+        if fault_inject is not None:
+            fault_inject(phase, None if relative is None else relative.as_posix())
+
+    directories, leaves = _snapshot_publication_tree(source)
+    manifest_relative = Path(MANIFEST)
+    manifest_rows = [row for row in leaves if row[0] == manifest_relative]
+    if manifest_rows != [(manifest_relative, "file")]:
+        raise SnapshotError("validated snapshot candidate has no regular manifest")
+    ordinary_leaves = [row for row in leaves if row[0] != manifest_relative]
+    try:
+        destination.mkdir(mode=stat.S_IMODE(source.lstat().st_mode))
+    except FileExistsError:
+        return False
+    destination.chmod(stat.S_IMODE(source.lstat().st_mode))
+    inject("destination_claimed")
+
+    for relative in directories:
+        source_path = source / relative
+        destination_path = destination / relative
+        try:
+            destination_path.mkdir(mode=stat.S_IMODE(source_path.lstat().st_mode))
+            destination_path.chmod(stat.S_IMODE(source_path.lstat().st_mode))
+        except FileExistsError as exc:
+            raise SnapshotError(
+                f"snapshot destination collision at directory {relative.as_posix()!r}"
+            ) from exc
+        inject("directory_published", relative)
+
+    for relative, kind in ordinary_leaves:
+        source_path = source / relative
+        destination_path = destination / relative
+        try:
+            if kind == "file":
+                os.link(source_path, destination_path, follow_symlinks=False)
+            else:
+                os.symlink(os.readlink(source_path), destination_path)
+        except FileExistsError as exc:
+            raise SnapshotError(
+                f"snapshot destination collision at leaf {relative.as_posix()!r}"
+            ) from exc
+        inject("leaf_published", relative)
+
+    # Make every non-manifest namespace update durable before the completeness
+    # marker.  This is ordered evidence, not a host/power-loss qualification.
+    for relative in reversed(directories):
+        _fsync_directory(destination / relative)
+    _fsync_directory(destination)
+    inject("before_manifest")
+    try:
+        os.link(
+            source / manifest_relative,
+            destination / manifest_relative,
+            follow_symlinks=False,
+        )
+    except FileExistsError as exc:
+        raise SnapshotError("snapshot destination manifest collision") from exc
+    _fsync_directory(destination)
+    _fsync_directory(destination.parent)
+    return True
+
+
+def _publish_snapshot_directory_noreplace(
+    source: Path,
+    destination: Path,
+    *,
+    expected_commit: str,
+    expected_tree: str,
+    expected_closure_sha256: str,
+) -> bool:
+    """Validate, publish without replacement, and verify/adopt the winner."""
+
+    verify_snapshot(
+        source,
+        expected_commit=expected_commit,
+        expected_tree=expected_tree,
+        expected_closure_sha256=expected_closure_sha256,
+    )
+    renamed = _try_rename_directory_noreplace(source, destination)
+    if renamed is None:
+        won = _populate_snapshot_tree_noreplace(source, destination)
+    else:
+        won = renamed
+    # A false result is adoption only after complete exact verification.  An
+    # incomplete incumbent is never repaired or replaced.
+    verified = verify_snapshot(
+        destination,
+        expected_commit=expected_commit,
+        expected_tree=expected_tree,
+        expected_closure_sha256=expected_closure_sha256,
+    )
+    if won and source.exists():
+        shutil.rmtree(source)
+    if verified["closure_sha256"] != expected_closure_sha256:
+        raise SnapshotError("published snapshot verification changed identity")
+    return won
 
 
 def _validate_manifest_shape(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -466,18 +641,22 @@ def materialize_snapshot(
                 expected_tree=tree,
                 expected_closure_sha256=payload["closure_sha256"],
             )
-            published = _rename_directory_noreplace(temporary, destination)
+            published = _publish_snapshot_directory_noreplace(
+                temporary,
+                destination,
+                expected_commit=resolved_commit,
+                expected_tree=tree,
+                expected_closure_sha256=payload["closure_sha256"],
+            )
             if not published:
-                # A same-key publisher appeared despite the cooperative lock.
-                # Never replace it: adopt only after complete exact validation.
-                existing = verify_snapshot(
+                # The helper already adopted only after exact validation.
+                shutil.rmtree(temporary)
+                return verify_snapshot(
                     destination,
                     expected_commit=resolved_commit,
                     expected_tree=tree,
                     expected_closure_sha256=payload["closure_sha256"],
                 )
-                shutil.rmtree(temporary)
-                return existing
         except BaseException:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
