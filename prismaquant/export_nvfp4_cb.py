@@ -235,10 +235,33 @@ def _is_trellis_fmt(fmt: str) -> bool:
 def _trellis_fused_group_key(qname: str, profile) -> str | None:
     """Reuse the single fused-sibling grouping the allocator uses.
 
-    WO-C rule 3: vLLM merges q/k/v and gate/up and per-role wires cannot be
-    concatenated — each carries its own alphabets, schedule and padding.
-    gridbook/config.py refuses such a target *by name*. This helper mirrors
-    that hard runtime fact rather than inventing a second rule.
+    WHAT THE RUNTIME ACTUALLY REFUSES, because the earlier wording here stated
+    it too strongly and a producer that believes it gives up two thirds of a
+    dense model.
+
+    ``gridbook/config.py::_build_trellis_method`` refuses a fused target that
+    has **per-role owners** -- three separate schemes declared against q/k/v --
+    because three wires are not a wire: each carries its own alphabets, rate
+    schedule and row padding. Its message then says exactly what IS supported:
+
+        "Export ONE wire covering the whole merged module and declare it
+         against this prefix."
+
+    and ``_trellis_scheme_for_prefix`` resolves a scheme declared against the
+    merged name (``...qkv_proj`` / ``...gate_up_proj``). So a fused serving
+    unit CAN be trellis: concatenate the siblings along the output-row axis in
+    ``packed_modules_mapping`` order and encode one wire over the merged
+    ``[sum(out_features), in_features]`` matrix.
+
+    **This exporter does not yet do that**, and the gap is registered rather
+    than papered over: producing a merged wire is render-path work (the
+    encoder must see the concatenated matrix), not an export rename. Until it
+    lands, a fused unit assigned a trellis rung is refused here -- but the
+    refusal is a PRODUCER limitation, not the runtime fact the previous
+    docstring claimed. On Qwen3-4B the unfused Linears are only 31.2% of body
+    parameters, so this cap is the difference between a third of a model and
+    all of it, and it matters most in the sub-3-bit band where the trellis is
+    the only format that reaches the rate at all.
     """
     try:
         from prismaquant.nvfp4_activation_contract import (
@@ -1021,22 +1044,26 @@ def export_nvfp4_cb(
             f"+ stock NVFP4/FP8_DYNAMIC (CT-delegated) + FP8_SOURCE "
             f"(verbatim fp8 passthrough) + trellis TCQ_E2M1/TCQ_E4M3 + BF16 passthrough only")
 
-    # --- Trellis hard runtime facts (WO-C rules 3 + 4) --------------------
-    # Rule 3: Fused modules cannot be trellis — per-role wires cannot be
-    # concatenated (each carries its own alphabets, schedule, padding).
-    # gridbook/config.py refuses such a target *by name*; mirror that here.
+    # --- Trellis serving constraints -------------------------------------
+    # A fused unit is refused here because THIS EXPORTER cannot yet produce a
+    # merged wire, not because the runtime forbids one. gridbook/config.py
+    # refuses a fused target with PER-ROLE owners and then says what is
+    # supported: "Export ONE wire covering the whole merged module and declare
+    # it against this prefix". See _trellis_fused_group_key for the full note.
     for qname in list(trellis_targets):
         fused_key = _trellis_fused_group_key(qname, _profile)
         if fused_key is not None:
             raise ValueError(
-                f"{qname}: fused modules cannot be trellis — vLLM merges "
-                f"{fused_key} and per-role wires cannot be concatenated "
-                "(each carries its own alphabets, rate schedule and row "
-                "padding). gridbook/config.py refuses such a target by name. "
-                "On a Qwen-shaped architecture the trellis-eligible Linears are "
-                "the unfused ones: o_proj and down_proj. Fused siblings must "
-                "take a non-trellis format (NVFP4/FP8/BF16) or go in ignore. "
-                "This is a hard runtime fact, not a policy you may relax."
+                f"{qname}: this exporter cannot yet emit a trellis wire for "
+                f"the fused unit {fused_key}. The RUNTIME supports it -- "
+                "gridbook/config.py refuses only PER-ROLE wires and directs a "
+                "producer to \"export ONE wire covering the whole merged "
+                "module\" -- but producing that wire means encoding the "
+                "row-concatenated sibling matrix, which is render-path work "
+                "this exporter does not have. Until it lands, assign fused "
+                "units a non-trellis format (NVFP4/FP8/BF16). This is a "
+                "PRODUCER limitation and is tracked as one; do not restate it "
+                "as a runtime fact."
             )
         if _is_routed_moe_trellis_target(qname, _profile):
             raise ValueError(
@@ -2397,8 +2424,10 @@ def export_nvfp4_cb(
             "columns": int(wire.columns),
             "wire_bytes": int(blob_len),
         }
-        # One target per group — per-role wires cannot be concatenated, so
-        # grouping them would be the fused-module error.
+        # One target per wire. Merging several targets into one group would
+        # declare per-role wires against a fused prefix, which the runtime
+        # refuses by name; the supported merged form needs ONE wire encoded
+        # over the concatenated matrix, which this exporter cannot yet make.
         export_target = _resident_export_target(qname)
         trellis_scheme_groups[qname] = {
             "format": "TRELLIS",
