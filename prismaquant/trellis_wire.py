@@ -51,6 +51,19 @@ _CODE_LAYOUT = {value: key for key, value in _LAYOUT_CODE.items()}
 _GENERATOR_0 = int(GENERATOR_OCTAL[0], 8)
 _GENERATOR_1 = int(GENERATOR_OCTAL[1], 8)
 
+# An E2M1 wire stores one E4M3FN scale byte per group of sixteen weights.
+# Constructing the set below happens once (and is intentionally independent of
+# torch's float8 implementation).  Validation can then scan an arbitrarily
+# large scale plane in C via ``set(bytes)`` instead of calling Python once per
+# group.  This matters for full-model receipts, where the scale plane contains
+# tens of millions of bytes but at most 256 distinct values.
+_POSITIVE_E4M3_SCALE_CODES = frozenset(
+    code
+    for code in range(256)
+    if code not in E4M3FN_NAN_CODES
+    and native_code_value(E4M3_FAMILY, code) > 0.0
+)
+
 
 class TrellisWireError(ValueError):
     """A blob is not a canonical wire-v1 payload."""
@@ -205,10 +218,7 @@ class TrellisWire:
                 raise TrellisWireError(
                     "E2M1 global_scale_real must be finite and positive"
                 )
-            if any(
-                native_code_value(E4M3_FAMILY, code) <= 0.0
-                for code in self.scale_blob
-            ):
+            if not set(self.scale_blob).issubset(_POSITIVE_E4M3_SCALE_CODES):
                 raise TrellisWireError(
                     "E2M1 scale codes must decode finite and positive"
                 )
