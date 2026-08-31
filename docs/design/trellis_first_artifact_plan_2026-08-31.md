@@ -85,6 +85,52 @@ CUDA_HOME, neither of which is the cause. Put
 `/home/rob/dq-runs/venvs/prismaquant-cu130/bin` on `PATH` and set
 `PRISMAQUANT_CB_EXT_DIR` to a persistent directory.
 
+## 4-bis. vLLM serves a trellis checkpoint — measured end to end
+
+`gridbook/tools/make_trellis_smoke_checkpoint.py` at the pin, E2M1 `R512`,
+2 layers, hidden 256, vocab 248320 (a real tokenizer's, so vLLM can load one),
+served on this box with the **wheel-pinned** serving runtime
+(`gridbook_serving_runtime.sh` + `GRIDBOOK_SERVING_RUNTIME_WHEEL` pointing at
+the dist-ci wheel), `GRIDBOOK_TRELLIS_E2M1=1`,
+`GRIDBOOK_TRELLIS_E2M1_MODE=resident`, image
+`vllm/vllm-openai:qwen38-flash-next`:
+
+```
+[serve] READY after 130s
+/v1/models -> {"id":"toy", ...}
+/v1/completions -> 8 tokens, finite logprobs
+```
+
+So `quantization=gridbook` config parse, safetensors load, trellis lane
+dispatch, load-time wire validation and the native TCQ R256 kernel all work
+inside vLLM. The generated text is gibberish and that is correct: the smoke
+checkpoint's weights are random by construction, and its own docstring says the
+reference weight *is* the wire's decoded value. The lane's numerical exactness
+is established by the 46 lane tests in §4, not by this serve; what this serve
+establishes is **integration**.
+
+Two environment facts this cost:
+
+- **The producer runtime path cannot be used to serve.** `gridbook_runtime.sh`
+  attests a *git checkout* and the vLLM images have no `git`
+  (`gridbook-runtime: ERROR: git is required to attest a Gridbook checkout`).
+  Serving must use `gridbook_serving_runtime.sh`, which binds the wheel and its
+  published SHA-256 instead — which is the stronger attestation anyway.
+- **The JIT build needs two headers the image lacks.** `trellis_r256.cu`
+  includes `ATen/cuda/CUDAContext.h`, which pulls `cusparse.h` and
+  `cusolverDn.h`; neither is in the image's `/usr/local/cuda/include`. They
+  exist under `nvidia/cu13/include` in site-packages. Putting that directory on
+  `CPATH` **does not work** — `crt/host_runtime.h` then also comes from the pip
+  package and nvcc fails with *"macro `__cudaLaunch` passed 2 arguments, but
+  takes just 1"*. Symlink **only the headers the toolkit include dir is
+  missing**, so nvcc's own headers keep priority.
+
+**A gap this exposed, and it is WO-D's:** the serve emitted **no `emit_route`
+telemetry at all**. Principle 14's second leg — compare the artifact's priced
+activation-contract histogram against the routes the serve actually emitted —
+currently has nothing to consume on this lane. A gate with no evidence must
+refuse for lack of evidence, not pass by default.
+
 ## 5. What is actually missing — all producer-side
 
 `export_native_compressed.py` refuses every trellis rung today. Half of its
