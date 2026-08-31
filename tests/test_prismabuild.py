@@ -4,11 +4,13 @@ import ast
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -655,6 +657,286 @@ def test_input_ingestion_race_reuses_one_verified_content_address(tmp_path: Path
         hashlib.sha256(payload).hexdigest()
     }
     assert all(cas.input_path(entry).read_bytes() == payload for entry, _ in results)
+
+
+@pytest.mark.parametrize("transition", ["two-to-one", "one-to-one"])
+def test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: str,
+):
+    payload_bytes = b"stable content-addressed payload"
+    payload = tmp_path / "payload"
+    payload.write_bytes(payload_bytes)
+    payload.chmod(0o444)
+    extra_link = tmp_path / "publication-link"
+    if transition == "two-to-one":
+        os.link(payload, extra_link)
+        assert payload.stat().st_nlink == 2
+
+    original_open = pb._open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+    mutated = False
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_change_link_metadata(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            if transition == "two-to-one":
+                extra_link.unlink()
+            else:
+                # Model a link/unlink ctime disturbance whose before/after
+                # link count remains one.  The first attempt must be thrown
+                # away rather than accepted under a ctime exception.
+                time.sleep(0.001)
+                os.link(payload, extra_link)
+                extra_link.unlink()
+        return chunk
+
+    monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_change_link_metadata)
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    assert pb._file_identity_nofollow(
+        payload,
+        where="test payload",
+        expected_sha256=digest,
+        expected_bytes=len(payload_bytes),
+    ) == (digest, len(payload_bytes), payload.stat().st_mode)
+    assert open_count == 2
+    assert payload.stat().st_nlink == 1
+
+
+def test_stable_receipt_read_replays_publication_link_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    receipt_bytes = b'{"receipt":"stable"}\n'
+    receipt = tmp_path / "receipt.json"
+    receipt.write_bytes(receipt_bytes)
+    receipt.chmod(0o444)
+    publication_link = tmp_path / "receipt-publication-link"
+    os.link(receipt, publication_link)
+
+    original_open = pb._open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+    mutated = False
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_unlink(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            publication_link.unlink()
+        return chunk
+
+    monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_unlink)
+
+    assert pb._read_regular_file_nofollow(
+        receipt, where="test receipt", require_readonly=True
+    ) == receipt_bytes
+    assert open_count == 2
+
+
+def test_stable_file_identity_refuses_perpetual_one_link_ctime_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload_bytes = b"same bytes, hostile metadata churn"
+    payload = tmp_path / "payload"
+    payload.write_bytes(payload_bytes)
+    payload.chmod(0o444)
+    transient_link = tmp_path / "transient-link"
+
+    original_open = pb._open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+    mutation_count = 0
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_churn_link(descriptor: int, count: int) -> bytes:
+        nonlocal mutation_count
+        chunk = original_read(descriptor, count)
+        if chunk:
+            time.sleep(0.001)
+            os.link(payload, transient_link)
+            transient_link.unlink()
+            mutation_count += 1
+        return chunk
+
+    monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_churn_link)
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    with pytest.raises(
+        pb.CASTamperError,
+        match=rf"did not stabilize after {pb._STABLE_FILE_READ_ATTEMPTS} fresh reads",
+    ):
+        pb._file_identity_nofollow(
+            payload,
+            where="test payload",
+            expected_sha256=digest,
+            expected_bytes=len(payload_bytes),
+        )
+    assert open_count == pb._STABLE_FILE_READ_ATTEMPTS
+    assert mutation_count == pb._STABLE_FILE_READ_ATTEMPTS
+    assert payload.stat().st_nlink == 1
+
+
+@pytest.mark.parametrize("mutation", ["mode", "mtime"])
+def test_stable_file_identity_refuses_substantive_mutation_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+):
+    payload_bytes = b"immutable payload"
+    payload = tmp_path / "payload"
+    payload.write_bytes(payload_bytes)
+    payload.chmod(0o444)
+    original = payload.stat()
+
+    original_open = pb._open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+    mutated = False
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_mutate(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            if mutation == "mode":
+                payload.chmod(0o400)
+            else:
+                os.utime(
+                    payload,
+                    ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000_000),
+                )
+        return chunk
+
+    monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_mutate)
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    with pytest.raises(pb.CASTamperError, match="changed substantively"):
+        pb._file_identity_nofollow(
+            payload,
+            where="test payload",
+            expected_sha256=digest,
+            expected_bytes=len(payload_bytes),
+        )
+    assert open_count == 1
+
+
+def test_stable_file_identity_refuses_owner_mutation_without_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload_bytes = b"immutable payload"
+    payload = tmp_path / "payload"
+    payload.write_bytes(payload_bytes)
+    payload.chmod(0o444)
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    original_open = pb._open_regular_nofollow
+    original_fstat = pb.os.fstat
+    payload_descriptor: int | None = None
+    payload_fstat_count = 0
+    open_count = 0
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count, payload_descriptor
+        open_count += 1
+        payload_descriptor, parent_fd = original_open(path, where=where)
+        return payload_descriptor, parent_fd
+
+    def fstat_with_changed_owner(descriptor: int) -> os.stat_result:
+        nonlocal payload_fstat_count
+        observed = original_fstat(descriptor)
+        if descriptor != payload_descriptor:
+            return observed
+        payload_fstat_count += 1
+        if payload_fstat_count != 2:
+            return observed
+        return SimpleNamespace(
+            st_dev=observed.st_dev,
+            st_ino=observed.st_ino,
+            st_size=observed.st_size,
+            st_mode=observed.st_mode,
+            st_uid=observed.st_uid + 1,
+            st_gid=observed.st_gid,
+            st_mtime_ns=observed.st_mtime_ns,
+            st_nlink=observed.st_nlink,
+            st_ctime_ns=observed.st_ctime_ns,
+        )  # type: ignore[return-value]
+
+    monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "fstat", fstat_with_changed_owner)
+
+    with pytest.raises(pb.CASTamperError, match="changed substantively"):
+        pb._file_identity_nofollow(
+            payload,
+            where="test payload",
+            expected_sha256=digest,
+            expected_bytes=len(payload_bytes),
+        )
+    assert open_count == 1
+
+
+def test_stable_file_identity_refuses_wrong_address_before_metadata_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = tmp_path / "payload"
+    payload.write_bytes(b"wrong address")
+    payload.chmod(0o444)
+    transient_link = tmp_path / "transient-link"
+    original_open = pb._open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_churn_link(descriptor: int, count: int) -> bytes:
+        chunk = original_read(descriptor, count)
+        if chunk and not transient_link.exists():
+            os.link(payload, transient_link)
+            transient_link.unlink()
+        return chunk
+
+    monkeypatch.setattr(pb, "_open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_churn_link)
+
+    with pytest.raises(pb.CASTamperError, match="expected address"):
+        pb._file_identity_nofollow(
+            payload,
+            where="test payload",
+            expected_sha256="0" * 64,
+            expected_bytes=len(b"wrong address"),
+        )
+    assert open_count == 1
 
 
 def test_input_ingestion_and_lookup_detect_conflict_and_tampering(tmp_path: Path):
