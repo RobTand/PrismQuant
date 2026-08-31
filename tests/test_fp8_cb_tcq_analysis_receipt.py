@@ -719,6 +719,61 @@ def test_imported_codec_label_permutation_refuses(
         M.build_receipt(source)
 
 
+@pytest.mark.parametrize("forged_nsse", [-1e-16, 1e-16])
+def test_resigned_metric_tolerance_verdict_flip_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forged_nsse: float,
+):
+    source = _source(tmp_path, monkeypatch)
+    document = json.loads(source.read_text())
+    baseline = M._population_summaries(document["per_tensor"])
+    assert all(
+        cell["verdict"] == "NO_VERDICT_brackets_disagree_or_frontiers_cross"
+        for population in baseline.values()
+        for cell in population["cells"]
+    )
+    for cell in document["per_tensor"].values():
+        for rung in M.CELL_MAP.values():
+            arm = cell["arms"][f"fp8_cb_fixed@{rung}"]
+            arm["weighted_sse"] = 0.0
+            arm["weighted_nsse"] = forged_nsse
+            arm["weighted_snr_db"] = -10.0 * math.log10(
+                max(forged_nsse, 1e-300)
+            )
+    attacked = M._population_summaries(document["per_tensor"])
+    assert all(
+        cell["verdict"] == "FP8_CB"
+        for population in attacked.values()
+        for cell in population["cells"]
+    )
+    document["population_summaries"] = attacked
+    body = {
+        key: value for key, value in document.items()
+        if key != "checkpoint_sha256"
+    }
+    document["checkpoint_sha256"] = M._identity_sha256(body)
+    source.write_text(json.dumps(document))
+    with pytest.raises(M.AnalysisReceiptError, match="weighted_nsse"):
+        M.build_receipt(source)
+
+
+@pytest.mark.parametrize("field", ["python", "torch", "triton"])
+def test_resigned_runtime_version_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str,
+):
+    source = _source(tmp_path, monkeypatch)
+    document = json.loads(source.read_text())
+    document["settings"]["environment"][field] = "forged"
+    unsigned = {
+        key: value for key, value in document["settings"].items()
+        if key != "identity_sha256"
+    }
+    document["settings"]["identity_sha256"] = M._identity_sha256(unsigned)
+    source.write_text(json.dumps(document))
+    _reseal_source(source)
+    with pytest.raises(M.AnalysisReceiptError, match="runtime versions"):
+        M.build_receipt(source)
+
+
 def test_resigned_receipt_schema_and_summary_refuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
