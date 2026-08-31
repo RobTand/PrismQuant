@@ -2,6 +2,20 @@
 
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `codex/prismabuild-v4-qualified-20260831`) for the **exact V4
+two-host shared-NFS CPU qualification** of the opt-in initial-miss rendezvous.
+The independently reviewed frozen harness ran source commit `452c6f6` (tree
+`e7b31d0`, runtime closure `266b33b…`, 1,223 entries) on `gx10-6b77` and
+Sparky. Both exact workers published manifest-bound arrival/ready evidence for
+the same configured CAS root, action and run; the loser returned the ordinary
+proof-bearing cache hit. The frozen run root
+`run-v4-452c6f6-20260831-075539` committed matching host-manifest SHA-256
+`48d9ad1…` and independently re-verified PASS from its `0555` root. Exact
+commands, hashes, scope and limitations are in
+`docs/results/prismabuild_two_host_qualification_2026-08-31.md`. This qualifies
+only that configured two-host/shared-NFS causal path; host/power loss, live
+Slurm, daemon deployment, ACL/WORM isolation and GPU work remain unqualified.
+Re-stamped
 (2026-08-31, `codex/prismabuild-initial-miss-rendezvous-20260831`) for the
 **opt-in PrismaBuild initial-miss causal rendezvous** (§10.1). `run-local` can
 consume one immutable strict manifest naming exactly two lowercase hosts, one
@@ -20,7 +34,9 @@ authentication: a namespace principal able to forge another host's fully
 formed record remains inside the undeployed ACL/WORM trust boundary. Hostile
 CPU tests cover stalls, timeout, replay/mismatch, unsafe topology and files,
 pre-release receipt publication, and legitimate post-release publication.
-There is no shared-NFS, host-loss, live-Slurm, GPU, or deployment claim.
+At this source-review boundary there was no shared-NFS, host-loss, live-Slurm,
+GPU, or deployment claim; the newer V4 result above supplies only the exact
+configured shared-NFS qualification it names.
 Re-stamped
 (2026-08-31, `codex/prismabuild-runtime-snapshot-immutability-20260831`) for
 the **exact-Git runtime-snapshot immutability boundary**. Published directories
@@ -7758,9 +7774,12 @@ a worker that completed the opt-in protocol gains the closed self-hashed
 `initial_miss_rendezvous_receipt.v1` result member. These unkeyed records prove
 integrity under cooperative isolated principals, not Byzantine authorship: a
 same-namespace writer can fabricate or delete another participant's state, so
-ACL/WORM/retention isolation remains a deployment prerequisite. Only hostile
-same-process CPU tests exist; shared-NFS, host/power loss and live Slurm remain
-unqualified.
+ACL/WORM/retention isolation remains a deployment prerequisite. Hostile local
+CPU tests and the exact V4 `gx10-6b77`/Sparky shared-NFS qualification now pass
+for source commit `452c6f6`; see
+`docs/results/prismabuild_two_host_qualification_2026-08-31.md`. This is not a
+portable filesystem claim: host/power loss, other mounts, live Slurm, daemon
+deployment and hostile-principal behavior remain unqualified.
 
 The worker passes that exact locked open-file description to task argv. Thus a
 worker `SIGKILL` cannot release exclusion while its direct action process can
