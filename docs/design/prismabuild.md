@@ -157,11 +157,13 @@ The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,
 derives the canonical SHA-256 and byte count, optionally checks both against
 caller-supplied expectations, publishes through a read-only first-writer-wins
-hard link, fsyncs the blob shard, then reopens and hashes the canonical CAS name
-before returning the exact `{id, sha256, bytes}` action-input row. A concurrent
-identical writer is an independently verified cache hit; a conflicting,
-malformed, symlinked, truncated, or changed object refuses. `input_path()` and
-the `verify-input` CLI replay the same schema, size, and full-content check.
+hard link, and fsyncs the blob shard. A winning publisher reopens the canonical
+name and proves that it is the exact private, read-only staging inode whose
+bytes it just hashed and fsynced; it does not hash that same inode again. A
+loser never trusts the other writer's inode and hashes the canonical blob in
+full. `input_path()`, `verify-input`, and every public cache lookup retain the
+schema, size, mode, and full-content check. A conflicting, malformed,
+symlinked, truncated, writable, or changed object refuses.
 This closes the code-level input-ingress gap. One narrow cross-host pilot was
 run on 2026-08-30 from repository commit `5bd2d2c`: Sparky and Sparklina used
 their direct stdlib launchers concurrently to ingest the same 2,601-byte
@@ -285,6 +287,17 @@ launcher as the final userspace check before the first-writer-wins hard link.
 There remains an unavoidable sequential interval between that final check
 returning and the `os.link` syscall; this design minimizes that interval rather
 than claiming a zero-gap filesystem snapshot.
+Result-blob publication uses the same consumed-inode rule as input ingestion.
+The successful publisher already computed SHA-256 while copying into a
+private read-only staging inode. After the canonical hard link is durable, it
+reopens that name and requires exact device/inode and substantive metadata
+identity. Receipt readback can then validate the canonical receipt without a
+second or third payload hash. If another blob or stochastic receipt won, every
+unconsumed winning blob is hashed normally. Returning a path immediately from
+that successful publication reuses this proof; later `lookup()` and
+`result_path()` calls always consume and hash the canonical payload anew.
+The before/after 2 GiB and 256 MiB NFS measurements and their limits are in
+`docs/results/prismabuild_publish_io_2026-08-31.md`.
 CAS staging, blob, request, and receipt directories are walked or created only
 through held `dir_fd` values with `O_NOFOLLOW`; new components use `mkdirat`
 semantics and are fsynced after their final mode is applied. Hard links,

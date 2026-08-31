@@ -2,6 +2,19 @@
 
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `codex/prismabuild-publish-io-20260831`) for the **CAS
+winning-publication I/O boundary** (§10.1). A fresh result or input is hashed
+once while being copied to its private, read-only, fsynced staging inode. If
+its no-clobber hard link wins, canonical-name readback proves exact inode and
+substantive metadata identity instead of rereading the payload. A losing blob
+or different stochastic receipt remains fully hashed, as do all later public
+lookups. On a warm 2 GiB NFS fixture this reduced process logical reads from
+6.442 GB to 2.148 GB and publication wall time from 4.906 s to 3.175 s; exact
+cProfile, `/proc/self/io`, two-box Netdata evidence, commands, and limitations
+are recorded in `docs/results/prismabuild_publish_io_2026-08-31.md`. This is
+not production-scale, cold-NFS, power-loss, or ACL/WORM qualification. No
+pipeline default, format menu, serving pin, or serving topology changed.
+Re-stamped
 (2026-08-31, `codex/prismabuild-declared-result-recovery-20260831`) for the
 **claimed local-result crash-recovery boundary** (§10.1). Before task argv,
 the local worker now first-writer-publishes a self-digested immutable claim
@@ -7587,6 +7600,19 @@ closed rather than redirecting lookup, publication, or cleanup outside the
 configured CAS. This is a Linux contract requiring `openat`, `O_NOFOLLOW`, and
 `/proc/self/fd`; a returned payload `Path` records a just-verified name, not an
 FD held for an arbitrary later consumer.
+
+A blob publisher additionally retains the provenance of the private staging
+inode whose content it hashed during the copy. When its no-clobber hard link
+wins, it fsyncs the shard, opens the canonical name without following links,
+and requires that name to be the same regular, read-only inode with identical
+size, mode, ownership, and modification time. This is the consumed content
+proof for that publication, so receipt readback and the immediate worker return
+do not reread the same large payload. Any pre-existing blob, or a canonical
+stochastic receipt naming another result, is unconsumed state and receives a
+full SHA-256 pass. Public `lookup()`, `input_path()`, and `result_path()` also
+retain full content verification; inode identity is never treated as a future
+cache hit. Storage that permits an actor to rewrite read-only CAS inodes is
+still outside the undeployed ACL/WORM trust gate.
 
 Local execution also has one immutable ownership record per exact
 `(action manifest, resolved checkout, working directory, declared result)` at
