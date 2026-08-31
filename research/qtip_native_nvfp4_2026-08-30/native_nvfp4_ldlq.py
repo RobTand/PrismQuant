@@ -484,8 +484,34 @@ def qtip_native_arm(
     if weight.ndim != 2 or int(weight.shape[1]) % GROUP:
         raise ValueError("weight must be [out,in] with group-16 input width")
     source = weight.float()
+    _x, h, _damp = damped_hessian(
+        activations, int(source.shape[1]), source.device
+    )
+    return qtip_native_arm_from_hessian(source, h, scale_levels)
+
+
+def qtip_native_arm_from_hessian(
+    weight: torch.Tensor,
+    hessian: torch.Tensor,
+    scale_levels: tuple[float, ...] = SCALE_LEVELS,
+) -> Arm:
+    """Arm C from an already constructed, matched-objective Hessian.
+
+    This is the same stock-native terminal and reverse recurrence used by
+    :func:`qtip_native_arm`.  It exists so activation-free corpora can supply
+    their explicit Hessian contract without fabricating activation rows.
+    """
+    if weight.ndim != 2 or int(weight.shape[1]) % GROUP:
+        raise ValueError("weight must be [out,in] with group-16 input width")
+    source = weight.float()
     rows, cols = map(int, source.shape)
-    _x, h, _damp = damped_hessian(activations, cols, source.device)
+    h = hessian.to(device=source.device, dtype=torch.float32)
+    if h.shape != (cols, cols):
+        raise ValueError("hessian must be square over the weight input width")
+    if not bool(torch.isfinite(h).all()):
+        raise ValueError("hessian must be finite")
+    if not torch.allclose(h, h.T, rtol=0.0, atol=1.0e-6):
+        raise ValueError("hessian must be symmetric")
     lower = qtip_block_unit_lower(h)
     with fixed_contract(scale_levels):
         global_real = enc.nvfp4_global_real(

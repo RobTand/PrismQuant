@@ -162,6 +162,178 @@ canonical `gridbook.trellis.wire.v1` bytes, reparses and decodes those same
 bytes, and proves original-basis serve algebra. It remains one-Linear,
 unregistered, unpinned, and production-ineligible.
 
+## Executable Arm E quality campaign
+
+`arm_e_quality_campaign.py` is the research-only matched runner for scalar
+native NVFP4 (A), stock-native BlockLDL (C), and rotated BlockLDL plus the
+canonical E2M1 trellis wire (E). Its only CLI inputs are a closed
+`prismaquant.research.arm_e_quality_campaign_manifest.v1` and the optional
+`--preflight-only` switch. Unknown fields, implicit seeds, noncanonical
+alphabets, output paths outside the declared root, CPU quality execution, and
+an unavailable CUDA/Triton encoder all fail closed.
+
+The runner selects the largest legal q256 whose **complete** wire is no larger
+than either native control. Headers, full schedules, offsets, alphabet bytes,
+E4M3 group-scale bytes, and row padding are charged. Current exact preflight:
+
+| shape | selected q256 | complete wire bpw |
+|---|---:|---:|
+| Qwen `[2048,1024]` | 992 | 4.377437592 |
+| routed down `[4096,2048]` | 1008 | 4.438612938 |
+| routed gate/up `[2048,4096]` | 1016 | 4.470870018 |
+| dense gate/up `[12288,4096]` | 1016 | 4.469103336 |
+| dense down `[4096,12288]` | 1016 | 4.469774723 |
+
+Qwen q1000, q1008, and q1016 all occupy 4.502437592 bpw after 16-byte
+row alignment and therefore exceed the 4.500030518-bpw native controls. The
+q992 selection is deliberate.
+
+The Qwen mode uses the exact preprocessed activation rows for both its Hessian
+and activation-output metric. The GLM corpus has activation second moments but
+no activation rows, so its receipt always marks activation-output unavailable
+and reports only raw-importance-weighted, regularized-diagonal-H, and plain
+weight metrics. A deterministic Rademacher matrix checks transform orientation
+only and is explicitly excluded from quality.
+
+Each E seed publishes one `.trellis` file, reopens it, canonical-reserializes
+it, and decodes those same bytes before its tensor-result commit marker can
+publish. The campaign receipt publishes last. A persistent identity claim and
+structural validation of seed census, rate, bytes, transforms, metric domains,
+and nested producer receipt permit crash resume; this is not an external
+signature over locally writable evidence.
+
+### Current GLM feasibility boundary
+
+The existing producer accepts one dense K-by-K Hessian and performs a full
+factorization. A K=12288 FP32 Hessian alone is 603,979,776 bytes and the dense
+factorization is cubic. Although a transformed diagonal GLM Hessian is exactly
+block diagonal by the declared 4096-column input transform, that structured
+producer is not implemented here. Actual execution therefore refuses every
+K>4096 selection **before creating the publication claim**. A full 33-tensor
+GLM manifest is a valid preflight contract but is not currently executable and
+cannot produce a “completed campaign” receipt. The immediate executable pilot
+is one routed-down K2048 plus one dense gate/up K4096 tensor. Dense-down K12288
+is a refusal test until an exact block-structured implementation is separately
+reviewed and regression-locked against the dense producer.
+
+### Closed manifest and Sparky commands
+
+The following creates the exact Qwen manifest from the accepted R3 inputs on
+Sparky. Run it only from a clean committed checkout; the manifest binds the
+commit and the runner rechecks every imported source at claim, completion, and
+receipt publication.
+
+```bash
+PQ_TREE=/home/rob/pq-arm-e-quality-campaign
+PQ_COMMIT=$(git -C "$PQ_TREE" rev-parse HEAD)
+PQ_RUN=/home/rob/dq-runs/arm-e-qwen-${PQ_COMMIT:0:7}
+mkdir -p "$PQ_RUN/contract" "$PQ_RUN/output" "$PQ_RUN/profile" "$PQ_RUN/netdata"
+cp /home/rob/dq-runs/qtip-native-nvfp4-v2-r3-contract-64679a7/calibration_identity.v1.json "$PQ_RUN/contract/"
+jq -n --arg commit "$PQ_COMMIT" --arg run "$PQ_RUN" '{
+  schema:"prismaquant.research.arm_e_quality_campaign_manifest.v1",
+  campaign_id:("arm-e-qwen-" + ($commit[0:7])),
+  mode:"qwen_one_linear",
+  research_opt_in:"qtip_trellis_online_hadamard_one_linear_v1",
+  execution:{device:"cuda:0",host:"sparky",container_identity:("sha256:" + "cf3f7f83e6820fa75aae249393e8fa4840af4562192203a1aed3f2082f3ea2f9"),prismaquant_checkout:"/code",prismaquant_commit:$commit},
+  output:{root:"/publication",durable_root_uri:("sparky:" + $run + "/output")},
+  input:{kind:"qwen_one_linear",model_id:"Qwen/Qwen3-0.6B",weight_path:"/model/model.safetensors",weight_key:"model.layers.0.self_attn.q_proj.weight",activations_path:"/activation/model__layers__0__self_attn__q_proj.pt",activations_key:"inputs",calibration_manifest:"/contract/calibration_identity.v1.json"},
+  recipe:{family:"TCQ_E2M1_R256",layout:"tight_offsets",rate_policy:"largest_q256_complete_wire_not_above_min_native_A_C_bytes_v1",schedule_policy:"uniform_column_schedule_bresenham_v1",alphabet_policy:"canonical_full_e2m1_value_order_rate3_v1",scale_rule:"static_6",terminal_metric_mode:"diag_block_D",input_block_policy:"largest_power_of_two_divisor_capped_v1",max_input_block_size:4096,output_block_size:256,sb_chunk:64,determinism_mode:"on",tailbite_candidates:4,backend:"triton",point_route:"full",buffer_blocks:2,damp_fraction:1.0,glm_algebra_witness_rows:2},
+  seeds:[
+    {label:"primary",input_seed:4660,output_seed:22136},
+    {label:"holdout-1",input_seed:4661,output_seed:22137},
+    {label:"holdout-2",input_seed:4662,output_seed:22138}
+  ]
+}' > "$PQ_RUN/contract/qwen.manifest.v1.json"
+```
+
+CPU-safe contract and exact-byte preflight:
+
+```bash
+docker run --rm --entrypoint /usr/bin/python3 \
+  -e PYTHONPATH=/code -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$PQ_TREE:/code:ro" \
+  -v /home/rob/models/Qwen3-0.6B:/model:ro \
+  -v /home/rob/dq-runs/aura-lmhead-fix-0p6b/act:/activation:ro \
+  -v "$PQ_RUN/contract:/contract:ro" -v "$PQ_RUN/output:/publication" \
+  -w /code sha256:cf3f7f83e6820fa75aae249393e8fa4840af4562192203a1aed3f2082f3ea2f9 \
+  -m research.qtip_native_nvfp4_2026-08-30.arm_e_quality_campaign \
+  --manifest /contract/qwen.manifest.v1.json --preflight-only
+```
+
+Gold quality execution, wrapped in the host's in-process CUDA/NVTX profiler:
+
+```bash
+ARM_E_START=$(date +%s)
+nsys profile --trace=cuda,nvtx,osrt --sample=none \
+  --force-overwrite=false -o "$PQ_RUN/profile/arm-e-qwen" \
+  docker run --rm --gpus all --ipc=host --entrypoint /usr/bin/python3 \
+  -e PYTHONPATH=/code -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$PQ_TREE:/code:ro" \
+  -v /home/rob/models/Qwen3-0.6B:/model:ro \
+  -v /home/rob/dq-runs/aura-lmhead-fix-0p6b/act:/activation:ro \
+  -v "$PQ_RUN/contract:/contract:ro" -v "$PQ_RUN/output:/publication" \
+  -w /code sha256:cf3f7f83e6820fa75aae249393e8fa4840af4562192203a1aed3f2082f3ea2f9 \
+  -m research.qtip_native_nvfp4_2026-08-30.arm_e_quality_campaign \
+  --manifest /contract/qwen.manifest.v1.json
+ARM_E_STOP=$(date +%s)
+```
+
+The trace does not clear the telemetry gate unless it contains CUDA events.
+Capture both boxes over that exact epoch interval; GPU utilization is retained
+only as context, while power is judged against the approximately 140 W GB10
+envelope:
+
+```bash
+for host in sparky sparklina; do
+  for chart in nvidia_smi.gpu_power_draw system.cpu disk.io system.net; do
+    curl -fsS "http://${host}:19999/api/v1/data?chart=${chart}&after=${ARM_E_START}&before=${ARM_E_STOP}&format=json" \
+      -o "$PQ_RUN/netdata/${host}-${chart}.json"
+  done
+done
+sha256sum "$PQ_RUN/profile/arm-e-qwen.nsys-rep" "$PQ_RUN"/netdata/*.json \
+  > "$PQ_RUN/telemetry.sha256"
+```
+
+Create the feasible GLM pilot from the Qwen manifest, preserving the same
+recipe and primary seed:
+
+```bash
+GLM_RUN=/home/rob/dq-runs/arm-e-glm-pilot-${PQ_COMMIT:0:7}
+mkdir -p "$GLM_RUN/contract" "$GLM_RUN/output"
+jq --arg run "$GLM_RUN" '
+  .campaign_id=("arm-e-glm-pilot-" + (.execution.prismaquant_commit[0:7])) |
+  .mode="glm_corpus" |
+  .output={root:"/publication",durable_root_uri:("sparky:" + $run + "/output")} |
+  .input={kind:"glm_corpus",corpus_manifest:"/corpus/manifest.json",selected_tensors:["model.language_model.layers.0.mlp.gate_proj.weight","model.language_model.layers.3.mlp.experts.0.down_proj.weight"],limit:null} |
+  .seeds=[.seeds[0]]
+' "$PQ_RUN/contract/qwen.manifest.v1.json" > "$GLM_RUN/contract/glm-pilot.manifest.v1.json"
+docker run --rm --gpus all --ipc=host --entrypoint /usr/bin/python3 \
+  -e PYTHONPATH=/code -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$PQ_TREE:/code:ro" \
+  -v /home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2:/corpus:ro \
+  -v "$GLM_RUN/contract:/contract:ro" -v "$GLM_RUN/output:/publication" \
+  -w /code sha256:cf3f7f83e6820fa75aae249393e8fa4840af4562192203a1aed3f2082f3ea2f9 \
+  -m research.qtip_native_nvfp4_2026-08-30.arm_e_quality_campaign \
+  --manifest /contract/glm-pilot.manifest.v1.json
+```
+
+To exercise the full-census planning path without allocating K12288, change
+`selected_tensors` to `[]`, use a fresh output identity, and run
+`--preflight-only`. It must report
+`full_glm_census_executable=false`; removing `--preflight-only` must refuse
+before creating a claim.
+
+The feasibility go gate is: no CPU fallback, peak allocated memory at most
+24 GiB, every tensor at most 1,800 seconds, projected 33-tensor total at most
+six GPU-hours, a usable in-process trace, and clean both-host Netdata. These
+are execution gates, not speed claims. Qwen advances when primary E beats or
+ties C on activation-output and regularized-H NSSE at lower exact bpw; robust
+advance additionally needs nonnegative median deltas across the three seeds
+and no activation delta below -0.1 dB. GLM's future full-census gate remains
+the separately reported dense/routed paired raw-importance thresholds encoded
+in the receipt; no GLM activation-output, KL/PPL, serving, or performance
+claim is permitted here.
+
 ## Preliminary v1 one-Linear result (Sparky, 2026-08-30; superseded)
 
 The following run discovered a promising seam, but its v1 receipt did not bind
