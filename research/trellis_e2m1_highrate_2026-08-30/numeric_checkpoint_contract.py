@@ -22,10 +22,31 @@ class CheckpointContractError(ValueError):
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$")
-_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,253}[A-Za-z0-9])?$")
+_CAMPAIGN_IMAGE_REFERENCE = (
+    "eugr/spark-vllm@sha256:"
+    "58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869"
+)
+_CAMPAIGN_IMAGE_DIGEST = (
+    "sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869"
+)
+_PHYSICAL_HOSTS = {
+    "sparky": {
+        "uts_hostname": "sparky",
+        "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+        "gpu_name": "NVIDIA GB10",
+    },
+    "sparklina": {
+        "uts_hostname": "gx10-6b77",
+        "gpu_uuid": "GPU-b1eceeea-fec7-371e-2cf3-cd10f2e7b705",
+        "gpu_name": "NVIDIA GB10",
+    },
+}
 _EXECUTION_KEYS = frozenset({
-    "schema", "physical_host", "container_image_digest", "repo_git_commit",
+    "schema", "physical_host", "uts_hostname", "gpu_uuid",
+    "container_image_reference", "container_image_digest",
+    "container_image_id", "container_image_evidence",
+    "container_image_in_process_verification", "container_user", "ipc_mode",
+    "repo_root", "source_mount_evidence", "repo_git_commit",
     "repo_tree_clean", "python", "torch", "triton", "device",
 })
 _E2_LANES = ("tcq_two_tier", "tcq_v1")
@@ -176,26 +197,61 @@ def _validate_execution_environment(
     value: object, *, active_source_identity: object, where: str
 ) -> Mapping[str, object]:
     environment = _exact(value, _EXECUTION_KEYS, where=where)
-    if environment.get("schema") != "trellis.numeric_execution.v1":
+    if environment.get("schema") != "trellis.numeric_execution.v2":
         raise CheckpointContractError(f"{where}.schema differs")
     host = environment.get("physical_host")
-    if not isinstance(host, str) or _HOST.fullmatch(host) is None:
+    host_spec = _PHYSICAL_HOSTS.get(host) if isinstance(host, str) else None
+    if host_spec is None:
         raise CheckpointContractError(f"{where}.physical_host is invalid")
-    image = environment.get("container_image_digest")
-    if not isinstance(image, str) or _IMAGE_DIGEST.fullmatch(image) is None:
+    if environment.get("uts_hostname") != host_spec["uts_hostname"]:
+        raise CheckpointContractError(f"{where}.uts_hostname differs")
+    if environment.get("gpu_uuid") != host_spec["gpu_uuid"]:
+        raise CheckpointContractError(f"{where}.gpu_uuid differs")
+    if environment.get("device") != host_spec["gpu_name"]:
+        raise CheckpointContractError(f"{where}.device differs")
+    if environment.get("container_image_reference") != _CAMPAIGN_IMAGE_REFERENCE:
         raise CheckpointContractError(
-            f"{where}.container_image_digest is invalid"
+            f"{where}.container_image_reference differs"
         )
+    if environment.get("container_image_digest") != _CAMPAIGN_IMAGE_DIGEST:
+        raise CheckpointContractError(
+            f"{where}.container_image_digest differs"
+        )
+    if environment.get("container_image_id") != _CAMPAIGN_IMAGE_DIGEST:
+        raise CheckpointContractError(f"{where}.container_image_id differs")
+    if environment.get("container_image_evidence") != (
+        "host_docker_daemon_inspect_before_start"
+    ):
+        raise CheckpointContractError(f"{where}.container_image_evidence differs")
+    if environment.get("container_image_in_process_verification") != "not_available":
+        raise CheckpointContractError(
+            f"{where}.container_image_in_process_verification differs"
+        )
+    if environment.get("container_user") != "1000:1000":
+        raise CheckpointContractError(f"{where}.container_user differs")
+    if environment.get("ipc_mode") != "private":
+        raise CheckpointContractError(f"{where}.ipc_mode differs")
+    repo_root = environment.get("repo_root")
+    if not isinstance(repo_root, str) or not repo_root.startswith("/") or repo_root == "/":
+        raise CheckpointContractError(f"{where}.repo_root is invalid")
+    if environment.get("source_mount_evidence") != (
+        "host_docker_daemon_inspect_readonly_repo_and_git"
+    ):
+        raise CheckpointContractError(f"{where}.source_mount_evidence differs")
     commit = environment.get("repo_git_commit")
     if not isinstance(commit, str) or _GIT_COMMIT.fullmatch(commit) is None:
         raise CheckpointContractError(f"{where}.repo_git_commit is invalid")
     if environment.get("repo_tree_clean") is not True:
         raise CheckpointContractError(f"{where}.repo_tree_clean must be true")
-    for field in ("python", "torch", "triton", "device"):
+    for field in ("python", "torch", "triton"):
         item = environment.get(field)
         if not isinstance(item, str) or not item:
             raise CheckpointContractError(f"{where}.{field} is unavailable")
     source = _mapping(active_source_identity, where=f"{where}.active_sources")
+    if source.get("repo_root") != repo_root:
+        raise CheckpointContractError(
+            f"{where}.repo_root differs from active source identity"
+        )
     if source.get("repo_git_commit") != commit:
         raise CheckpointContractError(
             f"{where}.repo_git_commit differs from active source identity"

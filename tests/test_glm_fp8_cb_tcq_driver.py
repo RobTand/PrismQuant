@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -194,9 +195,78 @@ def _entry(name: str, population: str):
     )
 
 
+def _settings(entries):
+    commit = "e" * 40
+    population_counts = {}
+    for entry in entries:
+        population_counts[entry.population] = (
+            population_counts.get(entry.population, 0) + 1
+        )
+    settings = {
+        "schema": _DRIVER.SCHEMA,
+        "corpus_manifest": "/immutable/manifest.json",
+        "corpus_manifest_sha256": "1" * 64,
+        "corpus_file_sha256": "2" * 64,
+        "importance_value_sha256": "3" * 64,
+        "corpus_prismaquant_commit": "4" * 40,
+        "population_counts": population_counts,
+        "rungs": list(_DRIVER.RUNGS),
+        "rates": list(_DRIVER.RATES),
+        "cell_map": {
+            str(rate): rung for rate, rung in _DRIVER.CELL_MAP.items()
+        },
+        "trellis_scale_brackets": list(_DRIVER.TRELLIS_BRACKETS),
+        "alphabet_selectors": list(_DRIVER.ALPHABET_SELECTORS),
+        "book_price_brackets": list(_DRIVER.BOOK_PRICE_BRACKETS),
+        "encode_tier": _DRIVER.ENCODE_TIER,
+        "locked_sources": {},
+        "frozen_codec_closure": {},
+        "active_source_identity": {
+            "repo_git_commit": commit,
+            "repo_root": "/immutable/prismaquant",
+        },
+        "environment": {
+            "schema": "trellis.numeric_execution.v2",
+            "physical_host": "sparky",
+            "uts_hostname": "sparky",
+            "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+            "container_image_reference": (
+                "eugr/spark-vllm@sha256:"
+                "58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869"
+            ),
+            "container_image_digest": (
+                "sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869"
+            ),
+            "container_image_id": (
+                "sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869"
+            ),
+            "container_image_evidence": (
+                "host_docker_daemon_inspect_before_start"
+            ),
+            "container_image_in_process_verification": "not_available",
+            "container_user": "1000:1000",
+            "ipc_mode": "private",
+            "repo_root": "/immutable/prismaquant",
+            "source_mount_evidence": (
+                "host_docker_daemon_inspect_readonly_repo_and_git"
+            ),
+            "repo_git_commit": commit,
+            "repo_tree_clean": True,
+            "python": "3.12.3",
+            "torch": "2.13.0+cu130",
+            "triton": "3.7.1",
+            "device": "NVIDIA GB10",
+        },
+        "command": ["fp8_cb_tcq_glm.py"],
+        "claim_boundary": _DRIVER.CLAIM_BOUNDARY,
+    }
+    settings["identity_sha256"] = _DRIVER.identity_sha256(settings)
+    return settings
+
+
 def test_closed_final_report_rederives_summaries_and_refuses_pooled_field():
     entries = (_entry("dense-a", "dense"), _entry("routed-a", "routed"))
-    settings = {"schema": _DRIVER.SCHEMA, "identity_sha256": "e" * 64}
+    settings = _settings(entries)
     per_tensor = {
         "dense-a": _complete_cell("dense"),
         "routed-a": _complete_cell("routed"),
@@ -242,7 +312,7 @@ def test_resume_requires_full_claim_replay_but_ignores_wall_timing():
 
 def test_closed_report_binds_each_arm_to_its_name():
     entries = (_entry("dense-a", "dense"), _entry("routed-a", "routed"))
-    settings = {"schema": _DRIVER.SCHEMA, "identity_sha256": "e" * 64}
+    settings = _settings(entries)
     per_tensor = {
         "dense-a": _complete_cell("dense"),
         "routed-a": _complete_cell("routed"),
@@ -272,7 +342,7 @@ def test_closed_report_binds_each_arm_to_its_name():
 
 def test_closed_report_binds_importance_provenance_to_corpus_entry():
     entries = (_entry("dense-a", "dense"), _entry("routed-a", "routed"))
-    settings = {"schema": _DRIVER.SCHEMA, "identity_sha256": "e" * 64}
+    settings = _settings(entries)
     per_tensor = {
         "dense-a": _complete_cell("dense"),
         "routed-a": _complete_cell("routed"),
@@ -302,6 +372,11 @@ def test_driver_is_cuda_only_and_publishes_result_last():
     source = _PATH.read_text()
 
     assert "this GPU campaign has no CPU fallback" in source
+    assert "require_numeric_execution_environment(" in source
+    assert '"numeric_execution_contract"' in source
+    assert "_driver_environment" not in source
+    assert "--expected-host" not in source
+    assert "--container-identity" not in source
     assert 'backend="triton"' in source
     assert "validate_report(" in source
     assert source.index("_verify_final_bindings(") < source.rindex(
@@ -309,6 +384,89 @@ def test_driver_is_cuda_only_and_publishes_result_last():
     )
     assert _DRIVER.CLAIM_BOUNDARY["serving_verdict"] is False
     assert _DRIVER.CLAIM_BOUNDARY["performance_claim"] is False
+
+
+def test_settings_contract_closes_execution_identity_and_receipt_fields():
+    entries = (_entry("dense-a", "dense"), _entry("routed-a", "routed"))
+    settings = _settings(entries)
+    _DRIVER._validate_settings(settings, entries)
+
+    attacks = []
+    extra = copy.deepcopy(settings)
+    extra["declared_container_identity"] = extra["environment"][
+        "container_image_digest"
+    ]
+    attacks.append(extra)
+    wrong_gpu = copy.deepcopy(settings)
+    wrong_gpu["environment"]["gpu_uuid"] = (
+        "GPU-b1eceeea-fec7-371e-2cf3-cd10f2e7b705"
+    )
+    attacks.append(wrong_gpu)
+    overclaim = copy.deepcopy(settings)
+    overclaim["environment"]["container_image_in_process_verification"] = (
+        "cryptographic"
+    )
+    attacks.append(overclaim)
+    resume_mismatch = copy.deepcopy(settings)
+    resume_mismatch["environment"]["container_image_id"] = "sha256:" + "6" * 64
+    attacks.append(resume_mismatch)
+    for attack in attacks:
+        with pytest.raises(_DRIVER.CampaignError):
+            _DRIVER._validate_settings(attack, entries)
+
+
+def test_final_binding_recheck_refuses_execution_environment_drift(
+    tmp_path, monkeypatch,
+):
+    artifact = tmp_path / "corpus.safetensors"
+    artifact.write_bytes(b"corpus")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_bytes(b"manifest")
+    corpus = SimpleNamespace(
+        artifact_path=artifact,
+        manifest={
+            "importance_identity": {"value_sha256": "i" * 64},
+            "prismaquant_commit": "c" * 40,
+        },
+    )
+    settings = {
+        "environment": {"execution": "bound"},
+        "active_source_identity": {"active": "bound"},
+        "locked_sources": {"locked": "bound"},
+        "frozen_codec_closure": {"closure": "bound"},
+        "corpus_manifest_sha256": _DRIVER.file_sha256(manifest),
+        "corpus_file_sha256": _DRIVER.file_sha256(artifact),
+        "importance_value_sha256": "i" * 64,
+        "corpus_prismaquant_commit": "c" * 40,
+    }
+    args = SimpleNamespace(locked_ladder=tmp_path / "ladder.py", manifest=manifest)
+    live = {"execution": "bound"}
+    monkeypatch.setattr(_DRIVER, "_execution_environment", lambda _ladder: live)
+    monkeypatch.setattr(
+        _DRIVER, "_active_source_identity", lambda: {"active": "bound"}
+    )
+    monkeypatch.setattr(
+        _DRIVER, "_locked_sources", lambda _path: {"locked": "bound"}
+    )
+    monkeypatch.setattr(
+        _DRIVER.BASE,
+        "_frozen_codec_closure",
+        lambda _ladder: {"closure": "bound"},
+    )
+    monkeypatch.setattr(
+        _DRIVER,
+        "load_active_glm_corpus_bound",
+        lambda _root, _manifest: (
+            corpus,
+            {"sha256": _DRIVER.file_sha256(manifest)},
+        ),
+    )
+    _DRIVER._verify_final_bindings(args=args, settings=settings, ladder=object())
+    live = {"execution": "drifted"}
+    with pytest.raises(_DRIVER.CampaignError, match="environment drifted"):
+        _DRIVER._verify_final_bindings(
+            args=args, settings=settings, ladder=object()
+        )
 
 
 def test_locked_contract_contains_both_cells_selectors_and_price_brackets():
@@ -321,3 +479,51 @@ def test_locked_contract_contains_both_cells_selectors_and_price_brackets():
     assert _DRIVER.ALPHABET_SELECTORS == ("lloyd", "exact_dp")
     assert _DRIVER.BOOK_PRICE_BRACKETS == ("wire8", "fp16_production")
     assert len(_DRIVER.ARM_NAMES) == 12
+
+
+def test_preflight_is_gpu_optional_nonpublishing_and_needs_no_self_claims(
+    tmp_path, monkeypatch, capsys,
+):
+    manifest = tmp_path / "manifest.json"
+    out = tmp_path / "result.json"
+    ladder_path = tmp_path / "fp8_ladder.py"
+    corpus = SimpleNamespace(
+        manifest={"file_sha256": "f" * 64},
+        populations={"dense": [object()], "routed": []},
+    )
+    monkeypatch.setattr(
+        _DRIVER,
+        "load_active_glm_corpus_bound",
+        lambda _root, _path: (corpus, {"sha256": "m" * 64}),
+    )
+    monkeypatch.setattr(_DRIVER, "_locked_sources", lambda _path: {"locked": True})
+    monkeypatch.setattr(
+        _DRIVER.BASE,
+        "_load_ladder",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("preflight imported the GPU ladder")
+        ),
+    )
+    monkeypatch.setattr(
+        _DRIVER, "_active_source_identity", lambda: {"source": True}
+    )
+    monkeypatch.setattr(
+        _DRIVER,
+        "_execution_environment",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("preflight attempted publication attestation")
+        ),
+    )
+
+    assert _DRIVER.main([
+        "--manifest", str(manifest),
+        "--locked-ladder", str(ladder_path),
+        "--out", str(out),
+        "--preflight-only",
+    ]) == 0
+    preflight = json.loads(capsys.readouterr().out)
+    assert preflight["status"] == "validated_no_gpu_no_write"
+    assert preflight["publication_capable"] is False
+    assert preflight["publication_receipt"] is None
+    assert "environment" not in preflight
+    assert not out.exists()

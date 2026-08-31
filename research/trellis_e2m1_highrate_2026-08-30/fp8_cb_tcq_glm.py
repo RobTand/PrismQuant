@@ -20,10 +20,7 @@ import copy
 import json
 import math
 import os
-import platform
 import re
-import socket
-import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -46,6 +43,12 @@ from atomic_publication import (  # noqa: E402
     publish_file_no_replace,
 )
 from isolated_glm_corpus import load_active_glm_corpus_bound  # noqa: E402
+from numeric_execution_contract import (  # noqa: E402
+    NumericExecutionContractError,
+    require_numeric_execution_environment,
+    require_repo_commit,
+    validate_numeric_execution_record,
+)
 
 
 SCHEMA = "trellis.glm_fp8_cb_tcq_two_bracket.v1"
@@ -69,7 +72,15 @@ ENCODE_TIER = "balanced"
 DEFAULT_LOCKED_LADDER = BASE.DEFAULT_LOCKED_LADDER
 EXPECTED_DP_SHA256 = "022cd576c052cf613eb856a8ad4fce94462e819cb23274815e297f0493491696"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_CONTAINER_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SETTINGS_KEYS = {
+    "schema", "corpus_manifest", "corpus_manifest_sha256",
+    "corpus_file_sha256", "importance_value_sha256",
+    "corpus_prismaquant_commit", "population_counts", "rungs", "rates",
+    "cell_map", "trellis_scale_brackets", "alphabet_selectors",
+    "book_price_brackets", "encode_tier", "locked_sources",
+    "frozen_codec_closure", "active_source_identity", "environment",
+    "command", "claim_boundary", "identity_sha256",
+}
 
 
 class CampaignError(RuntimeError):
@@ -87,17 +98,9 @@ def _exact_keys(value: Mapping[str, object], expected: set[str], *, where: str) 
 
 def _repo_commit() -> str:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise CampaignError("cannot bind the PrismaQuant Git commit") from exc
-    if not re.fullmatch(r"[0-9a-f]{40}", result):
-        raise CampaignError("PrismaQuant Git identity is not one full commit")
-    return result
+        return require_repo_commit(REPO_ROOT)
+    except NumericExecutionContractError as exc:
+        raise CampaignError(str(exc)) from exc
 
 
 def _active_source_identity() -> dict[str, object]:
@@ -106,6 +109,7 @@ def _active_source_identity() -> dict[str, object]:
         "base_fp8_glm_driver": HERE / "fp8_learned_glm.py",
         "atomic_publication": HERE / "atomic_publication.py",
         "isolated_glm_corpus": HERE / "isolated_glm_corpus.py",
+        "numeric_execution_contract": HERE / "numeric_execution_contract.py",
         "active_corpus_reader": REPO_ROOT / "prismaquant/trellis_bf16_corpus.py",
     }
     return {
@@ -136,37 +140,19 @@ def _locked_sources(ladder_path: Path) -> dict[str, object]:
     }
 
 
-def _driver_environment(torch) -> dict[str, object]:
-    if not torch.cuda.is_available():
-        raise CampaignError("CUDA is required; this GPU campaign has no CPU fallback")
-    if torch.cuda.device_count() != 1:
-        raise CampaignError("exactly one visible CUDA device is required")
-    props = torch.cuda.get_device_properties(0)
-    driver_file = Path("/proc/driver/nvidia/version")
-    return {
-        "host": socket.gethostname(),
-        "system": platform.system().lower(),
-        "machine": platform.machine().lower(),
-        "python": platform.python_version(),
-        "torch": str(torch.__version__),
-        "torch_cuda": str(torch.version.cuda),
-        "cuda_device_count": 1,
-        "cuda_device_name": props.name,
-        "cuda_capability": f"sm{props.major}{props.minor}",
-        "nvidia_driver_file_sha256": (
-            file_sha256(driver_file) if driver_file.is_file() else None
-        ),
-    }
+def _execution_environment(ladder) -> dict[str, object]:
+    try:
+        return require_numeric_execution_environment(
+            REPO_ROOT,
+            ladder.H.current_env(),
+            os.environ,
+            require_cuda=True,
+        )
+    except NumericExecutionContractError as exc:
+        raise CampaignError(str(exc)) from exc
 
 
 def _settings(*, args, corpus, manifest_binding, ladder, execution) -> dict[str, object]:
-    if not _CONTAINER_RE.fullmatch(args.container_identity):
-        raise CampaignError("--container-identity must be one immutable sha256 digest")
-    if execution["host"] != args.expected_host:
-        raise CampaignError(
-            f"live host {execution['host']!r} differs from --expected-host "
-            f"{args.expected_host!r}"
-        )
     settings: dict[str, object] = {
         "schema": SCHEMA,
         "corpus_manifest": str(corpus.manifest_path),
@@ -189,12 +175,12 @@ def _settings(*, args, corpus, manifest_binding, ladder, execution) -> dict[str,
         "locked_sources": _locked_sources(args.locked_ladder),
         "frozen_codec_closure": BASE._frozen_codec_closure(ladder),
         "active_source_identity": _active_source_identity(),
-        "execution": execution,
-        "declared_container_identity": args.container_identity,
+        "environment": execution,
         "command": list(sys.argv),
         "claim_boundary": CLAIM_BOUNDARY,
     }
     settings["identity_sha256"] = identity_sha256(settings)
+    _validate_settings(settings, corpus.entries)
     return settings
 
 
@@ -647,6 +633,69 @@ def _finite(value: object, *, where: str, nonnegative: bool = False) -> float:
     return result
 
 
+def _validate_settings(settings: Mapping[str, object], entries) -> None:
+    _exact_keys(settings, _SETTINGS_KEYS, where="settings")
+    if settings.get("schema") != SCHEMA:
+        raise CampaignError("settings.schema differs")
+    for field in (
+        "corpus_manifest_sha256",
+        "corpus_file_sha256",
+        "importance_value_sha256",
+    ):
+        if not _SHA256_RE.fullmatch(str(settings.get(field))):
+            raise CampaignError(f"settings.{field} is invalid")
+    if not re.fullmatch(
+        r"[0-9a-f]{40}", str(settings.get("corpus_prismaquant_commit"))
+    ):
+        raise CampaignError("settings.corpus_prismaquant_commit is invalid")
+    expected_populations: dict[str, int] = {}
+    for entry in entries:
+        expected_populations[entry.population] = (
+            expected_populations.get(entry.population, 0) + 1
+        )
+    if settings.get("population_counts") != expected_populations:
+        raise CampaignError("settings.population_counts differs from corpus")
+    exact_constants = {
+        "rungs": list(RUNGS),
+        "rates": list(RATES),
+        "cell_map": {str(rate): rung for rate, rung in CELL_MAP.items()},
+        "trellis_scale_brackets": list(TRELLIS_BRACKETS),
+        "alphabet_selectors": list(ALPHABET_SELECTORS),
+        "book_price_brackets": list(BOOK_PRICE_BRACKETS),
+        "encode_tier": ENCODE_TIER,
+        "claim_boundary": CLAIM_BOUNDARY,
+    }
+    for field, expected in exact_constants.items():
+        if settings.get(field) != expected:
+            raise CampaignError(f"settings.{field} differs")
+    command = settings.get("command")
+    if not isinstance(command, list) or not command or any(
+        not isinstance(value, str) for value in command
+    ):
+        raise CampaignError("settings.command is malformed")
+    active_sources = settings.get("active_source_identity")
+    if not isinstance(active_sources, Mapping):
+        raise CampaignError("settings.active_source_identity is malformed")
+    try:
+        validate_numeric_execution_record(settings.get("environment"))
+    except NumericExecutionContractError as exc:
+        raise CampaignError(f"settings.environment: {exc}") from exc
+    environment = settings["environment"]
+    if active_sources.get("repo_git_commit") != environment.get("repo_git_commit"):
+        raise CampaignError(
+            "settings environment commit differs from active source identity"
+        )
+    if active_sources.get("repo_root") != environment.get("repo_root"):
+        raise CampaignError(
+            "settings environment repository differs from active source identity"
+        )
+    unsigned = {
+        key: value for key, value in settings.items() if key != "identity_sha256"
+    }
+    if settings.get("identity_sha256") != identity_sha256(unsigned):
+        raise CampaignError("settings identity digest differs")
+
+
 def _validate_footprint(arm: Mapping[str, object], *, numel: int, where: str) -> None:
     footprint = arm.get("footprint")
     if not isinstance(footprint, Mapping):
@@ -673,6 +722,7 @@ def validate_report(
     report: Mapping[str, object], *, settings: Mapping[str, object], entries,
     require_complete: bool = False,
 ) -> None:
+    _validate_settings(settings, entries)
     partial = report.get("partial")
     expected_keys = {
         "schema", "settings", "started_at_unix_s", "per_tensor", "partial",
@@ -827,6 +877,8 @@ def _resume(path: Path, *, settings, entries) -> dict[str, object]:
 
 
 def _verify_final_bindings(*, args, settings, ladder) -> None:
+    if settings.get("environment") != _execution_environment(ladder):
+        raise CampaignError("numeric execution environment drifted during run")
     if settings.get("active_source_identity") != _active_source_identity():
         raise CampaignError("active source identity drifted during run")
     if settings.get("locked_sources") != _locked_sources(args.locked_ladder):
@@ -848,6 +900,10 @@ def _verify_final_bindings(*, args, settings, ladder) -> None:
 def _run(args, corpus, settings, ladder) -> int:
     import torch
 
+    if not torch.cuda.is_available():
+        raise CampaignError("CUDA is required; this GPU campaign has no CPU fallback")
+    if torch.cuda.device_count() != 1:
+        raise CampaignError("exactly one visible CUDA device is required")
     if args.out.exists() or args.out.is_symlink():
         raise CampaignError("final output already exists (immutable no-clobber)")
     partial = args.out.with_name(args.out.name + ".partial")
@@ -909,8 +965,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--locked-ladder", type=Path, default=DEFAULT_LOCKED_LADDER)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--expected-host", required=True)
-    parser.add_argument("--container-identity", required=True)
     parser.add_argument("--preflight-only", action="store_true")
     return parser
 
@@ -919,13 +973,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     corpus, manifest_binding = load_active_glm_corpus_bound(REPO_ROOT, args.manifest)
     locked = _locked_sources(args.locked_ladder)
-    ladder = BASE._load_ladder(args.locked_ladder)
     if locked != _locked_sources(args.locked_ladder):
         raise CampaignError("locked source identity changed during preflight")
     if args.preflight_only:
         preflight = {
             "schema": SCHEMA,
             "status": "validated_no_gpu_no_write",
+            "publication_capable": False,
+            "publication_receipt": None,
             "corpus_manifest_sha256": manifest_binding["sha256"],
             "corpus_file_sha256": corpus.manifest["file_sha256"],
             "population_counts": {
@@ -943,9 +998,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         print(json.dumps(preflight, indent=2, sort_keys=True))
         return 0
-    import torch
-
-    execution = _driver_environment(torch)
+    ladder = BASE._load_ladder(args.locked_ladder)
+    execution = _execution_environment(ladder)
     settings = _settings(
         args=args,
         corpus=corpus,

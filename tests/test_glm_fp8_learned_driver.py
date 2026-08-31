@@ -243,3 +243,65 @@ def test_fp8_resume_requires_exact_regenerated_metrics_hashes_and_books():
             _DRIVER._require_fp8_replay_match(
                 "tensor-a", attack, regenerated
             )
+
+
+def test_dry_run_is_gpu_optional_and_cannot_construct_publication_receipt(
+    tmp_path, monkeypatch, capsys,
+):
+    manifest = tmp_path / "manifest.json"
+    out = tmp_path / "result.json"
+    ladder_path = tmp_path / "fp8_ladder.py"
+    corpus = SimpleNamespace(
+        manifest_path=manifest,
+        manifest={
+            "file_sha256": "f" * 64,
+            "importance_identity": {"value_sha256": "i" * 64},
+            "prismaquant_commit": "c" * 40,
+        },
+        populations={"dense": [object()], "routed": []},
+    )
+    monkeypatch.setattr(
+        _DRIVER,
+        "load_active_glm_corpus_bound",
+        lambda _root, _path: (corpus, {"sha256": "m" * 64}),
+    )
+    monkeypatch.setattr(_DRIVER, "_locked_sources", lambda _path: {"locked": True})
+    monkeypatch.setattr(
+        _DRIVER,
+        "_load_ladder",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("dry-run imported the GPU ladder")
+        ),
+    )
+    monkeypatch.setattr(
+        _DRIVER, "_frozen_codec_closure", lambda _ladder: {"closure": True}
+    )
+    monkeypatch.setattr(
+        _DRIVER, "_active_source_identity", lambda: {"source": True}
+    )
+    monkeypatch.setattr(
+        _DRIVER,
+        "_execution_environment",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry-run attempted publication attestation")
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(_PATH),
+            "--manifest", str(manifest),
+            "--locked-ladder", str(ladder_path),
+            "--out", str(out),
+            "--dry-run",
+        ],
+    )
+
+    assert _DRIVER.main() == 0
+    preflight = json.loads(capsys.readouterr().out)
+    assert preflight["status"] == "validated_no_gpu_no_write"
+    assert preflight["publication_capable"] is False
+    assert preflight["publication_receipt"] is None
+    assert "environment" not in preflight
+    assert not out.exists()

@@ -21,6 +21,73 @@ C = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(C)
 
 
+def _execution_environment(commit: str):
+    return {
+        "schema": "trellis.numeric_execution.v2",
+        "physical_host": "sparky",
+        "uts_hostname": "sparky",
+        "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+        "container_image_reference": C._CAMPAIGN_IMAGE_REFERENCE,
+        "container_image_digest": C._CAMPAIGN_IMAGE_DIGEST,
+        "container_image_id": C._CAMPAIGN_IMAGE_DIGEST,
+        "container_image_evidence": (
+            "host_docker_daemon_inspect_before_start"
+        ),
+        "container_image_in_process_verification": "not_available",
+        "container_user": "1000:1000",
+        "ipc_mode": "private",
+        "repo_root": "/immutable/prismaquant",
+        "source_mount_evidence": (
+            "host_docker_daemon_inspect_readonly_repo_and_git"
+        ),
+        "repo_git_commit": commit,
+        "repo_tree_clean": True,
+        "python": "3.12.3",
+        "torch": "2.13.0+cu130",
+        "triton": "3.7.1",
+        "device": "NVIDIA GB10",
+    }
+
+
+def test_checkpoint_execution_receipt_is_closed_and_campaign_pinned():
+    commit = "e" * 40
+    source = {
+        "repo_git_commit": commit,
+        "repo_root": "/immutable/prismaquant",
+    }
+    C._validate_execution_environment(
+        _execution_environment(commit),
+        active_source_identity=source,
+        where="execution",
+    )
+    attacks = []
+    extra = _execution_environment(commit)
+    extra["anonymous_host_alias"] = "sparky"
+    attacks.append(extra)
+    wrong_gpu = _execution_environment(commit)
+    wrong_gpu["gpu_uuid"] = "GPU-b1eceeea-fec7-371e-2cf3-cd10f2e7b705"
+    attacks.append(wrong_gpu)
+    wrong_image = _execution_environment(commit)
+    wrong_image["container_image_id"] = "sha256:" + "a" * 64
+    attacks.append(wrong_image)
+    overclaim = _execution_environment(commit)
+    overclaim["container_image_in_process_verification"] = "cryptographic"
+    attacks.append(overclaim)
+    root_user = _execution_environment(commit)
+    root_user["container_user"] = "0:0"
+    attacks.append(root_user)
+    host_ipc = _execution_environment(commit)
+    host_ipc["ipc_mode"] = "host"
+    attacks.append(host_ipc)
+    for attack in attacks:
+        with pytest.raises(C.CheckpointContractError):
+            C._validate_execution_environment(
+                attack,
+                active_source_identity=source,
+                where="execution",
+            )
+
+
 def _e2_footprint(
     lane: str, rate: float, shape: list[int], counts, *, nested=False,
 ):
@@ -178,16 +245,11 @@ def _e2_checkpoint():
         "schema": "trellis.e2m1_highrate.v3", "started_at_unix_s": 1.0,
         "publication_identity_sha256": "c" * 64, "rate_plan": [2.0],
         "mathematical_q256_bounds": [256, 1016], "control_rungs": [],
-        "active_source_identity": {"repo_git_commit": commit},
-        "environment": {
-            "schema": "trellis.numeric_execution.v1",
-            "physical_host": "sparky",
-            "container_image_digest": "sha256:" + "f" * 64,
+        "active_source_identity": {
             "repo_git_commit": commit,
-            "repo_tree_clean": True,
-            "python": "3.12.3", "torch": "2.13.0+cu130",
-            "triton": "3.7.1", "device": "NVIDIA GB10",
+            "repo_root": "/immutable/prismaquant",
         },
+        "environment": _execution_environment(commit),
     })
     shape = [2, 256]
     cell = {
@@ -562,16 +624,11 @@ def _fp8_settings():
         "population_counts": {"dense": 1, "routed": 0},
         "rungs": [32, 40, 48], "encode_tier": "balanced",
         "locked_sources": {}, "frozen_codec_closure": {},
-        "active_source_identity": {"repo_git_commit": commit},
-        "environment": {
-            "schema": "trellis.numeric_execution.v1",
-            "physical_host": "sparky",
-            "container_image_digest": "sha256:" + "f" * 64,
+        "active_source_identity": {
             "repo_git_commit": commit,
-            "repo_tree_clean": True,
-            "python": "3.12.3", "torch": "2.13.0+cu130",
-            "triton": "3.7.1", "device": "NVIDIA GB10",
+            "repo_root": "/immutable/prismaquant",
         },
+        "environment": _execution_environment(commit),
         "aggregation_contract": "dense/routed population-separated; no pooled median",
     }
     settings["identity_sha256"] = hashlib.sha256(json.dumps(

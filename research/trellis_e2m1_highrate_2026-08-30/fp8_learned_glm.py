@@ -298,11 +298,7 @@ def main() -> int:
         REPO_ROOT, args.manifest
     )
     locked = _locked_sources(args.locked_ladder)
-    ladder = _load_ladder(args.locked_ladder)
-    environment = _execution_environment(
-        ladder, require_cuda=not args.dry_run
-    )
-    settings = {
+    preflight_core = {
         "schema": SCHEMA,
         "corpus_manifest": str(corpus.manifest_path),
         "corpus_manifest_sha256": manifest_binding["sha256"],
@@ -315,16 +311,25 @@ def main() -> int:
         "rungs": list(RUNGS),
         "encode_tier": ENCODE_TIER,
         "locked_sources": locked,
-        "frozen_codec_closure": _frozen_codec_closure(ladder),
         "active_source_identity": _active_source_identity(),
-        "environment": environment,
         "aggregation_contract": "dense/routed population-separated; no pooled median",
     }
-    settings["identity_sha256"] = _identity_sha256(settings)
     if args.dry_run:
-        print(json.dumps({**settings, "status": "validated_no_gpu_no_write"},
-                         indent=2, sort_keys=True))
+        print(json.dumps({
+            **preflight_core,
+            "status": "validated_no_gpu_no_write",
+            "publication_capable": False,
+            "publication_receipt": None,
+        }, indent=2, sort_keys=True))
         return 0
+    ladder = _load_ladder(args.locked_ladder)
+    settings_core = {
+        **preflight_core,
+        "frozen_codec_closure": _frozen_codec_closure(ladder),
+    }
+    environment = _execution_environment(ladder, require_cuda=True)
+    settings = {**settings_core, "environment": environment}
+    settings["identity_sha256"] = _identity_sha256(settings)
     try:
         with exclusive_publication_claim(args.out, identity=settings):
             return _run_claimed(args, corpus, settings, ladder)
