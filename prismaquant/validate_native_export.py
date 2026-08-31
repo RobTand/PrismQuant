@@ -165,13 +165,46 @@ def _run_arm(args, model_dir: Path, spec: dict | None, *,
             print(f"  prompt: {o.prompt!r}", flush=True)
             print(f"  output: {text!r}", flush=True)
         produced = sum(len(t) for t in texts)
-        return {
-            "passed": produced > 0,
-            "detail": (f"{arm}: generated {produced} chars"
-                       if produced else f"{arm}: generated NOTHING"),
-            "metrics": {"arm": arm, "generated_chars": produced,
+        base_passed = produced > 0
+        base_detail = (f"{arm}: generated {produced} chars"
+                       if produced else f"{arm}: generated NOTHING")
+        base_metrics = {"arm": arm, "generated_chars": produced,
                         "enforce_eager": enforce_eager,
-                        "max_new_tokens": args.max_new_tokens},
+                        "max_new_tokens": args.max_new_tokens}
+        # --- WO-D D3: leg 2 — priced vs served route must agree ---
+        # This is principle 14's second leg. The CB seam is
+        # nvfp4_activation_contract.read_route / emit_route; trellis lanes
+        # currently set gridbook_activation_contract but do not emit_route,
+        # so served telemetry is absent and the gate must refuse for lack of
+        # evidence rather than pass (finding recorded in WO-D-FINDINGS.md).
+        try:
+            priced = _load_priced_trellis_histograms(model_dir)
+            served = _collect_served_trellis_histograms(llm)
+            route_problems = verify_trellis_priced_vs_served(priced, served)
+            if route_problems:
+                print(f"[validate] trellis route leg2 FAILED ({arm}): {route_problems[0]}", flush=True)
+                return {
+                    "passed": False,
+                    "detail": f"{arm}: trellis route mismatch: {route_problems[0]}",
+                    "metrics": {**base_metrics, "trellis_route_problems": route_problems,
+                                "priced_histograms": priced, "served_histograms": served},
+                }
+            # Also attach histograms on success for audit
+            if priced:
+                base_metrics["priced_histograms"] = priced
+                base_metrics["served_histograms"] = served
+        except Exception as exc:
+            # Verification of the verification must not be assumed; fail closed
+            print(f"[validate] trellis route check error ({arm}): {exc!r}", flush=True)
+            return {
+                "passed": False,
+                "detail": f"{arm}: trellis route check error: {exc}",
+                "metrics": {**base_metrics, "trellis_route_error": str(exc)},
+            }
+        return {
+            "passed": base_passed,
+            "detail": base_detail,
+            "metrics": base_metrics,
         }
     except Exception as exc:
         print(f"[validate] {arm} arm FAILED: {exc!r}", flush=True)
@@ -196,6 +229,249 @@ def _run_arm(args, model_dir: Path, spec: dict | None, *,
                     torch.cuda.empty_cache()
             except Exception:
                 pass
+
+
+def _load_priced_trellis_histograms(model_dir: Path) -> dict:
+    """Load the priced activation-contract / route histogram (D1) for trellis.
+
+    The priced histogram is the artifact's claim about which routes it will
+    take: ``selection_serving_lane_provenance.activation_contracts`` and the
+    trellis-specific ``trellis_route_histogram``. It is the first leg of
+    principle 14's attestation. The file may live in several places; we try
+    them in order and return the first found.
+
+    Returns a dict with at least ``activation_contracts`` and
+    ``trellis_route_histogram`` keys, or empty dict if no priced trellis claim
+    exists (non-trellis artifact).
+    """
+    candidates: list[Path] = [
+        model_dir / "selection.json",
+        model_dir / "quant_config.json",
+        model_dir / "shipcard.json",
+    ]
+    # Also check parent work dir for selection.json (common layout)
+    if model_dir.parent != model_dir:
+        candidates.append(model_dir.parent / "selection.json")
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        # Direct selection.json shape
+        if isinstance(payload, dict) and "activation_contracts" in payload:
+            # Heuristic: this looks like a serving_lane_provenance dict
+            return {
+                "activation_contracts": dict(payload.get("activation_contracts") or {}),
+                "trellis_route_histogram": dict(payload.get("trellis_route_histogram") or {}),
+                "trellis_units": list(payload.get("trellis_units") or []),
+                "source": str(path),
+            }
+        # selection.json wrapped form: {"serving_lane_provenance": {...}}
+        if isinstance(payload, dict) and isinstance(payload.get("serving_lane_provenance"), dict):
+            prov = payload["serving_lane_provenance"]
+            return {
+                "activation_contracts": dict(prov.get("activation_contracts") or {}),
+                "trellis_route_histogram": dict(prov.get("trellis_route_histogram") or {}),
+                "trellis_units": list(prov.get("trellis_units") or []),
+                "source": str(path),
+            }
+        # quant_config.json provenance
+        if isinstance(payload, dict) and isinstance(payload.get("provenance"), dict):
+            prov = payload["provenance"]
+            # trellis_route_status lifted from selection
+            if isinstance(prov.get("trellis_route_status"), dict):
+                tr = prov["trellis_route_status"]
+                return {
+                    "activation_contracts": dict(tr.get("activation_contracts") or tr.get("trellis_route_histogram") or {}),
+                    "trellis_route_histogram": dict(tr.get("trellis_route_histogram") or tr.get("route_histogram") or {}),
+                    "trellis_units": list(tr.get("trellis_units") or []),
+                    "source": str(path),
+                }
+            if isinstance(prov.get("selection_serving_lane_provenance"), dict):
+                sel = prov["selection_serving_lane_provenance"]
+                return {
+                    "activation_contracts": dict(sel.get("activation_contracts") or {}),
+                    "trellis_route_histogram": dict(sel.get("trellis_route_histogram") or {}),
+                    "trellis_units": list(sel.get("trellis_units") or []),
+                    "source": str(path),
+                }
+        # shipcard.json trellis_route_status
+        if isinstance(payload, dict) and isinstance(payload.get("trellis_route_status"), dict):
+            tr = payload["trellis_route_status"]
+            return {
+                "activation_contracts": dict(tr.get("activation_contracts") or {}),
+                "trellis_route_histogram": dict(tr.get("trellis_route_histogram") or {}),
+                "trellis_units": list(tr.get("trellis_units") or []),
+                "source": str(path),
+            }
+        # Direct priced file with trellis_route_histogram top-level
+        if isinstance(payload, dict) and isinstance(payload.get("trellis_route_histogram"), dict):
+            return {
+                "activation_contracts": dict(payload.get("activation_contracts") or {}),
+                "trellis_route_histogram": dict(payload["trellis_route_histogram"]),
+                "trellis_units": list(payload.get("trellis_units") or []),
+                "source": str(path),
+            }
+    return {}
+
+
+def _find_torch_model_from_llm(llm):
+    """Best-effort walk from a vLLM LLM instance to its underlying nn.Module."""
+    if llm is None:
+        return None
+    # Try direct attributes
+    seen: set[int] = set()
+    stack = [llm]
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        # If this object itself has route telemetry, treat it as model
+        try:
+            import torch.nn as nn
+            if isinstance(obj, nn.Module):
+                # Check if any submodule has trellis/CB route state
+                has_route = False
+                for _, mod in obj.named_modules():
+                    if hasattr(mod, "gridbook_activation_contract") or hasattr(mod, "_cb_route_state") or hasattr(mod, "_cb_route_kind"):
+                        has_route = True
+                        break
+                if has_route:
+                    return obj
+        except Exception:
+            pass
+        for attr in ("model_executor", "driver_worker", "worker", "model_runner", "model", "engine_core", "engine", "llm_engine", "core"):
+            try:
+                child = getattr(obj, attr, None)
+            except Exception:
+                child = None
+            if child is not None and not isinstance(child, (str, int, float, bool, bytes)):
+                stack.append(child)
+    return None
+
+
+def _collect_served_trellis_histograms(llm) -> dict | None:
+    """Collect the *served* activation-contract histogram via emit_route telemetry.
+
+    Reuses the CB seam (``nvfp4_activation_contract.emit_route`` / ``read_route``)
+    and the trellis lane's ``gridbook_activation_contract`` attribute set by
+    ``trellis_e2m1_lane`` / ``trellis_e4m3_lane``. Both are plain Python scalars
+    written onto the layer at dispatch time, so this is tensor-free and cannot
+    perturb execution.
+
+    Returns a dict like ``{"e2m1_group16_ue4m3_static": 2}`` or ``None`` if no
+    trellis route telemetry exists at all (missing seam). The caller must treat
+    ``None`` as lack of evidence and refuse closed, not as an empty histogram.
+    """
+    if llm is None:
+        return None
+    model = _find_torch_model_from_llm(llm)
+    if model is None:
+        # No model found → no telemetry
+        return None
+    served: dict[str, int] = {}
+    found_any = False
+    # Try CB-style read_route first (covers CB; trellis may also use it in future)
+    try:
+        from gridbook.nvfp4_activation_contract import read_route as _read_route
+    except Exception:
+        _read_route = None  # type: ignore
+    for _, mod in model.named_modules():
+        # Trellis lane telemetry: gridbook_activation_contract set at create_weights
+        contract = getattr(mod, "gridbook_activation_contract", None)
+        if isinstance(contract, str) and contract:
+            found_any = True
+            served[contract] = served.get(contract, 0) + 1
+            continue
+        if _read_route is not None:
+            try:
+                rec = _read_route(mod)
+            except Exception:
+                rec = None
+            if rec is not None:
+                found_any = True
+                c = rec.get("contract")
+                if isinstance(c, str) and c:
+                    served[c] = served.get(c, 0) + 1
+                else:
+                    served["unknown"] = served.get("unknown", 0) + 1
+    if not found_any:
+        return None
+    return served
+
+
+def verify_trellis_priced_vs_served(
+    priced: dict,
+    served: dict | None,
+) -> list[str]:
+    """Compare priced (selection) vs served (emit_route) trellis histograms.
+
+    This is principle 14's second leg: the priced contract and the served
+    contract must be the same object. A disagreement is the 2026-08-17 defect
+    (73.7% of a 92 GB body rode arch::Sm80 fallback recorded in selection.json
+    and refused by nothing) reproduced for trellis.
+
+    Returns a list of refusal reasons (empty = OK). A ``served is None`` when
+    priced contains trellis units is itself a refusal: the comparison cannot be
+    faked with an assumption.
+    """
+    problems: list[str] = []
+    # Determine if priced contains any trellis claim.
+    priced_hist = priced.get("trellis_route_histogram") if isinstance(priced, dict) else None
+    priced_units = priced.get("trellis_units") if isinstance(priced, dict) else None
+    has_priced_trellis = bool(priced_hist) or bool(priced_units)
+    # Fallback: activation_contracts may contain trellis contracts
+    if not has_priced_trellis and isinstance(priced, dict):
+        act = priced.get("activation_contracts") or {}
+        for k in act:
+            if isinstance(k, str) and ("e2m1" in k or "fp8_per_token" in k):
+                has_priced_trellis = True
+                break
+    if not has_priced_trellis:
+        return []
+    if served is None:
+        # WO-D D3 finding: trellis lanes emit no route telemetry at all.
+        problems.append(
+            "trellis served route telemetry absent: the artifact's priced trellis_route_histogram "
+            f"{priced_hist} has no corresponding emit_route records from the serve; this is a finding, "
+            "not a pass — the comparison cannot be faked with an assumption, so the gate refuses for lack "
+            "of evidence (WO-D D3 second leg). Trellis lanes set gridbook_activation_contract but do not "
+            "call nvfp4_activation_contract.emit_route; the CB seam (read_route) is therefore empty for trellis."
+        )
+        return problems
+    # Compare activation_contracts histograms.
+    # For trellis, priced_hist keys are "family:contract:route_status", we extract contract counts.
+    # Also compare direct activation_contracts dict if present.
+    priced_contracts = priced.get("activation_contracts") if isinstance(priced, dict) else {}
+    if isinstance(priced_contracts, dict) and priced_contracts:
+        # served is already by contract
+        if priced_contracts != served:
+            problems.append(
+                f"trellis priced vs served activation_contracts disagree: priced {dict(sorted(priced_contracts.items()))} "
+                f"vs served {dict(sorted(served.items()))} — principle 14 leg 2 refuses (WO-D D3)"
+            )
+    elif priced_hist:
+        # Derive priced contract counts from histogram keys
+        from collections import Counter
+        derived: Counter[str] = Counter()
+        for key, cnt in priced_hist.items():
+            # key format "family:contract:status"
+            parts = str(key).split(":")
+            if len(parts) >= 2:
+                contract = parts[1]
+            else:
+                contract = str(key)
+            if contract:
+                derived[contract] += int(cnt)
+        if dict(derived) != served:
+            problems.append(
+                f"trellis priced vs served histogram disagree: priced trellis_route_histogram {dict(sorted(priced_hist.items()))} "
+                f"implies contracts {dict(derived)} vs served {dict(sorted(served.items()))}"
+            )
+    return problems
 
 
 def _record_arm(args, model_dir: Path, spec: dict | None, verdict: dict) -> None:

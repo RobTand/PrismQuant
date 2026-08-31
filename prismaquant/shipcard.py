@@ -1349,6 +1349,32 @@ def build_shipcard(
             "weight_content_manifest"
         ) is not None:
             card["weight_stat_attestation"] = weight_stat_attestation(root)
+        # Principle 9 / 12: trellis route provenance (D1) travels with the
+        # artifact's bpp/quality claim. Both trellis and CB exporters stamp
+        # their verdicts into quant_config provenance; lifting here makes the
+        # card the refusal contract.
+        if isinstance(provenance, Mapping) and isinstance(
+            provenance.get("trellis_route_status"), Mapping
+        ):
+            # Direct trellis verdict (structured per-unit records)
+            card["trellis_route_status"] = dict(provenance["trellis_route_status"])
+        elif isinstance(provenance, Mapping) and isinstance(
+            provenance.get("selection_serving_lane_provenance"), Mapping
+        ):
+            # Allocator-written selection provenance containing trellis units
+            sel = provenance["selection_serving_lane_provenance"]
+            if isinstance(sel.get("trellis_units"), list) and sel["trellis_units"]:
+                card["trellis_route_status"] = {
+                    "schema": sel.get("schema", "prismaquant.serving_lane_route.v1"),
+                    "trellis_units": sel["trellis_units"],
+                    "trellis_route_histogram": sel.get("trellis_route_histogram", {}),
+                    "trellis_route_status_counts": sel.get("trellis_route_status_counts", {}),
+                    "trellis_requires_serve_flags": sel.get("trellis_requires_serve_flags", []),
+                    "trellis_unbacked_units": sel.get("trellis_unbacked_units", []),
+                    "trellis_unbacked_units_detail": sel.get("trellis_unbacked_units_detail", []),
+                    "target_profile": sel.get("target_profile"),
+                    "gridbook_runtime_version": sel.get("gridbook_runtime_version"),
+                }
         # Principle 9 requires the artifact's route disposition -- a declared
         # non-native target or an explicit override -- to be stamped on the
         # card, and principle 12 requires the route census to travel with the
@@ -1808,6 +1834,198 @@ def verify(
                 problems.append(
                     f"{slot}: spec_decode_detected is TRUE — this is draft-model "
                     "NLL, not the artifact's; re-measure on a no-spec serve")
+    # --- Trellis serving-lane provenance gates (WO-D D2) ---
+    # These are principle 9 / 12 / 14 gates for the trellis lane, parallel to
+    # the CB route gate but structured around the trellis v3 cells.
+    trellis_prov = None
+    if isinstance(card.get("trellis_route_status"), Mapping):
+        trellis_prov = card["trellis_route_status"]
+    elif isinstance(card.get("selection_serving_lane_provenance"), Mapping):
+        trellis_prov = card["selection_serving_lane_provenance"]
+    elif isinstance((card.get("build") or {}).get("selection_serving_lane_provenance"), Mapping):
+        trellis_prov = (card["build"] or {})["selection_serving_lane_provenance"]
+    # Also support direct trellis_units at top level (test seam)
+    if trellis_prov is None and isinstance(card.get("trellis_units"), list):
+        trellis_prov = card
+    # If still none, try to synthesize from on-disk quant_config (best-effort)
+    # so a card lacking a lifted provenance but whose artifact manifest contains
+    # trellis formats still fails closed rather than silently passing.
+    if trellis_prov is None and model_dir is not None:
+        try:
+            qc_path = Path(model_dir) / "quant_config.json"
+            if qc_path.is_file():
+                qc = json.loads(qc_path.read_text())
+                prov = (qc.get("provenance") or {}) if isinstance(qc, Mapping) else {}
+                if isinstance(prov.get("trellis_route_status"), Mapping):
+                    trellis_prov = prov["trellis_route_status"]
+                elif isinstance(prov.get("selection_serving_lane_provenance"), Mapping):
+                    sel = prov["selection_serving_lane_provenance"]
+                    if isinstance(sel.get("trellis_units"), list) and sel["trellis_units"]:
+                        trellis_prov = sel
+        except Exception:
+            pass
+    # Determine if this artifact claims to contain trellis units.
+    # We treat any provenance with trellis_units non-empty as a trellis artifact,
+    # or any card that explicitly declares trellis_route_status.
+    is_trellis_artifact = False
+    trellis_units_list: list = []
+    if isinstance(trellis_prov, Mapping):
+        if isinstance(trellis_prov.get("trellis_units"), list):
+            trellis_units_list = trellis_prov["trellis_units"]
+            if trellis_units_list:
+                is_trellis_artifact = True
+        # Also consider the case where provenance is the top-level card itself
+        # with trellis_units (handled above).
+        if not is_trellis_artifact and isinstance(card.get("trellis_units"), list) and card["trellis_units"]:
+            trellis_units_list = card["trellis_units"]
+            is_trellis_artifact = True
+        # If the card declares a trellis provenance key at all, consider it trellis-related
+        if not is_trellis_artifact and "trellis_route_status" in card:
+            is_trellis_artifact = True
+    if is_trellis_artifact:
+        # Gate 1: unbacked trellis units require explicit non-native target or override.
+        unbacked = [u for u in trellis_units_list if isinstance(u, Mapping) and u.get("route_status") in ("unbacked", "unattested")]
+        # Also treat "unbacked" exposed via histogram: check Histogram keys containing :unbacked
+        # But primary signal is per-unit.
+        if unbacked:
+            declared = None
+            override = None
+            # Check stamped declarations on card (top-level and trellis_prov)
+            for src in (card, trellis_prov or {}):
+                if isinstance(src, Mapping):
+                    if src.get("declared_non_native_target"):
+                        declared = src["declared_non_native_target"]
+                    if src.get("declared_trellis_non_native_target"):
+                        declared = src["declared_trellis_non_native_target"]
+                    if src.get("override"):
+                        override = src["override"]
+                    if src.get("trellis_override"):
+                        override = src["trellis_override"]
+                    # Also check nested "declared_non_native_target" under provenance
+                    if isinstance(src.get("trellis_route_status"), Mapping):
+                        inner = src["trellis_route_status"]
+                        if isinstance(inner, Mapping) and inner.get("declared_non_native_target"):
+                            declared = inner["declared_non_native_target"]
+            # Also check explicit fields that shipcard lifts from CB provenance
+            if not declared:
+                declared = card.get("declared_non_native_target") or (trellis_prov or {}).get("declared_non_native_target")
+            if not override:
+                override = card.get("override") or (trellis_prov or {}).get("override") or card.get("trellis_override")
+            # Allow explicit per-card fields that tests may use
+            if not declared and not override:
+                # Check environment-style override stamped as string field
+                declared = card.get("trellis_non_native_target") or card.get("non_native_target")
+                override = card.get("trellis_per_run_override") or override
+            if not declared and not override:
+                sample = ", ".join(u.get("qname", "?") for u in unbacked[:3])
+                reasons = "; ".join(u.get("unattested_reason", u.get("reason", ""))[:120] for u in unbacked[:1])
+                problems.append(
+                    f"trellis route: {len(unbacked)} unit(s) are unbacked (no attested trellis cell covers them) "
+                    f"[{sample}]; {reasons} — export fails closed unless the artifact explicitly declares "
+                    "a non-native target platform or carries an explicit per-run override stamped on the card "
+                    "(principle 9)"
+                )
+        # Gate 2: backed_with_serve_flag must record exact requires_serve_flags.
+        flagged_units = [u for u in trellis_units_list if isinstance(u, Mapping) and u.get("route_status") == "backed_with_serve_flag"]
+        if flagged_units:
+            # The artifact must record the flags in a structured field a gate can read.
+            recorded_flags = None
+            for src in (card, trellis_prov or {}):
+                if isinstance(src, Mapping):
+                    if isinstance(src.get("trellis_requires_serve_flags"), list):
+                        recorded_flags = src["trellis_requires_serve_flags"]
+                        break
+                    if isinstance(src.get("requires_serve_flags"), list):
+                        recorded_flags = src["requires_serve_flags"]
+                        break
+            # Also check histogram provenance's aggregated flags
+            if recorded_flags is None:
+                recorded_flags = (trellis_prov or {}).get("trellis_requires_serve_flags")
+            if not recorded_flags:
+                sample = ", ".join(u.get("qname", "?") for u in flagged_units[:3])
+                problems.append(
+                    f"trellis route: {len(flagged_units)} unit(s) are backed_with_serve_flag but the artifact "
+                    f"records no requires_serve_flags [{sample}]; the flags are artifact metadata, not operator "
+                    "folklore, and must be stamped as structured data (principle 9/14)"
+                )
+            else:
+                # Verify that recorded flags cover every per-unit requirement (exact set)
+                expected = set()
+                for u in flagged_units:
+                    for f in u.get("requires_serve_flags", []) or []:
+                        expected.add(str(f))
+                recorded_set = set(str(f) for f in recorded_flags)
+                if expected - recorded_set:
+                    problems.append(
+                        f"trellis route: backed_with_serve_flag units require flags {sorted(expected)} "
+                        f"but the artifact only records {sorted(recorded_set)}"
+                    )
+        # Gate 3: bpp or quality claim without route histogram.
+        has_bpp_claim = False
+        has_quality_claim = False
+        build = card.get("build") if isinstance(card.get("build"), Mapping) else {}
+        if isinstance(build.get("achieved_bpp"), Mapping) and build["achieved_bpp"].get("value") is not None:
+            has_bpp_claim = True
+        elif isinstance(build.get("achieved_bpp"), (int, float)):
+            has_bpp_claim = True
+        # Alternative bpp location: card["bpp"], card["achieved_bpp"], or any slot that is gold
+        if not has_bpp_claim and isinstance(card.get("bpp"), (int, float, Mapping)):
+            has_bpp_claim = True
+        if not has_bpp_claim:
+            for slot in GOLD_SLOTS:
+                rec = (card.get("slots") or {}).get(slot)
+                if isinstance(rec, Mapping) and rec.get("passed") is True:
+                    has_quality_claim = True
+                    break
+        if not has_quality_claim:
+            # Also check if any trellis unit's bpp claim is implied via build.achieved_bpp cross_check
+            if any(k in card for k in ("gold.kl", "gold.ppl")):
+                has_quality_claim = True
+        if (has_bpp_claim or has_quality_claim) and is_trellis_artifact:
+            hist = None
+            if isinstance(trellis_prov, Mapping):
+                hist = trellis_prov.get("trellis_route_histogram") or trellis_prov.get("route_histogram")
+            if not hist:
+                hist = card.get("trellis_route_histogram") or card.get("route_histogram")
+            if not hist:
+                problems.append(
+                    "trellis route: artifact publishes a bpp or quality claim (achieved_bpp / gold.kl/ppl) "
+                    "without the accompanying route histogram by (family, activation_contract, route_status) "
+                    "(principle 12) — a win on a non-native kernel is not a win on the named hardware"
+                )
+        # Gate 4 (WO-C correction): trellis serving is TP=1 only.
+        # Any trellis artifact that declares TP>1 is unservable (sharded trellis needs per-rank wires).
+        if is_trellis_artifact:
+            tp_declared = None
+            # Check structured provenance fields first
+            for src in (card, trellis_prov or {}):
+                if not isinstance(src, Mapping):
+                    continue
+                for key in ("trellis_tensor_parallel_world_size", "tensor_parallel_world_size", "vllm_tensor_parallel_world_size", "tp"):
+                    if key in src:
+                        try:
+                            tp_declared = int(src[key])
+                        except Exception:
+                            tp_declared = None
+                        if tp_declared is not None:
+                            break
+                if tp_declared is not None:
+                    break
+            # Also check build dict
+            if tp_declared is None and isinstance(card.get("build"), Mapping):
+                for key in ("tensor_parallel_world_size", "tp"):
+                    if key in card["build"]:
+                        try:
+                            tp_declared = int(card["build"][key])
+                        except Exception:
+                            pass
+            # If provenance explicitly says it requires TP=1 but card declares >1, refuse.
+            # If no TP declared, treat as TP=1 (the default) — do not refuse.
+            if tp_declared is not None and tp_declared != 1:
+                problems.append(
+                    f"trellis route: artifact requires TP=1 but declares tensor_parallel_world_size={tp_declared}; "
+                    "a sharded trellis needs per-rank wires, not a byte range into a shared schedule (WO-C correction, max_world_size 1 per trellis_format_family)"
+                )
     return problems
 
 

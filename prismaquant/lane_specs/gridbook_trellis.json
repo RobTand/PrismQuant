@@ -1,0 +1,77 @@
+{
+  "schema": "prismaquant.lane_spec.v1",
+  "id": "gridbook_trellis",
+  "export_container": "gridbook_trellis",
+  "runtime": "vllm+gridbook_plugin",
+  "description": "Gridbook trellis (TCQ) container on GB10 sm_121: TCQ_E2M1_R256 and TCQ_E4M3_R256 dense lanes decoded via Gridbook plugin pinned in prismaquant/gridbook_runtime/gridbook_runtime_pin.json (0.9.1, 227420f). Activation contracts are e2m1_group16_ue4m3_static (W4A4) and fp8_per_token_dynamic (W8A8). Both lanes are opt-in behind GRIDBOOK_TRELLIS_* flags; the flags are artifact metadata, not folklore. The four cells on sm_121 are device_qualified backed_with_serve_flag at rungs 512 and 1152 respectively; candidate rungs outside that set and routed_moe structure are unbacked serving gaps (WO-D).",
+  "serving_profiles": [
+    "trellis_research_sm121"
+  ],
+  "endpoint": {
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "health_path": "/health",
+    "metrics_path": "/metrics"
+  },
+  "serve": {
+    "scripts": [
+      "scripts/serve_gridbook_trellis.sh"
+    ],
+    "command": [
+      "bash",
+      "${SERVE_SCRIPT}"
+    ]
+  },
+  "gates": [
+    {
+      "id": "load_generate.eager",
+      "runner": "MODEL=<artifact> scripts/serve_gridbook_trellis.sh eager",
+      "shipcard_slot": "native_export.eager",
+      "description": "Fresh exact-pinned Gridbook container, TP=1, fp8 KV, speculative decode off, --enforce-eager, then two identical non-empty greedy completions over the OpenAI endpoint. Fills the eager load/generation slot."
+    },
+    {
+      "id": "load_generate.graph",
+      "runner": "MODEL=<artifact> scripts/serve_gridbook_trellis.sh graph",
+      "shipcard_slot": "native_export.graph",
+      "description": "A second fresh exact-pinned Gridbook container with --enforce-eager absent, followed by the same endpoint proof and a distinct server-side fingerprint. Eager success cannot stand in for CUDA-graph load/capture/generation success."
+    },
+    {
+      "id": "ship_gate.ppl_p99nll",
+      "runner": "prismaquant.validate_quantized_model --base-url http://127.0.0.1:8000 --shipcard",
+      "shipcard_slot": "ship_gate",
+      "description": "Unchanged from the native lane: same validator, endpoint, and thresholds. Endpoint-agnostic ship gate."
+    },
+    {
+      "id": "gold.kl",
+      "runner": "tools/measure_vllm_full_kl.py --dsv4-gridbook-contract",
+      "shipcard_slot": "gold.kl",
+      "description": "Served KL-vs-BF16 in the plugin serving env. Its BF16 teacher is produced first by tools/build_streamed_full_kl_teacher.py --wikitext-inputs <gold-inputs.json>. Match extension residency across A/B arms: loading a CUDA extension shifts allocator addresses and moves confident-KL by up to 17%."
+    },
+    {
+      "id": "gold.ppl",
+      "runner": "tools/measure_vllm_wikitext_ppl.py --dsv4-gridbook-contract --wikitext-inputs <gold-inputs.json>",
+      "shipcard_slot": "gold.ppl",
+      "description": "Direct WikiText PPL on the served trellis artifact using the exact CPU-materialized, value-closed offline token payload."
+    }
+  ],
+  "kl_evaluator": {
+    "kind": "validate_assignments_kl",
+    "entrypoint": "prismaquant.validate_assignments_kl:main",
+    "note": "Resident held-out KL over Pareto assignments, production-cache rendered; feeds select_validated_frontier. Returns (mean, per_sequence, stats) with kl_p95/kl_p99/kl_max/nll_p99. For trellis this is the W*A16 screen today (A-side unpriced); the lane's served contract is W4A4/W8A8 and the A-side must be priced before promotion (WO-D D3 leg2)."
+  },
+  "served_activation_quantization": {
+    "executes": [
+      "TCQ_E2M1_R*",
+      "TCQ_E4M3_R*"
+    ],
+    "rationale": "DERIVED from Gridbook lanes trellis_e2m1_lane.py and trellis_e4m3_lane.py. E2M1: group-16 ue4m3 block plane * e2m1 codes plus global_scale_real, lane declares ACTIVATION_CONTRACT = e2m1_group16_ue4m3_static and quantizes activations to E2M1 group16 via native_fp4_quant before _scaled_mm (W4A4). E4M3: per-row fp32 scale + e4m3 codes, lane declares ACTIVATION_CONTRACT = fp8_per_token_dynamic and quantizes activations per token to E4M3 via native_fp8_quant before _scaled_mm (W8A8). Both are Blackwell-only and opt-in behind GRIDBOOK_TRELLIS_* flags with residency mode.",
+    "selectors_must_be_unset": []
+  },
+  "advisory_gates": true,
+  "notes": [
+    "Four trellis cells on sm_121 (device_qualified, backed_with_serve_flag): TCQ_E2M1_R256@512 decode/batch (e2m1_group16_ue4m3_static) and TCQ_E4M3_R256@1152 decode/batch (fp8_per_token_dynamic), each requiring GRIDBOOK_TRELLIS_E2M1/E4M3=1 plus GRIDBOOK_TRELLIS_*_MODE=resident|streamed. Candidate rungs outside [512] and [1152] and any routed_moe structure are unbacked gaps (WO-D).",
+    "Single-GPU only: the pinned Gridbook contract has no qualified TP path for trellis (max_world_size 1, trellis_tensor_parallel_world_size=1).",
+    "Fused serving units (qkv_proj, gate_up_proj per packed_modules_mapping order) are one trellis wire per merged module, not per-role (WO-C correction, gridbook/config.py::_build_trellis_method at 227420f).",
+    "Serve script passes exact trellis flags through to the container and binds --host 0.0.0.0 --port 8000 with -p 8000:8000 (loopback bind is unreachable from LAN test host)."
+  ]
+}
