@@ -29,8 +29,8 @@ import argparse
 import copy
 import json
 import math
+import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 from typing import Mapping
@@ -59,6 +59,11 @@ from numeric_checkpoint_contract import (
     CheckpointContractError,
     validate_e2m1_checkpoint,
     validate_e2_published_control_arm,
+)
+from numeric_execution_contract import (
+    NumericExecutionContractError,
+    require_numeric_execution_environment,
+    require_repo_commit,
 )
 
 W, C, P, S4, TF = H.W, H.C, H.P, H.S4, H.TF
@@ -227,22 +232,29 @@ def _parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def _repo_commit() -> str | None:
+def _repo_commit() -> str:
     try:
-        commit = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return commit if len(commit) == 40 else None
+        return require_repo_commit(REPO_ROOT)
+    except NumericExecutionContractError as exc:
+        raise SystemExit(f"FATAL: {exc}") from exc
+
+
+def _execution_environment() -> dict[str, object]:
+    try:
+        return require_numeric_execution_environment(
+            REPO_ROOT,
+            H.current_env(),
+            os.environ,
+            require_cuda=True,
+        )
+    except NumericExecutionContractError as exc:
+        raise SystemExit(f"FATAL: {exc}") from exc
 
 
 def _active_source_identity() -> dict[str, object]:
     driver = Path(__file__).resolve(strict=True)
     isolated_loader = driver.with_name("isolated_glm_corpus.py")
+    execution_contract = driver.with_name("numeric_execution_contract.py")
     corpus_reader = REPO_ROOT / "prismaquant/trellis_bf16_corpus.py"
     imported_codec_modules = {
         name: {
@@ -281,6 +293,8 @@ def _active_source_identity() -> dict[str, object]:
         "driver_sha256": file_sha256(driver),
         "isolated_loader_path": str(isolated_loader),
         "isolated_loader_sha256": file_sha256(isolated_loader),
+        "numeric_execution_contract_path": str(execution_contract),
+        "numeric_execution_contract_sha256": file_sha256(execution_contract),
         "active_corpus_reader_path": str(corpus_reader.resolve(strict=True)),
         "active_corpus_reader_sha256": file_sha256(corpus_reader),
         "frozen_hull": {
@@ -365,7 +379,9 @@ def _corpus_binding(
 
 
 def _claim_identity(
-    args: argparse.Namespace, corpus_binding: Mapping[str, object]
+    args: argparse.Namespace,
+    corpus_binding: Mapping[str, object],
+    execution_environment: Mapping[str, object],
 ) -> dict[str, object]:
     return {
         "schema": "trellis.e2m1_highrate.publication.v1",
@@ -376,6 +392,7 @@ def _claim_identity(
         "limit": args.limit,
         "allow_control_drift": bool(args.allow_control_drift),
         "active_sources": _active_source_identity(),
+        "environment": dict(execution_environment),
     }
 
 
@@ -384,8 +401,17 @@ def _verify_final_bindings(
     args: argparse.Namespace,
     receipt: Mapping[str, object],
     publication_identity: Mapping[str, object],
+    execution_environment: Mapping[str, object],
 ) -> None:
-    if _claim_identity(args, _corpus_binding(args)) != publication_identity:
+    fresh_environment = _execution_environment()
+    if fresh_environment != execution_environment:
+        raise SystemExit("FATAL: numeric execution environment drifted during run")
+    if receipt.get("environment") != fresh_environment:
+        raise SystemExit("FATAL: result execution environment is not the live one")
+    if (
+        _claim_identity(args, _corpus_binding(args), fresh_environment)
+        != publication_identity
+    ):
         raise SystemExit("FATAL: publication identity drifted during run")
     if receipt.get("active_source_identity") != _active_source_identity():
         raise SystemExit("FATAL: active/frozen source identity drifted during run")
@@ -532,13 +558,18 @@ def main() -> int:
     args = _parse_args()
     if args.corpus != "glm" and args.glm_rate_plan != "scaffold":
         raise SystemExit("--glm-rate-plan is valid only with --corpus glm")
+    execution_environment = _execution_environment()
     prepared = _prepare_campaign(args)
-    publication_identity = _claim_identity(args, prepared["corpus_binding"])
+    publication_identity = _claim_identity(
+        args, prepared["corpus_binding"], execution_environment
+    )
     try:
         with exclusive_publication_claim(
             args.out, identity=publication_identity
         ):
-            return _run_claimed(args, publication_identity, prepared)
+            return _run_claimed(
+                args, publication_identity, prepared, execution_environment
+            )
     except PublicationError as exc:
         raise SystemExit(f"FATAL: {exc}") from exc
 
@@ -547,6 +578,7 @@ def _run_claimed(
     args: argparse.Namespace,
     publication_identity: Mapping[str, object],
     prepared: Mapping[str, object],
+    execution_environment: Mapping[str, object],
 ) -> int:
 
     partial_path = args.out.with_name(args.out.name + ".partial")
@@ -569,7 +601,7 @@ def _run_claimed(
     expected_tensors = prepared["expected_tensors"]
     expected_controls = prepared["expected_controls"]
 
-    env = H.current_env()
+    env = dict(execution_environment)
     active_sources = publication_identity["active_sources"]
     corpus_binding = prepared["corpus_binding"]
     receipt = {
@@ -926,6 +958,7 @@ def _run_claimed(
         args=args,
         receipt=receipt,
         publication_identity=publication_identity,
+        execution_environment=execution_environment,
     )
     try:
         publish_file_no_replace(partial_path, args.out)

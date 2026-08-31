@@ -21,6 +21,13 @@ class CheckpointContractError(ValueError):
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,253}[A-Za-z0-9])?$")
+_EXECUTION_KEYS = frozenset({
+    "schema", "physical_host", "container_image_digest", "repo_git_commit",
+    "repo_tree_clean", "python", "torch", "triton", "device",
+})
 _E2_LANES = ("tcq_two_tier", "tcq_v1")
 _E2_ROOT_KEYS = frozenset({"receipt", "per_tensor", "checkpoint_sha256"})
 _E2_RECEIPT_KEYS = frozenset({
@@ -123,7 +130,7 @@ _FP8_SETTINGS_KEYS = frozenset({
     "corpus_file_sha256", "importance_value_sha256",
     "corpus_prismaquant_commit", "population_counts", "rungs", "encode_tier",
     "locked_sources", "frozen_codec_closure", "active_source_identity",
-    "aggregation_contract", "identity_sha256",
+    "environment", "aggregation_contract", "identity_sha256",
 })
 _FP8_CELL_KEYS = frozenset({
     "population", "shape", "source_weight_sha256", "importance_sha256",
@@ -163,6 +170,37 @@ FP8_PERFORMANCE_GATE = (
     "encode timings are observations only; attach in-process profiler "
     "and both-host Netdata/power evidence before any performance claim"
 )
+
+
+def _validate_execution_environment(
+    value: object, *, active_source_identity: object, where: str
+) -> Mapping[str, object]:
+    environment = _exact(value, _EXECUTION_KEYS, where=where)
+    if environment.get("schema") != "trellis.numeric_execution.v1":
+        raise CheckpointContractError(f"{where}.schema differs")
+    host = environment.get("physical_host")
+    if not isinstance(host, str) or _HOST.fullmatch(host) is None:
+        raise CheckpointContractError(f"{where}.physical_host is invalid")
+    image = environment.get("container_image_digest")
+    if not isinstance(image, str) or _IMAGE_DIGEST.fullmatch(image) is None:
+        raise CheckpointContractError(
+            f"{where}.container_image_digest is invalid"
+        )
+    commit = environment.get("repo_git_commit")
+    if not isinstance(commit, str) or _GIT_COMMIT.fullmatch(commit) is None:
+        raise CheckpointContractError(f"{where}.repo_git_commit is invalid")
+    if environment.get("repo_tree_clean") is not True:
+        raise CheckpointContractError(f"{where}.repo_tree_clean must be true")
+    for field in ("python", "torch", "triton", "device"):
+        item = environment.get(field)
+        if not isinstance(item, str) or not item:
+            raise CheckpointContractError(f"{where}.{field} is unavailable")
+    source = _mapping(active_source_identity, where=f"{where}.active_sources")
+    if source.get("repo_git_commit") != commit:
+        raise CheckpointContractError(
+            f"{where}.repo_git_commit differs from active source identity"
+        )
+    return environment
 _FP8_SIDECAR_AMORTIZATION = (
     "the fixed fp8 lattice sidecar is a format-shared asset, charged "
     "once per (rung, physical identity), NOT per tensor"
@@ -670,6 +708,11 @@ def validate_e2m1_checkpoint(
             or len(set(control_rungs)) != len(control_rungs)):
         raise CheckpointContractError("receipt.control_rungs differs")
     _sha(receipt.get("publication_identity_sha256"), where="receipt.publication_identity_sha256")
+    _validate_execution_environment(
+        receipt.get("environment"),
+        active_source_identity=receipt.get("active_source_identity"),
+        where="receipt.environment",
+    )
     comparable_saved = {key: value for key, value in receipt.items()
                         if key not in {"started_at_unix_s", "partial", "tensors_done"}}
     comparable_current = {key: value for key, value in current_receipt.items()
@@ -922,6 +965,11 @@ def _validate_fp8_settings(settings: object, *, expected: Mapping[str, object]) 
     value = _exact(settings, _FP8_SETTINGS_KEYS, where="settings")
     if value != expected:
         raise CheckpointContractError("settings identity differs")
+    _validate_execution_environment(
+        value.get("environment"),
+        active_source_identity=value.get("active_source_identity"),
+        where="settings.environment",
+    )
     for field in ("corpus_manifest_sha256", "corpus_file_sha256", "importance_value_sha256", "identity_sha256"):
         _sha(value.get(field), where=f"settings.{field}")
     if value.get("schema") != "trellis.glm_fp8_learned_balanced.v2":

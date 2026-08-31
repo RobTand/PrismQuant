@@ -19,7 +19,7 @@ import importlib
 import inspect
 import json
 import math
-import subprocess
+import os
 import sys
 import time
 from pathlib import Path
@@ -42,6 +42,11 @@ from numeric_checkpoint_contract import (
     fp8_population_summaries,
     validate_fp8_checkpoint,
     validate_fp8_replay_envelope,
+)
+from numeric_execution_contract import (
+    NumericExecutionContractError,
+    require_numeric_execution_environment,
+    require_repo_commit,
 )
 
 EXPECTED_FP8_LADDER_SHA256 = (
@@ -194,22 +199,29 @@ def _require_fp8_replay_match(
         )
 
 
-def _repo_commit() -> str | None:
+def _repo_commit() -> str:
     try:
-        commit = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return commit if len(commit) == 40 else None
+        return require_repo_commit(REPO_ROOT)
+    except NumericExecutionContractError as exc:
+        raise CampaignError(str(exc)) from exc
+
+
+def _execution_environment(ladder, *, require_cuda: bool) -> dict[str, object]:
+    try:
+        return require_numeric_execution_environment(
+            REPO_ROOT,
+            ladder.H.current_env(),
+            os.environ,
+            require_cuda=require_cuda,
+        )
+    except NumericExecutionContractError as exc:
+        raise CampaignError(str(exc)) from exc
 
 
 def _active_source_identity() -> dict[str, object]:
     driver = Path(__file__).resolve(strict=True)
     isolated_loader = driver.with_name("isolated_glm_corpus.py")
+    execution_contract = driver.with_name("numeric_execution_contract.py")
     corpus_reader = REPO_ROOT / "prismaquant/trellis_bf16_corpus.py"
     return {
         "repo_root": str(REPO_ROOT),
@@ -218,6 +230,8 @@ def _active_source_identity() -> dict[str, object]:
         "driver_sha256": file_sha256(driver),
         "isolated_loader_path": str(isolated_loader),
         "isolated_loader_sha256": file_sha256(isolated_loader),
+        "numeric_execution_contract_path": str(execution_contract),
+        "numeric_execution_contract_sha256": file_sha256(execution_contract),
         "active_corpus_reader_path": str(corpus_reader.resolve(strict=True)),
         "active_corpus_reader_sha256": file_sha256(corpus_reader),
     }
@@ -245,6 +259,9 @@ def _frozen_codec_closure(ladder) -> dict[str, object]:
 def _verify_final_bindings(
     *, args, settings: Mapping[str, object], ladder
 ) -> None:
+    fresh_environment = _execution_environment(ladder, require_cuda=True)
+    if settings.get("environment") != fresh_environment:
+        raise CampaignError("numeric execution environment drifted during run")
     if settings.get("active_source_identity") != _active_source_identity():
         raise CampaignError("active source identity drifted during run")
     if settings.get("locked_sources") != _locked_sources(args.locked_ladder):
@@ -282,6 +299,9 @@ def main() -> int:
     )
     locked = _locked_sources(args.locked_ladder)
     ladder = _load_ladder(args.locked_ladder)
+    environment = _execution_environment(
+        ladder, require_cuda=not args.dry_run
+    )
     settings = {
         "schema": SCHEMA,
         "corpus_manifest": str(corpus.manifest_path),
@@ -297,6 +317,7 @@ def main() -> int:
         "locked_sources": locked,
         "frozen_codec_closure": _frozen_codec_closure(ladder),
         "active_source_identity": _active_source_identity(),
+        "environment": environment,
         "aggregation_contract": "dense/routed population-separated; no pooled median",
     }
     settings["identity_sha256"] = _identity_sha256(settings)

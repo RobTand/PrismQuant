@@ -97,6 +97,7 @@ def test_final_binding_recheck_refuses_midrun_corpus_mutation(
     )
     settings = {
         "active_source_identity": {"active": "bound"},
+        "environment": {"execution": "bound"},
         "locked_sources": {"locked": "bound"},
         "frozen_codec_closure": {"closure": "bound"},
         "corpus_manifest_sha256": hashlib.sha256(
@@ -113,6 +114,11 @@ def test_final_binding_recheck_refuses_midrun_corpus_mutation(
     ladder = object()
     monkeypatch.setattr(
         _DRIVER, "_active_source_identity", lambda: {"active": "bound"}
+    )
+    monkeypatch.setattr(
+        _DRIVER,
+        "_execution_environment",
+        lambda _ladder, require_cuda: {"execution": "bound"},
     )
     monkeypatch.setattr(
         _DRIVER, "_locked_sources", lambda _path: {"locked": "bound"}

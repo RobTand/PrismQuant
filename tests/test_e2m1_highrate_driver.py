@@ -58,7 +58,9 @@ def test_future_result_binds_active_and_frozen_source_closures():
     assert 'Path(module.INPUT)' in source
     assert '"input_sha256"' in source
     assert '"control_sha256"' in source
-    assert '_claim_identity(args, prepared["corpus_binding"])' in source
+    assert 'args, prepared["corpus_binding"], execution_environment' in source
+    assert '"numeric_execution_contract_sha256"' in source
+    assert "require_numeric_execution_environment(" in source
     assert '_corpus_binding(args) != binding' in source
     assert 'required published control' in source
     assert 'expected_tensors[name]' in source

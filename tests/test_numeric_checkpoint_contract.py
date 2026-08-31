@@ -173,10 +173,21 @@ def _e2_arm(lane: str, rate: float, shape: list[int]):
 
 def _e2_checkpoint():
     receipt = {key: None for key in C._E2_RECEIPT_KEYS - {"partial", "tensors_done"}}
+    commit = "e" * 40
     receipt.update({
         "schema": "trellis.e2m1_highrate.v3", "started_at_unix_s": 1.0,
         "publication_identity_sha256": "c" * 64, "rate_plan": [2.0],
         "mathematical_q256_bounds": [256, 1016], "control_rungs": [],
+        "active_source_identity": {"repo_git_commit": commit},
+        "environment": {
+            "schema": "trellis.numeric_execution.v1",
+            "physical_host": "sparky",
+            "container_image_digest": "sha256:" + "f" * 64,
+            "repo_git_commit": commit,
+            "repo_tree_clean": True,
+            "python": "3.12.3", "torch": "2.13.0+cu130",
+            "triton": "3.7.1", "device": "NVIDIA GB10",
+        },
     })
     shape = [2, 256]
     cell = {
@@ -540,6 +551,7 @@ def test_e2_final_control_and_population_receipts_are_derived():
 
 
 def _fp8_settings():
+    commit = "e" * 40
     settings = {
         "schema": "trellis.glm_fp8_learned_balanced.v2",
         "corpus_manifest": "/immutable/manifest.json",
@@ -550,7 +562,16 @@ def _fp8_settings():
         "population_counts": {"dense": 1, "routed": 0},
         "rungs": [32, 40, 48], "encode_tier": "balanced",
         "locked_sources": {}, "frozen_codec_closure": {},
-        "active_source_identity": {},
+        "active_source_identity": {"repo_git_commit": commit},
+        "environment": {
+            "schema": "trellis.numeric_execution.v1",
+            "physical_host": "sparky",
+            "container_image_digest": "sha256:" + "f" * 64,
+            "repo_git_commit": commit,
+            "repo_tree_clean": True,
+            "python": "3.12.3", "torch": "2.13.0+cu130",
+            "triton": "3.7.1", "device": "NVIDIA GB10",
+        },
         "aggregation_contract": "dense/routed population-separated; no pooled median",
     }
     settings["identity_sha256"] = hashlib.sha256(json.dumps(
