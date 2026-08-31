@@ -198,9 +198,12 @@ only and is explicitly excluded from quality.
 Each E seed publishes one `.trellis` file, reopens it, canonical-reserializes
 it, and decodes those same bytes before its tensor-result commit marker can
 publish. The campaign receipt publishes last. A persistent identity claim and
-structural validation of seed census, rate, bytes, transforms, metric domains,
-and nested producer receipt permit crash resume; this is not an external
-signature over locally writable evidence.
+deterministic GPU replay from hash-checked pinned inputs permit crash resume
+only when the native controls, Hessian, BlockLDL receipt, canonical wire,
+inverse transform, metrics, and verdicts reproduce exactly. Historical timing
+values are noncomparative telemetry and are not replayed. This is a local
+integrity/recomputation contract, not an external signature or independent
+proof that the prior GPU execution occurred.
 
 ### Current GLM feasibility boundary
 

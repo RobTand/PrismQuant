@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -241,6 +242,218 @@ def test_metric_availability_separates_qwen_activations_from_glm_importance():
     assert glm["raw_importance_weighted"]["available"] is True
 
 
+def test_qwen_load_refuses_same_shape_swap_after_preflight(tmp_path):
+    weight_path = tmp_path / "weight.pt"
+    replacement_path = tmp_path / "replacement.pt"
+    activations_path = tmp_path / "activations.pt"
+    calibration_path = tmp_path / "calibration.json"
+    original_weight = torch.arange(256 * 256, dtype=torch.float32).reshape(256, 256)
+    replacement_weight = original_weight.flip(0).contiguous()
+    activations = torch.arange(4 * 256, dtype=torch.float32).reshape(4, 256)
+    torch.save({"weight": original_weight}, weight_path)
+    torch.save({"weight": replacement_weight}, replacement_path)
+    torch.save({"inputs": activations}, activations_path)
+    calibration_body = {
+        "schema": NATIVE.CALIBRATION_SCHEMA,
+        "dataset": "unit-test",
+        "capture_precision": "float32",
+        "calibration_hash": "1" * 64,
+        "nsamples": 4,
+        "seqlen": 1,
+        "seed": 7,
+    }
+    calibration = {
+        **calibration_body,
+        "identity_sha256": NATIVE._canonical_sha256(calibration_body),
+    }
+    calibration_path.write_text(json.dumps(calibration))
+    manifest = _manifest(tmp_path)
+    manifest["input"].update({
+        "weight_path": str(weight_path),
+        "weight_key": "weight",
+        "activations_path": str(activations_path),
+        "activations_key": "inputs",
+        "calibration_manifest": str(calibration_path),
+    })
+    manifest = M.validate_manifest(manifest)
+    inputs = M.preflight_inputs(manifest)
+    assert inputs.units[0].source_weight_sha256 == inputs.provenance["weight"][
+        "tensor_sha256"
+    ]
+
+    # Atomic rename preserves shape and pathname while changing the inode and
+    # exact bytes after preflight.
+    replacement_path.replace(weight_path)
+    with pytest.raises(ValueError, match="changed after preflight"):
+        M._load_unit_tensors(manifest, inputs, inputs.units[0])
+
+
+def test_qwen_safetensors_pinned_load_returns_owned_materialized_tensor(tmp_path):
+    from safetensors.torch import save_file
+
+    path = tmp_path / "weight.safetensors"
+    original = torch.arange(32, dtype=torch.float32).reshape(4, 8)
+    replacement = original.flip(0).contiguous()
+    save_file({"weight": original}, path)
+    loaded, provenance = M._load_qwen_tensor_bound(path, "weight")
+    assert provenance["tensor_sha256"] == NATIVE.tensor_sha256(original)
+    save_file({"weight": replacement}, path)
+    assert torch.equal(loaded, original)
+    assert loaded.untyped_storage().data_ptr() != replacement.untyped_storage().data_ptr()
+
+
+def test_glm_pinned_load_rechecks_weight_and_importance_hashes(tmp_path):
+    weight = torch.arange(8, dtype=torch.bfloat16).reshape(2, 4)
+    importance = torch.arange(4, dtype=torch.float32)
+    weight_raw = weight.view(torch.uint8).numpy().tobytes()
+    importance_raw = importance.view(torch.uint8).numpy().tobytes()
+    artifact = tmp_path / "corpus.safetensors"
+    artifact.write_bytes(weight_raw + importance_raw)
+    entry = SimpleNamespace(
+        name="tensor.weight",
+        importance_key="tensor.importance",
+        source_weight_shape=(2, 4),
+        importance_shape=(4,),
+        source_weight_sha256=hashlib.sha256(weight_raw).hexdigest(),
+        importance_sha256=hashlib.sha256(importance_raw).hexdigest(),
+    )
+    corpus = SimpleNamespace(
+        entries=(entry,),
+        artifact_path=artifact,
+        _layout=SimpleNamespace(
+            data_start=0,
+            tensors={
+                entry.name: {"data_offsets": [0, len(weight_raw)]},
+                entry.importance_key: {
+                    "data_offsets": [
+                        len(weight_raw), len(weight_raw) + len(importance_raw)
+                    ]
+                },
+            },
+        ),
+    )
+    unit = M.InputUnit(
+        entry.name, "dense", (2, 4), entry.source_weight_sha256
+    )
+    loaded_weight, loaded_importance = M._load_glm_tensor_bound(corpus, unit)
+    assert torch.equal(loaded_weight, weight)
+    assert torch.equal(loaded_importance, importance)
+
+    artifact.write_bytes(bytes(len(weight_raw)) + importance_raw)
+    with pytest.raises(ValueError, match="GLM weight identity differs"):
+        M._load_glm_tensor_bound(corpus, unit)
+
+
+def _semantic_result_fixture(*, wire_sha256: str, control_sha256: str):
+    telemetry = {
+        "scope": "offline_quality_campaign_noncomparative",
+        "preflight_plan": {"current_dense_producer_executable": True},
+        "phase_seconds": {"load_inputs": 1.0},
+        "total_measured_phase_seconds": 1.0,
+        "torch_cuda_peak_allocated_bytes": 1,
+        "cpu_factorization_fallback_observed": False,
+        "gpu_utilization_used_as_diagnostic": False,
+        "serving_or_throughput_claim": False,
+    }
+    producer_body = {
+        "schema": M.ARM_E.BLOCKLDL_COMBINED_ARTIFACT_SCHEMA,
+        "wire_bytes": 1,
+        "wire_identity_sha256": wire_sha256,
+        "decoded_weight_sha256": "e" * 64,
+        "decoded_codes_sha256": "d" * 64,
+        "same_byte_reparse_verified": True,
+        "block_ldl": {"cross_block_feedback_nonzero_count": 1},
+        "producer_eligible": False,
+    }
+    producer_receipt = {
+        **producer_body,
+        "identity_sha256": M.ARM_E._canonical_sha256(producer_body),
+    }
+    body = {
+        "schema": M.RESULT_SCHEMA,
+        "status": "matched_quality_isolate_complete",
+        "campaign_claim_identity_sha256": "a" * 64,
+        "source_closure_identity_sha256": "b" * 64,
+        "mode": M.QWEN_MODE,
+        "tensor": {"tensor_sha256": "c" * 64},
+        "hessian_contract": {"construction": "fixture"},
+        "metric_availability": {},
+        "rate_plan": {"selected_body_rate_q256": 1016},
+        "transform_geometry": {},
+        "controls": {
+            "A_scalar_native_nvfp4": {
+                "fields_sha256": control_sha256,
+                "metrics": {"weight": {"nsse": 0.0}},
+            },
+            "C_stock_blockldl_native_nvfp4": {
+                "fields_sha256": control_sha256,
+                "metrics": {"weight": {"nsse": 0.0}},
+            },
+        },
+        "arm_e_by_seed": [{
+            "wire": {
+                "sha256": wire_sha256,
+                "publication_status": "published_no_replace",
+            },
+            "metrics": {"weight": {"nsse": 0.0}},
+            "producer_receipt": producer_receipt,
+        }],
+        "feasibility_telemetry": telemetry,
+        "format_registry_entries_created": 0,
+        "runtime_pin_changed": False,
+        "production_contract_changed": False,
+        "producer_eligible": False,
+    }
+    return {**body, "identity_sha256": M._identity_sha256(body)}
+
+
+def test_semantic_replay_rejects_zero_wire_and_fabricated_quality(tmp_path):
+    schedule = M.uniform_column_schedule(256, 1016, family=E2M1_FAMILY)
+    zero_artifact = encode_trellis_one_linear(
+        torch.zeros(1, 256),
+        torch.ones(256),
+        family=E2M1_FAMILY,
+        body_rate_q256=1016,
+        schedule=schedule,
+        layout=M.LAYOUT_TIGHT_OFFSETS,
+        alphabets=M.canonical_highrate_alphabets(schedule),
+        scale_rule="static_6",
+        sb_chunk=1,
+        determinism_mode="on",
+        tailbite_candidates=4,
+        backend="eager",
+        point_route="full",
+    )
+    forged = _semantic_result_fixture(
+        wire_sha256=hashlib.sha256(zero_artifact.wire_bytes).hexdigest(),
+        control_sha256="f" * 64,
+    )
+    reproduced = _semantic_result_fixture(
+        wire_sha256="1" * 64,
+        control_sha256="2" * 64,
+    )
+    with pytest.raises(ValueError, match="semantic attestation was not reproduced"):
+        M._require_semantic_reproduction(
+            forged, reproduced, path=tmp_path / "result.json"
+        )
+
+
+def test_semantic_replay_normalizes_only_publication_status(tmp_path):
+    existing = _semantic_result_fixture(
+        wire_sha256="1" * 64, control_sha256="2" * 64
+    )
+    reproduced = copy.deepcopy(existing)
+    reproduced["arm_e_by_seed"][0]["wire"][
+        "publication_status"
+    ] = "resumed_identical_existing"
+    reproduced_body = dict(reproduced)
+    reproduced_body.pop("identity_sha256")
+    reproduced["identity_sha256"] = M._identity_sha256(reproduced_body)
+    M._require_semantic_reproduction(
+        existing, reproduced, path=tmp_path / "result.json"
+    )
+
+
 def test_published_wire_is_reopened_reserialized_and_decoded(tmp_path):
     generator = torch.Generator().manual_seed(11)
     weight = torch.randn(1, 256, generator=generator)
@@ -321,6 +534,16 @@ def test_completed_receipt_resume_requires_exact_manifest_member_census(tmp_path
     manifest_provenance = {"semantic_identity_sha256": "a" * 64}
     input_provenance = {"kind": M.QWEN_MODE, "identity_sha256": "b" * 64}
     source_closure = {"identity_sha256": "c" * 64}
+    execution = {
+        "declared_host": "test-host",
+        "observed_hostname": "test-host",
+        "container_identity": "sha256:" + "f" * 64,
+        "device": {"type": "cuda", "index": 0},
+        "torch_version": "test",
+        "cuda_toolkit_version": "test",
+        "command": ["arm_e_quality_campaign.py", "--manifest", "test.json"],
+    }
+    publication = M._campaign_publication_record("sparky:/tmp/arm-e-test")
     body = {
         "schema": M.RECEIPT_SCHEMA,
         "status": "quality_campaign_complete",
@@ -329,7 +552,7 @@ def test_completed_receipt_resume_requires_exact_manifest_member_census(tmp_path
         "mode": M.QWEN_MODE,
         "input_provenance": input_provenance,
         "source_closure": source_closure,
-        "execution": {},
+        "execution": execution,
         "acceptance_contract": M.ACCEPTANCE_CONTRACT,
         "summary": {},
         # A locally rewritten receipt can be self-digested and internally
@@ -340,7 +563,7 @@ def test_completed_receipt_resume_requires_exact_manifest_member_census(tmp_path
             "bytes": 1,
             "sha256": "e" * 64,
         }],
-        "publication": {},
+        "publication": publication,
         "claim_boundary": {
             "quality_only": True,
             "activation_output_model_quality": False,
@@ -367,6 +590,25 @@ def test_completed_receipt_resume_requires_exact_manifest_member_census(tmp_path
             manifest_provenance=manifest_provenance,
             input_provenance=input_provenance,
             expected_members=expected_members,
+            expected_execution=execution,
+            expected_publication=publication,
+            mode=M.QWEN_MODE,
+            root=tmp_path,
+        )
+
+    body["execution"] = {}
+    receipt = {**body, "identity_sha256": M._identity_sha256(body)}
+    path.write_bytes(M._canonical_bytes(receipt, pretty=True))
+    with pytest.raises(ValueError, match="execution identity differs"):
+        M._verify_complete_receipt(
+            path,
+            claim_identity_sha256="d" * 64,
+            source_closure=source_closure,
+            manifest_provenance=manifest_provenance,
+            input_provenance=input_provenance,
+            expected_members=expected_members,
+            expected_execution=execution,
+            expected_publication=publication,
             mode=M.QWEN_MODE,
             root=tmp_path,
         )
@@ -469,4 +711,5 @@ def test_resume_refuses_forged_completed_seed_prefix(tmp_path):
             source_closure_identity_sha256="c" * 64,
             expected_seeds=manifest["seeds"],
             recipe=manifest["recipe"],
+            reproduced_result=value,
         )

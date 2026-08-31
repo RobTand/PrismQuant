@@ -17,6 +17,7 @@ import math
 import os
 import re
 import socket
+import stat
 import statistics
 import sys
 import tempfile
@@ -220,6 +221,163 @@ def _file_sha256(path: Path) -> str:
         while block := handle.read(8 << 20):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _fd_sha256(descriptor: int) -> str:
+    """Hash one already-open file without changing its shared offset."""
+
+    digest = hashlib.sha256()
+    offset = 0
+    while block := os.pread(descriptor, 8 << 20, offset):
+        digest.update(block)
+        offset += len(block)
+    return digest.hexdigest()
+
+
+def _load_qwen_tensor_bound(
+    path: str | Path,
+    key: str | None,
+    *,
+    expected_file_sha256: str | None = None,
+    expected_tensor_sha256: str | None = None,
+) -> tuple[torch.Tensor, dict[str, object]]:
+    """Load and hash a Qwen tensor through one pinned regular-file inode.
+
+    The manifest pathname is resolved and opened once.  Both byte hashes and
+    the tensor load use that descriptor (the loader reopens ``/proc/self/fd``
+    while this descriptor remains live), so a rename swap cannot make the
+    provenance refer to different bytes than the optimization input.
+    """
+
+    source = Path(path).resolve(strict=True)
+    descriptor = os.open(
+        source,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"Qwen input is not a regular file: {source}")
+        first_file_sha256 = _fd_sha256(descriptor)
+        if (
+            expected_file_sha256 is not None
+            and first_file_sha256 != expected_file_sha256
+        ):
+            raise ValueError(f"Qwen input file changed after preflight: {source}")
+        pinned = Path(f"/proc/self/fd/{descriptor}")
+        if not pinned.exists():
+            raise ValueError("Qwen fd-pinned loading requires /proc/self/fd")
+        if source.suffix == ".safetensors":
+            from safetensors import safe_open
+
+            with safe_open(str(pinned), framework="pt", device="cpu") as handle:
+                keys = list(handle.keys())
+                selected_key = key
+                if selected_key is None:
+                    if len(keys) != 1:
+                        raise ValueError("explicit tensor key required")
+                    selected_key = keys[0]
+                if selected_key not in keys:
+                    raise KeyError(f"{selected_key!r} is not present in {source}")
+                # ``safe_open`` may return mmap-backed storage.  Materialize
+                # an owned tensor while the pinned descriptor is live and
+                # before the post-load byte hash closes the TOCTOU window.
+                tensor = handle.get_tensor(selected_key).clone()
+        else:
+            value = torch.load(pinned, map_location="cpu", weights_only=True)
+            if isinstance(value, torch.Tensor):
+                if key:
+                    raise ValueError("key supplied for a single tensor")
+                tensor = value
+            else:
+                selected_key = key
+                if selected_key is None:
+                    if not isinstance(value, Mapping) or len(value) != 1:
+                        raise ValueError("explicit tensor key required")
+                    selected_key = next(iter(value))
+                if not isinstance(value, Mapping) or selected_key not in value:
+                    raise KeyError(f"{selected_key!r} is not present in {source}")
+                tensor = value[selected_key]
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(f"Qwen input {source}:{key} is not a tensor")
+        after = os.fstat(descriptor)
+        second_file_sha256 = _fd_sha256(descriptor)
+        if (
+            (before.st_dev, before.st_ino, before.st_size)
+            != (after.st_dev, after.st_ino, after.st_size)
+            or second_file_sha256 != first_file_sha256
+        ):
+            raise ValueError(f"Qwen input changed during fd-pinned load: {source}")
+        tensor_sha256 = NATIVE.tensor_sha256(tensor)
+        if (
+            expected_tensor_sha256 is not None
+            and tensor_sha256 != expected_tensor_sha256
+        ):
+            raise ValueError(f"Qwen tensor changed after preflight: {source}:{key}")
+        return tensor, {
+            "path": str(source),
+            "key": key,
+            "file_sha256": first_file_sha256,
+            "tensor_sha256": tensor_sha256,
+        }
+    finally:
+        os.close(descriptor)
+
+
+def _load_glm_tensor_bound(
+    corpus: FinalizedBF16Corpus, unit: "InputUnit"
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pread one GLM pair from a hash-verified pinned corpus descriptor."""
+
+    matches = [entry for entry in corpus.entries if entry.name == unit.name]
+    if len(matches) != 1:
+        raise ValueError(f"unknown GLM corpus tensor {unit.name!r}")
+    entry = matches[0]
+    descriptor = os.open(
+        corpus.artifact_path,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("GLM finalized corpus artifact is not a regular file")
+        if unit.source_weight_sha256 != entry.source_weight_sha256:
+            raise ValueError(f"GLM preflight weight identity differs: {entry.name}")
+
+        def tensor_bytes(name: str) -> bytes:
+            header = corpus._layout.tensors[name]
+            start, end = map(int, header["data_offsets"])
+            raw = os.pread(
+                descriptor,
+                end - start,
+                int(corpus._layout.data_start) + start,
+            )
+            if len(raw) != end - start:
+                raise ValueError(f"GLM finalized corpus tensor is truncated: {name}")
+            return raw
+
+        weight_raw = tensor_bytes(entry.name)
+        importance_raw = tensor_bytes(entry.importance_key)
+        if hashlib.sha256(weight_raw).hexdigest() != entry.source_weight_sha256:
+            raise ValueError(f"GLM weight identity differs: {entry.name}")
+        if hashlib.sha256(importance_raw).hexdigest() != entry.importance_sha256:
+            raise ValueError(f"GLM importance identity differs: {entry.importance_key}")
+        after = os.fstat(descriptor)
+        if (
+            (before.st_dev, before.st_ino, before.st_size)
+            != (after.st_dev, after.st_ino, after.st_size)
+        ):
+            raise ValueError("GLM finalized corpus changed during pinned load")
+        return (
+            CORPUS_MODULE._tensor_from_bytes(
+                weight_raw, dtype="BF16", shape=entry.source_weight_shape
+            ),
+            CORPUS_MODULE._tensor_from_bytes(
+                importance_raw, dtype="F32", shape=entry.importance_shape
+            ),
+        )
+    finally:
+        os.close(descriptor)
 
 
 def _reject_duplicate_object(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
@@ -773,8 +931,12 @@ def preflight_inputs(manifest: Mapping[str, Any]) -> PreflightInputs:
         weight_path = Path(source["weight_path"]).resolve(strict=True)
         activations_path = Path(source["activations_path"]).resolve(strict=True)
         calibration_path = Path(source["calibration_manifest"]).resolve(strict=True)
-        weight = NATIVE._load(str(weight_path), source["weight_key"])
-        activations = NATIVE._load(str(activations_path), source["activations_key"])
+        weight, weight_provenance = _load_qwen_tensor_bound(
+            weight_path, source["weight_key"]
+        )
+        activations, activations_provenance = _load_qwen_tensor_bound(
+            activations_path, source["activations_key"]
+        )
         if weight.ndim != 2 or activations.ndim < 2:
             raise ValueError("Qwen inputs must be weight [out,in] and activations [...,in]")
         rows, columns = map(int, weight.shape)
@@ -784,25 +946,15 @@ def preflight_inputs(manifest: Mapping[str, Any]) -> PreflightInputs:
         provenance = {
             "kind": QWEN_MODE,
             "model_id": source["model_id"],
-            "weight": {
-                "path": str(weight_path),
-                "key": source["weight_key"],
-                "file_sha256": _file_sha256(weight_path),
-                "tensor_sha256": NATIVE.tensor_sha256(weight),
-            },
-            "activations": {
-                "path": str(activations_path),
-                "key": source["activations_key"],
-                "file_sha256": _file_sha256(activations_path),
-                "tensor_sha256": NATIVE.tensor_sha256(activations),
-            },
+            "weight": weight_provenance,
+            "activations": activations_provenance,
             "calibration": calibration,
         }
         unit = InputUnit(
             name=str(source["weight_key"] or weight_path.name),
             population="qwen_one_linear",
             shape=(rows, columns),
-            source_weight_sha256=None,
+            source_weight_sha256=str(weight_provenance["tensor_sha256"]),
         )
         return PreflightInputs(QWEN_MODE, (unit,), provenance)
 
@@ -1131,13 +1283,35 @@ def _load_unit_tensors(
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     source = manifest["input"]
     if inputs.mode == QWEN_MODE:
-        return (
-            NATIVE._load(source["weight_path"], source["weight_key"]),
-            NATIVE._load(source["activations_path"], source["activations_key"]),
+        expected_weight = inputs.provenance["weight"]
+        expected_activations = inputs.provenance["activations"]
+        if not isinstance(expected_weight, Mapping) or not isinstance(
+            expected_activations, Mapping
+        ):
+            raise ValueError("Qwen preflight provenance is incomplete")
+        weight, weight_provenance = _load_qwen_tensor_bound(
+            source["weight_path"],
+            source["weight_key"],
+            expected_file_sha256=str(expected_weight.get("file_sha256")),
+            expected_tensor_sha256=str(expected_weight.get("tensor_sha256")),
         )
+        activations, activations_provenance = _load_qwen_tensor_bound(
+            source["activations_path"],
+            source["activations_key"],
+            expected_file_sha256=str(expected_activations.get("file_sha256")),
+            expected_tensor_sha256=str(expected_activations.get("tensor_sha256")),
+        )
+        if weight_provenance != expected_weight:
+            raise ValueError("Qwen weight provenance changed after preflight")
+        if activations_provenance != expected_activations:
+            raise ValueError("Qwen activation provenance changed after preflight")
+        return weight, activations
     assert inputs.corpus is not None
-    weight, importance = inputs.corpus.load_tensor(unit.name)
-    return weight, importance
+    if _file_sha256(inputs.corpus.manifest_path) != inputs.provenance.get(
+        "manifest_file_sha256"
+    ):
+        raise ValueError("GLM finalized corpus manifest changed after preflight")
+    return _load_glm_tensor_bound(inputs.corpus, unit)
 
 
 def run_unit(
@@ -1240,6 +1414,8 @@ def run_unit(
 
     unit_dir = _safe_output(output_root, f"tensors/{index:03d}-{_slug(unit.name)}")
     unit_dir.mkdir(parents=True, exist_ok=True)
+    result_path = unit_dir / "result.json"
+    existing_result_marker = result_path.exists()
     seed_results: list[dict[str, object]] = []
     for seed in manifest["seeds"]:
         label = seed["label"]
@@ -1290,6 +1466,10 @@ def run_unit(
                 e_metrics = quality_metrics(weight, original_q, **metric_kwargs)
 
         wire_path = unit_dir / f"{label}.trellis"
+        if existing_result_marker and not wire_path.exists():
+            raise ValueError(
+                f"existing tensor result is missing its declared wire: {wire_path}"
+            )
         publication_status = _publish_or_verify_bytes(wire_path, artifact.wire_bytes)
         wire_verification = verify_published_wire(
             wire_path,
@@ -1384,7 +1564,19 @@ def run_unit(
         **tensor_body,
         "identity_sha256": _identity_sha256(tensor_body),
     }
-    result_path = unit_dir / "result.json"
+    resumed = _resume_unit_result(
+        output_root,
+        index=index,
+        unit=unit,
+        mode=inputs.mode,
+        claim_identity_sha256=claim_identity_sha256,
+        source_closure_identity_sha256=source_closure_identity_sha256,
+        expected_seeds=manifest["seeds"],
+        recipe=recipe,
+        reproduced_result=tensor_result,
+    )
+    if resumed is not None:
+        return resumed
     _publish_or_verify_json(result_path, tensor_result)
     return tensor_result, result_path
 
@@ -1487,6 +1679,8 @@ def _verify_complete_receipt(
     manifest_provenance: Mapping[str, object],
     input_provenance: Mapping[str, object],
     expected_members: Mapping[str, str],
+    expected_execution: Mapping[str, object],
+    expected_publication: Mapping[str, object],
     mode: str,
     root: Path,
 ) -> dict[str, Any]:
@@ -1513,6 +1707,10 @@ def _verify_complete_receipt(
         raise ValueError("existing campaign source closure differs")
     if body.get("acceptance_contract") != ACCEPTANCE_CONTRACT:
         raise ValueError("existing campaign acceptance contract differs")
+    if body.get("execution") != expected_execution:
+        raise ValueError("existing campaign execution identity differs")
+    if body.get("publication") != expected_publication:
+        raise ValueError("existing campaign publication contract differs")
     if body.get("claim_boundary") != {
         "quality_only": True,
         "activation_output_model_quality": False,
@@ -1546,6 +1744,126 @@ def _verify_complete_receipt(
     return value
 
 
+def _campaign_publication_record(durable_root_uri: str) -> dict[str, object]:
+    return {
+        "semantics": "persistent_identity_claim_per_tensor_result_markers_receipt_last",
+        "durable_root_uri": durable_root_uri,
+        "resume": (
+            "a complete receipt is revalidated and returned; identical "
+            "per-tensor wires/results under the same persistent claim "
+            "are accepted only after deterministic GPU replay from "
+            "hash-checked pinned inputs reproduces the native controls, "
+            "Hessian, BlockLDL producer receipt, canonical wire, inverse "
+            "transform, metrics, and verdicts; conflicting or incomplete "
+            "prefixes fail closed"
+        ),
+        "resume_assurance": (
+            "integrity by deterministic recomputation, not an external "
+            "signature or independent proof that prior GPU execution "
+            "occurred"
+        ),
+        "commit_marker_relative_path": "receipt.json",
+    }
+
+
+_TELEMETRY_FIELDS = frozenset({
+    "scope", "preflight_plan", "phase_seconds", "total_measured_phase_seconds",
+    "torch_cuda_peak_allocated_bytes", "cpu_factorization_fallback_observed",
+    "gpu_utilization_used_as_diagnostic", "serving_or_throughput_claim",
+})
+
+
+def _validated_nonclaim_telemetry(
+    value: object, *, where: str
+) -> dict[str, object]:
+    telemetry = _require_exact_fields(value, _TELEMETRY_FIELDS, where=where)
+    if telemetry["scope"] != "offline_quality_campaign_noncomparative":
+        raise ValueError(f"{where}: telemetry scope differs")
+    phases = telemetry["phase_seconds"]
+    if not isinstance(phases, Mapping) or not phases:
+        raise ValueError(f"{where}: phase telemetry is missing")
+    for name, seconds in phases.items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or type(seconds) not in {int, float}
+            or not math.isfinite(float(seconds))
+            or float(seconds) < 0.0
+        ):
+            raise ValueError(f"{where}: phase telemetry is invalid")
+    total = telemetry["total_measured_phase_seconds"]
+    if type(total) not in {int, float} or not math.isfinite(float(total)):
+        raise ValueError(f"{where}: phase total is invalid")
+    expected_total = sum(float(seconds) for seconds in phases.values())
+    tolerance = max(1.0e-9, abs(expected_total) * 1.0e-12)
+    if abs(float(total) - expected_total) > tolerance:
+        raise ValueError(f"{where}: phase total does not match phase evidence")
+    peak = telemetry["torch_cuda_peak_allocated_bytes"]
+    if type(peak) is not int or peak < 0:
+        raise ValueError(f"{where}: CUDA peak allocation is invalid")
+    if telemetry["cpu_factorization_fallback_observed"] is not False:
+        raise ValueError(f"{where}: CPU factorization fallback was recorded")
+    if telemetry["gpu_utilization_used_as_diagnostic"] is not False:
+        raise ValueError(f"{where}: GPU utilization diagnostic claim differs")
+    if telemetry["serving_or_throughput_claim"] is not False:
+        raise ValueError(f"{where}: serving/performance claim differs")
+    if not isinstance(telemetry["preflight_plan"], Mapping):
+        raise ValueError(f"{where}: preflight feasibility plan is missing")
+    return telemetry
+
+
+def _semantic_replay_payload(
+    value: Mapping[str, object], *, where: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    body = dict(value)
+    identity = body.pop("identity_sha256", None)
+    if identity != _identity_sha256(body):
+        raise ValueError(f"{where}: tensor receipt identity mismatch")
+    _require_exact_fields(body, _TENSOR_RESULT_BODY_FIELDS, where=where)
+    telemetry = _validated_nonclaim_telemetry(
+        body.pop("feasibility_telemetry"), where=f"{where}.feasibility_telemetry"
+    )
+    # Canonical JSON is also a strict JSON-type deep copy.  Publication status
+    # describes whether bytes were first-created or reopened, not their
+    # semantic identity, so it is the sole normalized field during replay.
+    semantic = json.loads(_canonical_bytes(body))
+    for index, seed in enumerate(semantic["arm_e_by_seed"]):
+        wire = seed.get("wire") if isinstance(seed, Mapping) else None
+        if not isinstance(wire, dict):
+            raise ValueError(f"{where}: Arm E wire record {index} is invalid")
+        publication_status = wire.pop("publication_status", None)
+        if publication_status not in {
+            "published_no_replace", "resumed_identical_existing"
+        }:
+            raise ValueError(f"{where}: wire publication status is invalid")
+    return semantic, telemetry
+
+
+def _require_semantic_reproduction(
+    existing: Mapping[str, object],
+    reproduced: Mapping[str, object],
+    *,
+    path: Path,
+) -> None:
+    existing_semantic, existing_telemetry = _semantic_replay_payload(
+        existing, where=f"existing {path}"
+    )
+    reproduced_semantic, reproduced_telemetry = _semantic_replay_payload(
+        reproduced, where=f"reproduced {path}"
+    )
+    if existing_telemetry["preflight_plan"] != reproduced_telemetry["preflight_plan"]:
+        raise ValueError(f"resumed tensor feasibility plan was not reproduced: {path}")
+    if set(existing_telemetry["phase_seconds"]) != set(
+        reproduced_telemetry["phase_seconds"]
+    ):
+        raise ValueError(f"resumed tensor phase census was not reproduced: {path}")
+    if existing_semantic != reproduced_semantic:
+        raise ValueError(
+            "resumed tensor semantic attestation was not reproduced from "
+            f"the bound inputs and current producer: {path}"
+        )
+
+
 def _resume_unit_result(
     root: Path,
     *,
@@ -1556,6 +1874,7 @@ def _resume_unit_result(
     source_closure_identity_sha256: str,
     expected_seeds: Sequence[Mapping[str, object]],
     recipe: Mapping[str, object],
+    reproduced_result: Mapping[str, object],
 ) -> tuple[dict[str, Any], Path] | None:
     result_path = _safe_output(
         root, f"tensors/{index:03d}-{_slug(unit.name)}/result.json"
@@ -1754,6 +2073,7 @@ def _resume_unit_result(
             )
             if seed.get("verdict") != expected_verdict:
                 raise ValueError(f"resumed Qwen verdict differs: {path}")
+    _require_semantic_reproduction(value, reproduced_result, path=result_path)
     return value, result_path
 
 
@@ -1765,7 +2085,19 @@ def run_campaign(
     *,
     command: Sequence[str],
 ) -> dict[str, object]:
-    require_gpu_campaign_execution(manifest)
+    device = require_gpu_campaign_execution(manifest)
+    execution_record = {
+        "declared_host": manifest["execution"]["host"],
+        "observed_hostname": socket.gethostname(),
+        "container_identity": manifest["execution"]["container_identity"],
+        "device": NATIVE.device_identity(device),
+        "torch_version": torch.__version__,
+        "cuda_toolkit_version": torch.version.cuda,
+        "command": list(command),
+    }
+    publication_record = _campaign_publication_record(
+        manifest["output"]["durable_root_uri"]
+    )
     if validated_source_closure(
         manifest["execution"]["prismaquant_checkout"],
         manifest["execution"]["prismaquant_commit"],
@@ -1808,27 +2140,25 @@ def run_campaign(
                 manifest_provenance=manifest_provenance,
                 input_provenance=inputs.provenance,
                 expected_members=expected_members,
+                expected_execution=execution_record,
+                expected_publication=publication_record,
                 mode=manifest["mode"],
                 root=output_root,
             )
             resumed_results: list[dict[str, object]] = []
             actual_members: list[dict[str, object]] = []
             for index, unit in enumerate(inputs.units):
-                resumed = _resume_unit_result(
-                    output_root,
+                result, result_path = run_unit(
+                    manifest,
+                    inputs,
+                    unit,
                     index=index,
-                    unit=unit,
-                    mode=inputs.mode,
+                    output_root=output_root,
                     claim_identity_sha256=claim_identity_sha256,
                     source_closure_identity_sha256=str(
                         source_closure["identity_sha256"]
                     ),
-                    expected_seeds=manifest["seeds"],
-                    recipe=manifest["recipe"],
                 )
-                if resumed is None:
-                    raise ValueError("completed campaign is missing a tensor result")
-                result, result_path = resumed
                 resumed_results.append(result)
                 actual_members.append(_artifact_member(
                     output_root, result_path, "tensor_result_commit_marker"
@@ -1858,28 +2188,15 @@ def run_campaign(
         results: list[dict[str, object]] = []
         result_paths: list[Path] = []
         for index, unit in enumerate(inputs.units):
-            resumed = _resume_unit_result(
-                output_root,
+            result, path = run_unit(
+                manifest,
+                inputs,
+                unit,
                 index=index,
-                unit=unit,
-                mode=inputs.mode,
+                output_root=output_root,
                 claim_identity_sha256=claim_identity_sha256,
                 source_closure_identity_sha256=str(source_closure["identity_sha256"]),
-                expected_seeds=manifest["seeds"],
-                recipe=manifest["recipe"],
             )
-            if resumed is None:
-                result, path = run_unit(
-                    manifest,
-                    inputs,
-                    unit,
-                    index=index,
-                    output_root=output_root,
-                    claim_identity_sha256=claim_identity_sha256,
-                    source_closure_identity_sha256=str(source_closure["identity_sha256"]),
-                )
-            else:
-                result, path = resumed
             results.append(result)
             result_paths.append(path)
         closing_sources = validated_source_closure(
@@ -1897,7 +2214,6 @@ def run_campaign(
             *(_artifact_member(output_root, path, "tensor_result_commit_marker") for path in result_paths),
             *(_artifact_member(output_root, path, "canonical_trellis_wire") for path in wire_paths),
         ]
-        device = torch.device(manifest["execution"]["device"])
         receipt_body: dict[str, object] = {
             "schema": RECEIPT_SCHEMA,
             "status": "quality_campaign_complete",
@@ -1906,35 +2222,11 @@ def run_campaign(
             "mode": manifest["mode"],
             "input_provenance": inputs.provenance,
             "source_closure": source_closure,
-            "execution": {
-                "declared_host": manifest["execution"]["host"],
-                "observed_hostname": socket.gethostname(),
-                "container_identity": manifest["execution"]["container_identity"],
-                "device": NATIVE.device_identity(device),
-                "torch_version": torch.__version__,
-                "cuda_toolkit_version": torch.version.cuda,
-                "command": list(command),
-            },
+            "execution": execution_record,
             "acceptance_contract": ACCEPTANCE_CONTRACT,
             "summary": summary,
             "published_members": sorted(members, key=lambda item: item["relative_path"]),
-            "publication": {
-                "semantics": "persistent_identity_claim_per_tensor_result_markers_receipt_last",
-                "durable_root_uri": manifest["output"]["durable_root_uri"],
-                "resume": (
-                    "a complete receipt is revalidated and returned; identical "
-                    "per-tensor wires/results under the same persistent claim "
-                    "are structurally revalidated against the manifest seed, "
-                    "shape, rate, accounting, metric-domain, transform, and "
-                    "producer-receipt contracts before reuse; conflicting or "
-                    "incomplete prefixes fail closed"
-                ),
-                "resume_assurance": (
-                    "structural crash-resume validation, not an external "
-                    "signature over locally writable evidence"
-                ),
-                "commit_marker_relative_path": "receipt.json",
-            },
+            "publication": publication_record,
             "claim_boundary": {
                 "quality_only": True,
                 "activation_output_model_quality": False,
