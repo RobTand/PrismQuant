@@ -1,18 +1,40 @@
 #!/usr/bin/env bash
 # ============================================================================
 # serve_gridbook_trellis.sh — serve the Gridbook trellis (TCQ) artifact on sm_121.
-# Modelled on scripts/serve_qwen27b_smoke.sh (gridbook_runtime_prepare,
-# GRIDBOOK_RUNTIME_DOCKER_ARGS, in-container install-container, then vllm serve).
-# Plus the required trellis env flags passed through, and --host 0.0.0.0 --port 8000
-# with -p 8000:8000 (loopback bind is unreachable from LAN host).
+# Uses the SERVING runtime helper, not the producer one. That distinction is
+# load-bearing and was established empirically on 2026-08-31: the producer
+# helper (gridbook_runtime.sh) attests a git CHECKOUT, and the vLLM images have
+# no git, so it dies with
+#   gridbook-runtime: ERROR: git is required to attest a Gridbook checkout
+# gridbook_serving_runtime.sh binds the released wheel and its published
+# SHA-256 instead -- the stronger attestation anyway. Supply the wheel with
+# GRIDBOOK_SERVING_RUNTIME_WHEEL, and note the pin matches the **dist-ci**
+# build; dist-final is a later non-reproducible rebuild with a different digest.
+#
+# The trellis lanes JIT-build trellis_r256.cu, which includes
+# ATen/cuda/CUDAContext.h and therefore needs cusparse.h and cusolverDn.h. The
+# vLLM images ship neither in /usr/local/cuda/include, but both live under
+# nvidia/cu13/include in site-packages. Link ONLY the headers the toolkit dir
+# lacks: putting that whole directory on CPATH makes crt/host_runtime.h come
+# from the pip package too and nvcc then fails with
+#   error: macro "__cudaLaunch" passed 2 arguments, but takes just 1
+# The build also needs the `ninja` BINARY on PATH, which the ninja Python
+# package installs into the venv's bin/ -- an absolute-path interpreter
+# invocation is not enough, and the resulting failure misreports itself as a
+# missing CUDA toolchain.
+#
+# Required trellis env flags are passed through, and --host 0.0.0.0 --port 8000
+# with -p 8000:8000 (a loopback bind is unreachable from the LAN host).
 # ============================================================================
 set -u
 # R15 serve fingerprint (docs/ARCHITECTURE.md §7.4): write_serve_manifest.
 PQ_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$PQ_SCRIPT_DIR/lib/serve_manifest.sh" ] && . "$PQ_SCRIPT_DIR/lib/serve_manifest.sh"
 PQ_REPO_ROOT="$(cd "$PQ_SCRIPT_DIR/.." && pwd)"
-. "$PQ_REPO_ROOT/prismaquant/gridbook_runtime/gridbook_runtime.sh"
-gridbook_runtime_prepare || exit $?
+: "${GRIDBOOK_SERVING_RUNTIME_WHEEL:?set to the pinned dist-ci gridbook wheel}"
+export GRIDBOOK_SERVING_RUNTIME_WHEEL
+. "$PQ_REPO_ROOT/prismaquant/gridbook_runtime/gridbook_serving_runtime.sh"
+gridbook_serving_runtime_prepare || exit $?
 NAME=pq_gridbook_trellis
 MODEL="${MODEL:-/dqruns/trellis-artifact}"
 MAXLEN="${MAXLEN:-32768}"
@@ -20,7 +42,7 @@ MAXLEN="${MAXLEN:-32768}"
 UTIL="${UTIL:-0.80}"
 EXTRA_ARGS="${EXTRA_ARGS:---enforce-eager}"
 LOG=/home/rob/dq-runs/trellis/logs/serve_trellis.log
-mkdir -p /home/rob/dq-runs/trellis/logs
+mkdir -p /home/rob/dq-runs/trellis/logs /home/rob/dq-runs/trellis/extcache
 
 docker rm -f "$NAME" >/dev/null 2>&1
 HOST_MODEL="${MODEL/\/dqruns/\/home\/rob\/dq-runs}"
@@ -37,11 +59,13 @@ echo "[serve] launching $NAME (trellis len $MAXLEN, util $UTIL, extra: $EXTRA_AR
 docker run -d --gpus all --ipc=host -p 8000:8000 --name "$NAME" \
   -v "$PQ_REPO_ROOT":/repo:ro \
   -v /home/rob/dq-runs:/dqruns \
-  "${GRIDBOOK_RUNTIME_DOCKER_ARGS[@]}" \
+  "${GRIDBOOK_SERVING_RUNTIME_DOCKER_ARGS[@]}" \
   -e VLLM_LOGGING_LEVEL=INFO \
   -e VLLM_TORCH_PROFILER_DIR=/dqruns/trellis/profiles \
   -e VLLM_SERVER_DEV_MODE=1 \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  -e CUDA_HOME=/usr/local/cuda \
+  -e PRISMAQUANT_CB_EXT_DIR="${PRISMAQUANT_CB_EXT_DIR:-/dqruns/trellis/extcache}" \
   -e PQ_MODEL="$MODEL" -e PQ_MAXLEN="$MAXLEN" -e PQ_UTIL="$UTIL" \
   -e PQ_EXTRA="$EXTRA_ARGS" \
   -e PQ_SPEC="${SPEC_CONFIG:-}" \
@@ -52,6 +76,13 @@ docker run -d --gpus all --ipc=host -p 8000:8000 --name "$NAME" \
   --entrypoint bash vllm-node:latest -c '
     set -euo pipefail
     bash "${PQ_GRIDBOOK_RUNTIME_HELPER:?}" install-container
+    NVINC=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/include
+    for f in "$NVINC"/*.h; do
+      b=$(basename "$f")
+      [ -e "/usr/local/cuda/include/$b" ] || ln -s "$f" "/usr/local/cuda/include/$b"
+    done
+    export PATH=/usr/local/cuda/bin:$PATH
+    python3 -c "import ninja" >/dev/null 2>&1 || pip install --quiet ninja
     exec vllm serve "$PQ_MODEL" --host 0.0.0.0 --port 8000 \
       --served-model-name trellis \
       --max-model-len "$PQ_MAXLEN" --max-num-seqs 2 \

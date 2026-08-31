@@ -34,6 +34,7 @@ SERVING_PIN = ASSET_DIR / "gridbook_serving_runtime_pin.json"
 LIVE_SCRIPTS = (
     "canary_ladder.sh",
     "serve_dsv4_cb_validate.sh",
+    "serve_gridbook_trellis.sh",
     "serve_hy3_smoke.sh",
     "serve_hy3_teb.sh",
     "serve_laguna_smoke.sh",
@@ -49,6 +50,12 @@ LIVE_SCRIPTS = (
 # so this is a set rather than a name comparison.
 SERVING_PIN_SCRIPTS = frozenset({
     "serve_dsv4_cb_validate.sh",
+    # The trellis lane is serving-pin by NECESSITY, not by artifact property:
+    # the producer helper attests a git checkout and no vLLM image carries git,
+    # so `gridbook_runtime_prepare` cannot run in the container at all
+    # (measured 2026-08-31: "git is required to attest a Gridbook checkout").
+    # The serving helper binds the released wheel and its published SHA-256.
+    "serve_gridbook_trellis.sh",
     "serve_qwen38_cb_a_smoke.sh",
 })
 

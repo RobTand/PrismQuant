@@ -149,7 +149,7 @@ def test_command_matches_the_documented_lane_harness():
 # --------------------------------------------------------------------------
 # LaneSpec
 # --------------------------------------------------------------------------
-def test_three_lanes_are_declared():
+def test_the_four_lanes_are_declared():
     assert set(lane_spec_names()) == {"compressed_tensors", "gguf", "gridbook_trellis", "nvfp4_cb"}
     containers = {s.export_container for s in all_lane_specs()}
     assert containers == {"compressed-tensors", "gguf", "gridbook_trellis", "nvfp4_cb"}

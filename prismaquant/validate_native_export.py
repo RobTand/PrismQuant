@@ -374,11 +374,23 @@ def _collect_served_trellis_histograms(llm) -> dict | None:
         return None
     served: dict[str, int] = {}
     found_any = False
-    # Try CB-style read_route first (covers CB; trellis may also use it in future)
-    try:
-        from gridbook.nvfp4_activation_contract import read_route as _read_route
-    except Exception:
-        _read_route = None  # type: ignore
+    # CB-style route records are read by DUCK TYPING, never by importing
+    # Gridbook. ``AGENTS.md:38`` forbids the producer importing or vendoring the
+    # runtime, and ``tests/test_gridbook_runtime_boundary.py`` enforces it --
+    # an import here also could not work, since the producer's validator runs
+    # outside the serving container.
+    #
+    # Duck typing is safe precisely because the record is a documented plain
+    # attribute layout: gridbook's own ``read_route`` is "pure ``getattr`` over
+    # Python scalars", keyed on ``_cb_route_state`` being non-None to
+    # distinguish "no record" from a partial one. We read the same attributes
+    # by the same names and preserve that distinction, because collapsing a
+    # MISSING record into an empty histogram is exactly what would let a gate
+    # pass without ever having observed a route.
+    def _read_route(layer):
+        if getattr(layer, "_cb_route_state", None) is None:
+            return None
+        return {"contract": getattr(layer, "_cb_route_contract", None)}
     for _, mod in model.named_modules():
         # Trellis lane telemetry: gridbook_activation_contract set at create_weights
         contract = getattr(mod, "gridbook_activation_contract", None)
