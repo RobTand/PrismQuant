@@ -1,7 +1,8 @@
 # E2M1 trellis: the high-rate band, and the coding gain against an honest scalar
 
 Status: **numeric scaffold complete and measured on the immutable GLM BF16
-corpus; research evidence only, with no serving verdict.** 2026-08-30.
+corpus; research evidence only, with no serving verdict.** Originated
+2026-08-30; authoritative numeric closure updated 2026-08-31.
 
 These drivers live in the repo; the corpora and result caches they read live
 under `/home/rob/dq-runs/` and are not checked in. The historical control
@@ -107,15 +108,24 @@ corpus reader from the deliberately frozen historical encoder modules.
 
 ### Legacy result identity boundary
 
-The three immutable GLM result files cited below predate the hardened
-publication contract: both E2M1 files carry
+The three superseded GLM result files in the finalized-corpus directory
+predate the hardened publication contract: both E2M1 files carry
 `trellis.e2m1_highrate.v2`, and the learned-FP8 file carries
 `trellis.glm_fp8_learned_balanced.v1`. In substance their status is
 `execution_identity_attested=false`: their retained bytes establish the
 reported numeric values and hashes, but do not bind the active driver,
 isolated corpus loader, integration checkout, or transitive frozen-codec
 closure that actually executed. No post-hoc receipt can recover that missing
-fact, so none is fabricated and the result files remain untouched.
+fact, so none is fabricated and the result files remain untouched. The result
+sections below instead cite new, prospectively attested E2M1-v3 and
+learned-FP8-v2 publications from exact clean commit
+`2f955fa7c073799e494110ff81029027955ee85d`. All three bind manifest SHA-256
+`a66f800827b92383985ce205004cd2d70b63bcc5e19cada6b05a8162401ee5b0`,
+corpus artifact SHA-256
+`0d3c08aed48e8d0b540d0705c305cc3197f77c250b07dd7a07e55345f5ddd94e`,
+importance SHA-256
+`dad7818dd11ea8f853bd1869f41189ca3de4a2d10deda52cfef563f63496a9dd`,
+9 dense tensors, and 24 routed tensors.
 
 New E2M1 v3 and learned-FP8 v2 outputs bind the corpus manifest, artifact
 and importance hashes; active driver, isolated loader, corpus reader and Git
@@ -176,17 +186,34 @@ At R=3, the median trellis points are 17.833 dB at 3.50036 bpw for dense and
 scalar-NVFP4 medians are 20.595 dB and 20.678 dB, so the same-grid code gain
 does not erase the missing body bit.
 
-The result receipt is `glm-e2m1-highrate.json` (SHA-256
-`097b1863ff6c1ba27cecc0fb897e825bc360edb8d09e9b3596951c9bc5730bcd`),
-and its derived table is `glm-e2m1-coding-gain.json` (SHA-256
-`8b873d2bcc16a8da311591eb1f0b340ed8f4addc65acd3275283b2db299e3c79`).
-The 258.4-second run has an in-process py-spy speedscope trace (SHA-256
-`edc6bc486132703ca47e9da9f374fb82986144350623d291d9043addde165450`)
-and aligned Netdata evidence from both boxes. Sparky's Netdata power mean was
-37.85 W, 27.0% of the approximately 140 W envelope, with a 63 W maximum;
-its independent pqteld series measured 39.87 W mean and 11.00 kJ. These
-measurements characterize the offline driver only and do not establish served
-kernel performance.
+The authoritative run directory is
+`/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/e2m1-scaffold-v1/`.
+Its final result SHA-256 is
+`d7dd0478d5e3ef3b55946f42e161f46ab0c62c1fff2fd57babb5cb11704ee332`;
+the exactly recomputed coding-gain table SHA-256 is
+`e4a2af3d734fa7266cc8eb790148be5a3d86b80979a14d47bf0e0fbea78d7d60`.
+A tracked V2 recomputation receipt,
+`analysis/coding-gain.receipt-v2.json`, has file SHA-256
+`3fc1e6650367bdcb33a5170c431a815050c00d629080b00343d9ea0904c08bfc`
+and internal self-digest
+`4fbf36e4f4ab0636d99c668feaf6c3924c86a3e850bf131a5c490df3fb955f43`.
+It binds `coding_gain` to the `scaffold` plan, source result, analysis, and
+verifier closure. The earlier V1 derived receipt is retained but superseded;
+it omitted this kind-to-plan binding and its numeric values are unchanged.
+
+The in-container py-spy trace SHA-256 is
+`c12cedcc550011649c76c125005a41ebedc7b9f988c55a98768bc8bf1fcd9175`.
+Over the 629-second telemetry envelope, Sparky Netdata measured 24.6024 W mean,
+50 W maximum, and 15.491 kJ (17.57% of the approximately 140 W envelope);
+pqteld measured 25.4434 W mean, 47.96 W maximum, and 15.999 kJ. Only
+`telemetry-v3/` is admissible (manifest SHA-256
+`318505d2684bf64251207db8b9d80404f265e9dd662cca8f16e32898a1805772`).
+The retained `telemetry/` directory is forbidden: a cross-date glob applied an
+older pqteld schema header to current rows and shifted `power_draw_w` onto
+temperature. `telemetry-v2/` is also forbidden: capture aborted on an older
+source containing nonnumeric rows and produced no manifest. These measurements
+characterize the offline driver only; they do not establish served-kernel
+performance.
 
 ### The near-four-bit boundary
 
@@ -201,64 +228,164 @@ R=3.96875 regresses to 19.897/20.285 dB and one dense tensor is unreachable.
 This is the measured form of the fixed-support boundary. Above shaped rate 3,
 the current wire can only mix rate-3 trellis columns with rate-4 scalar bypass
 columns. It approaches the scalar endpoint but does not create new E2M1
-reconstruction support. The result is `glm-e2m1-near4.json` (SHA-256
-`d9356eee75f94c07fe11cfdab4f70a72357e2092a7e6846677aec0668211e3cd`)
-with py-spy trace SHA-256
-`f4c879e1ba040adf364c9c0cfd03cecdf5793d9dcf8d89fa64bc487bb38ff645`.
-Its first roughly 20 seconds overlapped the rejected QTIP r2 attempt because
-the work queue admitted both. Quality is deterministic, but this window must
-not be used for a performance or energy claim.
+reconstruction support. The authoritative run is
+`/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/e2m1-high-v1/`.
+Its result SHA-256 is
+`af0b0893401dc22c771ada019d181b2f4a09b64ea8797484543d45e877f21ac0`;
+the exact near-four summary SHA-256 is
+`08ae60d76d90a712cc8751ca76f13800a49834dee844a512fa7bf4eda85b0a48`.
+The tracked V2 recomputation receipt,
+`analysis/near-four-summary.receipt-v2.json`, has file SHA-256
+`d17f8869dbeda7597148b8d60f2382edb4906ddb82444a2ee8a0af60d475a59e`
+and internal self-digest
+`bfe8214596bc685230f7ac657db400747614e657fe4bbf61b109611503632344`;
+it binds `near_four` to the `high` plan. Its V1 predecessor is retained but
+superseded for the same binding reason, without a numeric change.
+
+The py-spy trace SHA-256 is
+`865e74d0e8a34d628acd0688ff3b737f58d7b336ea40ce3024716e95fc4fa065`.
+The 498-second `telemetry-v1/` envelope has manifest SHA-256
+`37fac51b2d7874393e8f73d85de5e66903a339003b3008636d8c78a7961bc89c`.
+Sparky Netdata measured 22.9359 W mean, 55 W maximum, and 11.436 kJ;
+pqteld measured 21.0886 W mean, 39.28 W maximum, and 10.498 kJ. No other
+Sparky GPU workload was observed. The concurrent learned-FP8 work on
+Sparklina is peer-box context only. This clean window supports offline-driver
+energy characterization, never a serving or cross-implementation speed claim.
 
 ### Learned FP8-CB scale control
 
 The provenance-locked K32/K40/K48 fixed-vs-learned campaign completed for all
 33 tensors at the production `balanced` tier. Learned-minus-fixed median SNR
 gains were +0.061/+0.037/+0.051 dB for dense and +0.083/+0.073/+0.125 dB for
-routed weights, with every tensor positive at every K. The result is
-`glm-fp8-learned-balanced.json` (SHA-256
-`3437be1473e1a880d5a6d338bc93f85902ea661be982d040681834426baf1a94`)
-and the 1,125.8-second algorithm trace has SHA-256
-`f7ef868f00d55794b7f16f34d09880f682f5bd63991a3e6880764172820662ad`.
-Sparky Netdata measured 55.93 W mean and 82 W maximum (40.0% of the 140 W
-envelope); pqteld measured 57.21 W mean and 65.73 kJ. This is a small,
-unanimous offline numeric gain, not a serving verdict.
+routed weights, with every tensor positive at every K. The authoritative run
+is
+`/home/rob/dq-runs/numeric-authoritative-2f955fa/sparklina/fp8-learned-v1/`.
+Its final result SHA-256 is
+`6f717f53dbc3401c72c6fac978b2f36a68368fe76ede13f26efb24b6e2971d6a`
+and its 1,168-second py-spy trace SHA-256 is
+`e6521fd7466a0894476d9d02aa27697a322ce95069c3acd9aa79f84f437cd9a3`.
+The 1,174-second `telemetry-v1/` manifest SHA-256 is
+`8f17d9523e45ce642cd1bfa6a8d0f74a7821b349a1a5f05101020697edb96933`.
+On the active host, Sparklina Netdata measured 45.2677 W mean, 71 W maximum,
+and 53.182 kJ (32.33% of the approximately 140 W envelope); pqteld measured
+45.7926 W mean, 67.47 W maximum, and 53.755 kJ. No other Sparklina GPU workload
+was observed; Sparky's E2M1 campaigns are peer-box context only. This is a
+small, unanimous offline numeric gain, not a serving verdict.
 
-### Hardened GLM FP8-CB vs E4M3-TCQ closure scaffold
+### Completed GLM FP8-CB vs E4M3-TCQ exact-byte closure
 
-`fp8_cb_tcq_glm.py` is the unrun, research-only campaign that closes the
-handover's exact remaining 4.0/5.0 numeric question without combining old
-results across corpora or receipts.  One immutable result must cover all 33
-finalized GLM tensors and contains, for nominal body cells 4 and 5:
+The research-only campaign completed on Sparky for all 33 finalized GLM
+tensors: 9 dense and 24 routed, kept separate with no pooled result. It tested
+fixed and per-tensor learned FP8-CB K32/K40 at the production `balanced` encode
+tier against TCQ_E4M3 R4/R5, both `production_row_fp32` and research-only
+`two_tier` scale brackets, both frozen `lloyd` and `exact_dp` TCQ alphabets,
+and both honest learned-book accounting endpoints (`wire8` and the declared
+FP16 production sidecar).
 
-- fixed and per-tensor learned FP8-CB K32/K40 at the production `balanced`
-  encode tier;
-- TCQ_E4M3 R4/R5 under both `production_row_fp32` and `two_tier` scale-plane
-  brackets;
-- both frozen `lloyd` and `exact_dp` alphabet selectors; and
-- both honest learned-book prices: one legal E4M3 byte per element and the
-  FP16 sidecar the production footprint currently declares.
+| population | body cell | FP8-CB rung | exact-byte tensor frontiers | final cell |
+|---|---:|---:|---:|---|
+| dense (9) | 4 | K32 | 36/36 cross | `NO_VERDICT` |
+| dense (9) | 5 | K40 | 36/36 cross | `NO_VERDICT` |
+| routed (24) | 4 | K32 | 96/96 cross | `NO_VERDICT` |
+| routed (24) | 5 | K40 | 96/96 cross | `NO_VERDICT` |
+
+Each count is tensor × two scale brackets × two book-price endpoints.
+Thus all 264 exact-byte family frontiers cross: FP8-CB supplies a lower-byte
+point while TCQ supplies a strictly higher-SNR point on every comparison.
+This is not TCQ Pareto domination. The descriptive median best-quality
+FP8-CB-minus-TCQ SNR deltas are:
+
+| population | body cell | production row-FP32 | research two-tier |
+|---|---:|---:|---:|
+| dense | 4 | -1.509895 dB | -3.477842 dB |
+| dense | 5 | -1.948798 dB | -2.858964 dB |
+| routed | 4 | -1.283757 dB | -3.408104 dB |
+| routed | 5 | -1.787727 dB | -2.785978 dB |
+
+Book price changes bytes, not those quality deltas or any verdict. The strict
+frontier theorem was independently audited in
+`/home/rob/dq-runs/deliberation/numeric_closure_fable_2026-08-31.md`
+(SHA-256
+`36cffef74cea2a89f2784ba9bd94c8e1c37e502b6bc437500aad333491cce719`).
+The report's contemporaneous campaign-unrun and branch-status prose is
+superseded by the completed artifact and receipt above; its theorem-level
+frontier analysis remains the cited result.
+Its valid conclusion, now applied to the completed artifact, is **no
+objective-free family replacement on this artifact-exact single draw**. That
+does not mean equality, absence of a useful budget-specific choice, or a
+model-general result. Learned-book endpoint conjunction is uniform over
+prices between the endpoints; the two scale brackets establish only
+two-doctrine robustness. Strict quality comparisons remain one-ULP sensitive.
+
+The authoritative directory is
+`/home/rob/dq-runs/numeric-authoritative-2f955fa/sparky/fp8-cb-tcq-v1/`.
+The result is final, nonpartial, `tensors_done=33`, and has status
+`measurement_complete_no_serving_verdict`; its SHA-256 is
+`3e37ebeb24f575d802461c14c8d844fe5ba0fd7029a0a3f0b2bfe4d2a9befe18`;
+its checkpoint self-digest is
+`c1d6699de67bcac88b084cd10b0dc3cc9b418aa0568febf8612e4c7c034a86ff`
+and settings identity is
+`913e070ff6bd74506bc0156f9105ed453fa2af86cb0bdbc39d6efcd675fd5712`.
+The no-replace
+`analysis/fp8-cb-tcq.analysis-receipt-v1.json` has file SHA-256
+`f8d58799363bbb36f0b57d8c637a162931511015bf6604f87d352f6254890ec2`
+and internal self-digest
+`804bd192bdd41672c82fda3d772e88bbc480543cd4f8b545c0562b40cc530dc4`.
+Its tracked verifier is commit
+`511385b5c916ee12f06771a68fb302d60e5e161a`, file SHA-256
+`3b28992cdf91893cc6de54d73ac9492b3935c002297debf760ccb8fa59cece2f`.
+It independently pins the exact result, corpus, sources, runtime versions,
+container/attestation, canonical integer costs, metric identities, and all
+frontiers before rebuilding the receipt.
+
+The execution used exact producer commit
+`2f955fa7c073799e494110ff81029027955ee85d` in container
+`8d5a2b79f98d24f10635bbe6fa7c339a8361377f18926f281ad4e2503d4bac89`.
+Docker and the container both exited 0, with `OOMKilled=false`; final Docker
+inspect SHA-256 is
+`bfa6e728e8805d2aa6efdef2e1710100b8dc85fa14db2d7b90507652e84dbc95`.
+The canonical launch-attestation file SHA-256 is
+`f495263965cba1a6b63d05c86fb328b8f488b3337d78a055090f6af9a84c6ee1`
+and its internal identity is
+`1cfad16122829dd0f3554a77d5b630a5005af78a57b706eca886bd756d8c510d`.
+The algorithm interval was 2,181.061 seconds. The valid py-spy speedscope
+profile SHA-256 is
+`b13df57960f0042f2232f1c36ded7c5e6c2ba060be7d5d3bec674d8b07ef3c3f`;
+it contains 250,583 samples, including 219,697 main-thread samples over
+2,196.97 seconds.
+
+The exact 2,208-second dual-host envelope is published only as
+`telemetry-v1/`, whose manifest SHA-256 is
+`a9c1e01bd12c11bf990c46db9fcd8c392be1edcaffdf188652ae86f0438644aa`.
+Sparky Netdata measured 23.0511 W mean, 48.9 W p95, 74 W maximum, and
+50.914 kJ (16.47% of the approximately 140 W envelope); schema-aware pqteld
+measured 22.8822 W mean, 48.39 W p95, 72.97 W maximum, and 50.519 kJ. The
+midnight-spanning pqteld capture parsed each source under its own 42-column
+header and required exact cross-source schema equality. Sparklina's peer-box
+series measured 6.4611 W mean/14.268 kJ in Netdata and 6.8662 W
+mean/15.158 kJ in pqteld; it is context only and is not attributed to this
+campaign. No failed or schema-invalid CB/TCQ telemetry directory is
+admissible. These are offline box measurements, not process-exclusive energy,
+served-kernel throughput, saturation, work per joule, or a
+cross-implementation performance comparison.
+
+#### Campaign design and exact-byte verdict contract
 
 The driver imports the existing frozen `fp8_ladder.py` arms and accountants;
-it does not reimplement either codec. It additionally pins the exact-DP
-source in the frozen Stage-0 snapshot, because that source is a separate file
-and is not present beside `fp8_ladder.py`.  Every completed checkpoint cell is
-regenerated from the hash-checked corpus and compared in full before reuse.
-Only wall timing is excluded from replay.  A persistent identity-bound claim
-reserves both final and partial names, the final receipt is no-replace, and
-the corpus, active sources, frozen codec closure, exact command, live CUDA
-identity, expected host, and declared immutable container digest are rechecked
-before the result publishes. Every completed partial and final carries an
-append-only `trellis.numeric_execution_segment.v1` history. A restart in a
-fresh, correctly attested container on the same host appends a segment without
-making the container ID part of the stable checkpoint identity; a host or
-host-specific image-ID change alters that stable identity and is refused.
+it does not reimplement either codec. It additionally pins the exact-DP source
+in the frozen Stage-0 snapshot. Every completed checkpoint cell is regenerated
+from the hash-checked corpus and compared in full before reuse; only wall
+timing is excluded from replay. A persistent identity-bound claim reserves
+both final and partial names, publication is no-replace, and the corpus,
+active sources, frozen codec closure, exact command, live CUDA identity,
+expected host, and immutable container digest are rechecked before the result
+publishes. Every checkpoint carries an append-only
+`trellis.numeric_execution_segment.v1` history.
 
-The result derives two separate population tables and has no pooled field.
-For each population/cell it constructs exact-byte Pareto frontiers rather than
-calling a higher-SNR point at more bytes a win.  A cell is awarded only if the
-same family strictly covers the opposing frontier on every tensor under all
-four scale-plane × learned-book-price combinations.  A crossing frontier,
-mixed tensors, or bracket disagreement produces a structured `NO_VERDICT`.
+The result constructs exact-byte Pareto frontiers. A cell is awarded only if
+the same family strictly covers the opposing frontier on every tensor under
+all four scale-plane × learned-book-price combinations. A crossing frontier,
+mixed tensors, or bracket disagreement produces structured `NO_VERDICT`.
 This is deliberately stricter than comparing round nominal labels.
 
 #### Exact numeric launch and attestation contract
@@ -408,9 +535,10 @@ worktree read-only. Sparky mounted the clean immutable checkout
 `e48e88b5fd2fd2a6c94cb544b3760ffc1b19d0c5`; the finalized host-helper bytes
 were supplied to that host for the pre-start inspection. These checks validate
 the closed Docker configuration and the nonpublishing parser/import path.
-They do not execute the encoder, enter the CUDA publication contract, prove a
-clean future integration commit, or establish any quality, speed, power, or
-serving result. No numeric GPU campaign was run.
+They did not execute the encoder, enter the CUDA publication contract, or
+establish any quality, speed, power, or serving result themselves. The
+subsequent completed campaign documented above supersedes only the former
+unrun study status; it does not turn either preflight into measurement.
 
 Even a later completed result remains W\*A16 weighted-SSE research evidence:
 it cannot qualify W8A8 activation behavior, Gridbook load, KL/PPL, serving
