@@ -22,6 +22,7 @@ def _body(
     *,
     task_class: str = "generation",
     determinism: str = "deterministic",
+    artifact_family: str = "generic",
     artifact_kind: str = "generic",
     portability: str = "portable",
     platform_key: str | None = None,
@@ -55,12 +56,13 @@ def _body(
             }
         )
     return {
-        "schema": pb.ACTION_SCHEMA_V1,
+        "schema": pb.ACTION_SCHEMA_V2,
         "task": {
             "definition_id": "tests/build-result",
             "definition_version": "v1",
             "task_class": task_class,
             "determinism": determinism,
+            "artifact_family": artifact_family,
             "artifact_kind": artifact_kind,
             "argv": resolved_argv,
             "working_directory": ".",
@@ -161,6 +163,7 @@ def test_unsealed_or_non_normalized_action_is_rejected(tmp_path: Path):
     ("path", "replacement"),
     [
         (("task", "definition_version"), "v2"),
+        (("task", "artifact_family"), "codebook"),
         (("task", "argv"), ["/bin/true", "different"]),
         (("inputs", 0, "sha256"), "4" * 64),
         (("code_closure", "closure_sha256"), "5" * 64),
@@ -189,27 +192,46 @@ def test_action_key_binds_every_semantic_input(
         assert pb.seal_action(changed)["action_key"] != original["action_key"]
 
 
-def test_portability_contracts_and_d29_refusal(tmp_path: Path):
+def test_portability_contracts_and_explicit_codebook_family_refusal(tmp_path: Path):
     with pytest.raises(pb.ActionContractError, match="measurement actions"):
         _action(tmp_path, task_class="measurement")
-    with pytest.raises(pb.ActionContractError, match="D29"):
-        _action(tmp_path, artifact_kind="fp8_cb")
-    with pytest.raises(pb.ActionContractError, match="D29"):
-        _action(tmp_path, artifact_kind="fp8-cb")
-    for spelling in (
-        "fp8cb",
-        "cb_fp8",
-        "qwen3-fp8-cb",
-        "fp8_cb_v2",
-        "fp8_codebook",
-        "nvfp4-cb-rerender",
+    # These labels were false negatives under the retired substring heuristic.
+    # The closed family, not a spelling convention, now carries the policy.
+    for artifact_kind in (
+        "fp8-book",
+        "fp8-lut",
+        "fp8-palette",
+        "nvfp4-quantizer",
+        "scale-book",
+        "cb-training",
+        "codebook-train",
+        "fp8-dictionary",
     ):
         with pytest.raises(pb.ActionContractError, match="D29"):
-            _action(tmp_path, artifact_kind=spelling)
+            _action(
+                tmp_path,
+                artifact_family="codebook",
+                artifact_kind=artifact_kind,
+            )
+
+    # These labels were false positives under substring matching. An ordinary
+    # family remains portable even when its descriptive kind happens to contain
+    # the letters "cb" near a quantization-family token.
+    for artifact_kind in ("nvfp4-recbuild", "fp8-cbor-dump"):
+        action = _action(
+            tmp_path,
+            artifact_family="generic",
+            artifact_kind=artifact_kind,
+        )
+        assert (
+            action["execution_scope"]["portability"]  # type: ignore[index]
+            == "portable"
+        )
 
     platform = _action(
         tmp_path,
-        artifact_kind="fp8_cb",
+        artifact_family="codebook",
+        artifact_kind="fp8-lut",
         portability="platform_keyed",
         platform_key="linux-aarch64-sm121",
     )
@@ -225,6 +247,22 @@ def test_portability_contracts_and_d29_refusal(tmp_path: Path):
         host_class="gb10",
     )
     assert host["execution_scope"]["host_class"] == "gb10"  # type: ignore[index]
+
+
+def test_action_v2_requires_closed_artifact_family_and_refuses_v1(tmp_path: Path):
+    body = _body(tmp_path)
+    body["task"]["artifact_family"] = "codebook-ish"  # type: ignore[index]
+    with pytest.raises(pb.ActionContractError, match="artifact_family must be one of"):
+        pb.seal_action(body)
+
+    legacy = _body(tmp_path)
+    legacy["schema"] = pb.ACTION_SCHEMA_V1
+    del legacy["task"]["artifact_family"]  # type: ignore[index]
+    with pytest.raises(
+        pb.ActionContractError,
+        match="v1 actions must be redeclared and resealed",
+    ):
+        pb.seal_action(legacy)
 
 
 def test_nonportable_action_refuses_unattestable_toolchain_or_unbound_argv0(

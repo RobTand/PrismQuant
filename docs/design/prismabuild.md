@@ -6,12 +6,14 @@ dependency-free action-key, immutable-CAS, and local-worker core lives in
 `prismaquant/prismabuild.py`; the fail-closed SLURM resource transport lives in
 `prismaquant/prismabuild_slurm.py`; and the optional asset/DAG adapter lives in
 `prismaquant/prismabuild_dagster.py`. Before `sbatch`, the SLURM adapter
-first-writer-publishes a sealed submission identity and bounded retry policy;
+first-writer-publishes a sealed submission identity, bounded retry policy, and
+self-hashed runtime identity for the loaded adapter module plus configured
+worker-launcher bytes;
 after acceptance it binds the returned job id, and after an orchestrator
 restart it adopts only the unique scheduler allocation carrying that exact
 identity. Poll and scheduler-mutation claims are append-only durable state. The
 adapter submits a canonical immutable action request to one sealed cluster
-with exact argv,
+with an exact `sbatch` argv and a sealed, POSIX-quoted `--wrap=exec` worker argv,
 `--export=NIL`, and explicit resources, then accepts only a scope-correct CAS
 receipt as success. A SLURM `COMPLETED` state without that receipt is a failed
 action.
@@ -87,12 +89,18 @@ matters). Rules:
   contract-pinned dependency list is the house precedent). Bias to
   over-declare: over-invalidation wastes compute; under-invalidation serves
   stale results.
-- **Generation vs measurement tasks**: generation (encodes, permutation/
-  gauge searches, CB books — discrete outputs re-scored later) EXCLUDES
-  host from the key → any box's result is valid ("surrogates generate,
-  real KL selects" applied to hardware). Measurement (KL, PPL, probe)
+- **Generation vs measurement tasks**: ordinary generation (encodes,
+  permutation/gauge searches — discrete outputs re-scored later) may exclude
+  host from the key → any box's result is valid ("surrogates generate, real KL
+  selects" applied to hardware). Measurement (KL, PPL, probe)
   INCLUDES host-class + toolchain — numerics don't transfer across
-  architectures; gold path pinned to `gb10`.
+  architectures; gold path pinned to `gb10`. Codebook generation is also
+  nonportable because D29 records cross-architecture row-scale byte drift.
+- **Artifact family is explicit** — action schema
+  `prismaquant.prismabuild.action.v2` requires the closed
+  `task.artifact_family` value `generic` or `codebook`. `artifact_kind` remains
+  a descriptive identifier and never drives portability by substring. V1 is
+  not reinterpreted: callers must redeclare the family and reseal the action.
 - **Deterministic vs stochastic** task classes: deterministic entries may be
   verified by recompute; stochastic (probe backward is recorded
   non-bit-reproducible) get run-once / first-result-wins.
@@ -190,6 +198,10 @@ regressions cover transient `2 -> 1` publication-link cleanup, transient
 `1 -> 1` link/unlink ctime churn followed by a stable pass, perpetual `1 -> 1`
 churn, and immediate content/mode/mtime/owner refusal. The focused core,
 Slurm-adapter, and Dagster-adapter suite passed `174 passed, 1 skipped`.
+The Slurm durable-state adapter now calls that same core primitive with
+read-only enforcement and a 16 MiB bound instead of maintaining a divergent
+single-pass copy. Adapter regressions separately pin transient ctime/nlink
+replay from a fresh FD and immediate substantive mode/mtime refusal.
 
 The exact-fix rerun is retained without overwrite at
 `/mnt/shared/prismaquant-prismabuild-validation/7acf3ad/run-20260831T035517Z-codex-live-nfs-fix`.
@@ -250,13 +262,18 @@ CAS bytes exist and match before execution, but the sealed argv/code remains
 responsible for resolving and consuming those bytes; process provenance is not
 an OS-level proof of every file read. Worker core/launcher identity is likewise
 receipt provenance, not action-key identity: a cache hit retains the producer
-revision that created its canonical result. The SLURM submitter verifies that
-the configured launcher path is a regular executable, but does not seal its
-then-current digest into the action request. If that file changes while a job
-waits, the started wrapper records its earliest live source snapshot and
-rechecks it; submission-time bytes are not claimed. Python does not expose the
-already-started script's parser input buffer, so even that early snapshot is
-not a cryptographic proof of the exact bytes the interpreter parsed.
+revision that created its canonical result. Separately, Slurm submission intent
+v2 seals a self-hashed runtime object containing the exact loaded adapter-module
+bytes and configured worker-launcher bytes. Both are rehashed after the durable
+intent readback and immediately before `sbatch`; path or byte drift refuses
+without invoking the scheduler. This does not put transport code into the
+reusable action key or action request. The scheduler cannot retain the submit-
+host FD while a job is queued: the started wrapper therefore still records and
+rechecks its own earliest live snapshot, and that receipt provenance may
+visibly differ from the submission-time planned launcher if deployment changed
+after `sbatch`. Python does not expose the already-started script's parser input
+buffer, so even that early snapshot is not a cryptographic proof of the exact
+bytes the interpreter parsed.
 
 The attestation becomes `producer` in the self-hashed
 `prismaquant.prismabuild.cas_receipt.v3` receipt. CAS lookup replays its action,
@@ -318,22 +335,41 @@ Scheduler identity is shared CAS state, separate from result truth. For each
 action the adapter owns one immutable lineage:
 
 ```text
-submissions/v1/<action-prefix>/<action-key>/
+submissions/v2/<action-prefix>/<action-key>/
   intent.json
   job.json
   transitions/polls/00000000-<ordinal>.json
   mutations/<ordinal>.json
 ```
 
-`intent.json` uses `prismaquant.prismabuild.slurm_submission_intent.v1`. It
+`intent.json` uses `prismaquant.prismabuild.slurm_submission_intent.v2` and
+contains a `prismaquant.prismabuild.slurm_submit_spec.v2`. It
 seals the action key; one cluster; CAS, log, checkout, worker, and SLURM
 executable paths; the closed submit environment; resources and placement; and
 the exact `max_polls`, `poll_interval_seconds`, and zero-`max_requeues` policy.
+It also seals the complete canonical worker argv.
+The submit spec also carries a self-hashed
+`prismaquant.prismabuild.slurm_runtime.v1` record for the load-time adapter
+source and configured worker-launcher source. The runtime launcher's declared
+path must exactly equal the sealed worker path, and both source identities and
+the runtime digest are strictly validated. Existing `submissions/v1` records
+remain immutable history: the v2 adapter neither parses nor migrates them.
 SLURM recompute is also sealed false. Its canonical submit-spec digest
 derives both the full `pqb-<digest>` job name and
 `prismabuild:<digest>` comment. The read-only first-writer object is published
 and re-read before `sbatch`; a changed resource, path, environment, or retry
 limit on replay conflicts rather than creating another lineage.
+
+The worker is deliberately not passed as `sbatch`'s positional batch script:
+Slurm copies such a script into its spool, so the executed launcher's
+`__file__` becomes a spool path and its checkout-relative core import fails.
+Instead the adapter supplies one `--wrap=exec <command>` option. The command is
+derived only from the sealed worker argv with `shlex.join`; tests round-trip
+spaces, quotes, dollar signs, and semicolons through `shlex.split` and assert
+there is no positional script. This is a controlled POSIX-shell encoding at
+the Slurm boundary, while the submitting process still uses `shell=False` and
+the task's own argv remains inside the immutable JSON request rather than shell
+text. A real Slurm launch of this path remains part of deployment validation.
 
 Submission uses `--no-requeue`, and positive same-job retry is deliberately
 unavailable. This is not a temporary command-line combination: current Slurm
@@ -489,9 +525,9 @@ Deployment still requires all of the following evidence:
   deployed filesystem/ACL/backup policy.
 - The orchestrator hosts must expose Linux `openat`/`O_NOFOLLOW` semantics and
   `/proc/self/fd`, and the worker/Slurm executable path ancestors must be
-  immutable to the submitting principal. The adapter verifies the worker leaf
-  immediately before submit, but a later scheduler launch cannot retain that
-  submit-host file descriptor across the allocation boundary.
+  immutable to the submitting principal. The adapter seals and rehashes the
+  worker leaf immediately before submit, but a later scheduler launch cannot
+  retain that submit-host file descriptor across the allocation boundary.
 - Production-scale large-result NFS publication, host-loss directory
   durability, munge/cgroup worker attestation, launcher deployment, and the
   planned Netdata/Prometheus evidence on both boxes remain separate gates.

@@ -52,12 +52,13 @@ def _action(
             )
     return pb.seal_action(
         {
-            "schema": pb.ACTION_SCHEMA_V1,
+            "schema": pb.ACTION_SCHEMA_V2,
             "task": {
                 "definition_id": f"tests/dagster/{name}",
                 "definition_version": "v1",
                 "task_class": "generation",
                 "determinism": "deterministic",
+                "artifact_family": "generic",
                 "artifact_kind": "generic",
                 "argv": argv,
                 "working_directory": ".",

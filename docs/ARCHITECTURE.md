@@ -2,6 +2,20 @@
 
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `codex/prismabuild-d1-d10-20260831`) for the **PrismaBuild action
+classification and Slurm provenance closure** (§10.1). Action schema v2 adds a
+closed `artifact_family`; codebook portability is governed by that field rather
+than fallible substring inference, and v1 requires explicit redeclaration and
+resealing. Slurm submit-spec and intent move to v2 under `submissions/v2` and
+seal a self-hashed runtime identity for the loaded adapter module and configured
+worker-launcher bytes, both rechecked immediately before `sbatch`. Durable Slurm
+reads now reuse the core bounded stable-pass reader with read-only and 16 MiB
+limits; transient ctime/nlink churn replays from a fresh FD while substantive
+mutation remains immediate refusal. The sealed worker argv launches through a
+safely quoted `--wrap=exec` instead of Slurm's source-relocating positional
+batch-script copy. These are CPU-tested contract changes, not
+a live scheduler, host-loss durability, Dagster-daemon, GPU, quality, or
+deployment claim. Re-stamped
 (2026-08-31, `codex/scale-grid-closure-stage1-20260831`) for the **executable
 and source-to-transform closure of the scale-grid research boundary** (§10.2).
 Direct receipt/render schemas v2 now bind selector, encoder, canonical-wire,
@@ -7512,6 +7526,14 @@ DAG layer above it. Neither creates another queue, result database, cache, or
 certification path. `/mnt/shared` is the intended deployment root, not a
 shared PrismaBuild CAS installed by this repository.
 
+Action schema `prismaquant.prismabuild.action.v2` requires the closed task field
+`artifact_family`, currently `generic` or `codebook`, while retaining
+`artifact_kind` only as a descriptive identifier. Measurement actions and
+codebook-family actions cannot be portable; the latter policy records D29's
+cross-architecture row-scale drift without guessing from free-form spelling.
+V1 actions are not interpreted as v2: a caller must declare the family and
+reseal, producing a new action key.
+
 The CAS has one supported input-ingress path: `PrismaBuildCAS.ingest_input()`
 and the `ingest-input` CLI take a stable regular-file snapshot in CAS-local
 staging, derive and optionally check its SHA-256/byte identity, first-writer
@@ -7574,24 +7596,43 @@ configured CAS. This is a Linux contract requiring `openat`, `O_NOFOLLOW`, and
 FD held for an arbitrary later consumer.
 
 Before any `sbatch`, the adapter publishes and re-reads one immutable
-`prismaquant.prismabuild.slurm_submission_intent.v1` at
-`submissions/v1/<prefix>/<action-key>/intent.json`. It seals the action key,
+`prismaquant.prismabuild.slurm_submission_intent.v2` at
+`submissions/v2/<prefix>/<action-key>/intent.json`. Its
+`prismaquant.prismabuild.slurm_submit_spec.v2` seals the action key,
 one cluster, CAS/log/checkout/worker and SLURM executable paths, closed submit
 environment, resources, placement, exact durable poll limit and interval,
-zero requeues, and `recompute=false`. The canonical submit-spec digest derives
+zero requeues, `recompute=false`, and the complete canonical worker argv. It
+also contains a self-hashed
+`prismaquant.prismabuild.slurm_runtime.v1` identity for the exact adapter-module
+snapshot loaded at import and the exact configured worker-launcher bytes. The
+launcher identity must name the configured worker path. Both sources are
+rehashed after intent publication/readback and immediately before `sbatch`; a
+path or byte drift, or loss of executable mode, refuses before the scheduler
+call. The
+v2 adapter does not parse, migrate, overwrite, or delete the disjoint
+`submissions/v1` history. The
+canonical submit-spec digest derives
 both the full `pqb-<digest>` job name and `prismabuild:<digest>` comment. A
-replay with a changed path, environment, resource, or retry policy conflicts;
+replay with changed runtime, path, environment, resource, or retry policy
+conflicts;
 it cannot form a second lineage (`prismabuild_slurm.SlurmAdapter._submit_spec`,
 `_submission_intent`, `_publish_submission_intent`).
 
-Submission is one exact argv array with `shell=False`:
+Submission is one exact local argv array with `shell=False`:
 `sbatch --parsable --clusters=<sealed-cluster> --export=NIL --no-requeue`, one
 node/task, append-mode logs, explicit CPU/memory/placement/time fields, and a
-GPU flag only when its positive count was requested. `NIL`, not `NONE`, avoids
+GPU flag only when its positive count was requested. The adapter does not pass
+the worker as a positional batch script because Slurm copies that source into
+its spool, changing `__file__` and breaking the launcher's checkout-relative
+core import. It instead appends one `--wrap=exec <command>` argument produced by
+`shlex.join` over the sealed canonical worker argv. The controlled Slurm-side
+POSIX shell therefore only decodes fixed transport arguments; task argv stays
+inside the immutable request and is never shell-interpolated. Quoting tests
+round-trip spaces, quotes, dollar signs, and semicolons and assert that no
+positional script is present. `NIL`, not `NONE`, avoids
 Slurm's implicit user-environment import; scheduler/SPANK variables still
 reach the required absolute worker path. The worker receives only the
-canonical read-only `requests/<prefix>/<action-key>.json`; task argv remains
-inside that request and is never shell-interpolated. Placement intent is
+canonical read-only `requests/<prefix>/<action-key>.json`. Placement intent is
 validated against the action's `portable`, `platform_keyed`, or
 `host_class_keyed` scope before submission, but caller-provided placement
 strings never become producer identity (`SlurmAdapter.submit`, `_worker_argv`,
@@ -7641,8 +7682,12 @@ ambiguous, and no restarted caller replays the RPC
 
 The Slurm state tree uses the same anchored creation/read/publication protocol
 as the core CAS (`prismabuild_slurm._ensure_real_directory`,
-`_open_directory_nofollow`, `_atomic_publish_nofollow`, `_read_state_bytes`).
-Files are canonical, self-digested, read-only, and capped at 16 MiB; poll,
+`_open_directory_nofollow`, `_atomic_publish_nofollow`, `_read_state_bytes`). Its
+reader delegates to the core `_read_regular_file_nofollow` stable-pass
+primitive with read-only enforcement and a streamed 16 MiB bound, so a
+ctime/nlink-only mismatch discards the entire attempt and reopens from byte
+zero, while size/mode/owner/mtime mutation refuses immediately. Files are
+canonical and self-digested; poll,
 mutation, observation, and stale-temp counts are bounded before their contents
 are loaded. Symlink hops, writable or noncanonical records, gaps, impossible
 attempts, excess counters, changed inode/mode/time state, wrong action/job/
@@ -7691,13 +7736,15 @@ minimized gap, not an atomic source-filesystem snapshot.
 
 Worker-runtime identity is receipt provenance, not part of the action key. A
 cache hit therefore retains the producer revision recorded by its canonical
-receipt. SLURM submission checks that the configured launcher is a regular
-executable but does not pin its submission-time digest into the action request;
-if it changes while queued, the started wrapper binds and rechecks its earliest
-live source snapshot. No equivalence to the earlier submission-time bytes is
-claimed, and Python does not expose the already-started script's original
-parser buffer, so the snapshot is not a cryptographic proof of those exact
-parsed bytes.
+receipt. Slurm's separate submission-runtime record now pins the submit-time
+adapter and configured launcher without contaminating the reusable action key
+or action request. The scheduler cannot carry the submit-host launcher FD
+through queueing: if deployment changes after `sbatch`, the started wrapper
+binds and rechecks its own earliest live source snapshot, which remains visible
+as actual producer provenance and may differ from the planned submission
+identity. Python does not expose the already-started script's original parser
+buffer, so that snapshot is not a cryptographic proof of the exact parsed
+bytes.
 `COMPLETED` without a receipt is failure. A repeated initial worker invocation
 checks the same CAS before running, while a forced/admin-restarted allocation
 refuses before it can read action data. A dirty partial result still refuses
