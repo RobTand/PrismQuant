@@ -1108,6 +1108,22 @@ def validate_fp8_checkpoint(document: object, *, settings: Mapping[str, object],
         if float(root["completed_at_unix_s"]) < float(root["started_at_unix_s"]):
             raise CheckpointContractError("checkpoint completion precedes start")
     names = [entry.name for entry in entries]
+    if generated_hashes is None or generated_books is None:
+        raise CheckpointContractError(
+            "generated FP8 evidence is required for every validation"
+        )
+    evidence_hashes = _mapping(
+        generated_hashes, where="generated_hashes"
+    )
+    evidence_books = _mapping(
+        generated_books, where="generated_books"
+    )
+    if set(evidence_hashes) != set(per_tensor):
+        raise CheckpointContractError(
+            "generated reconstruction tensor domain differs"
+        )
+    if set(evidence_books) != set(per_tensor):
+        raise CheckpointContractError("generated book tensor domain differs")
     expected_population_counts = {
         population: sum(entry.population == population for entry in entries)
         for population in ("dense", "routed")
@@ -1151,32 +1167,36 @@ def validate_fp8_checkpoint(document: object, *, settings: Mapping[str, object],
             _validate_fp8_arm(arms[f"fp8_cb_learned@{rung}"], rung=rung, learned=True,
                               shape=shape,
                               energy=energy, where=f"per_tensor.{name}.arms.fp8_cb_learned@{rung}")
-        if generated_hashes is not None and name in generated_hashes:
-            expected_hashes = generated_hashes[name]
-            if set(expected_hashes) != expected_arms:
+        expected_hashes = _mapping(
+            evidence_hashes[name], where=f"generated_hashes.{name}"
+        )
+        if set(expected_hashes) != expected_arms:
+            raise CheckpointContractError(
+                f"per_tensor.{name} generated reconstruction hash domain differs"
+            )
+        for arm_name, expected_hash in expected_hashes.items():
+            _sha(expected_hash, where=f"generated_hashes.{name}.{arm_name}")
+            if arms[arm_name]["reconstruction_sha256"] != expected_hash:
                 raise CheckpointContractError(
-                    f"per_tensor.{name} generated reconstruction hash domain differs"
+                    f"per_tensor.{name}.{arm_name} reconstruction hash differs "
+                    "from generated object"
                 )
-            for arm_name, expected_hash in expected_hashes.items():
-                _sha(expected_hash, where=f"generated_hashes.{name}.{arm_name}")
-                if arms[arm_name]["reconstruction_sha256"] != expected_hash:
-                    raise CheckpointContractError(
-                        f"per_tensor.{name}.{arm_name} reconstruction hash differs "
-                        "from generated object"
-                    )
-        if generated_books is not None and name in generated_books:
-            expected_books = generated_books[name]
-            learned_domain = {f"fp8_cb_learned@{rung}" for rung in (32, 40, 48)}
-            if set(expected_books) != learned_domain:
+        expected_books = _mapping(
+            evidence_books[name], where=f"generated_books.{name}"
+        )
+        learned_domain = {
+            f"fp8_cb_learned@{rung}" for rung in (32, 40, 48)
+        }
+        if set(expected_books) != learned_domain:
+            raise CheckpointContractError(
+                f"per_tensor.{name} generated book domain differs"
+            )
+        for arm_name, expected_book in expected_books.items():
+            if arms[arm_name]["learned_book"] != expected_book:
                 raise CheckpointContractError(
-                    f"per_tensor.{name} generated book domain differs"
+                    f"per_tensor.{name}.{arm_name} learned book differs "
+                    "from generated tables"
                 )
-            for arm_name, expected_book in expected_books.items():
-                if arms[arm_name]["learned_book"] != expected_book:
-                    raise CheckpointContractError(
-                        f"per_tensor.{name}.{arm_name} learned book differs "
-                        "from generated tables"
-                    )
     if not require_partial:
         expected_summaries = fp8_population_summaries(per_tensor)
         if root.get("population_summaries") != expected_summaries:
@@ -1224,8 +1244,44 @@ def fp8_population_summaries(
     return output
 
 
+def validate_fp8_replay_envelope(
+    document: object, *, settings: Mapping[str, object],
+    entries: Sequence[object],
+) -> None:
+    """Validate only an untrusted partial's envelope before GPU replay.
+
+    Cell claims are deliberately not accepted here; the driver regenerates
+    each prefix cell and compares it exactly before calling the full validator.
+    """
+
+    root = _exact(document, _FP8_ROOT_KEYS, where="checkpoint")
+    digest = _sha(
+        root.get("checkpoint_sha256"),
+        where="checkpoint.checkpoint_sha256",
+    )
+    body = {
+        key: value for key, value in root.items()
+        if key != "checkpoint_sha256"
+    }
+    if digest != _json_digest(body, newline=False, where="checkpoint"):
+        raise CheckpointContractError("checkpoint self-digest differs")
+    if root.get("schema") != "trellis.glm_fp8_learned_balanced.v2":
+        raise CheckpointContractError("checkpoint schema differs")
+    _validate_fp8_settings(root.get("settings"), expected=settings)
+    if root.get("partial") is not True:
+        raise CheckpointContractError("checkpoint.partial must be True")
+    _finite(root.get("started_at_unix_s"), where="checkpoint.started_at_unix_s")
+    per_tensor = _mapping(root.get("per_tensor"), where="checkpoint.per_tensor")
+    if root.get("tensors_done") != len(per_tensor):
+        raise CheckpointContractError("checkpoint tensor count differs")
+    names = [entry.name for entry in entries]
+    if list(per_tensor) != names[:len(per_tensor)]:
+        raise CheckpointContractError("checkpoint is not the ordered tensor prefix")
+
+
 __all__ = [
     "CheckpointContractError", "FP8_PERFORMANCE_GATE",
     "fp8_population_summaries", "validate_e2m1_checkpoint",
     "validate_e2_published_control_arm", "validate_fp8_checkpoint",
+    "validate_fp8_replay_envelope",
 ]

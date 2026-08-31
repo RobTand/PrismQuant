@@ -51,7 +51,10 @@ from atomic_publication import (
     identity_sha256,
     publish_file_no_replace,
 )
-from isolated_glm_corpus import load_active_glm_corpus
+from isolated_glm_corpus import (
+    load_active_glm_corpus_bound,
+    read_bound_json,
+)
 from numeric_checkpoint_contract import (
     CheckpointContractError,
     validate_e2m1_checkpoint,
@@ -59,6 +62,15 @@ from numeric_checkpoint_contract import (
 )
 
 W, C, P, S4, TF = H.W, H.C, H.P, H.S4, H.TF
+import prismaquant.export_native_compressed as NVFP4_COMPARATOR  # noqa: E402
+NVFP4_ACTIVATION_CONTRACT = NVFP4_COMPARATOR._nvfp4_activation_contract
+
+EXPECTED_NVFP4_COMPARATOR_SHA256 = (
+    "cec4e8f18d36f0c9b1f70cc69959bcf27449fe048fb8c612c488ea042326129a"
+)
+EXPECTED_NVFP4_ACTIVATION_CONTRACT_SHA256 = (
+    "690d345b371ad99a8355e3e2e52b7220a1e6d0160c497dbaffe255647896bb27"
+)
 
 # --- corpus configuration --------------------------------------------------
 # dsv4 = MXFP4-source DSv4 routed experts (21-27 distinct source values).
@@ -244,8 +256,24 @@ def _active_source_identity() -> dict[str, object]:
             ("plane", P),
             ("schedule", S4),
             ("trellis_formats", TF),
+            ("nvfp4_scalar_comparator", NVFP4_COMPARATOR),
+            ("nvfp4_activation_contract", NVFP4_ACTIVATION_CONTRACT),
         )
     }
+    for module, expected_sha in (
+        (NVFP4_COMPARATOR, EXPECTED_NVFP4_COMPARATOR_SHA256),
+        (
+            NVFP4_ACTIVATION_CONTRACT,
+            EXPECTED_NVFP4_ACTIVATION_CONTRACT_SHA256,
+        ),
+    ):
+        module_path = Path(module.__file__).resolve(strict=True)
+        module_sha = file_sha256(module_path)
+        if (not module_path.is_relative_to(H.SNAPSHOT.resolve(strict=True))
+                or module_sha != expected_sha):
+            raise SystemExit(
+                "FATAL: frozen NVFP4 scalar comparator source drifted"
+            )
     return {
         "repo_root": str(REPO_ROOT),
         "repo_git_commit": _repo_commit(),
@@ -273,40 +301,66 @@ def _bf16_ladder_module():
     return module
 
 
-def _corpus_binding(args: argparse.Namespace, *, glm_corpus=None) -> dict[str, object]:
+def _corpus_binding(
+    args: argparse.Namespace, *, glm_corpus=None,
+    manifest_binding: Mapping[str, str] | None = None,
+    control_binding: Mapping[str, str] | None = None,
+) -> dict[str, object]:
     if args.corpus == "glm":
         if args.glm_manifest is None:
             raise SystemExit("--corpus glm requires --glm-manifest")
-        fresh = glm_corpus or load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
+        if glm_corpus is None:
+            fresh, fresh_binding = load_active_glm_corpus_bound(
+                REPO_ROOT, args.glm_manifest
+            )
+        else:
+            if manifest_binding is None:
+                raise SystemExit("FATAL: bound GLM manifest identity is missing")
+            fresh, fresh_binding = glm_corpus, manifest_binding
         return {
             "manifest_path": str(fresh.manifest_path),
-            "manifest_sha256": file_sha256(fresh.manifest_path),
+            "manifest_sha256": fresh_binding["sha256"],
             "artifact_path": str(fresh.artifact_path),
             "artifact_sha256": file_sha256(fresh.artifact_path),
             "importance_value_sha256": fresh.manifest["importance_identity"]["value_sha256"],
             "corpus_prismaquant_commit": fresh.manifest["prismaquant_commit"],
         }
     if args.corpus == "dsv4":
+        if manifest_binding is None:
+            _manifest, manifest_binding = read_bound_json(H.INPUT_MANIFEST)
+        if control_binding is None:
+            _control, control_binding = read_bound_json(PUBLISHED)
         return {
-            "manifest_path": str(H.INPUT_MANIFEST.resolve(strict=True)),
-            "manifest_sha256": file_sha256(H.INPUT_MANIFEST),
+            "manifest_path": manifest_binding["path"],
+            "manifest_sha256": manifest_binding["sha256"],
             "input_path": str(H.INPUT.resolve(strict=True)),
             "input_sha256": file_sha256(H.INPUT),
-            "control_path": str(PUBLISHED.resolve(strict=True)),
-            "control_sha256": file_sha256(PUBLISHED),
+            "control_path": control_binding["path"],
+            "control_sha256": control_binding["sha256"],
         }
     module = _bf16_ladder_module()
     control_present = BF16_PUBLISHED.exists()
+    if manifest_binding is None:
+        manifest, manifest_binding = read_bound_json(Path(module.MANIFEST))
+        loaded_manifest, _names, _entries = module.load_corpus()
+        if loaded_manifest != manifest:
+            raise SystemExit(
+                "FATAL: BF16 manifest changed between bound read and load"
+            )
+    if control_present and control_binding is None:
+        _control, control_binding = read_bound_json(BF16_PUBLISHED)
     return {
         "bf16_ladder_path": str(Path(module.__file__).resolve(strict=True)),
         "bf16_ladder_sha256": file_sha256(Path(module.__file__)),
-        "manifest_path": str(Path(module.MANIFEST).resolve(strict=True)),
-        "manifest_sha256": file_sha256(Path(module.MANIFEST)),
+        "manifest_path": manifest_binding["path"],
+        "manifest_sha256": manifest_binding["sha256"],
         "input_path": str(Path(module.INPUT).resolve(strict=True)),
         "input_sha256": file_sha256(Path(module.INPUT)),
         "control_path": str(BF16_PUBLISHED.resolve()),
         "control_present": control_present,
-        "control_sha256": file_sha256(BF16_PUBLISHED) if control_present else None,
+        "control_sha256": (
+            control_binding["sha256"] if control_present else None
+        ),
     }
 
 
@@ -347,11 +401,15 @@ def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
 
     glm_corpus = None
     bf16_ladder = None
+    manifest_binding = None
+    control_binding = None
     if args.corpus == "dsv4":
-        published = json.loads(PUBLISHED.read_text())["per_tensor"]
+        control_document, control_binding = read_bound_json(PUBLISHED)
+        manifest_document, manifest_binding = read_bound_json(H.INPUT_MANIFEST)
+        published = control_document["per_tensor"]
         entries = {
             str(entry["name"]): entry
-            for entry in json.loads(H.INPUT_MANIFEST.read_text())["entries"]
+            for entry in manifest_document["entries"]
         }
         rate_plan = (*MID_RATES, CONTROL_RATE, *NEW_RATES)
         control_keys = (
@@ -359,17 +417,27 @@ def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
         )
     elif args.corpus == "bf16":
         bf16_ladder = _bf16_ladder_module()
-        _manifest, _names, entries = bf16_ladder.load_corpus()
-        published = (
-            json.loads(BF16_PUBLISHED.read_text())["cells"]
-            if BF16_PUBLISHED.exists() else {}
+        manifest_document, manifest_binding = read_bound_json(
+            Path(bf16_ladder.MANIFEST)
         )
+        loaded_manifest, _names, entries = bf16_ladder.load_corpus()
+        if loaded_manifest != manifest_document:
+            raise SystemExit(
+                "FATAL: BF16 manifest changed between bound read and load"
+            )
+        if BF16_PUBLISHED.exists():
+            control_document, control_binding = read_bound_json(BF16_PUBLISHED)
+            published = control_document["cells"]
+        else:
+            published = {}
         rate_plan = BF16_RATES
         control_keys = ("tcq_two_tier@2.0",)
     else:
         if args.glm_manifest is None:
             raise SystemExit("--corpus glm requires --glm-manifest")
-        glm_corpus = load_active_glm_corpus(REPO_ROOT, args.glm_manifest)
+        glm_corpus, manifest_binding = load_active_glm_corpus_bound(
+            REPO_ROOT, args.glm_manifest
+        )
         entries = {entry.name: entry for entry in glm_corpus.entries}
         published = {}
         rate_plan = GLM_RATE_PLANS[args.glm_rate_plan]
@@ -449,7 +517,12 @@ def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
         "control_keys": control_keys,
         "glm_corpus": glm_corpus,
         "bf16_ladder": bf16_ladder,
-        "corpus_binding": _corpus_binding(args, glm_corpus=glm_corpus),
+        "corpus_binding": _corpus_binding(
+            args,
+            glm_corpus=glm_corpus,
+            manifest_binding=manifest_binding,
+            control_binding=control_binding,
+        ),
         "expected_tensors": expected_tensors,
         "expected_controls": expected_controls,
     }
@@ -617,8 +690,9 @@ def _run_claimed(
         # bypass column IS this, so "trellis on bypass columns" and "NVFP4 on
         # bypass columns" must agree up to the scale plane, while a genuine
         # coding gain can only live on the SHAPED columns.
-        from prismaquant import format_registry as FR
-        nvfp4_recon = FR.get_format("NVFP4").quantize_dequantize(weight)
+        nvfp4_recon = NVFP4_COMPARATOR._rtn_dequant_nvfp4(
+            weight, group_size=16
+        ).to(weight.dtype)
 
         def scalar_subgrid(x_cols, enc_cols, pes_cols, w_cols, m_levels):
             """RTN onto the weighted-MSE-optimal m-level subset of the E2M1

@@ -8,13 +8,54 @@ codec modules used by a campaign.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
+import os
 from pathlib import Path
 import sys
 import types
 
 
 _PACKAGE_NAME = "_prismaquant_active_glm_corpus"
+
+
+def read_bound_json(path: Path) -> tuple[dict[str, object], dict[str, str]]:
+    """Parse and hash the exact bytes read from one pinned file description."""
+
+    candidate = Path(path).resolve(strict=True)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(candidate, flags)
+    try:
+        chunks = []
+        while chunk := os.read(descriptor, 1 << 20):
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    raw = b"".join(chunks)
+
+    def object_from_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON member {key!r}")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError(f"non-finite JSON constant {value}")
+
+    value = json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=object_from_pairs,
+        parse_constant=reject_constant,
+    )
+    if not isinstance(value, dict):
+        raise ValueError(f"{candidate}: expected one JSON object")
+    return value, {
+        "path": str(candidate),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
 
 
 def load_active_glm_corpus(repo_root: Path, manifest: Path):
@@ -41,3 +82,15 @@ def load_active_glm_corpus(repo_root: Path, manifest: Path):
             f"active GLM corpus loader escaped checkout: {module_path}"
         )
     return module.load_finalized_bf16_corpus(manifest)
+
+
+def load_active_glm_corpus_bound(repo_root: Path, manifest: Path):
+    """Load a corpus only when its parsed manifest matches bound input bytes."""
+
+    document, binding = read_bound_json(manifest)
+    corpus = load_active_glm_corpus(repo_root, manifest)
+    if corpus.manifest != document:
+        raise RuntimeError(
+            "GLM manifest changed between bound read and corpus load"
+        )
+    return corpus, binding

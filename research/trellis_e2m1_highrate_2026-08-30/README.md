@@ -139,10 +139,19 @@ offset, alphabet, scale, byte, bpw, metric, subset, and final-summary
 identities. The GLM reader opens one artifact file description for each
 weight/importance pair and rechecks both tensor hashes at the point of use, so
 an artifact path replacement cannot mix or silently substitute corpus bytes.
+Manifest and control JSON identity is computed from the same pinned file
+description whose bytes are parsed; a path swap between a parse and a later
+hash cannot bind one document while using another. The scalar-NVFP4 comparator
+now calls the frozen export codec directly, and the receipt binds both that
+module and its NVFP4 activation-contract dependency by exact canary digest;
+the mutable checkout's `format_registry.py` is not in this claim path.
 Learned-FP8 v2 independently recomputes its body, row-scale, learned-book,
 total-bit/byte/bpw, population-summary, and performance-gate fields. For cells
-produced in the live process it also compares the recorded reconstruction and
-book reports with the encoder-returned objects. A resumed checkpoint contains
+produced in the live process its closed validator requires the exact generated
+reconstruction-hash domain for every arm and the exact generated-book domain
+for every learned arm; missing caller evidence is a refusal, never an optional
+check. It also compares the recorded reconstruction and book reports with the
+encoder-returned objects. A resumed checkpoint contains
 only their digests and summaries, not the reconstruction or tables themselves;
 those persisted hashes alone are therefore integrity labels, not independent
 proof that GPU execution occurred. Resume closes that boundary by regenerating

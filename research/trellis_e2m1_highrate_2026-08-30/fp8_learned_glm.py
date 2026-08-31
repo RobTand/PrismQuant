@@ -28,7 +28,7 @@ from typing import Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-from isolated_glm_corpus import load_active_glm_corpus
+from isolated_glm_corpus import load_active_glm_corpus_bound
 from atomic_publication import (
     PublicationError,
     atomic_checkpoint_json,
@@ -41,6 +41,7 @@ from numeric_checkpoint_contract import (
     FP8_PERFORMANCE_GATE,
     fp8_population_summaries,
     validate_fp8_checkpoint,
+    validate_fp8_replay_envelope,
 )
 
 EXPECTED_FP8_LADDER_SHA256 = (
@@ -163,7 +164,7 @@ def _resume_report(path: Path, *, settings, corpus) -> dict[str, object]:
     if sealed.get("checkpoint_sha256") != _identity_sha256(body):
         raise CampaignError("partial checkpoint self-digest differs")
     try:
-        validate_fp8_checkpoint(
+        validate_fp8_replay_envelope(
             sealed, settings=settings, entries=corpus.entries
         )
     except CheckpointContractError as exc:
@@ -250,9 +251,11 @@ def _verify_final_bindings(
         raise CampaignError("locked FP8/hull source identity drifted during run")
     if settings.get("frozen_codec_closure") != _frozen_codec_closure(ladder):
         raise CampaignError("frozen codec closure drifted during run")
-    fresh = load_active_glm_corpus(REPO_ROOT, args.manifest)
+    fresh, manifest_binding = load_active_glm_corpus_bound(
+        REPO_ROOT, args.manifest
+    )
     if (
-        file_sha256(fresh.manifest_path)
+        manifest_binding["sha256"]
         != settings.get("corpus_manifest_sha256")
         or fresh.manifest.get("file_sha256")
         != settings.get("corpus_file_sha256")
@@ -274,13 +277,15 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    corpus = load_active_glm_corpus(REPO_ROOT, args.manifest)
+    corpus, manifest_binding = load_active_glm_corpus_bound(
+        REPO_ROOT, args.manifest
+    )
     locked = _locked_sources(args.locked_ladder)
     ladder = _load_ladder(args.locked_ladder)
     settings = {
         "schema": SCHEMA,
         "corpus_manifest": str(corpus.manifest_path),
-        "corpus_manifest_sha256": file_sha256(corpus.manifest_path),
+        "corpus_manifest_sha256": manifest_binding["sha256"],
         "corpus_file_sha256": corpus.manifest["file_sha256"],
         "importance_value_sha256": corpus.manifest["importance_identity"]["value_sha256"],
         "corpus_prismaquant_commit": corpus.manifest["prismaquant_commit"],

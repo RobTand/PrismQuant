@@ -666,9 +666,32 @@ def _seal_fp8(root):
     ).encode()).hexdigest()
 
 
+def _fp8_evidence(root):
+    hashes = {
+        name: {
+            arm_name: arm["reconstruction_sha256"]
+            for arm_name, arm in cell["arms"].items()
+        }
+        for name, cell in root["per_tensor"].items()
+    }
+    books = {
+        name: {
+            arm_name: arm["learned_book"]
+            for arm_name, arm in cell["arms"].items()
+            if "learned_book" in arm
+        }
+        for name, cell in root["per_tensor"].items()
+    }
+    return hashes, books
+
+
 def test_fp8_checkpoint_rejects_unknown_claims_and_fake_metrics():
     root, settings, entries = _fp8_checkpoint()
-    C.validate_fp8_checkpoint(root, settings=settings, entries=entries)
+    hashes, books = _fp8_evidence(root)
+    C.validate_fp8_checkpoint(
+        root, settings=settings, entries=entries,
+        generated_hashes=hashes, generated_books=books,
+    )
     for mutate, match in (
         (lambda value: value.__setitem__("production_eligible", True), "checkpoint members"),
         (lambda value: value["settings"].__setitem__("serving_ready", True), "settings members"),
@@ -688,26 +711,36 @@ def test_fp8_checkpoint_rejects_unknown_claims_and_fake_metrics():
         mutate(bad)
         _seal_fp8(bad)
         with pytest.raises(C.CheckpointContractError, match=match):
-            C.validate_fp8_checkpoint(bad, settings=settings, entries=entries)
+            C.validate_fp8_checkpoint(
+                bad, settings=settings, entries=entries,
+                generated_hashes=hashes, generated_books=books,
+            )
 
     stale = copy.deepcopy(root)
     stale["per_tensor"]["tensor-a"]["weighted_energy"] = 2.0
     with pytest.raises(C.CheckpointContractError, match="self-digest differs"):
-        C.validate_fp8_checkpoint(stale, settings=settings, entries=entries)
+        C.validate_fp8_checkpoint(
+            stale, settings=settings, entries=entries,
+            generated_hashes=hashes, generated_books=books,
+        )
 
-    hashes = {
-        "tensor-a": {
-            arm_name: arm["reconstruction_sha256"]
-            for arm_name, arm in root["per_tensor"]["tensor-a"]["arms"].items()
-        }
-    }
-    books = {
-        "tensor-a": {
-            arm_name: arm["learned_book"]
-            for arm_name, arm in root["per_tensor"]["tensor-a"]["arms"].items()
-            if "learned_book" in arm
-        }
-    }
+    with pytest.raises(C.CheckpointContractError, match="evidence is required"):
+        C.validate_fp8_checkpoint(root, settings=settings, entries=entries)
+    with pytest.raises(
+        C.CheckpointContractError,
+        match="generated reconstruction tensor domain differs",
+    ):
+        C.validate_fp8_checkpoint(
+            root, settings=settings, entries=entries,
+            generated_hashes={}, generated_books={},
+        )
+    with pytest.raises(
+        C.CheckpointContractError, match="generated book domain differs",
+    ):
+        C.validate_fp8_checkpoint(
+            root, settings=settings, entries=entries,
+            generated_hashes=hashes, generated_books={"tensor-a": {}},
+        )
     C.validate_fp8_checkpoint(
         root, settings=settings, entries=entries,
         generated_hashes=hashes, generated_books=books,
@@ -723,6 +756,7 @@ def test_fp8_checkpoint_rejects_unknown_claims_and_fake_metrics():
 
 def test_fp8_final_summary_and_performance_gate_are_derived():
     root, settings, entries = _fp8_checkpoint()
+    hashes, books = _fp8_evidence(root)
     root.update({
         "partial": False,
         "completed_at_unix_s": 2.0,
@@ -732,7 +766,8 @@ def test_fp8_final_summary_and_performance_gate_are_derived():
     })
     _seal_fp8(root)
     C.validate_fp8_checkpoint(
-        root, settings=settings, entries=entries, require_partial=False
+        root, settings=settings, entries=entries, require_partial=False,
+        generated_hashes=hashes, generated_books=books,
     )
 
     bad_summary = copy.deepcopy(root)
@@ -744,6 +779,7 @@ def test_fp8_final_summary_and_performance_gate_are_derived():
         C.validate_fp8_checkpoint(
             bad_summary, settings=settings, entries=entries,
             require_partial=False,
+            generated_hashes=hashes, generated_books=books,
         )
 
     bad_gate = copy.deepcopy(root)
@@ -753,4 +789,5 @@ def test_fp8_final_summary_and_performance_gate_are_derived():
         C.validate_fp8_checkpoint(
             bad_gate, settings=settings, entries=entries,
             require_partial=False,
+            generated_hashes=hashes, generated_books=books,
         )

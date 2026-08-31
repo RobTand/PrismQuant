@@ -58,7 +58,7 @@ def test_population_summary_never_pools_dense_and_routed():
 def test_corpus_reader_does_not_claim_canonical_prismaquant_package():
     source = _PATH.read_text()
 
-    assert "load_active_glm_corpus(REPO_ROOT, args.manifest)" in source
+    assert "load_active_glm_corpus_bound(" in source
     assert "from prismaquant.trellis_bf16_corpus import" not in source
 
 
@@ -121,7 +121,14 @@ def test_final_binding_recheck_refuses_midrun_corpus_mutation(
         _DRIVER, "_frozen_codec_closure", lambda _ladder: {"closure": "bound"}
     )
     monkeypatch.setattr(
-        _DRIVER, "load_active_glm_corpus", lambda _root, _path: fresh
+        _DRIVER, "load_active_glm_corpus_bound",
+        lambda _root, _path: (
+            fresh,
+            {
+                "path": str(manifest.resolve()),
+                "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            },
+        ),
     )
     _DRIVER._verify_final_bindings(args=args, settings=settings, ladder=ladder)
 

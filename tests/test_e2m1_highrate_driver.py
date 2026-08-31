@@ -13,7 +13,8 @@ DRIVER = (
 def test_active_corpus_loader_is_isolated_from_locked_hull_package():
     source = DRIVER.read_text()
 
-    assert "load_active_glm_corpus(REPO_ROOT, args.glm_manifest)" in source
+    assert "load_active_glm_corpus_bound(" in source
+    assert "read_bound_json(PUBLISHED)" in source
     assert "from prismaquant.trellis_bf16_corpus import" not in source
 
 
@@ -62,6 +63,73 @@ def test_future_result_binds_active_and_frozen_source_closures():
     assert 'required published control' in source
     assert 'expected_tensors[name]' in source
     assert 'expected_controls[name]' in source
+    assert "NVFP4_COMPARATOR._rtn_dequant_nvfp4" in source
+    assert 'from prismaquant import format_registry' not in source
+    assert '"nvfp4_scalar_comparator"' in source
+    assert '"nvfp4_activation_contract"' in source
+
+
+def test_dirty_frozen_nvfp4_comparator_source_is_rejected():
+    program = textwrap.dedent(
+        f"""
+        import importlib.util, sys
+        from pathlib import Path
+        path = Path({str(DRIVER)!r})
+        sys.path.insert(0, str(path.parent))
+        spec = importlib.util.spec_from_file_location("e2m1_dirty_source", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original = module.file_sha256
+        for claim_source in (
+            module.NVFP4_COMPARATOR, module.NVFP4_ACTIVATION_CONTRACT,
+        ):
+            dirty = Path(claim_source.__file__).resolve()
+            def dirty_digest(candidate):
+                if Path(candidate).resolve() == dirty:
+                    return "0" * 64
+                return original(candidate)
+            module.file_sha256 = dirty_digest
+            try:
+                module._active_source_identity()
+            except SystemExit as exc:
+                assert "comparator source drifted" in str(exc)
+            else:
+                raise AssertionError(
+                    f"dirty frozen NVFP4 source {{dirty}} was accepted"
+                )
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], text=True, capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_frozen_direct_nvfp4_comparator_matches_prior_registry_route():
+    program = textwrap.dedent(
+        f"""
+        import importlib.util, sys, torch
+        from pathlib import Path
+        path = Path({str(DRIVER)!r})
+        sys.path.insert(0, str(path.parent))
+        spec = importlib.util.spec_from_file_location("e2m1_nvfp4_parity", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        from prismaquant import format_registry
+        weight = torch.linspace(-3.0, 3.0, 512).reshape(2, 256).to(torch.bfloat16)
+        prior = format_registry.get_format("NVFP4").quantize_dequantize(weight)
+        direct = module.NVFP4_COMPARATOR._rtn_dequant_nvfp4(
+            weight, group_size=16
+        ).to(weight.dtype)
+        assert torch.equal(prior, direct)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], text=True, capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_self_bound_v3_partial_rejects_fake_full_prefix_in_isolated_process(tmp_path):
@@ -79,7 +147,8 @@ def test_self_bound_v3_partial_rejects_fake_full_prefix_in_isolated_process(tmp_
         assert source_identity["frozen_hull"]["source_sha256"]
         assert set(source_identity["frozen_hull"]["imported_codec_modules"]) == {{
             "hull_sweep", "weight_codec", "common", "plane", "schedule",
-            "trellis_formats",
+            "trellis_formats", "nvfp4_scalar_comparator",
+            "nvfp4_activation_contract",
         }}
         receipt = {{
             "schema": "trellis.e2m1_highrate.v3",
@@ -133,7 +202,10 @@ def test_bf16_missing_published_control_refuses_before_gpu(tmp_path):
         spec = importlib.util.spec_from_file_location("e2m1_preflight_test", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        manifest = Path({str(tmp_path / 'bf16-manifest.json')!r})
+        manifest.write_text("{{}}")
         class FakeLadder:
+            MANIFEST = manifest
             @staticmethod
             def load_corpus():
                 entry = {{
@@ -233,7 +305,10 @@ def test_bf16_nonfinite_published_control_refuses_in_prepare(tmp_path):
         spec = importlib.util.spec_from_file_location("e2m1_control_test", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        manifest = Path({str(tmp_path / 'bf16-manifest.json')!r})
+        manifest.write_text("{{}}")
         class FakeLadder:
+            MANIFEST = manifest
             @staticmethod
             def load_corpus():
                 entry = {{
@@ -268,6 +343,9 @@ def test_bf16_nonfinite_published_control_refuses_in_prepare(tmp_path):
         )
         try:
             module._prepare_campaign(args)
+        except ValueError as exc:
+            assert not called
+            assert "non-finite JSON constant" in str(exc)
         except SystemExit as exc:
             assert called
             assert "invalid published control" in str(exc)
