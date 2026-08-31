@@ -562,6 +562,32 @@ _PUBLISHED_FILES = frozenset({
 #     backend defaulting, and corrupt-header refusal.  Neither commit changes
 #     a quantizer, scale calculation, emitted tensor name, footprint, or wire
 #     serializer; the handoff verdict and output bytes are therefore unchanged.
+#
+# RE-FROZEN 2026-08-31 for the trellis render mechanism (WO-B, `d59f453`) and
+# the format registration that accompanies it (WO-A, `f4386e4`); exactly one
+# file in this release closure changed:
+#   production_weight_cache.py -- adds a `tcq_trellis` branch to
+#     `render_production_weight`, a `TrellisSerializationContext` carrying the
+#     artifact-wide encoder recipe, and retention of the immutable
+#     `gridbook.trellis.wire.v1` bytes alongside the decoded tensor so the
+#     exporter ships the bytes whose decode the surrogate priced (principle 8).
+#     `tcq_trellis` joins `WEIGHTED_RENDER_FAMILIES` and a `trellis` mechanism
+#     registers in `render_score`.
+#
+#     THE DSv4 W8A16 PATH IS UNCHANGED, and the reason is structural rather
+#     than a reading of the diff: every addition is gated behind
+#     `_is_trellis_format_name(fmt)`, which `parse_trellis_format_name` answers
+#     only for `TCQ_E2M1_R*` / `TCQ_E4M3_R*`. No W8A16 assignment can carry such
+#     a format -- the source-fp8 passthrough families are disjoint from the
+#     trellis families in the registry -- so the branch is unreachable on this
+#     handoff and the pre-existing code path is byte-identical in behaviour.
+#     The entry-shape change is guarded separately: `TRELLIS_RENDER_MECHANISM_ABI`
+#     bumps, and a cache written before it rebuilds loudly rather than serving a
+#     trellis-shaped miss.
+#
+#     `tests/test_col_weights_render_identity.py` still pins col_weights
+#     inertness for every non-weighted family, which is what would catch an
+#     accidental behaviour change on the W8A16 render.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
         "dfffc634a7275e76a4c4b3bd0299e8b0775673dca23f6f5c56ca31f8b748b8a5"
@@ -597,7 +623,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "69f0a105f6a99f35b2200ec36a484c5795b2d1475b88c83522e56ed1021aa3d5"
     ),
     "prismaquant/production_weight_cache.py": (
-        "83762ea8774e8d4936e3c6144d8dfe25810623b6a395e06694a99aed3c092054"
+        "da3a6143dde425bf9862709b4e13bcf72c3e2a80c58cd468116aed2bd9bc9fcb"
     ),
     "prismaquant/nvfp4_cb_footprint.py": (
         "96bc38a7ab18c6d2401ed2b66141eef9809409c78468f8ceb16c0891b9701547"
