@@ -2159,7 +2159,15 @@ class PrismaBuildCAS:
     def _publish_staged_input_blob(
         self, staging: Path, contract: Mapping[str, object]
     ) -> tuple[Path, bool]:
-        """Link a staged input into the CAS and verify the canonical name."""
+        """Link a verified staging inode into the CAS and verify its name.
+
+        ``staging`` is the private, read-only inode just returned by
+        ``_copy_to_staging`` together with ``contract``.  If this process wins
+        the hard-link publication, identity of the canonical name to that
+        already-hashed inode proves the content without rereading a potentially
+        huge payload.  A pre-existing race winner remains untrusted and is
+        always reopened and hashed in full.
+        """
 
         digest = str(contract["sha256"])
         blob_path, directory_fd = self._open_input_blob_shard(digest)
@@ -2171,6 +2179,26 @@ class PrismaBuildCAS:
             os.close(directory_fd)
             raise
         try:
+            try:
+                staged_identity = os.stat(
+                    staging.name, dir_fd=source_fd, follow_symlinks=False
+                )
+            except OSError as exc:
+                raise CASTamperError(
+                    f"CAS staging file changed before publication: {staging}"
+                ) from exc
+            if not stat.S_ISREG(staged_identity.st_mode):
+                raise CASTamperError(
+                    f"CAS staging file is not regular: {staging}"
+                )
+            if staged_identity.st_mode & 0o222:
+                raise CASTamperError(
+                    f"CAS staging file is writable: {staging}"
+                )
+            if staged_identity.st_size != int(contract["bytes"]):
+                raise CASTamperError(
+                    f"CAS staging file size differs from its contract: {staging}"
+                )
             try:
                 os.link(
                     staging.name,
@@ -2184,6 +2212,32 @@ class PrismaBuildCAS:
                 won = False
             if won:
                 os.fsync(directory_fd)
+                flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+                try:
+                    published_fd = os.open(
+                        digest, flags, dir_fd=directory_fd
+                    )
+                except OSError as exc:
+                    raise CASTamperError(
+                        f"published CAS blob changed before readback: {blob_path}"
+                    ) from exc
+                try:
+                    published_identity = os.fstat(published_fd)
+                    if _substantive_file_read_identity(
+                        published_identity
+                    ) != _substantive_file_read_identity(staged_identity):
+                        raise CASTamperError(
+                            "published CAS blob differs from the verified staging "
+                            f"inode: {blob_path}"
+                        )
+                    _assert_regular_identity(
+                        published_fd,
+                        directory_fd,
+                        blob_path,
+                        where="published CAS blob",
+                    )
+                finally:
+                    os.close(published_fd)
             _assert_directory_identity(
                 source_fd, staging.parent, where="CAS staging directory"
             )
@@ -2193,10 +2247,11 @@ class PrismaBuildCAS:
         finally:
             os.close(source_fd)
             os.close(directory_fd)
-        # A successful hard link is not sufficient evidence: re-open and hash
-        # the canonical name after its directory entry has been synchronized.
-        # The same verification rejects a malformed or conflicting race winner.
-        return self._verify_input_blob(contract), won
+        if won:
+            return blob_path, True
+        # A different inode won the content address.  Its name is only a claim;
+        # reopen and hash every byte before it can satisfy this publication.
+        return self._verify_input_blob(contract), False
 
     def ingest_input(
         self,
@@ -2377,8 +2432,27 @@ class PrismaBuildCAS:
     def _verify_input_blob(self, contract: Mapping[str, object]) -> Path:
         return self._verify_blob(contract, writable_label="CAS input payload")
 
+    def _lookup_receipt_only(
+        self, action: Mapping[str, object]
+    ) -> dict[str, object] | None:
+        """Validate canonical receipt bytes without consuming its blob."""
+
+        path = self._receipt_path(str(action["action_key"]))
+        try:
+            raw = self._load_receipt_bytes(path)
+        except FileNotFoundError:
+            return None
+        try:
+            value = _decode_strict_json(raw, where="CAS receipt")
+            receipt = self._validate_receipt(value, action=action)
+        except ActionContractError as exc:
+            raise CASTamperError(str(exc)) from exc
+        if raw != _canonical_file_bytes(receipt):
+            raise CASTamperError("CAS receipt bytes are not canonical JSON")
+        return receipt
+
     def lookup(self, action: object) -> dict[str, object] | None:
-        """Return a verified v3 receipt, or ``None`` on a v3 miss.
+        """Return a content-verified v3 receipt, or ``None`` on a v3 miss.
 
         An unversioned legacy-v2 receipt is deliberately neither migrated nor
         interpreted here.  It remains immutable history while v3 recomputes
@@ -2386,18 +2460,9 @@ class PrismaBuildCAS:
         """
 
         normalized = validate_action(action)
-        path = self._receipt_path(str(normalized["action_key"]))
-        try:
-            raw = self._load_receipt_bytes(path)
-        except FileNotFoundError:
+        receipt = self._lookup_receipt_only(normalized)
+        if receipt is None:
             return None
-        try:
-            value = _decode_strict_json(raw, where="CAS receipt")
-            receipt = self._validate_receipt(value, action=normalized)
-        except ActionContractError as exc:
-            raise CASTamperError(str(exc)) from exc
-        if raw != _canonical_file_bytes(receipt):
-            raise CASTamperError("CAS receipt bytes are not canonical JSON")
         self._verify_blob(receipt["result"])  # type: ignore[arg-type]
         return receipt
 
@@ -2474,7 +2539,12 @@ class PrismaBuildCAS:
                 _canonical_file_bytes(candidate),
                 prelink_verify=verify_publication_provenance,
             )
-            canonical = self.lookup(normalized)
+            # The canonical blob was already consumed above: a winning link
+            # was proven identical to our private hashed staging inode, while
+            # a losing link was hashed in full.  Re-read and validate the
+            # receipt, but do not perform a redundant full blob pass when it
+            # names that same result.
+            canonical = self._lookup_receipt_only(normalized)
             if canonical is None:
                 raise CASTamperError("CAS receipt vanished after publication race")
             if won:
@@ -2487,6 +2557,11 @@ class PrismaBuildCAS:
             assert isinstance(task, Mapping)
             canonical_result = canonical["result"]
             assert isinstance(canonical_result, Mapping)
+            if canonical_result != result:
+                # A stochastic receipt race may select a different blob.  It
+                # has not been consumed by this publication and must retain
+                # the ordinary full-content verification contract.
+                self._verify_blob(canonical_result)
             if task["determinism"] == "deterministic" and canonical_result != result:
                 raise CASConflictError(
                     "deterministic recomputation differs from the canonical CAS result"
@@ -2992,7 +3067,10 @@ def run_local_action(
     return {
         "status": "published" if won else "canonical_result_reused",
         "receipt": receipt,
-        "payload_path": str(cas.result_path(receipt, normalized)),
+        # ``publish_result`` has already consumed or identity-proved the exact
+        # canonical blob.  Returning its name must not trigger a fourth full
+        # read of a large result; public lookups remain content-verifying.
+        "payload_path": str(cas._verified_receipt_result_path(receipt)),
         "recovered_declared_result": recovered_declared_result,
         "reaped_staging_files": reaped_staging_files,
         "local_result_claim_sha256": claim["claim_sha256"],
