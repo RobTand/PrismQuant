@@ -13,9 +13,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import statistics
+import stat
 from typing import Mapping, Sequence
 
 from atomic_publication import (
@@ -53,7 +55,67 @@ class AnalysisReceiptError(RuntimeError):
     pass
 
 
-def _strict_json_object(path: Path) -> dict[str, object]:
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(info.st_dev), int(info.st_ino), int(info.st_mode),
+        int(info.st_uid), int(info.st_gid), int(info.st_size),
+        int(info.st_mtime_ns), int(info.st_ctime_ns), int(info.st_nlink),
+    )
+
+
+def _read_bound_file(path: Path) -> tuple[bytes, dict[str, object]]:
+    """Read one stable regular-file inode and bind its exact bytes once."""
+
+    candidate = path.absolute()
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(candidate, flags)
+    except OSError as exc:
+        raise AnalysisReceiptError(f"cannot open bound file {candidate}: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise AnalysisReceiptError(f"bound input is not regular: {candidate}")
+        chunks = []
+        while chunk := os.read(descriptor, 8 << 20):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        try:
+            path_after = os.stat(candidate, follow_symlinks=False)
+        except OSError as exc:
+            raise AnalysisReceiptError(
+                f"bound input path changed while read: {candidate}"
+            ) from exc
+        identity = _file_identity(before)
+        if (
+            _file_identity(after) != identity
+            or _file_identity(path_after) != identity
+            or not stat.S_ISREG(path_after.st_mode)
+        ):
+            raise AnalysisReceiptError(
+                f"bound input identity changed while read: {candidate}"
+            )
+        raw = b"".join(chunks)
+        if len(raw) != before.st_size:
+            raise AnalysisReceiptError(f"bound input size changed while read: {candidate}")
+        return raw, {
+            "path": str(candidate),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        }
+    finally:
+        os.close(descriptor)
+
+
+def _stable_file_sha256(path: Path) -> str:
+    return str(_read_bound_file(path)[1]["sha256"])
+
+
+def _strict_json_object(
+    path: Path,
+) -> tuple[dict[str, object], dict[str, object]]:
     def object_from_pairs(pairs):
         result = {}
         for key, value in pairs:
@@ -65,17 +127,18 @@ def _strict_json_object(path: Path) -> dict[str, object]:
     def reject_constant(token: str):
         raise ValueError(f"non-finite JSON constant {token!r}")
 
+    raw, binding = _read_bound_file(path)
     try:
         value = json.loads(
-            path.read_text(),
+            raw.decode("utf-8"),
             object_pairs_hook=object_from_pairs,
             parse_constant=reject_constant,
         )
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (UnicodeError, ValueError) as exc:
         raise AnalysisReceiptError(f"invalid JSON object {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise AnalysisReceiptError(f"{path} is not one JSON object")
-    return value
+    return value, binding
 
 
 def _identity_sha256(value: Mapping[str, object]) -> str:
@@ -391,8 +454,7 @@ def _validate_source(source: Mapping[str, object]) -> Mapping[str, object]:
             or not isinstance(digest, str) or _SHA256.fullmatch(digest) is None
         ):
             raise AnalysisReceiptError(f"active source {label} identity is invalid")
-        resolved = Path(path).resolve(strict=True)
-        if file_sha256(resolved) != digest:
+        if _stable_file_sha256(Path(path)) != digest:
             raise AnalysisReceiptError(f"active source {label} bytes differ")
     segments = source.get("execution_segments")
     if not isinstance(segments, list) or not segments:
@@ -422,8 +484,7 @@ def _validate_source(source: Mapping[str, object]) -> Mapping[str, object]:
         if (
             not isinstance(attestation_path, str)
             or not isinstance(attestation_sha, str)
-            or file_sha256(Path(attestation_path).resolve(strict=True))
-            != attestation_sha
+            or _stable_file_sha256(Path(attestation_path)) != attestation_sha
         ):
             raise AnalysisReceiptError("source launch attestation bytes differ")
     for name, cell in per_tensor.items():
@@ -478,18 +539,20 @@ def _validate_source(source: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def build_receipt(source_path: Path) -> dict[str, object]:
-    source_path = source_path.resolve(strict=True)
-    source = _strict_json_object(source_path)
+    source, source_binding = _strict_json_object(source_path)
     settings = _validate_source(source)
     per_tensor = source["per_tensor"]
-    verifier = Path(__file__).resolve(strict=True)
+    verifier = Path(__file__).absolute()
     dependency = verifier.parent / "atomic_publication.py"
+    verifier_binding = _read_bound_file(verifier)[1]
+    dependency_binding = _read_bound_file(dependency)[1]
     body: dict[str, object] = {
         "schema": SCHEMA,
         "status": "verified_exact_recomputation",
         "source": {
-            "path": str(source_path),
-            "sha256": file_sha256(source_path),
+            "path": source_binding["path"],
+            "sha256": source_binding["sha256"],
+            "size_bytes": source_binding["size_bytes"],
             "checkpoint_sha256": source["checkpoint_sha256"],
             "repo_git_commit": settings["environment"]["repo_git_commit"],
             "schema": source["schema"],
@@ -508,11 +571,13 @@ def build_receipt(source_path: Path) -> dict[str, object]:
         "population_summaries": _population_summaries(per_tensor),
         "frontier_diagnostics": _frontier_diagnostics(per_tensor),
         "verifier": {
-            "path": str(verifier),
-            "sha256": file_sha256(verifier),
+            "path": verifier_binding["path"],
+            "sha256": verifier_binding["sha256"],
+            "size_bytes": verifier_binding["size_bytes"],
             "dependencies": [{
-                "path": str(dependency.resolve(strict=True)),
-                "sha256": file_sha256(dependency.resolve(strict=True)),
+                "path": dependency_binding["path"],
+                "sha256": dependency_binding["sha256"],
+                "size_bytes": dependency_binding["size_bytes"],
             }],
         },
     }
