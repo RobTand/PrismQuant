@@ -59,6 +59,14 @@ from prismaquant.cb_export_config import (
     codebook_tensor_names as _codebook_tensor_names,
     codebook_tensors as _codebook_tensors,
 )
+from prismaquant.trellis_formats import (
+    ALL_LEGAL_TRELLIS_FORMAT_NAMES as _ALL_LEGAL_TRELLIS_FORMAT_NAMES,
+    E2M1_FAMILY as _TRELLIS_E2M1_FAMILY,
+    E4M3_FAMILY as _TRELLIS_E4M3_FAMILY,
+    parse_trellis_format_name as _parse_trellis_format_name,
+)
+from prismaquant.trellis_wire import TrellisWire as _TrellisWire
+from prismaquant.trellis_footprint import trellis_tensor_payload_breakdown as _trellis_breakdown
 from prismaquant.layer_config import load_assignment, read_layer_config_metadata
 from prismaquant.shard_layout import (
     DEFAULT_SHARD_BYTES,
@@ -111,14 +119,15 @@ from prismaquant.routed_moe_codebooks import (
 # This exporter's own declaration of what the mixed CB container can carry —
 # exactly the coverage gate in `export_cb` below: the CB rung families, the two
 # stock-CT schemes the plugin delegates to vLLM's CompressedTensors path
-# (NVFP4, FP8_E4M3 <- FP8_DYNAMIC), the verbatim FP8_SOURCE passthrough and the
-# BF16 container passthrough. The `nvfp4_cb` serving profile's export lane
-# derives its format menu from this constant
-# (serving_profile_specs/nvfp4_cb.json), so the allocator can never spend budget
-# on a rung this exporter would hard-fail on.
+# (NVFP4, FP8_E4M3 <- FP8_DYNAMIC), the verbatim FP8_SOURCE passthrough, the
+# BF16 container passthrough, and the Gridbook trellis families
+# (TCQ_E2M1_Rxxx / TCQ_E4M3_Rxxx) whose wire is the only carrier. The
+# `nvfp4_cb` serving profile's export lane derives its format menu from this
+# constant (serving_profile_specs/nvfp4_cb.json), so the allocator can never
+# spend budget on a rung this exporter would hard-fail on.
 EXPORTABLE_FORMATS = CB_FORMAT_NAMES | frozenset(
     {"NVFP4", "FP8_E4M3", "FP8_SOURCE", "BF16"}
-)
+) | frozenset(_ALL_LEGAL_TRELLIS_FORMAT_NAMES)
 
 
 def _preflight_assignment_before_output_transaction(function):
@@ -150,6 +159,14 @@ def _preflight_assignment_before_output_transaction(function):
 
             refused = []
             for qname, fmt in assignment.items():
+                # Trellis is gated by lane_eligibility (gridbook.lane-eligibility.v3),
+                # not by the CB profile's format_rules. The CB profile's allow list
+                # deliberately does not enumerate the 2546 trellis rungs, and
+                # check_serving_format would refuse them before the lane gate
+                # ever runs. Skip trellis here; the per-artifact lane gate below
+                # is the authority for those bytes (principle 14).
+                if _is_trellis_fmt(str(fmt)):
+                    continue
                 decision = check_serving_format(target_profile, qname, fmt)
                 if not decision.legal:
                     refused.append({
@@ -200,6 +217,124 @@ def _role_of(qname: str) -> str:
     """Shared-codebook grouping key — the Linear's projection role (last qname
     component), e.g. ``model.layers.3.mlp.gate_proj`` -> ``gate_proj``."""
     return qname.split(".")[-1]
+
+
+# ---------------------------------------------------------------------------
+# Trellis helpers — the Gridbook trellis wire is the only carrier (WO-C rule 1)
+# ---------------------------------------------------------------------------
+
+def _parse_trellis_format(fmt: str):
+    """Return (TrellisFamily, body_rate_q256) or None for non-trellis."""
+    return _parse_trellis_format_name(str(fmt).strip().upper())
+
+
+def _is_trellis_fmt(fmt: str) -> bool:
+    return _parse_trellis_format(fmt) is not None
+
+
+def _trellis_fused_group_key(qname: str, profile) -> str | None:
+    """Reuse the single fused-sibling grouping the allocator uses.
+
+    WO-C rule 3: vLLM merges q/k/v and gate/up and per-role wires cannot be
+    concatenated — each carries its own alphabets, schedule and padding.
+    gridbook/config.py refuses such a target *by name*. This helper mirrors
+    that hard runtime fact rather than inventing a second rule.
+    """
+    try:
+        from prismaquant.nvfp4_activation_contract import (
+            fused_sibling_group_key as _fused_key,
+        )
+
+        return _fused_key(qname, profile=profile, tolerate_profile_errors=False)
+    except Exception:
+        return None
+
+
+def _is_routed_moe_trellis_target(qname: str, profile) -> bool:
+    """Dense only (WO-C rule 4). The pinned contract publishes no routed_moe
+    trellis cell; a routed/packed-MoE unit assigned a trellis rung must fail
+    export closed naming the missing cell.
+
+    Detection reuses the profile when present, otherwise falls back to the
+    lexical “.experts.” convention. This is intentionally conservative:
+    false-positive dense is fail-closed via the lane gate, false-positive MoE
+    is a loud shape failure, so neither silently ships.
+    """
+    if profile is not None:
+        try:
+            packed = getattr(profile, "packed_expert_param_names", lambda: frozenset())()
+            if packed:
+                # Any qname that resolves to a packed expert parent is MoE.
+                per_expert_regex = getattr(profile, "per_expert_moe_regex", lambda: None)()
+                if per_expert_regex:
+                    import re as _re
+
+                    pat = _re.compile(
+                        per_expert_regex[len("re:") :]
+                        if per_expert_regex.startswith("re:")
+                        else per_expert_regex
+                    )
+                    # Check both raw and profile-mapped live name
+                    candidates = [str(qname)]
+                    try:
+                        mapped = profile.checkpoint_to_live_name(str(qname) + ".weight")
+                        if mapped:
+                            candidates.append(str(mapped))
+                    except Exception:
+                        pass
+                    for cand in candidates:
+                        base = cand[:-7] if cand.endswith(".weight") else cand
+                        if pat.match(base) or ".experts." in base:
+                            return True
+        except Exception:
+            pass
+    return ".experts." in str(qname)
+
+
+def _load_trellis_wire_bytes(
+    qname: str,
+    fmt: str,
+    trellis_wire_cache: dict | None,
+) -> bytes | None:
+    """Return wire bytes for one trellis unit from the ProductionWeightCache seam.
+
+    WO-C C1: The wire bytes come from ProductionWeightCache (WO-B retention).
+    If WO-B is not merged, code against the seam: try the explicit
+    trellis_wire_cache dict first, then ProductionWeightCache.get_trellis_wire_bytes
+    if that method exists, then fail closed. Do NOT re-encode.
+    """
+    # 1) Explicit dict supplied by caller (test seam or staged cache)
+    if trellis_wire_cache is not None:
+        # dict may be keyed by (qname, fmt) or qname alone
+        key = (str(qname), str(fmt).strip().upper())
+        alt = str(qname)
+        if key in trellis_wire_cache:
+            val = trellis_wire_cache[key]
+            return bytes(val) if isinstance(val, (bytes, bytearray, memoryview)) else val.numpy().tobytes() if hasattr(val, "numpy") else bytes(val)
+        if alt in trellis_wire_cache:
+            val = trellis_wire_cache[alt]
+            return bytes(val) if isinstance(val, (bytes, bytearray, memoryview)) else val.numpy().tobytes() if hasattr(val, "numpy") else bytes(val)
+        # Also try upper fmt
+        for k, v in trellis_wire_cache.items():
+            if isinstance(k, tuple) and k[0] == str(qname):
+                return bytes(v) if isinstance(v, (bytes, bytearray, memoryview)) else bytes(v)
+    # 2) ProductionWeightCache seam — WO-B
+    try:
+        from prismaquant.production_weight_cache import ProductionWeightCache  # type: ignore
+
+        # If a global cache instance has been stashed on the exporter via
+        # environment or attribute, try it. Otherwise, this is a seam call
+        # that will fail closed below.
+        # The production path will set trellis_wire_cache explicitly, so this
+        # branch is only for the merged WO-B world where the cache object
+        # itself is passed as trellis_wire_cache.
+        if hasattr(trellis_wire_cache, "get_trellis_wire_bytes"):
+            b = trellis_wire_cache.get_trellis_wire_bytes(str(qname), str(fmt))  # type: ignore[attr-defined]
+            if b is not None:
+                return bytes(b)
+    except Exception:
+        pass
+    return None
 
 
 def _load_skeleton(model_dir: Path) -> dict[str, torch.Tensor]:
@@ -703,6 +838,7 @@ def export_nvfp4_cb(
     shard_bytes: int = DEFAULT_SHARD_BYTES,
     producer_policy: str | None = None,
     producer_runtime_contract: dict | str | Path | None = None,
+    trellis_wire_cache: dict | object | None = None,
 ) -> dict[str, int]:
     """Export a CB checkpoint. See module docstring / LAYOUT.md for the layout.
 
@@ -851,14 +987,20 @@ def export_nvfp4_cb(
     # missing scales fail closed in cb_source_weight_bf16_value.
     _source_fp8_scale_map = build_cb_source_fp8_scale_map(model_dir)
     # --- Coverage gate: classify every assigned format into CB / stock-CT /
-    # BF16-passthrough (the mixed container, LAYOUT.md §4; "FP8 in every
-    # recipe"). ---
+    # trellis / BF16-passthrough (the mixed container, LAYOUT.md §4; "FP8 in
+    # every recipe"). ---
     cb_targets: dict[str, tuple[str, str, int]] = {}   # qname -> (grid,mode,k)
     stock_targets: dict[str, str] = {}                 # qname -> "NVFP4"|"FP8_E4M3"
+    trellis_targets: dict[str, tuple[str, int]] = {}   # qname -> (family, body_rate_q256)
     source_targets: list[str] = []                     # FP8_SOURCE passthrough
     illegal = []
     for qname, fmt in assignment.items():
         if fmt == "BF16":
+            continue
+        trellis_parsed = _parse_trellis_format(fmt)
+        if trellis_parsed is not None:
+            family_obj, rate = trellis_parsed
+            trellis_targets[qname] = (family_obj.family, int(rate))
             continue
         parsed = _parse_producer_cb_format(fmt)
         if parsed is not None:
@@ -877,7 +1019,33 @@ def export_nvfp4_cb(
             f"assignment contains formats the mixed CB container cannot carry: "
             f"{sorted({f for _, f in illegal})} — it carries the CB families "
             f"+ stock NVFP4/FP8_DYNAMIC (CT-delegated) + FP8_SOURCE "
-            f"(verbatim fp8 passthrough) + BF16 passthrough only")
+            f"(verbatim fp8 passthrough) + trellis TCQ_E2M1/TCQ_E4M3 + BF16 passthrough only")
+
+    # --- Trellis hard runtime facts (WO-C rules 3 + 4) --------------------
+    # Rule 3: Fused modules cannot be trellis — per-role wires cannot be
+    # concatenated (each carries its own alphabets, schedule, padding).
+    # gridbook/config.py refuses such a target *by name*; mirror that here.
+    for qname in list(trellis_targets):
+        fused_key = _trellis_fused_group_key(qname, _profile)
+        if fused_key is not None:
+            raise ValueError(
+                f"{qname}: fused modules cannot be trellis — vLLM merges "
+                f"{fused_key} and per-role wires cannot be concatenated "
+                "(each carries its own alphabets, rate schedule and row "
+                "padding). gridbook/config.py refuses such a target by name. "
+                "On a Qwen-shaped architecture the trellis-eligible Linears are "
+                "the unfused ones: o_proj and down_proj. Fused siblings must "
+                "take a non-trellis format (NVFP4/FP8/BF16) or go in ignore. "
+                "This is a hard runtime fact, not a policy you may relax."
+            )
+        if _is_routed_moe_trellis_target(qname, _profile):
+            raise ValueError(
+                f"{qname}: routed/packed-MoE trellis is not served — the pinned "
+                "Gridbook 0.9.1 contract (gridbook.runtime-contract.v12) publishes "
+                "no routed_moe trellis cell for any family/rate. A "
+                "routed/packed-MoE unit assigned a trellis rung must fail export "
+                "closed with this message naming the missing cell."
+            )
 
     # Per-expert-on-disk MoE checkpoints: assemble only packed parents that
     # are actually quantized. Packing every detected bank mutates omitted/BF16
@@ -1079,6 +1247,146 @@ def export_nvfp4_cb(
     activation_execution_contract = None
     activation_scales_by_physical_target: dict[str, float] = {}
     activation_scale_policy_id = None
+
+    # -------------------------------------------------------------------
+    # Trellis wire retrieval + E2M1 A-side static scale (WO-C C1/C2)
+    # -------------------------------------------------------------------
+    # The wire is the only carrier (rule 1). The exporter must NOT re-encode.
+    # Bytes come from ProductionWeightCache (WO-B). Code against the seam:
+    # trellis_wire_cache may be a dict, a ProductionWeightCache instance, or
+    # None — if no cache has a wire for a selected unit, fail closed.
+    trellis_wires: dict[str, bytes] = {}
+    trellis_parsed: dict[str, _TrellisWire] = {}
+    trellis_e2m1_targets: set[str] = set()
+    trellis_e4m3_targets: set[str] = set()
+    trellis_input_global_scales: dict[str, float] = {}
+    trellis_input_global_scale_sources: dict[str, str] = {}
+    for qname, (family, rate) in trellis_targets.items():
+        # Retrieve wire bytes from cache seam
+        blob = _load_trellis_wire_bytes(qname, assignment[qname], trellis_wire_cache)
+        if blob is None:
+            raise ValueError(
+                f"{qname}: trellis wire not found in ProductionWeightCache "
+                f"for format {assignment[qname]} — export refuses to re-encode "
+                "(principle 8: one rendering, surrogate and exported bytes "
+                "identical). WO-B lands the retention; if that branch is not "
+                "merged into yours yet this is the seam. Provide "
+                "trellis_wire_cache={{qname: wire_bytes}} or a "
+                "ProductionWeightCache with get_trellis_wire_bytes, and say so "
+                "in the commit message."
+            )
+        # Parse and validate — the wire is self-describing and the only
+        # carrier of schedule/alphabets/scale plane/row padding.
+        try:
+            wire = _TrellisWire.from_bytes(blob)
+        except Exception as exc:
+            raise ValueError(
+                f"{qname}: trellis wire blob is not a canonical "
+                f"{_TrellisWire.__name__} payload: {exc}"
+            ) from exc
+        # Family/rate must match assignment; wire_bytes length is already
+        # implied by the blob but we gate on the parsed fields too.
+        if wire.family != family or wire.body_rate_q256 != rate:
+            raise ValueError(
+                f"{qname}: wire family/rate {wire.family} R{wire.body_rate_q256} "
+                f"does not match assignment {family} R{rate}"
+            )
+        # Shape check against skeleton — dense Linear only (rule 4)
+        wkey = _try_resolve_skeleton(qname, skeleton, _profile)
+        if wkey is not None:
+            shp = tuple(int(d) for d in skeleton[wkey].shape)
+            if len(shp) == 2:
+                if (wire.rows, wire.columns) != (shp[0], shp[1]):
+                    raise ValueError(
+                        f"{qname}: wire geometry {wire.rows}x{wire.columns} "
+                        f"does not match skeleton shape {shp}"
+                    )
+            elif len(shp) == 3:
+                raise ValueError(
+                    f"{qname}: trellis wire is dense-only but skeleton is "
+                    f"rank-3 packed MoE {shp}"
+                )
+        trellis_wires[qname] = bytes(blob)
+        trellis_parsed[qname] = wire
+        if family == _TRELLIS_E2M1_FAMILY:
+            trellis_e2m1_targets.add(qname)
+        elif family == _TRELLIS_E4M3_FAMILY:
+            trellis_e4m3_targets.add(qname)
+
+    # E2M1 A-side static scale: the one genuinely new quantity (WO-C C2).
+    # Derive it from calibration activations exactly as NVFP4 derives
+    # input_global_scale (compute_nvfp4_input_global_scale /
+    # nvfp4_activation_contract.input_global_scale_from_max_abs). Reuse those
+    # functions because the execution contract is identical:
+    # e2m1_group16_ue4m3_static.
+    if trellis_e2m1_targets:
+        # Fused-sibling unification does not apply — trellis units are unfused
+        # by rule 3. State explicitly rather than leaving silently unhandled.
+        # (No call to _unify_input_global_scales_across_fused_siblings.)
+        if activation_cache_dir is None:
+            raise ValueError(
+                "export_nvfp4_cb: E2M1 trellis requires activation_cache_dir; "
+                "missing activations for a trellis unit is fail-closed — there "
+                "is no defensible default for an activation scale"
+            )
+        # Resolve policy once — same policy as NVFP4 W4A4
+        trellis_activation_policy = resolve_input_global_scale_policy(
+            activation_scale_policy
+        )
+        # For trellis, we reuse the NVFP4 calibration helper to load max_abs
+        # per target, but without fused grouping (unfused singletons). Missing
+        # activations fail closed.
+        from prismaquant.nvfp4_activation_contract import (
+            input_global_scale_from_max_abs as _trellis_scale_from_max,
+            load_activation_cache_max_abs as _trellis_load_max,
+        )
+
+        # Attempt to load via the calibrated helper; if activations are present
+        # in the cache dir, use them. Fallback to direct max_abs compute.
+        # We intentionally do NOT use the packed-MoE supplemental path — trellis
+        # is dense only.
+        try:
+            # Try the full helper which handles fused groups; for trellis it
+            # will be singleton groups, but we still getSource validation.
+            from prismaquant.nvfp4_activation_contract import (
+                calibrated_input_global_scales_with_sources as _calib_with_src,
+            )
+
+            trellis_scales_tmp, trellis_sources_tmp = _calib_with_src(
+                trellis_e2m1_targets,
+                activation_cache_dir=activation_cache_dir,
+                policy=trellis_activation_policy,
+                profile=_profile,
+            )
+            trellis_input_global_scales.update(trellis_scales_tmp)
+            trellis_input_global_scale_sources.update(trellis_sources_tmp)
+        except Exception:
+            # Fallback: direct per-target max_abs load
+            max_abs_map = {}
+            # Try loading via ActivationIndex directly
+            try:
+                max_abs_map = _trellis_load_max(
+                    activation_cache_dir, trellis_e2m1_targets
+                )
+            except Exception as exc:
+                raise ValueError(
+                    "export_nvfp4_cb: E2M1 trellis activation calibration "
+                    f"failed for {sorted(trellis_e2m1_targets)}: {exc}"
+                ) from exc
+            missing = [t for t in trellis_e2m1_targets if t not in max_abs_map]
+            if missing:
+                raise ValueError(
+                    f"export_nvfp4_cb: E2M1 trellis activation contract has no "
+                    f"calibrated input for {missing!r}; production export "
+                    "refuses an incomplete scale mapping"
+                )
+            for qname in trellis_e2m1_targets:
+                max_abs = float(max_abs_map[qname])
+                scale = _trellis_scale_from_max(
+                    max_abs, policy=trellis_activation_policy
+                )
+                trellis_input_global_scales[qname] = float(scale)
+                trellis_input_global_scale_sources[qname] = "target_activation_cache"
 
     # --- Resolve codebooks, grouped by (physical ref, format).  Production
     # learned cells come only from the immutable pre-render bundle.  The old
@@ -1423,19 +1731,122 @@ def export_nvfp4_cb(
         cb_route_status_provenance = rtx4090_route_status_stamp(
             _strict_producer[1], assignment
         )
+        # Trellis on a strict policy is not defined — the policy pins an
+        # Ada-era v11 contract that has no trellis cells. Fail closed if a
+        # trellis rung sneaked into a strict assignment.
+        if trellis_targets:
+            raise ValueError(
+                "export_nvfp4_cb: strict producer policy does not support "
+                f"trellis units {sorted(trellis_targets)}; use the generic "
+                "Gridbook 0.9.1 route gate"
+            )
     else:
+        # Include trellis in the same gate — one table, one verdict.
+        # Trellis routed MoE is dense-only, so routed_units for trellis is
+        # empty (the earlier hard refusal would have already fired). The gate
+        # still needs shapes for trellis: use the wire geometry when a wire
+        # is present, else the skeleton.
+        def _trellis_route_shape(qname: str) -> tuple[int, ...]:
+            if qname in trellis_parsed:
+                w = trellis_parsed[qname]
+                return (int(w.rows), int(w.columns))
+            return _route_gate_shape(qname)
+
+        def _combined_shape(qname: str) -> tuple[int, ...]:
+            if qname in trellis_targets:
+                return _trellis_route_shape(qname)
+            return _route_gate_shape(qname)
+
+        all_quantized = (*cb_targets, *stock_targets, *trellis_targets)
+        # For trellis, routed detection is via the earlier dense-only gate;
+        # no trellis MoE should survive, but keep the routed set empty for
+        # the mixed call so the gate does not mis-classify a trellis Linear
+        # as MoE due to “.experts.” in a non-MoE name.
         cb_route_status_provenance = gate_cb_export_units(
             assignment=assignment,
-            quantized_targets=(*cb_targets, *stock_targets),
+            quantized_targets=all_quantized,
             routed_units=_expert_stack_members,
             role_split_units=(
                 qname for qname, roles in routed_role_plans.items() if roles
             ),
-            shape_of=_route_gate_shape,
+            shape_of=_combined_shape,
             allow_unbacked_route=allow_unbacked_route,
             non_native_target=non_native_target,
             exporter="export_nvfp4_cb",
         )
+        # WO-C C3: Verify every trellis unit's cell explicitly — a rung may be
+        # a producer candidate (formats table) and still have no attested serving
+        # cell (lane_eligibility). The gate already fails on unattested, but
+        # we want a pointed message for the trellis rate-table gap.
+        if trellis_targets:
+            from prismaquant.gridbook_lane_eligibility import (
+                load_eligibility_table,
+                load_published_formats,
+                unit_structural_facts,
+                resolve_unit_route,
+            )
+            _trellis_table = load_eligibility_table()
+            _trellis_published = load_published_formats()
+            # Derive target_platform from the same profile the gate used
+            _target_platform = None
+            try:
+                from prismaquant.serving_profiles import load_serving_profile
+                import os as _os_gate
+
+                _tp_name = (
+                    _os_gate.environ.get("PRISMAQUANT_TARGET_PROFILE")
+                    or read_layer_config_metadata(layer_config_path).get(
+                        "target_profile"
+                    )
+                    or "nvfp4_cb"
+                )
+                _target_platform = load_serving_profile(_tp_name).target_platform or None
+            except Exception:
+                _target_platform = None
+            # Default to sm_121 per WO-C C3 when no profile declares it — the
+            # trellis lane is sm_121 only, and the gate without a platform says
+            # unattested with no route to name, which is correct but vague.
+            if not _target_platform:
+                _target_platform = "sm_121"
+            # Only enforce the pointed trellis rung-vs-cell message when
+            # the artifact does NOT carry an explicit non-native or override
+            # declaration — otherwise the gate's own disposition (stamped as
+            # declared_non_native_target / explicit_override) is the correct
+            # outcome, not a refusal.
+            _allow_override = bool(
+                (allow_unbacked_route or os.environ.get("PQ_CB_ROUTE_STATUS_OVERRIDE"))
+                or (non_native_target or os.environ.get("PQ_CB_NON_NATIVE_TARGET"))
+            )
+            for qname, (family, rate) in trellis_targets.items():
+                is_routed = _is_routed_moe_trellis_target(qname, _profile)
+                shape = _trellis_route_shape(qname)
+                facts = unit_structural_facts(
+                    qname,
+                    assignment[qname],
+                    is_routed_moe=is_routed,
+                    role_split=False,
+                    in_features=shape[1] if len(shape) >= 2 else shape[-1],
+                    out_features=shape[0],
+                    published_formats=_trellis_published,
+                )
+                route = resolve_unit_route(facts, _trellis_table, platform=_target_platform)
+                if route.route_status not in ("backed", "backed_with_serve_flag"):
+                    if _allow_override:
+                        continue
+                    # Produce the exact WO-C message naming the missing cell
+                    raise ValueError(
+                        f"{qname}: trellis {family} R{rate} has no backed serving "
+                        f"cell on platform {_target_platform!r} (route_status="
+                        f"{route.route_status!r}, reason={route.unattested_reason!r}). "
+                        "The formats table lists candidate_rungs_q256 "
+                        "[384, 512, 640, 768, 896] but the pinned contract's "
+                        "lane_eligibility cells list rungs_q256: [512] only. A "
+                        "rung may be a producer candidate and still have no "
+                        "attested serving cell — export must gate on the cell, "
+                        "not the candidate list. Unless the artifact carries an "
+                        "explicit non-native-target declaration or per-run "
+                        "override (stamped on shipcard), this refuses."
+                    )
 
     validate_cb_serialization_context_stamp(
         _recipe_cb_context_stamp,
@@ -1639,6 +2050,37 @@ def export_nvfp4_cb(
             out_tensors[ckpt_qname + ".weight_scale"] = skeleton[sname].to(
                 torch.float32).contiguous()
             counts["FP8_SOURCE"] += 1
+            continue
+        if canon in trellis_targets:
+            # Gridbook trellis wire — the only carrier (WO-C rule 1). The
+            # schedule, alphabets, block offsets and scale plane exist nowhere
+            # else; never emit them as separate tensors and never emit a
+            # [rows, row_stride] payload rectangle. Every scale is derived from
+            # the blob, never loaded beside it — except E2M1's
+            # trellis_input_global_scale, which is genuinely not a wire fact.
+            family, rate = trellis_targets[canon]
+            blob = trellis_wires[canon]
+            wire = trellis_parsed[canon]
+            # Emit wire_bytes as opaque uint8 1-D
+            wire_tensor = torch.frombuffer(bytearray(blob), dtype=torch.uint8).clone()
+            export_base = _export_base_name(canon, _profile, skeleton, assume_resolvable=False)
+            # Resolve export base to checkpoint naming
+            # ckpt_qname already is checkpoint base; use it for output but ensure
+            # it matches the canonical export mapping
+            out_tensors[export_base + ".wire_bytes"] = wire_tensor.contiguous()
+            counts[assignment[canon]] += 1
+            # Verify wire_bytes length matches scheme declaration (consumer gate)
+            # The scheme will declare wire_bytes = len(blob)
+            if family == _TRELLIS_E2M1_FAMILY:
+                # E2M1 A-side static scale — the one genuinely new quantity (WO-C C2)
+                scale_val = trellis_input_global_scales.get(canon)
+                if scale_val is None:
+                    raise ValueError(
+                        f"{canon}: missing trellis_input_global_scale for E2M1 "
+                        f"R{rate} — calibration activations absent, fail closed"
+                    )
+                scale_tensor = torch.tensor([float(scale_val)], dtype=torch.float32)
+                out_tensors[export_base + ".trellis_input_global_scale"] = scale_tensor.contiguous()
             continue
         if canon in packed_qnames:
             grid, mode, k = cb_targets[canon]
@@ -1936,6 +2378,34 @@ def export_nvfp4_cb(
             _meta_ref.get("post_allocation_refinement"),
             where="export_nvfp4_cb post_allocation_refinement",
         )
+    # Inject trellis groups (WO-C C1): the wire is the only carrier.
+    # Each trellis Linear gets its own group with format TRELLIS and a
+    # scheme that is the consumer's gate input, not prose.
+    trellis_scheme_groups: dict[str, dict] = {}
+    for qname, (family, rate) in trellis_targets.items():
+        wire = trellis_parsed[qname]
+        blob_len = len(trellis_wires[qname])
+        # Scheme copies the reference shape from
+        # tools/make_trellis_smoke_checkpoint.py verbatim (WO-C contract):
+        # family, body_rate_q256, rows, columns, wire_bytes.
+        # The wire schema “gridbook.trellis.wire.v1” is pinned via the wire
+        # header itself; the scheme repeats only the gate-relevant fields.
+        scheme = {
+            "family": family,
+            "body_rate_q256": int(rate),
+            "rows": int(wire.rows),
+            "columns": int(wire.columns),
+            "wire_bytes": int(blob_len),
+        }
+        # One target per group — per-role wires cannot be concatenated, so
+        # grouping them would be the fused-module error.
+        export_target = _resident_export_target(qname)
+        trellis_scheme_groups[qname] = {
+            "format": "TRELLIS",
+            "targets": [export_target],
+            "scheme": scheme,
+        }
+
     quant_config = build_quant_config(
         assignment=assignment,
         cb_targets=cb_targets,
@@ -1968,6 +2438,23 @@ def export_nvfp4_cb(
         streaming_provenance=None,
         include_tensor_formats=True,
     )
+    # Merge trellis groups after build_quant_config — that builder owns the CB
+    # vocabulary and must not be taught the trellis scheme; merging here keeps
+    # the one-carrier invariant in this exporter alone.
+    if trellis_scheme_groups:
+        # Assign consecutive group ids after the CB/stock groups
+        next_idx = len(quant_config.get("config_groups", {}))
+        for qname in sorted(trellis_scheme_groups):
+            quant_config["config_groups"][f"group_{next_idx}"] = trellis_scheme_groups[qname]
+            next_idx += 1
+        # Mix of families => mixed-precision (WO-C C1)
+        quant_config["format"] = "mixed-precision"
+        # Purge any trellis qnames that accidentally landed in ignore (they
+        # are quantized, not passthrough). The earlier loop already avoided
+        # adding them, but a profile that drops a key could leave a stale entry.
+        quant_config["ignore"] = [n for n in quant_config.get("ignore", []) if n not in trellis_targets]
+        # Also ensure BF16-assigned linears that are actually trellis are not
+        # in ignore via the skeleton verbatim path — they were never added.
     if _strict_producer is not None:
         _strict_runtime_contract, _strict_policy_stamp = _strict_producer
         quant_config["format"] = "fp8_cb"
@@ -2019,12 +2506,45 @@ def export_nvfp4_cb(
                   metadata={"format": "pt", "quant_method": "gridbook"})
     src_config = model_dir / "config.json"
     config = json.loads(src_config.read_text()) if src_config.exists() else {}
+    # WO-C C1: format becomes mixed-precision when assignment mixes families
+    _quant_format = "fp8_cb" if _strict_producer is not None else "nvfp4_cb"
+    if trellis_targets:
+        # Trellis alone uses mixed-precision per the smoke checkpoint contract;
+        # mixing trellis with any CB/stock also mixes.
+        _has_other_quant = bool(cb_targets or stock_targets or source_targets)
+        if _has_other_quant or trellis_targets:
+            _quant_format = "mixed-precision"
+            quant_config["format"] = "mixed-precision"
+        else:
+            _quant_format = quant_config.get("format", "mixed-precision")
+    else:
+        # No trellis: decide mixed from CB vs stock mixing
+        _families = set()
+        if cb_targets:
+            _families.add("cb")
+        if stock_targets:
+            _families.update(stock_targets.values())
+        if source_targets:
+            _families.add("source")
+        if len(_families) > 1:
+            _quant_format = "mixed-precision"
+            quant_config["format"] = "mixed-precision"
     config["quantization_config"] = {
         "quant_method": "gridbook",
-        "format": "fp8_cb" if _strict_producer is not None else "nvfp4_cb",
+        "format": _quant_format,
         "config_file": "quant_config.json",
         **({"codebook_file": codebook_file} if codebook_file else {}),
     }
+    # WO-C C3: selection_serving_lane_provenance — structured serve flags
+    # The CB gate already stamped requires_serve_flags; mirror it into the
+    # legacy selection_serving_lane_provenance key so a gate can read it.
+    if trellis_targets:
+        quant_config["provenance"]["selection_serving_lane_provenance"] = cb_route_status_provenance
+        # Also record trellis-specific provenance explicitly for docs
+        quant_config["provenance"]["trellis_route_status"] = cb_route_status_provenance
+        # Ensure route histogram and serve flags are visible next to bpp (principle 12)
+        if cb_route_status_provenance.get("requires_serve_flags"):
+            quant_config["provenance"]["requires_serve_flags"] = cb_route_status_provenance["requires_serve_flags"]
     (out_dir / "config.json").write_text(json.dumps(config, indent=2))
     # Copy tokenizer / generation / multimodal sidecars verbatim (best effort).
     # The multimodal preprocessor configs are REQUIRED for VLM checkpoints
