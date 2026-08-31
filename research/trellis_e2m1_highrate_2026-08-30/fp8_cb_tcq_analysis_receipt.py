@@ -188,6 +188,14 @@ _FROZEN_SOURCE_SUFFIX_HASHES = {
     "/trellis-stage0/tcq_pilot.py":
         "13bd902641ec7385cf84d96f4c0d8192acdbf3c72f0976c42359c3b4b6faeb2d",
 }
+_IMPORTED_CODEC_LABEL_SUFFIX = {
+    "H": "/trellis-hull-20260828/hull_sweep.py",
+    "C": "/trellis-stage0/stage5_e4m3_codec.py",
+    "W": "/trellis-stage0/stage6_worker.py",
+    "P": "/trellis-stage0/tcq_pilot.py",
+    "S4": "/trellis-stage0/stage4_place.py",
+    "TF": "/trellis-stage0/stage6_prismaquant_snapshot/prismaquant/trellis_formats.py",
+}
 _ATTESTATION_KEYS = {
     "schema", "verification_scope", "physical_host", "uts_hostname",
     "gpu_uuid", "container_id", "container_hostname", "container_state",
@@ -878,6 +886,20 @@ def _validate_path_hash(path_value: object, sha_value: object, *, where: str) ->
         raise AnalysisReceiptError(f"{where} bound bytes differ")
 
 
+def _snapshot_tree_sha256(root: Path) -> str:
+    if not root.is_dir() or root.is_symlink():
+        raise AnalysisReceiptError("frozen snapshot root is not a regular directory")
+    files = sorted(path for path in root.rglob("*") if path.is_file())
+    if not files or any(path.is_symlink() for path in files):
+        raise AnalysisReceiptError("frozen snapshot tree is empty or symlinked")
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(str(path.relative_to(root)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(_stable_file_sha256(path)))
+    return digest.hexdigest()
+
+
 def _validate_source_closure(
     settings: Mapping[str, object], *, source_path: str,
 ) -> None:
@@ -947,13 +969,27 @@ def _validate_source_closure(
         _validate_path_hash(path_text, digest, where=f"frozen source {path_text}")
     if matched_suffixes != _FROZEN_SOURCE_SUFFIXES:
         raise AnalysisReceiptError("frozen source suffix census differs")
+    snapshot_member = next(
+        Path(path) for path in sources
+        if path.endswith(
+            "/stage6_prismaquant_snapshot/prismaquant/cb_layout.py"
+        )
+    )
+    if _snapshot_tree_sha256(snapshot_member.parents[1]) != EXPECTED_SNAPSHOT_TREE_SHA256:
+        raise AnalysisReceiptError("frozen snapshot tree bytes differ")
     imported = _exact_keys(
         closure.get("imported_codec_modules"), {"H", "C", "W", "P", "S4", "TF"},
         where="closure.imported_codec_modules",
     )
     for label, raw in imported.items():
         item = _exact_keys(raw, {"path", "sha256"}, where=f"imported codec {label}")
-        if sources.get(item.get("path")) != item.get("sha256"):
+        suffix = _IMPORTED_CODEC_LABEL_SUFFIX[label]
+        if (
+            not isinstance(item.get("path"), str)
+            or not item["path"].endswith(suffix)
+            or item.get("sha256") != _FROZEN_SOURCE_SUFFIX_HASHES[suffix]
+            or sources.get(item.get("path")) != item.get("sha256")
+        ):
             raise AnalysisReceiptError(f"imported codec {label} is outside frozen source map")
 
 

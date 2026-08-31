@@ -383,7 +383,16 @@ def _source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         frozen[str(path)] = digest
         frozen_hashes[suffix] = digest
     monkeypatch.setattr(M, "_FROZEN_SOURCE_SUFFIX_HASHES", frozen_hashes)
-    monkeypatch.setattr(M, "EXPECTED_SNAPSHOT_TREE_SHA256", "9" * 64)
+    snapshot_member = next(
+        Path(path) for path in frozen
+        if path.endswith(
+            "/stage6_prismaquant_snapshot/prismaquant/cb_layout.py"
+        )
+    )
+    monkeypatch.setattr(
+        M, "EXPECTED_SNAPSHOT_TREE_SHA256",
+        M._snapshot_tree_sha256(snapshot_member.parents[1]),
+    )
 
     locked, locked_hashes = {}, {}
     for stem in ("fp8_ladder", "hull_sweep", "e4m3_alphabet_dp"):
@@ -687,6 +696,26 @@ def test_attestation_and_cross_arm_resigned_attacks_refuse(
     source.write_text(json.dumps(document))
     _reseal_source(source, summaries=True)
     with pytest.raises(M.AnalysisReceiptError, match="plane identity"):
+        M.build_receipt(source)
+
+
+def test_imported_codec_label_permutation_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    source = _source(tmp_path, monkeypatch)
+    document = json.loads(source.read_text())
+    imported = document["settings"]["frozen_codec_closure"][
+        "imported_codec_modules"
+    ]
+    imported["H"], imported["C"] = imported["C"], imported["H"]
+    unsigned = {
+        key: value for key, value in document["settings"].items()
+        if key != "identity_sha256"
+    }
+    document["settings"]["identity_sha256"] = M._identity_sha256(unsigned)
+    source.write_text(json.dumps(document))
+    _reseal_source(source)
+    with pytest.raises(M.AnalysisReceiptError, match="imported codec"):
         M.build_receipt(source)
 
 
