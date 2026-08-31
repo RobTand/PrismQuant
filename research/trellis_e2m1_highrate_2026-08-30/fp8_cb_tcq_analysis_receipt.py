@@ -66,6 +66,11 @@ EXPECTED_IMPORTANCE_VALUE_SHA256 = (
     "dad7818dd11ea8f853bd1869f41189ca3de4a2d10deda52cfef563f63496a9dd"
 )
 EXPECTED_CORPUS_PRODUCER_COMMIT = "4ddfb1e296997e834ea072db2f2f589950ce94ed"
+EXPECTED_RUNTIME_VERSIONS = {
+    "python": "3.12.3",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+}
 EXPECTED_ATTESTATION_FILE_SHA256 = (
     "f495263965cba1a6b63d05c86fb328b8f488b3337d78a055090f6af9a84c6ee1"
 )
@@ -1233,10 +1238,42 @@ def _validate_tcq_footprint(
 def _validate_nested_arms(per_tensor: Mapping[str, Mapping[str, object]]) -> None:
     for name, cell in per_tensor.items():
         shape = cell["shape"]
+        energy = _finite(
+            cell.get("weighted_energy"), where=f"{name}.weighted_energy",
+            nonnegative=True,
+        )
+        if energy <= 0:
+            raise AnalysisReceiptError(f"{name}.weighted_energy must be positive")
         planes: dict[str, set[str]] = {bracket: set() for bracket in BRACKETS}
         schedules: dict[tuple[str, int], list[Mapping[str, object]]] = {}
         alphabets: dict[tuple[str, str], list[Mapping[str, object]]] = {}
         for arm_name, arm in cell["arms"].items():
+            error = _finite(
+                arm.get("weighted_sse"),
+                where=f"{name}.{arm_name}.weighted_sse",
+                nonnegative=True,
+            )
+            nsse = _finite(
+                arm.get("weighted_nsse"),
+                where=f"{name}.{arm_name}.weighted_nsse",
+                nonnegative=True,
+            )
+            snr = _finite(
+                arm.get("weighted_snr_db"),
+                where=f"{name}.{arm_name}.weighted_snr_db",
+            )
+            # This verifier closes an artifact-exact claim, so tolerance here
+            # would be authority to alter the Pareto verdict.  The producer
+            # serialized these two identities from the same Python values and
+            # every authoritative arm satisfies them exactly.
+            if nsse != error / energy:
+                raise AnalysisReceiptError(
+                    f"{name}.{arm_name}.weighted_nsse exact identity differs"
+                )
+            if snr != -10.0 * math.log10(max(nsse, 1e-300)):
+                raise AnalysisReceiptError(
+                    f"{name}.{arm_name}.weighted_snr_db exact identity differs"
+                )
             if arm_name.startswith("fp8_cb_"):
                 rung = int(arm_name.rsplit("@", 1)[1])
                 learned = arm_name.startswith("fp8_cb_learned@")
@@ -1324,6 +1361,11 @@ def _validate_source(
     environment = settings["environment"]
     if environment.get("physical_host") != "sparky":
         raise AnalysisReceiptError("source campaign did not execute on Sparky")
+    if any(
+        environment.get(field) != expected
+        for field, expected in EXPECTED_RUNTIME_VERSIONS.items()
+    ):
+        raise AnalysisReceiptError("source campaign runtime versions differ")
     _validate_source_closure(settings, source_path=str(source_binding["path"]))
     segments = source.get("execution_segments")
     if not isinstance(segments, list) or len(segments) != 1:
