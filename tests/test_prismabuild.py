@@ -965,7 +965,7 @@ def test_input_ingestion_and_lookup_detect_conflict_and_tampering(tmp_path: Path
         cas.input_path(entry)
 
 
-def test_input_ingestion_rehashes_canonical_name_after_winning_link(
+def test_input_ingestion_revalidates_canonical_inode_after_winning_link(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     payload = b"trusted input"
@@ -984,8 +984,37 @@ def test_input_ingestion_rehashes_canonical_name_after_winning_link(
         destination.write_bytes(b"changed input")
 
     monkeypatch.setattr(pb.os, "link", link_then_corrupt)
-    with pytest.raises(pb.CASTamperError, match="payload content differs"):
+    with pytest.raises(pb.CASTamperError, match="verified staging inode"):
         cas.ingest_input(source, input_id="dataset")
+
+
+def test_blob_publication_skips_only_winning_inode_rehash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = b"trusted input"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_identity = pb._file_identity_nofollow
+    consumed: list[Path] = []
+
+    def track_identity(path: Path, **kwargs: object):
+        consumed.append(path)
+        return original_identity(path, **kwargs)
+
+    monkeypatch.setattr(pb, "_file_identity_nofollow", track_identity)
+    entry, won = cas.ingest_input(source, input_id="dataset")
+    assert won is True
+    assert consumed == []
+
+    assert cas.input_path(entry) == cas._blob_path(str(entry["sha256"]))
+    assert consumed == [cas._blob_path(str(entry["sha256"]))]
+
+    consumed.clear()
+    repeated, won = cas.ingest_input(source, input_id="dataset")
+    assert repeated == entry
+    assert won is False
+    assert consumed == [cas._blob_path(str(entry["sha256"]))]
 
 
 def test_input_ingestion_refuses_symlinked_cas_shard(tmp_path: Path):
@@ -1680,6 +1709,36 @@ def test_deterministic_recompute_must_match(tmp_path: Path):
             attestation=attestation,
         )
     assert cas.lookup(action) == receipt
+
+
+def test_fresh_result_publish_reuses_verified_winning_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    output = tmp_path / "output"
+    output.write_bytes(b"canonical")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    original_identity = pb._file_identity_nofollow
+    consumed: list[Path] = []
+
+    def track_identity(path: Path, **kwargs: object):
+        consumed.append(path)
+        return original_identity(path, **kwargs)
+
+    monkeypatch.setattr(pb, "_file_identity_nofollow", track_identity)
+    receipt, won = cas.publish_result(
+        action, output, attestation=attestation
+    )
+    assert won is True
+    assert consumed == []
+    assert cas._verified_receipt_result_path(receipt).is_file()
+    assert consumed == []
+
+    assert cas.lookup(action) == receipt
+    assert consumed == [cas._blob_path(str(receipt["result"]["sha256"]))]
 
 
 def test_cas_publish_refuses_worker_core_changed_after_preflight(
