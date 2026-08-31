@@ -221,6 +221,59 @@ Sparky Netdata measured 55.93 W mean and 82 W maximum (40.0% of the 140 W
 envelope); pqteld measured 57.21 W mean and 65.73 kJ. This is a small,
 unanimous offline numeric gain, not a serving verdict.
 
+### Hardened GLM FP8-CB vs E4M3-TCQ closure scaffold
+
+`fp8_cb_tcq_glm.py` is the unrun, research-only campaign that closes the
+handover's exact remaining 4.0/5.0 numeric question without combining old
+results across corpora or receipts.  One immutable result must cover all 33
+finalized GLM tensors and contains, for nominal body cells 4 and 5:
+
+- fixed and per-tensor learned FP8-CB K32/K40 at the production `balanced`
+  encode tier;
+- TCQ_E4M3 R4/R5 under both `production_row_fp32` and `two_tier` scale-plane
+  brackets;
+- both frozen `lloyd` and `exact_dp` alphabet selectors; and
+- both honest learned-book prices: one legal E4M3 byte per element and the
+  FP16 sidecar the production footprint currently declares.
+
+The driver imports the existing frozen `fp8_ladder.py` arms and accountants;
+it does not reimplement either codec.  It additionally pins the exact-DP
+source in the frozen Stage-0 snapshot, because that source is a separate file
+and is not present beside `fp8_ladder.py`.  Every completed checkpoint cell is
+regenerated from the hash-checked corpus and compared in full before reuse.
+Only wall timing is excluded from replay.  A persistent identity-bound claim
+reserves both final and partial names, the final receipt is no-replace, and
+the corpus, active sources, frozen codec closure, exact command, live CUDA
+identity, expected host, and declared immutable container digest are rechecked
+before the result publishes.
+
+The result derives two separate population tables and has no pooled field.
+For each population/cell it constructs exact-byte Pareto frontiers rather than
+calling a higher-SNR point at more bytes a win.  A cell is awarded only if the
+same family strictly covers the opposing frontier on every tensor under all
+four scale-plane × learned-book-price combinations.  A crossing frontier,
+mixed tensors, or bracket disagreement produces a structured `NO_VERDICT`.
+This is deliberately stricter than comparing round nominal labels.
+
+CPU-safe preflight, from the committed integration checkout:
+
+```bash
+PY=/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python
+$PY research/trellis_e2m1_highrate_2026-08-30/fp8_cb_tcq_glm.py \
+  --manifest /home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/manifest.json \
+  --out /home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-fp8-cb-tcq-two-bracket-v1.json \
+  --expected-host sparky \
+  --container-identity sha256:<known-good-image-digest> \
+  --preflight-only
+```
+
+The GPU command is the same without `--preflight-only`, inside that exact
+known-good image and with an in-process CUDA profile plus aligned Netdata and
+pqteld capture on both boxes.  It must run alone on Sparky.  No GPU run or
+result is claimed here.  Even a completed result remains W\*A16 weighted-SSE
+research evidence: it cannot qualify W8A8 activation behavior, Gridbook load,
+KL/PPL, serving speed, residency, or work per joule.
+
 ## Known reachability limit
 
 Body rate **3.96875 is not universally reachable**. At 1016 q256 every 256-block
