@@ -987,6 +987,18 @@ def _normalize_inputs(value: object) -> list[dict[str, object]]:
     return sorted(inputs, key=lambda entry: str(entry["id"]))
 
 
+def validate_input_contract(value: object) -> dict[str, object]:
+    """Normalize one content-addressed input row used by an action.
+
+    The returned object is exactly the ``{id, sha256, bytes}`` shape accepted
+    in ``action.inputs``.  Keeping this validation public lets input ingestion
+    and later lookup share the action schema instead of inventing a second
+    descriptor vocabulary.
+    """
+
+    return _normalize_inputs([value])[0]
+
+
 def _normalize_task(value: object) -> dict[str, object]:
     task = _exact_mapping(value, keys=_TASK_KEYS, where="action.task")
     task_class = _text(task["task_class"], where="action.task.task_class")
@@ -1638,7 +1650,7 @@ def _verified_input_contracts(
             raise CASUnavailableError(
                 f"cannot inspect action input in the CAS: {entry['id']}: {exc}"
             ) from exc
-        cas._verify_blob(entry)
+        cas.input_path(entry)
         verified.append(dict(entry))
     return sorted(verified, key=lambda entry: str(entry["id"]))
 
@@ -1736,6 +1748,136 @@ class PrismaBuildCAS:
 
     def _blob_path(self, digest: str) -> Path:
         return self.root / "blobs" / digest[:2] / digest
+
+    def _open_input_blob_shard(self, digest: str) -> tuple[Path, int]:
+        """Open a real CAS shard directory without following CAS symlinks."""
+
+        directories = (
+            self.root,
+            self.root / "blobs",
+            self.root / "blobs" / digest[:2],
+        )
+        for directory in directories:
+            try:
+                directory.mkdir()
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise CASUnavailableError(
+                    f"cannot create CAS input directory: {directory}: {exc}"
+                ) from exc
+            try:
+                mode = directory.lstat().st_mode
+            except OSError as exc:
+                raise CASUnavailableError(
+                    f"cannot inspect CAS input directory: {directory}: {exc}"
+                ) from exc
+            if not stat.S_ISDIR(mode):
+                raise CASTamperError(
+                    f"CAS input directory is not a real directory: {directory}"
+                )
+        shard = directories[-1]
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(shard, flags)
+        except OSError as exc:
+            if exc.errno in {errno.ENOTDIR, errno.ELOOP}:
+                raise CASTamperError(
+                    f"CAS input shard changed or became a symlink: {shard}"
+                ) from exc
+            raise CASUnavailableError(
+                f"cannot open CAS input shard: {shard}: {exc}"
+            ) from exc
+        return shard / digest, descriptor
+
+    def _publish_staged_input_blob(
+        self, staging: Path, contract: Mapping[str, object]
+    ) -> tuple[Path, bool]:
+        """Link a staged input into the CAS and verify the canonical name."""
+
+        digest = str(contract["sha256"])
+        blob_path, directory_fd = self._open_input_blob_shard(digest)
+        try:
+            try:
+                os.link(
+                    staging,
+                    digest,
+                    dst_dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                won = True
+            except FileExistsError:
+                won = False
+            if won:
+                os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        # A successful hard link is not sufficient evidence: re-open and hash
+        # the canonical name after its directory entry has been synchronized.
+        # The same verification rejects a malformed or conflicting race winner.
+        return self._verify_input_blob(contract), won
+
+    def ingest_input(
+        self,
+        source_path: str | Path,
+        *,
+        input_id: str,
+        expected_sha256: str | None = None,
+        expected_bytes: int | None = None,
+    ) -> tuple[dict[str, object], bool]:
+        """Publish one stable file snapshot as an immutable action input.
+
+        The digest and byte count are derived from the staged bytes.  Optional
+        expectations fail before publication when the source differs.  The
+        returned row can be inserted directly into ``action.inputs``; ``won``
+        is false only when an independently verified identical blob already
+        occupied the content address.
+        """
+
+        identity = _text(input_id, where="input id", pattern=_ID_RE)
+        expected_digest = (
+            _sha256(expected_sha256, where="expected input sha256")
+            if expected_sha256 is not None
+            else None
+        )
+        expected_size = (
+            _nonnegative_integer(expected_bytes, where="expected input bytes")
+            if expected_bytes is not None
+            else None
+        )
+        staging, digest, size = _copy_to_staging(
+            Path(source_path), self.root / ".staging"
+        )
+        try:
+            if expected_digest is not None and digest != expected_digest:
+                raise ActionContractError(
+                    "ingested input sha256 differs from the expected digest"
+                )
+            if expected_size is not None and size != expected_size:
+                raise ActionContractError(
+                    "ingested input byte count differs from the expected size"
+                )
+            entry = validate_input_contract(
+                {"id": identity, "sha256": digest, "bytes": size}
+            )
+            contract = {"sha256": digest, "bytes": size}
+            _, won = self._publish_staged_input_blob(staging, contract)
+            return entry, won
+        finally:
+            try:
+                staging.unlink()
+            except FileNotFoundError:
+                pass
+
+    def input_path(self, input_contract: object) -> Path:
+        """Return an action input's CAS path after full content verification."""
+
+        entry = validate_input_contract(input_contract)
+        return self._verify_input_blob(
+            {"sha256": entry["sha256"], "bytes": entry["bytes"]}
+        )
 
     def publish_action_request(self, action: object) -> Path:
         """Publish the canonical immutable request consumed by remote workers."""
@@ -1865,6 +2007,18 @@ class PrismaBuildCAS:
             raise CASTamperError(
                 f"CAS payload content differs from receipt: {path}"
             )
+        return path
+
+    def _verify_input_blob(self, contract: Mapping[str, object]) -> Path:
+        path = self._verify_blob(contract)
+        try:
+            mode = path.lstat().st_mode
+        except OSError as exc:
+            raise CASUnavailableError(
+                f"CAS input is unavailable: {path}: {exc}"
+            ) from exc
+        if mode & 0o222:
+            raise CASTamperError(f"CAS input payload is writable: {path}")
         return path
 
     def lookup(self, action: object) -> dict[str, object] | None:
@@ -2264,6 +2418,15 @@ def _build_parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("verify")
     verify.add_argument("--action", required=True, type=Path)
     verify.add_argument("--cas-root", required=True, type=Path)
+    ingest = commands.add_parser("ingest-input")
+    ingest.add_argument("--source", required=True, type=Path)
+    ingest.add_argument("--cas-root", required=True, type=Path)
+    ingest.add_argument("--input-id", required=True)
+    ingest.add_argument("--expected-sha256")
+    ingest.add_argument("--expected-bytes", type=int)
+    verify_input = commands.add_parser("verify-input")
+    verify_input.add_argument("--input-contract", required=True, type=Path)
+    verify_input.add_argument("--cas-root", required=True, type=Path)
     run = commands.add_parser("run-local")
     run.add_argument("--action", required=True, type=Path)
     run.add_argument("--cas-root", required=True, type=Path)
@@ -2287,6 +2450,39 @@ def main(
         closure = build_code_closure(args.root, args.file)
         _atomic_write_new_json(args.output, closure)
         print(args.output)
+        return 0
+    if args.command == "ingest-input":
+        cas = PrismaBuildCAS(args.cas_root)
+        entry, won = cas.ingest_input(
+            args.source,
+            input_id=args.input_id,
+            expected_sha256=args.expected_sha256,
+            expected_bytes=args.expected_bytes,
+        )
+        print(
+            json.dumps(
+                {
+                    "status": "published" if won else "already_present",
+                    "input": entry,
+                    "payload_path": str(cas.input_path(entry)),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "verify-input":
+        contract = _read_json_mapping(args.input_contract, where="input contract")
+        cas = PrismaBuildCAS(args.cas_root)
+        normalized = validate_input_contract(contract)
+        print(
+            json.dumps(
+                {
+                    "input": normalized,
+                    "payload_path": str(cas.input_path(normalized)),
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     action_path = args.action if hasattr(args, "action") else args.body
     action_data = _read_json_mapping(action_path, where="action")
@@ -2349,6 +2545,7 @@ __all__ = [
     "seal_action",
     "validate_action",
     "validate_code_closure",
+    "validate_input_contract",
     "validate_worker_scope",
     "validate_worker_attestation",
     "verify_code_closure",

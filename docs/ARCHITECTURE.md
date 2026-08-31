@@ -3,13 +3,18 @@
 As of: 2026-08-30 · `codex/finish-numeric-prismabuild-20260830` — stamps follow,
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
 `codex/finish-numeric-prismabuild-20260830`) for the **QTIP-derived native
-NVFP4 research producer and PrismaBuild publication boundary** (§10.1–§10.2):
-PrismaBuild now implements canonical hashing inside its bound core, captures
-that core during module initialization and the SLURM launcher at the earliest
-executed wrapper code, then runs action closure/executable checks before a
-final runtime recheck and CAS link. Receipt v3 has a disjoint namespace that
-preserves and ignores incompatible unversioned v2 receipts. This still remains
-code and mocked/in-process tests rather than a deployed
+NVFP4 research producer and PrismaBuild input/publication boundary**
+(§10.1–§10.2): PrismaBuild now ingests stable file snapshots into its CAS,
+derives and optionally checks canonical SHA-256/byte identities, publishes
+read-only blobs without replacement, fsyncs the winning shard, and verifies the
+canonical CAS name before returning an action-input row; lookup and CLI paths
+replay the same full check. Its worker implements canonical hashing inside its
+bound core, captures that core during module initialization and the SLURM
+launcher at the earliest executed wrapper code, then runs action
+closure/executable checks before a final runtime recheck and CAS link. Receipt
+v3 has a disjoint namespace that preserves and ignores incompatible
+unversioned v2 receipts. This still remains code and mocked/in-process tests,
+including local-filesystem CAS tests, rather than a deployed
 SLURM/Dagster/CAS/telemetry system. A physical one-Linear Arm E producer now
 combines randomized
 orthogonal transforms, the canonical
@@ -7426,6 +7431,16 @@ PrismaBuild's dependency-free core (`prismaquant.prismabuild`) owns the
 canonical action key, declared code closure, local execution contract, and
 immutable configurable CAS. `/mnt/shared` is the intended deployment root, not
 a shared PrismaBuild CAS installed by this repository.
+The CAS now has one supported input-ingress path: `ingest_input()` and the
+`ingest-input` CLI copy a stable regular file into CAS-local staging while
+deriving SHA-256/bytes, reject optional expected-identity mismatches before
+publication, hard-link the read-only snapshot to its content address without
+replacement, fsync the winning shard, and fully rehash the canonical name.
+`input_path()` and `verify-input` validate the exact action-input row and replay
+size plus content before returning a path. A losing identical writer is
+accepted only after the same verification; an invalid incumbent is tamper, not
+a cache hit. This path is adversarially tested on a local filesystem, but no
+cross-host shared-NFS ingest or publication race has been run.
 `prismaquant.prismabuild_slurm` is now the narrow SLURM resource adapter.
 `prismaquant.prismabuild_dagster` is the optional DAG layer above it. Neither
 layer creates another queue, cache, or certification path. Each submission

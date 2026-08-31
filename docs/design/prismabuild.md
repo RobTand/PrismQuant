@@ -137,6 +137,19 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   toolchain fields remain permitted and are visibly absent from the
   attestation's verified subsets.
 
+The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
+dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,
+derives the canonical SHA-256 and byte count, optionally checks both against
+caller-supplied expectations, publishes through a read-only first-writer-wins
+hard link, fsyncs the blob shard, then reopens and hashes the canonical CAS name
+before returning the exact `{id, sha256, bytes}` action-input row. A concurrent
+identical writer is an independently verified cache hit; a conflicting,
+malformed, symlinked, truncated, or changed object refuses. `input_path()` and
+the `verify-input` CLI replay the same schema, size, and full-content check.
+This closes the code-level input-ingress gap; it does not claim that these
+operations, cross-host races, or directory fsync have been validated on the
+intended shared NFS deployment.
+
 Two limits are explicit. For portable actions the observed executable hash is
 receipt provenance, not a newly required action-key field; callers that need
 the executable to participate in cache identity must use a nonportable scope

@@ -547,6 +547,205 @@ def test_preflight_refuses_toolchain_mismatch_before_execution(tmp_path: Path):
     assert not (tmp_path / "result.bin").exists()
 
 
+def test_input_ingestion_publishes_canonical_readback_verified_contract(
+    tmp_path: Path,
+):
+    source = tmp_path / "source.bin"
+    payload = b"immutable input payload"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    entry, won = cas.ingest_input(
+        source,
+        input_id="model/weights",
+        expected_sha256=digest,
+        expected_bytes=len(payload),
+    )
+
+    assert won
+    assert entry == {
+        "id": "model/weights",
+        "sha256": digest,
+        "bytes": len(payload),
+    }
+    path = cas.input_path(entry)
+    assert path == cas._blob_path(digest)
+    assert path.read_bytes() == payload
+    assert path.stat().st_mode & 0o222 == 0
+    source.write_bytes(b"source may change after the stable snapshot")
+    assert cas.input_path(entry).read_bytes() == payload
+
+
+def test_input_ingestion_rejects_expectation_mismatch_before_publication(
+    tmp_path: Path,
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"actual")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(pb.ActionContractError, match="sha256 differs"):
+        cas.ingest_input(
+            source,
+            input_id="dataset",
+            expected_sha256="0" * 64,
+        )
+    with pytest.raises(pb.ActionContractError, match="byte count differs"):
+        cas.ingest_input(
+            source,
+            input_id="dataset",
+            expected_bytes=999,
+        )
+
+    assert not list((tmp_path / "cas" / "blobs").rglob("*"))
+    assert not list((tmp_path / "cas" / ".staging").glob("*.tmp"))
+
+
+def test_input_ingestion_rejects_symlink_source_and_malformed_contract(
+    tmp_path: Path,
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"actual")
+    alias = tmp_path / "alias.bin"
+    alias.symlink_to(source)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(pb.LocalActionError, match="readable regular file"):
+        cas.ingest_input(alias, input_id="dataset")
+    with pytest.raises(pb.ActionContractError, match="fields differ"):
+        cas.input_path(
+            {
+                "id": "dataset",
+                "sha256": hashlib.sha256(b"actual").hexdigest(),
+                "bytes": len(b"actual"),
+                "path": str(source),
+            }
+        )
+
+
+def test_input_ingestion_race_reuses_one_verified_content_address(tmp_path: Path):
+    payload = b"same immutable bytes"
+    sources = [tmp_path / f"source-{index}.bin" for index in range(2)]
+    for source in sources:
+        source.write_bytes(payload)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    barrier = threading.Barrier(2)
+    results: list[tuple[dict[str, object], bool]] = []
+    errors: list[BaseException] = []
+
+    def ingest(index: int) -> None:
+        try:
+            barrier.wait()
+            results.append(
+                cas.ingest_input(sources[index], input_id=f"source/{index}")
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=ingest, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    assert sum(won for _, won in results) == 1
+    assert {entry["sha256"] for entry, _ in results} == {
+        hashlib.sha256(payload).hexdigest()
+    }
+    assert all(cas.input_path(entry).read_bytes() == payload for entry, _ in results)
+
+
+def test_input_ingestion_and_lookup_detect_conflict_and_tampering(tmp_path: Path):
+    payload = b"trusted input"
+    digest = hashlib.sha256(payload).hexdigest()
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    blob = cas._blob_path(digest)
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"wrong content")
+
+    with pytest.raises(pb.CASTamperError, match="payload content differs"):
+        cas.ingest_input(source, input_id="dataset")
+
+    blob.write_bytes(payload)
+    with pytest.raises(pb.CASTamperError, match="input payload is writable"):
+        cas.ingest_input(source, input_id="dataset")
+    blob.chmod(0o444)
+    entry, won = cas.ingest_input(source, input_id="dataset")
+    assert not won
+    blob.chmod(0o644)
+    with pytest.raises(pb.CASTamperError, match="input payload is writable"):
+        cas.input_path(entry)
+
+
+def test_input_ingestion_rehashes_canonical_name_after_winning_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = b"trusted input"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_link = pb.os.link
+
+    def link_then_corrupt(
+        source_path: Path, destination_path: str, **kwargs: object
+    ) -> None:
+        original_link(source_path, destination_path, **kwargs)
+        directory_fd = kwargs["dst_dir_fd"]
+        destination = Path(f"/proc/self/fd/{directory_fd}") / destination_path
+        destination.chmod(0o644)
+        destination.write_bytes(b"changed input")
+
+    monkeypatch.setattr(pb.os, "link", link_then_corrupt)
+    with pytest.raises(pb.CASTamperError, match="payload content differs"):
+        cas.ingest_input(source, input_id="dataset")
+
+
+def test_input_ingestion_refuses_symlinked_cas_shard(tmp_path: Path):
+    payload = b"trusted input"
+    digest = hashlib.sha256(payload).hexdigest()
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    blobs = tmp_path / "cas" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / digest[:2]).symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(pb.CASTamperError, match="not a real directory"):
+        pb.PrismaBuildCAS(tmp_path / "cas").ingest_input(
+            source, input_id="dataset"
+        )
+    assert list(outside.iterdir()) == []
+
+
+def test_input_ingestion_refuses_source_changed_during_stable_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"a" * (5 * 1024 * 1024))
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_read = pb.os.read
+    changed = False
+
+    def read_then_change(descriptor: int, count: int) -> bytes:
+        nonlocal changed
+        chunk = original_read(descriptor, count)
+        if chunk and not changed:
+            changed = True
+            with source.open("ab") as handle:
+                handle.write(b"changed")
+        return chunk
+
+    monkeypatch.setattr(pb.os, "read", read_then_change)
+    with pytest.raises(pb.LocalActionError, match="changed while it was copied"):
+        cas.ingest_input(source, input_id="dataset")
+    assert not list((tmp_path / "cas" / "blobs").rglob("*"))
+
+
 def test_nonportable_preflight_requires_and_verifies_cas_inputs(tmp_path: Path):
     payload = b"immutable upstream"
     digest = hashlib.sha256(payload).hexdigest()
@@ -557,10 +756,16 @@ def test_nonportable_preflight_requires_and_verifies_cas_inputs(tmp_path: Path):
             action, cas_root=tmp_path / "cas", checkout_root=tmp_path
         )
 
-    blob = tmp_path / "cas" / "blobs" / digest[:2] / digest
-    blob.parent.mkdir(parents=True)
-    blob.write_bytes(payload)
-    blob.chmod(0o444)
+    source = tmp_path / "input.bin"
+    source.write_bytes(payload)
+    observed, won = pb.PrismaBuildCAS(tmp_path / "cas").ingest_input(
+        source,
+        input_id="upstream/result",
+        expected_sha256=digest,
+        expected_bytes=len(payload),
+    )
+    assert won
+    assert observed == entry
     attestation = pb.preflight_action(
         action, cas_root=tmp_path / "cas", checkout_root=tmp_path
     )
@@ -1302,6 +1507,56 @@ def test_cli_seals_keys_runs_and_verifies(tmp_path: Path, capsys: pytest.Capture
         ]
     ) == 0
     assert str(action["action_key"]) in capsys.readouterr().out
+
+
+def test_cli_ingests_and_verifies_input_contract(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    source = tmp_path / "model.bin"
+    payload = b"model bytes"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    cas_root = tmp_path / "cas"
+
+    command = [
+        "ingest-input",
+        "--source",
+        str(source),
+        "--cas-root",
+        str(cas_root),
+        "--input-id",
+        "model/weights",
+        "--expected-sha256",
+        digest,
+        "--expected-bytes",
+        str(len(payload)),
+    ]
+    assert pb.main(command) == 0
+    published = json.loads(capsys.readouterr().out)
+    assert published["status"] == "published"
+    assert published["input"] == {
+        "id": "model/weights",
+        "sha256": digest,
+        "bytes": len(payload),
+    }
+
+    assert pb.main(command) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "already_present"
+
+    contract_path = tmp_path / "input.json"
+    contract_path.write_text(json.dumps(published["input"]), encoding="utf-8")
+    assert pb.main(
+        [
+            "verify-input",
+            "--input-contract",
+            str(contract_path),
+            "--cas-root",
+            str(cas_root),
+        ]
+    ) == 0
+    verified = json.loads(capsys.readouterr().out)
+    assert verified["input"] == published["input"]
+    assert Path(verified["payload_path"]).read_bytes() == payload
 
 
 def test_action_key_has_expected_plain_sha256_shape(tmp_path: Path):
