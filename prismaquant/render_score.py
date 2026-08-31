@@ -387,6 +387,28 @@ def _register_builtins() -> None:
         after=("gptq", "fisher_gptq"),
         description="Closed-form NVFP4/MXFP8_E4M3 scale refinement.",
     ))
+    # Trellis TCQ: 256-state tail-biting Viterbi over a per-input-column
+    # imatrix-weighted objective. The wire bytes (not the decoded float
+    # tensor) are the shipped artifact, so the render, surrogate pricing,
+    # KL validation and export must be byte-identical (principle 8). This
+    # mechanism is the deliberate trellis render, not a candidate layered on
+    # RTN, exactly like weighted_vq for CB/GGUF but with a distinct kernel
+    # family (tcq_trellis). It is also imatrix-weighted, so it participates
+    # in the same WEIGHTED_RENDER_FAMILIES gate as CB/GGUF.
+    register_render_mechanism(RenderMechanismSpec(
+        name="trellis",
+        operation="imatrix_weighted_trellis_search",
+        scope="linear",
+        phase=50,
+        gate_metric="weight_mse",
+        description=(
+            "Gridbook trellis-coded quantization (TCQ) Viterbi search — "
+            "the 256-state tail-biting encoder whose wire bytes ARE the "
+            "shipped artifact. The decode of those exact bytes is the "
+            "returned tensor, so render/surrogate/KL/export share one "
+            "encode (one-encode invariant, WO-B)."
+        ),
+    ))
 
 
 _register_builtins()
