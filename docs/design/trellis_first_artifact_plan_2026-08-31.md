@@ -287,6 +287,34 @@ artifact exists, which is what principle 8's second clause is for. The first
 artifact's job is therefore to **measure** the A-side end to end (real
 held-out KL on the served checkpoint), not to predict it.
 
+## 6-bis. Open at the time of writing — do not merge without these
+
+1. **The frozen export-source closure is broken and must be re-frozen.**
+   `prismaquant/production_weight_cache.py` is one of the 15 files whose exact
+   bytes `dsv4_w8a16_export_handoff._FROZEN_EXPORT_SOURCE_SHA256` pins, so the
+   WO-B render mechanism trips
+   `test_tracked_frozen_export_sources_match_reviewed_bytes` and
+   `test_exact_w8a16_handoff_returns_read_only_receipt`. That gate is doing its
+   job. Clearing it is **not** a hash bump: the precedent in that file is a
+   written `RE-FROZEN <date> for <commits>` block naming the file, what changed
+   in it, and *why the DSv4 W8A16 path is unchanged*. Deferred only because
+   WO-A and WO-C may also touch that file; re-stamping before they land would
+   simply break again. **The branch is not clean until that block exists.**
+
+2. **The trellis route record cannot distinguish `decode` from `batch`.**
+   Found by WO-E1 while adding `emit_route` to the Gridbook lanes: the pinned
+   contract publishes separate cells per regime, but each lane makes one
+   `torch._scaled_mm` call and only the record's `shape` field carries `M`. So
+   a served record cannot fully key the cell it is supposed to reconcile
+   against. The telemetry is still worth having -- it turns "no evidence" into
+   "evidence at family/contract granularity" -- but the regime half of
+   principle 14's second leg stays open, and a gate must not pretend otherwise.
+
+3. **`emit_route` needs a Gridbook release and a producer pin bump** before the
+   ship gate can consume it. Until then a trellis artifact can be built and
+   measured but not shipped, and that is the correct state rather than a
+   blocker to route around.
+
 ## 7. Deliberately not on this path
 
 The Stage-1 numeric campaign, the `pqwork` reserve-set v3 durability work, and
