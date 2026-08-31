@@ -10,18 +10,18 @@ names a manifest file.  Unset, :func:`augment_candidates` returns its input
 unchanged and the run is byte-identical to one built without this module
 (principle 6, the ``PRISMAQUANT_FISHER_CAP_MULTIPLIER`` precedent).
 
-STATUS: THE MENU IS BUILT, THE SEAM IS NOT WIRED
-------------------------------------------------
-:func:`build_trellis_menu` produces a correctly priced menu.  The production
-seam :func:`augment_candidates` **refuses** when the flag is set, because
-eight links between that menu and a shipped assignment do not exist -- see
-:data:`UNWIRED_LINKS`, which is the refusal message and the re-enable
-checklist.  The first version of this module (40d3e15) claimed the seam's
-placement inside ``build_candidates`` meant trellis rungs "pass the same
-legality, aggregation and byte accounting every other candidate does".  That
-was false on all three counts and is the reason the refusal exists: the
-registry gaps crash loudly, but the aggregation gaps are SILENT, and a partial
-fix would trade the loud failure for the silent one.
+STATUS: BOTH MANIFEST MENU PATHS REFUSE
+--------------------------------------
+The legacy v1 manifest lacks the frozen curve identity, matched scalar
+backbone, pre-measurement holdout seal, and full-truth allocation-regret record.
+Attaching those facts while loading would invent provenance, so
+:func:`build_trellis_menu` refuses v1 before mutating a candidate menu.  An
+identity-complete v2 manifest parser is intentionally not present yet.  The
+in-memory research API in ``trellis_rate_surface`` is the only densification
+path.  Its full-truth gate retrospectively validates the exact menu with an
+internal greedy allocator; merely materializing that menu does not transfer the
+result to a consuming solver.  The production seam also refuses because the
+end-to-end links in :data:`UNWIRED_LINKS` remain absent.
 
 WHY A MANIFEST AND NOT A ``FORMATS`` ENUM ENTRY
 ----------------------------------------------
@@ -30,12 +30,12 @@ layout, schedule, alphabets)``, and the wire's rate resolution is
 ``256/columns`` q256 -- effectively continuous.  What makes a rung *cost*
 something is a measured anchor, and anchors are per-campaign data, not a
 constant in the source tree.  So the flag names a file of measured anchors and
-this module densifies them.  The names the DP and ``layer_config.json`` see
-are the closed ``TCQ_{E2M1,E4M3}_R<q256>`` spelling that
-``trellis_formats.parse_trellis_format_name`` round-trips.
+this module can parse its legacy campaign provenance, but refuses to densify
+it.  A future identity-complete v2 record would still describe closed
+``TCQ_{E2M1,E4M3}_R<q256>`` wire spellings rather than enum constants.
 
-THE THREE THINGS THIS REFUSES, AND WHY
---------------------------------------
+ADDITIONAL GATES A FUTURE V2 LOADER MUST RETAIN
+------------------------------------------------
 1. **A profile with no ``target_platform``.**  ``trellis_allocator``'s
    ``_capability_gate`` returns *legal* when the profile declares no exact
    platform (:578-586) -- deliberately, because admission is then the
@@ -65,35 +65,23 @@ THE THREE THINGS THIS REFUSES, AND WHY
 
 WHAT THIS DOES NOT DO
 ---------------------
-It does not render, export, or serve.  ``ProductionWeightCache`` has no
-trellis mechanism and ``export_native_compressed`` refuses a TCQ assignment
-outright.  This is allocation-time reach only: it lets the DP see the surface,
-report what it would choose, and price the choice in exact serialized bytes.
+It does not densify a manifest, populate a DP menu, render, export, or serve.
+``ProductionWeightCache`` has no trellis mechanism and
+``export_native_compressed`` refuses a TCQ assignment outright. The separate
+in-memory rate-surface module offers research-only campaign planning and
+retrospective internal-greedy validation; this manifest seam exposes neither.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 
-from .allocator_solver import Candidate, _shape_from_stats
-from .trellis_allocator import TrellisAllocatorCandidate
+from .allocator_solver import Candidate
 from .trellis_formats import (
-    ALL_LEGAL_TRELLIS_FORMAT_NAMES,
-    LAYOUT_TIGHT_OFFSETS,
     LAYOUTS,
-    SUPERBLOCK_WEIGHTS,
-    TrellisFormatError,
-    get_trellis_family,
-)
-
-#: Spelling guard for the name the DP and ``layer_config.json`` will carry.
-_LEGAL_FORMAT_NAMES = frozenset(ALL_LEGAL_TRELLIS_FORMAT_NAMES)
-from .trellis_rate_surface import (
-    densify_rate_surface,
-    fit_rate_surface,
 )
 
 #: Names a JSON manifest of measured anchors.  Unset is the default and is a
@@ -101,6 +89,7 @@ from .trellis_rate_surface import (
 TRELLIS_SURFACE_ENV = "PRISMAQUANT_TRELLIS_SURFACE"
 
 TRELLIS_SURFACE_MANIFEST_SCHEMA = "prismaquant.trellis_surface_manifest.v1"
+TRELLIS_SURFACE_MANIFEST_SCHEMA_V2 = "prismaquant.trellis_surface_manifest.v2"
 TRELLIS_MENU_PROVENANCE_SCHEMA = "prismaquant.trellis_menu_provenance.v1"
 
 #: Rungs densified per unit when the manifest does not say.  The anchors
@@ -190,11 +179,13 @@ def _require(payload: Mapping[str, object], field: str) -> object:
 
 
 def load_manifest(path: str | os.PathLike[str]) -> TrellisSurfaceManifest:
-    """Parse and structurally validate a surface manifest.
+    """Parse v1 campaign provenance for read-only planning inspection.
 
     Every field is required.  There is no default for ``activation_contract``
     or ``target_profile`` on purpose: a defaulted answer to "what did you
-    measure this on" is indistinguishable from a wrong one.
+    measure this on" is indistinguishable from a wrong one.  Returning this
+    record does not validate or authorize interpolation;
+    :func:`build_trellis_menu` always refuses it.
     """
 
     resolved = Path(path)
@@ -211,6 +202,12 @@ def load_manifest(path: str | os.PathLike[str]) -> TrellisSurfaceManifest:
     if not isinstance(payload, dict):
         raise TrellisMenuError("trellis surface manifest must be an object")
     schema = payload.get("schema")
+    if schema == TRELLIS_SURFACE_MANIFEST_SCHEMA_V2:
+        raise TrellisMenuError(
+            "identity-complete trellis manifest v2 ingestion is not "
+            "implemented; use the sealed in-memory trellis_rate_surface "
+            "research API rather than discarding v2 identity or gate fields"
+        )
     if schema != TRELLIS_SURFACE_MANIFEST_SCHEMA:
         raise TrellisMenuError(
             f"trellis surface manifest schema {schema!r} is not "
@@ -240,140 +237,6 @@ def load_manifest(path: str | os.PathLike[str]) -> TrellisSurfaceManifest:
     )
 
 
-def _profile_declares_platform(profile_id: str) -> str:
-    """Return the profile's exact target platform, or refuse.
-
-    This is the whole reason the manifest names a profile rather than
-    inheriting the run's.  ``_capability_gate`` cannot fire without one, and a
-    capability gate that cannot fire is provenance, not a gate (principle 9).
-    """
-
-    from .serving_profiles import load_serving_profile
-
-    try:
-        profile = load_serving_profile(profile_id)
-    except FileNotFoundError as exc:
-        raise TrellisMenuError(
-            f"trellis surface names serving profile {profile_id!r}, which "
-            f"does not exist"
-        ) from exc
-    platform = getattr(profile, "target_platform", None)
-    if not platform:
-        raise TrellisMenuError(
-            f"serving profile {profile_id!r} declares no 'target_platform', "
-            f"so trellis_allocator._capability_gate returns legal for every "
-            f"family without comparing anything (E2M1 needs SM120+, E4M3 "
-            f"SM89+). Refusing to allocate against a gate that cannot fire. "
-            f"Name a profile that declares the exact hardware the anchors "
-            f"were measured on."
-        )
-    return str(platform)
-
-
-def _achievable_q256(columns: int, family, low: int, high: int,
-                     count: int) -> list[int]:
-    """Rungs a real per-column schedule can hit, spread across the envelope.
-
-    The wire carries one 4-bit rate code per input column shared across rows,
-    so the achievable tensor totals are the integers and the rate resolution
-    is ``SUPERBLOCK_WEIGHTS/columns`` q256.  Anchors are always kept: they are
-    the only rungs that were measured rather than interpolated.
-    """
-
-    spec = get_trellis_family(family)
-    lowest = max(low, SUPERBLOCK_WEIGHTS)
-    highest = min(high, spec.bypass_rate * SUPERBLOCK_WEIGHTS)
-    if highest < lowest:
-        return []
-    if count <= 1:
-        return [lowest]
-    step = (highest - lowest) / (count - 1)
-    return sorted({
-        int(round(lowest + index * step)) for index in range(count)
-    })
-
-
-def _unit_candidates(
-    unit_name: str,
-    shape: Sequence[int],
-    entry: Mapping[str, object],
-    manifest: TrellisSurfaceManifest,
-    *,
-    qname: str | None,
-    packed_expert: bool | None,
-) -> tuple[TrellisAllocatorCandidate, ...]:
-    family = str(_require(entry, "family"))
-    raw_alphabets = _require(entry, "alphabets")
-    if not isinstance(raw_alphabets, dict):
-        raise TrellisMenuError(f"{unit_name}: 'alphabets' must be an object")
-    alphabets = {
-        int(rate): [int(code) for code in codes]
-        for rate, codes in raw_alphabets.items()
-    }
-    points = _require(entry, "points")
-    if not isinstance(points, list) or len(points) < 2:
-        raise TrellisMenuError(
-            f"{unit_name}: a rate surface needs at least two measured anchors; "
-            f"one anchor cannot bracket anything and this module refuses to "
-            f"extrapolate"
-        )
-    dims = tuple(int(value) for value in shape)
-    if len(dims) != 2:
-        raise TrellisMenuError(f"{unit_name}: shape must be rank 2, got {dims}")
-    columns = dims[1]
-    if columns % SUPERBLOCK_WEIGHTS:
-        raise TrellisMenuError(
-            f"{unit_name}: {columns} input columns is not a multiple of "
-            f"{SUPERBLOCK_WEIGHTS}; a short final superblock is legal on the "
-            f"wire but its rate accounting is the campaign's to declare"
-        )
-
-    from .trellis_rate_surface import uniform_column_schedule
-
-    anchor_records = []
-    from .trellis_allocator import build_trellis_allocator_candidate
-    for point in sorted(points, key=lambda p: int(p["q256"])):
-        rate = int(point["q256"])
-        schedule = uniform_column_schedule(columns, rate, family=family)
-        used = {
-            value for value in schedule
-            if value < get_trellis_family(family).bypass_rate
-        }
-        anchor_records.append(
-            build_trellis_allocator_candidate(
-                unit_name,
-                dims,
-                family=family,
-                body_rate_q256=rate,
-                layout=manifest.layout,
-                schedule=schedule,
-                alphabets={key: alphabets[key] for key in sorted(used)},
-                predicted_dloss=float(point["dloss"]),
-                predicted_dloss_stderr=float(point.get("stderr", 0.0)),
-                target_profile=manifest.target_profile,
-                qname=qname,
-                packed_expert=packed_expert,
-                variant_label="measured",
-            )
-        )
-    surface = fit_rate_surface(anchor_records, currency=manifest.currency)
-    low, high = surface.q256_range
-    rungs = _achievable_q256(
-        columns, family, low, high, manifest.rungs_per_unit,
-    )
-    rungs = sorted(set(rungs) | set(surface.anchor_q256))
-    rungs = [rate for rate in rungs if low <= rate <= high]
-    return densify_rate_surface(
-        surface,
-        dims,
-        q256_values=rungs,
-        alphabets=alphabets,
-        target_profile=manifest.target_profile,
-        qname=qname,
-        packed_expert=packed_expert,
-    )
-
-
 def build_trellis_menu(
     candidates: dict[str, list[Candidate]],
     stats: Mapping[str, Mapping[str, object]],
@@ -382,166 +245,38 @@ def build_trellis_menu(
     manifest_path: str | None = None,
     provenance_out: dict | None = None,
 ) -> dict[str, list[Candidate]]:
-    """Add trellis rungs to an already-built menu, or return it unchanged.
+    """Refuse legacy manifest interpolation, or no-op when no path is set.
 
     ``manifest_path`` defaults to ``PRISMAQUANT_TRELLIS_SURFACE``.  With
     neither set this is a no-op returning the same object, so a run without
     the flag executes exactly the code path it executed before this module
     existed.
 
-    The DP is untouched: trellis rungs are ordinary multi-choice knapsack
-    candidates, priced in exact serialized tensor-payload bytes.  Their
-    ``fmt`` is the closed ``TCQ_<grid>_R<q256>`` name -- SHAPE-FREE on
-    purpose, because ``aggregate_fused_siblings`` and
-    ``aggregate_packed_serving_groups`` intersect member menus BY FORMAT NAME.
-    ``TrellisAllocatorCandidate.allocator_key`` embeds the per-tensor
-    pre-render recipe digest, which includes the shape, so using it directly
-    would give q_proj and k_proj disjoint menus at identical rungs and
-    silently collapse every fused group back to individual rows.  The recipe
-    digest still travels, on ``serialized_identity``, where per-member layout
-    identity belongs.
+    Manifest v1 cannot prove the curve identity or the holdout/regret record.
+    It is therefore not a compatibility path.  A future v2 loader must parse
+    identity-complete records and consume the same sealed full-truth validation
+    context as
+    :func:`prismaquant.trellis_rate_surface.rate_surface_solver_menu`. That
+    context is not a license for a different consuming allocator; until an
+    identity-complete loader exists, direct manifest-to-menu conversion is
+    impossible.
     """
 
     resolved_path = manifest_path or os.environ.get(TRELLIS_SURFACE_ENV)
     if not resolved_path:
         return candidates
 
-    manifest = load_manifest(resolved_path)
-    if manifest.cost_mode != cost_mode:
-        raise TrellisMenuError(
-            f"trellis surface was measured under COST_MODE="
-            f"{manifest.cost_mode!r} but this run prices in {cost_mode!r}. "
-            f"One DP prices in one currency; ranking rungs measured under two "
-            f"objectives against each other solves neither."
-        )
-    platform = _profile_declares_platform(manifest.target_profile)
-
-    added = 0
-    covered: list[str] = []
-    skipped: dict[str, str] = {}
-    for unit_name, entry in manifest.anchors.items():
-        if unit_name not in candidates:
-            skipped[unit_name] = "unit has no priced scalar menu in this run"
-            continue
-        stat = stats.get(unit_name)
-        if not stat:
-            skipped[unit_name] = "unit absent from probe stats"
-            continue
-        # The repo's own shape helper, not a hand-rolled 2-tuple: it returns
-        # (num_experts, out, in) for a packed row, and pricing that row as
-        # (out, in) underprices it by num_experts (128x on DSv4).  A silent
-        # 128x underprice makes a rung look nearly free to the DP and the
-        # seam would report it as "0 unit(s) skipped".
-        shape = _shape_from_stats(dict(stat))
-        if len(shape) < 2 or min(shape) <= 0:
-            skipped[unit_name] = f"unusable shape {shape}"
-            continue
-        if _is_packed_expert(stat):
-            # Refuse rather than price num_experts x per-expert bytes: that
-            # pricing would assert a per-expert trellis render coherent with
-            # the packed unit's single-format constraint, which no measurement
-            # supports.  Counted, not silent.
-            skipped[unit_name] = (
-                f"packed-expert row (shape {shape}); no per-expert trellis "
-                f"render exists, and pricing one would be an unmeasured claim"
-            )
-            continue
-        try:
-            records = _unit_candidates(
-                unit_name,
-                shape,
-                entry,
-                manifest,
-                qname=unit_name,
-                packed_expert=None,   # refused above; never reached packed
-            )
-        except (TrellisFormatError, TrellisMenuError, KeyError) as exc:
-            skipped[unit_name] = f"{type(exc).__name__}: {exc}"
-            continue
-
-        seen: set[str] = {cand.fmt for cand in candidates[unit_name]}
-        for record in records:
-            if not record.servability.legal:
-                continue
-            fmt = str(record.footprint["format"])
-            if fmt not in _LEGAL_FORMAT_NAMES:
-                # The name is the cross-module contract: layer_config.json
-                # stores it and parse_trellis_format_name must read it back.
-                # A drift in TrellisFamily.format_name would otherwise ship a
-                # recipe nothing downstream can parse.
-                raise TrellisMenuError(
-                    f"{unit_name}: {fmt!r} is not in the closed trellis "
-                    f"format vocabulary; TrellisFamily.format_name and "
-                    f"parse_trellis_format_name have drifted apart"
-                )
-            if fmt in seen:
-                raise TrellisMenuError(
-                    f"{unit_name}: duplicate candidate format {fmt!r}; a unit "
-                    f"cannot offer one rung twice under one manifest"
-                )
-            seen.add(fmt)
-            base = record.to_solver_candidate()
-            candidates[unit_name].append(replace(base, fmt=fmt))
-            added += 1
-        if records:
-            covered.append(unit_name)
-
-    payload = {
-        "schema": TRELLIS_MENU_PROVENANCE_SCHEMA,
-        "manifest_path": str(manifest.path),
-        "cost_mode": manifest.cost_mode,
-        "currency": manifest.currency,
-        "target_profile": manifest.target_profile,
-        "target_platform": platform,
-        # The contract the anchors' dloss was MEASURED under. The hull that
-        # produced these numbers priced W*A16 while both families' native
-        # _scaled_mm routes are A=W; stamping it here is what stops a future
-        # A=W lane from silently inheriting a W*A16 loss.
-        "anchor_activation_contract": manifest.activation_contract,
-        "layout": manifest.layout,
-        "rungs_per_unit": manifest.rungs_per_unit,
-        "units_covered": len(covered),
-        "units_in_menu": len(candidates),
-        "candidates_added": added,
-        "units_skipped": skipped,
-        "research_only": True,
-        "exportable": False,
-        "export_note": (
-            "export_native_compressed refuses a TCQ assignment: no production "
-            "render mechanism exists and the producer pin publishes no "
-            "activation-contract attestation table for these lanes."
-        ),
-        "anchor_provenance": dict(manifest.provenance),
-    }
-    if provenance_out is not None:
-        provenance_out.update(payload)
-    print(
-        f"[alloc] trellis surface: +{added} rungs on {len(covered)}/"
-        f"{len(candidates)} units from {manifest.path.name} "
-        f"(profile={manifest.target_profile} platform={platform} "
-        f"anchors@{manifest.activation_contract}); "
-        f"{len(skipped)} unit(s) skipped",
-        flush=True,
+    load_manifest(resolved_path)
+    raise TrellisMenuError(
+        f"legacy manifest schema {TRELLIS_SURFACE_MANIFEST_SCHEMA!r} is "
+        "planning provenance only and cannot be densified or admitted to an "
+        "allocator menu: it lacks the full frozen curve identity, matched "
+        "scalar-backbone context, a pre-measurement holdout seal, and a "
+        "full-truth retrospective allocation-regret record. Supply an "
+        "identity-complete "
+        f"{TRELLIS_SURFACE_MANIFEST_SCHEMA_V2!r} record once a v2 loader "
+        "exists; do not infer those fields from v1."
     )
-    if skipped:
-        for unit_name in sorted(skipped)[:5]:
-            print(f"[alloc]   skip {unit_name}: {skipped[unit_name]}",
-                  flush=True)
-    return candidates
-
-
-def _is_packed_expert(stat: Mapping[str, object]) -> bool:
-    """The repo's packed-expert detector, imported late to avoid a cycle.
-
-    ``allocator_candidates`` imports this module, so the import cannot be at
-    module scope.  Reading ``stat["packed_expert"]`` instead -- as this seam
-    did until 2026-08-29 -- tests a key nothing in the probe-stats path ever
-    writes, so the guard was always falsy.
-    """
-
-    from .allocator_candidates import _stats_indicates_packed_expert
-
-    return _stats_indicates_packed_expert(dict(stat))
 
 
 def augment_candidates(
@@ -558,9 +293,11 @@ def augment_candidates(
     byte-identical to one built without this module -- that half is real and
     is what ships.
 
-    Set, it refuses.  :func:`build_trellis_menu` builds a correctly priced
-    menu, but eight links between that menu and a shipped assignment do not
-    exist (:data:`UNWIRED_LINKS`), and they do not fail the same way: the
+    Set, it refuses.  The identity-complete in-memory research API can build
+    an exactly priced menu covered by retrospective full-truth validation, but
+    that validation does not transfer to another allocator. Eight links
+    between such a menu and a shipped assignment do not exist
+    (:data:`UNWIRED_LINKS`), and they do not fail the same way: the
     registry gaps crash loudly inside the Pareto sweep, while the aggregation
     gaps are SILENT -- they would drop every rung from every fused and packed
     group and hand back a plausible-looking frontier in which only o_proj and
@@ -571,8 +308,9 @@ def augment_candidates(
 
     Enabling the surface therefore means landing those links with tests that
     exercise behaviour, then deleting this refusal -- not passing a flag.
-    Until then :func:`build_trellis_menu` is reachable directly, for research
-    and for the tests, where a wrong menu cannot reach a shipped artifact.
+    Legacy :func:`build_trellis_menu` also refuses because its v1 records lack
+    the identity and full-truth validation record required even for
+    retrospective allocator research.
     """
 
     resolved_path = manifest_path or os.environ.get(TRELLIS_SURFACE_ENV)
@@ -584,8 +322,8 @@ def augment_candidates(
         f"{TRELLIS_SURFACE_ENV}={resolved_path} was set, but the allocator "
         f"cannot honour a trellis rung end-to-end. Eight links are missing:\n"
         f"{links}\n"
-        f"Build the menu directly with trellis_menu.build_trellis_menu() for "
-        f"research. Do not remove this refusal to reach a selectable run: the "
+        f"Use the identity-bound trellis_rate_surface research API only. Do "
+        f"not remove this refusal to reach a selectable run: the "
         f"aggregation gaps are silent, so the run would look successful and "
         f"allocate wrongly."
     )
@@ -607,6 +345,7 @@ __all__ = [
     "TRELLIS_MENU_PROVENANCE_SCHEMA",
     "TRELLIS_SURFACE_ENV",
     "TRELLIS_SURFACE_MANIFEST_SCHEMA",
+    "TRELLIS_SURFACE_MANIFEST_SCHEMA_V2",
     "TrellisMenuError",
     "TrellisSeamUnwiredError",
     "TrellisSurfaceManifest",

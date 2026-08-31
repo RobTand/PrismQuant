@@ -7,6 +7,202 @@ producer format, no exporter branch, no pipeline flag, and no compiled-kernel
 ladder. A legal q256 value is a parameter of one Trellis family implementation,
 not a public format ID. Every record carries `producer_eligible: false`.
 
+## Interpolated measured curves: sealed v2 contract
+
+`prismaquant.trellis_rate_surface` may densify sparse measurements for exactly
+two purposes:
+
+1. campaign planning, to choose the next real rung to encode and measure; and
+2. retrospective allocator-cost validation, only after a measured holdout and
+   full-truth allocation-regret gate have validated the exact candidate menu.
+
+It is mechanically ineligible for a menu verdict, family verdict, publication
+claim, producer format, export, or serving decision. Those spellings are not
+aliases for a permissive analysis mode: the closed use vocabulary rejects them.
+The compatibility fields named `licensed_use` / `licensed_uses` encode only
+that closed vocabulary; they are not statistical, population, or
+consumer-allocator licenses.
+The legacy `prismaquant.trellis_surface_manifest.v1` path cannot enter either
+the direct research menu or the production seam. V1 has useful read-only
+campaign provenance, but it lacks the identity and decision records below.
+Those facts may not be inferred. An identity-complete manifest-v2 loader does
+not exist yet and v2 input is explicitly refused rather than downgraded to v1.
+
+### Frozen curve identity
+
+Every measured anchor, matched scalar control, fitted surface, holdout, and
+regret record binds the same canonical curve identity:
+
+```
+{
+  wire_family,
+  selector,
+  alphabet_policy,
+  alphabet_fitting_scope,
+  scale_plane,
+  scale_coding,
+  encode_tier,
+  schedule_policy,
+  render_path,              # rtn | gptq | ldlq | rotated
+  corpus_id,
+  importance_id,
+  population,               # dense | routed
+  render_recipe_identity_sha256,
+  codec_closure_sha256
+}
+```
+
+`render_recipe_identity_sha256` is the canonical digest of the complete
+value-level render recipe, including every applicable knob such as LDL damp,
+terminal mode and block geometry, rotation construction and seeds, scale-grid
+mode/menu, tail-biting, and superblock chunking. `render_path` remains the
+broad categorical label; the codec closure says what code was available, and
+neither substitutes for the exact recipe digest.
+
+The fitted surface additionally binds the allocator unit, exact tensor shape,
+layout, target serving profile, objective currency, fit response, and the
+identities of every measured anchor. The currency is already sealed into each
+measured trellis anchor and scalar control; fitting cannot relabel the same
+numbers as a different objective. Shape is part of the surface context because
+it changes both the per-column schedule and the exact serialized-byte
+function. Changing any
+identity field, mixing wire families or layouts, changing shape or schedule
+policy, or supplying a scalar control from another identity is a refusal, not
+a new implicit curve. Every curve requires its own identity-bound measurements;
+QTIP selectors and LDLQ or rotated render paths likewise cannot borrow a
+scalar, RTN, or zero-gain anchor from another curve. One
+`allocation_regret` call additionally requires every unit to share the same
+curve identity (unit name and tensor shape remain separate surface fields), so
+its result cannot be read as evidence pooled across corpora, importance
+definitions, populations, or render recipes.
+
+This research identity does not contain a model-checkpoint digest or a hash of
+the source tensor values. `unit_name` is therefore meaningful only inside the
+same trusted campaign/model context; it is not a cross-model content address.
+Persisting or transferring a surface beyond that context requires a future
+sealed model and unit-universe identity. The refusing manifest/production seams
+mean this omission cannot currently authorize a shipped assignment.
+
+### Fit response
+
+The allocator-capable response is gain over a measured, context-matched scalar
+subgrid. For anchor `i`, with trellis loss `D_i` and scalar-control loss `S_i`,
+the fitted value is
+
+```
+G_i = 10 log10(S_i / D_i).
+```
+
+`G` is interpolated linearly in integer q256 between the two measured anchors,
+then converted back with the independently measured scalar point at the target
+rung:
+
+```
+D_hat(q) = S(q) * 10 ** (-G_hat(q) / 10).
+```
+
+Every scalar point carries its own closure digest and an explicit
+`context_parity_verified` bit under the same curve identity. Missing controls,
+false parity, or a different target rate fail closed. Supplying scalar controls
+to the raw path is also refused; a caller cannot silently throw away the
+better-matched response.
+
+Piecewise-linear interpolation in `(q256, log2 raw_dloss)` remains available
+only as an explicit campaign-planning fallback. It cannot provide allocator
+costs. Both responses require at least two identity-bound measured anchors,
+strictly increasing integer q256 and strictly decreasing positive loss.
+Interpolation never extrapolates and a prediction that escapes the loss values
+of its bracketing anchors is rejected. Nonmonotone measurements are re-anchor
+work, not values to smooth.
+
+### Sealed holdout and retrospective regret validation
+
+Retrospective allocator validation is a two-phase protocol:
+
+1. Fit without at least one strictly interior rung and seal its prediction,
+   surface identity, curve identity, target q256, and matched scalar-point
+   identity before the rung's trellis loss is supplied. The seal also commits
+   the exact pre-render recipe digest; grading a different schedule/alphabet
+   recipe at the same nominal q256 is refused.
+2. Measure that exact rung under the same identity and scalar control, then
+   grade the pre-existing seal. A fitted anchor cannot double as a holdout.
+3. Densify the allocator menu through the real schedule builder and wire
+   pricer. Every truth value must be an identity-bound measured anchor whose
+   pre-render recipe digest exactly matches that densified rung; unbound float
+   claims are refused. Grade allocation twice at one sealed byte budget: once
+   deciding on interpolated losses and once deciding on measured truth,
+   scoring both assignments with truth.
+4. Require explicit scale-price bracket agreement and a configured maximum
+   allocation-regret percentage. Every surface needs a measured holdout grade.
+5. Pass the resulting immutable gate to the research menu materializer. The
+   gate binds both
+   each fitted-surface digest, each full densified-menu digest, and the exact
+   measured-truth anchor set, so it cannot authorize different rungs, recipes,
+   predicted losses, shapes, byte prices, or validation truth. A failed gate,
+   planning-only surface, missing grade, changed menu, different unit set, or
+   solver budget other than the one graded is refused before candidates are
+   returned. Materializing those candidates does not transfer the measured
+   regret result to the repository's `allocator_solver` or to any other
+   consuming algorithm.
+
+Leave-one-anchor-out residuals remain diagnostics only. The acceptance number
+is decision regret within the internal greedy comparison: the measured-truth
+cost of using interpolation in that algorithm. Bracket disagreement cannot be
+hidden by averaging or by an apparently small regret on a different menu.
+
+The seal and grade are canonical self-hashed in-memory evidence. They check
+that the supplied grade is arithmetically consistent with the bound surface,
+prediction, measured anchor, scalar control, and wire recipe. They are not a
+trusted timestamp, signature, append-only log, or proof that the caller did not
+seal several rungs and report only the favorable one. A campaign that needs a
+chronology or anti-shopping claim must externally precommit its holdout set,
+budget, regret threshold, and bracket procedure before measurement. No such
+population/campaign attestation is implemented here.
+
+The other canonical SHA-256 fields have the same boundary: they detect an
+accidental mutation only when checked against the objects they bind. They are
+not signatures or authentication, and a trusted Python caller can construct a
+new object and recompute a new self-consistent hash (or call a lower-level menu
+helper directly). The high-level API now replays the derivable arithmetic and
+surface/menu bindings before materialization, but it is not a hostile-caller
+security boundary. Both production manifest paths still refuse.
+
+### Operational scope: zero allocator-use encodes saved
+
+The full-truth gate is intentionally strict and operationally vacuous as a GPU
+measurement reducer. For every unit, `allocation_regret` requires the measured
+truth rates, scalar-backbone rates, and exact densified candidate rates to be
+the same nonempty set. Each truth row must be the identity- and recipe-bound
+measurement of that exact candidate. The solver-menu materializer then accepts
+only the densified-menu digest covered by that gate. Therefore every candidate
+it can return has already been trellis-encoded and measured: allocator-use
+savings are zero encodes, with positive validation overhead.
+
+The resulting regret number is still useful as a retrospective validation of
+the internal greedy marginal allocator. That allocator is not the consuming
+`allocator_solver`, and the gate neither certifies a different algorithm nor an
+exact global optimum on non-convex per-unit curves. Campaign planning is the
+only current path that can reduce measurements: it may interpolate between
+sparse anchors to choose the next rung to measure, but cannot enter the
+allocator bridge.
+
+This module has no sampled-cohort or population-transfer mechanism. On the
+current full-truth path, a non-monotone measured curve is refused and sent for
+re-anchoring; no unit is omitted from a statistic. If a sampled population path
+is ever added, a sampled non-monotone curve must count as a violation rather
+than being dropped by reusing this refusal behavior. Current evidence does not
+authorize such a path.
+
+### q256 and exact-byte pricing
+
+Interpolation happens only on exact integer `body_rate_q256`. Every proposed
+rung is rendered into a legal schedule and priced with
+`trellis_tensor_payload_breakdown`; bytes are never interpolated or estimated
+from nominal bpp. Alignment makes the map from q256 to bytes non-injective. The
+regret allocator therefore collapses an equal-byte plateau to its lowest-loss
+rung before computing marginal gains, preserving a free quality improvement
+that a naive positive-byte-delta loop would skip.
+
 The sparse `quality_candidate_q256` values in `trellis_formats.py` remain the
 reviewed seed measurements. They are not the mathematical rate domain. An
 experiment must explicitly request either `all_legal`, a deterministic `dense`
