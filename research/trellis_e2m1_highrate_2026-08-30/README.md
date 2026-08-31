@@ -4,9 +4,11 @@ Status: **numeric scaffold complete and measured on the immutable GLM BF16
 corpus; research evidence only, with no serving verdict.** 2026-08-30.
 
 These drivers live in the repo; the corpora and result caches they read live
-under `/home/rob/dq-runs/` and are not checked in. Paths are absolute inside
-each script because the study directory is a sibling of the frozen Stage-6
-encoder snapshot they must bind to.
+under `/home/rob/dq-runs/` and are not checked in. The historical control
+scripts bind the frozen Stage-6 snapshot by its absolute path. The active
+publication drivers instead take their manifest and output paths on the
+command line and bind the repository, Git common directory, corpus, command,
+container launch, and live execution identity.
 
 ## Why this exists
 
@@ -115,7 +117,7 @@ isolated corpus loader, integration checkout, or transitive frozen-codec
 closure that actually executed. No post-hoc receipt can recover that missing
 fact, so none is fabricated and the result files remain untouched.
 
-Future E2M1 v3 and learned-FP8 v2 outputs bind the corpus manifest, artifact
+New E2M1 v3 and learned-FP8 v2 outputs bind the corpus manifest, artifact
 and importance hashes; active driver, isolated loader, corpus reader and Git
 identity; and the frozen hull source/tree closure. The BF16 lane additionally
 binds the imported `bf16_ladder.py`, `B.MANIFEST`, `B.INPUT`, and its control
@@ -237,7 +239,7 @@ finalized GLM tensors and contains, for nominal body cells 4 and 5:
   FP16 sidecar the production footprint currently declares.
 
 The driver imports the existing frozen `fp8_ladder.py` arms and accountants;
-it does not reimplement either codec.  It additionally pins the exact-DP
+it does not reimplement either codec. It additionally pins the exact-DP
 source in the frozen Stage-0 snapshot, because that source is a separate file
 and is not present beside `fp8_ladder.py`.  Every completed checkpoint cell is
 regenerated from the hash-checked corpus and compared in full before reuse.
@@ -245,7 +247,11 @@ Only wall timing is excluded from replay.  A persistent identity-bound claim
 reserves both final and partial names, the final receipt is no-replace, and
 the corpus, active sources, frozen codec closure, exact command, live CUDA
 identity, expected host, and declared immutable container digest are rechecked
-before the result publishes.
+before the result publishes. Every completed partial and final carries an
+append-only `trellis.numeric_execution_segment.v1` history. A restart in a
+fresh, correctly attested container on the same host appends a segment without
+making the container ID part of the stable checkpoint identity; a host or
+host-specific image-ID change alters that stable identity and is refused.
 
 The result derives two separate population tables and has no pooled field.
 For each population/cell it constructs exact-byte Pareto frontiers rather than
@@ -255,24 +261,142 @@ four scale-plane × learned-book-price combinations.  A crossing frontier,
 mixed tensors, or bracket disagreement produces a structured `NO_VERDICT`.
 This is deliberately stricter than comparing round nominal labels.
 
-CPU-safe preflight, from the committed integration checkout:
+#### Exact numeric launch and attestation contract
 
-```bash
-PY=/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python
-$PY research/trellis_e2m1_highrate_2026-08-30/fp8_cb_tcq_glm.py \
-  --manifest /home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/manifest.json \
-  --out /home/rob/dq-runs/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/glm-fp8-cb-tcq-two-bracket-v1.json \
-  --expected-host sparky \
-  --container-identity sha256:<known-good-image-digest> \
-  --preflight-only
+`--expected-host` and `--container-identity` are not driver arguments. The
+host creates a stopped container, then
+`numeric_execution_contract.py --container ... --physical-host ... --output
+...` inspects it before it may start. The helper resolves a full immutable
+container ID, performs two matching Docker-inspect and rootfs-diff reads, and
+creates a canonical `trellis.numeric_launch_attestation.v1` JSON file with
+exclusive no-clobber creation and file-plus-directory fsync. The attestation
+parent is mounted read-only into the container at the identical absolute path.
+At publication, the process rereads those exact canonical bytes, joins them to
+the live container-ID hostname, UID/GID/groups, UTS hostname, GPU UUID/name,
+command, and environment, then rehashes every tracked HEAD blob and rejects
+untracked or ignored executable/import code. The durable stable projection is
+`trellis.numeric_execution.v2`; the per-container linkage is the execution
+segment described above. This is Docker-daemon evidence on a trusted host,
+not a cryptographic defense against a hostile root operator or Docker daemon.
+
+The image reference in Docker `Config.Image` is exactly:
+
+```text
+eugr/spark-vllm@sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869
 ```
 
-The GPU command is the same without `--preflight-only`, inside that exact
-known-good image and with an in-process CUDA profile plus aligned Netdata and
-pqteld capture on both boxes.  It must run alone on Sparky.  No GPU run or
-result is claimed here.  Even a completed result remains W\*A16 weighted-SSE
-research evidence: it cannot qualify W8A8 activation behavior, Gridbook load,
-KL/PPL, serving speed, residency, or work per joule.
+`HULL_CONTAINER_IMAGE` is the digest portion of that reference, not Docker's
+local image-object ID. The latter is checked separately and is host-specific:
+
+| physical-host key | required UTS hostname | required GPU UUID | allowed local Docker image ID |
+|---|---|---|---|
+| `sparky` | `sparky` | `GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4` | `sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869` |
+| `sparklina` | `gx10-6b77` | `GPU-b1eceeea-fec7-371e-2cf3-cd10f2e7b705` | `sha256:ac631d27c1514ec3f838299d424c98892a0ba854fa642002df4c8f576bbfe9fa` |
+
+This is the reference fresh-container CB/TCQ preflight. Run it on the selected
+host from a clean committed checkout for publication parity. All source and
+destination mount paths must be identical. Use a new container name,
+attestation path, and result path for every attempt; the contracts deliberately
+do not overwrite an old claim.
+
+```bash
+HOST=sparky                         # or sparklina, on that physical host
+REPO=/absolute/path/to/clean-committed-prismaquant-worktree
+STUDY="$REPO/research/trellis_e2m1_highrate_2026-08-30"
+GIT_COMMON=$(/usr/bin/git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)
+STORAGE=/home/rob/dq-runs
+MANIFEST="$STORAGE/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/manifest.json"
+RUN_ID="preflight-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+ATTEST_DIR="$STORAGE/numeric-launches/$RUN_ID"
+ATTEST="$ATTEST_DIR/launch-attestation.json"
+OUT="$STORAGE/glm-corpus-20260830/final-bf16-pread-1469b9b-v2/$RUN_ID.json"
+NAME="pq-fp8-cb-tcq-$HOST-$RUN_ID"
+IMAGE_REF='eugr/spark-vllm@sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869'
+IMAGE_DIGEST='sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869'
+
+/usr/bin/install -d -m 0700 "$ATTEST_DIR"
+CID=$(/usr/bin/docker create --pull=never --name "$NAME" \
+  --user 1000:1000 --uts host --network none --ipc private \
+  --cgroupns private --cap-drop ALL \
+  --security-opt no-new-privileges:true --read-only --gpus all \
+  --tmpfs /tmp:rw,nosuid,nodev,exec,size=8g,uid=1000,gid=1000,mode=0700 \
+  --workdir "$REPO" \
+  --env "HULL_PHYSICAL_HOST=$HOST" \
+  --env "HULL_CONTAINER_IMAGE=$IMAGE_DIGEST" \
+  --env "HULL_LAUNCH_ATTESTATION=$ATTEST" \
+  --env "HULL_REPO_ROOT=$REPO" \
+  --env "HULL_GIT_COMMON_DIR=$GIT_COMMON" \
+  --env PYTHONNOUSERSITE=1 --env PYTHONDONTWRITEBYTECODE=1 \
+  --env CUDA_CACHE_PATH=/tmp/cuda-cache --env TMPDIR=/tmp \
+  --env TORCH_EXTENSIONS_DIR=/tmp/torch-extensions \
+  --env TRITON_CACHE_DIR=/tmp/triton-cache \
+  --env XDG_CACHE_HOME=/tmp/cache \
+  --mount "type=bind,src=$ATTEST_DIR,dst=$ATTEST_DIR,readonly" \
+  --mount "type=bind,src=$REPO,dst=$REPO,readonly" \
+  --mount "type=bind,src=$GIT_COMMON,dst=$GIT_COMMON,readonly" \
+  --mount "type=bind,src=$STORAGE,dst=$STORAGE" \
+  "$IMAGE_REF" \
+  /usr/bin/python3 -B "$STUDY/fp8_cb_tcq_glm.py" \
+    --manifest "$MANIFEST" --out "$OUT" --preflight-only)
+
+/usr/bin/python3 -B "$STUDY/numeric_execution_contract.py" \
+  --container "$CID" --physical-host "$HOST" --output "$ATTEST"
+/usr/bin/docker start --attach "$CID"
+```
+
+The host helper accepts only that closed launcher shape: UID/GID
+`1000:1000`, host UTS, private PID/cgroup/IPC, no network, all capabilities
+dropped, no-new-privileges, a read-only rootfs, the exact `/tmp` tmpfs, the
+exact four binds above, the pinned NVIDIA entrypoint, and the pinned image's
+complete environment plus only the five `HULL_*` and seven Python/scratch
+fields shown. Extra mounts, devices, groups, capabilities, security modes, or
+environment keys are refusals. In particular, additional source-code,
+`/usr/bin`, CUDA, site-packages, and dynamic-loader overlays cannot be added.
+
+Direct `/usr/bin/python3 -B` is accepted only for
+`fp8_cb_tcq_glm.py --preflight-only` and `fp8_learned_glm.py --dry-run`.
+Every publication-capable invocation of `e2m1_highrate.py`,
+`fp8_learned_glm.py`, or `fp8_cb_tcq_glm.py` must replace the direct command
+above with this exact in-container profiler prefix and omit the preflight flag:
+
+```bash
+/usr/local/bin/py-spy record --output <path-below-/home/rob/dq-runs> \
+  --format speedscope -- /usr/bin/python3 -B <absolute-approved-driver> \
+  <that-driver's-arguments>
+```
+
+Do not wrap `docker run` or `docker start` in host-side `nsys profile`: that
+profiles the short-lived Docker client rather than the daemon-owned CUDA
+process and can yield an empty CUDA trace. The current accepted path is
+in-container py-spy plus time-aligned Netdata and pqteld evidence. Adding nsys
+later requires an explicit image/command-contract revision and an in-container
+launch; it is not an unrecorded wrapper around this schema.
+
+#### Verified no-workload preflight evidence
+
+On 2026-08-30 a newly created container passed the finalized host inspection
+and the CB/TCQ direct preflight on each machine:
+
+| host | inspected local image ID | helper / container result |
+|---|---|---|
+| Sparky | `sha256:58862b388e0fab05a5c9b673f21d1d7b41a1123953a2d9ace49aae6c79319869` | attestation accepted; exit 0 |
+| Sparklina | `sha256:ac631d27c1514ec3f838299d424c98892a0ba854fa642002df4c8f576bbfe9fa` | attestation accepted; exit 0 |
+
+Both driver payloads reported schema
+`trellis.glm_fp8_cb_tcq_two_bracket.v1`, 9 dense and 24 routed tensors,
+`status=validated_no_gpu_no_write`, `publication_capable=false`, and
+`publication_receipt=null`. Sparklina mounted the current integration
+worktree read-only. Sparky mounted the clean immutable checkout
+`e48e88b5fd2fd2a6c94cb544b3760ffc1b19d0c5`; the finalized host-helper bytes
+were supplied to that host for the pre-start inspection. These checks validate
+the closed Docker configuration and the nonpublishing parser/import path.
+They do not execute the encoder, enter the CUDA publication contract, prove a
+clean future integration commit, or establish any quality, speed, power, or
+serving result. No numeric GPU campaign was run.
+
+Even a later completed result remains W\*A16 weighted-SSE research evidence:
+it cannot qualify W8A8 activation behavior, Gridbook load, KL/PPL, serving
+speed, residency, or work per joule.
 
 ## Known reachability limit
 
@@ -286,21 +410,48 @@ crashing.
 
 ## Reproduce
 
-    PY=/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python
-    cd /home/rob/dq-runs/trellis-hull-20260828     # scripts bind to the snapshot here
-    $PY bypass_census.py                            # CPU only
-    $PY scalar_subgrid_ladder.py --corpus dsv4      # CPU only
-    $PY scalar_subgrid_ladder.py --corpus bf16      # CPU only
-    $PY shaped_scalar_control.py                    # CPU only
-    $PY e2m1_highrate.py --corpus dsv4 --out <rows.json>   # GPU
-    $PY e2m1_highrate.py --corpus glm --glm-manifest <final-v2.json> \
-      --out <glm-rows.json>                                # GPU
-    $PY e2m1_highrate.py --corpus glm --glm-manifest <final-v2.json> \
-      --glm-rate-plan high --out <glm-high-rate-rows.json> # GPU
-    $PY fp8_learned_glm.py --manifest <final-v2.json> \
-      --out <glm-fp8-learned.json> --dry-run               # CPU validation
-    $PY coding_gain_table.py --rows <rows.json>
+Run repo drivers from the repository, not from the frozen snapshot directory;
+the control scripts import that snapshot themselves. These are the complete
+current CPU/offline argument vectors:
 
-The four CPU drivers need no GPU and no trellis encode. `e2m1_highrate.py` is
-the only one that funds GPU work; it reproduces published control rungs before
-its new rows are trusted and refuses on a mismatch.
+```bash
+PY=/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python
+REPO=/absolute/path/to/prismaquant-checkout
+STUDY="$REPO/research/trellis_e2m1_highrate_2026-08-30"
+cd "$REPO"
+
+"$PY" "$STUDY/bypass_census.py"
+"$PY" "$STUDY/scalar_subgrid_ladder.py" --corpus dsv4
+"$PY" "$STUDY/scalar_subgrid_ladder.py" --corpus bf16
+"$PY" "$STUDY/shaped_scalar_control.py"
+"$PY" "$STUDY/fp8_learned_glm.py" \
+  --manifest <final-v2.json> --out <glm-fp8-learned.json> --dry-run
+"$PY" "$STUDY/fp8_cb_tcq_glm.py" \
+  --manifest <final-v2.json> --out <glm-fp8-cb-tcq.json> --preflight-only
+"$PY" "$STUDY/coding_gain_table.py" --rows <rows.json> \
+  --out <coding-gain-table.json>
+```
+
+The first four commands and `coding_gain_table.py` are offline derivations;
+the two GLM validation modes explicitly do no GPU work and write no result.
+For a publication run, place one of the following complete Python command
+suffixes after py-spy's `--` in the attested container recipe above:
+
+```bash
+/usr/bin/python3 -B "$STUDY/e2m1_highrate.py" \
+  --corpus dsv4 --out <rows.json>
+/usr/bin/python3 -B "$STUDY/e2m1_highrate.py" \
+  --corpus glm --glm-manifest <final-v2.json> --out <glm-rows.json>
+/usr/bin/python3 -B "$STUDY/e2m1_highrate.py" \
+  --corpus glm --glm-manifest <final-v2.json> --glm-rate-plan high \
+  --out <glm-high-rate-rows.json>
+/usr/bin/python3 -B "$STUDY/fp8_learned_glm.py" \
+  --manifest <final-v2.json> --out <glm-fp8-learned.json>
+/usr/bin/python3 -B "$STUDY/fp8_cb_tcq_glm.py" \
+  --manifest <final-v2.json> --out <glm-fp8-cb-tcq.json>
+```
+
+Those lines show driver argv only; invoking them directly is not a valid
+publication launch. All three GPU-capable drivers require the host attestation
+and in-container py-spy command. `e2m1_highrate.py` additionally reproduces
+published control rungs before trusting new rows and refuses on a mismatch.

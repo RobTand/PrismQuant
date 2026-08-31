@@ -118,7 +118,9 @@ def test_final_binding_recheck_refuses_midrun_corpus_mutation(
     monkeypatch.setattr(
         _DRIVER,
         "_execution_environment",
-        lambda _ladder, require_cuda: {"execution": "bound"},
+        lambda _ladder, require_cuda: (
+            {"execution": "bound"}, {"segment": "bound"}
+        ),
     )
     monkeypatch.setattr(
         _DRIVER, "_locked_sources", lambda _path: {"locked": "bound"}
@@ -136,7 +138,9 @@ def test_final_binding_recheck_refuses_midrun_corpus_mutation(
             },
         ),
     )
-    _DRIVER._verify_final_bindings(args=args, settings=settings, ladder=ladder)
+    assert _DRIVER._verify_final_bindings(
+        args=args, settings=settings, ladder=ladder
+    ) == {"segment": "bound"}
 
     artifact.write_bytes(b"artifact-mutated-during-run")
     with pytest.raises(_DRIVER.CampaignError, match="corpus drifted"):

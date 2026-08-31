@@ -13,6 +13,7 @@ import re
 import hashlib
 import json
 import statistics
+from pathlib import PurePosixPath
 from typing import Mapping, Sequence
 
 
@@ -34,11 +35,15 @@ _PHYSICAL_HOSTS = {
         "uts_hostname": "sparky",
         "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
         "gpu_name": "NVIDIA GB10",
+        "image_id": _CAMPAIGN_IMAGE_DIGEST,
     },
     "sparklina": {
         "uts_hostname": "gx10-6b77",
         "gpu_uuid": "GPU-b1eceeea-fec7-371e-2cf3-cd10f2e7b705",
         "gpu_name": "NVIDIA GB10",
+        "image_id": (
+            "sha256:ac631d27c1514ec3f838299d424c98892a0ba854fa642002df4c8f576bbfe9fa"
+        ),
     },
 }
 _EXECUTION_KEYS = frozenset({
@@ -49,6 +54,11 @@ _EXECUTION_KEYS = frozenset({
     "repo_root", "source_mount_evidence", "repo_git_commit",
     "repo_tree_clean", "python", "torch", "triton", "device",
 })
+_EXECUTION_SEGMENT_KEYS = frozenset({
+    "schema", "physical_host", "container_id", "image_id", "gpu_uuid",
+    "launch_attestation_path", "launch_attestation_sha256",
+    "launch_command_sha256", "segment_sha256",
+})
 _E2_LANES = ("tcq_two_tier", "tcq_v1")
 _E2_ROOT_KEYS = frozenset({"receipt", "per_tensor", "checkpoint_sha256"})
 _E2_RECEIPT_KEYS = frozenset({
@@ -58,7 +68,7 @@ _E2_RECEIPT_KEYS = frozenset({
     "active_source_identity", "publication_identity_sha256",
     "glm_rate_plan", "aggregation_contract", "rate_plan", "new_rates",
     "mathematical_q256_bounds", "arms", "pricing", "environment",
-    "partial", "tensors_done",
+    "partial", "tensors_done", "execution_segments",
 })
 _E2_FINAL_RECEIPT_KEYS = _E2_RECEIPT_KEYS | {
     "completed_at_unix_s", "status", "control_verdict", "population_counts",
@@ -141,7 +151,7 @@ _E2_TWO_TIER_FOOTPRINT_KEYS = _E2_V1_FOOTPRINT_KEYS | {
 
 _FP8_ROOT_KEYS = frozenset({
     "schema", "settings", "started_at_unix_s", "per_tensor", "partial",
-    "tensors_done", "checkpoint_sha256",
+    "tensors_done", "execution_segments", "checkpoint_sha256",
 })
 _FP8_FINAL_ROOT_KEYS = _FP8_ROOT_KEYS | {
     "completed_at_unix_s", "population_summaries", "status", "performance_gate",
@@ -217,7 +227,7 @@ def _validate_execution_environment(
         raise CheckpointContractError(
             f"{where}.container_image_digest differs"
         )
-    if environment.get("container_image_id") != _CAMPAIGN_IMAGE_DIGEST:
+    if environment.get("container_image_id") != host_spec["image_id"]:
         raise CheckpointContractError(f"{where}.container_image_id differs")
     if environment.get("container_image_evidence") != (
         "host_docker_daemon_inspect_before_start"
@@ -257,6 +267,65 @@ def _validate_execution_environment(
             f"{where}.repo_git_commit differs from active source identity"
         )
     return environment
+
+
+def _validate_execution_segments(
+    value: object, *, environment: Mapping[str, object], where: str,
+) -> list[Mapping[str, object]]:
+    if not isinstance(value, list) or not value:
+        raise CheckpointContractError(f"{where} must be a nonempty list")
+    seen: set[str] = set()
+    output: list[Mapping[str, object]] = []
+    for index, raw in enumerate(value):
+        segment = _exact(
+            raw, _EXECUTION_SEGMENT_KEYS, where=f"{where}[{index}]"
+        )
+        if segment.get("schema") != "trellis.numeric_execution_segment.v1":
+            raise CheckpointContractError(f"{where}[{index}].schema differs")
+        if (
+            segment.get("physical_host") != environment.get("physical_host")
+            or segment.get("image_id") != environment.get("container_image_id")
+            or segment.get("gpu_uuid") != environment.get("gpu_uuid")
+        ):
+            raise CheckpointContractError(
+                f"{where}[{index}] differs from the stable environment"
+            )
+        container_id = segment.get("container_id")
+        if not isinstance(container_id, str) or re.fullmatch(
+            r"[0-9a-f]{64}", container_id
+        ) is None:
+            raise CheckpointContractError(
+                f"{where}[{index}].container_id is invalid"
+            )
+        attestation_path = segment.get("launch_attestation_path")
+        storage_path = PurePosixPath("/home/rob/dq-runs")
+        if (
+            not isinstance(attestation_path, str)
+            or not PurePosixPath(attestation_path).is_absolute()
+            or not PurePosixPath(attestation_path).is_relative_to(storage_path)
+            or PurePosixPath(attestation_path).parent == storage_path
+            or PurePosixPath(attestation_path).name in {"", ".", ".."}
+        ):
+            raise CheckpointContractError(
+                f"{where}[{index}].launch_attestation_path is invalid"
+            )
+        for field in (
+            "launch_attestation_sha256", "launch_command_sha256", "segment_sha256",
+        ):
+            _sha(segment.get(field), where=f"{where}[{index}].{field}")
+        unsigned = {
+            key: item for key, item in segment.items() if key != "segment_sha256"
+        }
+        if segment["segment_sha256"] != _json_digest(
+            unsigned, newline=False, where=f"{where}[{index}]"
+        ):
+            raise CheckpointContractError(f"{where}[{index}] digest differs")
+        digest = str(segment["segment_sha256"])
+        if digest in seen:
+            raise CheckpointContractError(f"{where} contains a duplicate segment")
+        seen.add(digest)
+        output.append(segment)
+    return output
 _FP8_SIDECAR_AMORTIZATION = (
     "the fixed fp8 lattice sidecar is a format-shared asset, charged "
     "once per (rung, physical identity), NOT per tensor"
@@ -764,15 +833,25 @@ def validate_e2m1_checkpoint(
             or len(set(control_rungs)) != len(control_rungs)):
         raise CheckpointContractError("receipt.control_rungs differs")
     _sha(receipt.get("publication_identity_sha256"), where="receipt.publication_identity_sha256")
-    _validate_execution_environment(
+    execution_environment = _validate_execution_environment(
         receipt.get("environment"),
         active_source_identity=receipt.get("active_source_identity"),
         where="receipt.environment",
     )
+    _validate_execution_segments(
+        receipt.get("execution_segments"), environment=execution_environment,
+        where="receipt.execution_segments",
+    )
     comparable_saved = {key: value for key, value in receipt.items()
-                        if key not in {"started_at_unix_s", "partial", "tensors_done"}}
+                        if key not in {
+                            "started_at_unix_s", "partial", "tensors_done",
+                            "execution_segments",
+                        }}
     comparable_current = {key: value for key, value in current_receipt.items()
-                          if key not in {"started_at_unix_s", "partial", "tensors_done"}}
+                          if key not in {
+                              "started_at_unix_s", "partial", "tensors_done",
+                              "execution_segments",
+                          }}
     if comparable_saved != comparable_current:
         raise CheckpointContractError("receipt identity differs")
     per_tensor = _mapping(root.get("per_tensor"), where="per_tensor")
@@ -1194,7 +1273,14 @@ def validate_fp8_checkpoint(document: object, *, settings: Mapping[str, object],
         raise CheckpointContractError("checkpoint self-digest differs")
     if root.get("schema") != "trellis.glm_fp8_learned_balanced.v2":
         raise CheckpointContractError("checkpoint schema differs")
-    _validate_fp8_settings(root.get("settings"), expected=settings)
+    validated_settings = _validate_fp8_settings(root.get("settings"), expected=settings)
+    execution_environment = _mapping(
+        validated_settings.get("environment"), where="settings.environment"
+    )
+    _validate_execution_segments(
+        root.get("execution_segments"), environment=execution_environment,
+        where="checkpoint.execution_segments",
+    )
     if root.get("partial") is not require_partial:
         raise CheckpointContractError(f"checkpoint.partial must be {require_partial}")
     _finite(root.get("started_at_unix_s"), where="checkpoint.started_at_unix_s")
@@ -1371,7 +1457,14 @@ def validate_fp8_replay_envelope(
         raise CheckpointContractError("checkpoint self-digest differs")
     if root.get("schema") != "trellis.glm_fp8_learned_balanced.v2":
         raise CheckpointContractError("checkpoint schema differs")
-    _validate_fp8_settings(root.get("settings"), expected=settings)
+    validated_settings = _validate_fp8_settings(root.get("settings"), expected=settings)
+    execution_environment = _mapping(
+        validated_settings.get("environment"), where="settings.environment"
+    )
+    _validate_execution_segments(
+        root.get("execution_segments"), environment=execution_environment,
+        where="checkpoint.execution_segments",
+    )
     if root.get("partial") is not True:
         raise CheckpointContractError("checkpoint.partial must be True")
     _finite(root.get("started_at_unix_s"), where="checkpoint.started_at_unix_s")

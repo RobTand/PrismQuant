@@ -164,7 +164,7 @@ def _resume_partial(
     receipt: Mapping[str, object],
     expected_tensors: Mapping[str, Mapping[str, object]],
     expected_controls: Mapping[str, Mapping[str, object]],
-) -> tuple[dict[str, dict], float] | None:
+) -> tuple[dict[str, dict], float, list[dict[str, object]]] | None:
     if not path.exists():
         return None
     document = _strict_json_object(path)
@@ -186,7 +186,10 @@ def _resume_partial(
     started = saved_receipt.get("started_at_unix_s")
     if not isinstance(started, (int, float)) or not math.isfinite(started):
         raise SystemExit("FATAL: partial checkpoint start time is invalid")
-    return dict(per_tensor), float(started)
+    segments = saved_receipt.get("execution_segments")
+    if not isinstance(segments, list):
+        raise SystemExit("FATAL: partial checkpoint execution history is invalid")
+    return dict(per_tensor), float(started), [dict(item) for item in segments]
 
 
 def _e2_replay_semantics(cell: Mapping[str, object]) -> dict[str, object]:
@@ -239,13 +242,15 @@ def _repo_commit() -> str:
         raise SystemExit(f"FATAL: {exc}") from exc
 
 
-def _execution_environment() -> dict[str, object]:
+def _execution_environment() -> tuple[dict[str, object], dict[str, object]]:
     try:
         return require_numeric_execution_environment(
             REPO_ROOT,
             H.current_env(),
             os.environ,
             require_cuda=True,
+            driver_path=Path(__file__),
+            driver_argv=sys.argv,
         )
     except NumericExecutionContractError as exc:
         raise SystemExit(f"FATAL: {exc}") from exc
@@ -402,8 +407,8 @@ def _verify_final_bindings(
     receipt: Mapping[str, object],
     publication_identity: Mapping[str, object],
     execution_environment: Mapping[str, object],
-) -> None:
-    fresh_environment = _execution_environment()
+) -> dict[str, object]:
+    fresh_environment, fresh_segment = _execution_environment()
     if fresh_environment != execution_environment:
         raise SystemExit("FATAL: numeric execution environment drifted during run")
     if receipt.get("environment") != fresh_environment:
@@ -420,6 +425,7 @@ def _verify_final_bindings(
         raise SystemExit("FATAL: result corpus binding is missing")
     if _corpus_binding(args) != binding:
         raise SystemExit("FATAL: bound corpus/input/control identity drifted during run")
+    return fresh_segment
 
 
 def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
@@ -558,7 +564,7 @@ def main() -> int:
     args = _parse_args()
     if args.corpus != "glm" and args.glm_rate_plan != "scaffold":
         raise SystemExit("--glm-rate-plan is valid only with --corpus glm")
-    execution_environment = _execution_environment()
+    execution_environment, execution_segment = _execution_environment()
     prepared = _prepare_campaign(args)
     publication_identity = _claim_identity(
         args, prepared["corpus_binding"], execution_environment
@@ -568,7 +574,8 @@ def main() -> int:
             args.out, identity=publication_identity
         ):
             return _run_claimed(
-                args, publication_identity, prepared, execution_environment
+                args, publication_identity, prepared, execution_environment,
+                execution_segment,
             )
     except PublicationError as exc:
         raise SystemExit(f"FATAL: {exc}") from exc
@@ -579,6 +586,7 @@ def _run_claimed(
     publication_identity: Mapping[str, object],
     prepared: Mapping[str, object],
     execution_environment: Mapping[str, object],
+    execution_segment: Mapping[str, object],
 ) -> int:
 
     partial_path = args.out.with_name(args.out.name + ".partial")
@@ -644,6 +652,7 @@ def _run_claimed(
                     "family's ATTESTED group16_fp8_e4m3_0p5_bpw plane "
                     "(comparable to NVFP4 and to production)"),
         "environment": env,
+        "execution_segments": [dict(execution_segment)],
     }
 
     resumed = _resume_partial(
@@ -655,8 +664,13 @@ def _run_claimed(
     if resumed is None:
         resumed_out: dict[str, dict] = {}
     else:
-        resumed_out, started_at = resumed
+        resumed_out, started_at, saved_segments = resumed
         receipt["started_at_unix_s"] = started_at
+        if execution_segment.get("segment_sha256") not in {
+            item.get("segment_sha256") for item in saved_segments
+        }:
+            saved_segments.append(dict(execution_segment))
+        receipt["execution_segments"] = saved_segments
         print(
             f"replaying {len(resumed_out)}/{len(names)} checkpoint tensors "
             "before reuse",
@@ -954,12 +968,16 @@ def _run_claimed(
     except CheckpointContractError as exc:
         raise SystemExit(f"FATAL: refusing invalid final result: {exc}") from exc
     _atomic_json(partial_path, final_checkpoint)
-    _verify_final_bindings(
+    final_segment = _verify_final_bindings(
         args=args,
         receipt=receipt,
         publication_identity=publication_identity,
         execution_environment=execution_environment,
     )
+    if final_segment != receipt["execution_segments"][-1]:
+        raise SystemExit(
+            "FATAL: final execution segment differs from checkpoint history"
+        )
     try:
         publish_file_no_replace(partial_path, args.out)
     except PublicationError as exc:

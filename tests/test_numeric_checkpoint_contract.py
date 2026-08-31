@@ -21,15 +21,16 @@ C = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(C)
 
 
-def _execution_environment(commit: str):
+def _execution_environment(commit: str, *, host: str = "sparky"):
+    host_spec = C._PHYSICAL_HOSTS[host]
     return {
         "schema": "trellis.numeric_execution.v2",
-        "physical_host": "sparky",
-        "uts_hostname": "sparky",
-        "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+        "physical_host": host,
+        "uts_hostname": host_spec["uts_hostname"],
+        "gpu_uuid": host_spec["gpu_uuid"],
         "container_image_reference": C._CAMPAIGN_IMAGE_REFERENCE,
         "container_image_digest": C._CAMPAIGN_IMAGE_DIGEST,
-        "container_image_id": C._CAMPAIGN_IMAGE_DIGEST,
+        "container_image_id": host_spec["image_id"],
         "container_image_evidence": (
             "host_docker_daemon_inspect_before_start"
         ),
@@ -45,8 +46,39 @@ def _execution_environment(commit: str):
         "python": "3.12.3",
         "torch": "2.13.0+cu130",
         "triton": "3.7.1",
-        "device": "NVIDIA GB10",
+        "device": host_spec["gpu_name"],
     }
+
+
+def _execution_segment(environment, *, marker: str = "1"):
+    unsigned = {
+        "schema": "trellis.numeric_execution_segment.v1",
+        "physical_host": environment["physical_host"],
+        "container_id": marker * 64,
+        "image_id": environment["container_image_id"],
+        "gpu_uuid": environment["gpu_uuid"],
+        "launch_attestation_path": (
+            f"/home/rob/dq-runs/test-fixtures/{marker}/attestation.json"
+        ),
+        "launch_attestation_sha256": "a" * 64,
+        "launch_command_sha256": "b" * 64,
+    }
+    return {
+        **unsigned,
+        "segment_sha256": hashlib.sha256(json.dumps(
+            unsigned, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest(),
+    }
+
+
+def _reseal_segment(segment):
+    unsigned = {
+        key: value for key, value in segment.items()
+        if key != "segment_sha256"
+    }
+    segment["segment_sha256"] = hashlib.sha256(json.dumps(
+        unsigned, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
 
 
 def test_checkpoint_execution_receipt_is_closed_and_campaign_pinned():
@@ -86,6 +118,24 @@ def test_checkpoint_execution_receipt_is_closed_and_campaign_pinned():
                 active_source_identity=source,
                 where="execution",
             )
+
+
+def test_sparklina_checkpoint_requires_its_real_local_image_id():
+    commit = "e" * 40
+    source = {
+        "repo_git_commit": commit,
+        "repo_root": "/immutable/prismaquant",
+    }
+    environment = _execution_environment(commit, host="sparklina")
+    C._validate_execution_environment(
+        environment, active_source_identity=source, where="execution"
+    )
+    wrong = copy.deepcopy(environment)
+    wrong["container_image_id"] = C._CAMPAIGN_IMAGE_DIGEST
+    with pytest.raises(C.CheckpointContractError, match="container_image_id"):
+        C._validate_execution_environment(
+            wrong, active_source_identity=source, where="execution"
+        )
 
 
 def _e2_footprint(
@@ -250,6 +300,9 @@ def _e2_checkpoint():
             "repo_root": "/immutable/prismaquant",
         },
         "environment": _execution_environment(commit),
+        "execution_segments": [
+            _execution_segment(_execution_environment(commit))
+        ],
     })
     shape = [2, 256]
     cell = {
@@ -317,6 +370,8 @@ def test_e2_checkpoint_requires_closed_complete_semantics():
         (lambda value: value["per_tensor"]["tensor-a"]["arms"]["tcq_v1@2.0"]["footprint"].__setitem__("total_bytes", 999), "total_bytes accounting"),
         (lambda value: value["per_tensor"]["tensor-a"]["arms"]["tcq_v1@2.0"]["schedule"].__setitem__("stage4_guard_fixups", 1), "guard fixup"),
         (lambda value: value["per_tensor"]["tensor-a"]["arms"]["tcq_v1@2.0"]["subset_split"]["2"].__setitem__("trellis_db", 999.0), "trellis_db"),
+        (lambda value: value["receipt"]["execution_segments"][0].__setitem__("image_id", C._PHYSICAL_HOSTS["sparklina"]["image_id"]), "stable environment"),
+        (lambda value: value["receipt"]["execution_segments"][0].__setitem__("launch_attestation_path", "/home/rob/dq-runs/attestation.json"), "attestation_path"),
     ):
         bad = copy.deepcopy(checkpoint)
         mutate(bad)
@@ -730,7 +785,9 @@ def _fp8_checkpoint():
             },
             "weighted_energy": 1.0, "arms": arms,
         }},
-        "partial": True, "tensors_done": 1, "checkpoint_sha256": "",
+        "partial": True, "tensors_done": 1,
+        "execution_segments": [_execution_segment(settings["environment"])],
+        "checkpoint_sha256": "",
     }
     _seal_fp8(root)
     return root, settings, [entry]
@@ -770,6 +827,29 @@ def test_fp8_checkpoint_rejects_unknown_claims_and_fake_metrics():
         root, settings=settings, entries=entries,
         generated_hashes=hashes, generated_books=books,
     )
+
+    invalid_path = copy.deepcopy(root)
+    invalid_path["execution_segments"][0]["launch_attestation_path"] = (
+        "/home/rob/dq-runs/attestation.json"
+    )
+    _reseal_segment(invalid_path["execution_segments"][0])
+    _seal_fp8(invalid_path)
+    with pytest.raises(C.CheckpointContractError, match="launch_attestation_path"):
+        C.validate_fp8_checkpoint(
+            invalid_path, settings=settings, entries=entries,
+            generated_hashes=hashes, generated_books=books,
+        )
+
+    duplicate = copy.deepcopy(root)
+    duplicate["execution_segments"].append(
+        copy.deepcopy(duplicate["execution_segments"][0])
+    )
+    _seal_fp8(duplicate)
+    with pytest.raises(C.CheckpointContractError, match="duplicate segment"):
+        C.validate_fp8_checkpoint(
+            duplicate, settings=settings, entries=entries,
+            generated_hashes=hashes, generated_books=books,
+        )
     for mutate, match in (
         (lambda value: value.__setitem__("production_eligible", True), "checkpoint members"),
         (lambda value: value["settings"].__setitem__("serving_ready", True), "settings members"),

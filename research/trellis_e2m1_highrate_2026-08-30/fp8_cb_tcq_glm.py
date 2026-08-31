@@ -48,6 +48,7 @@ from numeric_execution_contract import (  # noqa: E402
     require_numeric_execution_environment,
     require_repo_commit,
     validate_numeric_execution_record,
+    validate_numeric_execution_segment,
 )
 
 
@@ -140,13 +141,17 @@ def _locked_sources(ladder_path: Path) -> dict[str, object]:
     }
 
 
-def _execution_environment(ladder) -> dict[str, object]:
+def _execution_environment(
+    ladder,
+) -> tuple[dict[str, object], dict[str, object]]:
     try:
         return require_numeric_execution_environment(
             REPO_ROOT,
             ladder.H.current_env(),
             os.environ,
             require_cuda=True,
+            driver_path=Path(__file__),
+            driver_argv=sys.argv,
         )
     except NumericExecutionContractError as exc:
         raise CampaignError(str(exc)) from exc
@@ -625,7 +630,11 @@ def _strict_report(path: Path) -> dict[str, object]:
 
 
 def _finite(value: object, *, where: str, nonnegative: bool = False) -> float:
-    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
         raise CampaignError(f"{where} must be finite")
     result = float(value)
     if nonnegative and result < 0:
@@ -721,12 +730,14 @@ def _validate_footprint(arm: Mapping[str, object], *, numel: int, where: str) ->
 def validate_report(
     report: Mapping[str, object], *, settings: Mapping[str, object], entries,
     require_complete: bool = False,
+    generated_evidence: Mapping[str, Mapping[str, object]] | None = None,
+    replay_envelope: bool = False,
 ) -> None:
     _validate_settings(settings, entries)
     partial = report.get("partial")
     expected_keys = {
         "schema", "settings", "started_at_unix_s", "per_tensor", "partial",
-        "tensors_done", "checkpoint_sha256",
+        "tensors_done", "execution_segments", "checkpoint_sha256",
     }
     if partial is False:
         expected_keys |= {
@@ -738,6 +749,27 @@ def validate_report(
     _exact_keys(report, expected_keys, where="report")
     if report.get("schema") != SCHEMA or report.get("settings") != settings:
         raise CampaignError("report identity differs from campaign settings")
+    started_at = _finite(
+        report.get("started_at_unix_s"), where="report.started_at_unix_s",
+        nonnegative=True,
+    )
+    segments = report.get("execution_segments")
+    if not isinstance(segments, list) or not segments:
+        raise CampaignError("report.execution_segments must be nonempty")
+    seen_segments = set()
+    for index, segment in enumerate(segments):
+        try:
+            validate_numeric_execution_segment(
+                segment, environment=settings["environment"]
+            )
+        except NumericExecutionContractError as exc:
+            raise CampaignError(
+                f"report.execution_segments[{index}]: {exc}"
+            ) from exc
+        digest = segment["segment_sha256"]
+        if digest in seen_segments:
+            raise CampaignError("report.execution_segments contains a duplicate")
+        seen_segments.add(digest)
     body = {key: value for key, value in report.items() if key != "checkpoint_sha256"}
     if report.get("checkpoint_sha256") != identity_sha256(body):
         raise CampaignError("checkpoint self-digest differs")
@@ -750,6 +782,16 @@ def validate_report(
         raise CampaignError("checkpoint tensors are not an exact corpus prefix")
     if report.get("tensors_done") != len(names):
         raise CampaignError("tensors_done differs from checkpoint coverage")
+    if replay_envelope:
+        if require_complete:
+            raise CampaignError("replay envelope cannot validate a final result")
+    else:
+        if not isinstance(generated_evidence, Mapping):
+            raise CampaignError(
+                "deterministically regenerated cell evidence is required"
+            )
+        if set(generated_evidence) != set(per_tensor):
+            raise CampaignError("generated evidence tensor domain differs")
     by_name = {entry.name: entry for entry in entries}
     for name, cell in per_tensor.items():
         if not isinstance(cell, Mapping):
@@ -856,6 +898,10 @@ def validate_report(
             if not _SHA256_RE.fullmatch(str(arm.get("reconstruction_sha256"))):
                 raise CampaignError(f"{name}.{arm_name}: reconstruction hash invalid")
             _validate_footprint(arm, numel=numel, where=f"{name}.{arm_name}")
+        if not replay_envelope and _replay_semantics(cell) != generated_evidence[name]:
+            raise CampaignError(
+                f"{name}: final claims differ from deterministically regenerated evidence"
+            )
     if require_complete and partial is not False:
         raise CampaignError("completed result required")
     if partial is False:
@@ -863,6 +909,12 @@ def validate_report(
             raise CampaignError("final result does not cover the full corpus")
         if report.get("status") != STATUS or report.get("claim_boundary") != CLAIM_BOUNDARY:
             raise CampaignError("final no-serving claim boundary differs")
+        completed_at = _finite(
+            report.get("completed_at_unix_s"),
+            where="report.completed_at_unix_s", nonnegative=True,
+        )
+        if completed_at < started_at:
+            raise CampaignError("report completion precedes start")
         expected_summaries = population_summaries(per_tensor)
         if report.get("population_summaries") != expected_summaries:
             raise CampaignError("population summaries are not exactly derived")
@@ -872,12 +924,15 @@ def validate_report(
 
 def _resume(path: Path, *, settings, entries) -> dict[str, object]:
     sealed = _strict_report(path)
-    validate_report(sealed, settings=settings, entries=entries)
+    validate_report(
+        sealed, settings=settings, entries=entries, replay_envelope=True
+    )
     return {key: value for key, value in sealed.items() if key != "checkpoint_sha256"}
 
 
-def _verify_final_bindings(*, args, settings, ladder) -> None:
-    if settings.get("environment") != _execution_environment(ladder):
+def _verify_final_bindings(*, args, settings, ladder) -> dict[str, object]:
+    fresh_environment, fresh_segment = _execution_environment(ladder)
+    if settings.get("environment") != fresh_environment:
         raise CampaignError("numeric execution environment drifted during run")
     if settings.get("active_source_identity") != _active_source_identity():
         raise CampaignError("active source identity drifted during run")
@@ -895,9 +950,10 @@ def _verify_final_bindings(*, args, settings, ladder) -> None:
         != settings.get("corpus_prismaquant_commit")
     ):
         raise CampaignError("bound GLM corpus drifted during run")
+    return fresh_segment
 
 
-def _run(args, corpus, settings, ladder) -> int:
+def _run(args, corpus, settings, ladder, execution_segment) -> int:
     import torch
 
     if not torch.cuda.is_available():
@@ -911,6 +967,12 @@ def _run(args, corpus, settings, ladder) -> int:
         raise CampaignError("partial checkpoint must not be a symlink")
     if partial.exists():
         report = _resume(partial, settings=settings, entries=corpus.entries)
+        segments = list(report["execution_segments"])
+        if execution_segment.get("segment_sha256") not in {
+            item.get("segment_sha256") for item in segments
+        }:
+            segments.append(dict(execution_segment))
+        report["execution_segments"] = segments
     else:
         report = {
             "schema": SCHEMA,
@@ -919,9 +981,11 @@ def _run(args, corpus, settings, ladder) -> int:
             "per_tensor": {},
             "partial": True,
             "tensors_done": 0,
+            "execution_segments": [dict(execution_segment)],
         }
     saved = dict(report["per_tensor"])
     report["per_tensor"] = {}
+    generated_evidence: dict[str, dict[str, object]] = {}
     device = torch.device("cuda:0")
     for index, entry in enumerate(corpus.entries, 1):
         cell = _measure_cell(
@@ -933,9 +997,13 @@ def _run(args, corpus, settings, ladder) -> int:
         else:
             suffix = ""
         report["per_tensor"][entry.name] = cell
+        generated_evidence[entry.name] = _replay_semantics(cell)
         report["tensors_done"] = index
         sealed = _sealed(report)
-        validate_report(sealed, settings=settings, entries=corpus.entries)
+        validate_report(
+            sealed, settings=settings, entries=corpus.entries,
+            generated_evidence=generated_evidence,
+        )
         atomic_checkpoint_json(partial, sealed)
         print(
             f"[{index}/{len(corpus.entries)}] {entry.population} {entry.name}{suffix}",
@@ -951,10 +1019,15 @@ def _run(args, corpus, settings, ladder) -> int:
     })
     sealed = _sealed(report)
     validate_report(
-        sealed, settings=settings, entries=corpus.entries, require_complete=True
+        sealed, settings=settings, entries=corpus.entries, require_complete=True,
+        generated_evidence=generated_evidence,
     )
     atomic_checkpoint_json(partial, sealed)
-    _verify_final_bindings(args=args, settings=settings, ladder=ladder)
+    final_segment = _verify_final_bindings(
+        args=args, settings=settings, ladder=ladder
+    )
+    if final_segment != report["execution_segments"][-1]:
+        raise CampaignError("final execution segment differs from checkpoint history")
     publish_file_no_replace(partial, args.out)
     print(f"wrote {args.out}", flush=True)
     return 0
@@ -999,7 +1072,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(preflight, indent=2, sort_keys=True))
         return 0
     ladder = BASE._load_ladder(args.locked_ladder)
-    execution = _execution_environment(ladder)
+    execution, execution_segment = _execution_environment(ladder)
     settings = _settings(
         args=args,
         corpus=corpus,
@@ -1009,7 +1082,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         with exclusive_publication_claim(args.out, identity=settings):
-            return _run(args, corpus, settings, ladder)
+            return _run(args, corpus, settings, ladder, execution_segment)
     except PublicationError as exc:
         raise CampaignError(str(exc)) from exc
 

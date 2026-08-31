@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -264,6 +265,35 @@ def _settings(entries):
     return settings
 
 
+def _segment(settings, *, marker="1"):
+    environment = settings["environment"]
+    unsigned = {
+        "schema": "trellis.numeric_execution_segment.v1",
+        "physical_host": environment["physical_host"],
+        "container_id": marker * 64,
+        "image_id": environment["container_image_id"],
+        "gpu_uuid": environment["gpu_uuid"],
+        "launch_attestation_path": (
+            f"/home/rob/dq-runs/test-fixtures/{marker}/attestation.json"
+        ),
+        "launch_attestation_sha256": "a" * 64,
+        "launch_command_sha256": "b" * 64,
+    }
+    return {
+        **unsigned,
+        "segment_sha256": hashlib.sha256(json.dumps(
+            unsigned, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest(),
+    }
+
+
+def _evidence(per_tensor):
+    return {
+        name: _DRIVER._replay_semantics(cell)
+        for name, cell in per_tensor.items()
+    }
+
+
 def test_closed_final_report_rederives_summaries_and_refuses_pooled_field():
     entries = (_entry("dense-a", "dense"), _entry("routed-a", "routed"))
     settings = _settings(entries)
@@ -278,6 +308,7 @@ def test_closed_final_report_rederives_summaries_and_refuses_pooled_field():
         "per_tensor": per_tensor,
         "partial": False,
         "tensors_done": 2,
+        "execution_segments": [_segment(settings)],
         "completed_at_unix_s": 2.0,
         "population_summaries": _DRIVER.population_summaries(per_tensor),
         "status": _DRIVER.STATUS,
@@ -285,7 +316,8 @@ def test_closed_final_report_rederives_summaries_and_refuses_pooled_field():
     }
     sealed = _DRIVER._sealed(report)
     _DRIVER.validate_report(
-        sealed, settings=settings, entries=entries, require_complete=True
+        sealed, settings=settings, entries=entries, require_complete=True,
+        generated_evidence=_evidence(per_tensor),
     )
 
     attack = copy.deepcopy(sealed)
@@ -293,7 +325,8 @@ def test_closed_final_report_rederives_summaries_and_refuses_pooled_field():
     attack = _DRIVER._sealed(attack)
     with pytest.raises(_DRIVER.CampaignError, match="unknown=.*pooled_summary"):
         _DRIVER.validate_report(
-            attack, settings=settings, entries=entries, require_complete=True
+            attack, settings=settings, entries=entries, require_complete=True,
+            generated_evidence=_evidence(per_tensor),
         )
 
 
@@ -324,6 +357,7 @@ def test_closed_report_binds_each_arm_to_its_name():
         "per_tensor": per_tensor,
         "partial": False,
         "tensors_done": 2,
+        "execution_segments": [_segment(settings)],
         "completed_at_unix_s": 2.0,
         "population_summaries": _DRIVER.population_summaries(per_tensor),
         "status": _DRIVER.STATUS,
@@ -336,7 +370,8 @@ def test_closed_report_binds_each_arm_to_its_name():
 
     with pytest.raises(_DRIVER.CampaignError, match="TCQ identity differs"):
         _DRIVER.validate_report(
-            sealed, settings=settings, entries=entries, require_complete=True
+            sealed, settings=settings, entries=entries, require_complete=True,
+            generated_evidence=_evidence(per_tensor),
         )
 
 
@@ -354,6 +389,7 @@ def test_closed_report_binds_importance_provenance_to_corpus_entry():
         "per_tensor": per_tensor,
         "partial": False,
         "tensors_done": 2,
+        "execution_segments": [_segment(settings)],
         "completed_at_unix_s": 2.0,
         "population_summaries": _DRIVER.population_summaries(per_tensor),
         "status": _DRIVER.STATUS,
@@ -364,7 +400,99 @@ def test_closed_report_binds_importance_provenance_to_corpus_entry():
 
     with pytest.raises(_DRIVER.CampaignError, match="importance provenance differs"):
         _DRIVER.validate_report(
-            sealed, settings=settings, entries=entries, require_complete=True
+            sealed, settings=settings, entries=entries, require_complete=True,
+            generated_evidence=_evidence(per_tensor),
+        )
+
+
+def test_resealed_schedule_alphabet_book_and_reconstruction_mutations_fail():
+    entries = (_entry("dense-a", "dense"), _entry("routed-a", "routed"))
+    settings = _settings(entries)
+    per_tensor = {
+        "dense-a": _complete_cell("dense"),
+        "routed-a": _complete_cell("routed"),
+    }
+    evidence = _evidence(per_tensor)
+    report = {
+        "schema": _DRIVER.SCHEMA,
+        "settings": settings,
+        "started_at_unix_s": 1.0,
+        "per_tensor": per_tensor,
+        "partial": False,
+        "tensors_done": 2,
+        "execution_segments": [_segment(settings)],
+        "completed_at_unix_s": 2.0,
+        "population_summaries": _DRIVER.population_summaries(per_tensor),
+        "status": _DRIVER.STATUS,
+        "claim_boundary": _DRIVER.CLAIM_BOUNDARY,
+    }
+    _DRIVER.validate_report(
+        _DRIVER._sealed(report), settings=settings, entries=entries,
+        require_complete=True, generated_evidence=evidence,
+    )
+
+    mutations = (
+        lambda value: value["per_tensor"]["dense-a"]["arms"][
+            "tcq_e4m3.two_tier.exact_dp@5"
+        ]["schedule"].__setitem__("test_fixture", False),
+        lambda value: value["per_tensor"]["dense-a"]["arms"][
+            "tcq_e4m3.two_tier.exact_dp@5"
+        ]["alphabet"].__setitem__("test_fixture", False),
+        lambda value: value["per_tensor"]["dense-a"]["arms"][
+            "fp8_cb_learned@32"
+        ]["learned_book"].__setitem__("test_fixture", False),
+        lambda value: value["per_tensor"]["dense-a"]["arms"][
+            "fp8_cb_fixed@32"
+        ].__setitem__("reconstruction_sha256", "0" * 64),
+    )
+    for mutate in mutations:
+        bad = copy.deepcopy(report)
+        mutate(bad)
+        with pytest.raises(_DRIVER.CampaignError, match="generated evidence"):
+            _DRIVER.validate_report(
+                _DRIVER._sealed(bad), settings=settings, entries=entries,
+                require_complete=True, generated_evidence=evidence,
+            )
+
+    bad_time = copy.deepcopy(report)
+    bad_time["completed_at_unix_s"] = 0.5
+    with pytest.raises(_DRIVER.CampaignError, match="completion precedes start"):
+        _DRIVER.validate_report(
+            _DRIVER._sealed(bad_time), settings=settings, entries=entries,
+            require_complete=True, generated_evidence=evidence,
+        )
+
+
+def test_fresh_container_segment_history_is_append_only_and_deduplicated():
+    entries = (_entry("dense-a", "dense"), _entry("routed-a", "routed"))
+    settings = _settings(entries)
+    per_tensor = {
+        "dense-a": _complete_cell("dense"),
+        "routed-a": _complete_cell("routed"),
+    }
+    report = {
+        "schema": _DRIVER.SCHEMA,
+        "settings": settings,
+        "started_at_unix_s": 1.0,
+        "per_tensor": per_tensor,
+        "partial": False,
+        "tensors_done": 2,
+        "execution_segments": [_segment(settings), _segment(settings, marker="2")],
+        "completed_at_unix_s": 2.0,
+        "population_summaries": _DRIVER.population_summaries(per_tensor),
+        "status": _DRIVER.STATUS,
+        "claim_boundary": _DRIVER.CLAIM_BOUNDARY,
+    }
+    evidence = _evidence(per_tensor)
+    _DRIVER.validate_report(
+        _DRIVER._sealed(report), settings=settings, entries=entries,
+        require_complete=True, generated_evidence=evidence,
+    )
+    report["execution_segments"].append(copy.deepcopy(report["execution_segments"][0]))
+    with pytest.raises(_DRIVER.CampaignError, match="duplicate"):
+        _DRIVER.validate_report(
+            _DRIVER._sealed(report), settings=settings, entries=entries,
+            require_complete=True, generated_evidence=evidence,
         )
 
 
@@ -441,7 +569,10 @@ def test_final_binding_recheck_refuses_execution_environment_drift(
     }
     args = SimpleNamespace(locked_ladder=tmp_path / "ladder.py", manifest=manifest)
     live = {"execution": "bound"}
-    monkeypatch.setattr(_DRIVER, "_execution_environment", lambda _ladder: live)
+    segment = {"segment": "bound"}
+    monkeypatch.setattr(
+        _DRIVER, "_execution_environment", lambda _ladder: (live, segment)
+    )
     monkeypatch.setattr(
         _DRIVER, "_active_source_identity", lambda: {"active": "bound"}
     )
@@ -461,7 +592,9 @@ def test_final_binding_recheck_refuses_execution_environment_drift(
             {"sha256": _DRIVER.file_sha256(manifest)},
         ),
     )
-    _DRIVER._verify_final_bindings(args=args, settings=settings, ladder=object())
+    assert _DRIVER._verify_final_bindings(
+        args=args, settings=settings, ladder=object()
+    ) == segment
     live = {"execution": "drifted"}
     with pytest.raises(_DRIVER.CampaignError, match="environment drifted"):
         _DRIVER._verify_final_bindings(

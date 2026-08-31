@@ -206,13 +206,17 @@ def _repo_commit() -> str:
         raise CampaignError(str(exc)) from exc
 
 
-def _execution_environment(ladder, *, require_cuda: bool) -> dict[str, object]:
+def _execution_environment(
+    ladder, *, require_cuda: bool,
+) -> tuple[dict[str, object], dict[str, object]]:
     try:
         return require_numeric_execution_environment(
             REPO_ROOT,
             ladder.H.current_env(),
             os.environ,
             require_cuda=require_cuda,
+            driver_path=Path(__file__),
+            driver_argv=sys.argv,
         )
     except NumericExecutionContractError as exc:
         raise CampaignError(str(exc)) from exc
@@ -258,8 +262,10 @@ def _frozen_codec_closure(ladder) -> dict[str, object]:
 
 def _verify_final_bindings(
     *, args, settings: Mapping[str, object], ladder
-) -> None:
-    fresh_environment = _execution_environment(ladder, require_cuda=True)
+) -> dict[str, object]:
+    fresh_environment, fresh_segment = _execution_environment(
+        ladder, require_cuda=True
+    )
     if settings.get("environment") != fresh_environment:
         raise CampaignError("numeric execution environment drifted during run")
     if settings.get("active_source_identity") != _active_source_identity():
@@ -284,6 +290,7 @@ def _verify_final_bindings(
         != settings.get("corpus_prismaquant_commit")
     ):
         raise CampaignError("bound GLM corpus drifted during run")
+    return fresh_segment
 
 
 def main() -> int:
@@ -327,17 +334,24 @@ def main() -> int:
         **preflight_core,
         "frozen_codec_closure": _frozen_codec_closure(ladder),
     }
-    environment = _execution_environment(ladder, require_cuda=True)
+    environment, execution_segment = _execution_environment(
+        ladder, require_cuda=True
+    )
     settings = {**settings_core, "environment": environment}
     settings["identity_sha256"] = _identity_sha256(settings)
     try:
         with exclusive_publication_claim(args.out, identity=settings):
-            return _run_claimed(args, corpus, settings, ladder)
+            return _run_claimed(
+                args, corpus, settings, ladder, execution_segment
+            )
     except PublicationError as exc:
         raise CampaignError(str(exc)) from exc
 
 
-def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
+def _run_claimed(
+    args, corpus, settings: Mapping[str, object], ladder,
+    execution_segment: Mapping[str, object],
+) -> int:
     if args.out.exists() or args.out.is_symlink():
         raise CampaignError("final output already exists (immutable no-clobber)")
 
@@ -349,6 +363,12 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
         raise CampaignError("partial checkpoint must not be a symlink")
     if partial.exists():
         report = _resume_report(partial, settings=settings, corpus=corpus)
+        segments = list(report["execution_segments"])
+        if execution_segment.get("segment_sha256") not in {
+            item.get("segment_sha256") for item in segments
+        }:
+            segments.append(dict(execution_segment))
+        report["execution_segments"] = segments
     else:
         report = {
             "schema": SCHEMA,
@@ -356,6 +376,7 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
             "started_at_unix_s": time.time(),
             "per_tensor": {},
             "partial": True,
+            "execution_segments": [dict(execution_segment)],
         }
     saved_per_tensor = dict(report["per_tensor"])
     report["per_tensor"] = {}
@@ -484,7 +505,11 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
     except CheckpointContractError as exc:
         raise CampaignError(f"refusing invalid final result: {exc}") from exc
     _atomic_json(partial, sealed)
-    _verify_final_bindings(args=args, settings=settings, ladder=ladder)
+    final_segment = _verify_final_bindings(
+        args=args, settings=settings, ladder=ladder
+    )
+    if final_segment != report["execution_segments"][-1]:
+        raise CampaignError("final execution segment differs from checkpoint history")
     try:
         publish_file_no_replace(partial, args.out)
     except PublicationError as exc:
