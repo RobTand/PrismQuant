@@ -2759,6 +2759,14 @@ def repair_local_result(
         root, str(task["working_directory"]), str(task["result_path"])
     )
     with _local_output_lock(cas, root, output):
+        # The pre-lock lookup is only a fast refusal.  A producer can publish
+        # while this repair waits for the shared output lock, so the decision
+        # to unlink must be made from a fresh receipt lookup while exclusion
+        # is held.
+        if cas.lookup(normalized) is not None:
+            raise LocalActionError(
+                "cannot repair a declared result after its action has a CAS receipt"
+            )
         claim = _load_local_result_claim(cas, normalized, root)
         if claim is None:
             raise LocalActionError(

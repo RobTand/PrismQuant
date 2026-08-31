@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
@@ -1348,6 +1349,42 @@ def test_local_result_repair_requires_exact_claim_and_refuses_symlink(
         pb.repair_local_result(
             action, cas_root=cas_root, checkout_root=checkout
         )
+
+
+def test_local_result_repair_rechecks_receipt_after_lock_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Repair cannot erase output certified while it waits for exclusion."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    output = checkout / "result.bin"
+    output.write_bytes(b"result")
+    pb._ensure_local_result_claim(cas, action, checkout)
+    attestation = pb.preflight_action(
+        action, cas_root=cas_root, checkout_root=checkout
+    )
+
+    @contextmanager
+    def publish_while_repair_waits(*_args: object, **_kwargs: object):
+        receipt, won = cas.publish_result(
+            action, output, attestation=attestation
+        )
+        assert won is True
+        assert receipt["result"]["sha256"] == hashlib.sha256(b"result").hexdigest()
+        yield
+
+    monkeypatch.setattr(pb, "_local_output_lock", publish_while_repair_waits)
+    with pytest.raises(pb.LocalActionError, match="has a CAS receipt"):
+        pb.repair_local_result(
+            action, cas_root=cas_root, checkout_root=checkout
+        )
+    assert output.read_bytes() == b"result"
+    assert cas.lookup(action) is not None
 
 
 def test_local_worker_refuses_closure_changed_by_action_before_publish(
