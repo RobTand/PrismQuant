@@ -343,6 +343,23 @@ after acquiring the output lock so a receipt published while it waited wins.
 Claims are retained as immutable recovery authority; they are not success
 records and cannot satisfy `lookup()`.
 
+The checkout/output `flock` is also an action-lifetime lease. The worker passes
+the exact locked open-file description into task argv, so abrupt worker death
+does not release exclusion while that direct task process can still write its
+declared result. A retry waits; after the orphan exits it removes only the
+exact claimed result and recomputes. If a handled worker exception such as
+`SIGINT` unwinds Python, the worker terminates and reaps the task's complete
+new-session process group before its context manager closes the worker's lock
+descriptor. It never explicitly unlocks the shared open-file description: if
+the task cannot be reaped, its inherited descriptor retains exclusion.
+Regressions kill the worker both during argv and after result staging. This is
+not a kernel-enforced sandbox: task code that deliberately closes inherited
+descriptors or escapes its process group violates the local-action contract,
+and an indefinitely uninterruptible task can retain the lock indefinitely.
+The proposed Slurm deployment's cgroup and sealed time limit remain required
+external containment; PrismaBuild has no durable local holder lease or
+lock-acquisition timeout today.
+
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In
 the target deployment, the trust boundary would be the munge-authenticated,
@@ -501,19 +518,20 @@ Accordingly the current bound applies to the native orchestrated loop, not to
 arbitrary direct `resolve()` calls. This is an explicit remaining contract gap,
 not a throughput claim.
 
-The CPU profile at 4,000 retained poll records is immutable under
-`/home/rob/dq-runs/prismabuild-d9-poll-cache-final-20260831` (manifest SHA-256
-`80f489dab3c4aa55a8a447ad0477c131de5c8f76a63e9033abbe8772671f49e9`,
+The exact merged-source CPU profile at 4,000 retained poll records is immutable
+under `/home/rob/dq-runs/prismabuild-d9-poll-cache-merged-20260831` (manifest
+SHA-256
+`189e7ddc8d9c56ff546954c5ab7a09312c5b492137ce5a10c1706cdeee416037`,
 comparison SHA-256
-`6502450bc87cc264b107a47c33de4cd010f92c801b2c020a83a7203c6468ee23`).
+`265db8e2e3871b5d274ba009ed39c447fdd31c93d1ce1b27b54770e47766a65d`).
 Against exact pre-change commit `a71680c`, eight claims after one warm replay
-fell from 13.003521138 s to 0.050925729 s (255.34x), `/proc/self/io` read
-syscalls from 128,226 to 162 (791.52x fewer), and `rchar` from 27,068,601 to
-65,769 bytes (411.57x less). First complete replay remained 1.597760866 s versus
-1.592751665 s, as required for restart/audit semantics. The before/after hot
-cProfile artifacts have SHA-256
+on merged commit `825120c` fell from 13.003521138 s to 0.053521276 s
+(242.96x), `/proc/self/io` read syscalls from 128,226 to 162 (791.52x fewer),
+and `rchar` from 27,068,601 to 67,465 bytes (401.22x less). First complete
+replay remained 1.597760866 s versus 1.603223845 s, as required for
+restart/audit semantics. The before/after hot cProfile artifacts have SHA-256
 `5650df4b43aa8bf0698dd35b5ce6deb4ffb4dacc37a78818a3cbe9d569ff3d76`
-and `3a44a629ae006b81b7f58f584889525b54598f88ed9d322c5633e3e3b32e4d3a`.
+and `1ce2aadc0fdbc8715d5b5141b8cda93fc784124444832f37b3dc2255bb09de6e`.
 Raw `system.cpu`, `system.io`, `system.net`, and `nfs.rpc` Netdata windows from
 both active `gx10-6b77` and Sparky are included and individually hashed by the
 manifest. This is a local-filesystem CPU microprofile with host-context

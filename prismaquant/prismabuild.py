@@ -2921,11 +2921,12 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield descriptor
     finally:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(descriptor)
-            os.close(directory_fd)
+        # Closing releases the lock only after the final duplicate of this
+        # open-file description closes.  Do not issue LOCK_UN: a task that
+        # inherited the descriptor must retain exclusion if the worker
+        # unwinds before that task can be reaped.
+        os.close(descriptor)
+        os.close(directory_fd)
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
@@ -3052,8 +3053,9 @@ def run_local_action(
         except BaseException:
             # A handled signal (notably SIGINT/KeyboardInterrupt) unwinds this
             # process while its new-session child keeps running.  Reap the
-            # entire action group before the context manager explicitly
-            # unlocks the descriptor shared with that child.
+            # entire action group before the context manager closes its copy
+            # of the descriptor shared with that child.  If the child cannot
+            # be reaped, its duplicate continues to hold the lock.
             if process is not None:
                 _terminate_process_group(process)
             raise

@@ -16,13 +16,15 @@ fail-closed exceptions and an AST regression, so `python -O` cannot erase
 schema, path, runtime, retry, cache, or worker-argv refusals. Direct `resolve()`
 remains an unbudgeted observation RPC; only
 the native Dagster loop currently pairs each call with an exact durable claim.
-At 4,000 records, eight post-warm claims measured 13.003521138 s before and
-0.050925729 s after (255.34x), with read syscalls falling 128,226 to 162; the
-complete restart replay was retained. cProfile, `/proc/self/io`, and raw
+At 4,000 records, eight post-warm claims on exact merged commit `825120c`
+measured 13.003521138 s before and 0.053521276 s after (242.96x), with read
+syscalls falling 128,226 to 162; the complete restart replay was retained.
+cProfile, `/proc/self/io`, and raw
 before/after Netdata windows for `system.cpu`, `system.io`, `system.net`, and
 `nfs.rpc` on both active `gx10-6b77` and Sparky are retained at
-`/home/rob/dq-runs/prismabuild-d9-poll-cache-final-20260831` (manifest SHA-256
-`80f489dab3c4aa55a8a447ad0477c131de5c8f76a63e9033abbe8772671f49e9`).
+`/home/rob/dq-runs/prismabuild-d9-poll-cache-merged-20260831` (manifest
+SHA-256
+`189e7ddc8d9c56ff546954c5ab7a09312c5b492137ce5a10c1706cdeee416037`).
 This is CPU/local-filesystem evidence, not live Slurm, shared-NFS, host-loss,
 Dagster-daemon, GPU, or deployment qualification. Re-stamped
 (2026-08-31, `codex/prismabuild-publish-io-20260831`) for the **CAS
@@ -63,10 +65,14 @@ CAS staging is claim-private and a retry removes a bounded set of its killed
 worker's regular temporary leaves before recomputing. The same transition is
 available explicitly as `repair-local-result`. A subprocess SIGKILL injected
 after result/blob staging and receipt fsync, but before receipt publication,
-left no receipt and was recovered by a clean recomputation; this is a local
-process-fault test, not host/power-loss, NFS-lock, real-Slurm, or deployment
-evidence. No pipeline default, format menu, serving pin, or serving topology
-changed. Re-stamped
+left no receipt and was recovered by a clean recomputation. The later
+`codex/finish-numeric-prismabuild-20260830` extension also passes the locked
+open-file description into task argv and reaps the action process group on a
+handled worker unwind; exact mid-argv `SIGKILL` and `SIGINT` subprocess tests
+prove that a retry cannot overlap the surviving writer. These are local
+process-fault tests, not host/power-loss, hostile-task, NFS-lock, real-Slurm,
+or deployment evidence. No pipeline default, format menu, serving pin, or
+serving topology changed. Re-stamped
 (2026-08-31, `codex/scale-grid-closure-stage1-20260831`) for the **executable
 and source-to-transform closure of the scale-grid research boundary** (§10.2).
 Direct receipt/render schemas v2 now bind selector, encoder, canonical-wire,
@@ -7679,6 +7685,21 @@ substitute for a receipt.
 The output lock remains the concurrency boundary; deployed cross-host NFS
 lock semantics are still an external gate.
 
+The worker passes that exact locked open-file description to task argv. Thus a
+worker `SIGKILL` cannot release exclusion while its direct action process can
+still write the claimed output; a retry starts only after the orphan exits,
+then performs the checked cleanup and recomputation above. A handled worker
+exception instead terminates and reaps the action's new-session process group
+before the context manager closes the worker's descriptor. It does not issue
+an explicit unlock, so an unreaped child retaining its inherited descriptor
+continues to exclude retries. Exact subprocess regressions
+cover mid-argv `SIGKILL`, post-staging `SIGKILL`, and `SIGINT` unwind. This is a
+cooperative local-action contract, not a process sandbox: a task that closes
+inherited descriptors or escapes its process group is out of contract, and an
+uninterruptible task may retain the lock indefinitely. A deployed Slurm cgroup
+and sealed time limit are still required; no durable local holder lease or
+lock-acquisition timeout is implemented.
+
 Before any `sbatch`, the adapter publishes and re-reads one immutable
 `prismaquant.prismabuild.slurm_submission_intent.v2` at
 `submissions/v2/<prefix>/<action-key>/intent.json`. Its
@@ -7790,8 +7811,9 @@ The native Dagster runner calls `claim_poll()` immediately before every
 claim-to-observation token/consumption contract remains unimplemented. The
 4,000-record CPU profile, `/proc/self/io` deltas, and both-host Netdata context
 are retained and hashed at
-`/home/rob/dq-runs/prismabuild-d9-poll-cache-final-20260831`; eight warm claims
-were 255.34x faster while first full replay remained unchanged. This does not
+`/home/rob/dq-runs/prismabuild-d9-poll-cache-merged-20260831`; eight warm claims
+on exact merged commit `825120c` were 242.96x faster while first full replay
+remained unchanged. This does not
 qualify live Slurm, shared-NFS latency, daemon behavior, or deployment.
 
 The Slurm state tree uses the same anchored creation/read/publication protocol

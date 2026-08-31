@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from contextlib import contextmanager
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -1419,6 +1420,37 @@ def test_sigkill_during_action_keeps_output_locked_until_orphan_exits(
                 os.killpg(process_group, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_closing_worker_lock_copy_does_not_unlock_inheriting_action(
+    tmp_path: Path,
+):
+    """No explicit unlock may defeat a surviving task's shared lock lease."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    output = checkout / "result.bin"
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    holder: subprocess.Popen[bytes] | None = None
+    try:
+        with pb._local_output_lock(cas, checkout, output) as descriptor:
+            holder = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(1)"],
+                pass_fds=(descriptor,),
+            )
+
+        lock_paths = list((cas.root / ".worker-locks").glob("*.lock"))
+        assert len(lock_paths) == 1
+        with lock_paths[0].open("r+b") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert holder.wait(timeout=3.0) == 0
+            fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(contender.fileno(), fcntl.LOCK_UN)
+    finally:
+        if holder is not None and holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=2.0)
 
 
 def test_sigint_worker_reaps_action_group_before_releasing_output_lock(
