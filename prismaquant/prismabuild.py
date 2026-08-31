@@ -114,6 +114,11 @@ _PORTABILITY = frozenset({"portable", "platform_keyed", "host_class_keyed"})
 _TASK_CLASSES = frozenset({"generation", "measurement"})
 _DETERMINISM = frozenset({"deterministic", "stochastic"})
 _PROCESS_GROUP_GRACE_SECONDS = 5.0
+# NFS may return one internally inconsistent ctime/nlink snapshot while a
+# first-writer hard link becomes visible.  Never accept that read: reopen the
+# no-follow path and replay the entire read from byte zero, at most this many
+# times, until one attempt is internally stable.
+_STABLE_FILE_READ_ATTEMPTS = 3
 _ATTESTABLE_TOOLCHAIN_KEYS = frozenset(
     {
         "argv0.sha256",
@@ -1435,92 +1440,144 @@ def _assert_regular_identity(
         os.close(current)
 
 
+def _stable_file_read_identity(info: os.stat_result) -> tuple[int, ...]:
+    """Metadata that must agree within one accepted regular-file read."""
+
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mode,
+        info.st_uid,
+        info.st_gid,
+        info.st_mtime_ns,
+        info.st_nlink,
+        info.st_ctime_ns,
+    )
+
+
+def _substantive_file_read_identity(info: os.stat_result) -> tuple[int, ...]:
+    """Metadata changes that are tamper, not an NFS link-visibility retry."""
+
+    identity = _stable_file_read_identity(info)
+    return identity[:7]
+
+
 def _read_regular_file_nofollow(
     path: Path, *, where: str, require_readonly: bool = False
 ) -> bytes:
-    """Read one stable inode without following any pathname component."""
+    """Read one stable inode without following any pathname component.
 
-    descriptor, parent_fd = _open_regular_nofollow(path, where=where)
-    try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise CASTamperError(f"{where} is not a regular file: {path}")
-        if require_readonly and before.st_mode & 0o222:
-            raise CASTamperError(f"{where} is writable: {path}")
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        after = os.fstat(descriptor)
-        if (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mode,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        ) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mode,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        ):
-            raise CASTamperError(f"{where} changed while it was read: {path}")
-        _assert_regular_identity(
-            descriptor, parent_fd, path, where=where
-        )
-        _assert_directory_identity(parent_fd, path.parent, where=f"{where} parent")
-        return b"".join(chunks)
-    finally:
-        os.close(descriptor)
-        os.close(parent_fd)
+    A ctime/nlink-only mismatch is discarded and retried through a fresh path
+    resolution and FD.  No bytes from an unstable attempt are returned.
+    """
+
+    for attempt in range(_STABLE_FILE_READ_ATTEMPTS):
+        descriptor, parent_fd = _open_regular_nofollow(path, where=where)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise CASTamperError(f"{where} is not a regular file: {path}")
+            if require_readonly and before.st_mode & 0o222:
+                raise CASTamperError(f"{where} is writable: {path}")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+            if _stable_file_read_identity(before) != _stable_file_read_identity(after):
+                if _substantive_file_read_identity(
+                    before
+                ) != _substantive_file_read_identity(after):
+                    raise CASTamperError(
+                        f"{where} changed substantively while it was read: {path}"
+                    )
+                _assert_regular_identity(descriptor, parent_fd, path, where=where)
+                _assert_directory_identity(
+                    parent_fd, path.parent, where=f"{where} parent"
+                )
+                if attempt + 1 < _STABLE_FILE_READ_ATTEMPTS:
+                    continue
+                raise CASTamperError(
+                    f"{where} did not stabilize after "
+                    f"{_STABLE_FILE_READ_ATTEMPTS} fresh reads: {path}"
+                )
+            _assert_regular_identity(descriptor, parent_fd, path, where=where)
+            _assert_directory_identity(
+                parent_fd, path.parent, where=f"{where} parent"
+            )
+            return b"".join(chunks)
+        finally:
+            os.close(descriptor)
+            os.close(parent_fd)
+    raise AssertionError("stable file read retry loop did not return or raise")
 
 
-def _file_identity_nofollow(path: Path, *, where: str) -> tuple[str, int, int]:
-    """Hash one stable inode reached through a held no-follow parent."""
+def _file_identity_nofollow(
+    path: Path,
+    *,
+    where: str,
+    expected_sha256: str | None = None,
+    expected_bytes: int | None = None,
+) -> tuple[str, int, int]:
+    """Hash one stable inode reached through a fresh held no-follow parent.
 
-    descriptor, parent_fd = _open_regular_nofollow(path, where=where)
-    digest = hashlib.sha256()
-    size = 0
-    try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise CASTamperError(f"{where} is not a regular file: {path}")
-        while True:
-            chunk = os.read(descriptor, 4 * 1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-            size += len(chunk)
-        after = os.fstat(descriptor)
-        if (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mode,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        ) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mode,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        ):
-            raise CASTamperError(f"{where} changed while it was read: {path}")
-        _assert_regular_identity(
-            descriptor, parent_fd, path, where=where
-        )
-        _assert_directory_identity(parent_fd, path.parent, where=f"{where} parent")
-        return digest.hexdigest(), size, before.st_mode
-    finally:
-        os.close(descriptor)
-        os.close(parent_fd)
+    Every retry reopens the full path and hashes from byte zero.  A wrong
+    expected address is immediate tamper even when metadata is also unstable.
+    """
+
+    for attempt in range(_STABLE_FILE_READ_ATTEMPTS):
+        descriptor, parent_fd = _open_regular_nofollow(path, where=where)
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise CASTamperError(f"{where} is not a regular file: {path}")
+            while True:
+                chunk = os.read(descriptor, 4 * 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
+            observed_digest = digest.hexdigest()
+            if expected_bytes is not None and size != expected_bytes:
+                raise CASTamperError(
+                    f"{where} content differs from its expected byte count: {path}"
+                )
+            if expected_sha256 is not None and observed_digest != expected_sha256:
+                raise CASTamperError(
+                    f"{where} content differs from its expected address: {path}"
+                )
+            after = os.fstat(descriptor)
+            if _stable_file_read_identity(before) != _stable_file_read_identity(after):
+                if _substantive_file_read_identity(
+                    before
+                ) != _substantive_file_read_identity(after):
+                    raise CASTamperError(
+                        f"{where} changed substantively while it was read: {path}"
+                    )
+                _assert_regular_identity(descriptor, parent_fd, path, where=where)
+                _assert_directory_identity(
+                    parent_fd, path.parent, where=f"{where} parent"
+                )
+                if attempt + 1 < _STABLE_FILE_READ_ATTEMPTS:
+                    continue
+                raise CASTamperError(
+                    f"{where} did not stabilize after "
+                    f"{_STABLE_FILE_READ_ATTEMPTS} fresh reads: {path}"
+                )
+            _assert_regular_identity(descriptor, parent_fd, path, where=where)
+            _assert_directory_identity(
+                parent_fd, path.parent, where=f"{where} parent"
+            )
+            return observed_digest, size, before.st_mode
+        finally:
+            os.close(descriptor)
+            os.close(parent_fd)
+    raise AssertionError("stable file identity retry loop did not return or raise")
 
 
 def _unlink_nofollow(path: Path, *, where: str) -> None:
@@ -2262,7 +2319,10 @@ class PrismaBuildCAS:
         path = self._blob_path(digest)
         try:
             observed_digest, observed_size, observed_mode = _file_identity_nofollow(
-                path, where="CAS payload"
+                path,
+                where="CAS payload",
+                expected_sha256=digest,
+                expected_bytes=int(result["bytes"]),
             )
         except FileNotFoundError as exc:
             raise CASTamperError(f"CAS payload is missing: {path}") from exc
