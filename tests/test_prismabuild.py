@@ -1779,6 +1779,40 @@ def test_fresh_result_publish_reuses_verified_winning_inode(
     assert consumed == [cas._blob_path(str(receipt["result"]["sha256"]))]
 
 
+def test_stochastic_receipt_loser_hashes_different_canonical_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout, determinism="stochastic")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.write_bytes(b"first canonical result")
+    second.write_bytes(b"different losing result")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    canonical, won = cas.publish_result(
+        action, first, attestation=attestation
+    )
+    assert won is True
+    original_identity = pb._file_identity_nofollow
+    consumed: list[Path] = []
+
+    def track_identity(path: Path, **kwargs: object):
+        consumed.append(path)
+        return original_identity(path, **kwargs)
+
+    monkeypatch.setattr(pb, "_file_identity_nofollow", track_identity)
+    observed, won = cas.publish_result(
+        action, second, attestation=attestation
+    )
+    assert won is False
+    assert observed == canonical
+    assert consumed == [
+        cas._blob_path(str(canonical["result"]["sha256"]))
+    ]
+
+
 def test_cas_publish_refuses_worker_core_changed_after_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
