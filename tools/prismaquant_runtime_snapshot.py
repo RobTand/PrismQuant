@@ -9,11 +9,13 @@ closure before it is mounted and again inside the container.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
@@ -167,6 +169,138 @@ def _closure_sha256(entries: Sequence[Mapping[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _validated_git_archive_members(
+    members: Sequence[tarfile.TarInfo],
+) -> list[tarfile.TarInfo]:
+    """Validate the complete Git archive topology before extracting a byte.
+
+    Git trees can contain absolute symlink *targets*, and runtime snapshots
+    retain those links without following them.  Archive member names are a
+    separate boundary: they must be unique normalized relative POSIX paths,
+    and no member may descend through a file or symlink member.  Only the
+    three filesystem kinds representable by a Git tree are admitted.
+    """
+
+    validated: list[tarfile.TarInfo] = []
+    kinds: dict[str, str] = {}
+    reserved = {MANIFEST}
+    for index, member in enumerate(members):
+        raw = member.name
+        if not raw or "\x00" in raw:
+            raise SnapshotError(f"Git archive member {index} has an empty name")
+        path = PurePosixPath(raw)
+        parts = raw.split("/")
+        if (
+            path.is_absolute()
+            or any(part in {"", ".", ".."} for part in parts)
+            or path.as_posix() != raw
+        ):
+            raise SnapshotError(
+                f"Git archive member is not one normalized relative path: {raw!r}"
+            )
+        if raw in reserved:
+            raise SnapshotError(f"Git archive contains reserved member {raw!r}")
+        if raw in kinds:
+            raise SnapshotError(f"Git archive contains duplicate member {raw!r}")
+        if member.isdir():
+            kind = "directory"
+        elif member.isreg():
+            kind = "file"
+        elif member.issym():
+            kind = "symlink"
+        else:
+            raise SnapshotError(
+                f"Git archive member has unsupported type: {raw!r}"
+            )
+        kinds[raw] = kind
+        validated.append(member)
+
+    # This second pass is deliberately after the complete type/name census.
+    # Extraction order cannot hide a later symlink/file ancestor.
+    for raw in kinds:
+        parents = list(PurePosixPath(raw).parents)
+        for parent in parents:
+            if parent == PurePosixPath("."):
+                continue
+            parent_kind = kinds.get(parent.as_posix())
+            if parent_kind is None:
+                raise SnapshotError(
+                    f"Git archive member {raw!r} has undeclared directory "
+                    f"ancestor {parent.as_posix()!r}"
+                )
+            if parent_kind in {"file", "symlink"}:
+                raise SnapshotError(
+                    f"Git archive member {raw!r} descends through "
+                    f"{parent_kind} member {parent.as_posix()!r}"
+                )
+    return validated
+
+
+def _extract_git_archive(archive: Path, destination: Path) -> None:
+    """Extract one prevalidated Git archive without following its symlinks."""
+
+    try:
+        with tarfile.open(archive, mode="r:") as handle:
+            members = _validated_git_archive_members(handle.getmembers())
+            ordinary = [member for member in members if not member.issym()]
+            symlinks = [member for member in members if member.issym()]
+            # Keep Python's strict data filter for every byte-bearing member.
+            # Symlinks are excluded from tar extraction entirely, so an
+            # absolute target can never redirect a later member write.
+            handle.extractall(destination, members=ordinary, filter="data")
+            for member in symlinks:
+                target = destination.joinpath(*PurePosixPath(member.name).parts)
+                if target.exists() or target.is_symlink():
+                    raise SnapshotError(
+                        f"Git archive symlink target path already exists: {member.name!r}"
+                    )
+                try:
+                    os.symlink(member.linkname, target)
+                except OSError as exc:
+                    raise SnapshotError(
+                        f"could not create Git archive symlink {member.name!r}"
+                    ) from exc
+    except SnapshotError:
+        raise
+    except (OSError, tarfile.TarError) as exc:
+        raise SnapshotError("could not safely extract runtime archive") from exc
+
+
+def _rename_directory_noreplace(source: Path, destination: Path) -> bool:
+    """Atomically publish one directory without replacing an incumbent."""
+
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError as exc:
+        raise SnapshotError(
+            "runtime snapshot publication requires Linux renameat2"
+        ) from exc
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100,  # AT_FDCWD
+        os.fsencode(source),
+        -100,
+        os.fsencode(destination),
+        1,  # RENAME_NOREPLACE
+    )
+    if result == 0:
+        return True
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        return False
+    raise SnapshotError(
+        f"could not publish runtime snapshot without replacement: "
+        f"{os.strerror(error)}"
+    )
+
+
 def _validate_manifest_shape(payload: Mapping[str, Any]) -> dict[str, Any]:
     required = {
         "schema", "commit", "tree", "closure_sha256", "entry_count", "entries"
@@ -281,17 +415,21 @@ def materialize_snapshot(
     lock_path = cache / f".{resolved_commit}.lock"
     with lock_path.open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if destination.exists():
+        if destination.exists() or destination.is_symlink():
             return verify_snapshot(
                 destination,
                 expected_commit=resolved_commit,
                 expected_tree=tree,
             )
+        archive_descriptor, archive_raw = tempfile.mkstemp(
+            prefix=f".{resolved_commit[:12]}.archive-", suffix=".tar", dir=cache
+        )
+        os.close(archive_descriptor)
+        archive = Path(archive_raw)
         temporary = Path(tempfile.mkdtemp(
             prefix=f".{resolved_commit[:12]}.tmp-", dir=cache
         ))
         try:
-            archive = temporary / ".runtime-source.tar"
             try:
                 subprocess.run(
                     [
@@ -308,12 +446,7 @@ def materialize_snapshot(
                 raise SnapshotError(
                     f"could not archive reviewed runtime commit: {detail.strip()}"
                 ) from exc
-            try:
-                with tarfile.open(archive, mode="r:") as handle:
-                    handle.extractall(temporary, filter="data")
-            except (OSError, tarfile.TarError) as exc:
-                raise SnapshotError("could not safely extract runtime archive") from exc
-            archive.unlink()
+            _extract_git_archive(archive, temporary)
             entries = _snapshot_entries(temporary)
             payload = {
                 "schema": SCHEMA,
@@ -333,10 +466,26 @@ def materialize_snapshot(
                 expected_tree=tree,
                 expected_closure_sha256=payload["closure_sha256"],
             )
-            temporary.rename(destination)
+            published = _rename_directory_noreplace(temporary, destination)
+            if not published:
+                # A same-key publisher appeared despite the cooperative lock.
+                # Never replace it: adopt only after complete exact validation.
+                existing = verify_snapshot(
+                    destination,
+                    expected_commit=resolved_commit,
+                    expected_tree=tree,
+                    expected_closure_sha256=payload["closure_sha256"],
+                )
+                shutil.rmtree(temporary)
+                return existing
         except BaseException:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
+        finally:
+            try:
+                archive.unlink()
+            except FileNotFoundError:
+                pass
     return verify_snapshot(
         destination,
         expected_commit=resolved_commit,
