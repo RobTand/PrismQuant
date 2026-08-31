@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import sys
 
@@ -18,6 +19,7 @@ _PATH = (
 _SPEC = importlib.util.spec_from_file_location("fp8_cb_tcq_analysis_receipt", _PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 M = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = M
 sys.path.insert(0, str(_PATH.parent))
 try:
     _SPEC.loader.exec_module(M)
@@ -180,3 +182,42 @@ def test_no_replace_publication(tmp_path: Path):
     assert json.loads(output.read_text()) == receipt
     with pytest.raises(M.AnalysisReceiptError, match="already exists"):
         M.publish_receipt(output, receipt)
+
+
+def test_bound_reader_rejects_symlink_and_duplicate_json(tmp_path: Path):
+    target = tmp_path / "target.json"
+    target.write_text('{"x":1}\n')
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    with pytest.raises(M.AnalysisReceiptError, match="cannot open bound file"):
+        M._strict_json_object(link)
+
+    duplicate = tmp_path / "duplicate.json"
+    duplicate.write_text('{"x":1,"x":2}\n')
+    with pytest.raises(M.AnalysisReceiptError, match="duplicate JSON member"):
+        M._strict_json_object(duplicate)
+
+
+def test_bound_reader_rejects_path_swap_during_one_fd_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "source.json"
+    source.write_text('{"x":1}\n')
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text('{"x":2}\n')
+    displaced = tmp_path / "displaced.json"
+    real_read = os.read
+    swapped = False
+
+    def swapping_read(descriptor: int, size: int) -> bytes:
+        nonlocal swapped
+        block = real_read(descriptor, size)
+        if block and not swapped:
+            swapped = True
+            source.rename(displaced)
+            replacement.rename(source)
+        return block
+
+    monkeypatch.setattr(M.os, "read", swapping_read)
+    with pytest.raises(M.AnalysisReceiptError, match="identity changed"):
+        M._strict_json_object(source)
