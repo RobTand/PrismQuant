@@ -2,6 +2,21 @@
 
 As of: 2026-08-31 · `codex/finish-numeric-prismabuild-20260830` — stamps
 follow, newest first, each recording its own source branch and date. Re-stamped
+(2026-08-31, `codex/prismabuild-declared-result-recovery-20260831`) for the
+**claimed local-result crash-recovery boundary** (§10.1). Before task argv,
+the local worker now first-writer-publishes a self-digested immutable claim
+binding the exact action, action manifest, resolved checkout, working directory,
+and declared result path. A retry holding the existing output lock may remove
+only a regular contained result carrying that exact claim; an unclaimed dirty
+path, symlink, changed claim, or already-certified action still refuses. Result
+CAS staging is claim-private and a retry removes a bounded set of its killed
+worker's regular temporary leaves before recomputing. The same transition is
+available explicitly as `repair-local-result`. A subprocess SIGKILL injected
+after result/blob staging and receipt fsync, but before receipt publication,
+left no receipt and was recovered by a clean recomputation; this is a local
+process-fault test, not host/power-loss, NFS-lock, real-Slurm, or deployment
+evidence. No pipeline default, format menu, serving pin, or serving topology
+changed. Re-stamped
 (2026-08-31, `codex/scale-grid-closure-stage1-20260831`) for the **executable
 and source-to-transform closure of the scale-grid research boundary** (§10.2).
 Direct receipt/render schemas v2 now bind selector, encoder, canonical-wire,
@@ -7573,6 +7588,24 @@ configured CAS. This is a Linux contract requiring `openat`, `O_NOFOLLOW`, and
 `/proc/self/fd`; a returned payload `Path` records a just-verified name, not an
 FD held for an arbitrary later consumer.
 
+Local execution also has one immutable ownership record per exact
+`(action manifest, resolved checkout, working directory, declared result)` at
+`local-results/v1/<claim-prefix>/<claim-sha256>.json`. The worker checks that
+the result is absent, publishes and rereads this self-digested claim before
+task argv, then checks absence again. If the process dies after argv creates a
+partial or complete result but before the CAS receipt becomes canonical, a
+later invocation holding the same checkout/output `flock` may unlink only a
+regular, contained leaf under that exact claim and recompute the action. It
+also reaps at most 64 regular, same-UID `.payload.*.tmp` leaves from that
+claim's private `.staging/local-results/<claim-sha256>/` directory. Any
+unclaimed pre-existing path, symlink, non-regular object, foreign owner,
+unexpected staging entry, changed claim, or repair after a valid receipt
+refuses. `repair-local-result` exposes the same bounded cleanup without
+executing argv. The claim is authorization to discard action-owned scratch,
+not evidence that the bytes were valid and never a substitute for a receipt.
+The output lock remains the concurrency boundary; deployed cross-host NFS
+lock semantics are still an external gate.
+
 Before any `sbatch`, the adapter publishes and re-reads one immutable
 `prismaquant.prismabuild.slurm_submission_intent.v1` at
 `submissions/v1/<prefix>/<action-key>/intent.json`. It seals the action key,
@@ -7700,8 +7733,9 @@ parser buffer, so the snapshot is not a cryptographic proof of those exact
 parsed bytes.
 `COMPLETED` without a receipt is failure. A repeated initial worker invocation
 checks the same CAS before running, while a forced/admin-restarted allocation
-refuses before it can read action data. A dirty partial result still refuses
-in the core worker instead of being guessed away. The existing pipeline and
+refuses before it can read action data. A claimed dirty partial result is
+removed and recomputed under the output lock; an unclaimed result still
+refuses instead of being guessed away. The existing pipeline and
 `cluster_campaign.manifest.v2` execution path remain unchanged.
 
 The Dagster graph is constructed only from explicit `ActionSpec` values. Each
