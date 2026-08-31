@@ -595,6 +595,17 @@ def _source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     }
     document = {**body, "checkpoint_sha256": M._identity_sha256(body)}
     result_path.write_text(json.dumps(document))
+    monkeypatch.setattr(M, "EXPECTED_RESULT_PATH", str(result_path))
+    monkeypatch.setattr(
+        M, "EXPECTED_RESULT_SHA256", M._stable_file_sha256(result_path),
+    )
+    monkeypatch.setattr(M, "EXPECTED_RESULT_SIZE_BYTES", result_path.stat().st_size)
+    monkeypatch.setattr(
+        M, "EXPECTED_CHECKPOINT_SHA256", document["checkpoint_sha256"],
+    )
+    monkeypatch.setattr(
+        M, "EXPECTED_SETTINGS_IDENTITY_SHA256", settings["identity_sha256"],
+    )
     return result_path
 
 
@@ -771,6 +782,23 @@ def test_resigned_runtime_version_refuses(
     source.write_text(json.dumps(document))
     _reseal_source(source)
     with pytest.raises(M.AnalysisReceiptError, match="runtime versions"):
+        M.build_receipt(source)
+
+
+def test_algebraically_valid_alternative_metric_artifact_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    source = _source(tmp_path, monkeypatch)
+    document = json.loads(source.read_text())
+    for cell in document["per_tensor"].values():
+        for rung in M.CELL_MAP.values():
+            arm = cell["arms"][f"fp8_cb_fixed@{rung}"]
+            arm["weighted_sse"] = 1e-10
+            arm["weighted_nsse"] = 1e-10
+            arm["weighted_snr_db"] = -10.0 * math.log10(1e-10)
+    source.write_text(json.dumps(document))
+    _reseal_source(source, summaries=True)
+    with pytest.raises(M.AnalysisReceiptError, match="exact final result"):
         M.build_receipt(source)
 
 
