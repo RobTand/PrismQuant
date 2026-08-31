@@ -317,6 +317,61 @@ def test_persistent_claim_refuses_another_campaign_identity(tmp_path):
             pass
 
 
+def test_completed_receipt_resume_requires_exact_manifest_member_census(tmp_path):
+    manifest_provenance = {"semantic_identity_sha256": "a" * 64}
+    input_provenance = {"kind": M.QWEN_MODE, "identity_sha256": "b" * 64}
+    source_closure = {"identity_sha256": "c" * 64}
+    body = {
+        "schema": M.RECEIPT_SCHEMA,
+        "status": "quality_campaign_complete",
+        "campaign_claim_identity_sha256": "d" * 64,
+        "manifest": manifest_provenance,
+        "mode": M.QWEN_MODE,
+        "input_provenance": input_provenance,
+        "source_closure": source_closure,
+        "execution": {},
+        "acceptance_contract": M.ACCEPTANCE_CONTRACT,
+        "summary": {},
+        # A locally rewritten receipt can be self-digested and internally
+        # coherent while omitting every manifest-declared tensor artifact.
+        "published_members": [{
+            "kind": "unrelated",
+            "relative_path": "unrelated.bin",
+            "bytes": 1,
+            "sha256": "e" * 64,
+        }],
+        "publication": {},
+        "claim_boundary": {
+            "quality_only": True,
+            "activation_output_model_quality": False,
+            "gridbook_runtime_executed": False,
+            "served": False,
+            "performance_claim": False,
+            "producer_eligible": False,
+            "runtime_pin_changed": False,
+            "production_contract_changed": False,
+        },
+    }
+    receipt = {**body, "identity_sha256": M._identity_sha256(body)}
+    path = tmp_path / "receipt.json"
+    path.write_bytes(M._canonical_bytes(receipt, pretty=True))
+    expected_members = {
+        "tensors/000-one/result.json": "tensor_result_commit_marker",
+        "tensors/000-one/primary.trellis": "canonical_trellis_wire",
+    }
+    with pytest.raises(ValueError, match="member census differs from manifest"):
+        M._verify_complete_receipt(
+            path,
+            claim_identity_sha256="d" * 64,
+            source_closure=source_closure,
+            manifest_provenance=manifest_provenance,
+            input_provenance=input_provenance,
+            expected_members=expected_members,
+            mode=M.QWEN_MODE,
+            root=tmp_path,
+        )
+
+
 def test_resume_refuses_forged_completed_seed_prefix(tmp_path):
     unit = M.InputUnit("one.weight", "qwen_one_linear", (256, 256), None)
     manifest = M.validate_manifest(_manifest(tmp_path))

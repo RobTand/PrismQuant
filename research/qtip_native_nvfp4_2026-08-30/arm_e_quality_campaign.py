@@ -1483,7 +1483,10 @@ def _verify_complete_receipt(
     path: Path,
     *,
     claim_identity_sha256: str,
-    source_closure_identity_sha256: str,
+    source_closure: Mapping[str, object],
+    manifest_provenance: Mapping[str, object],
+    input_provenance: Mapping[str, object],
+    expected_members: Mapping[str, str],
     mode: str,
     root: Path,
 ) -> dict[str, Any]:
@@ -1501,8 +1504,12 @@ def _verify_complete_receipt(
         raise ValueError("existing campaign receipt belongs to another claim")
     if body.get("mode") != mode or body.get("status") != "quality_campaign_complete":
         raise ValueError("existing campaign receipt mode/status differs")
+    if body.get("manifest") != manifest_provenance:
+        raise ValueError("existing campaign manifest provenance differs")
+    if body.get("input_provenance") != input_provenance:
+        raise ValueError("existing campaign input provenance differs")
     source = body.get("source_closure")
-    if not isinstance(source, Mapping) or source.get("identity_sha256") != source_closure_identity_sha256:
+    if source != source_closure:
         raise ValueError("existing campaign source closure differs")
     if body.get("acceptance_contract") != ACCEPTANCE_CONTRACT:
         raise ValueError("existing campaign acceptance contract differs")
@@ -1523,7 +1530,16 @@ def _verify_complete_receipt(
     paths = [member.get("relative_path") for member in members if isinstance(member, Mapping)]
     if len(paths) != len(members) or len(set(paths)) != len(paths):
         raise ValueError("existing campaign member census is invalid")
+    if set(paths) != set(expected_members):
+        raise ValueError("existing campaign member census differs from manifest")
     for member in members:
+        _require_exact_fields(
+            member,
+            frozenset({"kind", "relative_path", "bytes", "sha256"}),
+            where="campaign published member",
+        )
+        if member["kind"] != expected_members[member["relative_path"]]:
+            raise ValueError("existing campaign member kind differs")
         target = _safe_output(root, member["relative_path"])
         if target.stat().st_size != member["bytes"] or _file_sha256(target) != member["sha256"]:
             raise ValueError(f"existing campaign member differs: {target}")
@@ -1703,11 +1719,20 @@ def _resume_unit_result(
         producer_body = dict(producer)
         producer_identity = producer_body.pop("identity_sha256", None)
         block_ldl = producer_body.get("block_ldl")
+        decoded_weight = decode_values_torch(
+            blob, device=torch.device("cpu"), dtype=torch.float32
+        )
+        decoded_codes = WIRE_MODULE.decode_codes_torch(
+            blob, device=torch.device("cpu")
+        )
         if (
             producer_identity != ARM_E._canonical_sha256(producer_body)
             or producer_body.get("schema") != ARM_E.BLOCKLDL_COMBINED_ARTIFACT_SCHEMA
             or producer_body.get("wire_bytes") != len(blob)
             or producer_body.get("wire_identity_sha256") != wire["sha256"]
+            or producer_body.get("decoded_weight_sha256") != ARM_E._tensor_sha256(decoded_weight)
+            or producer_body.get("decoded_codes_sha256") != ARM_E._tensor_sha256(decoded_codes)
+            or producer_body.get("same_byte_reparse_verified") is not True
             or producer_body.get("producer_eligible") is not False
             or (
                 unit.shape[1] > 256
@@ -1766,13 +1791,64 @@ def run_campaign(
     claim_identity_sha256 = _identity_sha256(claim_body)
     with ATOMIC.exclusive_publication_claim(final_path, identity=claim_body):
         if final_path.exists():
+            expected_members: dict[str, str] = {}
+            for index, unit in enumerate(inputs.units):
+                directory = f"tensors/{index:03d}-{_slug(unit.name)}"
+                expected_members[f"{directory}/result.json"] = (
+                    "tensor_result_commit_marker"
+                )
+                for seed in manifest["seeds"]:
+                    expected_members[f"{directory}/{seed['label']}.trellis"] = (
+                        "canonical_trellis_wire"
+                    )
             value = _verify_complete_receipt(
                 final_path,
                 claim_identity_sha256=claim_identity_sha256,
-                source_closure_identity_sha256=str(source_closure["identity_sha256"]),
+                source_closure=source_closure,
+                manifest_provenance=manifest_provenance,
+                input_provenance=inputs.provenance,
+                expected_members=expected_members,
                 mode=manifest["mode"],
                 root=output_root,
             )
+            resumed_results: list[dict[str, object]] = []
+            actual_members: list[dict[str, object]] = []
+            for index, unit in enumerate(inputs.units):
+                resumed = _resume_unit_result(
+                    output_root,
+                    index=index,
+                    unit=unit,
+                    mode=inputs.mode,
+                    claim_identity_sha256=claim_identity_sha256,
+                    source_closure_identity_sha256=str(
+                        source_closure["identity_sha256"]
+                    ),
+                    expected_seeds=manifest["seeds"],
+                    recipe=manifest["recipe"],
+                )
+                if resumed is None:
+                    raise ValueError("completed campaign is missing a tensor result")
+                result, result_path = resumed
+                resumed_results.append(result)
+                actual_members.append(_artifact_member(
+                    output_root, result_path, "tensor_result_commit_marker"
+                ))
+                for seed_result in result["arm_e_by_seed"]:
+                    wire_path = _safe_output(
+                        output_root, seed_result["wire"]["relative_path"]
+                    )
+                    actual_members.append(_artifact_member(
+                        output_root, wire_path, "canonical_trellis_wire"
+                    ))
+            expected_summary = aggregate_results(
+                manifest["mode"], resumed_results, manifest["seeds"]
+            )
+            if value["summary"] != expected_summary:
+                raise ValueError("completed campaign summary differs from tensor results")
+            if value["published_members"] != sorted(
+                actual_members, key=lambda item: item["relative_path"]
+            ):
+                raise ValueError("completed campaign member records differ")
             if validated_source_closure(
                 manifest["execution"]["prismaquant_checkout"],
                 manifest["execution"]["prismaquant_commit"],
