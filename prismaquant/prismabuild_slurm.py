@@ -2359,7 +2359,7 @@ class SlurmAdapter:
                 submission_key=None,
             )
         root = _absolute_path(checkout_root, where="checkout root")
-        if not root.is_dir():
+        if not _real_directory_chain_exists(root, where="SLURM checkout root"):
             raise pb.ActionContractError(f"checkout root is not a directory: {root}")
         self._check_worker_script()
         request = publish_action_request(normalized, cas_root=self.cas_root)

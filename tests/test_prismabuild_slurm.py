@@ -2253,3 +2253,40 @@ def test_worker_script_must_be_real_and_executable(
                 platform_key=None, host_class=None
             ),
         )
+
+
+@pytest.mark.parametrize("link_at_leaf", [False, True])
+def test_checkout_root_rejects_symlinked_path_components(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    link_at_leaf: bool,
+):
+    real_parent = tmp_path / "real-parent"
+    real_checkout = real_parent / "checkout"
+    real_checkout.mkdir(parents=True)
+    action = _action(real_checkout)
+    adapter, _ = _adapter(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("no submit")),
+    )
+
+    if link_at_leaf:
+        checkout = tmp_path / "checkout-link"
+        checkout.symlink_to(real_checkout, target_is_directory=True)
+    else:
+        linked_parent = tmp_path / "parent-link"
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+        checkout = linked_parent / "checkout"
+
+    with pytest.raises(
+        pb.CASTamperError,
+        match="SLURM checkout root ancestor is not a real directory",
+    ):
+        adapter.submit(
+            action,
+            checkout_root=checkout,
+            resources=_resources(),
+            placement=ps.SlurmPlacement(platform_key=None, host_class=None),
+        )
