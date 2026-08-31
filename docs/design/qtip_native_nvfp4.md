@@ -244,7 +244,10 @@ is executed or bound here. The existing PrismaQuant `{6,4}` JSO grid is the
 control, and Arm C2's seven max-to-level candidates are an existing
 PrismaQuant heuristic, not a Quartet II implementation or reproduction. Wider
 scale grids remain opt-in until matched-calibration results justify them; none
-turns the scale field into a second payload.
+turns the scale field into a second payload. The former independent group-16
+RTN selector is now retired for shaped trellis positions. The fail-closed
+two-arm construction and exact zero-rate accounting are specified in
+[`trellis_scale_grid.md`](trellis_scale_grid.md).
 
 ## Required experiment matrix
 
@@ -284,6 +287,19 @@ ordered factor groups, including offsets, sizes, transformed-block hashes,
 feedback hashes, and `D` hashes. Replay compares those semantics as well as
 the canonical wire; matching final bytes alone cannot substitute a different
 factor grouping.
+
+Arm E also exposes an explicit research-only E4M3 scale-grid mode. It reruns
+the entire feedback recurrence for identity and candidate arms and selects
+only per `(output row, factor group)` using the realized fp64 Hessian proxy.
+The same decision covers every terminal in the coupled group; finer
+superblock/group splicing refuses. Both trajectories share the precommitted
+global scale, canonical pack/reparse/decode is mandatory, ties keep identity,
+and the selected result must prove exact `Cf=min(C0,C1)`, `Cf<=C0`, identical
+wire length, and byte-identical no-win output. This is scaffolding, not a
+measured Arm E promotion. A receipt self-digest is not artifact authority:
+`require_blockldl_trellis_artifact_replay` revalidates the retained prepared
+inputs and explicit recipe, reruns both trajectories, and requires exact wire,
+decode, transform, and receipt identity.
 
 Original weight/Hessian hashes remain explicitly preparation-time provenance;
 the encode boundary reauthenticates the transformed tensors it actually owns.

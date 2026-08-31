@@ -2,6 +2,21 @@
 
 As of: 2026-08-30 · `codex/finish-numeric-prismabuild-20260830` — stamps follow,
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/finish-numeric-prismabuild-20260830`) for the **fail-closed research
+E4M3 scale-grid gate for the native E2M1 trellis and Arm E** (§10.2). The
+retired independent group-16 RTN selector can no longer authorize shaped
+trellis output. A diagonal research wrapper now runs complete identity and
+candidate encodes, scores canonical byte-decoded reconstructions in fp64, and
+splices only independent row-by-256-superblock tiles. Arm E instead reruns the
+entire feedback recurrence twice and selects only per row and LDL factor group;
+finer splicing refuses. Both paths freeze the global scale, retain the existing
+fixed-size E4M3 plane and wire ABI, keep identity on ties, and prove exact
+zero-byte-rate change and realized non-regression. Import-time selector and
+encoder identities, complete render-recipe binding, live-file checks, and
+artifact-aware deterministic replay close mixed-source and receipt-only
+provenance gaps. This is unmeasured, opt-in, unregistered
+scaffolding; it changes no production recipe, menu, runtime pin, serving lane,
+or quality claim. Re-stamped (2026-08-30,
 `codex/finish-numeric-prismabuild-20260830`) for the **durable PrismaBuild
 submission/adoption and anchored CAS/state contract** (§10.1): a sealed,
 single-cluster intent now precedes `sbatch`; an immutable cluster-qualified
@@ -7714,9 +7729,56 @@ rank-two substitute, an off-block source, a nonpositive/nonfinite diagonal, or
 reordered/rehashed factor metadata refuses. The arbitrary dense-Hessian Qwen
 path remains whole-matrix and refuses `K>4096`.
 
+The E2M1 E4M3 group-16 scale plane also has an explicit research-only two-arm
+scale-grid gate. The earlier independent RTN selector is retired for
+shaped positions: one scale change can alter the Viterbi path and tail-biting
+choice across an entire 256-column cycle, so a group-local RTN win is not
+authority. The diagonal wrapper instead runs the unchanged identity encode and
+one complete candidate encode under the same immutable tensor-global scale,
+canonically packs, reparses, and decodes both, and scores realized weighted SSE
+in fp64. It chooses strictly per `(output row, 256-column superblock)`,
+including all path, bypass, point, and 16 scale bytes in that tile; ties retain
+identity. The final canonical decode must satisfy exact per-tile
+`Cf=min(C0,C1)`, `Cf<=C0`, equal wire length, and byte-identical no-win output.
+The scale plane remains exactly one E4M3 byte per 16 weights (`128 q256`, 0.5
+bpw), so selected values change neither payload length nor ABI and
+`delta_bpw_q256=0`.
+
+BlockLDL feedback widens the only legal gate. With the explicit
+`row_factor_group` opt-in, Arm E runs the complete reverse recurrence once
+with identity terminal scales and once with candidate terminal scales, each on
+its own feedback-adjusted targets and the same precommitted global. It compares
+the two realized fp64 Hessian proxies per row and factor group, applies one row
+mask to every coupled 256-column terminal in that group, then rechecks the
+canonical wire, recurrence, factor reconstruction, and direct/decomposed
+quadratic identity. Dense-H runs therefore gate per row and whole `K`; the
+structured GLM path may gate at transform factor boundaries only because its
+cross-group feedback is exactly zero. Any superblock-, group-16-, or other
+inside-recurrence scope refuses. The finalized GLM BF16 corpus v2 supplies
+hash-bound importance vectors; dense and routed populations remain separate.
+
+Scale-grid receipts bind the ordered menu, complete canonical render recipe,
+import-time selector and encoder identities, global scale, arm/final wire
+identities, winner masks, objectives, and exact-byte accounting. A mapping
+self-digest checks structure, not opaque artifact truth. Recipe ingress is
+restricted to plain scalars and one validated schedule/alphabet snapshot used
+for both execution and the receipt; parsed wires are checked back against it.
+Authoritative direct
+and Arm E replay revalidate the caller-owned tensors and full explicit recipe,
+rerun both encodes or feedback trajectories, and require exact canonical
+bytes, decoded tensors, scores, transform metadata, and receipt semantics.
+Selector or encoder bytes changed after their module import refuse rather than
+being misbound to cached executable code. The
+implementation remains unregistered and production-ineligible, and no GLM
+quality, runtime, energy, Gridbook load, or serving claim follows until a
+matched profiled GPU pilot and the ordinary ship gates complete
+(`docs/design/trellis_scale_grid.md`).
+
 The Arm E receipt binds the local BlockLDL/transform producer and trellis-
-encoder sources, rechecking both import-time hashes around final receipt
-construction, plus the audited QTIP commit and source-file digests; that
+encoder sources, and grid-enabled runs additionally bind the scale selector;
+all executed sources are checked against their import-time hashes around final
+receipt construction. The receipt also binds the audited QTIP commit and
+source-file digests; that
 provenance imports neither QTIP code nor its wire. Its dense-`D` record
 distinguishes diagonal consumption from the separately false off-diagonal,
 full-matrix, and exact dense-objective claims. The prepared-receipt validator

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import hashlib
 import importlib
 import json
@@ -143,6 +144,24 @@ def test_qtip_source_audit_constants_match_native_isolate_and_local_source(
         ValueError, match="encoder source changed since module import"
     ):
         M._require_encoder_source_unchanged()
+    monkeypatch.undo()
+    import prismaquant.trellis_encoder as encoder_module
+
+    loaded_encoder_identity = encoder_module.encoder_source_sha256()
+    monkeypatch.setattr(
+        encoder_module, "_current_encoder_source_sha256", lambda: "0" * 64
+    )
+    assert encoder_module.encoder_source_sha256() == loaded_encoder_identity
+    with pytest.raises(
+        ValueError, match="encoder source changed since module import"
+    ):
+        M._require_encoder_source_unchanged()
+    monkeypatch.undo()
+    monkeypatch.setattr(M, "scale_grid_source_sha256", lambda: "0" * 64)
+    with pytest.raises(
+        ValueError, match="scale-grid source changed since module import"
+    ):
+        M._require_scale_grid_source_unchanged()
 
 
 @pytest.mark.parametrize("field,value", [
@@ -919,6 +938,401 @@ def test_two_transform_block_diagonal_path_matches_dense_factors_and_wire():
         assert actual["source_diagonal_sha256"] == expected[
             "source_diagonal_sha256"
         ]
+
+
+def test_arm_e_scale_grid_refuses_any_scope_inside_a_factor_group():
+    weight = torch.randn(1, 512, generator=torch.Generator().manual_seed(711))
+    prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
+        weight,
+        torch.ones(512),
+        body_rate_q256=512,
+        input_block_size=512,
+        output_block_size=1,
+        input_seed=7,
+        output_seed=11,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    with pytest.raises(ValueError, match="row_factor_group"):
+        M.require_blockldl_trellis_wire_round_trip(
+            prepared,
+            torch.zeros(1, 512),
+            body_rate_q256=512,
+            schedule=[2] * 512,
+            layout="fixed_quota_per_256",
+            alphabets={2: _e2_alphabet(2)},
+            scale_rule="static_6",
+            sb_chunk=1,
+            determinism_mode="on",
+            tailbite_candidates=4,
+            backend="eager",
+            point_route="full",
+            terminal_metric_mode="diag_block_D",
+            buffer_blocks=1,
+            research_opt_in=M.RESEARCH_OPT_IN,
+            scale_grid_multipliers=(1.0, 0.75, 1.25),
+            scale_grid_selection_scope="row_superblock",
+        )
+    for menu, message in (
+        ((), "candidate zero"),
+        ((1.0, 1.0), "unique"),
+        ((1.0, float("nan")), "finite/positive"),
+        ((True, 0.75), "plain numeric"),
+        ((1.0, "0.75"), "plain numeric"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            M.require_blockldl_trellis_wire_round_trip(
+                prepared,
+                torch.zeros(1, 512),
+                body_rate_q256=512,
+                schedule=[2] * 512,
+                layout="fixed_quota_per_256",
+                alphabets={2: _e2_alphabet(2)},
+                scale_rule="static_6",
+                sb_chunk=1,
+                determinism_mode="on",
+                tailbite_candidates=4,
+                backend="eager",
+                point_route="full",
+                terminal_metric_mode="diag_block_D",
+                buffer_blocks=1,
+                research_opt_in=M.RESEARCH_OPT_IN,
+                scale_grid_multipliers=menu,
+                scale_grid_selection_scope="row_factor_group",
+            )
+
+
+def test_arm_e_render_recipe_uses_one_immutable_schedule_snapshot():
+    identity_schedule = [1] * 16 + [4] * 240
+    later_schedule = [4] * 240 + [1] * 16
+
+    class FlipSchedule(list):
+        def __init__(self):
+            super().__init__(identity_schedule)
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            selected = identity_schedule if self.iterations == 1 else later_schedule
+            return iter(selected)
+
+    generator = torch.Generator().manual_seed(20260915)
+    weight = torch.randn(1, 256, generator=generator)
+    prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
+        weight,
+        torch.ones(256),
+        body_rate_q256=976,
+        input_block_size=256,
+        output_block_size=1,
+        input_seed=7,
+        output_seed=11,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    schedule = FlipSchedule()
+    artifact = M.require_blockldl_trellis_wire_round_trip(
+        prepared,
+        torch.zeros(1, 256),
+        body_rate_q256=976,
+        schedule=schedule,
+        layout="tight_offsets",
+        alphabets={1: (15, 11, 8, 4)},
+        scale_rule="static_6",
+        sb_chunk=1,
+        determinism_mode="on",
+        tailbite_candidates=4,
+        backend="eager",
+        point_route="full",
+        terminal_metric_mode="diag_block_D",
+        buffer_blocks=1,
+        research_opt_in=M.RESEARCH_OPT_IN,
+        scale_grid_multipliers=(1.0, 0.75, 1.25),
+        scale_grid_selection_scope="row_factor_group",
+    )
+    wire = TrellisWire.from_bytes(artifact.wire_bytes)
+    assert schedule.iterations == 1
+    assert list(wire.schedule) == identity_schedule
+    assert artifact.receipt["wire_recipe"]["schedule"] == identity_schedule
+
+
+def test_arm_e_render_recipe_refuses_string_subclass_alias():
+    class BackendAlias(str):
+        def __str__(self):
+            return "triton"
+
+    with pytest.raises(ValueError, match="backend must be a nonempty plain string"):
+        M.require_blockldl_trellis_wire_round_trip(
+            None,
+            torch.zeros(1, 256),
+            body_rate_q256=976,
+            schedule=[1] * 16 + [4] * 240,
+            layout="tight_offsets",
+            alphabets={1: (15, 11, 8, 4)},
+            scale_rule="static_6",
+            sb_chunk=1,
+            determinism_mode="on",
+            tailbite_candidates=4,
+            backend=BackendAlias("eager"),
+            point_route="full",
+            terminal_metric_mode="diag_block_D",
+            buffer_blocks=1,
+            research_opt_in=M.RESEARCH_OPT_IN,
+        )
+
+
+def test_arm_e_identity_grid_runs_two_full_recurrences_and_is_old_bytes(
+    monkeypatch,
+):
+    generator = torch.Generator().manual_seed(20260912)
+    weight = torch.randn(2, 512, generator=generator)
+    activations = torch.randn(5, 512, generator=generator)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        activations.T @ activations + 0.5 * torch.eye(512),
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=2,
+        input_seed=3,
+        output_seed=4,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    kwargs = {
+        "activations": activations,
+        "body_rate_q256": 512,
+        "schedule": [2] * 512,
+        "layout": "fixed_quota_per_256",
+        "alphabets": {2: _e2_alphabet(2)},
+        "scale_rule": "static_6",
+        "sb_chunk": 2,
+        "determinism_mode": "on",
+        "tailbite_candidates": 4,
+        "backend": "eager",
+        "point_route": "full",
+        "terminal_metric_mode": "diag_block_D",
+        "buffer_blocks": 1,
+        "research_opt_in": M.RESEARCH_OPT_IN,
+    }
+    identity = M.require_blockldl_trellis_wire_round_trip(prepared, **kwargs)
+    calls = 0
+    reference_calls = 0
+    original = M.reverse_block_feedback_buffered
+    original_reference = M.reverse_block_feedback_reference
+
+    def counted(*args, **call_kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **call_kwargs)
+
+    def counted_reference(*args, **call_kwargs):
+        nonlocal reference_calls
+        reference_calls += 1
+        return original_reference(*args, **call_kwargs)
+
+    monkeypatch.setattr(M, "reverse_block_feedback_buffered", counted)
+    monkeypatch.setattr(
+        M, "reverse_block_feedback_reference", counted_reference
+    )
+    gated = M.require_blockldl_trellis_wire_round_trip(
+        prepared,
+        **kwargs,
+        scale_grid_multipliers=(1.0,),
+        scale_grid_selection_scope="row_factor_group",
+    )
+    assert calls == 2
+    assert reference_calls == 3
+    assert gated.wire_bytes == identity.wire_bytes
+    selection = gated.receipt["block_ldl"]["scale_selection"]
+    assert selection["full_recurrence_arms"] == 2
+    assert selection["selected_recurrence_reverified"] is True
+    assert selection["candidate_win_rows"] == 0
+    assert selection["no_win_byte_identical"] is True
+    assert selection["wire_byte_delta"] == selection["delta_bpw_q256"] == 0
+    assert selection["identity_wire_bytes"] == selection["final_wire_bytes"]
+    assert selection["identity_wire_sha256"] == hashlib.sha256(
+        identity.wire_bytes
+    ).hexdigest()
+    assert selection["final_wire_sha256"] == hashlib.sha256(
+        gated.wire_bytes
+    ).hexdigest()
+    forged_receipt = copy.deepcopy(gated.receipt)
+    forged_receipt["block_ldl"]["scale_selection"][
+        "identity_wire_sha256"
+    ] = "0" * 64
+    forged_body = dict(forged_receipt)
+    forged_body.pop("identity_sha256")
+    forged_receipt["identity_sha256"] = M._canonical_sha256(forged_body)
+    forged = replace(gated, receipt=forged_receipt)
+    with pytest.raises(ValueError, match="receipt semantics"):
+        M.require_blockldl_trellis_artifact_replay(
+            forged,
+            prepared,
+            **kwargs,
+            scale_grid_multipliers=(1.0,),
+            scale_grid_selection_scope="row_factor_group",
+        )
+
+
+def test_arm_e_scale_grid_gates_one_mask_across_every_coupled_block():
+    generator = torch.Generator().manual_seed(20260911)
+    weight = torch.randn(2, 512, generator=generator)
+    activations = torch.randn(6, 512, generator=generator)
+    prepared = M.prepare_one_linear_scaffold(
+        weight,
+        activations.T @ activations + 0.5 * torch.eye(512),
+        body_rate_q256=512,
+        input_block_size=16,
+        output_block_size=2,
+        input_seed=3,
+        output_seed=4,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    artifact = M.require_blockldl_trellis_wire_round_trip(
+        prepared,
+        activations,
+        body_rate_q256=512,
+        schedule=[2] * 512,
+        layout="fixed_quota_per_256",
+        alphabets={2: _e2_alphabet(2)},
+        scale_rule="static_6",
+        sb_chunk=2,
+        determinism_mode="on",
+        tailbite_candidates=4,
+        backend="eager",
+        point_route="full",
+        terminal_metric_mode="diag_block_D",
+        buffer_blocks=1,
+        research_opt_in=M.RESEARCH_OPT_IN,
+        scale_grid_multipliers=(1.0, 0.55, 0.75, 1.25, 1.30),
+        scale_grid_selection_scope="row_factor_group",
+    )
+    selection = artifact.receipt["block_ldl"]["scale_selection"]
+    assert selection["candidate_win_rows"] == 1
+    assert selection["cf_exact_minimum_per_row_factor_group"] is True
+    assert selection["cf_le_c0"] is True
+    group = artifact.receipt["block_ldl"]["factor_groups"][0]
+    assert group["scale_selection"]["full_recurrence_arms"] == 2
+    assert group["scale_selection"]["candidate_win_rows"] == 1
+    assert group["scale_selection"]["cf_exact_minimum"] is True
+    # Both 256-column terminals are coupled by one recurrence and therefore
+    # carry the same row/factor-group decision, never per-block decisions.
+    terminal_selections = [
+        block["scale_selection"] for block in artifact.receipt["terminal_blocks"]
+    ]
+    assert {item["scope"] for item in terminal_selections} == {
+        "row_factor_group"
+    }
+    assert {item["candidate_win_rows"] for item in terminal_selections} == {1}
+    assert artifact.receipt["wire_recipe"]["scale_selection"]["mode"] == (
+        "e4m3_grid_gated_v1"
+    )
+    assert TrellisWire.from_bytes(artifact.wire_bytes).to_bytes() == (
+        artifact.wire_bytes
+    )
+
+
+def test_arm_e_selected_recurrence_target_mutation_refuses(monkeypatch):
+    generator = torch.Generator().manual_seed(20260916)
+    weight = torch.randn(1, 256, generator=generator)
+    prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
+        weight,
+        torch.ones(256),
+        body_rate_q256=512,
+        input_block_size=256,
+        output_block_size=1,
+        input_seed=7,
+        output_seed=11,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    original = M.reverse_block_feedback_reference
+    calls = 0
+
+    def corrupt_selected(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        decoded, targets = original(*args, **kwargs)
+        if calls == 3:
+            targets = (targets[0] + 1.0, *targets[1:])
+        return decoded, targets
+
+    monkeypatch.setattr(M, "reverse_block_feedback_reference", corrupt_selected)
+    with pytest.raises(AssertionError, match="selected Arm E targets differ"):
+        M.require_blockldl_trellis_wire_round_trip(
+            prepared,
+            torch.zeros(1, 256),
+            body_rate_q256=512,
+            schedule=[2] * 256,
+            layout="fixed_quota_per_256",
+            alphabets={2: _e2_alphabet(2)},
+            scale_rule="static_6",
+            sb_chunk=1,
+            determinism_mode="on",
+            tailbite_candidates=4,
+            backend="eager",
+            point_route="full",
+            terminal_metric_mode="diag_block_D",
+            buffer_blocks=1,
+            research_opt_in=M.RESEARCH_OPT_IN,
+            scale_grid_multipliers=(1.0,),
+            scale_grid_selection_scope="row_factor_group",
+        )
+
+
+def test_structured_scale_grid_respects_factor_boundaries_and_replays_exactly():
+    generator = torch.Generator().manual_seed(0)
+    weight = (
+        torch.randn(2, 1024, generator=generator)
+        * torch.exp(torch.linspace(-2.0, 2.0, 1024))[None, :]
+    )
+    importance = torch.rand(1024, generator=generator).add_(0.25)
+    activations = torch.randn(2, 1024, generator=generator)
+    prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
+        weight,
+        importance,
+        body_rate_q256=976,
+        input_block_size=512,
+        output_block_size=2,
+        input_seed=3,
+        output_seed=4,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    superblock_schedule = [1] * 16 + [4] * 240
+    kwargs = {
+        "activations": activations,
+        "body_rate_q256": 976,
+        "schedule": superblock_schedule * 4,
+        "layout": "tight_offsets",
+        "alphabets": {1: (15, 11, 8, 4)},
+        "scale_rule": "static_6",
+        "sb_chunk": 2,
+        "determinism_mode": "on",
+        "tailbite_candidates": 4,
+        "backend": "eager",
+        "point_route": "full",
+        "terminal_metric_mode": "diag_block_D",
+        "buffer_blocks": 1,
+        "research_opt_in": M.RESEARCH_OPT_IN,
+        "scale_grid_multipliers": (1.0, 0.55, 0.70, 0.85, 1.15, 1.30),
+        "scale_grid_selection_scope": "row_factor_group",
+    }
+    first = M.require_blockldl_trellis_wire_round_trip(prepared, **kwargs)
+    second = M.require_blockldl_trellis_artifact_replay(
+        first, prepared, **kwargs
+    )
+    assert first.wire_bytes == second.wire_bytes
+    assert first.receipt == second.receipt
+    groups = first.receipt["block_ldl"]["factor_groups"]
+    assert [(group["first_column"], group["last_column_exclusive"]) for group in groups] == [
+        (0, 512), (512, 1024),
+    ]
+    selections = [group["scale_selection"] for group in groups]
+    assert [item["candidate_win_rows"] for item in selections] == [2, 1]
+    assert selections[0]["candidate_win_mask_sha256"] != selections[1][
+        "candidate_win_mask_sha256"
+    ]
+    terminal_blocks = first.receipt["terminal_blocks"]
+    assert [
+        block["scale_selection"]["candidate_win_rows"]
+        for block in terminal_blocks
+    ] == [2, 2, 1, 1]
+    assert [block["factor_group_index"] for block in terminal_blocks] == [0, 0, 1, 1]
 
 
 @pytest.mark.parametrize("block_size", [128, 768, 2048])

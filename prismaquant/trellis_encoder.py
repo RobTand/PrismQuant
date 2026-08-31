@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import hashlib
 import math
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
 import torch
 
@@ -47,6 +47,10 @@ _E2M1_BYPASS_CODES = (15, 14, 13, 12, 11, 10, 9, 0, 1, 2, 3, 4, 5, 6, 7)
 _E2M1_BYPASS_VALUES = tuple(
     native_code_value(E2M1_FAMILY, code) for code in _E2M1_BYPASS_CODES
 )
+_ENCODER_SOURCE_PATH = Path(__file__).resolve()
+_IMPORTED_ENCODER_SOURCE_SHA256 = hashlib.sha256(
+    _ENCODER_SOURCE_PATH.read_bytes()
+).hexdigest()
 
 
 class TrellisEncoderError(RuntimeError):
@@ -61,6 +65,7 @@ class EncodedTrellisPlanes:
     bypass_codes: torch.Tensor
     scale_blob: bytes
     global_scale_real: float
+    scale_codes: torch.Tensor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +78,25 @@ class _PointTables:
 
 
 def encoder_source_sha256() -> str:
-    """Hash the checked-in encoder source, never bytecode/cache files."""
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    """Return the source identity captured with this loaded implementation."""
+
+    return _IMPORTED_ENCODER_SOURCE_SHA256
+
+
+def _current_encoder_source_sha256() -> str:
+    return hashlib.sha256(_ENCODER_SOURCE_PATH.read_bytes()).hexdigest()
+
+
+def require_encoder_source_unchanged() -> str:
+    """Refuse when loaded encoder functions and on-disk source can differ."""
+
+    current = _current_encoder_source_sha256()
+    if current != _IMPORTED_ENCODER_SOURCE_SHA256:
+        raise TrellisEncoderError(
+            "trellis encoder source changed since module import; refusing "
+            "to execute or bind a mixed encoder closure"
+        )
+    return _IMPORTED_ENCODER_SOURCE_SHA256
 
 
 def build_trellis() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -584,6 +606,146 @@ def _nearest_levels(
     )
 
 
+def _snap_e2m1_scale_codes_unchecked(
+    real_scale: torch.Tensor,
+    global_scale: torch.Tensor | float,
+    *,
+    multiplier: float = 1.0,
+    floor_to_min_positive: bool,
+) -> torch.Tensor:
+    real = torch.as_tensor(real_scale)
+    global_value = torch.as_tensor(
+        global_scale, dtype=torch.float32, device=real.device
+    )
+    multiplier_value = float(multiplier)
+    ratio = real.to(torch.float32) / global_value
+    if multiplier_value != 1.0:
+        ratio = ratio * multiplier_value
+    lower = 2.0 ** -9 if floor_to_min_positive else 0.0
+    snapped = ratio.clamp(lower, E4M3_MAX).to(torch.float8_e4m3fn)
+    return snapped.view(torch.uint8).contiguous()
+
+
+def snap_e2m1_scale_codes(
+    real_scale: torch.Tensor,
+    global_scale: torch.Tensor | float,
+    *,
+    multiplier: float = 1.0,
+    floor_to_min_positive: bool,
+) -> torch.Tensor:
+    """Snap positive real E2M1 scales to wire E4M3 codes.
+
+    This validated research seam and the ordinary encoder share the private
+    byte-producing primitive. The ordinary established path skips these
+    diagnostic synchronizations; its inputs were constructed locally and its
+    operation ordering remains unchanged.
+    """
+
+    real = torch.as_tensor(real_scale)
+    if not real.is_floating_point() or real.numel() == 0:
+        raise TrellisEncoderError("E2M1 real scales must be a nonempty float tensor")
+    if not bool(torch.isfinite(real).all().item()) or bool((real <= 0).any().item()):
+        raise TrellisEncoderError("E2M1 real scales must be finite and positive")
+    global_value = torch.as_tensor(
+        global_scale, dtype=torch.float32, device=real.device
+    )
+    if (
+        global_value.numel() != 1
+        or not bool(torch.isfinite(global_value).item())
+        or float(global_value.item()) <= 0.0
+    ):
+        raise TrellisEncoderError("E2M1 global scale must be one finite positive scalar")
+    multiplier_value = float(multiplier)
+    if not math.isfinite(multiplier_value) or multiplier_value <= 0.0:
+        raise TrellisEncoderError("E2M1 scale multiplier must be finite and positive")
+    # Preserve the identity operation ordering byte-for-byte. In particular,
+    # do not introduce a multiply-by-one rounding before the division.
+    return _snap_e2m1_scale_codes_unchecked(
+        real,
+        global_value,
+        multiplier=multiplier_value,
+        floor_to_min_positive=floor_to_min_positive,
+    )
+
+
+def iter_snapped_e2m1_scale_codes(
+    real_scale: torch.Tensor,
+    global_scale: torch.Tensor | float,
+    multipliers: Sequence[float],
+    *,
+    floor_to_min_positive: bool,
+) -> Iterator[torch.Tensor]:
+    """Validate once, then stream scale-code planes without per-arm syncs."""
+
+    menu = tuple(float(value) for value in multipliers)
+    if not menu:
+        raise TrellisEncoderError("E2M1 scale multiplier menu must be nonempty")
+    if any(not math.isfinite(value) or value <= 0.0 for value in menu):
+        raise TrellisEncoderError(
+            "E2M1 scale multipliers must be finite and positive"
+        )
+    real = torch.as_tensor(real_scale)
+    # The first public call performs the tensor legality checks once.
+    yield snap_e2m1_scale_codes(
+        real,
+        global_scale,
+        multiplier=menu[0],
+        floor_to_min_positive=floor_to_min_positive,
+    )
+    global_value = torch.as_tensor(
+        global_scale, dtype=torch.float32, device=real.device
+    )
+    for multiplier in menu[1:]:
+        yield _snap_e2m1_scale_codes_unchecked(
+            real,
+            global_value,
+            multiplier=multiplier,
+            floor_to_min_positive=floor_to_min_positive,
+        )
+
+
+def _decode_e2m1_scale_codes_unchecked(
+    codes: torch.Tensor,
+    global_scale: torch.Tensor | float,
+) -> torch.Tensor:
+    contiguous = codes.contiguous()
+    decoded = contiguous.view(torch.float8_e4m3fn).to(torch.float32)
+    global_value = torch.as_tensor(
+        global_scale, dtype=torch.float32, device=codes.device
+    )
+    return (decoded * global_value).clamp_min(1.0e-12).contiguous()
+
+
+def decode_e2m1_scale_codes(
+    codes: torch.Tensor,
+    global_scale: torch.Tensor | float,
+) -> torch.Tensor:
+    """Decode a legal positive E4M3 scale plane under one fixed global."""
+
+    if codes.dtype != torch.uint8 or codes.numel() == 0:
+        raise TrellisEncoderError(
+            "E2M1 scale codes must be a nonempty uint8 tensor"
+        )
+    contiguous = codes.contiguous()
+    decoded = contiguous.view(torch.float8_e4m3fn).to(torch.float32)
+    if not bool(torch.isfinite(decoded).all().item()) or bool(
+        (decoded <= 0).any().item()
+    ):
+        raise TrellisEncoderError(
+            "E2M1 scale codes must decode finite and strictly positive"
+        )
+    global_value = torch.as_tensor(
+        global_scale, dtype=torch.float32, device=codes.device
+    )
+    if (
+        global_value.numel() != 1
+        or not bool(torch.isfinite(global_value).item())
+        or float(global_value.item()) <= 0.0
+    ):
+        raise TrellisEncoderError("E2M1 global scale must be one finite positive scalar")
+    return _decode_e2m1_scale_codes_unchecked(contiguous, global_value)
+
+
 def _scale_context(
     weight: torch.Tensor,
     col_weights: torch.Tensor,
@@ -591,7 +753,10 @@ def _scale_context(
     family: str,
     scale_rule: str,
     global_scale_real_override: float | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, bytes, float]:
+    scale_plane_override: torch.Tensor | None = None,
+) -> tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, bytes, float, torch.Tensor | None
+]:
     """Return normalized weight, objective, per-element scale, wire plane."""
     rows, columns = map(int, weight.shape)
     if scale_rule != "static_6" and family == E2M1_FAMILY:
@@ -603,16 +768,18 @@ def _scale_context(
     importance = col_weights.reshape(1, columns).to(
         device=weight.device, dtype=torch.float32
     ).clamp_min(1.0e-12)
-    if family != E2M1_FAMILY and global_scale_real_override is not None:
+    if family != E2M1_FAMILY and (
+        global_scale_real_override is not None or scale_plane_override is not None
+    ):
         raise TrellisEncoderError(
-            "global_scale_real_override is defined only for E2M1"
+            "global/scale-plane overrides are defined only for E2M1"
         )
     if family == E2M1_FAMILY:
         grouped = source.reshape(rows, columns // 16, 16)
         real_scale = grouped.abs().amax(dim=-1).clamp_min(1.0e-12) / 6.0
         if global_scale_real_override is None:
             global_scale = (real_scale.amax() / E4M3_MAX).clamp_min(1.0e-12)
-            scale_ratio = (real_scale / global_scale).clamp(0.0, E4M3_MAX)
+            floor_to_min_positive = False
         else:
             requested = float(global_scale_real_override)
             if not math.isfinite(requested) or requested <= 0.0:
@@ -622,19 +789,32 @@ def _scale_context(
             global_scale = torch.tensor(
                 requested, dtype=torch.float32, device=weight.device
             )
-            # Wire-v1 rejects zero E4M3 scale codes.  The minimum positive
-            # E4M3FN subnormal is 2^-9.  This floor affects only the explicit
-            # cross-superblock override; the established default path above
-            # remains byte-for-byte unchanged.
-            scale_ratio = (real_scale / global_scale).clamp(
-                2.0 ** -9, E4M3_MAX
-            )
-        fp8_scale = scale_ratio.to(torch.float8_e4m3fn)
-        effective = (fp8_scale.to(torch.float32) * global_scale).clamp_min(
-            1.0e-12
+            floor_to_min_positive = True
+        identity_codes = _snap_e2m1_scale_codes_unchecked(
+            real_scale,
+            global_scale,
+            floor_to_min_positive=floor_to_min_positive,
         )
+        if scale_plane_override is None:
+            scale_codes = identity_codes
+            effective = _decode_e2m1_scale_codes_unchecked(
+                scale_codes, global_scale
+            )
+        else:
+            if scale_plane_override.dtype != torch.uint8:
+                raise TrellisEncoderError("scale_plane_override must have dtype uint8")
+            if tuple(scale_plane_override.shape) != tuple(real_scale.shape):
+                raise TrellisEncoderError(
+                    "scale_plane_override shape must equal the E2M1 group-scale plane"
+                )
+            if scale_plane_override.device != weight.device:
+                raise TrellisEncoderError(
+                    "scale_plane_override must already reside on the weight device"
+                )
+            scale_codes = scale_plane_override.detach().contiguous()
+            effective = decode_e2m1_scale_codes(scale_codes, global_scale)
         scale_blob = (
-            fp8_scale.view(torch.uint8)
+            scale_codes
             .detach()
             .to(device="cpu")
             .contiguous()
@@ -643,6 +823,7 @@ def _scale_context(
         )
         global_real = float(global_scale.item())
         per_element = effective.repeat_interleave(16, dim=1)
+        resident_scale_codes: torch.Tensor | None = scale_codes
     else:
         if scale_rule != "row_fp32_amax_448":
             raise TrellisEncoderError(
@@ -671,9 +852,17 @@ def _scale_context(
             .tobytes()
         )
         global_real = 1.0
+        resident_scale_codes = None
     normalized = source / per_element
     objective = importance * per_element.pow(2)
-    return normalized, objective, per_element, scale_blob, global_real
+    return (
+        normalized,
+        objective,
+        per_element,
+        scale_blob,
+        global_real,
+        resident_scale_codes,
+    )
 
 
 @contextmanager
@@ -709,6 +898,7 @@ def encode_trellis_planes(
     backend: str,
     point_route: str,
     global_scale_real_override: float | None = None,
+    scale_plane_override: torch.Tensor | None = None,
 ) -> EncodedTrellisPlanes:
     """Encode one dense Linear and return the exact wire planes."""
     spec = get_trellis_family(family)
@@ -747,12 +937,20 @@ def encode_trellis_planes(
     if point_route not in {"full", "windowed"}:
         raise TrellisEncoderError("point route must be full or windowed")
 
-    normalized, objective, per_element, scale_blob, global_real = _scale_context(
+    (
+        normalized,
+        objective,
+        per_element,
+        scale_blob,
+        global_real,
+        scale_codes,
+    ) = _scale_context(
         weight,
         vector,
         family=spec.family,
         scale_rule=scale_rule,
         global_scale_real_override=global_scale_real_override,
+        scale_plane_override=scale_plane_override,
     )
     reconstructed_normalized = torch.empty_like(normalized)
     u_bits = torch.zeros(rows, columns, dtype=torch.uint8, device=weight.device)
@@ -860,6 +1058,7 @@ def encode_trellis_planes(
         bypass_codes=bypass_codes,
         scale_blob=scale_blob,
         global_scale_real=global_real,
+        scale_codes=scale_codes,
     )
 
 
@@ -867,6 +1066,10 @@ __all__ = [
     "EncodedTrellisPlanes",
     "TrellisEncoderError",
     "build_trellis",
+    "decode_e2m1_scale_codes",
     "encode_trellis_planes",
     "encoder_source_sha256",
+    "require_encoder_source_unchanged",
+    "iter_snapped_e2m1_scale_codes",
+    "snap_e2m1_scale_codes",
 ]

@@ -12,8 +12,9 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import json
+import math
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence, cast
 
 import torch
 
@@ -27,6 +28,8 @@ from prismaquant.trellis_encoder import (
     EncodedTrellisPlanes,
     encode_trellis_planes,
     encoder_source_sha256,
+    require_encoder_source_unchanged as require_encoder_module_unchanged,
+    snap_e2m1_scale_codes,
 )
 from prismaquant.trellis_producer import (
     TrellisOneLinearArtifact,
@@ -37,6 +40,11 @@ from prismaquant.trellis_wire import (
     decode_codes_torch,
     decode_values_torch,
     pack_planes,
+)
+from prismaquant.trellis_scale_grid import (
+    propose_e2m1_scale_plane,
+    require_scale_grid_source_unchanged as require_scale_grid_module_unchanged,
+    scale_grid_source_sha256,
 )
 
 
@@ -155,6 +163,7 @@ _IMPORTED_PRODUCER_SOURCE_SHA256 = hashlib.sha256(
     _PRODUCER_SOURCE_PATH.read_bytes()
 ).hexdigest()
 _IMPORTED_ENCODER_SOURCE_SHA256 = encoder_source_sha256()
+_IMPORTED_SCALE_GRID_SOURCE_SHA256 = scale_grid_source_sha256()
 
 
 @dataclass(frozen=True)
@@ -237,8 +246,15 @@ def _require_producer_source_unchanged() -> str:
 
 
 def _require_encoder_source_unchanged() -> str:
+    try:
+        module_identity = require_encoder_module_unchanged()
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
     current = encoder_source_sha256()
-    if not hmac.compare_digest(current, _IMPORTED_ENCODER_SOURCE_SHA256):
+    if (
+        not hmac.compare_digest(current, module_identity)
+        or not hmac.compare_digest(current, _IMPORTED_ENCODER_SOURCE_SHA256)
+    ):
         raise ValueError(
             "trellis encoder source changed since module import; refusing "
             "to publish a receipt for a mixed code closure"
@@ -246,11 +262,112 @@ def _require_encoder_source_unchanged() -> str:
     return _IMPORTED_ENCODER_SOURCE_SHA256
 
 
+def _require_scale_grid_source_unchanged() -> str:
+    module_identity = require_scale_grid_module_unchanged()
+    current = scale_grid_source_sha256()
+    if (
+        not hmac.compare_digest(current, module_identity)
+        or not hmac.compare_digest(current, _IMPORTED_SCALE_GRID_SOURCE_SHA256)
+    ):
+        raise ValueError(
+            "trellis scale-grid source changed since module import; refusing "
+            "to execute or bind a mixed selector closure"
+        )
+    return _IMPORTED_SCALE_GRID_SOURCE_SHA256
+
+
 def _require_implementation_sources_unchanged() -> tuple[str, str]:
     return (
         _require_producer_source_unchanged(),
         _require_encoder_source_unchanged(),
     )
+
+
+def _checked_blockldl_render_inputs(
+    *,
+    body_rate_q256: object,
+    schedule: object,
+    layout: object,
+    alphabets: object,
+    scale_rule: object,
+    sb_chunk: object,
+    determinism_mode: object,
+    tailbite_candidates: object,
+    backend: object,
+    point_route: object,
+    terminal_metric_mode: object,
+    buffer_blocks: object,
+    research_opt_in: object,
+    scale_grid_selection_scope: object,
+) -> dict[str, object]:
+    for name, value in {
+        "body_rate_q256": body_rate_q256,
+        "sb_chunk": sb_chunk,
+        "tailbite_candidates": tailbite_candidates,
+        "buffer_blocks": buffer_blocks,
+    }.items():
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"Arm E {name} must be a positive plain int")
+    for name, value in {
+        "layout": layout,
+        "scale_rule": scale_rule,
+        "determinism_mode": determinism_mode,
+        "backend": backend,
+        "point_route": point_route,
+        "terminal_metric_mode": terminal_metric_mode,
+        "research_opt_in": research_opt_in,
+    }.items():
+        if type(value) is not str or not value:
+            raise ValueError(f"Arm E {name} must be a nonempty plain string")
+    if (
+        scale_grid_selection_scope is not None
+        and (
+            type(scale_grid_selection_scope) is not str
+            or not scale_grid_selection_scope
+        )
+    ):
+        raise ValueError(
+            "Arm E scale_grid_selection_scope must be a plain string or None"
+        )
+    try:
+        frozen_schedule = tuple(schedule)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Arm E schedule must be an integer sequence") from exc
+    if not frozen_schedule or any(type(value) is not int for value in frozen_schedule):
+        raise ValueError("Arm E schedule must contain only plain ints")
+    if not isinstance(alphabets, Mapping):
+        raise ValueError("Arm E alphabets must be a mapping")
+    frozen_alphabets: dict[int, tuple[int, ...]] = {}
+    for rate, codes in dict(alphabets).items():
+        if type(rate) is not int:
+            raise ValueError("Arm E alphabet rates must be plain ints")
+        try:
+            frozen_codes = tuple(codes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Arm E alphabet values must be integer sequences"
+            ) from exc
+        if not frozen_codes or any(type(code) is not int for code in frozen_codes):
+            raise ValueError(
+                "Arm E alphabet values must contain only plain ints"
+            )
+        frozen_alphabets[rate] = frozen_codes
+    return {
+        "body_rate_q256": body_rate_q256,
+        "schedule": frozen_schedule,
+        "layout": layout,
+        "alphabets": frozen_alphabets,
+        "scale_rule": scale_rule,
+        "sb_chunk": sb_chunk,
+        "determinism_mode": determinism_mode,
+        "tailbite_candidates": tailbite_candidates,
+        "backend": backend,
+        "point_route": point_route,
+        "terminal_metric_mode": terminal_metric_mode,
+        "buffer_blocks": buffer_blocks,
+        "research_opt_in": research_opt_in,
+        "scale_grid_selection_scope": scale_grid_selection_scope,
+    }
 
 
 def _require_exact_fields(
@@ -1686,6 +1803,8 @@ def require_blockldl_trellis_wire_round_trip(
     terminal_metric_mode: str,
     buffer_blocks: int,
     research_opt_in: str,
+    scale_grid_multipliers: Sequence[float] | None = None,
+    scale_grid_selection_scope: str | None = None,
 ) -> CombinedOneLinearArtifact:
     """Run 256-column reverse BlockLDL feedback with exact trellis terminals.
 
@@ -1695,8 +1814,73 @@ def require_blockldl_trellis_wire_round_trip(
     so the resulting planes can be represented by one canonical wire.
     """
 
+    checked = _checked_blockldl_render_inputs(
+        body_rate_q256=body_rate_q256,
+        schedule=schedule,
+        layout=layout,
+        alphabets=alphabets,
+        scale_rule=scale_rule,
+        sb_chunk=sb_chunk,
+        determinism_mode=determinism_mode,
+        tailbite_candidates=tailbite_candidates,
+        backend=backend,
+        point_route=point_route,
+        terminal_metric_mode=terminal_metric_mode,
+        buffer_blocks=buffer_blocks,
+        research_opt_in=research_opt_in,
+        scale_grid_selection_scope=scale_grid_selection_scope,
+    )
+    body_rate_q256 = cast(int, checked["body_rate_q256"])
+    schedule = cast(tuple[int, ...], checked["schedule"])
+    layout = cast(str, checked["layout"])
+    alphabets = cast(dict[int, tuple[int, ...]], checked["alphabets"])
+    scale_rule = cast(str, checked["scale_rule"])
+    sb_chunk = cast(int, checked["sb_chunk"])
+    determinism_mode = cast(str, checked["determinism_mode"])
+    tailbite_candidates = cast(int, checked["tailbite_candidates"])
+    backend = cast(str, checked["backend"])
+    point_route = cast(str, checked["point_route"])
+    terminal_metric_mode = cast(str, checked["terminal_metric_mode"])
+    buffer_blocks = cast(int, checked["buffer_blocks"])
+    research_opt_in = cast(str, checked["research_opt_in"])
+    scale_grid_selection_scope = cast(
+        str | None, checked["scale_grid_selection_scope"]
+    )
     if research_opt_in != RESEARCH_OPT_IN:
         raise ValueError(f"research_opt_in must equal {RESEARCH_OPT_IN!r}")
+    scale_grid_enabled = scale_grid_multipliers is not None
+    if scale_grid_enabled:
+        scale_grid_raw = tuple(scale_grid_multipliers)
+        if any(
+            type(value) not in {int, float}
+            for value in scale_grid_raw
+        ):
+            raise ValueError(
+                "Arm E scale-grid multipliers must be plain numeric values"
+            )
+        scale_grid_menu = tuple(float(value) for value in scale_grid_raw)
+        if not scale_grid_menu or scale_grid_menu[0] != 1.0:
+            raise ValueError("Arm E scale-grid candidate zero must be exactly 1.0")
+        if any(
+            not math.isfinite(value) or value <= 0.0
+            for value in scale_grid_menu
+        ):
+            raise ValueError("Arm E scale-grid multipliers must be finite/positive")
+        if len(set(scale_grid_menu)) != len(scale_grid_menu):
+            raise ValueError("Arm E scale-grid multipliers must be unique")
+        if scale_grid_selection_scope != "row_factor_group":
+            raise ValueError(
+                "Arm E scale-grid selection must use row_factor_group; "
+                "splicing inside a coupled recurrence is forbidden"
+            )
+        scale_grid_source_at_start = _require_scale_grid_source_unchanged()
+    else:
+        scale_grid_menu = None
+        scale_grid_source_at_start = None
+        if scale_grid_selection_scope is not None:
+            raise ValueError(
+                "Arm E scale_grid_selection_scope requires an explicit multiplier menu"
+            )
     if terminal_metric_mode == "dense_block_D":
         raise ValueError(
             "dense_block_D is unsupported: its cross-coordinate residual "
@@ -1741,6 +1925,7 @@ def require_blockldl_trellis_wire_round_trip(
     shared_global = float(shared_global_tensor.item())
 
     encoded_blocks: dict[int, EncodedTrellisPlanes] = {}
+    identity_encoded_blocks: dict[int, EncodedTrellisPlanes] = {}
     block_receipts: dict[int, dict[str, object]] = {}
     block_count = columns // TRELLIS_FEEDBACK_BLOCK_SIZE
     recurrence_q = torch.zeros_like(weight)
@@ -1775,6 +1960,9 @@ def require_blockldl_trellis_wire_round_trip(
             diagonal_blocks=diagonal,
         )
 
+    scale_grid_candidate_win_rows = 0
+    scale_grid_total_rows = 0
+
     for group_index, group in enumerate(factor_groups()):
         group_first = group.first_column
         group_last = group.last_column_exclusive
@@ -1782,147 +1970,446 @@ def require_blockldl_trellis_wire_round_trip(
         group_first_block = group_first // TRELLIS_FEEDBACK_BLOCK_SIZE
         group_block_count = group_columns // TRELLIS_FEEDBACK_BLOCK_SIZE
 
-        def terminal(local_block_index: int, target: torch.Tensor) -> torch.Tensor:
-            block_index = group_first_block + local_block_index
-            first = block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
-            last = first + TRELLIS_FEEDBACK_BLOCK_SIZE
-            block_schedule = tuple(int(value) for value in schedule[first:last])
-            local_body_rate_q256 = sum(block_schedule)
-            bypass_rate = get_trellis_family(E2M1_FAMILY).bypass_rate
-            block_rates = sorted({
-                rate for rate in block_schedule if rate < bypass_rate
-            })
-            try:
-                block_alphabets = {
-                    rate: alphabets[rate] for rate in block_rates
+        group_weight = weight[:, group_first:group_last]
+        arm_encoded: dict[str, dict[int, EncodedTrellisPlanes]] = {}
+        arm_receipts: dict[str, dict[int, dict[str, object]]] = {}
+
+        def run_trajectory(
+            arm: str,
+        ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...], float]:
+            if arm not in {"identity", "candidate"}:
+                raise AssertionError("unknown BlockLDL scale-grid arm")
+            if arm == "candidate" and not scale_grid_enabled:
+                raise AssertionError("candidate trajectory requested while grid is off")
+            trajectory_encoded: dict[int, EncodedTrellisPlanes] = {}
+            trajectory_receipts: dict[int, dict[str, object]] = {}
+
+            def terminal(
+                local_block_index: int, target: torch.Tensor
+            ) -> torch.Tensor:
+                block_index = group_first_block + local_block_index
+                first = block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
+                last = first + TRELLIS_FEEDBACK_BLOCK_SIZE
+                block_schedule = tuple(int(value) for value in schedule[first:last])
+                local_body_rate_q256 = sum(block_schedule)
+                bypass_rate = get_trellis_family(E2M1_FAMILY).bypass_rate
+                block_rates = sorted({
+                    rate for rate in block_schedule if rate < bypass_rate
+                })
+                try:
+                    block_alphabets = {
+                        rate: alphabets[rate] for rate in block_rates
+                    }
+                except KeyError as exc:
+                    raise ValueError(
+                        f"missing alphabet for block rate {int(exc.args[0])}"
+                    ) from exc
+                dense_d = group.diagonal_blocks[local_block_index]
+                metric = (
+                    dense_d.diagonal().contiguous()
+                    if terminal_metric_mode == "diag_block_D"
+                    else torch.ones(
+                        TRELLIS_FEEDBACK_BLOCK_SIZE,
+                        dtype=torch.float32,
+                        device=target.device,
+                    )
+                )
+                scale_plane_override = None
+                proposal_record: dict[str, object] | None = None
+                if arm == "candidate":
+                    assert scale_grid_menu is not None
+                    target_scales = (
+                        target.float().reshape(rows, 16, 16)
+                        .abs().amax(-1).clamp_min(1.0e-12) / 6.0
+                    )
+                    identity_codes = snap_e2m1_scale_codes(
+                        target_scales,
+                        shared_global,
+                        multiplier=1.0,
+                        floor_to_min_positive=True,
+                    )
+                    proposal = propose_e2m1_scale_plane(
+                        target,
+                        metric,
+                        global_scale_real=shared_global,
+                        identity_scale_codes=identity_codes,
+                        multipliers=scale_grid_menu,
+                        floor_to_min_positive=True,
+                    )
+                    scale_plane_override = proposal.scale_codes
+                    proposal_record = {
+                        "multiplier_indices_sha256": _tensor_sha256(
+                            proposal.multiplier_indices
+                        ),
+                        "scale_codes_sha256": _tensor_sha256(
+                            proposal.scale_codes
+                        ),
+                        "masked_candidate_cells": (
+                            proposal.masked_candidate_cells
+                        ),
+                        "clipped_candidate_cells": (
+                            proposal.clipped_candidate_cells
+                        ),
+                        "rtn_floor_nonregression_verified": True,
+                    }
+                encoded = encode_trellis_planes(
+                    target,
+                    metric,
+                    family=E2M1_FAMILY,
+                    schedule=block_schedule,
+                    alphabets=block_alphabets,
+                    scale_rule=scale_rule,
+                    sb_chunk=sb_chunk,
+                    determinism_mode=determinism_mode,
+                    tailbite_candidates=tailbite_candidates,
+                    backend=backend,
+                    point_route=point_route,
+                    global_scale_real_override=shared_global,
+                    scale_plane_override=scale_plane_override,
+                )
+                terminal_wire = pack_planes(
+                    family=E2M1_FAMILY,
+                    body_rate_q256=local_body_rate_q256,
+                    schedule=block_schedule,
+                    layout=layout,
+                    u_bits=encoded.u_bits,
+                    point_indices=encoded.point_indices,
+                    bypass_codes=encoded.bypass_codes,
+                    alphabets=block_alphabets,
+                    scale_blob=encoded.scale_blob,
+                    global_scale_real=shared_global,
+                )
+                terminal_blob = terminal_wire.to_bytes()
+                if TrellisWire.from_bytes(terminal_blob).to_bytes() != terminal_blob:
+                    raise AssertionError("terminal wire did not reserialize exactly")
+                decoded_terminal = decode_values_torch(
+                    terminal_blob, device=target.device, dtype=target.dtype
+                )
+                if not torch.equal(
+                    decoded_terminal.to(torch.bfloat16),
+                    encoded.reconstruction.to(torch.bfloat16),
+                ):
+                    raise AssertionError(
+                        "terminal same-byte decode differs from encoder reconstruction"
+                    )
+                target_group_scales = (
+                    target.reshape(rows, 16, 16).abs().amax(-1) / 6.0
+                )
+                clipped = int(
+                    (
+                        target_group_scales
+                        > shared_global_tensor * 448.0
+                    ).sum().item()
+                )
+                trajectory_encoded[block_index] = encoded
+                trajectory_receipts[block_index] = {
+                    "arm": arm,
+                    "block_index": block_index,
+                    "factor_group_index": group_index,
+                    "first_column": first,
+                    "last_column_exclusive": last,
+                    "local_body_rate_q256": local_body_rate_q256,
+                    "feedback_target_sha256": _tensor_sha256(target),
+                    "terminal_wire_identity_sha256": hashlib.sha256(
+                        terminal_blob
+                    ).hexdigest(),
+                    "decoded_terminal_sha256": _tensor_sha256(decoded_terminal),
+                    "dense_D_sha256": _tensor_sha256(dense_d),
+                    "terminal_metric_sha256": _tensor_sha256(metric),
+                    "terminal_metric_mode": terminal_metric_mode,
+                    "dense_D_terminal_consumption": {
+                        "diagonal_consumed": (
+                            terminal_metric_mode == "diag_block_D"
+                        ),
+                        "off_diagonal_consumed": False,
+                        "full_matrix_consumed": False,
+                        "exact_dense_objective": False,
+                    },
+                    "clipped_group_count_at_fixed_global": clipped,
+                    "scale_proposal": proposal_record,
                 }
-            except KeyError as exc:
-                raise ValueError(
-                    f"missing alphabet for block rate {int(exc.args[0])}"
-                ) from exc
-            dense_d = group.diagonal_blocks[local_block_index]
-            metric = (
-                dense_d.diagonal().contiguous()
-                if terminal_metric_mode == "diag_block_D"
-                else torch.ones(
-                    TRELLIS_FEEDBACK_BLOCK_SIZE,
-                    dtype=torch.float32,
-                    device=target.device,
+                return decoded_terminal
+
+            trajectory_q, trajectory_targets = reverse_block_feedback_buffered(
+                group_weight,
+                group.feedback_lower,
+                terminal,
+                block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
+                buffer_blocks=buffer_blocks,
+            )
+
+            def decoded_replay(
+                local_block_index: int, _target: torch.Tensor
+            ) -> torch.Tensor:
+                first = local_block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
+                return trajectory_q[
+                    :, first:first + TRELLIS_FEEDBACK_BLOCK_SIZE
+                ]
+
+            oracle_q, oracle_targets = reverse_block_feedback_reference(
+                group_weight,
+                group.feedback_lower,
+                decoded_replay,
+                block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
+            )
+            if not torch.equal(oracle_q, trajectory_q):
+                raise AssertionError(
+                    f"{arm} buffered recurrence decoded blocks changed"
+                )
+            trajectory_target_max_abs = max(
+                float((buffered - oracle).abs().max().item())
+                for buffered, oracle in zip(
+                    trajectory_targets, oracle_targets, strict=True
                 )
             )
-            encoded = encode_trellis_planes(
-                target,
-                metric,
-                family=E2M1_FAMILY,
-                schedule=block_schedule,
-                alphabets=block_alphabets,
-                scale_rule=scale_rule,
-                sb_chunk=sb_chunk,
-                determinism_mode=determinism_mode,
-                tailbite_candidates=tailbite_candidates,
-                backend=backend,
-                point_route=point_route,
-                global_scale_real_override=shared_global,
-            )
-            terminal_wire = pack_planes(
-                family=E2M1_FAMILY,
-                body_rate_q256=local_body_rate_q256,
-                schedule=block_schedule,
-                layout=layout,
-                u_bits=encoded.u_bits,
-                point_indices=encoded.point_indices,
-                bypass_codes=encoded.bypass_codes,
-                alphabets=block_alphabets,
-                scale_blob=encoded.scale_blob,
-                global_scale_real=shared_global,
-            )
-            terminal_blob = terminal_wire.to_bytes()
-            if TrellisWire.from_bytes(terminal_blob).to_bytes() != terminal_blob:
-                raise AssertionError("terminal wire did not reserialize exactly")
-            decoded_terminal = decode_values_torch(
-                terminal_blob, device=target.device, dtype=target.dtype
-            )
-            if not torch.equal(
-                decoded_terminal.to(torch.bfloat16),
-                encoded.reconstruction.to(torch.bfloat16),
+            if not all(
+                torch.allclose(buffered, oracle, rtol=3.0e-5, atol=3.0e-5)
+                for buffered, oracle in zip(
+                    trajectory_targets, oracle_targets, strict=True
+                )
             ):
                 raise AssertionError(
-                    "terminal same-byte decode differs from encoder reconstruction"
+                    f"{arm} buffered BlockLDL targets differ from the "
+                    f"unbuffered oracle; max_abs={trajectory_target_max_abs}"
                 )
-            target_group_scales = (
-                target.reshape(rows, 16, 16).abs().amax(-1) / 6.0
-            )
-            clipped = int(
-                (target_group_scales > shared_global_tensor * 448.0).sum().item()
-            )
-            encoded_blocks[block_index] = encoded
-            block_receipts[block_index] = {
-                "block_index": block_index,
-                "factor_group_index": group_index,
-                "first_column": first,
-                "last_column_exclusive": last,
-                "local_body_rate_q256": local_body_rate_q256,
-                "feedback_target_sha256": _tensor_sha256(target),
-                "terminal_wire_identity_sha256": hashlib.sha256(
-                    terminal_blob
-                ).hexdigest(),
-                "decoded_terminal_sha256": _tensor_sha256(decoded_terminal),
-                "dense_D_sha256": _tensor_sha256(dense_d),
-                "terminal_metric_sha256": _tensor_sha256(metric),
-                "terminal_metric_mode": terminal_metric_mode,
-                "dense_D_terminal_consumption": {
-                    "diagonal_consumed": terminal_metric_mode == "diag_block_D",
-                    "off_diagonal_consumed": False,
-                    "full_matrix_consumed": False,
-                    "exact_dense_objective": False,
-                },
-                "clipped_group_count_at_fixed_global": clipped,
-            }
-            return decoded_terminal
+            arm_encoded[arm] = trajectory_encoded
+            arm_receipts[arm] = trajectory_receipts
+            return trajectory_q, trajectory_targets, trajectory_target_max_abs
 
-        group_weight = weight[:, group_first:group_last]
-        group_q, group_targets = reverse_block_feedback_buffered(
-            group_weight,
-            group.feedback_lower,
-            terminal,
-            block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
-            buffer_blocks=buffer_blocks,
+        identity_q, identity_targets, identity_target_error = run_trajectory(
+            "identity"
         )
+        if scale_grid_enabled:
+            candidate_q, candidate_targets, candidate_target_error = run_trajectory(
+                "candidate"
+            )
+        else:
+            candidate_q = identity_q
+            candidate_targets = identity_targets
+            candidate_target_error = identity_target_error
+
+        def row_proxy_fp64(reconstruction: torch.Tensor) -> torch.Tensor:
+            error = group_weight.to(torch.float64) - reconstruction.to(torch.float64)
+            hessian_fp64 = group.transformed_hessian.to(torch.float64)
+            return ((error @ hessian_fp64) * error).sum(dim=1).contiguous()
+
+        identity_row_proxy = row_proxy_fp64(identity_q)
+        candidate_row_proxy = row_proxy_fp64(candidate_q)
+        candidate_wins = (
+            candidate_row_proxy < identity_row_proxy
+            if scale_grid_enabled
+            else torch.zeros(rows, dtype=torch.bool, device=weight.device)
+        )
+        row_mask = candidate_wins.reshape(rows, 1)
+        group_q = torch.where(row_mask, candidate_q, identity_q).contiguous()
+        group_targets = tuple(
+            torch.where(row_mask, candidate, identity).contiguous()
+            for identity, candidate in zip(
+                identity_targets, candidate_targets, strict=True
+            )
+        )
+        final_row_proxy = row_proxy_fp64(group_q)
+        if not torch.equal(
+            final_row_proxy,
+            torch.minimum(identity_row_proxy, candidate_row_proxy),
+        ):
+            raise AssertionError(
+                "Arm E row-factor-group Cf is not exactly min(C0, C1)"
+            )
+        if bool((final_row_proxy > identity_row_proxy).any().item()):
+            raise AssertionError("Arm E row-factor-group Cf exceeded identity C0")
+        if scale_grid_enabled:
+            def selected_terminal(
+                local_block_index: int, _target: torch.Tensor
+            ) -> torch.Tensor:
+                first = local_block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
+                return group_q[
+                    :, first:first + TRELLIS_FEEDBACK_BLOCK_SIZE
+                ]
+
+            selected_oracle_q, selected_oracle_targets = (
+                reverse_block_feedback_reference(
+                    group_weight,
+                    group.feedback_lower,
+                    selected_terminal,
+                    block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
+                )
+            )
+            if not torch.equal(selected_oracle_q, group_q):
+                raise AssertionError(
+                    "selected Arm E recurrence changed decoded blocks"
+                )
+            selected_target_error = max(
+                float((selected - oracle).abs().max().item())
+                for selected, oracle in zip(
+                    group_targets, selected_oracle_targets, strict=True
+                )
+            )
+            if not all(
+                torch.allclose(selected, oracle, rtol=3.0e-5, atol=3.0e-5)
+                for selected, oracle in zip(
+                    group_targets, selected_oracle_targets, strict=True
+                )
+            ):
+                raise AssertionError(
+                    "selected Arm E targets differ from the unbuffered "
+                    f"recurrence; max_abs={selected_target_error}"
+                )
+        else:
+            selected_target_error = identity_target_error
+        scale_grid_candidate_win_rows += int(candidate_wins.sum().item())
+        scale_grid_total_rows += rows
+        group_target_max_abs = max(
+            identity_target_error, candidate_target_error, selected_target_error
+        )
+        target_errors.append(group_target_max_abs)
+
         recurrence_q[:, group_first:group_last] = group_q
         for local_index, target in enumerate(group_targets):
             buffered_targets[group_first_block + local_index] = target
 
-        def decoded_replay(
-            local_block_index: int, _target: torch.Tensor
-        ) -> torch.Tensor:
-            first = local_block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
-            return group_q[:, first:first + TRELLIS_FEEDBACK_BLOCK_SIZE]
+        for local_index in range(group_block_count):
+            block_index = group_first_block + local_index
+            identity_encoded = arm_encoded["identity"][block_index]
+            identity_encoded_blocks[block_index] = identity_encoded
+            if scale_grid_enabled:
+                candidate_encoded = arm_encoded["candidate"][block_index]
+                column_mask = row_mask.expand(
+                    rows, TRELLIS_FEEDBACK_BLOCK_SIZE
+                )
+                scale_mask = row_mask.expand(
+                    rows, TRELLIS_FEEDBACK_BLOCK_SIZE // 16
+                )
+                identity_scale = identity_encoded.scale_codes
+                candidate_scale = candidate_encoded.scale_codes
+                if (
+                    identity_scale is None
+                    or candidate_scale is None
+                    or identity_scale.device != weight.device
+                    or candidate_scale.device != weight.device
+                    or tuple(identity_scale.shape) != (rows, 16)
+                    or tuple(candidate_scale.shape) != (rows, 16)
+                ):
+                    raise AssertionError(
+                        "Arm E terminal lost its resident E2M1 scale-code plane"
+                    )
+                final_scale = torch.where(
+                    scale_mask, candidate_scale, identity_scale
+                )
+                final_encoded = EncodedTrellisPlanes(
+                    reconstruction=group_q[
+                        :, local_index * TRELLIS_FEEDBACK_BLOCK_SIZE:
+                        (local_index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
+                    ].contiguous(),
+                    u_bits=torch.where(
+                        column_mask,
+                        candidate_encoded.u_bits,
+                        identity_encoded.u_bits,
+                    ).contiguous(),
+                    point_indices=torch.where(
+                        column_mask,
+                        candidate_encoded.point_indices,
+                        identity_encoded.point_indices,
+                    ).contiguous(),
+                    bypass_codes=torch.where(
+                        column_mask,
+                        candidate_encoded.bypass_codes,
+                        identity_encoded.bypass_codes,
+                    ).contiguous(),
+                    scale_blob=(
+                        final_scale.detach().cpu().contiguous().numpy().tobytes()
+                    ),
+                    global_scale_real=identity_encoded.global_scale_real,
+                    scale_codes=final_scale.contiguous(),
+                )
+            else:
+                final_encoded = identity_encoded
+            encoded_blocks[block_index] = final_encoded
 
-        oracle_q, oracle_targets = reverse_block_feedback_reference(
-            group_weight,
-            group.feedback_lower,
-            decoded_replay,
-            block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
-        )
-        if not torch.equal(oracle_q, group_q):
-            raise AssertionError("buffered recurrence decoded blocks changed")
-        group_target_max_abs = max(
-            float((buffered - oracle).abs().max().item())
-            for buffered, oracle in zip(
-                group_targets, oracle_targets, strict=True
+            identity_receipt = arm_receipts["identity"][block_index]
+            if not scale_grid_enabled:
+                legacy_receipt = dict(identity_receipt)
+                legacy_receipt.pop("arm")
+                legacy_receipt.pop("scale_proposal")
+                block_receipts[block_index] = legacy_receipt
+                continue
+            candidate_receipt = arm_receipts["candidate"][block_index]
+            first = block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
+            last = first + TRELLIS_FEEDBACK_BLOCK_SIZE
+            block_schedule = tuple(int(value) for value in schedule[first:last])
+            block_rates = sorted({
+                rate for rate in block_schedule
+                if rate < get_trellis_family(E2M1_FAMILY).bypass_rate
+            })
+            block_alphabets = {rate: alphabets[rate] for rate in block_rates}
+            final_terminal_wire = pack_planes(
+                family=E2M1_FAMILY,
+                body_rate_q256=sum(block_schedule),
+                schedule=block_schedule,
+                layout=layout,
+                u_bits=final_encoded.u_bits,
+                point_indices=final_encoded.point_indices,
+                bypass_codes=final_encoded.bypass_codes,
+                alphabets=block_alphabets,
+                scale_blob=final_encoded.scale_blob,
+                global_scale_real=shared_global,
             )
-        )
-        target_errors.append(group_target_max_abs)
-        if not all(
-            torch.allclose(buffered, oracle, rtol=3.0e-5, atol=3.0e-5)
-            for buffered, oracle in zip(
-                group_targets, oracle_targets, strict=True
+            final_terminal_blob = final_terminal_wire.to_bytes()
+            if TrellisWire.from_bytes(
+                final_terminal_blob
+            ).to_bytes() != final_terminal_blob:
+                raise AssertionError(
+                    "spliced Arm E terminal wire did not reserialize exactly"
+                )
+            final_terminal_decoded = decode_values_torch(
+                final_terminal_blob, device=weight.device, dtype=weight.dtype
             )
-        ):
-            raise AssertionError(
-                "buffered BlockLDL targets differ from the unbuffered oracle; "
-                f"max_abs={group_target_max_abs}"
+            expected_block = group_q[
+                :, local_index * TRELLIS_FEEDBACK_BLOCK_SIZE:
+                (local_index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
+            ]
+            if not torch.equal(final_terminal_decoded, expected_block):
+                raise AssertionError(
+                    "spliced Arm E terminal decode differs from selected trajectory"
+                )
+            final_target = group_targets[local_index]
+            target_group_scales = (
+                final_target.reshape(rows, 16, 16).abs().amax(-1) / 6.0
             )
+            block_receipts[block_index] = {
+                **{
+                    key: value for key, value in identity_receipt.items()
+                    if key not in {
+                        "arm", "scale_proposal", "feedback_target_sha256",
+                        "terminal_wire_identity_sha256",
+                        "decoded_terminal_sha256",
+                        "clipped_group_count_at_fixed_global",
+                    }
+                },
+                "feedback_target_sha256": _tensor_sha256(final_target),
+                "terminal_wire_identity_sha256": hashlib.sha256(
+                    final_terminal_blob
+                ).hexdigest(),
+                "decoded_terminal_sha256": _tensor_sha256(
+                    final_terminal_decoded
+                ),
+                "clipped_group_count_at_fixed_global": int(
+                    (
+                        target_group_scales
+                        > shared_global_tensor * 448.0
+                    ).sum().item()
+                ),
+                "scale_selection": {
+                    "mode": "e4m3_grid_gated_v1",
+                    "scope": "row_factor_group",
+                    "candidate_win_rows": int(candidate_wins.sum().item()),
+                    "identity_win_or_tie_rows": int(
+                        rows - candidate_wins.sum().item()
+                    ),
+                    "identity_arm": identity_receipt,
+                    "candidate_arm": candidate_receipt,
+                },
+            }
 
         unit_lower = group.feedback_lower.clone()
         for first in range(0, group_columns, TRELLIS_FEEDBACK_BLOCK_SIZE):
@@ -1951,46 +2438,63 @@ def require_blockldl_trellis_wire_round_trip(
                 "BlockLDL factors do not reconstruct their transformed "
                 f"Hessian group; max_abs={group_factor_max_abs}"
             )
-        group_error = group_weight - group_q.float()
-        transformed_error = group_error @ unit_lower
-        group_decomposed_proxy = sum(
-            (
-                transformed_error[
-                    :, index * TRELLIS_FEEDBACK_BLOCK_SIZE:
-                    (index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
-                ] @ group.diagonal_blocks[index]
-            ).mul(
-                transformed_error[
-                    :, index * TRELLIS_FEEDBACK_BLOCK_SIZE:
-                    (index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
-                ]
+        def decomposition_evidence(
+            arm_name: str, reconstruction: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor, float]:
+            group_error = group_weight - reconstruction.float()
+            transformed_error = group_error @ unit_lower
+            group_decomposed = sum(
+                (
+                    transformed_error[
+                        :, index * TRELLIS_FEEDBACK_BLOCK_SIZE:
+                        (index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
+                    ] @ group.diagonal_blocks[index]
+                ).mul(
+                    transformed_error[
+                        :, index * TRELLIS_FEEDBACK_BLOCK_SIZE:
+                        (index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
+                    ]
+                ).sum()
+                for index in range(group_block_count)
+            )
+            group_direct = (
+                (group_error @ group.transformed_hessian) * group_error
             ).sum()
-            for index in range(group_block_count)
+            absolute = float((group_decomposed - group_direct).abs().item())
+            if not torch.allclose(
+                group_decomposed,
+                group_direct,
+                rtol=3.0e-5,
+                atol=3.0e-5,
+            ):
+                raise AssertionError(
+                    f"{arm_name} BlockLDL quadratic decomposition mismatch; "
+                    f"abs_error={absolute}"
+                )
+            return group_decomposed, group_direct, absolute
+
+        identity_decomposed, identity_direct, identity_proxy_abs = (
+            decomposition_evidence("identity", identity_q)
         )
-        group_direct_proxy = (
-            (group_error @ group.transformed_hessian) * group_error
-        ).sum()
-        group_proxy_abs = float(
-            (group_decomposed_proxy - group_direct_proxy).abs().item()
+        if scale_grid_enabled:
+            candidate_decomposed, candidate_direct, candidate_proxy_abs = (
+                decomposition_evidence("candidate", candidate_q)
+            )
+        else:
+            candidate_decomposed = identity_decomposed
+            candidate_direct = identity_direct
+            candidate_proxy_abs = identity_proxy_abs
+        group_decomposed_proxy, group_direct_proxy, group_proxy_abs = (
+            decomposition_evidence("selected", group_q)
         )
         proxy_errors.append(group_proxy_abs)
-        if not torch.allclose(
-            group_decomposed_proxy,
-            group_direct_proxy,
-            rtol=3.0e-5,
-            atol=3.0e-5,
-        ):
-            raise AssertionError(
-                "BlockLDL quadratic decomposition mismatch; "
-                f"abs_error={group_proxy_abs}"
-            )
         decomposed_proxy_total += group_decomposed_proxy
         direct_proxy_total += group_direct_proxy
         group_feedback_nonzero = int(
             torch.count_nonzero(group.feedback_lower).item()
         )
         feedback_nonzero_count += group_feedback_nonzero
-        factor_group_records.append({
+        factor_group_record: dict[str, object] = {
             "index": group_index,
             "first_column": group_first,
             "last_column_exclusive": group_last,
@@ -2010,10 +2514,50 @@ def require_blockldl_trellis_wire_round_trip(
             "factorization_max_abs_error": group_factor_max_abs,
             "buffered_oracle_target_max_abs_error": group_target_max_abs,
             "quadratic_decomposition_abs_error": group_proxy_abs,
-        })
+        }
+        if scale_grid_enabled:
+            factor_group_record["scale_selection"] = {
+                "mode": "e4m3_grid_gated_v1",
+                "scope": "row_factor_group",
+                "full_recurrence_arms": 2,
+                "identity_row_proxy_fp64_sha256": _tensor_sha256(
+                    identity_row_proxy
+                ),
+                "candidate_row_proxy_fp64_sha256": _tensor_sha256(
+                    candidate_row_proxy
+                ),
+                "final_row_proxy_fp64_sha256": _tensor_sha256(final_row_proxy),
+                "candidate_win_mask_sha256": _tensor_sha256(candidate_wins),
+                "candidate_win_rows": int(candidate_wins.sum().item()),
+                "identity_win_or_tie_rows": int(
+                    rows - candidate_wins.sum().item()
+                ),
+                "cf_exact_minimum": True,
+                "cf_le_c0": True,
+                "selected_recurrence_reverified": True,
+                "selected_oracle_target_max_abs_error": selected_target_error,
+                "identity_decomposition_abs_error": identity_proxy_abs,
+                "candidate_decomposition_abs_error": candidate_proxy_abs,
+                "selected_decomposition_abs_error": group_proxy_abs,
+                "identity_decomposed_proxy_fp32_hex": float(
+                    identity_decomposed.item()
+                ).hex(),
+                "candidate_decomposed_proxy_fp32_hex": float(
+                    candidate_decomposed.item()
+                ).hex(),
+                "identity_direct_proxy_fp32_hex": float(
+                    identity_direct.item()
+                ).hex(),
+                "candidate_direct_proxy_fp32_hex": float(
+                    candidate_direct.item()
+                ).hex(),
+            }
+        factor_group_records.append(factor_group_record)
 
     if set(encoded_blocks) != set(range(block_count)):
         raise AssertionError("BlockLDL recurrence did not encode every block")
+    if set(identity_encoded_blocks) != set(range(block_count)):
+        raise AssertionError("identity BlockLDL recurrence did not encode every block")
     if any(target is None for target in buffered_targets):
         raise AssertionError("BlockLDL recurrence omitted a feedback target")
     target_max_abs = max(target_errors)
@@ -2030,32 +2574,41 @@ def require_blockldl_trellis_wire_round_trip(
             f"abs_error={proxy_abs}"
         )
 
-    ordered = [encoded_blocks[index] for index in range(block_count)]
-    scale_planes = [
-        torch.frombuffer(bytearray(value.scale_blob), dtype=torch.uint8).reshape(
-            rows, TRELLIS_FEEDBACK_BLOCK_SIZE // 16
+    def compose_wire(
+        blocks: Mapping[int, EncodedTrellisPlanes]
+    ) -> TrellisWire:
+        ordered = [blocks[index] for index in range(block_count)]
+        scale_planes = [
+            torch.frombuffer(
+                bytearray(value.scale_blob), dtype=torch.uint8
+            ).reshape(rows, TRELLIS_FEEDBACK_BLOCK_SIZE // 16)
+            for value in ordered
+        ]
+        scale_blob = torch.cat(
+            scale_planes, dim=1
+        ).contiguous().numpy().tobytes()
+        return pack_planes(
+            family=E2M1_FAMILY,
+            body_rate_q256=body_rate_q256,
+            schedule=schedule,
+            layout=layout,
+            u_bits=torch.cat([value.u_bits for value in ordered], dim=1),
+            point_indices=torch.cat(
+                [value.point_indices for value in ordered], dim=1
+            ),
+            bypass_codes=torch.cat(
+                [value.bypass_codes for value in ordered], dim=1
+            ),
+            alphabets=alphabets,
+            scale_blob=scale_blob,
+            global_scale_real=shared_global,
         )
-        for value in ordered
-    ]
-    scale_blob = (
-        torch.cat(scale_planes, dim=1).contiguous().numpy().tobytes()
-    )
-    wire = pack_planes(
-        family=E2M1_FAMILY,
-        body_rate_q256=body_rate_q256,
-        schedule=schedule,
-        layout=layout,
-        u_bits=torch.cat([value.u_bits for value in ordered], dim=1),
-        point_indices=torch.cat(
-            [value.point_indices for value in ordered], dim=1
-        ),
-        bypass_codes=torch.cat(
-            [value.bypass_codes for value in ordered], dim=1
-        ),
-        alphabets=alphabets,
-        scale_blob=scale_blob,
-        global_scale_real=shared_global,
-    )
+
+    identity_wire = compose_wire(identity_encoded_blocks)
+    identity_blob = identity_wire.to_bytes()
+    if TrellisWire.from_bytes(identity_blob).to_bytes() != identity_blob:
+        raise AssertionError("identity BlockLDL wire did not reserialize exactly")
+    wire = compose_wire(encoded_blocks)
     blob = wire.to_bytes()
     if TrellisWire.from_bytes(blob).to_bytes() != blob:
         raise AssertionError("BlockLDL trellis wire did not reserialize exactly")
@@ -2067,6 +2620,17 @@ def require_blockldl_trellis_wire_round_trip(
         raise AssertionError(
             "same-byte wire decode differs from recurrence terminal decodes"
         )
+    if len(blob) != len(identity_blob):
+        raise AssertionError("Arm E scale grid changed the exact wire byte length")
+    if scale_grid_candidate_win_rows == 0 and blob != identity_blob:
+        raise AssertionError(
+            "Arm E no-win scale-grid result is not byte-identical to identity"
+        )
+    if (
+        scale_grid_enabled
+        and _require_scale_grid_source_unchanged() != scale_grid_source_at_start
+    ):
+        raise AssertionError("scale-grid selector source changed during Arm E encode")
 
     serve = dict(verify_post_decode_serve_algebra(
         decoded_weight, activations, contract
@@ -2149,6 +2713,34 @@ def require_blockldl_trellis_wire_round_trip(
         "atomic_terminal_geometry": "one_output_row_by_256_input_columns",
         "qtip_16_by_16_terminal_geometry_claimed": False,
     }
+    if scale_grid_enabled:
+        assert scale_grid_menu is not None
+        factor["scale_selection"] = {
+            "mode": "e4m3_grid_gated_v1",
+            "scope": "row_factor_group",
+            "full_recurrence_arms": 2,
+            "multipliers": list(scale_grid_menu),
+            "multipliers_sha256": _canonical_sha256(list(scale_grid_menu)),
+            "identity_index": 0,
+            "candidate_win_rows": scale_grid_candidate_win_rows,
+            "identity_win_or_tie_rows": (
+                scale_grid_total_rows - scale_grid_candidate_win_rows
+            ),
+            "total_row_factor_groups": scale_grid_total_rows,
+            "immutable_global_scale": True,
+            "cf_exact_minimum_per_row_factor_group": True,
+            "cf_le_c0": True,
+            "selected_recurrence_reverified": True,
+            "same_length": True,
+            "no_win_byte_identical": scale_grid_candidate_win_rows == 0,
+            "identity_wire_bytes": len(identity_blob),
+            "final_wire_bytes": len(blob),
+            "identity_wire_sha256": hashlib.sha256(identity_blob).hexdigest(),
+            "final_wire_sha256": wire_sha256,
+            "wire_byte_delta": 0,
+            "delta_bpw_q256": 0,
+            "selector_source_sha256": scale_grid_source_at_start,
+        }
     if structured_diagonal:
         assert isinstance(prepared, PreparedDiagonalHessianOneLinear)
         _validate_prepared_diagonal_hessian_one_linear(
@@ -2163,6 +2755,8 @@ def require_blockldl_trellis_wire_round_trip(
         implementation_source_sha256,
         implementation_encoder_sha256,
     ) = _require_implementation_sources_unchanged()
+    if scale_grid_enabled:
+        _require_scale_grid_source_unchanged()
     wire_recipe = {
         "schema": TRELLIS_WIRE_SCHEMA,
         "family": E2M1_FAMILY,
@@ -2182,7 +2776,36 @@ def require_blockldl_trellis_wire_round_trip(
         "sb_chunk": int(sb_chunk),
         "determinism_mode": determinism_mode,
         "tailbite_candidates": int(tailbite_candidates),
+        "scale_selection": (
+            {
+                "mode": "e4m3_grid_gated_v1",
+                "scope": "row_factor_group",
+                "multipliers": list(scale_grid_menu),
+                "multipliers_sha256": _canonical_sha256(list(scale_grid_menu)),
+                "selector_source_sha256": scale_grid_source_at_start,
+            }
+            if scale_grid_enabled else {"mode": "off"}
+        ),
     }
+    expected_wire_alphabets = {
+        int(rate): tuple(codes) for rate, codes in alphabets.items()
+    }
+    for arm_name, arm_blob in (
+        ("identity", identity_blob),
+        ("selected", blob),
+    ):
+        parsed_arm = TrellisWire.from_bytes(arm_blob)
+        if (
+            parsed_arm.family != wire_recipe["family"]
+            or parsed_arm.body_rate_q256 != wire_recipe["body_rate_q256"]
+            or list(parsed_arm.schedule) != wire_recipe["schedule"]
+            or parsed_arm.layout != wire_recipe["layout"]
+            or dict(parsed_arm.alphabets) != expected_wire_alphabets
+            or parsed_arm.global_scale_real != wire_recipe["global_scale_real"]
+        ):
+            raise AssertionError(
+                f"{arm_name} Arm E wire differs from the bound render recipe"
+            )
     receipt_body: dict[str, object] = {
         "schema": BLOCKLDL_COMBINED_ARTIFACT_SCHEMA,
         "status": "blockldl_feedback_physical_wire_and_algebra_verified",
@@ -2208,6 +2831,13 @@ def require_blockldl_trellis_wire_round_trip(
                 "path": "prismaquant/trellis_encoder.py",
                 "sha256": implementation_encoder_sha256,
             },
+            "scale_grid_selector_source": (
+                {
+                    "path": "prismaquant/trellis_scale_grid.py",
+                    "sha256": scale_grid_source_at_start,
+                }
+                if scale_grid_enabled else None
+            ),
             "qtip_source_audit": {
                 "repository": QTIP_REPOSITORY,
                 "commit": QTIP_PINNED_COMMIT,
@@ -2232,6 +2862,8 @@ def require_blockldl_trellis_wire_round_trip(
         "identity_sha256": _canonical_sha256(receipt_body),
     }
     _require_implementation_sources_unchanged()
+    if scale_grid_enabled:
+        _require_scale_grid_source_unchanged()
     return CombinedOneLinearArtifact(
         wire_bytes=blob,
         decoded_transformed_weight=decoded_weight,
@@ -2239,6 +2871,60 @@ def require_blockldl_trellis_wire_round_trip(
         online_transform=contract,
         receipt=receipt,
     )
+
+
+def require_blockldl_trellis_artifact_replay(
+    expected: CombinedOneLinearArtifact,
+    prepared: PreparedOneLinear | PreparedDiagonalHessianOneLinear,
+    activations: torch.Tensor,
+    **recipe: object,
+) -> CombinedOneLinearArtifact:
+    """Rerun both configured trajectories and require exact artifact identity.
+
+    The combined receipt's self-digest detects accidental mutation but cannot
+    authenticate opaque trajectory hashes by itself. This explicit research
+    replay is the authority boundary: caller-owned prepared tensors and the
+    full recipe are revalidated, the producer reruns, and canonical bytes,
+    decoded tensors, transform metadata, and all receipt semantics must match.
+    """
+
+    if not isinstance(expected, CombinedOneLinearArtifact):
+        raise ValueError("expected replay artifact must be CombinedOneLinearArtifact")
+    if not isinstance(expected.receipt, Mapping):
+        raise ValueError("expected replay receipt must be an object")
+    expected_body = dict(expected.receipt)
+    expected_identity = expected_body.pop("identity_sha256", None)
+    _require_sha256(
+        expected_identity,
+        where="expected replay receipt identity_sha256",
+    )
+    if not hmac.compare_digest(
+        expected_identity,
+        _canonical_sha256(expected_body),
+    ):
+        raise ValueError("expected replay receipt identity mismatch")
+    replay = require_blockldl_trellis_wire_round_trip(
+        prepared,
+        activations,
+        **recipe,
+    )
+    if expected.wire_bytes != replay.wire_bytes:
+        raise ValueError("BlockLDL artifact replay differs at canonical wire bytes")
+    if not torch.equal(
+        expected.decoded_transformed_weight,
+        replay.decoded_transformed_weight,
+    ):
+        raise ValueError("BlockLDL artifact replay differs at decoded weight")
+    if not torch.equal(expected.decoded_codes, replay.decoded_codes):
+        raise ValueError("BlockLDL artifact replay differs at decoded codes")
+    if not _json_exact_equal(
+        expected.online_transform,
+        replay.online_transform,
+    ):
+        raise ValueError("BlockLDL artifact replay differs at transform metadata")
+    if not _json_exact_equal(expected.receipt, replay.receipt):
+        raise ValueError("BlockLDL artifact replay differs at receipt semantics")
+    return replay
 
 
 __all__ = [
@@ -2268,6 +2954,7 @@ __all__ = [
     "prepare_one_linear_diagonal_hessian_scaffold",
     "prepare_one_linear_scaffold",
     "qtip_block_ldl_factors",
+    "require_blockldl_trellis_artifact_replay",
     "require_blockldl_trellis_wire_round_trip",
     "require_combined_wire_round_trip",
     "reverse_block_feedback_buffered",
