@@ -1615,6 +1615,17 @@ def _format_supports_render_mechanism(fmt: str, mechanism: str) -> bool:
 
     fmt_u = str(fmt).strip().upper()
     mech = str(mechanism).strip()
+    # Trellis rungs have no scalar-column mechanisms (no GPTQ, scale
+    # sweep, act order, joint scale). Their render is the full
+    # tail-biting Viterbi encode (WO-B). This explicit branch prevents
+    # a silent fall-through to the scalar default.
+    try:
+        from prismaquant.trellis_formats import parse_trellis_format_name as _parse_trellis
+
+        if _parse_trellis(fmt_u) is not None:
+            return False
+    except Exception:
+        pass
     if fmt_u == "NVFP4":
         return mech in {
             "four_over_six",
@@ -1678,6 +1689,12 @@ def _weighted_render_family(fmt: str) -> str | None:
         family = fr.get_format(str(fmt).strip().upper()).family
     except Exception:
         return None
+    # Trellis rungs have no weighted path — the unweighted Viterbi
+    # encode is the truth (WO-A A1). They are explicitly not in
+    # WEIGHTED_RENDER_FAMILIES so col_weights stays inert and the
+    # render is bit-identical with or without a vector.
+    if family == "tcq_trellis":
+        return None
     return family if family in WEIGHTED_RENDER_FAMILIES else None
 
 
@@ -1686,9 +1703,12 @@ def _is_cb_format_name(fmt: str) -> bool:
     from prismaquant import format_registry as fr
 
     try:
-        return fr.get_format(
+        family = fr.get_format(
             fr.canonical_format_name(str(fmt).strip().upper())
-        ).family in {"nvfp4_cb", "fp8_cb"}
+        ).family
+        if family == "tcq_trellis":
+            return False
+        return family in {"nvfp4_cb", "fp8_cb"}
     except Exception:
         return False
 
@@ -4320,7 +4340,22 @@ def render_production_weight(
     from prismaquant import format_registry as fr
 
     fmt = fr.canonical_format_name(str(fmt).strip().upper())
-    is_cb = fr.get_format(fmt).family in {"nvfp4_cb", "fp8_cb"}
+    family = fr.get_format(fmt).family
+    if family == "tcq_trellis":
+        # The trellis wire has no ProductionWeightCache mechanism yet.
+        # WO-A registers the format so the allocator can price it, but
+        # the cache that would produce the bytes is owned by WO-B.
+        # Fail closed with the only true blocker (see
+        # export_native_compressed trellis refusal).
+        raise ValueError(
+            f"{qname}: format {fmt} is a Gridbook trellis rung "
+            f"(family {family}). ProductionWeightCache renders no trellis "
+            "wire — the trellis cache mechanism is owned by WO-B and "
+            "is not yet implemented, so no rendered bytes exist to cache. "
+            "This is deliberate, not a missing feature; re-solve without "
+            "the trellis rung or await WO-B."
+        )
+    is_cb = family in {"nvfp4_cb", "fp8_cb"}
     if is_cb and cb_serialization_context is None:
         raise ValueError(
             f"{qname}={fmt}: production CB render requires an explicit "

@@ -1658,28 +1658,34 @@ def _coerce_runtime_legal_assignment(
             if parse_trellis_format_name(fmt_canonical) is not None:
                 # A trellis rung reached export. The generic message below
                 # would blame the serving profile's export lane, which is the
-                # wrong diagnosis: no lane bound is missing, the RENDER is.
-                # PRISMAQUANT_TRELLIS_SURFACE is allocation-time reach only --
-                # ProductionWeightCache has no trellis mechanism, so there are
-                # no rendered bytes to pack, and the producer Gridbook pin
-                # publishes no executed-activation-contract table for these
-                # families, so even a rendered wire could not be priced
-                # honestly against what the runtime would execute
-                # (principles 8 and 14).
+                # wrong diagnosis: the lane bound is not missing, the RENDER
+                # is. PRISMAQUANT_TRELLIS_SURFACE was allocation-time reach
+                # only, but WO-A's gridbook_trellis_dense_sm121 profile now
+                # declares a real export lane; the remaining true blocker is
+                # that ProductionWeightCache has no trellis wire mechanism,
+                # so there are no rendered bytes to pack. The pinned
+                # Gridbook 0.9.1 contract **does** publish the executed-
+                # activation-contract table for TCQ_E2M1/TCQ_E4M3 (lane_eligibility
+                # device_qualified cells on sm_121, e2m1_group16_ue4m3_static
+                # and fp8_per_token_dynamic), so that half of the old message
+                # is false at this pin and the activation contract is now
+                # attested. The wire-bytes half remains: trellis export has
+                # no pack path until WO-B lands the cache mechanism and WO-C
+                # the exporter (principles 8 and 14).
                 raise ValueError(
                     f"{qname}: format {fmt_canonical} is a Gridbook trellis "
-                    f"rung from the research rate surface "
-                    f"(PRISMAQUANT_TRELLIS_SURFACE). It has no export path "
-                    f"and this is deliberate, not a missing feature: "
-                    f"ProductionWeightCache renders no trellis wire, so "
-                    f"there are no bytes to pack, and the producer Gridbook "
-                    f"pin publishes no executed-activation-contract table "
-                    f"for TCQ_E2M1/TCQ_E4M3, so an exported artifact could "
-                    f"not state what its own activation contract is. The "
-                    f"surface is an ALLOCATION-TIME report about where bytes "
-                    f"would go; promoting it to an artifact needs a render "
-                    f"mechanism and a runtime attestation first. Re-solve "
-                    f"without PRISMAQUANT_TRELLIS_SURFACE to export."
+                    f"rung (TCQ_E2M1_R*). It has no export pack path yet — "
+                    "this is deliberate, not a missing lane bound: "
+                    "ProductionWeightCache renders no trellis wire, so "
+                    "there are no bytes to pack. The pinned Gridbook 0.9.1 "
+                    "contract does publish the executed-activation-contract "
+                    "table for TCQ_E2M1/TCQ_E4M3 (device_qualified cells on "
+                    "sm_121; e2m1_group16_ue4m3_static for E2M1), so the "
+                    "activation contract is attested and is not the blocker. "
+                    "The remaining blocker is the producer cache's missing "
+                    "trellis mechanism, owned by WO-B; WO-C will add the "
+                    "export pack path. Re-solve without a trellis rung to "
+                    "export, or await WO-B/C."
                 )
             raise ValueError(
                 f"{qname}: format {fmt_canonical} has no compressed-tensors "

@@ -1,0 +1,132 @@
+{
+  "schema": "prismaquant.serving_profile.v1",
+  "id": "gridbook_trellis_dense_sm121",
+  "runtime": "gridbook_plugin",
+  "target_platform": "sm_121",
+  "description": "Shippable Gridbook trellis dense profile on GB10 (Blackwell sm_121). Admits the five E2M1 body rungs from the pinned Gridbook 0.9.1 candidate_rungs_q256 (TCQ_E2M1_R384/512/640/768/896) plus the scalar terminals an honest mixed menu needs (NVFP4, FP8_E4M3, BF16). Unlike trellis_research_sm121 (emulation_only, no export lane) this profile declares an export lane and is therefore shippable in structure; the remaining true blocker for a trellis artifact is ProductionWeightCache's missing trellis wire mechanism (WO-B), not a missing lane bound, and WO-C will add the pack path. The trellis wire is the Gridbook trellis wire v1 (88-byte header, schedule nibbles, offset table, alphabet blob and E2M1 group-16 FP8 E4M3 scale plane).",
+  "export_lane": {
+    "id": "gridbook_trellis_dense_mixed",
+    "exporter": "prismaquant.export_native_compressed + trellis wire v1 (WO-C pack pending)",
+    "codec_formats_from": [
+      "prismaquant.trellis_formats:ALL_LEGAL_TRELLIS_FORMAT_NAMES",
+      "prismaquant.export_native_compressed:EXPORTABLE_FORMATS"
+    ],
+    "passthrough_formats": [],
+    "reason": "exporter_cannot_emit",
+    "detail": "The serializer surface is the Gridbook trellis wire v1 plus the stock compressed-tensors terminals. The five E2M1 candidate rungs are the producer body; BF16/FP8_E4M3/NVFP4 are the honest scalar terminals. Until WO-B lands the cache render and WO-C the pack, export fails closed at the cache (ProductionWeightCache renders no trellis wire), not at this lane — the lane already bounds the menu exactly as the two source tables declare, so no hand-maintained deny list mirrors it."
+  },
+  "format_rules": [
+    {
+      "id": "trellis_dense_container_formats",
+      "allow_formats": [
+        "TCQ_E2M1_R384",
+        "TCQ_E2M1_R512",
+        "TCQ_E2M1_R640",
+        "TCQ_E2M1_R768",
+        "TCQ_E2M1_R896",
+        "NVFP4",
+        "FP8_E4M3",
+        "BF16"
+      ],
+      "reason": "profile_mismatch",
+      "detail": "Gridbook trellis dense on sm_121: the five E2M1 body rungs from the pinned contract's candidate_rungs_q256 plus the honest scalar terminals (BF16/FP8_E4M3/NVFP4 as existing profiles spell them). A rung outside candidate_rungs_q256 (e.g., TCQ_E2M1_R1000, legal to the reader range 256..1016 but not a candidate) is not registered and is refused by name."
+    },
+    {
+      "id": "trellis_dense_only",
+      "when": {
+        "regex": "(^|[.])(?:mlp[.]|moe[.]|ffn[.])?experts([.]|$)"
+      },
+      "deny_formats": [
+        "TCQ_E2M1_R384",
+        "TCQ_E2M1_R512",
+        "TCQ_E2M1_R640",
+        "TCQ_E2M1_R768",
+        "TCQ_E2M1_R896"
+      ],
+      "reason": "profile_mismatch",
+      "detail": "The pinned Gridbook runtime publishes no routed_moe trellis cell; trellis is dense-only on sm_121 (e2m1_group16_ue4m3_static is dense-only, see lane_eligibility cells for TCQ_E2M1_R256 on sm_121)."
+    }
+  ],
+  "shape_rules": [
+    {
+      "id": "trellis_superblock_shape",
+      "formats_from": [
+        "prismaquant.trellis_formats:ALL_LEGAL_TRELLIS_FORMAT_NAMES"
+      ],
+      "in_features_multiple_of": 256,
+      "reason": "kernel_shape",
+      "detail": "Trellis wire packs a 256-weight superblock along the input dim; in_features must be a multiple of 256."
+    }
+  ],
+  "serving_lanes": [
+    {
+      "id": "trellis_e2m1_dense",
+      "formats": [
+        "TCQ_E2M1_R384",
+        "TCQ_E2M1_R512",
+        "TCQ_E2M1_R640",
+        "TCQ_E2M1_R768",
+        "TCQ_E2M1_R896"
+      ],
+      "activation_contract": "e2m1_group16_ue4m3_static",
+      "fallback_route": "gridbook trellis dense — wire v1 decode (native)",
+      "detail": "Dense E2M1 trellis lane on sm_121. Route status is DERIVED from the pinned Gridbook contract's device_qualified cells (backed_with_serve_flag with GRIDBOOK_TRELLIS_E2M1 flags), never typed here (principle 14). The five rungs are the contract's candidate_rungs_q256; a rung with no cell (e.g., 384/640/768/896 today — the contract only device-qualifies 512 on sm_121) resolves unattested, which is the honest signal that the runtime has not receipted that rate. Routed expert stacks have no cell at all, so they fail closed as dense-only.",
+      "route_status_source": {
+        "attestation": "gridbook_runtime_contract.lane_eligibility",
+        "pin": "prismaquant/gridbook_runtime/gridbook_serving_runtime_pin.json",
+        "structures": [
+          "dense"
+        ],
+        "detail": "Dense-only: the pinned contract publishes no routed_moe trellis cell, so a routed unit under this profile has no lane cell and resolves unattested. The W4A4 lane quantizes activations under e2m1_group16_ue4m3_static."
+      }
+    },
+    {
+      "id": "nvfp4_dense",
+      "formats": [
+        "NVFP4"
+      ],
+      "activation_contract": "w4a4_nvfp4_group16_static (stock CT, same wire as trellis W4A4 but different codec)",
+      "fallback_route": "compressed-tensors NVFP4 (CUTLASS)",
+      "detail": "Scalar NVFP4 terminal for honest mixed-menu comparison; not a trellis wire but shares the same W4A4 activation numerics.",
+      "route_status_source": {
+        "attestation": "gridbook_runtime_contract.lane_eligibility",
+        "pin": "prismaquant/gridbook_runtime/gridbook_serving_runtime_pin.json",
+        "structures": [
+          "dense"
+        ]
+      }
+    },
+    {
+      "id": "fp8_dense",
+      "formats": [
+        "FP8_E4M3"
+      ],
+      "activation_contract": "w8a8_dynamic_fp8_e4m3_per_token",
+      "fallback_route": "compressed-tensors FP8",
+      "detail": "Scalar FP8 terminal.",
+      "route_status_source": {
+        "attestation": "gridbook_runtime_contract.lane_eligibility",
+        "pin": "prismaquant/gridbook_runtime/gridbook_serving_runtime_pin.json",
+        "structures": [
+          "dense"
+        ]
+      }
+    },
+    {
+      "id": "bf16_dense",
+      "formats": [
+        "BF16"
+      ],
+      "activation_contract": "w16a16_bf16_passthrough",
+      "fallback_route": "plain bf16",
+      "detail": "Unquantized passthrough.",
+      "route_status_source": {
+        "attestation": "gridbook_runtime_contract.lane_eligibility",
+        "pin": "prismaquant/gridbook_runtime/gridbook_serving_runtime_pin.json",
+        "structures": [
+          "dense"
+        ]
+      }
+    }
+  ]
+}

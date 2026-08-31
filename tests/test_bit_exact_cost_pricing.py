@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from prismaquant import format_registry as fr
@@ -83,6 +84,15 @@ def test_registry_act_bits_declaration_matches_activation_callable():
     """
     x = _random_activations()
     for name, spec in sorted(fr.REGISTRY.items()):
+        # WO-A: tcq_trellis W4A4 lane has no unary QDQ — the served path
+        # needs a calibrated input_global_scale per fused sibling, so the
+        # FormatSpec's unary signature cannot supply it and must fail closed
+        # with the contract string rather than silently approximate.
+        if spec.family == "tcq_trellis":
+            assert spec.act_quant_changes_input
+            with pytest.raises(NotImplementedError, match="e2m1_group16_ue4m3_static"):
+                spec.activation_quantize_dequantize(x.clone())
+            continue
         out = spec.activation_quantize_dequantize(x.clone())
         if not spec.act_quant_changes_input:
             assert torch.equal(out, x), (

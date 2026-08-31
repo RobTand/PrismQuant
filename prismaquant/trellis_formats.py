@@ -662,6 +662,113 @@ def validate_alphabets(
     return result
 
 
+def canonical_trellis_schedule(
+    columns: int,
+    family: str | TrellisFamily,
+    body_rate_q256: int,
+    layout: str = LAYOUT_FIXED_QUOTA,
+) -> tuple[int, ...]:
+    """Deterministic per-column schedule for a trellis Linear.
+
+    Generated from ``body_rate_q256`` with a base/remainder split per
+    256-column superblock so the byte count is shape-dependent and
+    reproducible. The schedule validates under the family's layout
+    contract and guarantees at least ``MIN_TRELLIS_STEPS`` shaped
+    positions per block. Both the FormatSpec RTN path and the footprint
+    accountant call this helper so bytes and error agree.
+    """
+
+    spec = get_trellis_family(family)
+    rate = validate_body_rate_q256(spec, body_rate_q256)
+    if layout not in LAYOUTS:
+        raise TrellisFormatError(
+            f"unknown trellis layout {layout!r}; expected {sorted(LAYOUTS)}"
+        )
+    if type(columns) is not int or columns <= 0:
+        raise TrellisFormatError("columns must be a positive JSON integer")
+    schedule: list[int] = []
+    for start in range(0, columns, SUPERBLOCK_WEIGHTS):
+        block_len = min(SUPERBLOCK_WEIGHTS, columns - start)
+        if layout == LAYOUT_FIXED_QUOTA and block_len == SUPERBLOCK_WEIGHTS:
+            block_target = rate
+        else:
+            block_target = int(round(rate * block_len / SUPERBLOCK_WEIGHTS))
+            lo = block_len * 1
+            hi = block_len * spec.bypass_rate
+            block_target = max(lo, min(hi, block_target))
+            if block_len >= MIN_TRELLIS_STEPS and block_target == block_len * spec.bypass_rate:
+                block_target = block_len * spec.bypass_rate - MIN_TRELLIS_STEPS
+        base = block_target // block_len
+        rem = block_target % block_len
+        if base < 1:
+            base = 1
+            rem = block_target - base * block_len
+            rem = max(0, min(block_len, rem))
+        if base >= spec.bypass_rate:
+            base = spec.bypass_rate - 1
+            rem = block_target - base * block_len
+            rem = max(0, min(block_len, rem))
+        # Place the lower rate first so the final column's point bits stay
+        # within the row's body bits. The wire's LSB-first packing would
+        # otherwise try to read a point bit beyond the row's 16-byte
+        # alignment for a trailing rate-1 column (decode's
+        # _gather_bits would index byte 96 of a 96-byte stride).
+        block_sched = [base] * int(block_len - rem) + [base + 1] * int(rem)
+        shaped = sum(1 for v in block_sched if v < spec.bypass_rate)
+        if block_len >= MIN_TRELLIS_STEPS and shaped < MIN_TRELLIS_STEPS:
+            need = MIN_TRELLIS_STEPS - shaped
+            for idx in range(len(block_sched)):
+                if block_sched[idx] == spec.bypass_rate:
+                    block_sched[idx] = spec.shaped_max_rate
+                    need -= 1
+                    if need == 0:
+                        break
+        schedule.extend(block_sched)
+    validated = validate_schedule(spec, rate, schedule, layout=layout)
+    return validated
+
+
+def canonical_trellis_alphabets(
+    schedule: Sequence[int],
+    family: str | TrellisFamily,
+) -> dict[int, tuple[int, ...]]:
+    """Deterministic per-rate alphabets for a canonical schedule.
+
+    Alphabets are code-valued (native grid codes, not floats) and sorted
+    by decoded value then code as the wire contract requires. For E2M1
+    the slice is centered in the global sorted code order so the
+    alphabet is symmetric around zero; for E4M3 R7 the canonical
+    duplicate-zero alphabet is produced. Byte count depends only on
+    slot count, but determinism keeps wire identity stable.
+    """
+
+    spec = get_trellis_family(family)
+    values = _schedule_values(schedule)
+    used = {v for v in values if v < spec.bypass_rate}
+    all_codes = list(range(1 << spec.grid_bits))
+    sorted_codes = sorted(all_codes, key=lambda c: (native_code_value(spec, c), c))
+    out: dict[int, tuple[int, ...]] = {}
+    for rate in sorted(used):
+        if not 1 <= rate <= spec.shaped_max_rate:
+            raise TrellisFormatError(f"invalid shaped rate {rate}")
+        need = 1 << (rate + 1)
+        if spec.family == E4M3_FAMILY and rate == 7:
+            filtered = [c for c in sorted_codes if c not in E4M3FN_NAN_CODES]
+            if len(filtered) != 254:
+                raise TrellisFormatError("E4M3 filtered code count drifted")
+            extended = filtered + [0x00, 0x80]
+            extended_sorted = sorted(extended, key=lambda c: (native_code_value(spec, c), c))
+            if len(extended_sorted) != need:
+                raise TrellisFormatError("E4M3 R7 alphabet size drifted")
+            out[rate] = tuple(extended_sorted)
+            continue
+        if need > len(sorted_codes):
+            raise TrellisFormatError("alphabet larger than grid")
+        offset = (len(sorted_codes) - need) // 2
+        out[rate] = tuple(sorted_codes[offset : offset + need])
+    return out
+
+
 def format_contract_payload() -> dict[str, object]:
     """Return the closed research contract for receipts and documentation."""
 
@@ -738,6 +845,8 @@ __all__ = [
     "TrellisFormatError",
     "TrellisRateSurface",
     "TrellisRateSequence",
+    "canonical_trellis_alphabets",
+    "canonical_trellis_schedule",
     "format_contract_payload",
     "get_trellis_family",
     "native_code_value",

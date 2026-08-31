@@ -54,6 +54,78 @@ from prismaquant.mx_formats import (
     mxfp8_ue8m0_activation_qdq,
     mxfp8_ue8m0_weight_qdq,
 )
+import json
+from pathlib import Path
+
+
+TCQ_TRELLIS_FAMILY = "tcq_trellis"
+# The pinned contract's TCQ_E2M1_R256 family maps to this local family.
+_TRELLIS_PINNED_FAMILY = "TCQ_E2M1_R256"
+_TRELLIS_CONTRACT_PATH = Path(__file__).resolve().parent / "gridbook_runtime" / "gridbook_runtime_contract.0.9.1.json"
+
+
+def _load_trellis_candidate_rungs(contract_path: Path | str | None = None) -> tuple[int, ...]:
+    """Return ``candidate_rungs_q256`` for the pinned E2M1 trellis family.
+
+    When ``contract_path`` is given (test seam), the file at that path is
+    read as the contract. Otherwise the rungs are derived from the pinned
+    runtime's *published* format table (``gridbook_lane_eligibility.
+    load_published_formats``), so a future pin that adds or drops a rung
+    adds or drops a FormatSpec with no code edit.
+    """
+
+    if contract_path is not None:
+        text = Path(contract_path).read_text(encoding="utf-8")
+        data = json.loads(text)
+        formats = {
+            str(entry.get("family")): dict(entry)
+            for entry in data.get("formats", ())
+            if isinstance(entry, dict) and entry.get("family")
+        }
+    else:
+        try:
+            from prismaquant.gridbook_lane_eligibility import load_published_formats
+
+            formats = load_published_formats()
+        except Exception:
+            # Fallback to the materialized v12 contract file if the
+            # eligibility helper is unavailable at import time.
+            try:
+                text = _TRELLIS_CONTRACT_PATH.read_text(encoding="utf-8")
+                data = json.loads(text)
+                formats = {
+                    str(entry.get("family")): dict(entry)
+                    for entry in data.get("formats", ())
+                    if isinstance(entry, dict) and entry.get("family")
+                }
+            except Exception:
+                return ()
+    entry = formats.get(_TRELLIS_PINNED_FAMILY)
+    if not isinstance(entry, dict):
+        return ()
+    rungs = entry.get("candidate_rungs_q256", ())
+    if not isinstance(rungs, (list, tuple)):
+        return ()
+    out: list[int] = []
+    for value in rungs:
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        out.append(int(value))
+    # Deduplicate and sort for determinism; the contract already guarantees
+    # sorted unique, but tests with fixtures rely on this normalization.
+    return tuple(sorted(set(out)))
+
+
+def load_trellis_candidate_rungs(contract_path: Path | str | None = None) -> tuple[int, ...]:
+    """Public test seam: rungs derived from a contract file.
+
+    ``contract_path`` is a fixture contract path used by
+    ``tests/test_trellis_format_registration.py`` to prove that a future
+    pin with a different rung set changes the registered formats with no
+    source edit.
+    """
+
+    return _load_trellis_candidate_rungs(contract_path)
 
 
 @dataclass
@@ -1210,6 +1282,162 @@ for _k in FP8_ACCEPTED_RUNGS:
     )
 
 
+# -----------------------------------------------------------------------
+# TCQ trellis family — five E2M1 rungs derived from the pinned Gridbook
+# contract (TCQ_E2M1_R256 candidate_rungs_q256). The list is read at
+# import time so a future pin that adds/drops a rung adds/drops a
+# FormatSpec with no source edit (WO-A A1). See load_trellis_candidate_rungs.
+# -----------------------------------------------------------------------
+def _make_trellis_weight_qdq(family: str, q256: int):
+    """Unweighted trellis encode — expensive and intentionally so.
+
+    A trellis rung has no cheap RTN rounding; the weight error of a
+    trellis Linear is the error of the full Viterbi encode under the
+    trellis wire's schedule/alphabets/scale plane. This closure runs
+    that encode per call: it builds a canonical per-shape schedule
+    and alphabet recipe from the family's layout, calls
+    ``encode_trellis_one_linear`` with ``col_weights = ones`` (the
+    unweighted objective the work order specifies), and returns the
+    same-byte decoded weight. Do NOT add a cache here — WO-B owns
+    the ProductionWeightCache wire mechanism, and caching here would
+    hide the cost the allocator must see (WO-A A1).
+    """
+
+    layout = "fixed_quota_per_256"
+
+    def qdq(weight: torch.Tensor) -> torch.Tensor:
+        if weight.ndim < 2:
+            raise ValueError(
+                f"trellis QDQ requires rank >=2, got {tuple(weight.shape)}"
+            )
+        if int(weight.shape[-1]) % 256 != 0:
+            raise ValueError(
+                f"{family}_R{q256}: trellis wire requires in_features multiple of 256, "
+                f"got {int(weight.shape[-1])}"
+            )
+        from prismaquant.trellis_formats import (
+            canonical_trellis_alphabets,
+            canonical_trellis_schedule,
+            get_trellis_family,
+        )
+        from prismaquant.trellis_producer import encode_trellis_one_linear
+
+        spec = get_trellis_family(family)
+        cols = int(weight.shape[-1])
+        sched = canonical_trellis_schedule(cols, spec, q256, layout=layout)
+        alph = canonical_trellis_alphabets(sched, spec)
+        col_weights = torch.ones(cols, dtype=torch.float32, device=weight.device)
+        artifact = encode_trellis_one_linear(
+            weight,
+            col_weights,
+            family=spec.family,
+            body_rate_q256=q256,
+            schedule=sched,
+            layout=layout,
+            alphabets=alph,
+            scale_rule="static_6",
+            sb_chunk=64,
+            determinism_mode="on",
+            tailbite_candidates=4,
+            backend="eager",
+            point_route="full",
+        )
+        return artifact.decoded_weight.to(dtype=weight.dtype, device=weight.device)
+
+    return qdq
+
+
+def _make_trellis_activation_qdq():
+    """W4A4 trellis lane activation contract.
+
+    The pinned Gridbook contract declares activation_contract
+    ``e2m1_group16_ue4m3_static`` for TCQ_E2M1_R256. No per-tensor
+    standalone QDQ with that exact static-group contract exists in
+    the tree (nvfp4_activation_contract.nvfp4_activation_qdq_served
+    requires a calibrated input_global_scale per fused sibling, which
+    FormatSpec's unary signature cannot supply). Substituting the
+    dynamic per-group RTN (``_make_rtn("fp4_e2m1",16)``) would be an
+    approximation of the W4A4 wire, not the wire itself. Fail closed
+    with the contract string rather than silently pricing the wrong
+    A-side.
+    """
+
+    contract = "e2m1_group16_ue4m3_static"
+
+    def qdq(x: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError(
+            f"trellis activation contract {contract!r} has no unary QDQ: "
+            "the served W4A4 path quantizes activations under a calibrated "
+            "static per-group scale (nvfp4_activation_contract."
+            "nvfp4_activation_qdq_served) and requires a fused-sibling "
+            "input_global_scale. Do not approximate with a dynamic per-group "
+            "RTN; WO-A requires a loud refusal naming the contract."
+        )
+
+    return qdq
+
+
+def _make_trellis_spec(q256: int) -> FormatSpec:
+    """One E2M1 trellis FormatSpec at body rate ``q256``.
+
+    The body wire is ``q256`` bits per 256 weights (``q256/256`` bpw
+    body). Exact tensor bytes are shape-dependent (row padding,
+    schedule nibbles, offset table, alphabet blob, scale plane) and
+    live in ``footprint.format_tensor_payload_breakdown`` via
+    ``trellis_footprint.trellis_tensor_payload_breakdown`` — the
+    authoritative seam. The scalar fields below are therefore
+    **nominal body-rate markers, not authoritative**; the footprint
+    seam is the byte authority and ``effective_bits`` here is retained
+    only for ordering/display. Do not use it for budgeting.
+    """
+
+    try:
+        from prismaquant.trellis_formats import E2M1_FAMILY, FAMILIES
+
+        fam = FAMILIES[E2M1_FAMILY]
+        min_sm = int(fam.minimum_capability_sm)
+    except Exception:
+        min_sm = 120
+    return FormatSpec(
+        name=f"TCQ_E2M1_R{q256}",
+        weight_bits=0,
+        group_size=256,
+        scale_bits=int(q256),
+        scale_dtype_name="trellis_tcqe2m1_body_q256",
+        weight_element_dtype="tcq_e2m1",
+        act_bits=4,
+        act_dtype_name="fp4_e2m1",
+        act_group_size=16,
+        family=TCQ_TRELLIS_FAMILY,
+        min_capability_sm=min_sm,
+        producer_eligible=True,
+        autoround_config=lambda q256=q256: dict(
+            bits=0,
+            group_size=256,
+            data_type="tcq_trellis",
+            trellis_family="TCQ_E2M1_R256",
+            trellis_q256=int(q256),
+            trellis_layout="fixed_quota_per_256",
+        ),
+        quantize_dequantize=_make_trellis_weight_qdq("TCQ_E2M1_R256", int(q256)),
+        activation_quantize_dequantize=_make_trellis_activation_qdq(),
+    )
+
+
+for _q256 in _load_trellis_candidate_rungs():
+    try:
+        register_format(_make_trellis_spec(int(_q256)))
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to register trellis rung TCQ_E2M1_R{_q256}: {exc}"
+        ) from exc
+
+try:
+    del _q256
+except NameError:
+    pass
+
+
 def list_formats(family: str | None = None) -> list[FormatSpec]:
     if family is None:
         return sorted(REGISTRY.values(), key=lambda s: s.effective_bits)
@@ -1238,6 +1466,11 @@ def format_is_producer_eligible(name: str) -> bool:
     spec = REGISTRY.get(canonical)
     if spec is None or not spec.producer_eligible:
         return False
+    # Trellis producer eligibility is governed by the pinned Gridbook
+    # contract's candidate_rungs_q256 list; the local FormatSpec flag is
+    # the authority. Do not route through the CB wire-family checker.
+    if spec.family == TCQ_TRELLIS_FAMILY:
+        return bool(spec.producer_eligible)
     # Pin CB eligibility to the torch-free wire source as a second invariant;
     # a registry construction bug cannot widen the producer ladder by itself.
     if parse_format_name(canonical) is not None:

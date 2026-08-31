@@ -597,7 +597,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "69f0a105f6a99f35b2200ec36a484c5795b2d1475b88c83522e56ed1021aa3d5"
     ),
     "prismaquant/production_weight_cache.py": (
-        "69e29daf21ec8fcfb6ee86375dc6a9792750f38e32337c931b26be64bb0c9fc7"
+        "83762ea8774e8d4936e3c6144d8dfe25810623b6a395e06694a99aed3c092054"
     ),
     "prismaquant/nvfp4_cb_footprint.py": (
         "96bc38a7ab18c6d2401ed2b66141eef9809409c78468f8ceb16c0891b9701547"

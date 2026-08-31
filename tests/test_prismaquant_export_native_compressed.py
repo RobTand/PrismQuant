@@ -1055,6 +1055,19 @@ class TestRoundTrip(unittest.TestCase):
             "MXFP6_E2M3": "no vLLM/compressed-tensors served export path is wired yet",
             "INT8_W8A16": "registered allocator research format; no native exporter metadata path",
             "INT4_W4A16_g128": "registered allocator research format; no native exporter metadata path",
+            # WO-A: five E2M1 trellis rungs are now registered as tcq_trellis
+            # FormatSpecs derived at import time from the pinned Gridbook
+            # 0.9.1 candidate_rungs_q256. The wire is Gridbook trellis wire
+            # v1 (88-byte header + schedule + offset table + alphabet blob +
+            # E2M1 scale plane, see trellis_footprint). The pack path is
+            # owned by WO-C and the cache render by WO-B, so there is no
+            # compressed-tensors metadata to reconcile yet — the same
+            # explicit-gap class as MXFP6.
+            "TCQ_E2M1_R384": "Gridbook trellis wire v1 — pack path owned by WO-C, no compressed-tensors metadata (WO-A registers the format, WO-B the cache, WO-C the exporter)",
+            "TCQ_E2M1_R512": "Gridbook trellis wire v1 — pack path owned by WO-C, no compressed-tensors metadata (WO-A registers the format, WO-B the cache, WO-C the exporter)",
+            "TCQ_E2M1_R640": "Gridbook trellis wire v1 — pack path owned by WO-C, no compressed-tensors metadata (WO-A registers the format, WO-B the cache, WO-C the exporter)",
+            "TCQ_E2M1_R768": "Gridbook trellis wire v1 — pack path owned by WO-C, no compressed-tensors metadata (WO-A registers the format, WO-B the cache, WO-C the exporter)",
+            "TCQ_E2M1_R896": "Gridbook trellis wire v1 — pack path owned by WO-C, no compressed-tensors metadata (WO-A registers the format, WO-B the cache, WO-C the exporter)",
         }
         gguf_lane = {
             # Served via the GGUF container (export_gguf), not
@@ -1118,6 +1131,11 @@ class TestRoundTrip(unittest.TestCase):
                     if fr.get_format(fmt).family in ("nvfp4_cb", "fp8_cb"):
                         # NVFP4-CB plugin-container formats: rendered==served
                         # is pinned in tests/test_nvfp4_cb_formats.py.
+                        continue
+                    if fr.get_format(fmt).family == "tcq_trellis":
+                        # Gridbook trellis wire v1 — no compressed-tensors
+                        # metadata (WO-A registers the format, WO-B the cache,
+                        # WO-C the exporter). No reconciliation in this file.
                         continue
 
                     if fmt in {"NVFP4", "NVFP4A16"}:

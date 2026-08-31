@@ -71,6 +71,13 @@ from .nvfp4_cb_footprint import (
     cb_tensor_payload_breakdown,
     is_cb_format,
 )
+from prismaquant.trellis_formats import parse_trellis_format_name as _parse_trellis_format_name
+
+
+def is_trellis_format(name: str) -> bool:
+    """Whether ``name`` is a TCQ trellis wire format (e.g. TCQ_E2M1_R512)."""
+
+    return _parse_trellis_format_name(str(name)) is not None
 
 # safetensors header dtype -> bytes per element (header carries the source
 # dtype string; we only need it to derive source-bytes-per-param when the
@@ -108,8 +115,14 @@ def format_tensor_payload_breakdown(
 
     CB formats cannot use their nominal :class:`FormatSpec` byte formula;
     their row scales and versioned layout live in
-    :func:`cb_tensor_payload_breakdown`.  All other formats use the registered
-    shape-exact producer formula.
+    :func:`cb_tensor_payload_breakdown`.  Trellis formats (TCQ) likewise
+    use a shape-dependent wire — row padding, schedule nibbles, offset
+    table, alphabet blob and scale plane — via
+    ``trellis_footprint.trellis_tensor_payload_breakdown``, which is the
+    byte authority; the FormatSpec's scalar nominal body rate
+    (``scale_bits/group_size == q256/256``) is retained only for
+    ordering/display and is explicitly NOT authoritative. All other
+    formats use the registered shape-exact producer formula.
     """
     spec = (
         format_spec_or_name
@@ -135,6 +148,55 @@ def format_tensor_payload_breakdown(
                 require_materialized_codebook_identity
             ),
         )
+    if is_trellis_format(canonical):
+        # Trellis wire bytes are shape-dependent (row padding, schedule
+        # nibbles, offset table, alphabet blob, scale plane). The
+        # FormatSpec's scalar nominal body rate is NOT authoritative;
+        # this seam is — via trellis_footprint.trellis_tensor_payload_breakdown.
+        # The same canonical schedule/alphabet helper is used by the
+        # FormatSpec's quantize_dequantize so bytes and error share one
+        # recipe (WO-A A1).
+        from prismaquant.trellis_formats import (
+            canonical_trellis_alphabets,
+            canonical_trellis_schedule,
+        )
+        from prismaquant.trellis_footprint import (
+            trellis_tensor_payload_breakdown as _trellis_breakdown,
+        )
+
+        parsed = _parse_trellis_format_name(canonical)
+        if parsed is None:
+            raise ValueError(f"{qname}: trellis format parsing failed for {canonical}")
+        family, q256 = parsed
+        if len(dims) != 2:
+            raise ValueError(
+                f"{qname}: trellis family {family.family} is dense-only (the pinned "
+                f"contract publishes no routed_moe trellis cell); got shape {dims} rank {len(dims)}"
+            )
+        rows, cols = int(dims[-2]), int(dims[-1])
+        schedule = canonical_trellis_schedule(cols, family, q256, layout="fixed_quota_per_256")
+        alphabets = canonical_trellis_alphabets(schedule, family)
+        breakdown = _trellis_breakdown(
+            (rows, cols),
+            family=family,
+            body_rate_q256=q256,
+            layout="fixed_quota_per_256",
+            schedule=schedule,
+            alphabets=alphabets,
+            sidecar_header_bytes=0,
+        )
+        payload_bytes = int(breakdown["total_bytes"])
+        return {
+            "format": canonical,
+            "shape": list(dims),
+            "params": int(math.prod(dims)) if dims else 1,
+            "tensor_payload_bytes": payload_bytes,
+            "identity_key": str(breakdown["pre_render_recipe_identity_sha256"]),
+            "sidecar_identity_key": None,
+            "sidecar_payload_bytes": 0,
+            "trellis_breakdown": breakdown,
+            "byte_authority": "trellis_footprint.trellis_tensor_payload_breakdown",
+        }
 
     payload_bytes = int(spec.memory_bytes_for_shape(dims))
     return {
