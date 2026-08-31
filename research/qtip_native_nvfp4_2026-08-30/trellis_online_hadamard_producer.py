@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import torch
 
@@ -47,7 +47,10 @@ COMBINED_ARTIFACT_SCHEMA = (
     "prismaquant.research.qtip_trellis_online_hadamard_artifact.v1"
 )
 BLOCKLDL_COMBINED_ARTIFACT_SCHEMA = (
-    "prismaquant.research.qtip_blockldl_trellis_hadamard_artifact.v1"
+    "prismaquant.research.qtip_blockldl_trellis_hadamard_artifact.v2"
+)
+DIAGONAL_HESSIAN_SCAFFOLD_SCHEMA = (
+    "prismaquant.research.qtip_trellis_online_hadamard_diagonal_hessian.v1"
 )
 TRELLIS_FEEDBACK_BLOCK_SIZE = 256
 RESEARCH_OPT_IN = "qtip_trellis_online_hadamard_one_linear_v1"
@@ -165,6 +168,22 @@ class PreparedOneLinear:
 
 
 @dataclass(frozen=True)
+class PreparedDiagonalHessianOneLinear:
+    """Transformed weight plus an exact retained diagonal-H contract.
+
+    The input transform is block diagonal.  A diagonal source Hessian
+    therefore becomes an exact block-diagonal transformed Hessian without a
+    dense ``K x K`` allocation.  The source diagonal remains live so the
+    encode boundary can reauthenticate and derive every block itself.
+    """
+
+    transformed_weight: torch.Tensor
+    source_hessian_diagonal: torch.Tensor
+    online_transform: Mapping[str, object]
+    receipt: Mapping[str, object]
+
+
+@dataclass(frozen=True)
 class CombinedOneLinearArtifact:
     """Physical trellis bytes and their transformed-basis decoded view."""
 
@@ -173,6 +192,17 @@ class CombinedOneLinearArtifact:
     decoded_codes: torch.Tensor
     online_transform: Mapping[str, object]
     receipt: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class BlockLDLFactorGroup:
+    """One independently factorable block of an exact block-diagonal H."""
+
+    first_column: int
+    last_column_exclusive: int
+    transformed_hessian: torch.Tensor
+    feedback_lower: torch.Tensor
+    diagonal_blocks: torch.Tensor
 
 
 def _canonical_sha256(value: object) -> str:
@@ -595,6 +625,77 @@ def transform_weight_and_hessian(
     return transformed_weight, transformed_hessian
 
 
+def transform_weight(
+    weight: torch.Tensor,
+    online_transform: Mapping[str, object],
+) -> torch.Tensor:
+    """Return ``R_out W R_in.T`` without constructing any Hessian."""
+
+    if weight.ndim != 2:
+        raise ValueError("weight must be rank two")
+    rows, columns = map(int, weight.shape)
+    contract = validate_online_transform(
+        online_transform, rows=rows, columns=columns
+    )
+    value = weight.float()
+    if not bool(torch.isfinite(value).all()):
+        raise ValueError("weight must be finite")
+    weight_right = _input_basis_rows(value, contract, "input")
+    return _input_basis_rows(
+        weight_right.T, contract, "output"
+    ).T.contiguous()
+
+
+def _validated_positive_hessian_diagonal(
+    diagonal: torch.Tensor,
+    *,
+    dimension: int,
+) -> torch.Tensor:
+    # Refuse shape before detach/dtype conversion.  In particular, a forged
+    # K-by-K BF16 tensor must not allocate a global FP32 K-by-K temporary on
+    # the structured path that exists specifically to avoid that geometry.
+    if diagonal.ndim != 1 or int(diagonal.numel()) != dimension:
+        raise ValueError(
+            "structured Hessian source must be one rank-one diagonal vector; "
+            "dense or off-diagonal source matrices are not accepted"
+        )
+    value = diagonal.detach().float()
+    if not bool(torch.isfinite(value).all()) or bool((value <= 0).any()):
+        raise ValueError(
+            "structured Hessian diagonal must be finite and strictly positive"
+        )
+    return value.contiguous()
+
+
+def transformed_diagonal_hessian_block(
+    source_diagonal_block: torch.Tensor,
+) -> torch.Tensor:
+    """Construct exactly ``H diag(d) H`` for one Sylvester block.
+
+    Input-side Rademacher signs cancel on a diagonal source Hessian.  This
+    helper intentionally accepts only a rank-one diagonal vector, making an
+    off-block or otherwise dense source impossible to smuggle into the
+    structured producer.
+    """
+
+    if source_diagonal_block.ndim != 1:
+        raise ValueError(
+            "source_diagonal_block must be rank one; off-block input refused"
+        )
+    block_size = int(source_diagonal_block.numel())
+    if block_size < 1 or block_size & (block_size - 1):
+        raise ValueError("diagonal-H transform block must be a positive power of two")
+    diagonal = _validated_positive_hessian_diagonal(
+        source_diagonal_block, dimension=block_size
+    )
+    dense_block = torch.diag(diagonal)
+    right = _normalized_block_hadamard_rows(dense_block, block_size)
+    transformed = _normalized_block_hadamard_rows(
+        right.T.contiguous(), block_size
+    ).T.contiguous()
+    return ((transformed + transformed.T) * 0.5).contiguous()
+
+
 def transformed_activations(
     activations: torch.Tensor,
     online_transform: Mapping[str, object],
@@ -814,6 +915,161 @@ def prepare_one_linear_scaffold(
     )
 
 
+def _diagonal_hessian_structure(
+    diagonal: torch.Tensor,
+    contract: Mapping[str, object],
+) -> dict[str, object]:
+    input_spec = _side_spec(contract, "input")
+    dimension = int(input_spec["dimension"])
+    block_size = int(input_spec["block_size"])
+    value = _validated_positive_hessian_diagonal(
+        diagonal, dimension=dimension
+    )
+    body: dict[str, object] = {
+        "schema": "prismaquant.research.block_diagonal_hessian_structure.v1",
+        "construction": "block_walsh_hadamard_similarity_of_positive_diagonal",
+        "dimension": dimension,
+        "transform_block_size": block_size,
+        "transform_block_count": dimension // block_size,
+        "source_diagonal_sha256": _tensor_sha256(value),
+        "ordered_blocks": [
+            {
+                "index": index,
+                "first_column": first,
+                "last_column_exclusive": first + block_size,
+                "columns": block_size,
+                "source_diagonal_sha256": _tensor_sha256(
+                    value[first:first + block_size]
+                ),
+            }
+            for index, first in enumerate(range(0, dimension, block_size))
+        ],
+        "input_rademacher_signs_cancel_exactly": True,
+        "off_block_entries_zero_by_construction": True,
+        "dense_k_by_k_materialized": False,
+    }
+    return {**body, "identity_sha256": _canonical_sha256(body)}
+
+
+def prepare_one_linear_diagonal_hessian_scaffold(
+    weight: torch.Tensor,
+    hessian_diagonal: torch.Tensor,
+    *,
+    body_rate_q256: int,
+    input_block_size: int,
+    output_block_size: int,
+    input_seed: int,
+    output_seed: int,
+    research_opt_in: str,
+) -> PreparedDiagonalHessianOneLinear:
+    """Prepare a diagonal-H Arm E input without ever allocating dense KxK."""
+
+    if research_opt_in != RESEARCH_OPT_IN:
+        raise ValueError(f"research_opt_in must equal {RESEARCH_OPT_IN!r}")
+    if weight.ndim != 2:
+        raise ValueError("weight must be rank two")
+    rows, columns = map(int, weight.shape)
+    if rows <= 0 or columns <= 0 or columns % 16:
+        raise ValueError("E2M1 trellis weight must be nonempty and group-16 aligned")
+    if (
+        type(input_block_size) is not int
+        or input_block_size < TRELLIS_FEEDBACK_BLOCK_SIZE
+        or input_block_size % TRELLIS_FEEDBACK_BLOCK_SIZE
+    ):
+        raise ValueError(
+            "structured input_block_size must be an integer multiple of 256"
+        )
+    diagonal = _validated_positive_hessian_diagonal(
+        hessian_diagonal, dimension=columns
+    )
+    family = get_trellis_family(E2M1_FAMILY)
+    rate = validate_body_rate_q256(family, body_rate_q256)
+    contract = build_online_transform(
+        rows=rows,
+        columns=columns,
+        input_block_size=input_block_size,
+        output_block_size=output_block_size,
+        input_seed=input_seed,
+        output_seed=output_seed,
+    )
+    transformed_weight = transform_weight(weight, contract)
+    structure = _diagonal_hessian_structure(diagonal, contract)
+    source_authority = {
+        "status": "retained_positive_diagonal_reauthenticated_at_encode",
+        "weight_reauthenticated_at_encode": False,
+        "hessian_diagonal_reauthenticated_at_encode": True,
+        "reason": (
+            "the original weight is represented by the transformed-weight "
+            "identity; the retained diagonal is hashed again before every "
+            "structured factorization"
+        ),
+    }
+    basis = {
+        **_PREPARED_BASIS,
+        "hessian_source": "diag(retained_positive_diagonal)",
+        "hessian_transformed_representation": (
+            "exact_block_diagonal_without_dense_k_by_k_materialization"
+        ),
+    }
+    receipt_body: dict[str, object] = {
+        "schema": DIAGONAL_HESSIAN_SCAFFOLD_SCHEMA,
+        "status": "prepared_exact_block_diagonal_hessian_wire_seam_available",
+        "scope": "research_only_one_linear_unregistered_contract_scaffold",
+        "research_opt_in": RESEARCH_OPT_IN,
+        "shape": {"rows": rows, "columns": columns},
+        "source": {
+            "authority": source_authority,
+            "weight": {
+                "dtype": str(weight.dtype),
+                "sha256": _tensor_sha256(weight),
+            },
+            "hessian_diagonal": {
+                "dtype": str(diagonal.dtype),
+                "sha256": _tensor_sha256(diagonal),
+            },
+        },
+        "transformed": {
+            "weight": {
+                "dtype": str(transformed_weight.dtype),
+                "sha256": _tensor_sha256(transformed_weight),
+            },
+            "hessian_structure": structure,
+        },
+        "basis": basis,
+        "online_transform": contract,
+        "wire": {
+            "schema": TRELLIS_WIRE_SCHEMA,
+            "family": E2M1_FAMILY,
+            "body_rate_q256": rate,
+            "terminal_grid": "E2M1",
+            "scale_contract": family.scale_contract,
+            "qtip_bitshift_wire_allowed": False,
+            "wire_bytes": None,
+            "wire_identity_sha256": None,
+            "encoder_invoked": False,
+            "decoder_invoked": False,
+        },
+        "wire_seam": {
+            "available_repository_api": _PREPARED_AVAILABLE_REPOSITORY_API,
+            "excluded_substitutions": _PREPARED_EXCLUDED_SUBSTITUTIONS,
+        },
+        "format_registry_entries_created": 0,
+        "runtime_pin_changed": False,
+        "production_contract_changed": False,
+        "producer_eligible": False,
+    }
+    receipt = {
+        **receipt_body,
+        "identity_sha256": _canonical_sha256(receipt_body),
+    }
+    return PreparedDiagonalHessianOneLinear(
+        transformed_weight=transformed_weight,
+        source_hessian_diagonal=diagonal,
+        online_transform=contract,
+        receipt=receipt,
+    )
+
+
 def _validate_prepared_one_linear(
     prepared: PreparedOneLinear,
     *,
@@ -954,6 +1210,168 @@ def _validate_prepared_one_linear(
     return body
 
 
+def _validate_prepared_diagonal_hessian_one_linear(
+    prepared: PreparedDiagonalHessianOneLinear,
+    *,
+    body_rate_q256: int,
+) -> dict[str, object]:
+    """Reauthenticate the retained diagonal and its exact structure claim."""
+
+    if not isinstance(prepared, PreparedDiagonalHessianOneLinear):
+        raise ValueError(
+            "prepared must be a PreparedDiagonalHessianOneLinear"
+        )
+    if not isinstance(prepared.receipt, Mapping):
+        raise ValueError("prepared receipt must be an object")
+    body = dict(prepared.receipt)
+    identity = body.pop("identity_sha256", None)
+    _require_sha256(identity, where="prepared receipt identity_sha256")
+    if not hmac.compare_digest(identity, _canonical_sha256(body)):
+        raise ValueError("prepared receipt identity mismatch")
+    _require_exact_fields(body, _PREPARED_ROOT_FIELDS, where="prepared receipt")
+    expected_root = {
+        "schema": DIAGONAL_HESSIAN_SCAFFOLD_SCHEMA,
+        "status": "prepared_exact_block_diagonal_hessian_wire_seam_available",
+        "scope": "research_only_one_linear_unregistered_contract_scaffold",
+        "research_opt_in": RESEARCH_OPT_IN,
+        "format_registry_entries_created": 0,
+        "runtime_pin_changed": False,
+        "production_contract_changed": False,
+        "producer_eligible": False,
+    }
+    for field, expected in expected_root.items():
+        if not _json_exact_equal(body[field], expected):
+            raise ValueError(f"prepared receipt {field} mismatch")
+
+    if prepared.transformed_weight.ndim != 2:
+        raise ValueError("prepared transformed weight must be rank two")
+    rows, columns = map(int, prepared.transformed_weight.shape)
+    shape = _require_exact_fields(
+        body["shape"], _PREPARED_SHAPE_FIELDS, where="prepared receipt shape"
+    )
+    if not _json_exact_equal(shape, {"rows": rows, "columns": columns}):
+        raise ValueError("prepared receipt shape mismatch")
+    diagonal = _validated_positive_hessian_diagonal(
+        prepared.source_hessian_diagonal, dimension=columns
+    )
+    contract = validate_online_transform(
+        body.get("online_transform"), rows=rows, columns=columns
+    )
+    input_block_size = int(_side_spec(contract, "input")["block_size"])
+    if (
+        input_block_size < TRELLIS_FEEDBACK_BLOCK_SIZE
+        or input_block_size % TRELLIS_FEEDBACK_BLOCK_SIZE
+    ):
+        raise ValueError(
+            "prepared structured input transform block must be 256-aligned"
+        )
+    if contract != validate_online_transform(
+        prepared.online_transform, rows=rows, columns=columns
+    ):
+        raise ValueError("prepared online-transform metadata mismatch")
+
+    source = _require_exact_fields(
+        body["source"],
+        frozenset({"authority", "weight", "hessian_diagonal"}),
+        where="prepared receipt source",
+    )
+    expected_authority = {
+        "status": "retained_positive_diagonal_reauthenticated_at_encode",
+        "weight_reauthenticated_at_encode": False,
+        "hessian_diagonal_reauthenticated_at_encode": True,
+        "reason": (
+            "the original weight is represented by the transformed-weight "
+            "identity; the retained diagonal is hashed again before every "
+            "structured factorization"
+        ),
+    }
+    if not _json_exact_equal(source["authority"], expected_authority):
+        raise ValueError("prepared receipt source.authority mismatch")
+    source_weight = _require_exact_fields(
+        source["weight"],
+        _PREPARED_TENSOR_IDENTITY_FIELDS,
+        where="prepared receipt source.weight",
+    )
+    source_dtype = source_weight["dtype"]
+    if not (
+        isinstance(source_dtype, str)
+        and source_dtype.startswith("torch.")
+        and isinstance(
+            getattr(torch, source_dtype.removeprefix("torch."), None),
+            torch.dtype,
+        )
+    ):
+        raise ValueError("prepared receipt source.weight.dtype must be a torch dtype")
+    _require_sha256(
+        source_weight["sha256"], where="prepared receipt source.weight.sha256"
+    )
+    expected_diagonal = {
+        "dtype": str(diagonal.dtype),
+        "sha256": _tensor_sha256(diagonal),
+    }
+    if not _json_exact_equal(source["hessian_diagonal"], expected_diagonal):
+        raise ValueError("prepared retained Hessian diagonal identity mismatch")
+
+    transformed = _require_exact_fields(
+        body["transformed"],
+        frozenset({"weight", "hessian_structure"}),
+        where="prepared receipt transformed",
+    )
+    expected_weight = {
+        "dtype": str(prepared.transformed_weight.dtype),
+        "sha256": _tensor_sha256(prepared.transformed_weight),
+    }
+    if not _json_exact_equal(transformed["weight"], expected_weight):
+        raise ValueError("prepared transformed weight identity mismatch")
+    expected_structure = _diagonal_hessian_structure(diagonal, contract)
+    if not _json_exact_equal(
+        transformed["hessian_structure"], expected_structure
+    ):
+        raise ValueError("prepared transformed Hessian structure mismatch")
+    expected_basis = {
+        **_PREPARED_BASIS,
+        "hessian_source": "diag(retained_positive_diagonal)",
+        "hessian_transformed_representation": (
+            "exact_block_diagonal_without_dense_k_by_k_materialization"
+        ),
+    }
+    if not _json_exact_equal(body["basis"], expected_basis):
+        raise ValueError("prepared receipt basis mismatch")
+
+    wire = _require_exact_fields(
+        body["wire"], _PREPARED_WIRE_FIELDS, where="prepared receipt wire"
+    )
+    family = get_trellis_family(E2M1_FAMILY)
+    expected_wire = {
+        "schema": TRELLIS_WIRE_SCHEMA,
+        "family": E2M1_FAMILY,
+        "body_rate_q256": body_rate_q256,
+        "terminal_grid": "E2M1",
+        "scale_contract": family.scale_contract,
+        "qtip_bitshift_wire_allowed": False,
+        "wire_bytes": None,
+        "wire_identity_sha256": None,
+        "encoder_invoked": False,
+        "decoder_invoked": False,
+    }
+    if not _json_exact_equal(wire, expected_wire):
+        raise ValueError("prepared receipt wire contract mismatch")
+    wire_seam = _require_exact_fields(
+        body["wire_seam"],
+        _PREPARED_WIRE_SEAM_FIELDS,
+        where="prepared receipt wire_seam",
+    )
+    if not _json_exact_equal(
+        wire_seam,
+        {
+            "available_repository_api": _PREPARED_AVAILABLE_REPOSITORY_API,
+            "excluded_substitutions": _PREPARED_EXCLUDED_SUBSTITUTIONS,
+        },
+    ):
+        raise ValueError("prepared receipt wire_seam mismatch")
+    return body
+
+
 def qtip_block_ldl_factors(
     hessian: torch.Tensor,
     *,
@@ -1004,6 +1422,60 @@ def qtip_block_ldl_factors(
     for first in range(0, columns, block_size):
         feedback_lower[first:first + block_size, first:first + block_size] = 0
     return feedback_lower.contiguous(), torch.stack(diagonal_blocks)
+
+
+def iter_transformed_diagonal_block_ldl_factors(
+    source_diagonal: torch.Tensor,
+    online_transform: Mapping[str, object],
+    *,
+    block_size: int = TRELLIS_FEEDBACK_BLOCK_SIZE,
+) -> Iterator[BlockLDLFactorGroup]:
+    """Yield exact factor groups without constructing a dense global Hessian.
+
+    The source contract is deliberately narrower than arbitrary block-sparse
+    input: only a retained positive diagonal plus the already validated
+    block-local orthogonal transform is accepted.  Thus off-block zeros are a
+    theorem of the construction rather than an unchecked caller assertion.
+    """
+
+    input_spec = _side_spec(online_transform, "input")
+    dimension = int(input_spec["dimension"])
+    transform_block_size = int(input_spec["block_size"])
+    if type(block_size) is not int or block_size < 1:
+        raise ValueError("block_size must be a positive integer")
+    if transform_block_size % block_size:
+        raise ValueError(
+            "input transform block must be divisible by the feedback block"
+        )
+    diagonal = _validated_positive_hessian_diagonal(
+        source_diagonal, dimension=dimension
+    )
+    expected_diagonal_sha256 = _tensor_sha256(diagonal)
+    for first in range(0, dimension, transform_block_size):
+        if not hmac.compare_digest(
+            _tensor_sha256(diagonal), expected_diagonal_sha256
+        ):
+            raise ValueError(
+                "structured Hessian diagonal changed during factorization"
+            )
+        last = first + transform_block_size
+        transformed_hessian = transformed_diagonal_hessian_block(
+            diagonal[first:last]
+        )
+        feedback_lower, diagonal_blocks = qtip_block_ldl_factors(
+            transformed_hessian, block_size=block_size
+        )
+        yield BlockLDLFactorGroup(
+            first_column=first,
+            last_column_exclusive=last,
+            transformed_hessian=transformed_hessian,
+            feedback_lower=feedback_lower,
+            diagonal_blocks=diagonal_blocks,
+        )
+    if not hmac.compare_digest(
+        _tensor_sha256(diagonal), expected_diagonal_sha256
+    ):
+        raise ValueError("structured Hessian diagonal changed during factorization")
 
 
 def reverse_block_feedback_reference(
@@ -1198,7 +1670,7 @@ def require_combined_wire_round_trip(
 
 
 def require_blockldl_trellis_wire_round_trip(
-    prepared: PreparedOneLinear,
+    prepared: PreparedOneLinear | PreparedDiagonalHessianOneLinear,
     activations: torch.Tensor,
     *,
     body_rate_q256: int,
@@ -1236,9 +1708,17 @@ def require_blockldl_trellis_wire_round_trip(
             "terminal_metric_mode must be 'diag_block_D', "
             "'qtip_frobenius', or the explicitly refused 'dense_block_D'"
         )
-    prepared_receipt = _validate_prepared_one_linear(
-        prepared, body_rate_q256=body_rate_q256
+    structured_diagonal = isinstance(
+        prepared, PreparedDiagonalHessianOneLinear
     )
+    if structured_diagonal:
+        prepared_receipt = _validate_prepared_diagonal_hessian_one_linear(
+            prepared, body_rate_q256=body_rate_q256
+        )
+    else:
+        prepared_receipt = _validate_prepared_one_linear(
+            prepared, body_rate_q256=body_rate_q256
+        )
     weight = prepared.transformed_weight.float()
     rows, columns = map(int, weight.shape)
     if columns % TRELLIS_FEEDBACK_BLOCK_SIZE:
@@ -1248,10 +1728,10 @@ def require_blockldl_trellis_wire_round_trip(
     contract = validate_online_transform(
         prepared.online_transform, rows=rows, columns=columns
     )
-    feedback_lower, diagonal_blocks = qtip_block_ldl_factors(
-        prepared.transformed_hessian,
-        block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
-    )
+    if not structured_diagonal and prepared.transformed_hessian.shape != (
+        columns, columns
+    ):
+        raise ValueError("prepared transformed Hessian has the wrong shape")
 
     group_scales = weight.reshape(rows, columns // 16, 16).abs().amax(-1)
     group_scales = group_scales.clamp_min(1.0e-12) / 6.0
@@ -1262,137 +1742,292 @@ def require_blockldl_trellis_wire_round_trip(
 
     encoded_blocks: dict[int, EncodedTrellisPlanes] = {}
     block_receipts: dict[int, dict[str, object]] = {}
+    block_count = columns // TRELLIS_FEEDBACK_BLOCK_SIZE
+    recurrence_q = torch.zeros_like(weight)
+    buffered_targets: list[torch.Tensor | None] = [None] * block_count
+    factor_group_records: list[dict[str, object]] = []
+    target_errors: list[float] = []
+    factor_errors: list[float] = []
+    proxy_errors: list[float] = []
+    feedback_nonzero_count = 0
+    decomposed_proxy_total = weight.new_zeros(())
+    direct_proxy_total = weight.new_zeros(())
 
-    def terminal(block_index: int, target: torch.Tensor) -> torch.Tensor:
-        first = block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
-        last = first + TRELLIS_FEEDBACK_BLOCK_SIZE
-        block_schedule = tuple(int(value) for value in schedule[first:last])
-        local_body_rate_q256 = sum(block_schedule)
-        bypass_rate = get_trellis_family(E2M1_FAMILY).bypass_rate
-        block_rates = sorted({
-            rate for rate in block_schedule if rate < bypass_rate
-        })
-        try:
-            block_alphabets = {
-                rate: alphabets[rate] for rate in block_rates
+    def factor_groups() -> Iterator[BlockLDLFactorGroup]:
+        if structured_diagonal:
+            assert isinstance(prepared, PreparedDiagonalHessianOneLinear)
+            yield from iter_transformed_diagonal_block_ldl_factors(
+                prepared.source_hessian_diagonal,
+                contract,
+                block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
+            )
+            return
+        assert isinstance(prepared, PreparedOneLinear)
+        dense_hessian = prepared.transformed_hessian.float()
+        feedback, diagonal = qtip_block_ldl_factors(
+            dense_hessian, block_size=TRELLIS_FEEDBACK_BLOCK_SIZE
+        )
+        yield BlockLDLFactorGroup(
+            first_column=0,
+            last_column_exclusive=columns,
+            transformed_hessian=dense_hessian,
+            feedback_lower=feedback,
+            diagonal_blocks=diagonal,
+        )
+
+    for group_index, group in enumerate(factor_groups()):
+        group_first = group.first_column
+        group_last = group.last_column_exclusive
+        group_columns = group_last - group_first
+        group_first_block = group_first // TRELLIS_FEEDBACK_BLOCK_SIZE
+        group_block_count = group_columns // TRELLIS_FEEDBACK_BLOCK_SIZE
+
+        def terminal(local_block_index: int, target: torch.Tensor) -> torch.Tensor:
+            block_index = group_first_block + local_block_index
+            first = block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
+            last = first + TRELLIS_FEEDBACK_BLOCK_SIZE
+            block_schedule = tuple(int(value) for value in schedule[first:last])
+            local_body_rate_q256 = sum(block_schedule)
+            bypass_rate = get_trellis_family(E2M1_FAMILY).bypass_rate
+            block_rates = sorted({
+                rate for rate in block_schedule if rate < bypass_rate
+            })
+            try:
+                block_alphabets = {
+                    rate: alphabets[rate] for rate in block_rates
+                }
+            except KeyError as exc:
+                raise ValueError(
+                    f"missing alphabet for block rate {int(exc.args[0])}"
+                ) from exc
+            dense_d = group.diagonal_blocks[local_block_index]
+            metric = (
+                dense_d.diagonal().contiguous()
+                if terminal_metric_mode == "diag_block_D"
+                else torch.ones(
+                    TRELLIS_FEEDBACK_BLOCK_SIZE,
+                    dtype=torch.float32,
+                    device=target.device,
+                )
+            )
+            encoded = encode_trellis_planes(
+                target,
+                metric,
+                family=E2M1_FAMILY,
+                schedule=block_schedule,
+                alphabets=block_alphabets,
+                scale_rule=scale_rule,
+                sb_chunk=sb_chunk,
+                determinism_mode=determinism_mode,
+                tailbite_candidates=tailbite_candidates,
+                backend=backend,
+                point_route=point_route,
+                global_scale_real_override=shared_global,
+            )
+            terminal_wire = pack_planes(
+                family=E2M1_FAMILY,
+                body_rate_q256=local_body_rate_q256,
+                schedule=block_schedule,
+                layout=layout,
+                u_bits=encoded.u_bits,
+                point_indices=encoded.point_indices,
+                bypass_codes=encoded.bypass_codes,
+                alphabets=block_alphabets,
+                scale_blob=encoded.scale_blob,
+                global_scale_real=shared_global,
+            )
+            terminal_blob = terminal_wire.to_bytes()
+            if TrellisWire.from_bytes(terminal_blob).to_bytes() != terminal_blob:
+                raise AssertionError("terminal wire did not reserialize exactly")
+            decoded_terminal = decode_values_torch(
+                terminal_blob, device=target.device, dtype=target.dtype
+            )
+            if not torch.equal(
+                decoded_terminal.to(torch.bfloat16),
+                encoded.reconstruction.to(torch.bfloat16),
+            ):
+                raise AssertionError(
+                    "terminal same-byte decode differs from encoder reconstruction"
+                )
+            target_group_scales = (
+                target.reshape(rows, 16, 16).abs().amax(-1) / 6.0
+            )
+            clipped = int(
+                (target_group_scales > shared_global_tensor * 448.0).sum().item()
+            )
+            encoded_blocks[block_index] = encoded
+            block_receipts[block_index] = {
+                "block_index": block_index,
+                "factor_group_index": group_index,
+                "first_column": first,
+                "last_column_exclusive": last,
+                "local_body_rate_q256": local_body_rate_q256,
+                "feedback_target_sha256": _tensor_sha256(target),
+                "terminal_wire_identity_sha256": hashlib.sha256(
+                    terminal_blob
+                ).hexdigest(),
+                "decoded_terminal_sha256": _tensor_sha256(decoded_terminal),
+                "dense_D_sha256": _tensor_sha256(dense_d),
+                "terminal_metric_sha256": _tensor_sha256(metric),
+                "terminal_metric_mode": terminal_metric_mode,
+                "dense_D_terminal_consumption": {
+                    "diagonal_consumed": terminal_metric_mode == "diag_block_D",
+                    "off_diagonal_consumed": False,
+                    "full_matrix_consumed": False,
+                    "exact_dense_objective": False,
+                },
+                "clipped_group_count_at_fixed_global": clipped,
             }
-        except KeyError as exc:
-            raise ValueError(
-                f"missing alphabet for block rate {int(exc.args[0])}"
-            ) from exc
-        dense_d = diagonal_blocks[block_index]
-        metric = (
-            dense_d.diagonal().contiguous()
-            if terminal_metric_mode == "diag_block_D"
-            else torch.ones(
-                TRELLIS_FEEDBACK_BLOCK_SIZE,
-                dtype=torch.float32,
-                device=target.device,
+            return decoded_terminal
+
+        group_weight = weight[:, group_first:group_last]
+        group_q, group_targets = reverse_block_feedback_buffered(
+            group_weight,
+            group.feedback_lower,
+            terminal,
+            block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
+            buffer_blocks=buffer_blocks,
+        )
+        recurrence_q[:, group_first:group_last] = group_q
+        for local_index, target in enumerate(group_targets):
+            buffered_targets[group_first_block + local_index] = target
+
+        def decoded_replay(
+            local_block_index: int, _target: torch.Tensor
+        ) -> torch.Tensor:
+            first = local_block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
+            return group_q[:, first:first + TRELLIS_FEEDBACK_BLOCK_SIZE]
+
+        oracle_q, oracle_targets = reverse_block_feedback_reference(
+            group_weight,
+            group.feedback_lower,
+            decoded_replay,
+            block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
+        )
+        if not torch.equal(oracle_q, group_q):
+            raise AssertionError("buffered recurrence decoded blocks changed")
+        group_target_max_abs = max(
+            float((buffered - oracle).abs().max().item())
+            for buffered, oracle in zip(
+                group_targets, oracle_targets, strict=True
             )
         )
-        encoded = encode_trellis_planes(
-            target,
-            metric,
-            family=E2M1_FAMILY,
-            schedule=block_schedule,
-            alphabets=block_alphabets,
-            scale_rule=scale_rule,
-            sb_chunk=sb_chunk,
-            determinism_mode=determinism_mode,
-            tailbite_candidates=tailbite_candidates,
-            backend=backend,
-            point_route=point_route,
-            global_scale_real_override=shared_global,
-        )
-        terminal_wire = pack_planes(
-            family=E2M1_FAMILY,
-            body_rate_q256=local_body_rate_q256,
-            schedule=block_schedule,
-            layout=layout,
-            u_bits=encoded.u_bits,
-            point_indices=encoded.point_indices,
-            bypass_codes=encoded.bypass_codes,
-            alphabets=block_alphabets,
-            scale_blob=encoded.scale_blob,
-            global_scale_real=shared_global,
-        )
-        terminal_blob = terminal_wire.to_bytes()
-        if TrellisWire.from_bytes(terminal_blob).to_bytes() != terminal_blob:
-            raise AssertionError("terminal wire did not reserialize exactly")
-        decoded_terminal = decode_values_torch(
-            terminal_blob, device=target.device, dtype=target.dtype
-        )
-        if not torch.equal(
-            decoded_terminal.to(torch.bfloat16),
-            encoded.reconstruction.to(torch.bfloat16),
+        target_errors.append(group_target_max_abs)
+        if not all(
+            torch.allclose(buffered, oracle, rtol=3.0e-5, atol=3.0e-5)
+            for buffered, oracle in zip(
+                group_targets, oracle_targets, strict=True
+            )
         ):
             raise AssertionError(
-                "terminal same-byte decode differs from encoder reconstruction"
+                "buffered BlockLDL targets differ from the unbuffered oracle; "
+                f"max_abs={group_target_max_abs}"
             )
-        target_group_scales = target.reshape(rows, 16, 16).abs().amax(-1) / 6.0
-        clipped = int(
-            (target_group_scales > shared_global_tensor * 448.0).sum().item()
-        )
-        encoded_blocks[block_index] = encoded
-        block_receipts[block_index] = {
-            "block_index": block_index,
-            "first_column": first,
-            "last_column_exclusive": last,
-            "local_body_rate_q256": local_body_rate_q256,
-            "feedback_target_sha256": _tensor_sha256(target),
-            "terminal_wire_identity_sha256": hashlib.sha256(
-                terminal_blob
-            ).hexdigest(),
-            "decoded_terminal_sha256": _tensor_sha256(decoded_terminal),
-            "dense_D_sha256": _tensor_sha256(dense_d),
-            "terminal_metric_sha256": _tensor_sha256(metric),
-            "terminal_metric_mode": terminal_metric_mode,
-            "dense_D_terminal_consumption": {
-                "diagonal_consumed": terminal_metric_mode == "diag_block_D",
-                "off_diagonal_consumed": False,
-                "full_matrix_consumed": False,
-                "exact_dense_objective": False,
-            },
-            "clipped_group_count_at_fixed_global": clipped,
-        }
-        return decoded_terminal
 
-    recurrence_q, buffered_targets = reverse_block_feedback_buffered(
-        weight,
-        feedback_lower,
-        terminal,
-        block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
-        buffer_blocks=buffer_blocks,
-    )
-    block_count = columns // TRELLIS_FEEDBACK_BLOCK_SIZE
+        unit_lower = group.feedback_lower.clone()
+        for first in range(0, group_columns, TRELLIS_FEEDBACK_BLOCK_SIZE):
+            unit_lower[
+                first:first + TRELLIS_FEEDBACK_BLOCK_SIZE,
+                first:first + TRELLIS_FEEDBACK_BLOCK_SIZE,
+            ] = torch.eye(
+                TRELLIS_FEEDBACK_BLOCK_SIZE,
+                dtype=unit_lower.dtype,
+                device=unit_lower.device,
+            )
+        dense_d = torch.block_diag(*group.diagonal_blocks.unbind(0))
+        reconstructed_hessian = unit_lower @ dense_d @ unit_lower.T
+        group_factor_max_abs = float(
+            (reconstructed_hessian - group.transformed_hessian)
+            .abs().max().item()
+        )
+        factor_errors.append(group_factor_max_abs)
+        if not torch.allclose(
+            reconstructed_hessian,
+            group.transformed_hessian,
+            rtol=3.0e-5,
+            atol=3.0e-5,
+        ):
+            raise AssertionError(
+                "BlockLDL factors do not reconstruct their transformed "
+                f"Hessian group; max_abs={group_factor_max_abs}"
+            )
+        group_error = group_weight - group_q.float()
+        transformed_error = group_error @ unit_lower
+        group_decomposed_proxy = sum(
+            (
+                transformed_error[
+                    :, index * TRELLIS_FEEDBACK_BLOCK_SIZE:
+                    (index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
+                ] @ group.diagonal_blocks[index]
+            ).mul(
+                transformed_error[
+                    :, index * TRELLIS_FEEDBACK_BLOCK_SIZE:
+                    (index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
+                ]
+            ).sum()
+            for index in range(group_block_count)
+        )
+        group_direct_proxy = (
+            (group_error @ group.transformed_hessian) * group_error
+        ).sum()
+        group_proxy_abs = float(
+            (group_decomposed_proxy - group_direct_proxy).abs().item()
+        )
+        proxy_errors.append(group_proxy_abs)
+        if not torch.allclose(
+            group_decomposed_proxy,
+            group_direct_proxy,
+            rtol=3.0e-5,
+            atol=3.0e-5,
+        ):
+            raise AssertionError(
+                "BlockLDL quadratic decomposition mismatch; "
+                f"abs_error={group_proxy_abs}"
+            )
+        decomposed_proxy_total += group_decomposed_proxy
+        direct_proxy_total += group_direct_proxy
+        group_feedback_nonzero = int(
+            torch.count_nonzero(group.feedback_lower).item()
+        )
+        feedback_nonzero_count += group_feedback_nonzero
+        factor_group_records.append({
+            "index": group_index,
+            "first_column": group_first,
+            "last_column_exclusive": group_last,
+            "columns": group_columns,
+            "source_diagonal_sha256": (
+                _tensor_sha256(
+                    prepared.source_hessian_diagonal[group_first:group_last]
+                )
+                if structured_diagonal else None
+            ),
+            "transformed_hessian_sha256": _tensor_sha256(
+                group.transformed_hessian
+            ),
+            "feedback_lower_sha256": _tensor_sha256(group.feedback_lower),
+            "diagonal_blocks_sha256": _tensor_sha256(group.diagonal_blocks),
+            "feedback_nonzero_count": group_feedback_nonzero,
+            "factorization_max_abs_error": group_factor_max_abs,
+            "buffered_oracle_target_max_abs_error": group_target_max_abs,
+            "quadratic_decomposition_abs_error": group_proxy_abs,
+        })
+
     if set(encoded_blocks) != set(range(block_count)):
         raise AssertionError("BlockLDL recurrence did not encode every block")
-
-    def decoded_replay(block_index: int, _target: torch.Tensor) -> torch.Tensor:
-        first = block_index * TRELLIS_FEEDBACK_BLOCK_SIZE
-        return recurrence_q[:, first:first + TRELLIS_FEEDBACK_BLOCK_SIZE]
-
-    oracle_q, oracle_targets = reverse_block_feedback_reference(
-        weight,
-        feedback_lower,
-        decoded_replay,
-        block_size=TRELLIS_FEEDBACK_BLOCK_SIZE,
-    )
-    if not torch.equal(oracle_q, recurrence_q):
-        raise AssertionError("buffered recurrence decoded blocks changed")
-    target_max_abs = max(
-        float((buffered - oracle).abs().max().item())
-        for buffered, oracle in zip(buffered_targets, oracle_targets, strict=True)
-    )
-    if not all(
-        torch.allclose(buffered, oracle, rtol=3.0e-5, atol=3.0e-5)
-        for buffered, oracle in zip(
-            buffered_targets, oracle_targets, strict=True
-        )
+    if any(target is None for target in buffered_targets):
+        raise AssertionError("BlockLDL recurrence omitted a feedback target")
+    target_max_abs = max(target_errors)
+    factor_max_abs = max(factor_errors)
+    proxy_abs = float((decomposed_proxy_total - direct_proxy_total).abs().item())
+    if not torch.allclose(
+        decomposed_proxy_total,
+        direct_proxy_total,
+        rtol=3.0e-5,
+        atol=3.0e-5,
     ):
         raise AssertionError(
-            "buffered BlockLDL targets differ from the unbuffered oracle; "
-            f"max_abs={target_max_abs}"
+            "structured BlockLDL total quadratic decomposition mismatch; "
+            f"abs_error={proxy_abs}"
         )
 
     ordered = [encoded_blocks[index] for index in range(block_count)]
@@ -1433,63 +2068,6 @@ def require_blockldl_trellis_wire_round_trip(
             "same-byte wire decode differs from recurrence terminal decodes"
         )
 
-    unit_lower = feedback_lower.clone()
-    for first in range(0, columns, TRELLIS_FEEDBACK_BLOCK_SIZE):
-        unit_lower[
-            first:first + TRELLIS_FEEDBACK_BLOCK_SIZE,
-            first:first + TRELLIS_FEEDBACK_BLOCK_SIZE,
-        ] = torch.eye(
-            TRELLIS_FEEDBACK_BLOCK_SIZE,
-            dtype=unit_lower.dtype,
-            device=unit_lower.device,
-        )
-    dense_d = torch.block_diag(*diagonal_blocks.unbind(0))
-    reconstructed_hessian = unit_lower @ dense_d @ unit_lower.T
-    factor_max_abs = float(
-        (reconstructed_hessian - prepared.transformed_hessian.float())
-        .abs()
-        .max()
-        .item()
-    )
-    if not torch.allclose(
-        reconstructed_hessian,
-        prepared.transformed_hessian.float(),
-        rtol=3.0e-5,
-        atol=3.0e-5,
-    ):
-        raise AssertionError(
-            "BlockLDL factors do not reconstruct the transformed Hessian; "
-            f"max_abs={factor_max_abs}"
-        )
-    error = weight - decoded_weight.float()
-    transformed_error = error @ unit_lower
-    decomposed_proxy = sum(
-        (
-            transformed_error[
-                :, index * TRELLIS_FEEDBACK_BLOCK_SIZE:
-                (index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
-            ]
-            @ diagonal_blocks[index]
-        )
-        .mul(
-            transformed_error[
-                :, index * TRELLIS_FEEDBACK_BLOCK_SIZE:
-                (index + 1) * TRELLIS_FEEDBACK_BLOCK_SIZE
-            ]
-        )
-        .sum()
-        for index in range(block_count)
-    )
-    direct_proxy = ((error @ prepared.transformed_hessian.float()) * error).sum()
-    proxy_abs = float((decomposed_proxy - direct_proxy).abs().item())
-    if not torch.allclose(
-        decomposed_proxy, direct_proxy, rtol=3.0e-5, atol=3.0e-5
-    ):
-        raise AssertionError(
-            "BlockLDL quadratic decomposition mismatch; "
-            f"abs_error={proxy_abs}"
-        )
-
     serve = dict(verify_post_decode_serve_algebra(
         decoded_weight, activations, contract
     ))
@@ -1502,22 +2080,65 @@ def require_blockldl_trellis_wire_round_trip(
             "gridbook.trellis.wire.v1 payload"
         ),
     })
+    logical_feedback_sha256 = _canonical_sha256({
+        "representation": (
+            "block_diagonal_factor_groups"
+            if structured_diagonal else "dense_whole_matrix"
+        ),
+        "groups": [
+            {
+                "index": item["index"],
+                "first_column": item["first_column"],
+                "last_column_exclusive": item["last_column_exclusive"],
+                "sha256": item["feedback_lower_sha256"],
+            }
+            for item in factor_group_records
+        ],
+    })
+    logical_diagonal_blocks_sha256 = _canonical_sha256({
+        "terminal_block_size": TRELLIS_FEEDBACK_BLOCK_SIZE,
+        "groups": [
+            {
+                "index": item["index"],
+                "first_column": item["first_column"],
+                "last_column_exclusive": item["last_column_exclusive"],
+                "sha256": item["diagonal_blocks_sha256"],
+            }
+            for item in factor_group_records
+        ],
+    })
     factor = {
         "algorithm": "pinned_qtip_block_LDL_reverse_feedback",
         "block_size": TRELLIS_FEEDBACK_BLOCK_SIZE,
         "buffer_blocks": int(buffer_blocks),
-        "feedback_lower_sha256": _tensor_sha256(feedback_lower),
-        "diagonal_blocks_sha256": _tensor_sha256(diagonal_blocks),
+        "factorization_strategy": (
+            "exact_block_diagonal_from_retained_source_diagonal_v1"
+            if structured_diagonal else "dense_whole_matrix_v1"
+        ),
+        "factor_groups": factor_group_records,
+        "factor_group_count": len(factor_group_records),
+        "largest_factor_group_columns": max(
+            int(item["columns"]) for item in factor_group_records
+        ),
+        "dense_k_by_k_materialized": not structured_diagonal,
+        "off_block_coupling": (
+            "identically_zero_by_block_local_transform_of_diagonal_source"
+            if structured_diagonal else "represented_in_dense_factor"
+        ),
+        "feedback_lower_sha256": logical_feedback_sha256,
+        "diagonal_blocks_sha256": logical_diagonal_blocks_sha256,
         "factorization_max_abs_error": factor_max_abs,
         "hessian_symmetrization": (
             "fp32 (H+H.T)/2 after max asymmetry <= 1e-5"
         ),
         "buffered_oracle_target_max_abs_error": target_max_abs,
         "quadratic_decomposition_abs_error": proxy_abs,
-        "full_cross_block_feedback_matrix_consumed": block_count > 1,
-        "cross_block_feedback_nonzero_count": int(
-            torch.count_nonzero(feedback_lower).item()
+        "quadratic_decomposition_group_max_abs_error": max(proxy_errors),
+        "full_cross_block_feedback_matrix_consumed": (
+            block_count > 1 and feedback_nonzero_count > 0
         ),
+        "full_cross_output_rows_processed": True,
+        "cross_block_feedback_nonzero_count": feedback_nonzero_count,
         "dense_D_terminal_consumption": {
             "diagonal_consumed": terminal_metric_mode == "diag_block_D",
             "off_diagonal_consumed": False,
@@ -1528,6 +2149,16 @@ def require_blockldl_trellis_wire_round_trip(
         "atomic_terminal_geometry": "one_output_row_by_256_input_columns",
         "qtip_16_by_16_terminal_geometry_claimed": False,
     }
+    if structured_diagonal:
+        assert isinstance(prepared, PreparedDiagonalHessianOneLinear)
+        _validate_prepared_diagonal_hessian_one_linear(
+            prepared, body_rate_q256=body_rate_q256
+        )
+    else:
+        assert isinstance(prepared, PreparedOneLinear)
+        _validate_prepared_one_linear(
+            prepared, body_rate_q256=body_rate_q256
+        )
     (
         implementation_source_sha256,
         implementation_encoder_sha256,
@@ -1612,8 +2243,11 @@ def require_blockldl_trellis_wire_round_trip(
 
 __all__ = [
     "BLOCKLDL_COMBINED_ARTIFACT_SCHEMA",
+    "BlockLDLFactorGroup",
     "CombinedOneLinearArtifact",
     "COMBINED_ARTIFACT_SCHEMA",
+    "DIAGONAL_HESSIAN_SCAFFOLD_SCHEMA",
+    "PreparedDiagonalHessianOneLinear",
     "PreparedOneLinear",
     "QTIP_PINNED_COMMIT",
     "QTIP_REPOSITORY",
@@ -1629,7 +2263,9 @@ __all__ = [
     "decoded_weight_in_original_basis",
     "inverse_transformed_outputs",
     "online_transform_digest",
+    "iter_transformed_diagonal_block_ldl_factors",
     "producer_source_sha256",
+    "prepare_one_linear_diagonal_hessian_scaffold",
     "prepare_one_linear_scaffold",
     "qtip_block_ldl_factors",
     "require_blockldl_trellis_wire_round_trip",
@@ -1638,7 +2274,9 @@ __all__ = [
     "reverse_block_feedback_reference",
     "seeded_sign_digest",
     "seeded_signs",
+    "transform_weight",
     "transform_weight_and_hessian",
+    "transformed_diagonal_hessian_block",
     "transformed_activations",
     "validate_online_transform",
     "verify_post_decode_serve_algebra",

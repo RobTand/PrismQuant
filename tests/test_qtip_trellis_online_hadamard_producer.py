@@ -69,6 +69,22 @@ def _fixture():
     return weight, activations, hessian
 
 
+def test_rank_two_diagonal_source_refuses_before_any_tensor_conversion():
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class NoTensorOperations(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            raise AssertionError(f"malformed Hessian reached tensor op {func}")
+
+    weight = torch.ones(1, 16, dtype=torch.bfloat16)
+    malformed = torch.ones(16, 16, dtype=torch.bfloat16)
+    with NoTensorOperations():
+        with pytest.raises(ValueError, match="rank-one diagonal vector"):
+            M._validated_positive_hessian_diagonal(malformed, dimension=16)
+        with pytest.raises(ValueError, match="rank one over the input width"):
+            NATIVE.qtip_native_arm_from_diagonal_hessian(weight, malformed)
+
+
 def _rehashed_prepared(prepared, mutation):
     receipt = copy.deepcopy(prepared.receipt)
     receipt.pop("identity_sha256")
@@ -77,6 +93,19 @@ def _rehashed_prepared(prepared, mutation):
     return M.PreparedOneLinear(
         transformed_weight=prepared.transformed_weight,
         transformed_hessian=prepared.transformed_hessian,
+        online_transform=prepared.online_transform,
+        receipt=receipt,
+    )
+
+
+def _rehashed_structured_prepared(prepared, mutation):
+    receipt = copy.deepcopy(prepared.receipt)
+    receipt.pop("identity_sha256")
+    mutation(receipt)
+    receipt["identity_sha256"] = M._canonical_sha256(receipt)
+    return M.PreparedDiagonalHessianOneLinear(
+        transformed_weight=prepared.transformed_weight,
+        source_hessian_diagonal=prepared.source_hessian_diagonal,
         online_transform=prepared.online_transform,
         receipt=receipt,
     )
@@ -527,34 +556,47 @@ def test_buffered_blockldl_recurrence_matches_unbuffered_oracle(buffer_blocks):
 
 def test_blockldl_trellis_terminal_refuses_dense_D_claim():
     weight = torch.zeros(1, 512)
-    prepared = M.prepare_one_linear_scaffold(
-        weight,
-        torch.eye(512),
-        body_rate_q256=512,
-        input_block_size=16,
-        output_block_size=1,
-        input_seed=1,
-        output_seed=2,
-        research_opt_in=M.RESEARCH_OPT_IN,
-    )
-    with pytest.raises(ValueError, match="dense_block_D is unsupported"):
-        M.require_blockldl_trellis_wire_round_trip(
-            prepared,
-            torch.zeros(1, 512),
+    prepared_inputs = (
+        M.prepare_one_linear_scaffold(
+            weight,
+            torch.eye(512),
             body_rate_q256=512,
-            schedule=[2] * 512,
-            layout="fixed_quota_per_256",
-            alphabets={2: (15, 13, 11, 9, 8, 2, 4, 7)},
-            scale_rule="static_6",
-            sb_chunk=1,
-            determinism_mode="on",
-            tailbite_candidates=4,
-            backend="eager",
-            point_route="full",
-            terminal_metric_mode="dense_block_D",
-            buffer_blocks=1,
+            input_block_size=16,
+            output_block_size=1,
+            input_seed=1,
+            output_seed=2,
             research_opt_in=M.RESEARCH_OPT_IN,
-        )
+        ),
+        M.prepare_one_linear_diagonal_hessian_scaffold(
+            weight,
+            torch.linspace(0.5, 1.5, 512),
+            body_rate_q256=512,
+            input_block_size=256,
+            output_block_size=1,
+            input_seed=1,
+            output_seed=2,
+            research_opt_in=M.RESEARCH_OPT_IN,
+        ),
+    )
+    for prepared in prepared_inputs:
+        with pytest.raises(ValueError, match="dense_block_D is unsupported"):
+            M.require_blockldl_trellis_wire_round_trip(
+                prepared,
+                torch.zeros(1, 512),
+                body_rate_q256=512,
+                schedule=[2] * 512,
+                layout="fixed_quota_per_256",
+                alphabets={2: (15, 13, 11, 9, 8, 2, 4, 7)},
+                scale_rule="static_6",
+                sb_chunk=1,
+                determinism_mode="on",
+                tailbite_candidates=4,
+                backend="eager",
+                point_route="full",
+                terminal_metric_mode="dense_block_D",
+                buffer_blocks=1,
+                research_opt_in=M.RESEARCH_OPT_IN,
+            )
 
 
 def test_blockldl_factorization_refuses_non_positive_definite_hessian():
@@ -730,3 +772,232 @@ def test_blockldl_trellis_uses_block_local_recipe_and_full_union(
         artifact.decoded_transformed_weight,
         decode_values_torch(artifact.wire_bytes),
     )
+
+
+def test_two_transform_block_diagonal_path_matches_dense_factors_and_wire():
+    generator = torch.Generator().manual_seed(20260903)
+    weight = torch.randn(2, 1024, generator=generator)
+    activations = torch.randn(3, 1024, generator=generator)
+    diagonal = torch.rand(1024, generator=generator).add_(0.25)
+    prepare_kwargs = {
+        "body_rate_q256": 512,
+        "input_block_size": 512,
+        "output_block_size": 2,
+        "input_seed": 0xABCDEF,
+        "output_seed": 0x123456,
+        "research_opt_in": M.RESEARCH_OPT_IN,
+    }
+    dense = M.prepare_one_linear_scaffold(
+        weight, torch.diag(diagonal), **prepare_kwargs
+    )
+    structured = M.prepare_one_linear_diagonal_hessian_scaffold(
+        weight, diagonal, **prepare_kwargs
+    )
+    assert torch.equal(dense.transformed_weight, structured.transformed_weight)
+
+    groups = list(M.iter_transformed_diagonal_block_ldl_factors(
+        diagonal, structured.online_transform
+    ))
+    assert [(g.first_column, g.last_column_exclusive) for g in groups] == [
+        (0, 512), (512, 1024)
+    ]
+    assembled_hessian = torch.block_diag(
+        *(group.transformed_hessian for group in groups)
+    )
+    assert torch.equal(assembled_hessian, dense.transformed_hessian)
+    dense_feedback, dense_d = M.qtip_block_ldl_factors(
+        dense.transformed_hessian
+    )
+    structured_feedback = torch.block_diag(
+        *(group.feedback_lower for group in groups)
+    )
+    structured_d = torch.cat(
+        [group.diagonal_blocks for group in groups], dim=0
+    )
+    assert torch.allclose(
+        structured_feedback, dense_feedback, rtol=2e-6, atol=2e-7
+    )
+    assert torch.allclose(structured_d, dense_d, rtol=2e-6, atol=2e-7)
+    assert torch.count_nonzero(dense_feedback[:512, 512:]) == 0
+    assert torch.count_nonzero(dense_feedback[512:, :512]) == 0
+
+    def terminal(_index, target):
+        return torch.round(target * 8.0) / 8.0
+
+    dense_q, dense_targets = M.reverse_block_feedback_buffered(
+        dense.transformed_weight,
+        dense_feedback,
+        terminal,
+        buffer_blocks=2,
+    )
+    structured_q = torch.zeros_like(dense_q)
+    structured_targets = []
+    for group in groups:
+        first, last = group.first_column, group.last_column_exclusive
+        group_q, group_targets = M.reverse_block_feedback_buffered(
+            structured.transformed_weight[:, first:last],
+            group.feedback_lower,
+            terminal,
+            buffer_blocks=2,
+        )
+        structured_q[:, first:last] = group_q
+        structured_targets.extend(group_targets)
+    assert torch.equal(structured_q, dense_q)
+    assert all(
+        torch.allclose(actual, expected, rtol=2e-6, atol=2e-7)
+        for actual, expected in zip(
+            structured_targets, dense_targets, strict=True
+        )
+    )
+
+    encode_kwargs = {
+        "activations": activations,
+        "body_rate_q256": 512,
+        "schedule": [2] * 1024,
+        "layout": "fixed_quota_per_256",
+        "alphabets": {2: _e2_alphabet(2)},
+        "scale_rule": "static_6",
+        "sb_chunk": 2,
+        "determinism_mode": "on",
+        "tailbite_candidates": 4,
+        "backend": "eager",
+        "point_route": "full",
+        "terminal_metric_mode": "diag_block_D",
+        "buffer_blocks": 2,
+        "research_opt_in": M.RESEARCH_OPT_IN,
+    }
+    dense_artifact = M.require_blockldl_trellis_wire_round_trip(
+        dense, **encode_kwargs
+    )
+    structured_artifact = M.require_blockldl_trellis_wire_round_trip(
+        structured, **encode_kwargs
+    )
+    assert structured_artifact.wire_bytes == dense_artifact.wire_bytes
+    assert torch.equal(
+        structured_artifact.decoded_codes, dense_artifact.decoded_codes
+    )
+    assert torch.equal(
+        structured_artifact.decoded_transformed_weight,
+        dense_artifact.decoded_transformed_weight,
+    )
+    for field in (
+        "wire_bytes", "wire_identity_sha256", "decoded_codes_sha256",
+        "decoded_weight_sha256", "same_byte_reparse_verified",
+    ):
+        assert structured_artifact.receipt[field] == dense_artifact.receipt[field]
+    structured_factor = structured_artifact.receipt["block_ldl"]
+    assert structured_factor["factorization_strategy"] == (
+        "exact_block_diagonal_from_retained_source_diagonal_v1"
+    )
+    assert structured_factor["dense_k_by_k_materialized"] is False
+    assert structured_factor["factor_group_count"] == 2
+    assert structured_factor["largest_factor_group_columns"] == 512
+    assert structured_factor["full_cross_output_rows_processed"] is True
+    assert structured_factor["cross_block_feedback_nonzero_count"] > 0
+    assert structured_factor["dense_D_terminal_consumption"] == {
+        "diagonal_consumed": True,
+        "off_diagonal_consumed": False,
+        "full_matrix_consumed": False,
+        "exact_dense_objective": False,
+    }
+    structure = structured.receipt["transformed"]["hessian_structure"]
+    assert [
+        (item["index"], item["first_column"], item["last_column_exclusive"])
+        for item in structure["ordered_blocks"]
+    ] == [(0, 0, 512), (1, 512, 1024)]
+    for expected, actual in zip(
+        structure["ordered_blocks"],
+        structured_factor["factor_groups"],
+        strict=True,
+    ):
+        assert actual["index"] == expected["index"]
+        assert actual["first_column"] == expected["first_column"]
+        assert actual["last_column_exclusive"] == expected[
+            "last_column_exclusive"
+        ]
+        assert actual["columns"] == expected["columns"]
+        assert actual["source_diagonal_sha256"] == expected[
+            "source_diagonal_sha256"
+        ]
+
+
+@pytest.mark.parametrize("block_size", [128, 768, 2048])
+def test_structured_diagonal_contract_refuses_invalid_transform_blocks(block_size):
+    weight = torch.zeros(1, 1024)
+    diagonal = torch.ones(1024)
+    with pytest.raises(ValueError, match=(
+        "multiple of 256|positive power of two|must divide"
+    )):
+        M.prepare_one_linear_diagonal_hessian_scaffold(
+            weight,
+            diagonal,
+            body_rate_q256=512,
+            input_block_size=block_size,
+            output_block_size=1,
+            input_seed=1,
+            output_seed=2,
+            research_opt_in=M.RESEARCH_OPT_IN,
+        )
+
+
+def test_structured_diagonal_contract_refuses_off_block_rank2_nonpositive_and_forgery():
+    weight = torch.zeros(1, 512)
+    diagonal = torch.linspace(0.5, 1.5, 512)
+    dense = torch.diag(diagonal)
+    dense[0, 300] = dense[300, 0] = 0.25
+    with pytest.raises(ValueError, match="dense or off-diagonal"):
+        M.prepare_one_linear_diagonal_hessian_scaffold(
+            weight,
+            dense,
+            body_rate_q256=512,
+            input_block_size=256,
+            output_block_size=1,
+            input_seed=1,
+            output_seed=2,
+            research_opt_in=M.RESEARCH_OPT_IN,
+        )
+    for bad in (diagonal.clone().zero_(), diagonal.clone()):
+        if bool((bad > 0).all()):
+            bad[17] = -1
+        with pytest.raises(ValueError, match="strictly positive"):
+            M.prepare_one_linear_diagonal_hessian_scaffold(
+                weight,
+                bad,
+                body_rate_q256=512,
+                input_block_size=256,
+                output_block_size=1,
+                input_seed=1,
+                output_seed=2,
+                research_opt_in=M.RESEARCH_OPT_IN,
+            )
+
+    prepared = M.prepare_one_linear_diagonal_hessian_scaffold(
+        weight,
+        diagonal,
+        body_rate_q256=512,
+        input_block_size=256,
+        output_block_size=1,
+        input_seed=1,
+        output_seed=2,
+        research_opt_in=M.RESEARCH_OPT_IN,
+    )
+    forged = _rehashed_structured_prepared(
+        prepared,
+        lambda receipt: receipt["transformed"]["hessian_structure"].update({
+            "off_block_entries_zero_by_construction": False
+        }),
+    )
+    with pytest.raises(ValueError, match="Hessian structure mismatch"):
+        M._validate_prepared_diagonal_hessian_one_linear(
+            forged, body_rate_q256=512
+        )
+    reordered = _rehashed_structured_prepared(
+        prepared,
+        lambda receipt: receipt["transformed"]["hessian_structure"][
+            "ordered_blocks"
+        ].reverse(),
+    )
+    with pytest.raises(ValueError, match="Hessian structure mismatch"):
+        M._validate_prepared_diagonal_hessian_one_linear(
+            reordered, body_rate_q256=512
+        )

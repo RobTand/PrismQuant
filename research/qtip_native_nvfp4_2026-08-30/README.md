@@ -4,7 +4,8 @@ Status: **implemented and measured Arm C research-only one-Linear isolate,
 plus a physical transformed-basis PrismaQuant/Gridbook trellis producer; no
 production registration, QTIP runtime, or new serving lane.** Arm C tests
 QTIP-derived BlockLDLQ with a stock native-NVFP4 terminal. The combined
-producer emits canonical `gridbook.trellis.wire.v1` bytes and validates the
+producer includes an exact block-structured diagonal-Hessian path, emits
+canonical `gridbook.trellis.wire.v1` bytes, and validates the
 online sign/Hadamard algebra against an external, unpinned Gridbook research
 reference outside the current Gridbook 0.9.1 contract. Schema v2 requires a
 fresh no-clobber result root and a receipt that binds both source trees,
@@ -213,17 +214,34 @@ once per tensor.
 
 ### Current GLM feasibility boundary
 
-The existing producer accepts one dense K-by-K Hessian and performs a full
-factorization. A K=12288 FP32 Hessian alone is 603,979,776 bytes and the dense
-factorization is cubic. Although a transformed diagonal GLM Hessian is exactly
-block diagonal by the declared 4096-column input transform, that structured
-producer is not implemented here. Actual execution therefore refuses every
-K>4096 selection **before creating the publication claim**. A full 33-tensor
-GLM manifest is a valid preflight contract but is not currently executable and
-cannot produce a “completed campaign” receipt. The immediate executable pilot
-is one routed-down K2048 plus one dense gate/up K4096 tensor. Dense-down K12288
-is a refusal test until an exact block-structured implementation is separately
-reviewed and regression-locked against the dense producer.
+The GLM source contract is a retained strictly positive diagonal vector, not a
+self-asserted dense matrix. If the declared input transform uses normalized
+block-Hadamards `H_b` and signs `S_b`, then
+`H_b S_b diag(d_b) S_b H_b^T = H_b diag(d_b) H_b^T`. The signs cancel and the
+full transformed Hessian is exactly block diagonal. The producer constructs,
+factors, and consumes one transform block at a time while preserving the full
+reverse feedback recurrence within each block and across every output row.
+It requires the block size to be a power of two, 256-aligned, and a divisor of
+K. Ordered offsets, sizes, source-diagonal hashes, transformed-block hashes,
+feedback hashes, and `D` hashes are receipt- and replay-bound.
+
+Consequently, dense-down K=12288 with B=4096 uses three B-by-B factor groups
+and never constructs a K-by-K Hessian. The avoided FP32 K-by-K matrix alone is
+603,979,776 bytes. A 1,811,939,328-byte reference tensor quantity is recorded
+for shape `[4096,12288]`, but it is explicitly neither a liveness-derived upper
+bound nor a measured allocator peak: the current producer retains additional
+W-shaped tensors and CUDA library workspaces. This makes the full 33-tensor GLM
+census shape-contract supported; its memory gate remains unmeasured until a
+CUDA pilot records the actual peak. It does not say that the campaign has run,
+met its time/energy gates, or produced a quality result. The two-tensor pilot
+remains the shortest safe first measured execution.
+
+The boundary is deliberately narrow. Arbitrary dense or rank-two Hessians,
+off-block entries, nonpositive diagonals, and forged/reordered group receipts
+fail closed. The Qwen dense-H path still refuses K>4096. The exact block
+reduction also does not make dense local `D` coordinate-additive: the current
+256-state terminal does not prove dense-`D` optimality, `dense_block_D` remains
+unsupported, and no EXL3-beating claim follows.
 
 ### Closed manifest and Sparky commands
 
@@ -303,8 +321,8 @@ sha256sum "$PQ_RUN/profile/arm-e-qwen.nsys-rep" "$PQ_RUN"/netdata/*.json \
   > "$PQ_RUN/telemetry.sha256"
 ```
 
-Create the feasible GLM pilot from the Qwen manifest, preserving the same
-recipe and primary seed:
+Create the first measured GLM pilot from the Qwen manifest, preserving the
+same recipe and primary seed:
 
 ```bash
 GLM_RUN=/home/rob/dq-runs/arm-e-glm-pilot-${PQ_COMMIT:0:7}
@@ -329,16 +347,23 @@ docker run --rm --gpus all --ipc=host --entrypoint /usr/bin/python3 \
 To exercise the full-census planning path without allocating K12288, change
 `selected_tensors` to `[]`, use a fresh output identity, and run
 `--preflight-only`. It must report
-`full_glm_census_executable=false`; removing `--preflight-only` must refuse
-before creating a claim.
+`full_glm_census_shape_supported=true`,
+`full_glm_census_memory_gate_status=unmeasured_requires_cuda_peak`, and a
+three-group K12288 feasibility plan.
+That CPU-only result is a shape/reference-plan contract, not memory or
+execution evidence.
+Do not start the non-preflight census until the clean committed source identity,
+exclusive GPU window, and profiler/telemetry roots are fixed.
 
 The feasibility go gate is: no CPU fallback, peak allocated memory at most
 24 GiB, every tensor at most 1,800 seconds, projected 33-tensor total at most
-six GPU-hours, a usable in-process trace, and clean both-host Netdata. These
+six GPU-hours, a usable in-process trace, and clean both-host Netdata. Capture
+the in-process profile and Sparky/Sparklina Netdata for the pilot as well as
+the eventual census; a preflight cannot satisfy either measurement. These
 are execution gates, not speed claims. Qwen advances when primary E beats or
 ties C on activation-output and regularized-H NSSE at lower exact bpw; robust
 advance additionally needs nonnegative median deltas across the three seeds
-and no activation delta below -0.1 dB. GLM's future full-census gate remains
+and no activation delta below -0.1 dB. GLM's full-census gate remains
 the separately reported dense/routed paired raw-importance thresholds encoded
 in the receipt; no GLM activation-output, KL/PPL, serving, or performance
 claim is permitted here.

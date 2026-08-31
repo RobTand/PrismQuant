@@ -552,6 +552,48 @@ def qtip_native_arm_from_hessian(
     return Arm(fields, decoded, tuple(reversed(receipts)))
 
 
+def qtip_native_arm_from_diagonal_hessian(
+    weight: torch.Tensor,
+    hessian_diagonal: torch.Tensor,
+) -> Arm:
+    """Exact Arm C specialization for a positive diagonal Hessian.
+
+    With QTIP's group-16 BlockLDL geometry, a diagonal Hessian has an exactly
+    zero strictly-lower feedback factor.  The stock-native terminals are thus
+    independent RTN groups under the same tensor-global scale, exactly the
+    ordinary native RTN field construction.  Retaining the diagonal avoids a
+    pointless dense K-by-K allocation for activation-free GLM corpora.
+    """
+
+    if weight.ndim != 2 or int(weight.shape[1]) % GROUP:
+        raise ValueError("weight must be [out,in] with group-16 input width")
+    columns = int(weight.shape[1])
+    # Validate the cheap structural contract before either input can trigger
+    # a dtype conversion.  A malformed K-by-K BF16 Hessian is not allowed to
+    # allocate the global FP32 matrix this specialization is meant to avoid.
+    if hessian_diagonal.ndim != 1 or int(hessian_diagonal.numel()) != columns:
+        raise ValueError("hessian_diagonal must be rank one over the input width")
+    source = weight.float()
+    diagonal = hessian_diagonal.detach().float()
+    if not bool(torch.isfinite(diagonal).all()) or bool((diagonal <= 0).any()):
+        raise ValueError("hessian_diagonal must be finite and strictly positive")
+    arm = rtn_arm(source)
+    receipts = tuple({
+        "first_column": first,
+        "last_column_exclusive": first + GROUP,
+        "fields_sha256": fields_sha256({
+            "weight_packed": arm.fields["weight_packed"][:, first // 2:(first + GROUP) // 2],
+            "weight_scale": arm.fields["weight_scale"][:, first // GROUP:(first + GROUP) // GROUP],
+            "weight_global_scale": arm.fields["weight_global_scale"],
+            "input_global_scale": arm.fields["input_global_scale"],
+        }),
+        "legal_native_nvfp4": True,
+        "blockldl_feedback_nonzero_count": 0,
+        "diagonal_hessian_specialization": True,
+    } for first in range(0, columns, GROUP))
+    return Arm(arm.fields, arm.reconstruction, receipts)
+
+
 def qtip_native_seven_level_scale_arm(
     weight: torch.Tensor, activations: torch.Tensor
 ) -> Arm:

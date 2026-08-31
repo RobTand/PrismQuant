@@ -89,6 +89,8 @@ GLM_ACTIVATION_UNAVAILABLE_REASON = (
     "excluded from quality metrics"
 )
 DENSE_BLOCKLDL_MAX_COLUMNS = 4096
+QWEN_DENSE_HESSIAN_CONTRACT = "qwen_dense_regularized_hessian_v1"
+GLM_DIAGONAL_HESSIAN_CONTRACT = "glm_positive_diagonal_hessian_v1"
 QWEN_ACTIVATION_AVAILABLE_REASON = (
     "measured from the same preprocessed calibration activation rows used "
     "to construct the matched Hessian"
@@ -739,46 +741,99 @@ def automatic_input_block_size(columns: int, cap: int) -> int:
     return candidate
 
 
-def dense_producer_feasibility(shape: Sequence[int]) -> dict[str, object]:
-    """Plan the current dense-H producer without allocating its matrices.
-
-    The transformed diagonal GLM Hessian is exactly block diagonal at the
-    declared input-Hadamard geometry, but the current producer still accepts
-    and factors one dense K-by-K tensor.  K>4096 therefore fails closed until
-    the separately reviewed block-structured implementation exists.
-    """
+def arm_e_producer_feasibility(
+    shape: Sequence[int],
+    *,
+    source_hessian_contract: str,
+    input_block_size: int,
+) -> dict[str, object]:
+    """Plan dense-Qwen or exact structured-GLM factorization without tensors."""
 
     rows, columns = map(int, shape)
-    hessian_bytes = 4 * columns * columns
+    if rows < 1 or columns < 256 or columns % 256:
+        raise ValueError("Arm E shape must be positive and 256-column aligned")
+    input_block_size = _plain_int(
+        input_block_size, where="input_block_size", minimum=256
+    )
+    if input_block_size & (input_block_size - 1) or columns % input_block_size:
+        raise ValueError(
+            "input_block_size must be a power of two dividing the input width"
+        )
+    dense_hessian_bytes = 4 * columns * columns
     weight_bytes = 4 * rows * columns
-    # Planning estimates only: enough to expose scale, never a measured peak
-    # or runtime prediction.
-    conservative_dense_working_set_bytes = 10 * hessian_bytes + 3 * weight_bytes
-    cholesky_flop_order = columns**3 // 3
-    executable = columns <= DENSE_BLOCKLDL_MAX_COLUMNS
+    if source_hessian_contract == QWEN_DENSE_HESSIAN_CONTRACT:
+        factor_columns = columns
+        factor_count = 1
+        source_hessian_bytes = dense_hessian_bytes
+        dense_k_by_k_materialized = True
+        strategy = "dense_whole_matrix_v1"
+        executable = columns <= DENSE_BLOCKLDL_MAX_COLUMNS
+        refusal = None if executable else (
+            "arbitrary dense transformed Hessian exceeds the reviewed whole-"
+            "matrix factorization boundary"
+        )
+        reference_tensor_bytes = 10 * dense_hessian_bytes + 3 * weight_bytes
+    elif source_hessian_contract == GLM_DIAGONAL_HESSIAN_CONTRACT:
+        factor_columns = input_block_size
+        factor_count = columns // input_block_size
+        source_hessian_bytes = 4 * columns
+        dense_k_by_k_materialized = False
+        strategy = "exact_block_diagonal_from_retained_source_diagonal_v1"
+        executable = input_block_size <= DENSE_BLOCKLDL_MAX_COLUMNS
+        refusal = None if executable else (
+            "the declared input-transform block exceeds the reviewed per-block "
+            "factorization boundary"
+        )
+        factor_hessian_bytes = 4 * factor_columns * factor_columns
+        # A simple reference quantity for comparing shapes.  This is neither
+        # a liveness-derived upper bound nor a measured allocator peak: the
+        # producer retains additional W-shaped tensors and library workspaces
+        # that depend on the execution recipe (including sb_chunk).
+        reference_tensor_bytes = 12 * factor_hessian_bytes + 5 * weight_bytes
+    else:
+        raise ValueError("unsupported source_hessian_contract")
+    factor_hessian_bytes = 4 * factor_columns * factor_columns
     return {
-        "schema": "prismaquant.research.arm_e_dense_producer_feasibility.v1",
+        "schema": "prismaquant.research.arm_e_producer_feasibility.v3",
         "shape": [rows, columns],
-        "dense_fp32_hessian_bytes": hessian_bytes,
-        "conservative_dense_working_set_bytes": conservative_dense_working_set_bytes,
-        "cholesky_flop_order_estimate": cholesky_flop_order,
-        "estimate_is_measurement": False,
-        "current_dense_producer_max_columns": DENSE_BLOCKLDL_MAX_COLUMNS,
-        "current_dense_producer_executable": executable,
-        "refusal_reason": None if executable else (
-            "K exceeds the declared dense-H/whole-matrix BlockLDL feasibility "
-            "boundary; transformed diagonal H is block diagonal by the input "
-            "Hadamard block, but that exact structure-aware factorization is "
-            "not implemented in the current producer"
+        "source_hessian_contract": source_hessian_contract,
+        "factorization_strategy": strategy,
+        "dense_fp32_k_by_k_hessian_bytes": dense_hessian_bytes,
+        "source_hessian_bytes": source_hessian_bytes,
+        "dense_k_by_k_materialized": dense_k_by_k_materialized,
+        "factorization_block_columns": factor_columns,
+        "factorization_block_count": factor_count,
+        "largest_factor_hessian_bytes": factor_hessian_bytes,
+        "reference_tensor_bytes_estimate": reference_tensor_bytes,
+        "cholesky_flop_order_estimate": (
+            factor_count * factor_columns**3 // 3
         ),
+        "estimate_is_measurement": False,
+        "estimate_is_upper_bound": False,
+        "memory_gate_status": (
+            "unmeasured_requires_cuda_peak"
+            if executable else "not_reached_shape_contract_refused"
+        ),
+        "reviewed_factorization_block_columns_max": DENSE_BLOCKLDL_MAX_COLUMNS,
+        "shape_contract_supported": executable,
+        "refusal_reason": refusal,
     }
 
 
-def require_dense_producer_feasible(shape: Sequence[int]) -> dict[str, object]:
-    plan = dense_producer_feasibility(shape)
-    if not plan["current_dense_producer_executable"]:
+def require_arm_e_producer_shape_supported(
+    shape: Sequence[int],
+    *,
+    source_hessian_contract: str,
+    input_block_size: int,
+) -> dict[str, object]:
+    plan = arm_e_producer_feasibility(
+        shape,
+        source_hessian_contract=source_hessian_contract,
+        input_block_size=input_block_size,
+    )
+    if not plan["shape_contract_supported"]:
         raise ValueError(
-            f"refusing dense Arm E producer for shape {tuple(shape)}: "
+            f"refusing Arm E producer for shape {tuple(shape)}: "
             f"{plan['refusal_reason']}"
         )
     return plan
@@ -1104,20 +1159,29 @@ def preflight_report(
         plan = exact_native_budget_frontier(
             shape, arm_a_bytes=native_bytes, arm_c_bytes=native_bytes
         )
+        input_block_size = automatic_input_block_size(
+            shape[1], manifest["recipe"]["max_input_block_size"]
+        )
+        source_hessian_contract = (
+            GLM_DIAGONAL_HESSIAN_CONTRACT
+            if inputs.mode == GLM_MODE else QWEN_DENSE_HESSIAN_CONTRACT
+        )
         plans.append({
             "shape": list(shape),
             "native_control_bytes": native_bytes,
             "selected_body_rate_q256": plan["selected_body_rate_q256"],
             "wire_bytes": plan["footprint"]["total_bytes"],
             "wire_bpw": plan["footprint"]["exact_bpw"],
-            "input_block_size": automatic_input_block_size(
-                shape[1], manifest["recipe"]["max_input_block_size"]
+            "input_block_size": input_block_size,
+            "producer_feasibility": arm_e_producer_feasibility(
+                shape,
+                source_hessian_contract=source_hessian_contract,
+                input_block_size=input_block_size,
             ),
-            "dense_producer_feasibility": dense_producer_feasibility(shape),
         })
     refused = [
         plan for plan in plans
-        if not plan["dense_producer_feasibility"]["current_dense_producer_executable"]
+        if not plan["producer_feasibility"]["shape_contract_supported"]
     ]
     full_glm_requested = bool(
         inputs.mode == GLM_MODE
@@ -1127,7 +1191,7 @@ def preflight_report(
         "schema": PREFLIGHT_SCHEMA,
         "status": "validated_no_quality_campaign_executed",
         "execution_readiness": (
-            "refused_current_dense_producer_shape"
+            "refused_current_producer_shape"
             if refused else "shape_contract_ready"
         ),
         "manifest": dict(manifest_provenance),
@@ -1137,7 +1201,12 @@ def preflight_report(
         "shape_plans": plans,
         "refused_shape_plans": refused,
         "full_glm_census_requested": full_glm_requested,
-        "full_glm_census_executable": full_glm_requested and not refused,
+        "full_glm_census_shape_supported": full_glm_requested and not refused,
+        "full_glm_census_memory_gate_status": (
+            "unmeasured_requires_cuda_peak"
+            if full_glm_requested and not refused
+            else "not_reached"
+        ),
         "source_closure_identity_sha256": source_closure["identity_sha256"],
         "claim_boundary": {
             "quality_measured": False,
@@ -1438,7 +1507,18 @@ def run_unit(
 ) -> tuple[dict[str, object], Path]:
     device = torch.device(manifest["execution"]["device"])
     recipe = manifest["recipe"]
-    feasibility_plan = require_dense_producer_feasible(unit.shape)
+    input_block = automatic_input_block_size(
+        unit.shape[1], recipe["max_input_block_size"]
+    )
+    source_hessian_contract = (
+        GLM_DIAGONAL_HESSIAN_CONTRACT
+        if inputs.mode == GLM_MODE else QWEN_DENSE_HESSIAN_CONTRACT
+    )
+    feasibility_plan = require_arm_e_producer_shape_supported(
+        unit.shape,
+        source_hessian_contract=source_hessian_contract,
+        input_block_size=input_block,
+    )
     timings: dict[str, float] = {}
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
@@ -1464,6 +1544,8 @@ def run_unit(
             "damp_fraction": 1.0,
             "realized_diagonal_damping": realized_damp,
             "activation_output_metric_available": True,
+            "source_hessian_contract": QWEN_DENSE_HESSIAN_CONTRACT,
+            "dense_k_by_k_materialized": True,
         }
     else:
         assert auxiliary is not None
@@ -1472,7 +1554,7 @@ def run_unit(
             regularized_diagonal, hessian_contract = regularized_glm_diagonal(
                 raw_importance
             )
-            hessian = torch.diag(regularized_diagonal)
+            hessian = None
         x = None
         algebra_rows = _algebra_witness(
             recipe["glm_algebra_witness_rows"], columns, device
@@ -1481,6 +1563,12 @@ def run_unit(
             **hessian_contract,
             "activation_output_metric_available": False,
             "activation_output_metric_unavailable_reason": GLM_ACTIVATION_UNAVAILABLE_REASON,
+            "source_hessian_contract": GLM_DIAGONAL_HESSIAN_CONTRACT,
+            "dense_k_by_k_materialized": False,
+            "arm_c_diagonal_blockldl_feedback_nonzero_count": 0,
+            "arm_e_factorization_strategy": (
+                "exact_block_diagonal_from_retained_source_diagonal_v1"
+            ),
             "algebra_probe": {
                 "kind": "synthetic_matrix_orientation_witness",
                 "rows": int(algebra_rows.shape[0]),
@@ -1493,7 +1581,13 @@ def run_unit(
         with _measure_phase("arm_a_scalar_native", device, timings):
             arm_a = NATIVE.rtn_arm(weight)
         with _measure_phase("arm_c_stock_blockldl_native", device, timings):
-            arm_c = NATIVE.qtip_native_arm_from_hessian(weight, hessian)
+            arm_c = (
+                NATIVE.qtip_native_arm_from_diagonal_hessian(
+                    weight, regularized_diagonal
+                )
+                if inputs.mode == GLM_MODE
+                else NATIVE.qtip_native_arm_from_hessian(weight, hessian)
+            )
     a_accounting = NATIVE.payload_accounting(arm_a.fields)
     c_accounting = NATIVE.payload_accounting(arm_c.fields)
     expected_native_bytes = native_payload_bytes((rows, columns))
@@ -1510,10 +1604,6 @@ def run_unit(
         int(rate): tuple(int(code) for code in codes)
         for rate, codes in rate_plan["alphabets"].items()
     }
-    input_block = automatic_input_block_size(
-        columns, recipe["max_input_block_size"]
-    )
-
     metric_kwargs = {
         "regularized_hessian": hessian if inputs.mode == QWEN_MODE else None,
         "regularized_diagonal": regularized_diagonal,
@@ -1533,9 +1623,15 @@ def run_unit(
         label = seed["label"]
         with torch.inference_mode():
             with _measure_phase(f"arm_e_prepare_{label}", device, timings):
-                prepared = ARM_E.prepare_one_linear_scaffold(
+                prepare = (
+                    ARM_E.prepare_one_linear_diagonal_hessian_scaffold
+                    if inputs.mode == GLM_MODE
+                    else ARM_E.prepare_one_linear_scaffold
+                )
+                prepared = prepare(
                     weight,
-                    hessian,
+                    regularized_diagonal
+                    if inputs.mode == GLM_MODE else hessian,
                     body_rate_q256=q256,
                     input_block_size=input_block,
                     output_block_size=recipe["output_block_size"],
@@ -2218,10 +2314,19 @@ def run_campaign(
         raise ValueError("source closure changed before campaign claim")
     output_root = Path(manifest["output"]["root"]).absolute()
     # Refuse the complete selection before creating a claim or publishing a
-    # prefix.  In particular, a full GLM manifest containing K=12288 cannot
-    # silently begin a dense O(K^3) factorization.
+    # prefix.  Dense Qwen inputs and structured diagonal GLM inputs have
+    # distinct, closed feasibility contracts.
     for unit in inputs.units:
-        require_dense_producer_feasible(unit.shape)
+        require_arm_e_producer_shape_supported(
+            unit.shape,
+            source_hessian_contract=(
+                GLM_DIAGONAL_HESSIAN_CONTRACT
+                if inputs.mode == GLM_MODE else QWEN_DENSE_HESSIAN_CONTRACT
+            ),
+            input_block_size=automatic_input_block_size(
+                unit.shape[1], manifest["recipe"]["max_input_block_size"]
+            ),
+        )
     output_root.mkdir(parents=True, exist_ok=True)
     output_root = output_root.resolve(strict=True)
     final_path = _safe_output(output_root, "receipt.json")

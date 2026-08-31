@@ -2,7 +2,10 @@
 
 **Status (2026-08-30): research contract, not a production format or serving
 claim.** The stock-native Arm C BlockLDLQ isolate and a physical one-Linear
-rotated-trellis producer are implemented. An external Gridbook research
+rotated-trellis producer are implemented. The producer has an exact
+block-structured path for a strictly positive diagonal source Hessian under
+the declared block-local input Hadamard; arbitrary dense Hessians retain the
+reviewed whole-matrix boundary. An external Gridbook research
 reference implements online sign/Hadamard transforms, but it is unpinned and
 is not part of Gridbook 0.9.1's runtime contract. The producer emits the
 existing canonical Gridbook trellis carrier, reparses and reference-decodes
@@ -148,6 +151,40 @@ after the GEMM.
 Rotating an already quantized activation, or using an untransformed Hessian to
 optimize a transformed weight, is a different and invalid experiment.
 
+### Exact diagonal-source block reduction
+
+The GLM corpus supplies a strictly positive diagonal source Hessian
+
+\[
+H_0 = \operatorname{diag}(d), \qquad d_i > 0.
+\]
+
+For an input transform composed of independent size-`B` normalized Sylvester
+blocks and Rademacher signs, write each block as `R_b = H_b S_b`. Then
+
+\[
+R_b\operatorname{diag}(d_b)R_b^T
+=H_bS_b\operatorname{diag}(d_b)S_bH_b^T
+=H_b\operatorname{diag}(d_b)H_b^T.
+\]
+
+The signs cancel exactly and the full transformed Hessian is the ordered
+block diagonal matrix with those `B`-by-`B` blocks. The producer may therefore
+construct and factor one block at a time without constructing a `K`-by-`K`
+matrix. This is algebraically identical to factoring the full transformed
+matrix: cross-transform-block feedback is exactly zero, while all reverse
+BlockLDL feedback within each transform block and every output row remains.
+The contract requires `B` to be a power of two, a multiple of 256, and a
+divisor of `K`; it binds each ordered block's offset, size, and source-diagonal
+hash. A rank-two source, an off-block entry, a nonpositive diagonal, or a
+reordered/rehashed block description fails closed.
+
+This reduction is only a structure theorem. It does not prove that the
+current 256-state terminal search minimizes a dense local `D` objective, and
+it does not establish a quality advantage over EXL3 or any other method.
+`dense_block_D` remains unsupported and refuses on both dense and structured
+producer paths.
+
 ## What a four-bit terminal can and cannot do
 
 At a fixed group scale, ordinary NVFP4 exposes the 15 distinct numerical E2M1
@@ -224,8 +261,10 @@ terminal, quantizable-parameter denominator, and deterministic seeds.
 | E | transformed-Hessian optimizer | input + output sign/Hadamard | existing PrismaQuant/Gridbook E2M1 trellis wire | target combined rotated-trellis arm | physical one-Linear producer implemented; external runtime reference unpinned |
 
 Arm E's implemented optimizer consumes the complete 256-column block-LDL
-cross-block feedback matrix in reverse order, and only the same-byte decoded
-trellis terminal feeds earlier blocks. Its local terminal is honestly narrower:
+cross-block feedback matrix in reverse order within every exact transform
+block, and only the same-byte decoded trellis terminal feeds earlier blocks.
+For the diagonal-source structured path, feedback between transform blocks is
+provably zero rather than omitted. Its local terminal is honestly narrower:
 `qtip_frobenius` uses the QTIP-style unweighted terminal and `diag_block_D`
 uses the diagonal of the local dense LDL block. The residual cross terms
 `2 D[s,t] e_s e_t` are not coordinate-additive and cannot be summarized by
@@ -239,6 +278,12 @@ sources plus the audited QTIP commit and source digests. Both local source
 hashes are captured at module import and rechecked around final receipt
 construction; a self-rehashed prepared receipt cannot change or extend its
 fixed basis, wire, seam, scope, or eligibility semantics.
+
+The structured receipt additionally binds the retained diagonal and its
+ordered factor groups, including offsets, sizes, transformed-block hashes,
+feedback hashes, and `D` hashes. Replay compares those semantics as well as
+the canonical wire; matching final bytes alone cannot substitute a different
+factor grouping.
 
 Original weight/Hessian hashes remain explicitly preparation-time provenance;
 the encode boundary reauthenticates the transformed tensors it actually owns.

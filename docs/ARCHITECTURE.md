@@ -2,6 +2,20 @@
 
 As of: 2026-08-30 · `codex/finish-numeric-prismabuild-20260830` — stamps follow,
 newest first, each recording its own branch and date. Re-stamped (2026-08-30,
+`codex/finish-numeric-prismabuild-20260830`) for the **exact structured GLM
+Arm E producer boundary** (§10.2): a retained positive diagonal source Hessian
+under the declared block-local sign/Hadamard transform is now reduced exactly
+to ordered independent transformed blocks. The producer factors one block at
+a time, preserves complete reverse BlockLDL feedback within it and across all
+output rows, and never constructs the full `K`-by-`K` Hessian on this path.
+Dense Qwen Hessians retain the reviewed whole-matrix `K<=4096` boundary.
+Receipts and replay bind the source diagonal and ordered factor geometry and
+hashes; malformed rank-two diagonal inputs refuse before dtype/device
+conversion. The full GLM census is now shape-contract supported, but its
+recorded tensor quantity is neither a liveness upper bound nor a CUDA peak:
+the memory gate remains explicitly unmeasured until a profiled pilot with
+both-host telemetry. This changes no production format, runtime pin, pipeline
+default, or serving claim. Re-stamped (2026-08-30,
 `codex/finish-numeric-prismabuild-20260830`) for the **QTIP-derived native
 NVFP4 research producer and PrismaBuild input/publication boundary**
 (§10.1–§10.2): PrismaBuild now ingests stable file snapshots into its CAS,
@@ -7568,7 +7582,22 @@ order, with only a decoded terminal feeding an earlier block. The local
 terminal is either QTIP-style Frobenius or diagonal-D-weighted. Exact dense-D
 local minimization is not implemented: its pairwise error terms are not
 coordinate-additive in the current 256-state Viterbi state, and that requested
-mode fails closed.
+mode fails closed (`research/qtip_native_nvfp4_2026-08-30/`
+`trellis_online_hadamard_producer.py`).
+
+For the GLM corpus's retained strictly positive diagonal source Hessian, Arm E
+has a separate exact structured path. With each input-transform block written
+`R_b = H_b S_b`, the signs cancel in
+`R_b diag(d_b) R_b^T = H_b diag(d_b) H_b^T`; independent transform blocks make
+the full transformed Hessian block diagonal in the declared order. The
+producer therefore constructs and factors one `B`-by-`B` block at a time,
+never a global `K`-by-`K` matrix. It preserves all reverse BlockLDL feedback
+within every transform block and output row; cross-transform-block feedback is
+exactly zero rather than dropped. `B` must be a power of two, 256-aligned, a
+divisor of `K`, and at most the reviewed 4096-column factor boundary. A
+rank-two substitute, an off-block source, a nonpositive/nonfinite diagonal, or
+reordered/rehashed factor metadata refuses. The arbitrary dense-Hessian Qwen
+path remains whole-matrix and refuses `K>4096`.
 
 The Arm E receipt binds the local BlockLDL/transform producer and trellis-
 encoder sources, rechecking both import-time hashes around final receipt
@@ -7579,10 +7608,25 @@ full-matrix, and exact dense-objective claims. The prepared-receipt validator
 requires closed root and nested field sets plus the exact fixed basis, wire,
 seam, scope, and
 production-ineligibility constants, so recomputing its self-digest after a
-semantic or unknown-field mutation does not grant authority.
+semantic or unknown-field mutation does not grant authority. Structured
+receipts additionally bind the retained source diagonal and every ordered
+factor group's offsets, sizes, transformed-Hessian, feedback, and `D` hashes;
+semantic replay checks those bindings as well as the canonical wire.
 The prepared source hashes are labelled preparation-time provenance, not
 encode-time reauthentication; the transformed tensors are the values the
 encode boundary reauthenticates.
+
+This closes the GLM *shape* seam, not its measured execution gate. A
+`[4096,12288]` plan uses three 4096-column factor groups and avoids the
+603,979,776-byte FP32 global Hessian. Its recorded
+`reference_tensor_bytes_estimate` is explicitly neither a live-storage upper
+bound nor a measured allocator peak; additional weight-shaped tensors and
+CUDA library workspaces exist. Full-census preflight therefore reports
+`shape_contract_ready` with
+`memory_gate_status=unmeasured_requires_cuda_peak`. A clean CUDA pilot must
+record the real peak, an in-process profile, wall time, and Netdata on both
+Sparks before the full census or any memory/runtime claim
+(`research/qtip_native_nvfp4_2026-08-30/arm_e_quality_campaign.py`).
 
 Both implementations remain unregistered and production-ineligible. The
 online sign/Hadamard execution reference lives on an external, unpinned

@@ -144,17 +144,67 @@ def test_transform_block_policy(columns, expected):
     assert M.automatic_input_block_size(columns, 4096) == expected
 
 
-def test_k12288_dense_factorization_fails_preflight_without_allocating(monkeypatch):
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("planning allocated a tensor")
+def test_k12288_structured_preflight_bounds_without_allocating(monkeypatch):
+    weight = torch.linspace(-1.0, 1.0, 12_288).reshape(1, 12_288)
+    diagonal = torch.linspace(0.5, 1.5, 12_288)
 
-    monkeypatch.setattr(torch, "empty", forbidden)
-    plan = M.dense_producer_feasibility((4096, 12288))
-    assert plan["dense_fp32_hessian_bytes"] == 603_979_776
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("structured K12288 path used a forbidden constructor")
+
+    for name in ("diag", "zeros", "empty", "einsum"):
+        monkeypatch.setattr(torch, name, forbidden)
+    prepared = M.ARM_E.prepare_one_linear_diagonal_hessian_scaffold(
+        weight,
+        diagonal,
+        body_rate_q256=1016,
+        input_block_size=4096,
+        output_block_size=1,
+        input_seed=1,
+        output_seed=2,
+        research_opt_in=M.ARM_E.RESEARCH_OPT_IN,
+    )
+    structure = prepared.receipt["transformed"]["hessian_structure"]
+    assert structure["dimension"] == 12_288
+    assert structure["transform_block_count"] == 3
+    assert structure["dense_k_by_k_materialized"] is False
+    plan = M.arm_e_producer_feasibility(
+        (4096, 12288),
+        source_hessian_contract=M.GLM_DIAGONAL_HESSIAN_CONTRACT,
+        input_block_size=4096,
+    )
+    assert plan["dense_fp32_k_by_k_hessian_bytes"] == 603_979_776
+    assert plan["source_hessian_bytes"] == 49_152
+    assert plan["dense_k_by_k_materialized"] is False
+    assert plan["factorization_block_columns"] == 4096
+    assert plan["factorization_block_count"] == 3
+    assert plan["largest_factor_hessian_bytes"] == 67_108_864
+    assert plan["reference_tensor_bytes_estimate"] == 1_811_939_328
     assert plan["estimate_is_measurement"] is False
-    assert plan["current_dense_producer_executable"] is False
-    with pytest.raises(ValueError, match="refusing dense Arm E producer"):
-        M.require_dense_producer_feasible((4096, 12288))
+    assert plan["estimate_is_upper_bound"] is False
+    assert plan["memory_gate_status"] == "unmeasured_requires_cuda_peak"
+    assert plan["shape_contract_supported"] is True
+    assert M.require_arm_e_producer_shape_supported(
+        (4096, 12288),
+        source_hessian_contract=M.GLM_DIAGONAL_HESSIAN_CONTRACT,
+        input_block_size=4096,
+    ) == plan
+
+
+def test_k12288_arbitrary_dense_hessian_still_fails_closed():
+    plan = M.arm_e_producer_feasibility(
+        (4096, 12288),
+        source_hessian_contract=M.QWEN_DENSE_HESSIAN_CONTRACT,
+        input_block_size=4096,
+    )
+    assert plan["dense_k_by_k_materialized"] is True
+    assert plan["shape_contract_supported"] is False
+    assert plan["memory_gate_status"] == "not_reached_shape_contract_refused"
+    with pytest.raises(ValueError, match="arbitrary dense transformed Hessian"):
+        M.require_arm_e_producer_shape_supported(
+            (4096, 12288),
+            source_hessian_contract=M.QWEN_DENSE_HESSIAN_CONTRACT,
+            input_block_size=4096,
+        )
 
 
 def test_quality_execution_refuses_cpu_while_preflight_contract_remains_valid(
@@ -171,7 +221,7 @@ def test_quality_execution_refuses_cpu_while_preflight_contract_remains_valid(
         M.require_gpu_campaign_execution(cuda_manifest)
 
 
-def test_full_glm_preflight_labels_current_k12288_refusal(tmp_path):
+def test_full_glm_preflight_labels_k12288_structured_execution_ready(tmp_path):
     manifest = M.validate_manifest(_manifest(tmp_path, mode=M.GLM_MODE))
     inputs = M.PreflightInputs(
         M.GLM_MODE,
@@ -188,9 +238,20 @@ def test_full_glm_preflight_labels_current_k12288_refusal(tmp_path):
         inputs,
         {"identity_sha256": "e" * 64},
     )
-    assert report["execution_readiness"] == "refused_current_dense_producer_shape"
+    assert report["execution_readiness"] == "shape_contract_ready"
     assert report["full_glm_census_requested"] is True
-    assert report["full_glm_census_executable"] is False
+    assert report["full_glm_census_shape_supported"] is True
+    assert report["full_glm_census_memory_gate_status"] == (
+        "unmeasured_requires_cuda_peak"
+    )
+    assert report["refused_shape_plans"] == []
+    k12288 = next(
+        plan for plan in report["shape_plans"] if plan["shape"] == [4096, 12288]
+    )
+    assert k12288["producer_feasibility"]["factorization_strategy"] == (
+        "exact_block_diagonal_from_retained_source_diagonal_v1"
+    )
+    assert k12288["producer_feasibility"]["dense_k_by_k_materialized"] is False
     assert report["claim_boundary"]["completed_campaign"] is False
 
 
@@ -210,6 +271,30 @@ def test_native_arm_hessian_entry_preserves_activation_wrapper_bytes():
         from_activations.reconstruction, from_hessian.reconstruction
     )
     assert from_activations.terminal_blocks == from_hessian.terminal_blocks
+
+
+def test_native_arm_c_diagonal_specialization_is_exact_bytes_multiple_blocks():
+    generator = torch.Generator().manual_seed(20260904)
+    weight = torch.randn(3, 64, generator=generator)
+    diagonal = torch.rand(64, generator=generator).add_(0.125)
+    dense = NATIVE.qtip_native_arm_from_hessian(
+        weight, torch.diag(diagonal)
+    )
+    structured = NATIVE.qtip_native_arm_from_diagonal_hessian(
+        weight, diagonal
+    )
+    assert NATIVE.fields_sha256(structured.fields) == NATIVE.fields_sha256(
+        dense.fields
+    )
+    for field in NATIVE.FIELDS:
+        assert torch.equal(structured.fields[field], dense.fields[field])
+    assert torch.equal(structured.reconstruction, dense.reconstruction)
+    assert len(structured.terminal_blocks) == 4
+    assert all(
+        block["blockldl_feedback_nonzero_count"] == 0
+        and block["diagonal_hessian_specialization"] is True
+        for block in structured.terminal_blocks
+    )
 
 
 def test_metric_availability_separates_qwen_activations_from_glm_importance():
@@ -372,7 +457,10 @@ def test_glm_pinned_load_refuses_whole_artifact_swap_with_same_pair(tmp_path):
 def _semantic_result_fixture(*, wire_sha256: str, control_sha256: str):
     telemetry = {
         "scope": "offline_quality_campaign_noncomparative",
-        "preflight_plan": {"current_dense_producer_executable": True},
+        "preflight_plan": {
+            "shape_contract_supported": True,
+            "memory_gate_status": "unmeasured_requires_cuda_peak",
+        },
         "phase_seconds": {"load_inputs": 1.0},
         "total_measured_phase_seconds": 1.0,
         "torch_cuda_peak_allocated_bytes": 1,
@@ -387,7 +475,16 @@ def _semantic_result_fixture(*, wire_sha256: str, control_sha256: str):
         "decoded_weight_sha256": "e" * 64,
         "decoded_codes_sha256": "d" * 64,
         "same_byte_reparse_verified": True,
-        "block_ldl": {"cross_block_feedback_nonzero_count": 1},
+        "block_ldl": {
+            "cross_block_feedback_nonzero_count": 1,
+            "factor_groups": [{
+                "index": 0,
+                "first_column": 0,
+                "last_column_exclusive": 256,
+                "columns": 256,
+                "source_diagonal_sha256": "3" * 64,
+            }],
+        },
         "producer_eligible": False,
     }
     producer_receipt = {
@@ -477,6 +574,38 @@ def test_semantic_replay_normalizes_only_publication_status(tmp_path):
     M._require_semantic_reproduction(
         existing, reproduced, path=tmp_path / "result.json"
     )
+
+
+def test_semantic_replay_binds_ordered_factor_group_geometry_and_hash(tmp_path):
+    existing = _semantic_result_fixture(
+        wire_sha256="1" * 64, control_sha256="2" * 64
+    )
+    for field, forged_value in (
+        ("index", 1),
+        ("first_column", 256),
+        ("last_column_exclusive", 512),
+        ("columns", 512),
+        ("source_diagonal_sha256", "4" * 64),
+    ):
+        reproduced = copy.deepcopy(existing)
+        reproduced["arm_e_by_seed"][0]["producer_receipt"]["block_ldl"][
+            "factor_groups"
+        ][0][field] = forged_value
+        producer_receipt = reproduced["arm_e_by_seed"][0]["producer_receipt"]
+        producer_body = dict(producer_receipt)
+        producer_body.pop("identity_sha256")
+        producer_receipt["identity_sha256"] = M.ARM_E._canonical_sha256(
+            producer_body
+        )
+        reproduced_body = dict(reproduced)
+        reproduced_body.pop("identity_sha256")
+        reproduced["identity_sha256"] = M._identity_sha256(reproduced_body)
+        with pytest.raises(
+            ValueError, match="semantic attestation was not reproduced"
+        ):
+            M._require_semantic_reproduction(
+                existing, reproduced, path=tmp_path / "result.json"
+            )
 
 
 def test_published_wire_is_reopened_reserialized_and_decoded(tmp_path):
