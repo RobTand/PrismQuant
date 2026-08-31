@@ -18,7 +18,6 @@ import importlib
 import inspect
 import json
 import math
-import statistics
 import subprocess
 import sys
 import time
@@ -38,6 +37,8 @@ from atomic_publication import (
 )
 from numeric_checkpoint_contract import (
     CheckpointContractError,
+    FP8_PERFORMANCE_GATE,
+    fp8_population_summaries,
     validate_fp8_checkpoint,
 )
 
@@ -124,45 +125,7 @@ def _load_ladder(ladder_path: Path):
 
 def population_summaries(per_tensor: Mapping[str, Mapping[str, object]]) -> dict[str, object]:
     """Summarize each GLM population independently; never emit a pooled row."""
-
-    output: dict[str, object] = {}
-    for population in ("dense", "routed"):
-        names = sorted(
-            name for name, cell in per_tensor.items()
-            if cell.get("population") == population
-        )
-        if not names:
-            continue
-        rows = []
-        for rung in RUNGS:
-            deltas = []
-            fixed_db = []
-            learned_db = []
-            fixed_bpw = []
-            learned_bpw = []
-            for name in names:
-                arms = per_tensor[name]["arms"]
-                fixed = arms[f"fp8_cb@{rung}"]
-                learned = arms[f"fp8_cb_learned@{rung}"]
-                fixed_db.append(float(fixed["weighted_snr_db"]))
-                learned_db.append(float(learned["weighted_snr_db"]))
-                fixed_bpw.append(float(fixed["footprint"]["exact_bpw"]))
-                learned_bpw.append(float(learned["footprint"]["exact_bpw"]))
-                deltas.append(learned_db[-1] - fixed_db[-1])
-            rows.append({
-                "rung": rung,
-                "tensors": len(names),
-                "fixed_db_median": statistics.median(fixed_db),
-                "learned_db_median": statistics.median(learned_db),
-                "learned_minus_fixed_db_median": statistics.median(deltas),
-                "learned_minus_fixed_db_min": min(deltas),
-                "learned_minus_fixed_db_max": max(deltas),
-                "learned_better": sum(delta > 0 for delta in deltas),
-                "fixed_bpw_median": statistics.median(fixed_bpw),
-                "learned_bpw_median": statistics.median(learned_bpw),
-            })
-        output[population] = {"tensors": len(names), "rows": rows}
-    return output
+    return fp8_population_summaries(per_tensor)
 
 
 def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
@@ -341,6 +304,8 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
             "partial": True,
         }
     per_tensor = report["per_tensor"]
+    generated_hashes: dict[str, dict[str, str]] = {}
+    generated_books: dict[str, dict[str, object]] = {}
     device = torch.device("cuda")
     for index, entry in enumerate(corpus.entries, 1):
         if entry.name in per_tensor:
@@ -396,24 +361,34 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
                 ),
             ):
                 error = ladder.C.weighted_sse(weight, reconstruction, metric)
+                reconstruction_hash = ladder.tensor_sha256(
+                    reconstruction.contiguous()
+                )
                 cell["arms"][arm] = {
                     "encode_tier": ENCODE_TIER,
                     "encode_seconds_observation_not_perf_claim": elapsed,
                     "weighted_sse": error,
                     "weighted_nsse": error / energy,
                     "weighted_snr_db": -10.0 * math.log10(max(error / energy, 1e-300)),
-                    "reconstruction_sha256": ladder.tensor_sha256(
-                        reconstruction.contiguous()
-                    ),
+                    "reconstruction_sha256": reconstruction_hash,
                     "footprint": footprint,
                     **extra,
                 }
+                generated_hashes.setdefault(entry.name, {})[arm] = (
+                    reconstruction_hash
+                )
+                if "learned_book" in extra:
+                    generated_books.setdefault(entry.name, {})[arm] = extra[
+                        "learned_book"
+                    ]
         per_tensor[entry.name] = cell
         report["tensors_done"] = len(per_tensor)
         sealed = _sealed_report(report)
         try:
             validate_fp8_checkpoint(
-                sealed, settings=settings, entries=corpus.entries
+                sealed, settings=settings, entries=corpus.entries,
+                generated_hashes=generated_hashes,
+                generated_books=generated_books,
             )
         except CheckpointContractError as exc:
             raise CampaignError(
@@ -430,16 +405,15 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
         "completed_at_unix_s": time.time(),
         "population_summaries": population_summaries(per_tensor),
         "status": "measurement_complete_no_serving_verdict",
-        "performance_gate": (
-            "encode timings are observations only; attach in-process profiler "
-            "and both-host Netdata/power evidence before any performance claim"
-        ),
+        "performance_gate": FP8_PERFORMANCE_GATE,
     })
     sealed = _sealed_report(report)
     try:
         validate_fp8_checkpoint(
             sealed, settings=settings, entries=corpus.entries,
             require_partial=False,
+            generated_hashes=generated_hashes,
+            generated_books=generated_books,
         )
     except CheckpointContractError as exc:
         raise CampaignError(f"refusing invalid final result: {exc}") from exc

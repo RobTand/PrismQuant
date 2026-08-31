@@ -129,7 +129,20 @@ not accepted as evidence that cells, metrics, footprints, or arm coverage are
 valid. An unreachable declaration is not a free-form substitute for an arm:
 only the mathematical 3.96875 ceiling may carry the exact scheduler guard
 refusal, and both lanes must refuse together; every lower lane/rate is required
-to contain a measured arm.
+to contain a measured arm. Resume also binds every tensor name to the logical
+shape and population derived from the bound corpus, requires the complete
+published-control metric domain, and re-derives wire-v1 body, alignment,
+offset, alphabet, scale, byte, bpw, metric, subset, and final-summary
+identities. The GLM reader opens one artifact file description for each
+weight/importance pair and rechecks both tensor hashes at the point of use, so
+an artifact path replacement cannot mix or silently substitute corpus bytes.
+Learned-FP8 v2 independently recomputes its body, row-scale, learned-book,
+total-bit/byte/bpw, population-summary, and performance-gate fields. For cells
+produced in the live process it also compares the recorded reconstruction and
+book reports with the encoder-returned objects. A resumed checkpoint contains
+only their digests and summaries, not the reconstruction or tables themselves;
+those persisted hashes are therefore integrity labels, not independent proof
+that GPU execution occurred.
 
 ### Same-grid coding gain
 

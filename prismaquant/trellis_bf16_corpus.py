@@ -426,15 +426,24 @@ def _read_safetensors_layout(path: Path) -> _SafetensorsLayout:
 
 
 def _tensor_bytes(layout: _SafetensorsLayout, name: str) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(layout.path, flags)
+    try:
+        return _tensor_bytes_from_fd(layout, name, descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _tensor_bytes_from_fd(
+    layout: _SafetensorsLayout, name: str, descriptor: int
+) -> bytes:
+    """Read one tensor from an already pinned artifact file description."""
+
     try:
         start, end = layout.tensors[name]["data_offsets"]
     except KeyError as exc:
         raise CorpusContractError(f"{layout.path}: missing tensor {name!r}") from exc
-    descriptor = os.open(layout.path, os.O_RDONLY)
-    try:
-        value = os.pread(descriptor, end - start, layout.data_start + start)
-    finally:
-        os.close(descriptor)
+    value = os.pread(descriptor, end - start, layout.data_start + start)
     if len(value) != end - start:
         raise CorpusContractError(f"{layout.path}: truncated tensor {name!r}")
     return value
@@ -503,15 +512,42 @@ class FinalizedBF16Corpus:
     _layout: _SafetensorsLayout
 
     def load_tensor(self, entry: CorpusEntry | str) -> tuple[torch.Tensor, torch.Tensor]:
-        """Load one BF16 weight and its FP32 importance via pread."""
+        """Load and re-hash one weight/importance pair from one pinned fd."""
 
         if isinstance(entry, str):
             matches = [candidate for candidate in self.entries if candidate.name == entry]
             if len(matches) != 1:
                 raise CorpusContractError(f"unknown corpus entry {entry!r}")
             entry = matches[0]
-        weight_raw = _tensor_bytes(self._layout, entry.name)
-        importance_raw = _tensor_bytes(self._layout, entry.importance_key)
+        else:
+            matches = [candidate for candidate in self.entries
+                       if candidate.name == entry.name]
+            if len(matches) != 1 or matches[0] != entry:
+                raise CorpusContractError(
+                    f"corpus entry identity differs for {entry.name!r}"
+                )
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(self.artifact_path, flags)
+        except OSError as exc:
+            raise CorpusContractError(
+                f"cannot open bound corpus artifact {self.artifact_path}: {exc}"
+            ) from exc
+        try:
+            weight_raw = _tensor_bytes_from_fd(self._layout, entry.name, descriptor)
+            importance_raw = _tensor_bytes_from_fd(
+                self._layout, entry.importance_key, descriptor
+            )
+        finally:
+            os.close(descriptor)
+        if hashlib.sha256(weight_raw).hexdigest() != entry.source_weight_sha256:
+            raise CorpusContractError(
+                f"{entry.name}: source weight changed after corpus validation"
+            )
+        if hashlib.sha256(importance_raw).hexdigest() != entry.importance_sha256:
+            raise CorpusContractError(
+                f"{entry.name}: importance changed after corpus validation"
+            )
         return (
             _tensor_from_bytes(weight_raw, dtype="BF16", shape=entry.source_weight_shape),
             _tensor_from_bytes(importance_raw, dtype="F32", shape=entry.importance_shape),

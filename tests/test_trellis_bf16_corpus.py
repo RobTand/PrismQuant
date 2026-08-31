@@ -543,3 +543,77 @@ def test_loader_refuses_nonfinite_importance_even_when_raw_hash_is_redeclared(
     manifest.write_text(json.dumps(payload))
     with pytest.raises(corpus.CorpusContractError, match="importance is non-finite"):
         corpus.load_finalized_bf16_corpus(manifest)
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [("weight", "source weight changed"), ("importance", "importance changed")],
+)
+def test_load_tensor_rehashes_bound_bytes_after_initial_validation(
+    tmp_path, monkeypatch, kind, message,
+):
+    manifest, output, *_ = _finalized(tmp_path, monkeypatch)
+    loaded = corpus.load_finalized_bf16_corpus(manifest)
+    entry = loaded.entries[0]
+    original = output.read_bytes()
+    tensor_name = entry.name if kind == "weight" else entry.importance_key
+    start, _end = loaded._layout.tensors[tensor_name]["data_offsets"]
+    output.chmod(0o644)
+    try:
+        with output.open("r+b") as handle:
+            position = loaded._layout.data_start + start
+            handle.seek(position)
+            byte = handle.read(1)
+            handle.seek(position)
+            handle.write(bytes([byte[0] ^ 1]))
+        with pytest.raises(corpus.CorpusContractError, match=message):
+            loaded.load_tensor(entry)
+    finally:
+        output.write_bytes(original)
+        output.chmod(0o444)
+
+
+def test_load_tensor_pins_one_fd_across_atomic_path_swap(
+    tmp_path, monkeypatch,
+):
+    manifest, output, expected_raw, expected_importance, *_ = _finalized(
+        tmp_path, monkeypatch
+    )
+    loaded = corpus.load_finalized_bf16_corpus(manifest)
+    entry = loaded.entries[0]
+    replacement = output.with_name("replacement.safetensors")
+    replacement.write_bytes(output.read_bytes())
+    replacement.chmod(0o644)
+    replacement_bytes = bytearray(replacement.read_bytes())
+    replacement_bytes[-1] ^= 1
+    replacement.write_bytes(replacement_bytes)
+    backup = output.with_name("original-pinned.safetensors")
+    original_reader = corpus._tensor_bytes_from_fd
+    swapped = False
+    restored = False
+    displaced = output.with_name("displaced-replacement.safetensors")
+
+    def swap_after_first_read(layout, name, descriptor):
+        nonlocal swapped, restored
+        raw = original_reader(layout, name, descriptor)
+        if not swapped:
+            swapped = True
+            output.replace(backup)
+            replacement.replace(output)
+        elif not restored:
+            output.replace(displaced)
+            backup.replace(output)
+            restored = True
+        return raw
+
+    monkeypatch.setattr(corpus, "_tensor_bytes_from_fd", swap_after_first_read)
+    try:
+        weight, importance = loaded.load_tensor(entry)
+        assert _tensor_bytes(weight, "BF16") == expected_raw[entry.name]
+        assert torch.equal(importance, expected_importance[entry.name])
+        assert swapped
+        assert restored
+    finally:
+        if backup.exists():
+            output.replace(displaced)
+            backup.replace(output)

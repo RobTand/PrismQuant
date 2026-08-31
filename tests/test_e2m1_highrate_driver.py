@@ -32,7 +32,7 @@ def test_final_receipt_is_published_only_after_complete_result():
 
     assert 'partial_path = args.out.with_name(args.out.name + ".partial")' in source
     assert 'if args.out.exists()' in source
-    assert '_resume_partial(partial_path, receipt=receipt, names=names)' in source
+    assert 'expected_tensors=expected_tensors' in source
     assert source.count("_atomic_json(") >= 2
     assert 'publish_file_no_replace(partial_path, args.out)' in source
     assert "args.out.write_text" not in source
@@ -57,6 +57,9 @@ def test_future_result_binds_active_and_frozen_source_closures():
     assert '"control_sha256"' in source
     assert '_claim_identity(args, prepared["corpus_binding"])' in source
     assert '_corpus_binding(args) != binding' in source
+    assert 'required published control' in source
+    assert 'expected_tensors[name]' in source
+    assert 'expected_controls[name]' in source
 
 
 def test_self_bound_v3_partial_rejects_fake_full_prefix_in_isolated_process(tmp_path):
@@ -95,7 +98,12 @@ def test_self_bound_v3_partial_rejects_fake_full_prefix_in_isolated_process(tmp_
         )
         try:
             module._resume_partial(
-                partial, receipt=receipt, names=["tensor-a", "tensor-b"]
+                partial, receipt=receipt,
+                expected_tensors={{
+                    "tensor-a": {{"shape": [2, 3], "population": "dense"}},
+                    "tensor-b": {{"shape": [2, 3], "population": "dense"}},
+                }},
+                expected_controls={{"tensor-a": {{}}, "tensor-b": {{}}}},
             )
         except SystemExit as exc:
             assert "contract differs" in str(exc)
@@ -107,6 +115,46 @@ def test_self_bound_v3_partial_rejects_fake_full_prefix_in_isolated_process(tmp_
         [sys.executable, "-c", program],
         text=True,
         capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_bf16_missing_published_control_refuses_before_gpu(tmp_path):
+    program = textwrap.dedent(
+        f"""
+        import importlib.util, sys
+        from pathlib import Path
+        from types import SimpleNamespace
+        path = Path({str(DRIVER)!r})
+        sys.path.insert(0, str(path.parent))
+        spec = importlib.util.spec_from_file_location("e2m1_preflight_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        class FakeLadder:
+            @staticmethod
+            def load_corpus():
+                entry = {{
+                    "source_weight_shape": [2, 256],
+                    "importance_shape": [256],
+                }}
+                return {{}}, ["tensor-a"], {{"tensor-a": entry}}
+        module._bf16_ladder_module = lambda: FakeLadder
+        module.BF16_PUBLISHED = Path({str(tmp_path / 'missing-control.json')!r})
+        args = SimpleNamespace(
+            corpus="bf16", limit=None, glm_manifest=None,
+            glm_rate_plan="scaffold",
+        )
+        try:
+            module._prepare_campaign(args)
+        except SystemExit as exc:
+            assert "required published control" in str(exc)
+        else:
+            raise AssertionError("missing BF16 control reached campaign setup")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], text=True, capture_output=True,
         timeout=30,
     )
     assert result.returncode == 0, result.stderr

@@ -143,7 +143,8 @@ def _resume_partial(
     path: Path,
     *,
     receipt: Mapping[str, object],
-    names: list[str],
+    expected_tensors: Mapping[str, Mapping[str, object]],
+    expected_controls: Mapping[str, Mapping[str, object]],
 ) -> tuple[dict[str, dict], float] | None:
     if not path.exists():
         return None
@@ -155,7 +156,9 @@ def _resume_partial(
         raise SystemExit("FATAL: partial checkpoint self-digest differs")
     try:
         validate_e2m1_checkpoint(
-            document, current_receipt=receipt, names=names
+            document, current_receipt=receipt,
+            expected_tensors=expected_tensors,
+            expected_controls=expected_controls,
         )
     except CheckpointContractError as exc:
         raise SystemExit(f"FATAL: partial checkpoint contract differs: {exc}") from exc
@@ -350,6 +353,53 @@ def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
     names = list(entries)
     if args.limit:
         names = names[:args.limit]
+    for name in names:
+        for control_key in control_keys:
+            published_cell = published.get(name)
+            published_arms = (
+                published_cell.get("arms", {})
+                if isinstance(published_cell, dict) else {}
+            )
+            if control_key not in published_arms:
+                raise SystemExit(
+                    f"FATAL: {name}: required published control "
+                    f"{control_key!r} is absent; refusing before GPU work"
+                )
+    expected_tensors: dict[str, dict[str, object]] = {}
+    expected_controls: dict[str, dict[str, object]] = {}
+    for name in names:
+        entry = entries[name]
+        if args.corpus == "dsv4":
+            source_shape = entry["source_weight_shape"]
+            importance_shape = entry["importance_shape"]
+            logical_shape = [int(source_shape[0]), int(importance_shape[0])]
+            population = "dsv4"
+        elif args.corpus == "bf16":
+            logical_shape = [int(value) for value in entry["source_weight_shape"]]
+            population = "bf16"
+        else:
+            logical_shape = [int(value) for value in entry.source_weight_shape]
+            population = entry.population
+        expected_tensors[name] = {
+            "shape": logical_shape,
+            "population": population,
+        }
+        expected_controls[name] = {}
+        for control_key in control_keys:
+            published_arm = published[name]["arms"][control_key]
+            expected_controls[name][control_key] = {
+                "metrics": {
+                    field: published_arm[field]
+                    for field in (
+                        "weighted_sse", "weighted_nsse", "weighted_snr_db",
+                        "plain_sse", "plain_nsse",
+                    )
+                },
+                "footprint": {
+                    field: published_arm["footprint"][field]
+                    for field in ("total_bytes", "body_rate_q256")
+                },
+            }
     return {
         "entries": entries,
         "names": names,
@@ -359,6 +409,8 @@ def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
         "glm_corpus": glm_corpus,
         "bf16_ladder": bf16_ladder,
         "corpus_binding": _corpus_binding(args, glm_corpus=glm_corpus),
+        "expected_tensors": expected_tensors,
+        "expected_controls": expected_controls,
     }
 
 
@@ -400,6 +452,8 @@ def _run_claimed(
     control_keys = prepared["control_keys"]
     glm_corpus = prepared["glm_corpus"]
     B = prepared["bf16_ladder"]
+    expected_tensors = prepared["expected_tensors"]
+    expected_controls = prepared["expected_controls"]
 
     env = H.current_env()
     active_sources = publication_identity["active_sources"]
@@ -446,7 +500,12 @@ def _run_claimed(
         "environment": env,
     }
 
-    resumed = _resume_partial(partial_path, receipt=receipt, names=names)
+    resumed = _resume_partial(
+        partial_path,
+        receipt=receipt,
+        expected_tensors=expected_tensors,
+        expected_controls=expected_controls,
+    )
     if resumed is None:
         out: dict[str, dict] = {}
     else:
@@ -706,7 +765,9 @@ def _run_claimed(
         checkpoint = _checkpoint_document(receipt, out, partial=True)
         try:
             validate_e2m1_checkpoint(
-                checkpoint, current_receipt=receipt, names=names
+                checkpoint, current_receipt=receipt,
+                expected_tensors=expected_tensors,
+                expected_controls=expected_controls,
             )
         except CheckpointContractError as exc:
             raise SystemExit(
@@ -729,7 +790,9 @@ def _run_claimed(
     final_checkpoint = _checkpoint_document(receipt, out, partial=False)
     try:
         validate_e2m1_checkpoint(
-            final_checkpoint, current_receipt=receipt, names=names,
+            final_checkpoint, current_receipt=receipt,
+            expected_tensors=expected_tensors,
+            expected_controls=expected_controls,
             require_partial=False,
         )
     except CheckpointContractError as exc:
