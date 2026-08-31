@@ -325,9 +325,10 @@ checkout/output lock, validates the claim byte-for-byte, rejects symlinks and
 non-regular paths, unlinks only the claimed leaf, removes at most 64 permitted
 same-UID files from the claim-private result-staging directory, and reruns argv
 to produce a new attestation. An unclaimed dirty result remains a hard error.
-A valid CAS receipt also blocks explicit repair. Claims are retained as
-immutable recovery authority; they are not success records and cannot satisfy
-`lookup()`.
+A valid CAS receipt also blocks explicit repair; repair repeats that lookup
+after acquiring the output lock so a receipt published while it waited wins.
+Claims are retained as immutable recovery authority; they are not success
+records and cannot satisfy `lookup()`.
 
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In

@@ -7622,9 +7622,11 @@ also reaps at most 64 regular, same-UID `.payload.*.tmp` leaves from that
 claim's private `.staging/local-results/<claim-sha256>/` directory. Any
 unclaimed pre-existing path, symlink, non-regular object, foreign owner,
 unexpected staging entry, changed claim, or repair after a valid receipt
-refuses. `repair-local-result` exposes the same bounded cleanup without
-executing argv. The claim is authorization to discard action-owned scratch,
-not evidence that the bytes were valid and never a substitute for a receipt.
+refuses. Repair rechecks receipt state after taking the output lock, closing a
+producer-finished-while-waiting race. `repair-local-result` exposes the same
+bounded cleanup without executing argv. The claim is authorization to discard
+action-owned scratch, not evidence that the bytes were valid and never a
+substitute for a receipt.
 The output lock remains the concurrency boundary; deployed cross-host NFS
 lock semantics are still an external gate.
 
