@@ -36,6 +36,8 @@ def test_final_receipt_is_published_only_after_complete_result():
     assert source.count("_atomic_json(") >= 2
     assert 'publish_file_no_replace(partial_path, args.out)' in source
     assert "args.out.write_text" not in source
+    assert "saved_cell = resumed_out.get(name)" in source
+    assert "_require_e2_replay_match(name, saved_cell, cell)" in source
 
 
 def test_future_result_binds_active_and_frozen_source_closures():
@@ -151,6 +153,127 @@ def test_bf16_missing_published_control_refuses_before_gpu(tmp_path):
             assert "required published control" in str(exc)
         else:
             raise AssertionError("missing BF16 control reached campaign setup")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], text=True, capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_e2_resume_requires_exact_regenerated_claims_except_timing(tmp_path):
+    program = textwrap.dedent(
+        f"""
+        import copy, importlib.util, sys
+        from pathlib import Path
+        path = Path({str(DRIVER)!r})
+        sys.path.insert(0, str(path.parent))
+        spec = importlib.util.spec_from_file_location("e2m1_replay_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        regenerated = {{
+            "two_tier_plane_sha256": "a" * 64,
+            "weighted_energy": 10.0,
+            "plain_energy": 20.0,
+            "arms": {{
+                "tcq_v1@2.0": {{
+                    "encode_seconds": 2.0,
+                    "weighted_sse": 1.0,
+                    "weighted_nsse": 0.1,
+                    "weighted_snr_db": 10.0,
+                    "subset_split": {{"2": {{"trellis_wsse": 1.0}}}},
+                }}
+            }},
+        }}
+        timing_only = copy.deepcopy(regenerated)
+        timing_only["arms"]["tcq_v1@2.0"]["encode_seconds"] = 999.0
+        module._require_e2_replay_match("tensor-a", timing_only, regenerated)
+
+        invented = copy.deepcopy(regenerated)
+        arm = invented["arms"]["tcq_v1@2.0"]
+        arm.update({{
+            "weighted_sse": 2.0,
+            "weighted_nsse": 0.2,
+            "weighted_snr_db": 6.9897000433601875,
+        }})
+        arm["subset_split"]["2"]["trellis_wsse"] = 2.0
+        try:
+            module._require_e2_replay_match("tensor-a", invented, regenerated)
+        except SystemExit as exc:
+            assert "deterministic replay" in str(exc)
+        else:
+            raise AssertionError("coherently invented E2 metrics were reused")
+
+        false_plane = copy.deepcopy(regenerated)
+        false_plane["two_tier_plane_sha256"] = "b" * 64
+        try:
+            module._require_e2_replay_match("tensor-a", false_plane, regenerated)
+        except SystemExit as exc:
+            assert "deterministic replay" in str(exc)
+        else:
+            raise AssertionError("arbitrary E2 plane hash was reused")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], text=True, capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_bf16_nonfinite_published_control_refuses_in_prepare(tmp_path):
+    program = textwrap.dedent(
+        f"""
+        import importlib.util, json, math, sys
+        from pathlib import Path
+        from types import SimpleNamespace
+        path = Path({str(DRIVER)!r})
+        sys.path.insert(0, str(path.parent))
+        spec = importlib.util.spec_from_file_location("e2m1_control_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        class FakeLadder:
+            @staticmethod
+            def load_corpus():
+                entry = {{
+                    "source_weight_shape": [2, 256],
+                    "importance_shape": [256],
+                }}
+                return {{}}, ["tensor-a"], {{"tensor-a": entry}}
+        module._bf16_ladder_module = lambda: FakeLadder
+        control = Path({str(tmp_path / 'corrupt-control.json')!r})
+        control.write_text(json.dumps({{
+            "cells": {{
+                "tensor-a": {{
+                    "shape": [2, 256], "numel": 512,
+                    "weighted_energy": 1.0, "plain_energy": 1.0,
+                    "arms": {{"tcq_two_tier@2.0": {{
+                        "weighted_sse": float("nan")
+                    }}}},
+                }}
+            }}
+        }}))
+        module.BF16_PUBLISHED = control
+        called = False
+        def reject(arm, **kwargs):
+            global called
+            called = True
+            assert math.isnan(arm["weighted_sse"])
+            raise module.CheckpointContractError("weighted_sse must be finite")
+        module.validate_e2_published_control_arm = reject
+        args = SimpleNamespace(
+            corpus="bf16", limit=None, glm_manifest=None,
+            glm_rate_plan="scaffold",
+        )
+        try:
+            module._prepare_campaign(args)
+        except SystemExit as exc:
+            assert called
+            assert "invalid published control" in str(exc)
+            assert "refusing before GPU work" in str(exc)
+        else:
+            raise AssertionError("nonfinite BF16 control passed preflight")
         """
     )
     result = subprocess.run(

@@ -126,7 +126,10 @@ namespace, closed-schema and semantic exact-prefix resume validation,
 final-time identity replay, and hard-link no-replace publication with the
 completed result published last. The checkpoint SHA is only a checksum; it is
 not accepted as evidence that cells, metrics, footprints, or arm coverage are
-valid. An unreachable declaration is not a free-form substitute for an arm:
+valid. A structurally valid completed cell is never skipped: both drivers
+regenerate it from the bound corpus through the currently pinned codec and
+require exact equality of every claim, normalizing only explicitly non-claim
+wall timing. An unreachable declaration is not a free-form substitute for an arm:
 only the mathematical 3.96875 ceiling may carry the exact scheduler guard
 refusal, and both lanes must refuse together; every lower lane/rate is required
 to contain a measured arm. Resume also binds every tensor name to the logical
@@ -141,8 +144,10 @@ total-bit/byte/bpw, population-summary, and performance-gate fields. For cells
 produced in the live process it also compares the recorded reconstruction and
 book reports with the encoder-returned objects. A resumed checkpoint contains
 only their digests and summaries, not the reconstruction or tables themselves;
-those persisted hashes are therefore integrity labels, not independent proof
-that GPU execution occurred.
+those persisted hashes alone are therefore integrity labels, not independent
+proof that GPU execution occurred. Resume closes that boundary by regenerating
+the reconstruction and tables and comparing the complete claim-bearing cell
+before it may be reused or published.
 
 ### Same-grid coding gain
 

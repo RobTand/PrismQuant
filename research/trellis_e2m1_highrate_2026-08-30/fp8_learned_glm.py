@@ -13,6 +13,7 @@ in-process profiler plus Netdata/power evidence on both hosts.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib
 import inspect
@@ -170,6 +171,28 @@ def _resume_report(path: Path, *, settings, corpus) -> dict[str, object]:
     return body
 
 
+def _fp8_replay_semantics(cell: Mapping[str, object]) -> dict[str, object]:
+    """Return every cell claim except explicitly non-claim wall timing."""
+
+    normalized = copy.deepcopy(dict(cell))
+    arms = normalized.get("arms")
+    if isinstance(arms, dict):
+        for arm in arms.values():
+            if isinstance(arm, dict):
+                arm.pop("encode_seconds_observation_not_perf_claim", None)
+    return normalized
+
+
+def _require_fp8_replay_match(
+    name: str, saved: Mapping[str, object], regenerated: Mapping[str, object],
+) -> None:
+    if _fp8_replay_semantics(saved) != _fp8_replay_semantics(regenerated):
+        raise CampaignError(
+            f"{name}: saved checkpoint cell differs from deterministic "
+            "replay; refusing reuse"
+        )
+
+
 def _repo_commit() -> str | None:
     try:
         commit = subprocess.run(
@@ -303,13 +326,14 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
             "per_tensor": {},
             "partial": True,
         }
+    saved_per_tensor = dict(report["per_tensor"])
+    report["per_tensor"] = {}
     per_tensor = report["per_tensor"]
     generated_hashes: dict[str, dict[str, str]] = {}
     generated_books: dict[str, dict[str, object]] = {}
     device = torch.device("cuda")
     for index, entry in enumerate(corpus.entries, 1):
-        if entry.name in per_tensor:
-            continue
+        saved_cell = saved_per_tensor.get(entry.name)
         raw, importance = corpus.load_tensor(entry)
         weight = raw.to(device=device, dtype=torch.float32)
         metric = importance.to(device=device, dtype=torch.float32).reshape(1, -1)
@@ -381,6 +405,13 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
                     generated_books.setdefault(entry.name, {})[arm] = extra[
                         "learned_book"
                     ]
+        if saved_cell is not None:
+            _require_fp8_replay_match(entry.name, saved_cell, cell)
+            print(
+                f"[{index}/{len(corpus.entries)}] {entry.population} "
+                f"{entry.name}: REPLAY VERIFIED",
+                flush=True,
+            )
         per_tensor[entry.name] = cell
         report["tensors_done"] = len(per_tensor)
         sealed = _sealed_report(report)
@@ -395,8 +426,12 @@ def _run_claimed(args, corpus, settings: Mapping[str, object], ladder) -> int:
                 f"refusing invalid generated checkpoint: {exc}"
             ) from exc
         _atomic_json(partial, sealed)
-        print(f"[{index}/{len(corpus.entries)}] {entry.population} {entry.name}",
-              flush=True)
+        if saved_cell is None:
+            print(
+                f"[{index}/{len(corpus.entries)}] {entry.population} "
+                f"{entry.name}",
+                flush=True,
+            )
         del raw, importance, weight, metric
         torch.cuda.empty_cache()
 

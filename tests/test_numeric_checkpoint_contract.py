@@ -392,6 +392,58 @@ def test_e2_control_domain_and_published_values_are_bound():
         )
 
 
+def test_published_e2_control_is_semantically_validated_before_use():
+    shape = [2, 256]
+    arm = _e2_arm("tcq_v1", 2.0, shape)
+    arm.pop("subset_split")
+    C.validate_e2_published_control_arm(
+        arm,
+        key="tcq_v1@2.0",
+        shape=shape,
+        weighted_energy=1.0,
+        plain_energy=1.0,
+    )
+
+    legacy_bf16 = copy.deepcopy(arm)
+    legacy_bf16.pop("plain_snr_db")
+    C.validate_e2_published_control_arm(
+        legacy_bf16,
+        key="tcq_v1@2.0",
+        shape=shape,
+        weighted_energy=1.0,
+        plain_energy=1.0,
+    )
+
+    for mutate, match in (
+        (
+            lambda value: value.__setitem__("weighted_sse", float("nan")),
+            "weighted_sse must be finite",
+        ),
+        (
+            lambda value: value["footprint"].__setitem__(
+                "schema", "unrecognized.production.claim"
+            ),
+            "schema differs",
+        ),
+        (
+            lambda value: value["footprint"].__setitem__(
+                "total_bytes", value["footprint"]["total_bytes"] + 1
+            ),
+            "total_bytes accounting",
+        ),
+    ):
+        bad = copy.deepcopy(arm)
+        mutate(bad)
+        with pytest.raises(C.CheckpointContractError, match=match):
+            C.validate_e2_published_control_arm(
+                bad,
+                key="tcq_v1@2.0",
+                shape=shape,
+                weighted_energy=1.0,
+                plain_energy=1.0,
+            )
+
+
 def test_e2_unreachable_is_only_paired_mathematical_ceiling_refusal():
     checkpoint, receipt = _e2_checkpoint()
     cell = checkpoint["per_tensor"]["tensor-a"]

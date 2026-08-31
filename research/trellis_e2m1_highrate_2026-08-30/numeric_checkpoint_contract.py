@@ -45,6 +45,8 @@ _E2_ARM_KEYS = frozenset({
     "plain_sse", "reproduces_stage6", "rung", "schedule", "subset_split",
     "weighted_nsse", "weighted_snr_db", "weighted_sse",
 })
+_E2_PUBLISHED_ARM_KEYS = _E2_ARM_KEYS - {"subset_split"}
+_E2_PUBLISHED_BF16_ARM_KEYS = _E2_PUBLISHED_ARM_KEYS - {"plain_snr_db"}
 _E2_SCHEDULE_KEYS = frozenset({
     "target_rate", "achieved_rate", "maximum_rate", "invert",
     "fixed_quota_per_256", "tailbite_guard_fixups", "schedule_sha256",
@@ -544,6 +546,92 @@ def _validate_e2_arm(value: object, *, lane: str, rate: float,
                         weighted_energy=weighted_energy,
                         weighted_sse=float(arm["weighted_sse"]),
                         where=f"{where}.subset_split")
+
+
+def validate_e2_published_control_arm(
+    value: object, *, key: str, shape: Sequence[int],
+    weighted_energy: object, plain_energy: object,
+) -> None:
+    """Validate a legacy published control before any campaign GPU work."""
+
+    if not isinstance(key, str) or "@" not in key:
+        raise CheckpointContractError("published control key is invalid")
+    lane, rate_text = key.rsplit("@", 1)
+    if lane not in _E2_LANES:
+        raise CheckpointContractError("published control lane differs")
+    try:
+        rate = float(rate_text)
+    except ValueError as exc:
+        raise CheckpointContractError("published control rate is invalid") from exc
+    logical_shape = _shape(list(shape), where="published control shape")
+    mapping = _mapping(value, where=f"published control {key}")
+    keys = frozenset(mapping)
+    if keys not in {_E2_PUBLISHED_ARM_KEYS, _E2_PUBLISHED_BF16_ARM_KEYS}:
+        raise CheckpointContractError(
+            f"published control {key} members differ"
+        )
+    arm = mapping
+    if arm.get("arm") != lane:
+        raise CheckpointContractError(f"published control {key}.arm differs")
+    _close(
+        _finite(arm.get("rung"), where=f"published control {key}.rung"),
+        rate,
+        where=f"published control {key}.rung",
+    )
+    _finite(
+        arm.get("encode_seconds"),
+        where=f"published control {key}.encode_seconds",
+        positive=True,
+    )
+    energies = {
+        "weighted": _finite(
+            weighted_energy, where="published control weighted_energy",
+            positive=True,
+        ),
+        "plain": _finite(
+            plain_energy, where="published control plain_energy", positive=True,
+        ),
+    }
+    for domain, energy in energies.items():
+        sse = _finite(
+            arm.get(f"{domain}_sse"),
+            where=f"published control {key}.{domain}_sse",
+            positive=True,
+        )
+        nsse = _finite(
+            arm.get(f"{domain}_nsse"),
+            where=f"published control {key}.{domain}_nsse",
+            positive=True,
+        )
+        _close(
+            nsse, sse / energy,
+            where=f"published control {key}.{domain}_nsse", rel=1e-7,
+        )
+        snr_key = f"{domain}_snr_db"
+        if snr_key in arm:
+            _close(
+                _finite(
+                    arm.get(snr_key),
+                    where=f"published control {key}.{snr_key}",
+                ),
+                -10.0 * math.log10(nsse),
+                where=f"published control {key}.{snr_key}", rel=1e-7,
+            )
+    expected_reproduction = (
+        lane == "tcq_v1" and rate in _E2_REPRODUCTION_RATES
+    )
+    if arm.get("reproduces_stage6") is not expected_reproduction:
+        raise CheckpointContractError(
+            f"published control {key}.reproduces_stage6 differs"
+        )
+    counts = _validate_e2_schedule(
+        arm.get("schedule"), rate=rate, columns=logical_shape[1],
+        where=f"published control {key}.schedule",
+    )
+    _validate_e2_footprint(
+        arm.get("footprint"), lane=lane, rate=rate, shape=logical_shape,
+        counts=counts, where=f"published control {key}.footprint",
+    )
 
 
 def validate_e2m1_checkpoint(
@@ -1139,5 +1227,5 @@ def fp8_population_summaries(
 __all__ = [
     "CheckpointContractError", "FP8_PERFORMANCE_GATE",
     "fp8_population_summaries", "validate_e2m1_checkpoint",
-    "validate_fp8_checkpoint",
+    "validate_e2_published_control_arm", "validate_fp8_checkpoint",
 ]

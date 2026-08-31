@@ -26,6 +26,7 @@ rows are not comparable to the published ladder and it refuses.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 from pathlib import Path
@@ -54,6 +55,7 @@ from isolated_glm_corpus import load_active_glm_corpus
 from numeric_checkpoint_contract import (
     CheckpointContractError,
     validate_e2m1_checkpoint,
+    validate_e2_published_control_arm,
 )
 
 W, C, P, S4, TF = H.W, H.C, H.P, H.S4, H.TF
@@ -168,6 +170,28 @@ def _resume_partial(
     if not isinstance(started, (int, float)) or not math.isfinite(started):
         raise SystemExit("FATAL: partial checkpoint start time is invalid")
     return dict(per_tensor), float(started)
+
+
+def _e2_replay_semantics(cell: Mapping[str, object]) -> dict[str, object]:
+    """Return every cell claim except explicitly non-claim wall timing."""
+
+    normalized = copy.deepcopy(dict(cell))
+    arms = normalized.get("arms")
+    if isinstance(arms, dict):
+        for arm in arms.values():
+            if isinstance(arm, dict):
+                arm.pop("encode_seconds", None)
+    return normalized
+
+
+def _require_e2_replay_match(
+    name: str, saved: Mapping[str, object], regenerated: Mapping[str, object],
+) -> None:
+    if _e2_replay_semantics(saved) != _e2_replay_semantics(regenerated):
+        raise SystemExit(
+            f"FATAL: {name}: saved checkpoint cell differs from deterministic "
+            "replay; refusing reuse"
+        )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -353,18 +377,6 @@ def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
     names = list(entries)
     if args.limit:
         names = names[:args.limit]
-    for name in names:
-        for control_key in control_keys:
-            published_cell = published.get(name)
-            published_arms = (
-                published_cell.get("arms", {})
-                if isinstance(published_cell, dict) else {}
-            )
-            if control_key not in published_arms:
-                raise SystemExit(
-                    f"FATAL: {name}: required published control "
-                    f"{control_key!r} is absent; refusing before GPU work"
-                )
     expected_tensors: dict[str, dict[str, object]] = {}
     expected_controls: dict[str, dict[str, object]] = {}
     for name in names:
@@ -386,7 +398,36 @@ def _prepare_campaign(args: argparse.Namespace) -> dict[str, object]:
         }
         expected_controls[name] = {}
         for control_key in control_keys:
-            published_arm = published[name]["arms"][control_key]
+            published_cell = published.get(name)
+            published_arms = (
+                published_cell.get("arms", {})
+                if isinstance(published_cell, Mapping) else {}
+            )
+            if control_key not in published_arms:
+                raise SystemExit(
+                    f"FATAL: {name}: required published control "
+                    f"{control_key!r} is absent; refusing before GPU work"
+                )
+            if (published_cell.get("shape") != logical_shape
+                    or published_cell.get("numel") != math.prod(logical_shape)):
+                raise SystemExit(
+                    f"FATAL: {name}: published control tensor identity "
+                    "differs; refusing before GPU work"
+                )
+            published_arm = published_arms[control_key]
+            try:
+                validate_e2_published_control_arm(
+                    published_arm,
+                    key=control_key,
+                    shape=logical_shape,
+                    weighted_energy=published_cell.get("weighted_energy"),
+                    plain_energy=published_cell.get("plain_energy"),
+                )
+            except CheckpointContractError as exc:
+                raise SystemExit(
+                    f"FATAL: {name}: invalid published control "
+                    f"{control_key!r}: {exc}; refusing before GPU work"
+                ) from exc
             expected_controls[name][control_key] = {
                 "metrics": {
                     field: published_arm[field]
@@ -507,15 +548,18 @@ def _run_claimed(
         expected_controls=expected_controls,
     )
     if resumed is None:
-        out: dict[str, dict] = {}
+        resumed_out: dict[str, dict] = {}
     else:
-        out, started_at = resumed
+        resumed_out, started_at = resumed
         receipt["started_at_unix_s"] = started_at
-        print(f"resuming {len(out)}/{len(names)} completed tensors", flush=True)
+        print(
+            f"replaying {len(resumed_out)}/{len(names)} checkpoint tensors "
+            "before reuse",
+            flush=True,
+        )
+    out: dict[str, dict] = {}
     for index, name in enumerate(names, start=1):
-        if name in out:
-            print(f"[{index}/{len(names)}] {name}: RESUMED", flush=True)
-            continue
+        saved_cell = resumed_out.get(name)
         entry = entries[name]
         if args.corpus == "dsv4":
             packed, raw_scale, importance = W.load_compact(name)
@@ -761,6 +805,12 @@ def _run_claimed(
                 f"{footprint_equal}). These rows are NOT comparable to the "
                 f"published ladder; re-run under the pinned environment "
                 f"(hull_sweep.py --print-container-command).")
+        if saved_cell is not None:
+            _require_e2_replay_match(name, saved_cell, cell)
+            print(
+                f"[{index}/{len(names)}] {name}: REPLAY VERIFIED",
+                flush=True,
+            )
         out[name] = cell
         checkpoint = _checkpoint_document(receipt, out, partial=True)
         try:

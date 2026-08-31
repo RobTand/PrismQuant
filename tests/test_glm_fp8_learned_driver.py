@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -73,6 +74,8 @@ def test_future_v2_binds_transitive_sources_and_result_last_publication():
     assert "hull.snapshot_tree_sha256()" in source
     assert "hull.source_hashes()" in source
     assert "publish_file_no_replace(partial, args.out)" in source
+    assert "saved_cell = saved_per_tensor.get(entry.name)" in source
+    assert "_require_fp8_replay_match(entry.name, saved_cell, cell)" in source
 
 
 def test_final_binding_recheck_refuses_midrun_corpus_mutation(
@@ -170,3 +173,60 @@ def test_fp8_self_bound_partial_checks_digest_before_closed_semantics(tmp_path):
     path.write_text(json.dumps(mutated))
     with pytest.raises(_DRIVER.CampaignError, match="self-digest differs"):
         _DRIVER._resume_report(path, settings=settings, corpus=corpus)
+
+
+def test_fp8_resume_requires_exact_regenerated_metrics_hashes_and_books():
+    regenerated = {
+        "weighted_energy": 10.0,
+        "arms": {
+            "fp8_cb@32": {
+                "encode_seconds_observation_not_perf_claim": 2.0,
+                "weighted_sse": 1.0,
+                "weighted_nsse": 0.1,
+                "weighted_snr_db": 10.0,
+                "reconstruction_sha256": "a" * 64,
+            },
+            "fp8_cb_learned@32": {
+                "encode_seconds_observation_not_perf_claim": 3.0,
+                "weighted_sse": 0.5,
+                "weighted_nsse": 0.05,
+                "weighted_snr_db": 13.010299956639813,
+                "reconstruction_sha256": "b" * 64,
+                "learned_book": {
+                    "elements": 16,
+                    "tables": [{"sha256": "c" * 64}],
+                },
+            },
+        },
+    }
+    timing_only = copy.deepcopy(regenerated)
+    timing_only["arms"]["fp8_cb@32"][
+        "encode_seconds_observation_not_perf_claim"
+    ] = 999.0
+    _DRIVER._require_fp8_replay_match(
+        "tensor-a", timing_only, regenerated
+    )
+
+    attacks = []
+    invented = copy.deepcopy(regenerated)
+    invented["arms"]["fp8_cb@32"].update({
+        "weighted_sse": 2.0,
+        "weighted_nsse": 0.2,
+        "weighted_snr_db": 6.9897000433601875,
+    })
+    attacks.append(invented)
+    false_reconstruction = copy.deepcopy(regenerated)
+    false_reconstruction["arms"]["fp8_cb@32"][
+        "reconstruction_sha256"
+    ] = "d" * 64
+    attacks.append(false_reconstruction)
+    false_book = copy.deepcopy(regenerated)
+    false_book["arms"]["fp8_cb_learned@32"]["learned_book"]["tables"][0][
+        "sha256"
+    ] = "e" * 64
+    attacks.append(false_book)
+    for attack in attacks:
+        with pytest.raises(_DRIVER.CampaignError, match="deterministic replay"):
+            _DRIVER._require_fp8_replay_match(
+                "tensor-a", attack, regenerated
+            )
