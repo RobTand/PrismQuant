@@ -1,4 +1,21 @@
-"""Is the trade good?  Measure both sides of "FP8 attention buys expert bits".
+"""REFUTED 2026-09-01, same day.  Superseded by ``glm53_expert_menu.py``.
+
+Its gain leg buys ``TESSERA_E4M3_K1_R951`` as a "4.2148 bpp" rung.  Two facts
+kill that: body and completion sum to the cap, so a Tessera family has ONE
+size and that rung actually weighs **7.5 bpp**; and its grid digest is not in
+``SERIALISABLE_GRIDS``, so it cannot be written at all.  There is no
+serialisable Tessera rung between 4.0 and 8, and the freed bytes therefore buy
+a *format change on a subset of layers*, not a rate.  The verdict survives at
+7.7x instead of 10.7x -- see
+``tessera/docs/measurements/glm53-bit-trade-2026-09-01.md``.
+
+Kept runnable because its COST leg (non-expert body BF16 -> FP8_E4M3) is
+unaffected and is still the source of the 0.018207 figure.  Do not cite its
+gain leg.
+
+Original docstring follows.
+
+Is the trade good?  Measure both sides of "FP8 attention buys expert bits".
 
 ``docs/measurements/glm53-body-budget-2026-09-01.md`` shows that Mia leaves
 15.44 GiB at 16 bpp on 2.6% of GLM's parameters, and that pricing attention and
@@ -17,7 +34,9 @@ without a Fisher weighting that would import a second set of assumptions.
 
 **The expert rungs are not the same family.**  ``TESSERA_E2M1_K2`` caps at
 exactly 4.000 bpp (``q256`` max 896), so the higher rung cannot come from it;
-``TESSERA_E4M3_K1`` is the only *serialisable* family covering the band (the
+``TESSERA_E4M3_K1`` was believed to be the only *serialisable* family
+covering the band -- WRONG, its digest is not committed, and nothing covers
+the band (the
 LM* Lloyd-Max families reach it but have no wire identity -- their values are
 fitted to the tensor and no identifier reproduces them).  So the gain leg is
 also a family change, and that is stated rather than hidden: it is what the

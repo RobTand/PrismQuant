@@ -33,8 +33,14 @@ BF16 probe, not a synthetic draw -- the distinction that
 ``tessera-source-model-must-match-the-encoder`` exists to enforce.  ``G`` is
 chosen by the production policy ``select_mse_grid_input_global_scale``, which
 minimizes serve-QDQ MSE, so the NVFP4 activation leg is at its *best* static
-setting.  NVFP4's weight leg remains RTN (no GPTQ/JSO), so the weight side
-still favours Tessera; both biases are stated rather than netted.
+setting.  (An earlier draft of this docstring also claimed "NVFP4's weight leg
+remains RTN".  It does not -- the code renders it through
+``render_production_weight`` with gptq/static_act_order/joint_scale_opt, and
+asserts the result differs from RTN before scoring.  The stale sentence
+contradicted the paragraph above it and is removed.)  The remaining asymmetry
+runs the other way: Tessera's arm is plain -- no rotation, no diagonals, worth
+~1% on the weight screen -- so both NVFP4 legs are at production best and
+Tessera's is not.
 
 Scope limit: the probe caches one input per packed-expert entry, at hidden dim,
 so this covers gate_proj/up_proj only.  down_proj consumes the intermediate
