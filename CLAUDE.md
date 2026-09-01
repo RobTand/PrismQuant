@@ -484,8 +484,11 @@ the serving profile (`vllm_packed_moe` still allow-lists `MXFP8_E4M3`; only
 output MSE over 410 Gemma Linears vs exact-scale FP8), so exact-scale FP8
 Pareto-dominates it and the allocator never picks it when both are offered.
 
-**Research / non-served:** NVFP4A16, MXFP4 (served but rarely chosen), MXFP6
-(no vLLM kernel), INT4/INT8 and MXFP8_E5M2 (registry entries, no served path).
+**Research / non-served:** NVFP4A16, MXFP4 (served but rarely chosen),
+INT4/INT8 and MXFP8_E5M2 (registry entries, no served path). **MXFP6 was
+removed from the registry entirely on 2026-09-01** — no hardware or runtime
+supports it (`docs/design/mxfp6_cb_feasibility.md`: FP6 rides Blackwell's 8-bit
+datapath, no separate rate, operands byte-padded).
 **E5M2** is only a valid *kv-cache* dtype. `prismaquant/kernels/` ships only
 `nvfp4_fused.py`.
 
@@ -564,7 +567,7 @@ a `TARGET_DISK_GB` card).
   — that number is a polish-time signal on a 2×128 calibration, **not** a held-out
   8×512 claim. Do not cite −2.8× as a result until the 8×512 re-measurement lands.
 - **Low-bit kernel lane** (`references/lowbit-kernels/`): direction agreed
-  (MicroMix-style mixed MXFP4/MXFP6/MXFP8 per-channel kernel to fill the
+  (MicroMix-style mixed MXFP4/MXFP8 per-channel kernel to fill the
   NVFP4→MXFP8 4× gap; the knee lands at 5.0–5.7 bpp across his models) but not
   implemented; *"chase the hardware, not old SoTA."*
 

@@ -62,7 +62,8 @@ The pipeline order is shared across formats. Support is format-gated:
 - FP8_E4M3/FP8_E5M2 support GPTQ; FP8_E4M3 additionally supports dynamic
   per-row scale_sweep.
 - MXFP4 supports GPTQ and static_act_order with the canonical E8M0 scale
-  rule. MXFP6 remains research-only here because no served export/dequant path
+  rule. (MXFP6 was removed from the registry on 2026-09-01; it had no served
+  export/dequant path
   is wired yet.
 - MXFP8_E4M3/MXFP8_E5M2 support GPTQ and static_act_order with the canonical
   E8M0 scale rule. When static_act_order is enabled, the production gate

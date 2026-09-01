@@ -1229,8 +1229,6 @@ def test_format_gate_disables_joint_scale_opt_for_mxfp8():
     assert _format_supports_render_mechanism("MXFP4", "gptq")
     assert _format_supports_render_mechanism("MXFP4", "static_act_order")
     assert not _format_supports_render_mechanism("MXFP4", "joint_scale_opt")
-    assert not _format_supports_render_mechanism("MXFP6_E3M2", "static_act_order")
-    assert not _format_supports_render_mechanism("MXFP6_E2M3", "static_act_order")
     assert not _format_supports_render_mechanism("FP8_E4M3", "static_act_order")
     assert not _format_supports_render_mechanism("FP8_E5M2", "static_act_order")
     assert _format_supports_render_mechanism("MXFP8_E4M3", "static_act_order")

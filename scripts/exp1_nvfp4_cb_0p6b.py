@@ -1241,7 +1241,7 @@ def write_report_1b(targets):
                      f"within the measured ladder — premium > "
                      f"{max(p[0] for p in prod_pts) - foots['IQ3XXS']['total_bpw']:.2f} bpw.")
     L.append("\n### FP8-CB mid-range — does it WIN per-byte?\n")
-    L.append("RD study: FP8-grid tax <1%; this is the MXFP6-gap band where CB "
+    L.append("RD study: FP8-grid tax <1%; this is the 4-to-8-bit gap band where CB "
              "may beat IQ per-byte. FP8_CB vs the nearest IQ point:\n")
     L.append("| FP8_CB rung | total bpw | KL_conf | nearest IQ | IQ bpw | IQ KL | per-byte |")
     L.append("|---|---|---|---|---|---|---|")

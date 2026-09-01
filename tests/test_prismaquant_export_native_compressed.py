@@ -1051,8 +1051,6 @@ class TestRoundTrip(unittest.TestCase):
             "FP8_SOURCE",
         }
         explicit_gaps = {
-            "MXFP6_E3M2": "no vLLM/compressed-tensors served export path is wired yet",
-            "MXFP6_E2M3": "no vLLM/compressed-tensors served export path is wired yet",
             "INT8_W8A16": "registered allocator research format; no native exporter metadata path",
             "INT4_W4A16_g128": "registered allocator research format; no native exporter metadata path",
         }
@@ -1109,7 +1107,7 @@ class TestRoundTrip(unittest.TestCase):
             enc._NVFP4_SCALE_RULE = enc.NVFP4_SCALE_RULE_STATIC_6
             for fmt in sorted(fr.REGISTRY):
                 with self.subTest(fmt=fmt):
-                    if fmt in {"MXFP6_E3M2", "MXFP6_E2M3", "INT8_W8A16", "INT4_W4A16_g128"}:
+                    if fmt in {"INT8_W8A16", "INT4_W4A16_g128"}:
                         continue
                     if fr.get_format(fmt).family == "gguf":
                         # GGUF-container formats: rendered==served is pinned
@@ -3276,7 +3274,7 @@ class TestRuntimeLegalAssignment(unittest.TestCase):
             td = Path(td)
             self._single_linear_source(td)
 
-            for fmt in ("FP8_E5M2", "NVFP4A16", "MXFP6_E3M2", "INT8_W8A16"):
+            for fmt in ("FP8_E5M2", "NVFP4A16", "INT8_W8A16"):
                 with self.subTest(fmt=fmt):
                     with self.assertRaises(ValueError) as ctx:
                         _coerce_runtime_legal_assignment(

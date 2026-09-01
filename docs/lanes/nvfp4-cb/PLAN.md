@@ -296,7 +296,7 @@ export_native_compressed.py:6768, nvfp4_fused.py:250 bf16-MMA anti-pattern).
     ~0.5bpw structural tax) but "is native-FP4 prefill worth ~0.5 bpw?" — the
     original speed-vs-bytes trade. TEETH: 0.5bpw × 295B ≈ +18GB → may break the
     single-Spark Hy3 fit (the motivating case). BRIGHT SPOT: FP8_CB (4.5-8bpw)
-    pays the tax at ~10% not ~25%, fills the MXFP6 gap, FP8-grid tax <1%.
+    pays the tax at ~10% not ~25%, fills the 4-to-8-bit gap, FP8-grid tax <1%.
   * MITIGATION noted (not built): ship a two-tier scale (fp16/256 + cheap
     sub/16), expand to E4M3-per-16 in the kernel prologue (scales are small,
     no INV-1 issue) → recovers most of the packaging tax while keeping FP4
@@ -316,7 +316,7 @@ export_native_compressed.py:6768, nvfp4_fused.py:250 bf16-MMA anti-pattern).
   (56s/Linear) — now finishing at ≥1 seed. (2) "KILL at matched bytes" is the
   WRONG frame per the RD study: CB was never a matched-bytes competitor. Redirected
   to the real decision number — the native-FP4 SPEED PREMIUM (bpw at which CB
-  reaches IQ2_S/IQ3_XXS KL) + FP8_CB mid-range per-byte (the MXFP6-gap family,
+  reaches IQ2_S/IQ3_XXS KL) + FP8_CB mid-range per-byte (the 4-to-8-bit-gap family,
   where FP8-grid tax <1% may let CB win). Honest downgrade of the ambition:
   NOT "IQ-class compression AND native speed" — it's "native-FP4 speed at a
   bytes premium." Product decision pending the break-even curve.
@@ -330,7 +330,7 @@ export_native_compressed.py:6768, nvfp4_fused.py:250 bf16-MMA anti-pattern).
     interpolation (2.5→2.21, 3.0→0.74). Cross-VALIDATES the RD study's
     independent ~0.19 bpw scale-tax. On 295B: ~+7GB for native-FP4 prefill.
   * Redirected: DROPPED redundant 3h full-k16 anchor; prioritizing FP8_CB
-    K36/40/44 per-byte (MXFP6-gap) + product-k28 (4.0) + IQ3/IQ4 refs → final
+    K36/40/44 per-byte (4-to-8-bit gap) + product-k28 (4.0) + IQ3/IQ4 refs → final
     go/pivot/shelve.
 - Honest correction to my prior "downgrade" message: premium is SMALL (~0.15,
   mitigable toward 0 via two-tier scales), not a kill. Format concept validated.
@@ -341,7 +341,7 @@ export_native_compressed.py:6768, nvfp4_fused.py:250 bf16-MMA anti-pattern).
     0.131 (1-seed, no-sweep) to 0.031 — a **4.2× gain**.
   * FP8_CB ESCAPES the scale-packaging tax (per-channel fp32 scale, not
     group-16 E4M3) — RD study's FP8-grid tax <1% confirmed empirically.
-  * This IS the knee/MXFP6-gap rung the user asked about: bends the NVFP4(4.5,
+  * This IS the knee/4-to-8-bit-gap rung the user asked about: bends the NVFP4(4.5,
     0.222)→FP8(8.0) RD curve — 7× lower KL for +0.5bpw over NVFP4. Beats MXFP6
     by construction (MXFP6 E8M0-handicapped, no vLLM kernel). ANSWER to the
     MXFP6 question: don't add MXFP6; FP8_CB fills that gap better.

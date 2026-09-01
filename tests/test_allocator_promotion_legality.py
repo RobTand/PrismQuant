@@ -105,6 +105,20 @@ _MOE_SHAPES = {
 _MOE_MEMBERS = tuple(_MOE_SHAPES)
 
 
+# A second MoE layer whose moe_intermediate_size (1704) is divisible by 8 but
+# not by 16, so EVERY grouped format is masked on down_proj and only the
+# per-tensor rungs (FP8_E4M3, BF16) are legal for the whole unit. This is the
+# shape that gives promotion two legal-for-all formats above the assignment,
+# which is what makes "cheapest at or above" distinguishable from "highest".
+_ODD_MOE_INTERMEDIATE = 1704
+_ODD_MOE_SHAPES = {
+    f"{_EXPERT}.gate_proj": (_ODD_MOE_INTERMEDIATE, _HIDDEN),
+    f"{_EXPERT}.up_proj": (_ODD_MOE_INTERMEDIATE, _HIDDEN),
+    f"{_EXPERT}.down_proj": (_HIDDEN, _ODD_MOE_INTERMEDIATE),
+}
+_ODD_MOE_MEMBERS = tuple(_ODD_MOE_SHAPES)
+
+
 # ---------------------------------------------------------------------------
 # The defect and the fix
 # ---------------------------------------------------------------------------
@@ -157,14 +171,15 @@ def test_promotion_takes_the_cheapest_legal_format_at_or_above_the_dp_choice():
     format at or above the max-rank assignment", which here is FP8 (8.02 bpp),
     not the highest legal-for-all format (BF16, 16 bpp).
     """
-    fmts = ["NVFP4", "MXFP6_E3M2", "FP8_E4M3", "BF16"]
-    _stats, _costs, _cands, legal = _legality(_MOE_SHAPES, fmts)
-    gate, up, down = _MOE_MEMBERS
-    assert legal[down] == {"NVFP4", "FP8_E4M3", "BF16"}, (
-        "fixture must mask only the group-32 format on down_proj")
+    fmts = ["NVFP4", "MXFP4", "FP8_E4M3", "BF16"]
+    _stats, _costs, _cands, legal = _legality(_ODD_MOE_SHAPES, fmts)
+    gate, up, down = _ODD_MOE_MEMBERS
+    assert legal[down] == {"FP8_E4M3", "BF16"}, (
+        "fixture must mask every grouped format on down_proj, leaving exactly "
+        "the two per-tensor formats legal for the whole unit")
 
     promoted = promote_serving_units(
-        {gate: "MXFP6_E3M2", up: "MXFP6_E3M2", down: "NVFP4"},
+        {gate: "NVFP4", up: "NVFP4", down: "FP8_E4M3"},
         _rank(fmts), profile=DefaultProfile(), legal_formats=legal)
     assert set(promoted.values()) == {"FP8_E4M3"}, promoted
 

@@ -1,5 +1,16 @@
 # MXFP6-grid codebooks: feasibility (performance-gated)
 
+> **2026-09-01 — MXFP6 is removed from the tree.** Rob: *"You can drop mxfp6.
+> It's unsupported everywhere."* `MXFP6_E3M2` / `MXFP6_E2M3` are no longer
+> registered formats, and MXFP6 appears in no menu, profile, lane spec or test.
+> **This file is kept, not archived**, because it is the *evidence* for that
+> decision (Q1: FP6 rides Blackwell's 8-bit datapath — one `kind::mxf8f6f4`,
+> no separate fp6 rate, operands byte-padded to 1 byte per value) and because
+> its subset-dominance result is cited as the anchor by
+> `format_kernel_inventory.md`, `mxfp4_cb_feasibility.md` and
+> `strix_halo_format_plan.md`. Read it as a settled record, not as a live
+> candidate.
+
 2026-07-30. Commissioned by Robert: "explore the feasibility of using MXFP6 to
 support codebook formats… FIRST decide if it could yield any performance
 improvement." Architecture/hardware-capability study only; no GPU work run.

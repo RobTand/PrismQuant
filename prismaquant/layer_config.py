@@ -156,15 +156,6 @@ def canonicalize_format(entry: dict | str | int) -> str:
             return "MXFP8_E4M3"
         if dt == "fp8_e5m2" and bits == 8:
             return "FP8_E5M2"
-        if dt == "mx_fp" and bits == 6:
-            elt = str(entry.get("weight_element_dtype", "fp6_e3m2")).lower()
-            if elt == "fp6_e2m3":
-                return "MXFP6_E2M3"
-            return "MXFP6_E3M2"
-        if dt == "fp6_e3m2" and bits == 6:
-            return "MXFP6_E3M2"
-        if dt == "fp6_e2m3" and bits == 6:
-            return "MXFP6_E2M3"
         raise ValueError(f"unsupported scheme: {entry!r}")
     if isinstance(entry, str):
         value = entry.lower()

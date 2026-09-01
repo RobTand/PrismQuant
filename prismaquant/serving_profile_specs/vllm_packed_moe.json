@@ -9,7 +9,7 @@
     "exporter": "prismaquant.export_native_compressed",
     "codec_formats_from": ["prismaquant.export_native_compressed:EXPORTABLE_FORMATS"],
     "reason": "exporter_cannot_emit",
-    "detail": "The lane's menu IS the compressed-tensors exporter's own EXPORTABLE_FORMATS declaration: every format in its FORMAT_SCHEME table (config_groups metadata) plus the BF16 container passthrough, which ships as plain safetensors bf16 on the checkpoint's ignore list. Passthroughs need no entry here -- the exporter already folds them in, so there is exactly one source of truth. Rungs outside that set (the A16 family NVFP4A16/MXFP8A16/INT8_W8A16/INT4_W4A16_g128, MXFP6, FP8_E5M2, the GGUF ggml types) have no config_groups scheme, so _quantize_2d raises `unsupported format` and _coerce_runtime_legal_assignment hard-fails rather than rewriting the Linear to BF16 and blowing the allocated bit budget. They stay reachable on the research profile."
+    "detail": "The lane's menu IS the compressed-tensors exporter's own EXPORTABLE_FORMATS declaration: every format in its FORMAT_SCHEME table (config_groups metadata) plus the BF16 container passthrough, which ships as plain safetensors bf16 on the checkpoint's ignore list. Passthroughs need no entry here -- the exporter already folds them in, so there is exactly one source of truth. Rungs outside that set (the A16 family NVFP4A16/MXFP8A16/INT8_W8A16/INT4_W4A16_g128, FP8_E5M2, the GGUF ggml types) have no config_groups scheme, so _quantize_2d raises `unsupported format` and _coerce_runtime_legal_assignment hard-fails rather than rewriting the Linear to BF16 and blowing the allocated bit budget. They stay reachable on the research profile."
   },
   "runtime_packages": [
     {

@@ -917,7 +917,7 @@ def cost_entry_is_bit_exact(
 
     ``weight_mse`` is a mean of squared per-element deltas: it is exactly
     zero only when the format stores the source weights verbatim (W' == W)
-    — e.g. MXFP8 over an FP8 128-block source, or MXFP4/MXFP6/MXFP8 over
+    — e.g. MXFP8 over an FP8 128-block source, or MXFP4/MXFP8 over
     an MXFP4-packed QAT source. But W' == W only silences the WEIGHT side.
     For W·A· formats (``FormatSpec.act_quant_changes_input`` — NVFP4,
     FP8 dynamic, the MX family, GGUF Q8_1 compute) the cost pipeline

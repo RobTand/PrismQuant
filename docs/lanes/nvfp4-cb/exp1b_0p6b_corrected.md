@@ -51,7 +51,7 @@ learned-SHARED-per-role PRODUCT-mode NVFP4-CB (fast, conservative upper bound) v
 
 ### FP8-CB mid-range — does it WIN per-byte?
 
-RD study: FP8-grid tax <1%; this is the MXFP6-gap band where CB may beat IQ per-byte. FP8_CB vs the nearest IQ point:
+RD study: FP8-grid tax <1%; this is the 4-to-8-bit gap band where CB may beat IQ per-byte. FP8_CB vs the nearest IQ point:
 
 | FP8_CB rung | total bpw | KL_conf | nearest IQ | IQ bpw | IQ KL | per-byte |
 |---|---|---|---|---|---|---|

@@ -724,7 +724,7 @@ class ServingProfile:
     # constrains *emulation / kernel* legality only and does not
     # correspond to an artifact container, so no exporter bounds its
     # menu. Deliberately true for `research`, which exists so research
-    # rungs with no served path (MXFP6, INT4_W4A16_g128, the A16 family)
+    # rungs with no served path (INT4_W4A16_g128, the A16 family)
     # stay measurable. False is the fail-closed default: a new serving
     # profile must name its export lane or declare itself emulation-only.
     emulation_only: bool = False

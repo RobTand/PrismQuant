@@ -2516,7 +2516,7 @@ def main():
 
     # --- Format-family coherence check -----------------------------------
     # A sensible format ladder has at most ONE format per bit tier. Having
-    # both NVFP4 and MXFP4 (or MXFP6_E3M2 and MXFP6_E2M3) means the allocator
+    # both NVFP4 and MXFP4 means the allocator
     # picks between them based on tiny measurement noise per-layer, which
     # produces a serving mess: two separate kernel paths for the same tier.
     #
@@ -2537,8 +2537,8 @@ def main():
                + "\nRecommended bundles (vLLM serving, today):\n"
                "  Production     : NVFP4,FP8_DYNAMIC,BF16\n"
                "  MX research    : MXFP4,MXFP8_E4M3,BF16\n"
-               "  Experimental   : NVFP4,MXFP6_E3M2,FP8_DYNAMIC,BF16   "
-               "(MXFP6 hardware-supported on Blackwell, vLLM kernels not yet landed)")
+               "  Experimental   : NVFP4,MXFP4,FP8_DYNAMIC,BF16   "
+               "(MXFP4 serves W4A16 -- no A4 kernel on this lane)")
         if args.enforce_family_coherence:
             raise SystemExit(f"[alloc] ERROR: {msg}")
         else:

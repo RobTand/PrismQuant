@@ -15,7 +15,7 @@ uniformly:
   - min_capability_sm       minimum SM arch (useful for hardware filter)
 
 Users register new formats with @register_format. New hardware formats
-(e.g. a future MXFP6 variant or Ada W4A8) can be added without touching
+(e.g. a future MX variant or Ada W4A8) can be added without touching
 core code.
 """
 from __future__ import annotations
@@ -740,7 +740,7 @@ register_format(FormatSpec(
     activation_quantize_dequantize=lambda x: x,
 ))
 
-# MXFP4 / MXFP8_E4M3 / MXFP8_E5M2 / MXFP6 variants
+# MXFP4 / MXFP8_E4M3 / MXFP8_E5M2 variants
 # (OCP MX, group_size=32, E8M0 scales)
 # All MX formats use mx_scale=True so RTN models the actual E8M0 power-of-two
 # per-block scale used by the serving path. Without this the measured RTN
@@ -753,24 +753,6 @@ register_format(FormatSpec(
     autoround_config=lambda: _mx_autoround(4, 32, 4, "fp4_e2m1"),
     quantize_dequantize=_make_rtn("fp4_e2m1", 32, mx_scale=True),
     activation_quantize_dequantize=_make_rtn("fp4_e2m1", 32, mx_scale=True),
-))
-register_format(FormatSpec(
-    name="MXFP6_E3M2",
-    weight_bits=6, group_size=32, scale_bits=8, scale_dtype_name="uint8_e8m0",
-    weight_element_dtype="fp6_e3m2", act_bits=6, act_dtype_name="fp6_e3m2",
-    act_group_size=32, family="mx", min_capability_sm=100,
-    autoround_config=lambda: _mx_autoround(6, 32, 6, "fp6_e3m2"),
-    quantize_dequantize=_make_rtn("fp6_e3m2", 32, mx_scale=True),
-    activation_quantize_dequantize=_make_rtn("fp6_e3m2", 32, mx_scale=True),
-))
-register_format(FormatSpec(
-    name="MXFP6_E2M3",
-    weight_bits=6, group_size=32, scale_bits=8, scale_dtype_name="uint8_e8m0",
-    weight_element_dtype="fp6_e2m3", act_bits=6, act_dtype_name="fp6_e2m3",
-    act_group_size=32, family="mx", min_capability_sm=100,
-    autoround_config=lambda: _mx_autoround(6, 32, 6, "fp6_e2m3"),
-    quantize_dequantize=_make_rtn("fp6_e2m3", 32, mx_scale=True),
-    activation_quantize_dequantize=_make_rtn("fp6_e2m3", 32, mx_scale=True),
 ))
 register_format(FormatSpec(
     name="MXFP8_E4M3",  # explicit name for the canonical variant

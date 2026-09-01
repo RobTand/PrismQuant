@@ -353,7 +353,7 @@ def test_research_profile_is_the_declared_emulation_only_exemption():
     assert research.emulation_only is True
     assert research.export_lane is None
     assert lane_emittable_formats("research") is None
-    for fmt in ("MXFP6_E3M2", "INT4_W4A16_g128", "NVFP4A16", "MXFP8A16",
+    for fmt in ("INT4_W4A16_g128", "NVFP4A16", "MXFP8A16",
                 "INT8_W8A16", "Q4_K"):
         assert check_serving_format("research", DENSE_QNAME, fmt).legal, fmt
 
@@ -406,7 +406,7 @@ def test_vllm_lane_denies_the_a16_rungs_with_a_structural_reason():
     re-encode short-circuit prices a weight-lossless A16 rung at dloss
     0.0, the unbeatable global minimum."""
     for fmt in ("NVFP4A16", "MXFP8A16", "INT8_W8A16", "INT4_W4A16_g128",
-                "MXFP6_E3M2", "MXFP6_E2M3", "Q4_K", "IQ4_XS"):
+                "Q4_K", "IQ4_XS"):
         decision = check_serving_format(VLLM_PROFILE, DENSE_QNAME, fmt)
         assert not decision.legal, fmt
         assert decision.reason == "exporter_cannot_emit", fmt
