@@ -173,6 +173,16 @@ class TesseraFamily:
         return f"TESSERA_{self.base}_K{self.arity}"
 
     @property
+    def family(self) -> str:
+        """Alias for :attr:`name`.
+
+        The RD allocator identifies a family by ``spec.family``; keeping the
+        alias means retargeting it is an import swap rather than a rewrite,
+        which is the whole point of the seam being three fields wide.
+        """
+        return self.name
+
+    @property
     def payload_bits(self) -> int:
         """Width of the code space: ``arity * log2(base_size)``."""
         return (self.base_size.bit_length() - 1) * self.arity
