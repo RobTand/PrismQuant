@@ -1249,6 +1249,17 @@ def require_producer_formats(
 def get_format(name: str) -> FormatSpec:
     canonical = canonical_format_name(name)
     if canonical not in REGISTRY:
+        # Tessera rungs are parameters of a family, not registry rows: one
+        # family addresses ~9500 rungs at 1/256-bpp resolution, and freezing
+        # those into REGISTRY would turn a continuous rate axis into a menu
+        # someone has to maintain. Synthesize on demand so every consumer that
+        # resolves a format by name works unchanged, then fall through to the
+        # normal KeyError for anything that is not Tessera-shaped.
+        from .tessera_render import synthesize_tessera_spec
+
+        spec = synthesize_tessera_spec(canonical)
+        if spec is not None:
+            return spec
         raise KeyError(f"Unknown format '{name}'. Available: "
                        f"{sorted((*REGISTRY.keys(), *FORMAT_ALIASES.keys()))}")
     return REGISTRY[canonical]
