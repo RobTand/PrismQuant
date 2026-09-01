@@ -1,8 +1,23 @@
 # PrismaBuild — distributed campaign execution (spec, deferred)
 
-**Status: SPEC / NOT BUILT.** Filed 2026-08-26 from a design conversation with
-Robert; return to this after GLM-5.3-Flash v1 ships. Nothing in the live
-pipeline depends on this document.
+> **⚠ Status banner is STALE as of 2026-08-31 — the code exists.** This header
+> still reads "SPEC / NOT BUILT", but `prismaquant/prismabuild.py` has been
+> committed since `f792327` (2026-08-30, "Add deterministic PrismaBuild core")
+> and now rides **11 unmerged `origin/` branches**, none of them merged into
+> `origin/main`:
+> `git log --all --oneline -- prismaquant/prismabuild.py` shows the history;
+> `git branch -r --contains f792327` shows the carriers. The most recent work is
+> `57a517c` / `452c6f6` (2026-08-31, output leases and initial-miss rendezvous).
+> **Read the branches, not this document,** for what is actually implemented.
+> Left un-rewritten deliberately: picking the single merge candidate out of those
+> 11 branches is open work (Rob, 2026-08-31: *"The point of PrismaBuild is to
+> dispatch work to other machines... you can split it into its own project"*),
+> and rewriting the spec before that choice is made would just create a second
+> stale document. Prime directive applies to everything below this line.
+
+**Status (as filed): SPEC / NOT BUILT.** Filed 2026-08-26 from a design
+conversation with Robert; return to this after GLM-5.3-Flash v1 ships. Nothing
+in the *live pipeline* depends on this document — that part is still true.
 
 ## Problem
 
