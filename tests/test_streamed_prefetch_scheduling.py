@@ -259,6 +259,35 @@ def test_turnaround_releases_stale_prefetch_bytes(monkeypatch):
     _drain(ctx)
 
 
+def test_repeated_endpoint_preserves_seeded_reverse_prefetch(monkeypatch):
+    """Forward N-1 -> reverse N-1 must not discard the reverse seed.
+
+    The probe installs the top layer at the end of phase 1, prefetches N-2,
+    then installs the same top layer to begin phase 3.  A zero delta is a
+    phase boundary, not evidence that the old +1 direction should continue.
+    """
+    reads: list[int] = []
+    ctx = _make_ctx(monkeypatch, num_layers=8, reads=reads)
+    # Keep the completed future as the only delivery path.  If top-up drops
+    # it, ensure_loaded must perform a second source read and the test catches
+    # the exact NFS amplification seen by the production schedule.
+    monkeypatch.setattr(ctx.layer_cache, "_effective_max", lambda: 0)
+    ctx._last_installed = 7
+    ctx._walk_step = 1
+
+    reverse_seed = ctx.schedule_prefetch(6)
+    assert reverse_seed is not None
+    reverse_seed.result()
+    assert not ctx.layer_cache.peek(6)
+
+    ctx._top_up_prefetch(7)
+    _tensors, src = ctx.ensure_loaded(6)
+
+    assert src == "wait"
+    assert reads == [6]
+    _drain(ctx)
+
+
 # ---------------------------------------------------------------------------
 # 4. Pressure trim must not evict a layer the walk pinned for imminent use.
 def test_pressure_trim_prefers_unpinned_victims(monkeypatch):

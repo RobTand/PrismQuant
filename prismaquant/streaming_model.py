@@ -628,6 +628,14 @@ class StreamingContext:
         """
         prev = self._last_installed
         self._last_installed = L
+        # A phase boundary may install the same endpoint twice (the forward
+        # sweep ends at N-1 and the reverse sweep starts at N-1).  That is not
+        # another forward step: retaining the stale direction here would
+        # release the reverse futures that the caller just seeded and replace
+        # them with an out-of-range forward window.  Wait for the first
+        # distinct layer to establish the new direction.
+        if prev == L:
+            return
         step = 0 if prev is None else L - prev
         if step in (1, -1):
             self._walk_step = step
