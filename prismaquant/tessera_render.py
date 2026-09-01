@@ -136,6 +136,16 @@ def render_tessera_weight(
         raise ValueError(f"{name!r} is not a Tessera format name")
     family, rung = parsed
 
+    # Refuse rather than ignore.  The render contract passes ``col_weights``
+    # for the imatrix-weighted families; Tessera's encoder does not consume it
+    # yet, and silently dropping it would price a lever that was never applied
+    # -- the same failure shape as an activation dict keyed by the wrong name.
+    if col_weights is not None:
+        raise NotImplementedError(
+            "Tessera render does not consume col_weights yet; it must not be "
+            "silently ignored. Add imatrix weighting to encode_unit first."
+        )
+
     if weight.ndim != 2:
         raise ValueError(
             f"{name}: Tessera renders a 2-D Linear, got shape {tuple(weight.shape)}. "
