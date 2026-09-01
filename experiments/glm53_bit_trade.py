@@ -75,29 +75,54 @@ def main():
           f"{fr.get_format(EXPERT_HIGH).effective_bits_for_shape((4096, 2048)):.4f}, "
           f"FP8_E4M3 = {fp8.effective_bits_for_shape((4096, 2048)):.4f}\n")
 
-    # ---- cost leg: what BF16 -> FP8 does to the attention/dense body --------
-    print("COST leg -- other_body BF16 -> FP8_E4M3 (rel functional error)")
+    # ---- cost leg: what BF16 -> FP8 does to the non-expert body ----------
+    # Enumerate the cache rather than guessing names: the probe cached the
+    # forget-gate, dense-MLP, shared-expert and lm_head inputs, and NOT q/k/v/o
+    # -- so "attention" here means the gating projections that were captured,
+    # and the claim is scoped to that rather than quietly generalised.
+    import os
+    import re
+
+    print("COST leg -- non-expert body BF16 -> FP8_E4M3 (rel functional error)")
     cost = []
-    for layer in (5, 20, 42):
-        for proj in ("mlp__gate_proj", "mlp__up_proj", "mlp__down_proj",
-                     "mlp__shared_experts__gate_proj"):
-            path = f"{ACT}/model__language_model__layers__{layer}__{proj}.pt"
-            name = ("model.language_model.layers."
-                    f"{layer}.{proj.replace('__', '.')}.weight")
-            if name not in INDEX:
-                continue
-            try:
-                _, x = split_act(path)
-            except FileNotFoundError:
-                continue
-            w = load(name)
-            if w.shape[1] != x.shape[1]:
-                del w; torch.cuda.empty_cache(); continue
-            e = rel_err(x, w.float(), fp8.quantize_dequantize(w).float())
-            cost.append(e)
-            print(f"  L{layer:<3d} {proj:<32s} {e:.6f}")
+    seen_kinds = set()
+    for fname in sorted(os.listdir(ACT)):
+        if not fname.endswith(".pt") or "__experts.pt" in fname:
+            continue
+        stem = fname[:-3]
+        name = stem.replace("__", ".") + ".weight" if stem != "lm_head" else "lm_head.weight"
+        if name not in INDEX:
+            continue
+        m = re.search(r"\.layers\.(\d+)\.", name)
+        # Sample a few layers per projection kind, not all 46 -- the point is a
+        # representative cost, and every extra tensor is a full GPU render.
+        kind = re.sub(r"\.layers\.\d+\.", ".layers.N.", name)
+        if m and list(cost).count(None) == 0 and kind in seen_kinds and \
+                int(m.group(1)) not in (5, 20, 42):
+            continue
+        if m and int(m.group(1)) not in (5, 20, 42):
+            continue
+        seen_kinds.add(kind)
+        try:
+            _, x = split_act(f"{ACT}/{fname}")
+        except (FileNotFoundError, KeyError):
+            continue
+        w = load(name)
+        if w.ndim != 2 or w.shape[1] != x.shape[1]:
             del w, x
             torch.cuda.empty_cache()
+            continue
+        e = rel_err(x, w.float(), fp8.quantize_dequantize(w).float())
+        cost.append(e)
+        print(f"  {name.replace('model.language_model.', ''):<52s} {e:.6f}")
+        del w, x
+        torch.cuda.empty_cache()
+
+    if not any("lm_head" in k for k in seen_kinds):
+        raise SystemExit(
+            "lm_head was not priced, but the budget doc moves its 1.18 GiB to "
+            "FP8 -- the cost leg would be missing a term it depends on"
+        )
 
     # ---- gain leg: what +0.215 bpp does to the routed experts --------------
     print("\nGAIN leg -- experts 4.0000 -> 4.2148 bpp (rel functional error)")
@@ -134,6 +159,15 @@ def main():
     print(f"gain: experts go {lo:.6f} -> {hi:.6f} rel error ({(hi/lo - 1)*100:+.1f}%)")
     print(f"      on {304405.8 / 320120.0 * 100:.2f}% of quantizable params")
     print()
+    # Weight each leg by the parameter share it applies to. This is a crude
+    # currency -- it treats relative output error as if it were additive across
+    # Linears, which the additivity work says is roughly true in fp32 and not
+    # exactly -- but it is the same currency on both sides, so the ratio is a
+    # ranking and not a magnitude.
+    w_cost = c * (7648.2 / 320120.0)
+    w_gain = (lo - hi) * (304405.8 / 320120.0)
+    print(f"\nparam-weighted: cost {w_cost:.3e}   gain {w_gain:.3e}   "
+          f"gain/cost = {w_gain / w_cost:.1f}x")
     if hi < lo:
         print("The extra expert bits REDUCE expert error, and the FP8 leg pays "
               f"{c:.6f} on 2.4% of the params to get it.")
