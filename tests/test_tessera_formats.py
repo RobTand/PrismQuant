@@ -35,21 +35,20 @@ from prismaquant.tessera_formats import (
 
 # (label, family name, body q256, artifact bpp as measured on built bytes)
 #
-# The first four are top rungs, where the retired ``(q256+128)/256`` formula
-# happened to be right and these numbers are unchanged.  The two E4M3 entries
-# are sub-cap and were published at 4.5 and 5.5 bpp; the artifact the encoder
-# builds for either weighs **7.5**, because BODY + COMPLETION is the cap at
-# every rung.  Any comparison that spent a "5.5 bpp" E4M3 rung against FP8 was
-# really spending 7.5 -- which does not rescue Tessera in the FP8 band, it
-# makes the gap wider (7.5 against FP8's 8.0 is 6.25% fewer bytes, not the
-# 18.8% that was claimed).
+# Every entry is ``q256/256 + 0.5`` -- the body the rung names plus the S6b
+# scale plane -- at the exporter's ``completion=0``.  The two E4M3 rows are
+# sub-cap and are the ones that moved twice on 2026-09-01: published at 4.5
+# and 5.5, "corrected" to 7.5 when the serialiser was found writing the
+# COMPLETION plane at full width, and back to 4.5 and 5.5 once that was fixed
+# (tessera `a96064b`).  4.5 and 5.5 were right the whole time; the middle
+# value was a bug's arithmetic.
 MEASURED_LADDER = [
     ("E2M1 scalar R=3", "TESSERA_E2M1_K1", 768, 3.5),
     ("E2M1 k=2 R=7", "TESSERA_E2M1_K2", 896, 4.0),
     ("free-16 k=2 R=7", "TESSERA_LM16_K2", 896, 4.0),
     ("free-16 scalar R=3", "TESSERA_LM16_K1", 768, 3.5),
-    ("E4M3 R=4 (sub-cap)", "TESSERA_E4M3_K1", 1024, 7.5),
-    ("E4M3 R=5 (sub-cap)", "TESSERA_E4M3_K1", 1280, 7.5),
+    ("E4M3 R=4 (sub-cap)", "TESSERA_E4M3_K1", 1024, 4.5),
+    ("E4M3 R=5 (sub-cap)", "TESSERA_E4M3_K1", 1280, 5.5),
 ]
 
 
@@ -148,16 +147,22 @@ def test_a_tessera_shaped_name_with_an_illegal_rung_raises():
 
 
 def test_the_scale_plane_is_half_a_bit_everywhere():
+    """A flat half-bit on top of the body, at BOTH ends of the family.
+
+    This checked only the top for a stretch, because the artifact bounds had
+    been collapsed to a point at the cap on the reading that COMPLETION
+    backfills whatever BODY does not spend.  Checking both ends is what makes
+    it a statement about the scale plane rather than about the rate span: if
+    the two ends ever needed different offsets, one of them would not be the
+    scale plane.
+    """
     assert SCALE_PLANE_BITS_Q256 == 128
     for spec in enumerate_grid_space():
-        # Against the body's *top*, not its bottom: the artifact bound is a
-        # point at the cap, because COMPLETION backfills whatever BODY does not
-        # spend.  Comparing against the body floor measured the rate span and
-        # the scale plane at once and called the sum "the scale plane".
-        _, body_hi = spec.mathematical_q256_bounds
+        body_lo, body_hi = spec.mathematical_q256_bounds
         art_lo, art_hi = spec.artifact_q256_bounds
-        assert art_lo == art_hi
-        assert art_hi - body_hi == SCALE_PLANE_BITS_Q256
+        assert art_lo - body_lo == SCALE_PLANE_BITS_Q256, spec.name
+        assert art_hi - body_hi == SCALE_PLANE_BITS_Q256, spec.name
+        assert art_hi > art_lo, (spec.name, "a family advertises an interval")
 
 
 def test_an_adaptive_surface_must_name_its_evidence():
@@ -199,11 +204,14 @@ def test_the_bpp_formula_agrees_with_tesseras_exact_byte_accountant():
     makes it a *second* statement of something tessera already computes
     exactly, and a second statement is a drift bug waiting to happen.
 
-    ``completion=cap`` is the load-bearing argument, and passing 0 here is how
-    this test agreed with a wrong formula for as long as it did.
-    ``unit_artifact`` writes COMPLETION at the full ``cap - rate`` width at
-    every rung, so ``terminal_rate``'s ``completion=0`` default describes an
-    artifact the encoder never builds.  It has to be told what the wire does.
+    ``completion`` is the load-bearing argument, and it is checked at BOTH
+    ends.  This test once passed ``completion=cap`` because ``unit_artifact``
+    wrote the COMPLETION plane at full width whatever depth the encoder used --
+    so the flat ladder that produced looked like the format.  It was a bug in
+    three places (tessera `a96064b`, `eec18ba`); the plane now follows the
+    spend.  Pinning both ends is what stops either error from coming back: at
+    ``completion=0`` the size must track the rung, and at ``completion=cap`` it
+    must be the family's ceiling at every rung.
 
     The ``arity != 1`` skip was the other half of the blind spot: it hid the
     one family where the old formula and the accountant disagreed outright
@@ -218,46 +226,73 @@ def test_the_bpp_formula_agrees_with_tesseras_exact_byte_accountant():
             # ``terminal_rate`` takes q256 per *code* -- it calls
             # ``root_from_q256`` directly -- while a rung is quoted per
             # position, so the arity factor has to be applied by the caller.
-            exact = terminal_rate(
-                q * spec.arity, 4096, 4096, with_scale_refine=True,
-                cap=spec.rate_cap, arity=spec.arity, completion=spec.rate_cap,
-            )
-            assert artifact_bpp(spec, q) == exact, (spec.name, q)
-            checked += 1
+            for depth in (0, spec.rate_cap):
+                exact = terminal_rate(
+                    q * spec.arity, 4096, 4096, with_scale_refine=True,
+                    cap=spec.rate_cap, arity=spec.arity, completion=depth,
+                )
+                assert artifact_bpp(spec, q, depth) == exact, (spec.name, q, depth)
+                checked += 1
+            assert artifact_bpp(spec, q, None) == artifact_bpp(
+                spec, q, spec.rate_cap)
     assert checked >= 12
 
 
-def test_the_rung_does_not_set_the_size():
-    """The measured fact the pricing fix encodes, stated on its own so it
-    cannot be lost in a refactor: every rung of a family weighs the same.
+def test_the_rung_sets_the_size_and_the_completion_depth_is_the_other_axis():
+    """Stated on its own so neither of the two errors can come back.
 
-    A column at rate R writes R body bits and ``cap - R`` completion bits, so
-    the rung shifts bits between two planes and never changes their sum.  R is
-    a *quality* knob at fixed size -- more of the budget under the trellis's
-    joint Viterbi search rather than greedy per-position completion -- which
-    also means every sub-top rung is strictly dominated: identical bytes,
-    worse error.
+    A column at body rate ``R`` writes ``R`` bits and may spend up to
+    ``cap - R`` completion bits.  At ``completion=0`` -- the exporter's default
+    and the measured optimum -- the artifact tracks the rung one for one, and
+    the ladder is a continuous, strictly increasing size axis.  At full depth
+    body and completion sum to ``cap`` and every rung of a family really does
+    weigh the same; that is a corner of the rate surface, not the surface.
+
+    For a stretch on 2026-09-01 this file asserted the corner as the whole
+    thing, because the serialiser wrote the plane at full width regardless.
     """
     for spec in enumerate_grid_space():
         rungs = realisable_rungs(spec)
-        priced = {artifact_bpp(spec, q) for q in rungs}
-        assert len(priced) == 1, (spec.name, sorted(map(float, priced)))
-        # ...and that one price is the cap, not the rung.
-        assert priced.pop() == Fraction(
-            spec.rate_cap * 256, spec.arity
-        ) / 256 + Fraction(1, 2)
+        ceiling = Fraction(spec.rate_cap * 256, spec.arity) / 256 + Fraction(1, 2)
+
+        priced = [artifact_bpp(spec, q) for q in rungs]
+        assert priced == sorted(priced), spec.name
+        assert len(set(priced)) == len(rungs), (spec.name, "flat ladder")
+        assert priced[-1] == ceiling
+        for rung, bpp in zip(rungs, priced):
+            assert bpp == Fraction(rung, 256) + Fraction(1, 2)
+
+        at_full = {artifact_bpp(spec, q, None) for q in rungs}
+        assert at_full == {ceiling}, (spec.name, sorted(map(float, at_full)))
 
 
 # --------------------------------------------------- the wire gate vs the lane
 
 
 def test_a_rung_that_renders_can_still_be_unwritable():
-    """E4M3 is a *hardware* grid, so ``_grid_for`` admits it and the render
-    succeeds -- but its digest is not a wire commitment, so the exporter
-    refuses in ``alphabet_plane()``.  That refusal lands after allocation and
-    after the production cache is built, which on a GLM-scale run is hours of
-    work discarded at the last step.  The predicate has to be answerable up
-    front."""
+    """``_grid_for`` admits any grid the renderer can build, but only grids
+    whose digest is a wire commitment can be written -- and the exporter's
+    refusal lands after allocation and after the production cache is built,
+    which on a GLM-scale run is hours of work discarded at the last step.  The
+    predicate has to be answerable up front.
+
+    The example used to be E4M3, which was writable all along and merely
+    missing from the registry (tessera `a4de134` admitted it).  With it in,
+    the renderable set and the writable set **coincide today**: the renderer
+    takes hardware base grids only, and all three hardware-derived grids that
+    fit in a one-byte plane entry are now registered.  A free Lloyd-Max grid is
+    unwritable for a reason no registry line can fix -- its values are fitted
+    to the tensor, so no reader rebuilds them from a name -- but it does not
+    render either, so it cannot demonstrate the gap.
+
+    The gap is therefore asserted through the mechanism rather than through an
+    example: remove a grid's digest from the wire commitment and the predicate
+    must go False *while the render still succeeds*.  That is the case the
+    predicate exists for, and it will recur the moment a fourth grid renders.
+    """
+    from unittest import mock
+
+    import tessera.alphabet as alphabet
     from prismaquant.tessera_render import (
         render_tessera_weight,
         tessera_rung_is_serialisable,
@@ -265,11 +300,23 @@ def test_a_rung_that_renders_can_still_be_unwritable():
 
     torch.manual_seed(0)
     weight = torch.randn(64, 512) * 0.02
-    # It really does render, and really is not serialisable.  Both halves
-    # matter: if it stopped rendering this test would pass for the wrong reason.
     assert render_tessera_weight(weight, "TESSERA_E4M3_K1_R1024").shape == (64, 512)
-    assert tessera_rung_is_serialisable("TESSERA_E4M3_K1_R1024") is False
+    assert tessera_rung_is_serialisable("TESSERA_E4M3_K1_R1024") is True
     assert tessera_rung_is_serialisable("TESSERA_E2M1_K2_R896") is True
+
+    without = {digest: grid for digest, grid in alphabet.SERIALISABLE_GRIDS.items()
+               if grid.name != "E4M3"}
+    assert len(without) == len(alphabet.SERIALISABLE_GRIDS) - 1
+    with mock.patch.object(alphabet, "SERIALISABLE_GRIDS", without):
+        # The predicate is lru_cached -- it is asked once per rung per run on a
+        # menu of thousands -- so a test that patches the registry underneath
+        # it must clear the cache or it reads its own earlier answer.
+        tessera_rung_is_serialisable.cache_clear()
+        # Still renders -- if it stopped, this would pass for the wrong reason.
+        assert render_tessera_weight(
+            weight, "TESSERA_E4M3_K1_R1024").shape == (64, 512)
+        assert tessera_rung_is_serialisable("TESSERA_E4M3_K1_R1024") is False
+    tessera_rung_is_serialisable.cache_clear()
 
 
 def test_flipping_the_serving_lane_cannot_admit_an_unwritable_rung():
@@ -284,8 +331,11 @@ def test_flipping_the_serving_lane_cannot_admit_an_unwritable_rung():
 
     with mock.patch.object(tr, "_TESSERA_SERVING_LANE_EXISTS", True):
         assert tr.synthesize_tessera_spec("TESSERA_E2M1_K2_R896").producer_eligible
-        assert not tr.synthesize_tessera_spec(
+        assert tr.synthesize_tessera_spec(
             "TESSERA_E4M3_K1_R1024"
+        ).producer_eligible
+        assert not tr.synthesize_tessera_spec(
+            "TESSERA_LM16_K1_R768"
         ).producer_eligible
 
 

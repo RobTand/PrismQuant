@@ -233,19 +233,21 @@ class TesseraFamily:
 
     @property
     def artifact_q256_bounds(self) -> tuple[int, int]:
-        """What ships -- and it is a *point*, not an interval.
+        """What ships: the body interval plus the S6b scale plane.
 
-        ``mathematical_q256_bounds`` describes the BODY plane, which really
-        does run from 1 bit per code to the cap.  The artifact does not,
-        because COMPLETION takes exactly the width BODY gives up: the shipped
-        size is ``cap`` bits per code at every rung, so both ends of this
-        interval are the same number.  It is kept as a pair because callers
-        unpack it as bounds, and because the body interval above remains the
-        honest description of the plane it names.
+        ``mathematical_q256_bounds`` describes the BODY plane, running from 1
+        bit per code to the cap; the artifact adds a flat half-bit of scale at
+        both ends, so this is that interval shifted, not collapsed.
+
+        It *was* collapsed to a point for a few hours on 2026-09-01, on the
+        reading that COMPLETION takes exactly the width BODY gives up.  That
+        was true of the serialiser at the time and false of the format: the
+        plane was written at full width whatever depth the encoder spent
+        (tessera `a96064b`).  A family really does advertise an interval, and
+        the DP really can search inside it.
         """
-        _, hi = self.mathematical_q256_bounds
-        top = hi + SCALE_PLANE_BITS_Q256
-        return (top, top)
+        lo, hi = self.mathematical_q256_bounds
+        return (lo + SCALE_PLANE_BITS_Q256, hi + SCALE_PLANE_BITS_Q256)
 
     def format_name(self, body_rate_q256: int) -> str:
         validate_body_rate_q256(self, body_rate_q256)
@@ -353,32 +355,52 @@ def realisable_rungs(
     return range(lo, hi + 1, step_q256)
 
 
-def artifact_bpp(family: "str | TesseraFamily", body_rate_q256: int) -> Fraction:
-    """Bits per position the artifact actually weighs: body plus scale plane.
+def artifact_bpp(
+    family: "str | TesseraFamily",
+    body_rate_q256: int,
+    completion: "int | None" = 0,
+) -> Fraction:
+    """Bits per position the artifact weighs: body, completion, scale plane.
 
-    **The rung does not set the size.**  A column at rate ``R`` writes ``R``
-    body bits *and* ``cap - R`` completion bits, so body + completion is
-    ``cap`` per code at every rate: the rung shifts bits between two planes
-    without changing their sum.  Measured on real artifacts, every
-    ``E2M1_K1`` rung from R256 to R768 weighs the same 3.50 bpp while its
-    error moves 0.0755 -> 0.0209.
+    The rate is **two-dimensional**.  A column at body rate ``R`` writes ``R``
+    body bits and may spend up to ``cap - R`` further bits selecting among the
+    descendants its trellis subset reaches; the encoder spends
+    ``min(completion, cap - R)`` of them.  ``completion=0`` is the exporter's
+    default and the measured optimum -- at every matched artifact size, body
+    rate buys more accuracy than completion depth does (up to 1.4x on
+    ``E2M1_K1``) -- and ``None`` means full depth, where body + completion sum
+    to ``cap`` and every rung of a family weighs the same.
 
-    This returned ``(body_rate_q256 + 128)/256`` until 2026-09-01, which is
-    right *only* at a family's top rung -- where ``body_rate_q256`` already
-    equals ``cap*256/arity`` -- and every artifact ever exported happened to
-    sit there, so nothing caught it.  Off the top rung it underpriced by up to
-    133% (R256 quoted 1.5 bpp against 3.5 bpp of bytes), in the direction that
-    silently busts a byte budget.
-
-    ``body_rate_q256`` is still taken and still validated: it selects the rung
-    and decides the *error*, and an illegal one must raise here rather than
-    downstream.  It just does not enter the size.
+    That last sentence was, from 2026-09-01 until later the same day, this
+    function's entire contract: it returned the family's cap regardless of the
+    rung, because the serialiser wrote the COMPLETION plane at full width
+    whatever depth the encoder used, so the ladder really was flat on disk.
+    That was a bug in three places (tessera `a96064b`, `eec18ba`) and not a
+    property of the format.  Both errors are worth remembering, because they
+    point opposite ways: quoting ``(q256+128)/256`` against a full-width
+    completion plane underpriced R256 by 133%, and quoting the cap against an
+    honest one overprices it by the same amount.  The size is what the
+    accountant writes, and the accountant now follows the spend.
     """
     spec = get_tessera_family(family)
     validate_body_rate_q256(spec, body_rate_q256)
-    return (
-        Fraction(spec.rate_cap * Q256_UNIT, spec.arity) + SCALE_PLANE_BITS_Q256
-    ) / Q256_UNIT
+    cap_q256 = Fraction(spec.rate_cap * Q256_UNIT, spec.arity)
+    body = Fraction(body_rate_q256)
+    room = cap_q256 - body
+    if completion is None:
+        spent = room
+    else:
+        if completion < 0:
+            raise TesseraFormatError(
+                f"completion depth {completion} is negative")
+        # ``completion`` counts bits per CODE and a code covers ``arity``
+        # positions, so it enters the per-position rate divided by the arity --
+        # the same conversion ``bits_per_position`` makes for the body.  It is
+        # also capped per column at ``cap - R``: a family cannot spend
+        # completion it has no room for, and charging for it would reintroduce
+        # the overcharge above from the other side.
+        spent = min(room, Fraction(completion * Q256_UNIT, spec.arity))
+    return (body + spent + SCALE_PLANE_BITS_Q256) / Q256_UNIT
 
 
 def enumerate_grid_space(

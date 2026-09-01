@@ -117,7 +117,7 @@ def tessera_tensor_payload_breakdown(
     alphabets: "Mapping[int, Sequence[int]] | None" = None,
     alphabet_bytes: "int | None" = None,
     sidecar_header_bytes: int = 0,
-    completion: "int | None" = None,
+    completion: "int | None" = 0,
     with_diagonals: bool = False,
 ) -> dict[str, object]:
     """Exact serialized bytes for one 2-D Linear weight at one Tessera rung.
@@ -210,6 +210,26 @@ def tessera_tensor_payload_breakdown(
         half_weights=HALF_WEIGHTS // spec.arity,
         quantizable_params=rows * columns,
     )
+    terminal_spec = TerminalSpec(
+        slot_id="alloc",
+        # ``completion`` is the second rate axis, and the default is the
+        # exporter's: ``encode_linear(completion=0)``.  It briefly defaulted to
+        # the cap instead, because ``unit_artifact`` was writing the COMPLETION
+        # plane at full width whatever depth the encoder spent -- so the cap
+        # was, for a few hours, what the wire really did.  Both defaults have
+        # been wrong in opposite directions and by the same amount, and the
+        # only defence is that this spec now sizes the *planes* as well as the
+        # terminal, so the two cannot describe different artifacts.
+        completion_bits=tuple(
+            (spec.rate_cap - r) if completion is None
+            else min(completion, spec.rate_cap - r)
+            for r in rates
+        ),
+        released_positions=0,
+        with_scale_base=True,
+        with_scale_refine=True,
+        with_diagonals=with_diagonals,
+    )
     planes = build_planes(
         geometry,
         rates,
@@ -217,26 +237,7 @@ def tessera_tensor_payload_breakdown(
         b"",
         with_diagonals=with_diagonals,
         cap=spec.rate_cap,
-    )
-    terminal_spec = TerminalSpec(
-        slot_id="alloc",
-        # ``unit_artifact`` writes COMPLETION at the full ``cap - rate`` width
-        # at every rung -- the encoder has no option to omit it -- so the
-        # default has to be the cap, not 0.  Defaulting to 0 described an
-        # artifact nothing builds and underpriced every sub-cap rung by
-        # ``cap - rate`` bits per code: R256 quoted 1.5 bpp against 3.5 bpp of
-        # actual bytes.  An explicit value stays available for pricing a
-        # hypothetical layout, but it is no longer what a caller gets by
-        # saying nothing.
-        completion_bits=tuple(
-            min(spec.rate_cap if completion is None else completion,
-                spec.rate_cap - r)
-            for r in rates
-        ),
-        released_positions=0,
-        with_scale_base=True,
-        with_scale_refine=True,
-        with_diagonals=with_diagonals,
+        spec=terminal_spec,
     )
     record = build_terminal(
         geometry, rates, terminal_spec, planes, alphabet_bytes, 0,

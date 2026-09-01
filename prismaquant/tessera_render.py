@@ -100,17 +100,20 @@ def _grid_for(family: TesseraFamily):
 def tessera_rung_is_serialisable(name: str) -> bool:
     """Can the *wire* carry this rung's bytes at all?
 
-    Distinct from "does a runtime serve it".  A rung can render perfectly and
-    still be unserialisable: ``_grid_for`` admits any *hardware* base, but the
-    reader resolves a grid by digest against ``SERIALISABLE_GRIDS``, which is a
-    permanent wire commitment and a strictly smaller set.  ``E4M3`` is exactly
-    that gap -- ``TESSERA_E4M3_K1_R1024`` renders, prices at 4.5000 bpp, and
-    then dies in ``alphabet_plane()`` at export time, after the allocation and
-    the whole production cache have been built.
+    Distinct from "does a runtime serve it".  ``_grid_for`` admits any
+    *hardware* base, while the reader resolves a grid by digest against
+    ``SERIALISABLE_GRIDS``, which is a permanent wire commitment.  A rung that
+    renders and is not committed dies in ``alphabet_plane()`` at export time --
+    after the allocation and the whole production cache have been built -- so
+    the menu must be able to ask up front rather than discover it in a
+    traceback.
 
-    Pricing a rung the exporter cannot write is the menu offering something the
-    format cannot deliver, so this predicate exists to be read by a gate rather
-    than discovered by a traceback.
+    ``E4M3`` used to be that gap and no longer is: it was writable all along
+    and merely missing from the registry, which tessera `a4de134` fixed after
+    checking that its values are reader-reconstructible from the byte pattern
+    exactly as E2M1's are.  The two sets coincide today, and this predicate
+    still has to exist: it is what keeps them from silently diverging when a
+    fourth grid renders.
     """
     from tessera.alphabet import SERIALISABLE_GRIDS, grid_digest
 
