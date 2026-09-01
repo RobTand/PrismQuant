@@ -50,7 +50,7 @@ def test_canonicalize_format_accepts_supported_recipe_shapes():
 
 def test_canonicalize_format_rejects_unknown_formats():
     with pytest.raises(ValueError, match="unsupported"):
-        canonicalize_format("nvint2")
+        canonicalize_format("not_a_real_format")
     with pytest.raises(ValueError, match="unsupported"):
         canonicalize_format({"data_type": "int", "bits": 3})
 

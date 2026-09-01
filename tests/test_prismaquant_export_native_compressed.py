@@ -655,11 +655,11 @@ class TestGroupedExportQuantization(unittest.TestCase):
 
         weights = torch.randn(2, 4, 16)
         with self.assertRaises(ValueError):
-            canonicalize_format("nvint2")
+            canonicalize_format("not_a_real_format")
         with self.assertRaises(ValueError):
             canonicalize_format({"data_type": "int", "bits": 3})
         with self.assertRaises(ValueError):
-            _quantize_2d(weights[0], "NVINT2")
+            _quantize_2d(weights[0], "NOT_A_REAL_FORMAT")
         with self.assertRaises(ValueError):
             _quantize_2d_group_same_shape(weights, "INT3")
 

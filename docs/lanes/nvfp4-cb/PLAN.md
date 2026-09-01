@@ -49,8 +49,8 @@ A vector-quantized codebook format whose codewords are 8-dim vectors of FP4
 bit-compatible NVFP4 and feeds the existing CUTLASS FP4 tensor-core path. A
 k-bit index per 8 weights gives `k/8 + 0.5` bpw (k=12..24 → 2.0..3.5 in 0.125
 steps; plain NVFP4 is the degenerate k=4·8 member). It composes IQ-class
-sub-4-bit compression, NVINT's lossless-expansion envelope (without either of
-NVINT's fatal serving modes), and AURA's measured allocation over a
+sub-4-bit compression, the retired low-bit lane's lossless-expansion envelope
+(without either of its fatal serving modes), and AURA's measured allocation over a
 near-continuous rate ladder. Storage layout: 256-weight superblocks
 (32 k-bit indices + 16 E4M3 scales = 4k+16 bytes, integer for every k).
 

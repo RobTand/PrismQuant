@@ -486,10 +486,8 @@ Pareto-dominates it and the allocator never picks it when both are offered.
 
 **Research / non-served:** NVFP4A16, MXFP4 (served but rarely chosen), MXFP6
 (no vLLM kernel), INT4/INT8 and MXFP8_E5M2 (registry entries, no served path).
-**E5M2** is only a valid *kv-cache* dtype. **NVINT2/NVINT3** were custom PrismaQuant
-Triton kernels (byte-aligned 3-stream load; 2.5× per-kernel on MiniMax) — never
-vLLM-served, ruled out for DSv4-class, and **since removed from the live tree**
-(only test references remain; `prismaquant/kernels/` now ships only `nvfp4_fused.py`).
+**E5M2** is only a valid *kv-cache* dtype. `prismaquant/kernels/` ships only
+`nvfp4_fused.py`.
 
 **JSO (`joint_scale_opt`)** is the production NVFP4 implicit-clipping mechanism: it
 maps to the `joint_mse` scale rule whose per-group levels default to **{6,4}**

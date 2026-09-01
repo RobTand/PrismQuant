@@ -48,7 +48,7 @@ minus the matmul minus the scale) produces a bf16 tile whose `.to(e4m3)` is
 **provably lossless** (verified: max cast-error 0.0), and it drops straight into
 `ops.scaled_fp8_quant` + `ops.cutlass_scaled_mm` (`scale_b=[N,1]`).
 
-**INV-1 nuance (honored precisely).** NVINT2 died from a RESIDENT, model-wide
+**INV-1 nuance (honored precisely).** The retired low-bit lane died from a RESIDENT, model-wide
 dense expansion (92.9 GB → 115.7 GiB, OOM). Here the expansion is a per-LAYER
 TRANSIENT: expand one layer → GEMM → free before the next. Verified: peak
 transient **9.4 MiB** for the 0.6B down_proj, and allocation returns to baseline
@@ -194,7 +194,7 @@ it. NVFP4_CB's fp4 sweep is a separate question, gated on the layout-v2 fix.)
   freed each forward — bounded, not resident (INV-1). Measured 9.4 MiB for the
   0.6B down_proj; the largest 4B layer (fused gate_up, N=19456×K=2560) bounds it
   at ≈ 150 MiB — vs a resident dense expansion of the whole 4B model (~19 GiB
-  bf16), the NVINT2 trap this avoids.
+  bf16), the resident-expansion trap this avoids.
 - **v1 scale-plane caveat.** These artifacts use the v1 group-16 E4M3 scale
   plane; a confirmed v1 defect (fp4 sweep candidates collapse to ~4 distinct
   values under subnormal-E4M3 snapping) is being fixed as layout v2 in parallel.

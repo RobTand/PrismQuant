@@ -11,9 +11,9 @@ Scope: how we serve an NVFP4-CB (vector-quantized codebook over FP4/E2M1 codes,
 NVFP4-identical group-16 E4M3 scales) checkpoint in vLLM on GB10/sm_121, mixed
 per-Linear with plain NVFP4, FP8, BF16 in one artifact. Not an implementation.
 
-## 0. The one design fact that changes everything vs NVINT2/3
+## 0. The one design fact that changes everything vs the retired low-bit lane
 
-NVINT2/3 died two ways (memory `gguf_lowbit_serving_lane.md`, session
+The retired custom low-bit integer kernels died two ways (memory `gguf_lowbit_serving_lane.md`, session
 `session_2026_04_24_minimax_kernel_attempts.md`): (a) load-time expansion to NVFP4
 gave **zero** runtime-memory savings (92.9 GB artifact → 115.7 GiB resident, OOM on
 the 121 GiB budget); (b) standalone MMVQ Triton kernels were memory-latency-bound at
@@ -32,7 +32,7 @@ follow, and every prototype below must be gated on them:
 - **INV-1 (no expansion in HBM/resident state):** the resident weight is the k-bit
   index stream + codebook + E4M3 scales. Decoding to nibble-packed NVFP4 must happen
   in smem/registers per tile, never as a materialized `[N,K/2]` uint8 tensor. This is
-  literally the trap that OOM-killed NVINT2. A resident-footprint assertion is a load
+  literally the trap that OOM-killed the retired low-bit lane. A resident-footprint assertion is a load
   gate, not a nicety.
 - **INV-2 (FP4 tensor cores, not BF16 MMA):** the prefill win only exists if decoded
   codes go to the Blackwell FP4 MMA. A Triton kernel that dequants FP4→bf16 and runs
@@ -44,7 +44,7 @@ follow, and every prototype below must be gated on them:
 ### 1a. PREFILL / batched (M large): fused-expand NVFP4 GEMM
 
 Pipeline per output tile:
-1. Fetch the k-bit indices for the K-tile (byte-unaligned; pack as the NVINT3
+1. Fetch the k-bit indices for the K-tile (byte-unaligned; pack as the retired
    3-stream/byte-triplet trick did — memory `session_2026_04_24_3stream_win.md` — so
    loads stay contiguous; a group of indices packs into whole bytes).
 2. **Codebook lookup → 8 FP4 codes per index**, written into the smem staging buffer
@@ -109,7 +109,7 @@ Measured facts argue *against* over-engineering here: IQ (codebook) decode was 1
 vs 18.7 tok/s for k-quant on a 295B artifact — **codebook lookup overhead is small,
 the path is bandwidth-bound** (memory `gguf_lowbit_serving_lane.md`). And decode is
 where NVFP4-CB *should* win outright: fewer bytes/weight = less HBM traffic = faster
-decode, the opposite of NVINT2's story once we honor INV-1.
+decode, the opposite of the retired lane's story once we honor INV-1.
 
 Plan: a **Triton (or small CUDA) dequant-GEMV** for M≤threshold, mirroring GGUF's
 own M-gated dispatch (`quantization/linear.py:34-57`: MMVQ for `x.shape[0] <= mmvq_safe`,
@@ -121,7 +121,8 @@ BF16-vs-FP4 MMA is irrelevant at M=1 (no tensor-core utilization anyway), so the
 decode kernel does *not* need the CUTLASS FP4 path — this decouples decode
 (ship-early, easy) from prefill (hard).
 
-**GB10 latency-floor + CUDA-graph requirement.** The ~6 ms/call NVINT3 floor was
+**GB10 latency-floor + CUDA-graph requirement.** The ~6 ms/call floor measured on
+the retired low-bit kernels was
 grouped-**MoE** dispatch + many tiny launches (`conference/001:24-25`), not an
 intrinsic GEMV cost. Two mitigations, both mandatory per house rules (CLAUDE.md §4.10,
 memory `feedback_cuda_graphs_everywhere.md`): (i) the GEMV must be a single fixed-shape
@@ -203,7 +204,7 @@ w13 and one for w2 per layer (experts-uniform-per-layer, memory
 |---|---|---|
 | **Activation dtype.** GGUF forces fp16 activations on Blackwell (memory `gguf_lowbit_serving_lane.md`); we must NOT inherit that — CB layers are **W4A4**, activations RTN-quantized to NVFP4 exactly like stock NVFP4 (inline act-quant `nvfp4_fused.py:216-229`). | CB method advertises the same act path as vLLM's `CompressedTensorsW4A4Nvfp4` scheme; feed the kernel the NVFP4 activation scale. `get_supported_act_dtypes` returns bf16 (not fp16-forced). | Load a 2-layer CB model, assert activation tensor is NVFP4-quantized (not fp16 passthrough); compare a CB Linear's output vs a plain-NVFP4 Linear built from the same decoded tile — must match to NVFP4 RTN tolerance. |
 | **CUDA-graph capture** breaks on data-dependent control flow. | Custom ops registered via `direct_register_custom_op` + `fake_impl` (`linear.py:68-74`, `ops.py:116-158`); fixed-shape, no host branching in captured region; env-gated eager fallback with bit-exactness. | Capture+replay a decode step; assert graph-on == graph-off logits bit-exact (CLAUDE.md §4.10). |
-| **MoE fused-expert path** — grouped dispatch was the 6 ms NVINT floor. | Reuse `GGUFMoEMethod` structure + `moe_align_block_size` (`fused_moe.py:53-95`); single grouped kernel, not per-expert launches. | 8×-expert MoE layer decode tok/s ≥ plain-NVFP4-MoE within bandwidth ratio; no per-token launch storm (nsys). |
+| **MoE fused-expert path** — grouped dispatch was the 6 ms floor on the retired lane. | Reuse `GGUFMoEMethod` structure + `moe_align_block_size` (`fused_moe.py:53-95`); single grouped kernel, not per-expert launches. | 8×-expert MoE layer decode tok/s ≥ plain-NVFP4-MoE within bandwidth ratio; no per-token launch storm (nsys). |
 | **torch.compile interaction.** | Every kernel is a registered custom op with a `fake_impl` (matches `ops.py:110-158`); opaque to Dynamo, no graph break inside. | `vllm serve --enforce-eager` and default (compiled) both produce identical greedy output. |
 | **vLLM API churn.** GGUF plugin already monkeypatches internal APIs (`plugin.py:51-97`); `LinearMethodBase`/`QuantizationConfig` signatures drift. | Pin a tested vLLM version per artifact (as with GGUF venvs, memory `container_transformers_pin`); keep our surface minimal (config + method + custom op), avoid loader patches. | CI smoke against the pinned vLLM; a canary test that imports the vLLM symbols we depend on and fails loudly on signature change. |
 | **Maintenance burden — this makes us a CUDA kernel vendor.** | Upstreaming options, in order of preference: (1) **standalone `vllm-prismaquant-plugin`** now — clean ownership, GGUF's `setup.py` CUDAExtension harness (`setup.py:30-60`) copies directly; (2) eventually push the CB scheme into **vLLM compressed-tensors upstream** — the right long-term home since our scales *are* NVFP4 and much of the kernel inherits CUTLASS block-scaled NVFP4; (3) a PR into `vllm-gguf-plugin` is the **wrong** home (GGUF-typed csrc, semantic mismatch) — reject. | N/A (strategic). Decision recorded; revisit after prototype (iii). |

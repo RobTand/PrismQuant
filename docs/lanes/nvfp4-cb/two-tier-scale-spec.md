@@ -241,7 +241,7 @@ default table suffices.
 
 ## 4. The resident-vs-disk trap (owned explicitly)
 
-The NVINT lesson (`v2_serving_memory_footprint.md`: 92.9 GB disk → 115.7 GiB
+The retired low-bit lane's lesson (`v2_serving_memory_footprint.md`: 92.9 GB disk → 115.7 GiB
 resident, OOM) replayed on scales: **reconstructing the e4m3 plane at LOAD
 saves disk only** — the resident plane returns to 0.5 bpw and the allocator's
 fit-the-card budget (resident bytes) gains nothing. Worse, the current

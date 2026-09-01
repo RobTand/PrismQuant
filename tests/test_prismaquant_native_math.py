@@ -44,7 +44,7 @@ class TestPrismaQuantFormatRegistry(unittest.TestCase):
         self.assertIn("FP8_DYNAMIC", fr.aliases_for("FP8_E4M3"))
 
     def test_low_bit_custom_kernel_formats_are_not_registered(self):
-        for name in ("INT2", "INT3", "NVINT2", "NVINT3", "NVFP3"):
+        for name in ("INT2", "INT3", "NVFP3", "NOT_A_REAL_FORMAT"):
             with self.assertRaises(KeyError):
                 fr.get_format(name)
 
