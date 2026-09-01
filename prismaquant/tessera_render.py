@@ -58,6 +58,17 @@ TESSERA_GROUP = 32
 TESSERA_HALF = 16
 
 
+#: Does a pinned runtime execute Tessera bytes natively?
+#:
+#: The kernel lane -- where the body stays compressed and is decoded inside the
+#: GEMV -- has a Triton decode kernel but no vLLM backend, so nothing serves
+#: these bytes today.  Principle 9 makes this a *measured platform fact*, not a
+#: preference: flipping it is an attestation that a pinned runtime loads and
+#: routes the format on real shapes, and it belongs to that evidence, not to
+#: whoever is adding a format next.
+_TESSERA_SERVING_LANE_EXISTS = False
+
+
 def is_tessera_format(name: object) -> bool:
     """True for a Tessera-shaped format name, without raising on others."""
     try:
@@ -83,6 +94,34 @@ def _grid_for(family: TesseraFamily):
             "identifier reproduces them, so it needs a VALUES plane first."
         )
     return tuple_grid(bases[family.base], family.arity)
+
+
+@lru_cache(maxsize=64)
+def tessera_rung_is_serialisable(name: str) -> bool:
+    """Can the *wire* carry this rung's bytes at all?
+
+    Distinct from "does a runtime serve it".  A rung can render perfectly and
+    still be unserialisable: ``_grid_for`` admits any *hardware* base, but the
+    reader resolves a grid by digest against ``SERIALISABLE_GRIDS``, which is a
+    permanent wire commitment and a strictly smaller set.  ``E4M3`` is exactly
+    that gap -- ``TESSERA_E4M3_K1_R1024`` renders, prices at 4.5000 bpp, and
+    then dies in ``alphabet_plane()`` at export time, after the allocation and
+    the whole production cache have been built.
+
+    Pricing a rung the exporter cannot write is the menu offering something the
+    format cannot deliver, so this predicate exists to be read by a gate rather
+    than discovered by a traceback.
+    """
+    from tessera.alphabet import SERIALISABLE_GRIDS, grid_digest
+
+    parsed = parse_tessera_format_name(name)
+    if parsed is None:
+        return False
+    try:
+        grid = _grid_for(parsed[0])
+    except NotImplementedError:
+        return False           # a free base: no identifier reproduces its values
+    return grid_digest(grid) in SERIALISABLE_GRIDS
 
 
 @lru_cache(maxsize=256)
@@ -224,11 +263,17 @@ def synthesize_tessera_spec(name: str):
         family=family.name,
         min_capability_sm=80,
         quantize_dequantize=tessera_quantize_dequantize(name),
-        # Not producer-eligible: no exporter emits these bytes yet and no
-        # pinned runtime serves them, so registry membership must not be
-        # mistaken for a serving route (principle 9). Flipping this is a
-        # deliberate act that follows an exporter and an attested route.
-        producer_eligible=False,
+        # Producer-eligibility is the AND of two independent gates, and
+        # conflating them is how a rung reaches the DP that cannot be written:
+        #   (a) the wire can carry it -- the grid's digest is a permanent
+        #       commitment in SERIALISABLE_GRIDS, which E4M3 is not;
+        #   (b) a pinned runtime executes it -- the kernel lane has no vLLM
+        #       backend yet, so this is False for every rung today (principle 9).
+        # (a) is per-rung and settled here; (b) is one flag so that flipping it
+        # behind an attested route CANNOT silently admit an unwritable rung.
+        producer_eligible=(
+            _TESSERA_SERVING_LANE_EXISTS and tessera_rung_is_serialisable(name)
+        ),
         # The whole rate, body and scale planes together -- which is what
         # ``artifact_bpp`` computes.  Without this the generic accountant
         # charges ``ceil(bpp)`` plus a *second* group-scale term on top of a

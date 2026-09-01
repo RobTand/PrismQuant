@@ -233,9 +233,19 @@ class TesseraFamily:
 
     @property
     def artifact_q256_bounds(self) -> tuple[int, int]:
-        """The same bounds including the S6b scale plane -- what ships."""
-        lo, hi = self.mathematical_q256_bounds
-        return (lo + SCALE_PLANE_BITS_Q256, hi + SCALE_PLANE_BITS_Q256)
+        """What ships -- and it is a *point*, not an interval.
+
+        ``mathematical_q256_bounds`` describes the BODY plane, which really
+        does run from 1 bit per code to the cap.  The artifact does not,
+        because COMPLETION takes exactly the width BODY gives up: the shipped
+        size is ``cap`` bits per code at every rung, so both ends of this
+        interval are the same number.  It is kept as a pair because callers
+        unpack it as bounds, and because the body interval above remains the
+        honest description of the plane it names.
+        """
+        _, hi = self.mathematical_q256_bounds
+        top = hi + SCALE_PLANE_BITS_Q256
+        return (top, top)
 
     def format_name(self, body_rate_q256: int) -> str:
         validate_body_rate_q256(self, body_rate_q256)
@@ -344,10 +354,31 @@ def realisable_rungs(
 
 
 def artifact_bpp(family: "str | TesseraFamily", body_rate_q256: int) -> Fraction:
-    """Bits per position the artifact actually weighs: body plus scale plane."""
+    """Bits per position the artifact actually weighs: body plus scale plane.
+
+    **The rung does not set the size.**  A column at rate ``R`` writes ``R``
+    body bits *and* ``cap - R`` completion bits, so body + completion is
+    ``cap`` per code at every rate: the rung shifts bits between two planes
+    without changing their sum.  Measured on real artifacts, every
+    ``E2M1_K1`` rung from R256 to R768 weighs the same 3.50 bpp while its
+    error moves 0.0755 -> 0.0209.
+
+    This returned ``(body_rate_q256 + 128)/256`` until 2026-09-01, which is
+    right *only* at a family's top rung -- where ``body_rate_q256`` already
+    equals ``cap*256/arity`` -- and every artifact ever exported happened to
+    sit there, so nothing caught it.  Off the top rung it underpriced by up to
+    133% (R256 quoted 1.5 bpp against 3.5 bpp of bytes), in the direction that
+    silently busts a byte budget.
+
+    ``body_rate_q256`` is still taken and still validated: it selects the rung
+    and decides the *error*, and an illegal one must raise here rather than
+    downstream.  It just does not enter the size.
+    """
     spec = get_tessera_family(family)
     validate_body_rate_q256(spec, body_rate_q256)
-    return Fraction(body_rate_q256 + SCALE_PLANE_BITS_Q256, Q256_UNIT)
+    return (
+        Fraction(spec.rate_cap * Q256_UNIT, spec.arity) + SCALE_PLANE_BITS_Q256
+    ) / Q256_UNIT
 
 
 def enumerate_grid_space(

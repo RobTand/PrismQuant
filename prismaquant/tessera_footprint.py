@@ -117,7 +117,7 @@ def tessera_tensor_payload_breakdown(
     alphabets: "Mapping[int, Sequence[int]] | None" = None,
     alphabet_bytes: "int | None" = None,
     sidecar_header_bytes: int = 0,
-    completion: int = 0,
+    completion: "int | None" = None,
     with_diagonals: bool = False,
 ) -> dict[str, object]:
     """Exact serialized bytes for one 2-D Linear weight at one Tessera rung.
@@ -220,7 +220,19 @@ def tessera_tensor_payload_breakdown(
     )
     terminal_spec = TerminalSpec(
         slot_id="alloc",
-        completion_bits=tuple(min(completion, spec.rate_cap - r) for r in rates),
+        # ``unit_artifact`` writes COMPLETION at the full ``cap - rate`` width
+        # at every rung -- the encoder has no option to omit it -- so the
+        # default has to be the cap, not 0.  Defaulting to 0 described an
+        # artifact nothing builds and underpriced every sub-cap rung by
+        # ``cap - rate`` bits per code: R256 quoted 1.5 bpp against 3.5 bpp of
+        # actual bytes.  An explicit value stays available for pricing a
+        # hypothetical layout, but it is no longer what a caller gets by
+        # saying nothing.
+        completion_bits=tuple(
+            min(spec.rate_cap if completion is None else completion,
+                spec.rate_cap - r)
+            for r in rates
+        ),
         released_positions=0,
         with_scale_base=True,
         with_scale_refine=True,

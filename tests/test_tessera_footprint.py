@@ -30,8 +30,11 @@ MEASURED = [
     ("TESSERA_E2M1_K2", 896, 4.0),
     ("TESSERA_LM16_K2", 896, 4.0),
     ("TESSERA_LM16_K1", 768, 3.5),
-    ("TESSERA_E4M3_K1", 1024, 4.5),
-    ("TESSERA_E4M3_K1", 1280, 5.5),
+    # Sub-cap rungs.  Published as 4.5 and 5.5; the bytes the encoder writes
+    # for either are 7.5 bpp, because BODY + COMPLETION is the cap at every
+    # rung.  See test_the_rung_does_not_set_the_size.
+    ("TESSERA_E4M3_K1", 1024, 7.5),
+    ("TESSERA_E4M3_K1", 1280, 7.5),
 ]
 
 
@@ -61,15 +64,24 @@ def test_every_family_prices_at_the_bounds_it_advertises():
         assert hi["exact_bpw"] == pytest.approx(hi_q256 / 256, abs=1e-9), spec.name
 
 
-def test_bytes_are_monotone_in_the_rung():
-    """A rate axis the allocator can search has to be ordered."""
+def test_bytes_are_invariant_in_the_rung():
+    """This asserted bytes were *monotone* in the rung until 2026-09-01, on the
+    reasoning that "a rate axis the allocator can search has to be ordered".
+
+    The axis is not a rate axis.  BODY spends ``R`` bits per code and
+    COMPLETION spends ``cap - R``, so every rung of a family serialises to the
+    identical byte count and the rung buys quality, not size.  The premise was
+    wrong rather than the implementation, so the assertion is inverted rather
+    than relaxed: a single differing byte here means one of the two planes
+    stopped tracking the other."""
     spec = get_tessera_family("TESSERA_E4M3_K1")
-    previous = None
-    for q in realisable_rungs(spec, step_q256=64):
-        out = tessera_tensor_payload_breakdown(SHAPE, family=spec, body_rate_q256=q)
-        if previous is not None:
-            assert out["total_bytes"] > previous
-        previous = out["total_bytes"]
+    sizes = {
+        tessera_tensor_payload_breakdown(
+            SHAPE, family=spec, body_rate_q256=q
+        )["total_bytes"]
+        for q in realisable_rungs(spec, step_q256=64)
+    }
+    assert len(sizes) == 1, sorted(sizes)
 
 
 def test_a_schedule_that_does_not_realise_its_rung_is_refused():
@@ -155,23 +167,39 @@ def test_the_allocator_prices_a_tessera_rung(family, q256, bpp):
     assert candidate.bits_per_param - bpp < 1e-3
 
 
-def test_the_allocator_sees_a_continuous_axis_not_a_few_rungs():
-    """The whole point: adjacent rungs differ, and differ in order."""
+def test_the_rung_axis_is_not_a_rate_axis_the_allocator_can_search():
+    """This asserted the opposite -- "adjacent rungs differ, and differ in
+    order" -- and it was the load-bearing claim behind treating Tessera as a
+    continuously-rateable format.  It is false.
+
+    BODY and COMPLETION trade off exactly, so the serialised payload is one
+    size per family.  The only thing that still moves between adjacent rungs is
+    **anchor-table side information**: a mixed-rate rung ships two alphabet
+    tables where a rung sitting exactly on an integer rate ships one.  That
+    varies by a few parts in 10^5, is not monotone, and is emphatically not a
+    rate the DP can trade against NVFP4.
+
+    Consequence, and the reason this is worth a test rather than a comment: a
+    Tessera menu is a menu of *families*, each contributing exactly one size.
+    Sweeping q256 inside a family gives the allocator nothing to choose
+    between on bytes, so the only non-dominated rung is the family's top one.
+    """
     spec = get_tessera_family("TESSERA_E4M3_K1")
-    priced = [_price(spec, q) for q in (1020, 1021, 1022, 1023, 1024)]
-    bpps = [c.bits_per_param for c in priced]
-    assert bpps == sorted(bpps)
-    assert len(set(bpps)) == len(bpps), "adjacent q256 rungs must be distinguishable"
-    # One q256 apart is 1/256 of a bit of *body*; the total moves by slightly
-    # less across this window because 1024 needs one anchor table where the
-    # mixed-rate rungs below it need two.  The body step is exact:
-    bodies = [
-        tessera_tensor_payload_breakdown(SHAPE, family=spec, body_rate_q256=q)
-        for q in (1020, 1024)
-    ]
-    assert bodies[1]["exact_bpw"] - bodies[0]["exact_bpw"] == pytest.approx(
-        4 / 256, abs=1e-9
-    )
+
+    bodies = {
+        tessera_tensor_payload_breakdown(
+            SHAPE, family=spec, body_rate_q256=q
+        )["exact_bpw"]
+        for q in (1020, 1021, 1022, 1023, 1024)
+    }
+    assert len(bodies) == 1, sorted(map(float, bodies))
+
+    # The priced candidate carries its alphabets too, so it is not *exactly*
+    # constant -- but the spread is side information, far below a rung's worth
+    # of anything, and unordered.
+    bpps = [_price(spec, q).bits_per_param for q in (1020, 1021, 1022, 1023, 1024)]
+    assert max(bpps) - min(bpps) < 1e-3
+    assert bpps != sorted(bpps), "if this ever sorts, check it is not a real rate"
 
 
 # --------------------------------------------- the two accountants are one
@@ -205,17 +233,26 @@ def test_the_registry_and_the_footprint_price_the_same_bytes(q256):
 
 
 @pytest.mark.parametrize("q256", [128, 384, 640, 768, 896])
-def test_the_registry_prices_the_rate_the_rung_name_states(q256):
-    """``artifact_bpp`` is ``(q256 + scale_plane)/256``; the price must be it.
+def test_the_rung_name_is_not_a_rate(q256):
+    """The R-number is a *quality* setting, and the registry must not read it
+    as a size.
 
-    A rung's R-number is its per-position body rate, and the scale planes add a
-    fixed 128/256.  If the registry's number is not exactly that, then the name
-    of the format and the cost of the format are different facts.
+    This test asserted the opposite until 2026-09-01 -- that the price is
+    ``(q256 + 128)/256`` -- and it passed, because every artifact that had ever
+    been built sat at a family's top rung, which is the single rung where that
+    formula is right.  Off the top rung it underprices: R128 quoted 1.0 bpp
+    against 4.0 bpp of bytes.
+
+    What the wire actually does is spend ``cap`` bits per code at every rung,
+    split between BODY (``R``, chosen by the trellis's joint search) and
+    COMPLETION (``cap - R``, chosen greedily per position).  Raising R moves
+    bits from the greedy plane to the searched one, which is why error falls
+    with R while size does not move at all.
     """
     from prismaquant import format_registry as fr
 
     spec = fr.get_format(f"TESSERA_E2M1_K2_R{q256}")
-    assert spec.effective_bits_for_shape((4096, 1536)) == (q256 + 128) / 256
+    assert spec.effective_bits_for_shape((4096, 1536)) == 4.0
 
 
 def test_an_exact_rate_is_the_whole_rate_not_a_body_rate():
