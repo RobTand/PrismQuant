@@ -170,7 +170,9 @@ def render_tessera_weight(
     """
     from tessera.decode import reconstruct_unit
     from tessera.encode import encode_unit
-    from tessera.export import DEFAULT_SCALE_PLANE, DEFAULT_SPAN
+    from tessera.export import (
+        DEFAULT_SCALE_PLANE, DEFAULT_SPAN, DEFAULT_TRELLIS_WEIGHTING,
+    )
     from tessera.manifest import RotationState
     from tessera.trellis import ConvCode
 
@@ -218,6 +220,7 @@ def render_tessera_weight(
         # are the pre-minor-1 wire, kept so old artifacts stay reproducible.
         span=DEFAULT_SPAN,
         scale_plane=DEFAULT_SCALE_PLANE,
+        trellis_weighting=DEFAULT_TRELLIS_WEIGHTING,
     )
     out = reconstruct_unit(unit, forests, ConvCode(memory=TESSERA_CONV_MEMORY))
     return out.to(dtype=weight.dtype, device=weight.device)
