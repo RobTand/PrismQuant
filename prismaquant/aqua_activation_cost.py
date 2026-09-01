@@ -712,3 +712,101 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ---------------------------------------------------------------------------
+# Per-expert checkpoint layouts
+# ---------------------------------------------------------------------------
+# ``build_weight_resolver`` maps one card unit to ONE checkpoint key, which is
+# right for a packed routed-expert parameter stored as a bare 3-D tensor
+# (``...mlp.experts.gate_up_proj``).  GLM-5.3-Flash does not store it that way:
+# every expert is its own 2-D ``nn.Linear`` weight
+# (``...mlp.experts.{e}.gate_proj.weight``), and the fused gate/up pair is two
+# tensors, not one.  So the 84 packed units of a 45-layer GLM body resolve to
+# nothing -- 97% of the parameters -- and because ``cost_entry_act_dloss``
+# defaults to 0.0 the DP cannot tell "unmeasured" from "free".  On a lane whose
+# own attested contract says NVFP4 is "Real A4 on BOTH the dense and the
+# packed-expert route", that is the DSv4 mispricing with the sign flipped: it
+# makes the W4A4 rung look free exactly where it is not.
+#
+# The A-side math for packed units already exists and is tested
+# (``_activation_dloss_packed``); only the checkpoint layout does not reach it.
+# What follows is the bridge, and it STREAMS rather than stacking: the packed
+# sum
+#
+#     dLoss ~= 0.5 / T_global * sum_e sum_o g_sq[e,o] * sum_j W[e,o,j]^2 var[e,j]
+#
+# is separable over ``e``, so a [288, 4096, 4096] gate_up never has to exist --
+# it would be 19 GiB in float32, per format.  Each expert is promoted to
+# float32 one at a time and reduced with ``_weighted_row_sum``, the same kernel
+# and the same float64 accumulation the packed path uses, so this is the
+# production quantity computed in a different order, not a second estimator.
+
+def per_expert_weight_keys(unit_name: str, weight_map: dict, *,
+                           n_experts: int) -> list[list[str]] | None:
+    """Checkpoint keys for one packed unit, as ``[expert][sibling]``.
+
+    Returns ``None`` when the layout is not per-expert, so a caller can fall
+    back to the single-key resolver without a special case.
+    """
+    if ".mlp.experts." not in unit_name:
+        return None
+    stem, _, leaf = unit_name.rpartition(".mlp.experts.")
+    siblings = {"gate_up_proj": ("gate_proj", "up_proj"),
+                "down_proj": ("down_proj",)}.get(leaf)
+    if siblings is None:
+        return None
+    keys: list[list[str]] = []
+    for expert in range(n_experts):
+        row = [f"{stem}.mlp.experts.{expert}.{s}.weight" for s in siblings]
+        if any(k not in weight_map for k in row):
+            return None
+        keys.append(row)
+    return keys
+
+
+def packed_act_dloss_per_expert(unit, keys: list[list[str]], model_path: str,
+                                act_var, *, gain: float = 1.0,
+                                handles=None) -> float:
+    """``_activation_dloss_packed`` over a per-expert checkpoint, streamed.
+
+    ``keys[e]`` are the sibling tensors of expert ``e``, concatenated along the
+    output axis in the order vLLM fuses them (gate then up) -- the same order
+    ``expert_g_sq_sum``'s rows are indexed in, which is why the concatenation
+    may not be reordered.
+    """
+    import numpy as np
+    import torch
+
+    from .format_cost_protocol import _row_chunk, _weighted_row_sum
+
+    g_all = np.asarray(unit.expert_g_sq_sum, dtype=np.float64)
+    var = np.asarray(act_var, dtype=np.float64)
+    n_e = int(g_all.shape[0])
+    if len(keys) != n_e:
+        raise ValueError(f"{unit.topology.name}: {len(keys)} experts in the "
+                         f"checkpoint, {n_e} in the card")
+    if var.shape == (unit.in_features,):
+        var = np.broadcast_to(var, (n_e, unit.in_features))
+    elif var.shape != (n_e, unit.in_features):
+        raise ValueError(f"{unit.topology.name}: packed act_var shape "
+                         f"{var.shape}, expected {(n_e, unit.in_features)} "
+                         f"or {(unit.in_features,)}")
+
+    rows_per_chunk = _row_chunk(unit.in_features)
+    total = 0.0
+    for e, row in enumerate(keys):
+        parts = [handles(k) for k in row]
+        w_e = parts[0] if len(parts) == 1 else torch.cat(parts, dim=0)
+        if tuple(w_e.shape) != (unit.out_features, unit.in_features):
+            raise RuntimeError(
+                f"{unit.topology.name}: expert {e} materialized "
+                f"{tuple(w_e.shape)}, expected "
+                f"{(unit.out_features, unit.in_features)}")
+        w_e = w_e.to(torch.float32)
+        g_e, v_e = g_all[e], var[e]
+        for lo in range(0, unit.out_features, rows_per_chunk):
+            hi = min(lo + rows_per_chunk, unit.out_features)
+            total += _weighted_row_sum(w_e[lo:hi], v_e, g_e[lo:hi])
+        del parts, w_e
+    return 0.5 * (total / max(1, unit.n_tokens)) * float(gain)
