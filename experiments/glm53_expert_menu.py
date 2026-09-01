@@ -102,7 +102,8 @@ def main():
           f"{fr.get_format('TESSERA_E2M1_K2_R896').effective_bits_for_shape(shape):.4f}\n")
 
     hdr = (f"{'layer':>5} {'tensor':<12} {'T-K1 3.5':>9} {'T-K2 4.0':>9} "
-           f"{'NV 4.5 W4A4':>12} {'NV 4.5 W4A16':>13} {'FP8 8.0 W8A8':>13}")
+           f"{'NV 4.5 W4A4':>12} {'NV 4.5 W4A16':>13} {'NVrtn W4A16':>12} "
+           f"{'FP8 8.0 W8A8':>13}")
     print(hdr)
     rows = []
     for layer in (5, 20, 42):
@@ -122,7 +123,8 @@ def main():
             w_fp8 = render_production_weight(
                 w, "FP8_E4M3", qname=name, activations={name: x_fit}, levers=levers,
             ).float()
-            if torch.equal(w_nv, nv.quantize_dequantize(w).float()):
+            w_rtn = nv.quantize_dequantize(w).float()
+            if torch.equal(w_nv, w_rtn):
                 raise SystemExit(
                     f"{name}: NVFP4 production render is bit-identical to RTN -- "
                     "the activation key did not land; see the qname memory"
@@ -133,13 +135,14 @@ def main():
                 t_k2=err(x @ tessera(w, 2).float().T),
                 nv_a4=err(x_nv @ w_nv.T),
                 nv_a16=err(x @ w_nv.T),
+                nv_rtn=err(x @ w_rtn.T),
                 fp8_a8=err(x_fp8 @ w_fp8.T),
             )
             rows.append(row)
             print(f"{layer:>5} {name:<12} {row['t_k1']:>9.5f} {row['t_k2']:>9.5f} "
                   f"{row['nv_a4']:>12.5f} {row['nv_a16']:>13.5f} "
-                  f"{row['fp8_a8']:>13.5f}")
-            del w, wf, ref, w_nv, w_fp8
+                  f"{row['nv_rtn']:>12.5f} {row['fp8_a8']:>13.5f}")
+            del w, wf, ref, w_nv, w_fp8, w_rtn
             torch.cuda.empty_cache()
         print(f"      (static G = {g:.4g})")
         del x_fit, x, x_nv, x_fp8
@@ -147,15 +150,23 @@ def main():
 
     print("\n" + "=" * len(hdr))
     mean = {k: st.mean(r[k] for r in rows)
-            for k in ("t_k1", "t_k2", "nv_a4", "nv_a16", "fp8_a8")}
+            for k in ("t_k1", "t_k2", "nv_a4", "nv_a16", "nv_rtn", "fp8_a8")}
     print(f"{'mean':>5} {'':<12} {mean['t_k1']:>9.5f} {mean['t_k2']:>9.5f} "
-          f"{mean['nv_a4']:>12.5f} {mean['nv_a16']:>13.5f} {mean['fp8_a8']:>13.5f}")
+          f"{mean['nv_a4']:>12.5f} {mean['nv_a16']:>13.5f} {mean['nv_rtn']:>12.5f} "
+          f"{mean['fp8_a8']:>13.5f}")
     print(f"\nn = {len(rows)} projections, 3 layers")
     print(f"NVFP4-as-served / Tessera-4.0 = {mean['nv_a4'] / mean['t_k2']:.4f}  "
           "(>1 means the 4.5 bpp rung is WORSE than the 4.0 one)")
     print(f"FP8-as-served  / Tessera-4.0 = {mean['fp8_a8'] / mean['t_k2']:.4f}")
     print(f"Tessera 3.5 -> 4.0            = "
           f"{(mean['t_k2'] / mean['t_k1'] - 1) * 100:+.1f}% per half-bit")
+    print(f"\nWhat activation-awareness is worth at 4.5 bpp, W4A16:")
+    print(f"  NVFP4 RTN (blind)  {mean['nv_rtn']:.5f}")
+    print(f"  NVFP4 GPTQ+JSO     {mean['nv_a16']:.5f}   "
+          f"= {mean['nv_rtn'] / mean['nv_a16']:.3f}x better")
+    print("  Tessera's encoder is activation-BLIND; EXL3's is Hessian-driven. "
+          "That factor is the like-for-like\n  scale on which to read "
+          "EXL3 0.05653 vs Tessera 0.09738 (1.72x) at matched bpw.")
     json.dump(rows, open("/mnt/shared/tessera-kl/glm53_expert_menu.json", "w"), indent=1)
 
 
