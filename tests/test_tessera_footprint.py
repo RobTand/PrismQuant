@@ -172,3 +172,65 @@ def test_the_allocator_sees_a_continuous_axis_not_a_few_rungs():
     assert bodies[1]["exact_bpw"] - bodies[0]["exact_bpw"] == pytest.approx(
         4 / 256, abs=1e-9
     )
+
+
+# --------------------------------------------- the two accountants are one
+
+
+@pytest.mark.parametrize("q256", [128, 384, 640, 768, 896])
+def test_the_registry_and_the_footprint_price_the_same_bytes(q256):
+    """``FormatSpec`` and ``tessera_footprint`` must not be two opinions.
+
+    They are read by different consumers: the DP's per-format bit cost goes
+    through ``FormatSpec.effective_bits_for_shape``
+    (``allocator_solver.py:748``) and the byte-budget gate goes through
+    ``FormatSpec.memory_bytes_for_shape`` (``footprint.py``), while the
+    Tessera candidate builder prices with ``tessera_tensor_payload_breakdown``.
+    They disagreed: the registry charged ``ceil(artifact_bpp)`` *plus* a group
+    scale term on top of a rate that already included the scale planes, so
+    R896 priced at 4.25 bpp against an artifact that is 4.00.  The allocator
+    was ranking Tessera against NVFP4 on a 6.25% overcharge it invented, which
+    is principle 8's drift with the two halves inside one repository.
+    """
+    from prismaquant import format_registry as fr
+
+    shape = (4096, 1536)
+    spec = fr.get_format(f"TESSERA_E2M1_K2_R{q256}")
+    breakdown = dict(
+        tessera_tensor_payload_breakdown(
+            shape, family="TESSERA_E2M1_K2", body_rate_q256=q256
+        )
+    )
+    assert spec.memory_bytes_for_shape(shape) == breakdown["total_bytes"]
+
+
+@pytest.mark.parametrize("q256", [128, 384, 640, 768, 896])
+def test_the_registry_prices_the_rate_the_rung_name_states(q256):
+    """``artifact_bpp`` is ``(q256 + scale_plane)/256``; the price must be it.
+
+    A rung's R-number is its per-position body rate, and the scale planes add a
+    fixed 128/256.  If the registry's number is not exactly that, then the name
+    of the format and the cost of the format are different facts.
+    """
+    from prismaquant import format_registry as fr
+
+    spec = fr.get_format(f"TESSERA_E2M1_K2_R{q256}")
+    assert spec.effective_bits_for_shape((4096, 1536)) == (q256 + 128) / 256
+
+
+def test_an_exact_rate_is_the_whole_rate_not_a_body_rate():
+    """Declaring ``exact_bits_per_param`` must *replace* the group-scale term.
+
+    If it were additive, every Tessera rung would be overcharged by
+    ``scale_bits/group_size`` -- silently, since both numbers are plausible.
+    """
+    from fractions import Fraction
+
+    from prismaquant import format_registry as fr
+
+    spec = fr.FormatSpec(
+        name="EXACTLY_FOUR", weight_bits=4, group_size=32, scale_bits=8,
+        scale_dtype_name="fp8_e4m3", weight_element_dtype="fp4_e2m1",
+        exact_bits_per_param=Fraction(4),
+    )
+    assert spec.effective_bits_for_shape((256, 256)) == 4.0

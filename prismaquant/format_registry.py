@@ -21,6 +21,7 @@ core code.
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
@@ -89,6 +90,13 @@ class FormatSpec:
     # positional constructor ABI. Menus/assignments must use the explicit
     # producer APIs instead of treating registry membership as authority.
     producer_eligible: bool = True
+    # An exact bits-per-parameter rate, for formats whose serialized size is
+    # not the integer-weight-plus-group-scale model the fields above encode.
+    # When set it is the WHOLE rate -- body and scales together -- and
+    # ``memory_bytes_for_shape`` uses it instead of, not in addition to, the
+    # ``weight_bits``/``scale_bits`` terms.  Kept last to preserve the
+    # positional constructor ABI.
+    exact_bits_per_param: "Fraction | None" = None
 
     @property
     def act_quant_changes_input(self) -> bool:
@@ -178,6 +186,13 @@ class FormatSpec:
     def memory_bytes_for_shape(self, shape: tuple[int, ...]) -> int:
         """Exact-ish serialized size for a tensor in this format."""
         n_params = int(math.prod(shape)) if len(shape) else 1
+        if self.exact_bits_per_param is not None:
+            # The declared rate already covers every plane the artifact
+            # writes.  Adding the group-scale term here would charge the
+            # scales twice, which is precisely the drift principle 8 forbids:
+            # the allocator would price a checkpoint the exporter never emits.
+            rate = Fraction(self.exact_bits_per_param)
+            return -(-(n_params * rate.numerator) // (rate.denominator * 8))
         weight_bytes = math.ceil(n_params * self.weight_bits / 8.0)
         scale_bytes = math.ceil(self.scale_count_for_shape(shape) * self.scale_bits / 8.0)
         return weight_bytes + scale_bytes

@@ -211,8 +211,9 @@ def synthesize_tessera_spec(name: str):
         name=name,
         # ``weight_bits`` is the integer field the accountant reads; Tessera's
         # rate is fractional by construction, so the exact value travels in
-        # ``artifact_bpp`` and this is the ceiling for anything that wants one
-        # number. Reporting a floor here would under-count every artifact.
+        # ``exact_bits_per_param`` and this is the ceiling for anything that
+        # wants one number. Reporting a floor here would under-count every
+        # artifact.
         weight_bits=-(-bpp.numerator // bpp.denominator),
         group_size=TESSERA_GROUP,
         scale_bits=8,
@@ -228,4 +229,12 @@ def synthesize_tessera_spec(name: str):
         # mistaken for a serving route (principle 9). Flipping this is a
         # deliberate act that follows an exporter and an attested route.
         producer_eligible=False,
+        # The whole rate, body and scale planes together -- which is what
+        # ``artifact_bpp`` computes.  Without this the generic accountant
+        # charges ``ceil(bpp)`` plus a *second* group-scale term on top of a
+        # number that already includes the scales: R896 priced at 4.25 bpp
+        # against an artifact the exporter's byte-exact accountant measures at
+        # 4.002.  The allocator would have been ranking Tessera against NVFP4
+        # on a 6% overcharge it invented.
+        exact_bits_per_param=bpp,
     )
