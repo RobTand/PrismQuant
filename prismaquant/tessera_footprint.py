@@ -27,6 +27,7 @@ import hashlib
 import json
 
 from .tessera_formats import (
+    tessera_wire_defaults,
     SUPERBLOCK_WEIGHTS,
     TesseraFamily,
     TesseraFormatError,
@@ -119,8 +120,15 @@ def tessera_tensor_payload_breakdown(
     sidecar_header_bytes: int = 0,
     completion: "int | None" = 0,
     with_diagonals: bool = False,
+    span: "int | None" = None,
+    scale_plane: "str | None" = None,
 ) -> dict[str, object]:
     """Exact serialized bytes for one 2-D Linear weight at one Tessera rung.
+
+    ``span`` and ``scale_plane`` default to the tessera exporter's wire
+    (``tessera_wire_defaults``), so a footprint priced here is the footprint
+    of the bytes ``encode_linear`` writes.  Both are recorded in the breakdown
+    and re-derived by ``validate_tessera_tensor_payload_breakdown``.
 
     ``schedule`` may be omitted, in which case the canonical Bresenham schedule
     for the rung is used -- the same one the encoder would build.  Passing one
@@ -130,6 +138,13 @@ def tessera_tensor_payload_breakdown(
     """
     spec = get_tessera_family(family)
     rung = validate_body_rate_q256(spec, body_rate_q256)
+    default_span, default_plane = tessera_wire_defaults()
+    span = default_span if span is None else int(span)
+    plane = default_plane if scale_plane is None else str(scale_plane)
+    if span < 1:
+        raise TesseraFormatError(f"span must be positive, got {span}")
+    if plane not in ("s6b", "lut16"):
+        raise TesseraFormatError(f"unknown scale plane {plane!r}; s6b or lut16")
 
     dims = tuple(shape)
     if len(dims) != 2 or any(type(v) is not int or v <= 0 for v in dims):
@@ -193,6 +208,11 @@ def tessera_tensor_payload_breakdown(
             f"geometry ({GROUP_WEIGHTS}/{HALF_WEIGHTS})"
         )
     code_rows = rows // spec.arity
+    if code_rows % span:
+        raise TesseraFormatError(
+            f"{spec.name}: {code_rows} code rows is not a whole number of "
+            f"span-{span} super-symbols; this shape cannot carry the span"
+        )
 
     # `alphabet_bytes` is the already-counted figure, which is what a recorded
     # footprint carries; `alphabets` is the table itself.  Revalidating a report
@@ -226,7 +246,9 @@ def tessera_tensor_payload_breakdown(
             for r in rates
         ),
         released_positions=0,
-        with_scale_base=True,
+        # A LUT plane has no base plane; its table lives in the manifest
+        # (side bytes, outside the plane region this accountant prices).
+        with_scale_base=plane == "s6b",
         with_scale_refine=True,
         with_diagonals=with_diagonals,
     )
@@ -238,10 +260,11 @@ def tessera_tensor_payload_breakdown(
         with_diagonals=with_diagonals,
         cap=spec.rate_cap,
         spec=terminal_spec,
+        span=span,
     )
     record = build_terminal(
         geometry, rates, terminal_spec, planes, alphabet_bytes, 0,
-        cap=spec.rate_cap,
+        cap=spec.rate_cap, span=span,
     )
 
     total_bytes = record.exact_bytes + sidecar_header_bytes
@@ -257,7 +280,8 @@ def tessera_tensor_payload_breakdown(
         "shape": [rows, columns],
         "layout": layout,
         "body_rate_q256": rung,
-        "scale_contract": "s6b",
+        "scale_contract": plane,
+        "trellis_span": span,
         "superblock_weights": SUPERBLOCK_WEIGHTS,
         "schedule_bits_per_code_row": sum(rates),
         "code_rows": code_rows,
@@ -309,6 +333,10 @@ def validate_tessera_tensor_payload_breakdown(
         layout=str(copied.get("layout", "tight")),
         alphabet_bytes=int(copied.get("alphabet_bytes", 0)),
         sidecar_header_bytes=int(copied.get("sidecar_header_bytes", 0)),
+        # A report written before minor 1 carries neither field and means the
+        # wire of its day; one written after names what it priced.
+        span=int(copied.get("trellis_span", 1)),
+        scale_plane=str(copied.get("scale_contract", "s6b")),
     )
     claimed = copied.get("pre_render_recipe_identity_sha256")
     if claimed != _recipe_identity(copied):

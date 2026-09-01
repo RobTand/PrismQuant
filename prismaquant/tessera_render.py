@@ -170,6 +170,7 @@ def render_tessera_weight(
     """
     from tessera.decode import reconstruct_unit
     from tessera.encode import encode_unit
+    from tessera.export import DEFAULT_SCALE_PLANE, DEFAULT_SPAN
     from tessera.manifest import RotationState
     from tessera.trellis import ConvCode
 
@@ -212,6 +213,11 @@ def render_tessera_weight(
         completion=0,
         group=TESSERA_GROUP,
         half=TESSERA_HALF,
+        # The exporter's wire, read from the exporter: the surrogate prices
+        # the bytes that ship (principle 8).  ``encode_unit``'s own defaults
+        # are the pre-minor-1 wire, kept so old artifacts stay reproducible.
+        span=DEFAULT_SPAN,
+        scale_plane=DEFAULT_SCALE_PLANE,
     )
     out = reconstruct_unit(unit, forests, ConvCode(memory=TESSERA_CONV_MEMORY))
     return out.to(dtype=weight.dtype, device=weight.device)
@@ -241,7 +247,7 @@ def synthesize_tessera_spec(name: str):
     naming the registry, not a Tessera parse failure.
     """
     from . import format_registry as fr
-    from .tessera_formats import artifact_bpp
+    from .tessera_formats import artifact_bpp, tessera_wire_defaults
 
     parsed = parse_tessera_format_name(name)
     if parsed is None:
@@ -249,6 +255,16 @@ def synthesize_tessera_spec(name: str):
     family, rung = parsed
 
     bpp = artifact_bpp(family, rung)
+    _span, plane = tessera_wire_defaults()
+    # Descriptive fields for the scale plane the wire carries.  ``s6b`` is an
+    # E8M0 byte per 32 plus a nibble per 16; ``lut16`` is a nibble per 16
+    # indexing a per-unit E4M3 table.  Both materialise to one E4M3 per 16 at
+    # load; the exact rate travels in ``exact_bits_per_param`` either way.
+    scale_fields = (
+        dict(group_size=TESSERA_GROUP, scale_bits=8, scale_dtype_name="uint8_e8m0")
+        if plane == "s6b"
+        else dict(group_size=TESSERA_HALF, scale_bits=4, scale_dtype_name="uint4_lut16_e4m3")
+    )
     return fr.FormatSpec(
         name=name,
         # ``weight_bits`` is the integer field the accountant reads; Tessera's
@@ -257,9 +273,7 @@ def synthesize_tessera_spec(name: str):
         # wants one number. Reporting a floor here would under-count every
         # artifact.
         weight_bits=-(-bpp.numerator // bpp.denominator),
-        group_size=TESSERA_GROUP,
-        scale_bits=8,
-        scale_dtype_name="uint8_e8m0",
+        **scale_fields,
         weight_element_dtype=f"tessera_{family.base.lower()}_k{family.arity}",
         act_bits=None,               # W-only: the body decodes to bf16 weights
         act_dtype_name=None,

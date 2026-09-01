@@ -32,7 +32,9 @@ from prismaquant.tessera_formats import (
 
 SHAPE = (4096, 4096)
 
-# (family, body q256, published artifact bpp)
+# (family, body q256, published artifact bpp) -- published on the span-1 S6b
+# wire (tessera schema minor 0), which is therefore named explicitly below: a
+# published figure is a property of the wire it was measured on.
 MEASURED = [
     ("TESSERA_E2M1_K1", 768, 3.5),
     ("TESSERA_E2M1_K2", 896, 4.0),
@@ -46,14 +48,41 @@ MEASURED = [
     ("TESSERA_E4M3_K1", 1280, 5.5),
 ]
 
+# The same rungs under the exporter's default wire since 2026-09-01 (schema
+# minor 1: span-2 trellis, LUT scale plane).  At arity 2 the stored labels
+# cost exactly what the plane saves, so K2 R896 stays 4.0; at arity 1 they
+# cost a quarter-bit more than the plane saves, so K1 rungs weigh +0.25.
+DEFAULT_WIRE = [
+    ("TESSERA_E2M1_K1", 768, 3.75),
+    ("TESSERA_E2M1_K2", 896, 4.0),
+    ("TESSERA_LM16_K2", 896, 4.0),
+    ("TESSERA_LM16_K1", 768, 3.75),
+    ("TESSERA_E4M3_K1", 1024, 4.75),
+    ("TESSERA_E4M3_K1", 1280, 5.75),
+]
+
 
 @pytest.mark.parametrize("family,q256,bpp", MEASURED)
 def test_the_measured_ladder_prices_at_its_published_bpp(family, q256, bpp):
     spec = get_tessera_family(family)
-    out = tessera_tensor_payload_breakdown(SHAPE, family=spec, body_rate_q256=q256)
+    out = tessera_tensor_payload_breakdown(
+        SHAPE, family=spec, body_rate_q256=q256, span=1, scale_plane="s6b",
+    )
     assert out["exact_bpw"] == pytest.approx(bpp, abs=1e-9)
     assert out["schema"] == TESSERA_TENSOR_PAYLOAD_SCHEMA
     assert out["wire_schema"] == "prismaquant.tessera.v1"
+    assert out["trellis_span"] == 1 and out["scale_contract"] == "s6b"
+
+
+@pytest.mark.parametrize("family,q256,bpp", DEFAULT_WIRE)
+def test_the_default_wire_prices_the_bytes_the_exporter_writes(family, q256, bpp):
+    """No wire named: the price is the exporter's wire, read from tessera."""
+    spec = get_tessera_family(family)
+    out = tessera_tensor_payload_breakdown(SHAPE, family=spec, body_rate_q256=q256)
+    assert out["exact_bpw"] == pytest.approx(bpp, abs=1e-9)
+    assert out["trellis_span"] == 2 and out["scale_contract"] == "lut16"
+    # and the revalidation re-derives the same wire from the record itself
+    assert validate_tessera_tensor_payload_breakdown(out)["exact_bpw"] == out["exact_bpw"]
 
 
 def test_every_family_prices_at_the_bounds_it_advertises():
@@ -158,8 +187,9 @@ def _price(spec, q256, dloss=1.0):
     )
 
 
-@pytest.mark.parametrize("family,q256,bpp", MEASURED)
+@pytest.mark.parametrize("family,q256,bpp", DEFAULT_WIRE)
 def test_the_allocator_prices_a_tessera_rung(family, q256, bpp):
+    """The allocator prices what the exporter writes: the default wire."""
     candidate = _price(get_tessera_family(family), q256)
     assert candidate.family == family
     assert candidate.body_rate_q256 == q256

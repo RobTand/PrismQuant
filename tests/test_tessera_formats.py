@@ -20,7 +20,10 @@ from prismaquant.tessera_formats import (
     ANCHOR_BUDGET_BITS,
     LANE_KERNEL,
     LANE_STOCK,
+    SCALE_LUT_BITS_Q256,
     SCALE_PLANE_BITS_Q256,
+    tessera_wire_defaults,
+    wire_overhead_q256,
     SUPERBLOCK_WEIGHTS,
     TesseraFormatError,
     TesseraRateSurface,
@@ -54,9 +57,22 @@ MEASURED_LADDER = [
 
 @pytest.mark.parametrize("label,family,q256,bpp", MEASURED_LADDER)
 def test_the_measured_rungs_price_at_their_published_bpp(label, family, q256, bpp):
+    """Published on the span-1 S6b wire (tessera schema minor 0), so priced
+    on it: a published figure belongs to the wire it was measured on."""
     spec = get_tessera_family(family)
     assert validate_body_rate_q256(spec, q256) == q256
-    assert artifact_bpp(spec, q256) == Fraction(int(bpp * 256), 256), label
+    assert artifact_bpp(spec, q256, span=1, scale_plane="s6b") == Fraction(int(bpp * 256), 256), label
+
+
+def test_the_default_wire_keeps_k2_at_four_and_lifts_arity_one_by_a_quarter():
+    """The exporter's wire since 2026-09-01 (span 2 over a LUT plane): the
+    stored labels cost (L-1)/L bits per CODE, the LUT plane saves a quarter-bit
+    per position, so at arity 2 the two cancel and at arity 1 they do not."""
+    assert artifact_bpp("TESSERA_E2M1_K2", 896) == Fraction(4)
+    assert artifact_bpp("TESSERA_E2M1_K1", 768) == Fraction(15, 4)
+    assert artifact_bpp("TESSERA_E4M3_K1", 1024) == Fraction(19, 4)
+    assert artifact_bpp("TESSERA_E2M1_K2", 896) == artifact_bpp(
+        "TESSERA_E2M1_K2", 896, span=1, scale_plane="s6b")
 
 
 @pytest.mark.parametrize("label,family,q256,bpp", MEASURED_LADDER)
@@ -160,9 +176,18 @@ def test_the_scale_plane_is_half_a_bit_everywhere():
     for spec in enumerate_grid_space():
         body_lo, body_hi = spec.mathematical_q256_bounds
         art_lo, art_hi = spec.artifact_q256_bounds
-        assert art_lo - body_lo == SCALE_PLANE_BITS_Q256, spec.name
-        assert art_hi - body_hi == SCALE_PLANE_BITS_Q256, spec.name
+        extra = wire_overhead_q256(spec)
+        assert art_lo - body_lo == extra, spec.name
+        assert art_hi - body_hi == extra, spec.name
         assert art_hi > art_lo, (spec.name, "a family advertises an interval")
+    # The overhead is the exporter's wire and nothing else: span-1 S6b is the
+    # historical half-bit; the shipping span-2 LUT wire is a quarter-bit of
+    # plane plus half a bit per CODE of stored labels.
+    for spec in enumerate_grid_space():
+        assert wire_overhead_q256(spec, 1, "s6b") == SCALE_PLANE_BITS_Q256
+        assert wire_overhead_q256(spec, 2, "lut16") == (
+            SCALE_LUT_BITS_Q256 + Fraction(128, spec.arity)
+        )
 
 
 def test_an_adaptive_surface_must_name_its_evidence():
@@ -227,8 +252,10 @@ def test_the_bpp_formula_agrees_with_tesseras_exact_byte_accountant():
             # ``root_from_q256`` directly -- while a rung is quoted per
             # position, so the arity factor has to be applied by the caller.
             for depth in (0, spec.rate_cap):
+                span, plane = tessera_wire_defaults()
                 exact = terminal_rate(
                     q * spec.arity, 4096, 4096, with_scale_refine=True,
+                    with_scale_base=plane == "s6b", span=span,
                     cap=spec.rate_cap, arity=spec.arity, completion=depth,
                 )
                 assert artifact_bpp(spec, q, depth) == exact, (spec.name, q, depth)
@@ -253,14 +280,15 @@ def test_the_rung_sets_the_size_and_the_completion_depth_is_the_other_axis():
     """
     for spec in enumerate_grid_space():
         rungs = realisable_rungs(spec)
-        ceiling = Fraction(spec.rate_cap * 256, spec.arity) / 256 + Fraction(1, 2)
+        overhead = wire_overhead_q256(spec) / 256
+        ceiling = Fraction(spec.rate_cap * 256, spec.arity) / 256 + overhead
 
         priced = [artifact_bpp(spec, q) for q in rungs]
         assert priced == sorted(priced), spec.name
         assert len(set(priced)) == len(rungs), (spec.name, "flat ladder")
         assert priced[-1] == ceiling
         for rung, bpp in zip(rungs, priced):
-            assert bpp == Fraction(rung, 256) + Fraction(1, 2)
+            assert bpp == Fraction(rung, 256) + overhead
 
         at_full = {artifact_bpp(spec, q, None) for q in rungs}
         assert at_full == {ceiling}, (spec.name, sorted(map(float, at_full)))

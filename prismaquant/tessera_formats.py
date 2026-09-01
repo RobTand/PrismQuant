@@ -61,6 +61,9 @@ __all__ = [
     "RATE_SURFACE_DENSE",
     "RATE_SURFACE_MODES",
     "SCALE_PLANE_BITS_Q256",
+    "SCALE_LUT_BITS_Q256",
+    "tessera_wire_defaults",
+    "wire_overhead_q256",
     "SUPERBLOCK_WEIGHTS",
     "TesseraFamily",
     "TesseraFormatError",
@@ -106,10 +109,52 @@ SUPERBLOCK_WEIGHTS = 256
 MIN_TRELLIS_STEPS = 8
 
 #: The S6b scale plane: an E8M0 base byte per group of 32 plus a 4-bit
-#: refinement per half of 16.  A flat 0.5 bits per position on top of the body,
-#: which is why a 3.0-bit body ships as a 3.5 bpp artifact.  Priced here so the
-#: allocator never has to know the layout.
+#: refinement per half of 16.  A flat 0.5 bits per position on top of the body.
+#: Priced here so the allocator never has to know the layout.
 SCALE_PLANE_BITS_Q256 = Q256_UNIT // 2
+#: The LUT scale plane (tessera schema minor 1, 2026-09-01): the same 4-bit
+#: word per half of 16, now an index into a per-unit sixteen-entry E4M3 table
+#: carried in the manifest, and no base plane.  A flat 0.25 bits per position.
+SCALE_LUT_BITS_Q256 = Q256_UNIT // 4
+
+
+def tessera_wire_defaults() -> "tuple[int, str]":
+    """``(span, scale plane)`` the tessera exporter writes today.
+
+    One source of truth, read from the package that writes the bytes: the
+    render leg encodes with these, and both accountants price them.  A
+    PrismaQuant-side copy would be the third spelling of one decision, and the
+    2026-09-01 default flip (span 2 over a LUT plane) is exactly the change a
+    stale copy would have priced wrongly.
+    """
+    from tessera.export import DEFAULT_SCALE_PLANE, DEFAULT_SPAN
+    from tessera.manifest import ScalePlaneKind
+
+    plane = "lut16" if ScalePlaneKind(DEFAULT_SCALE_PLANE) is ScalePlaneKind.LUT else "s6b"
+    return int(DEFAULT_SPAN), plane
+
+
+def wire_overhead_q256(
+    spec: "TesseraFamily", span: "int | None" = None, scale_plane: "str | None" = None,
+) -> Fraction:
+    """Per-position q256 the wire adds on top of the body rate.
+
+    Two terms.  The span-L trellis stores one select bit per L *codes* instead
+    of one per code and ``L - 1`` two-bit labels: ``(L - 1) / L`` extra bits
+    per code, i.e. per ``arity`` positions.  The scale plane is a flat
+    ``SCALE_PLANE_BITS_Q256`` (S6b) or ``SCALE_LUT_BITS_Q256`` (LUT).  At
+    ``span=1, s6b`` this is the half-bit every pre-minor-1 figure carried.
+    """
+    default_span, default_plane = tessera_wire_defaults()
+    span = default_span if span is None else int(span)
+    plane = default_plane if scale_plane is None else str(scale_plane)
+    if span < 1:
+        raise TesseraFormatError(f"span must be positive, got {span}")
+    if plane not in ("s6b", "lut16"):
+        raise TesseraFormatError(f"unknown scale plane {plane!r}; s6b or lut16")
+    body_extra = Fraction((span - 1) * Q256_UNIT, span * spec.arity)
+    plane_bits = SCALE_PLANE_BITS_Q256 if plane == "s6b" else SCALE_LUT_BITS_Q256
+    return body_extra + plane_bits
 
 #: Encoding scores ``2**payload_bits`` anchors at every trellis step, so the
 #: code space is a *cost*, not just an addressing choice.  65 536 anchors per
@@ -233,10 +278,11 @@ class TesseraFamily:
 
     @property
     def artifact_q256_bounds(self) -> tuple[int, int]:
-        """What ships: the body interval plus the S6b scale plane.
+        """What ships: the body interval plus the wire's flat overhead.
 
         ``mathematical_q256_bounds`` describes the BODY plane, running from 1
-        bit per code to the cap; the artifact adds a flat half-bit of scale at
+        bit per code to the cap; the artifact adds ``wire_overhead_q256`` --
+        the scale plane and, at span > 1, the trellis's stored labels -- at
         both ends, so this is that interval shifted, not collapsed.
 
         It *was* collapsed to a point for a few hours on 2026-09-01, on the
@@ -247,7 +293,13 @@ class TesseraFamily:
         the DP really can search inside it.
         """
         lo, hi = self.mathematical_q256_bounds
-        return (lo + SCALE_PLANE_BITS_Q256, hi + SCALE_PLANE_BITS_Q256)
+        extra = wire_overhead_q256(self)
+        if extra.denominator != 1:
+            raise TesseraFormatError(
+                f"{self.name}: the wire overhead {extra} q256 is not a whole "
+                "q256 unit; the family's bounds cannot be stated at 1/256 bpp"
+            )
+        return (lo + int(extra), hi + int(extra))
 
     def format_name(self, body_rate_q256: int) -> str:
         validate_body_rate_q256(self, body_rate_q256)
@@ -359,8 +411,18 @@ def artifact_bpp(
     family: "str | TesseraFamily",
     body_rate_q256: int,
     completion: "int | None" = 0,
+    span: "int | None" = None,
+    scale_plane: "str | None" = None,
 ) -> Fraction:
-    """Bits per position the artifact weighs: body, completion, scale plane.
+    """Bits per position the artifact weighs: body, completion, wire overhead.
+
+    ``span`` and ``scale_plane`` default to what the tessera exporter writes
+    (``tessera_wire_defaults``): since 2026-09-01 a span-2 trellis over a LUT
+    plane, which at ``E2M1_K2_R896`` is 3.75 + 0.25 = 4.0 bpp -- the same size
+    as the span-1 S6b wire it replaced, at 1.125x lower output-space error on
+    the GLM experts (tessera ``experiments/tessera_wire_default_check.py``).
+    On an arity-1 family the stored labels cost 0.25 more per position than
+    the LUT plane saves, so those rungs weigh 0.25 bpp more than they did.
 
     The rate is **two-dimensional**.  A column at body rate ``R`` writes ``R``
     body bits and may spend up to ``cap - R`` further bits selecting among the
@@ -400,7 +462,7 @@ def artifact_bpp(
         # completion it has no room for, and charging for it would reintroduce
         # the overcharge above from the other side.
         spent = min(room, Fraction(completion * Q256_UNIT, spec.arity))
-    return (body + spent + SCALE_PLANE_BITS_Q256) / Q256_UNIT
+    return (body + spent + wire_overhead_q256(spec, span, scale_plane)) / Q256_UNIT
 
 
 def enumerate_grid_space(
