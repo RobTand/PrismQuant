@@ -850,8 +850,11 @@ class TesseraServingRoute:
     This is a statement about *layouts*, which is all a producer may assert on
     its own.  It is **not** an attestation that a pinned runtime routes these
     bytes (principle 14): that is ``tessera_render.tessera_lane_attested``,
-    a lookup against the pinned serving release's own contract, and a rung is
-    ``producer_eligible`` only when a published cell names it.  The route is what the artifact *would* execute as
+    a lookup against the contract Tessera's OWN vLLM plugin packages
+    (``tessera.serving``, ``quant_method: "tessera"``), ANDed with the reviewed
+    release pin in ``prismaquant/tessera_runtime/``; a rung is
+    ``producer_eligible`` only when a published cell names it and that pin
+    names a release.  The route is what the artifact *would* execute as
     once a lane is attested, and pricing it is how the allocator stops
     comparing a W4A4 rung against a W8A8 one as if the A side were free.
     """

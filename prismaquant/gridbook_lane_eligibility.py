@@ -35,10 +35,22 @@ Schema v3, and why absence carries the whole weight
 ``platforms``, ``regimes``, ``structures`` and a list of ``cells``, each cell
 naming exactly one ``(platform, family, structure, regime)`` and the rung set it
 covers -- ``rungs`` (CB codebook K) for a ``cb_product`` family, ``rungs_q256``
-(body bits per 256 weights) for a ``tcq_trellis`` family. Which discriminator a
+(body bits per 256 weights) for a RATE-addressed family. Which discriminator a
 cell uses is NOT a key on the cell: it is decided by whether the cell's family
-appears in ``formats[]`` with ``kind == "tcq_trellis"``, exactly as Gridbook's
-own validator decides it.
+appears in ``formats[]`` with a rate-addressed ``kind``
+(:data:`RATE_ADDRESSED_FORMAT_KINDS`), exactly as each publisher's own
+validator decides it.
+
+Two publishers, one parser
+--------------------------
+``gridbook.lane-eligibility.v3`` and ``tessera.lane-eligibility.v3`` are the
+same wire format from two runtimes, and this module parses both (see
+:data:`LANE_ELIGIBILITY_SCHEMAS`). The differences are three and all additive:
+the vendor prefix on the schema string; the ``tessera_wire`` format kind, which
+is rate-addressed exactly as ``tcq_trellis`` is; and the OPTIONAL cell field
+``requires_plugin``, which says the route exists only in a process where that
+runtime's vLLM plugin is installed. Gridbook cells carry no ``requires_plugin``
+and serialize through here byte-for-byte as before.
 
 The publisher's cell status vocabulary is ``backed | backed_with_serve_flag |
 fallback``. There is deliberately **no ``unbacked`` cell**: Gridbook does not
@@ -82,6 +94,25 @@ from typing import Any, Mapping, Sequence
 #: by what came back: it is the record of why the fields were asked for, never
 #: a second authority on what they mean.
 LANE_ELIGIBILITY_SCHEMA = "gridbook.lane-eligibility.v3"
+
+#: The same wire format, published by Tessera's own vLLM plugin
+#: (``tessera.serving``, entry point ``tessera``, ``quant_method: "tessera"``).
+#: Only the vendor prefix differs: v3 is a closed-world, platform-scoped cell
+#: table either way, and this module is deliberately ONE parser rather than
+#: two, because a second copy of the cell grammar is a drift bug waiting for a
+#: field to move. What Tessera adds on top is ``requires_plugin`` (below), and
+#: that is an OPTIONAL cell key so a Gridbook table keeps parsing byte-for-byte
+#: as it did.
+LANE_ELIGIBILITY_SCHEMA_TESSERA = "tessera.lane-eligibility.v3"
+
+#: Every eligibility-table schema this parser accepts. The check is a set
+#: membership, never a prefix match: an unrecognised vendor is a table this
+#: repository was not handed, and an older *version* of either vendor's table
+#: is not a subset of v3 (see ``_parse_table``).
+LANE_ELIGIBILITY_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA,
+})
 
 #: Schema of the provenance payload this module produces. Bumped with the table
 #: schema: the payload gained the scope census and the qualification /
@@ -142,7 +173,28 @@ STRUCTURES = frozenset({STRUCTURE_DENSE, STRUCTURE_ROUTED_MOE})
 #: lane cell -- a cell's rung vocabulary follows from its family's kind.
 FORMAT_KIND_CB_PRODUCT = "cb_product"
 FORMAT_KIND_TCQ_TRELLIS = "tcq_trellis"
-FORMAT_KINDS = frozenset({FORMAT_KIND_CB_PRODUCT, FORMAT_KIND_TCQ_TRELLIS})
+#: Tessera's discriminator for the same idea: a family addressed by a RATE
+#: (body bits per 256 weights), not by a codebook size. ``tcq_trellis`` is
+#: Gridbook's spelling of it and ``tessera_wire`` is Tessera's; both resolve to
+#: the ``rungs_q256`` rung vocabulary and to ``EligibilityCell.is_trellis``.
+FORMAT_KIND_TESSERA_WIRE = "tessera_wire"
+FORMAT_KINDS = frozenset({
+    FORMAT_KIND_CB_PRODUCT,
+    FORMAT_KIND_TCQ_TRELLIS,
+    FORMAT_KIND_TESSERA_WIRE,
+})
+
+#: The kinds whose rung axis is a RATE. ``EligibilityCell.is_trellis`` means
+#: exactly "rate-addressed" -- the name is historical, from the era when
+#: ``tcq_trellis`` was the only such kind -- and every dispatch on the rung
+#: vocabulary tests membership here, never one kind constant. There are two
+#: such dispatch sites (``_published_families`` and ``resolve_payload_rung``)
+#: and they must agree, or a name resolves to a family with no rate and every
+#: downstream cell match fails closed for the wrong reason.
+RATE_ADDRESSED_FORMAT_KINDS = frozenset({
+    FORMAT_KIND_TCQ_TRELLIS,
+    FORMAT_KIND_TESSERA_WIRE,
+})
 
 _ASSET_DIR = Path(__file__).resolve().parent / "gridbook_runtime"
 _INDEX_PATH = _ASSET_DIR / "gridbook_runtime_contract_index.json"
@@ -168,7 +220,8 @@ class UnitStructuralFacts:
 
     ``k`` and ``rate_q256`` are the two rung vocabularies and they are mutually
     exclusive by construction: a ``cb_product`` family carries a codebook ``k``,
-    a ``tcq_trellis`` family carries a rate. Neither is ever a rounded bpw.
+    a RATE-addressed family (``tcq_trellis`` or ``tessera_wire``) carries a
+    rate. Neither is ever a rounded bpw.
     Both stay ``None`` when the pinned release publishes no such rung, so every
     rung predicate and every cell match fails closed rather than passing on a
     rate the runtime never listed.
@@ -248,9 +301,10 @@ class EligibilityCell:
     """One packaged v3 cell: which bytes, where, in which regime, on what route.
 
     A cell is scoped to exactly one ``(platform, family, structure, regime)``
-    and covers an explicit, non-empty rung list. It carries no prose: Gridbook's
-    v3 validator refuses ``detail``/``rationale`` keys on a cell, because a gate
-    cannot read prose (principle 14).
+    and covers an explicit, non-empty rung list. It carries no prose: a v3
+    validator refuses ``detail``/``rationale`` keys on a cell, because a gate
+    cannot read prose (principle 14). ``requires_plugin`` is the one optional
+    key, absent from every Gridbook cell and present on every Tessera one.
     """
 
     id: str
@@ -260,15 +314,26 @@ class EligibilityCell:
     regime: str
     route_status: str
     qualification: str
-    #: CB codebook rungs. Empty for a trellis cell.
+    #: CB codebook rungs. Empty for a rate-addressed cell.
     rungs: tuple[int, ...] = ()
-    #: Trellis body bits per 256 weights. Empty for a CB cell.
+    #: Body bits per 256 weights. Empty for a CB cell.
     rungs_q256: tuple[int, ...] = ()
-    #: The activation contract this route executes. Trellis cells only; a CB
-    #: cell publishes none and this stays "".
+    #: The activation contract this route executes. Rate-addressed cells only;
+    #: a CB cell publishes none and this stays "".
     activation_contract: str = ""
     requires_serve_flags: tuple[str, ...] = ()
+    #: The vLLM plugin whose installation this route requires, or "" when the
+    #: route is reachable in the pinned runtime as shipped. It is a
+    #: machine-readable CELL field rather than prose because an export gate
+    #: has to be able to refuse an artifact whose serve command would not
+    #: install the plugin -- stock vLLM has no reader for Tessera bytes, so
+    #: those routes are plugin-gated, not merely flag-gated. Gridbook cells
+    #: publish none and this stays "".
+    requires_plugin: str = ""
     predicates: tuple[tuple[str, str, Any], ...] = ()
+    #: "This cell's family is addressed by a RATE, not by a codebook size."
+    #: The name is historical -- ``tcq_trellis`` was the only such kind when it
+    #: was chosen -- and ``tessera_wire`` families set it too.
     is_trellis: bool = False
 
     @classmethod
@@ -296,7 +361,11 @@ class EligibilityCell:
         }
         if is_trellis:
             required.add("activation_contract")
-        _require_keys(payload, where, required=required, optional=set())
+        # ``requires_plugin`` is OPTIONAL, which is the whole of what keeps
+        # this widening additive: a Gridbook v3 cell has never carried the key
+        # and must keep parsing unchanged.
+        _require_keys(payload, where, required=required,
+                      optional={"requires_plugin"})
 
         status = str(payload["route_status"])
         if status not in CELL_ROUTE_STATUSES:
@@ -326,6 +395,18 @@ class EligibilityCell:
                     f"{where}.activation_contract must name the contract this "
                     "route executes; an empty one attests nothing")
 
+        requires_plugin = str(payload.get("requires_plugin", ""))
+        if requires_plugin and status not in LANE_ROUTE_STATUSES:
+            # Mirrors the ``requires_serve_flags`` rule below. A plugin
+            # requirement is an instruction for reaching a route that EXISTS;
+            # naming one on a cell whose route is an announced fallback says
+            # nothing an operator can act on, and would let a reader believe a
+            # plugin install turns a fallback into a native route.
+            raise GridbookLaneEligibilityError(
+                f"{where}: requires_plugin is {requires_plugin!r} but "
+                f"route_status is {status!r}; a plugin requirement is only "
+                f"meaningful on a cell whose route is one of "
+                f"{sorted(LANE_ROUTE_STATUSES)}")
         flags = tuple(str(v) for v in payload["requires_serve_flags"])
         if flags and status != ROUTE_STATUS_BACKED_WITH_SERVE_FLAG:
             raise GridbookLaneEligibilityError(
@@ -350,6 +431,7 @@ class EligibilityCell:
             rungs_q256=rungs if is_trellis else (),
             activation_contract=activation_contract,
             requires_serve_flags=flags,
+            requires_plugin=requires_plugin,
             predicates=_parse_predicates(payload["predicates"], where),
             is_trellis=is_trellis,
         )
@@ -388,6 +470,10 @@ class EligibilityCell:
         else:
             payload["rungs"] = list(self.rungs)
         payload["requires_serve_flags"] = list(self.requires_serve_flags)
+        if self.requires_plugin:
+            # Emitted only when non-empty, so a Gridbook cell's serialization
+            # is byte-identical to what it was before this key existed.
+            payload["requires_plugin"] = self.requires_plugin
         return payload
 
 
@@ -439,6 +525,14 @@ class EligibilityTable:
             payload["published_families"] = sorted(self.families)
             payload["trellis_families"] = sorted(self.trellis_families)
             payload["cell_ids"] = [cell.id for cell in self.cells]
+            required_plugins = sorted({
+                cell.requires_plugin for cell in self.cells
+                if cell.requires_plugin
+            })
+            if required_plugins:
+                # Only when non-empty: a Gridbook table's provenance payload
+                # is unchanged by this widening.
+                payload["required_plugins"] = required_plugins
         return payload
 
 
@@ -451,12 +545,17 @@ class RegimeRoute:
     route_status: str
     cell_id: str | None
     requires_serve_flags: tuple[str, ...] = ()
+    #: The vLLM plugins the matched cell requires, aggregated exactly as
+    #: ``requires_serve_flags`` is. A tuple rather than a scalar because it
+    #: rolls up the same way at unit granularity, and one shape at both levels
+    #: is what stops a consumer having to special-case the regime view.
+    requires_plugins: tuple[str, ...] = ()
     qualification: str = ""
     activation_contract: str = ""
     detail: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "regime": self.regime,
             "route_status": self.route_status,
             "cell_id": self.cell_id,
@@ -465,6 +564,9 @@ class RegimeRoute:
             "activation_contract": self.activation_contract or None,
             "detail": self.detail,
         }
+        if self.requires_plugins:
+            payload["requires_plugins"] = list(self.requires_plugins)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -475,6 +577,12 @@ class UnitRoute:
     route_status: str
     regimes: tuple[RegimeRoute, ...] = ()
     requires_serve_flags: tuple[str, ...] = ()
+    #: The vLLM plugins every backed regime of this unit requires, aggregated
+    #: over the same regimes ``requires_serve_flags`` is aggregated over. An
+    #: artifact whose units carry a non-empty set is servable ONLY where those
+    #: plugins are installed, which is a fact its serve command and its
+    #: shipcard have to carry.
+    requires_plugins: tuple[str, ...] = ()
     #: True when the pinned contract publishes this unit's payload family, i.e.
     #: when the eligibility table is the authority for these bytes; False when
     #: it does not. ``None`` means the question was never asked, which is the
@@ -525,6 +633,8 @@ class UnitRoute:
             "requires_serve_flags": list(self.requires_serve_flags),
             "regime_routes": [r.as_dict() for r in self.regimes],
         }
+        if self.requires_plugins:
+            payload["requires_plugins"] = list(self.requires_plugins)
         if self.in_scope is not None:
             payload["in_scope"] = self.in_scope
         if self.attested:
@@ -638,6 +748,8 @@ def resolve_unit_route(
             route_status=best.route_status,
             cell_id=best.id,
             requires_serve_flags=best.requires_serve_flags,
+            requires_plugins=(
+                (best.requires_plugin,) if best.requires_plugin else ()),
             qualification=best.qualification,
             activation_contract=best.activation_contract,
         ))
@@ -652,6 +764,9 @@ def resolve_unit_route(
     ]
     flags = tuple(sorted({
         flag for r in backed for flag in r.requires_serve_flags
+    }))
+    plugins = tuple(sorted({
+        plugin for r in backed for plugin in r.requires_plugins
     }))
 
     if unclaimed:
@@ -688,6 +803,7 @@ def resolve_unit_route(
         regimes=tuple(regimes),
         in_scope=True,
         requires_serve_flags=flags,
+        requires_plugins=plugins,
     )
 
 
@@ -832,10 +948,11 @@ def load_published_formats(
 
     ``formats[]`` carries ``family``, ``name_pattern`` and, since contract v12,
     a ``kind`` discriminator: a ``cb_product`` row carries ``grid``/``mode``/
-    ``n_sub``/``rungs``, a ``tcq_trellis`` row carries
+    ``n_sub``/``rungs``, while a RATE-addressed row (``tcq_trellis`` in a
+    Gridbook contract, ``tessera_wire`` in Tessera's) carries
     ``candidate_rungs_q256``/``reader_rate_range_q256``/
     ``native_terminal_q256``. A unit's payload family, sub-table split, rung
-    legality and trellis rate are therefore genuinely DERIVED here rather than
+    legality and body rate are therefore genuinely DERIVED here rather than
     read out of a local table -- which is the point of principle 14.
     """
     path = Path(contract_path) if contract_path is not None else None
@@ -860,9 +977,9 @@ def _name_prefix(entry: Mapping[str, Any]) -> str:
     """The literal head of a format's ``name_pattern``, e.g. ``TCQ_E2M1_R``.
 
     Keying on the pattern rather than on the family is what lets one resolver
-    serve both kinds: a CB family IS its name prefix (``FP8_CB_K``), a trellis
-    family is not (``TCQ_E2M1_R256`` names rates around a 256-weight block, and
-    is never a rung of itself).
+    serve every kind: a CB family IS its name prefix (``FP8_CB_K``), a
+    rate-addressed family is not (``TCQ_E2M1_R256`` and ``TESSERA_E2M1_K2_R896``
+    name rates around a 256-weight block, and are never a rung of themselves).
     """
     pattern = str(entry.get("name_pattern", ""))
     head, sep, _ = pattern.partition("{k}")
@@ -903,8 +1020,8 @@ def resolve_payload_rung(
         if not suffix.isdigit():
             continue
         value = int(suffix)
-        if str(entry.get("kind", FORMAT_KIND_CB_PRODUCT)) == (
-                FORMAT_KIND_TCQ_TRELLIS):
+        if str(entry.get("kind", FORMAT_KIND_CB_PRODUCT)) in (
+                RATE_ADDRESSED_FORMAT_KINDS):
             lo, hi = (int(v) for v in entry["reader_rate_range_q256"])
             # Outside the published reader range the rate stays None, so every
             # cell's rung list fails to cover it and the unit is unattested.
@@ -959,7 +1076,14 @@ def unit_structural_facts(
 
 
 def _published_families(formats: Any) -> tuple[frozenset[str], frozenset[str]]:
-    """``(all families, trellis families)`` from the contract's formats table."""
+    """``(all families, rate-addressed families)`` from the formats table.
+
+    The second set is what ``EligibilityCell.is_trellis`` is built from, and
+    it holds every family whose ``kind`` is in
+    :data:`RATE_ADDRESSED_FORMAT_KINDS` -- Gridbook's ``tcq_trellis`` and
+    Tessera's ``tessera_wire`` alike. Such a family's cells carry
+    ``rungs_q256``; a ``cb_product`` family's carry ``rungs``.
+    """
     if not isinstance(formats, Sequence) or isinstance(formats, (str, bytes)):
         raise GridbookLaneEligibilityError(
             "runtime_contract.formats must be a JSON array; the lane table's "
@@ -980,7 +1104,7 @@ def _published_families(formats: Any) -> tuple[frozenset[str], frozenset[str]]:
                 f"runtime_contract.formats[{i}].kind {kind!r} is not one of "
                 f"{sorted(FORMAT_KINDS)}")
         families.add(family)
-        if kind == FORMAT_KIND_TCQ_TRELLIS:
+        if kind in RATE_ADDRESSED_FORMAT_KINDS:
             trellis.add(family)
     return frozenset(families), frozenset(trellis)
 
@@ -994,14 +1118,16 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
     # table fails both, and "missing field(s) ['cells', 'platforms']" would
     # send its reader off to add keys to a v2 block rather than to
     # re-materialize the contract from a release that publishes v3.
-    if block.get("schema") != LANE_ELIGIBILITY_SCHEMA:
+    if block.get("schema") not in LANE_ELIGIBILITY_SCHEMAS:
         raise GridbookLaneEligibilityError(
-            f"{where}.schema must be {LANE_ELIGIBILITY_SCHEMA!r}, got "
-            f"{block['schema']!r}. An older lane table is not a subset of this "
-            "one -- v1/v2 cells are not platform-scoped and carry no rung "
-            "list, so reading one here would admit every rung on every "
-            "platform. Re-materialize the contract from a release that "
-            "publishes the current schema.")
+            f"{where}.schema must be one of "
+            f"{sorted(LANE_ELIGIBILITY_SCHEMAS)}, got {block.get('schema')!r}. "
+            "An older lane table is not a subset of these -- v1/v2 cells are "
+            "not platform-scoped and carry no rung list, so reading one here "
+            "would admit every rung on every platform. An unrecognised VENDOR "
+            "prefix is a table this repository was not handed at all. Either "
+            "way, re-materialize the contract from a release that publishes a "
+            "schema named above rather than editing the table.")
     _require_keys(
         block, where,
         required={"schema", "platforms", "regimes", "structures", "cells"},
@@ -1171,6 +1297,8 @@ def _sha256(path: Path) -> str:
 
 __all__ = [
     "LANE_ELIGIBILITY_SCHEMA",
+    "LANE_ELIGIBILITY_SCHEMA_TESSERA",
+    "LANE_ELIGIBILITY_SCHEMAS",
     "ROUTE_ATTESTATION_SCHEMA",
     "CONTRACT_INDEX_SCHEMA",
     "ROUTE_STATUS_BACKED",
@@ -1186,7 +1314,9 @@ __all__ = [
     "QUALIFICATION_DEVICE_QUALIFIED",
     "FORMAT_KIND_CB_PRODUCT",
     "FORMAT_KIND_TCQ_TRELLIS",
+    "FORMAT_KIND_TESSERA_WIRE",
     "FORMAT_KINDS",
+    "RATE_ADDRESSED_FORMAT_KINDS",
     "STRUCTURE_DENSE",
     "STRUCTURE_ROUTED_MOE",
     "GridbookLaneEligibilityError",

@@ -2,6 +2,47 @@
 
 As of: 2026-09-02 · `tessera/decouple-gridbook` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-09-02,
+`tessera/decouple-gridbook`) for **Tessera's own vLLM plugin** (§5.7, §9,
+§9.2, §9.4, §5.1's format table, D33): Tessera now serves ITSELF. The
+serving half moved into the Tessera repository as the package
+`tessera.serving` — a `vllm.general_plugins` entry point
+`tessera = "tessera.serving:register"`, registering `quant_method = "tessera"`,
+selected by the checkpoint with no enable flag and one operator knob
+`TESSERA_SERVE_MODE=resident|streamed` — and it packages its own
+`runtime_contract.json` (`tessera.runtime-contract.v1`, lane table
+`tessera.lane-eligibility.v3`) whose every cell carries a new machine-readable
+field `requires_plugin: "tessera"`: stock vLLM has no reader for these bytes,
+so the route is plugin-gated, not merely flag-gated. **Gridbook's Tessera lane
+is withdrawn** — its contract v14, described in the stamp below and in §9.2,
+was never released, so nothing that shipped is broken, and the Gridbook pin no
+longer governs Tessera admission; read that stamp and that passage as history.
+Producer side, three things are new and one is rewired.
+`gridbook_lane_eligibility.py` becomes a two-vendor parser by three ADDITIVE
+widenings — an accepted-schema set, a `tessera_wire` format kind that is
+rate-addressed exactly as `tcq_trellis` is, and `requires_plugin` as an
+OPTIONAL cell key propagated as `requires_plugins` through `RegimeRoute` /
+`UnitRoute` / the provenance payload — and every pre-existing Gridbook
+eligibility test passes unchanged. `prismaquant/tessera_runtime/` +
+`tessera_serving_runtime_pin.py` are the new boundary object, modelled on the
+Gridbook serving pin minus the wheel digest (Tessera publishes no wheel; it is
+installed from a source checkout, and asserting a digest for an archive that
+does not exist is the hand-assertion principle 14 refuses).
+`tessera_lane_attested` now reads Tessera's packaged contract through
+`importlib.resources`, RAISES on a cell that claims a route without naming its
+plugin, and ANDs the release pin into its answer — **and the answer is False
+today BY THE PIN**: there is no Tessera release tag (cutting one is Rob's
+call), so the pin carries `PENDING_TESSERA_RELEASE_COMMIT` /
+`PENDING_TESSERA_RELEASE_VERSION`, `version_is_release: false`, and
+`require_exact_tessera_runtime_release` refuses them. Without that conjunct
+admission would flip to True the moment the `tessera` package became
+importable, which it already is as a producer-side render dependency — a
+producer-side import is not a serving release. A fourth lane spec
+`lane_specs/tessera.json` declares the bar (gates ADVISORY, dense-only, TP=1,
+no routed MoE — no served measurement covers experts, so the contract carries
+no `routed_moe` cell), and its `served_activation_quantization.executes` is
+DERIVED from the packaged table by a test rather than typed. No exporter, no
+stage, no menu default changed: `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16`.
+Re-stamped (2026-09-02,
 `tessera/decouple-gridbook`) for **Gridbook contract v14** (§5.7, §9.2, D33):
 the Tessera lane serves two families — `TESSERA_E2M1_K2` (W4A4) and
 `TESSERA_E4M3_K1` (W8A8) — behind one flag pair, and one checkpoint carrying
@@ -3681,7 +3722,7 @@ pricing and emulation. Registry-vs-callable consistency is pinned by
 | `MXFP8_E4M3` | `:720-728` | 8 / 32 / e8m0 | 8.25 | Registered, profile-allowed, **de-menued** |
 | `NVFP4A16`, `MXFP4`, `MXFP8A16`, `MXFP8_E5M2`, `FP8_E5M2`, `INT8_W8A16`, `INT4_W4A16_g128` | `:678-795` | — | — | Research / registry-only |
 | GGUF k-quants + IQ | `:884-902` | `_make_gguf_spec :864` | 2.0625–8.5 | GGUF lane (§9.3) |
-| `TESSERA_<grid>_K<arity>_R<q256>` (e.g. `TESSERA_E2M1_K2_R896`) | synthesized, `tessera_render.py:349` via `format_registry.py:1322-1338` | E2M1 (4-bit) or E4M3 (8-bit) base, arity 1–2, body rate in 1/256-bpp steps, scale plane from the family's wire recipe; route priced (W4A4 / W8A8 / kernel) | exact per shape (`bits_for_shape`); 4.00 at `E2M1_K2_R896` on (2048, 4096) | **Research** (§5.7): priced and rendered by name; producer-eligible only through `tessera_lane_attested` (False under the 0.9.1/v12 pin); no exporter or lane in this repo |
+| `TESSERA_<grid>_K<arity>_R<q256>` (e.g. `TESSERA_E2M1_K2_R896`) | synthesized, `tessera_render.py` via `format_registry.py:1322-1338` | E2M1 (4-bit) or E4M3 (8-bit) base, arity 1–2, body rate in 1/256-bpp steps, scale plane from the family's wire recipe; route priced (W4A4 / W8A8 / kernel) | exact per shape (`bits_for_shape`); 4.00 at `E2M1_K2_R896` on (2048, 4096) | **Research** (§5.7): priced and rendered by name; producer-eligible only through `tessera_lane_attested`, which reads Tessera's own packaged contract and is **False under the PENDING Tessera serving pin** (no release tag exists); lane spec declared (§9.4), no exporter in this repo |
 | `NVFP4_CB_K1..K25`; FP8-CB reader K4/K8/K12/K16/K20/K24 + every K28..K48; FP8-CB producer K4..K48 step 4 | `cb_layout.py`, registry construction in `format_registry.py` | product-VQ codebook, g256 | NVFP4 v2 body `k/8 + 0.28125` bpw; FP8 index stream `k/8` bpw plus per-row FP32 scales; both add a deduplicated codebook sidecar | NVFP4 reader/producer domains are both every integer K1..K25; K26..K32 exist only in direct lattice/codec research and have no public format id. New endpoint artifacts remain Gridbook-v11 route-attestation and measurement gated. New FP8-CB producers emit exactly K4/K8/K12/K16/K20/K24/K28/K32/K36/K40/K44/K48; reader-only off-law K29–K47 artifacts remain inspectable but cannot enter a new menu, assignment, bundle, or export. Strict Ada profile allows only this FP8 ladder + `FP8_E4M3` + BF16 (§9.2) |
 | ~~`NVFP4_CB_S13..S16`~~ | — | signed codebook, g256 | — | **DELETED 2026-08-17** — every native Gridbook FP4 route requires the unsigned two-tier product layout (`n_sub == 2 and type_size == 4*k + 9`), so a signed rung could only ever ride a fallback; it had already lost 78.48% of matched weight-MSE comparisons. Registry, encoder, exporter and footprint branches removed; `cb_layout.subtable_bit_widths(..., "signed", ...)` and a recipe carrying `cb_mode: "signed"` now **refuse** rather than resolve to the product rung of the same `k` (§9.2) |
 
@@ -3933,16 +3974,16 @@ fallback:
   rungs encode; `tessera_wire_recipe` (`:188`) is the one source of body and
   scale plane per grid and rung; `artifact_bpp` (`:754`) and
   `wire_overhead_q256` (`:364`) are the byte accountant; `tessera_serving_route`
-  (`:907`) is the fifth axis.
-- `tessera_render.py` — the render adapter. `render_tessera_weight` (`:219`)
+  (`:910`) is the fifth axis.
+- `tessera_render.py` — the render adapter. `render_tessera_weight` (`:332`)
   encodes and decodes through the `tessera` package and holds no numeric
   constant of its own (`TESSERA_CONV_MEMORY`, `TESSERA_GROUP`, `TESSERA_HALF`
   are read from `tessera.export`, because a second copy of a rate constant is a
-  drift bug waiting for a rate to change). `synthesize_tessera_spec` (`:349`)
-  builds a `FormatSpec` on demand; `tessera_rung_is_serialisable` (`:157`) asks
+  drift bug waiting for a rate to change). `synthesize_tessera_spec` (`:462`)
+  builds a `FormatSpec` on demand; `tessera_rung_is_serialisable` (`:270`) asks
   the wire whether a grid is committed (a rung that renders but is not
   committed would otherwise die in `alphabet_plane()` at export, after the whole
-  production cache is built); `tessera_lane_attested` (`:90`) is the admission
+  production cache is built); `tessera_lane_attested` (`:157`) is the admission
   gate.
 - `format_registry.get_format` (`:1322-1338`) falls through to
   `synthesize_tessera_spec` for anything Tessera-shaped and to the ordinary
@@ -3975,51 +4016,91 @@ weight-only decode inside the GEMV, and no runtime serves it. Pricing the route
 is what stops the allocator comparing a W4A4 rung against a W8A8 one as if the
 activation side were free — the NVFP4_CB lesson of 2026-08-17 (§4 P8).
 
-**Admission is a lookup, not a constant.** Principle 9 makes "a runtime
-executes this rung natively" a measured platform fact and principle 14 says the
-fact is read from the runtime's own table. `tessera_lane_attested(name)`
-resolves the name to its payload family and rate through
-`gridbook_lane_eligibility.resolve_payload_rung` and answers True only when the
-pinned SERVING release's eligibility table publishes the family and carries a
-`device_qualified` cell on a `backed` or `backed_with_serve_flag` route whose
-`rungs_q256` names that rate. No table, an unpublished family, a rate no cell
-names, a `compile_only` cell or a `fallback` route all answer False. Until
-2026-09-02 this was a module constant (`False`). **It is False today by the
-pin, not by an edit:** `gridbook_runtime/gridbook_serving_runtime_pin.json`
-pins Gridbook 0.9.1 / contract v12, which publishes no Tessera row. Gridbook
-contract v14 (unreleased, its `tessera/family` branch) carries two Tessera
-rows, one per family, each from a served receipt (Qwen3-0.6B, vLLM 0.28.0,
-GB10, 112/112 units on the native route in both residency modes, eager and
-compiled): `TESSERA_E2M1_K2` — rungs `(896,)`, two `device_qualified` sm_121
-dense cells on `torch._scaled_mm` W4A4; 4.0018-bpp wire, eager KL 0.6316 vs
-the stock NVFP4 arm's 0.6404, compiled 0.6271 vs 0.6220 — and
-`TESSERA_E4M3_K1` — rungs `(1024,)`, two cells on `torch._scaled_mm` W8A8
-under `fp8_per_token_dynamic`; 4.0708-bpp wire decoded to the per-channel FP8
-pair, eager KL 0.4660 vs the stock FP8 arm's 0.4699 on byte-identical bytes,
-compiled 0.4669. Both rows are `backed_with_serve_flag` on ONE flag pair
-(`GRIDBOOK_TESSERA=1`, `GRIDBOOK_TESSERA_MODE=resident|streamed`); the
-checkpoint's per-module scheme picks the route, so one checkpoint carries both
-families and one serve executes each on its own tensor-core path (served
-2026-09-02: a 28-NVFP4 / 84-FP8 split of the same model, lane KL 0.6772 vs
-its compressed-tensors twin's 0.6741 on vLLM's own kernels, 112/112 modules
-on their declared routes eager and compiled; receipts in
-`/home/rob/tessera/docs/measurements/tessera-gridbook-lane-served-2026-09-02.md`
-and `tessera-gridbook-fp8-lane-served-2026-09-02.md`).
-A re-pin onto a release that packages v14 is what flips the answer — a Gridbook
-release is Rob's decision — and the per-artifact question (this platform, this
-unit's regimes) stays with `resolve_unit_route` at export.
+**Admission is a lookup, not a constant — and Tessera's own table is what it
+reads.** Principle 9 makes "a runtime executes this rung natively" a measured
+platform fact and principle 14 says the fact is read from the runtime's own
+table. Since 2026-09-02 that runtime is **Tessera's own vLLM plugin** (§9.4):
+package `tessera.serving`, entry point `tessera = "tessera.serving:register"`
+under `vllm.general_plugins`, registering `quant_method = "tessera"`, selected
+by the checkpoint with no enable flag and one operator knob
+`TESSERA_SERVE_MODE=resident|streamed`. `tessera_lane_attested(name)` resolves
+the name to its payload family and rate through
+`gridbook_lane_eligibility.resolve_payload_rung` against the contract that
+plugin PACKAGES — `tessera/serving/runtime_contract.json`, reached by
+`importlib.resources.files("tessera.serving")`, never repo-root arithmetic —
+and answers True only on the AND of three conjuncts, each of which fails closed
+alone:
+
+1. **The table admits the rung.** The contract publishes the family and carries
+   a `device_qualified` cell on a `backed` or `backed_with_serve_flag` route
+   whose `rungs_q256` names that rate. No table, an unpublished family, a rate
+   no cell names, a `compile_only` cell or a `fallback` route all answer False.
+2. **Every matching cell names its plugin.** `requires_plugin: "tessera"` is a
+   machine-readable cell field, not prose, because stock vLLM has no reader for
+   these bytes: the route is plugin-gated, not merely flag-gated, and an export
+   gate must be able to refuse an artifact whose serve command would not install
+   the runtime. A cell claiming a route with no plugin requirement is a
+   CONTRACT DEFECT and this function **raises** rather than admitting it. The
+   requirement travels into provenance through `resolve_unit_route`, which
+   aggregates it onto every `UnitRoute` / `RegimeRoute` as `requires_plugins`
+   and into `EligibilityTable.provenance()` as `required_plugins`.
+3. **The pinned runtime is an exact reviewed release.**
+   `require_exact_tessera_runtime_release(load_tessera_serving_runtime_pin())`.
+   Without this conjunct the answer would flip to True the moment the `tessera`
+   package became importable — which it already is, as the render adapter's own
+   dependency — and a producer-side import is not a serving release.
+
+**It is False today by the PIN, not by an edit and not by an absent table.**
+Tessera's packaged contract publishes both families with `device_qualified`
+native cells and the package imports fine here; what withholds them is
+`prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, whose `commit`
+and `version` are the conspicuous sentinels `PENDING_TESSERA_RELEASE_COMMIT` /
+`PENDING_TESSERA_RELEASE_VERSION` with `version_is_release: false`. There is no
+Tessera release tag and cutting one is Rob's decision; when it happens, the pin
+file and the reader's two release constants
+(`TESSERA_SERVING_RUNTIME_RELEASE_{VERSION,COMMIT}`) resolve in ONE reviewed
+commit, because the reader requires them to be equal and neither half admits
+anything alone. `tests/test_tessera_lane_admission.py` proves both directions:
+the tracked pin is refused with "PENDING", and under a released-pin fixture on
+the REAL packaged contract `TESSERA_E2M1_K2_R896` and `TESSERA_E4M3_K1_R1024`
+are admitted while `TESSERA_E2M1_K2_R512` is not.
+
+Until 2026-09-02 this was a module constant (`False`), then briefly a lookup
+against GRIDBOOK's serving pin, whose unreleased contract v13/v14 carried the
+Tessera rows from the served receipts recorded in §9.2. **Gridbook's Tessera
+lane is withdrawn and the Gridbook pin no longer governs Tessera admission**;
+read §9.2's Tessera passage as history. The per-artifact question (this
+platform, this unit's regimes) still stays with `resolve_unit_route` at export.
+
+**The parser is shared, and the widenings are additive.**
+`gridbook_lane_eligibility.py` reads both vendors' tables — the v3 cell grammar
+is identical and a second copy of it would be a drift bug — through three
+additive changes: `LANE_ELIGIBILITY_SCHEMAS` accepts
+`tessera.lane-eligibility.v3` beside `gridbook.lane-eligibility.v3`;
+`FORMAT_KIND_TESSERA_WIRE` joins `tcq_trellis` in
+`RATE_ADDRESSED_FORMAT_KINDS`, so `EligibilityCell.is_trellis` now means
+"rate-addressed" and both dispatch sites (`_published_families`,
+`resolve_payload_rung`) test the set rather than one constant; and
+`requires_plugin` is an OPTIONAL cell key, emitted from `as_dict()` only when
+non-empty, so a Gridbook cell serializes byte-for-byte as it did. Every
+pre-existing Gridbook eligibility test passes unchanged.
 
 **What is not here.** No PrismaQuant exporter writes a Tessera wire
-(`export_native_compressed.py` has no Tessera codec; the served checkpoint
-above was written by the Tessera repository's own exporter,
-`experiments/export_gridbook_tessera.py`), no lane spec or ship gate names a
-Tessera format, no `run-pipeline.sh` stage does, and `FORMATS` stays
-`NVFP4,FP8_DYNAMIC,BF16`. `tessera_{allocator,footprint,rate_surface}.py` are
-the §4.9 trellis trio re-pointed at Tessera families (36 lines differ after
-renaming), imported by nothing in the pipeline; `trellis_menu` remains the only
-allocation-time seam and still refuses (§4.9). Tests:
-`tests/test_tessera_formats.py` (29), `tests/test_tessera_footprint.py` (18),
-`tests/test_tessera_shape_dependent_recipe.py` (15). Register entry: D33.
+(`export_native_compressed.py` has no Tessera codec; every Tessera checkpoint
+served so far was written by the Tessera repository's own exporter), no ship
+gate has been RUN on this lane, no `run-pipeline.sh` stage names a Tessera
+format, and `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16`. What IS here since
+2026-09-02 is the declared bar: `prismaquant/lane_specs/tessera.json` (§9.4)
+states the serve, endpoint, gates, KL evaluator and executed activation
+contracts before an exporter exists, which is the order that makes the bar
+something an exporter is built against.
+`tessera_{allocator,footprint,rate_surface}.py` are the §4.9 trellis trio
+re-pointed at Tessera families (36 lines differ after renaming), imported by
+nothing in the pipeline; `trellis_menu` remains the only allocation-time seam
+and still refuses (§4.9). Tests (collected):
+`tests/test_tessera_formats.py` (44), `tests/test_tessera_footprint.py` (42),
+`tests/test_tessera_shape_dependent_recipe.py` (15),
+`tests/test_tessera_lane_admission.py` (16). Register entry: D33.
 
 ## 6. Export & serving invariants
 
@@ -6443,7 +6524,7 @@ Consumer migration is separate, deliberate work.
 
 ## 9. Serving lanes
 
-Three artifact containers, one allocator. `EXPORT_CONTAINER` picks the lane (§3.3) and
+Four artifact containers, one allocator. `EXPORT_CONTAINER` picks the lane (§3.3) and
 constrains the whole run: both non-default lanes hard-gate `PRODUCTION_CACHE=0` and a matching
 `TARGET_PROFILE` (`exit 2`), and must pass the render-faithfulness assertion (§4.7) — their
 exporters ship imatrix-weighted bytes, so the cost render must be weighted too. That is no
@@ -6454,8 +6535,10 @@ evaluator are declared in `prismaquant/lane_specs/*.json` (re-vet **R16**); the 
 advisory and the shipcard is what refuses — at **publication**, via `tools/publish_artifact.py`
 (§7.1).
 
-**DIAGRAM-2 — Serving lanes:** the three artifact containers, the runtime each requires, the
-Spark-proven target, and the physically unqualified RTX 4090 candidate.
+**DIAGRAM-2 — Serving lanes:** the three artifact containers a PrismaQuant exporter
+writes today, the runtime each requires, the Spark-proven target, and the physically
+unqualified RTX 4090 candidate. The fourth lane (Tessera, §9.4) is deliberately absent
+from the diagram: it is a declared bar with no exporter behind it yet.
 
 ```mermaid
 flowchart LR
@@ -7437,16 +7520,19 @@ published PyPI archive are one file, `cb4d7ad64c5a78d447f427a0aa98790406b6821d02
 (a local rebuild produced a different archive, `7141acf9…`, as expected — wheels are not
 byte-reproducible, which is why the digest is read and not recomputed).
 
-**Tessera on this lane (2026-09-02).** Gridbook's `tessera/family` branch
-serves both Tessera wires through one lane and one flag pair: the 4.0-bpp
-E2M1x2 wire (`TESSERA_NVFP4` family, decoded to the stock NVFP4 tile,
-`torch._scaled_mm` W4A4) and the 4.07-bpp E4M3 wire (`TESSERA_FP8` family,
-decoded to the per-channel FP8 pair, `torch._scaled_mm` W8A8), module by
-module from one checkpoint; its contract v14 publishes the rows
-`TESSERA_E2M1_K2` and `TESSERA_E4M3_K1`, each with two `device_qualified`
-sm_121 cells. Neither pin in `gridbook_runtime/` names that release yet — both
-stay at 0.9.1 / v12 — so the producer-side admission in §5.7 answers False
-until a release packaging v14 is pinned.
+**Tessera on this lane — HISTORY, withdrawn 2026-09-02.** For one day
+Gridbook's `tessera/family` branch served both Tessera wires through this lane
+and one flag pair: the 4.0-bpp E2M1x2 wire (`TESSERA_NVFP4` family, decoded to
+the stock NVFP4 tile, `torch._scaled_mm` W4A4) and the 4.07-bpp E4M3 wire
+(`TESSERA_FP8` family, decoded to the per-channel FP8 pair, `torch._scaled_mm`
+W8A8), module by module from one checkpoint; its contract v14 published the
+rows `TESSERA_E2M1_K2` and `TESSERA_E4M3_K1`, each with two
+`device_qualified` sm_121 cells. **That lane is withdrawn and contract v14 was
+never released**, so nothing that shipped depended on it and no pin has to
+move. Tessera serves itself now, through its own plugin (§9.4), and **the
+Gridbook pins do not govern Tessera admission** — the served measurements
+above survive as the receipts that produced Tessera's own contract cells, but
+this passage is history, not a live route claim.
 
 ### 9.3 GGUF
 
@@ -7486,6 +7572,68 @@ endpoint-agnostic and llama-server speaks OpenAI, which is what `lane_specs/gguf
 (the pipeline smoke still proves load+generate only); embedding/head format as a measured
 decision rather than operator policy. Strix Halo enters this lane first, serving-only
 (re-vet R7): `docs/lanes/gguf.md` carries the dated tracking table.
+
+### 9.4 tessera — the Tessera wire on Tessera's own vLLM plugin
+
+**Declared, and fail-closed.** This lane exists as a *bar* before it exists as
+a shipping path: `prismaquant/lane_specs/tessera.json` states the serve, the
+endpoint, the gate set, the KL evaluator and the executed activation contracts,
+and no PrismaQuant exporter writes a Tessera wire yet
+(`export_native_compressed.py` has no Tessera codec). The ordering is
+deliberate — the bar is what a future exporter is built against.
+
+**The runtime is Tessera's.** Package `tessera.serving` in the Tessera
+repository: a `vllm.general_plugins` entry point
+`tessera = "tessera.serving:register"` registering `quant_method = "tessera"`,
+two dense routes (NVFP4 W4A4 at `e2m1_group16_ue4m3_static`, per-channel FP8
+W8A8 at `fp8_per_token_dynamic`), a streamed window decoder and the span-2
+NVFP4 CUDA decoder. **There is no enable flag**: the checkpoint's
+`quantization_config.quant_method` selects the plugin, and the single operator
+knob is `TESSERA_SERVE_MODE=resident|streamed`, declared rather than defaulted
+because it changes the artifact's footprint and is folded into vLLM's
+compile-cache key. The serve installs the plugin into the *stock* vLLM image
+(`pip install --no-deps --no-build-isolation -e <tessera>`); no core patch, no
+forked runtime. The reference serve script
+(`/home/rob/tessera/experiments/tessera_plugin_served.sh`) and the route census
+(`/home/rob/tessera/tools/tessera_route_census.py`) live in that repository and
+are NAMED by the lane spec, never vendored.
+
+**The boundary is two objects, both machine-readable.** The pin,
+`prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`
+(`prismaquant.tessera_serving_runtime_pin.v1`), read by
+`tessera_serving_runtime_pin.py`; and the contract the plugin packages,
+`tessera/serving/runtime_contract.json` (`tessera.runtime-contract.v1`, lane
+table `tessera.lane-eligibility.v3`), read through `importlib.resources`.
+PrismaQuant never vendors or imports the serving half. Unlike the Gridbook
+serving pin this one binds no wheel digest: Tessera publishes no wheel and is
+installed from a source checkout, so a digest would be a claim about an
+artifact that does not exist.
+
+**Every cell is plugin-gated, in a field a gate reads.** Each cell publishes
+`requires_plugin: "tessera"` — stock vLLM has no reader for these bytes, so the
+route is not merely flag-gated, and an export gate has to be able to refuse an
+artifact whose serve command would not install the runtime. The shared parser
+carries it as an optional cell key and aggregates it as `requires_plugins`
+through `RegimeRoute` / `UnitRoute` / `EligibilityTable.provenance()`;
+`tessera_lane_attested` RAISES on a cell that claims a native route without it,
+because a contract defect must be loud rather than silently admitted.
+
+**Scope, from the table and not from prose.** `structures: ["dense"]` and no
+`routed_moe` cell — no served measurement covers routed experts, and absence is
+the honest state under a closed-world v3 table, not a refusal. Both
+`tensor_parallel` units declare `max_world_size: 1`: a Tessera unit is one blob
+per vLLM module against a shared rate schedule, so a sharded form needs
+per-rank wires rather than a byte range. `expert_parallel.units` is empty.
+Both residency modes are receipted and both must be exercised.
+
+**Admission is False until a release tag exists.** The pin's `commit` and
+`version` are the sentinels `PENDING_TESSERA_RELEASE_COMMIT` /
+`PENDING_TESSERA_RELEASE_VERSION` with `version_is_release: false`;
+`require_exact_tessera_runtime_release` refuses them, and `tessera_lane_attested`
+ANDs that refusal in (§5.7). Cutting the tag is Rob's decision and resolves the
+pin file *and* the reader's two release constants in one reviewed commit —
+neither half admits anything alone. Gates on this lane are ADVISORY like every
+other lane's; the shipcard is what refuses.
 
 ## 10. Hardware & environment
 
@@ -7739,7 +7887,7 @@ New with the 2026-07-30 merge:
 | D30 | **The Sensitivity Card's non-scalar tiers are screening surrogates, and its probe wiring has two soft spots** (added 2026-08-14, §4.8). Four honest gaps, none of them closed: (1) **No served A/B.** The `MARGINAL` tier and AQUA-AURA have never been measured on exact full-vocab vLLM KL-vs-BF16 or direct WikiText PPL. `SCALAR` is a byte-identical reproduction of today's model and carries no such debt; the other two must not be cited as results (§2.5). (2) **The rank-1 reconstruction's error is unquantified on real layers.** `H = Σ_t outer(g_t², x_t²)` is exactly rank-1 only when one token dominates; `outer(row, col)/h_trace_raw` is provably exact in that case (`rtol=1e-10`) and an approximation of unknown magnitude everywhere else. Nothing has compared it against a materialized `H` on a real Linear. (3) **The marginal identity is exact only at the two streaming sites.** `sum(fisher_row) == sum(fisher_col) == h_trace_raw` holds by construction where `h_trace_raw` is literally `chunk_h.sum()` in fp32 (`incremental_probe.py:2520`, `:2751`). On the **resident** path `h_trace_raw` comes from the bf16 outer-product-norm identity `(gy2_sq.sum(1) · x2_sq.sum(1)).sum()` (`:1667-1668`) while the marginals reduce the fp32 `chunk_h`, so the two agree mathematically but not bitwise; `SensitivityUnit.validate`'s `rtol=1e-3` is what absorbs that, and nothing measures the actual spread. (4) **One accumulation site is dead on the shipping path and therefore untested.** The batched MoE block-flush hook (`:2276-2362`) fires only for blocks whose immediate children are per-expert containers exposing the profile's projection names as `nn.Linear` — the *unpacked*-expert layout. The shipping recipe's MoE models do not take it, and `tests/test_probe_marginals.py` covers the helpers and the two streaming sites but not that branch, so its marginal emission has never executed. A transposed axis or a wrong merge rule there would surface first on a new unpacked-expert architecture, which is exactly the class of silent-garbage failure §8.5 L3 is about. | §4.8; `prismaquant/sensitivity_card.py`, `format_cost_protocol.py`, `sensitivity_card_allocate.py`; `incremental_probe.py:97-199,1667-1672,2276-2360,2501-2520,2735-2751`; `tests/test_sensitivity_card.py`, `tests/test_probe_marginals.py`; `docs/design/sensitivity_card_contract.md` §8 | MED | (1)-(2) run the rank-agreement check against measured `output_mse` on Qwen3-0.6B and an allocation-churn check against a shipped `cost.pkl` before any tier but `SCALAR` is proposed for a default; (3) record the resident-vs-streaming identity spread on one real probe, or tighten the resident path to reduce `chunk_h` for both; (4) cover the MoE block flush with a synthetic unpacked-expert fixture, or state that the branch is retired. |
 | D31 | **Shipcard replay binds recorded evidence to the serving pin at HEAD** (added 2026-08-18). Every gate slot records the runtime that actually gated it (serve-manifest `gridbook_distribution`, endpoint-contract stack), but the replay compares those records against `load_gridbook_serving_runtime_pin()` at HEAD — so the 0.8.9 pin bump made the already-published DSv4 flagship unpublishable for a docs-only README update: six slot refusals, all "is not the tracked pin", on evidence that exactly matches the pin that was tracked when it was measured. Worked around honestly for the 0.8.9 card update by running the publisher from a worktree at `0266662` (the pre-bump commit; publisher and verifier code there are byte-identical to HEAD — the bump commit `6a883bc` touched pin data and docs only — so this verifies the card against the pin that gated it, with zero tool divergence). Recurs on every serving-pin bump for every historical artifact. | `prismaquant/shipcard.py:1225,2374,2521`; `tools/publish_artifact.py` dry-run refusal 2026-08-18 | MED | Decision for Robert: accept a declarative superseded-pins record in `gridbook_serving_runtime_pin.py` (version/commit/wheel of prior released pins; replay accepts recorded == current OR recorded ∈ superseded, and the verdict names which) — keeps fail-closed against unreviewed runtimes without rotting history — or rule that docs updates to historical artifacts always re-run the publisher at the artifact's pin era. |
 | D32 | **The Fisher probe is not bit-reproducible, and nothing in the tree said so** (added 2026-08-20). Two runs of `incremental_probe` with byte-identical calibration, the same commit and the same `--layers-per-shard` differ on **379/402 units**, median `|Δh_trace|/h_trace` **2.5e-4** (max 1.1e-2); `n_tokens_seen` and the per-expert Fisher *support* are bit-identical on every unit, so the forward and the routing are exactly deterministic and only the backward moves. Mechanism: 30 of Ornith-1.5-35B-A3B's 40 layers are Gated DeltaNet, whose `fla` Triton kernels reduce over chunks in a non-deterministic order. **Why it is debt rather than a bug:** the jitter is unbiased (signed mean +6.5e-5 against its own sd 5.7e-4) and three orders below the 23% cost CV that §9 records as producing 3% assignment churn and 0σ served — but a probe-side change gated on bit-identity refuses for reasons that have nothing to do with the change, and `--layers-per-shard auto` (sized from free RAM at launch) adds a second, *avoidable* source on top. **Consequence for provenance:** probe-derived artifacts (`cost_baseline.pkl`, `cost_aura.pkl`, `cost.pkl`, the sensitivity card) must be rebuilt together from one probe run rather than half-reused, or `cost.pkl`'s stamped provenance names a probe that produced only some of its numbers. | `incremental_probe.py`; `sensitivity_probe.py` `_accumulate_packed_per_token_fisher`; measured Ornith-1.5-35B-A3B 2026-08-20 | LOW | Gate probe changes on what is invariant (`n_tokens_seen`, per-expert support, an unbiased signed mean within a *measured* floor), never on bit-identity; pin `--layers-per-shard` for any A/B. |
-| D33 | **OPEN 2026-09-02.** Tessera is priced and rendered by name (§5.7) but has no path out of this repository: no exporter codec, no lane spec, no ship gate, and producer eligibility is False under the 0.9.1/v12 serving pin because that contract publishes no Tessera row. The only served Tessera artifact was exported by the Tessera repository and served by Gridbook's unreleased `tessera/family` branch (contract v14, `TESSERA_E2M1_K2` and `TESSERA_E4M3_K1`; one checkpoint carrying both families was served on 2026-09-02). | `tessera_render.py:90` (`tessera_lane_attested`), `gridbook_runtime/gridbook_serving_runtime_pin.json` (0.9.1 / v12), `export_native_compressed.py` (no Tessera codec) | Med | Pin a Gridbook release that packages v14 (Rob's release decision), then add the exporter codec and lane spec so an allocation that picks a Tessera rung can be shipped from here; until then the lookup fails closed by design. |
+| D33 | **OPEN 2026-09-02, narrowed the same day.** Tessera is priced and rendered by name (§5.7) and now has a *declared* lane (§9.4, `lane_specs/tessera.json`) and a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), but still no path out of this repository: **no exporter codec**, and no ship gate has been run on the lane. Producer eligibility is False, and the reason moved from "no runtime publishes a Tessera row" to "**no Tessera release tag exists**" — the packaged contract publishes both families with `device_qualified` native cells, and the PENDING pin is what withholds them. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_runtime/tessera_serving_runtime_pin.json` (PENDING sentinels), `tessera_serving_runtime_pin.py`, `export_native_compressed.py` (no Tessera codec) | Med | Rob cuts a Tessera release tag, then one reviewed commit resolves the pin file and the reader's two release constants together; independently, add the exporter codec so an allocation that picks a Tessera rung can be shipped from here. Until both, the lookup fails closed by design and the lane spec is a bar with nothing behind it. |
 
 **Open items carried from session handovers.** Of the 41 items the handover census could not
 map to a verified closure, the prior FP4-CB fast-expander/Triton item is now closed by the

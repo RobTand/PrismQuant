@@ -243,7 +243,12 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
 9. **Serving reality gates every format — per lane, and per artifact.** A
    format is production-eligible only when its lane's **pinned runtime**
    (vanilla vLLM for `compressed-tensors`, llama.cpp/vLLM-GGUF for GGUF, the
-   pinned Gridbook release for CB — the sanctioned three, per `AGENTS.md`)
+   pinned Gridbook release for CB, and — since 2026-09-02 — the pinned Tessera
+   release for the Tessera wire, served by Tessera's own vLLM plugin
+   `tessera.serving` and admitted only through
+   `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, which is
+   PENDING, so that lane admits nothing yet — the sanctioned four, per
+   `AGENTS.md`)
    loads it on real shapes, generates correctly eager **and** graph-mode,
    doesn't break MTP/spec-decode (or is gated away), and routes it to a
    **native** kernel for the declared target platform — tensor cores on the

@@ -458,145 +458,42 @@ def test_an_attested_lane_cannot_admit_an_unwritable_rung():
 
 
 def test_no_tessera_rung_is_producer_eligible_on_the_pinned_release():
-    """Principle 9: the pinned serving release (Gridbook 0.9.1, contract v12)
-    publishes no Tessera row, so registry membership must not be mistaken for
-    a serving route.  The day a pin lands on a release whose contract carries
-    the ``TESSERA_E2M1_K2`` row (v13 is the first), this test's premise ends
-    and the eligible set is whatever that contract's cells name."""
+    """Principle 9, and the whole point of the pin.
+
+    Tessera's OWN packaged contract publishes both families with
+    ``device_qualified`` native cells, and the ``tessera`` package is
+    importable here (it is a producer-side render dependency).  Producer
+    eligibility is still False, and the *reason* is the tracked serving pin:
+    there is no Tessera release tag, so it carries PENDING sentinels.  Both
+    halves are asserted, because "False" without "because the pin" is a
+    correlation, and the day someone deletes the pin conjunct this test has to
+    fail rather than keep passing on an unrelated absence.
+
+    The full-blooded admission logic lives in
+    ``tests/test_tessera_lane_admission.py``.
+    """
     from prismaquant import tessera_render as tr
     from prismaquant.tessera_render import synthesize_tessera_spec
+    from prismaquant.tessera_serving_runtime_pin import (
+        TesseraServingRuntimePinError,
+        load_tessera_serving_runtime_pin,
+        require_exact_tessera_runtime_release,
+    )
 
+    # The table is PRESENT and DOES govern both families -- so the refusal
+    # below cannot be coming from an absent or silent contract.
     table, _formats = tr._pinned_serving_table()
-    assert not table.governs("TESSERA_E2M1_K2")
-    for name in ("TESSERA_E2M1_K2_R896", "TESSERA_E2M1_K1_R640"):
+    assert table.present
+    assert table.governs("TESSERA_E2M1_K2") and table.governs("TESSERA_E4M3_K1")
+
+    with pytest.raises(TesseraServingRuntimePinError, match="PENDING"):
+        require_exact_tessera_runtime_release(load_tessera_serving_runtime_pin())
+    assert tr._release_pin_satisfied() is False
+
+    for name in ("TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024",
+                 "TESSERA_E2M1_K1_R640"):
         assert tr.tessera_lane_attested(name) is False
         assert synthesize_tessera_spec(name).producer_eligible is False
-
-
-def _v13_shaped_contract(tmp_path, *, qualification="device_qualified",
-                         route_status="backed_with_serve_flag", rungs=(896,)):
-    """The v12 fixture plus the Tessera row and cells Gridbook contract v13
-    publishes -- a FIXTURE for the lookup's logic, never an attestation: the
-    real cells reach this repository only through a re-pin."""
-    import json
-
-    from test_cb_route_status_gate import V12_FIXTURE, _cell
-
-    contract = json.loads(V12_FIXTURE.read_text())
-    contract["formats"].append({
-        "kind": "tcq_trellis", "family": "TESSERA_E2M1_K2",
-        "name_pattern": "TESSERA_E2M1_K2_R{k}",
-        "candidate_rungs_q256": [896], "reader_rate_range_q256": [896, 896],
-        "native_terminal_q256": 1024, "residency_modes": ["resident", "streamed"],
-    })
-    flags = ["GRIDBOOK_TESSERA_NVFP4=1", "GRIDBOOK_TESSERA_NVFP4_MODE=resident|streamed"]
-    for regime in ("decode", "batch"):
-        contract["lane_eligibility"]["cells"].append(_cell(
-            f"tessera_e2m1_k2_dense_sm121_{regime}", platform="sm_121",
-            family="TESSERA_E2M1_K2", structure="dense", regime=regime,
-            route_status=route_status, qualification=qualification,
-            rungs_q256=list(rungs), activation_contract="e2m1_group16_ue4m3_static",
-            flags=flags if route_status == "backed_with_serve_flag" else ()))
-    path = tmp_path / "v13.json"
-    path.write_text(json.dumps(contract))
-    return path
-
-
-def _v14_shaped_contract(tmp_path):
-    """The v13 fixture plus what Gridbook contract v14 adds: the
-    ``TESSERA_E4M3_K1`` row (the FP8 route of the same lane), its two cells,
-    and the lane's unified flag pair on every Tessera cell.  A FIXTURE for
-    the lookup's logic, never an attestation."""
-    import json
-
-    from test_cb_route_status_gate import _cell
-
-    path = _v13_shaped_contract(tmp_path)
-    contract = json.loads(path.read_text())
-    flags = ["GRIDBOOK_TESSERA=1", "GRIDBOOK_TESSERA_MODE=resident|streamed"]
-    for cell in contract["lane_eligibility"]["cells"]:
-        if str(cell.get("family", "")).startswith("TESSERA_"):
-            cell["requires_serve_flags"] = list(flags)
-    contract["formats"].append({
-        "kind": "tcq_trellis", "family": "TESSERA_E4M3_K1",
-        "name_pattern": "TESSERA_E4M3_K1_R{k}",
-        "candidate_rungs_q256": [1024], "reader_rate_range_q256": [1024, 1024],
-        "native_terminal_q256": 2048, "residency_modes": ["resident", "streamed"],
-    })
-    for regime in ("decode", "batch"):
-        contract["lane_eligibility"]["cells"].append(_cell(
-            f"tessera_e4m3_k1_dense_sm121_{regime}", platform="sm_121",
-            family="TESSERA_E4M3_K1", structure="dense", regime=regime,
-            route_status="backed_with_serve_flag", qualification="device_qualified",
-            rungs_q256=[1024], activation_contract="fp8_per_token_dynamic", flags=flags))
-    out = tmp_path / "v14.json"
-    out.write_text(json.dumps(contract))
-    return out
-
-
-def test_the_fp8_family_is_admitted_by_a_v14_shaped_contract_and_no_earlier(tmp_path):
-    """Contract v14 is the first to carry ``TESSERA_E4M3_K1`` (the FP8 W8A8
-    route of the same lane, receipted at q1024 only).  The lookup admits
-    exactly that rung from such a table, still refuses it from a v13-shaped
-    one, and the pinned release (0.9.1 / v12) admits neither family."""
-    from prismaquant import tessera_render as tr
-    from prismaquant.gridbook_lane_eligibility import (
-        load_eligibility_table, load_published_formats,
-    )
-
-    def _load(path):
-        return (load_eligibility_table("0.9.1-test", contract_path=path),
-                load_published_formats(contract_path=path))
-
-    (tmp_path / "v13").mkdir()
-    t13, f13 = _load(_v13_shaped_contract(tmp_path / "v13"))
-    assert not tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024", table=t13, formats=f13)
-
-    table, formats = _load(_v14_shaped_contract(tmp_path))
-    assert table.governs("TESSERA_E4M3_K1") and table.governs("TESSERA_E2M1_K2")
-    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024", table=table, formats=formats)
-    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R896", table=table, formats=formats)
-    # rates the FP8 receipt did not cover, and the grid's cap itself
-    for name in ("TESSERA_E4M3_K1_R896", "TESSERA_E4M3_K1_R2048"):
-        assert not tr.tessera_lane_attested(name, table=table, formats=formats)
-    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024") is False   # the pinned release
-
-
-def test_tessera_lane_attested_is_read_from_the_contracts_own_cells(tmp_path):
-    """One lookup, failing closed on every axis: the family must be published,
-    a cell must name the rate, the cell must be device-qualified and its
-    route native.  Nothing in this repository can widen it."""
-    from unittest import mock
-
-    from prismaquant import tessera_render as tr
-    from prismaquant.gridbook_lane_eligibility import (
-        load_eligibility_table, load_published_formats,
-    )
-
-    def _load(path):
-        return (load_eligibility_table("0.9.1-test", contract_path=path),
-                load_published_formats(contract_path=path))
-
-    table, formats = _load(_v13_shaped_contract(tmp_path))
-    assert table.governs("TESSERA_E2M1_K2")
-    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R896", table=table, formats=formats)
-    # a serialisable rate no cell names
-    assert not tr.tessera_lane_attested("TESSERA_E2M1_K2_R640", table=table, formats=formats)
-    # a family the contract does not publish
-    assert not tr.tessera_lane_attested("TESSERA_E2M1_K1_R640", table=table, formats=formats)
-    assert not tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024", table=table, formats=formats)
-    # a cell that only cross-compiled, and one whose route is a fallback
-    (tmp_path / "c").mkdir()
-    t2, f2 = _load(_v13_shaped_contract(tmp_path / "c", qualification="compile_only"))
-    assert not tr.tessera_lane_attested("TESSERA_E2M1_K2_R896", table=t2, formats=f2)
-    (tmp_path / "f").mkdir()
-    t3, f3 = _load(_v13_shaped_contract(tmp_path / "f", route_status="fallback"))
-    assert not tr.tessera_lane_attested("TESSERA_E2M1_K2_R896", table=t3, formats=f3)
-    # and the spec reads the same lookup: the menu admits the attested rung only
-    with mock.patch.object(tr, "_pinned_serving_table", lambda: (table, formats)):
-        assert tr.synthesize_tessera_spec("TESSERA_E2M1_K2_R896").producer_eligible
-        assert not tr.synthesize_tessera_spec("TESSERA_E2M1_K2_R640").producer_eligible
-        assert not tr.synthesize_tessera_spec("TESSERA_E4M3_K1_R1024").producer_eligible
 
 
 # ------------------------------------------------- the recipe is the unit of account

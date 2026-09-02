@@ -38,6 +38,7 @@ from .tessera_formats import (
     scale_plane_name,
     tessera_wire_recipe,
 )
+from .tessera_serving_runtime_pin import TESSERA_SERVING_PLUGIN_NAME
 
 __all__ = [
     "TESSERA_CONV_MEMORY",
@@ -45,6 +46,8 @@ __all__ = [
     "TESSERA_HALF",
     "is_tessera_format",
     "render_tessera_weight",
+    "tessera_lane_attested",
+    "tessera_serving_contract_path",
     "synthesize_tessera_spec",
     "tessera_quantize_dequantize",
 ]
@@ -77,38 +80,130 @@ _LABEL_SHAPE = (2048, 4096)
 #: ``fallback`` cell attests a serve, not a native one, and admits nothing.
 _NATIVE_ROUTE_STATUSES = frozenset({"backed", "backed_with_serve_flag"})
 
+#: The vLLM plugin every Tessera route requires.  Aliased from the pin module
+#: rather than retyped: one spelling of the runtime's identity, so a rename
+#: cannot leave the gate checking a name nothing publishes.
+TESSERA_SERVING_PLUGIN = TESSERA_SERVING_PLUGIN_NAME
+
+
+def tessera_serving_contract_path():
+    """The contract Tessera's own serving plugin PACKAGES, as a real path.
+
+    ``importlib.resources`` rather than repo-root arithmetic, so a wheel
+    install, an editable install and an in-repo checkout all resolve
+    identically -- and so this reads the table of the ``tessera.serving``
+    package that is actually importable, never a copy.  The JSON is read
+    directly rather than through ``tessera.serving.contract`` because that
+    module's validator imports the plugin's dispatch tables, which is a
+    serving-side import a producer must not need on a machine with no GPU.
+
+    Importing ``tessera`` here is allowed and importing ``gridbook`` is not:
+    Tessera is already a producer-side dependency of this repository (the
+    render adapter above encodes and decodes through ``tessera.export``),
+    whereas the CB serving runtime is installed only in a serving container.
+    """
+    from importlib import resources
+
+    return resources.files("tessera.serving").joinpath("runtime_contract.json")
+
 
 @functools.lru_cache(maxsize=1)
 def _pinned_serving_table():
-    """The eligibility table of the pinned SERVING release, loaded once."""
+    """Tessera's packaged eligibility table and format rows, loaded once.
+
+    Until 2026-09-02 this read GRIDBOOK's materialized contract, because
+    Gridbook was the only runtime that could serve Tessera bytes.  Tessera now
+    ships its own vLLM plugin and its own ``runtime_contract.json``, and
+    Gridbook's Tessera lane is withdrawn (its contract v14, which carried the
+    two Tessera rows, was never released), so the authority for what executes
+    Tessera bytes is Tessera's table.
+    """
+    from importlib.resources import as_file
+    import json
+
     from .gridbook_lane_eligibility import (
         load_eligibility_table, load_published_formats,
     )
-    return load_eligibility_table(), load_published_formats()
+    with as_file(tessera_serving_contract_path()) as path:
+        # The runtime's own version string, so the table's provenance names a
+        # release rather than an empty string.  It is a LABEL here; what
+        # admits a rung is the pin, below.
+        version = str(
+            json.loads(path.read_text(encoding="utf-8"))
+            .get("versions", {}).get("tessera", ""))
+        return (load_eligibility_table(version, contract_path=path),
+                load_published_formats(version, contract_path=path))
+
+
+def _release_pin_satisfied() -> bool:
+    """Is the tracked Tessera serving pin an exact reviewed release?
+
+    False today, and by the pin: there is no Tessera release tag, so the
+    tracked pin carries PENDING sentinels and
+    ``require_exact_tessera_runtime_release`` refuses them.  The module
+    attribute is looked up at call time so a test can substitute a
+    released-pin fixture without reaching inside this function.
+    """
+    from . import tessera_serving_runtime_pin as pin_module
+
+    try:
+        pin_module.require_exact_tessera_runtime_release(
+            pin_module.load_tessera_serving_runtime_pin())
+    except pin_module.TesseraServingRuntimePinError:
+        return False
+    return True
 
 
 def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
     """Does a pinned runtime execute this Tessera rung natively?  DERIVED.
 
     Principle 9 makes this a *measured platform fact*, and principle 14 says
-    the fact is read from the runtime's own table, never asserted here: the
-    rung is attested when the pinned serving release's contract publishes its
-    payload family (``TESSERA_E2M1_K2`` for ``TESSERA_E2M1_K2_R896``) and
-    carries a ``device_qualified`` cell whose route executes natively and
-    whose ``rungs_q256`` names this rate, on any platform the contract names.
+    the fact is read from the runtime's own table, never asserted here.  The
+    runtime is Tessera's own vLLM plugin (``tessera.serving``, entry point
+    ``tessera``, selected by a checkpoint's ``quant_method: "tessera"``, one
+    operator knob ``TESSERA_SERVE_MODE``), and the table is the
+    ``runtime_contract.json`` that plugin packages.  Three conjuncts, each of
+    which fails closed on its own:
+
+    1. **The table admits the rung.**  The contract publishes the name's
+       payload family (``TESSERA_E2M1_K2`` for ``TESSERA_E2M1_K2_R896``) and
+       carries a ``device_qualified`` cell whose route executes natively and
+       whose ``rungs_q256`` names this rate, on any platform it names.  No
+       table, an unpublished family, a rate no cell names, a ``compile_only``
+       cell or a ``fallback`` route all answer False.
+    2. **Every matching cell states its plugin requirement.**  Stock vLLM has
+       no reader for these bytes, so a Tessera route is plugin-gated rather
+       than merely flag-gated, and the cell says so in a field a gate can read
+       (``requires_plugin``).  A cell that claims a route while naming no
+       plugin is a CONTRACT DEFECT, and this function RAISES rather than
+       admitting it: silently admitting would produce an artifact whose serve
+       command need not install the runtime that reads it.  The requirement is
+       carried into provenance by
+       ``gridbook_lane_eligibility.resolve_unit_route``, which aggregates it
+       onto every ``UnitRoute`` / ``RegimeRoute`` (``requires_plugins``) and
+       into ``EligibilityTable.provenance()`` (``required_plugins``) -- the
+       payload the export gate stamps.
+    3. **The pinned runtime is an exact reviewed release.**  Without this
+       conjunct the answer would flip to True the moment the ``tessera``
+       package became importable -- which it already is, as a producer-side
+       render dependency -- and a producer-side import is not a serving
+       release.  There is no Tessera release tag today, so
+       ``require_exact_tessera_runtime_release`` refuses the tracked pin's
+       PENDING sentinels and **every Tessera rung is producer-ineligible by
+       the pin, not by an edit here**.
+
     The per-artifact question -- THIS platform, THIS unit's regimes -- stays
     with ``gridbook_lane_eligibility.resolve_unit_route`` at export; this is
-    the menu-level admission, one lookup, and it fails closed: no table, a
-    family the contract does not publish, a rate no cell names, a
-    ``compile_only`` cell or a ``fallback`` route all answer False.
+    the menu-level admission, one lookup.
 
-    Until 2026-09-02 this was a module constant (``False``); Gridbook contract
-    v13 was the first to carry a Tessera row (``TESSERA_E2M1_K2``) and v14
-    carries one per family (``TESSERA_E4M3_K1`` for the FP8 route as well),
-    and a serving pin on a release that packages them is what flips the
-    answer, not an edit here.
+    History: until 2026-09-02 this was a module constant (``False``), then a
+    lookup against GRIDBOOK's serving pin, whose unreleased contract v13/v14
+    carried the Tessera rows.  Gridbook's Tessera lane is withdrawn and the
+    Gridbook pin no longer governs Tessera admission.
     """
-    from .gridbook_lane_eligibility import resolve_payload_rung
+    from .gridbook_lane_eligibility import (
+        GridbookLaneEligibilityError, resolve_payload_rung,
+    )
     if table is None or formats is None:
         pinned_table, pinned_formats = _pinned_serving_table()
         table = pinned_table if table is None else table
@@ -118,14 +213,30 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
     family, _k, rate = resolve_payload_rung(name, published_formats=formats)
     if rate is None or not table.governs(family):
         return False
-    return any(
-        cell.is_trellis
+    matched = [
+        cell for cell in table.cells
+        if cell.is_trellis
         and cell.family == family
         and rate in cell.rungs_q256
         and cell.qualification == "device_qualified"
         and cell.route_status in _NATIVE_ROUTE_STATUSES
-        for cell in table.cells
-    )
+    ]
+    if not matched:
+        return False
+    # Conjunct 2 is checked BEFORE the pin, deliberately.  A defective packaged
+    # contract must be loud the day it lands, not on the day Rob cuts a tag.
+    unstated = [cell.id for cell in matched
+                if cell.requires_plugin != TESSERA_SERVING_PLUGIN]
+    if unstated:
+        raise GridbookLaneEligibilityError(
+            f"{name}: cell(s) {unstated} claim a native Tessera route without "
+            f"declaring requires_plugin={TESSERA_SERVING_PLUGIN!r}. Stock vLLM "
+            "has no reader for Tessera bytes, so every such route is "
+            "plugin-gated; a cell that omits the requirement would let an "
+            "artifact be admitted whose serve command need not install the "
+            "runtime that reads it. This is a contract defect -- fix the "
+            "packaged table, never this gate.")
+    return _release_pin_satisfied()
 
 
 def is_tessera_format(name: object) -> bool:

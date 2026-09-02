@@ -1,0 +1,85 @@
+{
+  "schema": "prismaquant.lane_spec.v1",
+  "id": "tessera",
+  "export_container": "tessera",
+  "runtime": "vllm+tessera_plugin",
+  "description": "Tessera-wire container, served by Tessera's OWN vLLM plugin: package `tessera.serving`, entry point `tessera = \"tessera.serving:register\"` under [project.entry-points.\"vllm.general_plugins\"], registering quant_method = \"tessera\". PrismaQuant never vendors the serving runtime; the boundary crosses through prismaquant/tessera_runtime/tessera_serving_runtime_pin.json and the contract the plugin packages (tessera/serving/runtime_contract.json). THERE IS NO ENABLE FLAG: the checkpoint's `quantization_config.quant_method: \"tessera\"` selects the plugin, and the single operator knob is TESSERA_SERVE_MODE=resident|streamed, which is declared rather than defaulted because it changes the footprint the artifact occupies and is folded into vLLM's compile-cache key. The serve installs the plugin into the vanilla vLLM image with `pip install --no-deps --no-build-isolation -e <tessera>`; no vLLM patch, no forked runtime. The reference serve script is /home/rob/tessera/experiments/tessera_plugin_served.sh and the route census is /home/rob/tessera/tools/tessera_route_census.py -- both live in the Tessera repository, which this repository does not vendor, so they are NAMED here and not copied.",
+  "serving_profiles": [],
+  "endpoint": {
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "health_path": "/health",
+    "metrics_path": "/metrics"
+  },
+  "serve": {
+    "scripts": [],
+    "command": [
+      "bash",
+      "${TESSERA_REPO}/experiments/tessera_plugin_served.sh",
+      "${MODEL}",
+      "${ARM}",
+      "${TESSERA_SERVE_MODE}"
+    ]
+  },
+  "gates": [
+    {
+      "id": "load_generate.eager",
+      "runner": "TESSERA_LANE_EAGER=1 bash /home/rob/tessera/experiments/tessera_plugin_served.sh <artifact> <arm> resident",
+      "shipcard_slot": "native_export.eager",
+      "description": "Fresh vanilla vLLM container with the pinned Tessera plugin editable-installed, TP=1, speculative decode off, --enforce-eager, then greedy completions over the OpenAI endpoint. Repeat for TESSERA_SERVE_MODE=streamed: the two residencies decode the same bytes by different paths, so an eager receipt in one mode is not a receipt for the other."
+    },
+    {
+      "id": "load_generate.graph",
+      "runner": "TESSERA_LANE_EAGER=0 bash /home/rob/tessera/experiments/tessera_plugin_served.sh <artifact> <arm> resident",
+      "shipcard_slot": "native_export.graph",
+      "description": "A second fresh container under vLLM's default compiled forward and CUDA graphs. Eager success cannot stand in for compiled load/capture/generation success on this lane in particular: the compile-cache identity key has to carry the residency mode, and a mode-blind key is only visible under capture."
+    },
+    {
+      "id": "route.census",
+      "runner": "python /home/rob/tessera/tools/tessera_route_census.py --log <serve.log>",
+      "shipcard_slot": null,
+      "description": "Principle 12's second leg on this lane: the per-module route histogram the serve actually emitted, read from the plugin's own telemetry, compared against the artifact's priced activation_contracts. A bpp or KL number whose units rode a route other than the one they were priced on is not a result. The tool lives in the Tessera repository and is named, not vendored."
+    },
+    {
+      "id": "ship_gate.ppl_p99nll",
+      "runner": "prismaquant.validate_quantized_model --base-url http://127.0.0.1:8000 --shipcard",
+      "shipcard_slot": "ship_gate",
+      "description": "Unchanged from the native lane: same validator, same endpoint kind, same thresholds. The ship gate is runtime-agnostic and always was."
+    },
+    {
+      "id": "gold.kl",
+      "runner": "tools/measure_vllm_full_kl.py --base-url http://127.0.0.1:8000",
+      "shipcard_slot": "gold.kl",
+      "description": "Served exact full-vocab KL-vs-BF16 in the plugin serving env, against an image-matched BF16 teacher. Match extension residency across A/B arms: the NVFP4 route builds one CUDA extension on first use, and loading a CUDA extension shifts allocator addresses."
+    },
+    {
+      "id": "gold.ppl",
+      "runner": "tools/measure_vllm_wikitext_ppl.py --base-url http://127.0.0.1:8000 --wikitext-inputs <gold-inputs.json>",
+      "shipcard_slot": "gold.ppl",
+      "description": "Direct WikiText PPL on the served Tessera artifact using the exact CPU-materialized, value-closed offline token payload."
+    }
+  ],
+  "kl_evaluator": {
+    "kind": "validate_assignments_kl",
+    "entrypoint": "prismaquant.validate_assignments_kl:main",
+    "note": "The producer-side frontier evaluator, reachable because tessera_render renders a Tessera rung through the tessera package: a frontier KL measures the same decode the serve executes. Selection on this lane is SURROGATE by default; nothing here is promoted."
+  },
+  "served_activation_quantization": {
+    "executes": [
+      "TESSERA_E2M1_K2_R*",
+      "TESSERA_E4M3_K1_R*"
+    ],
+    "rationale": "DERIVED, not hand-asserted (principle 14). Both globs and both activation contracts come from the cells of the packaged tessera/serving/runtime_contract.json: each glob is a formats[] row's `name_pattern` with `{k}` replaced by `*` (TESSERA_E2M1_K2_R{k}, TESSERA_E4M3_K1_R{k}), and each family's contract is the `activation_contract` its cells publish. TESSERA_E2M1_K2 executes `e2m1_group16_ue4m3_static` -- W4A4: the decoded tile IS the stock NVFP4 tile and the route runs torch._scaled_mm on quantized activations. TESSERA_E4M3_K1 executes `fp8_per_token_dynamic` -- W8A8: the decoded tile is the stock per-channel FP8 pair with per-token dynamic activation scales. Neither is a weight-only bridge, so neither A side prices to zero. tests/test_tessera_lane_admission.py derives this list from the packaged contract and asserts equality, so the value is a read rather than a copy.",
+    "why_this_matters": "The A-side term is what stops the allocator comparing a W4A4 Tessera rung against a W8A8 one as if the activation side were free. Pricing an A side the runtime does not execute -- or failing to price one it does -- is a CURRENCY error, and it moved a whole 87 GB DSv4 allocation once (2026-08-17, NVFP4_CB). Both Tessera families genuinely quantize activations, and both are priced.",
+    "if_this_changes": "The preflight asserts EQUALITY against the packaged table: tests/test_tessera_lane_admission.py::test_lane_spec_executes_is_derived_from_the_packaged_contract rebuilds this list from tessera/serving/runtime_contract.json and refuses any drift, and the same test pins each family's activation contract. So this field is not maintained by hand -- a runtime that adds a family, retires one, or changes a family's executed contract makes that test fail, and the fix is to re-read the table, never to edit this list to silence it."
+  },
+  "advisory_gates": true,
+  "notes": [
+    "ADMISSION IS FAIL-CLOSED UNTIL A TESSERA RELEASE TAG EXISTS. prismaquant/tessera_runtime/tessera_serving_runtime_pin.json carries PENDING sentinels for commit and version, version_is_release is false, and require_exact_tessera_runtime_release refuses them -- so tessera_lane_attested answers False for every rung and no allocation can select one. Cutting the tag is Rob's decision and resolves the pin file and the reader's release constants in one reviewed commit; nothing else in this repository flips the answer.",
+    "DENSE-ONLY. The packaged contract declares structures: [\"dense\"] and carries no routed_moe cell, because no served measurement covers routed experts. Absence is the honest state, not a refusal to serve; the plugin refuses routed MoE by name rather than degrading it.",
+    "TP=1 ONLY. The contract's tensor_parallel units both declare max_world_size 1: a Tessera unit is one blob per vLLM module against a shared rate schedule, so a sharded form needs per-rank wires rather than a byte range. expert_parallel.units is empty for the same reason routed MoE is absent.",
+    "Both residency modes (TESSERA_SERVE_MODE=resident|streamed) are receipted by the contract's cells and must both be exercised: they decode the same bytes by different paths.",
+    "Gates are ADVISORY on this lane as on every other (R16's open half is deferred to Robert); the shipcard is what refuses.",
+    "No PrismaQuant exporter writes a Tessera wire yet (export_native_compressed.py has no Tessera codec), so this lane declares the bar before anything in this repository can clear it. That ordering is deliberate: the bar is what a future exporter is built against."
+  ]
+}

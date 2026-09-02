@@ -149,13 +149,19 @@ def test_command_matches_the_documented_lane_harness():
 # --------------------------------------------------------------------------
 # LaneSpec
 # --------------------------------------------------------------------------
-def test_three_lanes_are_declared():
-    assert set(lane_spec_names()) == {"compressed_tensors", "gguf", "nvfp4_cb"}
+def test_four_lanes_are_declared():
+    """Four sanctioned lanes since 2026-09-02, when Tessera started serving
+    itself through its own vLLM plugin (AGENTS.md rule 5). None of them is a
+    forked runtime: two are vanilla vLLM, one is llama.cpp, and the two plugin
+    lanes install a separately released plugin into an unpatched image."""
+    assert set(lane_spec_names()) == {
+        "compressed_tensors", "gguf", "nvfp4_cb", "tessera"}
     containers = {s.export_container for s in all_lane_specs()}
-    assert containers == {"compressed-tensors", "gguf", "nvfp4_cb"}
+    assert containers == {"compressed-tensors", "gguf", "nvfp4_cb", "tessera"}
 
 
-@pytest.mark.parametrize("container", ["compressed-tensors", "gguf", "nvfp4_cb"])
+@pytest.mark.parametrize(
+    "container", ["compressed-tensors", "gguf", "nvfp4_cb", "tessera"])
 def test_every_lane_declares_the_four_things(container):
     spec = lane_spec_for_container(container)
     assert spec.endpoint.kind in {"openai", "llama_server", "none"}

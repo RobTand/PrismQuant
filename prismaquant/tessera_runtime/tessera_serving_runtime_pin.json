@@ -1,0 +1,9 @@
+{
+  "schema": "prismaquant.tessera_serving_runtime_pin.v1",
+  "repository": "https://github.com/RobTand/tessera.git",
+  "commit": "PENDING_TESSERA_RELEASE_COMMIT",
+  "version": "PENDING_TESSERA_RELEASE_VERSION",
+  "version_is_release": false,
+  "runtime_contract_schema": "tessera.runtime-contract.v1",
+  "plugin_entry_point": "tessera = tessera.serving:register"
+}
