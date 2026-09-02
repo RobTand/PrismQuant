@@ -278,23 +278,11 @@ class WeightSession:
         # Strict production-cache mode turns this into a hard miss for
         # every non-BF16 format.
         self._rtn_fallbacks.append((qname, fmt_canon))
-        bf16 = self._ensure_bf16_snapshot(qname)
-        if bf16 is None:
-            return None
-        try:
-            spec = fr.get_format(fmt_canon)
-        except Exception:
-            return None
-        from .nvfp4_cb_footprint import is_cb_format
-        from .tessera_render import is_tessera_format
-
-        if is_cb_format(fmt_canon):
-            raise RuntimeError(
-                f"production_weight_cache is required for CB fallback "
-                f"({qname!r}, {fmt_canon!r}) in WeightSession; the direct "
-                "registry render is unweighted and layout-stale"
-            )
-        if is_tessera_format(fmt_canon):
+        # Ahead of ``get_format``, whose failure path here is ``return None``:
+        # on a box without the ``tessera`` package that would turn the refusal
+        # below into a silent None, which is the shape of the bug it exists to
+        # stop.
+        if fr.is_tessera_format_name(fmt_canon):
             raise RuntimeError(
                 f"production_weight_cache is required for Tessera "
                 f"({qname!r}, {fmt_canon!r}) in WeightSession; the registry "
@@ -303,6 +291,21 @@ class WeightSession:
                 "fallback would price different bytes under the same format "
                 "name -- exactly what STRICT_PRODUCTION_CACHE=0 is not "
                 "permission to do"
+            )
+        bf16 = self._ensure_bf16_snapshot(qname)
+        if bf16 is None:
+            return None
+        try:
+            spec = fr.get_format(fmt_canon)
+        except Exception:
+            return None
+        from .nvfp4_cb_footprint import is_cb_format
+
+        if is_cb_format(fmt_canon):
+            raise RuntimeError(
+                f"production_weight_cache is required for CB fallback "
+                f"({qname!r}, {fmt_canon!r}) in WeightSession; the direct "
+                "registry render is unweighted and layout-stale"
             )
         return spec.quantize_dequantize(bf16.detach().clone())
 

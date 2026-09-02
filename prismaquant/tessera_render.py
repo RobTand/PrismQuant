@@ -704,11 +704,6 @@ __all__ += [
 ]
 
 
-def is_tessera_format(fmt: str) -> bool:
-    """True for a name the Tessera byte path owns."""
-    return parse_tessera_format_name(str(fmt).strip().upper()) is not None
-
-
 def render_tessera_production(
     weight,
     fmt: str,
@@ -787,4 +782,4 @@ def render_tessera_production(
     return render
 
 
-__all__ += ["is_tessera_format", "render_tessera_production"]
+__all__ += ["render_tessera_production"]

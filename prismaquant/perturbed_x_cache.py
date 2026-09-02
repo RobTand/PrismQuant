@@ -862,9 +862,7 @@ class PerturbedActivationCache:
                         f"({param_plan.name!r}, {fmt_canon!r}); refusing an "
                         "unweighted legacy registry render"
                     )
-                from .tessera_render import is_tessera_format
-
-                if is_tessera_format(fmt_canon):
+                if fr.is_tessera_format_name(fmt_canon):
                     raise RuntimeError(
                         f"production_weight_cache is required for Tessera "
                         f"({param_plan.name!r}, {fmt_canon!r}); the registry "

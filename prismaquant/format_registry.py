@@ -1336,6 +1336,28 @@ def require_producer_formats(
     return [get_format(name) for name in requested]
 
 
+def is_tessera_format_name(name: object) -> bool:
+    """True for a Tessera-shaped format name, **without importing Tessera**.
+
+    Four consumers ask only "is this one of mine?" before deciding whether to
+    take the Tessera path: ``render_production_weight`` and the three
+    production-cache miss fallbacks (``weight_session``, ``perturbed_x_cache``,
+    ``aura_cost``). All four are on the hot path of every *non*-Tessera format
+    too, so the question must not drag in the answer's dependencies --
+    ``tessera_formats`` and ``tessera_render`` both require the ``tessera``
+    package at import, and an NVFP4-only pipeline must not.
+
+    So this is the family's own name grammar anchored at the start, the same
+    line ``get_format`` draws below, and it is deliberately a *prefix* test
+    rather than a parse: a ``TESSERA_``-shaped name naming an illegal rung is
+    still Tessera's to refuse, with Tessera's own error, not the registry's
+    KeyError about an unknown format.
+    """
+    if not isinstance(name, str):
+        return False
+    return name.strip().upper().startswith("TESSERA_")
+
+
 def get_format(name: str) -> FormatSpec:
     canonical = canonical_format_name(name)
     if canonical not in REGISTRY:
@@ -1351,8 +1373,8 @@ def get_format(name: str) -> FormatSpec:
         # inside the synthesizer because reaching the synthesizer imports the
         # ``tessera`` package: an unknown NON-Tessera name must raise KeyError
         # naming the registry, not ModuleNotFoundError naming a package it was
-        # never asking for.  ``is_tessera_format`` draws the same line.
-        if str(canonical).startswith("TESSERA_"):
+        # never asking for.  ``is_tessera_format_name`` above is that line.
+        if is_tessera_format_name(canonical):
             from .tessera_render import synthesize_tessera_spec
 
             spec = synthesize_tessera_spec(canonical)

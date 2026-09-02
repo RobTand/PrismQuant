@@ -3780,6 +3780,13 @@ the same format name, and the seam refuses rather than downgrade silently:
   column count that does not match `weight.shape[1]`. The deliberate opt-out is
   the `tessera_weights_only` lever, which whoever sets must stamp.
 
+* **The predicate does not import Tessera.** All four sites below are on the
+  hot path of every *non*-Tessera format, and `tessera_formats` /
+  `tessera_render` both require the `tessera` package at import. So the
+  question "is this mine?" is `format_registry.is_tessera_format_name` — the
+  family's name grammar anchored at the start, the same line `get_format`
+  already drew — and `tessera_render` is imported inside the Tessera branch
+  only. Pinned by a subprocess test that blocks the `tessera` import.
 * **All three cache-miss RTN fallbacks refuse Tessera** —
   `weight_session._format_weight` and `perturbed_x_cache` (both gated by
   `PRISMAQUANT_STRICT_PRODUCTION_CACHE`, default refuse) and `aura_cost`'s
@@ -3968,7 +3975,7 @@ friends); it does not enumerate legal format names anywhere, so `TESSERA` is
 carried by `run-pipeline.sh` and `allocator.py` alone. Checked, not assumed.
 
 **Gate:** `tests/test_tessera_menu.py` (26) + `tests/test_tessera_campaign.py`
-(25; one skips until `TESSERA_HESSIAN_KWARG` is pinned, several are CUDA-marked),
+(27; one skips until `TESSERA_HESSIAN_KWARG` is pinned, several are CUDA-marked),
 on top of `tessera_{formats,footprint}`'s own suites.
 
 **Measured on Qwen3-0.6B layer 0, 2026-09-02**

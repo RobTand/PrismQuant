@@ -4325,12 +4325,11 @@ def render_production_weight(
     # ``quantize_dequantize`` -- for Tessera a weights-only *reconstruction*,
     # not the decoded wire, and not the H-aware encode that ships. One render
     # for the surrogate, the KL and the bytes (principle 8) means this one.
-    from prismaquant.tessera_render import (
-        is_tessera_format,
-        render_tessera_production,
-    )
+    if fr.is_tessera_format_name(fmt):
+        # Imported inside the branch: ``tessera_render`` pulls in the
+        # ``tessera`` package, and an NVFP4-only pipeline must not.
+        from prismaquant.tessera_render import render_tessera_production
 
-    if is_tessera_format(fmt):
         return render_tessera_production(
             weight,
             fmt,

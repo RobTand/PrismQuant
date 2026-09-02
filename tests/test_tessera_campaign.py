@@ -660,3 +660,84 @@ def test_the_aura_dw_fallback_refuses_tessera():
     w = torch.randn(8, 32, dtype=torch.float32)
     with pytest.raises(RuntimeError, match="Tessera"):
         _delta_w("lin", "TESSERA_E2M1_K2_R256", w, None)
+
+
+def test_the_perturbed_x_cache_fallback_refuses_tessera():
+    """The third fallback, pinned like the other two.
+
+    `_apply_weight_quant` is reached with no production cache, so `q` stays
+    None and the registry render is the next thing it would do.
+    """
+    from prismaquant import format_registry as fr
+    from prismaquant.perturbed_x_cache import (
+        PerturbedActivationCache, _ModulePlan, _ParamPlan,
+    )
+
+    lin = torch.nn.Linear(32, 8, bias=False)
+    plan = _ModulePlan(module=lin, params=[_ParamPlan(
+        name="lin", attr="weight",
+        spec=fr.get_format("TESSERA_E2M1_K2_R256"))])
+    cache = PerturbedActivationCache.__new__(PerturbedActivationCache)
+    cache._materialized_frozen_weight_depth = 0
+    cache._frozen_weight_cache = None
+    cache._production_weight_cache = None
+    with pytest.raises(RuntimeError, match="Tessera"):
+        cache._apply_weight_quant(plan)
+
+
+def test_a_non_tessera_render_does_not_import_the_tessera_package():
+    """Asking "is this mine?" must not drag in the answer's dependencies.
+
+    `render_production_weight` and the three cache-miss fallbacks are on the
+    hot path of every *non*-Tessera format too. Both `tessera_formats` and
+    `tessera_render` require the `tessera` package at import, so routing the
+    predicate through either would have made Tessera a hard dependency of the
+    shipping NVFP4 pipeline. The sweep cannot see this — it always runs with
+    Tessera on the path — so the import is blocked in a subprocess.
+    """
+    import subprocess
+    import sys
+
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    script = r'''
+import sys
+class _Block:
+    def find_spec(self, name, path=None, target=None):
+        if name == "tessera" or name.startswith("tessera."):
+            raise ImportError("blocked: " + name)
+        return None
+sys.meta_path.insert(0, _Block())
+for m in [m for m in sys.modules if m == "tessera" or m.startswith("tessera.")]:
+    del sys.modules[m]
+import torch
+from prismaquant.production_weight_cache import render_production_weight
+w = torch.randn(64, 256, dtype=torch.bfloat16)
+r = render_production_weight(w, "FP8_DYNAMIC", qname="q",
+                             activations={"q": torch.randn(128, 256)},
+                             levers={})
+assert tuple(r.shape) == (64, 256)
+from prismaquant.weight_session import WeightSession
+lin = torch.nn.Linear(32, 8, bias=False).to(torch.bfloat16)
+s = WeightSession(torch.nn.Sequential(lin), production_weight_cache=None,
+                  strict_production_cache=False)
+s._linear_by_qname["lin"] = (lin, "weight")
+try:
+    s._format_weight("lin", "TESSERA_E2M1_K2_R256")
+    raise SystemExit("weight_session did not refuse")
+except RuntimeError as e:
+    assert "Tessera" in str(e), e
+from prismaquant.aura_cost import _delta_w
+try:
+    _delta_w("lin", "TESSERA_E2M1_K2_R256", torch.randn(8, 32), None)
+    raise SystemExit("aura_cost did not refuse")
+except RuntimeError as e:
+    assert "Tessera" in str(e), e
+print("OK")
+'''
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo)
+    env.setdefault("TMPDIR", "/home/rob/tmp")
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(repo),
+                         env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "OK" in out.stdout

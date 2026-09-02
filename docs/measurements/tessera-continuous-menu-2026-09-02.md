@@ -99,7 +99,7 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_architecture_doc.py -q
 ```
 
-**116 passed, 1 skipped** on sparky (read from that command's own output; an
+**118 passed, 1 skipped** on sparky (read from that command's own output; an
 earlier revision of this file said 114, which was summed from two older runs
 and counted the skip as a pass). The `CUDA` marker here is a `skipif`, not a deselect, so sparky's GPU
 means every CUDA campaign test ran; the one skip is
@@ -133,10 +133,10 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_production_weight_cache.py \
   tests/test_col_weights_render_identity.py tests/test_render_score.py \
   tests/test_weight_session.py tests/test_perturbed_x_cache.py \
-  tests/test_aura_cost.py -q
+  tests/test_aura_cost.py tests/test_format_registry.py -q
 ```
 
-**333 passed, 1 skipped** (118 s, sparky). The last six suites were added when
+**349 passed, 1 skipped** (82 s, sparky). The last seven suites were added when
 `render_production_weight` gained the Tessera interception and the three
 cache-miss fallbacks gained their refusal (§7): a change inside those functions
 has to be shown not to move any *other* format's render.
@@ -278,8 +278,25 @@ priced.
   reach the AURA one with a Tessera name (`run-pipeline.sh:69` refuses the
   `TESSERA` token before that stage) but a direct call could, and
   "unreachable through one entry point" is not closed. Pinned by
-  `test_a_production_cache_miss_does_not_fall_back_to_the_registry` and
-  `test_the_aura_dw_fallback_refuses_tessera`.
+  `test_a_production_cache_miss_does_not_fall_back_to_the_registry`,
+  `test_the_perturbed_x_cache_fallback_refuses_tessera` and
+  `test_the_aura_dw_fallback_refuses_tessera`. Two of them refuse *before*
+  `get_format`, whose failure path in `weight_session` is `return None` — a
+  refusal placed after it would have become a silent None on any box without
+  the `tessera` package.
+* **Asking "is this mine?" does not import Tessera.** All four sites are on
+  the hot path of every *non*-Tessera format, and both `tessera_formats` and
+  `tessera_render` require the `tessera` package at import — so routing the
+  predicate through either would have made Tessera a hard dependency of the
+  shipping NVFP4 pipeline. The predicate is
+  `format_registry.is_tessera_format_name`, a prefix test on the family's own
+  name grammar, which is the line `get_format` already drew for the same
+  reason; `tessera_render` is imported inside the Tessera branch only. The
+  sweep cannot see this (it always has Tessera on the path), so it is pinned
+  by a subprocess test that blocks the import:
+  `test_a_non_tessera_render_does_not_import_the_tessera_package`. On this box
+  the venv carries an editable Tessera install, so nothing here would have
+  failed locally — which is precisely why it is a test and not an observation.
 * **The opt-out is reachable from the pipeline, not just from the API.**
   `build_production_cache` builds `levers` from `--enable` with no whitelist
   and `run-pipeline.sh` passes `PRODUCTION_CACHE_LEVERS` straight into it, so
@@ -297,6 +314,18 @@ priced.
   anchor at the **group-minimum** body cap and bisect once for the group.
   Not implemented, and it means §8.3's aggregated `meas` arm is a weaker
   baseline than it could be.
+* **The two Hessian sources are not tied to each other.** The campaign forms
+  `H` from its own `_calibration_tokens(seed, nsamples, seqlen)` draw and
+  stamps a `text_sha`; `render_tessera_production` forms `H` from whatever
+  `activations[qname]` the production-cache build collected — a different draw,
+  possibly a different row count. Nothing compares the cache build's draw to
+  the cost table's `tessera_hessian` stamp, so the identity that the allocator
+  refuses on is not checked by the one stage that renders the bytes. Moot
+  today (no `H` reaches the encoder at this pin) and load-bearing the day it
+  does: priced bytes and cached bytes would diverge again, with the identity
+  sitting unread in `layer_config`. `build_production_cache` should refuse a
+  calibration draw whose `text_sha` differs from the cost table's. Wired on
+  the cost side, not the cache side.
 * **Per-unit anchor budgets are not tuned.** Three round-one anchors, adaptive
   rounds to a LOO gate of 0.25 in |log2|, capped at three rounds. Whether that
   is the right budget per family is unmeasured; what is measured is what the
@@ -621,7 +650,7 @@ subset; what would make it a *ship* claim is a served KL, which does not exist.
 
 | asked | result |
 |---|---|
-| Tests pass, listed with the command | §3. **333 passed, 1 skipped** on the full sweep, including every allocator suite this branch could regress and the six render/cache/cost suites the Tessera interception and the fallback refusals could. |
+| Tests pass, listed with the command | §3. **349 passed, 1 skipped** on the full sweep, including every allocator suite this branch could regress and the seven render/cache/cost/registry suites the Tessera interception and the fallback refusals could. |
 | Three 0.6B allocations spanning more than a few distinct rates | §8.2. Menu 3039–3063 rungs **per unit**; 16893 priced rungs over 7 units. Assignments hit 3.00026 / 4.00026 / 5.00026 bpp with 4 distinct rungs each (4 DP items), and 6–7 distinct rungs each without pre-aggregation. Not a five-rung ladder. |
 | Anchor counts per family per unit | §8. 4–5 per family per unit, 21 surfaces, 102 anchors, 2534 s. |
 | A-leg pricing test exists | §3, `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and §8.2 shows it deciding a real allocation. |
