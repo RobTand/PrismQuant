@@ -25,7 +25,7 @@ Gate 3 is closed for every Tessera rung today
 ---------------------------------------------
 The pinned serving release is ``gridbook 0.9.1``, whose contract publishes the
 families ``NVFP4_CB_K``, ``FP8_CB_K``, ``TCQ_E2M1_R256`` and ``TCQ_E4M3_R256``.
-``gridbook_lane_eligibility.resolve_payload_rung`` matches a format name against
+``lane_eligibility.resolve_payload_rung`` matches a format name against
 those families' ``name_pattern`` heads, and no Tessera name
 (``TESSERA_E2M1_K2_R896``) starts with one, so every Tessera rung resolves to a
 family the table does not govern and :data:`ROUTE_STATUS_UNATTESTED` is the
@@ -64,7 +64,7 @@ from fractions import Fraction
 from functools import lru_cache
 from typing import NamedTuple
 
-from .gridbook_lane_eligibility import (
+from .lane_eligibility import (
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
     ROUTE_STATUS_UNATTESTED,

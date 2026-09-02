@@ -179,7 +179,7 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
        admitting it: silently admitting would produce an artifact whose serve
        command need not install the runtime that reads it.  The requirement is
        carried into provenance by
-       ``gridbook_lane_eligibility.resolve_unit_route``, which aggregates it
+       ``lane_eligibility.resolve_unit_route``, which aggregates it
        onto every ``UnitRoute`` / ``RegimeRoute`` (``requires_plugins``) and
        into ``EligibilityTable.provenance()`` (``required_plugins``) -- the
        payload the export gate stamps.
@@ -193,7 +193,7 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
        the pin, not by an edit here**.
 
     The per-artifact question -- THIS platform, THIS unit's regimes -- stays
-    with ``gridbook_lane_eligibility.resolve_unit_route`` at export; this is
+    with ``lane_eligibility.resolve_unit_route`` at export; this is
     the menu-level admission, one lookup.
 
     History: until 2026-09-02 this was a module constant (``False``), then a

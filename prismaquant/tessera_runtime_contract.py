@@ -6,10 +6,11 @@ behind which serve flags, at which tensor-parallel world size -- is read from
 ``tessera/serving/runtime_contract.json``, the table the plugin packages and
 publishes, or it is refused.  Nothing here decides anything; it parses.
 
-**Why this is not** ``gridbook_lane_eligibility``.  That module reads the
-*Gridbook* serving release's contract, resolved through the Gridbook serving
-pin, and its schemas are Gridbook's (``gridbook.lane-eligibility.v3``,
-``cb_product``/``tcq_trellis`` format kinds).  Tessera publishes its own
+**Why this is not** ``lane_eligibility``.  That module is the generic
+engine: it reads a serving release's contract through that lane's pin and
+admits units against it.  It was written for the Gridbook lane's schemas
+(``gridbook.lane-eligibility.v3``, ``cb_product``/``tcq_trellis`` format
+kinds) and kept its shape when that lane was retired on 2026-09-02.  Tessera publishes its own
 contract with its own schema ids and its own ``tessera_wire`` format kind, and
 the honest reading of a second runtime's table is a second reader -- not a
 widened set of accepted schema strings on the first, which would let either
@@ -48,7 +49,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .gridbook_lane_eligibility import (
+from .lane_eligibility import (
     QUALIFICATION_DEVICE_QUALIFIED,
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
