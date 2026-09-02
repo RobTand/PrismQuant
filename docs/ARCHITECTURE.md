@@ -2,6 +2,12 @@
 
 As of: 2026-09-02 · `tessera/decouple-gridbook` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-09-02,
+`tessera/decouple-gridbook`) for **Gridbook contract v14** (§5.7, §9.2, D33):
+the Tessera lane serves two families — `TESSERA_E2M1_K2` (W4A4) and
+`TESSERA_E4M3_K1` (W8A8) — behind one flag pair, and one checkpoint carrying
+both was served in one process; the pin is unchanged (0.9.1 / v12), so
+admission still answers False by the pin, and `tests/test_tessera_formats.py`
+gains the v14-shaped admission case. Re-stamped (2026-09-02,
 `tessera/decouple-gridbook`) for the **Tessera seam** (§5.7): a Tessera
 rung is a synthesized `FormatSpec`, not a registry row — `format_registry.get_format`
 falls through to `tessera_render.synthesize_tessera_spec` for any
@@ -3981,14 +3987,25 @@ names, a `compile_only` cell or a `fallback` route all answer False. Until
 2026-09-02 this was a module constant (`False`). **It is False today by the
 pin, not by an edit:** `gridbook_runtime/gridbook_serving_runtime_pin.json`
 pins Gridbook 0.9.1 / contract v12, which publishes no Tessera row. Gridbook
-contract v13 (unreleased, its `tessera/family` branch) is the first to carry
-one — family `TESSERA_E2M1_K2`, rungs `(896,)`, two `device_qualified` sm_121
-dense cells on `torch._scaled_mm` W4A4, `backed_with_serve_flag` — taken from
-a served receipt (Qwen3-0.6B, 4.0018-bpp wire, vLLM 0.28.0, GB10: eager KL
-0.6316 vs the stock NVFP4 arm's 0.6404, compiled 0.6271 vs 0.6220, 112/112
-units on the native route in both residency modes;
-`/home/rob/tessera/docs/measurements/tessera-gridbook-lane-served-2026-09-02.md`).
-A re-pin onto a release that packages v13 is what flips the answer — a Gridbook
+contract v14 (unreleased, its `tessera/family` branch) carries two Tessera
+rows, one per family, each from a served receipt (Qwen3-0.6B, vLLM 0.28.0,
+GB10, 112/112 units on the native route in both residency modes, eager and
+compiled): `TESSERA_E2M1_K2` — rungs `(896,)`, two `device_qualified` sm_121
+dense cells on `torch._scaled_mm` W4A4; 4.0018-bpp wire, eager KL 0.6316 vs
+the stock NVFP4 arm's 0.6404, compiled 0.6271 vs 0.6220 — and
+`TESSERA_E4M3_K1` — rungs `(1024,)`, two cells on `torch._scaled_mm` W8A8
+under `fp8_per_token_dynamic`; 4.0708-bpp wire decoded to the per-channel FP8
+pair, eager KL 0.4660 vs the stock FP8 arm's 0.4699 on byte-identical bytes,
+compiled 0.4669. Both rows are `backed_with_serve_flag` on ONE flag pair
+(`GRIDBOOK_TESSERA=1`, `GRIDBOOK_TESSERA_MODE=resident|streamed`); the
+checkpoint's per-module scheme picks the route, so one checkpoint carries both
+families and one serve executes each on its own tensor-core path (served
+2026-09-02: a 28-NVFP4 / 84-FP8 split of the same model, lane KL 0.6772 vs
+its compressed-tensors twin's 0.6741 on vLLM's own kernels, 112/112 modules
+on their declared routes eager and compiled; receipts in
+`/home/rob/tessera/docs/measurements/tessera-gridbook-lane-served-2026-09-02.md`
+and `tessera-gridbook-fp8-lane-served-2026-09-02.md`).
+A re-pin onto a release that packages v14 is what flips the answer — a Gridbook
 release is Rob's decision — and the per-artifact question (this platform, this
 unit's regimes) stays with `resolve_unit_route` at export.
 
@@ -7421,12 +7438,15 @@ published PyPI archive are one file, `cb4d7ad64c5a78d447f427a0aa98790406b6821d02
 byte-reproducible, which is why the digest is read and not recomputed).
 
 **Tessera on this lane (2026-09-02).** Gridbook's `tessera/family` branch
-serves the Tessera 4.0-bpp wire (`TESSERA_NVFP4` family, decoded to the stock
-NVFP4 tile, `torch._scaled_mm` W4A4) and its contract v13 publishes the row
-`TESSERA_E2M1_K2` with two `device_qualified` sm_121 cells. Neither pin in
-`gridbook_runtime/` names that release yet — both stay at 0.9.1 / v12 — so the
-producer-side admission in §5.7 answers False until a release packaging v13 is
-pinned.
+serves both Tessera wires through one lane and one flag pair: the 4.0-bpp
+E2M1x2 wire (`TESSERA_NVFP4` family, decoded to the stock NVFP4 tile,
+`torch._scaled_mm` W4A4) and the 4.07-bpp E4M3 wire (`TESSERA_FP8` family,
+decoded to the per-channel FP8 pair, `torch._scaled_mm` W8A8), module by
+module from one checkpoint; its contract v14 publishes the rows
+`TESSERA_E2M1_K2` and `TESSERA_E4M3_K1`, each with two `device_qualified`
+sm_121 cells. Neither pin in `gridbook_runtime/` names that release yet — both
+stay at 0.9.1 / v12 — so the producer-side admission in §5.7 answers False
+until a release packaging v14 is pinned.
 
 ### 9.3 GGUF
 
@@ -7719,7 +7739,7 @@ New with the 2026-07-30 merge:
 | D30 | **The Sensitivity Card's non-scalar tiers are screening surrogates, and its probe wiring has two soft spots** (added 2026-08-14, §4.8). Four honest gaps, none of them closed: (1) **No served A/B.** The `MARGINAL` tier and AQUA-AURA have never been measured on exact full-vocab vLLM KL-vs-BF16 or direct WikiText PPL. `SCALAR` is a byte-identical reproduction of today's model and carries no such debt; the other two must not be cited as results (§2.5). (2) **The rank-1 reconstruction's error is unquantified on real layers.** `H = Σ_t outer(g_t², x_t²)` is exactly rank-1 only when one token dominates; `outer(row, col)/h_trace_raw` is provably exact in that case (`rtol=1e-10`) and an approximation of unknown magnitude everywhere else. Nothing has compared it against a materialized `H` on a real Linear. (3) **The marginal identity is exact only at the two streaming sites.** `sum(fisher_row) == sum(fisher_col) == h_trace_raw` holds by construction where `h_trace_raw` is literally `chunk_h.sum()` in fp32 (`incremental_probe.py:2520`, `:2751`). On the **resident** path `h_trace_raw` comes from the bf16 outer-product-norm identity `(gy2_sq.sum(1) · x2_sq.sum(1)).sum()` (`:1667-1668`) while the marginals reduce the fp32 `chunk_h`, so the two agree mathematically but not bitwise; `SensitivityUnit.validate`'s `rtol=1e-3` is what absorbs that, and nothing measures the actual spread. (4) **One accumulation site is dead on the shipping path and therefore untested.** The batched MoE block-flush hook (`:2276-2362`) fires only for blocks whose immediate children are per-expert containers exposing the profile's projection names as `nn.Linear` — the *unpacked*-expert layout. The shipping recipe's MoE models do not take it, and `tests/test_probe_marginals.py` covers the helpers and the two streaming sites but not that branch, so its marginal emission has never executed. A transposed axis or a wrong merge rule there would surface first on a new unpacked-expert architecture, which is exactly the class of silent-garbage failure §8.5 L3 is about. | §4.8; `prismaquant/sensitivity_card.py`, `format_cost_protocol.py`, `sensitivity_card_allocate.py`; `incremental_probe.py:97-199,1667-1672,2276-2360,2501-2520,2735-2751`; `tests/test_sensitivity_card.py`, `tests/test_probe_marginals.py`; `docs/design/sensitivity_card_contract.md` §8 | MED | (1)-(2) run the rank-agreement check against measured `output_mse` on Qwen3-0.6B and an allocation-churn check against a shipped `cost.pkl` before any tier but `SCALAR` is proposed for a default; (3) record the resident-vs-streaming identity spread on one real probe, or tighten the resident path to reduce `chunk_h` for both; (4) cover the MoE block flush with a synthetic unpacked-expert fixture, or state that the branch is retired. |
 | D31 | **Shipcard replay binds recorded evidence to the serving pin at HEAD** (added 2026-08-18). Every gate slot records the runtime that actually gated it (serve-manifest `gridbook_distribution`, endpoint-contract stack), but the replay compares those records against `load_gridbook_serving_runtime_pin()` at HEAD — so the 0.8.9 pin bump made the already-published DSv4 flagship unpublishable for a docs-only README update: six slot refusals, all "is not the tracked pin", on evidence that exactly matches the pin that was tracked when it was measured. Worked around honestly for the 0.8.9 card update by running the publisher from a worktree at `0266662` (the pre-bump commit; publisher and verifier code there are byte-identical to HEAD — the bump commit `6a883bc` touched pin data and docs only — so this verifies the card against the pin that gated it, with zero tool divergence). Recurs on every serving-pin bump for every historical artifact. | `prismaquant/shipcard.py:1225,2374,2521`; `tools/publish_artifact.py` dry-run refusal 2026-08-18 | MED | Decision for Robert: accept a declarative superseded-pins record in `gridbook_serving_runtime_pin.py` (version/commit/wheel of prior released pins; replay accepts recorded == current OR recorded ∈ superseded, and the verdict names which) — keeps fail-closed against unreviewed runtimes without rotting history — or rule that docs updates to historical artifacts always re-run the publisher at the artifact's pin era. |
 | D32 | **The Fisher probe is not bit-reproducible, and nothing in the tree said so** (added 2026-08-20). Two runs of `incremental_probe` with byte-identical calibration, the same commit and the same `--layers-per-shard` differ on **379/402 units**, median `|Δh_trace|/h_trace` **2.5e-4** (max 1.1e-2); `n_tokens_seen` and the per-expert Fisher *support* are bit-identical on every unit, so the forward and the routing are exactly deterministic and only the backward moves. Mechanism: 30 of Ornith-1.5-35B-A3B's 40 layers are Gated DeltaNet, whose `fla` Triton kernels reduce over chunks in a non-deterministic order. **Why it is debt rather than a bug:** the jitter is unbiased (signed mean +6.5e-5 against its own sd 5.7e-4) and three orders below the 23% cost CV that §9 records as producing 3% assignment churn and 0σ served — but a probe-side change gated on bit-identity refuses for reasons that have nothing to do with the change, and `--layers-per-shard auto` (sized from free RAM at launch) adds a second, *avoidable* source on top. **Consequence for provenance:** probe-derived artifacts (`cost_baseline.pkl`, `cost_aura.pkl`, `cost.pkl`, the sensitivity card) must be rebuilt together from one probe run rather than half-reused, or `cost.pkl`'s stamped provenance names a probe that produced only some of its numbers. | `incremental_probe.py`; `sensitivity_probe.py` `_accumulate_packed_per_token_fisher`; measured Ornith-1.5-35B-A3B 2026-08-20 | LOW | Gate probe changes on what is invariant (`n_tokens_seen`, per-expert support, an unbiased signed mean within a *measured* floor), never on bit-identity; pin `--layers-per-shard` for any A/B. |
-| D33 | **OPEN 2026-09-02.** Tessera is priced and rendered by name (§5.7) but has no path out of this repository: no exporter codec, no lane spec, no ship gate, and producer eligibility is False under the 0.9.1/v12 serving pin because that contract publishes no Tessera row. The only served Tessera artifact was exported by the Tessera repository and served by Gridbook's unreleased `tessera/family` branch (contract v13, `TESSERA_E2M1_K2`). | `tessera_render.py:90` (`tessera_lane_attested`), `gridbook_runtime/gridbook_serving_runtime_pin.json` (0.9.1 / v12), `export_native_compressed.py` (no Tessera codec) | Med | Pin a Gridbook release that packages v13 (Rob's release decision), then add the exporter codec and lane spec so an allocation that picks a Tessera rung can be shipped from here; until then the lookup fails closed by design. |
+| D33 | **OPEN 2026-09-02.** Tessera is priced and rendered by name (§5.7) but has no path out of this repository: no exporter codec, no lane spec, no ship gate, and producer eligibility is False under the 0.9.1/v12 serving pin because that contract publishes no Tessera row. The only served Tessera artifact was exported by the Tessera repository and served by Gridbook's unreleased `tessera/family` branch (contract v14, `TESSERA_E2M1_K2` and `TESSERA_E4M3_K1`; one checkpoint carrying both families was served on 2026-09-02). | `tessera_render.py:90` (`tessera_lane_attested`), `gridbook_runtime/gridbook_serving_runtime_pin.json` (0.9.1 / v12), `export_native_compressed.py` (no Tessera codec) | Med | Pin a Gridbook release that packages v14 (Rob's release decision), then add the exporter codec and lane spec so an allocation that picks a Tessera rung can be shipped from here; until then the lookup fails closed by design. |
 
 **Open items carried from session handovers.** Of the 41 items the handover census could not
 map to a verified closure, the prior FP4-CB fast-expander/Triton item is now closed by the

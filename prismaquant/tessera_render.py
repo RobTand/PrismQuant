@@ -103,8 +103,10 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
     ``compile_only`` cell or a ``fallback`` route all answer False.
 
     Until 2026-09-02 this was a module constant (``False``); Gridbook contract
-    v13 is the first to carry a Tessera row, and a serving pin on a release
-    that packages it is what flips the answer, not an edit here.
+    v13 was the first to carry a Tessera row (``TESSERA_E2M1_K2``) and v14
+    carries one per family (``TESSERA_E4M3_K1`` for the FP8 route as well),
+    and a serving pin on a release that packages them is what flips the
+    answer, not an edit here.
     """
     from .gridbook_lane_eligibility import resolve_payload_rung
     if table is None or formats is None:

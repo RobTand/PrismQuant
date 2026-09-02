@@ -502,6 +502,66 @@ def _v13_shaped_contract(tmp_path, *, qualification="device_qualified",
     return path
 
 
+def _v14_shaped_contract(tmp_path):
+    """The v13 fixture plus what Gridbook contract v14 adds: the
+    ``TESSERA_E4M3_K1`` row (the FP8 route of the same lane), its two cells,
+    and the lane's unified flag pair on every Tessera cell.  A FIXTURE for
+    the lookup's logic, never an attestation."""
+    import json
+
+    from test_cb_route_status_gate import _cell
+
+    path = _v13_shaped_contract(tmp_path)
+    contract = json.loads(path.read_text())
+    flags = ["GRIDBOOK_TESSERA=1", "GRIDBOOK_TESSERA_MODE=resident|streamed"]
+    for cell in contract["lane_eligibility"]["cells"]:
+        if str(cell.get("family", "")).startswith("TESSERA_"):
+            cell["requires_serve_flags"] = list(flags)
+    contract["formats"].append({
+        "kind": "tcq_trellis", "family": "TESSERA_E4M3_K1",
+        "name_pattern": "TESSERA_E4M3_K1_R{k}",
+        "candidate_rungs_q256": [1024], "reader_rate_range_q256": [1024, 1024],
+        "native_terminal_q256": 2048, "residency_modes": ["resident", "streamed"],
+    })
+    for regime in ("decode", "batch"):
+        contract["lane_eligibility"]["cells"].append(_cell(
+            f"tessera_e4m3_k1_dense_sm121_{regime}", platform="sm_121",
+            family="TESSERA_E4M3_K1", structure="dense", regime=regime,
+            route_status="backed_with_serve_flag", qualification="device_qualified",
+            rungs_q256=[1024], activation_contract="fp8_per_token_dynamic", flags=flags))
+    out = tmp_path / "v14.json"
+    out.write_text(json.dumps(contract))
+    return out
+
+
+def test_the_fp8_family_is_admitted_by_a_v14_shaped_contract_and_no_earlier(tmp_path):
+    """Contract v14 is the first to carry ``TESSERA_E4M3_K1`` (the FP8 W8A8
+    route of the same lane, receipted at q1024 only).  The lookup admits
+    exactly that rung from such a table, still refuses it from a v13-shaped
+    one, and the pinned release (0.9.1 / v12) admits neither family."""
+    from prismaquant import tessera_render as tr
+    from prismaquant.gridbook_lane_eligibility import (
+        load_eligibility_table, load_published_formats,
+    )
+
+    def _load(path):
+        return (load_eligibility_table("0.9.1-test", contract_path=path),
+                load_published_formats(contract_path=path))
+
+    (tmp_path / "v13").mkdir()
+    t13, f13 = _load(_v13_shaped_contract(tmp_path / "v13"))
+    assert not tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024", table=t13, formats=f13)
+
+    table, formats = _load(_v14_shaped_contract(tmp_path))
+    assert table.governs("TESSERA_E4M3_K1") and table.governs("TESSERA_E2M1_K2")
+    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024", table=table, formats=formats)
+    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R896", table=table, formats=formats)
+    # rates the FP8 receipt did not cover, and the grid's cap itself
+    for name in ("TESSERA_E4M3_K1_R896", "TESSERA_E4M3_K1_R2048"):
+        assert not tr.tessera_lane_attested(name, table=table, formats=formats)
+    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024") is False   # the pinned release
+
+
 def test_tessera_lane_attested_is_read_from_the_contracts_own_cells(tmp_path):
     """One lookup, failing closed on every axis: the family must be published,
     a cell must name the rate, the cell must be device-qualified and its
