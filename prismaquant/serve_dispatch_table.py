@@ -573,13 +573,17 @@ def load_dispatch_table(path: str | Path) -> ServeDispatchTable:
     return parse_dispatch_table(payload, source_path=str(p))
 
 
-def example_table_path() -> Path:
-    """The shipped example table (proposal data; see its own ``status``)."""
-    return (
-        Path(__file__).resolve().parent
-        / "serve_dispatch_tables"
-        / "gridbook_gb10_2026-08-01.example.json"
-    )
+def example_table_path() -> Path | None:
+    """The shipped example table, or None when the tree ships none.
+
+    It shipped one until 2026-09-02: a proposal-data table built from the
+    retired Gridbook codebook lane's published measurements, which went to
+    ``archive/gridbook_lane_2026-09-02/prismaquant/serve_dispatch_tables/``
+    with that lane. Returning None rather than a dead path is the honest
+    answer, and it keeps the "a row without a source is refused at load" rule
+    intact: there is no in-tree table to mistake for a qualified one.
+    """
+    return None
 
 
 def dispatch_family_for_format(fmt: str) -> str:

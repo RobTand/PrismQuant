@@ -1,5 +1,20 @@
 # Sample-parallel incremental probe
 
+> **STATUS 2026-09-02: UNAVAILABLE — the lane it was built for is retired.**
+>
+> This document describes the design accurately and is kept for that reason,
+> but the lane does not run today. `prepare-run-contract` and the per-worker
+> source census below were both built on
+> `prismaquant.rtx4090_artifact_census` — the strict-Ada FP8-CB campaign's
+> closed Qwen3.8-27B layout — which went to
+> `archive/gridbook_lane_2026-09-02/` when Rob retired the Gridbook codebook
+> lane. Nothing can mint a run contract, and
+> `incremental_probe.py --global-calibration-tensor` refuses up front rather
+> than admitting a pre-retirement contract with one leg of its identity replay
+> missing. Reviving sample parallelism means giving the census a
+> lane-independent source of truth. Recorded as debt D34 in
+> `docs/ARCHITECTURE.md`.
+
 Status: opt-in RTX 4090 producer lane, 2026-08-24. This is not a
 `run-pipeline.sh` default. The contract is implemented and CPU-tested; no
 campaign performance or quality claim is made until the reviewed GPU run.

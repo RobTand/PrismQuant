@@ -234,77 +234,22 @@ def test_missing_router_is_loud(ckpt, tmp_path):
             m2, act_dir, {}, profile=_IdentityProfile(), device="cpu")
 
 
-def test_export_skeleton_expert_packing():
-    """The CB exporter's per-expert -> packed skeleton bridge: assembles
-    (E, gate+up, in) / (E, hidden, inter) stacks under the packed names the
-    CB targets resolve, removes the per-expert keys, no-ops when dense."""
-    from prismaquant.export_nvfp4_cb import _pack_skeleton_experts
-
-    class _Prof:
-        def per_expert_moe_regex(self):
-            return r"re:^model[.]layers[.][0-9]+[.]mlp[.]experts[.][0-9]+[.](gate|up|down)_proj$"
-
-        def packed_expert_param_names(self):
-            return frozenset({"gate_up_proj", "down_proj"})
-
-        def packed_expert_parent_for_projection(self, proj):
-            return {"gate_proj": "gate_up_proj", "up_proj": "gate_up_proj",
-                    "down_proj": "down_proj"}.get(proj)
-
-        def packed_expert_projection_names(self, parent):
-            return {"gate_up_proj": ("gate_proj", "up_proj"),
-                    "down_proj": ("down_proj",)}[parent]
-
-        def to_vllm_internal_name(self, name):
-            return name
-
-    torch.manual_seed(5)
-    skel = {"model.layers.0.self_attn.q_proj.weight": torch.randn(4, 4)}
-    per = {}
-    for e in range(2):
-        per[f"model.layers.0.mlp.experts.{e}.gate_proj.weight"] = \
-            torch.randn(8, 16)
-        per[f"model.layers.0.mlp.experts.{e}.up_proj.weight"] = \
-            torch.randn(8, 16)
-        per[f"model.layers.0.mlp.experts.{e}.down_proj.weight"] = \
-            torch.randn(16, 8)
-    skel.update({k: v.clone() for k, v in per.items()})
-    n = _pack_skeleton_experts(skel, _Prof())
-    assert n == 2
-    gu = skel["model.layers.0.mlp.experts.gate_up_proj.weight"]
-    dn = skel["model.layers.0.mlp.experts.down_proj.weight"]
-    assert gu.shape == (2, 16, 16) and dn.shape == (2, 16, 8)
-    # Content: expert 0's gate rows then up rows.
-    assert torch.equal(
-        gu[0, :8], per["model.layers.0.mlp.experts.0.gate_proj.weight"])
-    assert torch.equal(
-        gu[0, 8:], per["model.layers.0.mlp.experts.0.up_proj.weight"])
-    assert torch.equal(
-        dn[1], per["model.layers.0.mlp.experts.1.down_proj.weight"])
-    # Per-expert keys consumed; dense keys untouched.
-    assert not any(".experts.0." in k or ".experts.1." in k for k in skel)
-    assert "model.layers.0.self_attn.q_proj.weight" in skel
-    # Dense-only skeleton: no-op.
-    dense = {"model.layers.0.mlp.up_proj.weight": torch.randn(4, 4)}
-    assert _pack_skeleton_experts(dense, _Prof()) == 0
-
-
-def test_nvfp4_cb_profile_denies_stock_formats_on_packed_experts():
-    """The nvfp4_cb container's stock-CT delegation is dense-only: the
-    profile must deny stock NVFP4/FP8 on rank-3 packed expert stacks while
-    allowing them on dense Linears, and allow CB rungs on both."""
-    from prismaquant.allocator_candidates import check_format_applicability
-
-    dense = (2048, 2048)
-    stack = (256, 1024, 2048)
-    kw = dict(target_profile="nvfp4_cb")
-    assert check_format_applicability(dense, "NVFP4", **kw).legal
-    v = check_format_applicability(stack, "NVFP4", **kw)
-    assert not v.legal and v.reason == "runtime_unsupported"
-    assert not check_format_applicability(stack, "FP8_E4M3", **kw).legal
-    assert check_format_applicability(stack, "FP8_CB_K36", **kw).legal
-    assert check_format_applicability(stack, "FP8_CB_K28", **kw).legal
-    assert check_format_applicability(dense, "FP8_CB_K44", **kw).legal
+# Two tests were deleted here on 2026-09-02, with the Gridbook codebook lane
+# (archive/gridbook_lane_2026-09-02/):
+#
+# `test_export_skeleton_expert_packing` pinned
+# `export_nvfp4_cb._pack_skeleton_experts`, the CB exporter's per-expert ->
+# packed skeleton bridge. That exporter module is archived. The equivalent
+# bridge for the surviving lanes lives in `layer_streaming.py` and is covered
+# by its own tests.
+#
+# `test_nvfp4_cb_profile_denies_stock_formats_on_packed_experts` pinned the
+# `nvfp4_cb` serving profile's dense-only stock-CT delegation: stock NVFP4/FP8
+# denied on rank-3 packed expert stacks, CB rungs allowed on both. That
+# serving profile is archived and it was the only spec in the repo that ever
+# admitted a CB rung, so the assertion has no profile to make it against.
+# Re-pointing it at `vllm_packed_moe` -- which denies CB rungs outright --
+# would have turned a capability loss into a green assertion.
 
 
 def test_load_tensors_dequantizes_fp8_with_serialized_scale_contract(tmp_path):

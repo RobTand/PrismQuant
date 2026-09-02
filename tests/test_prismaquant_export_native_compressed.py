@@ -1138,24 +1138,18 @@ class TestRoundTrip(unittest.TestCase):
                         continue
 
                     if fmt == "MXFP8_UE8M0_G32":
-                        # Not a compressed-tensors rung: the STREAMING
-                        # exporter writes its planes itself. Pack with the
-                        # exporter's own packer, then decode with the same
-                        # served E8M0 formula the stock MXFP8 rungs use, and
-                        # require the registry render to equal it exactly.
-                        from prismaquant.export_nvfp4_cb_streaming import (
-                            _requant_pack,
-                        )
-
-                        packed = _requant_pack(fmt, W)
-                        served = _mxfp8_served_dequantize(
-                            packed["weight"],
-                            packed["weight_scale"].view(torch.uint8),
-                        )
-                        rendered = fr.get_format(fmt).quantize_dequantize(
-                            W.clone())
-                        torch.testing.assert_close(rendered, served)
-                        self.assertTrue(torch.equal(rendered, served))
+                        # RENDER-ONLY since 2026-09-02, so there is no served
+                        # side to compare against. This rung was never a
+                        # compressed-tensors scheme: the CB STREAMING exporter
+                        # wrote its planes itself, and this branch packed with
+                        # that exporter's `_requant_pack` before decoding with
+                        # the stock served E8M0 formula. That exporter is in
+                        # archive/gridbook_lane_2026-09-02/ and nothing else
+                        # writes this format, so the rung joins MXFP4_SOURCE as
+                        # a live FormatSpec with no writer (debt D34). The
+                        # registry render is unchanged and still reachable; what
+                        # cannot be asserted is that it equals bytes some
+                        # exporter emits, because none does.
                         continue
 
                     if fmt in {"MXFP8_E4M3", "MXFP8_E5M2", "MXFP8A16"}:

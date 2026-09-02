@@ -1238,14 +1238,12 @@ def measure_expert_unit_costs(
                  f"(module-input pool / down_proj replay): "
                  f"{added[:4]}{'...' if len(added) > 4 else ''}")
         measure_expert_unit_costs.last_added_col_weights = added
-        # Reuse the exporter's production rule: fuse gate/up in declared
-        # order, and average their per-member imatrix vectors per expert.
-        from prismaquant.export_nvfp4_cb_streaming import (
-            _packed_expert_col_weights,
-        )
+        # The packed-expert pooling rule: fuse gate/up in declared order, and
+        # average their per-member imatrix vectors per expert.
+        from prismaquant.routed_experts import packed_expert_col_weights
         for kind, _qn, unit in units:
             if kind == "unpacked":
-                col_weights = _packed_expert_col_weights(
+                col_weights = packed_expert_col_weights(
                     col_weights, unit.members_by_target, profile
                 )
     else:

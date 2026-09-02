@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -21,12 +22,10 @@ activate_prismaquant_source()
 
 try:  # package mode (`python -m tools.measure_vllm_wikitext_ppl`)
     from .dsv4_wikitext_inputs import load_dsv4_wikitext_inputs
-    from .dsv4_gridbook_contract import exact_llm_contract
     from .serve_fingerprint import gold_producer_identity, self_manifest
     from .spec_decode_guard import refuse_if_spec_decode
 except ImportError:  # script mode (`python /repo/tools/measure_vllm_wikitext_ppl.py`)
     from dsv4_wikitext_inputs import load_dsv4_wikitext_inputs  # type: ignore
-    from dsv4_gridbook_contract import exact_llm_contract  # type: ignore
     from serve_fingerprint import (  # type: ignore
         gold_producer_identity,
         self_manifest,
@@ -35,8 +34,6 @@ except ImportError:  # script mode (`python /repo/tools/measure_vllm_wikitext_pp
 
 #: Set by `_load_llm`; `None` (could not inspect) is refused by the shipcard.
 _SPEC_DECODE_DETECTED: bool | None = None
-_DSV4_GRIDBOOK_CONTRACT: dict | None = None
-_DSV4_GRIDBOOK_KWARGS: dict | None = None
 
 WIKITEXT_DATASET = "wikitext"
 WIKITEXT_CONFIG = "wikitext-2-raw-v1"
@@ -44,20 +41,11 @@ WIKITEXT_REVISION = "b08601e04326c79dfdd32d625aee71d232d685c3"
 WIKITEXT_PPL_CALIBRATION_SCHEMA = (
     "prismaquant.wikitext_ppl_calibration/1"
 )
-DSV4_WIKITEXT_SPLIT = "test"
-DSV4_WIKITEXT_N_TOKENS = 8192
-DSV4_WIKITEXT_SEQLEN = 512
-DSV4_WIKITEXT_DATASET_FINGERPRINT = "7ccd6deaa4fc56e5"
-DSV4_WIKITEXT_CORPUS_SHA256 = (
-    "c5b5caea5bd655cb221545a484f2f0f59d35092a17a66840d7b9513d0b99687d"
-)
-DSV4_WIKITEXT_TOTAL_TOKENS = 287_597
-DSV4_WIKITEXT_SELECTED_TOKEN_IDS_SHA256 = (
-    "6c23cefbd78c327d6edac566a5c6b419871021b6cf9890ec830713c1de704961"
-)
-DSV4_TOKENIZER_IDENTITY_SHA256 = (
-    "9f7ee7cb93b58bf30f278965547e7584b89c848e76c3adfeb92c070a88492de0"
-)
+# The DSv4 gold corpus/tokenizer value identities lived here and were asserted
+# only under --dsv4-gridbook-contract, retired 2026-09-02 with its lane; see
+# archive/gridbook_lane_2026-09-02/. The digests themselves are not lost --
+# prismaquant/shipcard.py keeps the same five DSV4_WIKITEXT_*/DSV4_TOKENIZER_*
+# receipts, which is where a shipped record is checked against them.
 _CORPUS_CONSTRUCTION = {
     "row_filter": "include iff bool(text.strip()); preserve text verbatim",
     "join_separator": "\n\n",
@@ -91,36 +79,24 @@ def _validate_workload_args(args) -> None:
             or value < 2
         ):
             raise ValueError(f"--{name.replace('_', '-')} must be an integer >= 2")
-    if not getattr(args, "dsv4_gridbook_contract", False):
-        return
-    expected = {
-        "split": DSV4_WIKITEXT_SPLIT,
-        "n_tokens": DSV4_WIKITEXT_N_TOKENS,
-        "seqlen": DSV4_WIKITEXT_SEQLEN,
-    }
-    for name, value in expected.items():
-        if getattr(args, name, None) != value:
-            raise ValueError(
-                "DSv4 Gridbook PPL requires "
-                f"--{name.replace('_', '-')}={value!r}"
-            )
 
 
-def _activate_dsv4_gridbook_contract(args) -> dict:
-    """Apply the closed environment/kwargs before importing the runtime."""
-    global _DSV4_GRIDBOOK_CONTRACT, _DSV4_GRIDBOOK_KWARGS
-    if not args.dsv4_gridbook_contract:
-        return {}
-    if _DSV4_GRIDBOOK_KWARGS is None:
-        exact_kwargs, receipt = exact_llm_contract(args.model)
-        _DSV4_GRIDBOOK_KWARGS = dict(exact_kwargs)
-        _DSV4_GRIDBOOK_CONTRACT = dict(receipt)
-    args.quantization = "gridbook"
-    args.dtype = "bfloat16"
-    args.gpu_memory_utilization = 0.84
-    args.enforce_eager = True
-    args.max_num_batched_tokens = 512
-    return dict(_DSV4_GRIDBOOK_KWARGS)
+def _resolve_serve_image(args) -> str:
+    """The container image this measurement runs in -- never guessed.
+
+    The image used to come from the Gridbook lane's serving pin, retired
+    2026-09-02 (archive/gridbook_lane_2026-09-02/), so a caller could get one
+    without naming it. A wrong image tag is a silent reproducibility confound
+    (R15), so this fails closed: name it with --serve-image or PQ_SERVE_IMAGE.
+    """
+    image = (args.serve_image or os.environ.get("PQ_SERVE_IMAGE") or "").strip()
+    if not image:
+        raise RuntimeError(
+            "the serving container image is unknown: pass --serve-image or "
+            "set PQ_SERVE_IMAGE. The serve fingerprint that makes two PPL "
+            "numbers comparable is not evidence without it."
+        )
+    return image
 
 
 def _provenance(args) -> dict:
@@ -130,49 +106,19 @@ def _provenance(args) -> dict:
     authoritative extension-residency read for the numbers below; a PPL from a
     different `serve_fingerprint` is not a comparable delta (tools/kl_ab.py).
     """
-    contract_sha = (
-        hashlib.sha256(json.dumps(
-            _DSV4_GRIDBOOK_CONTRACT,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")).hexdigest()
-        if _DSV4_GRIDBOOK_CONTRACT is not None else None
-    )
-    from prismaquant.gridbook_serving_runtime_pin import (
-        load_gridbook_serving_runtime_pin,
-        require_exact_gridbook_serving_runtime_release,
-    )
-    from prismaquant.validate_cb_endpoint import DSV4_SPARK_VLLM_IMAGE
-
-    pin = load_gridbook_serving_runtime_pin()
-    if args.dsv4_gridbook_contract:
-        require_exact_gridbook_serving_runtime_release(pin)
     producer = gold_producer_identity("measure_vllm_wikitext_ppl")
     manifest = self_manifest(
         extra={
             "measurement_tool": "measure_vllm_wikitext_ppl",
             "producer_identity": producer,
-            "effective_llm_kwargs": _DSV4_GRIDBOOK_KWARGS,
-            "dsv4_gridbook_contract_sha256": contract_sha,
         },
-        image=DSV4_SPARK_VLLM_IMAGE if args.dsv4_gridbook_contract else None,
-        artifact_dir=(args.model if args.dsv4_gridbook_contract else None),
-        require_engine_descendant=bool(args.dsv4_gridbook_contract),
-        gridbook_pin_attestation={
-            "repository": pin.repository,
-            "commit": pin.commit,
-            "version": pin.version,
-            "wheel_sha256": pin.wheel_sha256,
-        } if args.dsv4_gridbook_contract else None,
+        image=_resolve_serve_image(args),
     )
     return {
         "git_commit": producer["git_commit"],
         "serve_fingerprint": manifest["serve_fingerprint"],
         "serve_manifest": manifest,
         "spec_decode_detected": _SPEC_DECODE_DETECTED,
-        "dsv4_gridbook_contract": _DSV4_GRIDBOOK_CONTRACT,
-        "dsv4_gridbook_contract_sha256": contract_sha,
     }
 
 
@@ -245,8 +191,14 @@ def _load_measurement_ids(
     tokenizer_attestation: Mapping[str, Any],
     tokenizer=None,
 ) -> tuple[list[int], dict[str, object]]:
-    """Load generic corpus tokens or the exact offline DSv4 release input."""
-    if not args.dsv4_gridbook_contract:
+    """Load generic corpus tokens, or a pre-tokenized offline input payload.
+
+    The offline payload used to be selected by the Gridbook lane's contract
+    flag (retired 2026-09-02, archive/gridbook_lane_2026-09-02/). It is a
+    lane-independent capability -- it keeps `datasets`/pyarrow out of the
+    serving image -- so it is now selected by naming --wikitext-inputs.
+    """
+    if not getattr(args, "wikitext_inputs", None):
         if tokenizer is None:
             raise ValueError("generic WikiText PPL requires a tokenizer")
         return _load_ids(
@@ -255,11 +207,6 @@ def _load_measurement_ids(
             split=args.split,
             n_tokens=args.n_tokens,
             text_file=args.corpus_text_file,
-        )
-    if not getattr(args, "wikitext_inputs", None):
-        raise ValueError(
-            "DSv4 Gridbook PPL requires --wikitext-inputs from "
-            "tools/prepare_dsv4_wikitext_inputs.py"
         )
     payload = load_dsv4_wikitext_inputs(
         args.wikitext_inputs,
@@ -358,18 +305,10 @@ def _ppl_calibration_contract(
         raise RuntimeError("WikiText PPL scored-token count is inconsistent")
     selected_sha256 = _canonical_sha256(ids)
     chunk_starts = list(range(0, len(ids), int(args.seqlen)))
-    if getattr(args, "dsv4_gridbook_contract", False):
-        exact_evidence = {
-            "fingerprint": DSV4_WIKITEXT_DATASET_FINGERPRINT,
-            "corpus_sha256": DSV4_WIKITEXT_CORPUS_SHA256,
-            "total_tokens": DSV4_WIKITEXT_TOTAL_TOKENS,
-        }
-        if dict(dataset_evidence) != exact_evidence:
-            raise RuntimeError("DSv4 WikiText dataset value identity differs")
-        if selected_sha256 != DSV4_WIKITEXT_SELECTED_TOKEN_IDS_SHA256:
-            raise RuntimeError("DSv4 WikiText selected token IDs differ")
-        if tokenizer_identity_sha256 != DSV4_TOKENIZER_IDENTITY_SHA256:
-            raise RuntimeError("DSv4 tokenizer value identity differs")
+    # The corpus/token/tokenizer value-identity assertions that ran here were
+    # gated on --dsv4-gridbook-contract, retired 2026-09-02 with its lane (see
+    # archive/gridbook_lane_2026-09-02/). The contract below still records
+    # every one of those identities, so a consumer can still check them.
     contract = {
         "schema": WIKITEXT_PPL_CALIBRATION_SCHEMA,
         "dataset": {
@@ -428,9 +367,7 @@ def _load_llm(args) -> "LLM":
         # Mamba/DeltaNet hybrids need max_num_batched_tokens >= their
         # chunk-alignment floor (~2096); seqlen+1 alone can undershoot it.
         kwargs["max_num_batched_tokens"] = args.max_num_batched_tokens
-    if args.dsv4_gridbook_contract:
-        kwargs.update(_activate_dsv4_gridbook_contract(args))
-    # Environment/bootstrap above must precede the first Gridbook/vLLM import.
+    # Environment/bootstrap above must precede the first vLLM import.
     from vllm import LLM
 
     llm = LLM(**kwargs)
@@ -484,8 +421,9 @@ def main() -> int:
                              "containers carry no `datasets`/pyarrow/pandas.")
     parser.add_argument(
         "--wikitext-inputs",
-        help="offline payload from tools/prepare_dsv4_wikitext_inputs.py; "
-        "required by --dsv4-gridbook-contract",
+        help="pre-tokenized offline payload from "
+        "tools/prepare_dsv4_wikitext_inputs.py; when given, the tool never "
+        "imports `datasets` or a tokenizer",
     )
     parser.add_argument("--split", default="test")
     parser.add_argument("--n-tokens", type=int, default=8192)
@@ -500,18 +438,25 @@ def main() -> int:
         "is then the DRAFT model's, not the artifact's; the shipcard refuses "
         "such a record (see tools/spec_decode_guard.py).")
     parser.add_argument("--max-num-batched-tokens", type=int, default=None)
+    # --dsv4-gridbook-contract forced the one-Spark DSv4 gold-measurement
+    # runtime contract; retired 2026-09-02 with its lane, see
+    # archive/gridbook_lane_2026-09-02/.
     parser.add_argument(
-        "--dsv4-gridbook-contract",
-        action="store_true",
-        help="force the exact one-Spark DSv4 Gridbook gold-measurement "
-        "runtime contract (FP8 KV, conditional Marlin MoE, closed env, "
-        "eager/no-spec)",
+        "--serve-image",
+        default=None,
+        help="container image tag this measurement runs in. Required (or "
+        "PQ_SERVE_IMAGE): the serve fingerprint is not evidence without it.",
     )
     args = parser.parse_args()
 
+    # Resolve the image before the tokenizer or the model loads: an unnamed
+    # image is a reproducibility hole (R15), and discovering it only when the
+    # provenance block is written would waste the whole measurement.
+    try:
+        _resolve_serve_image(args)
+    except RuntimeError as exc:
+        parser.error(str(exc))
     _validate_workload_args(args)
-    if args.dsv4_gridbook_contract:
-        _activate_dsv4_gridbook_contract(args)
     started = time.monotonic()
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -521,10 +466,10 @@ def main() -> int:
         from full_kl_teacher_payload import tokenizer_identity  # type: ignore
     tokenizer_attestation = tokenizer_identity(args.model)
     tokenizer = None
-    if not args.dsv4_gridbook_contract:
-        # Generic workloads still tokenize arbitrary corpus revisions.  The
-        # closed DSv4 lane instead verifies the pre-tokenized input below and
-        # never needs datasets in the serving image.
+    if not args.wikitext_inputs:
+        # Generic workloads still tokenize arbitrary corpus revisions. An
+        # offline --wikitext-inputs payload instead verifies pre-tokenized
+        # input below and never needs datasets in the serving image.
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(

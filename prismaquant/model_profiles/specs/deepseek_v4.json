@@ -1,13 +1,11 @@
 {
+  "_lane_retirement_note": "nvfp4_cb removed 2026-09-02: the Gridbook codebook lane was retired (archive/gridbook_lane_2026-09-02/). This profile's CB declarations are deleted rather than left dangling -- a supported_lanes entry is a promise that a pinned runtime serves those bytes, and none does.",
   "schema": "prismaquant.model_structure.v1",
   "id": "deepseek_v4",
   "priority": 170,
   "_default_serving_profile_rationale": "DSv4 uses the conservative packed-MoE allocation contract for both the native and Gridbook CB export lanes. Declaring nothing would resolve to `research`, which carries NO format allow-list, so any menu format could pass the serving gate on a 304B artifact. Dense `fused_groups` stay empty deliberately: Gridbook constructs a role composite and may decode each source sibling from a different codebook format before the common FP8 execution path; any compressed-tensors-only uniformity rule must be enforced by that lane rather than globally coupling the producer allocation.",
   "default_serving_profile": "vllm_packed_moe",
-  "supported_lanes": [
-    "compressed-tensors",
-    "nvfp4_cb"
-  ],
+  "supported_lanes": ["compressed-tensors"],
   "preferred_lane": "compressed-tensors",
   "match": {
     "model_type": [

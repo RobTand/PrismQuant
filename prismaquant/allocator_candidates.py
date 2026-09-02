@@ -43,7 +43,7 @@ from .serving_profiles import (
     SERVING_LANE_SCHEMA,
     check_serving_format,
     check_serving_shape,
-    gridbook_runtime_version,
+    serving_runtime_version,
     serving_lane_route,
 )
 
@@ -194,7 +194,19 @@ SOURCE_PASSTHROUGH_CONTRACTS: dict[str, SourcePassthroughContract] = {
             wire_format_id="fp8_e4m3_ue8m0_block128",
             zero_cost_by_construction=True,
             serving_route=ROUTE_GRIDBOOK_FP8_SOURCE_W8A16,
-            route_status=ROUTE_STATUS_BACKED,
+            # BLOCKED since 2026-09-02, and by a measurement rather than by an
+            # opinion: the only route that ever executed these bytes was the
+            # Gridbook plugin's Fp8SourceW8A16LinearMethod, and that lane was
+            # retired (archive/gridbook_lane_2026-09-02/). No sanctioned
+            # runtime -- vanilla vLLM, llama.cpp/vLLM-GGUF, the Tessera plugin
+            # -- reads a block-128 UE8M0 source plane. The rung stays PRICED
+            # (principle 1: an allocator that wants it is reporting a serving
+            # gap, and that signal is the point) and the exporter now refuses
+            # a selection containing it without an explicit override, via
+            # ROUTE_PENDING_PASSTHROUGH_FORMATS. The evidence below is kept
+            # verbatim because it is a real measurement whose SCOPE is the
+            # retired runtime -- it says what was true, not what is.
+            route_status=ROUTE_STATUS_BLOCKED,
             route_requirement=(
                 "a Gridbook release attesting "
                 "abi_features.source_fp8_block128_w8a16=1; first released in "
@@ -2115,7 +2127,7 @@ def selection_serving_lane_provenance(
     return {
         "schema": SERVING_LANE_SCHEMA,
         "target_profile": str(target_profile or "research"),
-        "gridbook_runtime_version": gridbook_runtime_version(),
+        "serving_runtime_version": serving_runtime_version(),
         "units_total": len(assignment),
         "units_on_backed_fused_mid_m_lane": n_backed,
         "units_on_fallback_route": n_fallback,

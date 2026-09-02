@@ -70,10 +70,15 @@ def _write_snapshot(root: Path, files: dict[str, str]) -> Path:
 
 #: A minimal stand-in for the serve path: what the container actually executes.
 _RUNTIME_FILES = {
+    # Two lane-owned stand-ins left this table on 2026-09-02 with the Gridbook
+    # lane (archive/gridbook_lane_2026-09-02/): the runtime entry
+    # `prismaquant/gridbook_runtime/gridbook_serving_runtime.sh` and the
+    # judge-only entry `prismaquant/validate_cb_endpoint.py`. They were fixture
+    # strings, not subjects -- what these tests prove is the *classification*,
+    # so each is replaced by a live path of the same class rather than dropped.
     "prismaquant/model_profiles/deepseek_v4.py": "profile v1",
-    "prismaquant/gridbook_runtime/gridbook_serving_runtime.sh": "runtime v1",
+    "prismaquant/export_native_compressed.py": "runtime v1",
     "tools/prismaquant_source_bootstrap.py": "bootstrap v1",
-    "prismaquant/validate_cb_endpoint.py": "judge v1",
     "prismaquant/artifact_completeness.py": "completeness v1",
     "tests/test_something.py": "test v1",
     "docs/ARCHITECTURE.md": "doc v1",
@@ -96,7 +101,6 @@ def test_a_judge_only_change_is_the_case_the_split_exists_for(tmp_path: Path) ->
     runtime = _write_snapshot(tmp_path / "runtime", _RUNTIME_FILES)
     judge = _write_snapshot(tmp_path / "judge", {
         **_RUNTIME_FILES,
-        "prismaquant/validate_cb_endpoint.py": "judge v2",
         "prismaquant/artifact_completeness.py": "completeness v2",
         "tests/test_something.py": "test v2",
         "tests/test_added.py": "brand new",
@@ -105,8 +109,10 @@ def test_a_judge_only_change_is_the_case_the_split_exists_for(tmp_path: Path) ->
 
     report = snapshot_tool.judge_divergence(runtime, judge)
 
-    assert report["divergent_count"] == 5
-    assert "prismaquant/validate_cb_endpoint.py" in report["divergent_paths"]
+    # Was 5 until 2026-09-02, when `prismaquant/validate_cb_endpoint.py` --
+    # one of the two named judge-only files -- retired with the Gridbook lane.
+    assert report["divergent_count"] == 4
+    assert "prismaquant/artifact_completeness.py" in report["divergent_paths"]
     assert "tests/test_added.py" in report["divergent_paths"]
 
 
@@ -114,7 +120,7 @@ def test_a_judge_only_change_is_the_case_the_split_exists_for(tmp_path: Path) ->
     "path",
     [
         "prismaquant/model_profiles/deepseek_v4.py",
-        "prismaquant/gridbook_runtime/gridbook_serving_runtime.sh",
+        "prismaquant/export_native_compressed.py",
         "tools/prismaquant_source_bootstrap.py",
     ],
 )
@@ -197,58 +203,49 @@ def test_the_judge_only_list_stays_short_and_named(tmp_path: Path) -> None:
     assert len(exact) <= 6, "judge-only code files should be few and justified"
 
 
-def test_the_snapshot_tool_is_the_one_entry_the_container_also_runs(
-    tmp_path: Path,
-) -> None:
-    """It is allowed for a stated reason, so state the reason as a test.
-
-    The container executes `/repo/tools/prismaquant_runtime_snapshot.py verify`
-    from the RUNTIME snapshot. Letting the judge's copy differ is safe only
-    because the launcher exercises the runtime copy host-side with the identical
-    `verify` CLI, at every checkpoint and before any container starts -- so a
-    judge that broke that surface fails on the host, with no GPU reserved. If
-    that host-side exercise ever leaves the launcher, this entry must leave the
-    allowlist with it.
-    """
-
-    driver = (
-        Path(__file__).resolve().parents[1]
-        / "scripts" / "serve_dsv4_cb_validate.sh"
-    ).read_text(encoding="utf-8")
-
-    assert "tools/prismaquant_runtime_snapshot.py" in snapshot_tool.JUDGE_ONLY_PATHS
-    assert '"$PQ_RUNTIME_SNAPSHOT/tools/prismaquant_runtime_snapshot.py" verify' in driver
-    assert "/repo/tools/prismaquant_runtime_snapshot.py verify" in driver
-    for flag in ("--expected-commit", "--expected-tree", "--expected-closure-sha256"):
-        assert flag in driver
+# `test_the_snapshot_tool_is_the_one_entry_the_container_also_runs` was deleted
+# on 2026-09-02. It read `scripts/serve_dsv4_cb_validate.sh` and proved that
+# the launcher exercises the RUNTIME snapshot's copy of
+# `tools/prismaquant_runtime_snapshot.py` host-side, with the identical
+# `verify` CLI, before any container starts -- the stated reason that entry is
+# allowed to differ between judge and runtime at all. That launcher went to
+# archive/gridbook_lane_2026-09-02/scripts/ with the Gridbook lane.
+#
+# The allowlist entry is KEPT and the argument for it is unchanged, but no
+# live launcher demonstrates it any more: it is now a justification with no
+# executable witness. Whoever wires the next serve launcher must restore this
+# test against it. Recorded as debt D34.
 
 
 def test_the_two_gate_files_of_this_very_change_are_allowed(tmp_path: Path) -> None:
     """The guard caught this commit's own launcher edit before it was justified.
 
-    Keeping the case: a change to the launcher or the snapshot tool is judge-
-    side, but only these two -- `scripts/` is NOT a blanket subtree allowance.
+    Keeping the case: a change to the snapshot tool is judge-side, but
+    `scripts/` is NOT a blanket subtree allowance -- a producer script under it
+    still refuses.
     """
 
     runtime = _write_snapshot(tmp_path / "runtime", {
         **_RUNTIME_FILES,
-        "scripts/serve_dsv4_cb_validate.sh": "launcher v1",
         "scripts/export_something.sh": "producer v1",
         "tools/prismaquant_runtime_snapshot.py": "snapshot v1",
     })
     judge = _write_snapshot(tmp_path / "judge", {
         **_RUNTIME_FILES,
-        "scripts/serve_dsv4_cb_validate.sh": "launcher v2",
         "scripts/export_something.sh": "producer v1",
         "tools/prismaquant_runtime_snapshot.py": "snapshot v2",
     })
 
+    # Was 2 until 2026-09-02: the serve launcher
+    # `scripts/serve_dsv4_cb_validate.sh` was the OTHER of the "two gate files"
+    # and left JUDGE_ONLY_PATHS with the Gridbook lane
+    # (archive/gridbook_lane_2026-09-02/). One is left, and the half of this
+    # test that matters is the half below.
     report = snapshot_tool.judge_divergence(runtime, judge)
-    assert report["divergent_count"] == 2
+    assert report["divergent_count"] == 1
 
     moved_producer = _write_snapshot(tmp_path / "judge2", {
         **_RUNTIME_FILES,
-        "scripts/serve_dsv4_cb_validate.sh": "launcher v1",
         "scripts/export_something.sh": "producer v2",
         "tools/prismaquant_runtime_snapshot.py": "snapshot v1",
     })

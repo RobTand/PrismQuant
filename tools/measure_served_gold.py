@@ -2,14 +2,14 @@
 """Gold-lane KL and direct PPL against a **served** artifact, over HTTP.
 
 `tools/measure_vllm_full_kl.py` and `tools/measure_vllm_wikitext_ppl.py` are
-the DSv4-Flash lane's gold tools: they construct an in-process `LLM` under
-`tools.dsv4_gridbook_contract.exact_llm_contract`, which pins
-`tokenizer_mode="deepseek_v4"` and `max_logprobs=248320`.  No other model can
-run under that contract, so until now every non-DSv4 lane measured its gold
-numbers with ad-hoc run-local scripts that emitted a bare metric and none of
-the identity a ship record binds -- no serve fingerprint, no producer commit,
-no spec-decode state, no workload contract.  That is the gap this fills: the
-same discipline for artifacts served the ordinary way, through
+the DSv4-Flash lane's gold tools: they construct an in-process `LLM`.  They
+were written under a closed per-lane runtime contract (the Gridbook lane's,
+retired 2026-09-02 -- archive/gridbook_lane_2026-09-02/), which no other model
+could satisfy, so every other lane measured its gold numbers with ad-hoc
+run-local scripts that emitted a bare metric and none of the identity a ship
+record binds -- no serve fingerprint, no producer commit, no spec-decode
+state, no workload contract.  That is the gap this fills: the same discipline
+for artifacts served the ordinary way, through
 `vllm serve` + `/v1/completions`.
 
 Three subcommands, because KL needs two serves and PPL needs one:
@@ -411,7 +411,11 @@ def _cmd_kl(args: argparse.Namespace) -> int:
         "model": student_payload["artifact_dir"],
         "mode": "student",
         "score_positions": "all",
-        "quantization": "gridbook",
+        # The served quantization is whatever the serve was launched with, as
+        # recorded by serve_fingerprint from the server's own argv. It was a
+        # hardcoded "gridbook" until that lane retired 2026-09-02; a hardcoded
+        # lane name is not an attestation (see archive/gridbook_lane_2026-09-02/).
+        "quantization": student_payload["serve_manifest"].get("quantization"),
         "prompt_top_k": student_payload["prompt_top_k"],
         "vocab_size": vocab_size,
         "n_samples": student_payload["n_samples"],
@@ -522,7 +526,8 @@ def _cmd_ppl(args: argparse.Namespace) -> int:
         "ppl": math.exp(mean_nll),
         "per_chunk_mean_nll": per_window,
         "max_chunk_mean_nll": max(per_window),
-        "quantization": "gridbook",
+        # As above: read the served quantization from the server's own argv.
+        "quantization": manifest.get("quantization"),
         "spec_decode_detected": spec,
         "serve_fingerprint": manifest["serve_fingerprint"],
         "serve_manifest": manifest,

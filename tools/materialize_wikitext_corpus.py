@@ -4,7 +4,8 @@
 WHY THIS EXISTS
     The gold KL and PPL tools built their corpus with `datasets.load_dataset`,
     which drags in pyarrow + pandas + datasets.  The measurement containers do
-    not carry those (`gridbook:0.8.6-clean-dde15e0` has none of the three), and
+    not carry those (`gridbook:0.8.6-clean-dde15e0`, retired 2026-09-02, had
+    none of the three; see archive/gridbook_lane_2026-09-02/), and
     the fix must not be "pip install them at measurement time": that mutates the
     exact serving stack the number is fingerprinted against, and needs network
     on a path that should be offline and reproducible.

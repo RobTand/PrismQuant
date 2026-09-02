@@ -596,27 +596,15 @@ def test_tail_veto_default_on_with_kl_max_is_documented():
     assert "--tail-eta` defaults to `auto`" in doc
 
 
-def test_cb_defaults_match_the_shipped_drivers():
-    """D15: a default no shipped driver uses documents an unvalidated path.
-    Pinned against the drivers themselves so the two cannot drift again."""
-    script = _pipeline()
-    assert _shell_default(script, "CB_EXPERT_EMPIRICAL") == "0"
-    assert _shell_default(script, "CB_SCALE_CODING") == "two_tier"
-    assert _shell_default(script, "PRISMAQUANT_CB_LDLQ") == "0"
-    assert _shell_default(script, "PRISMAQUANT_CB_MINCHAIN") == "0"
-    assert "PRISMAQUANT_CB_LDLQ=0" in _doc()
-    assert "PRISMAQUANT_CB_MINCHAIN=0" in _doc()
-    drivers = [
-        ROOT / "scripts" / name for name in (
-            "run_hy3_prod_nvfp4cb.sh",
-            "run_hy3_prod_joint.sh",
-            "run_35b_prod_nvfp4cb.sh",
-            "run_laguna_s21_prod.sh",
-        )
-    ]
-    for driver in drivers:
-        text = driver.read_text(encoding="utf-8")
-        assert "export CB_EXPERT_EMPIRICAL=0" in text, driver.name
+# RETIRED 2026-09-02 with the Gridbook codebook lane
+# (archive/gridbook_lane_2026-09-02/): `test_cb_defaults_match_the_shipped_drivers`
+# pinned D15's four CB pipeline defaults against the four CB production drivers.
+# Both sides are gone -- `CB_EXPERT_EMPIRICAL` was guarded by
+# `EXPORT_CONTAINER == nvfp4_cb` at all three of its call sites, and the drivers
+# are archived -- so the test had nothing left to compare. It is deleted rather
+# than narrowed to the surviving `PRISMAQUANT_CB_LDLQ` / `_CB_MINCHAIN` pair,
+# because that pair belongs to the CB render plumbing (debt D34), not to a lane,
+# and a doc/driver agreement test with no driver is theatre.
 
 
 def test_three_diagrams_present():

@@ -1,8 +1,9 @@
 {
+  "_lane_retirement_note": "nvfp4_cb removed 2026-09-02: the Gridbook codebook lane was retired (archive/gridbook_lane_2026-09-02/). This profile's CB declarations are deleted rather than left dangling -- a supported_lanes entry is a promise that a pinned runtime serves those bytes, and none does.",
   "schema": "prismaquant.model_structure.v1",
   "id": "qwen3_5_dense",
   "priority": 100,
-  "supported_lanes": ["compressed-tensors", "nvfp4_cb"],
+  "supported_lanes": ["compressed-tensors"],
   "default_serving_profile": "vllm_packed_moe",
   "runtime_requirements": {
     "fast_kernel_packages": [

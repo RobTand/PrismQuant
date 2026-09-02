@@ -1,19 +1,27 @@
-"""Serving-lane eligibility, ATTESTED from Gridbook's packaged contract (R3).
+"""Serving-lane eligibility, ATTESTED from the pinned runtime's own contract.
 
 Principle 14: a claim about another runtime is *derived from a machine-readable
 table the pinned runtime publishes, or refused*. This module is the consumption
-half of that rule. It never encodes what Gridbook does; it reads what Gridbook
-*says* it does, from the packaged ``runtime_contract.json`` copy bound to the
-serving pin, and reports ``UNATTESTED`` when the pinned release publishes no
-claim covering a unit.
+half of that rule. It never encodes what a serving runtime does; it reads what
+that runtime *says* it does, from the packaged ``runtime_contract.json`` its
+installed distribution carries, and reports ``UNATTESTED`` when the pinned
+release publishes no claim covering a unit.
 
-Why this exists (the measured defect). The shipped DSv4 87 GB artifact carries
-11 routed FP8-CB layers whose ``gate_proj``/``up_proj`` bind distinct learned
-codebooks. Gridbook's persistent-B prefill lane refuses per-role split books, so
-those layers take the announced expand+grouped-bridge route above the token
-threshold. Nothing in the producer knew: no serving-profile lane declared a
-structured ``route_status``, so persistent-B eligibility was not a gate input
-and a user discovered it at serve time. Its twin on the vanilla-vLLM lane is
+The live publisher is Tessera's own vLLM plugin (``tessera.serving``). Until
+2026-09-02 it was the Gridbook codebook plugin, and this module was named
+``gridbook_lane_eligibility``; the Gridbook lane was retired that day (Rob:
+"put Tessera in PrismaQuant and remove Gridbook") and the module was renamed
+to the neutral name it should always have had. See
+``archive/gridbook_lane_2026-09-02/README.md``.
+
+Why this exists (the measured defect, on the retired lane). The shipped DSv4
+87 GB codebook artifact carried 11 routed FP8-CB layers whose
+``gate_proj``/``up_proj`` bound distinct learned codebooks. That runtime's
+persistent-B prefill lane refused per-role split books, so those layers took
+the announced expand+grouped-bridge route above the token threshold. Nothing in
+the producer knew: no serving-profile lane declared a structured
+``route_status``, so eligibility was not a gate input and a user discovered it
+at serve time. Its twin on the vanilla-vLLM lane is
 ``units_on_fallback_route=0`` -- vacuous, because no spec declares route status
 at all, so the counter is reachable only by never having looked.
 
@@ -31,29 +39,29 @@ The shape of the fix is therefore as important as the values:
 
 Schema v3, and why absence carries the whole weight
 ---------------------------------------------------
-``gridbook.lane-eligibility.v3`` is a **closed-world cell table**. It declares
+``tessera.lane-eligibility.v3`` is a **closed-world cell table**. It declares
 ``platforms``, ``regimes``, ``structures`` and a list of ``cells``, each cell
 naming exactly one ``(platform, family, structure, regime)`` and the rung set it
-covers -- ``rungs`` (CB codebook K) for a ``cb_product`` family, ``rungs_q256``
+covers -- ``rungs`` (codebook K) for a ``cb_product`` family, ``rungs_q256``
 (body bits per 256 weights) for a RATE-addressed family. Which discriminator a
 cell uses is NOT a key on the cell: it is decided by whether the cell's family
 appears in ``formats[]`` with a rate-addressed ``kind``
-(:data:`RATE_ADDRESSED_FORMAT_KINDS`), exactly as each publisher's own
+(:data:`RATE_ADDRESSED_FORMAT_KINDS`), exactly as the publisher's own
 validator decides it.
 
-Two publishers, one parser
---------------------------
-``gridbook.lane-eligibility.v3`` and ``tessera.lane-eligibility.v3`` are the
-same wire format from two runtimes, and this module parses both (see
-:data:`LANE_ELIGIBILITY_SCHEMAS`). The differences are three and all additive:
-the vendor prefix on the schema string; the ``tessera_wire`` format kind, which
-is rate-addressed exactly as ``tcq_trellis`` is; and the OPTIONAL cell field
-``requires_plugin``, which says the route exists only in a process where that
-runtime's vLLM plugin is installed. Gridbook cells carry no ``requires_plugin``
-and serialize through here byte-for-byte as before.
+One parser, and why the vocabulary is wider than one publisher
+---------------------------------------------------------------
+``gridbook.lane-eligibility.v3`` was the same wire format from the retired
+lane, and this parser served both. What remains of that is vocabulary, not a
+second authority: the ``cb_product`` kind, its ``rungs`` discriminator and the
+``tcq_trellis`` rate-addressed kind are still parsed, because they are the
+closed-world grammar a v3 table is written in, and a parser that silently
+dropped a kind would mis-read a table rather than refuse it. Only
+:data:`LANE_ELIGIBILITY_SCHEMAS` decides whose tables are accepted, and since
+2026-09-02 that set names Tessera alone.
 
 The publisher's cell status vocabulary is ``backed | backed_with_serve_flag |
-fallback``. There is deliberately **no ``unbacked`` cell**: Gridbook does not
+fallback``. There is deliberately **no ``unbacked`` cell**: a runtime does not
 enumerate what it cannot serve, so the ONLY negative signal a v3 table carries
 is *absence* -- no cell names this platform, this family, this rung. This
 module therefore resolves an uncovered unit to :data:`ROUTE_STATUS_UNATTESTED`
@@ -86,40 +94,34 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-#: Schema of the eligibility table PrismaQuant consumes. Gridbook publishes it
-#: inside its packaged ``runtime_contract.json`` under the ``lane_eligibility``
-#: key. The normative shape is the one Gridbook publishes -- principle 14 runs
-#: in this direction and no other. ``docs/design/gridbook_lane_eligibility_
-#: contract.md`` was the proposal handed to that repository and is SUPERSEDED
-#: by what came back: it is the record of why the fields were asked for, never
-#: a second authority on what they mean.
-LANE_ELIGIBILITY_SCHEMA = "gridbook.lane-eligibility.v3"
-
-#: The same wire format, published by Tessera's own vLLM plugin
+#: Schema of the eligibility table PrismaQuant consumes, published by Tessera's
+#: own vLLM plugin
 #: (``tessera.serving``, entry point ``tessera``, ``quant_method: "tessera"``).
-#: Only the vendor prefix differs: v3 is a closed-world, platform-scoped cell
-#: table either way, and this module is deliberately ONE parser rather than
-#: two, because a second copy of the cell grammar is a drift bug waiting for a
-#: field to move. What Tessera adds on top is ``requires_plugin`` (below), and
-#: that is an OPTIONAL cell key so a Gridbook table keeps parsing byte-for-byte
-#: as it did.
+#: v3 is a closed-world, platform-scoped cell table, and the parser below is
+#: deliberately ONE parser: a second copy of the cell grammar is a drift bug
+#: waiting for a field to move. ``requires_plugin`` is an OPTIONAL cell key.
+#:
+#: Until 2026-09-02 this set also carried ``gridbook.lane-eligibility.v3``, the
+#: same wire format published by the retired Gridbook codebook lane. That lane
+#: was removed with Rob's decision to put Tessera in PrismaQuant and remove
+#: Gridbook; see ``archive/gridbook_lane_2026-09-02/README.md``.
 LANE_ELIGIBILITY_SCHEMA_TESSERA = "tessera.lane-eligibility.v3"
 
 #: Every eligibility-table schema this parser accepts. The check is a set
 #: membership, never a prefix match: an unrecognised vendor is a table this
-#: repository was not handed, and an older *version* of either vendor's table
+#: repository was not handed, and an older *version* of the vendor's table
 #: is not a subset of v3 (see ``_parse_table``).
 LANE_ELIGIBILITY_SCHEMAS = frozenset({
-    LANE_ELIGIBILITY_SCHEMA,
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
 })
 
-#: Schema of the provenance payload this module produces. Bumped with the table
-#: schema: the payload gained the scope census and the qualification /
-#: activation-contract histograms, so a v1 reader would silently under-report.
-ROUTE_ATTESTATION_SCHEMA = "prismaquant.cb_route_attestation.v2"
-
-CONTRACT_INDEX_SCHEMA = "prismaquant.gridbook_runtime_contract_index.v1"
+#: Schema of the provenance payload this module produces. It was
+#: ``prismaquant.cb_route_attestation.v2`` until 2026-09-02, when the Gridbook
+#: codebook lane was retired: the name and its ``gridbook_serving_*`` fields
+#: both named a runtime that no longer has a lane here, and the only reader of
+#: those fields (``cb_route_status_gate``) went into the archive with it, so
+#: the rename costs no shipped artifact a reader.
+ROUTE_ATTESTATION_SCHEMA = "prismaquant.lane_route_attestation.v3"
 
 # --- Principle 9's lane vocabulary, verbatim. -------------------------------
 ROUTE_STATUS_BACKED = "backed"
@@ -141,7 +143,7 @@ LANE_ROUTE_STATUSES = frozenset({
 })
 REGIME_ROUTE_STATUSES = LANE_ROUTE_STATUSES | {ROUTE_STATUS_FALLBACK}
 
-#: The CLOSED set a packaged v3 cell may declare, mirroring Gridbook's own
+#: The CLOSED set a packaged v3 cell may declare, mirroring the publisher's
 #: ``_LANE_ROUTE_STATUSES`` exactly. ``unbacked`` is absent on purpose: the
 #: runtime never enumerates what it refuses, so a cell claiming ``unbacked`` is
 #: a table this repository must not have been handed. Accepting one would make
@@ -163,7 +165,7 @@ CELL_QUALIFICATIONS = frozenset({
     QUALIFICATION_DEVICE_QUALIFIED,
 })
 
-#: Structural classes a unit can belong to. The two take different Gridbook
+#: Structural classes a unit can belong to. The two take different runtime
 #: dispatch paths and therefore different eligibility cells.
 STRUCTURE_DENSE = "dense"
 STRUCTURE_ROUTED_MOE = "routed_moe"
@@ -175,7 +177,7 @@ FORMAT_KIND_CB_PRODUCT = "cb_product"
 FORMAT_KIND_TCQ_TRELLIS = "tcq_trellis"
 #: Tessera's discriminator for the same idea: a family addressed by a RATE
 #: (body bits per 256 weights), not by a codebook size. ``tcq_trellis`` is
-#: Gridbook's spelling of it and ``tessera_wire`` is Tessera's; both resolve to
+#: the retired lane's spelling of it and ``tessera_wire`` is Tessera's; both resolve to
 #: the ``rungs_q256`` rung vocabulary and to ``EligibilityCell.is_trellis``.
 FORMAT_KIND_TESSERA_WIRE = "tessera_wire"
 FORMAT_KINDS = frozenset({
@@ -196,11 +198,7 @@ RATE_ADDRESSED_FORMAT_KINDS = frozenset({
     FORMAT_KIND_TESSERA_WIRE,
 })
 
-_ASSET_DIR = Path(__file__).resolve().parent / "gridbook_runtime"
-_INDEX_PATH = _ASSET_DIR / "gridbook_runtime_contract_index.json"
-
-
-class GridbookLaneEligibilityError(ValueError):
+class LaneEligibilityError(ValueError):
     """The materialized contract or its eligibility table is malformed."""
 
 
@@ -248,11 +246,11 @@ class UnitStructuralFacts:
 
     def __post_init__(self) -> None:
         if self.structure not in STRUCTURES:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{self.qname}: structure must be one of "
                 f"{sorted(STRUCTURES)}, got {self.structure!r}")
         if self.k is not None and self.rate_q256 is not None:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{self.qname}: a unit carries a codebook rung OR a trellis "
                 f"rate, never both; got k={self.k} rate_q256={self.rate_q256}")
 
@@ -272,7 +270,7 @@ class UnitStructuralFacts:
 
     def fact(self, name: str) -> Any:
         if name not in _PREDICABLE_FACTS:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"eligibility cell predicates on unknown fact {name!r}; "
                 f"the attestable facts are {sorted(_PREDICABLE_FACTS)}")
         return getattr(self, _PREDICABLE_FACTS[name])
@@ -304,7 +302,7 @@ class EligibilityCell:
     and covers an explicit, non-empty rung list. It carries no prose: a v3
     validator refuses ``detail``/``rationale`` keys on a cell, because a gate
     cannot read prose (principle 14). ``requires_plugin`` is the one optional
-    key, absent from every Gridbook cell and present on every Tessera one.
+    key, absent from every retired-lane cell and present on every Tessera one.
     """
 
     id: str
@@ -327,7 +325,7 @@ class EligibilityCell:
     #: machine-readable CELL field rather than prose because an export gate
     #: has to be able to refuse an artifact whose serve command would not
     #: install the plugin -- stock vLLM has no reader for Tessera bytes, so
-    #: those routes are plugin-gated, not merely flag-gated. Gridbook cells
+    #: those routes are plugin-gated, not merely flag-gated. Retired-lane cells
     #: publish none and this stays "".
     requires_plugin: str = ""
     predicates: tuple[tuple[str, str, Any], ...] = ()
@@ -345,12 +343,12 @@ class EligibilityCell:
         trellis_families: frozenset[str],
     ) -> "EligibilityCell":
         if not isinstance(payload, Mapping):
-            raise GridbookLaneEligibilityError(f"{where} must be a JSON object")
+            raise LaneEligibilityError(f"{where} must be a JSON object")
         family = str(payload.get("family", ""))
         if not family:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}: cell must name a payload family")
-        # The rung vocabulary follows the FAMILY's kind, exactly as Gridbook's
+        # The rung vocabulary follows the FAMILY's kind, exactly as the publisher's
         # own validator dispatches it. A cell carries no ``kind`` key.
         is_trellis = family in trellis_families
         rung_key = "rungs_q256" if is_trellis else "rungs"
@@ -362,26 +360,26 @@ class EligibilityCell:
         if is_trellis:
             required.add("activation_contract")
         # ``requires_plugin`` is OPTIONAL, which is the whole of what keeps
-        # this widening additive: a Gridbook v3 cell has never carried the key
+        # this widening additive: a retired-lane v3 cell never carried the key
         # and must keep parsing unchanged.
         _require_keys(payload, where, required=required,
                       optional={"requires_plugin"})
 
         status = str(payload["route_status"])
         if status not in CELL_ROUTE_STATUSES:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}.route_status must be one of "
                 f"{sorted(CELL_ROUTE_STATUSES)}, got {status!r}. The runtime "
                 "does not enumerate what it refuses; absence, not an "
                 f"{ROUTE_STATUS_UNBACKED!r} cell, is how a v3 table says no.")
         qualification = str(payload["qualification"])
         if qualification not in CELL_QUALIFICATIONS:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}.qualification must be one of "
                 f"{sorted(CELL_QUALIFICATIONS)}, got {qualification!r}")
         structure = str(payload["structure"])
         if structure not in STRUCTURES:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}.structure must be one of {sorted(STRUCTURES)}, "
                 f"got {structure!r}")
 
@@ -391,7 +389,7 @@ class EligibilityCell:
         if is_trellis:
             activation_contract = str(payload["activation_contract"])
             if not activation_contract:
-                raise GridbookLaneEligibilityError(
+                raise LaneEligibilityError(
                     f"{where}.activation_contract must name the contract this "
                     "route executes; an empty one attests nothing")
 
@@ -402,19 +400,19 @@ class EligibilityCell:
             # naming one on a cell whose route is an announced fallback says
             # nothing an operator can act on, and would let a reader believe a
             # plugin install turns a fallback into a native route.
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}: requires_plugin is {requires_plugin!r} but "
                 f"route_status is {status!r}; a plugin requirement is only "
                 f"meaningful on a cell whose route is one of "
                 f"{sorted(LANE_ROUTE_STATUSES)}")
         flags = tuple(str(v) for v in payload["requires_serve_flags"])
         if flags and status != ROUTE_STATUS_BACKED_WITH_SERVE_FLAG:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}: requires_serve_flags is non-empty but route_status "
                 f"is {status!r}; a flag-gated route is "
                 f"{ROUTE_STATUS_BACKED_WITH_SERVE_FLAG!r} by definition")
         if status == ROUTE_STATUS_BACKED_WITH_SERVE_FLAG and not flags:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}: route_status is "
                 f"{ROUTE_STATUS_BACKED_WITH_SERVE_FLAG!r} but no serve flag is "
                 "named; an operator cannot reach an unnamed flag")
@@ -471,7 +469,7 @@ class EligibilityCell:
             payload["rungs"] = list(self.rungs)
         payload["requires_serve_flags"] = list(self.requires_serve_flags)
         if self.requires_plugin:
-            # Emitted only when non-empty, so a Gridbook cell's serialization
+            # Emitted only when non-empty, so a keyless cell's serialization
             # is byte-identical to what it was before this key existed.
             payload["requires_plugin"] = self.requires_plugin
         return payload
@@ -511,8 +509,8 @@ class EligibilityTable:
     def provenance(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "status": "present" if self.present else "absent",
-            "gridbook_serving_version": self.runtime_version,
-            "gridbook_serving_commit": self.runtime_commit,
+            "serving_runtime_version": self.runtime_version,
+            "serving_runtime_commit": self.runtime_commit,
             "contract_sha256": self.contract_sha256,
             "lane_eligibility_schema": self.schema or None,
         }
@@ -530,7 +528,7 @@ class EligibilityTable:
                 if cell.requires_plugin
             })
             if required_plugins:
-                # Only when non-empty: a Gridbook table's provenance payload
+                # Only when non-empty: a table without the key keeps a payload
                 # is unchanged by this widening.
                 payload["required_plugins"] = required_plugins
         return payload
@@ -658,7 +656,7 @@ def resolve_unit_route(
     Absent table -> ``unattested`` with no regime detail. Never a zero, never a
     guess, and never principle 9's ``backed`` by default.
 
-    ``platform`` is the exact Gridbook platform id the artifact targets (the
+    ``platform`` is the exact runtime platform id the artifact targets (the
     serving profile's ``target_platform``, e.g. ``sm_121``). v3 cells are
     platform-scoped, so resolving without one cannot name a route: a missing or
     unpublished platform yields ``unattested``, never a match-any.
@@ -820,100 +818,52 @@ _CELL_RANK = {
 # ---------------------------------------------------------------------------
 # Loading the pinned contract
 # ---------------------------------------------------------------------------
-def load_contract_index(path: Path | None = None) -> dict[str, Any]:
-    index_path = Path(path) if path is not None else _INDEX_PATH
-    try:
-        payload = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise GridbookLaneEligibilityError(
-            f"cannot read {index_path}: {exc}") from exc
-    if payload.get("schema") != CONTRACT_INDEX_SCHEMA:
-        raise GridbookLaneEligibilityError(
-            f"{index_path}: schema must be {CONTRACT_INDEX_SCHEMA!r}")
-    return payload
-
-
-def materialized_contract_path(version: str, *, index: Mapping[str, Any] | None = None
-                               ) -> Path | None:
-    """The local byte-verbatim copy of the packaged contract for *version*."""
-    payload = dict(index or load_contract_index())
-    for entry in payload.get("contracts", ()):
-        if str(entry.get("version")) == str(version):
-            return _ASSET_DIR / str(entry["path"])
-    return None
-
-
 def load_eligibility_table(
     version: str | None = None,
     *,
     contract_path: Path | None = None,
 ) -> EligibilityTable:
-    """Load the eligibility table attested by the pinned SERVING release.
+    """Load the eligibility table the pinned SERVING runtime packages.
 
-    The SERVING pin resolves this, deliberately and explicitly. PrismaQuant
-    carries two Gridbook pins -- a producer pin and a serving pin, both naming
-    0.9.1 since 2026-08-30 (0.8.11 before that) -- and
-    ``serving_profiles.gridbook_runtime_version()`` reads the PRODUCER one.
-    Route status is a statement about what the *serve* executes, so resolving
-    it through the producer pin would attest the wrong release whenever the
-    two diverge again; the lockstep test makes divergence loud, not
-    impossible, and this module stays bound to the serving pin regardless.
-    That exact confusion already produced one defect (the feasibility
-    certifier stamped the producer pin into a serving-scoped claim).
+    ``contract_path`` names the packaged ``runtime_contract.json`` of the
+    runtime whose routes are being attested; the caller resolves it from that
+    runtime's own installed package, never from a copy in this repository
+    (``tessera_render.tessera_serving_contract_path`` is the one live caller).
+
+    Until 2026-09-02 this function had a second mode: with no
+    ``contract_path`` it read Gridbook's SERVING pin and the byte-verbatim
+    contract copy indexed under ``prismaquant/gridbook_runtime/``. The
+    Gridbook lane is retired (``archive/gridbook_lane_2026-09-02/``), the
+    materialized copies went with it, and there is no default table any more.
+    Calling with neither argument is therefore not an error but an honest
+    ABSENCE: it returns a table with ``present=False``, so every unit resolves
+    to ``UNATTESTED`` and the export gate fails closed, which is exactly what
+    "no pinned runtime claims this route" should mean.
     """
-    if contract_path is not None:
-        version = str(version or "")
-        commit = ""
-        path: Path | None = Path(contract_path)
-        entry: Mapping[str, Any] = {}
-    else:
-        from .gridbook_serving_runtime_pin import (
-            load_gridbook_serving_runtime_pin,
-        )
-
-        pin = load_gridbook_serving_runtime_pin()
-        version = str(version or pin.version)
-        commit = pin.commit
-        index = load_contract_index()
-        entry = next(
-            (e for e in index.get("contracts", ())
-             if str(e.get("version")) == version),
-            {},
-        )
-        path = materialized_contract_path(version, index=index)
-        if entry and str(entry.get("commit")) != commit:
-            raise GridbookLaneEligibilityError(
-                f"materialized contract for Gridbook {version} names commit "
-                f"{entry.get('commit')!r} but the serving pin names "
-                f"{commit!r}; re-materialize the packaged contract from the "
-                "pinned commit rather than editing either record")
+    version = str(version or "")
+    commit = ""
+    path: Path | None = Path(contract_path) if contract_path is not None else None
 
     if path is None or not path.exists():
         return EligibilityTable(
             present=False,
-            runtime_version=version or "",
+            runtime_version=version,
             runtime_commit=commit,
             contract_sha256="",
             absent_reason=(
-                f"no materialized Gridbook runtime contract for pinned "
-                f"serving release {version!r}. A pinned release with no "
-                "contract attests nothing; add its byte-verbatim packaged "
-                "runtime_contract.json to prismaquant/gridbook_runtime/ and "
-                "index it. Route status stays UNATTESTED until then."
+                "no packaged runtime contract was supplied, so no serving "
+                "lane can be attested. Pass the pinned runtime's own "
+                "runtime_contract.json (contract_path=). Route status stays "
+                "UNATTESTED until then."
             ),
         )
 
     sha = _sha256(path)
-    if entry and str(entry.get("sha256")) not in ("", sha):
-        raise GridbookLaneEligibilityError(
-            f"{path}: sha256 {sha} does not match the indexed "
-            f"{entry.get('sha256')}; the materialized contract has drifted "
-            "from the release it claims to be")
 
     try:
         contract = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"cannot read {path}: {exc}") from exc
 
     block = contract.get("lane_eligibility")
@@ -924,14 +874,10 @@ def load_eligibility_table(
             runtime_commit=commit,
             contract_sha256=sha,
             absent_reason=(
-                f"Gridbook {version} packages no 'lane_eligibility' table in "
-                "runtime_contract.json, so no serving-lane route can be "
-                "attested for this pin. This is a REFUSAL TO CLAIM, not a "
-                "clean bill: the runtime's lane predicates (persistent-B "
-                "role-split refusal, fused mid-M rung law, token-count regime "
-                "thresholds, operator serve flags) exist but are not "
-                "published. See docs/design/gridbook_lane_eligibility_"
-                "contract.md for the table Gridbook must add."
+                f"{path} packages no 'lane_eligibility' table, so no "
+                "serving-lane route can be attested for this pin. This is a "
+                "REFUSAL TO CLAIM, not a clean bill: the runtime's lane "
+                "predicates exist but are not published."
             ),
         )
 
@@ -949,20 +895,13 @@ def load_published_formats(
     ``formats[]`` carries ``family``, ``name_pattern`` and, since contract v12,
     a ``kind`` discriminator: a ``cb_product`` row carries ``grid``/``mode``/
     ``n_sub``/``rungs``, while a RATE-addressed row (``tcq_trellis`` in a
-    Gridbook contract, ``tessera_wire`` in Tessera's) carries
+    retired Gridbook contract, ``tessera_wire`` in Tessera's) carries
     ``candidate_rungs_q256``/``reader_rate_range_q256``/
     ``native_terminal_q256``. A unit's payload family, sub-table split, rung
     legality and body rate are therefore genuinely DERIVED here rather than
     read out of a local table -- which is the point of principle 14.
     """
     path = Path(contract_path) if contract_path is not None else None
-    if path is None:
-        from .gridbook_serving_runtime_pin import (
-            load_gridbook_serving_runtime_pin,
-        )
-
-        version = str(version or load_gridbook_serving_runtime_pin().version)
-        path = materialized_contract_path(version)
     if path is None or not path.exists():
         return {}
     contract = json.loads(path.read_text(encoding="utf-8"))
@@ -1080,27 +1019,27 @@ def _published_families(formats: Any) -> tuple[frozenset[str], frozenset[str]]:
 
     The second set is what ``EligibilityCell.is_trellis`` is built from, and
     it holds every family whose ``kind`` is in
-    :data:`RATE_ADDRESSED_FORMAT_KINDS` -- Gridbook's ``tcq_trellis`` and
+    :data:`RATE_ADDRESSED_FORMAT_KINDS` -- the retired lane's ``tcq_trellis`` and
     Tessera's ``tessera_wire`` alike. Such a family's cells carry
     ``rungs_q256``; a ``cb_product`` family's carry ``rungs``.
     """
     if not isinstance(formats, Sequence) or isinstance(formats, (str, bytes)):
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             "runtime_contract.formats must be a JSON array; the lane table's "
             "rung vocabulary is decided by each family's published kind")
     families: set[str] = set()
     trellis: set[str] = set()
     for i, entry in enumerate(formats):
         if not isinstance(entry, Mapping):
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"runtime_contract.formats[{i}] must be a JSON object")
         family = str(entry.get("family", ""))
         if not family:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"runtime_contract.formats[{i}] publishes no family")
         kind = str(entry.get("kind", FORMAT_KIND_CB_PRODUCT))
         if kind not in FORMAT_KINDS:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"runtime_contract.formats[{i}].kind {kind!r} is not one of "
                 f"{sorted(FORMAT_KINDS)}")
         families.add(family)
@@ -1113,13 +1052,13 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
                  ) -> EligibilityTable:
     where = "runtime_contract.lane_eligibility"
     if not isinstance(block, Mapping):
-        raise GridbookLaneEligibilityError(f"{where} must be a JSON object")
+        raise LaneEligibilityError(f"{where} must be a JSON object")
     # The schema string is checked BEFORE the key set, deliberately. An older
     # table fails both, and "missing field(s) ['cells', 'platforms']" would
     # send its reader off to add keys to a v2 block rather than to
     # re-materialize the contract from a release that publishes v3.
     if block.get("schema") not in LANE_ELIGIBILITY_SCHEMAS:
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"{where}.schema must be one of "
             f"{sorted(LANE_ELIGIBILITY_SCHEMAS)}, got {block.get('schema')!r}. "
             "An older lane table is not a subset of these -- v1/v2 cells are "
@@ -1136,23 +1075,23 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
 
     platforms_block = block["platforms"]
     if not isinstance(platforms_block, Mapping) or not platforms_block:
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"{where}.platforms must be a non-empty JSON object keyed by "
             "platform id")
     platforms = tuple(str(p) for p in platforms_block)
 
     regimes = tuple(str(r) for r in block["regimes"])
     if not regimes or len(set(regimes)) != len(regimes):
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"{where}.regimes must be a non-empty list of unique ids")
 
     structures = tuple(str(s) for s in block["structures"])
     if not structures or len(set(structures)) != len(structures):
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"{where}.structures must be a non-empty list of unique ids")
     unknown = sorted(set(structures) - STRUCTURES)
     if unknown:
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"{where}.structures names {unknown}, which this repository has no "
             f"dispatch path for; the known set is {sorted(STRUCTURES)}")
 
@@ -1161,7 +1100,7 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
     cells_block = block["cells"]
     if not isinstance(cells_block, Sequence) or isinstance(
             cells_block, (str, bytes)):
-        raise GridbookLaneEligibilityError(f"{where}.cells must be a JSON array")
+        raise LaneEligibilityError(f"{where}.cells must be a JSON array")
     cells = tuple(
         EligibilityCell.from_dict(
             cell, f"{where}.cells[{i}]", trellis_families=trellis_families)
@@ -1170,26 +1109,26 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
 
     for cell in cells:
         if cell.regime not in regimes:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}.cells[{cell.id!r}].regime {cell.regime!r} is not a "
                 f"declared regime {list(regimes)}")
         if cell.platform not in platforms:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}.cells[{cell.id!r}].platform {cell.platform!r} is not "
                 f"a declared platform {list(platforms)}")
         if cell.structure not in structures:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}.cells[{cell.id!r}].structure {cell.structure!r} is "
                 f"not a declared structure {list(structures)}")
         if cell.family not in families:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}.cells[{cell.id!r}].family {cell.family!r} is not "
                 f"published in runtime_contract.formats "
                 f"({sorted(families)}); a lane cell for a codec the runtime "
                 "does not publish attests a route to nothing")
     ids = [cell.id for cell in cells]
     if len(set(ids)) != len(ids):
-        raise GridbookLaneEligibilityError(f"{where}.cells ids must be unique")
+        raise LaneEligibilityError(f"{where}.cells ids must be unique")
 
     return EligibilityTable(
         present=True,
@@ -1208,19 +1147,19 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
 
 def _parse_rungs(payload: Any, where: str) -> tuple[int, ...]:
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
-        raise GridbookLaneEligibilityError(f"{where} must be a JSON array")
+        raise LaneEligibilityError(f"{where} must be a JSON array")
     if not payload:
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"{where} must name at least one rung; an empty rung list covers "
             "nothing and would silently make its cell unreachable")
     out: list[int] = []
     for i, item in enumerate(payload):
         if isinstance(item, bool) or not isinstance(item, int):
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{where}[{i}] must be an integer rung, got {item!r}")
         out.append(int(item))
     if len(set(out)) != len(out):
-        raise GridbookLaneEligibilityError(f"{where} must not repeat a rung")
+        raise LaneEligibilityError(f"{where} must not repeat a rung")
     return tuple(out)
 
 
@@ -1235,23 +1174,23 @@ _PREDICATE_OPS = frozenset({
 def _parse_predicates(payload: Any, where: str
                       ) -> tuple[tuple[str, str, Any], ...]:
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"{where}.predicates must be a JSON array")
     out: list[tuple[str, str, Any]] = []
     for i, item in enumerate(payload):
         spot = f"{where}.predicates[{i}]"
         if not isinstance(item, Mapping):
-            raise GridbookLaneEligibilityError(f"{spot} must be a JSON object")
+            raise LaneEligibilityError(f"{spot} must be a JSON object")
         _require_keys(item, spot, required={"fact", "op", "value"}, optional=set())
         fact = str(item["fact"])
         if fact not in _PREDICABLE_FACTS:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{spot}.fact {fact!r} is not an attestable structural fact; "
                 f"the closed set is {sorted(_PREDICABLE_FACTS)}. An unknown "
                 "predicate is a malformed contract, never a no-op rule.")
         op = str(item["op"])
         if op not in _PREDICATE_OPS:
-            raise GridbookLaneEligibilityError(
+            raise LaneEligibilityError(
                 f"{spot}.op {op!r} is not one of {sorted(_PREDICATE_OPS)}")
         out.append((fact, op, item["value"]))
     return tuple(out)
@@ -1272,7 +1211,7 @@ def _predicate_holds(actual: Any, op: str, value: Any) -> bool:
         return int(actual) >= int(value)
     if op == "at_most":
         return int(actual) <= int(value)
-    raise GridbookLaneEligibilityError(f"unknown predicate op {op!r}")
+    raise LaneEligibilityError(f"unknown predicate op {op!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -1284,9 +1223,9 @@ def _require_keys(payload: Mapping[str, Any], where: str, *,
     missing = sorted(required - actual)
     extra = sorted(actual - required - optional)
     if missing:
-        raise GridbookLaneEligibilityError(f"{where}: missing field(s) {missing}")
+        raise LaneEligibilityError(f"{where}: missing field(s) {missing}")
     if extra:
-        raise GridbookLaneEligibilityError(f"{where}: unknown field(s) {extra}")
+        raise LaneEligibilityError(f"{where}: unknown field(s) {extra}")
 
 
 def _sha256(path: Path) -> str:
@@ -1296,11 +1235,9 @@ def _sha256(path: Path) -> str:
 
 
 __all__ = [
-    "LANE_ELIGIBILITY_SCHEMA",
     "LANE_ELIGIBILITY_SCHEMA_TESSERA",
     "LANE_ELIGIBILITY_SCHEMAS",
     "ROUTE_ATTESTATION_SCHEMA",
-    "CONTRACT_INDEX_SCHEMA",
     "ROUTE_STATUS_BACKED",
     "ROUTE_STATUS_BACKED_WITH_SERVE_FLAG",
     "ROUTE_STATUS_UNBACKED",
@@ -1319,17 +1256,15 @@ __all__ = [
     "RATE_ADDRESSED_FORMAT_KINDS",
     "STRUCTURE_DENSE",
     "STRUCTURE_ROUTED_MOE",
-    "GridbookLaneEligibilityError",
+    "LaneEligibilityError",
     "UnitStructuralFacts",
     "EligibilityCell",
     "EligibilityTable",
     "RegimeRoute",
     "UnitRoute",
     "resolve_unit_route",
-    "load_contract_index",
     "load_eligibility_table",
     "load_published_formats",
-    "materialized_contract_path",
     "resolve_payload_rung",
     "unit_structural_facts",
 ]

@@ -57,10 +57,9 @@ def test_detects_real_checkpoint_config():
     assert isinstance(resolved, Qwen3Profile)
     assert resolved.name == "qwen3"
     assert resolved.vllm_architecture_class() == "Qwen3MoeForCausalLM"
-    assert resolved.supported_export_lanes() == (
-        "compressed-tensors",
-        "nvfp4_cb",
-    )
+    # `nvfp4_cb` left this tuple on 2026-09-02 with the Gridbook lane
+    # (archive/gridbook_lane_2026-09-02/).
+    assert resolved.supported_export_lanes() == ("compressed-tensors",)
 
 
 def test_dense_qwen3_still_resolves_to_the_same_contract_profile():
@@ -209,10 +208,16 @@ def test_reencode_formats_remain_legal_on_bf16_source(census):
         2 * census["expert_intermediate"],
         census["hidden"],
     )
+    # The third case was `("FP8_CB_K28", "nvfp4_cb")` until 2026-09-02. It is
+    # deleted rather than re-pointed: no surviving serving profile offers a CB
+    # rung (`nvfp4_cb.json` was the only one, now in
+    # archive/gridbook_lane_2026-09-02/), and running the rung against
+    # `vllm_packed_moe` -- which denies it -- would have inverted the
+    # assertion's meaning. The CB FormatSpecs are still in the registry as
+    # debt D34; what has no subject here is a *profile* that admits them.
     for fmt, target in (
         ("FP8_E4M3", "vllm_packed_moe"),
         ("MXFP8_E4M3", "vllm_packed_moe"),
-        ("FP8_CB_K28", "nvfp4_cb"),
     ):
         verdict = check_format_applicability(
             packed_shape, fmt, source_kind="bf16", target_profile=target,

@@ -494,34 +494,19 @@ class TestServedActivationContractGovernsTheASide:
                                    executed_activation_formats=frozenset())
         assert "executes NO format's activation quantization" in str(exc.value)
 
-    def test_the_cb_lane_executes_BOTH_families_activation_grids(self):
-        """Both CB families QDQ activations on every served route.
-
-        NVFP4_CB: gridbook rounds activations onto the E2M1 group-16 grid
-        before every GEMM (`linear.py` `fp4_act_qdq_or_codec`, moe.py's three
-        routed `fp4_act_qdq` sites, codec.py `fp4_group16_act_qdq`); the
-        "exact BF16 bridge" is a GEMM-schedule statement, not an
-        activation-precision one. FP8_CB is W8A8 (`linear.py` hands `xq` +
-        per-token dynamic scales to native_cutlass_scaled_mm; moe.py's
-        `_FP8_GROUPED_CONTRACT` is "fp8_per_token_dynamic"). Passthrough
-        sources and BF16 stay outside the list. A 2026-08-17 revision briefly
-        zeroed the NVFP4_CB side by misreading "exact"; retracted same day --
-        this test pins the corrected answer.
-        """
-        from prismaquant.lane_spec import load_lane_spec
-
-        contract = load_lane_spec("nvfp4_cb").served_activation_quantization
-        assert contract is not None, (
-            "the CB lane must declare its served activation contract")
-        for fmt in ("NVFP4_CB_K12", "NVFP4_CB_K18",
-                    "FP8_CB_K28", "FP8_CB_K48"):
-            assert contract.matches(fmt), (
-                f"{fmt} executes its activation grid when served")
-        for fmt in ("FP8_BLOCK_UE8M0_SOURCE", "BF16", "MXFP4_SOURCE"):
-            assert not contract.matches(fmt), (
-                f"{fmt} is passthrough / >=16-bit activations; A-side zero")
-        assert "GEMM-SCHEDULE" in contract.rationale, (
-            "the rationale must keep the exact-bridge misreading's correction")
+    # `test_the_cb_lane_executes_BOTH_families_activation_grids` was deleted on
+    # 2026-09-02 with the Gridbook lane (archive/gridbook_lane_2026-09-02/).
+    # It pinned that BOTH CB families really do quantize activations on every
+    # served route -- NVFP4_CB onto the E2M1 group-16 grid before every GEMM,
+    # FP8_CB as W8A8 per-token dynamic -- against the lane spec that declared
+    # it. That lane spec is archived. The DURABLE LESSON the test existed for
+    # is kept here because it is not about Gridbook: on 2026-08-17 a revision
+    # zeroed the NVFP4_CB A-side by reading "exact BF16 bridge" as an
+    # activation-precision statement when it is a GEMM-schedule one; that
+    # currency error moved a whole 87 GB DSv4 allocation and was retracted the
+    # same day. `tests/test_tessera_lane_admission.py` now carries the same
+    # obligation for the lane that replaced it, deriving `executes` from the
+    # packaged runtime contract instead of asserting it.
 
     def test_a_family_pattern_covers_a_rung_added_tomorrow(self):
         """Patterns, not enumerated rungs: an unlisted rung must not go free."""
@@ -538,17 +523,26 @@ class TestServedActivationContractGovernsTheASide:
             LaneActivationContract.from_dict({"rationale": "..."})
 
     def test_resolver_refuses_a_lane_with_no_declaration(self, monkeypatch):
+        """Re-pointed from `nvfp4_cb` to `tessera` on 2026-09-02.
+
+        The subject is the resolver's refusal, not the lane: a lane that does
+        not declare what it executes must stop the run rather than be read as
+        executing nothing, which would price every A side at zero. Any lane
+        spec serves as the vehicle; the CB one is in
+        archive/gridbook_lane_2026-09-02/.
+        """
         import dataclasses
 
         from prismaquant import aqua_activation_cost as aqc
         from prismaquant.lane_spec import load_lane_spec
 
-        spec = load_lane_spec("nvfp4_cb")
+        spec = load_lane_spec("tessera")
+        assert spec.served_activation_quantization is not None
         bare = dataclasses.replace(spec, served_activation_quantization=None)
         monkeypatch.setattr(
             "prismaquant.lane_spec.load_lane_spec", lambda _id: bare)
         with pytest.raises(SystemExit, match="does not declare"):
-            aqc.resolve_executed_activation_formats(lane_id="nvfp4_cb")
+            aqc.resolve_executed_activation_formats(lane_id="tessera")
 
     def test_a_genuinely_fused_lane_still_prices_the_full_a_side(self):
         from prismaquant.aqua_activation_cost import (

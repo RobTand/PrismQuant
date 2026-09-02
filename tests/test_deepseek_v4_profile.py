@@ -191,10 +191,15 @@ def test_gridbook_dense_role_composites_are_not_allocator_fused(profile):
         ) is None
 
 
-def test_gridbook_cb_export_lane_is_declared(profile):
-    assert profile.supported_export_lanes() == (
-        "compressed-tensors", "nvfp4_cb"
-    )
+def test_export_lane_declaration_is_native_only(profile):
+    """Renamed from `test_gridbook_cb_export_lane_is_declared` on 2026-09-02.
+
+    DeepSeek-V4 declared both the native lane and `nvfp4_cb`; the codebook
+    lane retired (archive/gridbook_lane_2026-09-02/) and the declaration went
+    with it. `preferred_export_lane` never changed -- it was always the native
+    lane -- which is why nothing about how DSv4 actually ships moves here.
+    """
+    assert profile.supported_export_lanes() == ("compressed-tensors",)
     assert profile.preferred_export_lane() == "compressed-tensors"
 
 

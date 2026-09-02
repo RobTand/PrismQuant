@@ -273,61 +273,21 @@ def test_product_menu_and_lattice_generator_derive_from_layout():
         if (grid, dimension, positive) == ("fp4", 4, False)
     } == set(range(17))
 
-    for script in (
-        "run_27b_cb_20gb.sh",
-        "run_laguna_s21_prod.sh",
-        "run_hy3_prod_joint.sh",
-    ):
-        text = (REPO / "scripts" / script).read_text(encoding="utf-8")
-        assert "print_cb_format_menu.py" in text
-        assert "range(12, 25)" not in text
-        assert "range(28, 49)" not in text
+    # The three CB launch scripts this loop pinned against
+    # `print_cb_format_menu.py` (run_27b_cb_20gb.sh, run_laguna_s21_prod.sh,
+    # run_hy3_prod_joint.sh) went to archive/gridbook_lane_2026-09-02/scripts/
+    # with the lane on 2026-09-02. What the loop was protecting -- a driver
+    # hand-typing a rung range instead of deriving it from cb_layout -- has no
+    # live driver left to protect. The layout half above still runs.
 
 
-def test_bare_k_family_resolution_refuses_the_new_overlap():
-    from scripts.build_hy3_mtp_cb_inputs import _expert_family_for_k
-
-    assert _expert_family_for_k(1) == "nvfp4_cb"
-    assert _expert_family_for_k(40) == "fp8_cb"
-    with pytest.raises(ValueError, match="ambiguous"):
-        _expert_family_for_k(12)
-    assert _expert_family_for_k(12, family="nvfp4_cb") == "nvfp4_cb"
-    assert _expert_family_for_k(12, family="fp8_cb") == "fp8_cb"
-
-
-def test_production_serving_profile_cb_allowlist_matches_layout():
-    from prismaquant.serving_profiles import load_serving_profile
-
-    raw = json.loads((
-        REPO / "prismaquant" / "serving_profile_specs" / "nvfp4_cb.json"
-    ).read_text(encoding="utf-8"))
-    raw_production = next(
-        rule for rule in raw["format_rules"]
-        if rule["id"] == "nvfp4_cb_container_formats"
-    )
-    assert raw_production["allow_formats_from"] == [
-        "prismaquant.cb_layout:PRODUCT_CB_FORMAT_NAMES"
-    ]
-
-    profile = load_serving_profile("nvfp4_cb")
-    production = next(
-        rule for rule in profile.format_rules
-        if rule.id == "nvfp4_cb_container_formats"
-    )
-    declared_cb = {
-        name for name in production.allow_formats
-        if cb_layout.parse_format_name(name) is not None
-    }
-    assert declared_cb == cb_layout.PRODUCT_CB_FORMAT_NAMES
-
-    shape = next(rule for rule in profile.shape_rules
-                 if rule.id == "cb_superblock_shape")
-    assert set(shape.formats) == cb_layout.ACCEPTED_CB_FORMAT_NAMES
-
-    fp8_shape = next(rule for rule in profile.shape_rules
-                     if rule.id == "cb_fp8_out_features_load_gate")
-    assert set(fp8_shape.formats) == cb_layout.FP8_ACCEPTED_FORMAT_NAMES
-
-    fp8_lane = next(lane for lane in profile.serving_lanes
-                    if lane.id == "fp8_cb_fused_mid_m")
-    assert set(fp8_lane.formats) == cb_layout.FP8_ACCEPTED_FORMAT_NAMES
+# `test_bare_k_family_resolution_refuses_the_new_overlap` was deleted on
+# 2026-09-02: `_expert_family_for_k` lived in scripts/build_hy3_mtp_cb_inputs.py
+# (now archive/gridbook_lane_2026-09-02/scripts/) and has no counterpart in
+# `cb_layout`, so the bare-k ambiguity it refused is only reachable from the
+# archived driver.
+#
+# `test_production_serving_profile_cb_allowlist_matches_layout` was deleted the
+# same day: it read `serving_profile_specs/nvfp4_cb.json`, the retired lane's
+# serving profile. `cb_layout`'s ladders survive as debt D34 -- unreferenced by
+# any serving profile, which is exactly what makes them debt.

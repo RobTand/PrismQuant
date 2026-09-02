@@ -3,13 +3,13 @@
 
 prismaquant is pure Python, so the packaging risk is not compiled sources —
 it is the JSON and tensor tables that the code *reads at runtime*: model,
-serving and lane specs; exact IQ/CB lookup tables; and the immutable Gridbook
+serving and lane specs; exact IQ/CB lookup tables; and the
 integration contract. Those are declared in
 `[tool.setuptools.package-data]`, which is easy to break silently: the package
 still imports, and the failure only appears when something asks for a profile
 — i.e. on a user's first real run, not in any import smoke test.
 
-`run-pipeline.sh` and the Gridbook resolver are checked for the same reason:
+`run-pipeline.sh` is checked for the same reason:
 they are the shipped orchestration surface.
 
 Usage: check_dist.py <dist-dir> <source-root>
@@ -31,8 +31,6 @@ def _expected(source_root: str) -> set[str]:
         "prismaquant/serving_profile_specs/*.json",
         "prismaquant/lane_specs/*.json",
         "prismaquant/data/*.pt",
-        "prismaquant/gridbook_runtime/*.sh",
-        "prismaquant/gridbook_runtime/*.json",
         "prismaquant/run-pipeline.sh",
     ):
         for path in glob.glob(os.path.join(source_root, pattern)):

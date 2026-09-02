@@ -28,6 +28,20 @@ What this file pins:
 6. Aggregated (fused-sibling / packed-serving-group) super items fold the
    penalty in exactly ONCE.
 """
+
+# NOTE 2026-09-02: every `build_candidates(...)` call below used
+# `target_profile="nvfp4_cb"` until the Gridbook codebook lane retired
+# (archive/gridbook_lane_2026-09-02/). That serving profile was the only spec
+# in the repo that admitted a CB rung, so the calls started returning an empty
+# candidate map and these tests failed on KeyErrors rather than on their
+# subject. They are re-pointed at `research`, which declares no export lane and
+# no format-menu restriction -- exactly the status the CB pricing plumbing now
+# has (debt D34): priceable and renderable, servable nowhere. Verified that
+# `research` returns the CB rungs legal rather than silently dropping them
+# (`check_format_applicability((2048,2048), "FP8_CB_K36", target_profile=
+# "research") -> legal`, while `vllm_packed_moe` answers
+# `exporter_cannot_emit`). The activation-fair-pricing arithmetic under test is
+# unchanged.
 from __future__ import annotations
 
 import pytest
@@ -259,7 +273,7 @@ def test_calibration_corrects_weight_only_rows_and_leaves_measured_rows_alone():
     assert pricing.families["fp8_cb"].penalty == pytest.approx(2.0)
 
     cands = build_candidates(
-        stats, costs, _specs(), target_profile="nvfp4_cb",
+        stats, costs, _specs(), target_profile="research",
         cb_serialization_context=_CB_CONTEXT,
         activation_pricing=pricing)
 
@@ -354,7 +368,7 @@ def test_no_measured_activation_rows_passes_through_but_is_recorded():
     assert pricing.as_dict()["enabled"] is False
     # Uncorrected rows say so on the candidate.
     cands = build_candidates(
-        stats, costs, _specs(), target_profile="nvfp4_cb",
+        stats, costs, _specs(), target_profile="research",
         cb_serialization_context=_CB_CONTEXT,
         activation_pricing=pricing)
     branches = {
@@ -406,11 +420,11 @@ def test_kill_switch_restores_pre_p5a_prices_exactly(monkeypatch):
     assert not pricing.enabled and pricing.reason == REASON_KILL_SWITCH
 
     switched = build_candidates(
-        stats, costs, _specs(), target_profile="nvfp4_cb",
+        stats, costs, _specs(), target_profile="research",
         cb_serialization_context=_CB_CONTEXT, activation_pricing=pricing)
     monkeypatch.delenv(ENV_FLAG, raising=False)
     legacy = build_candidates(
-        stats, costs, _specs(), target_profile="nvfp4_cb",
+        stats, costs, _specs(), target_profile="research",
         cb_serialization_context=_CB_CONTEXT, activation_pricing=None)
     for name in switched:
         got = {c.fmt: c.predicted_dloss for c in switched[name]}
@@ -470,7 +484,7 @@ def test_a_fused_super_item_folds_the_family_penalty_in_exactly_once():
     assert pricing.families["nvfp4_cb"].penalty == pytest.approx(3.0)
 
     cands = build_candidates(
-        stats, costs, specs, target_profile="nvfp4_cb",
+        stats, costs, specs, target_profile="research",
         cb_serialization_context=_CB_CONTEXT, activation_pricing=pricing)
     stats_ext, costs_ext, cands_ext = aggregate_fused_siblings(
         stats, costs, specs, cands, profile=_FusedProfile(),
@@ -512,7 +526,7 @@ def test_a_super_item_with_mixed_member_branches_says_so():
     specs = _specs(["NVFP4_CB_K16", "BF16"])
     pricing = calibrate_activation_fair_pricing(stats, costs, specs)
     cands = build_candidates(
-        stats, costs, specs, target_profile="nvfp4_cb",
+        stats, costs, specs, target_profile="research",
         cb_serialization_context=_CB_CONTEXT, activation_pricing=pricing)
     _s, _c, cands_ext = aggregate_fused_siblings(
         stats, costs, specs, cands, profile=_FusedProfile(),
@@ -575,7 +589,7 @@ def test_the_dp_flips_to_fp8_cb_once_the_w4_activation_cost_is_priced():
 
     def _solve(pricing):
         cands = build_candidates(
-            stats, costs, specs, target_profile="nvfp4_cb",
+            stats, costs, specs, target_profile="research",
             cb_serialization_context=_CB_CONTEXT,
             activation_pricing=pricing)
         # Budget the expert row alone at a rate both CB rungs can reach.

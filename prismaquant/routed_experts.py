@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+import torch
 import torch.nn as nn
 
 
@@ -322,3 +323,52 @@ __all__ = [
     "profile_declared_unpacked_expert_linears",
     "resolve_routed_expert_profile",
 ]
+
+
+def packed_expert_col_weights(col_weights, members_by_target, profile):
+    """Per-expert imatrix vectors -> the ``(E, 1, in)`` stack entry each packed
+    target needs, returned as a NEW mapping (the per-expert entries survive for
+    the render identity, which is keyed by them).
+
+    It lived in the codebook exporter until 2026-09-02 (as
+    ``export_nvfp4_cb_streaming._packed_expert_col_weights``) and moved here
+    when that lane was retired: the rule is about how a PACKED EXPERT stack
+    pools its members' imatrix vectors, which is a routed-expert fact and not
+    a property of any one container.
+
+    A FUSED parent (``gate_up_proj`` = gate then up) has ONE input, so its two
+    projections' vectors are two samples of the same per-column mean-square and
+    are pooled by averaging. They are not identical in practice only because
+    the probe caches each Linear's inputs separately under a row limit
+    (DSv4-Flash layer 0: max |gate-up| ~ 0.3 against a vector norm ~ 4.6).
+    Weighting one projection by the other's sample would be the actual error;
+    per-row vectors cannot be expressed here at all, since the pack broadcasts
+    ``(E, 1, in)`` across the whole stack."""
+    out = dict(col_weights)
+    for packed_qname, member_qnames in members_by_target.items():
+        if packed_qname in out:
+            continue
+        projections = tuple(dict.fromkeys(
+            projection for projection, _expert_id in member_qnames
+        ))
+        experts = sorted({e for _p, e in member_qnames})
+        rows = []
+        for e in experts:
+            vecs = []
+            for proj in projections:
+                q = member_qnames[(proj, e)]
+                if q not in col_weights:
+                    raise ValueError(
+                        f"{packed_qname}: CB stack member {q!r} has no "
+                        "col_weights entry (no silent RTN)")
+                vecs.append(torch.as_tensor(col_weights[q])
+                            .reshape(-1).to(torch.float32))
+            widths = {int(v.numel()) for v in vecs}
+            if len(widths) != 1:
+                raise ValueError(
+                    f"{packed_qname}: expert {e} imatrix widths disagree "
+                    f"across the fused projections {projections}: {widths}")
+            rows.append(torch.stack(vecs).mean(dim=0) if len(vecs) > 1
+                        else vecs[0])
+        out[packed_qname] = torch.stack(rows).unsqueeze(1).contiguous()
+    return out

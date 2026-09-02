@@ -6,10 +6,12 @@ R15 (`docs/audits/architecture_re-vet_2026-07-30.md`). KL is bit-identical
 extension into the serving process shifts allocator addresses, activations get
 different pointer alignments, and alignment-sensitive cuBLAS/CUTLASS heuristics
 pick different kernels. On the 27B this reads as two bit-reproducible states,
-conf-KL 0.01134 vs 0.01328 (+-17%), keyed purely on whether the gridbook `.so`
-was resident during the dump. The rule ("A/B arms must have identical extension
-residency; deltas under ~+-20% across differing stacks are not evidence") was
-prose with nothing enforcing it.
+conf-KL 0.01134 vs 0.01328 (+-17%), keyed purely on whether one lane's CUDA
+`.so` was resident during the dump. That measurement was taken on the
+Gridbook lane, retired 2026-09-02 (archive/gridbook_lane_2026-09-02/), but the
+mechanism is the loader's and not the lane's. The rule ("A/B arms must have
+identical extension residency; deltas under ~+-20% across differing stacks are
+not evidence") was prose with nothing enforcing it.
 
 This module makes the stack an object:
 
@@ -54,32 +56,25 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 MANIFEST_SCHEMA = "prismaquant.serve_manifest/1"
 MANIFEST_FILENAME = "serve_manifest.json"
-GRIDBOOK_DISTRIBUTION_SCHEMA = (
-    "prismaquant.installed_gridbook_distribution/2"
-)
-GRIDBOOK_IMPORT_ORIGIN_SCHEMA = "prismaquant.gridbook_import_origin/1"
 VLLM_COMPILATION_PROVENANCE_SCHEMA = (
     "prismaquant.vllm_compilation_provenance/1"
 )
 VLLM_RUNTIME_PIN_SCHEMA = "prismaquant.vllm_runtime_pin.v1"
 VLLM_REPOSITORY = "https://github.com/vllm-project/vllm.git"
-GRIDBOOK_REPOSITORY = "https://github.com/RobTand/gridbook.git"
 GOLD_PRODUCER_IDENTITY_SCHEMA = "prismaquant.gold_producer_identity/1"
 MODELS_ENDPOINT_BINDING_SCHEMA = (
     "prismaquant.server_models_endpoint_binding/1"
 )
 
+# Six lane-owned members (the assignment/environment registries, the two
+# runtime pins, the serving-pin reader and the DSv4 contract) left this
+# closure when the Gridbook lane was retired 2026-09-02; the files now live
+# under archive/gridbook_lane_2026-09-02/ and no gold tool imports them.
 _GOLD_PRODUCER_COMMON_FILES = (
-    "prismaquant/gridbook_assignment.py",
-    "prismaquant/gridbook_environment.py",
-    "prismaquant/gridbook_runtime/gridbook_runtime_pin.json",
-    "prismaquant/gridbook_runtime/gridbook_serving_runtime_pin.json",
-    "prismaquant/gridbook_serving_runtime_pin.py",
-    "tools/dsv4_gridbook_contract.py",
     "tools/dsv4_wikitext_inputs.py",
     "tools/prepare_dsv4_wikitext_inputs.py",
     "tools/prismaquant_source_bootstrap.py",
@@ -104,89 +99,15 @@ _GOLD_PRODUCER_TOOL_FILES = {
     ),
 }
 
-_GRIDBOOK_SOURCE_SUFFIXES = frozenset({
-    ".cu", ".cuh", ".h", ".hpp", ".json", ".py",
-})
-_REQUIRED_GRIDBOOK_SOURCE_FILES = frozenset({
-    "gridbook/__init__.py",
-    "gridbook/cuda_ext.py",
-    "gridbook/plugin.py",
-    "gridbook/runtime_contract.json",
-    "gridbook/source_passthrough.py",
-    "gridbook/fp8_source_w8a16.py",
-    "gridbook/csrc/cb_gemv.cu",
-    "gridbook/csrc/fp8_source_w8a16.cu",
-    "gridbook/csrc/mxfp8_dense_gemm.cu",
-})
-
-
-def _gridbook_environment_allowlist() -> tuple[str, ...]:
-    """Read the authoritative registry without importing ``prismaquant``.
-
-    Importing a package submodule executes ``prismaquant.__init__``, which in
-    turn imports torch.  This helper is intentionally used inside a serving
-    container, so inspect the literal ``_var(...)`` declarations with the
-    standard-library AST instead.  A changed registry shape fails closed
-    rather than silently producing an incomplete process-environment proof.
-    """
-    registry_path = (
-        Path(__file__).resolve().parents[1]
-        / "prismaquant"
-        / "gridbook_environment.py"
-    )
-    try:
-        tree = ast.parse(
-            registry_path.read_text(encoding="utf-8"),
-            filename=str(registry_path),
-        )
-    except (OSError, SyntaxError, UnicodeError) as exc:
-        raise RuntimeError(
-            f"cannot read Gridbook environment registry: {registry_path}"
-        ) from exc
-
-    assignments = []
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if any(
-            isinstance(target, ast.Name)
-            and target.id == "GRIDBOOK_ENVIRONMENT_REGISTRY"
-            for target in node.targets
-        ):
-            assignments.append(node.value)
-    if len(assignments) != 1 or not isinstance(assignments[0], ast.Tuple):
-        raise RuntimeError(
-            "Gridbook environment registry must be one literal tuple"
-        )
-
-    names: list[str] = []
-    for entry in assignments[0].elts:
-        if (
-            not isinstance(entry, ast.Call)
-            or not isinstance(entry.func, ast.Name)
-            or entry.func.id != "_var"
-            or not entry.args
-            or not isinstance(entry.args[0], ast.Constant)
-            or not isinstance(entry.args[0].value, str)
-        ):
-            raise RuntimeError(
-                "Gridbook environment registry contains a non-literal name"
-            )
-        names.append(entry.args[0].value)
-    if not names or len(names) != len(set(names)):
-        raise RuntimeError(
-            "Gridbook environment registry names must be non-empty and unique"
-        )
-    return tuple(sorted(names))
-
-
 # Performance-sensitive variables that the release attestation is permitted to
 # carry.  Values are read from the server processes' /proc entries, never from
 # the short-lived ``docker exec`` process that writes the manifest.
+# Three PQ_GRIDBOOK_RUNTIME_* pins and one environment registry were projected
+# here until the Gridbook lane retired 2026-09-02 -- see
+# archive/gridbook_lane_2026-09-02/. What survives is generic: the two names
+# that prove the serving process resolved its imports from the installed
+# distribution rather than a working-directory shadow.
 SERVER_ENV_ALLOWLIST = (
-    "PQ_GRIDBOOK_RUNTIME_COMMIT",
-    "PQ_GRIDBOOK_RUNTIME_VERSION",
-    "PQ_GRIDBOOK_RUNTIME_WHEEL_SHA256",
     # The serving process must not carry an explicit Python module-search
     # override.  ``server_environment_snapshot`` records only set values, so
     # validators prove affirmative absence by requiring this allowlisted name
@@ -196,30 +117,22 @@ SERVER_ENV_ALLOWLIST = (
     # running server PIDs from /proc and is not one of them.
     "PYTHONPATH",
     # Python's safe-path mode prevents the empty-string/script-directory entry
-    # from taking precedence over the exact VCS-installed Gridbook package.
-    # The imported module origin is attested separately below.
+    # from taking precedence over the exact installed serving package.
     "PYTHONSAFEPATH",
-    *_gridbook_environment_allowlist(),
-)
-
-# Candidate-v10 inputs belong to the strict Ada campaign, not to the shared
-# historical manifest contract.  Keeping the projection profile-specific
-# preserves byte-for-byte replay of existing Gridbook release evidence while
-# proving that neither v10 diagnostic selector entered the RTX 4090 server.
-RTX4090_SERVER_ENV_ALLOWLIST = (
-    *SERVER_ENV_ALLOWLIST,
-    "PRISMAQUANT_CB_BF16_SWIZZLE",
-    "PRISMAQUANT_CB_FP4V2_DENSE_R2",
 )
 
 #: The extensions whose residency moves the numbers (§7.4).
+# The Gridbook `.so` was named here until that lane retired 2026-09-02
+# (archive/gridbook_lane_2026-09-02/). A lane whose kernels are not matched
+# here fingerprints as "nothing resident", so any new serving lane must add
+# its extension basenames.
 EXTENSION_PATTERN = re.compile(
-    r"gridbook|prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|"
+    r"prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|"
     r"causal_conv1d|fla")
 
 #: Packages whose version pins the numeric stack.
 TRACKED_PACKAGES = (
-    "vllm", "torch", "flashinfer-python", "gridbook", "prismaquant",
+    "vllm", "torch", "flashinfer-python", "prismaquant",
     "causal-conv1d", "flash-linear-attention", "transformers",
 )
 
@@ -228,8 +141,8 @@ _FINGERPRINT_EXCLUDED = frozenset({
     "created", "launch_argv", "processes", "model", "container", "hostname",
     "serve_fingerprint", "schema", "served_model_name", "written_by",
     # Chronology labels distinguish two observations of one live server; they
-    # must not make the serving stack itself appear to change between the
-    # required pre/post DSpark snapshots.
+    # must not make the serving stack itself appear to change between a
+    # required pre/post snapshot pair.
     "attestation_phase",
     # Live PIDs define a session, not a numeric serving stack. Their stable
     # identities remain represented by ``processes``/``serve_session_id``.
@@ -1083,7 +996,7 @@ def _decode_record_sha256(
     value: str,
     *,
     path: str,
-    distribution_name: str = "Gridbook",
+    distribution_name: str,
 ) -> str:
     prefix = "sha256="
     if not isinstance(value, str) or not value.startswith(prefix):
@@ -1108,7 +1021,7 @@ def _distribution_file(
     distribution: importlib_metadata.Distribution,
     *,
     filename: str,
-    distribution_name: str = "Gridbook",
+    distribution_name: str,
 ) -> tuple[str, Path]:
     matches = [
         item for item in (distribution.files or ())
@@ -1128,430 +1041,14 @@ def _distribution_file(
     return relative, path
 
 
-def validate_gridbook_import_origin_identity(
-    payload: Mapping[str, Any],
-    *,
-    expected_version: str,
-) -> None:
-    """Replay the path-independent structural part of an import-origin proof.
-
-    The producer resolves symlinks and checks the live filesystem before it
-    writes this record.  Consumers may run outside the serving container, so
-    replay uses the recorded canonical absolute paths and their containment
-    relation rather than trying to dereference container-only paths.
-    """
-    required = {
-        "schema",
-        "module_name",
-        "imported_version",
-        "distribution_package_root",
-        "module_file",
-        "module_search_locations",
-        "identity_sha256",
-    }
-    if not isinstance(payload, Mapping) or set(payload) != required:
-        raise ValueError("Gridbook import-origin identity is not closed")
-    if (
-        payload.get("schema") != GRIDBOOK_IMPORT_ORIGIN_SCHEMA
-        or payload.get("module_name") != "gridbook"
-        or payload.get("imported_version") != expected_version
-    ):
-        raise ValueError(
-            "Gridbook imported module name/version differs from the distribution"
-        )
-
-    root_value = payload.get("distribution_package_root")
-    file_value = payload.get("module_file")
-    locations = payload.get("module_search_locations")
-    if (
-        not isinstance(root_value, str)
-        or not isinstance(file_value, str)
-        or not isinstance(locations, list)
-        or not locations
-        or any(not isinstance(value, str) for value in locations)
-    ):
-        raise ValueError("Gridbook import-origin paths are malformed")
-
-    def canonical_absolute(value: str) -> Path:
-        path = Path(value)
-        if (
-            not path.is_absolute()
-            or ".." in path.parts
-            or str(path) != value
-        ):
-            raise ValueError(
-                "Gridbook import-origin paths must be canonical and absolute"
-            )
-        return path
-
-    root = canonical_absolute(root_value)
-    module_file = canonical_absolute(file_value)
-    search_locations = [canonical_absolute(value) for value in locations]
-    try:
-        module_file.relative_to(root)
-        for location in search_locations:
-            location.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(
-            "imported Gridbook module escapes the selected distribution package root"
-        ) from exc
-    if module_file != root / "__init__.py":
-        raise ValueError(
-            "imported Gridbook __file__ is not the selected distribution __init__.py"
-        )
-    if locations != sorted(set(locations)):
-        raise ValueError(
-            "Gridbook import-origin search locations are not canonical and unique"
-        )
-    unsigned = {
-        key: value for key, value in payload.items() if key != "identity_sha256"
-    }
-    if payload.get("identity_sha256") != _canonical_sha256(unsigned):
-        raise ValueError("Gridbook import-origin identity digest is stale")
-
-
-def gridbook_import_origin_identity(
-    distribution: importlib_metadata.Distribution,
-    *,
-    expected_version: str,
-) -> dict[str, Any]:
-    """Prove that ``import gridbook`` resolves inside ``distribution``.
-
-    Metadata and imports have independent resolution rules.  In particular, a
-    stale ``gridbook`` directory in the current working directory or on
-    ``PYTHONPATH`` can be imported even while ``importlib.metadata`` selects the
-    exact newly installed distribution.  Resolve both sides and require the
-    imported ``__file__`` plus every package ``__path__`` entry to remain under
-    the selected distribution's real package root.
-    """
-    init_items = [
-        item for item in (distribution.files or ())
-        if str(item) == "gridbook/__init__.py"
-    ]
-    if len(init_items) != 1:
-        raise ValueError(
-            "installed Gridbook distribution must contain exactly one "
-            "gridbook/__init__.py"
-        )
-    installed_init = Path(distribution.locate_file(init_items[0]))
-    if not installed_init.is_file() or installed_init.is_symlink():
-        raise ValueError(
-            "installed Gridbook distribution __init__.py is missing or is a symlink"
-        )
-    try:
-        installed_init = installed_init.resolve(strict=True)
-        package_root = installed_init.parent.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError(
-            "installed Gridbook distribution package root is unreadable"
-        ) from exc
-
-    try:
-        module = importlib.import_module("gridbook")
-    except Exception as exc:
-        raise ValueError("installed Gridbook module cannot be imported") from exc
-    imported_version = getattr(module, "__version__", None)
-    if imported_version != expected_version:
-        raise ValueError(
-            f"imported Gridbook version {imported_version!r} differs from "
-            f"installed distribution {expected_version!r}"
-        )
-    module_file_value = getattr(module, "__file__", None)
-    module_path_value = getattr(module, "__path__", None)
-    if not isinstance(module_file_value, str) or module_path_value is None:
-        raise ValueError("imported Gridbook module has no concrete file/package path")
-    try:
-        module_file = Path(module_file_value).resolve(strict=True)
-        search_locations = sorted({
-            str(Path(value).resolve(strict=True)) for value in module_path_value
-        })
-    except (OSError, TypeError, ValueError) as exc:
-        raise ValueError("imported Gridbook module paths are unreadable") from exc
-    if not search_locations:
-        raise ValueError("imported Gridbook module has an empty __path__")
-    if module_file != installed_init:
-        raise ValueError(
-            "imported Gridbook __file__ does not equal the selected installed "
-            "distribution's __init__.py (CWD/PYTHONPATH shadow suspected)"
-        )
-    try:
-        module_file.relative_to(package_root)
-        for location in map(Path, search_locations):
-            location.relative_to(package_root)
-    except ValueError as exc:
-        raise ValueError(
-            "imported Gridbook module escapes the selected installed "
-            "distribution package root (CWD/PYTHONPATH shadow suspected)"
-        ) from exc
-    spec = getattr(module, "__spec__", None)
-    spec_origin = getattr(spec, "origin", None)
-    if not isinstance(spec_origin, str):
-        raise ValueError("imported Gridbook module has no concrete spec origin")
-    try:
-        resolved_spec_origin = Path(spec_origin).resolve(strict=True)
-    except OSError as exc:
-        raise ValueError("imported Gridbook spec origin is unreadable") from exc
-    if resolved_spec_origin != module_file:
-        raise ValueError("imported Gridbook __spec__.origin differs from __file__")
-
-    identity: dict[str, Any] = {
-        "schema": GRIDBOOK_IMPORT_ORIGIN_SCHEMA,
-        "module_name": "gridbook",
-        "imported_version": imported_version,
-        "distribution_package_root": str(package_root),
-        "module_file": str(module_file),
-        "module_search_locations": search_locations,
-    }
-    identity["identity_sha256"] = _canonical_sha256(identity)
-    validate_gridbook_import_origin_identity(
-        identity, expected_version=expected_version
-    )
-    return identity
-
-
-def _normalized_gridbook_distribution_pin(
-    expected_pin: Mapping[str, str],
-) -> dict[str, str]:
-    """Return one closed VCS or wheel-backed Gridbook distribution pin."""
-
-    base_keys = {"repository", "commit", "version"}
-    keys = set(expected_pin) if isinstance(expected_pin, Mapping) else set()
-    if (
-        keys not in (base_keys, base_keys | {"wheel_sha256"})
-        or expected_pin.get("repository") != GRIDBOOK_REPOSITORY
-        or re.fullmatch(
-            r"[0-9a-f]{40}", str(expected_pin.get("commit", ""))
-        ) is None
-        or not isinstance(expected_pin.get("version"), str)
-        or not expected_pin.get("version")
-        or (
-            "wheel_sha256" in keys
-            and re.fullmatch(
-                r"[0-9a-f]{64}",
-                str(expected_pin.get("wheel_sha256", "")),
-            ) is None
-        )
-    ):
-        raise ValueError("Gridbook distribution pin is not closed and exact")
-    return {key: str(expected_pin[key]) for key in sorted(keys)}
-
-
-def validate_gridbook_pep610_direct_url(
-    direct_url: object,
-    expected_pin: Mapping[str, str],
-) -> str:
-    """Validate PEP 610 identity for an exact VCS or release-wheel install.
-
-    The commit remains part of both pin forms.  A wheel install additionally
-    binds the independently verified wheel SHA-256; its installed source and
-    metadata bytes are bound to RECORD by :func:`gridbook_distribution_provenance`.
-    """
-
-    pin = _normalized_gridbook_distribution_pin(expected_pin)
-    if not isinstance(direct_url, Mapping):
-        raise ValueError("installed Gridbook PEP 610 direct_url is not an object")
-    direct_transport = direct_url.get("url")
-    try:
-        parsed_transport = urlsplit(direct_transport) if isinstance(
-            direct_transport, str
-        ) else None
-    except ValueError:
-        parsed_transport = None
-    local_transport = (
-        parsed_transport is not None
-        and parsed_transport.scheme == "file"
-        and parsed_transport.netloc in {"", "localhost"}
-        and parsed_transport.path.startswith("/")
-        and not parsed_transport.query
-        and not parsed_transport.fragment
-        and parsed_transport.username is None
-        and parsed_transport.password is None
-    )
-
-    wheel_sha256 = pin.get("wheel_sha256")
-    if wheel_sha256 is None:
-        expected_vcs = {
-            "vcs": "git",
-            "requested_revision": pin["commit"],
-            "commit_id": pin["commit"],
-        }
-        if (
-            set(direct_url) != {"url", "vcs_info"}
-            or direct_url.get("vcs_info") != expected_vcs
-            or not (direct_transport == pin["repository"] or local_transport)
-        ):
-            raise ValueError(
-                "installed Gridbook PEP 610 direct_url is not the exact "
-                "pinned VCS commit"
-            )
-        return "vcs"
-
-    archive_info = direct_url.get("archive_info")
-    archive_keys = set(archive_info) if isinstance(
-        archive_info, Mapping
-    ) else set()
-    hashes = archive_info.get("hashes") if isinstance(
-        archive_info, Mapping
-    ) else None
-    wheel_name = (
-        Path(unquote(parsed_transport.path)).name
-        if parsed_transport is not None else ""
-    )
-    wheel_name_pattern = re.compile(
-        rf"gridbook-{re.escape(pin['version'])}-[A-Za-z0-9_.+-]+[.]whl"
-    )
-    legacy_hash_valid = (
-        "hash" not in archive_keys
-        or archive_info.get("hash") == f"sha256={wheel_sha256}"
-    ) if isinstance(archive_info, Mapping) else False
-    if (
-        set(direct_url) != {"url", "archive_info"}
-        or not local_transport
-        or wheel_name_pattern.fullmatch(wheel_name) is None
-        or archive_keys not in ({"hashes"}, {"hash", "hashes"})
-        or hashes != {"sha256": wheel_sha256}
-        or not legacy_hash_valid
-    ):
-        raise ValueError(
-            "installed Gridbook PEP 610 direct_url is not the exact pinned "
-            "release wheel"
-        )
-    return "wheel"
-
-
-def gridbook_distribution_provenance(
-    expected_pin: Mapping[str, str],
-) -> dict[str, Any]:
-    """Attest the installed Gridbook package, not merely its version label.
-
-    PEP 610 binds the install to either the exact external VCS revision or an
-    independently pinned release-wheel digest.  RECORD then binds installed
-    source/CUDA files and package metadata to their bytes.  Both are needed: a
-    matching ``gridbook.__version__`` can be produced by unrelated code, while
-    a truthful direct URL alone says nothing about post-install file mutation.
-    """
-    expected_pin = _normalized_gridbook_distribution_pin(expected_pin)
-
-    try:
-        distribution = importlib_metadata.distribution("gridbook")
-    except Exception as exc:
-        raise ValueError("the Gridbook distribution is not installed") from exc
-    name = str(distribution.metadata.get("Name", "")).strip().lower()
-    version = str(distribution.version)
-    if name != "gridbook" or version != expected_pin["version"]:
-        raise ValueError(
-            "installed Gridbook name/version differs from the exact pin"
-        )
-    import_origin = gridbook_import_origin_identity(
-        distribution, expected_version=version
-    )
-
-    direct_relative, direct_path = _distribution_file(
-        distribution, filename="direct_url.json"
-    )
-    try:
-        direct_url = json.loads(direct_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise ValueError("installed Gridbook direct_url.json is unreadable") from exc
-    validate_gridbook_pep610_direct_url(direct_url, expected_pin)
-
-    record_relative, record_path = _distribution_file(
-        distribution, filename="RECORD"
-    )
-    metadata_relative, metadata_path = _distribution_file(
-        distribution, filename="METADATA"
-    )
-    record_rows: dict[str, tuple[str, str]] = {}
-    try:
-        with record_path.open("r", encoding="utf-8", newline="") as handle:
-            for row in csv.reader(handle):
-                if len(row) != 3 or not row[0] or row[0] in record_rows:
-                    raise ValueError("malformed or duplicate RECORD row")
-                record_rows[row[0]] = (row[1], row[2])
-    except Exception as exc:
-        raise ValueError("installed Gridbook RECORD is malformed") from exc
-
-    source_items = [
-        item for item in (distribution.files or ())
-        if str(item).startswith("gridbook/")
-        and "__pycache__" not in item.parts
-        and Path(str(item)).suffix in _GRIDBOOK_SOURCE_SUFFIXES
-    ]
-    source_names = {str(item) for item in source_items}
-    missing = sorted(_REQUIRED_GRIDBOOK_SOURCE_FILES - source_names)
-    if missing:
-        raise ValueError(
-            f"installed Gridbook source/package-data closure is missing {missing}"
-        )
-    source_files: dict[str, dict[str, Any]] = {}
-    for item in sorted(source_items, key=str):
-        relative = str(item)
-        path = Path(distribution.locate_file(item))
-        if not path.is_file() or path.is_symlink():
-            raise ValueError(
-                f"installed Gridbook source is missing or is a symlink: {relative}"
-            )
-        identity = _file_identity(path)
-        record_hash, record_size = record_rows.get(relative, ("", ""))
-        if (
-            _decode_record_sha256(record_hash, path=relative)
-            != identity["sha256"]
-            or not record_size.isdigit()
-            or int(record_size) != identity["bytes"]
-        ):
-            raise ValueError(
-                f"installed Gridbook source differs from RECORD: {relative}"
-            )
-        source_files[relative] = identity
-
-    direct_identity = _file_identity(direct_path)
-    metadata_identity = _file_identity(metadata_path)
-    for relative, identity in (
-        (direct_relative, direct_identity),
-        (metadata_relative, metadata_identity),
-    ):
-        record_hash, record_size = record_rows.get(relative, ("", ""))
-        if (
-            _decode_record_sha256(record_hash, path=relative)
-            != identity["sha256"]
-            or not record_size.isdigit()
-            or int(record_size) != identity["bytes"]
-        ):
-            raise ValueError(
-                f"installed Gridbook metadata differs from RECORD: {relative}"
-            )
-
-    return {
-        "schema": GRIDBOOK_DISTRIBUTION_SCHEMA,
-        "name": "gridbook",
-        "repository": expected_pin["repository"],
-        "version": version,
-        "direct_url": direct_url,
-        "direct_url_path": direct_relative,
-        "direct_url_identity": direct_identity,
-        "metadata_path": metadata_relative,
-        "metadata_identity": metadata_identity,
-        "record_path": record_relative,
-        "record_identity": _file_identity(record_path),
-        "source_files": source_files,
-        "source_files_sha256": _canonical_sha256(source_files),
-        "import_origin": import_origin,
-    }
-
-
-def gridbook_runtime_pin() -> dict[str, str] | None:
-    """Immutable external Gridbook identity injected by the serve helper."""
-    mapping = {
-        "commit": "PQ_GRIDBOOK_RUNTIME_COMMIT",
-        "version": "PQ_GRIDBOOK_RUNTIME_VERSION",
-        "wheel_sha256": "PQ_GRIDBOOK_RUNTIME_WHEEL_SHA256",
-    }
-    value = {
-        field: os.environ[name]
-        for field, name in mapping.items()
-        if os.environ.get(name)
-    }
-    return value or None
+# An installed-distribution attestation lived here: PEP 610 direct_url (VCS or
+# pinned wheel), the RECORD-vs-bytes closure over the installed CUDA/Python
+# sources, the import-origin proof, and the PQ_GRIDBOOK_RUNTIME_* environment
+# pin that supplied the expected identity. Its subject was the Gridbook lane,
+# retired 2026-09-02, so the proof has nothing left to prove; the code went to
+# archive/gridbook_lane_2026-09-02/ along with the lane.
+# The equivalent vLLM attestation above is untouched -- it binds the
+# compressed-tensors lane's runtime and is still live.
 
 
 def git_provenance(repo: str | os.PathLike | None = None) -> dict[str, Any]:
@@ -1893,8 +1390,10 @@ def performance_stack_payload(manifest: Mapping[str, Any]) -> dict[str, Any]:
         "vllm_compilation_provenance": manifest.get(
             "vllm_compilation_provenance"
         ),
-        "gridbook_runtime_pin": manifest.get("gridbook_runtime_pin"),
-        "gridbook_distribution": manifest.get("gridbook_distribution"),
+        # Two keys left this payload when that lane retired 2026-09-02
+        # (Gridbook, archive/gridbook_lane_2026-09-02/); a
+        # manifest written before that date therefore no longer reproduces its
+        # recorded performance_stack_fingerprint.
         "resident_extensions": manifest.get("resident_extensions"),
         "residency_readable": manifest.get("residency_readable"),
         "normalized_serve_argv": manifest.get("normalized_performance_argv"),
@@ -2174,12 +1673,10 @@ def collect_manifest(
     source: str = "server",
     extra: Mapping[str, Any] | None = None,
     artifact_dir: str | os.PathLike | None = None,
-    draft_artifact_dir: str | os.PathLike | None = None,
     base_url: str | None = None,
     attestation_phase: str = "snapshot",
     server_environment_names: Sequence[str] = SERVER_ENV_ALLOWLIST,
     vllm_pin_attestation: Mapping[str, Any] | None = None,
-    artifact_content_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for a live serving (or measuring) process."""
     if attestation_phase not in {"snapshot", "pre", "post"}:
@@ -2246,21 +1743,6 @@ def collect_manifest(
         vllm_compilation = vllm_compilation_provenance(
             vllm_pin_attestation
         )
-    runtime_pin = gridbook_runtime_pin()
-    gridbook_distribution = None
-    if runtime_pin is not None:
-        if set(runtime_pin) not in (
-            {"commit", "version"},
-            {"commit", "version", "wheel_sha256"},
-        ):
-            raise ValueError(
-                "Gridbook runtime environment pin is partial; commit/version "
-                "and optional wheel SHA-256 must form one closed pin"
-            )
-        gridbook_distribution = gridbook_distribution_provenance({
-            "repository": GRIDBOOK_REPOSITORY,
-            **runtime_pin,
-        })
     manifest: dict[str, Any] = {
         "schema": MANIFEST_SCHEMA,
         "created": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -2279,7 +1761,6 @@ def collect_manifest(
         "kv_cache_dtype": _flag_value(launch_argv, "--kv-cache-dtype"),
         "speculative_config": _flag_value(launch_argv, "--speculative-config"),
         "package_versions": installed_packages,
-        "gridbook_runtime_pin": runtime_pin,
         "resident_extensions": extensions,
         # False whenever any inspected process's address space could not be
         # read (the host-side-of-a-container case): an unverified scan must not
@@ -2294,35 +1775,12 @@ def collect_manifest(
         "listener_binding": bound_listener,
         "models_endpoint_binding": endpoint_models,
     }
-    if gridbook_distribution is not None:
-        manifest["gridbook_distribution"] = gridbook_distribution
     if vllm_compilation is not None:
         manifest["vllm_compilation_provenance"] = vllm_compilation
-    if artifact_content_receipt is not None:
-        manifest["artifact_content_receipt"] = dict(
-            artifact_content_receipt
-        )
     manifest.update(gpu)
     if artifact_dir is not None:
         manifest["artifact_binding"] = artifact_binding(
             artifact_dir, launch_model=launch_model
-        )
-    if draft_artifact_dir is not None:
-        raw_spec = manifest.get("speculative_config")
-        try:
-            spec = json.loads(str(raw_spec))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                "--draft-artifact-dir requires strict JSON --speculative-config"
-            ) from exc
-        draft_model = spec.get("model") if isinstance(spec, dict) else None
-        if not isinstance(draft_model, str) or not draft_model:
-            raise ValueError(
-                "DSpark speculative config must name the separate draft model"
-            )
-        manifest["draft_artifact_binding"] = artifact_binding(
-            draft_artifact_dir,
-            launch_model=draft_model,
         )
     if extra:
         annotations = dict(extra)
@@ -2384,7 +1842,6 @@ def self_manifest(
     extra: Mapping[str, Any] | None = None,
     artifact_dir: str | os.PathLike | None = None,
     require_engine_descendant: bool = False,
-    gridbook_pin_attestation: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Manifest of this process and its complete descendant process tree.
 
@@ -2399,15 +1856,6 @@ def self_manifest(
     """
     if not isinstance(require_engine_descendant, bool):
         raise TypeError("require_engine_descendant must be a bool")
-    if gridbook_pin_attestation is not None:
-        try:
-            gridbook_pin_attestation = _normalized_gridbook_distribution_pin(
-                gridbook_pin_attestation
-            )
-        except ValueError as exc:
-            raise ValueError(
-                "gridbook_pin_attestation is not an exact runtime pin"
-            ) from exc
     parent_pid = os.getpid()
     descendants = descendant_process_pids(parent_pid)
     engine_descendants = [
@@ -2431,27 +1879,9 @@ def self_manifest(
     )
     manifest["measurement_parent_pid"] = parent_pid
     manifest["engine_descendant_pids"] = engine_descendants
-    if gridbook_pin_attestation is not None:
-        expected_runtime_pin = {
-            key: value for key, value in gridbook_pin_attestation.items()
-            if key != "repository"
-        }
-        observed_runtime_pin = manifest.get("gridbook_runtime_pin")
-        if (
-            observed_runtime_pin is not None
-            and observed_runtime_pin != expected_runtime_pin
-        ):
-            raise ValueError(
-                "gridbook_pin_attestation differs from the live runtime environment"
-            )
-        manifest["gridbook_runtime_pin"] = expected_runtime_pin
-        if "gridbook_distribution" not in manifest:
-            manifest["gridbook_distribution"] = (
-                gridbook_distribution_provenance(gridbook_pin_attestation)
-            )
-        manifest["performance_stack_fingerprint"] = (
-            performance_stack_fingerprint(manifest)
-        )
+    # An in-process caller could also cross-check an expected serving-runtime
+    # distribution pin here; the only such pin was the Gridbook lane's, and
+    # that lane retired 2026-09-02 -- archive/gridbook_lane_2026-09-02/.
     # Keep the invariant explicit if the fingerprint projection evolves. Live
     # PIDs are excluded today; the full process identities bind the session.
     manifest["serve_fingerprint"] = fingerprint(manifest)
@@ -2472,70 +1902,6 @@ def find_manifest(model_dir: str | os.PathLike | None) -> Path | None:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def _cmd_rtx4090_artifact_preflight(args: argparse.Namespace) -> int:
-    """Create one in-container, no-clobber content receipt before vLLM."""
-
-    model_dir = Path(args.model_dir)
-    contract_path = Path(args.runtime_contract)
-    out = Path(args.out)
-    if (
-        not model_dir.is_absolute()
-        or not contract_path.is_absolute()
-        or not out.is_absolute()
-        or not model_dir.is_dir()
-        or model_dir.is_symlink()
-        or not contract_path.is_file()
-        or contract_path.is_symlink()
-        or not out.parent.is_dir()
-        or out.parent.is_symlink()
-        or out.exists()
-    ):
-        raise ValueError(
-            "RTX4090 artifact preflight paths must be absolute, ordinary, "
-            "and the receipt must not exist"
-        )
-    from prismaquant.validate_rtx4090_fp8_cb import (
-        _load_json,
-        create_rtx4090_artifact_content_receipt,
-        validate_rtx4090_artifact_content_receipt,
-        validate_rtx4090_artifact_metadata,
-    )
-
-    runtime_contract, _raw = _load_json(
-        contract_path, where="Gridbook runtime contract"
-    )
-    # Policy and inventory first; neither operation opens safetensors content.
-    validate_rtx4090_artifact_metadata(
-        model_dir, runtime_contract=runtime_contract
-    )
-    receipt = create_rtx4090_artifact_content_receipt(model_dir)
-    validate_rtx4090_artifact_content_receipt(model_dir, receipt)
-    encoded = (
-        json.dumps(receipt, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        + "\n"
-    ).encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(out, flags, 0o600)
-    try:
-        with os.fdopen(fd, "wb", closefd=True) as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except Exception:
-        try:
-            out.unlink()
-        except OSError:
-            pass
-        raise
-    print(
-        "[rtx4090-artifact-preflight] verified "
-        f"files={len(receipt['files'])} bytes={receipt['content_bytes_read']}"
-    )
-    return 0
-
-
 def _cmd_write(args: argparse.Namespace) -> int:
     if args.pid is not None:
         raise ValueError(
@@ -2563,18 +1929,20 @@ def _cmd_write(args: argparse.Namespace) -> int:
             raise ValueError(
                 "serve fingerprint shipcard import escapes the reviewed snapshot"
             )
-    extra = None
-    server_environment_names = SERVER_ENV_ALLOWLIST
+    # The RTX4090 FP8-CB environment profile, its strict artifact/content
+    # receipt replay, and the paired DSpark runtime-evidence closure all lived
+    # here; they belonged to the Gridbook lane, which retired 2026-09-02 (see
+    # archive/gridbook_lane_2026-09-02/). What survives is lane-independent: an
+    # optional exact vLLM runtime pin, which the profile used to gate but which
+    # binds the vanilla-vLLM install on its own.
     vllm_pin_attestation = None
-    artifact_content_receipt = None
-    if args.server_environment_profile == "rtx4090_fp8_cb":
-        server_environment_names = RTX4090_SERVER_ENV_ALLOWLIST
-        if args.vllm_runtime_pin is None:
-            raise ValueError(
-                "RTX4090 FP8-CB server evidence requires --vllm-runtime-pin"
-            )
+    if args.vllm_runtime_pin is not None:
         pin_path = Path(args.vllm_runtime_pin)
-        if not pin_path.is_absolute() or not pin_path.is_file() or pin_path.is_symlink():
+        if (
+            not pin_path.is_absolute()
+            or not pin_path.is_file()
+            or pin_path.is_symlink()
+        ):
             raise ValueError(
                 "strict vLLM runtime pin must be one absolute ordinary file"
             )
@@ -2586,100 +1954,13 @@ def _cmd_write(args: argparse.Namespace) -> int:
             raise ValueError(
                 "strict vLLM runtime pin is unreadable or invalid"
             ) from exc
-        if (
-            args.artifact_dir is None
-            or args.artifact_content_receipt is None
-            or args.rtx4090_runtime_contract is None
-        ):
-            raise ValueError(
-                "RTX4090 FP8-CB evidence requires artifact, content receipt, "
-                "and runtime contract"
-            )
-        receipt_path = Path(args.artifact_content_receipt)
-        contract_path = Path(args.rtx4090_runtime_contract)
-        if (
-            not receipt_path.is_absolute()
-            or not receipt_path.is_file()
-            or receipt_path.is_symlink()
-            or not contract_path.is_absolute()
-            or not contract_path.is_file()
-            or contract_path.is_symlink()
-        ):
-            raise ValueError(
-                "strict artifact receipt and runtime contract must be absolute "
-                "ordinary files"
-            )
-        from prismaquant.validate_rtx4090_fp8_cb import (
-            _load_json,
-            validate_rtx4090_artifact,
-            validate_rtx4090_artifact_content_receipt,
-        )
-
-        artifact_content_receipt, _receipt_raw = _load_json(
-            receipt_path, where="RTX4090 artifact content receipt"
-        )
-        runtime_contract, _contract_raw = _load_json(
-            contract_path, where="Gridbook runtime contract"
-        )
-        artifact_content_receipt = (
-            validate_rtx4090_artifact_content_receipt(
-                args.artifact_dir, artifact_content_receipt
-            )
-        )
-        # This is the one full finalized-census replay in the serve flow. It
-        # consumes headers and sidecar metadata but reuses the receipt for all
-        # safetensors payload/content verification.
-        validate_rtx4090_artifact(
-            args.artifact_dir,
-            runtime_contract=runtime_contract,
-            artifact_content_receipt=artifact_content_receipt,
-        )
-    elif args.vllm_runtime_pin is not None:
-        raise ValueError(
-            "--vllm-runtime-pin is reserved for the RTX4090 FP8-CB profile"
-        )
-    elif (
-        args.artifact_content_receipt is not None
-        or args.rtx4090_runtime_contract is not None
-    ):
-        raise ValueError(
-            "strict artifact receipt/contract options are reserved for the "
-            "RTX4090 FP8-CB profile"
-        )
-    if args.dspark_runtime_evidence is not None:
-        if args.server_environment_profile != "default":
-            raise ValueError(
-                "DSpark runtime evidence and an alternate environment profile "
-                "are mutually exclusive"
-            )
-        # Lazy and stdlib-only: the profile module imports neither torch nor
-        # vLLM.  Its separate collector already performed the explicit live
-        # imports; here we re-hash its metadata/cache files and the installed
-        # Gridbook source namespace before embedding it in this server proof.
-        from prismaquant.dspark_serving_profile import (
-            DSPARK_SERVER_ENV_ALLOWLIST,
-            load_runtime_evidence,
-        )
-
-        runtime_evidence = load_runtime_evidence(
-            args.dspark_runtime_evidence, verify_files=True
-        )
-        server_environment_names = DSPARK_SERVER_ENV_ALLOWLIST
-        extra = {
-            "dspark_serving_profile": runtime_evidence["profile_receipt"],
-            "dspark_runtime_evidence": runtime_evidence,
-        }
     manifest = collect_manifest(
         pids=None,
         image=args.image,
         artifact_dir=args.artifact_dir,
-        draft_artifact_dir=args.draft_artifact_dir,
         base_url=args.base_url,
         attestation_phase=args.attestation_phase,
-        server_environment_names=server_environment_names,
         vllm_pin_attestation=vllm_pin_attestation,
-        artifact_content_receipt=artifact_content_receipt,
-        extra=extra,
     )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -2718,12 +1999,7 @@ def main(argv: list[str] | None = None) -> int:
     p_write.add_argument(
         "--artifact-dir",
         default=None,
-        help="exact mounted CB artifact served by this process",
-    )
-    p_write.add_argument(
-        "--draft-artifact-dir",
-        default=None,
-        help="exact separately quantized DSpark draft named by speculative config",
+        help="exact mounted artifact served by this process",
     )
     p_write.add_argument(
         "--base-url",
@@ -2736,57 +2012,20 @@ def main(argv: list[str] | None = None) -> int:
         default="snapshot",
         help="chronology role for this immutable server snapshot",
     )
-    p_write.add_argument(
-        "--dspark-runtime-evidence",
-        default=None,
-        help=(
-            "exact runtime-preflight receipt; selects the separate 0.8.6 "
-            "paired-DSpark process-environment/profile closure"
-        ),
-    )
-    p_write.add_argument(
-        "--server-environment-profile",
-        choices=("default", "rtx4090_fp8_cb"),
-        default="default",
-        help=(
-            "closed live-process environment projection; the RTX4090 profile "
-            "adds candidate-v10 selectors without changing historical evidence"
-        ),
-    )
+    # The lane-specific options (--dspark-runtime-evidence,
+    # --server-environment-profile, --artifact-content-receipt,
+    # --rtx4090-runtime-contract) and the rtx4090-artifact-preflight
+    # subcommand went with the Gridbook lane, retired 2026-09-02; see
+    # archive/gridbook_lane_2026-09-02/.
     p_write.add_argument(
         "--vllm-runtime-pin",
         default=None,
         help=(
-            "closed official-VCS vLLM pin required by the RTX4090 FP8-CB "
-            "server-evidence profile"
-        ),
-    )
-    p_write.add_argument(
-        "--artifact-content-receipt",
-        default=None,
-        help=(
-            "stat-bound in-container one-pass safetensors receipt required by "
-            "the RTX4090 FP8-CB profile"
-        ),
-    )
-    p_write.add_argument(
-        "--rtx4090-runtime-contract",
-        default=None,
-        help=(
-            "exact mounted Gridbook runtime contract used for the strict "
-            "post-serve finalized-census replay"
+            "closed official-VCS vLLM pin; binds the installed vanilla-vLLM "
+            "distribution to one exact commit and RECORD"
         ),
     )
     p_write.set_defaults(func=_cmd_write)
-
-    p_preflight = sub.add_parser(
-        "rtx4090-artifact-preflight",
-        help="verify strict safetensors once immediately before vLLM",
-    )
-    p_preflight.add_argument("--model-dir", required=True)
-    p_preflight.add_argument("--runtime-contract", required=True)
-    p_preflight.add_argument("--out", required=True)
-    p_preflight.set_defaults(func=_cmd_rtx4090_artifact_preflight)
 
     p_show = sub.add_parser("show", help="pretty-print a manifest")
     p_show.add_argument("manifest")

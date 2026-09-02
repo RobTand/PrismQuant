@@ -13,18 +13,31 @@ Six things are pinned here, in the order they matter:
      passthrough, still bounded by the source representation's exact bit rate,
      and one whose unmeasured A side must leave the menu rather than be priced
      at the DP's global minimum;
-  5. the wire contract: id, config group, and the emitted tensor pair;
+  5. the wire contract: the reserved, globally unique wire id;
   6. cost-measurement wiring — no codebook machinery, and the batched render
      agreeing with the unbatched one.
+
+Updated 2026-09-02, when the Gridbook codebook lane was retired to
+``archive/gridbook_lane_2026-09-02/``.  This rung was MX-FP8 FOR THAT LANE:
+``nvfp4_cb`` was the only serving profile that offered it, the only one that
+declared its ``mxfp8_ue8m0_g32`` serving lane, and ``cb_export_config`` /
+``export_nvfp4_cb_streaming`` were the only writers of its
+``mxfp8_e4m3_e8m0_g32`` wire.  All three are archived.  What survives is the
+registry declaration, the encoder, the exactness property and the cost
+plumbing — so item 5 is now the wire id alone, and the section-4 menu tests
+resolve against ``research``.  ``research`` is ``emulation_only`` and its own
+rationale says it exists "to keep research rungs with no served path
+measurable end-to-end in the emulation harness"; that is exactly this rung's
+status today.  Green here means the menu MECHANICS work, not that anything
+ships: the compressed-tensors profiles deny the format outright
+(``exporter_cannot_emit``), which is why they are not the re-point target.
 """
 import math
-from pathlib import Path
 
 import pytest
 import torch
 
 from prismaquant import format_registry as fr
-from prismaquant import serving_profiles as sp
 from prismaquant.allocator_candidates import (
     PASSTHROUGH_WIRE_FORMAT_IDS,
     REQUANT_WIRE_FORMAT_IDS,
@@ -448,7 +461,7 @@ def test_an_unmeasured_activation_side_is_masked_not_admitted():
     cands = build_candidates(
         stats, costs,
         [fr.get_format(FMT), fr.get_format("BF16")],
-        target_profile="nvfp4_cb", mask_records=masks)
+        target_profile="research", mask_records=masks)
     assert FMT not in {c.fmt for c in cands[name]}
     assert any(m["format"] == FMT
                and m["reason"] == ACTIVATION_COST_UNMEASURED_REASON
@@ -465,13 +478,19 @@ def test_a_measured_activation_side_passes_menu_admission():
     cands = build_candidates(
         stats, costs,
         [fr.get_format(FMT), fr.get_format("BF16")],
-        target_profile="nvfp4_cb")
+        target_profile="research")
     chosen = {c.fmt: c for c in cands[name]}
     assert FMT in chosen
     assert chosen[FMT].predicted_dloss > 0.0
     assert chosen[FMT].bits_per_param == 8.25
-    assert chosen[FMT].serving_lane.lane_id == "mxfp8_ue8m0_g32"
-    assert chosen[FMT].serving_lane.fused_mid_m_backed is False
+    # The two serving-lane assertions that stood here
+    # (``serving_lane.lane_id == "mxfp8_ue8m0_g32"`` and
+    # ``serving_lane.fused_mid_m_backed is False``) were deleted 2026-09-02:
+    # the lane was declared in prismaquant/serving_profile_specs/nvfp4_cb.json
+    # and went to archive/gridbook_lane_2026-09-02/ with the Gridbook codebook
+    # lane.  No surviving profile declares a serving lane, so
+    # ``chosen[FMT].serving_lane`` is ``None`` for every profile and there is
+    # no route left to assert.
     # Priced from the real A-side measurement, not short-circuited: the
     # weight side is exactly lossless here and would otherwise read as free.
     assert chosen[FMT].activation_pricing == "measured_output_mse"
@@ -499,54 +518,44 @@ def test_requantization_is_still_capped_by_the_source_bit_rate():
     for source_kind, (legal, reason) in expected.items():
         verdict = check_format_applicability(
             shape, FMT, source_kind=source_kind,
-            target_profile="nvfp4_cb",
+            target_profile="research",
             qname="model.layers.0.self_attn.q_proj")
         assert verdict.legal is legal, (
             source_kind, verdict.reason, verdict.detail)
         assert verdict.reason == reason
 
 
-def test_the_body_and_attention_menus_carry_it_and_packed_experts_do_not():
-    dense = "model.layers.0.self_attn.q_proj"
-    expert = "model.layers.0.mlp.experts.gate_up_proj"
-
-    assert sp.check_serving_format("nvfp4_cb", dense, FMT).legal
-    assert sp.check_serving_format(
-        "nvfp4_cb", "model.layers.0.mlp.down_proj", FMT).legal
-
-    denied = sp.check_serving_format(
-        "nvfp4_cb", expert, FMT, packed_expert=True)
-    assert not denied.legal
-    # Denied by the EXISTING container rule for stock-delegated dense-only
-    # emission, not by a format-specific special case.
-    assert denied.rule == "cb_packed_expert_stock_ct_unsupported"
-    assert denied.reason == "runtime_unsupported"
-
-
-def test_the_expert_cost_menu_stays_below_source_as_defense_in_depth():
-    """The measured menu is economical before the allocator rechecks it.
-
-    The script's enumeration avoids measuring obviously illegal expert rungs;
-    the general allocator gate remains authoritative and shape-exact.
-    """
-    driver = Path(__file__).resolve().parents[1] / (
-        "scripts/run_dsv4_mxfp4_cost.sh")
-    menu_line = next(
-        line for line in driver.read_text().splitlines()
-        if line.startswith("MENU=")
-    )
-    menu = menu_line.split("{MENU:-", 1)[1].rstrip('}"').split(",")
-    assert len(menu) > 1
-    for name in menu:
-        assert fr.get_format(name).effective_bits <= 4.25, name
-    assert FMT not in menu
-    assert fr.get_format(FMT).effective_bits > 4.25
+# --- DELETED 2026-09-02 ------------------------------------------------------
+#
+# Two tests are gone from here:
+#
+#   test_the_body_and_attention_menus_carry_it_and_packed_experts_do_not
+#   test_the_expert_cost_menu_stays_below_source_as_defense_in_depth
+#
+# The first asserted that the ``nvfp4_cb`` container offered this rung on the
+# dense body and attention menus but DENIED it on a packed expert, by the
+# container's own ``cb_packed_expert_stock_ct_unsupported`` rule rather than
+# by a format-specific special case.  Both the profile and that rule went to
+# archive/gridbook_lane_2026-09-02/ with the Gridbook codebook lane.  It is
+# deleted rather than re-pointed: ``research`` declares no packed-expert rule
+# and would call every one of the three cases legal, and the compressed-
+# tensors profiles deny the rung outright (``exporter_cannot_emit``) --- so
+# neither target can express "carried here, denied there".
+#
+# The second read the menu out of scripts/run_dsv4_mxfp4_cost.sh and checked
+# every entry priced at or below 4.25 effective bits while this 8.25-bit rung
+# stayed out of it.  That driver is a CB-lane cost driver and is archived at
+# archive/gridbook_lane_2026-09-02/scripts/run_dsv4_mxfp4_cost.sh, so the
+# menu it asserted about is no longer a menu any live path builds.  The
+# general allocator gate it called "defense in depth" for is the authoritative
+# one and is still covered by test_requantization_is_still_capped_by_the_
+# source_bit_rate above.
 
 
 def test_it_is_masked_where_the_group_does_not_divide_the_input():
     verdict = check_format_applicability(
         (256, 100), FMT, source_kind="bf16",
-        target_profile="nvfp4_cb",
+        target_profile="research",
         qname="model.layers.0.self_attn.q_proj")
     assert not verdict.legal
     assert verdict.reason == "group_divisibility"
@@ -586,101 +595,48 @@ def test_the_wire_id_is_pinned_and_globally_unique():
         fr.get_format(name)          # every id names a registered format
 
 
-def test_the_serving_lane_is_declared_and_honestly_unbacked():
-    lane = sp.serving_lane_route("nvfp4_cb", FMT)
-    assert lane is not None
-    assert lane.lane_id == "mxfp8_ue8m0_g32"
-    assert lane.rung is None
-    assert lane.fused_mid_m_backed is False
-    assert lane.fused_mid_m_rungs == ()
-    # An ABSENT fused_mid_m key, not an empty declared one: there is no decode
-    # prologue to fuse, and this is the fail-closed spelling.
-    assert lane.rungs_source == "lane_declares_no_fused_mid_m_lane"
-    # Not filed under any CB activation contract.
-    assert "cb" not in lane.activation_contract
-    assert lane.activation_contract == "w8a8-dynamic-mxfp8-e4m3-group32-ue8m0"
-
-
-def test_the_lane_only_becomes_backed_when_a_runtime_version_declares_it():
-    """rungs_by_runtime_version precedent: a pin with no key backs nothing."""
-    spec = sp.load_serving_profile("nvfp4_cb")
-    lane = next(l for l in spec.serving_lanes if l.id == "mxfp8_ue8m0_g32")
-    assert lane.fused_mid_m_rungs_by_runtime_version == ()
-    for version in ("0.7.0", "0.8.0", ""):
-        rungs, source = lane.backed_rungs(version)
-        assert rungs == ()
-        assert source == "lane_declares_no_fused_mid_m_lane"
-
-
-def test_the_config_group_declares_the_w8a8_activation_contract():
-    from prismaquant.cb_export_config import (
-        REQUANT_NATIVE_GROUP_FORMAT,
-        requant_native_config_group,
-        requant_wire_id,
-    )
-
-    assert requant_wire_id(FMT) == WIRE_ID
-    assert requant_wire_id("mxfp8_ue8m0_g32") == WIRE_ID
-    with pytest.raises(ValueError, match="not a declared re-quantization"):
-        requant_wire_id("MXFP8_E4M3")
-
-    group = requant_native_config_group(FMT)
-    assert group["format"] == REQUANT_NATIVE_GROUP_FORMAT
-    assert group["source_format"] == FMT
-    assert group["wire_format_id"] == WIRE_ID
-    acts = group["input_activations"]
-    assert acts is not None, "a W8A8 lane must not declare a weight-only group"
-    assert acts["num_bits"] == 8
-    assert acts["element_dtype"] == "fp8_e4m3"
-    assert acts["scale_dtype"] == "uint8_e8m0"
-    assert acts["dynamic"] is True
-    assert acts["strategy"] == "group" and acts["group_size"] == GROUP
-    weights = group["weights"]
-    assert weights["num_bits"] == 8
-    assert weights["element_dtype"] == "fp8_e4m3"
-    assert weights["scale_dtype"] == "uint8_e8m0"
-    assert weights["strategy"] == "group"
-    assert weights["group_size"] == GROUP
-    # The producer WROTE these bytes; saying otherwise would let the consumer
-    # believe they came from the checkpoint unchanged.
-    assert weights["source_passthrough"] is False
-
-
-def test_the_exporter_plans_a_weight_and_scale_pair_at_the_declared_dtypes():
-    from prismaquant.export_nvfp4_cb_streaming import (
-        _requant_output_specs,
-        _requant_pack,
-    )
-
-    specs = _requant_output_specs(FMT, (256, 512))
-    assert specs == [
-        ("weight", torch.float8_e4m3fn, (256, 512)),
-        ("weight_scale", torch.float8_e8m0fnu, (256, 512 // GROUP)),
-    ]
-    # The planned header must match what the packer actually produces, or the
-    # streaming writer sizes the file wrong.
-    packed = _requant_pack(FMT, torch.randn(256, 512))
-    assert sorted(packed) == ["weight", "weight_scale"]
-    for suffix, dtype, shape in specs:
-        assert packed[suffix].dtype is dtype
-        assert tuple(packed[suffix].shape) == shape
-
-    with pytest.raises(ValueError, match="not a multiple"):
-        _requant_output_specs(FMT, (256, 100))
-
-
-def test_the_exporter_packer_is_the_same_codec_the_registry_prices():
-    """Emulation and shipped bytes are one rendering, not two that agree."""
-    from prismaquant.export_nvfp4_cb_streaming import _requant_pack
-
-    w = torch.randn(64, 4 * GROUP) * 1.7
-    packed = _requant_pack(FMT, w)
-    rebuilt = (
-        packed["weight"].float().reshape(64, 4, GROUP)
-        * packed["weight_scale"].float().unsqueeze(-1)
-    ).reshape(64, 4 * GROUP)
-    assert torch.equal(rebuilt, fr.get_format(FMT).quantize_dequantize(w))
-
+# --- DELETED 2026-09-02 ------------------------------------------------------
+#
+# Five tests are gone from here:
+#
+#   test_the_serving_lane_is_declared_and_honestly_unbacked
+#   test_the_lane_only_becomes_backed_when_a_runtime_version_declares_it
+#   test_the_config_group_declares_the_w8a8_activation_contract
+#   test_the_exporter_plans_a_weight_and_scale_pair_at_the_declared_dtypes
+#   test_the_exporter_packer_is_the_same_codec_the_registry_prices
+#
+# The first two pinned this rung's serving-lane declaration: lane_id
+# "mxfp8_ue8m0_g32", rung None, honestly UNBACKED with an absent (not empty)
+# fused_mid_m key, and the W8A8 activation contract
+# "w8a8-dynamic-mxfp8-e4m3-group32-ue8m0" filed under no CB contract.  That
+# declaration lived in the ``serving_lanes`` block of
+# prismaquant/serving_profile_specs/nvfp4_cb.json --- the only spec in the
+# repo that ever had one --- and went with the Gridbook codebook lane to
+# archive/gridbook_lane_2026-09-02/.  No surviving profile declares a lane, a
+# route_status or an activation_contract for anything, so there is nothing
+# left to read.  Re-pointing them at ``research`` (which admits the format)
+# would only assert ``serving_lane_route(...) is None``, i.e. restate the
+# capability loss as a green route test.
+#
+# The last three pinned the WIRE WRITERS: that
+# ``cb_export_config.requant_native_config_group`` emits a config group
+# declaring 8-bit fp8_e4m3 weights AND uint8_e8m0 group-32 dynamic input
+# activations with ``source_passthrough: False``; that
+# ``export_nvfp4_cb_streaming._requant_output_specs`` plans exactly a
+# (weight float8_e4m3fn, weight_scale float8_e8m0fnu [N, K/32]) pair and
+# raises on a K that is not a multiple of the group; and that
+# ``_requant_pack`` is bit-for-bit the codec ``format_registry`` prices, so
+# emulation and shipped bytes are one rendering.  Both modules are archived
+# and ``mxfp8_e4m3_e8m0_g32`` has no surviving writer anywhere in
+# prismaquant/: the id is still NAMED --- by the shipcard's
+# ``_MXFP8_DENSE_WIRE_IDS``, the allocator's ``REQUANT_WIRE_FORMAT_IDS`` and
+# two comments in mxfp4_widen.py --- but nothing packs bytes for it.  There is no
+# exporter to test, so no importorskip: the modules are gone permanently.
+#
+# What this leaves: the rung is registry-priceable and renderable (sections
+# 1-3 and 6 below), and its wire id is still reserved and unique
+# (test_the_wire_id_is_pinned_and_globally_unique above), but nothing offers
+# it in a served menu and nothing writes it.  That is debt D34, recorded.
 
 # ---------------------------------------------------------------------------
 # 6. cost measurement wiring

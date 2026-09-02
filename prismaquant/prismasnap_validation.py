@@ -1184,7 +1184,10 @@ def _validate_measurement_launch(
         "--quantization",
         "--allow-spec-decode",
         "--speculative-config",
-        "--dsv4-gridbook-contract",
+        # Retired 2026-09-02 with its lane (archive/gridbook_lane_2026-09-02/).
+        # Kept because this validates a RECORDED argv: a replayed historical
+        # teacher launch can still carry the flag, and it was never BF16.
+        "--dsv4-gridbook-contract",  # retired 2026-09-02, see above
     }
     if any(
         isinstance(item, str)

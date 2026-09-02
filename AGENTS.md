@@ -33,25 +33,18 @@ Before implementing new functionality, read this file,
    appear in research menus before it is production-ready, but it must not
    become a production default until the engine for its container loads it,
    generates correctly, and uses a performant kernel on representative shapes.
-   Four containers, four gates: `compressed-tensors` on vanilla vLLM (no
+   Three containers, three gates: `compressed-tensors` on vanilla vLLM (no
    PrismaQuant kernels); GGUF on llama.cpp and the vLLM GGUF plugin, gated
-   additionally on bit-exactness against `gguf-py`; codebook (NVFP4-CB /
-   FP8-CB) on the separately released
-   [`gridbook`](https://github.com/RobTand/gridbook) plugin, pinned by
-   `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`. It ships its own CUDA kernels and
-   is gated on an unforked vLLM (no core patches), a producer profile declared
-   in Gridbook's packaged `runtime_contract.json`, fail-closed expert loading,
-   and served speed at least at parity
-   with the container it displaces; and the Tessera wire on **Tessera's own**
-   vLLM plugin (package `tessera.serving`, entry point
+   additionally on bit-exactness against `gguf-py`; and the Tessera wire on
+   **Tessera's own** vLLM plugin (package `tessera.serving`, entry point
    `tessera = "tessera.serving:register"` under `vllm.general_plugins`,
    registering `quant_method = "tessera"`), pinned by
    `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`. That lane
    has no enable flag — the checkpoint's `quant_method` selects the plugin, and
    the single operator knob is `TESSERA_SERVE_MODE=resident|streamed` — and it
-   is gated on the same unforked vLLM (the plugin is installed into the stock
-   image, no core patches), on `device_qualified` native cells in Tessera's
-   packaged `runtime_contract.json`, and on every such cell declaring
+   is gated on an unforked vLLM (the plugin is installed into the stock image,
+   no core patches), on `device_qualified` native cells in Tessera's packaged
+   `runtime_contract.json`, and on every such cell declaring
    `requires_plugin: "tessera"`, because stock vLLM has no reader for these
    bytes and the route is plugin-gated rather than merely flag-gated. Its
    admission is **fail-closed until a Tessera release tag exists**: the pin
@@ -62,11 +55,19 @@ Before implementing new functionality, read this file,
    dense-only at TP=1: no served measurement covers routed experts, so the
    contract carries no `routed_moe` cell. The non-vLLM-native lanes are
    sanctioned, not exceptions; what is forbidden is a forked runtime.
-   PrismaQuant must never vendor or import the Gridbook or Tessera *serving*
-   runtimes; compatibility crosses each repository boundary only through the
-   immutable pin and the packaged contract. (Gridbook briefly carried a Tessera
-   lane of its own; that contract version was never released and the lane is
-   withdrawn, so the Gridbook pin does not govern Tessera admission.)
+   PrismaQuant must never vendor or import the Tessera *serving* runtime;
+   compatibility crosses that repository boundary only through the immutable
+   pin and the packaged contract.
+
+   **A fourth container was retired on 2026-09-02.** The codebook lane
+   (NVFP4-CB / FP8-CB) served by the separately released
+   [`gridbook`](https://github.com/RobTand/gridbook) plugin was removed from
+   PrismaQuant by Robert's decision — *"put Tessera in PrismaQuant and remove
+   Gridbook"* — and archived whole at `archive/gridbook_lane_2026-09-02/`. Its
+   pin, exporter, serving profiles, ship gates and lane documents are gone from
+   the live tree; the Tessera wire is its successor. Do not re-add a Gridbook
+   pin, a `gridbook_runtime/` directory, or an `EXPORT_CONTAINER=nvfp4_cb`
+   path: `run-pipeline.sh` refuses that container with `exit 2`.
 6. **Measure on the same calibration contract.** New levers need apples-to-
    apples KL, bpp, and runtime measurements. Compare against the relevant
    shipped or current baseline using the same calibration set, sequence

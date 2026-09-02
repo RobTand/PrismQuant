@@ -135,7 +135,12 @@ def test_every_cost_producer_stamps_cost_mode(module):
 
 def test_pipeline_passes_cost_mode_to_every_producer():
     script = (ROOT / "prismaquant" / "run-pipeline.sh").read_text()
-    assert script.count('--cost-mode "$COST_MODE"') >= 5
+    # Was >= 5 until 2026-09-02: one of the call sites was inside the
+    # `EXPORT_CONTAINER=nvfp4_cb` arm and went with the Gridbook lane
+    # (archive/gridbook_lane_2026-09-02/). The property -- every producer the
+    # shell invokes is handed the cost mode -- is unchanged; only the number of
+    # producers is smaller.
+    assert script.count('--cost-mode "$COST_MODE"') >= 4
     assert "cost_table_reusable" in script
     # reuse of the ALLOCATOR cost table is conditional on the stamp
     assert 'if ! cost_table_reusable "$COST_PATH"' in script
@@ -198,8 +203,10 @@ def test_export_prefetch_require_is_wired_on_the_native_lane():
     "incremental_measure_quant_cost",
     "aura_cost",
     "production_render_cost",
-    "export_nvfp4_cb",
-    "export_nvfp4_cb_streaming",
+    # `export_nvfp4_cb` and `export_nvfp4_cb_streaming` left this list on
+    # 2026-09-02 with the Gridbook lane (archive/gridbook_lane_2026-09-02/).
+    # They were two of the entry points the ladder invoked directly, which is
+    # precisely why they were pinned here; both modules are gone.
     "export_gguf",
     # the pre-existing callers, pinned so a refactor cannot drop them
     "build_production_cache",
@@ -210,7 +217,7 @@ def test_export_prefetch_require_is_wired_on_the_native_lane():
 def test_gpu_or_bust_guard_on_every_production_entrypoint(module):
     src = (ROOT / "prismaquant" / f"{module}.py").read_text()
     assert "require_cuda_hot_path" in src, (
-        f"{module}.main() can run on CPU; the CB/GGUF ladder invokes these "
+        f"{module}.main() can run on CPU; the GGUF ladder invokes these "
         "directly, bypassing run-pipeline.sh's preflight")
 
 

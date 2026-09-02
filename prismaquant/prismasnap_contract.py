@@ -30,9 +30,11 @@ def refuse_prismasnap_for_unvalidated_lane(
     """Fail closed when a snapped source enters a non-native exporter.
 
     The measured production treatment is the native compressed-tensors
-    NVFP4/FP8/BF16 pipeline.  GGUF and Gridbook/codebook transforms have not
-    cleared the same A/B; fixed-book CB was materially harmful in the pilot.
-    No research/force flag bypasses this release boundary.
+    NVFP4/FP8/BF16 pipeline.  GGUF and codebook transforms have not cleared
+    the same A/B; fixed-book CB was materially harmful in the pilot (measured
+    on the Gridbook lane, retired 2026-09-02 -- see
+    archive/gridbook_lane_2026-09-02/).  No research/force flag bypasses this
+    release boundary.
     """
     marker = Path(model_dir) / PRISMASNAP_PROVENANCE_JSON
     if os.path.lexists(marker):

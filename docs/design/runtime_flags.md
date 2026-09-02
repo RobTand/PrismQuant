@@ -13,7 +13,8 @@ on that pass.*
 Method: AST + literal sweep of `os.environ` / `os.getenv` / `_env_flag` /
 `_env_int` / `_env_flag_enabled` / registry `*_env=` parameters / `pq_env_*`
 across `prismaquant/`, `tools/`, `scripts/`, `pipeline.py`, and the separately
-versioned Gridbook source at the commit current on the reconciliation date
+versioned serving-runtime source at its pinned commit (through 2026-09-02
+that was Gridbook; that lane is retired — §5, §7)
 (excluding `archive/`, `fp8/`, `scratch/`, `tests/`, worktrees). Every row cites
 its reading `file:line`; when a flag has several readers the row cites the one
 that decides behaviour and notes the others.
@@ -70,7 +71,8 @@ their subsystem — §9.1.)
 
 Three consumer families share the `PRISMAQUANT_*` namespace and are separated
 below: the **build pipeline** (probe/cost/render/export, §1–§4), the **CB build
-lane** (§5), and the **gridbook serving plugin** (§7), which runs inside vLLM
+render plumbing** (§5 — its lane was retired 2026-09-02), and the **serving
+plugin** flags (§7), which run inside vLLM
 and never sees a build flag.
 
 ## 1. Probe + cost flags
@@ -105,7 +107,7 @@ and never sees a build flag.
 | `PRISMAQUANT_UNROUTED_EXPERT_PROVENANCE` | unset | `measure_quant_cost.py:1614`; set by `scripts/run_dsv4_flash_92gb.sh:288` | Path to the col-weights provenance sidecar written by `synthesize_unrouted_expert_col_weights`. When set, the cost stage emits weight-only rows (`cost_source="unrouted_expert_weight_only"`, `output_mse_measured=False`) for EXACTLY the never-routed experts the sidecar declares — the declared class narrows the `allocator.py:2427` no-silent-holes refusal without weakening it: a missing row for a ROUTED expert still refuses. Unset → no emission, gate unchanged. |
 | `PRISMAQUANT_COST_MAX_ACT_ROWS` | `0` (all available rows) | `measure_quant_cost.py` (row-bucketed batched mode) | Optional cap on activation rows used per Linear in the cost stage's `output_mse` measurement. `0` uses every cached row (up to the collection cap). Introduced with the per-row-count bucketing that replaced the chunk-minimum truncation; every cost row records its `n_activation_rows`. |
 | `PRISMAQUANT_COST_FAIL_FAST` | **`1` (on)** | `measure_quant_cost.py` (`_measure_spec_into_accum`) | On a measurement exception: print a `[cost] FATAL:` line with traceback, stamp the rows `cost_measurement_failed`, and abort the shard; the shard merge additionally refuses stamped rows (`SystemExit(2)`). `0` restores the old swallow-and-continue behaviour for triage only — the merged-table gate still refuses the stamped rows. |
-| `PRISMAQUANT_ACTIVATION_FAIR_PRICING` | **`1` (on)** | `activation_fair_pricing.py` (`env_enabled`), calibrated once per run in `allocator.py` before `build_candidates`; pipeline knob `ACTIVATION_FAIR_PRICING` (`run-pipeline.sh`) | Ultraplan P5a. The cost precedence prices the W4A4-vs-W8A8 activation contract **only** on the measured `output_mse` branch, and the two rows above are what remove that branch from most of a production run: `PRISMAQUANT_EXPERT_COST_SAMPLE` makes `measure_quant_cost` stamp `output_mse_measured=False` on every packed-expert row, and `PRISMAQUANT_CB_LADDER_INTERP=1` fills interpolated rungs with `output_mse_measured=False` too. On those rows NVFP4-CB is credited with its cheaper index stream and charged none of its A-side cost (gridbook `docs/audits/ultraplan_perf_2026-08-01.md` §6, asymmetry 1). The allocator now fits ONE per-format-family correction per run — the geometric mean of `measured_dloss / weight_only_dloss` over the rows that carry BOTH estimators — and multiplies it into the weight-only-priced rows of that family. Multiplicative, so it cannot lift an exactly-0.0 price off the DP's global minimum (the `activation_cost_unmeasured` candidate removal keeps full strength). **It CAN reorder rungs inside a family, and did (2026-08-07):** the constant is uniform only where the family's rungs all take one pricing branch, and a CB ladder mixing measured rungs with band-interpolated ones does not — on the DSv4-Flash `nvfp4_cb` menu that mispriced K13/K14/K17 ~12x high on down_proj and ~1.6x low on gate/up_proj, because the family constant (112.5) averages a per-projection `output_mse/weight_mse` ratio spanning 9.4–320. Fixed by pricing a band-interpolated row from its own banked `output_mse` — the tensor's holdout-gated ladder fit, already in output space — instead of `weight_mse x` the constant. Such a row still declares `cost_source: band_interpolated` / `output_mse_measured: false`, is still barred from the calibration sample (its output_mse is derived; admitting it would be circular), and is stamped with its own branch label `interpolated_output_mse` so the artifact can still say which selected prices were predictions. A `band_interpolated` row whose `output_mse` is 0.0 (the packed-expert ladder path, which fits in weight space only) keeps the weight-only branch. **Fail-closed:** if one family calibrates while another activation-quantizing family still has uncorrected weight-only rows, the run refuses (`AssertionError` naming this flag) rather than ship a half-corrected menu; if NO family has measured rows, nothing is corrected, the verdict is printed and stamped, and pricing is unchanged. `0` reproduces pre-0.5.3 pricing bit-for-bit and also suppresses the refusal — for bisecting an allocation change, not for tuning. Fit, calibration sample (bounded + sha256 of the full list), residual band and per-rung dependence are stamped into `format_applicability.json` and `selection.json`. |
+| `PRISMAQUANT_ACTIVATION_FAIR_PRICING` | **`1` (on)** | `activation_fair_pricing.py` (`env_enabled`), calibrated once per run in `allocator.py` before `build_candidates`; pipeline knob `ACTIVATION_FAIR_PRICING` (`run-pipeline.sh`) | Ultraplan P5a. The cost precedence prices the W4A4-vs-W8A8 activation contract **only** on the measured `output_mse` branch, and the two rows above are what remove that branch from most of a production run: `PRISMAQUANT_EXPERT_COST_SAMPLE` makes `measure_quant_cost` stamp `output_mse_measured=False` on every packed-expert row, and `PRISMAQUANT_CB_LADDER_INTERP=1` fills interpolated rungs with `output_mse_measured=False` too. On those rows NVFP4-CB is credited with its cheaper index stream and charged none of its A-side cost (measured in the retired Gridbook lane's `docs/audits/ultraplan_perf_2026-08-01.md` §6, asymmetry 1; the finding is about weight-only pricing and outlives the lane). The allocator now fits ONE per-format-family correction per run — the geometric mean of `measured_dloss / weight_only_dloss` over the rows that carry BOTH estimators — and multiplies it into the weight-only-priced rows of that family. Multiplicative, so it cannot lift an exactly-0.0 price off the DP's global minimum (the `activation_cost_unmeasured` candidate removal keeps full strength). **It CAN reorder rungs inside a family, and did (2026-08-07):** the constant is uniform only where the family's rungs all take one pricing branch, and a CB ladder mixing measured rungs with band-interpolated ones does not — on the DSv4-Flash `nvfp4_cb` menu that mispriced K13/K14/K17 ~12x high on down_proj and ~1.6x low on gate/up_proj, because the family constant (112.5) averages a per-projection `output_mse/weight_mse` ratio spanning 9.4–320. Fixed by pricing a band-interpolated row from its own banked `output_mse` — the tensor's holdout-gated ladder fit, already in output space — instead of `weight_mse x` the constant. Such a row still declares `cost_source: band_interpolated` / `output_mse_measured: false`, is still barred from the calibration sample (its output_mse is derived; admitting it would be circular), and is stamped with its own branch label `interpolated_output_mse` so the artifact can still say which selected prices were predictions. A `band_interpolated` row whose `output_mse` is 0.0 (the packed-expert ladder path, which fits in weight space only) keeps the weight-only branch. **Fail-closed:** if one family calibrates while another activation-quantizing family still has uncorrected weight-only rows, the run refuses (`AssertionError` naming this flag) rather than ship a half-corrected menu; if NO family has measured rows, nothing is corrected, the verdict is printed and stamped, and pricing is unchanged. `0` reproduces pre-0.5.3 pricing bit-for-bit and also suppresses the refusal — for bisecting an allocation change, not for tuning. Fit, calibration sample (bounded + sha256 of the full list), residual band and per-rung dependence are stamped into `format_applicability.json` and `selection.json`. |
 | `PRISMAQUANT_FISHER_OUTPUT_MSE_ALLOCATOR` | **archived** | `allocator_candidates.py:253` | Historical Fisher row-weighted allocator objective. The production pipeline rejects it; archive context lives under `archive/fisher_2026-05-15/`. |
 | `PRISMAQUANT_FISHER_OUTPUT_MSE_ROW_WEIGHT_CLIP` | falls back to `PRISMAQUANT_FISHER_GPTQ_ROW_WEIGHT_CLIP`, then `64` | `measure_quant_cost.py:248`, fallback `measure_quant_cost.py:249` | Historical cap for Fisher output-MSE allocation; not used by the production pipeline. |
 
@@ -164,7 +166,7 @@ levers or cost modes are requested.
 | `FORMATS` | `NVFP4,FP8_DYNAMIC,BF16` (`run-pipeline.sh:45`) | Allocator format menu. MXFP8 is de-menued for inference — exact-scale FP8 Pareto-dominates it. |
 | `TARGET_BITS` | `4.75` | Allocator bit budget over quantizable parameters. |
 | `TARGET_PROFILE` | **unset** (re-vet R11) | Serving profile. Left unset so the architecture's own `spec.default_serving_profile` wins — a shell default silently overrode every spec (`resolve_target_profile` gives explicit requests precedence), which cost 226 Hy3 FP8 Linears silently coerced to BF16 on 2026-07-11. An explicit value still wins, so every in-tree launch script is unchanged. The resolved profile is stamped into `layer_config.json` and read by the exporter. |
-| `ALLOW_PINNED` | unset | Comma-separated qname substrings forwarded as `allocator --allow-pinned`, lifting `ModelProfile.is_pinned_name` so the DP places those units by budget-value instead of force-excluding them at source dtype. Empty = historical behaviour, byte-identical. The allocator enforces the preconditions (cost row + probe `n_params`) and refuses rather than pricing an unpriced unit at zero. Matters at card scale: a BF16 `lm_head` is 2.543 GB on Qwen3.8-27B, 20% of a 13.0 GB budget. A quantized pinned name also needs render/pack/serve support — `lm_head` on the native lane, `embed_tokens` only on the Gridbook lane via `quantized_embedding`; a **CB** rung on `lm_head` exports but does not load. |
+| `ALLOW_PINNED` | unset | Comma-separated qname substrings forwarded as `allocator --allow-pinned`, lifting `ModelProfile.is_pinned_name` so the DP places those units by budget-value instead of force-excluding them at source dtype. Empty = historical behaviour, byte-identical. The allocator enforces the preconditions (cost row + probe `n_params`) and refuses rather than pricing an unpriced unit at zero. Matters at card scale: a BF16 `lm_head` is 2.543 GB on Qwen3.8-27B, 20% of a 13.0 GB budget. A quantized pinned name also needs render/pack/serve support — `lm_head` on the native lane. `embed_tokens` was quantizable only on the retired Gridbook lane (via its `quantized_embedding`), so as of 2026-09-02 no lane can quantize it at all. |
 | `TARGET_PROFILE_DEFAULT` | `vllm_packed_moe` | Fallback passed to the allocator as `--target-profile-default` for architectures whose spec declares no serving profile. Never `research` (unbounded format menu). |
 | `TARGET_DISK_GB` | unset | Byte budget in decimal GB (re-vet R1, closes D12). When set: **overrides `TARGET_BITS`**, narrows the Pareto sweep to the ~3 byte-feasible rungs, and flips `SELECTION_MODE` to `validated-surrogate` + `VALIDATED_FRONTIER_PICK` to `budget` (explicit values still win). The card is the constraint; measured KL is the objective. |
 | `FISHER_WEIGHTED_GPTQ` | archived | Any truthy value is rejected; archive context lives under `archive/fisher_2026-05-15/`. |
@@ -223,17 +225,29 @@ levers or cost modes are requested.
 | `PRISMAQUANT_VALIDATION_FAKE_METRICS` | unset | `validation_harness.py:166` | Test-only metric injection. Never set in a run whose numbers will be cited. |
 | `PRISMAQUANT_SMOKE_MODEL` / `_SAMPLES` / `_SEQLEN` / `_SEED` / `_DETERMINISM` | unset / `2` / `32` / `12345` / `0` | `tools/smoke_graph_memory.py:97` / `:138` / `:136` / `:211` (defaulted at `:75`) / `:25` | Graph-memory smoke harness knobs. `_MODEL` names a **local** path or cached HF repo id (the smoke never downloads; unset probes three small Qwen ids with `local_files_only=True`). Caveat: this harness also `setdefault`s the retired L2/L3 graph selectors at `:66-74`, so those lines are not evidence that any of them is still read — see §9. |
 
-## 5. NVFP4-CB / FP8-CB build lane
+## 5. NVFP4-CB / FP8-CB render flags — the LANE IS RETIRED (2026-09-02)
 
-Enabled by `EXPORT_CONTAINER=nvfp4_cb`, which the pipeline gates to
-`TARGET_PROFILE=nvfp4_cb`, `PRODUCTION_CACHE=0` and `PRODUCTION_RECACHE=0`
-(the CB exporter requantizes the bf16 skeleton and never reads the export
-cache). The old `COST_MODE=local` requirement is **gone** as of 2026-07-30
-(re-vet R3): it named a property of the *render* in order to block an
-*objective*. What is enforced instead is render faithfulness — a `cached-menu`
-cost render on this lane is built with `--col-weights`, so it is the same
-imatrix-weighted render the exporter ships (CB Milestone C). Lane record:
-`docs/lanes/nvfp4-cb/PLAN.md`. One class of `PRISMAQUANT_CB_LDLQ_*` env names is
+> **The build lane these flags served no longer exists.** Robert, 2026-09-02:
+> *"put Tessera in PrismaQuant and remove Gridbook."* `EXPORT_CONTAINER=nvfp4_cb`
+> now `exit 2`s, the exporter and the pin are archived at
+> `archive/gridbook_lane_2026-09-02/`, and **no shell knob below has a
+> `run-pipeline.sh` default any more** — every `CB_*` shell variable was read
+> only inside an `EXPORT_CONTAINER=nvfp4_cb` block. What survives is the
+> *render and cost plumbing* (`nvfp4_cb_formats.py`, `nvfp4_cb_footprint.py`,
+> `cb_ldlq*.py`, `cb_minchain.py`, `cb_warm_state.py`, …), recorded as debt
+> **D34** in `docs/ARCHITECTURE.md` §12. So the `PRISMAQUANT_CB_*` rows below
+> are still **accurate about the code** and are kept for that reason — but
+> nothing sets them, nothing reaches them from the pipeline, and a rung they
+> price cannot be exported or served. Read this section as documentation of
+> live-but-orphaned machinery, never as a lane you can run.
+
+Historically: the lane was enabled by `EXPORT_CONTAINER=nvfp4_cb`, which the
+pipeline gated to `TARGET_PROFILE=nvfp4_cb`, `PRODUCTION_CACHE=0` and
+`PRODUCTION_RECACHE=0` (the CB exporter requantized the bf16 skeleton and never
+read the export cache). The `COST_MODE=local` requirement was dropped
+2026-07-30 (re-vet R3) in favour of render faithfulness via `--col-weights`
+(CB Milestone C). Lane record:
+`archive/gridbook_lane_2026-09-02/docs/lanes/nvfp4-cb/PLAN.md`. One class of `PRISMAQUANT_CB_LDLQ_*` env names is
 deliberately absent from the table below: the canonical packed LDLQ route is
 **ABI-fixed** — batched experts required, `expert_batch = LDLQ_PACKED_EXPERT_BATCH
 = 16`, `feeder_threads = 0` (`nvfp4_cb_formats.py:1624`, refusals `:1693-1701`,
@@ -266,7 +280,11 @@ tuned, and §10 classifies refusal/compat checks as non-knobs.
 | `PRISMAQUANT_EXPORT_PREFETCH_DEPTH` | `1` | `export_nvfp4_cb_streaming._StreamWriter._write_pipeline` | Maximum prefetched source tensors ahead of encode; output suffix entries do not consume the depth. Dense encode sources are pinned when CUDA is available; 10GB-class expert stacks keep the existing one-device-buffer producer rather than duplicating a whole stack in pinned host memory on the unified pool. |
 | `PRISMAQUANT_EXPORT_WRITE_QUEUE_BYTES` | `2147483648` (2 GiB) | `export_nvfp4_cb_streaming._StreamWriter._write_pipeline` | Hard reservation budget for encoded outputs in flight or waiting for the canonical writer. Reservation occurs before encode. A single larger tensor runs exclusively; later outputs backpressure until it is committed. |
 
-Shell-side CB knobs (`run-pipeline.sh`): `CB_LADDER_INTERP` (`0`),
+**Shell-side CB knobs — REMOVED from `run-pipeline.sh` on 2026-09-02** with the
+lane. The list below is what they were; none of them has a default now, and
+`CB_LADDER_INTERP`, `CB_EXPERT_NSAMPLES` / `_SEQLEN` / `_SAMPLE` and
+`CB_COL_WEIGHTS` are the only survivors, kept solely because the GGUF lane and
+the generic imatrix harvest read them. Historically: `CB_LADDER_INTERP` (`0`),
 **`CB_EXPERT_EMPIRICAL` (`0` since 2026-07-30 — D15: the default is now the
 value every shipped MoE CB driver sets; `1` re-enables the `[2d-CB]` empirical
 unit-KL replacement)**, `CB_EXPERT_NSAMPLES` / `CB_EXPERT_SEQLEN` (`16` /
@@ -311,16 +329,33 @@ the corresponding CLI flag is absent.
 | `VLLM_URL` | `http://localhost:8000` | `validate_quantized_model.py:507` |
 | `OMP_NUM_THREADS` / `MKL_NUM_THREADS` | set by the allocator | `allocator.py:1215-1216` |
 | `CUBLAS_WORKSPACE_CONFIG` | set under `PRISMAQUANT_DETERMINISTIC` | `build_production_cache.py:519` |
+| `PQ_SERVE_IMAGE` | none — **fails closed** | `tools/measure_vllm_full_kl.py`, `tools/measure_vllm_wikitext_ppl.py` |
 
-## 7. gridbook serving-plugin flags
+`PQ_SERVE_IMAGE` (equivalently `--serve-image`) is new on 2026-09-02 and is the
+one operator knob the Gridbook retirement *added* rather than removed. Both
+measurement tools used to take the serving container image from the Gridbook
+pin; with the pin archived (`archive/gridbook_lane_2026-09-02/`) the image has
+no attested source, so the tools refuse immediately after `parse_args` — before
+any model load — when neither the flag nor the env var is set. Defaulting to a
+tag would be exactly the unattested runtime claim principle 14 forbids: the
+image is what the measurement is *of*.
 
-Gridbook owns these flags, their defaults, validation, dispatch semantics, and
-operator documentation. Keeping a second table here already caused factual
-drift (for example the dense CUDA GEMV crossover and fused-FP4 promotion
-status), so it has been removed. Consult the `docs/PLUGIN.md` shipped by the
-exact Gridbook commit in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`. A serve record
-must fingerprint that commit and its actual environment; a PrismaQuant document
-is never authority for a runtime default.
+## 7. Plugin serving flags — RETIRED for Gridbook (2026-09-02), and the rule that outlives it
+
+The Gridbook serving plugin is no longer a PrismaQuant lane
+(`archive/gridbook_lane_2026-09-02/`), so its flags are not documented anywhere
+in this repository and its pin is gone.
+
+**The rule this section existed to state still holds, and now applies to
+Tessera.** A serving runtime owns its flags, their defaults, their validation
+and their dispatch semantics. Keeping a second table here already caused
+factual drift once (the dense CUDA GEMV crossover and fused-FP4 promotion
+status), which is why there is no table. Consult the documentation shipped by
+the exact pinned commit — for Tessera,
+`prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, whose only
+operator knob is `TESSERA_SERVE_MODE=resident|streamed`. A serve record must
+fingerprint that commit and its actual environment; a PrismaQuant document is
+never authority for a runtime default (principle 14).
 
 ## 8. GGUF lane (`docs/lanes/gguf.md`)
 
@@ -381,7 +416,7 @@ drives the walled L2/L3 stack, so nothing consumes the values.
 ## 10. Discovering live flags
 
 There is deliberately no hand-maintained exhaustive flag list. The previous
-snapshot mixed producer, archived, and externally owned Gridbook selectors and
+snapshot mixed producer, archived, and externally owned runtime selectors and
 drifted as soon as the runtime moved repositories. Sections 1–9 document the
 supported PrismaQuant policy knobs by subsystem. For a mechanical source audit,
 search live producer code directly, for example:
@@ -393,8 +428,8 @@ rg -o 'PRISMAQUANT_[A-Z0-9_]+' prismaquant scripts tools \
 
 That inventory is diagnostic rather than a stability promise: a token may be a
 compatibility check, refusal, or research switch rather than a supported knob.
-Gridbook runtime flags are defined and documented only by the exact commit in
-`prismaquant/gridbook_runtime/gridbook_runtime_pin.json`. `PQ_EXPORT_VECTOR_CHUNK` remains the
+Serving-runtime flags are defined and documented only by the exact pinned
+commit (§7). `PQ_EXPORT_VECTOR_CHUNK` remains the
 one live producer flag outside the `PRISMAQUANT_` namespace.
 
 ## 11. Disabling for debugging
@@ -422,7 +457,8 @@ Two traps when doing this:
   is walled (§2). There is now one reader and one default (`0`), but pinning it
   explicitly in an A/B is still the cheap habit.
 - Extension residency shifts allocator addresses and moves confident-KL by up
-  to ±17% between arms. For a served Gridbook comparison, use the same-process
-  A/B harness and residency controls documented by the exact pinned Gridbook
-  commit; runtime selector names and defaults are intentionally not repeated
+  to ±17% between arms (measured on the retired Gridbook lane, but the effect
+  is a property of loading a plugin extension, not of that plugin). For a served
+  plugin-lane comparison, use the same-process A/B harness and residency
+  controls documented by the exact pinned runtime commit; runtime selector names and defaults are intentionally not repeated
   here.

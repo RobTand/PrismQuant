@@ -102,11 +102,19 @@ SPEC_EXEMPT_BY_DESIGN = {"DefaultProfile"}
 # before the Python bodies may be deleted.
 NO_SPEC_XFAIL: set[str] = set()
 ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT = {
-    # Intentional, lane-aware exception. DeepSeek-V4's Gridbook consumer can
-    # construct a merged Linear as independent role decoders, so its producer
-    # spec must not globally force those roles to one format. A native
+    # Intentional, lane-aware exception -- whose lane retired on 2026-09-02.
+    #
+    # The justification was: DeepSeek-V4's Gridbook consumer can construct a
+    # merged Linear as independent role decoders, so its producer spec must
+    # not globally force those roles to one format; a native
     # compressed-tensors constraint belongs to that lane's exporter, not this
-    # architecture-wide accessor.
+    # architecture-wide accessor. The consumer that could do that went to
+    # archive/gridbook_lane_2026-09-02/ with the lane.
+    #
+    # The entry is KEPT, not discharged, because discharging it means deciding
+    # what DeepSeek-V4 should declare on the native lane -- a producer-behaviour
+    # change, not a removal. It is now an exemption with no live backing, and
+    # is recorded as such in docs/ARCHITECTURE.md debt D34.
     "DeepseekV4Profile",
 }
 
@@ -253,7 +261,13 @@ def test_profile_has_a_fused_sibling_source(profile):
             "ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT or explain why a global "
             "producer coupling is now lane-correct"
         )
-        assert "nvfp4_cb" in profile.supported_export_lanes()
+        # Until 2026-09-02 this asserted the exempt profile declared the
+        # `nvfp4_cb` lane -- i.e. that the exemption was paid for by a lane
+        # that could actually consume role-composite weights. That lane is
+        # retired, so the assertion would now be vacuous or false; what is
+        # still true, and still worth pinning, is that the exemption does not
+        # silently spread beyond the native lane.
+        assert profile.supported_export_lanes() == ("compressed-tensors",)
         return
     if name in UNATTESTED_FUSED_SOURCE_XFAIL:
         assert not has_source, (

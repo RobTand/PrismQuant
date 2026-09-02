@@ -6,7 +6,7 @@ PrismaQuant's allocator is **AURA** (*Production-Faithful KL–Fisher Allocation
 
 - **`compressed-tensors`** — vanilla vLLM serves it natively (`vllm serve $WORK_DIR/exported`), no custom kernels. NVFP4 / FP8 / BF16 per Linear, CUTLASS kernels on Blackwell.
 - **GGUF** — llama.cpp *and* vLLM (via the GGUF plugin) serve the same file, again with no PrismaQuant kernels. Full k-quant + IQ menu, per-tensor mixed, imatrix-weighted. This is how a 295B MoE fits on one 128 GB box.
-- **Codebook (`NVFP4-CB` / `FP8-CB`)** — served by **gridbook**, our out-of-tree vLLM quantization plugin, using native CUDA/CUTLASS kernels only. Still an unforked vLLM: install the exact commit in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`, no core patches; a missing required native operation fails closed. See below.
+- **Tessera** — the Tessera trellis wire, served by **Tessera's own** out-of-tree vLLM plugin (`tessera.serving`, `quant_method = "tessera"`), using native kernels only. Still an unforked vLLM: install the exact commit in `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, no core patches; a route the pinned contract does not device-qualify fails closed. The lane is declared and fail-closed until a Tessera release tag exists.
 
 ---
 
@@ -153,13 +153,21 @@ GGUF quantizers are PrismaQuant's own GPU implementations (imatrix-weighted grid
 
 ---
 
-## Codebook lane (gridbook)
+## Codebook lane (gridbook) — RETIRED 2026-09-02
 
-Below NVFP4's 4.5 bpw floor the vLLM-native menu runs out of rungs, and the GGUF IQ formats that fill the gap carry a large prefill tax on this hardware. The **NVFP4-CB / FP8-CB** product-codebook formats open measured 2–6 bpw rungs with a served kernel behind them: the resident weight is a packed k-bit index stream plus a tiny shared codebook. Native CUDA decodes small-M work directly; larger-M quality paths use only bounded per-layer transient expansion consumed by CUTLASS, so no dense `[N,K]` weight remains resident.
+PrismaQuant carried a fourth container for most of 2026: the **NVFP4-CB /
+FP8-CB** product-codebook formats, served by the separately released
+[`gridbook`](https://github.com/RobTand/gridbook) out-of-tree vLLM plugin. It
+worked — it put a 295B/21B-active model on **one** DGX Spark at 2.9 bpw with
+prefill 89 tok/s against the same model's GGUF IQ artifact at 42 tok/s
+([`rdtand/Hy3-295B-A21B-gridbook-2.9bit-vllm`](https://huggingface.co/rdtand/Hy3-295B-A21B-gridbook-2.9bit-vllm),
+which is **not** withdrawn) — and it is retired anyway, because PrismaQuant
+carries **one** non-vLLM-native wire and that wire is now Tessera's.
 
-Serving is the separately released [`gridbook`](https://github.com/RobTand/gridbook) package: an out-of-tree vLLM quantization plugin (registry key `gridbook`, legacy read alias `prismaquant`) with zero vLLM-core patches. PrismaQuant 0.8.0 pins Gridbook **0.8.0** at exact commit `9011a19228ddb96b8a49e11a20ac75c99c83998e`. That runtime JIT-builds its native CUDA support kernels and CUTLASS GEMM/grouped-GEMM kernels at model load, attests every required operation and shape before the first forward, and fails closed if the native path is unavailable. It has no Gridbook Triton dependency, dispatch arm, or serving fallback, and it bypasses vLLM's fallback-capable convenience wrappers. Export is `EXPORT_CONTAINER=nvfp4_cb` (`prismaquant/export_nvfp4_cb.py`). PrismaQuant contains no copy of the runtime: its only supported integration source is the immutable commit in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`, and CI compares producer profiles/rungs/layouts to that install's packaged `runtime_contract.json`. Gridbook may publish the same source as a release, but PrismaQuant serving and validation never replace the commit pin with a moving or merely version-matched package request. DeepSeek-V4/DSV4 remains absent from that consumer contract and is not qualified by this release.
-
-Public artifact: [`rdtand/Hy3-295B-A21B-gridbook-2.9bit-vllm`](https://huggingface.co/rdtand/Hy3-295B-A21B-gridbook-2.9bit-vllm) — 295B/21B-active at 2.9 bpw on **one** DGX Spark, prefill 89 tok/s against the same model's GGUF IQ artifact at 42 tok/s. No directional quality claim at this scale, same as the GGUF lane. Lane record: [`docs/lanes/nvfp4-cb/`](docs/lanes/nvfp4-cb/).
+`EXPORT_CONTAINER=nvfp4_cb` fails with `exit 2`. The producer-side lane — pins,
+exporter, serving profiles, ship gates, tests, and the lane's 27 documents
+including every served measurement — is archived at
+[`archive/gridbook_lane_2026-09-02/`](archive/gridbook_lane_2026-09-02/).
 
 ---
 
@@ -167,7 +175,7 @@ Public artifact: [`rdtand/Hy3-295B-A21B-gridbook-2.9bit-vllm`](https://huggingfa
 
 First-class profiles in-tree:
 
-- **Qwen3 / 3.5 / 3.6** — original Qwen3 dense + 30B-A3B routed MoE under Gridbook producer id `qwen3`; 3.5/3.6 packed-3D MoE + MTP heads and Gated-DeltaNet hybrids
+- **Qwen3 / 3.5 / 3.6** — original Qwen3 dense + 30B-A3B routed MoE; 3.5/3.6 packed-3D MoE + MTP heads and Gated-DeltaNet hybrids
 - **Tencent Hy3** (`hy_v3`) — 295B/21B-active, 192-expert MoE + MTP sidecar
 - **DeepSeek-V4-Flash** (vendored transformer + profile) — ~285B total by checkpoint arithmetic, 281,263,734,784 probe-measured quantizable parameters (166.9 GB on disk), per-expert-Linear MoE. The 671B headline belongs to the DeepSeek-V3 family and does not describe Flash; size claims here are per-checkpoint from the probe inventory, never the family headline.
 - **MiniMax M2 / M2.7** — nested per-expert MoE, native-FP8 source

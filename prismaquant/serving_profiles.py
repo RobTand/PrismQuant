@@ -15,11 +15,6 @@ from pathlib import Path
 from typing import Any, Collection, Mapping
 
 from . import format_registry as fr
-from .gridbook_runtime_pin import (
-    GridbookRuntimePinError,
-    load_gridbook_runtime_pin,
-    require_exact_gridbook_runtime_release,
-)
 
 
 SCHEMA = "prismaquant.serving_profile.v1"
@@ -399,11 +394,11 @@ class ResolvedServingLane:
 
     ``fused_mid_m_backed`` is the P5b question the allocator could not ask
     before: does the consumer's fused mid-M kernel actually instantiate THIS
-    rung, or does the rung fall to expand+GEMM? Gridbook K1.2 is the same
-    defect seen from the runtime end — the published 27B artifact ships an
-    8-rung K36..K47 ladder of which five rungs have no fused mid-M
-    instantiation — so recording the answer per selected unit is what stops
-    either repo from pricing an unbacked fast path.
+    rung, or does the rung fall to expand+GEMM? The retired codebook lane's
+    K1.2 was the same defect seen from the runtime end — its published 27B
+    artifact shipped an 8-rung K36..K47 ladder of which five rungs had no
+    fused mid-M instantiation — so recording the answer per selected unit is
+    what stops either repo from pricing an unbacked fast path.
     """
 
     lane_id: str
@@ -420,7 +415,7 @@ class ResolvedServingLane:
     # --- Structured route status (campaign rule R3, principle 9). ----------
     # Principle 9 requires route status in a STRUCTURED field a gate can read,
     # never in prose. These three carry it. Their values are RESOLVED from the
-    # pinned Gridbook serving release's packaged contract, never written into
+    # pinned serving release's packaged contract, never written into
     # a spec file: a hand-typed verdict is an assertion, and principle 14 takes
     # assertions about another runtime as refusals.
     #
@@ -431,7 +426,7 @@ class ResolvedServingLane:
     #   ``unit_dependent`` the table's rules for this lane predicate on facts
     #                      that only exist per unit at export (role split,
     #                      out_features), so the verdict is the export gate's
-    #                      (``cb_route_status_gate``), not this lane's.
+    #                      the export gate's, not this lane's.
     route_status: str = "unattested"
     requires_serve_flags: tuple[str, ...] = ()
     route_status_source: str = ""
@@ -476,26 +471,21 @@ class ResolvedServingLane:
 class ServingLaneSpec:
     """Declarative per-format-family serving route (ultraplan P5b).
 
-    The producer previously modelled exactly ONE gridbook kernel gate
+    The producer once modelled exactly ONE consumer kernel gate
     (``K % 256``) and nothing else — not the ``N % 8`` / ``N % 16`` load
     gates, not the fused mid-M rung set, not the activation contract. A
-    format name alone is not an execution identity
-    (``docs/lanes/nvfp4-cb/format-speed-policy.md`` §2), so the concrete
-    route is declared here as SPEC DATA and attached to every candidate.
+    format name alone is not an execution identity, so the concrete route is
+    declared here as SPEC DATA and attached to every candidate.
 
-    ``fused_mid_m_rungs_by_runtime_version`` is keyed by the pinned Gridbook
-    version (``prismaquant/gridbook_runtime/gridbook_runtime_pin.json``)
-    because the backed set is a property of the consumer release, not of the
-    format: Gridbook 0.5.0, 0.6.0 and 0.7.0 all instantiate
-    K ∈ {28,32,36,40,44,48} for FP8-CB while production permits every
-    K28..K48 — and 0.6.0's K1.2 resolution showed that set is not a partial
-    one. ``k % 4 == 0`` is a format+TMA law (``gridbook/codec.py``
-    ``FP8_FUSED_KBITS``), so the five off-law rungs of the 27B ladder are
-    permanently fallback-served, and the surface did not move again at
-    0.7.0. A pinned
-    version with no entry resolves to the EMPTY backed set — fail-closed,
-    because assuming a newer runtime backs what an older one did is exactly
-    how an unbacked fast path gets priced.
+    ``fused_mid_m_rungs_by_runtime_version`` is keyed by the pinned serving
+    release, because the backed set is a property of the consumer release,
+    not of the format. It was the codebook lane that needed it (that lane's
+    0.5.0/0.6.0/0.7.0 all instantiated K ∈ {28,32,36,40,44,48} for FP8-CB
+    while production permitted every K28..K48), and that lane was retired on
+    2026-09-02; no live lane spec declares the key today, so every lane
+    resolves the EMPTY backed set. That is the designed fail-closed answer:
+    assuming a runtime backs what an older one did is exactly how an unbacked
+    fast path gets priced.
 
     This is metadata only. It carries no latency term and imposes no
     constraint on the DP; the constrained Pareto solver is P5c.
@@ -574,7 +564,7 @@ class ServingLaneSpec:
         holds. It never widens -- an unmatched platform, family or rung is
         ``unattested``, because absence is the only way a v3 table says no.
         """
-        from .gridbook_lane_eligibility import (
+        from .lane_eligibility import (
             ROUTE_STATUS_UNATTESTED,
             load_eligibility_table,
             resolve_payload_rung,
@@ -586,7 +576,7 @@ class ServingLaneSpec:
             return (
                 ROUTE_STATUS_UNATTESTED,
                 (),
-                f"gridbook_runtime_contract:{version}:absent",
+                f"serving_runtime_contract:{version}:absent",
             )
         if not self.route_status_structures:
             # A lane that names no attestation has none. Fail-closed.
@@ -601,7 +591,7 @@ class ServingLaneSpec:
             return (
                 ROUTE_STATUS_UNATTESTED,
                 (),
-                f"gridbook_runtime_contract:{version}:no_target_platform",
+                f"serving_runtime_contract:{version}:no_target_platform",
             )
         canonical = fr.canonical_format_name(fmt)
         family, k, rate_q256 = resolve_payload_rung(canonical)
@@ -615,7 +605,7 @@ class ServingLaneSpec:
             return (
                 ROUTE_STATUS_UNATTESTED,
                 (),
-                f"gridbook_runtime_contract:{version}:no_cell",
+                f"serving_runtime_contract:{version}:no_cell",
             )
         rung = rate_q256 if k is None else k
         covering = [
@@ -629,7 +619,7 @@ class ServingLaneSpec:
             return (
                 ROUTE_STATUS_UNATTESTED,
                 (),
-                f"gridbook_runtime_contract:{version}:rung_not_listed",
+                f"serving_runtime_contract:{version}:rung_not_listed",
             )
         # Any cell carrying a predicate needs per-unit facts the lane does not
         # have (role split, out_features). The export gate settles those; this
@@ -641,7 +631,7 @@ class ServingLaneSpec:
                     flag for cell in covering
                     for flag in cell.requires_serve_flags
                 })),
-                f"gridbook_runtime_contract:{version}"
+                f"serving_runtime_contract:{version}"
                 ":unit_dependent(cb_route_status_gate)",
             )
         best = max(covering, key=lambda cell: _LANE_STATUS_RANK.get(
@@ -649,7 +639,7 @@ class ServingLaneSpec:
         return (
             best.route_status,
             best.requires_serve_flags,
-            f"gridbook_runtime_contract:{version}:{best.id}",
+            f"serving_runtime_contract:{version}:{best.id}",
         )
 
     def resolve(self, fmt: str, *, runtime_version: str,
@@ -735,7 +725,7 @@ class ServingProfile:
     # packed MoE, where CompressedTensorsMoEMethod selects ONE scheme per
     # FusedMoE layer. Gates --packed-role-split.
     supports_per_role_expert_schemes: bool = False
-    # Exact Gridbook platform id for hardware-scoped producer profiles.  This
+    # Exact runtime platform id for hardware-scoped producer profiles.  This
     # is an identity (e.g. ``sm_89``), never a minimum capability or a GPU-name
     # heuristic. Generic profiles leave it unset.
     target_platform: str | None = None
@@ -836,7 +826,7 @@ class ServingProfile:
             runtime_version=(
                 runtime_version
                 if runtime_version is not None
-                else gridbook_runtime_version()
+                else serving_runtime_version()
             ),
             rung=_cb_rung_of(fmt),
             target_platform=self.target_platform,
@@ -1059,9 +1049,9 @@ def require_lane_supported(
     """Preflight: refuse an export lane the *architecture* has not declared.
 
     Lane eligibility is a model-profile property (`supported_export_lanes()`),
-    not an operator preference. The CB lane needs a gridbook loader keyed to
-    the architecture's expert layout and the GGUF lane needs a llama.cpp-side
-    arch; where that wiring is missing, nothing fails. The run completes, the
+    not an operator preference. The GGUF lane needs a llama.cpp-side arch and
+    the Tessera lane needs its plugin's reader; where that wiring is missing,
+    nothing fails. The run completes, the
     exporter writes bytes, and the server loads uninitialised expert memory —
     the observed failure mode is *coherent-looking garbage generation*, not a
     crash (commit `9a79963`, Laguna, 93% of parameters). One quantization
@@ -1202,23 +1192,23 @@ def lane_emittable_formats(profile_id: str | None) -> frozenset[str] | None:
     return profile.export_lane.emittable_formats()
 
 
-def gridbook_runtime_version() -> str:
-    """The pinned Gridbook release the serving lanes are declared against.
+def serving_runtime_version() -> str:
+    """The pinned serving release the ``fused_mid_m`` lane keys are read at.
 
-    Read from ``prismaquant/gridbook_runtime/gridbook_runtime_pin.json`` —
-    the repo's single immutable record of the consumer integration — so the
-    fused-mid-M backed set cannot drift from the runtime that is actually
-    installed. Unreadable/unversioned pin resolves to ``""``, which matches
-    no declared version and therefore backs nothing (fail-closed).
+    It resolved the Gridbook producer pin until 2026-09-02, when that lane was
+    retired (``archive/gridbook_lane_2026-09-02/``) and its pin file went with
+    it. There is no producer-side pin behind this key any more, so it answers
+    ``""`` — which matches no declared version and therefore backs nothing,
+    the same fail-closed answer an unreadable pin always produced.
+
+    This is NOT the Tessera lane's version. Tessera's route is attested from
+    the contract its own installed plugin packages and gated by
+    ``tessera_serving_runtime_pin``; it never travels through a
+    ``fused_mid_m_rungs_by_runtime_version`` table.
     """
     global _RUNTIME_VERSION
     if _RUNTIME_VERSION is None:
-        try:
-            pin = load_gridbook_runtime_pin()
-            require_exact_gridbook_runtime_release(pin)
-            _RUNTIME_VERSION = pin.version
-        except GridbookRuntimePinError:
-            _RUNTIME_VERSION = ""
+        _RUNTIME_VERSION = ""
     return _RUNTIME_VERSION
 
 
@@ -1250,7 +1240,7 @@ def serving_lane_catalog(profile_id: str | None) -> dict:
         profile = load_serving_profile(profile_id)
     except FileNotFoundError:
         return {}
-    version = gridbook_runtime_version()
+    version = serving_runtime_version()
     lanes: dict[str, dict] = {}
     for lane in profile.serving_lanes:
         rungs, source = lane.backed_rungs(version)
@@ -1270,7 +1260,7 @@ def serving_lane_catalog(profile_id: str | None) -> dict:
     return {
         "schema": SERVING_LANE_SCHEMA,
         "target_profile": str(profile_id or "research"),
-        "gridbook_runtime_version": version,
+        "serving_runtime_version": version,
         "lanes": lanes,
     }
 

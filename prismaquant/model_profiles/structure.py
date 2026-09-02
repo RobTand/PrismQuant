@@ -46,7 +46,14 @@ SPEC_DEFAULT_PRIORITY = 1000
 # ---------------------------------------------------------------------------
 # Export lanes (EXPORT_CONTAINER vocabulary)
 # ---------------------------------------------------------------------------
-EXPORT_LANES = ("compressed-tensors", "nvfp4_cb", "gguf")
+EXPORT_LANES = ("compressed-tensors", "gguf")
+# "nvfp4_cb" was the third lane until 2026-09-02, when the Gridbook codebook
+# lane was retired (archive/gridbook_lane_2026-09-02/). A spec that still
+# names it now fails to load, loudly, which is the intent: a lane declaration
+# is a promise that a runtime serves those bytes, and none does. Tessera is
+# deliberately NOT added here by this removal: this tuple is the
+# EXPORT_CONTAINER vocabulary, and `run-pipeline.sh` has no tessera container
+# arm (debt D33 -- no exporter codec). Admission lands with the pin.
 DEFAULT_EXPORT_LANE = "compressed-tensors"
 # The serving-profile side spells the native lane with an underscore
 # (`serving_profile_specs/vllm_packed_moe.json` -> export_lane.id

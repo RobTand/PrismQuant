@@ -224,7 +224,7 @@ def test_qwen_moe_spec_specializes_source_and_vllm_maps_together():
     )
 
 
-def test_qwen36_35b_official_config_resolves_to_gridbook_producer_id(
+def test_qwen36_35b_official_config_resolves_to_its_producer_profile(
     qwen36_35b_census,
 ):
     profile = profile_from_config({
@@ -237,10 +237,12 @@ def test_qwen36_35b_official_config_resolves_to_gridbook_producer_id(
     assert profile.vllm_architecture_class() == (
         "Qwen3_5MoeForConditionalGeneration"
     )
-    assert profile.supported_export_lanes() == (
-        "compressed-tensors",
-        "nvfp4_cb",
-    )
+    # Renamed from `..._resolves_to_gridbook_producer_id` and narrowed on
+    # 2026-09-02: `nvfp4_cb` left the tuple with the Gridbook lane
+    # (archive/gridbook_lane_2026-09-02/). What the test is for -- that the
+    # official 35B config resolves to this profile and this vLLM class -- is
+    # unchanged.
+    assert profile.supported_export_lanes() == ("compressed-tensors",)
 
 
 def test_qwen36_35b_real_census_names_round_trip(qwen36_35b_census):

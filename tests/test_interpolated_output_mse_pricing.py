@@ -265,8 +265,17 @@ def test_build_candidates_prices_and_labels_the_interpolated_rung():
     """End to end through candidate construction, not just the scalar path."""
     stats, costs = _tables()
     pricing = calibrate_activation_fair_pricing(stats, costs, _specs())
+    # Re-pointed from `target_profile="nvfp4_cb"` on 2026-09-02: that serving
+    # profile retired with the Gridbook lane
+    # (archive/gridbook_lane_2026-09-02/) and was the only one that admitted a
+    # CB rung, so the call returned an empty candidate map and this test failed
+    # on a KeyError rather than on its subject. `research` is the honest
+    # replacement -- it declares no export lane and no menu restriction, which
+    # is exactly the status the CB pricing plumbing now has (debt D34):
+    # priceable and renderable, servable nowhere. The arithmetic under test is
+    # unchanged.
     cands = build_candidates(
-        stats, costs, _specs(), target_profile="nvfp4_cb",
+        stats, costs, _specs(), target_profile="research",
         cb_serialization_context=_CB_CONTEXT, activation_pricing=pricing)
 
     for qname, ratio in ((_DOWN_PROJ, _RATIO_DOWN_PROJ),

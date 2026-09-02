@@ -121,7 +121,7 @@ def _pinned_serving_table():
     from importlib.resources import as_file
     import json
 
-    from .gridbook_lane_eligibility import (
+    from .lane_eligibility import (
         load_eligibility_table, load_published_formats,
     )
     with as_file(tessera_serving_contract_path()) as path:
@@ -201,8 +201,8 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
     carried the Tessera rows.  Gridbook's Tessera lane is withdrawn and the
     Gridbook pin no longer governs Tessera admission.
     """
-    from .gridbook_lane_eligibility import (
-        GridbookLaneEligibilityError, resolve_payload_rung,
+    from .lane_eligibility import (
+        LaneEligibilityError, resolve_payload_rung,
     )
     if table is None or formats is None:
         pinned_table, pinned_formats = _pinned_serving_table()
@@ -228,7 +228,7 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
     unstated = [cell.id for cell in matched
                 if cell.requires_plugin != TESSERA_SERVING_PLUGIN]
     if unstated:
-        raise GridbookLaneEligibilityError(
+        raise LaneEligibilityError(
             f"{name}: cell(s) {unstated} claim a native Tessera route without "
             f"declaring requires_plugin={TESSERA_SERVING_PLUGIN!r}. Stock vLLM "
             "has no reader for Tessera bytes, so every such route is "

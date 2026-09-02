@@ -1,24 +1,12 @@
 """Shared pytest fixtures.
 
-Deliberately minimal: this repo had no conftest before 2026-08-30, and the
-only thing added here is one NON-autouse fixture, so collection semantics for
-the other ~5600 tests are unchanged.
+Deliberately minimal: this repo had no conftest before 2026-08-30. It carried
+one NON-autouse fixture, ``synthetic_cb_target``, which let a codebook export
+test declare that its bodies were CPU fixtures rather than served artifacts,
+through the route-status gate's own ``PQ_CB_NON_NATIVE_TARGET`` declaration.
+That gate, that declaration and the export tests that used it all went into
+``archive/gridbook_lane_2026-09-02/`` when the Gridbook codebook serving lane
+was retired on 2026-09-02, so the fixture has no subject left. Nothing here
+was ever autouse, so collection semantics are unchanged either way.
 """
 from __future__ import annotations
-
-import pytest
-
-# Sibling import: pytest puts this conftest's own directory on sys.path
-# (rootdir/prepend import mode), and tests/ is not a package.
-from cb_synthetic_target import declare_synthetic_cb_target
-
-
-@pytest.fixture
-def synthetic_cb_target():
-    """Opt-in: this module's CB bodies are fixtures, not served artifacts.
-
-    See ``tests/cb_synthetic_target`` for why this is a declaration and not a
-    gate override.  Not autouse -- a module asks for it by name.
-    """
-    with declare_synthetic_cb_target() as reason:
-        yield reason

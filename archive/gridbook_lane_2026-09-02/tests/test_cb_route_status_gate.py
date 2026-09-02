@@ -39,7 +39,7 @@ from prismaquant.cb_route_status_gate import (
     require_cb_route_status,
     shipcard_route_summary,
 )
-from prismaquant.gridbook_lane_eligibility import (
+from prismaquant.lane_eligibility import (
     CELL_ROUTE_STATUSES,
     LANE_ELIGIBILITY_SCHEMA,
     ROUTE_STATUS_BACKED,
@@ -792,7 +792,7 @@ def present_pin(monkeypatch):
     would have raised AttributeError the moment the pin advanced. Unused
     because unmeasured is a gap, not evidence.
     """
-    from prismaquant import gridbook_lane_eligibility as le
+    from prismaquant import lane_eligibility as le
     from prismaquant import serving_profiles as sp
 
     formats = {

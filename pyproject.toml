@@ -62,8 +62,6 @@ include = ["prismaquant*"]
 prismaquant = [
     "*.sh",
     "data/*.pt",
-    "gridbook_runtime/*.sh",
-    "gridbook_runtime/*.json",
     "model_profiles/specs/*.json",
     "serving_profile_specs/*.json",
     "serve_dispatch_tables/*.json",

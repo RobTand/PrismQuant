@@ -1,3 +1,9 @@
+> **ARCHIVED 2026-09-02.** This document belongs to the Gridbook codebook
+> serving lane, retired that day on Robert's decision (*"put Tessera in
+> PrismaQuant and remove Gridbook"*). It is kept because it records what was
+> measured and asked for, not because any of it is actionable. See
+> `archive/gridbook_lane_2026-09-02/README.md`.
+
 # RTX 4090 FP8-CB Gridbook producer policy
 
 This document defines the implementation boundary for the context-first dense

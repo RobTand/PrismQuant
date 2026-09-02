@@ -6,7 +6,6 @@ import pytest
 
 import prismaquant.format_registry as fr
 import prismaquant.serving_profiles as serving_profiles_module
-from prismaquant.gridbook_runtime_pin import load_gridbook_runtime_pin
 from prismaquant.serving_profiles import (
     ExportLaneSpec,
     ServingProfile,
@@ -40,19 +39,30 @@ def test_serving_profile_names_are_config_discovered():
     assert VLLM_PROFILE in serving_profile_names()
 
 
-def test_gridbook_runtime_version_fails_closed_for_unreleased_pin(monkeypatch):
-    pin = dataclasses.replace(
-        load_gridbook_runtime_pin(),
-        version_is_release=False,
-    )
-    monkeypatch.setattr(serving_profiles_module, "_RUNTIME_VERSION", None)
-    monkeypatch.setattr(
-        serving_profiles_module,
-        "load_gridbook_runtime_pin",
-        lambda: pin,
-    )
+def test_serving_runtime_version_backs_nothing(monkeypatch):
+    """No pinned producer runtime -> the empty version -> the empty backed set.
 
-    assert serving_profiles_module.gridbook_runtime_version() == ""
+    It read the Gridbook producer pin until 2026-09-02 and answered "" for an
+    unreleased pin; the lane and its pin are in
+    archive/gridbook_lane_2026-09-02/, so "" is now the only answer, and this
+    test pins that it stays the FAIL-CLOSED one: "" matches no lane spec's
+    ``fused_mid_m_rungs_by_runtime_version`` key, so no rung is claimed backed.
+    """
+    monkeypatch.setattr(serving_profiles_module, "_RUNTIME_VERSION", None)
+
+    assert serving_profiles_module.serving_runtime_version() == ""
+
+    spec = serving_profiles_module.ServingLaneSpec(
+        id="probe",
+        formats=("NVFP4",),
+        activation_contract="W4A4",
+        fallback_route="expand_gemm",
+        fused_mid_m_rungs_by_runtime_version=(("9.9.9", (28,)),),
+    )
+    rungs, source = spec.backed_rungs(
+        serving_profiles_module.serving_runtime_version())
+    assert rungs == ()
+    assert source == "pinned_runtime_version_not_declared"
 
 
 def test_vllm_profile_extends_runtime_shape_rules():
@@ -358,7 +368,7 @@ def test_research_profile_is_the_declared_emulation_only_exemption():
         assert check_serving_format("research", DENSE_QNAME, fmt).legal, fmt
 
 
-@pytest.mark.parametrize("profile_id", ["vllm_packed_moe", "nvfp4_cb", "gguf"])
+@pytest.mark.parametrize("profile_id", ["vllm_packed_moe", "gguf"])
 def test_production_profile_never_admits_an_unexportable_format(profile_id):
     """The invariant: effective-legal ⊆ exporter-emittable, for every
     registered format and both rule scopes."""
@@ -412,51 +422,6 @@ def test_vllm_lane_denies_the_a16_rungs_with_a_structural_reason():
         assert decision.reason == "exporter_cannot_emit", fmt
 
 
-def test_nvfp4_cb_all_product_rungs_remain_in_every_production_scope():
-    from prismaquant.cb_layout import NVFP4_PRODUCT_RUNGS
-
-    product_rungs = (
-        *(f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS),
-        *(f"FP8_CB_K{k}" for k in range(4, 49, 4)),
-    )
-    for qname, packed_expert in (
-        (DENSE_QNAME, False),
-        (SHARED_QNAME, False),
-        (EXPERT_QNAME, True),
-    ):
-        for fmt in product_rungs:
-            decision = check_serving_format(
-                "nvfp4_cb", qname, fmt, packed_expert=packed_expert
-            )
-            assert decision.legal, (qname, fmt, decision)
-
-
-@pytest.mark.parametrize("qname,packed_expert", NVFP4_CB_SCOPE_CASES)
-def test_nvfp4_cb_w4a16_stays_denied_until_gridbook_support_lands(
-    qname, packed_expert
-):
-    """Approved backlog status is not an exporter/runtime capability claim."""
-    fmt = "INT4_W4A16_g128"
-    assert fmt in fr.REGISTRY
-    assert check_serving_format(
-        "research", qname, fmt, packed_expert=packed_expert
-    ).legal
-
-    decision = check_serving_format(
-        "nvfp4_cb", qname, fmt, packed_expert=packed_expert
-    )
-    assert not decision.legal
-    assert decision.rule == "nvfp4_cb_container_formats"
-
-    profile = load_serving_profile("nvfp4_cb")
-    unpoliced = dataclasses.replace(profile, format_rules=())
-    structural = unpoliced.check_format(
-        qname, fmt, packed_expert=packed_expert
-    )
-    assert not structural.legal
-    assert structural.reason == "exporter_cannot_emit"
-
-
 def test_vllm_lane_still_admits_the_whole_production_menu():
     """Backwards compatibility: the bound must not narrow any format the
     shipped recipes actually use (run-pipeline's FORMATS default is
@@ -508,7 +473,6 @@ def test_compressed_tensors_lane_declaration_matches_exporter_behaviour():
     # FP8/FP8_DYNAMIC/MXFP8 aliases before an assignment reaches the
     # exporter, so `_quantize_2d` is only ever handed a canonical name.
     w = torch.randn(64, 256, dtype=torch.bfloat16)
-    nvfp4_cb_emittable = lane_emittable_formats("nvfp4_cb")
     for fmt in sorted(fr.REGISTRY):
         if fmt in PASSTHROUGH_SOURCE_REQUIREMENTS:
             # Source passthroughs ship through a container's passthrough
@@ -517,15 +481,27 @@ def test_compressed_tensors_lane_declaration_matches_exporter_behaviour():
             #
             # Which CONTAINER carries which passthrough is a per-lane fact,
             # not a global one: BF16 and FP8_SOURCE are compressed-tensors
-            # passthroughs, while FP8_BLOCK_UE8M0_SOURCE and MXFP4_SOURCE are
+            # passthroughs, while FP8_BLOCK_UE8M0_SOURCE and MXFP4_SOURCE were
             # nvfp4_cb-container passthroughs whose byte layouts the CT
-            # exporter has no emit path for. The invariant that must hold
-            # everywhere is the codec one — a passthrough is never quantized —
-            # plus "no orphans": every declared passthrough is emittable by
-            # SOME lane, so a format cannot be legal to allocate and
-            # impossible to ship.
+            # exporter has no emit path for.
+            #
+            # 2026-09-02: the nvfp4_cb container was retired with the Gridbook
+            # lane (archive/gridbook_lane_2026-09-02/), so those two now have
+            # NO emitting container. This is recorded rather than papered
+            # over, and the two halves are different facts:
+            #   FP8_BLOCK_UE8M0_SOURCE also lost its serve route (it was the
+            #     Gridbook plugin's), so its contract row is now
+            #     route_status=blocked and the exporter refuses a selection
+            #     carrying it without an explicit override.
+            #   MXFP4_SOURCE keeps a real serve route -- stock vLLM Marlin
+            #     MoE, measured on sm121, nothing to do with Gridbook -- and
+            #     has only lost its writer. It stays honestly priced, and it
+            #     fails CLOSED at export (the ValueError asserted below),
+            #     which is the serving-gap signal principle 1 asks for rather
+            #     than a silent fallback.
+            # The invariant this test still holds everywhere is the codec one:
+            # a passthrough is NEVER quantized by the weight codec.
             if fmt not in emittable:
-                assert fmt in nvfp4_cb_emittable, fmt
                 with pytest.raises(ValueError):
                     enc._quantize_2d(w, fmt)
             continue

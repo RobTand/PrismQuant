@@ -1,16 +1,20 @@
 """R6 (reader half) — export-lane eligibility as model configuration.
 
 `EXPORT_CONTAINER` is an operator env var with no relationship to whether the
-architecture is wired for that lane. Nothing stops `EXPORT_CONTAINER=nvfp4_cb`
-on an arch whose gridbook CB expert loader is a TODO: the run completes, the
+architecture is wired for that lane. Nothing stopped `EXPORT_CONTAINER=<lane>`
+on an arch whose expert loader for that lane is a TODO: the run completes, the
 artifact serves, and the FusedMoE reads uninitialised memory — coherent-looking
-garbage, not a crash (commit `9a79963`, Laguna, 93% of parameters). The honest
-CB-eligible set is six producer profiles and until now nothing in the tree said
-so.
+garbage, not a crash (commit `9a79963`, Laguna, 93% of parameters).
 
-This file pins the spec fields, profile accessors, and the preflight helper now
-wired by `run-pipeline.sh`. Cross-repository CI separately compares the exact
-producer set with Gridbook's packaged contract.
+This file pins the spec fields, profile accessors, and the preflight helper
+wired by `run-pipeline.sh`.
+
+The lane vocabulary lost `nvfp4_cb` on 2026-09-02 when the Gridbook codebook
+lane was retired (`archive/gridbook_lane_2026-09-02/`). The cases below were
+re-pointed at the lanes that remain rather than deleted: the *mechanism* — an
+architecture declares its lanes, and the preflight refuses an undeclared one —
+is exactly what the retirement leaves standing, and it is what the Tessera
+lane will be admitted through.
 """
 from __future__ import annotations
 
@@ -32,10 +36,11 @@ from prismaquant.serving_profiles import (
     require_profile_export_lane,
 )
 
-# Gridbook support is intentionally not duplicated here. The separately pinned
-# runtime publishes its supported producer IDs in runtime_contract.json, and
-# tests/test_gridbook_runtime_contract.py compares declarations to that one
-# machine-readable table in the dedicated integration job.
+# A serving runtime's supported producer IDs are never duplicated here: the
+# pinned runtime publishes them in its own runtime_contract.json and the
+# comparison is made against that one machine-readable table (AGENTS.md
+# principle 5 / CLAUDE.md principle 14). The Gridbook half of that comparison
+# retired with its lane on 2026-09-02.
 GGUF_WIRED = {"hy_v3"}
 
 PROFILE_CLASSES = list(_registry._REGISTERED)
@@ -50,13 +55,19 @@ def _profile(cls):
 
 
 def test_lane_vocabulary_is_the_export_container_vocabulary():
-    assert EXPORT_LANES == ("compressed-tensors", "nvfp4_cb", "gguf")
+    assert EXPORT_LANES == ("compressed-tensors", "gguf")
     assert DEFAULT_EXPORT_LANE == "compressed-tensors"
     # One declared alias: the serving-profile side spells the native lane with
     # an underscore (`export_lane.id == "compressed_tensors"`).
     assert canonical_export_lane("compressed_tensors") == "compressed-tensors"
     with pytest.raises(ValueError, match="unknown export lane"):
         canonical_export_lane("nvfp4-cb")
+    # Retired 2026-09-02 with the Gridbook lane. The vocabulary is the
+    # EXPORT_CONTAINER vocabulary, so a stale driver or spec naming the lane
+    # now fails loudly at the preflight instead of writing bytes nothing
+    # serves.
+    with pytest.raises(ValueError, match="unknown export lane"):
+        canonical_export_lane("nvfp4_cb")
 
 
 def test_preferred_lane_must_be_supported():
@@ -93,11 +104,16 @@ def test_preferred_lane_is_supported_and_defaults_to_native(cls):
         assert preferred == DEFAULT_EXPORT_LANE
 
 
-def test_the_two_script_driven_lanes_are_declared():
-    """`scripts/run_*_prod_nvfp4cb.sh` and the GGUF lane are tribal knowledge
-    today; these two are the archs whose shipped artifacts came off them."""
+def test_the_script_driven_lane_is_declared():
+    """The GGUF lane is tribal knowledge today; hy_v3 is the arch whose
+    shipped artifact came off it.
+
+    Laguna's `preferred_lane` was `nvfp4_cb` until 2026-09-02 and is now the
+    default native lane: its shipped artifact came off the retired codebook
+    lane, and it has no other declared preference.
+    """
     assert load_structure_spec("hy_v3").preferred_lane == "gguf"
-    assert load_structure_spec("laguna").preferred_lane == "nvfp4_cb"
+    assert load_structure_spec("laguna").preferred_lane == "compressed-tensors"
 
 
 # ------------------------------------------------------------------- preflight
@@ -105,11 +121,13 @@ def test_the_two_script_driven_lanes_are_declared():
 
 def test_require_lane_supported_accepts_declared_lanes():
     from prismaquant.model_profiles.deepseek_v4 import DeepseekV4Profile
+    from prismaquant.model_profiles.hy_v3 import HyV3Profile
     from prismaquant.model_profiles.laguna import LagunaProfile
     from prismaquant.model_profiles.qwen3_5 import Qwen3_5Profile
 
-    assert require_lane_supported(Qwen3_5Profile(), "nvfp4_cb") == "nvfp4_cb"
-    assert require_lane_supported(DeepseekV4Profile(), "nvfp4_cb") == "nvfp4_cb"
+    assert require_lane_supported(HyV3Profile(), "gguf") == "gguf"
+    assert require_lane_supported(
+        DeepseekV4Profile(), "compressed-tensors") == "compressed-tensors"
     assert require_lane_supported(LagunaProfile(), None) == "compressed-tensors"
     assert require_lane_supported(
         Qwen3_5Profile(), "compressed_tensors") == "compressed-tensors"
@@ -118,8 +136,10 @@ def test_require_lane_supported_accepts_declared_lanes():
 def test_require_lane_supported_refuses_an_undeclared_lane():
     from prismaquant.model_profiles.gemma4 import Gemma4Profile
 
+    # `gguf` since 2026-09-02 — `nvfp4_cb` is no longer *undeclared*, it is
+    # unknown, and that is a different refusal (below).
     with pytest.raises(SystemExit) as excinfo:
-        require_lane_supported(Gemma4Profile(), "nvfp4_cb")
+        require_lane_supported(Gemma4Profile(), "gguf")
     message = str(excinfo.value)
     assert "gemma4" in message
     assert "compressed-tensors" in message      # names the declared set
@@ -142,42 +162,30 @@ def test_require_lane_supported_is_inert_without_the_accessor():
     assert require_lane_supported(_Legacy(), "gguf") == "gguf"
 
 
-def test_narrow_4090_profile_inherits_cb_serializer_by_lane_identity():
-    profile = load_serving_profile("qwen38_rtx4090_fp8_cb")
-    assert profile.export_lane is not None
-    assert profile.export_lane.id == "nvfp4_cb"
-    assert profile.target_platform == "sm_89"
-    assert profile.producer_policy == "qwen38_27b_rtx4090_fp8_cb"
-    assert require_profile_export_lane(profile.id, "nvfp4_cb") == "nvfp4_cb"
-    with pytest.raises(ValueError, match="not requested container"):
-        require_profile_export_lane(profile.id, "compressed-tensors")
-
-    validation = load_serving_profile(
-        "qwen38_rtx4090_fp8_cb_validation_only"
-    )
-    assert validation.export_lane is not None
-    assert validation.export_lane.id == "nvfp4_cb"
-    assert validation.target_platform == "sm_89"
-    assert validation.producer_policy == (
-        "qwen38_27b_rtx4090_fp8_cb_validation_only"
-    )
+# `test_narrow_4090_profile_inherits_cb_serializer_by_lane_identity` was
+# deleted on 2026-09-02: it loaded `qwen38_rtx4090_fp8_cb`, one of the six CB
+# producer profiles, all of which went to archive/gridbook_lane_2026-09-02/
+# with the lane. `require_profile_export_lane` itself is still exercised by
+# `test_serving_profiles.py`; what is gone is the only lane whose serving
+# profile pinned a non-default `export_lane.id`.
 
 
 def test_no_shipped_lane_run_becomes_illegal():
     """Non-regression: every in-tree launch script's (arch, EXPORT_CONTAINER)
-    pair must still pass the preflight."""
+    pair must still pass the preflight.
+
+    The `nvfp4_cb` pairs — qwen3_5, qwen3_5_dense, hy_v3, laguna, deepseek_v4 —
+    were removed on 2026-09-02 along with their launch scripts. Those runs ARE
+    now illegal, deliberately: `canonical_export_lane` refuses the container
+    before the profile is consulted (pinned above).
+    """
     cases = [
-        ("qwen3_5", "nvfp4_cb"),        # run_27b_prod_nvfp4cb, run_35b_prod_nvfp4cb
-        ("qwen3_5_dense", "nvfp4_cb"),
-        ("hy_v3", "nvfp4_cb"),          # run_hy3_prod_nvfp4cb / _joint
         ("hy_v3", "gguf"),
-        ("laguna", "nvfp4_cb"),         # run_laguna_s21_prod
         ("qwen3_5", "compressed-tensors"),
         ("gemma4", "compressed-tensors"),
         ("lfm2_moe", "compressed-tensors"),
         ("minimax_m2", "compressed-tensors"),
         ("deepseek_v4", "compressed-tensors"),
-        ("deepseek_v4", "nvfp4_cb"),
     ]
     by_name = {c().name: c() for c in PROFILE_CLASSES}
     for name, lane in cases:

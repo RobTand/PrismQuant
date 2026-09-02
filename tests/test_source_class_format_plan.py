@@ -6,7 +6,7 @@ import math
 import pytest
 
 from prismaquant.nvfp4_cb_footprint import CBSerializationContext
-from prismaquant.serving_profiles import gridbook_runtime_version
+from prismaquant.serving_profiles import serving_runtime_version
 from prismaquant.source_class_format_plan import (
     EXPERT_MENU,
     NONEXPERT_MENU,
@@ -179,31 +179,6 @@ def _on_law_plan(profile=None):
     return expert, nonexpert, plan
 
 
-def test_serving_backed_restriction_admits_exactly_the_on_law_menu():
-    expert, nonexpert, plan = _on_law_plan()
-
-    assert plan.menu_id_for(expert) == EXPERT_MENU
-    assert plan.formats_for(expert) == ON_LAW_EXPERT_FORMATS
-    assert plan.menu_id_for(nonexpert) == NONEXPERT_MENU
-    assert plan.formats_for(nonexpert) == ON_LAW_NONEXPERT_FORMATS
-
-    scheduled = {
-        fmt
-        for formats in plan.formats_by_qname().values()
-        for fmt in formats
-    }
-    assert all(int(fmt.rsplit("K", 1)[1]) % 4 == 0 for fmt in scheduled)
-
-    restriction = plan.serving_backed_restriction
-    assert restriction is not None
-    assert restriction["profile_id"] == ON_LAW_PROFILE
-    assert restriction["family"] == "fp8_cb"
-    assert restriction["runtime_version"] == gridbook_runtime_version()
-    assert restriction["fused_mid_m_rungs"] == [28, 32, 36, 40, 44, 48]
-    assert "FP8_CB_K4" in restriction["restricted_out"]
-    assert "FP8_CB_K24" in restriction["restricted_out"]
-
-
 def test_on_law_menu_without_the_restriction_is_still_refused():
     # The anti-truncation guard is untouched on every other axis: the SAME
     # menus that are legal under a declared serving restriction are refused
@@ -221,69 +196,3 @@ def test_on_law_menu_without_the_restriction_is_still_refused():
     assert "FP8_CB_K4" in str(caught.value)
 
 
-def test_serving_backed_restriction_still_refuses_truncation():
-    qname = "model.layers.0.self_attn.q_proj"
-    with pytest.raises(ValueError, match="backed by the pinned serving") as caught:
-        build_source_class_format_plan(
-            {qname: _stats((4096, 4096))},
-            {qname: "fp8"},
-            _Profile(),
-            expert_formats=ON_LAW_EXPERT_FORMATS,
-            nonexpert_formats=ON_LAW_NONEXPERT_FORMATS[:-1],
-            cb_serialization_context=CONTEXT,
-            serving_backed_profile=ON_LAW_PROFILE,
-        )
-    assert "FP8_CB_K48" in str(caught.value)
-
-
-def test_serving_backed_restriction_refuses_an_unbacked_family():
-    # nvfp4_cb's NVFP4-CB lane declares no fused mid-M rung at any runtime, so
-    # restricting that family empties it. An empty menu is an error, never a
-    # silent truncation.
-    qname = "model.layers.0.self_attn.q_proj"
-    from prismaquant.cb_layout import NVFP4_PRODUCT_RUNGS
-
-    nvfp4_cb_formats = tuple(
-        f"NVFP4_CB_K{k}" for k in NVFP4_PRODUCT_RUNGS
-    )
-    with pytest.raises(ValueError, match="backs no fused mid-M rung"):
-        build_source_class_format_plan(
-            {qname: _stats((4096, 4096))},
-            {qname: "fp8"},
-            _Profile(),
-            expert_formats=nvfp4_cb_formats[:2],
-            nonexpert_formats=nvfp4_cb_formats,
-            cb_serialization_context=CONTEXT,
-            serving_backed_profile=ON_LAW_PROFILE,
-        )
-
-
-def test_serving_backed_plan_round_trip_rejects_pin_drift(tmp_path):
-    expert, nonexpert, plan = _on_law_plan()
-    path = tmp_path / "format_plan.json"
-    write_format_plan(plan, path)
-
-    loaded = load_format_plan(path)
-    assert loaded.identity_sha256 == plan.identity_sha256
-    assert loaded.serving_backed_restriction == plan.serving_backed_restriction
-    assert loaded.formats_for(expert) == ON_LAW_EXPERT_FORMATS
-
-    # A plan written under one backed set must not be reused under another.
-    # Re-stamp the digest so the drift check, not the identity check, is what
-    # refuses.
-    payload = json.loads(path.read_text())
-    payload["serving_backed_restriction"]["runtime_version"] = "0.0.0-other"
-    payload.pop("identity_sha256")
-    payload["identity_sha256"] = _plan_digest(payload)
-    path.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="different serving-backed restriction"):
-        load_format_plan(path)
-
-    historical = load_format_plan(
-        path, verify_current_serving_restriction=False
-    )
-    assert historical.identity_sha256 == payload["identity_sha256"]
-    assert historical.serving_backed_restriction == (
-        payload["serving_backed_restriction"]
-    )
-    assert historical.formats_for(expert) == ON_LAW_EXPERT_FORMATS

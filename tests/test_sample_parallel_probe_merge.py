@@ -36,10 +36,12 @@ from prismaquant.sample_parallel_probe_merge import (
     validate_merged_activation_cache_output,
     validate_worker_sample_cover,
 )
-from prismaquant.rtx4090_qwen38_policy import (
-    RTX4090_QWEN38_POLICY_ID,
-    RTX4090_QWEN38_POLICY_SCHEMA,
-)
+# The producer profile that minted these censuses retired 2026-09-02 with the
+# Gridbook lane (archive/gridbook_lane_2026-09-02/).  Its two identity strings
+# are inlined here verbatim because they are the values recorded in every run
+# contract on disk, and these fixtures replay recorded contracts.
+RTX4090_QWEN38_POLICY_SCHEMA = "prismaquant.rtx4090_qwen38_fp8_policy.v1"
+RTX4090_QWEN38_POLICY_ID = "qwen38_27b_rtx4090_fp8_cb"
 
 
 BODY_QNAMES = ("model.layers.0.q_proj",)
@@ -471,53 +473,6 @@ def test_cached_source_census_requires_valid_upstream_streamed_identity():
         producer.SampleParallelProbeError, match="model-content identity"
     ):
         _qname_census(upstream_content_sha256="not-a-sha256")
-
-
-def test_worker_local_source_preflight_refuses_changed_stable_census(
-    monkeypatch,
-):
-    expected = _qname_census()
-    changed = _qname_census(shard_sha256="a" * 64)
-    monkeypatch.setenv(
-        "PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE", "/host/local/cache.json"
-    )
-    monkeypatch.setattr(
-        producer, "build_rtx4090_qname_census", lambda _model: changed
-    )
-    with pytest.raises(
-        producer.SampleParallelProbeError, match="stable source census differs"
-    ):
-        producer.validate_worker_local_source_census(
-            "model-content-id", expected
-        )
-
-
-def test_worker_local_source_preflight_refuses_changed_portable_upstream(
-    monkeypatch,
-):
-    expected = _qname_census(
-        derivation="validated_streamed_model_identity_cache_v1",
-        upstream_content_sha256="8" * 64,
-        upstream_portable_content_sha256="a" * 64,
-    )
-    changed = _qname_census(
-        derivation="validated_streamed_model_identity_cache_v1",
-        upstream_content_sha256="9" * 64,
-        upstream_portable_content_sha256="b" * 64,
-        model="/another/host/model",
-    )
-    monkeypatch.setenv(
-        "PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE", "/host/local/cache.json"
-    )
-    monkeypatch.setattr(
-        producer, "build_rtx4090_qname_census", lambda _model: changed
-    )
-    with pytest.raises(
-        producer.SampleParallelProbeError, match="stable source census differs"
-    ):
-        producer.validate_worker_local_source_census(
-            "model-content-id", expected
-        )
 
 
 def test_importance_binding_changes_with_dtype_content_and_producer_snapshot():
@@ -1126,116 +1081,6 @@ def test_activation_cache_merge_offsets_sorts_and_truncates_rows(tmp_path):
         )
 
 
-def test_merge_bundle_is_atomic_after_cache_fault_and_exact_retry(
-    monkeypatch, tmp_path,
-):
-    cover = _cover()
-    caches = [tmp_path / "first", tmp_path / "second"]
-    for index, cache in enumerate(caches):
-        inputs = torch.arange(
-            index * 24, (index + 1) * 24, dtype=torch.float32
-        ).reshape(8, 3)
-        _write_activation(
-            cache, BODY_QNAMES[0], inputs, None,
-            partition_index=index,
-        )
-    merged_probe = merge_sample_parallel_probe_payloads(
-        [_payload(0), _payload(1)], expected_cover=cover,
-    )
-    destination = tmp_path / "bundle"
-
-    monkeypatch.setenv(
-        "PRISMAQUANT_TEST_FAULT_SAMPLE_MERGE_AFTER_CACHE", "1"
-    )
-    with pytest.raises(
-        producer.SampleParallelProbeError, match="injected sample merge"
-    ):
-        producer.publish_sample_parallel_merge_bundle(
-            merged_probe, {0: caches[0], 1: caches[1]}, destination,
-            expected_cover=cover, max_rows=1024,
-        )
-    assert not destination.exists()
-    assert list(tmp_path.glob(".bundle.sample-merge-bundle-*")) == []
-
-    monkeypatch.delenv(
-        "PRISMAQUANT_TEST_FAULT_SAMPLE_MERGE_AFTER_CACHE"
-    )
-    commit = producer.publish_sample_parallel_merge_bundle(
-        merged_probe, {0: caches[0], 1: caches[1]}, destination,
-        expected_cover=cover, max_rows=1024,
-    )
-    assert {path.name for path in destination.iterdir()} == {
-        producer.MERGE_BUNDLE_PROBE,
-        producer.MERGE_BUNDLE_ACTIVATIONS,
-        producer.MERGE_BUNDLE_COMMIT,
-    }
-    probe_bytes = (destination / producer.MERGE_BUNDLE_PROBE).read_bytes()
-    assert commit["probe"]["sha256"] == hashlib.sha256(probe_bytes).hexdigest()
-    persisted_commit = json.loads(
-        (destination / producer.MERGE_BUNDLE_COMMIT).read_text()
-    )
-    assert persisted_commit == commit
-    cache_manifest = json.loads(
-        (
-            destination / producer.MERGE_BUNDLE_ACTIVATIONS
-            / ACTIVATION_CACHE_MANIFEST
-        ).read_text()
-    )
-    assert commit["activation_cache"]["manifest_identity_sha256"] == (
-        cache_manifest["identity_sha256"]
-    )
-    validated = producer.validate_sample_parallel_merge_bundle(destination)
-    assert validated["identity_sha256"] == commit["identity_sha256"]
-    from prismaquant.rtx4090_fp8_burn import _validate_sample_merge_bundle
-
-    burn_validated = _validate_sample_merge_bundle(
-        probe=destination / producer.MERGE_BUNDLE_PROBE,
-        activation_cache_dir=(
-            destination / producer.MERGE_BUNDLE_ACTIVATIONS
-        ),
-        commit_path=destination / producer.MERGE_BUNDLE_COMMIT,
-    )
-    assert burn_validated["source_model_content_sha256"] == validated[
-        "source_model_content_sha256"
-    ]
-    assert burn_validated["source_model_upstream_content_sha256"] is None
-    assert burn_validated[
-        "source_model_upstream_portable_content_sha256"
-    ] is None
-    with pytest.raises(
-        producer.SampleParallelProbeError, match="already exists"
-    ):
-        producer.publish_sample_parallel_merge_bundle(
-            merged_probe, {0: caches[0], 1: caches[1]}, destination,
-            expected_cover=cover, max_rows=1024,
-        )
-
-    # Even a self-consistently re-sealed commit cannot authorize altered
-    # globally derived Fisher normalization.
-    probe_path = destination / producer.MERGE_BUNDLE_PROBE
-    with probe_path.open("rb") as handle:
-        altered_probe = pickle.load(handle)
-    altered_probe["stats"][BODY_QNAMES[0]]["h_trace"] += 1.0
-    altered_bytes = pickle.dumps(
-        altered_probe, protocol=pickle.HIGHEST_PROTOCOL
-    )
-    probe_path.write_bytes(altered_bytes)
-    commit["probe"]["bytes"] = len(altered_bytes)
-    commit["probe"]["sha256"] = hashlib.sha256(altered_bytes).hexdigest()
-    commit_body = dict(commit)
-    commit_body.pop("identity_sha256")
-    commit["identity_sha256"] = producer._canonical_sha256(
-        commit_body, where="re-sealed altered bundle commit"
-    )
-    (destination / producer.MERGE_BUNDLE_COMMIT).write_text(
-        json.dumps(commit)
-    )
-    with pytest.raises(
-        producer.SampleParallelProbeError, match="normalization differs"
-    ):
-        producer.validate_sample_parallel_merge_bundle(destination)
-
-
 @pytest.mark.parametrize(
     "siblings",
     [
@@ -1622,85 +1467,6 @@ def test_real_mtp_producer_row_closes_resume_postflight_merge_and_bundle(
     np.testing.assert_array_equal(
         validated_mtp["fisher_row"], merged_mtp["fisher_row"],
     )
-
-
-def test_burn_col_weights_use_captured_validated_bundle_probe_after_replace(
-    monkeypatch, tmp_path,
-):
-    from argparse import Namespace
-
-    from prismaquant.cb_imatrix import (
-        canonical_imatrix_sha256,
-        imatrix_from_probe_stats,
-    )
-    from prismaquant.rtx4090_fp8_burn import derive_col_weights
-
-    _cover_value, bundle = _publish_valid_activation_bundle(tmp_path)
-    real_validate = producer.validate_sample_parallel_merge_bundle
-    captured = {}
-
-    def _validate_then_replace(bundle_dir, *, capture_consumables=False):
-        validated = real_validate(
-            bundle_dir, capture_consumables=capture_consumables,
-        )
-        captured.update(validated)
-        replacement_payload = copy.deepcopy(
-            validated["_validated_probe_payload"]
-        )
-        replacement_payload["stats"][BODY_QNAMES[0]][
-            "act_sq_sum"
-        ] = np.full(3, 999.0, dtype=np.float32)
-        replacement = tmp_path / "post-validation-replacement.pkl"
-        replacement.write_bytes(pickle.dumps(
-            replacement_payload, protocol=pickle.HIGHEST_PROTOCOL,
-        ))
-        replacement.replace(bundle / producer.MERGE_BUNDLE_PROBE)
-        return validated
-
-    monkeypatch.setattr(
-        producer, "validate_sample_parallel_merge_bundle",
-        _validate_then_replace,
-    )
-    output = tmp_path / "cb_col_weights.pkl"
-    assert derive_col_weights(Namespace(
-        sample_merge_bundle=str(bundle), output=str(output),
-    )) == output
-
-    expected, _provenance = imatrix_from_probe_stats(
-        captured["_validated_probe_payload"]["stats"]
-    )
-    with output.open("rb") as handle:
-        observed = pickle.load(handle)
-    assert isinstance(observed, dict)
-    assert canonical_imatrix_sha256(observed) == canonical_imatrix_sha256(
-        expected
-    )
-    assert set(observed) == set(expected)
-    for qname in expected:
-        assert observed[qname].dtype == torch.float32
-        torch.testing.assert_close(observed[qname], expected[qname])
-
-
-def test_burn_col_weight_derivation_rejects_invalid_bundle_without_output(
-    tmp_path,
-):
-    from argparse import Namespace
-
-    from prismaquant.rtx4090_fp8_burn import (
-        RTX4090FP8BurnError,
-        derive_col_weights,
-    )
-
-    _cover_value, bundle = _publish_valid_activation_bundle(tmp_path)
-    (bundle / producer.MERGE_BUNDLE_COMMIT).write_text("{}\n")
-    output = tmp_path / "cb_col_weights.pkl"
-    with pytest.raises(
-        RTX4090FP8BurnError, match="bundle validation failed",
-    ):
-        derive_col_weights(Namespace(
-            sample_merge_bundle=str(bundle), output=str(output),
-        ))
-    assert not output.exists()
 
 
 def _reseal_activation_payload_and_bundle_commit(

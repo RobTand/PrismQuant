@@ -1,7 +1,26 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-02 · `tessera/decouple-gridbook` — stamps follow, newest
+As of: 2026-09-02 · `tessera/remove-gridbook` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-09-02,
+`tessera/remove-gridbook`) for the **retirement of the Gridbook codebook
+lane** (§1.1, §3.5, §9, §9.2, D34). Robert, 2026-09-02: *"put Tessera in
+PrismaQuant and remove Gridbook."* PrismaQuant carries **one** non-vLLM-native
+wire, and it is Tessera's. The producer-side lane is archived whole at
+`archive/gridbook_lane_2026-09-02/` — pins, exporter, lane spec, four serving
+profiles, ship-gate slots, 73 test modules (1,691 node IDs) and the lane's 27 documents including every
+served measurement it produced — and `EXPORT_CONTAINER=nvfp4_cb` is now the
+twelfth `exit 2` gate. The sanctioned containers are three:
+`compressed-tensors`, GGUF, Tessera. Three things the removal really does, and
+none of them is an opinion: `FP8_BLOCK_UE8M0_SOURCE` becomes
+`ROUTE_STATUS_BLOCKED` because its only route was the plugin (the rung stays
+priced, per principle 1; export fails closed, per principle 9);
+`MXFP4_SOURCE` keeps its backed stock-Marlin route but loses its only writer
+and its only serving profile; and `gridbook_lane_eligibility.py` — the
+**generic** engine that admits Tessera — is renamed `lane_eligibility.py`, its
+publisher-specific schema and asset lookup removed, and now demands an explicit
+`contract_path=` so that with none, every unit resolves UNATTESTED. The CB
+format/cost/render plumbing is deliberately **not** excised and is recorded as
+debt **D34**. Previously stamped (2026-09-02,
 `tessera/decouple-gridbook`) for **Tessera's own vLLM plugin** (§5.7, §9,
 §9.2, §9.4, §5.1's format table, D33): Tessera now serves ITSELF. The
 serving half moved into the Tessera repository as the package
@@ -544,7 +563,7 @@ once the per-`(qname, format)` codebook cells resolve. Its payload shape is
 load-bearing: under an absent attestation it carries `units_unattested` and
 **no** backed/fallback counters at all, so the
 `units_on_fallback_route = 0` defect is unrepresentable rather than merely
-discouraged. `docs/design/gridbook_lane_eligibility_contract.md` is the
+discouraged. `archive/gridbook_lane_2026-09-02/docs/design/gridbook_lane_eligibility_contract.md` (archived 2026-09-02) is the
 proposal that asked Gridbook for a table; it is superseded as a specification
 by the v3 shape Gridbook actually published (below) and is retained only as the
 record of the ask. Re-stamped (2026-08-21, `feat/pooled-stack-books`)
@@ -1281,8 +1300,10 @@ by measurement, not by the cost model (§2).
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
 | Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | maintained: NVFP4, FP8_DYNAMIC/E4M3, BF16; FP8_SOURCE remains a source-artifact compatibility codec | production default for the maintained W4A4/W8A8/BF16 menu; W8A16/source FP8 is not SM120 performance eligibility |
-| CB ("gridbook") | historical mixed `nvfp4_cb`, or a hardware-scoped CB checkpoint | vLLM + the separately versioned `gridbook` package (native CUDA/CUTLASS-only, fail-closed), installed from an immutable reviewed pin; PrismaQuant consumes only the packaged contract | NVFP4-CB public reader/producer K1..K25 plus the wider FP8-CB reader domain; new FP8-CB producers use exactly K4..K48 step 4. SM89 registers FP8 only. `qwen38_sm120_cb_validation_only` structurally registers both public ladders plus native NVFP4/FP8_E4M3/BF16 on exact `sm_120`, explicitly denies W8A16/source-FP8 compatibility carriers, and lets AQUA compare the admitted activation contracts without a manual family preference. Both hardware-scoped campaigns are lattice-only | Existing production recipes remain limited to architectures/routes declared by the tracked Gridbook release. Generic readers retain published source-model compatibility, but that inventory does not make W8A16 a maintained RTX50 candidate. The strict `qwen38_rtx4090_fp8_cb` candidate still refuses until an external v11 release publishes device-qualified exact-sm89 dense decode+batch cells and a physical 4090 closes the graph/device gate. The SM120 profile has no producer policy and is validation scaffolding only: candidate v11 is compile-only/unpinned, so the immutable release pin and exact device-qualified route contract remain mandatory before any artifact can ship |
+| **Tessera** | `tessera` wire (`quant_method = "tessera"`) | vLLM + **Tessera's own** plugin (`tessera.serving`), installed into the stock image from an immutable pin; PrismaQuant consumes only the packaged `runtime_contract.json` | the Tessera trellis wire, synthesized and priced by name (§5.7) | **declared, not shippable**: the pin carries PENDING sentinels until a Tessera release tag exists, so `tessera_lane_attested` answers False for every rung — by the pin, not by an edit. Dense-only at TP=1; the contract carries no `routed_moe` cell |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
+
+A fourth container — the **codebook (CB) / gridbook** lane — was **retired 2026-09-02** on Robert's decision (*"put Tessera in PrismaQuant and remove Gridbook"*) and archived whole at `archive/gridbook_lane_2026-09-02/`, its served measurements included. `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s. See §9.2 for what went with it.
 
 Lane detail, defaults and proven results: §9. Export codecs: §6. Pipeline defaults: §3.3.
 
@@ -1776,7 +1797,7 @@ which is what the rows touched since are keyed on.
 | **2b/4** | Format-menu render for AURA dW. A materialized cache exposes dW later; the streamed CB lifetime exposes each canonical render to the synchronous cost consumer and discards it only after that row is durably acknowledged (§5.4). It uses the same activation-cache/MTP and remaining-pin policy as the cost cache | `build_production_cache … --render-scope format-menu --activation-cache-dir act/` | frontier cache under validated-surrogate, else `production_render_score_cache.pkl`; transient CB mode retains pair attestations rather than loser weight shards | settings-hash `aura-dw-cache`, including the resolved head policy | `aura`; `exit 2` if the menu is BF16-only; every requested candidate must be consumed |
 | **2c/4** | AURA downstream-KL-adjoint cost. A fixed head remains auxiliary and is omitted; only `ALLOW_PINNED=lm_head` asks AURA to price the head inside the research DP | `prismaquant.aura_cost` with `--include-lm-head` only in DP-unpinned mode | `artifacts/cost_aura.pkl` | settings-hash `aura-cost`, including the resolved head policy | `aura` |
 | **2d/4** | Hybrid finalize: empirical profile-declared routed-expert unit-KL + sidecar backfill | `prismaquant.expert_empirical_cost --merge-base --backfill-base` (with the shared `--col-weights` on weighted cached-menu lanes) or inline backfill (`run-pipeline.sh`, AURA `[2d]`) | `artifacts/cost.pkl` | settings-hash `aura-hybrid-cost` + cost-mode provenance | `aura` |
-| **2d-CB** | CB hybrid: replace routed-expert rows with empirical unit-KL | `harvest_cb_col_weights "[2d-CB]"` → `expert_empirical_cost --replace-experts --col-weights` | `artifacts/cost_local_raw.pkl`, `artifacts/cost.pkl`, `cb_col_weights.pkl` | settings-hash `cb-hybrid-cost` + the in-payload merge probe; col-weights `cb-col-weights` | CB lane, `CB_EXPERT_EMPIRICAL=1` |
+| ~~**2d-CB**~~ (RETIRED 2026-09-02 with the lane, §9.2) | CB hybrid: replace routed-expert rows with empirical unit-KL | `harvest_cb_col_weights "[2d-CB]"` → `expert_empirical_cost --replace-experts --col-weights` | `artifacts/cost_local_raw.pkl`, `artifacts/cost.pkl`, `cb_col_weights.pkl` | settings-hash `cb-hybrid-cost` + the in-payload merge probe; col-weights `cb-col-weights` | CB lane, `CB_EXPERT_EMPIRICAL=1` |
 | **2b/4 cw** | Cost-cache col-weights (weighted lanes only) | `harvest_cb_col_weights "[2b/4] cost-cache"` → `build_production_cache --col-weights` | `artifacts/cb_col_weights.pkl` | settings-hash `cb-col-weights` | `COST_RENDER=cached-menu` on a CB/GGUF lane (§4.7) |
 | **P0–P3** | Platform-agnostic anchored-AURA mechanism: format-blind streamed adjoint; plugin-mapped production anchors per legal `(unit,family,equivalence_class)`; within-segment shape fit; recomputed hull; one byte-budget DP (§4.3) | frozen DSv4 shim `tools/run_aura_cb_reprice.sh` → `prismaquant.dsv4_aura_cb_reprice`; generic mechanism `prismaquant.anchored_cost`; CB mapping plugin on `format_registry` + `model_profiles` | identity-bound scalar checkpoints; the driver atomically emits an exportable artifacts directory containing the AURA-stamped `layer_config.json`, matching `selection.json`, allocator `pareto.knees.json`, and the exact platform render inputs (`cb_col_weights.pkl` on CB) | qname-keyed atomic resume bound to model/menu/arm/plugin/calibration/format-plan/render-input identity | generic evaluate/price/allocate mechanism with a machine-specific map plugin; DSv4 remains the acceptance vehicle; never a full-menu render campaign |
 | **RTX4090 sparse P1–P3 ×2 (manual)** | Strict 18 GB specialization of anchored AURA: derive the exact bundle-captured probe imatrix, attest one snapshot/image execution, split whole layers across two hosts, render only lattice K4/K16/K48 plus native FP8 per body Linear, reconstruct one exact global payload, fit the lattice rung law, byte-preserve direct rows, impute nine CB rungs, add the BF16 source terminal, and solve once (§4.3) | `prismaquant.rtx4090_fp8_burn` + `prismaquant.cb_anchored_cost` | durable no-clobber FP32 column weights; immutable execution attestation and two-stripe plan; 496×4 measured AURA cells; one mixed measured/imputed/source-terminal allocator table | complete disjoint qname/format/purpose/renderer/source/imatrix/snapshot/image/arm identity; worker chunk counters remain explicitly unverified planning metadata | Qwen3.8 strict FP8-only validation-artifact campaign; no NVFP4 and no twelve-rung physical render sweep |
@@ -1789,9 +1810,8 @@ which is what the rows touched since are keyed on.
 | **4/4 D×N (manual)** | Exact multi-host cache striping and set union. Plan whole-layer/auxiliary qname groups, run independent allowlisted cache builds, manifest and verify each portable bundle, union, then verify again after transfer | `prismaquant.production_cache_stripes`; `build_production_cache --include-qnames-file`; `prismaquant.union_production_cache {manifest,verify-shard,union,verify}` | `stripe-plan.json`, `stripe-NN.qnames.txt`, per-worker cache bundles, final `production_weight_cache.pkl` + content-addressed `weights/` + `union_manifest.json` | campaign identity binds source, calibration, full producer code, settings, render semantics, and assignment or stripe-plan coverage | operator workflow, not a `run-pipeline.sh` default; native materialized formats only (§5.4) |
 | **3c** | AURA additivity report — `residual = measured_end_KL − Σ predicted_dloss`, stamped into `cost.pkl` `provenance["additivity"]` (§4.3) | `prismaquant.aura_additivity_gate` (+ optional `validate_assignments_kl` under `AURA_ADDITIVITY_GATE=measure`) | `artifacts/aura_additivity.json`, `aura_additivity_kl.json` (measure only); `logs/aura_additivity*.log` | none — non-blocking report, skip-if-exists on the KL half | `COST_MODE=aura`, `AURA_ADDITIVITY_GATE≠0` |
 | **4/4 E-gguf** | GGUF skeleton + export + llama.cpp smoke | `convert_hf_to_gguf.py` (`1461-1464`), `prismaquant.export_gguf` (`1469-1493`), `llama-completion` (`1500-1516`) | `artifacts/skeleton.gguf`, `exported.gguf` | settings-hash `gguf-skeleton` (`1488`); export always runs | GGUF lane; **exits 0** |
-| **4/4 E-cb** | CB col-weights + codebook export | `harvest_cb_col_weights "[4/4]"`, `export_nvfp4_cb[_streaming]` | `exported_nvfp4_cb/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`) + `.pqcb` codebook sidecar | settings-hash `cb-col-weights`; export always runs | CB lane; no in-lane serving smoke; **exits 0** |
-| **RTX4090 strict build (operator campaign)** | Run the ordinary per-Linear pipeline under the dense Qwen3.8 context-first policy, prove the exact 1,199-tensor/615-Linear source census, then replay config ownership and finalized artifact headers/sidecar before publication | `scripts/run_qwen38_rtx4090_fp8_cb_18gb.sh` → `run-pipeline.sh` + `rtx4090_qwen38_policy` + `rtx4090_artifact_census` | strict top-level `format: fp8_cb` lattice artifact, exact policy/runtime-contract/source-identity stamps, complete tensor-format assignment, and strict `rtx4090.fp8_cb` shipcard slot | no special cache: streamed AURA, the existing activation cache, probe-derived full-corpus imatrix, `ProductionWeightCache`, prefetch, allocator, and CB exporter remain authoritative and identity-bound | opt-in `TARGET_PROFILE=qwen38_rtx4090_fp8_cb`; exact menu FP8-CB K4..K48 step 4 + `FP8_E4M3` + BF16, `CB_CODEBOOK_SOURCE_SCOPE=none`, `CB_ACTIVATION_SCOPE=none`, fixed BF16 `lm_head`/MTP, and a non-forceable complete-publication ceiling of 18,000,000,000 bytes; currently refuses because the available sm89 lane-v2 rows are compile-only |
-| **RTX4090 validation-only GB10 build** | Exercise the exact strict serializer, source/artifact census, top-level `fp8_cb` manifest, and complete FP8-only assignment under Gridbook v11 compile-only SM89 structural cells | `scripts/run_qwen38_rtx4090_fp8_cb_validation_only_gb10.sh` → the same launcher/pipeline with `RTX4090_BUILD_DISPOSITION=validation_only` → `validate_rtx4090_fp8_cb_validation_only` | artifact stamped `UNRELEASABLE_VALIDATION_ONLY`, `runtime_qualification_ceiling=compile_only`, `build_host=dgx_spark_gb10`; no serving receipt | exactly the strict build's streamed AURA, activation cache, imatrix, `ProductionWeightCache`, required resident prefetch, allocator, and CB exporter; no parallel cache | launcher requires one visible GB10 at CC 12.1; assignments/config groups/tensor formats admit only FP8-CB K4..K48 step 4, delegated `FP8_E4M3`, and BF16. Shipcard, publisher, and strict RTX4090 validator always refuse it regardless of filled slots or force flags |
+| ~~**4/4 E-cb**~~ (RETIRED 2026-09-02 with the lane, §9.2) | CB col-weights + codebook export | `harvest_cb_col_weights "[4/4]"`, `export_nvfp4_cb[_streaming]` | `exported_nvfp4_cb/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`) + `.pqcb` codebook sidecar | settings-hash `cb-col-weights`; export always runs | CB lane; no in-lane serving smoke; **exits 0** |
+| **RTX4090 strict build (operator campaign)** | Run the ordinary per-Linear pipeline under the dense Qwen3.8 context-first policy, prove the exact 1,199-tensor/615-Linear source census, then replay config ownership and finalized artifact headers/sidecar before publication | `scripts/run_qwen38_rtx4090_fp8_cb_18gb.sh` → `run-pipeline.sh` + `rtx4090_qwen38_policy` + `rtx4090_artifact_census` | strict top-level `format: fp8_cb` lattice artifact, exact policy/runtime-contract/source-identity stamps, complete tensor-format assignment, and strict `rtx4090.fp8_cb` shipcard slot | no special cache: streamed AURA, the existing activation cache, probe-derived full-corpus imatrix, `ProductionWeightCache`, prefetch, allocator, and CB exporter remain authoritative and identity-bound | opt-in `TARGET_PROFILE=qwen38_rtx4090_fp8_cb`; exact menu FP8-CB K4..K48 step 4 + `FP8_E4M3` + BF16, `| **RTX4090 validation-only GB10 build** | Exercise the exact strict serializer, source/artifact census, top-level `fp8_cb` manifest, and complete FP8-only assignment under Gridbook v11 compile-only SM89 structural cells | `scripts/run_qwen38_rtx4090_fp8_cb_validation_only_gb10.sh` → the same launcher/pipeline with `RTX4090_BUILD_DISPOSITION=validation_only` → `validate_rtx4090_fp8_cb_validation_only` | artifact stamped `UNRELEASABLE_VALIDATION_ONLY`, `runtime_qualification_ceiling=compile_only`, `build_host=dgx_spark_gb10`; no serving receipt | exactly the strict build's streamed AURA, activation cache, imatrix, `ProductionWeightCache`, required resident prefetch, allocator, and CB exporter; no parallel cache | launcher requires one visible GB10 at CC 12.1; assignments/config groups/tensor formats admit only FP8-CB K4..K48 step 4, delegated `FP8_E4M3`, and BF16. Shipcard, publisher, and strict RTX4090 validator always refuse it regardless of filled slots or force flags |
 | **RTX4090 validation-only direct export** | Consume a completed allocator assignment plus its exact value-bound column weights and original source; rerender only selected FP8-CB units, copy required source/BF16 tensors, then structurally validate | `scripts/export_qwen38_rtx4090_fp8_cb_validation_only.sh` → `prismaquant.rtx4090_validation_export` → existing `export_nvfp4_cb_streaming` → `validate_rtx4090_fp8_cb_validation_only` | the same top-level `fp8_cb`, `UNRELEASABLE_VALIDATION_ONLY` artifact; no retained-menu cache or serving receipt | no cache build: exporter streams the source and invokes the existing weighted renderer only for the selected assignment; `cb_render_identity` binds the exact supplied col-weights values and complete decoded-source identity | requires the allocator's assignment-bound whole-artifact budget stamp at a positive ceiling no greater than 18,000,000,000 bytes; refuses source namespace exclusions and every non-policy/NVFP4 format. It never calls `run-pipeline.sh`, and release/graph gates remain unchanged |
 | **4/4 E** | compressed-tensors export (§6) | `prismaquant.export_native_compressed` (`1665-1699`) | `exported/` in **~1 GiB safetensors shards** (`EXPORT_SHARD_BYTES`, default `1073741824`); `logs/export.log` | **none — always runs** | default lane |
 
@@ -1911,28 +1931,23 @@ PRODUCTION_CACHE_RENDER_SCOPE=assignment  …_CACHE_PREFETCH=require
 VALIDATED_SOURCE_PREFETCH=require   VALIDATED_FRONTIER_PICK=kneedle,
                                     or `budget` under a TARGET_DISK_GB card
 VALIDATED_FRONTIER_SKIP_CALIB=$NSAMPLES (held-out disjointness, ON)
-CB_EXPERT_EMPIRICAL=0  CB_SCALE_CODING=two_tier  (D15: shipped values)
-CB_CODEBOOK_SOURCE_SCOPE=none  (legal none|fp8|all; build-time family selector
-                     for codebook training. `fp8` is the production learned-CB
-                     arm; `all` is warned research-only because learned
-                     NVFP4-CB is measured NO-GO)
-CB_CODEBOOK_SOURCE=lattice  (legacy artifact-wide ANY scalar; derived from the
-                     bundle's per-rung source map when present, otherwise from
-                     the legacy scope; `learned` when any rung is learned)
-CB_CODEBOOK_BUNDLE=<empty at scope none; otherwise
-                     WORK_DIR/artifacts/cb_learned_bundle.pqcb>
-CB_SCALE_SWEEP=1  CB_SCALE_SWEEP_SCOPE=<unset>  (legal
-                     none|nvfp4|fp8|all; unset preserves the legacy bool)
-CB_LADDER_INTERP=0  (`1` exports PRISMAQUANT_CB_LADDER_INTERP=1 to the cost
-                     stage and gates the empirical expert stage's flag)
+CB_EXPERT_EMPIRICAL / CB_SCALE_CODING / CB_CODEBOOK_* / CB_SCALE_SWEEP*  —
+                     lost their shell DEFAULTS on 2026-09-02 with the Gridbook
+                     codebook lane (archive/gridbook_lane_2026-09-02/). Every
+                     default was set only inside an `EXPORT_CONTAINER=nvfp4_cb`
+                     block, and that container now `exit 2`s. They survive as
+                     settings-hash entries (`${VAR:-}`) because the CB render
+                     plumbing still reads them (debt D34), so a persisted
+                     cost/render artifact must still invalidate when an
+                     operator sets one. With no shell default,
+                     `allocator.py:2377` refuses a CB menu that reaches it
+                     without an explicit --cb-scale-coding.
 ACTIVATION_FAIR_PRICING=1  (exported as PRISMAQUANT_ACTIVATION_FAIR_PRICING)
-PRISMAQUANT_CB_LDLQ=0  (opt-in post-fit feedback assignment)
-PRISMAQUANT_CB_LDLQ_SCOPE=<unset>  (legal none|nvfp4|all; AUTHORITATIVE over the
-                     legacy bool above — unset scope derives from it, `all` when
-                     the bool is true and `none` otherwise; an inconsistent pair
-                     refuses. `nvfp4` is the dual-basis production recipe, §6.5.1)
-PRISMAQUANT_CB_LDLQ_GATE=holdout|in_sample|0  (default holdout: do-no-harm certified on rows the LDLQ fit never saw; per-Linear and per-expert fallback to raw; byte-neutral. `in_sample` is the pre-2026-08-08 legacy scoring, reproduction only)
-PRISMAQUANT_CB_MINCHAIN=0  (opt-in monotone packed-expert rung chain)
+PRISMAQUANT_CB_LDLQ / _SCOPE / _GATE, PRISMAQUANT_CB_MINCHAIN* — no shell
+                     default since 2026-09-02; they survive only as
+                     settings-hash entries (`${VAR:-}`). Their semantics are
+                     unchanged and their code is live (debt D34), but nothing in
+                     the pipeline sets them now that the CB export path is gone.
 AURA_ADDITIVITY_GATE=measure
 PRISMAQUANT_GGUF_IMATRIX=1  DEVICE=cuda  EXPORT_DEVICE=cuda
 ```
@@ -2189,7 +2204,7 @@ row keying/counts, source hashes and overlap precedence, then stamps
 The stamp travels into `selection.json` and the reserved layer-config metadata. A stamped table
 is refused without the allocator flag; an unstamped table cannot be blessed by the flag.
 
-### 3.5 Archived modes — the eleven `exit 2` gates
+### 3.5 Archived modes — the twelve `exit 2` gates
 
 | Trigger | Lines | Archive |
 |---|---|---|
@@ -2204,10 +2219,14 @@ is refused without the allocator flag; an unstamped table cannot be blessed by t
 | `ALLOC_PROPAGATED_SENSITIVITY_REPORT` non-empty | `374-380` | `archive/l3_propagated_2026-07-30` |
 | `PRODUCTION_CACHE_UNION` truthy (the archived surrogate-driven **smart-union candidate selector**, not the exact set union in §5.4) | `381-387` | `archive/union_cache_2026-07-30` |
 | `MSE_PROMOTION` truthy | `388-394` | `archive/mse_promotion_2026-07-30` |
+| `EXPORT_CONTAINER=nvfp4_cb` (the retired Gridbook codebook lane, 2026-09-02) | at the `EXPORT_CONTAINER` validity check | `archive/gridbook_lane_2026-09-02` |
 
-**A twelfth `exit 2` gate that is *not* an archived mode.** `COST_MODE=production-render-score`
+**A thirteenth `exit 2` gate that is *not* an archived mode.** `COST_MODE=production-render-score`
 (or `production-render`) refuses when the run targets a CB/CBL menu — detected as
-`EXPORT_CONTAINER=nvfp4_cb` **or** a `FORMATS` entry matching `*_CB_*`. The mode itself is
+`EXPORT_CONTAINER=nvfp4_cb` **or** a `FORMATS` entry matching `*_CB_*`. Since 2026-09-02 the
+first of those two signals is subsumed: the `nvfp4_cb` container gate fires first and refuses
+outright. The `FORMATS` limb still fires, and still matters, because the CB format/cost
+plumbing survives the lane (§9.2, debt D34) and can still be named in a menu. The mode itself is
 alive and correct off CB; what is unlicensed is the *pairing*, because the mode scores on
 `weight_mse` and that currency does not survive a codebook-basis change (§4.3 wording above;
 measured CV 0.088 → 0.224 across K28→K48). Activation currency holds where weight currency
@@ -2227,7 +2246,7 @@ rendered, disjoint keys under exact expected coverage and performs their verifie
 It is therefore a manual cache-build transport/reconciliation tool, not a restored pipeline
 mode (`union_production_cache.py`; §5.4).
 
-A twelfth refusal lives outside `run-pipeline.sh`: `export_native_compressed.main()` calls
+A fourteenth refusal lives outside `run-pipeline.sh`: `export_native_compressed.main()` calls
 `_refuse_archived_block_output_match()`, which `SystemExit`s if
 `PRISMAQUANT_BLOCK_OUTPUT_MATCH` is set truthy (`archive/block_output_match_2026-07-30`,
 re-vet R25). It is a `SystemExit` rather than a shell gate because the lever was an exporter
@@ -5833,7 +5852,12 @@ evidence either way and should be quoted as a range.
   `vllm`/`torch`/driver versions (`importlib.metadata` + NVML only — the writer never imports
   torch or touches CUDA, so it cannot add a context to a 121 GiB pool), GPU name,
   `enforce_eager`, `--quantization`, `PRISMAQUANT_*` env, and the resident-extension basenames
-  read from the **server's** `/proc/<pid>/maps` (`gridbook|prismaquant|flashinfer|causal_conv1d|fla`,
+  read from the **server's** `/proc/<pid>/maps`
+  (`prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|causal_conv1d|fla` — `gridbook`
+  was dropped from the alternation on 2026-09-02 with the lane, and **no Tessera
+  extension has replaced it**, so a Tessera serve fingerprints as "no lane extension
+  resident"; giving `EXTENSION_PATTERN` a Tessera alternative belongs to the
+  admission half, with the pin),
   unioned over the API-server *and* EngineCore processes — it is the engine that holds the
   kernels). Client-side is not an option: the measuring client cannot see the server's address
   space — reading a root-owned container process's maps from the host is *denied*, and the
@@ -6267,15 +6291,15 @@ artifacts exported before the rename.
 
 | Arch | profile | prio | structure spec | `default_serving_profile` | `supported_lanes` (preferred) | gridbook opt-in | MTP |
 |---|---|---|---|---|---|---|---|
-| qwen3 (dense + routed MoE; smoke: Qwen3-30B-A3B) | `qwen3.py` | 120 | ✅ | `vllm_packed_moe` | CT, **nvfp4_cb** (CT) | producer id `qwen3` declared by pinned Gridbook contract; `Qwen3MoeForCausalLM` uses the generic per-layer FusedMoE loader | none |
-| qwen3_5 / 3.6 MoE | `qwen3_5.py` | 110 | ✅ | `vllm_packed_moe` | CT, **nvfp4_cb** (CT) | declared by pinned Gridbook contract | `build_mtp_module` → `MtpModule` (live; R12) |
-| qwen3_5_dense | `qwen3_5_dense.py` | 100 | ✅ | `vllm_packed_moe` | CT, **nvfp4_cb** (CT) | no expert-loader hook | inherits `Qwen3_5Profile.build_mtp_module` (dead copy removed, R12) |
+| qwen3 (dense + routed MoE; smoke: Qwen3-30B-A3B) | `qwen3.py` | 120 | ✅ | `vllm_packed_moe` | **CT** (CT) | `Qwen3MoeForCausalLM` uses the generic per-layer FusedMoE loader. Its `nvfp4_cb` declaration was removed 2026-09-02 with the lane (§9.2) | none |
+| qwen3_5 / 3.6 MoE | `qwen3_5.py` | 110 | ✅ | `vllm_packed_moe` | **CT** (CT) | `nvfp4_cb` declaration removed 2026-09-02 with the lane (§9.2) | `build_mtp_module` → `MtpModule` (live; R12) |
+| qwen3_5_dense | `qwen3_5_dense.py` | 100 | ✅ | `vllm_packed_moe` | **CT** (CT) | no expert-loader hook; `nvfp4_cb` declaration removed 2026-09-02 with the lane (§9.2) | inherits `Qwen3_5Profile.build_mtp_module` (dead copy removed, R12) |
 | gemma4 | `gemma4.py` | 140 | ✅ | `vllm_packed_moe` | CT | ⚠ none | none |
 | lfm2_moe (LFM2.5) | `lfm2_moe.py` | 150 | ✅ | `vllm_packed_moe` | CT | ⚠ none | `has_mtp → False` |
 | minimax_m2 | `minimax_m2.py` | 160 | ✅ **added R22** — all 8 overrides declared | `vllm_packed_moe` **(added R22)** | CT | ⚠ none | `has_mtp → False` |
-| deepseek_v4 | `deepseek_v4.py` | 170 | ✅ | `vllm_packed_moe` **(added R22)** | CT, **nvfp4_cb** (CT) | declared by the exact Gridbook producer pin (0.8.5/v3 commit `e992e59` when this row was written; 0.8.11/v4 commit `187c721` since 2026-08-21); streaming CB export, W8A16 source passthrough, top-level loader, and routed per-role LUT ABI are wired and the installed-wheel GPU route gate passed on 0.8.5; full-artifact served parity remains a post-export gate | `has_mtp → False`; three source-quantized DSpark stages are declared by the header-validated physical→construction overlay (§6.3), with no tensor rewrite. The experimental hybrid sidecar emits 27 physical K12 CB targets plus four physical W8A16 bases (`main_proj` and three grouped-BMM `wo_a`) with exact construction declarations. It remains non-shipping until the separately pinned Gridbook 0.8.6/v4 consumer is immutable and the sidecar clears load, memory, acceptance, and paired endpoint/throughput-evidence gates. |
-| hy_v3 | `hy_v3.py` | 180 | ✅ | `gguf` (overridden, L1) | CT, nvfp4_cb, **gguf** (gguf) | declared by pinned Gridbook contract | `has_mtp → False`; MTP passthrough + out-of-band CB scripts |
-| laguna (poolside S/XS 2.x) | `laguna.py` | 190 | ✅ | `nvfp4_cb` (overridden, L1) | CT, **nvfp4_cb** (nvfp4_cb) | declared by pinned Gridbook contract; drafter still separate | `has_mtp → False` |
+| deepseek_v4 | `deepseek_v4.py` | 170 | ✅ | `vllm_packed_moe` **(added R22)** | **CT** (CT) | `nvfp4_cb` declaration removed 2026-09-02 with the lane (§9.2). Until then it was declared by the exact Gridbook producer pin and carried a streaming CB exporter, W8A16 source passthrough, a top-level loader and a routed per-role LUT ABI; all of that is archived at `archive/gridbook_lane_2026-09-02/`, and the DSpark hybrid sidecar it fed is unreachable from here | `has_mtp → False`; three source-quantized DSpark stages are declared by the header-validated physical→construction overlay (§6.3), with no tensor rewrite. The experimental hybrid sidecar emits 27 physical K12 CB targets plus four physical W8A16 bases (`main_proj` and three grouped-BMM `wo_a`) with exact construction declarations. It remains non-shipping until the separately pinned Gridbook 0.8.6/v4 consumer is immutable and the sidecar clears load, memory, acceptance, and paired endpoint/throughput-evidence gates. |
+| hy_v3 | `hy_v3.py` | 180 | ✅ | `gguf` (overridden, L1) | CT, **gguf** (gguf) | `nvfp4_cb` declaration removed 2026-09-02 with the lane (§9.2) | `has_mtp → False`; MTP passthrough (its out-of-band CB scripts went with the lane) |
+| laguna (poolside S/XS 2.x) | `laguna.py` | 190 | ✅ | spec declares none (2026-09-02) | **CT** (CT) | 2026-09-02: this profile preferred `nvfp4_cb` and pinned it as its `default_serving_profile`; both went with the lane (§9.2), so it now derives its profile like every other. Drafter still separate | `has_mtp → False` |
 | qwen4_exp (Qwen3.8-Flash-Next 177B) | `qwen4_exp.py` | 200 | ✅ | ⚠ **spec declares none** | ⚠ **spec declares none** → accessor default CT | ⚠ none | `has_mtp → False`; `mtp_source_prefix "mtp."` + `mtp.` in `passthrough_prefixes` |
 | glm5_next (GLM-5.3-Flash 314B) | `glm5_next.py` | 210 | ✅ | `vllm_glm5_next_packed_moe` (extends `vllm_packed_moe`) | CT (CT) | ⚠ none | `has_mtp → False`; body-indexed nextn at layer 45, passthrough (hy_v3 route) |
 | default | `default.py` | — (terminal) | n/a by design | — | CT (default) | n/a | none |
@@ -6524,53 +6548,48 @@ Consumer migration is separate, deliberate work.
 
 ## 9. Serving lanes
 
-Four artifact containers, one allocator. `EXPORT_CONTAINER` picks the lane (§3.3) and
-constrains the whole run: both non-default lanes hard-gate `PRODUCTION_CACHE=0` and a matching
-`TARGET_PROFILE` (`exit 2`), and must pass the render-faithfulness assertion (§4.7) — their
-exporters ship imatrix-weighted bytes, so the cost render must be weighted too. That is no
-longer the same as requiring `COST_MODE=local`: since CB Milestone C the production cache can
-render those families weighted (`--col-weights`), so a cached-menu render is admissible on
-these lanes, opt-in and non-default. Each lane's serve command, endpoint, gate set and KL
+Three artifact containers, one allocator (a fourth, the Gridbook codebook lane,
+was retired 2026-09-02 — §9.2). `EXPORT_CONTAINER` picks the lane (§3.3) and
+constrains the whole run: the GGUF lane hard-gates `PRODUCTION_CACHE=0` and a matching
+`TARGET_PROFILE` (`exit 2`), and must pass the render-faithfulness assertion (§4.7) — its
+exporter ships imatrix-weighted bytes, so the cost render must be weighted too. That is no
+longer the same as requiring `COST_MODE=local`: the production cache can
+render that family weighted (`--col-weights`), so a cached-menu render is admissible on
+the lane, opt-in and non-default. Each lane's serve command, endpoint, gate set and KL
 evaluator are declared in `prismaquant/lane_specs/*.json` (re-vet **R16**); the gates are
 advisory and the shipcard is what refuses — at **publication**, via `tools/publish_artifact.py`
 (§7.1).
 
-**DIAGRAM-2 — Serving lanes:** the three artifact containers a PrismaQuant exporter
-writes today, the runtime each requires, the Spark-proven target, and the physically
-unqualified RTX 4090 candidate. The fourth lane (Tessera, §9.4) is deliberately absent
-from the diagram: it is a declared bar with no exporter behind it yet.
+**DIAGRAM-2 — Serving lanes (re-drawn 2026-09-02):** the two artifact containers a
+PrismaQuant exporter writes today and the runtime each requires. The Gridbook
+codebook container and its plugin, its RTX 4090 candidate and its sm_120
+validation profile were removed with the lane (§9.2) and are gone from the
+diagram; the Tessera lane (§9.4) stays deliberately absent for the opposite
+reason — it is a declared bar with no exporter behind it yet.
 
 ```mermaid
 flowchart LR
   subgraph CONT["artifact containers"]
     A1["compressed-tensors<br/>maintained: NVFP4 / FP8_DYNAMIC / BF16<br/>FP8_SOURCE: source-artifact compatibility<br/>export_native_compressed.py"]
-    A2["codebook (CB)<br/>NVFP4 reader/producer: K1..K25 (new bands contract-gated)<br/>K26..K32: direct codec/lattice research only<br/>FP8 reader: K4/K8/K12/K16/K20/K24 + every K28..K48<br/>new FP8 producer: K4..K48 step 4<br/>SM89: lattice FP8-CB + FP8_E4M3 + BF16 only<br/>SM120 validation: both producer ladders + native terminals; no W8A16/source FP8"]
     A3["GGUF<br/>Q2_K..Q8_0 + IQ family<br/>export_gguf.py"]
   end
 
   subgraph RT["runtimes"]
     R1["vanilla vLLM<br/>no plugin, no forked runtime, no custom kernels<br/>CUTLASS NVFP4 path on Blackwell"]
-    R2["vLLM + Gridbook plugin<br/>exact commit from gridbook_runtime_pin.json<br/>entry point vllm.general_plugins; runtime details owned by Gridbook"]
     R3["llama.cpp"]
     R4["vLLM GGUF path<br/>in-tree up to vLLM 0.19; official vllm-gguf-plugin after"]
   end
 
   subgraph HW["hardware"]
     H1["NVIDIA GB10 DGX Spark<br/>Blackwell sm_121, 128 GB unified memory<br/>~121 GB usable serving budget"]
-    H3["NVIDIA GeForce RTX 4090<br/>Ada sm_89, 24 GiB<br/>strict 18,000,000,000-byte artifact + 4 GiB FP8 KV<br/>PENDING physical correctness / graph / memory / performance"]
-    H4["NVIDIA sm_120 discrete target class<br/>candidate registration only<br/>v11 compile_only + unpinned<br/>NO device-qualified or shipping claim"]
-    H2["Strix Halo<br/>CANCELED / UNSUPPORTED<br/>prototype removed after hardware access was lost;<br/>no qualified Gridbook backend"]
+    H2["Strix Halo<br/>CANCELED / UNSUPPORTED<br/>prototype removed after hardware access was lost;<br/>no qualified backend"]
   end
 
   A1 -->|"serving profile vllm_packed_moe"| R1
-  A2 -->|"serving profile nvfp4_cb"| R2
   A3 -->|"serving profile gguf"| R3
   A3 -->|"serving profile gguf"| R4
 
   R1 -->|"Spark-proven -- shipped rdtand artifacts"| H1
-  R2 -->|"Spark-proven -- 295B-class at ~2.9 bpp on ONE Spark"| H1
-  R2 -.->|"v11 sm89 routes are compile_only; strict export refuses"| H3
-  R2 -.->|"validation-only profile; release/device gate still closed"| H4
   R3 -->|"Spark-proven -- 295B-class at 2.8 bpp; the KL harness for this lane"| H1
   R4 -->|"smoke-verified on the 0.19.2 venv only, never KL-measured"| H1
 
@@ -6581,13 +6600,10 @@ flowchart LR
   classDef pending stroke:#c07800,stroke-width:2px,stroke-dasharray:4
   classDef unsupported stroke:#c0392b,stroke-width:2px,stroke-dasharray:4
   class H1 proven
-  class H3 pending
-  class H4 pending
   class H2 unsupported
 ```
 
-PrismaQuant paths below are repo-root-relative. Gridbook source paths refer to the separately
-versioned repository at the exact commit recorded in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`.
+PrismaQuant paths below are repo-root-relative.
 
 ### 9.1 Native compressed-tensors — the default lane
 
@@ -6596,943 +6612,50 @@ kernel — the only lane whose correctness depends on nothing we maintain. All o
 it; §7 owns its gates. Validation runs in-process (`validate_native_export.py:171` constructs
 `LLM(...)`), so it needs a venv or container carrying vLLM (§10).
 
-### 9.2 gridbook — codebook (CB) serving
+### 9.2 codebook (CB) / gridbook — RETIRED 2026-09-02
+
+Robert, 2026-09-02: *"put Tessera in PrismaQuant and remove Gridbook."* The
+fourth container is gone from the producer. `EXPORT_CONTAINER=nvfp4_cb` now
+fails with `exit 2` (§3.5), the producer and serving pins, the exporter
+(`export_nvfp4_cb*.py`), the lane spec (`lane_specs/nvfp4_cb.json`), the four
+CB serving profiles, the CB ship-gate slots and 73 test modules (1,691 node IDs) are archived whole at
+`archive/gridbook_lane_2026-09-02/`, together with the lane's 27 documents
+(`archive/gridbook_lane_2026-09-02/docs/lanes/nvfp4-cb/`) and every served
+measurement it produced. Read that directory's `README.md` before proposing
+anything CB-shaped: it records what the lane was, what it was worth, and what
+capability went with it.
+
+Three consequences the removal actually has, stated once so no gate has to
+infer them:
+
+- **`FP8_BLOCK_UE8M0_SOURCE` is `ROUTE_STATUS_BLOCKED`.** Those bytes executed
+  on the plugin's `Fp8SourceW8A16LinearMethod` and on nothing else, so the
+  verdict changed because the runtime left, not because anyone reweighed it.
+  Per principle 1 the rung stays **priced** — an allocator that wants it is
+  reporting a serving gap — and per principle 9 export fails closed on it.
+- **`MXFP4_SOURCE` keeps `ROUTE_STATUS_BACKED`** (stock vLLM Marlin MoE, which
+  was never Gridbook's route) but has **no writer and no serving profile**: the
+  `nvfp4_cb` container was its only exporter and the `nvfp4_cb` profile its
+  only offer. It is an exporter gap, not a route gap, and the two are not
+  conflated.
+- **`lane_eligibility.py`** (renamed from `gridbook_lane_eligibility.py`) is the
+  **generic** closed-world engine and stays: it is what admits Tessera (§9.4).
+  Its Gridbook schema string, asset directory and contract index are gone, and
+  `load_eligibility_table()` now demands an explicit `contract_path=` — with
+  none, every unit resolves UNATTESTED and export fails closed.
+
+The CB **format / cost / render plumbing** (`cb_layout.py`,
+`nvfp4_cb_formats.py`, `nvfp4_cb_footprint.py`, `cb_ldlq*.py`, `cb_minchain.py`,
+`cb_warm_state.py`, `cb_banked_books.py`, `cb_learned_promotion.py`,
+`cb_anchored_cost.py`, `cb_ladder_cross_family.py`, `routed_moe_codebooks.py`,
+`mxfp4_widen.py`, `source_class_format_plan.py`, and CB branches inside
+`production_weight_cache.py`, `allocator.py`, `format_registry.py`,
+`export_native_compressed.py`, `layer_config.py`, `lane_spec.py`,
+`serve_constraints.py`, `model_profiles/*`) is **still in the tree** and is
+recorded as debt D34 (§12). Removing the lane made those rungs unexportable and
+unservable — which is the property that matters — but the code that prices and
+renders them was not excised. Do not read its presence as a live lane.
 
-**Package, registration, and ownership.** Gridbook is one independent package with one source
-repository, one test suite, and one release history. It registers through vLLM's general-plugin
-entry point and owns all serving code: configuration parsing, architecture loader hooks, CUDA
-sources, kernel dispatch, telemetry, and runtime tests. PrismaQuant owns the inverse boundary:
-model analysis, allocation, artifact encoding, and exporter metadata. There is no runtime source
-under this repository and no sync operation between repositories.
-
-The complete integration is one immutable record, `prismaquant/gridbook_runtime/gridbook_runtime_pin.json`.
-Every source-backed serving script resolves that record through
-`prismaquant/gridbook_runtime/gridbook_runtime.sh`, accepts only an exact clean commit checkout,
-materializes it as a self-contained standalone checkout in the commit-addressed cache, mounts
-that copy read-only, and independently re-reads the tracked pin inside the container before
-re-attesting it. The helper copies those already-verified bytes to a private writable checkout
-and force-installs the exact `git+file://<copy>@<pin.commit>` VCS target; the full
-requested/resolved commit is then checked in PEP 610 `direct_url.json`.
-
-An immutable serving image may instead use a reviewed release wheel. That path is admissible
-only when the launcher supplies the independently verified 64-hex wheel digest, PEP 610 records
-the same SHA-256 under `archive_info`, the local wheel filename binds the selected package
-version, and the ordinary RECORD/source/import-origin closure below passes unchanged. The live
-manifest retains commit, version, and wheel digest together; the digest is not inferred from the
-installed package. Branch names, moving tags, dirty trees, unpinned or mismatched wheels, bare
-local directories, and editable installs are rejected. The shared Docker arguments launch at `/`
-with `PYTHONSAFEPATH=1`; after install, the helper requires imported `gridbook.__file__`,
-`__spec__.origin`, and every `__path__` entry to resolve inside the selected distribution's
-real package root and requires the imported version to match. Explicit `PYTHONPATH` shadows
-therefore fail the proof. Serve fingerprints include the resolved Gridbook commit and the
-installed distribution's PEP 610 VCS-or-wheel/RECORD/source/import-origin closure, so an A/B cannot silently
-compare different runtime code, a mutated same-version install, or a same-name package shadow.
-Materializing overrides is load-bearing for linked Git worktrees: their `.git` file points into
-an unmounted parent repository and is not a usable VCS identity inside Docker. The standalone
-cache contains its own `.git` object database and can be created from a verified override with
-no network access; concurrent publishers use the same temporary-directory/atomic-rename law as
-the remote-fetch path. A non-hex pending commit or `version_is_release=false` is rejected before
-checkout materialization or installation.
-
-**Quantized token embedding (`gridbook.embedding`, 2026-08-14).** The consumer
-half of the `quantized_embedding` contract in §6.2. Dispatch matches the declared
-unit against the serving prefix through `_candidate_bases`, and canonicalizes the
-*stored* keys at parse (`canonicalize=_canonical_target`), so both sides land in
-one namespace — load-bearing on Qwen3.8-27B, where three spellings are live at
-once: checkpoint `model.language_model.embed_tokens`, vLLM module
-`language_model.model.embed_tokens` (components **swapped**), and canonical
-`model.embed_tokens`. Verified across all three, both directions.
-
-Two failure modes are worth recording because neither is reachable by unit test:
-
-- **vLLM's post-load sweep is an `isinstance` check, not duck typing.**
-  `model_loader/utils.process_weights_after_loading` selects with
-  `isinstance(quant_method, QuantizeMethodBase)`. A method that implements the
-  entire surface *structurally* without being a subclass is skipped **in
-  silence**: weights load, dispatch is correct, the artifact inspects clean, and
-  the model dies on its **first forward** with a missing derived attribute. The
-  fix is virtual subclass registration (`QuantizeMethodBase.register(...)`) bound
-  from `create_weights`, which keeps `apply` ours to refuse and the module
-  importable without vLLM. Found by a load smoke; no unit test in either
-  repository could have found it, because the sweep exists only inside vLLM.
-- **Vocab padding meets packed nibbles.** vLLM pads the vocab to a multiple of 64
-  and zero-fills the pad rows. On packed uint8 that is zero *codes*, which decode
-  to 0.0 — true by arithmetic rather than by assumption, so the smoke asserts it.
-
-**A CB rung on `lm_head` exports cleanly and does not serve (2026-08-14).**
-A recipe naming `lm_head` at `NVFP4_CB_K18` produces a well-formed artifact —
-`config_groups.group_0 = {format: NVFP4_CB_K18, targets: [lm_head]}`, empty
-`ignore`, bytes written — and vLLM then refuses it: *"There is no module or
-parameter named `lm_head.cb_qweight` … available: {`lm_head.weight`}"*. No
-Gridbook method claims `ParallelLMHead`, so it keeps its plain BF16 `weight` and
-the packed payload has nowhere to land. This is the same shape of gap as the
-`isinstance` sweep above — the producer emits a declaration nothing on the
-serving side consumes — and it means the **shape gates in
-`cb_byte_feasibility` prove legality, not servability**. On the CB lane the head
-therefore rides the *delegated stock-CT* path: `lm_head: FP8_DYNAMIC` dispatches
-to `CompressedTensorsLinearMethod` and passes the same bit-exactness smoke. The
-byte consequence is what re-opens the row-split head as a real lever: a CB head
-would price at 0.283–0.889 GB against FP8's 1.272 GB on Qwen3.8-27B.
-
-Load smoke `dq-runs/embed-smoke/` (a deliberately untied synthetic Qwen3 with
-`vocab=4104`, chosen non-multiple-of-64 to keep the padding path live): dispatch,
-resident-vs-disk byte equality, zero pad codes, and served lookup **bit-identical**
-to decoding the on-disk tensors — passing under **both** eager and CUDA-graph
-capture (principle 9). Serving artifact A therefore requires a gridbook release
-carrying this mechanism, and that pin bump is itself a serving promotion. Note
-the smoke deliberately runs as a `PYTHONPATH` shadow, which the *pinned* serving
-path rejects by design — it proves the mechanism, not the release.
-
-**Delegated NVFP4 W4A4 was unservable on vLLM 0.26 until 2026-08-14.** Gridbook
-hands non-CB groups back to vLLM and then fails **closed** on any resolved
-backend absent from its audited table (no env bypass, on purpose — the table
-exists because Marlin's NVFP4 selector passes a W4A4 declaration and then
-rebuilds the config with both activation-scale arguments `None`, running
-weight-only arithmetic under a W4A4 label). The table knew
-`CutlassNvFp4LinearKernel`; this build's ladder selects
-`FlashInferCutlassNvFp4LinearKernel`, so **every stock NVFP4 W4A4 Linear was
-refused**. Re-audited and admitted: `input_quant_key()` is `kNvfp4Dynamic` and
-`apply_weights` feeds a real `x_blockscale` to
-`flashinfer_scaled_fp4_mm(backend="cutlass")` — the activation contract is
-honoured and the operator is CUTLASS, FlashInfer being only the wrapper. This
-matters for artifact A's recipe: a mixed CB artifact containing any stock NVFP4
-W4A4 Linear would otherwise have failed at load, after the export.
-
-**Closed Gridbook-0.8.11 measurement environment (31 names).** This is a PrismaQuant release-
-evidence profile, not a second catalog of Gridbook's general runtime defaults. The authority is
-`prismaquant.gridbook_environment.GRIDBOOK_ENVIRONMENT_REGISTRY`, whose exact pin/source scan
-fails if the pinned version, its required W8A16 feature, or its environment namespace changes.
-It described 0.8.5 with 29 names until the 2026-08-21 producer-pin advance, which added the two
-0.8.9-era selectors marked below. Every snapshot includes values **and
-nulls** for all names:
-
-| Category | Count | Exact names |
-|---|---:|---|
-| execution | 21 | `GRIDBOOK_MXFP8_DENSE`, `PRISMAQUANT_CB_GEMV`, **`PRISMAQUANT_CB_FP8_GEMV_V2`**, `PRISMAQUANT_CB_FUSED_FP4`, `PRISMAQUANT_CB_FUSED_FP4_MOE`, `PRISMAQUANT_CB_BF16_SM120`, `PRISMAQUANT_CB_FP4_FUSED_MIDM`, `PRISMAQUANT_CB_MOE_PERSISTENT_B`, `PRISMAQUANT_CB_MOE_PERSISTENT_B_CFG`, **`PRISMAQUANT_CB_MOE_PERSISTENT_B_D2R`**, `PRISMAQUANT_CB_FUSED_MIDM`, `PRISMAQUANT_CB_GROUPED_TRIM`, `PRISMAQUANT_CB_PREFILL_EXPERT_CHUNK`, `PRISMAQUANT_CB_PREFILL_CHUNK_BYTES`, `PRISMAQUANT_CB_DECODE_CONTRACT`, `PRISMAQUANT_CB_FP8_SCHED`, `PRISMAQUANT_CB_FP4V2_SCHED`, `PRISMAQUANT_CB_W2_SCHED`, `PRISMAQUANT_CB_W2_ROWS`, `PRISMAQUANT_CB_W2_WARPS`, `VLLM_USE_DEEP_GEMM` |
-| correctness bypass | 1 | `PRISMAQUANT_SKIP_CB_CAST_CHECK` |
-| residency/build | 5 | `PRISMAQUANT_PRELOAD_FUSED`, `PRISMAQUANT_CB_EXT_DIR`, `PRISMAQUANT_CUTLASS_INCLUDE`, `CUDACXX`, `CXX` |
-| retired | 3 | `PRISMAQUANT_CB_DECODE`, `PRISMAQUANT_CB_EXPAND`, `PRISMAQUANT_CB_PREFILL` |
-| diagnostic | 1 | `PRISMAQUANT_DEBUG_PREFIXES` |
-
-The canonical gold set leaves `GRIDBOOK_MXFP8_DENSE` **absent** and sets exactly
-`PRISMAQUANT_CB_GEMV=inherited`, `PRISMAQUANT_CB_BF16_SM120=0`,
-`PRISMAQUANT_CB_FP4_FUSED_MIDM=0`, `PRISMAQUANT_CB_MOE_PERSISTENT_B=0`,
-`PRISMAQUANT_CB_MOE_PERSISTENT_B_CFG=0`,
-`PRISMAQUANT_CB_MOE_PERSISTENT_B_D2R=0`, `PRISMAQUANT_CB_FP8_GEMV_V2=0`,
-`PRISMAQUANT_CB_FUSED_MIDM=1`,
-`PRISMAQUANT_CB_GROUPED_TRIM=1`,
-`PRISMAQUANT_CB_PREFILL_CHUNK_BYTES=1073741824`,
-`PRISMAQUANT_CB_DECODE_CONTRACT=v1`, `VLLM_USE_DEEP_GEMM=0`,
-`PRISMAQUANT_SKIP_CB_CAST_CHECK=0`, and `PRISMAQUANT_PRELOAD_FUSED=0` — 14 set
-values; the other
-17 names must be absent. The two added in 2026-08-21 are pinned `0` for the
-same reason every other dispatch selector here is: 0.8.9 moved their unset
-default to `auto`, and the gold lane pins the kernel its evidence was measured
-on rather than following a runtime default. Absence is semantic: the MXFP8 override would select the distinct
-direct group-32 W8A8 lane; literal `0` is invalid for the two fused-FP4
-selectors and expert-chunk override, and the retired `PRISMAQUANT_CB_DECODE` must never
-reappear. Gold clears and applies that state before the first tokenizer/runtime import.
-Endpoint and matched-performance profiles change preload to `1` so compared arms have the
-same extension residency; the endpoint also sets
-`PRISMAQUANT_CB_EXT_DIR=/opt/gridbook/ext-cache`. Server manifests inspect the complete process
-tree using the same 31-name allowlist plus the two immutable runtime-pin transport variables,
-`PYTHONSAFEPATH`, and `PYTHONPATH`; the last must be affirmatively absent, while the
-short-lived `/repo` fingerprint writer is not part of the inspected server process set.
-Every readable serving process must agree.
-
-**Separate current Gridbook-0.8.6 DSpark serving profile.** The table above is the
-producer/gold authority and tracks the producer pin (0.8.5 then, 0.8.11 now). It is neither
-imported nor amended for the later
-consumer. `prismaquant/dspark_serving_profile.py` owns a literal, independently scanned
-`dspark_serving_profile.v1` profile for paired DSpark validation only. Its 29-name Gridbook
-namespace selects `PRISMAQUANT_CB_GEMV=v2`, persistent-B and its cfg both `0`, decode contract
-`v1`, fused-mid-M/grouped-trim/preload `1`, and leaves every FP8/FP4v2/W2 scheduler/rows/warps
-override absent; it additionally binds
-`PYTORCH_ALLOC_CONF=expandable_segments:True`. The inspected server tree must also resolve
-`VLLM_MOE_SKIP_PADDING=true`. A source scan of the installed 0.8.6 package must find exactly
-the profile's closed Gridbook environment namespace: an unknown prefixed knob, a missing known
-knob, a differing value/null, or a process-tree disagreement refuses. This later profile can
-therefore evolve visibly without changing the semantics of the target-only authority. The
-regression digest is now stated on the scope it protects: the 29-name **historical
-projection** of the gold environment must still hash to its original literal, proving no
-pre-existing canonical value moved, and the full 31-name map carries its own digest
-(`test_gold_environment_grew_additively_over_the_historical_0_8_5_set`).
-
-The self-digesting runtime receipt binds image digest `sha256:58862b…869`, vLLM
-`0.26.1rc1.dev693+g7f7a32cfe.d20260812` at full commit
-`7f7a32cfec0f1bc5b73c37200b86631523a1ea8f`, torch `2.13.0+cu130`, and distribution
-`flashinfer-python==0.6.18` at commit
-`9ffd99510d92b883f154fc9f2e3d5aac93e231ca`. Import metadata, installed distributions, and
-image build metadata must all agree. Capability replay then proves FlashInfer's native DSV4
-dispatch entry `(head_dim=64, topk=256)` and the exact tuned max-context
-`sparse_mla_sm120_decode_dsv4`/`SparseMlaDecodeV3Runner` cache: token buckets
-`[1,4,8,16,32,64]`, 64 heads, head dimension 512, main top-k 128, extra top-k 2048, split
-count 34, six present positive tactics, exact cache-file SHA-256, and a serve-log cache hit with
-zero fallback tactic. Package, commit, capability, source, cache-file, or log mutation fails
-closed (`collect_runtime_evidence`, `validate_runtime_evidence`,
-`validate_cache_log_evidence`).
-
-The launch half is exact K=5, 262,144 model tokens, FP8 KV, 1,717,986,918 KV bytes,
-`max_num_seqs=1`, `max_num_batched_tokens=512`, Marlin, the `deepseek_v4` tool parser, and
-FULL_DECODE_ONLY graph sizes `[5,6]` with maximum six. The 512-token scheduler budget is part
-of the KV-admission contract, not merely a prefill performance choice. In the pinned vLLM,
-default async scheduling makes `max_in_flight_tokens = 2 * max_num_batched_tokens`; DSV4's
-sliding/compressor cache specs reserve their window plus those unsettled tokens. With the
-observed packed layout (22 tuple slots at 47,808 bytes each), changing only the budget to 4096
-requires 4,378 aggregate pages, or 4,604,675,328 bytes (4.29 GiB), and its binary-search
-diagnostic correctly estimates only 3,968 tokens under the fixed 1.6-GiB pool. At the selected
-512 budget the same one-request 256K admission needs 1,541,903,616 bytes (1.44 GiB) and fits.
-The subsequently logged aggregate `GPU KV cache size` is group-aware pool capacity, not a
-promise that an arbitrary different scheduler budget can admit one max-length request. Before
-any future scheduler-budget experiment can be called comparable, its supplemental runtime
-evidence must also bind the resolved async/concurrent-batch count, derived in-flight-token bound,
-KV spec/group census, tuple/page geometry, one-request required bytes, allocated blocks,
-reported token capacity, and successful 262,144-token admission; those diagnostic additions do
-not alter this release profile's selected 512-token launch contract.
-
-Finally, route evidence is realized execution, not configuration intent: exactly 70 target and
-six draft FP4 codebook routes must report GEMV v2, 16 target source-FP8 routes must report the
-inherited path, and fallback/unscoped counts must both be zero across the exact 43 target plus
-three draft layer identities (92 routes total). `validate_dspark_serve_manifest` threads this
-profile/runtime receipt through only the paired-DSpark endpoint validator while preserving the
-shared artifact, session, listener, launch, and residency checks. Every selected environment,
-package/capability/cache, launch, and route field has a mutation refusal test; a static digest
-test separately proves the old 0.8.5 environment is unchanged — since 2026-08-21 as the
-29-name historical projection of the grown 31-name map.
-
-**One machine-readable contract, not parallel tables.** Gridbook packages
-`gridbook/runtime_contract.json`; it is authoritative for the runtime's quantization aliases,
-CB rung ranges, serialized packing/type-size rules, and supported producer-profile ids.
-PrismaQuant's required `gridbook-contract` CI job VCS-installs the exact pinned commit, verifies
-its PEP 610 provenance and package version, and compares the producer's declarations against
-that contract. That job is also where the **K0.2** stage attestation runs end to end in a single
-process: `tests/test_gridbook_attestation_interop.py` emits a routed-MoE record with the real
-producer and feeds it to the pinned runtime's parser, payload validator, stage verifier, and
-artifact-level K0.2 verdict. It exists because a stage entry must declare *exactly* its five
-attested fields while every digest in the contract is framed over those same five by name — so a
-field ADDED on the producer side moves no hex, leaves both repositories' suites green, and fails
-for the first time at vLLM model load. Adding an architecture or changing a runtime ABI therefore
-starts in Gridbook, then advances this repository's single pin only after the contract test
-passes. PrismaQuant does not import Gridbook while exporting and carries no parallel runtime
-alias or loader table. Its producer codec remains an intentionally independent implementation of
-the artifact ABI; CI
-compares every packing/layout field and every rung so incompatibility fails at the boundary.
-
-**Candidate contract v11 and the strict sm89 lane (superseded by the released
-v12 pin — read the correction at the end of this subsection).** V11 makes the reader/producer distinction explicit instead of
-overloading one rung range. For FP8-CB, `formats[].rungs` is the reader domain
-K4/K8/K12/K16/K20/K24 plus every K28..K48, while
-`formats[].producer_rungs` is exactly K4..K48 step 4. PrismaQuant validates
-that external object with `gridbook_format_contract.py`; no local range is
-treated as evidence about a Gridbook runtime. V11 also carries
-`gridbook.lane-eligibility.v2`, a closed-world table keyed by exact platform,
-family, structure, regime, and rung. The strict dense Ada producer asks
-`gridbook_execution_contract.require_device_qualified_gridbook_routes` for
-both `decode` and `batch` on exact `sm_89`; an sm90/sm121 row or a
-`compile_only` row cannot satisfy it. `backed_with_serve_flag` is legal only
-when its exact required flags travel with the receipt. Graph compilation is
-intentionally **not** folded into that Gridbook table: the vLLM
-`fullgraph=True,dynamic=False` and mode-3 `FULL_AND_PIECEWISE` proof is external
-endpoint evidence under §7.
-
-For NVFP4-CB, a compatible v11 contract must declare both `rungs` and
-`producer_rungs` as every integer K1..K25; every lane cell must be a subset.
-K26..K32 have no public contract identity. Released Gridbook 0.8.11/v4 remains
-a historical reader input and cannot attest this producer expansion. Therefore
-the wider local registry is scaffolding only until the exact external pin also
-publishes those rungs and device-qualifies the requested structure/regime cells.
-
-**Correction (2026-08-30, the 0.9.1/v12 pin).** The paragraphs above describe
-what the v11 *candidate* was expected to publish. The contract that actually
-shipped and is now pinned publishes something narrower on both families:
-`FP8_CB_K.producer_rungs = [40, 44, 48]` (not K4..K48 step 4) and
-`NVFP4_CB_K.producer_rungs = [12..24]` (not K1..K25), while the reader `rungs`
-domains are unchanged from v4 — FP8 K28..K48, NVFP4 K12..K24. Three
-consequences follow, and none of them is a bug to fix here:
-
-- The eligibility cells narrow the *same* rungs on the attestation axis: no
-  published cell names an FP8 rung outside `[40, 44, 48]`, on any platform. So
-  the shipped DSv4 `FP8_CB_K28`/`K32` experts resolve `unattested` at the
-  route-status gate even on an `sm_120`-targeted profile.
-- `test_gridbook_runtime_contract.py` had asserted
-  `producer_rungs == list_producer_formats(family)` since the v11 work, a branch
-  dormant while v4 published no `producer_rungs`. v12 activates it. The pin
-  commit **splits** that equality rather than deciding it: the direction
-  `producer_rungs ⊆ producer menu` stays an assertion (nothing else checks it);
-  the reverse direction is a menu ban, vetoed by §Principle 1 in those words,
-  and its enforcement point is the per-artifact export gate (§Principle 9),
-  which the same pin proved live.
-- The `fp8_cb` producer menu reaches down to K4 while the runtime's *reader*
-  domain starts at K28, so K4..K24 are rungs **no released Gridbook can decode
-  at all**. Pre-existing, invisible under v4 because v4 published no producer
-  set to compare against. Recorded; closing it is a production-policy decision.
-
-`gridbook_format_contract.py` stays bound to `{v4, v11}` for the same reason: a
-v12 contract handed to that reader raises rather than silently re-scoping the
-ladder.
-
-`qwen38_sm120_cb_validation_only` is the matching producer-side registration
-scaffold: exact `target_platform=sm_120`, both public producer ladders, and only
-native NVFP4/FP8_E4M3/BF16 terminals. Its format rule also explicitly denies
-`format_registry.W8A16_COMPAT_FORMAT_NAMES`: the generic profile still knows
-how to read/reproduce published source-FP8 artifacts, but those compatibility
-routes cannot enter a new RTX50 cost menu, assignment, or release decision.
-The dense driver independently requires a complete BF16 body-source census
-before it writes the format plan. Both resident and streaming CB exporters
-read the assignment's reserved `target_profile` metadata (or the explicit
-`PRISMAQUANT_TARGET_PROFILE` override) during their outer preflight and refuse
-profile-denied formats before creating a destination or `.tmp-*` sibling. It
-deliberately declares no `producer_policy`. The profile therefore proves a closed candidate set and lets
-the dense AQUA campaign compare both registered activation contracts; it cannot
-stamp route qualification, become an exporter ship policy, or stand in for an
-immutable Gridbook pin. The release/device-qualified contract gate remains the
-only path from this validation identity to a shippable one.
-
-The current v11 implementation's sm89 dense FP8-CB decode/batch rows cover all
-twelve producer rungs but carry qualification `compile_only`. A no-device
-cross-compile produced explicit sm89 SASS and checked the extension/vLLM ABI;
-it did not execute a kernel or graph and therefore does not advance those rows
-to `device_qualified`. The tracked PrismaQuant producer/serving pin remains the
-released Gridbook 0.8.11/v4 record described above. No v11 release, wheel, or
-pin advance is claimed here, and `qwen38_rtx4090_fp8_cb` remains structurally
-unable to export until an immutable external release plus physical RTX 4090
-evidence closes that boundary. Evidence and hashes:
-`docs/results/rtx4090_fp8_gridbook_implementation_2026-08-24.md`.
-
-Qualification is family-wide at this boundary: artifact assignments may use
-any legal rung subset, but `require_rtx4090_runtime_contract` always requests
-all twelve producer rungs in both regimes. The candidate v11 changes neither
-the packaged tensor-parallel nor expert-parallel subtree from Gridbook 0.9.0,
-and its dense FP8 dispatch changes do not bypass their existing loader/runtime
-enforcement.
-
-At runtime `register()` registers `"gridbook"` plus the legacy artifact alias `"prismaquant"`
-and installs the per-architecture loader hooks. It does not patch vLLM core. The pinned release
-(0.8.11 at `187c7216b9d4882321c1923de0b4c49dc139743c`) resolves and attests every serving-reachable
-extension, optional-kernel mode, ABI, device, and
-shape contract during model load. Decode, expansion, activation QDQ, and routing support are
-native CUDA; GEMM and grouped GEMM are native CUTLASS. A missing or ineligible required native
-operation raises instead of selecting Triton, a fallback-capable vLLM helper, or another serving
-implementation. The container may mix CB groups, ignored BF16 prefixes, and stock NVFP4/FP8
-groups delegated to vLLM. Gridbook's own FP8 transient paths call vLLM's registered native
-CUDA quantizer and CUTLASS scaled-matmul operators directly after attestation. Fused dense and
-grouped native-NVFP4 paths remain explicit opt-ins: the 2026-08-01 teacher-backed LFM gate
-rejected default enablement even though operator arithmetic passed. The released 0.8.11 v4 contract
-attests `abi_features.routed_moe_per_role_codebook_lut=1`,
-`abi_features.source_fp8_block128_w8a16=1` and
-`abi_features.dspark_construction_physical_bridge=1`; compatibility is feature-gated and bound
-to that
-exact commit. The installed-wheel GB10/sm121 gate, measured on 0.8.5, backs the source route,
-while the materialized
-artifact must still close eager/graph, performance, and quality gates. The canceled gfx1151/ROCm
-prototype was removed rather than maintained as an unqualified second backend.
-
-**Native execution is a per-REGIME property, and NVFP4-CB decode is already native.**
-Gridbook dispatches CB by batch size, and the dense and routed thresholds differ
-(0.8.8 / `064a4cb`):
-
-| path | regime | route | opt-in upgrades |
-|---|---|---|---|
-| routed MoE | `T <= 16` (`moe_mixed.py:557,570`) | `ops.cb_moe_gemv_fp4_v2` (`:740`) | — (**native, default-on**) |
-| routed MoE | `T > 16` | `cb_expand_fp4_v2` → BF16 grouped GEMM (CUTLASS 2.x `DefaultGemmGrouped`, `arch::Sm80`) | ladder, cheapest requalification first: `PRISMAQUANT_CB_BF16_SM120` (sm12x schedule, same expand) → `PRISMAQUANT_CB_MOE_PERSISTENT_B` (decode-in-mainloop, deletes the `[E,N,K]` BF16 transient; FP4-CB-v2 only) → `PRISMAQUANT_CB_FUSED_FP4_MOE` (changes the activation contract) |
-| dense | `M <= 8` (`CUDA_GEMV_M_MAX`, `linear.py:67`) | FP4-v2 GEMV (`:1090`) | — (**native, default-on**) |
-| dense | `9 <= M <= 128` | fused mid-M (`fp4v2_fused_midm_lane.py:33,36`) | `PRISMAQUANT_CB_FP4_FUSED_MIDM`, **DENSE ONLY** |
-| dense | `M > 128` | BF16 bridge | `PRISMAQUANT_CB_BF16_SM120` (`linear.py:1140`) → `PRISMAQUANT_CB_FUSED_FP4` (contract change) |
-
-Two consequences a gate must respect. First, `fused_mid_m.rungs_by_runtime_version: {}`
-on the `nvfp4_cb_quality_path` lane is **one lane for one regime** — it says nothing
-about decode, and reading it as a whole-unit verdict is how the DSv4 92 GB body was
-reported as 73.7% "unbacked" when its decode path is 100% native (33,325/33,325 units).
-Second, the mid-M fused lane **can never cover a routed expert**, so it must not be
-counted for an MoE body; it is a lever for a *dense* artifact only. `route_status` in
-`serving_profile_specs/*.json` is therefore per regime, never a single verdict per lane,
-and `check_native_execution.py` reports `--regime decode|batch` separately.
-
-Turning the batch regime native needs no kernel work and no re-export — every opt-in
-rung is runnable on today's artifacts — but the ladder splits on the *requalification
-surface*. The two contract-preserving rungs (`PRISMAQUANT_CB_BF16_SM120` and
-`PRISMAQUANT_CB_MOE_PERSISTENT_B`) consume the same packed weights and the same
-`fp4_group16_rtn` QDQ payload and differ from the bridge only in FP32 reduction order —
-reassociation-class, the surface the promoted FP8 mid-M kernel cleared. Persistent-B is
-the high-value rung: it deletes the per-forward `[E,N,K]` BF16 expansion (2 B/weight
-written and re-read over *every* expert, routed or not, vs ~0.22 B/weight packed at K12),
-which gridbook's 2026-08-02 whole-operator microbenchmark measures at 20.9–46.7% of the
-default operator, winning every cell at 1.05–3.36× (proposal data; promotion is blocked
-solely on the served NATIVE-PARITY protocol, never run as of 2026-08-17).
-`PRISMAQUANT_CB_FUSED_FP4_MOE`, by contrast, executes a *different activation QDQ*
-(native global scale + UE4M3 group factors) than the bridge QDQ the cost table priced.
-Today's default serve is the bridge, so the priced and executed contracts agree
-(principle 8); flipping *that* flag moves them apart. The A/B that qualifies it
-(`scripts/validate_fused_nvfp4_ab.py --mode moe256`, shipped by gridbook) is therefore a
-**pricing-identity gate, not only a speed gate**. Any batch flag a serve relies on —
-contract-preserving or not — must be stamped on the shipcard as `requires_serve_flags`.
-
-**Storage format.** Product vector quantization onto a codebook whose every entry lies exactly
-on a hardware grid, so a decoded tile *is* a bit-standard NVFP4/FP8 tensor and dequantization
-is a gather rather than arithmetic. A weight vector is d=8 wide; a k-bit index selects a
-codeword; 32 codewords plus scales form a 256-weight superblock (external Gridbook
-`gridbook/codec.py`). Two
-ladders with different compatibility domains: `NVFP4_CB_K1–K25`
-(E2M1 grid, 0.40625–3.40625 serialized body bpw under production layout v2),
-and FP8-CB (E4M3) whose **reader** accepts K4/K8/K12/K16/K20/K24 plus every
-integer K28–K48, while a **new producer** may emit only
-K4/K8/K12/K16/K20/K24/K28/K32/K36/K40/K44/K48 —
-`prismaquant/cb_layout.py`, `gridbook_format_contract.py`. Historical off-law
-FP8 rungs remain readable; no producer API rounds or re-emits them. A third, signed-codebook ladder
-`NVFP4_CB_S13–S16` existed until **2026-08-17, when it was deleted outright**
-(Rob: *"they are not performant. We don't support them. We can delete them."*).
-The 2026-07-22 Qwen3.5-0.8B matched-rung screen had already found product K
-lower in 609/776 weight-MSE comparisons (78.48%), with only six signed units
-surviving the 2.6-bpp allocation; the deciding fact is that its `n_sub = 1`
-layout fails the predicate every native Gridbook FP4 route tests
-(`linear.py::_require_fp4_v2_product`: `n_sub == 2 and type_size == 4*k + 9`),
-so no signed rung could ever reach a native kernel. No allocation on disk and
-no shipped artifact referenced a signed rung, so the deletion changed no
-assignment. Gridbook still *declares* the family; the cross-repo attestation in
-`tests/test_gridbook_runtime_contract.py` asserts producer ⊆ runtime, so a
-producer that emits fewer rungs than the runtime publishes still passes. The reproducible command, comparison definition, source
-identity, and artifact checksums are in
-`docs/results/qwen35_0p8b_s_rung_headtohead_2026-07-22.md`. Keeping decoder
-support preserves already exported artifacts without advertising a losing rung
-to production solves (`format_registry.py:932-983`,
-`export_nvfp4_cb.py:277-281`). Storage rate and compute
-precision are independent dials: `FP8_CB_K32` *stores*
-4.0 bpw and *computes* in fp8 — why CB beats native NVFP4 at matched bpw (fp8 rungs run A8
-activations where NVFP4 runs A4). Codebooks live in a `.pqcb` safetensors sidecar pointed at
-from `config.json` (external Gridbook `gridbook/config.py`,
-`export_nvfp4_cb.py:630-639`); the non-globbed extension
-keeps vLLM's weight loader off it.
-
-**Strict Qwen3.8/Ada artifact policy.** The serving-profile key
-`qwen38_rtx4090_fp8_cb` selects producer policy
-`qwen38_27b_rtx4090_fp8_cb`. That policy permits only the twelve FP8-CB
-producer rungs above, delegated `FP8_E4M3`, and BF16; both native NVFP4 and
-NVFP4-CB are hard refusals, and `lm_head` is fixed to BF16. The artifact
-validator walks the current export directory recursively; publication freezes
-the complete upload tree and applies the same non-forceable ceiling again,
-after README/evidence/shipcard authoring. At most exactly 18,000,000,000 bytes
-of regular files may ship, rather than merely a modeled weight payload
-(`rtx4090_qwen38_policy.py`, `validate_rtx4090_fp8_cb.py`,
-`tools/publish_artifact.py`). This is an implemented, opt-in producer policy,
-not evidence that the candidate Gridbook v11 runtime has been released or that
-the artifact has passed a physical RTX 4090 gate. Final provenance is
-value-closed as well as name-closed: `render_identity_verified` must be bool
-true; the shared source-complete render validator binds the canonical imatrix;
-logical codebook digests replay against the exact FP16 sidecar bytes; the
-strict tensor-payload ledger replays its aggregate over the exact finalized
-header census; and the full weight-content manifest and producer Git identity
-bind to the on-disk containers and an exact clean (`dirty: false`) shipcard
-build record. Strict `cb_route_status` is a
-separate candidate-v11/sm89 record derived exactly from
-`producer_policy.runtime_attestation`, never the historical generic serving
-pin or an override/fallback disposition. Its shipcard summary therefore states
-device-qualified/backed decode+batch evidence explicitly instead of projecting
-the strict record through the generic route-summary schema.
-
-**Historical learned-v1 FP8 codebooks are a value-bearing rendering mode, not a new format
-name.** `CB_CODEBOOK_SOURCE_SCOPE=fp8` is the build instruction: it keeps every
-NVFP4-CB target on its canonical lattice and trains a distinct book only when
-the rung's measured `CBL_RUNG_POLICY` row is enabled. The resulting single
-FP8-CB K28–K48 menu therefore carries learned `(layer, role, rung)` cells for
-K28–K46 and canonical-lattice cells for K47/K48. The artifact-wide legacy
-scalar remains `learned` because at least one rung carries learned bytes;
-rendering never uses that scalar to reinterpret every FP8 rung. `none` is the
-default and reproduces the historical all-lattice artifact; `all` is warned
-research-only because learned NVFP4-CB measured <0.4% in the shipped band and
-is NO-GO (`cb_learned_bundle.py:62-145`; `build_cb_learned_bundle.py`).
-
-A non-`none` scope requires one immutable, value-bearing
-`CB_CODEBOOK_BUNDLE` **before any cost, cache, KL, or export render**. The
-bundle trainer runs the certified pooled weighted-Lloyd `learn_pool` once for
-each policy-enabled cell, materializes learned and canonical-lattice subtables
-as exact contiguous little-endian FP16 payloads, and gives every learned cell
-its own physical references while lattice cells use the shared lattice refs.
-Its manifest binds
-the trainer, source-weight and imatrix value identities, cell/rung policy,
-shapes, and a SHA-256 for each individual FP16 subtable (see
-`train_and_save_bundle` and `CBLearnedBundle` in
-`prismaquant.cb_learned_bundle`). Bundle load requires the tensor-name
-set, shape map, cell references, and digest map to cover one another exactly;
-missing, extra, stale, or altered values raise. The caller reads the cell's
-`source`: learned cells alone call `CBLearnedBundle.codebook_for`, which remains
-strict and raises on K47/K48 rather than implementing a lattice fallback;
-lattice cells take the ordinary canonical lattice renderer. Every learned
-render receives values reloaded from the canonical FP16 payload (promoted to
-FP32 only for encoder lookup), never the trainer's pre-materialization tensor;
-export-time retraining is forbidden. Cost provenance and export's compact
-serialized-payload context both stamp the per-rung source map, so surrogate,
-KL, and bytes cannot silently disagree. The exporter writes the selected lattice
-and learned tensors exactly once to `cb_codebooks.pqcb`, and the config's
-`codebook_sha256` map covers the **complete** sidecar name set, matching
-Gridbook's fail-closed verifier (`build_quant_config` in
-`prismaquant.cb_export_config`; pinned Gridbook `gridbook/cb_digest.py`).
-
-The learned rung ceiling is a measurement policy table, not the product
-bit-split's 2,048-entry structural rule (`CBL_RUNG_POLICY` in
-`prismaquant.cb_learned_bundle`):
-
-| FP8-CB rung | learned production policy | provenance meaning |
-|---|---|---|
-| K28–K43 | enabled | K28/K33/K38/K43 are directly measured GO cells; interior rungs are admitted by the certified K43 boundary and labelled as such rather than falsely claiming a per-rung measurement |
-| K44 | enabled, measured GO | sweep-matched CBL/lattice ratio **0.6057** (`dq-runs/dsv4-quality-hybrid/sfd-analysis/cbl_k43_k47.log:31`) |
-| K45 | enabled, measured GO | sweep-matched CBL/lattice ratio **0.6929** (`dq-runs/dsv4-quality-hybrid/sfd-analysis/cbl_k43_k47.log:40`) |
-| K46 | enabled, measured GO | sweep-matched CBL/lattice ratio **0.8312** (`dq-runs/dsv4-quality-hybrid/sfd-analysis/cbl_k43_k47.log:51`) |
-| K47 | rejected, measured NO-GO | sweep-matched CBL/lattice ratio **1.0689** (`dq-runs/dsv4-quality-hybrid/sfd-analysis/cbl_k43_k47.log:60`) |
-| K48 | rejected, measured NO-GO | learned placement is measured 54–98% worse than lattice (`transfer-study-fable-verify/F1_GENERALIZATION.md`) |
-
-`require_cbl_rung_enabled` is called for every cell that claims to be learned,
-both when a bundle is trained and when it is loaded. Policy-disabled cells are
-legal only as explicit lattice cells, so editing a menu or presenting an old
-bundle cannot relabel K47/K48 learned (`require_cbl_rung_enabled` call sites in
-`train_and_save_bundle` and `load_bundle`).
-
-**Learned-v2 starts from lattice and promotes only measured identities.** Its
-candidate domain is the exact twelve-rung FP8 producer ladder, but no rung is
-assumed learned and there is no inferred crossover. It reuses the sensitivity
-probe's activation statistics to derive the imatrix; it does not create a
-parallel calibration or activation cache. A per-rung learned table becomes
-authoritative only when a
-`prismaquant.fp8_cbl_promotion_receipt.v1` result certificate passes both
-held-out comparisons and binds the source checkpoint and tensor map, training
-calibration and derived-imatrix identities, role census, candidate FP16 table
-identities, and the decisions for the complete rung ladder. Missing evidence,
-a tie, or any changed identity leaves the committed lattice authoritative or
-refuses the supplied certificate (`cb_imatrix.py`, `cb_learned_promotion.py`).
-Historical trainer v1 remains the compatibility default; learned-v2 does not
-silently replace its policy.
-
-**Dense and routed-MoE serving are role-distinct from released 0.8.4 onward.**
-Gridbook's dense loader reads `codebook_ref` inside its
-per-role loop, interns each distinct reference tuple, concatenates those LUT
-blocks, and emits a `cb_row_offset` covering every output row. Thus fused
-`gate_up_proj` may carry gate≠up and fused `qkv_proj` may carry q≠k≠v
-(external Gridbook `gridbook/linear.py:405-437`). Gridbook commits `49733a5`
-and `776c45d` first make its legacy uniform resolver compare refs, then port
-the same block interning and per-row offset mechanism into routed w13/w2.
-PrismaQuant emits ordinary logical `gate_proj`, `up_proj`, and `down_proj`
-config groups with independent singular refs while keeping the physical
-`gate_up_proj`/`down_proj` tensors fused. Gate and up are encoded independently
-and their qweight/row-scale planes are concatenated in physical row order. The
-per-expert-format producer does the same per rung subgroup, preserving its
-`format_group_*` suffix and declared ascending expert order.
-
-The producer refusal now reads the explicit feature marker. A missing or malformed
-`routed_moe_per_role_codebook_lut=1` refuses every routed name, explicit routed flag, and rank-3
-learned source before encoding. Required compatibility CI separately checks the exact VCS commit
-and packaged ABI marker; release status still
-governs serving-rung credit. Production expert bundle cells accept only immutable banked K28–K33
-books, refuse an LDLQ scope that includes FP8, and never call the trainer. The
-bundle records each pooled role's rank-3
-source/imatrix identity plus per-expert aliases so cost/cache/KL/export resolve
-the same physical refs. Each banked cell also retains its selection, burn,
-content-addressed file, and payload-digest origin, tied back to those inputs on
-bundle reload. Missing, stale, unreadable, or identity-mismatched burn
-selection fails with no directory search, retraining, or lattice fallback.
-`docs/lanes/nvfp4-cb/MOE_LEARNED_CODEBOOK_SPEC.md` is the normative boundary;
-lattice routed-CB and the default `CB_CODEBOOK_SOURCE_SCOPE=none` are unchanged.
-
-**Runtime defaults and kernel provenance live only in Gridbook.** The old table
-here was removed after it drifted from the runtime it described. The runtime pin names Gridbook
-0.8.11 at released commit `187c7216b9d4882321c1923de0b4c49dc139743c`; resolve it from
-`prismaquant/gridbook_runtime/gridbook_runtime_pin.json`, then consult that exact source's
-`docs/PLUGIN.md`, `docs/KERNELS.md`, and dated audits. The cross-project policy
-is only this: a numerics-changing path cannot be promoted by kernel arithmetic
-or speed alone. The latest teacher-backed LFM gate rejected both fused-NVFP4
-defaults, so dense and grouped paths remain explicit opt-ins.
-
-**DSv4-Flash-0731 exact-shape native A/B (dated record, measured 2026-08-01).** This
-paragraph is ported verbatim from the 0.5.1-era study working tree and is kept under its
-measurement date. It was taken against the then-uncommitted native-only Gridbook candidate
-(base `4e7c1bc6` plus a dirty tree), which was later released as Gridbook 0.6.0 at
-`ca0f0f562d3f398e094bfa5356a9ce3fa47472f1`. PrismaQuant's current consumer is the released
-0.8.11 v4 contract at `187c7216b9d4882321c1923de0b4c49dc139743c`; these numbers remain
-candidate-era historical evidence and are not a
-re-measurement or promotion of either runtime.
-
-The exact-shape native A/B used the seven ordinary Linear calls repeated across all 43 DSV4
-body blocks (301 calls total), flushing 256 MiB before each timed call. K36 was 1.083x faster
-at `M=1` and 1.064x at `M=2`; native NVFP4 crossed over by `M=4` (1.120x), reached 1.589x at
-`M=8`, and was 1.34–2.50x faster over measured `M=9..1400`. Replacing the retired
-Triton-containing `M=16` route reduced K36's weighted block subtotal from about 1.168 ms to
-0.763 ms (1.53x). All 12 fused quality gates passed: worst relative L2 `2.146e-5`, max absolute
-`0.015625`, and at least 99.9983% BF16 output equality. Evidence:
-`/home/rob/dq-runs/dsv4-flash-0731/synthetic-bench-native-quality/README.md`; harness SHA-256
-`e38338b1e07469560ecc359af9e35af2ceb35476f72e79edcef0450acae765cb`, wide-result SHA-256
-`b63fec8a08930b5d1091dc17577261642d2df84786cfb8925c561375ad85a8ca`, decode-result SHA-256
-`a93cf8957c531ba3108ea27671de50f9b0fda2db26a710c85d4fbc0fb6b7cad5`. These are
-candidate-kernel measurements, not served tokens/s.
-
-**Per-arch wiring — the no-longer-silent no-load trap** (R10, 2026-07-30). Archs whose vLLM
-loader maps experts at the top level never call the per-layer `FusedMoE.load_weights`, so
-Gridbook installs its top-level wrapper from the packaged runtime contract. The authoritative
-module list is deliberately not repeated here. DSv4 is now contract-declared;
-its new learned per-role expert path remains gated pending device validation. Gridbook 0.5.0's
-warm synthetic DSV4-shape grouped-bridge timing is a kernel microbenchmark, not artifact
-qualification or a production promotion.
-Over-installing is harmless and a missing module is a no-op.
-An unwired arch used to load no stacked-CB expert tensors at all while the FusedMoE served
-uninitialised memory — garbage generation, not a crash (confirmed, `9a79963`: Laguna, 93% of
-params). That is now a hard serve-time failure: `create_weights` stamps `_pq_cb_filled = False`,
-both fill paths stamp `True`, and `process_weights_after_loading` raises through
-`cb_fill_guard.assert_cb_experts_filled` naming the model class and the module path to add —
-no env bypass, scoped to the params the local rank registered (EP/PP-absent and zero-expert
-shards skipped). New-arch checklist: §8.3 Tier D; leak record: §8.5 L3 (closed).
-
-**Serving.** Every live CB launcher resolves the same exact external Gridbook pin through
-`prismaquant/gridbook_runtime/gridbook_runtime.sh`, mounts the exact checkout read-only, re-verifies the tracked
-pin inside the container, and records the resolved runtime in the serve fingerprint. The OOM discipline lives in the launcher
-code (`serve_laguna_smoke.sh:64-90`):
-poll `/v1/models`, sleep 10 s for the allocator to settle, fail the serve and `exit 3` if
-`MemAvailable < MIN_FREE_GIB` (8), then arm a detached watchdog that kills the container below
-`WATCHDOG_GIB` (4). Rationale inline at `serve_hy3_teb.sh:76-84`; see §10.
-
-**Encode path.** Stage 4/4 (`run-pipeline.sh:1526-1640`): harvest per-column imatrix weights
-from the same activation cache the cost stage used (`:1549-1582`; REQUIRED for every CB target
-— no silent RTN), then `export_nvfp4_cb`, or `export_nvfp4_cb_streaming` when the source
-exceeds `EXPORT_STREAMING_THRESHOLD_GB` (80) — non-streaming goes resident and OOMs the box on
-200–300B sources. Encoder tiers `PRISMAQUANT_CB_ENCODE_TIER ∈ {fast, balanced, max}`, default
-`balanced` (`nvfp4_cb_formats.py:128-141`); `max` is bit-identical to the pre-tier encoder and
-is the regression anchor. Cost measurement can opt into atomic, content-keyed scale-search
-sidecars with `PRISMAQUANT_CB_WARM_STATE_DIR`; streaming export consumes them through
-`--warm-state-dir` and verifies a deterministic random sample through
-`--warm-verify-sample` (default 32). `cb_warm_state.py` accepts a record only when its format,
-exact source/imatrix value digests, initializer identity, and full serialization context all
-match; anything absent, corrupt, or stale falls back to a full encode. Sampled units also run
-that full encode and require exact selected-scale and rendered-byte equality, failing the
-transactional export closed on any difference. The quantization config provenance records
-`encoder_warm_start.{warm_used,cold_fallback,verified_n}`. This changes no format or encoding
-semantics; it only skips a repeated scale sweep whose result was already measured
-(`cb_warm_state.py`, `measure_quant_cost.py`, `export_nvfp4_cb_streaming.py`). The flag-gated
-`PRISMAQUANT_EXPORT_PIPELINE=1` execution strategy separates dense-source read-ahead, the
-unchanged single ordered encode stream, and a canonical-order writer thread. Reader lookahead is
-bounded by `PRISMAQUANT_EXPORT_PREFETCH_DEPTH` (default 1), with CUDA-target host tensors pinned;
-the writer reserves encoded outputs before encode against
-`PRISMAQUANT_EXPORT_WRITE_QUEUE_BYTES` (default 2 GiB), admitting an oversize tensor only
-exclusively. Every stage shares one first-error latch and the existing temporary-file/directory
-transaction, so failure publishes nothing. The flag defaults off pending the skip-marked
-real-GPU identity gate. It is an execution knob, **not** a serialization-context or render-
-identity dimension: on/off artifacts must be byte-identical. Successful runs log wall time plus
-read/encode/write busy and stall totals and write-budget stall count
-(`export_nvfp4_cb_streaming._StreamWriter`). The flag-gated
-`PRISMAQUANT_CB_LDLQ=1` encoder mode keeps that scale
-sweep and codebook fit intact, then performs deterministic fixed-codebook/fixed-scale
-assignment in 64-column Hessian-feedback blocks using the same cached activation rows and
-activation-weighted metric as cost measurement. Its validation history is 95% in-sample
-recovery, 84% held-out retention, and 78% fresh-text retention; the implementation's CPU
-mid-size timing check measured a 1.43x encoder-time multiplier. `ldlq` is part of the required
-CB serialization context and every render/provenance identity, so cost/export drift is
-refused and an opposite-mode warm record cold-falls back. The resulting artifact is still the
-ordinary grid-native CB layout: the mode is assignment-time only and adds no serving branch or
-runtime cost.
-
-The independently gated `PRISMAQUANT_CB_MINCHAIN=1` mode orders packed-expert
-CB rungs ascending and, per expert slice, chooses between the unchanged free
-fit and the selected predecessor reconstruction using weight MSE. Its exact
-comparison is `a <= b + 1e-12*max(abs(a),abs(b))`; epsilon and exact ties choose
-free. Therefore `selected(K) <= embed(K) = selected(K-1)` proves monotonicity,
-and `selected(K) <= free(K)` proves zero representational tax. Only the winner
-is replayed through activation QDQ. The earlier nested-book pilot is explicit
-NO-GO lineage: it proved reuse (0/960 predecessor violations, +0.456% encode)
-but imposed median tax up to 16.616%. Pilot 1 then had partial coverage; the
-anchor study resolved epsilon ties. Pilot 2 on DSV4 layer 14 passed full
-coverage with zero P1/P2 violations, P3 at 2.7–2.9% median / 12.9–13.8% p95,
-and P4 overhead 1.003x.
-
-Acceptance amendment v2 uses five-anchor monotone PCHIP (FP8 defaults
-K28/K33/K38/K43/K48), independent K33/K43 four-anchor cross-validation, and
-accept-all except a 25% gross-outlier backstop. A deterministic non-anchor
-audit rung is drawn per layer with seed `42 + layer`; each projection must
-pass 5% median / 15% p95 or the whole layer is fully measured. Anchors,
-holdbacks, seed, and all three tolerances have explicit
-`PRISMAQUANT_CB_MINCHAIN_*` settings and are stamped in cost provenance
-(`cb_minchain.py`, `measure_quant_cost.cost_payload_provenance`). The global
-mode/version enters `CBSerializationContext`; each materialized cell carries
-its arm, solution digest, and predecessor digest in `cb_render_identity`.
-Export refuses a context or per-cell stamp mismatch. Warm records inherit the
-same context dimension. Selected outputs remain ordinary flat per-rung books;
-the config/tensor wire format and Gridbook serving kernels are unchanged.
-
-The CB lane now has a concrete in-lane two-arm serving gate for DSv4
-(`scripts/serve_dsv4_cb_validate.sh`, `prismaquant.validate_cb_endpoint`) in addition to its
-declared endpoint-agnostic `validate_quantized_model` and paired matched-budget
-performance gate (INV-2). Eager and graph use separate fresh exact-pinned containers; the graph receipt requires
-positive FULL_DECODE_ONLY capture evidence. No DSv4 artifact is promoted merely because the
-runner exists: both `native_export.*` slots, `ship_gate`, gold KL/PPL, and performance evidence
-must still be filled by real device runs. Gates remain operator-run and the shipcard binds them
-at publication (§7.1).
-The pipeline does not enable per-expert split stacks. Direct streaming-export
-invocations may pass `--per-expert-config`; that producer ABI is the PROPOSED
-v1 contract in §6.2 and remains outside production defaults until Gridbook
-reconciliation and serving gates are complete.
-
-**Milestone C is closed (2026-07-30, re-vet R3).** `render_production_weight` /
-`build_production_cache` take `col_weights`, so a `ProductionWeightCache` render of a CB rung
-is the exporter's imatrix-weighted render and the lane's cost, KL and shipped bytes can come
-from ONE render (§4.7). The `COST_MODE=local` restriction is gone; render-score / AURA
-objectives are reachable here but **opt-in and non-default**, because the accuracy case for
-AURA is native-lane evidence and no served CB objective A/B exists. Lane defaults now match
-shipping practice (§12 D15 closed).
-
-**Proven results.** These measurements remain tied to their recorded runtime commits; they are
-not relabelled as measurements of the current Gridbook release.
-
-| artifact | result |
-|---|---|
-| Qwen3.6-27B @5.5 bpp | vs shipped PrismaAURA-5.5bit on the same BF16 dump: conf-KL −45…−53%, ALL-KL −56/−58%; PPL gap to BF16 3× smaller (9.166 vs 9.251, BF16 9.123). **Matched by construction, not by luck**: 16.713 vs 16.707 GB of quantized body (Δ 0.04%), 23.62 vs 23.61 GB total — the same byte budget spent on codebook vs uniform NVFP4/FP8. All 386 quantizable body Linears chose CB rungs (K36 136 / K40 30 / K44 77 / K48 143), zero stock NVFP4/FP8. (The "19.93 vs 23 GB, 0.0082 vs 0.0130" pair quoted in `serving-tax-elimination.md:63-64` is the *iso-quality* framing of a different, lower-bpp artifact — do not mix it into this row, as an earlier draft of this table did.) |
-| Ornith-1.0-35B MoE @4.75 bpp | conf-KL 0.01706 vs 0.03625 (−53%), ALL-KL −43%, PPL gap to BF16 −30%, decode ~33 tok/s vs BF16 28.4 |
-| Hy3-295B-A21B @2.9 bpp, **one Spark** | 105.73 GB resident; prefill 89 → 108.7–115 tok/s across the kernel campaign vs the shipped GGUF-IQ's 42 (2.1× → 2.6×) — the lane's thesis (tensor-core CB removes the IQ dequant tax) proven at 300B class; decode 13.1 base / 16.1 prose with the K44 MTP draft; TEB 88 vs GGUF-IQ 87 / k-quant 86. **No quality claims** — a 295B cannot be KL-validated on this box |
-| Laguna-S-2.1 @6.0 bpp / 84 GB | MoE prefill 293 → 1,821 → 2,063 → 2,186 tok/s under `auto`; native grouped-CUTLASS 3,603 — remaining gap 1.65× |
-
-**RESOLVED (2026-07-30, R28 / §12 D21).** The canonical public repo id for the Hy3 CB
-artifact is **`rdtand/Hy3-295B-A21B-prismaquant-gridbook-2.9bit-vllm`** — cite that one.
-`prod_hy3_results.md` records two older ids from the ship sequence,
-`rdtand/Hy3-295B-A21B-PrismaQuant-2.9bit-nvfp4cb-vllm` (2026-07-20 ship ledger, `:248`) and
-`rdtand/Hy3-295B-A21B-gridbook-2.9bit-vllm` (2026-07-21 joint-menu re-ship, `:313`); both were
-renamed rather than deleted, so both **307-redirect** to the canonical id (verified against the
-Hub 2026-07-30). The two historical citations are annotated in place rather than rewritten —
-they are the ship ledger, and the ledger records what was posted on the day.
-
-**Standing native-parity policy** (`docs/lanes/nvfp4-cb/format-speed-policy.md`): minimize
-predicted quality loss subject to exact whole-artifact bytes, separate p95 TTFT and p95 ITL /
-p05 TPS SLOs, device-residency limits, and backend/shape/TP/serving-unit legality. There is no
-`quality + lambda*time` objective and no blended `serve_ms`. Per-layer timings may propose an
-assignment, but same-session served KL/PPL/tasks plus end-to-end timing decide it. Exact-4.5
-Stage 0 favors production-faithful K36 weight error (493/496 units at 27B, 252/252 at 4B), but
-that is a stop-only surrogate, not a served promotion. Plain M=1 decode evidence does not imply
-batched/speculative parity, and the Hy3 zero-NVFP4 allocation is circular under its
-accuracy-only objective. The DSv4 screen makes the same conditional rule concrete: K36 won
-301/301 activation-fitted ordinary-Linears at `0.390x` NVFP4's sensitivity-weighted error and
-adds only `8,019,608` bytes to the proposed 92 GB artifact, so it is the quality-first,
-low-concurrency arm; native NVFP4 is the TTFT/batching/speculative-throughput arm because its
-kernel crossover occurs before `M=4`. Whole-model served A/B remains authoritative.
-
-**Implementation status: SHIPPED (ultraplan P5c, `b052255`).** The constrained
-Pareto formulation above is current allocator behaviour, not future work.
-`prismaquant/serve_constraints.py` + `prismaquant/serve_dispatch_table.py` are
-wired into the allocator (`allocator.py:158-163` imports, `:1979-2009` context
-construction and the ACTIVE/INACTIVE banner, `:2951` the per-assignment
-evaluation). The constraints are **hard and enforced at assignment level** — in
-the exact-payload / byte-budget ratchet, on the EXPANDED promoted assignment
-that actually ships, not inside `solve_allocation`'s bits-DP, whose
-unconstrained semantics are unchanged and pinned by test. An assignment that
-misses p95 TTFT, p95 ITL, p05 TPS or `resident + KV + peak_scratch` is
-INFEASIBLE and leaves the candidate set; it is never merely re-ranked. There is
-**no λ**, no phase-weighted `serve_ms` and no default workload mix: the
-objective is still exactly minimum predicted Δloss, with the existing ratchet
-tie-break. Fail-closed — an assignment the dispatch table cannot price is
-infeasible, not passed. Supplying no table and no SLOs leaves every code path
-**byte-identical** to the pre-P5c allocator, with a stamp recording that
-constraints were absent. Profile legality masks (including signed-rung
-exclusion) are enforced as before. What has *not* changed is the promotion
-rule: table-driven latency is proposal data, and the same-session served
-NATIVE-PARITY protocol is what promotes an assignment. A format allow-list
-still does not prove a backend, activation contract, or promotion state; those
-live in the structured native-parity benchmark record. Normative policy and the
-full shipped/gating split: `docs/lanes/nvfp4-cb/format-speed-policy.md:42-98`
-("What is implemented, and what still gates promotion"); design and the eight
-named assumptions: `docs/design/constrained_pareto_allocation.md`.
-
-For the historical 2026-08-01 DSv4 92 GB study, the quality arm was 35 routed-expert layers at K15, eight provisional layers
-`23,24,25,27,28,31,32,33` at K14, and 301 ordinary Linears at K36: tensor payload
-`91,724,116,088` bytes, or `91,992,551,544` bytes with the 256 MiB reserve. Replacing those
-301 ordinary Linears with native NVFP4 yielded `91,716,096,480` payload bytes. That dated
-artifact was not release-eligible at its then-current runtime pin. Gridbook 0.8.4 declared
-the DSv4 body/MTP/DSpark loader and routed per-role ABI consumed by this producer, but that does
-not retroactively promote the 92 GB study: the current 112.690 GB AURA artifact must still close
-the exact eager/graph, quality, and paired whole-model served native-parity shipcard gates.
-
-#### 9.2.1 Tracked v12 route status and the lane-v3 parser (R3)
-
-Principle 9 requires route status in a **structured** field a gate can read, and principle 14
-requires that field to be derived from a table the pinned runtime publishes, or refused. Both
-apply to this lane. **Since 2026-08-30 the tracked release is Gridbook 0.9.1/v12, and it does
-publish a lane-eligibility v3 table** — so route status is resolved from it rather than reported
-absent. What that table says about CB is the subject of "A measured gap the published table
-reports" below: twelve CB cells, all `compile_only`, all on `sm_89`/`sm_120`. `compile_only` is
-not physical RTX 4090 qualification and may not be upgraded to it. (Before the bump the pinned
-0.8.11/v4 contract published no table at all, so the honest answer was `unattested` by absence;
-that state is kept under test against 0.8.11's still-indexed contract, because a guard retired
-on the grounds that its defect is currently unreachable is how the defect returns.)
-
-**The two measured defects.** The shipped DSv4 87 GB artifact carries 11 routed FP8-CB layers
-whose `gate_proj` and `up_proj` bind distinct learned codebooks. Gridbook's persistent-B prefill
-lane refuses per-role split books, so above the token threshold those layers take the announced
-expand-and-bridge route. The exporter priced and shipped them with no gate consuming that fact,
-and a user found it at serve time. Its twin lives on the vanilla-vLLM lane, where
-`units_on_fallback_route = 0` was reachable only by never having looked: no serving-profile spec
-declared route status, so every unit `continue`d before it could be counted.
-
-**What the pinned contract publishes.** Gridbook 0.8.11's packaged (byte-identical to 0.8.10's)
-`gridbook/runtime_contract.json` (schema `gridbook.runtime-contract.v4`) carries `schema`,
-`contract_version`, `abi_features`, `quant_method`, `packing`, `layout`, `formats`, and
-`producer_profiles` — and its own validator enforces that exact key set, so a lane-eligibility
-block is currently rejected rather than merely missing. None of the published fields determines
-which lane a unit rides: the persistent-B role-split refusal, the fused mid-M `k % 4` law, the
-token-count regime thresholds, and the operator serve flags all live in Gridbook source the
-contract does not summarize. Do not read
-`abi_features.routed_moe_per_role_codebook_lut = 1` as a persistent-B eligibility claim; it
-attests fused-mainloop LUT support, a different question.
-
-**What PrismaQuant does instead of transcribing.** The producer implements the consumption half
-and reports the gap:
-
-- `prismaquant/gridbook_runtime/gridbook_runtime_contract.0.8.11.json` (and the `0.8.10` copy it is byte-identical to) is a byte-verbatim copy of
-  the packaged contract, bound to the **serving** pin by
-  `gridbook_runtime_contract_index.json` (version, commit, sha256). The contract JSON is the
-  sanctioned boundary crossing (`AGENTS.md:38`); the runtime is never imported. The
-  pinned-compatibility CI job asserts the copy equals the installed wheel's file
-  (`tests/test_gridbook_runtime_contract.py`), so the two cannot drift.
-- `prismaquant/gridbook_lane_eligibility.py` reads `lane_eligibility` from that file, finds it
-  absent, and returns a typed `EligibilityTable(present=False)`. Absence is therefore **derived
-  from the pinned contract**, not assumed. The same module derives payload family, `n_sub`, and
-  rung legality from the `formats` table that 0.8.11 really does publish.
-- `serving_profile_specs/nvfp4_cb.json` gives every serving lane a `route_status_source` block
-  naming which structural classes it consults. The spec declares the **key**; the verdict comes
-  from the contract. A verdict written into that file would be an assertion, so
-  `tests/test_cb_route_status_gate.py` refuses one.
-- `ResolvedServingLane` carries `route_status`, `requires_serve_flags`, and
-  `route_status_source`. Under the current pin every CB lane resolves
-  `unattested` / `gridbook_runtime_contract:0.8.11:absent`. Two values sit outside principle 9's
-  three-value enum and both say "this is not a verdict": `unattested` (the release publishes no
-  table) and `unit_dependent` (the table's rules predicate on facts that exist only per unit).
-
-**The export gate.** `prismaquant/cb_route_status_gate.py` runs in both CB exporters before any
-byte is written — `export_nvfp4_cb_streaming.py` after the serialization-context stamp, and
-`export_nvfp4_cb.py` at the matching point — because `role_split` is knowable only once the
-per-`(qname, format)` codebook cells resolve. Per unit it resolves the route in every declared
-regime and then:
-
-| Outcome | Disposition |
-|---|---|
-| Backed in every regime | Passes. |
-| Backed in some regime, announced fallback in another | **Recorded**, per unit and in the shipcard census. This is the measured DSv4 state, and it serves. |
-| Backed only behind an operator flag | Passes as `backed_with_serve_flag`, counted apart from `backed` and never summed into it; the flag travels with the artifact. |
-| Every regime serves, none natively | `unbacked`. **Refuses**, unless `--non-native-target PLATFORM` or `--allow-unbacked-route REASON` is given. Both are strings, both are stamped. |
-| No cell covers this platform / family / rung, and the contract publishes that family | `unattested`. **Refuses** on the same two escape hatches. Under a v3 table this is the *only* way the runtime can say no (below). |
-| The contract publishes no codec for this payload family at all | Counted as `units_outside_attested_families` and **reported, not refused**. The table is not the authority for those bytes. |
-| No table published | Reports `unattested` for every unit, refuses nothing. |
-
-Both dispositions are stamped into `quant_config["provenance"]["cb_route_status"]`, which is
-inventory-bound, so the census is part of the artifact's identity rather than a log line. From
-there `shipcard.build_shipcard` lifts the compact census onto `shipcard.json` as
-`cb_route_status` (`cb_route_status_gate.shipcard_route_summary`), because principle 9 stamps
-the disposition **on the card** and principle 12 makes the route histogram travel with the bpp
-claim. Both exporters stamp before opening the card, so one seam covers the streaming and
-non-streaming paths, and a non-CB artifact — which never runs the gate — gets no field at all
-rather than an empty census. The environment spellings are `PQ_CB_ROUTE_STATUS_OVERRIDE` and
-`PQ_CB_NON_NATIVE_TARGET`. They take the reason and the platform, not a bare `1`: a stamped
-override whose rationale is `1` documents nothing.
-
-**The payload shape is the point.** Under an absent attestation the provenance carries
-`units_unattested` and **no** backed, fallback, or unbacked counters at all. A vacuous zero is
-unrepresentable rather than merely discouraged, which is the 2026-08-17 lesson applied to its
-own twin. `selection_serving_lane_provenance` gains the same discipline: alongside the older
-`units_on_fallback_route` (which is about the fused mid-M lane only) it now reports
-`route_status_counts` and `route_status_attested`, so a lane that has never been looked at is
-distinguishable from one that came back clean. Principle 12 requires whichever is true to travel
-next to any bpp or KL claim: report "route status not attested for this lane", never "0 units on
-a fallback route".
-
-The same rule reaches one field deeper. Each `by_unit` row carries `in_scope` — "does the pinned
-contract publish this unit's payload family" — and under an absent attestation that question is
-never asked, because the resolver returns before it consults the formats table. So `in_scope` is
-tri-state (`UnitRoute.in_scope: bool | None`) and `as_dict` **omits** the key when it was never
-evaluated, rather than defaulting it to `True`. A default would have every BF16 and stock-CT unit
-stamp `in_scope: true` while no table was open at all — the `units_on_fallback_route=0` defect in
-miniature. Omission means "not asked"; on a present table the field is always an explicit
-boolean, and the gate raises rather than partitions if a `None` ever reaches it.
-
-**The lane-v3 parser (2026-08-30).** Gridbook publishes the table at `30287aa` — contract v12,
-`lane_eligibility.schema = gridbook.lane-eligibility.v3` — and `gridbook_lane_eligibility.py` now
-reads that shape. The earlier claim in this section, that flipping the index to `present` needed
-"no PrismaQuant code changes", is **retracted**: the v1 parser required `{schema, regimes, lanes}`
-and would have refused the published table outright. Four properties of the v3 shape are
-load-bearing, and each is pinned by a mutation-checked test in
-`tests/test_cb_route_status_gate.py`:
-
-- **Cells are platform-scoped, and a rung list is explicit.** A cell names exactly one
-  `(platform, family, structure, regime)` and the rungs it covers — `rungs` (codebook K) for a
-  `cb_product` family, `rungs_q256` (body bits per 256 weights) for a `tcq_trellis` one. Which
-  discriminator applies is decided by the family's `formats[].kind`, never by a key on the cell,
-  exactly as Gridbook's own validator dispatches it. `UnitStructuralFacts` gained `rate_q256` for
-  the trellis vocabulary; it and `k` are mutually exclusive by construction.
-- **Absence is the only negative signal, so the gate fails closed on it.** Gridbook's cell status
-  vocabulary is `backed | backed_with_serve_flag | fallback` — there is **no `unbacked` cell**,
-  because the runtime does not enumerate what it cannot serve. An uncovered unit therefore
-  resolves `unattested` rather than having `unbacked` invented from silence, and the export gate
-  refuses it. A parser that admitted an unlisted rate would convert the table's one negative
-  signal into no signal at all: the `units_on_fallback_route = 0` defect in a newer schema.
-- **Scope is derived, not typed.** A unit is judged only when its payload family appears in the
-  contract's `formats[]` table. BF16, FP8_SOURCE and stock CT rungs reach this gate (the exporter
-  passes `(*cb_targets, *stock_targets)`) and derive no published family; they are counted and
-  named as `units_outside_attested_families` and never read as backed. The scope test comes from
-  the published table, never from a list typed here.
-- **A missing platform is not a match-any.** `evaluate_cb_route_status` takes `target_platform`,
-  defaulting to the serving profile's `target_platform`. A profile that declares none resolves
-  every unit `unattested` and refuses, with that exact reason. **`nvfp4_cb.json` declares no
-  `target_platform` today** — only `qwen38_rtx4090_fp8_cb*` (`sm_89`),
-  `qwen38_sm120_cb_validation_only` (`sm_120`) and `trellis_research_sm121` (`sm_121`) do — so
-  that declaration is a prerequisite of the pin bump, not of this change.
-
-`ServingLaneSpec.route_status_for` was rewritten to the same shape and gained a `platform`
-argument, threaded from the profile's `target_platform` through `ServingProfile.resolve`. It had
-been reading `table.rules`, a name v3 does not have; the real pin's table is absent, so the
-function returned at its first branch and **no test had ever reached the line**. It would have
-raised `AttributeError` the day the pin advanced. At lane granularity the answer is narrower
-than at unit granularity — cells are scoped to a platform, a family and a rung list, and any
-surviving cell carrying a predicate yields `unit_dependent`, because `role_split` is a fact only
-the export gate holds.
-
-Two censuses are added to the provenance and the shipcard summary: `qualifications`
-(`compile_only` vs `device_qualified`) and `activation_contracts`. `compile_only` means the
-kernels cross-compile for that compute capability and nothing more; it is warned about and never
-upgraded. The provenance schema is `prismaquant.cb_route_attestation.v2`.
-
-**A measured gap the published table reports — now live.** Gridbook's v12 lane table publishes
-CB cells for `sm_89` and `sm_120` only; on `sm_121` it publishes trellis cells alone. Under the
-v12 contract a CB unit targeted at GB10 therefore resolves `unattested` and the gate refuses.
-That is the table reporting a serving gap rather than the producer working around one
-(principle 1). Since 2026-08-30 this is not a forecast: the pin is bumped,
-`serving_profile_specs/nvfp4_cb.json` declares `target_platform: sm_121`, and
-`require_cb_route_status` refuses a CB export on GB10 naming the platform and the two declared
-escape hatches. Gridbook could not honestly say otherwise — both CB preflights fix their
-capability in code (`sm89_preflight.SM89_CAPABILITY = (8, 9)`,
-`sm120_preflight.SM120_CAPABILITY = (12, 0)`, and `sm120_preflight` hard-refuses any SASS target
-but `sm_120`/`sm_120a`), so no CB receipt for compute 12.1 exists at this release to publish. The
-one device-qualified CB-on-GB10 receipt in the house is Gridbook 0.4.0 from 2026-07-31 (286
-units, 94 `NVFP4_CB_K16` routed-expert stacks on `cb_moe_gemv_fp4_v2`, 604 served completions,
-sealed manifest at `/home/rob/dq-runs/evidence/gridbook-0.4.0-jason-gb10/`); it predates the v2,
-fused and persistent-B kernel lines entirely, and no cell was added from it.
-
-**To make it attested,** the serving pin must advance to a Gridbook release that packages the v3
-table, its packaged contract must be materialized byte-verbatim in
-`prismaquant/gridbook_runtime/` with an index entry, and
-`gridbook_runtime_pin.GRIDBOOK_RUNTIME_CONTRACT_SCHEMA` must move from
-`gridbook.runtime-contract.v4` to `v12` — `parse_gridbook_runtime_pin` refuses any pin whose
-`runtime_contract_schema` differs from that constant, so the two are one change, not two. **All
-of that was done on 2026-08-30.** `30287aa` was released as `v0.9.1` at `227420f`; the packaged
-contract is materialized as `gridbook_runtime_contract.0.9.1.json` (`836b7831…`, byte-identical
-to the `30287aa` test fixture, held so by a test) with an index entry naming version, commit and
-digest; both pins name `0.9.1` / `227420f9821bab7089632ee914f0ba050f82b817` /
-`gridbook.runtime-contract.v12`. The `wheel_sha256` rule was satisfied with a receipt rather than
-a reproduction argument: the CI-built wheel, the wheel the GB10 gates ran against, and the
-published PyPI archive are one file, `cb4d7ad64c5a78d447f427a0aa98790406b6821d02c7f2f5d589d61890abdf9d`
-(a local rebuild produced a different archive, `7141acf9…`, as expected — wheels are not
-byte-reproducible, which is why the digest is read and not recomputed).
-
-**Tessera on this lane — HISTORY, withdrawn 2026-09-02.** For one day
-Gridbook's `tessera/family` branch served both Tessera wires through this lane
-and one flag pair: the 4.0-bpp E2M1x2 wire (`TESSERA_NVFP4` family, decoded to
-the stock NVFP4 tile, `torch._scaled_mm` W4A4) and the 4.07-bpp E4M3 wire
-(`TESSERA_FP8` family, decoded to the per-channel FP8 pair, `torch._scaled_mm`
-W8A8), module by module from one checkpoint; its contract v14 published the
-rows `TESSERA_E2M1_K2` and `TESSERA_E4M3_K1`, each with two
-`device_qualified` sm_121 cells. **That lane is withdrawn and contract v14 was
-never released**, so nothing that shipped depended on it and no pin has to
-move. Tessera serves itself now, through its own plugin (§9.4), and **the
-Gridbook pins do not govern Tessera admission** — the served measurements
-above survive as the receipts that produced Tessera's own contract cells, but
-this passage is history, not a live route claim.
 
 ### 9.3 GGUF
 
@@ -7888,6 +7011,7 @@ New with the 2026-07-30 merge:
 | D31 | **Shipcard replay binds recorded evidence to the serving pin at HEAD** (added 2026-08-18). Every gate slot records the runtime that actually gated it (serve-manifest `gridbook_distribution`, endpoint-contract stack), but the replay compares those records against `load_gridbook_serving_runtime_pin()` at HEAD — so the 0.8.9 pin bump made the already-published DSv4 flagship unpublishable for a docs-only README update: six slot refusals, all "is not the tracked pin", on evidence that exactly matches the pin that was tracked when it was measured. Worked around honestly for the 0.8.9 card update by running the publisher from a worktree at `0266662` (the pre-bump commit; publisher and verifier code there are byte-identical to HEAD — the bump commit `6a883bc` touched pin data and docs only — so this verifies the card against the pin that gated it, with zero tool divergence). Recurs on every serving-pin bump for every historical artifact. | `prismaquant/shipcard.py:1225,2374,2521`; `tools/publish_artifact.py` dry-run refusal 2026-08-18 | MED | Decision for Robert: accept a declarative superseded-pins record in `gridbook_serving_runtime_pin.py` (version/commit/wheel of prior released pins; replay accepts recorded == current OR recorded ∈ superseded, and the verdict names which) — keeps fail-closed against unreviewed runtimes without rotting history — or rule that docs updates to historical artifacts always re-run the publisher at the artifact's pin era. |
 | D32 | **The Fisher probe is not bit-reproducible, and nothing in the tree said so** (added 2026-08-20). Two runs of `incremental_probe` with byte-identical calibration, the same commit and the same `--layers-per-shard` differ on **379/402 units**, median `|Δh_trace|/h_trace` **2.5e-4** (max 1.1e-2); `n_tokens_seen` and the per-expert Fisher *support* are bit-identical on every unit, so the forward and the routing are exactly deterministic and only the backward moves. Mechanism: 30 of Ornith-1.5-35B-A3B's 40 layers are Gated DeltaNet, whose `fla` Triton kernels reduce over chunks in a non-deterministic order. **Why it is debt rather than a bug:** the jitter is unbiased (signed mean +6.5e-5 against its own sd 5.7e-4) and three orders below the 23% cost CV that §9 records as producing 3% assignment churn and 0σ served — but a probe-side change gated on bit-identity refuses for reasons that have nothing to do with the change, and `--layers-per-shard auto` (sized from free RAM at launch) adds a second, *avoidable* source on top. **Consequence for provenance:** probe-derived artifacts (`cost_baseline.pkl`, `cost_aura.pkl`, `cost.pkl`, the sensitivity card) must be rebuilt together from one probe run rather than half-reused, or `cost.pkl`'s stamped provenance names a probe that produced only some of its numbers. | `incremental_probe.py`; `sensitivity_probe.py` `_accumulate_packed_per_token_fisher`; measured Ornith-1.5-35B-A3B 2026-08-20 | LOW | Gate probe changes on what is invariant (`n_tokens_seen`, per-expert support, an unbiased signed mean within a *measured* floor), never on bit-identity; pin `--layers-per-shard` for any A/B. |
 | D33 | **OPEN 2026-09-02, narrowed the same day.** Tessera is priced and rendered by name (§5.7) and now has a *declared* lane (§9.4, `lane_specs/tessera.json`) and a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), but still no path out of this repository: **no exporter codec**, and no ship gate has been run on the lane. Producer eligibility is False, and the reason moved from "no runtime publishes a Tessera row" to "**no Tessera release tag exists**" — the packaged contract publishes both families with `device_qualified` native cells, and the PENDING pin is what withholds them. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_runtime/tessera_serving_runtime_pin.json` (PENDING sentinels), `tessera_serving_runtime_pin.py`, `export_native_compressed.py` (no Tessera codec) | Med | Rob cuts a Tessera release tag, then one reviewed commit resolves the pin file and the reader's two release constants together; independently, add the exporter codec so an allocation that picks a Tessera rung can be shipped from here. Until both, the lookup fails closed by design and the lane spec is a bar with nothing behind it. |
+| D34 | **The Gridbook lane is retired but its format/cost/render plumbing is not** (added 2026-09-02). The lane, its pins, exporter, serving profiles, ship-gate slots, 73 test modules (1,691 node IDs) and 27 documents were archived at `archive/gridbook_lane_2026-09-02/` and `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s (§3.5, §9.2) — so no CB rung can be exported or served, which is the property principle 9 cares about. What remains is the machinery that *prices and renders* those rungs: `cb_layout.py`, `nvfp4_cb_formats.py`, `nvfp4_cb_footprint.py`, `cb_ldlq*.py`, `cb_minchain.py`, `cb_warm_state.py`, `cb_banked_books.py`, `cb_learned_promotion.py`, `cb_anchored_cost.py`, `cb_ladder_cross_family.py`, `routed_moe_codebooks.py`, `mxfp4_widen.py`, `source_class_format_plan.py`, plus CB branches inside `production_weight_cache.py`, `allocator.py`, `format_registry.py`, `export_native_compressed.py`, `layer_config.py`, `lane_spec.py`, `serve_constraints.py` and `model_profiles/*`, and roughly 60 tests that exercise them. **Why it was left:** the excision is several hundred diffuse edits concentrated in exactly the files the continuous-menu branch is rewriting, and merging that against a live branch is more dangerous than the debt. **The risk it carries:** a `FORMATS` menu can still name a `*_CB_*` rung, the DP can still price it, and the only thing that stops it is the exporter and the `production-render-score` pairing guard — a *refusal*, not an *absence*. Four consequences are recorded separately because they are capability losses, not debt. (i) `FP8_BLOCK_UE8M0_SOURCE` is now `ROUTE_STATUS_BLOCKED` — its only route was the plugin. (ii) `MXFP4_SOURCE` keeps a backed stock-Marlin route but has no writer and no serving profile, and `MXFP8_UE8M0_G32` is the same shape — never a compressed-tensors scheme, written only by the CB *streaming* exporter, which is archived. Both keep a live `FormatSpec` and a working render; neither has a writer. (iii) **The `serving_lanes` block of a serving-profile spec now has zero live declarations.** `serving_profile_specs/nvfp4_cb.json` was the only spec that ever declared one (verified against `d263f54`), so the per-lane structured `route_status` / `activation_contract` / `fused_mid_m` table that principle 9 reads is a parser with nothing left to parse; the native lane's route status has always come from the source-passthrough contracts instead. The parser and its `route_status_source` machinery are kept because that is the shape the Tessera lane must declare in. (iv) **The sample-parallel incremental probe is unavailable**: its `prepare-run-contract` minter and its per-worker source-census revalidation were both built on `prismaquant/rtx4090_artifact_census.py`, the strict-Ada FP8-CB campaign's closed Qwen3.8-27B layout. `incremental_probe.py --global-calibration-tensor` now refuses up front rather than admitting a pre-retirement contract with one leg of its identity replay missing (`docs/design/sample_parallel_probe.md` carries the banner). Reviving it means giving the census a lane-independent source of truth. Two production observations were surfaced by the removal and deliberately **not** fixed here: `check_serving_shape` fails **open** on an unknown profile id (it catches `FileNotFoundError` and resolves silently to `research`, which permits every shape) while `serving_lane_route`/`serving_lane_catalog` fail **closed** — an asymmetry that predates this work but which made ten archived CB load-gate tests pass for the wrong reason; and `activation_pricing_branches["unrecorded"]` (`allocator_candidates.py:2153`) is now tested nowhere, its only coverage having ridden a deleted CB test. A fifth item is dead-but-kept rather than lost: `shipcard.py`'s `safetensors_content_receipt` trio has no live caller since the strict-RTX4090 publication gate retired, and is kept so receipts already on disk stay readable. `ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT` still exempts `DeepseekV4Profile` from declaring a fused-sibling source, but the lane that justified the exemption is gone; discharging it is a producer-behaviour decision, not a removal. | `archive/gridbook_lane_2026-09-02/README.md`; `docs/measurements/gridbook-lane-retired-2026-09-02.md`; §9.2 | MED | Excise the CB plumbing after the continuous-menu branch merges, in one commit whose diff is deletions plus the tests that go with them; or, if a codebook rung is wanted again for the Tessera lane, port the parts worth keeping deliberately rather than inheriting them. |
 
 **Open items carried from session handovers.** Of the 41 items the handover census could not
 map to a verified closure, the prior FP4-CB fast-expander/Triton item is now closed by the
