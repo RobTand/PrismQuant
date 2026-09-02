@@ -3889,6 +3889,17 @@ carried by `run-pipeline.sh` and `allocator.py` alone. Checked, not assumed.
 **Gate:** `tests/test_tessera_menu.py` (26) + `tests/test_tessera_campaign.py` (9,
 three CUDA-marked), on top of `tessera_{formats,footprint}`'s own suites.
 
+**Measured on Qwen3-0.6B layer 0, 2026-09-02**
+(`docs/measurements/tessera-continuous-menu-2026-09-02.md`). Menu 3039-3063
+rungs per unit; 102 anchors expand to 16893 priced rungs (166x). The DP lands
+within 3e-4 bpp of a 3.0 / 4.0 / 5.0 target; solved against measured anchors
+only it cannot reach the budget at all (4.639 at a 5.0 target) and costs
+1.76-9.84x in Delta-loss. Pre-DP fused aggregation costs 11-23% in Delta-loss
+at matched bpp. True regret at the chosen rungs (17 fresh encodes) is
+0.999 / 0.824 / 0.968 true-over-predicted, conservative at all three, while
+per-rung it spans 0.68-1.27 and the E4M3 LOO gate does **not** close on 4 of 7
+units. DP time: 11 solves, 2.32 s, over a 4315-rung menu.
+
 **Not done, and not claimed:** no export leg, so nothing here has been served and
 no KL — screen or gold — was measured on a Tessera allocation. See
 `docs/measurements/tessera-continuous-menu-2026-09-02.md` for the receipt and the
