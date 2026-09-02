@@ -204,13 +204,24 @@ class RouteAdmission:
     act_bits: "int | None"
     act_group_size: "int | None"
     min_capability_sm: int
-    #: ``backed`` / ``backed_with_serve_flag`` / ``unattested``.
+    #: ``backed`` / ``backed_with_serve_flag`` / ``unattested``.  Read off the
+    #: attesting cell, never typed here: a cell that says
+    #: ``backed_with_serve_flag`` is not a ``backed`` one, and collapsing the
+    #: two loses the flags the serve needs.
     route_status: str
     #: Can Tessera's wire carry these bytes at all?  Independent of the runtime.
     serialisable: bool
-    #: Which table answered.  Swaps when the Tessera contract lands.
+    #: Which table answered.  ``gridbook_serving_runtime_pin:...`` in
+    #: production; ``tessera_dev_pin:...`` under the development override.
     source: str
     detail: str = ""
+    #: The serve flags the attesting cell requires, verbatim.  Empty when
+    #: nothing attests -- absence, not "no flags needed".
+    requires_serve_flags: tuple[str, ...] = ()
+    #: The largest tensor-parallel world size the contract attests for this
+    #: family, or ``None`` when no contract governs it.  ``closed_world``
+    #: semantics: absence is "not attested at any degree", not "any degree".
+    max_world_size: "int | None" = None
 
     @property
     def attested(self) -> bool:
@@ -230,11 +241,78 @@ class RouteAdmission:
         )
 
 
-#: Where the attestation is read from today.  When Tessera publishes its own
-#: ``runtime_contract.json`` this string changes with the lookup below, and it
+#: Where the attestation is read from when no Tessera contract is pinned.  It
 #: travels into every unit's provenance so an artifact records which table
-#: admitted it.
-_ATTESTATION_SOURCE = "gridbook_serving_runtime_pin:lane_eligibility"
+#: admitted it -- and, when that table publishes no Tessera family, which table
+#: declined to.
+_GRIDBOOK_ATTESTATION_SOURCE = "gridbook_serving_runtime_pin:lane_eligibility"
+#: Where it is read from under the development override.  The commit is
+#: appended by :func:`_tessera_attestation_source`, so two runs against
+#: different Tessera builds cannot both claim "the Tessera contract".
+_TESSERA_ATTESTATION_SOURCE = "tessera_dev_pin:runtime_contract"
+
+
+def _tessera_attestation_source(contract) -> str:
+    return f"{_TESSERA_ATTESTATION_SOURCE}:{contract.commit[:12]}"
+
+
+def tessera_runtime_contract():
+    """The pinned Tessera contract, or ``None``.  **The one read.**
+
+    Every Tessera attestation in this module goes through here, so "which
+    table answered" is a single fact per run rather than a per-call race.
+    ``None`` is production (no RELEASE tag exists, so nothing is attested); a
+    mismatched or malformed pin raises rather than degrading to ``None``,
+    because a stale pin that silently empties the menu is the exact failure
+    the pin exists to prevent.
+    """
+    from .tessera_runtime_contract import load_tessera_contract
+
+    return load_tessera_contract()
+
+
+def tessera_tp_world_attested(
+    family: "str | TesseraFamily", tp_degree: int,
+) -> tuple[bool, str]:
+    """Does the pinned contract attest this family at this world size?
+
+    The contract's ``tensor_parallel`` block is ``closed_world``: a family it
+    does not list is attested at no degree at all, and a listed one is
+    attested up to its ``max_world_size``. This is the *attestation* leg of TP
+    legality and it is independent of the *geometry* leg
+    (:func:`tessera_shard_granularity`) -- a shape that shards cleanly at TP=8
+    is still not servable at TP=8 if the runtime says it serves one rank. Both
+    must pass, and the failing one is named in the reason so a receipt can say
+    which.
+    """
+    spec = get_tessera_family(family)
+    tp = int(tp_degree)
+    if tp <= 1:
+        # There is no tensor-parallel claim to attest on a whole unit. This
+        # leg answers about the DEGREE only; whether the rung is served at all
+        # is ``route_admission``'s question, and answering it twice here would
+        # make the TP gate a second route gate that refuses Tessera outright
+        # whenever no contract is pinned -- including on the research menu,
+        # whose entire purpose is to price rungs nothing attests.
+        return True, ""
+    contract = tessera_runtime_contract()
+    if contract is None:
+        return False, (
+            "tp_unattested: no Tessera runtime contract is pinned, so no world "
+            "size is attested for any family"
+        )
+    declared = contract.max_world_size.get(spec.name)
+    if declared is None:
+        return False, (
+            f"tp_unattested: the pinned contract's closed-world tensor_parallel "
+            f"block does not list {spec.name}"
+        )
+    if tp > int(declared):
+        return False, (
+            f"tp{tp}_unattested: the pinned contract attests {spec.name} up to "
+            f"world size {int(declared)}"
+        )
+    return True, ""
 
 
 def route_admission(name: str) -> RouteAdmission:
@@ -281,16 +359,57 @@ def route_admission(name: str) -> RouteAdmission:
     route = tessera_serving_route(family, recipe, rung)
     serialisable = tessera_rung_is_serialisable(name)
 
-    attested = bool(tessera_lane_attested(name))
-    if attested:
-        status = ROUTE_STATUS_BACKED
-        detail = "the pinned serving release publishes a cell naming this rate"
-    else:
-        status = ROUTE_STATUS_UNATTESTED
-        detail = (
-            "the pinned serving release publishes no cell covering this "
-            "family and rate"
+    contract = tessera_runtime_contract()
+    flags: tuple[str, ...] = ()
+    world: "int | None" = None
+    if contract is not None:
+        source = _tessera_attestation_source(contract)
+        world = contract.max_world_size.get(family.name)
+        cells = (
+            contract.native_cells(family.name, rung)
+            if contract.governs(family.name) else ()
         )
+        if cells:
+            # The status is the CELL's, not a constant. A cell that says
+            # ``backed_with_serve_flag`` is not a ``backed`` one, and the flags
+            # it names travel with it -- typing ``backed`` here would drop the
+            # ``TESSERA_SERVE_MODE`` the serve needs and read as a stronger
+            # claim than the runtime made.
+            status = cells[0].route_status
+            flags = tuple(dict.fromkeys(
+                flag for cell in cells for flag in cell.requires_serve_flags))
+            detail = (
+                f"the pinned Tessera contract attests {len(cells)} native "
+                f"cell(s) naming this rate: "
+                f"{', '.join(cell.cell_id for cell in cells)}"
+            )
+            if len({cell.route_status for cell in cells}) > 1:
+                raise TesseraMenuError(
+                    f"{name}: the pinned contract's native cells disagree about "
+                    f"route status ({sorted({c.route_status for c in cells})}); "
+                    "one rung cannot be two routes and this reader will not "
+                    "pick one"
+                )
+        else:
+            status = ROUTE_STATUS_UNATTESTED
+            published = sorted(contract.candidate_rungs.get(family.name, ()))
+            detail = (
+                f"the pinned Tessera contract publishes {family.name} at "
+                f"rungs {published} and no native cell covers R{rung}"
+                if contract.governs(family.name) else
+                f"the pinned Tessera contract does not publish {family.name}"
+            )
+    else:
+        source = _GRIDBOOK_ATTESTATION_SOURCE
+        if bool(tessera_lane_attested(name)):
+            status = ROUTE_STATUS_BACKED
+            detail = "the pinned serving release publishes a cell naming this rate"
+        else:
+            status = ROUTE_STATUS_UNATTESTED
+            detail = (
+                "the pinned serving release publishes no cell covering this "
+                "family and rate"
+            )
     return RouteAdmission(
         format_name=name,
         payload_family=family.name,
@@ -301,8 +420,10 @@ def route_admission(name: str) -> RouteAdmission:
         min_capability_sm=route.min_capability_sm,
         route_status=status,
         serialisable=serialisable,
-        source=_ATTESTATION_SOURCE,
+        source=source,
         detail=detail,
+        requires_serve_flags=flags,
+        max_world_size=world,
     )
 
 
@@ -331,8 +452,9 @@ def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
     stamped with and the gate that admitted it cannot disagree. Every field is
     derived: ``route_status`` and its source come from the admission,
     ``activation_contract`` from ``tessera_serving_route``. Nothing is
-    asserted, and ``fused_mid_m_backed`` is False because no pinned release
-    publishes a fused mid-M table for these bytes -- absence, priced as
+    asserted -- ``route_status`` and ``requires_serve_flags`` are the attesting
+    cell's own words -- and ``fused_mid_m_backed`` is False because no pinned
+    release publishes a fused mid-M table for these bytes: absence, priced as
     absence.
     """
     from .serving_profiles import ResolvedServingLane, gridbook_runtime_version
@@ -353,7 +475,7 @@ def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
         rung=None,
         detail=admission.detail,
         route_status=admission.route_status,
-        requires_serve_flags=(),
+        requires_serve_flags=admission.requires_serve_flags,
         route_status_source=admission.source,
     )
 
@@ -520,10 +642,21 @@ def tessera_tp_legal(
     *,
     tp_degree: int = 1,
     parallel_kind: str = PARALLEL_NONE,
+    require_attested_world: bool = False,
 ) -> tuple[bool, str]:
     """Is this rung legal on every rank at ``tp_degree``?  ``(legal, reason)``.
 
-    Two questions, both asked of Tessera:
+    Three questions when the menu is the attested one, two when it is not.
+    ``require_attested_world`` adds the first: does the pinned runtime contract
+    say it serves this family at this world size at all
+    (:func:`tessera_tp_world_attested`)?  That is a *different* question from
+    the geometry below -- a unit can shard perfectly and still have no runtime
+    that serves the shards -- and the two legs are kept separate so a refusal
+    names which one answered.  The research menu passes ``False``: it prices
+    unattested rungs deliberately and stamps every one of them, so a second
+    attestation refusal there would only hide the pricing.
+
+    Then two questions, both asked of Tessera:
 
     * **Can the whole unit be cut this way at all?**
       ``tessera.layout.can_shard(unit, tp, axis)`` -- and the axis mapping is
@@ -546,6 +679,10 @@ def tessera_tp_legal(
     tp = int(tp_degree)
     if tp < 1:
         raise TesseraMenuError(f"tp_degree must be >= 1, got {tp_degree}")
+    if require_attested_world:
+        attested, why = tessera_tp_world_attested(spec, tp)
+        if not attested:
+            return False, why
     try:
         sharded = shard_shape(shape, tp, parallel_kind)
     except TesseraMenuError as exc:
@@ -771,6 +908,7 @@ def expand_tessera_menu(
             legal, _reason = tessera_tp_legal(
                 spec, rung, dims,
                 tp_degree=tp_degree, parallel_kind=parallel_kind,
+                require_attested_world=(mode == MENU_ATTESTED),
             )
             if not legal:
                 continue

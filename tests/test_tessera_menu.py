@@ -19,11 +19,24 @@ from fractions import Fraction
 import pytest
 
 from prismaquant import tessera_menu as tm
+from prismaquant import tessera_runtime_contract as trc
 from prismaquant.tessera_formats import (
     TesseraFormatError, format_promotion_class, parse_tessera_format_name,
 )
 
 SHAPE = (2048, 1024)
+
+
+@pytest.fixture
+def dev_pin(monkeypatch):
+    """Turn on the Tessera development pin for one test.
+
+    Never module-scoped and never autouse: the default-menu test asserts the
+    menu is EMPTY without it, and a leaked pin would silently invert exactly
+    the assertion that says production is still fail-closed.
+    """
+    monkeypatch.setenv(trc.TESSERA_DEV_PIN_ENV, trc.TESSERA_DEV_PIN_COMMIT)
+    return trc.TESSERA_DEV_PIN_COMMIT
 
 
 # ---------------------------------------------------------------------------
@@ -240,18 +253,128 @@ def test_route_admission_never_asserts():
     }
 
 
-def test_attested_menu_is_closed_under_the_current_pin():
+def test_attested_menu_is_closed_with_no_tessera_contract_pinned():
     """A measured fact about the pinned release, recorded as a test.
 
-    The pinned Gridbook contract publishes no Tessera cell, so the DEFAULT
-    menu holds no Tessera rung at all. This is the honest state of the gate,
-    not a bug: principle 9 says a format is production-eligible only when a
-    pinned runtime attests it, and nothing does yet. When the Tessera lane
-    publishes its contract this test flips, and that is the signal that the
-    default menu just changed.
+    The pinned Gridbook contract publishes no Tessera cell, and no Tessera
+    RELEASE tag exists, so with the dev pin unset the DEFAULT menu holds no
+    Tessera rung at all. This is the honest state of the gate, not a bug:
+    principle 9 says a format is production-eligible only when a pinned
+    runtime attests it. A RELEASE tag is what flips this in production; the
+    dev pin below is what flips it here.
     """
+    assert not trc.dev_pin_requested(), "the dev pin must not leak into this test"
     rungs = tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED)
     assert rungs == []
+
+
+def test_the_dev_pin_attests_exactly_the_two_rungs_the_contract_publishes(dev_pin):
+    """The attested menu is two rungs, and it has no rate axis.
+
+    This is the headline the pin buys and the honest limit of "allocate
+    continuously": Tessera's packaged contract publishes ONE candidate rung per
+    family -- each family's native terminal rate -- so the attested menu is two
+    points 0.078 bpp apart on this shape, not a range. The continuous axis is
+    reachable only under the research menu, and widening the attested one is a
+    change to the contract's `candidate_rungs_q256`, not to PrismaQuant.
+    """
+    rungs = tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED)
+    assert [r.format_name for r in rungs] == [
+        "TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024",
+    ], [r.format_name for r in rungs]
+    for rung in rungs:
+        # Read off the cell, not typed: these cells are backed_with_serve_flag.
+        assert rung.admission.route_status == tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+        assert rung.admission.requires_serve_flags == (
+            "TESSERA_SERVE_MODE=resident|streamed",)
+        assert rung.admission.source.startswith("tessera_dev_pin:runtime_contract:")
+        assert rung.admission.max_world_size == 1
+
+
+def test_a_rate_the_contract_does_not_publish_is_unattested_not_backed(dev_pin):
+    """One q256 step off the published rung is absence of a claim."""
+    on = tm.route_admission("TESSERA_E4M3_K1_R1024")
+    off = tm.route_admission("TESSERA_E4M3_K1_R1023")
+    assert on.route_status == tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+    assert off.route_status == tm.ROUTE_STATUS_UNATTESTED
+    assert "R1023" in off.detail and "[1024]" in off.detail
+
+
+def test_the_dev_pin_refuses_a_commit_it_was_not_written_against(monkeypatch):
+    """A stale pin raises. It never degrades to 'unattested'.
+
+    Degrading would turn a pin pointing at the wrong Tessera into a silently
+    empty menu -- an allocation that looks like a correct fail-closed and is
+    actually a mis-read table.
+    """
+    monkeypatch.setenv(trc.TESSERA_DEV_PIN_ENV, "0" * 40)
+    with pytest.raises(trc.TesseraContractError, match="not the commit"):
+        trc.load_tessera_contract()
+
+
+def test_the_dev_pin_refuses_a_contract_whose_bytes_are_not_its_own(dev_pin, monkeypatch):
+    """The sha is the leg that attests; the commit is only declared.
+
+    An rsync'd source tree is not a git checkout and cannot be asked its HEAD,
+    so the bytes the reader consumed are what travels.
+    """
+    monkeypatch.setattr(trc, "TESSERA_DEV_PIN_CONTRACT_SHA256", "f" * 64)
+    with pytest.raises(trc.TesseraContractError, match="hashes to"):
+        trc.load_tessera_contract()
+
+
+def test_reading_the_contract_does_not_import_the_serving_plugin():
+    """Path arithmetic, not ``importlib.resources.files('tessera.serving')``.
+
+    Importing that package registers the vLLM plugin; a producer-side contract
+    read must not have that side effect, and this task's brief forbids the
+    import outright.
+    """
+    import subprocess
+    import sys
+
+    script = (
+        "import sys\n"
+        "from prismaquant import tessera_runtime_contract as trc\n"
+        "import os\n"
+        f"os.environ['{trc.TESSERA_DEV_PIN_ENV}'] = '{trc.TESSERA_DEV_PIN_COMMIT}'\n"
+        "c = trc.load_tessera_contract()\n"
+        "assert c is not None\n"
+        "assert 'tessera.serving' not in sys.modules, sorted(\n"
+        "    m for m in sys.modules if m.startswith('tessera.'))\n"
+        "print('OK')\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "OK" in out.stdout
+
+
+def test_tp_above_the_attested_world_size_is_refused_in_the_attested_menu(dev_pin):
+    """Two legs, and the attestation one binds first.
+
+    The contract's ``tensor_parallel`` block is ``closed_world`` and lists both
+    families at ``max_world_size: 1``. A ``[2048, 1024]`` unit shards perfectly
+    at TP=2 on either axis, so geometry alone would admit it; the runtime says
+    it serves one rank, and that is the answer. The research menu is unmoved --
+    it prices unattested rungs on purpose.
+    """
+    geometry_ok, _ = tm.tessera_tp_legal(
+        "TESSERA_E4M3_K1", 1024, SHAPE,
+        tp_degree=2, parallel_kind=tm.PARALLEL_COLUMN)
+    assert geometry_ok, "the shape shards; only the attestation should refuse"
+    legal, reason = tm.tessera_tp_legal(
+        "TESSERA_E4M3_K1", 1024, SHAPE,
+        tp_degree=2, parallel_kind=tm.PARALLEL_COLUMN,
+        require_attested_world=True)
+    assert not legal
+    assert "unattested" in reason and "world size 1" in reason
+    assert tm.expand_tessera_menu(
+        SHAPE, mode=tm.MENU_ATTESTED, tp_degree=2,
+        parallel_kind=tm.PARALLEL_COLUMN) == []
+    assert tm.expand_tessera_menu(
+        SHAPE, mode=tm.MENU_RESEARCH, tp_degree=2,
+        parallel_kind=tm.PARALLEL_COLUMN)
 
 
 def test_research_menu_is_dense_and_stamps_its_status():

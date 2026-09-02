@@ -696,7 +696,8 @@ def _tensor_parallel_applicability(
         return FormatApplicability(True)
     from .serving_profiles import load_serving_profile
     from .tessera_menu import (
-        PARALLEL_NONE, TesseraMenuError, tessera_tp_legal,
+        MENU_ATTESTED, PARALLEL_NONE, TesseraMenuError, menu_mode,
+        tessera_tp_legal,
     )
     from .tessera_formats import parse_tessera_format_name
 
@@ -722,6 +723,7 @@ def _tensor_parallel_applicability(
         legal, reason = tessera_tp_legal(
             family, rung, (out_features, in_features),
             tp_degree=world, parallel_kind=kind,
+            require_attested_world=(menu_mode() == MENU_ATTESTED),
         )
     except TesseraMenuError as exc:
         return FormatApplicability(False, TP_SHARD_REASON, str(exc), provenance)

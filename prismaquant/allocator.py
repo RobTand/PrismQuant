@@ -2313,6 +2313,21 @@ def main():
               f"({tessera_hessian_identity['stamped_rows']} stamped, "
               f"{tessera_hessian_identity['unstamped_rows']} unstamped rows)")
 
+    # Which runtime contract admitted this run's Tessera routes, if any. Empty
+    # when no Tessera contract is pinned -- production, where the attested menu
+    # is empty and nothing here is reached. Non-empty means the development
+    # override was in force, and the block names the exact Tessera commit and
+    # the sha256 of the contract file the reader consumed, so a shipcard can
+    # say which table attested its routes rather than that some table did.
+    from .tessera_runtime_contract import load_tessera_contract
+    _tessera_contract = load_tessera_contract()
+    tessera_dev_pin = {} if _tessera_contract is None else _tessera_contract.identity()
+    if tessera_dev_pin:
+        print(f"[alloc] tessera dev pin: commit={tessera_dev_pin['commit'][:12]} "
+              f"contract_sha={tessera_dev_pin['contract_sha256'][:12]} "
+              f"plugin={tessera_dev_pin['plugin_version']} "
+              f"contract_v{tessera_dev_pin['contract_version']}")
+
     # ---- Fisher renormalization ----
     # One shared denominator (the global calib token count) recomputed
     # from the stored raw accumulators; hard error on probes that cannot
@@ -4889,6 +4904,7 @@ def main():
             # campaign that priced few rungs and a bin width that swallowed
             # many look identical in the output.
             "tessera_group_knapsack": dict(tessera_group_menu_report),
+            **({"tessera_dev_pin": dict(tessera_dev_pin)} if tessera_dev_pin else {}),
             "tessera_menu": {
                 "per_linear": dict(tessera_menu_report),
                 "aggregated": dict(tessera_menu_report_agg),
@@ -5305,6 +5321,7 @@ def main():
         **({"tessera_hessian": dict(tessera_hessian_identity)}
            if (tessera_hessian_identity.get("stamped_rows")
                or tessera_hessian_identity.get("unstamped_rows")) else {}),
+        **({"tessera_dev_pin": dict(tessera_dev_pin)} if tessera_dev_pin else {}),
         **({"solve_diagnostics": {
                 str(k): {
                     "solver_seconds": v.get("solver_seconds"),

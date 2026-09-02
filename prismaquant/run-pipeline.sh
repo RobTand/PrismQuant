@@ -70,7 +70,7 @@ if [[ ",${FORMATS}," == *",TESSERA,"* ]]; then
   if [[ -z "${COST_PATH_OVERRIDE:-}" ]]; then
     echo "[pipeline] ERROR: FORMATS contains the TESSERA menu token, whose cost stage is prismaquant.tessera_campaign and is not yet run by this orchestrator. Produce it first:" >&2
     echo "[pipeline]   PRISMAQUANT_TESSERA_MENU=research python -m prismaquant.tessera_campaign --model \"\$MODEL_PATH\" --out \"\$WORK_DIR/artifacts/cost.pkl\" --cache-dir \"\$WORK_DIR/artifacts/tessera-cache\"" >&2
-    echo "[pipeline] then re-run with COST_PATH_OVERRIDE pointing at it. Note PRISMAQUANT_TESSERA_MENU: no pinned serving release attests a Tessera route today, so the default (attested) menu is EMPTY, and research mode stamps route_status=unattested on every selected unit for the export gate to fail closed on." >&2
+    echo "[pipeline] then re-run with COST_PATH_OVERRIDE pointing at it. Note PRISMAQUANT_TESSERA_MENU: with no Tessera contract pinned the default (attested) menu is EMPTY; under PRISMAQUANT_TESSERA_DEV_PIN it is the two rungs Tessera's packaged contract publishes (E2M1_K2 R896, E4M3_K1 R1024), both at TP world size 1. Research mode admits every serialisable rung and stamps route_status=unattested on each for the export gate to fail closed on." >&2
     exit 2
   fi
 fi

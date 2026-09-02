@@ -3706,13 +3706,49 @@ a cache over a runtime-contract read must not outlive the contract, and a plain
 name-keyed cache demonstrably inverted a pinned-release test that ran after one
 which patched the attestation.
 
-**The default menu is empty today, and says so.** The pinned Gridbook release
-publishes no Tessera cell, so `route_admission` answers `unattested` — *absence of
-a claim*, not `unbacked` — for every rung, and the default `attested` menu holds
-none of them. `PRISMAQUANT_TESSERA_MENU=research` opts in, admits every
-serialisable rung, and stamps `route_status=unattested` on each so the export gate
-fails closed on it (principles 1 and 9: an honestly priced rung is never removed
-from the menu; the *export* is where an unbacked route is refused).
+**The default menu is two rungs under the dev pin, and empty without it.** The
+pinned Gridbook release publishes no Tessera cell, so with no Tessera contract
+pinned `route_admission` answers `unattested` — *absence of a claim*, not
+`unbacked` — for every rung and the default `attested` menu holds none of them.
+
+Tessera now packages its own contract (`tessera/serving/runtime_contract.json`,
+schema `tessera.runtime-contract.v1`), read by `tessera_runtime_contract.py`. No
+Tessera RELEASE tag has been cut, so production admission stays fail-closed; the
+development override `PRISMAQUANT_TESSERA_DEV_PIN=<commit>` must equal
+`TESSERA_DEV_PIN_COMMIT` **and** the installed contract's sha256 must equal
+`TESSERA_DEV_PIN_CONTRACT_SHA256`, or the read raises — it never degrades to
+`unattested`, because a stale pin that silently empties the menu is exactly what
+the pin exists to prevent. The commit is declared and the sha is what attests: a
+worktree rsync'd to a second box is not a git checkout and cannot be asked its
+HEAD. The whole identity travels into provenance as `tessera_dev_pin`.
+
+Under that pin the attested menu is **two rungs, not a range**:
+
+| rung | bpp on `[2048, 1024]` | route status | serve flags | max TP world |
+|---|---|---|---|---|
+| `TESSERA_E2M1_K2_R896` | 4.000 | `backed_with_serve_flag` | `TESSERA_SERVE_MODE=resident\|streamed` | 1 |
+| `TESSERA_E4M3_K1_R1024` | 4.078 | `backed_with_serve_flag` | `TESSERA_SERVE_MODE=resident\|streamed` | 1 |
+
+Both are the family's native terminal rate, 0.078 bpp apart, so **the attested
+menu has no rate axis at all** — the continuous axis is priced and allocatable
+only under `PRISMAQUANT_TESSERA_MENU=research`, and widening it is a change to
+Tessera's published `candidate_rungs_q256`, not to anything here. Research mode
+admits every serialisable rung and stamps `route_status=unattested` on each so
+the export gate fails closed on it (principles 1 and 9: an honestly priced rung
+is never removed from the menu; the *export* is where an unbacked route is
+refused).
+
+Route status and serve flags are read off the attesting cell rather than typed:
+these cells say `backed_with_serve_flag`, and collapsing that to `backed` would
+both overstate the claim and drop the `TESSERA_SERVE_MODE` the serve needs.
+
+**Tensor parallelism has two legs, and both bind.** The *attestation* leg is the
+contract's `tensor_parallel` block, whose semantics are `closed_world`: it lists
+both families at `max_world_size: 1`, so **no Tessera rung is attested at TP > 1
+at any shape**, and `tessera_tp_world_attested` refuses in the attested menu
+before geometry is consulted. The research menu passes that leg by construction
+(it prices unattested rungs deliberately and stamps every one). The *geometry*
+leg is below, and a refusal names which leg answered.
 
 **Tensor parallelism is a per-unit legality input.** A Tessera rate is a schedule
 over the reduce dimension, so what a rank can encode is a function of *its* column
