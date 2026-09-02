@@ -741,7 +741,13 @@ def render_tessera_production(
     weights_only = bool(levers.get("tessera_weights_only", False)) if levers \
         else False
     acts = None
-    if activations is not None:
+    # When the lever says weights-only, no Hessian is FORMED -- not merely not
+    # required. Forming one and letting ``encode_tessera_unit`` drop it works
+    # only while the encoder cannot take an H; the day the kwarg is pinned, a
+    # lever named ``tessera_weights_only`` would start shipping H-aware bytes
+    # under a ``supplied=false`` stamp. The campaign's ``--hessian off``
+    # collects no H at all, and this must mean the same thing.
+    if activations is not None and not weights_only:
         try:
             acts = activations[qname]
         except KeyError:

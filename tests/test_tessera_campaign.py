@@ -582,3 +582,65 @@ def test_token_count_is_only_sent_when_the_encoder_takes_one(monkeypatch):
             hessian=torch.eye(32), token_count=4096)
     assert "hessians" in seen
     assert "token_count" not in seen
+
+
+def test_the_weights_only_lever_forms_no_hessian_at_all(monkeypatch):
+    """``tessera_weights_only`` must mean weights-only *after* the pin too.
+
+    Forming H and letting ``encode_tessera_unit`` drop it because the pinned
+    encoder cannot take one is correct exactly until the day the kwarg lands --
+    at which point a lever named "weights only" starts shipping H-aware bytes
+    under a ``supplied=false`` stamp. The monkeypatch simulates that day.
+    """
+    import prismaquant.tessera_render as tr
+
+    seen = {}
+
+    def fake_encode_linear(weight, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop after argument capture")
+
+    monkeypatch.setattr(tr, "TESSERA_HESSIAN_KWARG", "hessians")
+    monkeypatch.setattr(
+        tr, "_encoder_accepts_hessian",
+        lambda: (True, ("weight", "grid", "q256", "name", "hessians")))
+    monkeypatch.setattr(
+        tr._tessera_export, "encode_linear", fake_encode_linear)
+
+    w = torch.randn(8, 32, dtype=torch.bfloat16)
+    acts = {"q": torch.randn(64, 32)}
+    with pytest.raises(RuntimeError, match="argument capture"):
+        tr.render_tessera_production(
+            w, "TESSERA_E2M1_K2_R256", qname="q", activations=acts,
+            levers={"tessera_weights_only": True},
+        )
+    assert "hessians" not in seen
+
+    seen.clear()
+    with pytest.raises(RuntimeError, match="argument capture"):
+        tr.render_tessera_production(
+            w, "TESSERA_E2M1_K2_R256", qname="q", activations=acts, levers={},
+        )
+    assert "hessians" in seen
+
+
+def test_a_production_cache_miss_does_not_fall_back_to_the_registry():
+    """``STRICT_PRODUCTION_CACHE=0`` is not permission to price other bytes.
+
+    Both miss paths end at the format's registry ``quantize_dequantize``; for
+    Tessera that is the weights-only reconstruction, so the fallback would put
+    a different tensor behind the same format name with nothing raised. CB
+    already refuses there for the same reason.
+    """
+    from prismaquant.weight_session import WeightSession
+
+    lin = torch.nn.Linear(32, 8, bias=False).to(torch.bfloat16)
+    session = WeightSession(torch.nn.Sequential(lin),
+                            production_weight_cache=None,
+                            strict_production_cache=False)
+    # The qname map normally comes from a model profile; registering the
+    # alias directly keeps this test about the fallback and not about
+    # architecture discovery.
+    session._linear_by_qname["lin"] = (lin, "weight")
+    with pytest.raises(RuntimeError, match="Tessera"):
+        session._format_weight("lin", "TESSERA_E2M1_K2_R256")

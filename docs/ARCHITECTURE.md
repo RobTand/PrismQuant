@@ -3780,9 +3780,17 @@ the same format name, and the seam refuses rather than downgrade silently:
   column count that does not match `weight.shape[1]`. The deliberate opt-out is
   the `tessera_weights_only` lever, which whoever sets must stamp.
 
-`render_tessera_weight` remains the **weights-only reference** render — it is
-reached only by an explicit call, never by `render_production_weight` and never
-by the campaign, and it does not and will not take an H.
+* **The cache-miss RTN fallbacks refuse Tessera** (`weight_session._format_
+  weight`, `perturbed_x_cache`). Both fall back to the registry
+  `quantize_dequantize` when `PRISMAQUANT_STRICT_PRODUCTION_CACHE=0`, which
+  for Tessera is the weights-only reconstruction again — the same silence one
+  function further on. They now raise, as they already did for CB.
+
+`render_tessera_weight` remains the **weights-only reference** render. It is
+reached only through the registry's synthesized `quantize_dequantize` — public
+API, so it cannot be made unreachable — but no consumer that decides or ships
+bytes goes there any more: `render_production_weight` intercepts, and both
+cache-miss fallbacks refuse. It does not and will not take an H.
 
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
 
