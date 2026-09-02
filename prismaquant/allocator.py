@@ -5206,6 +5206,28 @@ def main():
             "additive_candidate_proposal_then_exact_assignment_filter"
         ),
         "global_optimality_claimed": False,
+        # Continuous-menu provenance, written on EVERY run rather than only on
+        # the byte-budget path: how wide the Tessera menu was before the DP saw
+        # it, which of the two exact reductions shrank it (per-Linear and, for
+        # aggregated super items, again after aggregation), and what the solve
+        # cost in wall time. On a menu of thousands of rungs those are the
+        # numbers that say whether a coarse-looking result is the allocator's
+        # answer or the menu's. Absent keys mean no Tessera rung was on the
+        # menu, so a stock run's metadata is unchanged.
+        **({"tessera_menu": {
+                "per_linear": dict(tessera_menu_report),
+                "aggregated": dict(tessera_menu_report_agg),
+            }} if (tessera_menu_report or tessera_menu_report_agg) else {}),
+        **({"solve_diagnostics": {
+                str(k): {
+                    "solver_seconds": v.get("solver_seconds"),
+                    "solver_calls": v.get("solver_calls"),
+                }
+                for k, v in _solve_diagnostics.items()
+                if isinstance(v, dict) and "solver_seconds" in v
+            }} if any(
+                isinstance(v, dict) and "solver_seconds" in v
+                for v in _solve_diagnostics.values()) else {}),
         # The artifact-wide CB context the per-tensor identities above were
         # computed under. Without it the exporter cannot know which contract
         # produced them: it reads this key
