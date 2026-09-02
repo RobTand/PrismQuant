@@ -4811,6 +4811,20 @@ def main():
                 "per_linear": dict(tessera_menu_report),
                 "aggregated": dict(tessera_menu_report_agg),
             },
+            # DP wall time per solved target, summed over the tightening
+            # retries that target needed. `_solve_diagnostics` was previously
+            # read only by the infeasibility message, so the cost of a solve
+            # was invisible to anything that consumed the output; a continuous
+            # menu is exactly the case where that number stops being obvious.
+            "solve_diagnostics": {
+                str(k): {
+                    "solver_seconds": v.get("solver_seconds"),
+                    "solver_calls": v.get("solver_calls"),
+                    "evals": v.get("evals"),
+                }
+                for k, v in _solve_diagnostics.items()
+                if isinstance(v, dict) and "solver_seconds" in v
+            },
             # Ultraplan P5c: which hard serving constraints were active, which
             # probed assignments the axis REJECTED and for which SLO, and
             # which constraint binds at the shipped optimum. Present on every
