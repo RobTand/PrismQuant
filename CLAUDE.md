@@ -237,17 +237,18 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
    serving runtime executes on them* must be *identical* — a mismatch on any
    link is a confound (a "rendering confound" is the exact reason the JSO
    wall-off was reverted). Rendering identity **without** execution identity
-   priced a real A-side at zero: NVFP4_CB, 2026-08-17. The executed contract is
+   priced a real A-side at zero: NVFP4_CB, 2026-08-17 (measured on the Gridbook
+   codebook lane, retired 2026-09-02 — the lesson is about rendering-vs-execution
+   identity and outlives the lane). The executed contract is
    a fact about the pinned runtime and is established per principle 14, never
    asserted locally.
 9. **Serving reality gates every format — per lane, and per artifact.** A
    format is production-eligible only when its lane's **pinned runtime**
-   (vanilla vLLM for `compressed-tensors`, llama.cpp/vLLM-GGUF for GGUF, the
-   pinned Gridbook release for CB, and — since 2026-09-02 — the pinned Tessera
-   release for the Tessera wire, served by Tessera's own vLLM plugin
-   `tessera.serving` and admitted only through
+   (vanilla vLLM for `compressed-tensors`, llama.cpp/vLLM-GGUF for GGUF, and
+   the pinned Tessera release for the Tessera wire, served by Tessera's own vLLM
+   plugin `tessera.serving` and admitted only through
    `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, which is
-   PENDING, so that lane admits nothing yet — the sanctioned four, per
+   PENDING, so that lane admits nothing yet — the sanctioned **three**, per
    `AGENTS.md`)
    loads it on real shapes, generates correctly eager **and** graph-mode,
    doesn't break MTP/spec-decode (or is gated away), and routes it to a
@@ -303,10 +304,12 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
     executed activation contracts, kernel routes, backed rungs — is either
     **derived from** a machine-readable table the pinned runtime publishes, or
     **refused**. Prose `detail`/`rationale` fields explain; they are never the
-    value a gate or a cost model reads. Concretely: Gridbook publishes its
-    executed-activation-contract table (it already computes it —
-    `nvfp4_activation_contract.bridge_contract`, per-scheme
-    `activation_contract` strings) inside its packaged `runtime_contract.json`;
+    value a gate or a cost model reads. Concretely: the pinned serving runtime
+    publishes its executed-activation-contract table inside its packaged
+    `runtime_contract.json` — Tessera does this today, and the retired Gridbook
+    lane (2026-09-02) did it before, computing it from
+    `nvfp4_activation_contract.bridge_contract` and its per-scheme
+    `activation_contract` strings;
     the producer preflight asserts every lane spec's `executes` list equals the
     pinned contract's table and refuses on mismatch, exactly as the R6 profile
     preflight already refuses producer/consumer profile drift. Second leg,
@@ -314,7 +317,7 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
     `activation_contracts` histogram against the routes the serve actually
     emitted (`emit_route` telemetry) and refuses on disagreement — the priced
     contract and the served contract must be the same object. The test may not
-    `import gridbook` (`AGENTS.md:38` forbids vendoring the runtime); the
+    import the serving runtime (`AGENTS.md` principle 5 forbids vendoring it); the
     attestation travels in the contract file. **Corollary for prose:** a
     recorded blocker or capability claim inherits the scope of the artifact it
     was measured on — record the scope or do not record the claim. *Two of our
@@ -609,6 +612,7 @@ lever ones (grouped-KL, Fisher, HDQ, multi-shot) **fail-fast with `exit 2`** fro
 
 | Method | Why it lost (the lesson) |
 |---|---|
+| **The Gridbook codebook lane (NVFP4-CB / FP8-CB)** | Retired **by decision, not by defect**, 2026-09-02 (`archive/gridbook_lane_2026-09-02/`) — Rob: *"put Tessera in PrismaQuant and remove Gridbook."* It won where it was measured (27B: −45%/−53% confident-position KL at 19.93 GB vs a 23 GB native artifact; 35B: 0.01706 vs 0.03625; the 105.73 GB Hy3 295B artifact came off it) and its shipped artifacts are **not** withdrawn. What it cost was a second serving runtime to pin, attest and keep in step, for one non-native wire; Tessera replaces that wire with one plugin lane. *A lane is priced by the runtime it obliges you to maintain, not only by the KL it wins.* Two second-order lessons kept: an unbacked route that nothing consumes is a confession log, not a gate (principle 9, 2026-08-17 NVFP4_CB); and a lane's tendrils outlive it — the sample-parallel probe and DeepSeek-V4's role-composite exemption were both coupled to a *campaign* census inside it (debt D34). |
 | **The three-level cost cascade (L1→L2→L3)** | Retired from the spine 2026-07-30 (`archive/l3_propagated_2026-07-30/`). L2 beat additive L1 by −1.5%; AURA beat L1 by −38.5%. Cross-layer residuals +5–12% diffuse, 3/1180 pairs significant, and the non-additivity was a bf16 artifact. *One faithful cost beats another level.* |
 | **`COST_MODE=production-render-staged`** | Rendered NVFP4 first and promoted only the top-30% error tail, so the DP could not consider anything outside it. 27B: last-token-KL screen improved 0.0232 vs 0.0280, direct PPL **regressed 10.83 vs 8.33** — "Do not ship". The canonical screen-vs-gold inversion. `archive/production_render_staged_2026-07-30/`. |
 | **`MSE_PROMOTION`** (post-frontier rewrite) | Re-ranked the already-KL-selected point by local `output_mse_per_bit`. On 35B: beat the strategic baseline, lost to both the shipped 4.75 and the 5.16 kneedle. *A post-allocator rewrite cannot beat a better cost inside the DP.* `archive/mse_promotion_2026-07-30/`. |

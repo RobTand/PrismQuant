@@ -149,19 +149,20 @@ def test_command_matches_the_documented_lane_harness():
 # --------------------------------------------------------------------------
 # LaneSpec
 # --------------------------------------------------------------------------
-def test_four_lanes_are_declared():
-    """Four sanctioned lanes since 2026-09-02, when Tessera started serving
-    itself through its own vLLM plugin (AGENTS.md rule 5). None of them is a
-    forked runtime: two are vanilla vLLM, one is llama.cpp, and the two plugin
-    lanes install a separately released plugin into an unpatched image."""
+def test_three_lanes_are_declared():
+    """Three sanctioned lanes since 2026-09-02, when Tessera started serving
+    itself through its own vLLM plugin (AGENTS.md rule 5) and the Gridbook
+    codebook lane was retired (archive/gridbook_lane_2026-09-02/). None of them
+    is a forked runtime: one is vanilla vLLM, one is llama.cpp, and the plugin
+    lane installs a separately released plugin into an unpatched image."""
     assert set(lane_spec_names()) == {
-        "compressed_tensors", "gguf", "nvfp4_cb", "tessera"}
+        "compressed_tensors", "gguf", "tessera"}
     containers = {s.export_container for s in all_lane_specs()}
-    assert containers == {"compressed-tensors", "gguf", "nvfp4_cb", "tessera"}
+    assert containers == {"compressed-tensors", "gguf", "tessera"}
 
 
 @pytest.mark.parametrize(
-    "container", ["compressed-tensors", "gguf", "nvfp4_cb", "tessera"])
+    "container", ["compressed-tensors", "gguf", "tessera"])
 def test_every_lane_declares_the_four_things(container):
     spec = lane_spec_for_container(container)
     assert spec.endpoint.kind in {"openai", "llama_server", "none"}
@@ -230,19 +231,28 @@ def test_gguf_lane_names_the_llama_perplexity_adapter():
     assert callable(getattr(mod, attr))
 
 
-def test_native_and_cb_share_the_endpoint_agnostic_ship_gate():
-    """The R16 finding in one assertion: the CB half is wiring, not
+def test_native_and_plugin_share_the_endpoint_agnostic_ship_gate():
+    """The R16 finding in one assertion: a plugin lane is wiring, not
     capability — both lanes run the SAME ship-gate script on the SAME
-    endpoint kind."""
+    endpoint kind.
+
+    Renamed from `test_native_and_cb_share_...` on 2026-09-02 and re-pointed
+    from `nvfp4_cb` to `tessera`. The finding is about lane-shape, not about
+    which plugin, so it survives the Gridbook retirement
+    (archive/gridbook_lane_2026-09-02/) with its subject intact — and Tessera
+    is the plugin lane it now has to hold for.
+    """
     native = load_lane_spec("compressed_tensors")
-    cb = load_lane_spec("nvfp4_cb")
-    assert native.endpoint.kind == cb.endpoint.kind == "openai"
+    plugin = load_lane_spec("tessera")
+    assert native.endpoint.kind == plugin.endpoint.kind == "openai"
     assert (native.gate("ship_gate.ppl_p99nll").runner
-            == cb.gate("ship_gate.ppl_p99nll").runner)
+            == plugin.gate("ship_gate.ppl_p99nll").runner)
 
 
-def test_cb_gold_ppl_runner_names_offline_wikitext_input():
-    cb = load_lane_spec("nvfp4_cb")
-    runner = cb.gate("gold.ppl").runner
-    assert "--dsv4-gridbook-contract" in runner
-    assert "--wikitext-inputs <gold-inputs.json>" in runner
+# `test_cb_gold_ppl_runner_names_offline_wikitext_input` was deleted on
+# 2026-09-02. It pinned the `gold.ppl` gate runner of the `nvfp4_cb` lane spec,
+# specifically that it carried `--dsv4-gridbook-contract` and offline
+# `--wikitext-inputs`. That lane spec is in archive/gridbook_lane_2026-09-02/
+# and the `--dsv4-gridbook-contract` flag went with it; no surviving lane
+# declares a `gold.ppl` gate, so the assertion has no subject rather than a
+# new home.

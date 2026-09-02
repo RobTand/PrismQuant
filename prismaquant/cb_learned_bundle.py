@@ -46,12 +46,6 @@ from prismaquant.cb_layout import (
     parse_format_name,
     subtable_bit_widths,
 )
-from prismaquant.gridbook_runtime_pin import (
-    GRIDBOOK_ROUTED_MOE_PER_ROLE_CODEBOOK_LUT_MIN_VERSION,
-    GridbookRuntimePinError,
-    load_gridbook_runtime_pin,
-    supports_routed_moe_per_role_codebook_lut,
-)
 from prismaquant.routed_moe_codebooks import (
     DEFAULT_ROUTED_BOOK_KEYING,
     ROUTED_BOOK_KEYINGS,
@@ -263,37 +257,22 @@ def refuse_routed_moe_learned(
     routed_moe: bool = False,
     weight: torch.Tensor | None = None,
 ) -> None:
-    """Fail closed unless the pinned runtime carries routed per-role LUTs.
+    """No-op: the runtime-version gate this used to apply has no runtime left.
 
-    Rank-3 CB weights are routed stacks in the producer ABI and take this gate
-    even if the caller omitted its explicit route flag.  Dense Linears never
-    consult the gate because older Gridbook releases already support their
-    per-row LUT offsets.
+    It read an immutable runtime pin and refused a learned ``codebook_ref`` on
+    a routed-MoE stack when the pinned release predated the per-row/per-role
+    LUT offset ABI.  That pin belonged to the Gridbook serving lane, retired
+    2026-09-02 (see archive/gridbook_lane_2026-09-02/), so there is no longer a
+    version to compare against and inventing one would be a heuristic, not a
+    measured platform fact.
+
+    The name and signature stay because callers still spell the gate at the
+    two points where a learned book is admitted; a lane that reintroduces a
+    routed-LUT version floor puts its own attested check here rather than
+    scattering one through the bundle builder.
     """
 
-    rank3 = weight is not None and torch.as_tensor(weight).ndim == 3
-    routed_name = re.search(r"(?:^|[.])experts(?:[.]|$)", str(qname)) is not None
-    if not (routed_moe or rank3 or routed_name):
-        return
-    try:
-        pin = load_gridbook_runtime_pin()
-    except GridbookRuntimePinError as exc:
-        raise ValueError(
-            f"{qname}: refusing learned codebook_ref on a routed-MoE stack: "
-            "the immutable Gridbook runtime pin is invalid "
-            f"({exc}); routed per-role LUTs require Gridbook "
-            f">={GRIDBOOK_ROUTED_MOE_PER_ROLE_CODEBOOK_LUT_MIN_VERSION}."
-        ) from exc
-    if supports_routed_moe_per_role_codebook_lut(pin):
-        return
-    raise ValueError(
-        f"{qname}: refusing learned codebook_ref on a routed-MoE stack: "
-        f"pinned Gridbook {pin.version} ({pin.commit}) predates the "
-        "per-row/per-role LUT offset ABI; routed learned codebooks require "
-        "Gridbook "
-        f">={GRIDBOOK_ROUTED_MOE_PER_ROLE_CODEBOOK_LUT_MIN_VERSION}. Dense "
-        "Linear CBL remains supported."
-    )
+    return
 
 
 def _keying_implied_by_cell_qname(qname: str) -> str | None:
@@ -2214,7 +2193,6 @@ __all__ = [
     "CB_LEARNED_TRAINER_V2_STAMP",
     "CB_LEARNED_V2_SAMPLING_SCHEMA",
     "CBLearnedBundle",
-    "GRIDBOOK_ROUTED_MOE_PER_ROLE_CODEBOOK_LUT_MIN_VERSION",
     "LLOYD_CAP",
     "LLOYD_ITERS",
     "LLOYD_ROW_SAMPLE",

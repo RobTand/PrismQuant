@@ -53,6 +53,11 @@ IMPORTANCE_EXECUTION_BINDING_SCHEMA = (
 ACTIVATION_SCOPE_SCHEMA = (
     "prismaquant.sample_parallel_probe.activation_scope.v1"
 )
+# The schema string keeps its original spelling on purpose: it is the wire
+# identifier stamped into every run contract and census already on disk.  The
+# producer that minted it (the Gridbook lane's RTX4090 campaign) retired
+# 2026-09-02 -- see archive/gridbook_lane_2026-09-02/ -- but renaming the
+# identifier would silently invalidate that recorded evidence.
 SOURCE_QNAME_CENSUS_SCHEMA = (
     "prismaquant.sample_parallel_probe.rtx4090_source_qname_census.v2"
 )
@@ -1736,388 +1741,15 @@ def _manifest_with_digest(
     }
 
 
-def _source_model_content_identity(
-    root: Path,
-    *,
-    config: Mapping[str, object],
-    checkpoint_weight_map: Mapping[str, str],
-    identity_cache_path: str | Path | None = None,
-) -> dict[str, object]:
-    """Bind exact checkpoint bytes, reusing the repository identity cache."""
-    cached_path = (
-        str(identity_cache_path)
-        if identity_cache_path is not None
-        else os.environ.get("PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE")
-    )
-    upstream_content: str | None = None
-    upstream_portable_content: str | None = None
-    resolved_commit: object = config.get("_commit_hash")
-    shards: list[dict[str, object]] = []
-    derivation: str
-    if cached_path:
-        try:
-            from prismaquant.cost_streaming import (
-                portable_streamed_model_content_identity,
-                validate_cached_streamed_model_identity,
-            )
-
-            identity = validate_cached_streamed_model_identity(
-                root, cached_path, require_complete_checkpoint=True
-            )
-            upstream_portable_content = str(
-                portable_streamed_model_content_identity(
-                    identity,
-                    where="sample-parallel cached source portable content",
-                )["portable_content_sha256"]
-            )
-        except Exception as exc:
-            raise SampleParallelProbeError(
-                "cached streamed model-content identity is invalid: "
-                f"{exc}"
-            ) from exc
-        upstream_content = str(identity["content_sha256"])
-        resolved_commit = identity.get("resolved_commit")
-        raw_shards = identity.get("shards")
-        if not isinstance(raw_shards, Sequence) or isinstance(
-            raw_shards, (str, bytes)
-        ):
-            raise SampleParallelProbeError(
-                "cached model-content identity has no source shards"
-            )
-        for item in raw_shards:
-            if not isinstance(item, Mapping):
-                raise SampleParallelProbeError(
-                    "cached model-content shard identity is malformed"
-                )
-            shards.append({
-                "name": Path(str(item.get("path", ""))).name,
-                "size": int(item.get("size", -1)),
-                "sha256": str(item.get("sha256", "")),
-            })
-        derivation = "validated_streamed_model_identity_cache_v1"
-    else:
-        shard_names = sorted(set(str(value) for value in checkpoint_weight_map.values()))
-        if not shard_names:
-            raise SampleParallelProbeError(
-                "source model-content identity has no indexed shards"
-            )
-        for name in shard_names:
-            if Path(name).name != name:
-                raise SampleParallelProbeError(
-                    f"source checkpoint uses an unsafe shard name {name!r}"
-                )
-            path = root / name
-            try:
-                before = path.stat()
-            except OSError as exc:
-                raise SampleParallelProbeError(
-                    f"source checkpoint shard is missing: {path}"
-                ) from exc
-            digest = _sha256_file(path)
-            after = path.stat()
-            if (
-                before.st_dev, before.st_ino, before.st_size,
-                before.st_mtime_ns, before.st_ctime_ns,
-            ) != (
-                after.st_dev, after.st_ino, after.st_size,
-                after.st_mtime_ns, after.st_ctime_ns,
-            ):
-                raise SampleParallelProbeError(
-                    f"source checkpoint shard changed while hashing: {path}"
-                )
-            shards.append({
-                "name": name,
-                "size": int(after.st_size),
-                "sha256": digest,
-            })
-        derivation = "full_indexed_safetensors_sha256_v1"
-    shards.sort(key=lambda row: str(row["name"]))
-    if (
-        len({str(row["name"]) for row in shards}) != len(shards)
-        or any(
-            int(row["size"]) < 1
-            or not re.fullmatch(r"[0-9a-f]{64}", str(row["sha256"]))
-            for row in shards
-        )
-    ):
-        raise SampleParallelProbeError(
-            "source model-content shard manifest is invalid"
-        )
-    from prismaquant.cost_streaming import (
-        canonical_streamed_model_semantic_config,
-    )
-
-    semantic_config = canonical_streamed_model_semantic_config(
-        config, where="sample-parallel source semantic config",
-    )
-    source_config_sha256 = _canonical_sha256(
-        semantic_config, where="sample-parallel source config content"
-    )
-    checkpoint_weight_map_sha256 = _canonical_sha256(
-        dict(sorted(checkpoint_weight_map.items())),
-        where="sample-parallel checkpoint weight map",
-    )
-    value_bearing = {
-        "source_config_sha256": source_config_sha256,
-        "checkpoint_weight_map_sha256": checkpoint_weight_map_sha256,
-        "shards": shards,
-    }
-    deterministic_content = _canonical_sha256(
-        value_bearing, where="sample-parallel model content"
-    )
-    body: dict[str, object] = {
-        "schema": SOURCE_MODEL_CONTENT_SCHEMA,
-        "derivation": derivation,
-        # Keep the existing repository identity when it is available, while
-        # the deterministic digest below makes cross-machine comparison
-        # independent of absolute cached shard paths.
-        "upstream_content_sha256": upstream_content,
-        "upstream_portable_content_sha256": upstream_portable_content,
-        "content_sha256": deterministic_content,
-        "resolved_commit": resolved_commit,
-        "checkpoint_tensors": len(checkpoint_weight_map),
-        "checkpoint_shards": len(shards),
-        "checkpoint_weight_map_sha256": checkpoint_weight_map_sha256,
-        "shards": shards,
-    }
-    return {
-        **body,
-        "identity_sha256": _canonical_sha256(
-            body, where="sample-parallel model-content identity"
-        ),
-    }
-def _canonical_staged_text_tensor_view(
-    observed: Mapping[str, Mapping[str, object]],
-    *,
-    source_layout: str,
-) -> dict[str, dict[str, object]]:
-    """Return the exact text-staging view of one physical source manifest.
-
-    Released text-only Qwen3.8 source trees may retain the official wrapper's
-    ``model.language_model.*`` checkpoint keys after their config is promoted
-    to ``Qwen3_5ForCausalLM``.  The existing streamed loader maps that one
-    namespace to live ``model.*`` names.  Apply precisely the same prefix law
-    for census comparison while leaving the raw weight map in the model-
-    content identity.  No other prefix, mixed body namespace, or collision is
-    accepted.
-    """
-    normalized = {
-        str(name): dict(header) for name, header in observed.items()
-    }
-    if source_layout != "flattened_text":
-        return dict(sorted(normalized.items()))
-    wrapper_prefix = "model.language_model."
-    wrapper_names = sorted(
-        name for name in normalized if name.startswith(wrapper_prefix)
-    )
-    if not wrapper_names:
-        return dict(sorted(normalized.items()))
-    direct_body = sorted(
-        name for name in normalized
-        if name.startswith("model.") and not name.startswith(wrapper_prefix)
-    )
-    if direct_body:
-        raise SampleParallelProbeError(
-            "flattened text checkpoint mixes model.* and exact "
-            f"model.language_model.* body namespaces: {direct_body[:8]}"
-        )
-    canonical: dict[str, dict[str, object]] = {}
-    for name, header in normalized.items():
-        target = (
-            "model." + name[len(wrapper_prefix):]
-            if name.startswith(wrapper_prefix)
-            else name
-        )
-        if target in canonical:
-            raise SampleParallelProbeError(
-                "flattened text checkpoint namespace mapping collides at "
-                f"{target!r}"
-            )
-        canonical[target] = header
-    return dict(sorted(canonical.items()))
-
-
-def build_rtx4090_qname_census(
-    model: str | Path,
-    *,
-    identity_cache_path: str | Path | None = None,
-) -> dict[str, object]:
-    """Derive the exact sample-parallel qname universe from the source.
-
-    This is intentionally the same strict Qwen3.8-27B config/header census as
-    the Ada producer.  It reads config and safetensors headers only; callers
-    cannot supply or edit a qname list into the merge contract.
-    """
-    root = Path(model)
-    try:
-        config = _strict_json_loads(
-            (root / "config.json").read_text(encoding="utf-8"),
-            where="sample-parallel source config",
-        )
-    except SampleParallelProbeError:
-        raise
-    except (OSError, ValueError) as exc:
-        raise SampleParallelProbeError(
-            f"cannot read source config for qname census: {root}"
-        ) from exc
-    if not isinstance(config, Mapping):
-        raise SampleParallelProbeError("source config is not a JSON object")
-    try:
-        from prismaquant.cost_streaming import (
-            canonical_streamed_model_semantic_config,
-        )
-        from prismaquant.rtx4090_artifact_census import (
-            expected_qwen38_source_layout,
-            scan_indexed_safetensors,
-        )
-        from prismaquant.rtx4090_qwen38_policy import (
-            RTX4090_QWEN38_POLICY_ID,
-            RTX4090_QWEN38_POLICY_SCHEMA,
-            validate_qwen38_dense_config,
-        )
-
-        validated = validate_qwen38_dense_config(
-            config, where="sample-parallel source config"
-        )
-        expected_tensors, source_linears = expected_qwen38_source_layout(
-            config, validated, where="sample-parallel qualified source"
-        )
-        observed_tensors, observed_weight_map = scan_indexed_safetensors(
-            root, where="sample-parallel source checkpoint"
-        )
-    except Exception as exc:
-        raise SampleParallelProbeError(str(exc)) from exc
-    canonical_observed_tensors = _canonical_staged_text_tensor_view(
-        observed_tensors,
-        source_layout=str(validated["source_layout"]),
-    )
-    if canonical_observed_tensors != expected_tensors:
-        missing = sorted(
-            set(expected_tensors) - set(canonical_observed_tensors)
-        )
-        unexpected = sorted(
-            set(canonical_observed_tensors) - set(expected_tensors)
-        )
-        changed = sorted(
-            name
-            for name in set(expected_tensors) & set(canonical_observed_tensors)
-            if expected_tensors[name] != canonical_observed_tensors[name]
-        )
-        raise SampleParallelProbeError(
-            "source checkpoint differs from the authoritative Qwen3.8 "
-            f"census: missing={missing[:8]} unexpected={unexpected[:8]} "
-            f"dtype_or_shape={changed[:8]}"
-        )
-    model_content = _source_model_content_identity(
-        root,
-        config=config,
-        checkpoint_weight_map=observed_weight_map,
-        identity_cache_path=identity_cache_path,
-    )
-
-    linear_entries: dict[str, dict[str, object]] = {}
-    for qname, source_name in sorted(source_linears.items()):
-        tensor = expected_tensors.get(source_name)
-        if not isinstance(tensor, Mapping):
-            raise SampleParallelProbeError(
-                f"source Linear {qname!r} has no authoritative tensor header"
-            )
-        if qname == "lm_head":
-            disposition = LM_HEAD_STATS_ONLY
-            token_rows = LM_HEAD_TOKEN_ROWS
-            terminal_format: str | None = "BF16"
-        elif qname.startswith("mtp."):
-            disposition = MTP_STATS_ONLY
-            token_rows = MTP_TOKEN_ROWS
-            terminal_format = "BF16"
-        elif qname.startswith("model.visual."):
-            disposition = TEXT_EXCLUDED
-            token_rows = None
-            terminal_format = None
-        elif qname.startswith("model.layers."):
-            disposition = BODY_STATS_AND_ACTIVATION
-            token_rows = BODY_TOKEN_ROWS
-            terminal_format = None
-        else:
-            raise SampleParallelProbeError(
-                f"source Linear {qname!r} has no sample-v1 disposition"
-            )
-        linear_entries[qname] = {
-            "source_tensor": source_name,
-            "source_dtype": str(tensor.get("dtype", "")),
-            "shape": [int(value) for value in tensor.get("shape", ())],
-            "disposition": disposition,
-            "token_rows_per_sample": token_rows,
-            "terminal_format": terminal_format,
-        }
-    if "lm_head" not in linear_entries:
-        raise SampleParallelProbeError("source census has no dense lm_head")
-    if not any(name.startswith("mtp.") for name in linear_entries):
-        raise SampleParallelProbeError("source census has no dense MTP Linears")
-
-    source_body: dict[str, object] = {
-        "schema": SOURCE_QNAME_CENSUS_SCHEMA,
-        "model": str(model),
-        "producer_profile_schema": RTX4090_QWEN38_POLICY_SCHEMA,
-        "producer_profile_id": RTX4090_QWEN38_POLICY_ID,
-        "source_layout": str(validated["source_layout"]),
-        "source_config_sha256": _canonical_sha256(
-            canonical_streamed_model_semantic_config(
-                config, where="sample-parallel source semantic config",
-            ),
-            where="sample-parallel source config",
-        ),
-        "source_tensor_manifest_sha256": _canonical_sha256(
-            expected_tensors, where="sample-parallel source tensor manifest"
-        ),
-        "source_weight_map_sha256": _canonical_sha256(
-            observed_weight_map, where="sample-parallel source weight map"
-        ),
-        "source_tensor_count": len(expected_tensors),
-        "source_linear_count": len(source_linears),
-        "source_model_identity": model_content,
-        "linear_entries": linear_entries,
-    }
-    source_census = {
-        **source_body,
-        "identity_sha256": _canonical_sha256(
-            source_body, where="sample-parallel source qname census"
-        ),
-    }
-    source_digest = str(source_census["identity_sha256"])
-    probe_entries = {
-        name: entry for name, entry in linear_entries.items()
-        if entry["disposition"] != TEXT_EXCLUDED
-    }
-    activation_entries = {
-        name: entry for name, entry in linear_entries.items()
-        if entry["disposition"] == BODY_STATS_AND_ACTIVATION
-    }
-    terminal_entries = {
-        name: entry for name, entry in linear_entries.items()
-        if entry["disposition"] in {LM_HEAD_STATS_ONLY, MTP_STATS_ONLY}
-    }
-    bundle_body: dict[str, object] = {
-        "source_census": source_census,
-        "probe_qname_manifest": _manifest_with_digest(
-            kind="full_probe", source_census_sha256=source_digest,
-            entries=probe_entries,
-        ),
-        "activation_qname_manifest": _manifest_with_digest(
-            kind="dense_body_activation", source_census_sha256=source_digest,
-            entries=activation_entries,
-        ),
-        "terminal_qname_manifest": _manifest_with_digest(
-            kind="terminal_bf16_stats_only", source_census_sha256=source_digest,
-            entries=terminal_entries,
-        ),
-    }
-    return validate_qname_census({
-        **bundle_body,
-        "identity_sha256": _canonical_sha256(
-            bundle_body, where="sample-parallel qname census bundle"
-        ),
-    })
+# The RTX4090 Qwen3.8 source qname census lived here: it derived the
+# sample-parallel qname universe from an authoritative source layout that
+# only the Gridbook lane's producer shipped.  That lane retired
+# 2026-09-02 (see archive/gridbook_lane_2026-09-02/), taking
+# prismaquant.rtx4090_artifact_census and prismaquant.rtx4090_qwen38_policy
+# with it, so the builder, its two private helpers, the worker-local
+# re-attestation that called it, and the run-contract builder are gone.
+# What survives validates run contracts and censuses already on disk,
+# which is all the merge side needs.
 
 
 def _validate_qname_manifest(
@@ -2194,16 +1826,14 @@ def validate_qname_census(raw: Mapping[str, object]) -> dict[str, object]:
         raise SampleParallelProbeError("source qname census fields differ")
     source_body = dict(source_raw)
     source_digest = source_body.pop("identity_sha256", None)
-    from prismaquant.rtx4090_qwen38_policy import (
-        RTX4090_QWEN38_POLICY_ID,
-        RTX4090_QWEN38_POLICY_SCHEMA,
-    )
+    # The producer-profile equality clauses checked this census against the
+    # archived RTX4090 policy identity; that policy retired with the
+    # Gridbook lane on 2026-09-02 (archive/gridbook_lane_2026-09-02/).
+    # The key-set check above still requires the two recorded keys, because
+    # every run contract on disk carries them.
     if (
         source_body.get("schema") != SOURCE_QNAME_CENSUS_SCHEMA
         or not str(source_body.get("model", ""))
-        or source_body.get("producer_profile_schema")
-        != RTX4090_QWEN38_POLICY_SCHEMA
-        or source_body.get("producer_profile_id") != RTX4090_QWEN38_POLICY_ID
         or source_body.get("source_layout") not in {
             "flattened_text", "official_wrapper"
         }
@@ -2484,41 +2114,6 @@ def stable_source_census_projection(
     }
 
 
-def validate_worker_local_source_census(
-    model: str | Path,
-    expected_qname_census: Mapping[str, object],
-) -> dict[str, object]:
-    """Re-attest this worker's local checkpoint before any reusable work."""
-    cache_path = os.environ.get("PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE")
-    if not cache_path:
-        raise SampleParallelProbeError(
-            "sample-parallel worker requires a host-local "
-            "PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE"
-        )
-    try:
-        observed = build_rtx4090_qname_census(model)
-        expected_projection = stable_source_census_projection(
-            expected_qname_census
-        )
-        observed_projection = stable_source_census_projection(observed)
-    except SampleParallelProbeError:
-        raise
-    except Exception as exc:
-        raise SampleParallelProbeError(
-            f"worker-local source census could not be derived: {exc}"
-        ) from exc
-    if observed_projection != expected_projection:
-        changed = sorted(
-            key for key in expected_projection
-            if observed_projection.get(key) != expected_projection.get(key)
-        )
-        raise SampleParallelProbeError(
-            "worker-local stable source census differs from the run "
-            f"contract: changed={changed[:12]}"
-        )
-    return observed_projection
-
-
 def _runtime_snapshot_entries(root: Path) -> list[dict[str, object]]:
     """Rebuild the tracked snapshot ledger without executing snapshot code."""
     entries: list[dict[str, object]] = []
@@ -2769,7 +2364,7 @@ def build_execution_identity(
     census = validate_qname_census(qname_census)
     if int(activation_rows_limit) != 1024:
         raise SampleParallelProbeError(
-            "RTX4090 sample-parallel v1 requires activation_rows_limit=1024"
+            "sample-parallel v1 requires activation_rows_limit=1024"
         )
     if str(census["source_census"]["model"]) != str(model):
         raise SampleParallelProbeError(
@@ -2910,71 +2505,6 @@ def validate_execution_identity(
             "execution identity model differs from source census"
         )
     return {**body, "identity_sha256": str(digest)}
-
-
-def build_sample_parallel_run_contract(
-    *,
-    model: str,
-    dataset: str,
-    calib_seed: int,
-    producer_snapshot_sha256: str,
-    producer_snapshot_commit: str,
-    producer_snapshot_tree: str,
-    container_image_digest: str,
-    dtype: str = "bf16",
-    importance_weighting: bool = True,
-    emit_marginals: bool = True,
-    activation_rows_limit: int = 1024,
-    source_identity_cache_path: str | Path | None = None,
-) -> dict[str, object]:
-    cache_path = (
-        str(source_identity_cache_path)
-        if source_identity_cache_path is not None
-        else os.environ.get("PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE")
-    )
-    if not cache_path:
-        raise SampleParallelProbeError(
-            "sample-parallel run-contract creation requires a validated "
-            "complete streamed-model identity cache"
-        )
-    census = build_rtx4090_qname_census(
-        model, identity_cache_path=cache_path,
-    )
-    model_content = census["source_census"]["source_model_identity"]
-    if (
-        model_content.get("derivation")
-        != "validated_streamed_model_identity_cache_v1"
-        or not isinstance(model_content.get("upstream_content_sha256"), str)
-        or not isinstance(
-            model_content.get("upstream_portable_content_sha256"), str
-        )
-    ):
-        raise SampleParallelProbeError(
-            "sample-parallel run contract lacks its upstream streamed-model "
-            "content identity"
-        )
-    execution = build_execution_identity(
-        model=model, dataset=dataset, calib_seed=calib_seed, dtype=dtype,
-        importance_weighting=importance_weighting,
-        emit_marginals=emit_marginals,
-        activation_rows_limit=activation_rows_limit,
-        qname_census=census,
-        producer_snapshot_sha256=producer_snapshot_sha256,
-        producer_snapshot_commit=producer_snapshot_commit,
-        producer_snapshot_tree=producer_snapshot_tree,
-        container_image_digest=container_image_digest,
-    )
-    body = {
-        "schema": RUN_CONTRACT_SCHEMA,
-        "execution_identity": execution,
-        "qname_census": census,
-    }
-    return validate_run_contract({
-        **body,
-        "identity_sha256": _canonical_sha256(
-            body, where="sample-parallel run contract"
-        ),
-    })
 
 
 def validate_run_contract(raw: Mapping[str, object]) -> dict[str, object]:
@@ -3490,47 +3020,6 @@ def _build_parser() -> argparse.ArgumentParser:
     importance.add_argument("--local-stats", nargs="+", required=True)
     importance.add_argument("--output", required=True)
 
-    run_contract = commands.add_parser("prepare-run-contract")
-    run_contract.add_argument("--model", required=True)
-    run_contract.add_argument("--dataset", required=True)
-    run_contract.add_argument("--calib-seed", default=42, type=int)
-    run_contract.add_argument(
-        "--dtype", choices=["bf16", "fp16", "fp32"], default="bf16"
-    )
-    run_contract.add_argument(
-        "--importance-weighting", action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    run_contract.add_argument(
-        "--emit-marginals", action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    run_contract.add_argument("--activation-rows-limit", type=int, default=1024)
-    run_contract.add_argument(
-        "--producer-snapshot-root",
-        default=os.environ.get("PRISMAQUANT_PRODUCER_SNAPSHOT_ROOT"),
-        required=os.environ.get("PRISMAQUANT_PRODUCER_SNAPSHOT_ROOT") is None,
-        help="Mounted immutable PrismaQuant runtime source snapshot root.",
-    )
-    run_contract.add_argument(
-        "--container-image-digest",
-        default=os.environ.get("PRISMAQUANT_PRODUCER_IMAGE_DIGEST"),
-        required=os.environ.get("PRISMAQUANT_PRODUCER_IMAGE_DIGEST") is None,
-        help="Pinned producer image digest in sha256:<64-hex> form.",
-    )
-    run_contract.add_argument(
-        "--source-identity-cache",
-        default=os.environ.get("PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE"),
-        required=(
-            os.environ.get("PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE") is None
-        ),
-        help=(
-            "Coordinator-local complete streamed-model identity cache, "
-            "created by prepare-worker-source-cache."
-        ),
-    )
-    run_contract.add_argument("--output", required=True)
-
     cover = commands.add_parser("build-cover")
     cover.add_argument("--calibration-manifest", required=True)
     cover.add_argument("--run-contract", required=True)
@@ -3575,30 +3064,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "merge-importance":
         receipt = merge_importance_stats(args.local_stats, args.output)
         print(json.dumps(receipt, sort_keys=True))
-        return 0
-    if args.command == "prepare-run-contract":
-        snapshot = validate_local_producer_snapshot(
-            args.producer_snapshot_root
-        )
-        contract = build_sample_parallel_run_contract(
-            model=args.model,
-            dataset=args.dataset,
-            calib_seed=args.calib_seed,
-            dtype=args.dtype,
-            importance_weighting=args.importance_weighting,
-            emit_marginals=args.emit_marginals,
-            activation_rows_limit=args.activation_rows_limit,
-            producer_snapshot_sha256=snapshot["closure_sha256"],
-            producer_snapshot_commit=snapshot["commit"],
-            producer_snapshot_tree=snapshot["tree"],
-            container_image_digest=args.container_image_digest,
-            source_identity_cache_path=args.source_identity_cache,
-        )
-        _atomic_write_bytes_no_clobber(
-            Path(args.output),
-            json.dumps(contract, sort_keys=True, indent=2).encode("utf-8") + b"\n",
-        )
-        print(args.output)
         return 0
     if args.command == "build-cover":
         from prismaquant.sample_parallel_probe_merge import (

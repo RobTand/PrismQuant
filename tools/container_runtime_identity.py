@@ -142,8 +142,6 @@ def _receipt_sha256(
     receipt_path: Path,
     *,
     expected_commit: str,
-    expected_image_ref: str,
-    require_receipt_image: bool,
 ) -> str:
     try:
         data = receipt_path.read_bytes()
@@ -157,19 +155,12 @@ def _receipt_sha256(
             "implementation receipt commit does not match the mounted "
             f"PrismaQuant commit {expected_commit}"
         )
-    if require_receipt_image:
-        runtime = receipt.get("gridbook_runtime")
-        receipt_image = (
-            runtime.get("campaign_image")
-            if isinstance(runtime, Mapping)
-            else None
-        )
-        if receipt_image != expected_image_ref:
-            raise RuntimeIdentityError(
-                "implementation receipt campaign_image does not match the "
-                f"requested immutable image: {receipt_image!r} != "
-                f"{expected_image_ref!r}"
-            )
+    # --require-receipt-image also pinned the receipt's campaign image, but it
+    # read that image from a `gridbook_runtime` block (retired 2026-09-02, see
+    # archive/gridbook_lane_2026-09-02/) that only one lane wrote, and only
+    # that lane's archived drivers ever passed the flag. The image tag
+    # itself is still fatal on its own: _validate_identity requires an
+    # immutable digest-pinned image_ref, and verify_mounted_runtime compares it.
     return hashlib.sha256(data).hexdigest()
 
 
@@ -193,7 +184,6 @@ def write_or_verify_identity(
     image_id: str,
     git_commit: str,
     implementation_receipt: Path,
-    require_receipt_image: bool,
 ) -> dict[str, str]:
     package_root = source_root.resolve(strict=True) / "prismaquant"
     # Validate the transport identity before consulting its receipt. This
@@ -215,8 +205,6 @@ def write_or_verify_identity(
     payload["implementation_receipt_sha256"] = _receipt_sha256(
         implementation_receipt,
         expected_commit=git_commit,
-        expected_image_ref=image_ref,
-        require_receipt_image=require_receipt_image,
     )
 
     checkpoint = checkpoint_root.resolve(strict=True)
@@ -341,7 +329,6 @@ def _parser() -> argparse.ArgumentParser:
     write.add_argument("--image-id", required=True)
     write.add_argument("--git-commit", required=True)
     write.add_argument("--implementation-receipt", type=Path, required=True)
-    write.add_argument("--require-receipt-image", action="store_true")
 
     verify = subparsers.add_parser("verify-mounted")
     verify.add_argument("--identity", type=Path, required=True)
@@ -377,7 +364,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 image_id=args.image_id,
                 git_commit=args.git_commit,
                 implementation_receipt=args.implementation_receipt,
-                require_receipt_image=bool(args.require_receipt_image),
             )
         else:
             payload = verify_mounted_runtime(

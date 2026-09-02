@@ -77,26 +77,11 @@ if len(lattices) != 20:
     sys.exit(f"installed CB lattice table count is {len(lattices)}, expected 20")
 print(f"  CB lattices OK: {len(lattices)}")
 
-# The exact external-runtime contract must work from site-packages and from an
-# arbitrary CWD. It is moved into the package, never copied from scripts/.
-runtime_dir = os.path.join(where, "gridbook_runtime")
-helper = os.path.join(runtime_dir, "gridbook_runtime.sh")
-pin_path = os.path.join(runtime_dir, "gridbook_runtime_pin.json")
-if not os.path.isfile(helper) or not os.path.isfile(pin_path):
-    sys.exit(f"Gridbook runtime assets missing under {runtime_dir}")
-syntax = subprocess.run(["bash", "-n", helper], capture_output=True, text=True)
-if syntax.returncode != 0:
-    sys.exit(f"packaged Gridbook helper is invalid bash:\n{syntax.stderr}")
-pin = json.loads(open(pin_path, encoding="utf-8").read())
-printed = subprocess.run(
-    ["bash", helper, "print-pin"], capture_output=True, text=True,
-)
-if printed.returncode != 0:
-    sys.exit(f"packaged Gridbook helper cannot read its pin:\n{printed.stderr}")
-want = f"{pin['repository']} {pin['commit']} {pin['version']}"
-if printed.stdout.strip() != want:
-    sys.exit(f"packaged Gridbook pin mismatch: {printed.stdout.strip()!r}")
-print("  Gridbook runtime pin/helper OK")
+# The Gridbook codebook lane's packaged runtime helper and immutable pin were
+# checked here until 2026-09-02, when that lane was retired
+# (archive/gridbook_lane_2026-09-02/). Nothing replaces the check: the Tessera
+# lane's pin is not packaged data, it is read from the installed `tessera`
+# distribution's own runtime_contract.json.
 
 # The pipeline's final refusal display is packaged rather than pointing at the
 # repository-only tools/ tree.

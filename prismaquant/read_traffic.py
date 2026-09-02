@@ -147,7 +147,12 @@ from typing import Any, Iterable, Mapping
 from . import format_registry as fr
 from . import footprint as fp
 from .allocator_solver import _shape_from_stats
-from .cb_export_config import CODEBOOK_TENSOR_PREFIX
+#: Tensor-name prefix the codebook subtables were written under. It came from
+#: ``cb_export_config`` until 2026-09-02, when the Gridbook codebook lane was
+#: retired (``archive/gridbook_lane_2026-09-02/``) and its exporter went with
+#: it. The read-traffic model still has to name those tensors to account for a
+#: CB assignment, so the literal moved here rather than the import staying.
+CODEBOOK_TENSOR_PREFIX = "cb_codebook."
 from .nvfp4_cb_footprint import is_cb_format
 
 SCHEMA = "prismaquant.read_traffic.v1"

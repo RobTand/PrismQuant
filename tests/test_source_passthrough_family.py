@@ -22,6 +22,7 @@ from prismaquant.allocator_candidates import (
     PASSTHROUGH_SOURCE_REQUIREMENTS,
     PASSTHROUGH_WIRE_FORMAT_IDS,
     ROUTE_STATUS_BACKED,
+    ROUTE_STATUS_BLOCKED,
     passthrough_serving_notes,
     ROUTE_PENDING_PASSTHROUGH_FORMATS,
     SOURCE_PASSTHROUGH_CONTRACTS,
@@ -176,67 +177,31 @@ def test_passthrough_provenance_cannot_be_forged_for_another_format():
 
 
 # ---------------------------------------------------------------------------
-# 3. Legality: the source-kind gate, in both directions
+# 3. Route status: what each passthrough's bytes actually execute on
 # ---------------------------------------------------------------------------
+#
+# The legality cases that used to live here drove `build_candidates` and
+# `selection_serving_lane_provenance` through `target_profile="nvfp4_cb"`.
+# That profile went with the Gridbook codebook lane on 2026-09-02
+# (archive/gridbook_lane_2026-09-02/), and MXFP4_SOURCE had no other one: it
+# is the lane's orphan -- a rung with a real stock-vLLM Marlin route, no
+# serving profile that offers it, and no exporter that writes it, since the
+# CB container was its only writer. Those tests are deleted rather than
+# re-pointed at `vllm_packed_moe`, which denies the rung outright and would
+# have turned a real capability loss into a green assertion.
 
-@pytest.mark.parametrize("fmt,kind,legal", [
-    ("MXFP4_SOURCE", "mxfp4", True),
-    ("MXFP4_SOURCE", "fp8_ue8m0", False),
-    ("MXFP4_SOURCE", "bf16", False),
-    ("FP8_BLOCK_UE8M0_SOURCE", "fp8_ue8m0", True),
-    ("FP8_BLOCK_UE8M0_SOURCE", "mxfp4", False),
-    ("FP8_BLOCK_UE8M0_SOURCE", "fp8", False),
-    ("BF16", "bf16", True),
-    ("BF16", "mxfp4", False),
-])
-def test_passthrough_is_legal_exactly_where_the_source_is_that_format(
-        fmt, kind, legal):
-    verdict = check_format_applicability(
-        EXPERT_W13_SHAPE if fmt == "MXFP4_SOURCE" else BODY_WO_A_SHAPE,
-        fmt,
-        qname=("model.layers.3.mlp.experts.0.gate_proj"
-               if fmt == "MXFP4_SOURCE" else "model.layers.3.self_attn.wq_a"),
-        source_kind=kind,
-        target_profile="nvfp4_cb",
-    )
-    assert verdict.legal is legal, (fmt, kind, verdict.reason, verdict.detail)
-    if not legal:
-        assert verdict.reason == "source_dtype_mismatch"
+def test_route_status_is_the_verdict_each_route_actually_earned():
+    """Two passthroughs, two different verdicts, both from measurements.
 
-
-def test_production_profile_allows_mxfp4_on_experts_and_denies_it_elsewhere():
-    """Ship-intent: the production nvfp4_cb profile permits the rung."""
-    assert check_serving_format(
-        "nvfp4_cb", "model.layers.39.mlp.experts.0.gate_proj",
-        "MXFP4_SOURCE").legal
-    # The aggregated packed super item is still an expert unit. This is the
-    # trap the rule's not_regex form exists to avoid: filter_candidates_for_
-    # profile re-checks with packed_expert=None after aggregation, and a
-    # scope="dense" rule would have stripped the format from the very unit it
-    # belongs on.
-    assert check_serving_format(
-        "nvfp4_cb",
-        "model.layers.39.mlp.experts.__packed_serving__.gate_up_proj",
-        "MXFP4_SOURCE").legal
-    denied = check_serving_format(
-        "nvfp4_cb", "model.layers.39.self_attn.wq_a", "MXFP4_SOURCE")
-    assert not denied.legal and denied.reason == "runtime_unsupported"
-
-
-def test_lane_metadata_declares_a_distinct_delegated_native_route():
-    lane = serving_lane_route("nvfp4_cb", "MXFP4_SOURCE").as_dict()
-    assert lane["lane_id"] == "delegated_native_mxfp4"
-    assert lane["rung"] is None
-    assert lane["fused_mid_m_backed"] is False
-    # NOT a CB contract — that is the whole point of a separate lane.
-    assert "cb" not in lane["activation_contract"]
-    cb_lane = serving_lane_route("nvfp4_cb", "NVFP4_CB_K14").as_dict()
-    assert cb_lane["lane_id"] != lane["lane_id"]
-    assert cb_lane["activation_contract"] != lane["activation_contract"]
-
-
-def test_route_status_follows_the_pinned_gridbook_contract():
-    """The exact Gridbook W8A16 route is backed; parity is a later ship gate."""
+    Updated 2026-09-02, when the Gridbook codebook lane was retired
+    (archive/gridbook_lane_2026-09-02/). The block-128 UE8M0 body route was
+    that plugin's `Fp8SourceW8A16LinearMethod` and nothing else executes those
+    bytes, so its verdict flipped to BLOCKED -- by the runtime going away, not
+    by an opinion. MXFP4_SOURCE never rode Gridbook: it serves on stock vLLM
+    Marlin MoE, so its verdict is untouched. (Its *writer* was the CB
+    container and it has none today; that is an exporter fact, not a route
+    fact, and this test deliberately does not conflate them.)
+    """
     mxfp4 = SOURCE_PASSTHROUGH_CONTRACTS["MXFP4_SOURCE"]
     body = SOURCE_PASSTHROUGH_CONTRACTS["FP8_BLOCK_UE8M0_SOURCE"]
     assert mxfp4.route_status == ROUTE_STATUS_BACKED
@@ -244,13 +209,12 @@ def test_route_status_follows_the_pinned_gridbook_contract():
     # BACKED only WITH a requirement; a backed route whose requirement is
     # unmet serves no better than a blocked one, so it must be declared.
     assert mxfp4.route_requirement == "vllm --moe-backend marlin"
-    assert body.route_status == ROUTE_STATUS_BACKED
-    assert body.route_backed
-    assert body.serving_route == "gridbook_fp8_source_w8a16"
+    assert body.route_status == ROUTE_STATUS_BLOCKED
+    assert not body.route_backed
+    # The evidence is KEPT verbatim and stays scoped to the runtime it was
+    # measured on: it records what was true, not what is.
     assert "source_fp8_block128_w8a16=1" in body.route_requirement
-    assert "GRIDBOOK_MXFP8_DENSE" not in body.route_requirement
     assert "e992e5980c96333a48149f96392d6cff56ae9e3f" in body.route_requirement
-    # Both carry the evidence for their verdict.
     assert mxfp4.route_evidence and body.route_evidence
 
 
@@ -294,7 +258,7 @@ def test_serving_notes_carry_requirement_and_evidence():
     assert notes["MXFP4_SOURCE"]["requirement"] == "vllm --moe-backend marlin"
     assert notes["MXFP4_SOURCE"]["route_status"] == ROUTE_STATUS_BACKED
     assert notes["FP8_BLOCK_UE8M0_SOURCE"]["route_status"] == (
-        ROUTE_STATUS_BACKED)
+        ROUTE_STATUS_BLOCKED)
     assert "source_fp8_block128_w8a16=1" in (
         notes["FP8_BLOCK_UE8M0_SOURCE"]["requirement"]
     )
@@ -334,77 +298,3 @@ def _expert_tables(n_layers=2, n_experts=2):
     return stats, costs, manifest
 
 
-def test_allocator_synthesizes_a_zero_cost_passthrough_candidate():
-    """The cost table has NO MXFP4_SOURCE column and never will."""
-    stats, costs, manifest = _expert_tables()
-    from prismaquant.nvfp4_cb_footprint import CBSerializationContext
-
-    ctx = CBSerializationContext(
-        scale_coding="two_tier", codebook_source="lattice",
-        scale_sweep=True, encode_tier="balanced")
-    specs = [fr.get_format(f) for f in
-             ("NVFP4_CB_K14", "FP8_CB_K36", "MXFP4_SOURCE")]
-    masks: list[dict] = []
-    cands = build_candidates(
-        stats, costs, specs, source_manifest=manifest,
-        target_profile="nvfp4_cb", cb_serialization_context=ctx,
-        mask_records=masks)
-    assert cands, "no candidates built"
-    for name, rows in cands.items():
-        by_fmt = {c.fmt: c for c in rows}
-        assert "MXFP4_SOURCE" in by_fmt, name
-        passthrough = by_fmt["MXFP4_SOURCE"]
-        assert passthrough.predicted_dloss == 0.0
-        assert passthrough.activation_pricing == BRANCH_SOURCE_PASSTHROUGH
-        assert passthrough.serving_lane.lane_id == "delegated_native_mxfp4"
-        # Exact source bytes for the unit, weight + E8M0 scale plane.
-        expected = (EXPERT_W2_BYTES if name.endswith("down_proj")
-                    else EXPERT_W13_BYTES)
-        assert passthrough.memory_bytes == expected
-        # K36 is above the 4.25-bpp source representation and therefore never
-        # reaches the DP, irrespective of its measured quality.
-        assert "FP8_CB_K36" not in by_fmt
-    k36_masks = [m for m in masks if m["format"] == "FP8_CB_K36"]
-    assert len(k36_masks) == len(stats)
-    assert all(m["reason"] == SOURCE_BPP_EXCEEDED_REASON for m in k36_masks)
-    assert all(m["source_bpp"] == 4.25 for m in k36_masks)
-
-
-def test_passthrough_is_not_offered_where_the_source_is_something_else():
-    stats, costs, manifest = _expert_tables()
-    manifest = {name: "bf16" for name in manifest}
-    from prismaquant.nvfp4_cb_footprint import CBSerializationContext
-
-    ctx = CBSerializationContext(
-        scale_coding="two_tier", codebook_source="lattice",
-        scale_sweep=True, encode_tier="balanced")
-    specs = [fr.get_format(f) for f in ("NVFP4_CB_K14", "MXFP4_SOURCE")]
-    masks: list[dict] = []
-    cands = build_candidates(
-        stats, costs, specs, source_manifest=manifest,
-        target_profile="nvfp4_cb", cb_serialization_context=ctx,
-        mask_records=masks)
-    for rows in cands.values():
-        assert "MXFP4_SOURCE" not in {c.fmt for c in rows}
-    assert masks and all(
-        m["reason"] == "source_dtype_mismatch"
-        for m in masks if m["format"] == "MXFP4_SOURCE")
-
-
-def test_selection_records_the_delegated_native_lane():
-    """A shipped selection must name the lane every unit rides."""
-    assignment = {
-        "model.layers.0.mlp.experts.0.gate_proj": "NVFP4_CB_K14",
-        "model.layers.1.mlp.experts.0.gate_proj": "MXFP4_SOURCE",
-    }
-    prov = selection_serving_lane_provenance(
-        assignment, None, "nvfp4_cb")
-    assert prov["units_total"] == 2
-    assert "MXFP4_SOURCE" in prov["by_format"]
-    route = prov["by_format"]["MXFP4_SOURCE"]["route"]
-    assert route["lane_id"] == "delegated_native_mxfp4"
-    # The passthrough unit is NOT counted under a CB activation contract.
-    assert set(prov["activation_contracts"]) == {
-        route["activation_contract"],
-        prov["by_format"]["NVFP4_CB_K14"]["route"]["activation_contract"],
-    }

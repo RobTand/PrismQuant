@@ -1,3 +1,9 @@
+> **ARCHIVED 2026-09-02.** This document belongs to the Gridbook codebook
+> serving lane, retired that day on Robert's decision (*"put Tessera in
+> PrismaQuant and remove Gridbook"*). It is kept because it records what was
+> measured and asked for, not because any of it is actionable. See
+> `archive/gridbook_lane_2026-09-02/README.md`.
+
 # Lane eligibility in Gridbook's packaged runtime contract
 
 **Status: SUPERSEDED as a specification (2026-08-30), kept as the record of

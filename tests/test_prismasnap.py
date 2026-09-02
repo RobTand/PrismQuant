@@ -268,18 +268,13 @@ def test_non_native_lanes_refuse_any_prismasnap_source_marker(tmp_path) -> None:
         refuse_prismasnap_for_unvalidated_lane(tmp_path, lane="Gridbook/codebook")
 
 
-def test_programmatic_codebook_exporters_gate_before_opening_output(
-    tmp_path,
-) -> None:
-    from prismaquant.export_nvfp4_cb import export_nvfp4_cb
-    from prismaquant.export_nvfp4_cb_streaming import export_nvfp4_cb_streaming
-
-    (tmp_path / "prismasnap_provenance.json").write_text("{}", encoding="utf-8")
-    output = tmp_path / "must-not-exist"
-    for exporter in (export_nvfp4_cb, export_nvfp4_cb_streaming):
-        with pytest.raises(RuntimeError, match="not admitted.*Gridbook"):
-            exporter(tmp_path, tmp_path / "missing-plan.json", output, {})
-        assert not output.exists()
+# `test_programmatic_codebook_exporters_gate_before_opening_output` was deleted
+# on 2026-09-02. It proved that `export_nvfp4_cb` and
+# `export_nvfp4_cb_streaming` call `refuse_prismasnap_for_unvalidated_lane`
+# BEFORE creating their output directory, so a refused export leaves no
+# half-written artifact. Both exporters are in
+# archive/gridbook_lane_2026-09-02/ and no live exporter reaches the codebook
+# lane. The refusal function itself is still pinned directly, one test above.
 
 
 class _RenamedProfile:

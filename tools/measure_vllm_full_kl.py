@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -21,18 +22,14 @@ from prismaquant_source_bootstrap import activate_prismaquant_source
 activate_prismaquant_source()
 
 try:  # package mode (`python -m tools.measure_vllm_full_kl`)
-    from .dsv4_gridbook_contract import exact_llm_contract
     from .full_kl_teacher_payload import (
-        EXPECTED_POSITIONS,
         load_teacher_evidence,
         safe_load_torch_payload,
     )
     from .serve_fingerprint import gold_producer_identity, self_manifest
     from .spec_decode_guard import refuse_if_spec_decode
 except ImportError:  # script mode (`python /repo/tools/measure_vllm_full_kl.py`)
-    from dsv4_gridbook_contract import exact_llm_contract  # type: ignore
     from full_kl_teacher_payload import (  # type: ignore
-        EXPECTED_POSITIONS,
         load_teacher_evidence,
         safe_load_torch_payload,
     )
@@ -50,8 +47,6 @@ except ImportError:  # script mode (`python /repo/tools/measure_vllm_full_kl.py`
 #: `None` means "could not inspect", which the shipcard refuses — an unverified
 #: negative is exactly what the draft-logprobs trap looked like.
 _SPEC_DECODE_DETECTED: bool | None = None
-_DSV4_GRIDBOOK_CONTRACT: dict | None = None
-_DSV4_GRIDBOOK_KWARGS: dict | None = None
 
 
 def _file_sha256(path: str | Path) -> str:
@@ -72,22 +67,24 @@ def _strict_json_text(value: object) -> str:
         ) from exc
 
 
-def _activate_dsv4_gridbook_contract(args) -> dict:
-    """Apply the closed environment/kwargs before importing the runtime."""
-    global _DSV4_GRIDBOOK_CONTRACT, _DSV4_GRIDBOOK_KWARGS
-    if not args.dsv4_gridbook_contract:
-        return {}
-    if _DSV4_GRIDBOOK_KWARGS is None:
-        exact_kwargs, receipt = exact_llm_contract(args.model)
-        _DSV4_GRIDBOOK_KWARGS = dict(exact_kwargs)
-        _DSV4_GRIDBOOK_CONTRACT = dict(receipt)
-    args.quantization = "gridbook"
-    args.dtype = "bfloat16"
-    args.gpu_memory_utilization = 0.84
-    args.enforce_eager = True
-    args.max_num_batched_tokens = 512
-    args.max_logprobs = 248_320
-    return dict(_DSV4_GRIDBOOK_KWARGS)
+def _resolve_serve_image(args) -> str:
+    """The container image this measurement runs in -- never guessed.
+
+    The image used to come from the Gridbook lane's serving pin, retired
+    2026-09-02 (archive/gridbook_lane_2026-09-02/), so a caller could get one
+    without naming it. A wrong image tag is a
+    silent reproducibility confound (R15), so this now fails closed: the
+    caller states it with --serve-image or PQ_SERVE_IMAGE.
+    """
+    image = args.serve_image or os.environ.get("PQ_SERVE_IMAGE") or ""
+    image = image.strip()
+    if not image:
+        raise RuntimeError(
+            "the serving container image is unknown: pass --serve-image or "
+            "set PQ_SERVE_IMAGE. The serve fingerprint that makes two KL "
+            "numbers comparable is not evidence without it."
+        )
+    return image
 
 
 def _provenance(args) -> dict:
@@ -98,49 +95,19 @@ def _provenance(args) -> dict:
     result JSONs whose `serve_fingerprint` differs are not comparable as a
     delta (`tools/kl_ab.py` refuses them).
     """
-    contract_sha = (
-        hashlib.sha256(json.dumps(
-            _DSV4_GRIDBOOK_CONTRACT,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")).hexdigest()
-        if _DSV4_GRIDBOOK_CONTRACT is not None else None
-    )
-    from prismaquant.gridbook_serving_runtime_pin import (
-        load_gridbook_serving_runtime_pin,
-        require_exact_gridbook_serving_runtime_release,
-    )
-    from prismaquant.validate_cb_endpoint import DSV4_SPARK_VLLM_IMAGE
-
-    pin = load_gridbook_serving_runtime_pin()
-    if args.dsv4_gridbook_contract:
-        require_exact_gridbook_serving_runtime_release(pin)
     producer = gold_producer_identity("measure_vllm_full_kl")
     manifest = self_manifest(
         extra={
             "measurement_tool": "measure_vllm_full_kl",
             "producer_identity": producer,
-            "effective_llm_kwargs": _DSV4_GRIDBOOK_KWARGS,
-            "dsv4_gridbook_contract_sha256": contract_sha,
         },
-        image=DSV4_SPARK_VLLM_IMAGE if args.dsv4_gridbook_contract else None,
-        artifact_dir=(args.model if args.dsv4_gridbook_contract else None),
-        require_engine_descendant=bool(args.dsv4_gridbook_contract),
-        gridbook_pin_attestation={
-            "repository": pin.repository,
-            "commit": pin.commit,
-            "version": pin.version,
-            "wheel_sha256": pin.wheel_sha256,
-        } if args.dsv4_gridbook_contract else None,
+        image=_resolve_serve_image(args),
     )
     return {
         "git_commit": producer["git_commit"],
         "serve_fingerprint": manifest["serve_fingerprint"],
         "serve_manifest": manifest,
         "spec_decode_detected": _SPEC_DECODE_DETECTED,
-        "dsv4_gridbook_contract": _DSV4_GRIDBOOK_CONTRACT,
-        "dsv4_gridbook_contract_sha256": contract_sha,
     }
 
 
@@ -234,9 +201,7 @@ def _load_llm(args, *, max_model_len: int) -> "LLM":
         # max_num_batched_tokens >= their chunk-alignment floor (~2096);
         # the seqlen+16 max_model_len alone can drive it below that.
         kwargs["max_num_batched_tokens"] = args.max_num_batched_tokens
-    if args.dsv4_gridbook_contract:
-        kwargs.update(_activate_dsv4_gridbook_contract(args))
-    # Environment/bootstrap above must precede the first Gridbook/vLLM import.
+    # Environment/bootstrap above must precede the first vLLM import.
     from vllm import LLM
 
     llm = LLM(**kwargs)
@@ -592,31 +557,12 @@ def _position_kl(t_ids_row, t_lps_row, s_ids_row, s_lps_row) -> tuple[float, flo
     return kl, top1
 
 
-def _assert_teacher_matches_candidate_source(args, teacher_evidence) -> None:
-    """Bind streamed BF16 teacher identity to the candidate's exact source."""
-    if not args.dsv4_gridbook_contract:
-        return
-    if not isinstance(teacher_evidence, dict):
-        raise RuntimeError(
-            "DSv4 Gridbook KL requires digest-bound streamed teacher evidence"
-        )
-    quant_path = Path(args.model).resolve(strict=True) / "quant_config.json"
-    try:
-        quant_config = json.loads(quant_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RuntimeError(
-            f"could not read candidate source identity from {quant_path}"
-        ) from exc
-    provenance = quant_config.get("provenance") if isinstance(
-        quant_config, dict
-    ) else None
-    candidate_source = provenance.get("source_model_identity") if isinstance(
-        provenance, dict
-    ) else None
-    if candidate_source != teacher_evidence.get("source_model"):
-        raise RuntimeError(
-            "streamed teacher source identity differs from candidate provenance"
-        )
+# _assert_teacher_matches_candidate_source() bound the streamed BF16
+# teacher's source identity to the candidate's quant_config provenance.
+# Its whole body was gated on --dsv4-gridbook-contract, retired 2026-09-02
+# with its lane -- archive/gridbook_lane_2026-09-02/. Nothing else set it, so
+# the
+# check never ran on another lane.
 
 
 def _student_all_positions(args, payload, teacher_evidence=None) -> int:
@@ -635,11 +581,6 @@ def _student_all_positions(args, payload, teacher_evidence=None) -> int:
     s_ids, s_lps = _measure_prompt_topk(llm, prompts, top_k=top_k)
 
     n, pm1, k = t_ids.shape
-    if args.dsv4_gridbook_contract and n * pm1 != EXPECTED_POSITIONS:
-        raise RuntimeError(
-            f"DSv4 gold workload requires {EXPECTED_POSITIONS} positions, "
-            f"got {n * pm1}"
-        )
     kl_pos = torch.zeros((n, pm1), dtype=torch.float64)
     t_top1 = torch.zeros((n, pm1), dtype=torch.float64)
     for i in range(n):
@@ -696,7 +637,6 @@ def _student(args) -> int:
     if _file_sha256(args.teacher_payload) != teacher_payload_sha256:
         raise RuntimeError("teacher payload changed while the student loaded it")
     args.teacher_payload_sha256 = teacher_payload_sha256
-    _assert_teacher_matches_candidate_source(args, teacher_evidence)
     if payload.get("score_positions") == "all":
         return _student_all_positions(args, payload, teacher_evidence)
     teacher = payload["teacher_logprobs"].float()
@@ -745,8 +685,7 @@ def main() -> int:
     parser.add_argument("--teacher-payload")
     parser.add_argument(
         "--teacher-meta",
-        help="metadata JSON emitted beside the streamed teacher payload; "
-        "required by the DSv4 Gridbook release contract",
+        help="metadata JSON emitted beside the streamed teacher payload",
     )
     parser.add_argument("--dataset-cache-dir", default="/hfcache/datasets")
     parser.add_argument("--corpus-text-file", default=None,
@@ -776,36 +715,29 @@ def main() -> int:
         "numbers are then the DRAFT model's, not the artifact's; the shipcard "
         "refuses such a record (see tools/spec_decode_guard.py).")
     parser.add_argument("--max-num-batched-tokens", type=int, default=None)
+    # --dsv4-gridbook-contract forced the one-Spark DSv4 gold-measurement
+    # runtime contract; retired 2026-09-02 with its lane, see
+    # archive/gridbook_lane_2026-09-02/.
     parser.add_argument(
-        "--dsv4-gridbook-contract",
-        action="store_true",
-        help="force the exact one-Spark DSv4 Gridbook gold-measurement "
-        "runtime contract (FP8 KV, conditional Marlin MoE, closed env, "
-        "eager/no-spec)",
+        "--serve-image",
+        default=None,
+        help="container image tag this measurement runs in. Required (or "
+        "PQ_SERVE_IMAGE): the serve fingerprint is not evidence without it.",
     )
     parser.add_argument(
         "--window-seed", type=int, default=42,
         help="RNG seed for the WikiText window draw (teacher mode only; "
         "students replay the windows stored in the teacher payload)")
     args = parser.parse_args()
+    # Resolve the image before anything loads a model: an unnamed image is a
+    # reproducibility hole (R15), and discovering it only when the provenance
+    # block is written would waste the whole measurement.
+    try:
+        _resolve_serve_image(args)
+    except RuntimeError as exc:
+        parser.error(str(exc))
     if args.mode == "student" and not args.teacher_payload:
         parser.error("--teacher-payload is required in student mode")
-    if args.mode == "teacher" and args.dsv4_gridbook_contract:
-        parser.error(
-            "DSv4 Gridbook teacher mode is streamed-only; use "
-            "tools/build_streamed_full_kl_teacher.py with "
-            "--wikitext-inputs"
-        )
-    if (
-        args.mode == "student"
-        and args.dsv4_gridbook_contract
-        and not args.teacher_meta
-    ):
-        parser.error(
-            "--teacher-meta is required for DSv4 Gridbook student evidence"
-        )
-    if args.dsv4_gridbook_contract:
-        _activate_dsv4_gridbook_contract(args)
     if args.mode == "teacher":
         return _teacher(args)
     return _student(args)

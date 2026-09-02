@@ -33,7 +33,7 @@ from prismaquant.serve_constraints import (
 )
 from prismaquant.serve_dispatch_table import parse_dispatch_table, SCHEMA
 from prismaquant.serving_profiles import (
-    gridbook_runtime_version,
+    serving_runtime_version,
     load_serving_profile,
     serving_lane_route,
 )
@@ -347,101 +347,6 @@ _ATTESTED_RUNTIME = "0.8.4"
 def _profile_lane(_name, fmt):
     return serving_lane_route(
         "nvfp4_cb", fmt, runtime_version=_ATTESTED_RUNTIME)
-
-
-def test_backed_and_unbacked_rungs_take_different_table_rows():
-    """Gridbook 0.7.0 instantiates FP8-CB fused mid-M for K in
-    {28,32,36,40,44,48}. K36 is backed; K37 is not, and production permits it
-    — permanently, since K1.2 resolved to a k % 4 == 0 format+TMA law rather
-    than to five missing instantiations. Both are 'FP8_CB' to the family
-    axis, so only the LANE axis can tell them apart — and it must, or the
-    allocator prices a fast path nobody backs."""
-    ctx = _lane_ctx(p95_ttft_ms=1e9)
-    stats = {"u0": {"n_params": 1}}
-    backed = evaluate_assignment(
-        {"u0": "FP8_CB_K36"}, stats, ctx, lane_for=_profile_lane)
-    unbacked = evaluate_assignment(
-        {"u0": "FP8_CB_K37"}, stats, ctx, lane_for=_profile_lane)
-    assert backed.predicted["p95_ttft_ms"] == pytest.approx(500.0)
-    assert unbacked.predicted["p95_ttft_ms"] == pytest.approx(2000.0)
-    assert backed.coverage["prefill"]["lane_counts"] == {"fused_mid_m": 1}
-    assert unbacked.coverage["prefill"]["lane_counts"] == {"fallback": 1}
-
-
-def test_an_unbacked_rung_can_be_the_difference_between_feasible_and_not():
-    ctx = _lane_ctx(p95_ttft_ms=1000.0)
-    stats = {"u0": {"n_params": 1}}
-    assert evaluate_assignment(
-        {"u0": "FP8_CB_K36"}, stats, ctx, lane_for=_profile_lane).feasible
-    unbacked = evaluate_assignment(
-        {"u0": "FP8_CB_K37"}, stats, ctx, lane_for=_profile_lane)
-    assert not unbacked.feasible
-    assert unbacked.binding_constraint == "p95_ttft_ms"
-
-
-def test_fused_lane_is_not_claimed_outside_its_declared_m_range():
-    """The lane is declared for 9 <= M <= 128; an arena measured at M=1400
-    takes the fallback row even for a rung the runtime backs."""
-    table = _table(
-        [_arena("prefill", "large", "ttft_ms", 1000.0, m=1400)],
-        [
-            _row("FP8_CB", "prefill", "large", "fused_mid_m", 0.5),
-            _row("FP8_CB", "prefill", "large", "fallback", 2.0),
-        ],
-    )
-    ctx = ServeConstraintContext(
-        table=table, mix=WorkloadMix.parse("prefill:large=1.0"),
-        slos=ServeSLOs(p95_ttft_ms=1e9))
-    verdict = evaluate_assignment(
-        {"u0": "FP8_CB_K36"}, {"u0": {"n_params": 1}}, ctx,
-        lane_for=_profile_lane)
-    assert verdict.predicted["p95_ttft_ms"] == pytest.approx(2000.0)
-
-
-def test_lane_key_rules():
-    backed = serving_lane_route(
-        "nvfp4_cb", "FP8_CB_K36", runtime_version=_ATTESTED_RUNTIME)
-    unbacked = serving_lane_route(
-        "nvfp4_cb", "FP8_CB_K37", runtime_version=_ATTESTED_RUNTIME)
-    assert lane_key_for(None, 64) == "native"
-    assert lane_key_for(backed, 64) == "fused_mid_m"
-    assert lane_key_for(backed, 1400) == "fallback"
-    assert lane_key_for(backed, None) == "fallback"   # arena states no M
-    assert lane_key_for(unbacked, 64) == "fallback"
-    # The default fp4-CB quality path declares an EMPTY backed set at every
-    # runtime version, so it is always the fallback route.
-    assert lane_key_for(
-        serving_lane_route(
-            "nvfp4_cb", "NVFP4_CB_K16", runtime_version=_ATTESTED_RUNTIME),
-        64) == "fallback"
-
-
-def test_unattested_runtime_pin_backs_nothing():
-    """The fail-closed half of the same rule.
-
-    A backed set is keyed to the Gridbook release that first ships the lane
-    with its flag defaulted on, so a version the spec does not attest backs
-    NOTHING and every rung takes the fallback route. Adding an entry for a new
-    version is a SERVING PROMOTION requiring measured evidence on a released
-    runtime -- never a bookkeeping edit made to turn a test green.
-
-    Asserted against a version the spec deliberately does not declare rather
-    than against whatever the live pin happens to name, so that moving the pin
-    is never what makes this pass or fail.
-    """
-    unattested = "0.9999.0"
-    profile = load_serving_profile("nvfp4_cb")
-    for lane in profile.serving_lanes:
-        rungs, source = lane.backed_rungs(unattested)
-        assert rungs == ()
-        assert source in {
-            "pinned_runtime_version_not_declared",
-            "lane_declares_no_fused_mid_m_lane",
-        }
-    for fmt in ("FP8_CB_K36", "FP8_CB_K37", "NVFP4_CB_K16"):
-        assert lane_key_for(
-            serving_lane_route("nvfp4_cb", fmt, runtime_version=unattested),
-            64) == "fallback", fmt
 
 
 # ---------------------------------------------------------------------------

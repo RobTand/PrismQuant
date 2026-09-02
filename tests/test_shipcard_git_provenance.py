@@ -11,28 +11,33 @@ def _git_unavailable(*_args, **_kwargs):
     raise FileNotFoundError("fixture has no git metadata")
 
 
-def test_cb_shipcard_uses_explicit_clean_git_identity_without_worktree(
+def test_export_shipcard_uses_explicit_clean_git_identity_without_worktree(
     tmp_path, monkeypatch,
 ):
+    """Renamed and re-pointed on 2026-09-02.
+
+    This drove `shipcard.open_cb_export_shipcard`, the Gridbook lane's
+    card-opening wrapper, which retired with the lane
+    (archive/gridbook_lane_2026-09-02/). The subject is the *identity*, not the
+    wrapper: an exporter running where `git` is unavailable must still stamp a
+    clean commit from `PRISMAQUANT_IDENTITY_GIT_*` rather than inventing one.
+    So it now composes the card exactly the way the surviving native exporter
+    does -- `export_native_compressed.py:8494` sets `build["git"] =
+    git_provenance()` and hands it to `build_shipcard` -- which is the live
+    path this assertion is about.
+    """
     model = tmp_path / "artifact"
     model.mkdir()
     (model / "config.json").write_text("{}")
     (model / "model.safetensors").write_bytes(b"fixture-weight")
-    layer_config = tmp_path / "layer_config.json"
-    layer_config.write_text(json.dumps({
-        "__prismaquant__": {"achieved_bits": 4.5},
-    }))
     monkeypatch.setattr(shipcard.subprocess, "run", _git_unavailable)
     monkeypatch.setenv("PRISMAQUANT_IDENTITY_GIT_COMMIT", "a" * 40)
     monkeypatch.setenv("PRISMAQUANT_IDENTITY_GIT_DIRTY", "0")
 
-    path, _ = shipcard.open_cb_export_shipcard(
-        model,
-        {"quant_method": "gridbook", "format": "nvfp4_cb"},
-        source_model=tmp_path / "source",
-        layer_config_path=layer_config,
-        exporter="fixture-exporter",
+    card = shipcard.build_shipcard(
+        model, build={"git": shipcard.git_provenance()}
     )
+    path = shipcard.write_shipcard(tmp_path / "shipcard.json", card)
     assert shipcard.load_shipcard(path)["build"]["git"] == {
         "commit": "a" * 40,
         "dirty": False,

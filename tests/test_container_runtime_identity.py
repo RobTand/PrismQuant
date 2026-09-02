@@ -12,7 +12,7 @@ import sys
 REPO = Path(__file__).resolve().parents[1]
 TOOL = REPO / "tools" / "container_runtime_identity.py"
 IMAGE_REF = (
-    "gridbook@sha256:"
+    "vllm-node@sha256:"
     "f7dad9260fea6f4207bd894acc9ebc034d91c599a70489a89ab1938a75db9c47"
 )
 IMAGE_ID = (
@@ -39,7 +39,11 @@ def _receipt(path: Path, *, image_ref: str = IMAGE_REF) -> Path:
         json.dumps(
             {
                 "git_commit": COMMIT,
-                "gridbook_runtime": {"campaign_image": image_ref},
+                # An extra per-lane block the tool no longer reads: the
+                # --require-receipt-image cross-check that consumed it retired
+                # 2026-09-02 with its lane (archive/gridbook_lane_2026-09-02/).
+                # Kept as a shape the reader must tolerate, not require.
+                "campaign": {"image": image_ref},
             }
         ),
         encoding="utf-8",
@@ -71,7 +75,6 @@ def _write_args(
         "--image-id", IMAGE_ID,
         "--git-commit", COMMIT,
         "--implementation-receipt", receipt,
-        "--require-receipt-image",
     )
 
 
@@ -138,7 +141,7 @@ def test_runtime_identity_rejects_mutable_image_tag(tmp_path):
         source=source,
         receipt=_receipt(tmp_path / "receipt.json"),
     ))
-    args[args.index("--image-ref") + 1] = "gridbook:test"
+    args[args.index("--image-ref") + 1] = "vllm-node:test"
     result = _run(*args)
     assert result.returncode == 2
     assert "image_ref is not immutable" in result.stderr

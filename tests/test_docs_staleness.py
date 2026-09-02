@@ -27,10 +27,21 @@ def test_sample_parallel_runbook_is_fail_closed_and_cross_host_portable():
         assert mount in doc
 
 
-def test_runtime_flags_doc_owns_policy_without_mirroring_gridbook_flags():
+def test_runtime_flags_doc_owns_policy_without_mirroring_plugin_flags():
+    """Renamed from `..._without_mirroring_gridbook_flags` on 2026-09-02.
+
+    The rule is not about Gridbook: a serving runtime's own selector names and
+    defaults are documented by that runtime and pinned by its immutable pin,
+    and PrismaQuant's flag doc must point at the pin rather than mirror the
+    flags (AGENTS.md principle 5). The Gridbook pin retired with its lane
+    (archive/gridbook_lane_2026-09-02/); the Tessera pin now carries the same
+    duty, so the assertion moves rather than disappearing. The
+    `PRISMAQUANT_CB_*` runtime selectors below stay in the forbidden list for
+    the same reason they always were: they belong to a plugin, not to us.
+    """
     doc = _read("docs/design/runtime_flags.md")
     assert "There is deliberately no hand-maintained exhaustive flag list" in doc
-    assert "prismaquant/gridbook_runtime/gridbook_runtime_pin.json" in doc
+    assert "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json" in doc
     assert "rg -o 'PRISMAQUANT_[A-Z0-9_]+' prismaquant scripts tools" in doc
     for external_runtime_flag in (
         "PRISMAQUANT_CB_DECODE",

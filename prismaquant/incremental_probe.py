@@ -1810,13 +1810,21 @@ def _validate_sample_parallel_publication_state(
     producer_snapshot_root: str,
     execution_identity: Mapping[str, object],
 ) -> None:
-    """Replay source and runtime identity immediately before publication."""
+    """Replay source and runtime identity immediately before publication.
+
+    The *source* half of that replay retired on 2026-09-02:
+    `validate_worker_local_source_census` was built on
+    `prismaquant.rtx4090_artifact_census`, the strict-Ada FP8-CB campaign's
+    closed Qwen3.8-27B layout, which went to
+    archive/gridbook_lane_2026-09-02/ with the Gridbook lane. The runtime half
+    below is unaffected. The sample-parallel worker entry refuses up front
+    rather than publishing with one leg of the replay missing (see the
+    `--sample-run-contract` branch in `main`).
+    """
     from prismaquant.sample_parallel_probe import (
         validate_local_producer_snapshot,
-        validate_worker_local_source_census,
     )
 
-    validate_worker_local_source_census(model, qname_census)
     validate_local_producer_snapshot(
         producer_snapshot_root,
         expected_closure_sha256=execution_identity[
@@ -4512,9 +4520,12 @@ def main():
     )
     ap.add_argument(
         "--sample-run-contract", default=None,
-        help="Closed source-censused execution contract produced by "
-             "`sample_parallel_probe prepare-run-contract`. Required with "
-             "sample parallelism; arbitrary shared metadata is not accepted.",
+        help="Closed source-censused execution contract. Required with "
+             "sample parallelism; arbitrary shared metadata is not accepted. "
+             "NOTE (2026-09-02): the `prepare-run-contract` subcommand that "
+             "minted these retired with the Gridbook lane "
+             "(archive/gridbook_lane_2026-09-02/), so this flag currently "
+             "has no producer and the branch refuses.",
     )
     ap.add_argument(
         "--sample-cover", default=None,
@@ -4718,6 +4729,31 @@ def main():
     # contiguous slice for the GPU pass.
     sample_parallel_calib: torch.Tensor | None = None
     if args.global_calibration_tensor is not None:
+        # Retired 2026-09-02, fail-closed rather than degraded.
+        #
+        # The sample-parallel worker admitted a shared run contract only after
+        # revalidating THIS host's own source bytes against the contract's
+        # census (`validate_worker_local_source_census`) -- "a run contract
+        # produced on one host cannot authorize another host's bytes merely
+        # because the model path string agrees". Both that check and the
+        # `prepare-run-contract` minter were built on
+        # `prismaquant.rtx4090_artifact_census`, the strict-Ada FP8-CB
+        # campaign's closed Qwen3.8-27B layout, archived with the Gridbook
+        # lane (archive/gridbook_lane_2026-09-02/).
+        #
+        # Nothing can mint a contract now, and a contract left on disk from
+        # before the retirement would be admitted with one leg of its identity
+        # replay missing. That is the exact failure this branch existed to
+        # refuse, so it refuses. Re-enabling sample parallelism means giving
+        # the census a lane-independent source of truth, not deleting this
+        # gate. Recorded as debt D34.
+        raise SystemExit(
+            "sample-parallel probe is unavailable since 2026-09-02: its run "
+            "contract and per-worker source census were built on the "
+            "strict-Ada FP8-CB artifact census, archived with the Gridbook "
+            "lane (archive/gridbook_lane_2026-09-02/). Run without "
+            "--global-calibration-tensor/--sample-partition-index."
+        )
         from prismaquant.sample_parallel_probe import (
             _load_json_mapping,
             activation_scope_receipt,
@@ -4727,7 +4763,6 @@ def main():
             load_local_importance_stats,
             validate_run_contract,
             validate_local_producer_snapshot,
-            validate_worker_local_source_census,
         )
         from prismaquant.sample_parallel_probe_merge import (
             validate_worker_sample_cover,
@@ -4761,17 +4796,6 @@ def main():
         except Exception as exc:
             raise SystemExit(
                 f"sample-parallel producer snapshot preflight failed: {exc}"
-            ) from exc
-        # A run contract produced on one host cannot authorize another host's
-        # bytes merely because the model path string agrees.  Revalidate this
-        # worker's own identity-cache fingerprints and compare only the stable
-        # content/census projection before calibration, CE, precompute, or
-        # shard reuse can be admitted.
-        try:
-            validate_worker_local_source_census(args.model, qname_census)
-        except Exception as exc:
-            raise SystemExit(
-                f"sample-parallel worker source preflight failed: {exc}"
             ) from exc
         if Path(args.output).exists():
             raise SystemExit(

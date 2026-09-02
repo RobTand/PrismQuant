@@ -11,7 +11,7 @@ What this module pins is the *shape of the refusal*, because the values will
 move and the shape must not:
 
 * the packaged Tessera table parses through the SHARED eligibility parser
-  (`gridbook_lane_eligibility`), whose three widenings are additive;
+  (`lane_eligibility`), whose three widenings are additive;
 * every Tessera cell carries ``requires_plugin: "tessera"``, and a cell that
   claims a route without one is refused rather than admitted;
 * the answer is False today BY THE PIN, and True under a released-pin fixture
@@ -28,10 +28,10 @@ import json
 import pytest
 
 from prismaquant import tessera_render as tr
-from prismaquant.gridbook_lane_eligibility import (
+from prismaquant.lane_eligibility import (
     FORMAT_KIND_TESSERA_WIRE,
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
-    GridbookLaneEligibilityError,
+    LaneEligibilityError,
     load_eligibility_table,
     load_published_formats,
 )
@@ -200,7 +200,7 @@ def test_a_cell_claiming_a_route_with_no_plugin_requirement_is_refused(tmp_path)
     for cell in contract["lane_eligibility"]["cells"]:
         cell["requires_plugin"] = ""
     table, formats = _load(_write(tmp_path, contract, "no_plugin.json"))
-    with pytest.raises(GridbookLaneEligibilityError, match="requires_plugin"):
+    with pytest.raises(LaneEligibilityError, match="requires_plugin"):
         tr.tessera_lane_attested(
             "TESSERA_E2M1_K2_R896", table=table, formats=formats)
 
@@ -213,7 +213,7 @@ def test_a_plugin_requirement_on_a_fallback_cell_is_refused(tmp_path):
     for cell in contract["lane_eligibility"]["cells"]:
         cell["route_status"] = "fallback"
         cell["requires_serve_flags"] = []
-    with pytest.raises(GridbookLaneEligibilityError, match="requires_plugin"):
+    with pytest.raises(LaneEligibilityError, match="requires_plugin"):
         _load(_write(tmp_path, contract, "fallback_plugin.json"))
 
 

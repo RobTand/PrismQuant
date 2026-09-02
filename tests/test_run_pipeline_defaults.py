@@ -145,6 +145,24 @@ def test_production_render_score_is_unlicensed_on_a_cb_menu():
     assert "reproducing pre-CB artifacts on non-CB menus" in script
 
 
+# RETIRED 2026-09-02 with the Gridbook codebook lane
+# (archive/gridbook_lane_2026-09-02/): two tests that drove the CB export gate
+# (`test_cb_export_gate_accepts_inherited_lane_and_wires_strict_producer_policy`,
+# `test_cb_activation_scope_is_validated_exported_and_stage_bound`). Their
+# subject -- `EXPORT_CONTAINER=nvfp4_cb`'s lane inheritance, strict producer
+# policy and CB_ACTIVATION_SCOPE plumbing -- no longer exists; that container
+# now `exit 2`s. The guard below survives because its FORMATS limb does.
+
+
+# RETIRED 2026-09-02 with the Gridbook codebook lane
+# (archive/gridbook_lane_2026-09-02/). Every gate these tests executed --
+# the CB learned-bundle trainer-version enum and its four v2 preconditions,
+# CB_ACTIVATION_SCOPE, the three `EXPORT_CONTAINER=nvfp4_cb` preconditions,
+# and the three CB producer-policy resolutions -- lived behind that container,
+# which now `exit 2`s before any of them is reached. They are deleted, not
+# skipped: a gate test for a gate that cannot be reached asserts nothing.
+
+
 def test_cb_unlicensed_guard_actually_fires():
     """Execute the guard's real predicate; a gate never seen firing is not a gate.
 
@@ -178,12 +196,34 @@ def test_cb_unlicensed_guard_actually_fires():
         assert proc.returncode in (0, 7), proc.returncode
         return proc.returncode == 7
 
-    # Both CB signals must trip it, independently.
-    assert fires("nvfp4_cb", "NVFP4,FP8_DYNAMIC,BF16")
+    # The FORMATS signal must trip it. This is the limb that still matters:
+    # the CB format/cost/render plumbing outlived the Gridbook lane (D34), so a
+    # `*_CB_*` menu is still nameable and still mis-priced by this estimator.
     assert fires("compressed-tensors", "FP8_CB_K28,FP8_CB_K43")
+    # The EXPORT_CONTAINER signal is GONE from this guard as of 2026-09-02, and
+    # its absence is the correct state, not drift: `EXPORT_CONTAINER=nvfp4_cb`
+    # is now refused outright by the container gate before any cost mode is
+    # considered (archive/gridbook_lane_2026-09-02/). A second refusal for the
+    # same input would be dead code pretending to be a gate.
+    assert not fires("nvfp4_cb", "NVFP4,FP8_DYNAMIC,BF16")
     # ...and neither control may.
     assert not fires("compressed-tensors", "NVFP4,FP8_DYNAMIC,BF16")
     assert not fires("", "")
+
+    # So prove the container gate is what refuses it now, by executing that
+    # gate's own predicate the same way.
+    container_cond = None
+    for line in path.read_text().splitlines():
+        if '"$EXPORT_CONTAINER" == "nvfp4_cb"' in line and line.strip().startswith("if "):
+            container_cond = line.strip().removeprefix("if ").removesuffix("; then")
+            break
+    assert container_cond is not None, "retired-container gate not found in script"
+    proc = subprocess.run(
+        ["bash", "-c", f"if {container_cond}; then exit 7; else exit 0; fi"],
+        env={"PATH": "/usr/bin:/bin", "EXPORT_CONTAINER": "nvfp4_cb"},
+        check=False,
+    )
+    assert proc.returncode == 7
 
 
 def test_core_recipe_defaults_are_pinned():
@@ -200,35 +240,6 @@ def test_core_recipe_defaults_are_pinned():
     assert '--artifact-overhead-reserve-bytes "$ARTIFACT_OVERHEAD_RESERVE_BYTES"' in script
     assert "TARGET_DISK_GB requires ARTIFACT_OVERHEAD_RESERVE_BYTES" in script
     assert ': "${VALIDATED_FRONTIER_PICK:=budget}"' in script
-
-
-def test_cb_export_gate_accepts_inherited_lane_and_wires_strict_producer_policy():
-    script = _run_pipeline_script()
-
-    # A hardware-specific profile reuses the historical serializer.  The
-    # pipeline therefore checks the inherited lane identity, not one profile
-    # id hardcoded into shell.
-    assert "require_profile_export_lane" in script
-    assert 'TARGET_PROFILE_RESOLVED" != "nvfp4_cb' not in script
-    assert "profile.producer_policy" in script
-    assert "profile.target_platform" in script
-    assert "GRIDBOOK_PRODUCER_RUNTIME_CONTRACT" in script
-    assert '--producer-policy "$CB_PRODUCER_POLICY"' in script
-    assert '--producer-runtime-contract "$GRIDBOOK_PRODUCER_RUNTIME_CONTRACT"' in script
-
-    # Reader-only legacy wire ids are rejected before either the cost menu or
-    # fixed-head assignment can be constructed.
-    assert script.count("format_is_producer_eligible") >= 2
-    assert "reader-only" in script
-
-
-def test_cb_activation_scope_is_validated_exported_and_stage_bound():
-    script = _run_pipeline_script()
-
-    assert _shell_default(script, "CB_ACTIVATION_SCOPE") == "nvfp4"
-    assert "CB_ACTIVATION_SCOPE must be none or nvfp4" in script
-    assert "export CB_ACTIVATION_SCOPE" in script
-    assert '"CB_ACTIVATION_SCOPE=${CB_ACTIVATION_SCOPE:-}"' in script
 
 
 def test_aura_streaming_identity_path_is_explicit_and_stage_bound():
@@ -295,16 +306,3 @@ def test_prismasnap_source_is_additive_native_only_and_non_native_fails_closed()
     assert "exit 2" in gate
 
 
-def test_learned_cb_pipeline_builds_immutable_bundle_before_production_stages():
-    script = _run_pipeline_script()
-
-    # Default remains the historical all-lattice producer.  Opt-in learned
-    # runs must materialize and validate one immutable value-bearing bundle
-    # before cost measurement or allocation can price those exact bytes.
-    assert _shell_default(script, "CB_CODEBOOK_SOURCE_SCOPE") == "none"
-    pre_cost = 'ensure_cb_learned_bundle "[2/4] pre-cost"'
-    assert pre_cost in script
-    assert script.index(pre_cost) < script.index("python3 -m prismaquant.allocator")
-    assert "python3 -m prismaquant.build_cb_learned_bundle" in script
-    assert "load_bundle(sys.argv[1])" in script
-    assert "same-path replacement never" in script

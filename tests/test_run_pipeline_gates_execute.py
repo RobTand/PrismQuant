@@ -138,6 +138,15 @@ FIRED = 2
 PASSED = 0
 
 
+# RETIRED 2026-09-02 with the Gridbook codebook lane
+# (archive/gridbook_lane_2026-09-02/). Every gate these tests executed --
+# the CB learned-bundle trainer-version enum and its four v2 preconditions,
+# CB_ACTIVATION_SCOPE, the three `EXPORT_CONTAINER=nvfp4_cb` preconditions,
+# and the three CB producer-policy resolutions -- lived behind that container,
+# which now `exit 2`s before any of them is reached. They are deleted, not
+# skipped: a gate test for a gate that cannot be reached asserts nothing.
+
+
 def test_gate_python_path_preserves_pytest_virtual_environment():
     """The controlled PATH must not resolve the venv launcher to `/usr/bin`."""
     selected = shutil.which("python3", path=f"{VENV_BIN}:/usr/bin:/bin")
@@ -189,42 +198,6 @@ def test_prismasnap_source_lane_admission_fires(scratch):
 # --------------------------------------------------------------------------
 
 
-def test_cb_learned_trainer_version_enum_fires():
-    block = extract_block(
-        'case "$CB_LEARNED_TRAINER_VERSION" in',
-        "CB_LEARNED_TRAINER_VERSION must be v1 or v2",
-    )
-
-    def status(value: str) -> int:
-        return run_block(block, {"CB_LEARNED_TRAINER_VERSION": value})
-
-    assert status("v3") == FIRED
-    assert status("") == FIRED
-    assert status("V2") == FIRED  # the enum is case-sensitive
-    assert status("v1") == PASSED
-    assert status("v2") == PASSED
-
-
-def test_cb_learned_receipt_requires_v2_trainer_fires():
-    block = extract_block(
-        'if [[ "$CB_LEARNED_TRAINER_VERSION" == "v1" \\',
-        "CB_LEARNED_PROMOTION_RECEIPT requires CB_LEARNED_TRAINER_VERSION=v2",
-    )
-
-    def status(version: str, receipt: str) -> int:
-        return run_block(
-            block,
-            {
-                "CB_LEARNED_TRAINER_VERSION": version,
-                "CB_LEARNED_PROMOTION_RECEIPT": receipt,
-            },
-        )
-
-    assert status("v1", "/some/receipt.json") == FIRED
-    assert status("v1", "") == PASSED
-    assert status("v2", "/some/receipt.json") == PASSED
-
-
 def _v2_scope_block() -> str:
     return extract_block(
         'if [[ "$CB_LEARNED_TRAINER_VERSION" == "v2" \\',
@@ -244,144 +217,14 @@ def _v2_env(**overrides) -> dict:
     return env
 
 
-def test_cb_learned_v2_requires_probe_imatrix_fires(scratch):
-    block = _v2_scope_block()
-    receipt = scratch / "receipt.json"
-    receipt.write_text("{}")
-    identity = scratch / "identity.json"
-    identity.write_text("{}")
-    good = _v2_env(
-        CB_LEARNED_PROMOTION_RECEIPT=str(receipt),
-        CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE=str(identity),
-    )
-
-    assert run_block(block, {**good, "CB_IMATRIX_SOURCE": "activation-cache"}) == FIRED
-    # The default (unset) is activation-cache, which must also fire.
-    unset = dict(good)
-    unset.pop("CB_IMATRIX_SOURCE")
-    assert run_block(block, unset) == FIRED
-    assert run_block(block, good) == PASSED
-    # The whole scope gate is inert for v1 and for the lattice scope.
-    assert run_block(
-        block, _v2_env(CB_LEARNED_TRAINER_VERSION="v1", CB_IMATRIX_SOURCE="x")
-    ) == PASSED
-    assert run_block(
-        block, _v2_env(CB_CODEBOOK_SOURCE_SCOPE="none", CB_IMATRIX_SOURCE="x")
-    ) == PASSED
-
-
-def test_cb_learned_v2_requires_existing_absolute_receipt_fires(scratch):
-    block = _v2_scope_block()
-    receipt = scratch / "receipt.json"
-    receipt.write_text("{}")
-    identity = scratch / "identity.json"
-    identity.write_text("{}")
-
-    def status(value: str) -> int:
-        return run_block(
-            block,
-            _v2_env(
-                CB_LEARNED_PROMOTION_RECEIPT=value,
-                CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE=str(identity),
-            ),
-        )
-
-    assert status("") == FIRED
-    assert status("receipt.json") == FIRED  # relative
-    assert status(str(scratch / "absent.json")) == FIRED  # absolute but missing
-    assert status(str(receipt)) == PASSED
-
-
-def test_cb_learned_v2_requires_source_model_identity_cache_fires(scratch):
-    block = _v2_scope_block()
-    receipt = scratch / "receipt.json"
-    receipt.write_text("{}")
-    identity = scratch / "identity.json"
-    identity.write_text("{}")
-
-    def status(value: str) -> int:
-        return run_block(
-            block,
-            _v2_env(
-                CB_LEARNED_PROMOTION_RECEIPT=str(receipt),
-                CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE=value,
-            ),
-        )
-
-    assert status("") == FIRED
-    assert status("identity.json") == FIRED
-    assert status(str(scratch / "absent.json")) == FIRED
-    assert status(str(identity)) == PASSED
-
-
 # --------------------------------------------------------------------------
 # CB activation scope
 # --------------------------------------------------------------------------
 
 
-def test_cb_activation_scope_enum_fires():
-    block = extract_block(
-        'case "$CB_ACTIVATION_SCOPE" in',
-        "CB_ACTIVATION_SCOPE must be none or nvfp4",
-    )
-
-    def status(value: str) -> int:
-        return run_block(block, {"CB_ACTIVATION_SCOPE": value})
-
-    assert status("fp8") == FIRED
-    assert status("") == FIRED
-    assert status("NVFP4") == FIRED
-    assert status("none") == PASSED
-    assert status("nvfp4") == PASSED
-
-
 # --------------------------------------------------------------------------
 # nvfp4_cb export lane / cache policy
 # --------------------------------------------------------------------------
-
-
-def test_nvfp4_cb_requires_profile_with_inherited_cb_export_lane_fires():
-    block = extract_block(
-        'if ! PQ_TARGET_PROFILE_RESOLVED="$TARGET_PROFILE_RESOLVED" python3 - ',
-        "requires a serving profile whose inherited export_lane.id is nvfp4_cb",
-    )
-
-    def status(profile: str) -> int:
-        return run_block(block, {"TARGET_PROFILE_RESOLVED": profile})
-
-    assert status("vllm_packed_moe") == FIRED  # exports through compressed-tensors
-    assert status("no_such_profile") == FIRED
-    assert status("nvfp4_cb") == PASSED
-    assert status("qwen38_rtx4090_fp8_cb") == PASSED  # inherits the lane
-
-
-def test_nvfp4_cb_requires_production_recache_off_fires():
-    block = extract_block(
-        'if [[ "${PRODUCTION_RECACHE:-1}" != "0" ]]; then',
-        "requires PRODUCTION_RECACHE=0",
-    )
-
-    assert run_block(block, {"PRODUCTION_RECACHE": "1"}) == FIRED
-    assert run_block(block, {}) == FIRED  # the pipeline default is 1
-    assert run_block(block, {"PRODUCTION_RECACHE": "0"}) == PASSED
-
-
-def test_nvfp4_cb_production_cache_only_under_validated_surrogate_fires():
-    block = extract_block(
-        'if [[ "${PRODUCTION_CACHE:-1}" != "0" \\',
-        "permits PRODUCTION_CACHE=1 only for SELECTION_MODE=validated-surrogate",
-    )
-
-    def status(cache: str | None, mode: str) -> int:
-        env = {"SELECTION_MODE": mode}
-        if cache is not None:
-            env["PRODUCTION_CACHE"] = cache
-        return run_block(block, env)
-
-    assert status("1", "surrogate") == FIRED
-    assert status(None, "surrogate") == FIRED  # default cache is 1
-    assert status("1", "validated-surrogate") == PASSED
-    assert status("0", "surrogate") == PASSED
 
 
 # --------------------------------------------------------------------------
@@ -513,20 +356,6 @@ def test_aura_streaming_enum_fires():
 # --------------------------------------------------------------------------
 
 
-def test_cb_producer_policy_resolution_failure_fires():
-    block = extract_block(
-        'if ! CB_PRODUCER_META="$(',
-        "failed to resolve the CB profile's producer policy.",
-    )
-
-    def status(profile: str) -> int:
-        return run_block(block, {"TARGET_PROFILE_RESOLVED": profile})
-
-    assert status("no_such_profile") == FIRED
-    assert status("nvfp4_cb") == PASSED
-    assert status("qwen38_rtx4090_fp8_cb") == PASSED
-
-
 def _producer_policy_block() -> str:
     return extract_block(
         'if [[ -n "$CB_PRODUCER_POLICY" ]]; then',
@@ -547,22 +376,3 @@ def _producer_status(policy: str, platform: str, contract: str) -> int:
     )
 
 
-def test_cb_producer_policy_requires_exact_target_platform_fires(scratch):
-    contract = scratch / "runtime_contract.json"
-    contract.write_text("{}")
-
-    assert _producer_status("some_policy", "", str(contract)) == FIRED
-    assert _producer_status("some_policy", "sm_89", str(contract)) == PASSED
-    # No producer policy at all: the whole block is inert.
-    assert _producer_status("", "", "") == PASSED
-
-
-def test_cb_producer_policy_requires_existing_gridbook_contract_fires(scratch):
-    contract = scratch / "runtime_contract.json"
-    contract.write_text("{}")
-
-    assert _producer_status("some_policy", "sm_89", "") == FIRED
-    assert _producer_status(
-        "some_policy", "sm_89", str(scratch / "absent.json")
-    ) == FIRED
-    assert _producer_status("some_policy", "sm_89", str(contract)) == PASSED

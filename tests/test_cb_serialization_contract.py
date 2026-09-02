@@ -1242,28 +1242,12 @@ def test_a_malformed_exclusion_record_is_loud():
             where="unit", assignment=assignment)
 
 
-def test_exporter_refuses_an_export_that_contradicts_its_price():
-    """The guard is wired into the exporter's own validation, not just free-standing."""
-    from prismaquant.export_nvfp4_cb_streaming import (
-        _validate_namespace_exclusions,
-    )
-
-    assignment = {"layer.q_proj": "BF16"}
-    priced = _stamp(assignment, excluded=["mtp."])
-
-    assert _validate_namespace_exclusions(
-        ["mtp."], assignment=assignment, profile=None,
-        budget_stamp=priced) == ("mtp.",)
-
-    with pytest.raises(ValueError, match="overshoots"):
-        _validate_namespace_exclusions(
-            [], assignment=assignment, profile=None, budget_stamp=priced)
-
-    with pytest.raises(ValueError, match="under budget"):
-        _validate_namespace_exclusions(
-            ["mtp."], assignment=assignment, profile=None,
-            budget_stamp=_stamp(assignment))
-
-    # Unbudgeted exports keep working exactly as before.
-    assert _validate_namespace_exclusions(
-        ["mtp."], assignment=assignment, profile=None) == ("mtp.",)
+# `test_exporter_refuses_an_export_that_contradicts_its_price` was deleted on
+# 2026-09-02. It reached into
+# `export_nvfp4_cb_streaming._validate_namespace_exclusions` to prove the
+# whole-artifact-budget guard is wired into the exporter's own validation
+# rather than only standing free. That exporter is in
+# archive/gridbook_lane_2026-09-02/. The guard function
+# `whole_artifact_budget_from_assignment_payload` is still pinned by the tests
+# above; what is no longer demonstrable is that an exporter calls it, because
+# the exporter that did is gone.

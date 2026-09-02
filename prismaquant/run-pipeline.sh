@@ -85,10 +85,6 @@ set -euo pipefail
 # 9728-dim H) and degenerates toward RTN — measured on Qwen3-4B, 1024
 # rows closed the render gap vs llama.cpp's imatrix quantizer from +20%
 # to +7.7% KLD (top-1 at parity). See docs/lanes/gguf.md.
-# The nvfp4_cb lane inherits the same default: the weighted VQ codeword
-# search wants a higher-rank imatrix than 256 rows (format-pipeline.md §6);
-# 1024 is the analogy-to-GGUF starting point pending a CB-specific
-# measurement (docs/lanes/nvfp4-cb/format-pipeline.md open-Q 6).
 : "${EXPORT_CONTAINER:=compressed-tensors}"
 python -m prismaquant.prismasnap_contract --model "$MODEL_PATH"
 if [[ ( -e "${MODEL_PATH}/prismasnap_provenance.json" \
@@ -98,197 +94,19 @@ if [[ ( -e "${MODEL_PATH}/prismasnap_provenance.json" \
   exit 2
 fi
 if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
-  # Producer identity must be fixed before allocation: candidate bytes and the
-  # final export must describe the same layout and shared sidecars.
-  # Family-scoped source policy.  `none` is the historical all-lattice
-  # producer and deliberately serializes with no new stamp member.  `fp8`
-  # enables learned books only where they measured useful; `all` is an
-  # explicitly warned research arm because NVFP4 CBL measured NO-GO.
-  : "${CB_CODEBOOK_SOURCE_SCOPE:=none}"
-  case "$CB_CODEBOOK_SOURCE_SCOPE" in
-    none) _cb_expected_source=lattice ;;
-    fp8) _cb_expected_source=learned ;;
-    all)
-      _cb_expected_source=learned
-      echo "[pipeline] WARNING: CB_CODEBOOK_SOURCE_SCOPE=all is research-only; learned NVFP4 codebooks are measured NO-GO" >&2
-      ;;
-    *)
-      echo "[pipeline] ERROR: CB_CODEBOOK_SOURCE_SCOPE must be none, fp8, or all" >&2
-      exit 2
-      ;;
-  esac
-  : "${CB_CODEBOOK_SOURCE:=$_cb_expected_source}"
-  if [[ "$CB_CODEBOOK_SOURCE" != "$_cb_expected_source" ]]; then
-    echo "[pipeline] ERROR: CB_CODEBOOK_SOURCE=$CB_CODEBOOK_SOURCE conflicts with CB_CODEBOOK_SOURCE_SCOPE=$CB_CODEBOOK_SOURCE_SCOPE (expected $_cb_expected_source)" >&2
-    exit 2
-  fi
-  unset _cb_expected_source
-  if [[ "$CB_CODEBOOK_SOURCE_SCOPE" != "none" ]]; then
-    : "${CB_CODEBOOK_BUNDLE:=${WORK_DIR}/artifacts/cb_learned_bundle.pqcb}"
-  else
-    : "${CB_CODEBOOK_BUNDLE:=}"
-  fi
-  # Learned-v2 is a result-gated producer, not a new default.  Without an
-  # accepted two-holdout receipt the v2 builder emits lattice cells only; a
-  # run that explicitly asks for learned scope must therefore provide the
-  # receipt and the complete streamed source-identity cache.  v1 remains only
-  # for historical reproduction.
-  : "${CB_LEARNED_TRAINER_VERSION:=v1}"
-  : "${CB_LEARNED_PROMOTION_RECEIPT:=}"
-  : "${CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE:=${PRISMAQUANT_STREAMED_MODEL_IDENTITY_CACHE:-}}"
-  case "$CB_LEARNED_TRAINER_VERSION" in
-    v1|v2) ;;
-    *)
-      echo "[pipeline] ERROR: CB_LEARNED_TRAINER_VERSION must be v1 or v2" >&2
-      exit 2
-      ;;
-  esac
-  if [[ "$CB_LEARNED_TRAINER_VERSION" == "v1" \
-     && -n "$CB_LEARNED_PROMOTION_RECEIPT" ]]; then
-    echo "[pipeline] ERROR: CB_LEARNED_PROMOTION_RECEIPT requires CB_LEARNED_TRAINER_VERSION=v2" >&2
-    exit 2
-  fi
-  if [[ "$CB_LEARNED_TRAINER_VERSION" == "v2" \
-     && "$CB_CODEBOOK_SOURCE_SCOPE" != "none" ]]; then
-    if [[ "${CB_IMATRIX_SOURCE:-activation-cache}" != "probe" ]]; then
-      echo "[pipeline] ERROR: learned-v2 requires CB_IMATRIX_SOURCE=probe so promotion binds full-corpus act_sq_sum/n_tokens_seen values" >&2
-      exit 2
-    fi
-    if [[ "$CB_LEARNED_PROMOTION_RECEIPT" != /* \
-       || ! -f "$CB_LEARNED_PROMOTION_RECEIPT" ]]; then
-      echo "[pipeline] ERROR: learned-v2 scope requires an existing absolute CB_LEARNED_PROMOTION_RECEIPT" >&2
-      exit 2
-    fi
-    if [[ "$CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE" != /* \
-       || ! -f "$CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE" ]]; then
-      echo "[pipeline] ERROR: learned-v2 promotion requires an existing absolute CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE" >&2
-      exit 2
-    fi
-  fi
-  # Optional routed-expert learned cells are selected by an immutable JSON
-  # manifest.  The manifest itself names the bank root and every accepted
-  # burn shard absolutely; no directory scan or export-time training exists.
-  : "${CB_ROUTED_MOE_BOOK_SELECTION:=}"
-  CB_ROUTED_MOE_BOOK_SELECTION_SHA256=""
-  if [[ -n "$CB_ROUTED_MOE_BOOK_SELECTION" ]]; then
-    if [[ "$CB_CODEBOOK_SOURCE_SCOPE" == "none" ]]; then
-      echo "[pipeline] ERROR: CB_ROUTED_MOE_BOOK_SELECTION requires a learned CB_CODEBOOK_SOURCE_SCOPE" >&2
-      exit 2
-    fi
-    if [[ "$CB_ROUTED_MOE_BOOK_SELECTION" != /* || ! -f "$CB_ROUTED_MOE_BOOK_SELECTION" ]]; then
-      echo "[pipeline] ERROR: CB_ROUTED_MOE_BOOK_SELECTION must name an existing absolute JSON file" >&2
-      exit 2
-    fi
-    CB_ROUTED_MOE_BOOK_SELECTION_SHA256="$(sha256sum "$CB_ROUTED_MOE_BOOK_SELECTION" | cut -d' ' -f1)"
-  fi
-  # Campaign rule R1: routed learned books are burned per (layer, STACK, rung),
-  # so a fused gate/up stack names ONE codebook. `role` reproduces the pre-R1
-  # book per (layer, projection, rung) for the A/B arm; its export then needs
-  # CB_ALLOW_PER_ROLE_BOOKS=1, which is stamped on the shipcard.
-  : "${CB_ROUTED_BOOK_KEYING:=stack}"
-  case "$CB_ROUTED_BOOK_KEYING" in
-    stack|role) ;;
-    *)
-      echo "[pipeline] ERROR: CB_ROUTED_BOOK_KEYING must be stack or role" >&2
-      exit 2
-      ;;
-  esac
-  : "${CB_ALLOW_PER_ROLE_BOOKS:=0}"
-  : "${CB_SCALE_CODING:=two_tier}"
-  # Static fused-W4A4 activation metadata is calibrated from the same probe
-  # cache as the weighted CB render.  MSE-grid is a deterministic producer
-  # policy, not a quality claim: Gridbook still keeps fused dispatch opt-in
-  # until the served KL/PPL gate closes for the concrete artifact.
-  : "${NVFP4_ACTIVATION_SCALE_POLICY:=mse_grid_calibrated.v1}"
-  # The historical mixed-family lane carries a calibrated NVFP4 W4A4
-  # activation contract.  FP8-only producers set `none`, which selects the
-  # already-supported no-activation serialization schema and prevents that
-  # metadata from entering cost/cache/export provenance.
-  : "${CB_ACTIVATION_SCOPE:=nvfp4}"
-  : "${CB_SCALE_SWEEP:=1}"
-  : "${PRISMAQUANT_CB_LDLQ:=0}"
-  : "${PRISMAQUANT_CB_MINCHAIN:=0}"
-  : "${PRISMAQUANT_CB_MINCHAIN_ANCHORS:=}"
-  : "${PRISMAQUANT_CB_MINCHAIN_HOLDBACKS:=}"
-  : "${PRISMAQUANT_CB_MINCHAIN_AUDIT_SEED:=42}"
-  : "${PRISMAQUANT_CB_MINCHAIN_BACKSTOP:=0.25}"
-  : "${PRISMAQUANT_CB_MINCHAIN_AUDIT_MEDIAN:=0.05}"
-  : "${PRISMAQUANT_CB_MINCHAIN_AUDIT_P95:=0.15}"
-  : "${PRISMAQUANT_CB_ENCODE_TIER:=balanced}"
-  # Cost renderers resolve CBSerializationContext from the environment. These
-  # must be exported (not merely shell locals) or a legacy-v1/default split can
-  # recur between the Python cost process and the exporter CLI.
-  case "$CB_SCALE_SWEEP" in
-    1|true|True|TRUE|yes|Yes|YES|on|On|ON) CB_SCALE_SWEEP=1 ;;
-    0|false|False|FALSE|no|No|NO|off|Off|OFF) CB_SCALE_SWEEP=0 ;;
-    *)
-      echo "[pipeline] ERROR: CB_SCALE_SWEEP must be 0 or 1" >&2
-      exit 2
-      ;;
-  esac
-  case "$CB_ACTIVATION_SCOPE" in
-    none|nvfp4) ;;
-    *)
-      echo "[pipeline] ERROR: CB_ACTIVATION_SCOPE must be none or nvfp4" >&2
-      exit 2
-      ;;
-  esac
-  if [[ -n "${CB_SCALE_SWEEP_SCOPE:-}" ]]; then
-    case "$CB_SCALE_SWEEP_SCOPE" in
-      none) _cb_expected_sweep=0 ;;
-      nvfp4|fp8|all) _cb_expected_sweep=1 ;;
-      *)
-        echo "[pipeline] ERROR: CB_SCALE_SWEEP_SCOPE must be none, nvfp4, fp8, or all" >&2
-        exit 2
-        ;;
-    esac
-    if [[ "$CB_SCALE_SWEEP" != "$_cb_expected_sweep" ]]; then
-      echo "[pipeline] ERROR: CB_SCALE_SWEEP=$CB_SCALE_SWEEP conflicts with CB_SCALE_SWEEP_SCOPE=$CB_SCALE_SWEEP_SCOPE" >&2
-      exit 2
-    fi
-    unset _cb_expected_sweep
-  fi
-  case "$PRISMAQUANT_CB_LDLQ" in
-    1|true|True|TRUE|yes|Yes|YES|on|On|ON) PRISMAQUANT_CB_LDLQ=1 ;;
-    0|false|False|FALSE|no|No|NO|off|Off|OFF) PRISMAQUANT_CB_LDLQ=0 ;;
-    *)
-      echo "[pipeline] ERROR: PRISMAQUANT_CB_LDLQ must be 0 or 1" >&2
-      exit 2
-      ;;
-  esac
-  case "$PRISMAQUANT_CB_MINCHAIN" in
-    1|true|True|TRUE|yes|Yes|YES|on|On|ON) PRISMAQUANT_CB_MINCHAIN=1 ;;
-    0|false|False|FALSE|no|No|NO|off|Off|OFF) PRISMAQUANT_CB_MINCHAIN=0 ;;
-    *)
-      echo "[pipeline] ERROR: PRISMAQUANT_CB_MINCHAIN must be 0 or 1" >&2
-      exit 2
-      ;;
-  esac
-  case "$PRISMAQUANT_CB_ENCODE_TIER" in
-    fast|balanced|max) ;;
-    *)
-      echo "[pipeline] ERROR: PRISMAQUANT_CB_ENCODE_TIER must be fast, balanced, or max" >&2
-      exit 2
-      ;;
-  esac
-  if [[ "$CB_SCALE_CODING" == "two_tier" && "$CB_SCALE_SWEEP" != "1" ]]; then
-    echo "[pipeline] ERROR: CB layout-v2/two_tier requires CB_SCALE_SWEEP=1; its scale encoder has no defined one-shot render" >&2
-    exit 2
-  fi
-  export CB_CODEBOOK_SOURCE CB_CODEBOOK_SOURCE_SCOPE CB_CODEBOOK_BUNDLE
-  export CB_LEARNED_TRAINER_VERSION CB_LEARNED_PROMOTION_RECEIPT
-  export CB_LEARNED_SOURCE_MODEL_IDENTITY_CACHE
-  export CB_ROUTED_MOE_BOOK_SELECTION
-  export CB_ROUTED_MOE_BOOK_SELECTION_SHA256
-  export CB_SCALE_CODING CB_SCALE_SWEEP CB_SCALE_SWEEP_SCOPE PRISMAQUANT_CB_LDLQ
-  export CB_ACTIVATION_SCOPE
-  export PRISMAQUANT_CB_MINCHAIN PRISMAQUANT_CB_MINCHAIN_ANCHORS
-  export PRISMAQUANT_CB_MINCHAIN_HOLDBACKS PRISMAQUANT_CB_MINCHAIN_AUDIT_SEED
-  export PRISMAQUANT_CB_MINCHAIN_BACKSTOP PRISMAQUANT_CB_MINCHAIN_AUDIT_MEDIAN
-  export PRISMAQUANT_CB_MINCHAIN_AUDIT_P95
-  export PRISMAQUANT_CB_ENCODE_TIER
+  # RETIRED 2026-09-02.  Rob: "put Tessera in PrismaQuant and remove Gridbook".
+  # The codebook container was served only by the separately released Gridbook
+  # vLLM plugin, and that lane -- its pins, its packaged runtime contract, its
+  # exporter, its route-status gate and its validators -- is now at
+  # archive/gridbook_lane_2026-09-02/.  A driver that still accepted this
+  # container would allocate and render bytes no sanctioned runtime reads, so
+  # it fails here rather than after an export's GPU hours.  The sanctioned
+  # containers are compressed-tensors (vanilla vLLM), gguf, and the Tessera
+  # wire.
+  echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb is RETIRED. The Gridbook codebook serving lane was removed on 2026-09-02; see archive/gridbook_lane_2026-09-02/README.md. Use compressed-tensors, gguf, or the Tessera lane." >&2
+  exit 2
 fi
-if [[ "$EXPORT_CONTAINER" == "gguf" || "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
+if [[ "$EXPORT_CONTAINER" == "gguf" ]]; then
   : "${ACTIVATION_ROWS_LIMIT:=1024}"
 else
   : "${ACTIVATION_ROWS_LIMIT:=256}"
@@ -472,7 +290,7 @@ esac
 # served A/B.
 # -----------------------------------------------------------------------
 COST_CACHE_COL_WEIGHTS_REQUIRED=0
-if [[ "$EXPORT_CONTAINER" == "gguf" || "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
+if [[ "$EXPORT_CONTAINER" == "gguf" ]]; then
   if ! LANE_RENDER_WEIGHTED="$(
     PQ_EXPORT_CONTAINER="$EXPORT_CONTAINER" python3 - <<'PY'
 import os
@@ -481,7 +299,7 @@ import sys
 from prismaquant import format_registry as fr
 from prismaquant.measure_quant_cost import _cost_render_uses_imatrix
 
-FAMILIES = {"gguf": ("gguf",), "nvfp4_cb": ("nvfp4_cb", "fp8_cb")}
+FAMILIES = {"gguf": ("gguf",)}
 families = FAMILIES[os.environ["PQ_EXPORT_CONTAINER"]]
 specs = [s for s in fr.list_formats() if s.family in families]
 if not specs:
@@ -521,35 +339,6 @@ fi
 # format-pipeline.md §6, LAYOUT.md). The rendering-confound half is now the
 # shared render-faithfulness assertion above (R3); what remains here is the
 # serving-profile and production-cache consistency the CB container needs.
-if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
-  if ! PQ_TARGET_PROFILE_RESOLVED="$TARGET_PROFILE_RESOLVED" python3 - <<'PY'
-import os
-import sys
-
-from prismaquant.serving_profiles import require_profile_export_lane
-
-try:
-    require_profile_export_lane(
-        os.environ["PQ_TARGET_PROFILE_RESOLVED"], "nvfp4_cb"
-    )
-except (FileNotFoundError, ValueError) as exc:
-    print(f"[pipeline] ERROR: {exc}", file=sys.stderr)
-    raise SystemExit(2) from None
-PY
-  then
-    echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb requires a serving profile whose inherited export_lane.id is nvfp4_cb; the resolved profile is '${TARGET_PROFILE_RESOLVED}'." >&2
-    exit 2
-  fi
-  if [[ "${PRODUCTION_RECACHE:-1}" != "0" ]]; then
-    echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb requires PRODUCTION_RECACHE=0 — the CB exporter re-encodes the selected assignment and does not consume a selected-assignment recache." >&2
-    exit 2
-  fi
-  if [[ "${PRODUCTION_CACHE:-1}" != "0" \
-     && "$SELECTION_MODE" != "validated-surrogate" ]]; then
-    echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb permits PRODUCTION_CACHE=1 only for SELECTION_MODE=validated-surrogate, where validate_assignments_kl consumes the identity-bound format-menu cache. Under surrogate selection the exporter re-encodes directly, so set PRODUCTION_CACHE=0." >&2
-    exit 2
-  fi
-fi
 
 if [[ "$DEVICE" != cuda* || "$EXPORT_DEVICE" != cuda* ]]; then
   echo "[pipeline] ERROR: PrismaQuant production pipeline is GPU-or-bust; DEVICE and EXPORT_DEVICE must be cuda*" >&2
@@ -864,23 +653,19 @@ fi
 # measured end-to-end, FP8 kept in the menu (real-KL rejects it, no bans).
 : "${AURA_EXPERT_NSAMPLES:=16}"
 : "${AURA_EXPERT_SEQLEN:=512}"
-# CB-lane empirical packed-expert stage + ladder interpolation. Defaults live
-# here (not inside the [2d-CB] block) so the settings-hash emission can see
-# every value an artifact's identity is keyed on.
-# D15 (re-vet R28): the default is the SHIPPED value. Every shipped MoE CB
-# driver — run_hy3_prod_nvfp4cb.sh, run_hy3_prod_joint.sh, run_35b_prod_nvfp4cb.sh,
-# run_laguna_s21_prod.sh — sets 0 (local weighted-MSE expert costs with the
-# per-expert ladder), and a default nobody ships is a default that documents a
-# path nobody validated. 1 re-enables the empirical unit-KL replacement (the
-# [2d-CB] hybrid), which is the right choice for menus of coarse rungs whose
-# unit KLs sit far apart; see run_35b_prod_nvfp4cb.sh's own note.
-: "${CB_EXPERT_EMPIRICAL:=0}"
+# Imatrix (column-weight) harvest + ladder interpolation. These are named CB_*
+# for the lane that first needed them; the harvest is what the GGUF lane and
+# every imatrix-weighted cost cache / production cache read, so it stays.
+# `CB_EXPERT_EMPIRICAL` went with the Gridbook codebook lane on 2026-09-02: it
+# only ever selected the [2d-CB] empirical packed-expert stage on an
+# `EXPORT_CONTAINER=nvfp4_cb` run, and that container now fails closed above.
+# See archive/gridbook_lane_2026-09-02/README.md.
 : "${CB_EXPERT_NSAMPLES:=16}"
 : "${CB_EXPERT_SEQLEN:=512}"
 : "${CB_EXPERT_SAMPLE:=0}"
 : "${CB_LADDER_INTERP:=0}"
 : "${CB_COL_WEIGHTS:=${WORK_DIR}/artifacts/cb_col_weights.pkl}"
-# Activation-fair pricing (ultraplan P5a; gridbook
+# Activation-fair pricing (ultraplan P5a,
 # docs/audits/ultraplan_perf_2026-08-01.md §6). The allocator's cost
 # precedence prices the W4A4-vs-W8A8 activation contract ONLY on the measured
 # output_mse branch, and the two levers above are exactly what removes that
@@ -917,10 +702,12 @@ export PRISMAQUANT_ACTIVATION_FAIR_PRICING="${ACTIVATION_FAIR_PRICING}"
 # SERVE_DISPATCH_TABLE — measured per-(format-family, phase, M-regime, lane)
 #   serving costs, every row citing its source document, date, GPU identity,
 #   measured quantity, units and the derivation that produced the ratio. A row
-#   without a source is refused at load. An EXAMPLE table built only from
-#   published Gridbook measurements ships in-tree; it is PROPOSAL DATA, not a
-#   qualified serving model for your hardware:
-#     prismaquant/serve_dispatch_tables/gridbook_gb10_2026-08-01.example.json
+#   without a source is refused at load. The in-tree EXAMPLE table was built
+#   from published codebook-lane measurements and went to
+#   archive/gridbook_lane_2026-09-02/prismaquant/serve_dispatch_tables/ with
+#   that lane on 2026-09-02; it was PROPOSAL DATA, never a qualified serving
+#   model for any hardware. There is no in-tree example today: supply a
+#   measured table or leave this empty.
 # SERVE_WORKLOAD_MIX — which M-regimes the workload actually runs, e.g.
 #   "prefill:dense_prefill_1400=1.0,decode:decode_batch1=1.0". Per-phase
 #   weights must sum to 1.0. There is deliberately no default: policy §1
@@ -945,7 +732,7 @@ export PRISMAQUANT_ACTIVATION_FAIR_PRICING="${ACTIVATION_FAIR_PRICING}"
 : "${SERVE_KV_BYTES:=0}"
 : "${SERVE_PEAK_SCRATCH_BYTES:=0}"
 if [[ -z "$SERVE_DISPATCH_TABLE" ]] && [[ -n "$SLO_PREFILL_P95_TTFT_MS$SLO_DECODE_P95_ITL_MS$SLO_DECODE_P05_TPS" ]]; then
-  echo "[pipeline] ERROR: a latency SLO was set but SERVE_DISPATCH_TABLE is empty. Latency constraints are priced from MEASURED rows; there is no built-in cost model to fall back on, and inventing one is exactly what the constrained-Pareto axis exists to prevent (gridbook docs/audits/ultraplan_perf_2026-08-01.md §6, P5c). Point SERVE_DISPATCH_TABLE at a measured table (the in-tree example is prismaquant/serve_dispatch_tables/gridbook_gb10_2026-08-01.example.json, which is PROPOSAL DATA)." >&2
+  echo "[pipeline] ERROR: a latency SLO was set but SERVE_DISPATCH_TABLE is empty. Latency constraints are priced from MEASURED rows; there is no built-in cost model to fall back on, and inventing one is exactly what the constrained-Pareto axis exists to prevent (ultraplan_perf_2026-08-01 §6, P5c). Point SERVE_DISPATCH_TABLE at a measured table for your own hardware; the retired codebook lane's example table is at archive/gridbook_lane_2026-09-02/ and was PROPOSAL DATA." >&2
   exit 2
 fi
 
@@ -960,16 +747,6 @@ case "$COST_MODE" in
     # empirical expert stage): CB_LADDER_INTERP=1.
     if [[ "$CB_LADDER_INTERP" == "1" ]]; then
       export PRISMAQUANT_CB_LADDER_INTERP=1
-    fi
-    # CB M4-hybrid: stage [2d-CB] REPLACES every packed-expert row with the
-    # empirical unit-KL (merge --replace-experts pops the local rows), so the
-    # local stage's expert measurements — full-stack imatrix-weighted CB
-    # encodes per rung, the dominant cost-stage wall on MoE (35B: ~1h45/shard)
-    # — are discarded work. Skip them whenever the replacement is guaranteed.
-    if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" \
-       && "$CB_EXPERT_EMPIRICAL" == "1" ]]; then
-      export PRISMAQUANT_SKIP_PACKED_EXPERT_COST=1
-      echo "[pipeline] [2/4] packed-expert local cost SKIPPED (CB hybrid replaces those rows)"
     fi
     ;;
   grouped-kl)
@@ -988,12 +765,12 @@ case "$COST_MODE" in
     # cohort artifact. Mechanism: a learned book is fit to the POOLED weight
     # distribution (redistributing error across experts rather than scaling
     # it), and CBL is itself selected under an imatrix-weighted weight metric
-    # (nvfp4_cb_formats.py `err = err * wq`) — shaped in one currency,
+    # (`err = err * wq` in the CB qdq) — shaped in one currency,
     # measured in another. It was also already shown to mis-rank LDLQ.
     # Allocating a CB menu on this estimator means allocating in the currency
     # that demonstrably does not transfer. Use aura (the default) or local.
-    if [[ "${EXPORT_CONTAINER:-}" == "nvfp4_cb" || "${FORMATS:-}" == *_CB_* ]]; then
-      echo "[pipeline] ERROR: COST_MODE=$COST_MODE is unlicensed on a CB/CBL menu (EXPORT_CONTAINER=${EXPORT_CONTAINER:-unset}, FORMATS=${FORMATS:-unset}). Its score field is weight_mse, the currency in which the per-unit factorization FAILS across a codebook-basis change (CV 0.088 at K28 -> 0.224 at K48; 8/10 rung-pairs breach the 0.10 bar, while lattice->lattice passes at 0.067/0.056). Activation currency holds where weight currency does not. This spelling remains valid only for reproducing pre-CB artifacts on non-CB menus. Use COST_MODE=aura (default) or local." >&2
+    if [[ "${FORMATS:-}" == *_CB_* ]]; then
+      echo "[pipeline] ERROR: COST_MODE=$COST_MODE is unlicensed on a CB/CBL menu (FORMATS=${FORMATS:-unset}). Its score field is weight_mse, the currency in which the per-unit factorization FAILS across a codebook-basis change (CV 0.088 at K28 -> 0.224 at K48; 8/10 rung-pairs breach the 0.10 bar, while lattice->lattice passes at 0.067/0.056). Activation currency holds where weight currency does not. This spelling remains valid only for reproducing pre-CB artifacts on non-CB menus. Use COST_MODE=aura (default) or local." >&2
       exit 2
     fi
     BASE_COST_PATH="${WORK_DIR}/artifacts/cost_baseline.pkl"
@@ -1222,6 +999,11 @@ STAGE_SETTINGS_ENV=(
   "SERVE_DEVICE_BUDGET_BYTES=${SERVE_DEVICE_BUDGET_BYTES:-}"
   "SERVE_KV_BYTES=${SERVE_KV_BYTES:-0}"
   "SERVE_PEAK_SCRATCH_BYTES=${SERVE_PEAK_SCRATCH_BYTES:-0}"
+  # CB_SCALE_CODING lost its shell DEFAULT on 2026-09-02 with the Gridbook
+  # lane (archive/gridbook_lane_2026-09-02/), but it keeps its settings-hash
+  # entry, exactly like the CB keys around it: the CB render plumbing still
+  # reads it (nvfp4_cb_footprint.py, debt D34), so a persisted cost/render
+  # artifact must still invalidate when an operator sets it.
   "CB_SCALE_CODING=${CB_SCALE_CODING:-}"
   "CB_CODEBOOK_SOURCE=${CB_CODEBOOK_SOURCE:-}"
   "CB_CODEBOOK_SOURCE_SCOPE=${CB_CODEBOOK_SOURCE_SCOPE:-}"
@@ -1547,12 +1329,6 @@ fi
 # 2. Cost measurement (per-(Linear, format) measured RTN error,
 #    body + MTP in one pass)
 # -----------------------------------------------------------------------
-if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
-  ensure_cb_learned_bundle "[2/4] pre-cost"
-  if [[ "$CB_CODEBOOK_SOURCE_SCOPE" != "none" ]]; then
-    export PRISMAQUANT_CB_COL_WEIGHTS="$CB_COL_WEIGHTS"
-  fi
-fi
 require_stage_settings "${BASE_COST_PATH}" base-cost
 # Under COST_MODE=local the baseline IS the allocator's cost table, so it is
 # also gated on the stamped cost_mode. Under the other modes cost_baseline.pkl
@@ -1565,18 +1341,6 @@ elif [[ "$BASE_COST_PATH" == "$COST_PATH" ]] && ! cost_table_reusable "$BASE_COS
   BASE_COST_REUSABLE=0
 fi
 if [[ "$BASE_COST_REUSABLE" == "0" ]]; then
-  # CB lane + LOCAL expert costs (CB_EXPERT_EMPIRICAL=0): the packed-expert
-  # measurement must use the SAME imatrix the exporter ships — incl. the
-  # synthesized per-expert down_proj replay entries the raw harvest can never
-  # contain. Harvest now (act cache exists post-probe; skip-if-exists) and
-  # point the cost stage at the pickle. Without this, down_proj stacks would
-  # be COSTED unweighted while the export ships weighted bytes (the
-  # rendering-confound class).
-  if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" \
-     && "$CB_EXPERT_EMPIRICAL" != "1" ]]; then
-    harvest_cb_col_weights "[2/4] pre-cost (local expert costs)"
-    export PRISMAQUANT_CB_COL_WEIGHTS="$CB_COL_WEIGHTS"
-  fi
   echo "[pipeline] [2/4] measuring per-(layer, format) cost ..."
   python3 -m prismaquant.incremental_measure_quant_cost \
     --model "$MODEL_PATH" \
@@ -1846,63 +1610,6 @@ PY
   fi
 fi
 
-# [2d-CB] CB-lane hybrid: COST_MODE=local's weighted-recon cost is
-# route-flip-blind on routed experts exactly like AURA's smooth cost
-# (moe_cb_design.md §2) — REPLACE the expert-stack rows with measured
-# empirical unit-KL, non-experts keep the local CB costs. No-op (beyond a
-# model load) on dense models: zero packed-expert units -> the merged
-# payload is the base unchanged. CB_EXPERT_EMPIRICAL=0 opts out.
-if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" \
-   && "$CB_EXPERT_EMPIRICAL" == "1" ]]; then
-  CB_LOCAL_RAW="${WORK_DIR}/artifacts/cost_local_raw.pkl"
-  CB_MERGED="$(python3 - "$COST_PATH" <<'PY'
-import pickle, sys
-try:
-    payload = pickle.load(open(sys.argv[1], "rb"))
-    print(1 if "expert_empirical_cost" in (
-        payload.get("provenance", {}) or {}) else 0)
-except Exception:
-    print(0)
-PY
-)"
-  require_stage_settings "$COST_PATH" cb-hybrid-cost
-  if [[ "$CB_MERGED" != "1" ]]; then
-    # The empirical pass renders CB candidates imatrix-WEIGHTED — harvest
-    # the col-weights now (same shared helper as the exporter; measured cost
-    # and shipped bytes stay the one weighted render).
-    harvest_cb_col_weights "[2d-CB]"
-    if [[ ! -f "$CB_LOCAL_RAW" ]]; then
-      mv "$COST_PATH" "$CB_LOCAL_RAW"
-    fi
-    echo "[pipeline] [2d-CB] measuring empirical packed-expert unit-KL (CB hybrid; replace semantics) ..."
-    CB_LADDER_ARGS=()
-    if [[ "$CB_LADDER_INTERP" == "1" ]]; then
-      CB_LADDER_ARGS+=(--cb-ladder-interp)
-    fi
-    # CB_EXPERT_SAMPLE=N: stratified expert subsample per unit (shared across
-    # formats), unit KL extrapolated by expert count. 0 (default) = full
-    # stacks. Cuts the empirical stage's encode volume ~E/N; export always
-    # encodes every expert exactly.
-    if [[ "$CB_EXPERT_SAMPLE" != "0" ]]; then
-      CB_LADDER_ARGS+=(--expert-sample "$CB_EXPERT_SAMPLE")
-    fi
-    python3 -m prismaquant.expert_empirical_cost \
-      --model "$MODEL_PATH" \
-      --cost-mode "$COST_MODE" \
-      --output "$COST_PATH" \
-      --formats "$FORMATS" \
-      --dataset "$DATASET" \
-      --n-calib-samples "$CB_EXPERT_NSAMPLES" \
-      --calib-seqlen "$CB_EXPERT_SEQLEN" \
-      --merge-base "$CB_LOCAL_RAW" \
-      --replace-experts \
-      --col-weights "$CB_COL_WEIGHTS" \
-      "${CB_LADDER_ARGS[@]}" \
-      2>&1 | tee "${WORK_DIR}/logs/expert_empirical_cost_cb.log"
-  else
-    echo "[pipeline] [2d-CB] CB hybrid cost already merged, skipping"
-  fi
-fi
 
 # -----------------------------------------------------------------------
 # 3. Allocator (multi-choice knapsack over per-layer formats)
@@ -1974,25 +1681,6 @@ if [[ -n "$SERVE_DISPATCH_TABLE" ]]; then
   echo "[pipeline] serving constraints ACTIVE: table=$SERVE_DISPATCH_TABLE mix='${SERVE_WORKLOAD_MIX}' (PROPOSAL DATA; the served NATIVE-PARITY protocol is the release gate)"
 fi
 ALLOCATOR_CB_ARGS=()
-if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
-  harvest_cb_col_weights "[3/4] allocator identity"
-  ALLOCATOR_CB_ARGS=(
-    --cb-scale-coding "$CB_SCALE_CODING"
-    --cb-codebook-source "$CB_CODEBOOK_SOURCE"
-    --cb-codebook-source-scope "$CB_CODEBOOK_SOURCE_SCOPE"
-    --cb-scale-sweep "$CB_SCALE_SWEEP"
-    --cb-ldlq "$PRISMAQUANT_CB_LDLQ"
-    --cb-minchain "$PRISMAQUANT_CB_MINCHAIN"
-    --cb-encode-tier "$PRISMAQUANT_CB_ENCODE_TIER"
-    --cb-col-weights "$CB_COL_WEIGHTS"
-  )
-  [[ -n "$CB_CODEBOOK_BUNDLE" ]] && ALLOCATOR_CB_ARGS+=(
-    --cb-codebook-bundle "$CB_CODEBOOK_BUNDLE"
-  )
-  [[ -n "${CB_SCALE_SWEEP_SCOPE:-}" ]] && ALLOCATOR_CB_ARGS+=(
-    --cb-scale-sweep-scope "$CB_SCALE_SWEEP_SCOPE"
-  )
-fi
 python3 -m prismaquant.allocator \
   --probe "${PROBE_PATH}" \
   --costs "${COST_PATH}" \
@@ -2630,163 +2318,6 @@ if [[ "$EXPORT_CONTAINER" == "gguf" ]]; then
   exit 0
 fi
 
-if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
-  # NVFP4-CB / FP8-CB codebook lane: one custom compressed-tensors-STYLE
-  # artifact served by the out-of-tree gridbook_plugin (LAYOUT.md is
-  # the byte contract). Like the GGUF lane, the exporter requantizes the bf16
-  # skeleton with an imatrix-weighted VQ search — it does NOT read a production
-  # cache. Requires the nvfp4_cb serving profile (gated above); the cost render
-  # only has to be imatrix-weighted, which the R3 assertion enforces.
-  : "${CB_OUT:=${WORK_DIR}/exported_nvfp4_cb}"
-  # Source/sweep scopes were resolved before the probe.  A learned scope has
-  # already built and verified its immutable bundle before cost measurement;
-  # export is a pure consumer and is forbidden to retrain.
-  : "${CB_CODEBOOK_ITERS:=4}"
-  : "${CB_CODEBOOK_SEED:=0}"
-  # Joint E4M3-legal scale sweep is default-ON (IQ-rendering parity; the
-  # exp-1 CB-vs-IQ confound was a scale-rendering artifact). CB_SCALE_SWEEP=0
-  # is the one-shot amax/grid-max A/B ablation only.
-  : "${CB_SCALE_SWEEP:=1}"
-  # fp4 scale coding: `two_tier` (layout-v2 E8M0-super + 4-bit-sub) or `v1`
-  # (bare E4M3 plane). D15 (re-vet R28): the default is the SHIPPED value.
-  # v2 shipped in the Hy3 295B and Laguna-S-2.1 artifacts and STANDARDS.md
-  # calls it the production fp4 scale coding with v1 legacy read-compat only —
-  # the old "serve gates pending, do NOT ship" comment predated its own ship.
-  # (fp8-CB has no group-16 scale plane, so this knob is inert on fp8-only
-  # menus, which is why two 27B/35B drivers set v1 without contradicting this.)
-  : "${CB_SCALE_CODING:=two_tier}"
-
-  # Col-weights (per-input-column imatrix) — the CB exporter's weighted-VQ
-  # importance, REQUIRED for every CB target (no silent RTN). Harvested from
-  # the SAME activation cache the local cost stage built, exactly as the GGUF
-  # lane's --imatrix-from-act-cache: measured cost and shipped bytes are the
-  # one weighted render (the one-cache / lockstep contract, format-pipeline
-  # §6). Skip-if-exists; override CB_COL_WEIGHTS to supply a pre-built flat
-  # {qname: (in_features,) tensor} pickle (e.g. Fisher col-weights, exp-4).
-  harvest_cb_col_weights "[4/4]"
-
-  # Streaming exporter for 200-300B-class sources (Hy3 ~557GB, DSv4 ~295GB):
-  # export_nvfp4_cb loads EVERY shard resident + accumulates EVERY output tensor
-  # -> OOM on the 121GB box (dsv4_readiness.md gap 2). export_nvfp4_cb_streaming
-  # holds ~one source tensor (one MoE layer's expert stack) + the codebooks.
-  # EXPORT_STREAMING: auto (default; stream when the source exceeds
-  # EXPORT_STREAMING_THRESHOLD_GB, default 80) / 1 / 0. Same CLI both ways.
-  : "${EXPORT_STREAMING:=auto}"
-  : "${EXPORT_STREAMING_THRESHOLD_GB:=80}"
-  CB_EXPORT_MODULE="prismaquant.export_nvfp4_cb"
-  _src_gb="$(du -sBG "$MODEL_PATH" 2>/dev/null | awk '{gsub(/G/,"",$1); print int($1)}')"
-  case "$EXPORT_STREAMING" in
-    1|true|True|TRUE|yes|Yes|YES) CB_EXPORT_MODULE="prismaquant.export_nvfp4_cb_streaming" ;;
-    0|false|False|FALSE|no|No|NO) ;;
-    auto|"")
-      if [[ -n "$_src_gb" && "$_src_gb" -ge "$EXPORT_STREAMING_THRESHOLD_GB" ]]; then
-        CB_EXPORT_MODULE="prismaquant.export_nvfp4_cb_streaming"
-        echo "[pipeline] [4/4] source ~${_src_gb}GB >= ${EXPORT_STREAMING_THRESHOLD_GB}GB -> streaming exporter"
-      fi
-      ;;
-    *)
-      echo "[pipeline] ERROR: EXPORT_STREAMING must be auto/1/0" >&2
-      exit 2
-      ;;
-  esac
-  echo "[pipeline] [4/4] exporting to nvfp4_cb (codebook container; ${CB_EXPORT_MODULE}) ..."
-  CB_EXPORT_ARGS=(
-    python3 -m "$CB_EXPORT_MODULE"
-    --model-dir "$MODEL_PATH"
-    --layer-config "${WORK_DIR}/artifacts/layer_config.json"
-    --out "$CB_OUT"
-    --col-weights "$CB_COL_WEIGHTS"
-    --activation-cache-dir "${WORK_DIR}/act"
-    --activation-scale-policy "$NVFP4_ACTIVATION_SCALE_POLICY"
-    --codebook-source "$CB_CODEBOOK_SOURCE"
-    --codebook-iters "$CB_CODEBOOK_ITERS"
-    --codebook-seed "$CB_CODEBOOK_SEED"
-    --scale-coding "$CB_SCALE_CODING"
-    --shard-bytes "$EXPORT_SHARD_BYTES"
-    --device "$EXPORT_DEVICE"
-  )
-  if ! CB_PRODUCER_META="$(
-    PQ_TARGET_PROFILE_RESOLVED="$TARGET_PROFILE_RESOLVED" python3 - <<'PY'
-import os
-
-from prismaquant.serving_profiles import load_serving_profile
-
-profile = load_serving_profile(os.environ["PQ_TARGET_PROFILE_RESOLVED"])
-print(f"{profile.producer_policy or ''}|{profile.target_platform or ''}")
-PY
-  )"; then
-    echo "[pipeline] ERROR: failed to resolve the CB profile's producer policy." >&2
-    exit 2
-  fi
-  IFS='|' read -r CB_PRODUCER_POLICY CB_TARGET_PLATFORM <<<"$CB_PRODUCER_META"
-  if [[ -n "$CB_PRODUCER_POLICY" ]]; then
-    if [[ -z "$CB_TARGET_PLATFORM" ]]; then
-      echo "[pipeline] ERROR: serving profile '${TARGET_PROFILE_RESOLVED}' declares producer_policy='${CB_PRODUCER_POLICY}' but no exact target_platform." >&2
-      exit 2
-    fi
-    if [[ -z "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:-}" \
-       || ! -f "${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT:-}" ]]; then
-      echo "[pipeline] ERROR: producer policy '${CB_PRODUCER_POLICY}' for target '${CB_TARGET_PLATFORM}' requires GRIDBOOK_PRODUCER_RUNTIME_CONTRACT to name an existing Gridbook v11 contract. The current materialized v4 pin cannot qualify this route." >&2
-      exit 2
-    fi
-    CB_EXPORT_ARGS+=(
-      --producer-policy "$CB_PRODUCER_POLICY"
-      --producer-runtime-contract "$GRIDBOOK_PRODUCER_RUNTIME_CONTRACT"
-    )
-    echo "[pipeline] [4/4] strict producer policy ${CB_PRODUCER_POLICY}: target_platform=${CB_TARGET_PLATFORM}, contract=${GRIDBOOK_PRODUCER_RUNTIME_CONTRACT}"
-  fi
-  case "$CB_SCALE_SWEEP" in
-    0|false|False|FALSE|no|No|NO) CB_EXPORT_ARGS+=(--no-scale-sweep) ;;
-    1|true|True|TRUE|yes|Yes|YES|auto|"") ;;
-    *)
-      echo "[pipeline] ERROR: CB_SCALE_SWEEP must be 0 or 1" >&2
-      exit 2
-      ;;
-  esac
-  # Campaign rule R1's escape hatch, for the A/B's per-role arm only. The
-  # export refuses split books by default and stamps this acknowledgement on
-  # the shipcard when it is passed.
-  case "${CB_ALLOW_PER_ROLE_BOOKS:-0}" in
-    1|true|True|TRUE|yes|Yes|YES) CB_EXPORT_ARGS+=(--allow-per-role-books) ;;
-    0|false|False|FALSE|no|No|NO|"") ;;
-    *)
-      echo "[pipeline] ERROR: CB_ALLOW_PER_ROLE_BOOKS must be 0 or 1" >&2
-      exit 2
-      ;;
-  esac
-  # Quarantined 2026-07-31: the old delta path did not bind reuse to the exact
-  # source/imatrix/codebook/exporter ABI and sampled only a few copied tensors.
-  # The exporter now requires a fresh output and rejects unbound reuse/resume.
-  if [[ -n "${EXPORT_REUSE_PRIOR:-}" ]]; then
-    echo "[pipeline] ERROR: EXPORT_REUSE_PRIOR is quarantined; CB export requires a fresh output until reuse has a complete source/imatrix/codebook/exporter-ABI manifest" >&2
-    exit 2
-  fi
-  "${CB_EXPORT_ARGS[@]}" 2>&1 | tee "${WORK_DIR}/logs/export.log"
-
-  # Milestone C LANDED 2026-07-30 (re-vet R3): `render_production_weight` /
-  # `build_production_cache` take `--col-weights`, so a cached-menu render of
-  # a CB rung is the SAME imatrix-weighted render the exporter ships and the
-  # standard ProductionWeightCache identity (cost == KL == bytes) holds on
-  # this lane too. The `COST_MODE=local` restriction is therefore GONE,
-  # replaced by the render-faithfulness assertion at the top of this file.
-  # What is deliberately NOT promoted: render-score/AURA objectives on CB are
-  # reachable but opt-in — their accuracy case is native-lane evidence and CB
-  # has had no served objective A/B (that A/B, not the plumbing, is what would
-  # justify a default).
-  # There is also NO in-lane serving smoke: CB artifacts serve ONLY via the
-  # separately released, immutable-pinned Gridbook runtime, so the
-  # load+generate / served-KL gate runs in Gridbook's serving env, not here
-  # (docs/lanes/nvfp4-cb/serve_prototype_0p6b.md). No rung is production-eligible
-  # until it clears the served gold-metric KL/PPL gate AND the prefill perf
-  # gate (INV-2, no Triton masquerade).
-  echo
-  echo "[pipeline] done."
-  echo "  Artifact: ${CB_OUT}  (custom quant_method=gridbook; LAYOUT.md contract)"
-  echo "  Serve:    vLLM with the pinned external gridbook package installed"
-  echo "            (prismaquant/gridbook_runtime/gridbook_runtime_pin.json); NOT stock compressed-tensors."
-  echo "  Gate:     served KL-vs-BF16 + WikiText PPL in the plugin serving env."
-  exit 0
-fi
 
 echo "[pipeline] [4/4] exporting to compressed-tensors ..."
 EXPORT_ARGS=(

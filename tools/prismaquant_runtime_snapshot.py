@@ -359,20 +359,13 @@ JUDGE_ONLY_PATHS: tuple[str, ...] = (
     # Documentation and tests are not executable stack under any entry point.
     "docs/",
     "tests/",
-    # The gate itself: reads the artifact and the endpoint, renders the verdict,
-    # and owns CB_SERVING_LANE_SPECS. The launcher reads that table from the
-    # same (judge) revision it replays against, so the two cannot drift.
-    "prismaquant/validate_cb_endpoint.py",
+    # Three lane-owned entries (the CB endpoint gate, the W8A16 export-handoff
+    # closure and the CB validate launcher) left this list when the Gridbook
+    # lane retired 2026-09-02; see archive/gridbook_lane_2026-09-02/.
+    #
     # Classifies a checkpoint's units for the cover proof. Host-side only in the
     # gate's path; the exporter imports it too, but export already happened.
     "prismaquant/artifact_completeness.py",
-    # The W8A16 export handoff's frozen-closure declaration. Consulted by
-    # tools/verify_dsv4_w8a16_export_handoff.py at export time, never at serve.
-    "prismaquant/dsv4_w8a16_export_handoff.py",
-    # The launcher itself. The judge snapshot's copy is the one that executes;
-    # the runtime snapshot's copy is never run by anything, in or out of the
-    # container.
-    "scripts/serve_dsv4_cb_validate.sh",
     # This file. It is the one entry here that the CONTAINER also executes -- as
     # `/repo/tools/prismaquant_runtime_snapshot.py verify`, from the runtime
     # snapshot, so at the build commit. That is safe for a specific reason

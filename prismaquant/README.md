@@ -17,7 +17,7 @@ declarative contract layer, not the executor.
 | Allocate | `allocator` |
 | Cache | `build_production_cache`, `production_recache` |
 | Select | `validate_assignments_kl`, `select_validated_frontier` |
-| Export | `export_native_compressed` (compressed-tensors), `export_gguf` / `export_gguf_direct` (GGUF), `export_nvfp4_cb` / `export_nvfp4_cb_streaming` (codebook, served by the separately released [Gridbook](https://github.com/RobTand/gridbook) package) |
+| Export | `export_native_compressed` (compressed-tensors), `export_gguf` / `export_gguf_direct` (GGUF) |
 | Validate | `validation_harness`, `validate_native_export`, `validate_quantized_model` |
 
 ## Library modules with no CLI (imported by the stages above)
@@ -29,7 +29,10 @@ declarative contract layer, not the executor.
   and the GPTQ-under-frozen-scales lever.
 - `nvfp4_cb_formats`, `nvfp4_cb_footprint` — product-codebook codecs plus the
   versioned serialized-payload contract (production FP4 layout-v2, FP8 row
-  scales, and shared FP16 codebook sidecars).
+  scales, and shared FP16 codebook sidecars). **Orphaned since 2026-09-02**:
+  their serving lane was retired (`archive/gridbook_lane_2026-09-02/`) and the
+  exporter went with it, so these rungs can be priced and rendered but not
+  shipped. Recorded as debt D34 in `docs/ARCHITECTURE.md` §12.
 
 ## Archive
 

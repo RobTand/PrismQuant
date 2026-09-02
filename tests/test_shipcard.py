@@ -18,7 +18,7 @@ if not (pathlib.Path(__file__).resolve().parents[1] / "tools").is_dir():
                 allow_module_level=True)
 
 from prismaquant.shipcard import (
-    CB_REQUIRED_SLOTS,
+
     GOLD_SLOTS,
     REQUIRED_SLOTS,
     SHIPCARD_RESERVED_BYTES,
@@ -29,7 +29,6 @@ from prismaquant.shipcard import (
     kv_shared_fisher_echo,
     load_shipcard,
     make_record,
-    open_cb_export_shipcard,
     required_slots,
     unfilled_slots,
     verify,
@@ -253,73 +252,6 @@ def test_reattest_accepts_copy_but_refuses_changed_weight_content(tmp_path):
         reattest_weight_stats(copied_card, copied)
 
 
-def test_cb_shipcard_accepts_in_stream_digest_without_rereading_weight(
-    tmp_path, monkeypatch,
-):
-    import prismaquant.shipcard as shipcard_module
-
-    model_dir = _artifact(tmp_path, weight_bytes=b"streamed-weights")
-    weight = model_dir / "model-00001-of-00001.safetensors"
-    layer_config = tmp_path / "layer_config.json"
-    layer_config.write_text("{}")
-
-    def refuse_second_read(_model_dir):
-        raise AssertionError("finished weight was read a second time")
-
-    monkeypatch.setattr(
-        shipcard_module, "build_weight_content_manifest", refuse_second_read
-    )
-    digest = hashlib.sha256(weight.read_bytes()).hexdigest()
-    path, _card = open_cb_export_shipcard(
-        model_dir,
-        {"quant_method": "gridbook", "format": "nvfp4_cb"},
-        source_model=tmp_path / "source",
-        layer_config_path=layer_config,
-        exporter="test_streaming_exporter",
-        weight_content_manifest={
-            "schema": "prismaquant.weight_content_manifest/1",
-            "algorithm": "sha256",
-            "files": {
-                weight.name: {
-                    "bytes": weight.stat().st_size,
-                    "sha256": digest,
-                },
-            },
-        },
-    )
-
-    quant_config = json.loads((model_dir / "quant_config.json").read_text())
-    assert quant_config["provenance"]["weight_content_manifest"]["files"] == {
-        weight.name: {"bytes": weight.stat().st_size, "sha256": digest},
-    }
-    assert load_shipcard(path)["weight_stat_attestation"]["files"][weight.name]
-
-
-def test_cb_shipcard_rejects_in_stream_digest_for_the_wrong_file_set(tmp_path):
-    model_dir = _artifact(tmp_path)
-    layer_config = tmp_path / "layer_config.json"
-    layer_config.write_text("{}")
-
-    with pytest.raises(ValueError, match="manifest file set differs"):
-        open_cb_export_shipcard(
-            model_dir,
-            {"quant_method": "gridbook", "format": "nvfp4_cb"},
-            source_model=tmp_path / "source",
-            layer_config_path=layer_config,
-            exporter="test_streaming_exporter",
-            weight_content_manifest={
-                "schema": "prismaquant.weight_content_manifest/1",
-                "algorithm": "sha256",
-                "files": {
-                    "wrong.safetensors": {
-                        "bytes": 7,
-                        "sha256": "0" * 64,
-                    },
-                },
-            },
-        )
-
-
 # ---------------------------------------------------------------------------
 # Refusal
 # ---------------------------------------------------------------------------
@@ -332,354 +264,10 @@ def test_fresh_card_refuses_every_slot(tmp_path):
     assert all("UNFILLED" in p for p in problems)
 
 
-def test_gridbook_card_opens_plugin_performance_refusal_slot(tmp_path):
-    model_dir = _artifact(tmp_path, model_type="deepseek_v4")
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-
-    expected = REQUIRED_SLOTS + CB_REQUIRED_SLOTS
-    assert tuple(card["slots"]) == expected
-    assert required_slots(card, model_dir=model_dir) == expected
-    assert unfilled_slots(card) == list(expected)
-    problems = verify(card, model_dir=model_dir)
-    assert any(
-        problem == f"{CB_REQUIRED_SLOTS[0]}: UNFILLED"
-        for problem in problems
-    )
-
-
-def test_a_cb_artifact_that_displaces_nothing_is_not_held_to_parity(tmp_path):
-    """`perf.matched_budget_parity` is a DSv4 *release argument*.
-
-    Its verifier requires five `displaced_container_*` digests naming the exact
-    eligible container the release replaces at the same byte budget. A net-new
-    size class -- the Qwen3.8 5080 CB artifact -- displaces nothing, so it can
-    never produce them: a gate no correct artifact can pass, the same defect as
-    the DSv4 gold contract. It is not opened, not required, and not silently
-    marked satisfied.
-    """
-    model_dir = _artifact(tmp_path, model_type="qwen3_5_text")
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-
-    assert CB_REQUIRED_SLOTS[0] not in card["slots"]
-    assert required_slots(card, model_dir=model_dir) == REQUIRED_SLOTS
-    assert not any(
-        problem.startswith(CB_REQUIRED_SLOTS[0])
-        for problem in verify(card, model_dir=model_dir)
-    )
-
-
-def test_a_parity_claim_that_is_made_off_lane_is_still_verified(tmp_path):
-    """Scoping the DEMAND must not create a hole in the CHECK: a card that
-    volunteers the slot is held to it wherever it lives."""
-    model_dir = _artifact(tmp_path, model_type="qwen3_5_text")
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-    card["slots"][CB_REQUIRED_SLOTS[0]] = {
-        "slot": CB_REQUIRED_SLOTS[0], "passed": True, "tool": "handmade",
-    }
-
-    assert CB_REQUIRED_SLOTS[0] in required_slots(card, model_dir=model_dir)
-    assert any(
-        problem.startswith(CB_REQUIRED_SLOTS[0])
-        for problem in verify(card, model_dir=model_dir)
-    ), "an off-lane parity claim must still be replayed, not waved through"
-
-
-def test_a_body_only_dsv4_artifact_is_not_held_to_parity(tmp_path):
-    """A namespace-excluded DSv4 export cannot pass the parity census.
-
-    The parity verifier walks every construction unit of the displaced
-    container; a body-only export moves the excluded units (`mtp.`, the
-    DSpark draft) into a separate sidecar artifact by construction, so the
-    census fires on every correct body-only rebuild -- the same
-    gate-no-correct-artifact-can-pass defect as the off-lane case above.
-    The scoping key is `quant_config.json` provenance, which
-    `compute_model_sha` binds, so it cannot be flipped without breaking
-    artifact identity.
-    """
-    model_dir = _artifact(tmp_path, model_type="deepseek_v4")
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-        "provenance": {"excluded_namespaces": ["mtp."]},
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-
-    assert CB_REQUIRED_SLOTS[0] not in required_slots(
-        card, model_dir=model_dir
-    )
-    assert not any(
-        problem.startswith(CB_REQUIRED_SLOTS[0])
-        for problem in verify(card, model_dir=model_dir)
-    )
-    # An exporter that OPENED the slot before this scoping existed left an
-    # opened-but-null record; that is an honest "scoped out", not a demand.
-    card_with_open_slot = dict(card)
-    card_with_open_slot["slots"] = dict(card["slots"])
-    card_with_open_slot["slots"][CB_REQUIRED_SLOTS[0]] = None
-    assert CB_REQUIRED_SLOTS[0] not in required_slots(
-        card_with_open_slot, model_dir=model_dir
-    )
-    assert not any(
-        problem.startswith(CB_REQUIRED_SLOTS[0])
-        for problem in verify(card_with_open_slot, model_dir=model_dir)
-    )
-
-
-def test_a_body_only_dsv4_parity_claim_is_still_verified(tmp_path):
-    """Scoping the DEMAND must not create a hole in the CHECK (body-only)."""
-    model_dir = _artifact(tmp_path, model_type="deepseek_v4")
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-        "provenance": {"excluded_namespaces": ["mtp."]},
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-    card["slots"][CB_REQUIRED_SLOTS[0]] = {
-        "slot": CB_REQUIRED_SLOTS[0], "passed": True, "tool": "handmade",
-    }
-
-    assert CB_REQUIRED_SLOTS[0] in required_slots(card, model_dir=model_dir)
-    assert any(
-        problem.startswith(CB_REQUIRED_SLOTS[0])
-        for problem in verify(card, model_dir=model_dir)
-    ), "a body-only parity claim must still be replayed, not waved through"
-
-
-def _cb_card(tmp_path, *, model_type, architectures, name="exported"):
-    """A Gridbook CB artifact whose architecture is the one thing that varies."""
-    model_dir = _artifact(tmp_path, name=name)
-    (model_dir / "config.json").write_text(json.dumps({
-        "model_type": model_type, "architectures": architectures,
-    }))
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook", "format": "nvfp4_cb",
-    }))
-    path = model_dir / "shipcard.json"
-    write_shipcard(
-        path, build_shipcard(model_dir, build={"quant_method": "gridbook"}))
-    return model_dir, path
-
-
 def _gold_problems(model_dir, path, slot):
     _fill_all(path, compute_model_sha(model_dir))
     return [p for p in verify(load_shipcard(path), model_dir=model_dir)
             if p.startswith(f"{slot}:")]
-
-
-@pytest.mark.parametrize("slot", sorted(GOLD_SLOTS))
-def test_the_dsv4_gold_contract_is_required_on_the_dsv4_lane(tmp_path, slot):
-    """A DSv4-Flash CB release still replays its own release contract."""
-    model_dir, path = _cb_card(
-        tmp_path, model_type="deepseek_v4",
-        architectures=["DeepseekV4ForCausalLM"])
-    assert any("DSv4 Gridbook gold contract" in p
-               for p in _gold_problems(model_dir, path, slot))
-
-
-@pytest.mark.parametrize("slot", sorted(GOLD_SLOTS))
-def test_a_cb_artifact_off_the_dsv4_lane_is_not_held_to_dsv4s_contract(
-    tmp_path, slot,
-):
-    """The contract pins ONE lane; `is_gridbook_cb` was only ever its proxy.
-
-    `_verify_dsv4_gridbook_gold_contract` requires `tokenizer_mode
-    ="deepseek_v4"` and `max_logprobs=248_320` — the DSv4 vocabulary — so a
-    Qwen CB artifact could not fill `gold.kl`/`gold.ppl` at any effort. A gate
-    no correct artifact can pass is a measurement gap, not a missing
-    measurement (principle 1). Caught 2026-08-15 publishing Qwen3.8-27B CB,
-    the first CB artifact off the DSv4 lane.
-
-    What stays: every generic gold requirement, which is what the rest of this
-    file pins. This test only asserts that the DSv4-specific one is gone.
-    """
-    model_dir, path = _cb_card(
-        tmp_path, model_type="qwen3_5_text",
-        architectures=["Qwen3_5ForCausalLM"])
-    assert _gold_problems(model_dir, path, slot) == []
-
-
-@pytest.mark.parametrize("config_text", [
-    None,                                     # no config.json at all
-    "{not json",                              # unreadable
-    "[]",                                     # not an object
-    '{"architectures": []}',                  # says nothing about the arch
-])
-def test_an_unreadable_architecture_keeps_the_strict_contract(
-    tmp_path, config_text,
-):
-    """Fail-closed: a DSv4 release cannot shed its contract by hiding config.
-
-    `config.json` is bound into `model_sha` as `config_sha`, so corrupting it
-    already breaks the card — but the lane test must not be the weak link that
-    turns a corrupt config into a LOOSER gate.
-    """
-    model_dir, path = _cb_card(
-        tmp_path, model_type="deepseek_v4",
-        architectures=["DeepseekV4ForCausalLM"])
-    if config_text is None:
-        (model_dir / "config.json").unlink()
-    else:
-        (model_dir / "config.json").write_text(config_text)
-    assert any("DSv4 Gridbook gold contract" in p
-               for p in _gold_problems(model_dir, path, "gold.kl"))
-
-
-def test_the_lane_is_read_off_disk_not_off_the_mutable_card(tmp_path):
-    """Same reasoning as `_is_gridbook_card`: the receipt is mutated as gates
-    close, so the obligation is resolved from the artifact."""
-    from prismaquant.shipcard import _is_dsv4_gridbook_artifact
-
-    model_dir, _ = _cb_card(
-        tmp_path, model_type="deepseek_v4",
-        architectures=["DeepseekV4ForCausalLM"])
-    assert _is_dsv4_gridbook_artifact(model_dir) is True
-    assert _is_dsv4_gridbook_artifact(None) is True
-
-    # The architecture list alone is enough, in both directions.
-    (model_dir / "config.json").write_text(
-        json.dumps({"architectures": ["DeepseekV4ForCausalLM"]}))
-    assert _is_dsv4_gridbook_artifact(model_dir) is True
-    (model_dir / "config.json").write_text(
-        json.dumps({"architectures": ["Qwen3_5ForCausalLM"]}))
-    assert _is_dsv4_gridbook_artifact(model_dir) is False
-
-
-def test_target_only_dspark_claim_absent_or_null_is_nonblocking_but_claim_is_replayed(
-    tmp_path, capsys,
-):
-    model_dir = _artifact(tmp_path)
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-
-    assert "mtp.dspark" not in card["slots"]
-    card["slots"]["mtp.dspark"] = None
-    assert "mtp.dspark" not in unfilled_slots(card)
-    path = model_dir / "shipcard.json"
-    write_shipcard(path, card)
-    assert "mtp.dspark" not in required_slots(card, model_dir=model_dir)
-
-    # Once a recognized optional claim is non-null it is release evidence, not
-    # ignorable annotation.  Default library and CLI verification both replay
-    # it without an explicit --require-slot.
-    card["slots"]["mtp.dspark"] = make_record(
-        slot="mtp.dspark",
-        tool="test",
-        passed=False,
-        model_sha=card["model_sha"],
-        detail="unvalidated claim",
-    )
-    write_shipcard(path, card)
-    assert "mtp.dspark" in required_slots(card, model_dir=model_dir)
-    assert any(
-        problem.startswith("mtp.dspark: FAILED")
-        for problem in verify(card, model_dir=model_dir)
-    )
-    assert shipcard_cli(["verify", str(path)]) == 1
-    assert "mtp.dspark: FAILED" in capsys.readouterr().out
-    assert shipcard_cli(["show", str(path)]) == 0
-    assert "mtp.dspark" in capsys.readouterr().out
-
-
-def test_on_disk_dspark_sidecar_requires_claim_but_target_overlay_does_not(
-    tmp_path,
-):
-    draft_dir = _artifact(tmp_path, name="draft")
-    (draft_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-        "provenance": {"dspark_cb_sidecar": {"schema": "test"}},
-    }))
-    draft_card = build_shipcard(
-        draft_dir, build={"quant_method": "gridbook"}
-    )
-    assert draft_card["slots"]["mtp.dspark"] is None
-    assert required_slots(draft_card, model_dir=draft_dir)[-1] == "mtp.dspark"
-    assert "mtp.dspark: UNFILLED" in verify(
-        draft_card, model_dir=draft_dir
-    )
-
-    # Removing the mutable slot cannot erase an obligation proven by the
-    # physical sidecar's own on-disk provenance.
-    draft_card["slots"].pop("mtp.dspark")
-    assert "mtp.dspark: UNFILLED" in verify(
-        draft_card, model_dir=draft_dir
-    )
-
-    target_dir = _artifact(tmp_path, name="target")
-    (target_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-        "provenance": {"dspark_source_overlay": {"schema": "test"}},
-    }))
-    target_card = build_shipcard(
-        target_dir, build={"quant_method": "gridbook"}
-    )
-    assert "mtp.dspark" not in target_card["slots"]
-    assert "mtp.dspark" not in required_slots(
-        target_card, model_dir=target_dir
-    )
-
-
-def test_on_disk_gridbook_identity_prevents_receipt_slot_erasure(tmp_path):
-    model_dir = _artifact(tmp_path, model_type="deepseek_v4")
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-    card["build"]["quant_method"] = "compressed-tensors"
-    card["slots"].pop(CB_REQUIRED_SLOTS[0])
-
-    problems = verify(card, model_dir=model_dir)
-    assert f"{CB_REQUIRED_SLOTS[0]}: UNFILLED" in problems
-
-
-@pytest.mark.parametrize("reserved", [None, 4096, "262144"])
-def test_gridbook_card_refuses_missing_or_forged_fixed_reservation(
-    tmp_path, reserved,
-):
-    model_dir = _artifact(tmp_path)
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-    card["reserved_file_bytes"] = reserved
-
-    assert any(
-        "reserved_file_bytes" in problem
-        for problem in verify(card, model_dir=model_dir)
-    )
-
-
-def test_gridbook_card_refuses_missing_weight_stat_attestation(tmp_path):
-    model_dir = _artifact(tmp_path)
-    (model_dir / "quant_config.json").write_text(json.dumps({
-        "quant_method": "gridbook",
-        "format": "nvfp4_cb",
-    }))
-    card = build_shipcard(model_dir, build={"quant_method": "gridbook"})
-    assert "weight_stat_attestation" not in card
-
-    assert any(
-        "lacks the required weight-stat attestation" in problem
-        for problem in verify(card, model_dir=model_dir)
-    )
 
 
 def test_full_card_verifies(tmp_path):
@@ -976,8 +564,15 @@ def test_cli_fill_from_a_gold_result_json(tmp_path, capsys):
         "kl_confident_mean": 0.0143,
         "kl_mean": 0.0201,
         "n_samples": 8,
-        "n_positions": 4096,
+        "n_positions": 4088,
         "seqlen": 512,
+        # The gold KL contract is every prompt position. The fixture carried
+        # no `score_positions` until 2026-09-02, when the fill-time replay
+        # stopped being scoped to the retired Gridbook lane's cards and
+        # started tracking `verify()` on every lane, as its own comment always
+        # demanded. Without the field the CLI now (correctly) fills
+        # passed=false, because publication would refuse the same record.
+        "score_positions": "all",
         "spec_decode_detected": False,
         "serve_fingerprint": "f" * 64,
         "git_commit": "a" * 40,
@@ -1514,34 +1109,3 @@ def test_cross_check_undershoot_is_also_coverage_gated(tmp_path):
     assert verify({"build": {"achieved_bpp": got}}, model_dir=None, required=[]) == []
 
 
-def test_recipe_priced_bpp_reads_the_sidecar_flat_layout(tmp_path):
-    """Two production layouts carry per-unit prices; both must be priceable.
-
-    The body allocator writes `name -> {..., "cb_serialized_identity": ...}`.
-    The DSpark CB sidecar builder writes a flat `name -> "FORMAT"` map with the
-    identities collected under `__prismaquant__.cb_serialized_identities`.
-    Reading only the first shape reported "not applicable" for the entire
-    sidecar lane, silently disabling the gate on a shippable artifact -- the
-    real MTP draft recipe prices 2,325 of 2,328 units at exactly 1.78125 bpp
-    (K12 two_tier), the 3 exclusions being the grouped-BMM `wo_a` passthroughs.
-    """
-    from prismaquant.shipcard import recipe_priced_bpp
-
-    identity = json.dumps({
-        "format": "NVFP4_CB_K12", "params": 8388608,
-        "tensor_payload_bytes": 1867776,       # 8388608 * 57/256
-    })
-    payload = {f"mtp.0.ffn.experts.{i}.up_proj": "NVFP4_CB_K12" for i in range(4)}
-    payload["mtp.0.attn.wo_a"] = "FP8_BLOCK_UE8M0_SOURCE"   # passthrough, unpriced
-    payload["__prismaquant__"] = {
-        "cb_serialized_identities": {
-            f"mtp.0.ffn.experts.{i}.up_proj": identity for i in range(4)
-        },
-    }
-    recipe = tmp_path / "dspark_layer_config.json"
-    recipe.write_text(json.dumps(payload))
-
-    got = recipe_priced_bpp(recipe)
-    assert got["value"] == pytest.approx(1.78125)
-    assert got["priced_units"] == 4
-    assert got["total_units"] == 5

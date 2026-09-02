@@ -72,20 +72,22 @@ nothing in this pipeline needs one.
 - `twine check --strict` on both artifacts.
 - **Runtime data files are packaged** (`.github/scripts/check_dist.py`).
   prismaquant is pure Python, so the packaging risk is not compiled sources: it
-  is the model/serving/lane JSON, canonical IQ and CB tensor tables, immutable
-  Gridbook pin and resolver, and `run-pipeline.sh`. A package-data regression
+  is the model/serving/lane JSON, canonical IQ and CB tensor tables, the
+  immutable Tessera serving pin and its resolver, and `run-pipeline.sh`. (The
+  Gridbook pin and resolver were in this list until 2026-09-02, when that lane
+  was retired — `archive/gridbook_lane_2026-09-02/`.) A package-data regression
   still imports cleanly and only fails on a user's first real run, so every
   asset is checked against both wheel and sdist.
 - **The tag matches the built version.** A mismatch means the wrong artifact is
   about to be published under the wrong name.
 - **The wheel works non-editably** (`.github/scripts/check_installed.py`): run
   from a temp directory with no `PYTHONPATH`, so `import prismaquant` cannot
-  fall back to the checkout. The install must resolve from site-packages, all
-  four serving profiles must load out of the installed JSON, the
-  model-structure spec directory must be present inside the package, IQ and CB
-  tables must load, the Gridbook helper must parse its adjacent pin from an
-  arbitrary working directory, `run-pipeline.sh` must be there, and the
-  allocator and shipcard CLIs must run.
+  fall back to the checkout. The install must resolve from site-packages, every
+  serving profile must load out of the installed JSON, the model-structure spec
+  directory must be present inside the package, IQ and CB tables must load,
+  `run-pipeline.sh` must be there, and the allocator and shipcard CLIs must
+  run. The packaged-Gridbook-helper check was removed 2026-09-02 with that lane
+  (`archive/gridbook_lane_2026-09-02/`).
 - **The tag commit is on `main`.** The workflow fetches full history and refuses
   a tag cut from an unmerged release branch.
 

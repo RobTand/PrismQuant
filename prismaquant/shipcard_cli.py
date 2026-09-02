@@ -26,10 +26,8 @@ import sys
 from pathlib import Path
 
 from prismaquant.shipcard import (
-    CB_REQUIRED_SLOTS,
     GOLD_SLOTS,
     OPTIONAL_SLOTS,
-    _is_dsv4_gridbook_artifact,
     _verify_gold_record,
     compute_model_sha,
     fill_slot,
@@ -54,8 +52,7 @@ CARRIED_METRIC_KEYS = PRIMARY_METRIC_KEYS + (
     "kl_p99", "kl_max", "n_positions", "n_confident", "n_samples", "seqlen",
     "n_tokens_scored", "per_chunk_mean_nll", "max_chunk_mean_nll",
     "quantization", "score_positions",
-    "dsv4_gridbook_contract", "serve_manifest",
-    "dsv4_gridbook_contract_sha256",
+    "serve_manifest",
     "teacher_evidence", "mode", "prompt_top_k", "vocab_size",
     "split", "n_tokens_requested", "calibration_contract",
     "calibration_contract_sha256",
@@ -223,37 +220,35 @@ def _cmd_fill(args: argparse.Namespace) -> int:
         extra={"record_path": str(Path(args.record).resolve()),
                "measured_model": payload.get("model")},
     )
-    blocking_slots = required_slots(card, model_dir=model_dir)
-    is_gridbook = all(slot in blocking_slots for slot in CB_REQUIRED_SLOTS)
+    # The gold-record replay here must track `verify()`: filling with a
+    # stricter contract than publication replays would refuse evidence that
+    # ships fine, and filling with a looser one would defer a refusal to the
+    # very last gate. Until 2026-09-02 it ran only for the retired Gridbook
+    # codebook lane's cards, gated on that lane's extra blocking slots; those
+    # slots and their DSv4 release contract went into
+    # archive/gridbook_lane_2026-09-02/ with the lane, so the generic replay
+    # now runs for every structurally valid record instead of for none.
     replay_problems = (
         _verify_gold_record(
             args.slot,
             record,
             model_dir=model_dir,
-            # Must track `verify()`: filling with a stricter contract than
-            # publication replays would refuse evidence that ships fine, and
-            # filling with a looser one would defer a refusal to the very last
-            # gate. The DSv4 release contract belongs to the DSv4 lane, not to
-            # CB -- `shipcard._is_dsv4_gridbook_artifact`.
-            require_dsv4_gridbook_contract=_is_dsv4_gridbook_artifact(
-                model_dir
-            ),
             require_current_artifact_path=True,
         )
-        if is_gridbook and structurally_valid
+        if structurally_valid
         else []
     )
     if replay_problems:
         if args.passed is True:
             print(
-                "[shipcard] REFUSED: --passed cannot override invalid DSv4 "
-                "Gridbook gold evidence: " + "; ".join(replay_problems),
+                "[shipcard] REFUSED: --passed cannot override invalid gold "
+                "evidence: " + "; ".join(replay_problems),
                 file=sys.stderr,
             )
             return 2
         record["passed"] = False
         print(
-            "[shipcard] WARN DSv4 Gridbook gold evidence did not replay; "
+            "[shipcard] WARN gold evidence did not replay; "
             "recording passed=false: " + "; ".join(replay_problems),
             file=sys.stderr,
         )

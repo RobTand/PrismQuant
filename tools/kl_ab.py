@@ -5,7 +5,9 @@ R15. §7.4's rule ("A/B arms must have identical extension residency; conf-KL
 deltas under ~+-20% across differing serving stacks are not evidence") was prose
 with nothing enforcing it, and the mechanism is dated and measured: on the 27B,
 the same artifact read 0.01134 vs 0.01328 conf-KL (+-17%) keyed purely on whether
-the gridbook `.so` was resident during the dump.
+one lane's CUDA `.so` was resident during the dump.  (That reading was taken on
+the Gridbook lane, retired 2026-09-02 -- archive/gridbook_lane_2026-09-02/ --
+but the mechanism belongs to the loader, not to any one lane.)
 
     python3 tools/kl_ab.py A.json B.json
     python3 tools/kl_ab.py A.json B.json --metric ppl
