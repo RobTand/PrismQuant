@@ -1047,20 +1047,52 @@ render seam handles this per rung; the exporter does not. There is no Tessera
 export leg in this tree (§7), so nothing here is blocked by it -- but the first
 export that mixes families will be.
 
-**Row 3 -- the H A/B -- is in flight, not reported here.** Two campaigns on the
-same 0.6B layer at Tessera `f3e7d0a`, identical in every argument except
+**Row 3 -- the H A/B -- landed, and the inertness test passes.** Two campaigns
+on the same 0.6B layer at Tessera `f3e7d0a`, identical in every argument except
 `--hessian require` vs `--hessian off`
 (`sparklina:/home/rob/tmp/run_campaign_row3.sh`, log
 `sparklina:/home/rob/tmp/row3.log`, outputs
-`/mnt/shared/tessera-runs/pq-continuous/qwen06b_h_{on,off}/`). What is
-established so far is the fail-fast leg: the H-aware path *runs*. Round 1 of
-the `require` arm reached
+`/mnt/shared/tessera-runs/pq-continuous/qwen06b_h_{on,off}/`). First the
+fail-fast leg -- the H-aware path *runs*: round 1 of the `require` arm reached
 `r1 40/63 model.layers.0.self_attn.q_proj TESSERA_E4M3_K1_R814 mse=0.000348269`
 with zero `FAILED` anchors, so `for_unit` -> `block_ldl` -> `encode_linear`
 with all four kwargs encodes rather than raising, on real calibration
-activations (2048 rows per Linear, `in_features` 1024-3072).
+activations (2048 rows per Linear, `in_features` 1024-3072). Both arms then ran
+to completion: `h_on` 130 anchors / 1878 encode-seconds, `h_off` 126 anchors /
+505 s, 126 anchors shared, both tables 7 units / 14659 priced rungs / 2423
+distinct formats.
 
-**When it lands, compare it per shared anchor, not per allocation.** Both arms
+**Compared per shared anchor, not per allocation** (both arms are adaptive, so
+an allocation-level comparison mixes the H effect with placement -- the §4b
+confound). On the 126-anchor intersection of `(unit, family, rung)`:
+
+| family | shared anchors | differ | max rel | mean rel | `hessian_applied` |
+|---|---|---|---|---|---|
+| `TESSERA_E2M1_K1` | 35 | **0** | 0.000e+00 | 0.000e+00 | false on all 35 |
+| `TESSERA_E2M1_K2` | 45 | **0** | 0.000e+00 | 0.000e+00 | false on all 45 |
+| `TESSERA_E4M3_K1` | 46 | **46** | 6.714e-01 | 5.444e-01 | true on all 46 |
+
+**Both legs of the test pass, and this is the one that a unit test with a
+synthetic H cannot give.** The 80 E2M1 anchors are *bit-identical* across the
+two arms -- the H is genuinely inert on a LUT16 plane, which is what
+`rung_accepts_hessian` claims and what the `hessian_applied: false` stamp
+asserts. The 46 E4M3 anchors all move, **all in the same direction**: `h_off /
+h_on` dloss is above 1 on 46 of 46, geomean **2.233x** (min 1.476, median
+2.100, max 3.044). Per unit the geomean runs 1.924x (`v_proj`) - 2.715x
+(`k_proj`); `q_proj` 1.964x, `up_proj` 1.886x, `o_proj` 2.504x, `gate_proj`
+2.258x, `down_proj` 2.534x. The H costs **3.72x the encode time** (1878 vs
+505 s) on this layer.
+
+Two reading caveats, both structural. (a) This is a **same-unit, same-rung,
+same-byte** comparison of two encoders, so it does not depend on the
+rung-ranking the §12 measurement impeaches -- but it is still an output-MSE
+number under the route contract, **not** a served one. (b) The `h_on` arm
+placed two anchors the `h_off` arm did not (`gate_proj`/`up_proj` at R611 and
+R753), which is the adaptive loop responding to a differently-shaped surface --
+exactly why the comparison is on the intersection.
+
+The comparison recipe as originally written, kept because it is the reason the
+above is trustworthy: both arms
 are adaptive, so after round 1 they place different anchors and an
 allocation-level comparison mixes the H effect with placement -- the same
 confound §4b exists to warn about. Round-1 anchors are deterministic, so every
@@ -1192,6 +1224,7 @@ not about served quality.
 | Does anything built depend on the surrogate ranking rungs? | §12. **Yes, structurally** -- every construction is exact *given* the cost and adds no check on it; the only structural guard is ordinal (non-monotone anchor sets are refused) and the measured failure is a slope error inside a monotone surface. The menu now requires `SELECTION_MODE=validated-surrogate` **and** a byte-matched uniform served control; the allocator warns and stamps `tessera_menu.selection_caveat`. |
 | TP gate on the real `shard_granularity` | §10. `tessera.layout.shard_granularity` through one function; row-parallel `[3072,1024]` collapses 3060 → 17 at tp=8, and `max_world_size: 1` closes the attested menu above tp=1. |
 | The two Hessian sources are one draw | §11, `test_the_campaign_and_the_production_render_form_one_hessian` and `test_one_identity_function_answers_for_both_paths`. |
+| The Hessian seam does something, and is inert where it claims to be | §11, row 3, measured on Tessera `f3e7d0a`: over 126 shared anchors the 80 E2M1 rows are **bit-identical** across `--hessian require` / `--hessian off` and all 46 E4M3 rows move, all in the same direction, geomean **2.233x** lower dloss with H, at 3.72x the encode time. A synthetic-H unit test cannot show either leg. |
 | A-leg pricing test exists | §3, `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and §8.2 shows it deciding a real allocation. |
 | E4M3 interpolation gated by LOO/regret, with numbers | §8.1 (LOO: **E4M3 is the worst family**, 4 of 7 units miss the 0.25 gate, worst 0.571), §8.3 (what interpolation buys at matched aggregation: **1.094× / 1.410× / 1.204×**, plus 0.052 / 0.095 bpp of budget the sparse menu cannot reach), §8.5 (trusted-cost error at the chosen rungs: 0.999 / 0.824 / 0.968, conservative at every target). **The LOO gate does not close on E4M3** — stated, not smoothed. |
 | `ARCHITECTURE.md` updated | §4.10, in the same commits as the code. |
