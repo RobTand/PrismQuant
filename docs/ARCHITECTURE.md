@@ -3865,9 +3865,14 @@ into the orchestrator, rather than emitting a cost table with no Tessera column 
 an allocation that silently contains none.
 
 **What gates the interpolation, and what does not.** The rate surface is gated
-by the campaign's own leave-one-anchor-out error and by an allocation-regret
-arm (solve the same targets against a menu of measured anchors only, and
-compare). The pre-existing
+by the campaign's own leave-one-anchor-out error and by a menu-density arm
+(solve the same targets against a menu of measured anchors only, and compare).
+That arm must hold **aggregation** fixed to mean anything: `aggregate_fused_
+siblings` intersects the members' menus by format *name*, and a Tessera name
+carries its realisable rate, which is shape-dependent — so on a measured-only
+table the qkv super item's E4M3 menus intersect to a single rung. Comparing an
+aggregated sparse arm against an aggregated dense one measures that collapse,
+not the interpolation. The pre-existing
 `allocator_candidates.drop_interpolated_candidates_dominated_by_measured` is
 **not** in that path: it is referenced by tests and docstrings and has **no live
 call site** in this tree, so it fires on nothing, Tessera or otherwise. Stated
@@ -3892,13 +3897,18 @@ three CUDA-marked), on top of `tessera_{formats,footprint}`'s own suites.
 **Measured on Qwen3-0.6B layer 0, 2026-09-02**
 (`docs/measurements/tessera-continuous-menu-2026-09-02.md`). Menu 3039-3063
 rungs per unit; 102 anchors expand to 16893 priced rungs (166x). The DP lands
-within 3e-4 bpp of a 3.0 / 4.0 / 5.0 target; solved against measured anchors
-only it cannot reach the budget at all (4.639 at a 5.0 target) and costs
-1.76-9.84x in Delta-loss. Pre-DP fused aggregation costs 11-23% in Delta-loss
-at matched bpp. True regret at the chosen rungs (17 fresh encodes) is
-0.999 / 0.824 / 0.968 true-over-predicted, conservative at all three, while
-per-rung it spans 0.68-1.27 and the E4M3 LOO gate does **not** close on 4 of 7
-units. DP time: 11 solves, 2.32 s, over a 4315-rung menu.
+within 3e-4 bpp of a 3.0 / 4.0 / 5.0 target. Against measured anchors only, at
+matched aggregation, it costs **1.09-1.41x** in Delta-loss and is 0.052 /
+0.095 bpp short of the 4.0 / 5.0 budgets — and *with* aggregation it cannot
+reach the budget at all (4.639 at a 5.0 target), because the sibling
+intersection leaves E4M3 with one rung. Pre-DP fused aggregation costs 11-23%
+in Delta-loss at matched bpp. Trusted-cost error at the chosen rungs (17 fresh
+encodes) is 0.999 / 0.824 / 0.968 true-over-predicted, conservative at all
+three, while per-rung it spans 0.68-1.27 and the E4M3 LOO gate does **not**
+close on 4 of 7 units. Rung labels are *body* rates: the 3.0 assignment's
+param-weighted body is 2.929 bpp and its charged wire 3.000 bpp, and one rung
+(`R814`) costs 3.258 bpp on `q_proj` but 3.320 on `k_proj` because the plane
+amortises over fewer rows. DP time: 11 solves, 2.32 s, over a 4315-rung menu.
 
 **Not done, and not claimed:** no export leg, so nothing here has been served and
 no KL — screen or gold — was measured on a Tessera allocation. See

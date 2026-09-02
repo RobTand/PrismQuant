@@ -53,8 +53,9 @@ python -m prismaquant.tessera_campaign \
   --max-artifact-bpp 5.5 --deadline-seconds 9000
 ```
 
-Allocations — three targets × three arms
-(`/home/rob/tmp/pq-continuous/run_allocations.sh`):
+Allocations — three targets × five arms
+(`/home/rob/tmp/pq-continuous/run_allocations.sh` for `full`/`meas`/`nofuse`/
+`free`, `/home/rob/tmp/pq-continuous/run_meas_nofuse.sh` for `measnofuse`):
 
 ```
 python -m prismaquant.allocator \
@@ -67,7 +68,10 @@ python -m prismaquant.allocator \
 
 * `full` — the interpolated rate surface, default (pre-aggregated) DP.
 * `meas` — measured anchors only, built by
-  `/home/rob/tmp/pq-continuous/measured_only_cost.py`; the **regret** baseline.
+  `/home/rob/tmp/pq-continuous/measured_only_cost.py`; the sparse-menu baseline.
+* `measnofuse` — measured anchors only **and** `--no-fused-aggregation`; the
+  only baseline that isolates menu density, because `meas` vs `full` also
+  differs in what fused-sibling intersection leaves on the menu (§8.3).
 * `nofuse` — interpolated surface with `--no-fused-aggregation`, the only arm
   in which the family-promotion relaxation is reachable (§5).
 
@@ -160,8 +164,8 @@ priced.
   only tests and docstrings reference it. It therefore does not guard the
   campaign's interpolated rows, or anyone else's. Said here rather than
   quietly relied on. What does gate the surface is the campaign's own
-  leave-one-anchor-out error (`--loo-gate`, adaptive rounds) plus the regret
-  arms below.
+  leave-one-anchor-out error (`--loo-gate`, adaptive rounds) plus the
+  menu-density arms below.
 
 ## 6. Scope — read the denominator before the numbers
 
@@ -295,7 +299,7 @@ grid's doing.
 | target | achieved | q / k / v | o | gate / up | down |
 |---|---|---|---|---|---|
 | 3.0 | **3.00026** | `E4M3_K1_R814` | `R785` | `R824` | `R493` |
-| 4.0 | **4.00027** | `E4M3_K1_R1083` | `R934` | `R1107` | `R749` |
+| 4.0 | **4.00026** | `E4M3_K1_R1083` | `R934` | `R1107` | `R749` |
 | 5.0 | **5.00026** | `E4M3_K1_R1366` | `R1217` | `R1384` | `R909` |
 
 Four distinct rungs per allocation, twelve distinct rungs across the three, and
@@ -307,41 +311,95 @@ Four rungs, not seven, because the DP has four items: `q/k/v` are one fused
 super item and `gate/up` another (§4). The rates differ *between* units and are
 pinned *within* a fused group.
 
-**Why E4M3 everywhere.** The allocator is not choosing 8-bit weights: at 3.0
-bpp `E4M3_K1_R814` is a **3.18-bit body** on the E4M3 grid. It wins because
-each candidate is priced **as it would serve** — the `E2M1` families carry
-NVFP4's W4A4 activation leg, `E4M3_K1` carries per-token FP8 — so the same
-weight rate is a different cost on the two routes. That is exactly what
-`test_the_same_weight_rate_costs_differently_on_the_two_routes` asserts, and
-here it is deciding an allocation rather than a unit test.
+**Why E4M3 everywhere — and what the rate label actually means.** The
+allocator is not choosing 8-bit weights, but the rung label is a *body* rate
+and the budget is charged on the *wire*, so the two must not be read as the
+same number. `R814` is 814/256 = **3.1797 bits/weight of body**; what the DP
+is charged is the body plus that unit's scale plane and header, taken from the
+format spec **for the unit's own shape** rather than derived from the label:
+`R814` costs **3.2578 bpp on `q_proj` [2048x1024]** and **3.3203 bpp on
+`k_proj` [1024x1024]**, because the CHANNEL plane amortises over twice as many
+rows on `q`. Over the whole 3.0 assignment the param-weighted body is **2.9294
+bpp** and the param-weighted charged wire is **3.000260 bpp** — which is
+exactly the `achieved_bits` the allocator reports. The planes are 0.071 bpp of
+the budget; the accounting is the wire's.
+
+Why E4M3 sweeps the board has **two** candidate explanations and this receipt
+separates neither:
+
+* every candidate is priced **as it would serve**, and the `E2M1` families
+  carry NVFP4's W4A4 activation leg while `E4M3_K1` carries per-token FP8, so
+  the same weight rate is a different cost on the two routes — which is what
+  `test_the_same_weight_rate_costs_differently_on_the_two_routes` asserts, here
+  deciding an allocation rather than a unit test;
+* the E4M3 WINDOW/CHANNEL body may simply be the better weight-space quantiser
+  at these rates on these shapes, independently of the A leg.
+
+Both are consistent with the assignments above. Telling them apart needs the
+same allocation re-run with the A legs equalised, which was not done. Read this
+as **"E4M3 wins under as-served pricing"**, not as "the A leg is why".
 
 **DP cost.** 11 solves for the shipped target on the `full` 5.0 run, **2.32 s
 total, mean 0.211 s, max 0.356 s** over a 4315-rung aggregated menu. A
 continuous menu is not what makes this allocator slow.
 
-### 8.3 Regret — what interpolation bought, measured
+### 8.3 What interpolation bought — and the confound in the obvious comparison
 
-The `meas` arm solves the same three targets against **measured anchors only**:
-102 rows → 71 after dominance → **31** after aggregation. The result is not a
-slightly worse assignment. It is an allocator that **cannot reach the budget**:
+The `meas` arm solves the same three targets against **measured anchors only**.
+The obvious comparison — `full` vs `meas` — is **confounded**, and the confound
+is worth more than the comparison was.
 
-| target | `full` achieved | `meas` achieved | budget left unused |
-|---|---|---|---|
-| 3.0 | 3.00026 | 2.8977 | **0.103 bpp** |
-| 4.0 | 4.00027 | 3.9937 | 0.006 bpp |
-| 5.0 | 5.00026 | **4.6391** | **0.361 bpp** |
+**The confound.** `aggregate_fused_siblings` builds a super item whose menu is
+the **intersection** of its members' menus by format name. A Tessera rung's
+name carries its realisable rate, and the realisable rate is **shape-dependent**:
+the campaign's bisection lands E4M3 anchors at 535/539/541 on
+`k`/`q`/`down` respectively, because the achievable q256 for a schedule depends
+on the unit's column count. So on the measured-only table the qkv super item's
+menus intersect to:
 
-At 5.0 the measured-only menu leaves 7.2% of the byte budget on the table,
-because its densest rungs on the units that matter simply do not exist as
-options. This is the concrete answer to "what is the continuous axis for":
-not a better assignment at a given rate, but the ability to *land on the rate
-you were given*. It is also why the interpolation has to be gated rather than
-trusted — §8.1's LOO is the cost of that reach.
+| family | `q_proj` measured rungs | `k_proj` | `v_proj` | **intersection** |
+|---|---|---|---|---|
+| `E2M1_K1` | 256,384,448,512,768 | same | same | **5 rungs** |
+| `E2M1_K2` | 128,320,416,512,896 | same | same | **5 rungs** |
+| `E4M3_K1` | 256,539,680,822,1388 | 256,535,674,814,1372 | 256,535,674,814,1372 | **{256}** |
 
-The `meas` arm also picks **mixed families** (`E2M1_K2` on q/k/v, `E4M3_K1` on
-the MLP) where `full` picks one. With 31 candidates the DP reaches across
-routes to fill bins it cannot fill within a route; with 4315 it does not have
-to. Read that as evidence about the sparse menu, not about the families.
+`E2M1`'s anchors are shape-independent and survive; **E4M3's qkv intersection
+collapses to the single lowest rung, R256 (1.07 bpp)**. That is why the
+aggregated `meas` arm parks q/k/v on `E2M1_K2_R512` at all three targets
+including 5.0, where it has 0.36 bpp of slack: it is not "the DP reaching
+across routes to fill bins", as an earlier draft of this section claimed — the
+super item simply **had no usable E4M3 candidate on its menu**. The aggregated
+`meas` ratios (1.76x / 3.78x / 9.84x, §8.4) are therefore mostly an
+intersection artifact, and are kept below only as a footnote.
+
+This is itself a result, and a better argument for the continuous axis than the
+one it replaces: **a discrete measured menu does not survive fused-sibling
+aggregation**, because siblings with different shapes do not realise the same
+rates. The interpolated surface is defined on the whole q256 grid, so the
+intersection is the whole grid and nothing is lost.
+
+**The aggregation-matched comparison.** Holding aggregation fixed
+(`--no-fused-aggregation` on both arms) so the only difference is menu density:
+
+| target | `nofuse` (interpolated) | `measnofuse` (anchors only) | Δloss ratio | budget unreached |
+|---|---|---|---|---|
+| 3.0 | 27.176 @ 3.00729 | 29.718 @ 3.00469 | **1.094x** | — |
+| 4.0 | 9.199 @ 4.00026 | 12.970 @ 3.94870 | **1.410x** | 0.052 bpp |
+| 5.0 | 3.773 @ 5.00000 | 4.541 @ 4.90469 | **1.204x** | 0.095 bpp |
+
+**Interpolation is worth 1.09x–1.41x in Δloss at matched aggregation** — not
+the 1.76x–9.84x the confounded pair suggested. Part of even that is reach
+rather than ranking: the measured-only menu is **0.052 and 0.095 bpp short of
+the budget** at 4.0 and 5.0 because its rungs do not land there, and unspent
+budget is unspent quality. At 3.0 it does land on the budget and the gap is
+correspondingly small (1.094x).
+
+So the honest statement of what the continuous axis buys, on this subset, is:
+**a ~1.1–1.4x Δloss improvement at matched aggregation, plus the ability to
+land on the byte budget instead of near it, plus survival of fused-sibling
+aggregation at all.** The third is the largest effect and the one that is
+structural rather than numerical. §8.1's LOO is the price of that reach, and it
+does not fully close on E4M3.
 
 ### 8.4 What the fused invariant costs, and whether the relaxation binds
 
@@ -349,22 +407,28 @@ All Δloss figures below are recomputed by one function over the **same** cost
 table (`½·h_trace·output_mse` from the full interpolated `cost.pkl`), so arms
 solved against different tables are still compared on one scale.
 
-| target | arm | achieved | distinct rungs | Δloss | vs `full` |
-|---|---|---|---|---|---|
-| 3.0 | `full` | 3.00026 | 4 | 34.168 | — |
-| 3.0 | `meas` | 2.8977 | 4 | 59.991 | **1.756×** |
-| 3.0 | `nofuse` | 3.00729 | 7 | 27.176 | **0.795×** |
-| 4.0 | `full` | 4.00026 | 4 | 11.903 | — |
-| 4.0 | `meas` | 3.9937 | 4 | 44.984 | **3.779×** |
-| 4.0 | `nofuse` | 4.00026 | 7 | 9.199 | **0.773×** |
-| 4.0 | `free` | 4.00026 | 7 | 9.199 | 0.773× |
-| 5.0 | `full` | 5.00026 | 4 | 4.232 | — |
-| 5.0 | `meas` | 4.6391 | 4 | 41.641 | **9.840×** |
-| 5.0 | `nofuse` | 5.00000 | 6 | 3.773 | **0.891×** |
-| 5.0 | `free` | 5.00000 | 6 | 3.773 | 0.891× |
+| target | arm | aggregation | achieved | distinct rungs | Δloss | vs `full` |
+|---|---|---|---|---|---|---|
+| 3.0 | `full` | on | 3.00026 | 4 | 34.168 | — |
+| 3.0 | `meas` | on | 2.8977 | 4 | 59.991 | 1.756× † |
+| 3.0 | `nofuse` | off | 3.00729 | 7 | 27.176 | **0.795×** |
+| 3.0 | `measnofuse` | off | 3.00469 | 6 | 29.718 | 0.870× |
+| 4.0 | `full` | on | 4.00026 | 4 | 11.903 | — |
+| 4.0 | `meas` | on | 3.9937 | 4 | 44.984 | 3.779× † |
+| 4.0 | `nofuse` | off | 4.00026 | 7 | 9.199 | **0.773×** |
+| 4.0 | `measnofuse` | off | 3.94870 | 6 | 12.970 | 1.090× |
+| 4.0 | `free` | off | 4.00026 | 7 | 9.199 | 0.773× |
+| 5.0 | `full` | on | 5.00026 | 4 | 4.232 | — |
+| 5.0 | `meas` | on | 4.6391 | 4 | 41.641 | 9.840× † |
+| 5.0 | `nofuse` | off | 5.00000 | 6 | 3.773 | **0.891×** |
+| 5.0 | `measnofuse` | off | 4.90469 | 5 | 4.541 | 1.073× |
+| 5.0 | `free` | off | 5.00000 | 6 | 3.773 | 0.891× |
 
-**Interpolation is worth 1.76×–9.84× in Δloss**, and the gap widens with the
-budget because the sparse menu cannot even spend it (§8.3).
+† **The `meas` rows are a footnote, not a result.** With aggregation on, the
+measured-only menu is intersected across fused siblings and E4M3's qkv
+intersection collapses to one rung (§8.3). Those three ratios measure that
+collapse, not interpolation. The comparison that holds aggregation fixed is
+`nofuse` vs `measnofuse`: **1.094× / 1.410× / 1.204×**.
 
 **Forcing fused siblings to one rate costs 11–23% in Δloss at matched bpp.**
 That is the price of the pre-DP aggregation, measured, and it is what free
@@ -397,10 +461,17 @@ work and doing it correctly:
 promotion the members of a fused group can land in different families, which is
 precisely what happened at 3.0.
 
-### 8.5 True allocation regret — how wrong the trusted cost was
+### 8.5 Trusted-cost error at the chosen rungs
 
-LOO measures the surface at a held-out anchor; §8.3 measures what interpolation
-buys in reach. Neither answers the question the allocator actually raises: *at
+This is **not** regret in the decision-theoretic sense — regret is
+true(chosen) − true(optimum under true costs), and computing that would need
+the true cost of every rung, not just the chosen ones. An earlier draft called
+it regret; it is not. What it measures is **the error of the trusted cost at
+the rungs the DP actually selected**, which is the quantity that decides
+whether the interpolated surface misled the allocator. (The `meas` vs
+`measnofuse` pair in §8.3 is at least a *bound* on regret, since it compares
+two feasible assignments on one table.) LOO measures the surface at a held-out
+anchor; §8.3 measures what interpolation buys in reach. Neither answers: *at
 the rungs this DP selected, how wrong was the cost it trusted?* So every rung
 the `full` arm chose was re-encoded and re-scored through the campaign's own
 path — same activations, same route contract, same render — and compared with
@@ -435,10 +506,10 @@ subset; what would make it a *ship* claim is a served KL, which does not exist.
 | asked | result |
 |---|---|
 | Tests pass, listed with the command | §3. **190 passed** on the full sweep at `e0d4df2`, including every allocator suite this branch could regress. |
-| Three 0.6B allocations spanning more than a few distinct rates | §8.2. Menu 3039–3063 rungs **per unit**; 16893 priced rungs over 7 units. Assignments hit 3.00026 / 4.00027 / 5.00026 bpp with 4 distinct rungs each (4 DP items), and 6–7 distinct rungs each without pre-aggregation. Not a five-rung ladder. |
+| Three 0.6B allocations spanning more than a few distinct rates | §8.2. Menu 3039–3063 rungs **per unit**; 16893 priced rungs over 7 units. Assignments hit 3.00026 / 4.00026 / 5.00026 bpp with 4 distinct rungs each (4 DP items), and 6–7 distinct rungs each without pre-aggregation. Not a five-rung ladder. |
 | Anchor counts per family per unit | §8. 4–5 per family per unit, 21 surfaces, 102 anchors, 2534 s. |
 | A-leg pricing test exists | §3, `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and §8.2 shows it deciding a real allocation. |
-| E4M3 interpolation gated by LOO/regret, with numbers | §8.1 (LOO: **E4M3 is the worst family**, 4 of 7 units miss the 0.25 gate, worst 0.571), §8.3 (reach: 1.76×–9.84×), §8.5 (true regret at the chosen rungs: 0.999 / 0.824 / 0.968). **The LOO gate does not close on E4M3** — stated, not smoothed. |
+| E4M3 interpolation gated by LOO/regret, with numbers | §8.1 (LOO: **E4M3 is the worst family**, 4 of 7 units miss the 0.25 gate, worst 0.571), §8.3 (what interpolation buys at matched aggregation: **1.094× / 1.410× / 1.204×**, plus 0.052 / 0.095 bpp of budget the sparse menu cannot reach), §8.5 (trusted-cost error at the chosen rungs: 0.999 / 0.824 / 0.968, conservative at every target). **The LOO gate does not close on E4M3** — stated, not smoothed. |
 | `ARCHITECTURE.md` updated | §4.10, in the same commits as the code. |
 | Commits on `tessera/continuous-menu` | Yes; no pushes. |
 | Menu size per unit and DP time on 0.6B | §8.2. DP: 11 solves, 2.32 s total, mean 0.211 s, max 0.356 s over a 4315-rung menu (0.72 s max on the 8487-rung unaggregated menu). |
@@ -454,7 +525,12 @@ evidence rather than opinion.
 `tessera/continuous-menu`). Run outputs, all on the shared mount:
 `/mnt/shared/tessera-runs/pq-continuous/qwen06b/` — `probe.pkl`, `cost.pkl`,
 `cost.anchors.json`, `cache/wire/` (one wire blob per priced anchor),
-`alloc/lc_{full,meas,nofuse,free}_{3.0,4.0,5.0}.json`, `alloc/log_*.txt`,
+`alloc/lc_{full,meas,measnofuse,nofuse,free}_{3.0,4.0,5.0}.json`,
+`alloc/log_*.txt`, `measnofuse.log`,
 `regret_full.json`, `campaign2.log`, `alloc_suite.log`, `verify.log`.
+Checked in beside this receipt: `data/tessera-continuous-regret_full-2026-09-02.json` (the trusted-cost
+error of §8.5) and `data/tessera-continuous-menu-density-2026-09-02.json`
+(the §8.3 intersection table, all five arms' assignments, and the
+aggregation-matched ratios recomputed on one cost table).
 Scratch drivers: `/home/rob/tmp/pq-continuous/{run_allocations.sh,
 measured_only_cost.py,verify_chosen.py,summarise.py,checkpoint_to_cost.py}`.
