@@ -25,6 +25,8 @@ A second copy of a rate constant is a drift bug waiting for a rate to change.
 """
 from __future__ import annotations
 
+import functools
+
 from functools import lru_cache
 
 import torch
@@ -71,15 +73,57 @@ TESSERA_HALF = _tessera_export.DEFAULT_HALF
 _LABEL_SHAPE = (2048, 4096)
 
 
-#: Does a pinned runtime execute Tessera bytes natively?
-#:
-#: The kernel lane -- where the body stays compressed and is decoded inside the
-#: GEMV -- has a Triton decode kernel but no vLLM backend, so nothing serves
-#: these bytes today.  Principle 9 makes this a *measured platform fact*, not a
-#: preference: flipping it is an attestation that a pinned runtime loads and
-#: routes the format on real shapes, and it belongs to that evidence, not to
-#: whoever is adding a format next.
-_TESSERA_SERVING_LANE_EXISTS = False
+#: Route statuses under which a cell says a native route EXECUTES.  A
+#: ``fallback`` cell attests a serve, not a native one, and admits nothing.
+_NATIVE_ROUTE_STATUSES = frozenset({"backed", "backed_with_serve_flag"})
+
+
+@functools.lru_cache(maxsize=1)
+def _pinned_serving_table():
+    """The eligibility table of the pinned SERVING release, loaded once."""
+    from .gridbook_lane_eligibility import (
+        load_eligibility_table, load_published_formats,
+    )
+    return load_eligibility_table(), load_published_formats()
+
+
+def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
+    """Does a pinned runtime execute this Tessera rung natively?  DERIVED.
+
+    Principle 9 makes this a *measured platform fact*, and principle 14 says
+    the fact is read from the runtime's own table, never asserted here: the
+    rung is attested when the pinned serving release's contract publishes its
+    payload family (``TESSERA_E2M1_K2`` for ``TESSERA_E2M1_K2_R896``) and
+    carries a ``device_qualified`` cell whose route executes natively and
+    whose ``rungs_q256`` names this rate, on any platform the contract names.
+    The per-artifact question -- THIS platform, THIS unit's regimes -- stays
+    with ``gridbook_lane_eligibility.resolve_unit_route`` at export; this is
+    the menu-level admission, one lookup, and it fails closed: no table, a
+    family the contract does not publish, a rate no cell names, a
+    ``compile_only`` cell or a ``fallback`` route all answer False.
+
+    Until 2026-09-02 this was a module constant (``False``); Gridbook contract
+    v13 is the first to carry a Tessera row, and a serving pin on a release
+    that packages it is what flips the answer, not an edit here.
+    """
+    from .gridbook_lane_eligibility import resolve_payload_rung
+    if table is None or formats is None:
+        pinned_table, pinned_formats = _pinned_serving_table()
+        table = pinned_table if table is None else table
+        formats = pinned_formats if formats is None else formats
+    if not table.present:
+        return False
+    family, _k, rate = resolve_payload_rung(name, published_formats=formats)
+    if rate is None or not table.governs(family):
+        return False
+    return any(
+        cell.is_trellis
+        and cell.family == family
+        and rate in cell.rungs_q256
+        and cell.qualification == "device_qualified"
+        and cell.route_status in _NATIVE_ROUTE_STATUSES
+        for cell in table.cells
+    )
 
 
 def is_tessera_format(name: object) -> bool:
@@ -416,15 +460,17 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
         # conflating them is how a rung reaches the DP that cannot be written:
         #   (a) the wire can carry it -- the grid's digest is a permanent
         #       commitment in SERIALISABLE_GRIDS;
-        #   (b) a pinned runtime executes it -- the kernel lane has no vLLM
-        #       backend yet, so this is False for every rung today (principle 9).
-        # (a) is per-rung and settled here; (b) is one flag so that flipping it
-        # behind an attested route CANNOT silently admit an unwritable rung.
-        # ``route`` above is a layout fact, NOT an attestation: a rung whose
-        # tile would materialise into NVFP4 is still not producer-eligible
-        # until a pinned runtime is measured loading and routing these bytes.
+        #   (b) a pinned runtime executes it -- read from the pinned serving
+        #       release's own contract (``tessera_lane_attested``), so a rung
+        #       is admitted by a cell the runtime published, never by an edit
+        #       here (principles 9 and 14).
+        # (a) is per-rung and settled here; (b) is one lookup so that a route
+        # attestation CANNOT silently admit an unwritable rung.  ``route``
+        # above is a layout fact, NOT an attestation: a rung whose tile would
+        # materialise into NVFP4 is still not producer-eligible until the
+        # pinned release's table carries a cell that names it.
         producer_eligible=(
-            _TESSERA_SERVING_LANE_EXISTS and tessera_rung_is_serialisable(name)
+            tessera_rung_is_serialisable(name) and tessera_lane_attested(name)
         ),
         # The shape-aware price, for a wire whose per-unit planes make the
         # rate a function of the tensor.  Exactly one of this and

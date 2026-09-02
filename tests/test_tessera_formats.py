@@ -437,17 +437,17 @@ def test_a_rung_that_renders_can_still_be_unwritable():
     tessera_rung_is_serialisable.cache_clear()
 
 
-def test_flipping_the_serving_lane_cannot_admit_an_unwritable_rung():
+def test_an_attested_lane_cannot_admit_an_unwritable_rung():
     """``producer_eligible`` is the AND of "the wire can carry it" and "a
-    runtime serves it".  The second is one module-level flag, so the whole
-    point of the AND is that flipping it -- the deliberate act that follows an
-    attested route -- must not quietly put a rung on the menu that the exporter
-    will refuse."""
+    runtime serves it".  The second is one lookup against the pinned serving
+    contract, so the whole point of the AND is that a route attestation --
+    the deliberate act that follows a serve receipt -- must not quietly put a
+    rung on the menu that the exporter will refuse."""
     from unittest import mock
 
     from prismaquant import tessera_render as tr
 
-    with mock.patch.object(tr, "_TESSERA_SERVING_LANE_EXISTS", True):
+    with mock.patch.object(tr, "tessera_lane_attested", lambda name, **kw: True):
         assert tr.synthesize_tessera_spec("TESSERA_E2M1_K2_R896").producer_eligible
         assert tr.synthesize_tessera_spec(
             "TESSERA_E4M3_K1_R1024"
@@ -457,13 +457,86 @@ def test_flipping_the_serving_lane_cannot_admit_an_unwritable_rung():
         ).producer_eligible
 
 
-def test_no_tessera_rung_is_producer_eligible_today():
-    """Principle 9: nothing serves these bytes yet, so registry membership must
-    not be mistaken for a serving route."""
+def test_no_tessera_rung_is_producer_eligible_on_the_pinned_release():
+    """Principle 9: the pinned serving release (Gridbook 0.9.1, contract v12)
+    publishes no Tessera row, so registry membership must not be mistaken for
+    a serving route.  The day a pin lands on a release whose contract carries
+    the ``TESSERA_E2M1_K2`` row (v13 is the first), this test's premise ends
+    and the eligible set is whatever that contract's cells name."""
+    from prismaquant import tessera_render as tr
     from prismaquant.tessera_render import synthesize_tessera_spec
 
+    table, _formats = tr._pinned_serving_table()
+    assert not table.governs("TESSERA_E2M1_K2")
     for name in ("TESSERA_E2M1_K2_R896", "TESSERA_E2M1_K1_R640"):
+        assert tr.tessera_lane_attested(name) is False
         assert synthesize_tessera_spec(name).producer_eligible is False
+
+
+def _v13_shaped_contract(tmp_path, *, qualification="device_qualified",
+                         route_status="backed_with_serve_flag", rungs=(896,)):
+    """The v12 fixture plus the Tessera row and cells Gridbook contract v13
+    publishes -- a FIXTURE for the lookup's logic, never an attestation: the
+    real cells reach this repository only through a re-pin."""
+    import json
+
+    from test_cb_route_status_gate import V12_FIXTURE, _cell
+
+    contract = json.loads(V12_FIXTURE.read_text())
+    contract["formats"].append({
+        "kind": "tcq_trellis", "family": "TESSERA_E2M1_K2",
+        "name_pattern": "TESSERA_E2M1_K2_R{k}",
+        "candidate_rungs_q256": [896], "reader_rate_range_q256": [896, 896],
+        "native_terminal_q256": 1024, "residency_modes": ["resident", "streamed"],
+    })
+    flags = ["GRIDBOOK_TESSERA_NVFP4=1", "GRIDBOOK_TESSERA_NVFP4_MODE=resident|streamed"]
+    for regime in ("decode", "batch"):
+        contract["lane_eligibility"]["cells"].append(_cell(
+            f"tessera_e2m1_k2_dense_sm121_{regime}", platform="sm_121",
+            family="TESSERA_E2M1_K2", structure="dense", regime=regime,
+            route_status=route_status, qualification=qualification,
+            rungs_q256=list(rungs), activation_contract="e2m1_group16_ue4m3_static",
+            flags=flags if route_status == "backed_with_serve_flag" else ()))
+    path = tmp_path / "v13.json"
+    path.write_text(json.dumps(contract))
+    return path
+
+
+def test_tessera_lane_attested_is_read_from_the_contracts_own_cells(tmp_path):
+    """One lookup, failing closed on every axis: the family must be published,
+    a cell must name the rate, the cell must be device-qualified and its
+    route native.  Nothing in this repository can widen it."""
+    from unittest import mock
+
+    from prismaquant import tessera_render as tr
+    from prismaquant.gridbook_lane_eligibility import (
+        load_eligibility_table, load_published_formats,
+    )
+
+    def _load(path):
+        return (load_eligibility_table("0.9.1-test", contract_path=path),
+                load_published_formats(contract_path=path))
+
+    table, formats = _load(_v13_shaped_contract(tmp_path))
+    assert table.governs("TESSERA_E2M1_K2")
+    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R896", table=table, formats=formats)
+    # a serialisable rate no cell names
+    assert not tr.tessera_lane_attested("TESSERA_E2M1_K2_R640", table=table, formats=formats)
+    # a family the contract does not publish
+    assert not tr.tessera_lane_attested("TESSERA_E2M1_K1_R640", table=table, formats=formats)
+    assert not tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024", table=table, formats=formats)
+    # a cell that only cross-compiled, and one whose route is a fallback
+    (tmp_path / "c").mkdir()
+    t2, f2 = _load(_v13_shaped_contract(tmp_path / "c", qualification="compile_only"))
+    assert not tr.tessera_lane_attested("TESSERA_E2M1_K2_R896", table=t2, formats=f2)
+    (tmp_path / "f").mkdir()
+    t3, f3 = _load(_v13_shaped_contract(tmp_path / "f", route_status="fallback"))
+    assert not tr.tessera_lane_attested("TESSERA_E2M1_K2_R896", table=t3, formats=f3)
+    # and the spec reads the same lookup: the menu admits the attested rung only
+    with mock.patch.object(tr, "_pinned_serving_table", lambda: (table, formats)):
+        assert tr.synthesize_tessera_spec("TESSERA_E2M1_K2_R896").producer_eligible
+        assert not tr.synthesize_tessera_spec("TESSERA_E2M1_K2_R640").producer_eligible
+        assert not tr.synthesize_tessera_spec("TESSERA_E4M3_K1_R1024").producer_eligible
 
 
 # ------------------------------------------------- the recipe is the unit of account
