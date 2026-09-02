@@ -29,12 +29,33 @@ from prismaquant.tessera_formats import (
     TesseraRateSurface,
     artifact_bpp,
     enumerate_grid_space,
+    family_rate_cap,
     get_tessera_family,
     parse_tessera_format_name,
     realisable_rungs,
+    recipe_is_shape_free,
+    scale_plane_name,
     tessera_family,
+    tessera_wire_recipe,
     validate_body_rate_q256,
 )
+from tessera.export import TCQ_RECIPE
+from tessera.manifest import BodyKind
+
+
+def _coset_rungs(spec):
+    """The rungs of ``spec`` the exporter writes on the coset trellis.
+
+    Since 2026-09-02 a family's wire is a function of the rung -- E2M1x2 is the
+    window body below the trellis's cap and the trellis at it -- so a test
+    about the trellis has to ask which rungs those are rather than assume the
+    family.  Returns them in rung order, possibly empty (E4M3 is the window
+    body everywhere).
+    """
+    return [
+        q for q in realisable_rungs(spec, recipe=TCQ_RECIPE)
+        if tessera_wire_recipe(spec, q).body is BodyKind.TCQ
+    ]
 
 # (label, family name, body q256, artifact bpp as measured on built bytes)
 #
@@ -65,14 +86,45 @@ def test_the_measured_rungs_price_at_their_published_bpp(label, family, q256, bp
 
 
 def test_the_default_wire_keeps_k2_at_four_and_lifts_arity_one_by_a_quarter():
-    """The exporter's wire since 2026-09-01 (span 2 over a LUT plane): the
-    stored labels cost (L-1)/L bits per CODE, the LUT plane saves a quarter-bit
-    per position, so at arity 2 the two cancel and at arity 1 they do not."""
+    """The coset-trellis wire (span 2 over a LUT plane): the stored labels cost
+    (L-1)/L bits per CODE, the LUT plane saves a quarter-bit per position, so at
+    arity 2 the two cancel and at arity 1 they do not.
+
+    E2M1x2 keeps that wire **at** the trellis's cap, which is the rung 4.0 bpp
+    is addressed at, so the headline number is unmoved by the 2026-09-02 flip.
+    """
     assert artifact_bpp("TESSERA_E2M1_K2", 896) == Fraction(4)
     assert artifact_bpp("TESSERA_E2M1_K1", 768) == Fraction(15, 4)
-    assert artifact_bpp("TESSERA_E4M3_K1", 1024) == Fraction(19, 4)
     assert artifact_bpp("TESSERA_E2M1_K2", 896) == artifact_bpp(
         "TESSERA_E2M1_K2", 896, span=1, scale_plane="s6b")
+
+
+def test_the_e4m3_rung_has_a_size_but_no_rate():
+    """E4M3's wire is the window body over the CHANNEL plane at every rung.
+
+    Both of its planes are charged per *unit* -- one fp16 per output row, one
+    ``2^14``-byte table -- so the rung has no bits-per-parameter rate to quote
+    and the shape-free accountant refuses instead of quoting a floor.  Named a
+    shape, it is exact, and the two entry points that answer it (the closed
+    form here, the ``FormatSpec`` the registry synthesizes) must agree.
+    """
+    from prismaquant import format_registry as fr
+
+    assert not recipe_is_shape_free(tessera_wire_recipe("TESSERA_E4M3_K1", 1024))
+    with pytest.raises(TesseraFormatError, match="per unit"):
+        artifact_bpp("TESSERA_E4M3_K1", 1024)
+
+    shape = (2048, 4096)
+    # 4.0 body + 16/4096 row field + 2^14 * 8 / (2048*4096) table.
+    priced = artifact_bpp("TESSERA_E4M3_K1", 1024, shape=shape)
+    assert priced == Fraction(4) + Fraction(16, 4096) + Fraction(
+        (1 << 14) * 8, 2048 * 4096)
+    assert priced == Fraction(1029, 256)
+
+    spec = fr.get_format("TESSERA_E4M3_K1_R1024")
+    assert spec.bits_for_shape(shape) == priced * shape[0] * shape[1]
+    # A narrower unit pays more for the same two per-unit planes.
+    assert artifact_bpp("TESSERA_E4M3_K1", 1024, shape=(96, 768)) > priced
 
 
 @pytest.mark.parametrize("label,family,q256,bpp", MEASURED_LADDER)
@@ -108,13 +160,26 @@ def test_arity_is_what_fills_the_rungs_between():
 
 
 def test_rate_cap_closes_the_code_space():
-    """|A_R| * |D(a)| = 2^(R+1) * 2^(cap-R) must equal 2^payload_bits."""
+    """|A_R| * |D(a)| = 2^(R+1) * 2^(cap-R) must equal 2^payload_bits.
+
+    That closure is the *coset trellis's*, and so is the cap it fixes.  The
+    window body shapes with the ``L - R`` bits of history a position shares
+    with its predecessors rather than with a code bit, so it caps a whole bit
+    higher and closes nothing -- which is why the cap is asked of the recipe
+    (:func:`family_rate_cap`) and never re-derived as a subtraction.
+    """
+    from tessera.export import TCQ_RECIPE
+
     for spec in enumerate_grid_space():
-        assert spec.rate_cap == spec.payload_bits - 1
-        for rate in range(1, spec.rate_cap + 1):
-            assert (1 << (rate + 1)) * (1 << (spec.rate_cap - rate)) == (
+        coset_cap = family_rate_cap(spec, TCQ_RECIPE)
+        assert coset_cap == spec.payload_bits - 1
+        for rate in range(1, coset_cap + 1):
+            assert (1 << (rate + 1)) * (1 << (coset_cap - rate)) == (
                 1 << spec.payload_bits
             )
+        # And the family advertises its own wire's cap, not the coset one.
+        window = spec.recipe.body is not BodyKind.TCQ
+        assert spec.rate_cap == spec.payload_bits - (0 if window else 1)
 
 
 def test_the_lane_follows_the_base_grid_not_the_arity():
@@ -133,7 +198,11 @@ def test_the_family_reads_its_grid_from_tessera_not_from_here():
         grid = spec.payload_grid()
         assert grid.payload_bits == spec.payload_bits
         assert grid.arity == spec.arity
-        assert grid.rate_cap == spec.rate_cap
+        # ``PayloadGrid.rate_cap`` is the coset trellis's ceiling -- it is what
+        # ``tessera.export.tcq_cap_q256`` reads to decide where E2M1x2 leaves
+        # the window body -- so it is that cap this must match, not whatever
+        # the family's current recipe advertises.
+        assert grid.rate_cap == family_rate_cap(spec, TCQ_RECIPE)
 
 
 def test_a_code_space_at_the_encoder_wall_is_refused():
@@ -173,13 +242,20 @@ def test_the_scale_plane_is_half_a_bit_everywhere():
     scale plane.
     """
     assert SCALE_PLANE_BITS_Q256 == 128
+    checked = 0
     for spec in enumerate_grid_space():
+        if not recipe_is_shape_free(spec.recipe):
+            # A per-unit wire has no per-position overhead to compare against;
+            # its offset is a function of the shape and is checked there.
+            continue
         body_lo, body_hi = spec.mathematical_q256_bounds
         art_lo, art_hi = spec.artifact_q256_bounds
         extra = wire_overhead_q256(spec)
         assert art_lo - body_lo == extra, spec.name
         assert art_hi - body_hi == extra, spec.name
         assert art_hi > art_lo, (spec.name, "a family advertises an interval")
+        checked += 1
+    assert checked, "no family left with a per-position wire to check"
     # The overhead is the exporter's wire and nothing else: span-1 S6b is the
     # historical half-bit; the shipping span-2 LUT wire is a quarter-bit of
     # plane plus half a bit per CODE of stored labels.
@@ -246,22 +322,25 @@ def test_the_bpp_formula_agrees_with_tesseras_exact_byte_accountant():
 
     checked = 0
     for spec in enumerate_grid_space():
-        rungs = realisable_rungs(spec)
+        rungs = _coset_rungs(spec)
+        if not rungs:
+            continue
+        cap = family_rate_cap(spec, TCQ_RECIPE)
         for q in (rungs[0], rungs[len(rungs) // 2], rungs[-1]):
+            wire = tessera_wire_recipe(spec, q)
+            plane = scale_plane_name(wire.scale_plane)
             # ``terminal_rate`` takes q256 per *code* -- it calls
             # ``root_from_q256`` directly -- while a rung is quoted per
             # position, so the arity factor has to be applied by the caller.
-            for depth in (0, spec.rate_cap):
-                span, plane = tessera_wire_defaults()
+            for depth in (0, cap):
                 exact = terminal_rate(
                     q * spec.arity, 4096, 4096, with_scale_refine=True,
-                    with_scale_base=plane == "s6b", span=span,
-                    cap=spec.rate_cap, arity=spec.arity, completion=depth,
+                    with_scale_base=plane == "s6b", span=wire.span,
+                    cap=cap, arity=spec.arity, completion=depth,
                 )
                 assert artifact_bpp(spec, q, depth) == exact, (spec.name, q, depth)
                 checked += 1
-            assert artifact_bpp(spec, q, None) == artifact_bpp(
-                spec, q, spec.rate_cap)
+            assert artifact_bpp(spec, q, None) == artifact_bpp(spec, q, cap)
     assert checked >= 12
 
 
@@ -278,20 +357,31 @@ def test_the_rung_sets_the_size_and_the_completion_depth_is_the_other_axis():
     For a stretch on 2026-09-01 this file asserted the corner as the whole
     thing, because the serialiser wrote the plane at full width regardless.
     """
+    checked = 0
     for spec in enumerate_grid_space():
-        rungs = realisable_rungs(spec)
-        overhead = wire_overhead_q256(spec) / 256
-        ceiling = Fraction(spec.rate_cap * 256, spec.arity) / 256 + overhead
+        # The completion plane is the coset trellis's second axis; the window
+        # body has none (``artifact_bpp`` refuses a depth under it), so this is
+        # a statement about the rungs whose wire is that trellis.
+        rungs = _coset_rungs(spec)
+        if not rungs:
+            continue
+        cap = family_rate_cap(spec, TCQ_RECIPE)
+        wire = tessera_wire_recipe(spec, rungs[0])
+        overhead = wire_overhead_q256(spec, recipe=wire) / 256
+        ceiling = Fraction(cap * 256, spec.arity) / 256 + overhead
 
-        priced = [artifact_bpp(spec, q) for q in rungs]
+        priced = [artifact_bpp(spec, q, recipe=wire) for q in rungs]
         assert priced == sorted(priced), spec.name
         assert len(set(priced)) == len(rungs), (spec.name, "flat ladder")
-        assert priced[-1] == ceiling
         for rung, bpp in zip(rungs, priced):
             assert bpp == Fraction(rung, 256) + overhead
+        if rungs[-1] * spec.arity == cap * 256:
+            assert priced[-1] == ceiling
 
-        at_full = {artifact_bpp(spec, q, None) for q in rungs}
+        at_full = {artifact_bpp(spec, q, None, recipe=wire) for q in rungs}
         assert at_full == {ceiling}, (spec.name, sorted(map(float, at_full)))
+        checked += 1
+    assert checked, "no family left with a completion axis to check"
 
 
 # --------------------------------------------------- the wire gate vs the lane
@@ -470,19 +560,34 @@ def test_a_per_unit_wire_term_has_no_price_without_a_shape():
     cannot carry "this is a floor".  Returning the floor there would be the
     silent drop, not the guard against it.
 
-    Nothing raises on today's wire, which is the other half of the contract:
-    every family's recipe is the TCQ body over a block plane, so the closed
-    form stays exact with no shape and no caller has to learn about this.
+    Which of today's wires this bites is a per-(grid, rung) fact, so the test
+    asks rather than assumes: a rung on the coset trellis over a block plane
+    still prices with no shape at all, and one on the window body or the
+    CHANNEL plane refuses.  Both halves are checked on the live recipes.
     """
     from prismaquant.tessera_formats import (
         recipe_from_wire_names, recipe_is_shape_free, tessera_wire_recipe,
         wire_overhead_q256,
     )
 
+    free = per_unit = 0
     for name in TCQ_FAMILIES:
         spec = get_tessera_family(name)
-        assert recipe_is_shape_free(tessera_wire_recipe(spec))
-        assert artifact_bpp(spec, 256) > 0          # no shape needed today
+        for q in (spec.mathematical_q256_bounds[0], 1024):
+            try:
+                validate_body_rate_q256(spec, q)
+            except TesseraFormatError:
+                continue
+            wire = tessera_wire_recipe(spec, q)
+            if recipe_is_shape_free(wire):
+                assert artifact_bpp(spec, q) > 0
+                free += 1
+            else:
+                with pytest.raises(TesseraFormatError, match="per unit"):
+                    artifact_bpp(spec, q)
+                assert artifact_bpp(spec, q, shape=(2048, 4096)) > 0
+                per_unit += 1
+    assert free and per_unit, (free, per_unit)
 
     spec = get_tessera_family("TESSERA_E4M3_K1")
     for wire in (
@@ -532,9 +637,14 @@ def test_a_window_recipe_widens_the_family_bounds():
     }
     for name, (tcq_bounds, win_bounds, tcq_cap, win_cap) in literal.items():
         spec = get_tessera_family(name)
-        # Unchanged by the recipe machinery: this is what ships today.
-        assert spec.mathematical_q256_bounds == tcq_bounds, name
-        assert spec.rate_cap == tcq_cap, name
+        # The family advertises its own wire's interval, and the two literals
+        # below say which that is for each grid: E4M3 is the window body
+        # everywhere since 2026-09-02, the two E2M1 families are the trellis at
+        # the rung their bounds are stated at.
+        expected = win_bounds if name == "TESSERA_E4M3_K1" else tcq_bounds
+        assert spec.mathematical_q256_bounds == expected, name
+        assert spec.rate_cap == (win_cap if name == "TESSERA_E4M3_K1"
+                                 else tcq_cap), name
         assert family_q256_bounds(spec, tcq) == tcq_bounds, name
         assert family_rate_cap(spec, tcq) == tcq_cap, name
         # Wider under a window recipe, at the top end only.
@@ -548,7 +658,9 @@ def test_a_window_recipe_widens_the_family_bounds():
         assert realisable_rungs(spec, recipe=window)[-1] == hi
         assert validate_body_rate_q256(spec, hi, recipe=window) == hi
         with pytest.raises(TesseraFormatError):
-            validate_body_rate_q256(spec, hi)          # TCQ: above the cap
+            # Above the coset trellis's cap, named explicitly: E4M3's default
+            # recipe is the window body now, and under it `hi` is legal.
+            validate_body_rate_q256(spec, hi, recipe=tcq)
         with pytest.raises(TesseraFormatError):
             validate_body_rate_q256(spec, hi + 1, recipe=window)
         # And the schedule really is buildable at the widened ceiling.
@@ -568,7 +680,19 @@ def test_the_two_scalar_wire_projection_refuses_what_it_cannot_state():
 
     from prismaquant import tessera_formats as tf
 
-    assert tessera_wire_defaults() == (2, "lut16")
+    # Today it raises, and that is the correct answer rather than a
+    # regression: since 2026-09-02 E4M3 is the window body over CHANNEL while
+    # E2M1 is the span-2 coset trellis over LUT16, so there is no pair of
+    # scalars that describes the exporter's wire.  The message names both the
+    # divergence it saw and the function that does answer the question.
+    with pytest.raises(TesseraFormatError, match="tessera_wire_recipe"):
+        tessera_wire_defaults()
+
+    # It still answers in a world where one wire really does cover every
+    # family -- which is what it meant before the flip, and all it ever meant.
+    uniform = tf.recipe_from_wire_names(2, "lut16")
+    with mock.patch.object(tf, "tessera_wire_recipe", lambda *a, **k: uniform):
+        assert tessera_wire_defaults() == (2, "lut16")
 
     window = tf.recipe_from_wire_names(1, "channel", "window", 14)
     with mock.patch.object(tf, "tessera_wire_recipe", lambda *a, **k: window):
@@ -616,9 +740,16 @@ def test_the_route_is_a_property_of_the_grid_and_the_plane_together():
     assert spec.act_quant_changes_input is True
     assert spec.group_size == 0        # per-output-channel, as FP8_E4M3 spells it
 
+    # E4M3's *default* wire is that pair since 2026-09-02, so the rung the
+    # registry synthesizes by name executes W8A8 with no recipe named at all.
+    by_name = synthesize_tessera_spec("TESSERA_E4M3_K1_R1024", shape=(2048, 4096))
+    assert (by_name.act_bits, by_name.act_dtype_name) == (8, "fp8_e4m3")
+
     # The two combinations with no stock MMA layout: kernel lane, weight-only.
     kernel_only = [
-        ("TESSERA_E4M3_K1_R1024", None),                      # E4M3 + block plane
+        # E4M3 over a per-16 block plane: still E4M3 bytes, but no kernel reads
+        # FP8 weights at that granularity.
+        ("TESSERA_E4M3_K1_R1024", recipe_from_wire_names(2, "lut16")),
         ("TESSERA_E2M1_K2_R896", recipe_from_wire_names(2, "channel")),
         ("TESSERA_LM16_K2_R896", None),                       # a free grid
     ]
@@ -674,8 +805,10 @@ def test_the_activation_side_is_the_serving_formats_own_quantiser():
         fr.get_format("FP8_E4M3").activation_quantize_dequantize(x),
     )
 
-    # Weight-only stays the identity.
-    kernel = synthesize_tessera_spec("TESSERA_E4M3_K1_R1024")
+    # Weight-only stays the identity -- E4M3 over a block plane, which is the
+    # wire E4M3 left on 2026-09-02 and still a legal thing to price.
+    kernel = synthesize_tessera_spec(
+        "TESSERA_E4M3_K1_R1024", recipe=recipe_from_wire_names(2, "lut16"))
     assert torch.equal(kernel.activation_quantize_dequantize(x), x)
 
     # And the W side: a spec synthesized for a recipe must *render* that
@@ -692,7 +825,9 @@ def test_the_activation_side_is_the_serving_formats_own_quantiser():
     )
     assert not torch.equal(
         w8.quantize_dequantize(weight),
-        render_tessera_weight(weight, "TESSERA_E4M3_K1_R1024"),
+        render_tessera_weight(
+            weight, "TESSERA_E4M3_K1_R1024",
+            recipe=recipe_from_wire_names(2, "lut16")),
     )
 
 

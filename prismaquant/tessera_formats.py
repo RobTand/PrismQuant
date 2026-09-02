@@ -319,29 +319,45 @@ def _resolved_recipe(
     """One recipe from the three ways a caller may name one.
 
     Precedence: an explicit ``recipe`` wins; otherwise the family's recipe at
-    ``rung``, with ``span``/``scale_plane`` overriding the fields they name --
-    which is the same "the caller overrides only what it names" rule
-    ``tessera.export.encode_linear`` applies to its own wire kwargs.
+    ``rung``.
+
+    Naming ``span``/``scale_plane`` asks for the **coset-trellis** wire with
+    that span and that plane, not for the family's current wire with two
+    fields swapped.  That spelling predates the recipe and only ever described
+    a TCQ body -- a span and a block plane are the two knobs that body has --
+    so it is how a caller says "price this the way the artifact I am comparing
+    against was priced".  Reading it as a mutation of the family's recipe would
+    have quietly answered a WINDOW question with a span-1 s6b label on it the
+    day E4M3 flipped, which is a wire that has never existed.  Ask for the
+    window wire by passing ``recipe=``.
     """
-    base = recipe if recipe is not None else tessera_wire_recipe(spec, rung)
-    if span is None and scale_plane is None:
-        return base
     if recipe is not None:
-        raise TesseraFormatError(
-            "name a recipe or the span/scale_plane scalars, not both"
-        )
+        if span is not None or scale_plane is not None:
+            raise TesseraFormatError(
+                "name a recipe or the span/scale_plane scalars, not both"
+            )
+        return recipe
+    if span is None and scale_plane is None:
+        return tessera_wire_recipe(spec, rung)
+    base = tessera_wire_recipe(spec, rung)
     kind = (
         ScalePlaneKind(base.scale_plane) if scale_plane is None
         else _PLANE_KINDS[scale_plane_name(scale_plane)]
     )
+    if kind is ScalePlaneKind.CHANNEL:
+        raise TesseraFormatError(
+            "the CHANNEL plane is not one of the coset trellis's planes; "
+            "name it with recipe=WireRecipe(...) so the body is stated too"
+        )
     return WireRecipe(
-        body=base.body,
-        span=base.span if span is None else int(span),
+        body=BodyKind.TCQ,
+        span=(base.span if base.body is BodyKind.TCQ else 1)
+        if span is None else int(span),
         scale_plane=kind,
-        window_bits=base.window_bits,
-        window_seed=base.window_seed,
-        window_sigma=base.window_sigma,
-        channel_sigma=base.channel_sigma,
+        window_bits=0,
+        window_seed=0,
+        window_sigma=None,
+        channel_sigma=None,
     )
 
 

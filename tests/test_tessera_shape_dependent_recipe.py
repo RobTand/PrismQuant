@@ -39,7 +39,14 @@ from tessera.export import WireRecipe  # noqa: E402
 from tessera.manifest import BodyKind, ScalePlaneKind  # noqa: E402
 
 WINDOW_BITS = 12
-#: The recipe Tessera is about to write for E4M3: window body, CHANNEL plane.
+#: The recipe Tessera ships for E4M3 as of 2026-09-02, by reference rather
+#: than by value: this file must keep testing whatever that recipe becomes.
+LIVE_RECIPE = tessera_export.E4M3_RECIPE
+LIVE_WINDOW_BITS = tessera_export.E4M3_WINDOW_BITS
+
+#: A second window width, substituted for E4M3 by the fixture below.  Not a
+#: hypothetical any more -- the flip has landed -- but a different L keeps the
+#: tests honest about pricing the recipe rather than a memorised constant.
 FLIPPED = WireRecipe(
     body=BodyKind.WINDOW,
     span=1,
@@ -53,7 +60,9 @@ SHAPES = ((2048, 4096), (96, 768))
 RUNGS = (512, 1024, 2048)
 
 
-def _reference_bits(rung: int, rows: int, columns: int) -> Fraction:
+def _reference_bits(
+    rung: int, rows: int, columns: int, window_bits: int = WINDOW_BITS,
+) -> Fraction:
     """Tessera's own accountant, told the recipe by hand."""
 
     rate = terminal_rate(
@@ -68,7 +77,7 @@ def _reference_bits(rung: int, rows: int, columns: int) -> Fraction:
         cap=8,                   # payload_bits, not payload_bits - 1
         arity=1,
         span=1,
-        window_bits=WINDOW_BITS,
+        window_bits=window_bits,
     )
     return rate * rows * columns
 
@@ -268,17 +277,73 @@ def test_the_e2m1_families_do_not_move_when_e4m3_flips(flipped_e4m3):
     assert tfm.family_q256_bounds(e4m3) == (256, 2048)
 
 
-def test_todays_wire_is_untouched_when_the_patch_is_not_applied():
-    """The unpatched world is the shipping one: rates, and no accountant."""
+def test_the_unpatched_wire_for_e4m3_is_the_window_over_channel():
+    """No fixture: the shipping recipe, asserted against tessera's own object.
 
-    spec = fr.get_format("TESSERA_E4M3_K1_R1024")
-    assert spec.bits_for_shape_fn is None
-    # 4.0 body + 0.25 LUT plane + 0.5 span-2 label bits.
-    assert spec.exact_bits_per_param == Fraction(19, 4)
-    assert spec.effective_bits == pytest.approx(5.25)
+    The flip landed on 2026-09-02, so the world these tests were written for is
+    now the default.  This is stated by equality with
+    ``tessera.export.E4M3_RECIPE`` rather than by repeating its fields, so a
+    later change to L or to the plane arrives here as a changed price rather
+    than as a passing test about a recipe nobody writes.
+    """
+
     family = tfm.get_tessera_family("TESSERA_E4M3_K1")
-    assert tfm.family_rate_cap(family) == 7
-    assert tfm.family_q256_bounds(family) == (256, 1792)
+    for rung in (256, 1024, 2048):
+        assert tfm.tessera_wire_recipe(family, rung) == LIVE_RECIPE
+    assert LIVE_RECIPE.body is BodyKind.WINDOW
+    assert LIVE_RECIPE.scale_plane is ScalePlaneKind.CHANNEL
+    assert not tfm.recipe_is_shape_free(LIVE_RECIPE)
+
+    # Priced by a function, not by a rate, and exact against terminal_rate at
+    # the width tessera actually ships.
+    spec = fr.get_format("TESSERA_E4M3_K1_R1024")
+    assert spec.exact_bits_per_param is None
+    assert spec.bits_for_shape_fn is not None
+    for shape in SHAPES:
+        assert spec.bits_for_shape(shape) == _reference_bits(
+            1024, *shape, window_bits=LIVE_WINDOW_BITS)
+    with pytest.raises(ValueError, match="shape-dependent"):
+        spec.effective_bits
+
+    # The window body's ceiling, and the W8A8 route, with nothing patched.
+    assert tfm.family_rate_cap(family) == 8
+    assert tfm.family_q256_bounds(family) == (256, 2048)
+    fp8 = fr.get_format("FP8_E4M3")
+    assert (spec.act_bits, spec.act_dtype_name, spec.act_group_size) == (
+        8, "fp8_e4m3", 0)
+    assert spec.min_capability_sm == fp8.min_capability_sm
+    assert spec.producer_eligible is False
+
+
+def test_the_sub_cap_e2m1x2_wire_is_shape_dependent_too():
+    """The other half of the flip: E2M1x2 below the coset trellis's cap.
+
+    ``wire_recipe`` returns the window body over LUT16 there (L=12) and the
+    trellis at the cap, so one family carries both kinds of price and the seam
+    has to answer per rung rather than per family.
+    """
+
+    from tessera.export import (
+        E2M1X2_SUBCAP_RECIPE, TCQ_RECIPE, tcq_cap_q256,
+    )
+
+    family = tfm.get_tessera_family("TESSERA_E2M1_K2")
+    cap = tcq_cap_q256(family.payload_grid())
+    assert cap == 896
+    assert tfm.tessera_wire_recipe(family, cap - 1) == E2M1X2_SUBCAP_RECIPE
+    assert tfm.tessera_wire_recipe(family, cap) == TCQ_RECIPE
+
+    sub_cap = fr.get_format("TESSERA_E2M1_K2_R768")
+    at_cap = fr.get_format("TESSERA_E2M1_K2_R896")
+    # Below the cap: a per-unit table, so a function and no scalar rate.
+    assert sub_cap.exact_bits_per_param is None
+    assert sub_cap.bits_for_shape_fn is not None
+    with pytest.raises(ValueError, match="shape-dependent"):
+        sub_cap.effective_bits
+    # At the cap: the coset trellis, a rate, and still exactly 4.0 bpp -- the
+    # rung every published Tessera number is quoted at.
+    assert at_cap.exact_bits_per_param == Fraction(4)
+    assert at_cap.bits_for_shape_fn is None
 
 
 # ---------------------------------------------------------------------------
@@ -291,15 +356,20 @@ def test_todays_wire_is_untouched_when_the_patch_is_not_applied():
 # a fused stack could not be decoded one expert at a time, and the kernel lane
 # decodes each unit against its own window table.  These tests pin that, and
 # pin that the two live consumers which used to raise now reach a number.
+#
+# They run **unpatched**, on the shipping E4M3 recipe: routed experts are what
+# this format exists for, so pricing them is a claim about the wire tessera
+# writes today rather than about a substituted one.
 
 GLM_EXPERTS = 128
 GLM_EXPERT_SHAPE = (1408, 4096)
 GLM_PACKED_SHAPE = (GLM_EXPERTS, *GLM_EXPERT_SHAPE)
 
 
-def test_a_packed_expert_stack_is_priced_as_one_unit_per_expert(flipped_e4m3):
+def test_a_packed_expert_stack_is_priced_as_one_unit_per_expert():
     spec = fr.get_format("TESSERA_E4M3_K1_R1024")
-    per_expert_bits = _reference_bits(1024, *GLM_EXPERT_SHAPE)
+    per_expert_bits = _reference_bits(
+        1024, *GLM_EXPERT_SHAPE, window_bits=LIVE_WINDOW_BITS)
     per_expert_bytes = math.ceil(per_expert_bits / 8)
 
     assert spec.bits_for_shape(GLM_PACKED_SHAPE) == GLM_EXPERTS * per_expert_bits
@@ -309,10 +379,11 @@ def test_a_packed_expert_stack_is_priced_as_one_unit_per_expert(flipped_e4m3):
     # The fused reading -- one unit of (experts*out, in) -- would charge one
     # window table instead of 128.  Naming the difference is what makes this a
     # test of the convention rather than of the arithmetic.
-    fused_bits = _reference_bits(1024, GLM_EXPERTS * GLM_EXPERT_SHAPE[0],
-                                GLM_EXPERT_SHAPE[1])
+    fused_bits = _reference_bits(
+        1024, GLM_EXPERTS * GLM_EXPERT_SHAPE[0], GLM_EXPERT_SHAPE[1],
+        window_bits=LIVE_WINDOW_BITS)
     assert spec.bits_for_shape(GLM_PACKED_SHAPE) - fused_bits == (
-        (GLM_EXPERTS - 1) * (1 << WINDOW_BITS) * 8
+        (GLM_EXPERTS - 1) * (1 << LIVE_WINDOW_BITS) * 8
     )
     # 1-D and 4-D remain refused: neither says how many units it is.
     with pytest.raises(ValueError):
@@ -321,7 +392,7 @@ def test_a_packed_expert_stack_is_priced_as_one_unit_per_expert(flipped_e4m3):
         spec.bits_for_shape((2, 128, 1408, 4096))
 
 
-def test_the_stats_shape_a_packed_expert_really_produces(flipped_e4m3):
+def test_the_stats_shape_a_packed_expert_really_produces():
     """The shape under test is the one the pipeline builds, not one invented."""
 
     from prismaquant.allocator_solver import _shape_from_stats
@@ -337,7 +408,7 @@ def test_the_stats_shape_a_packed_expert_really_produces(flipped_e4m3):
     assert spec.memory_bytes_for_shape(_shape_from_stats(entry)) > 0
 
 
-def test_the_allocator_reaches_a_rate_for_a_packed_expert_format(flipped_e4m3):
+def test_the_allocator_reaches_a_rate_for_a_packed_expert_format():
     """``_sort_specs_by_serialized_rate`` used to skip the tensor, then raise.
 
     Skipping every expert tensor left ``total_params == 0``, which fell through
@@ -358,13 +429,13 @@ def test_the_allocator_reaches_a_rate_for_a_packed_expert_format(flipped_e4m3):
         }
     }
     _ordered, rates = _sort_specs_by_serialized_rate([spec], stats, None)
-    want = _reference_bits(1024, *GLM_EXPERT_SHAPE) / (
-        GLM_EXPERT_SHAPE[0] * GLM_EXPERT_SHAPE[1]
-    )
+    want = _reference_bits(
+        1024, *GLM_EXPERT_SHAPE, window_bits=LIVE_WINDOW_BITS
+    ) / (GLM_EXPERT_SHAPE[0] * GLM_EXPERT_SHAPE[1])
     assert rates[spec.name] == pytest.approx(float(want))
 
 
-def test_decision_unit_construction_survives_a_packed_expert(flipped_e4m3):
+def test_decision_unit_construction_survives_a_packed_expert():
     """The unpriced path: ``decision_units`` calls the accountant with no try.
 
     ``target_profile="research"`` because the production packed-MoE profile
@@ -423,7 +494,8 @@ def test_decision_unit_construction_survives_a_packed_expert(flipped_e4m3):
         assert option.memory_bytes > 0
     want = sum(
         experts * math.ceil(
-            _reference_bits(1024, shape[0], shape[1]) / 8
+            _reference_bits(1024, shape[0], shape[1],
+                            window_bits=LIVE_WINDOW_BITS) / 8
         )
         for shape in ((2 * out_features, in_features), (in_features, out_features))
     )

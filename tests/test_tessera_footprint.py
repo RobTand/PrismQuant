@@ -25,10 +25,15 @@ from prismaquant.tessera_footprint import (
 )
 from prismaquant.tessera_formats import (
     TesseraFormatError,
+    artifact_bpp,
     enumerate_grid_space,
     get_tessera_family,
     realisable_rungs,
+    recipe_is_shape_free,
+    scale_plane_name,
+    tessera_wire_recipe,
 )
+from tessera.manifest import BodyKind
 
 SHAPE = (4096, 4096)
 
@@ -48,17 +53,21 @@ MEASURED = [
     ("TESSERA_E4M3_K1", 1280, 5.5),
 ]
 
-# The same rungs under the exporter's default wire since 2026-09-01 (schema
-# minor 1: span-2 trellis, LUT scale plane).  At arity 2 the stored labels
-# cost exactly what the plane saves, so K2 R896 stays 4.0; at arity 1 they
-# cost a quarter-bit more than the plane saves, so K1 rungs weigh +0.25.
+# The same rungs under the exporter's default wire, which is a function of the
+# grid AND the rung since 2026-09-02.  On the span-2 coset trellis over LUT16
+# the stored labels cost exactly what the plane saves at arity 2, so K2 R896
+# stays 4.0, while at arity 1 they cost a quarter-bit more and K1 rungs weigh
+# +0.25.  E4M3 left that wire entirely: the window body over the CHANNEL plane
+# pays no labels and no block plane, and instead pays two *per-unit* terms --
+# one fp16 per output row and a 2^14-byte table -- which at this 4096x4096
+# shape come to 16/4096 + 2^14*8/4096^2 = 0.01171875 bpp.
 DEFAULT_WIRE = [
     ("TESSERA_E2M1_K1", 768, 3.75),
     ("TESSERA_E2M1_K2", 896, 4.0),
     ("TESSERA_LM16_K2", 896, 4.0),
     ("TESSERA_LM16_K1", 768, 3.75),
-    ("TESSERA_E4M3_K1", 1024, 4.75),
-    ("TESSERA_E4M3_K1", 1280, 5.75),
+    ("TESSERA_E4M3_K1", 1024, 4.01171875),
+    ("TESSERA_E4M3_K1", 1280, 5.01171875),
 ]
 
 
@@ -80,7 +89,12 @@ def test_the_default_wire_prices_the_bytes_the_exporter_writes(family, q256, bpp
     spec = get_tessera_family(family)
     out = tessera_tensor_payload_breakdown(SHAPE, family=spec, body_rate_q256=q256)
     assert out["exact_bpw"] == pytest.approx(bpp, abs=1e-9)
-    assert out["trellis_span"] == 2 and out["scale_contract"] == "lut16"
+    # The wire is read off the recipe, not asserted as a constant: which body
+    # and plane this rung gets is tessera's decision per (grid, rung).
+    wire = tessera_wire_recipe(spec, q256)
+    assert out["trellis_span"] == wire.span
+    assert out["scale_contract"] == scale_plane_name(wire.scale_plane)
+    assert out["body_kind"] == wire.body.name.lower()
     # and the revalidation re-derives the same wire from the record itself
     assert validate_tessera_tensor_payload_breakdown(out)["exact_bpw"] == out["exact_bpw"]
 
@@ -91,15 +105,24 @@ def test_every_family_prices_at_the_bounds_it_advertises():
     times their real cost -- LM64 k=2 at 11.5 bpp against a 6.00 ceiling."""
     for spec in enumerate_grid_space():
         rungs = realisable_rungs(spec)
-        lo_q256, hi_q256 = spec.artifact_q256_bounds
-        lo = tessera_tensor_payload_breakdown(
-            SHAPE, family=spec, body_rate_q256=rungs[0]
-        )
-        hi = tessera_tensor_payload_breakdown(
-            SHAPE, family=spec, body_rate_q256=rungs[-1]
-        )
-        assert lo["exact_bpw"] == pytest.approx(lo_q256 / 256, abs=1e-9), spec.name
-        assert hi["exact_bpw"] == pytest.approx(hi_q256 / 256, abs=1e-9), spec.name
+        # The interval a family advertises is stated on its *family-level*
+        # recipe (the rung-independent one), so the ends are priced on that
+        # same wire -- otherwise this compares a window rung against a coset
+        # interval and calls the difference a bug.
+        wire = spec.recipe
+        per_unit = not recipe_is_shape_free(wire)
+        bounds = None if per_unit else spec.artifact_q256_bounds
+        for end, rung in enumerate((rungs[0], rungs[-1])):
+            out = tessera_tensor_payload_breakdown(
+                SHAPE, family=spec, body_rate_q256=rung, recipe=wire,
+                alphabet_bytes=0 if per_unit else None,
+            )
+            priced = Fraction(*out["exact_bpw_rational"])
+            want = (
+                artifact_bpp(spec, rung, recipe=wire, shape=SHAPE) if per_unit
+                else Fraction(bounds[end], 256)
+            )
+            assert priced == want, (spec.name, rung)
 
 
 def test_bytes_are_monotone_in_the_rung():
@@ -178,7 +201,14 @@ def test_the_lane_travels_with_the_price():
 
 def _price(spec, q256, dloss=1.0):
     schedule = spec.column_schedule(q256, SHAPE[1])
-    alphabets = {r: tuple(range(1 << (r + 1))) for r in set(schedule)}
+    # The coset trellis ships an anchor table per distinct rate; the window
+    # body's ALPHABET plane *is* its 2^L table and is already priced, so
+    # supplying anchors alongside it is refused rather than double-counted.
+    window = tessera_wire_recipe(spec, q256).body is BodyKind.WINDOW
+    alphabets = (
+        {} if window
+        else {r: tuple(range(1 << (r + 1))) for r in set(schedule)}
+    )
     return build_tessera_allocator_candidate(
         "layers.0.mlp.gate_proj", SHAPE, family=spec, body_rate_q256=q256,
         layout="tight", schedule=schedule, alphabets=alphabets,
@@ -197,12 +227,19 @@ def test_the_allocator_prices_a_tessera_rung(family, q256, bpp):
     assert candidate.memory_bytes * 8 == pytest.approx(
         candidate.bits_per_param * candidate.n_params, rel=1e-9
     )
-    # Strictly *above* the ladder figure, because `_price` supplies the anchor
-    # tables and they are real bytes.  The published ladder quotes body+scale;
-    # a priced candidate also carries its alphabets, and pretending otherwise
-    # would understate every artifact by the side information it must ship.
-    assert candidate.bits_per_param > bpp
-    assert candidate.bits_per_param - bpp < 1e-3
+    # On the coset trellis, strictly *above* the ladder figure, because
+    # `_price` supplies the anchor tables and they are real bytes.  The
+    # published ladder quotes body+scale; a priced candidate also carries its
+    # alphabets, and pretending otherwise would understate every artifact by
+    # the side information it must ship.  The window body has no separate
+    # anchor table -- its ALPHABET plane is the 2^L window and the ladder
+    # figure already includes it -- so there the two are equal.
+    window = tessera_wire_recipe(family, q256).body is BodyKind.WINDOW
+    if window:
+        assert candidate.bits_per_param == pytest.approx(bpp, abs=1e-9)
+    else:
+        assert candidate.bits_per_param > bpp
+        assert candidate.bits_per_param - bpp < 1e-3
 
 
 def test_the_rung_axis_is_a_rate_axis_the_allocator_can_search():
@@ -270,17 +307,29 @@ def test_the_registry_and_the_footprint_price_the_same_bytes(q256):
 def test_the_rung_name_is_the_rate(q256):
     """The R-number is the body rate, and the registry reads it as a size.
 
-    The price is ``(q256 + 128)/256`` -- the body the rung names, plus the flat
-    half-bit S6b scale plane.  For part of 2026-09-01 this asserted the family
-    cap at every rung instead, because the serialiser was writing the
+    What sits on top of the body is the *rung's own wire*.  At the coset
+    trellis's cap (R896) that is the span-2 LUT16 pair, a quarter-bit of plane
+    plus a quarter-bit of labels; below the cap E2M1x2 is the window body over
+    the same plane since 2026-09-02, which pays no labels and instead pays its
+    2^12-byte table once per unit.  For part of 2026-09-01 this asserted the
+    family cap at every rung instead, because the serialiser was writing the
     COMPLETION plane at its full ``cap - R`` width whatever depth the encoder
     spent.  Both readings have been wrong in opposite directions by the same
     amount, which is why this pins the formula rather than a single number.
     """
     from prismaquant import format_registry as fr
 
+    shape = (4096, 1536)
     spec = fr.get_format(f"TESSERA_E2M1_K2_R{q256}")
-    assert spec.effective_bits_for_shape((4096, 1536)) == (q256 + 128) / 256
+    wire = tessera_wire_recipe("TESSERA_E2M1_K2", q256)
+    extra = Fraction(64, 256)                       # LUT16: a nibble per 16
+    if wire.body is BodyKind.WINDOW:
+        extra += Fraction((1 << wire.window_bits) * 8, shape[0] * shape[1])
+    else:
+        extra += Fraction((wire.span - 1) * 256, wire.span * 2) / 256
+    want = Fraction(q256, 256) + extra
+    assert spec.bits_for_shape(shape) == want * shape[0] * shape[1]
+    assert spec.effective_bits_for_shape(shape) == float(want)
 
 
 def test_an_exact_rate_is_the_whole_rate_not_a_body_rate():
