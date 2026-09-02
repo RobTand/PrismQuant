@@ -95,6 +95,23 @@ nine campaign tests ran, including the two load-bearing ones:
   beside the dequantised render, and the priced render is the decode of those
   bytes (principle 8).
 
+The full sweep, including every allocator suite this branch could regress:
+
+```
+PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
+  tests/test_tessera_menu.py tests/test_tessera_campaign.py \
+  tests/test_tessera_formats.py tests/test_docs_staleness.py \
+  tests/test_architecture_doc.py tests/test_allocator_sibling_aggregation.py \
+  tests/test_allocator_promotion_legality.py \
+  tests/test_allocator_packed_group_units.py \
+  tests/test_allocator_main_enforcement.py \
+  tests/test_allocator_pareto_seed_export.py \
+  tests/test_allocator_byte_budget_selection.py \
+  tests/test_interpolated_output_mse_pricing.py -q
+```
+
+**190 passed** (180 s, sparky, at `e0d4df2`).
+
 ## 4. Where the relaxation is reached, and where it is not
 
 The brief asked for union-find promotion relaxed "so fused siblings / packed
@@ -417,7 +434,7 @@ subset; what would make it a *ship* claim is a served KL, which does not exist.
 
 | asked | result |
 |---|---|
-| Tests pass, listed with the command | §3. 101 passed (menu 26, campaign 9, formats 46, docs 20); plus 82 and 50 on the allocator regression suites named in the commits. |
+| Tests pass, listed with the command | §3. **190 passed** on the full sweep at `e0d4df2`, including every allocator suite this branch could regress. |
 | Three 0.6B allocations spanning more than a few distinct rates | §8.2. Menu 3039–3063 rungs **per unit**; 16893 priced rungs over 7 units. Assignments hit 3.00026 / 4.00027 / 5.00026 bpp with 4 distinct rungs each (4 DP items), and 6–7 distinct rungs each without pre-aggregation. Not a five-rung ladder. |
 | Anchor counts per family per unit | §8. 4–5 per family per unit, 21 surfaces, 102 anchors, 2534 s. |
 | A-leg pricing test exists | §3, `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and §8.2 shows it deciding a real allocation. |
