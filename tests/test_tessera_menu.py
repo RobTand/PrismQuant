@@ -364,32 +364,66 @@ def test_layer_config_roundtrip_recovers_the_rung():
 # Where the relaxation is, and is not, reached
 # ---------------------------------------------------------------------------
 
-def test_pre_aggregation_forces_one_rung_on_a_fused_group():
-    """The relaxation is unreachable on the DEFAULT (pre-aggregated) path.
+def test_pre_aggregation_offers_a_fused_group_one_family_and_free_rates():
+    """The DP sees the group's exact knapsack, not one shared rung.
 
-    ``aggregate_fused_siblings`` builds ONE super item per fused group with one
-    candidate per format NAME (``allocator_candidates.py``, ``for spec in
-    formats``), so the DP can only ever return a single rung for the whole
-    group and ``_promote_group_components`` -- relaxation included -- is a
-    no-op on it. That is the design the call site states outright ("The DP
-    can't pick mixed-sibling solutions because there's only one item per
-    group"), not a defect, and it is consistent with the wire: the Tessera rate
-    schedule is ``bresenham_rate_schedule(root, n_columns)``, a per-COLUMN
-    quota shared by every row, so siblings concatenated along ROWS into one
-    unit cannot carry different rates. Free per-sibling rates are therefore
-    reachable only when the siblings stay separate units, i.e. under
-    ``--no-fused-aggregation``.
+    This test used to pin the opposite, and said a later change that made the
+    DP mixed-rung capable would have to come here and say so. This is that
+    change, and here is what it says.
 
-    This test pins the fact so a later change that makes the DP mixed-rung
-    capable has to come here and say so.
+    The old aggregation built one super-item candidate per format **name**, by
+    intersecting the members' menus, so the DP could only return a single rung
+    for a whole fused group. Two things were wrong with reading that as the
+    serving constraint. It is too tight: the runtime dispatches on the
+    **decoder** -- the grid and arity a Tessera family names -- and a shared
+    rate is not a dispatch property, while q_proj and k_proj are different
+    tensors with different sensitivities. And on a continuous rate axis it is
+    ruinous rather than merely conservative: the intersection of two members'
+    *measured* menus can be a single rung, which is how a group's whole menu
+    collapses for a reason that has nothing to do with Tessera.
+
+    So the group's option set is now the Minkowski sum of its members' (bytes,
+    cost) menus restricted to one family -- the group's own exact multi-choice
+    knapsack, kept as a Pareto set under dominance (never a hull). Every option
+    is one family across the group and a rate per member.
+
+    **The serving premise is still unattested.** Whether a runtime decodes a
+    fused group as per-member wires it concatenates -- which is what free
+    per-member rates require, since ``bresenham_rate_schedule(root,
+    n_columns)`` is a per-COLUMN quota shared by every row of ONE unit -- is a
+    fact about that runtime, and no pinned release attests it. Principle 9's
+    export gate is what decides whether such an assignment ships; this pins
+    only what the allocator may consider.
     """
-    from prismaquant.allocator_candidates import aggregate_fused_siblings
-    import inspect
+    from prismaquant.allocator_candidates import tessera_group_composites
+    from prismaquant.allocator_solver import Candidate
 
-    src = inspect.getsource(aggregate_fused_siblings)
-    # One candidate per format name -- the group's rate is not a free variable.
-    assert "for spec in formats:" in src
-    assert "fmt=spec.name," in src
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        members[0]: [
+            Candidate(fmt="TESSERA_E4M3_K1_R100", bits_per_param=0.0,
+                      memory_bytes=10, predicted_dloss=9.0),
+            Candidate(fmt="TESSERA_E4M3_K1_R200", bits_per_param=0.0,
+                      memory_bytes=20, predicted_dloss=1.0),
+        ],
+        members[1]: [
+            Candidate(fmt="TESSERA_E4M3_K1_R100", bits_per_param=0.0,
+                      memory_bytes=10, predicted_dloss=5.0),
+            Candidate(fmt="TESSERA_E4M3_K1_R300", bits_per_param=0.0,
+                      memory_bytes=20, predicted_dloss=4.5),
+        ],
+    }
+    options = tessera_group_composites(members, candidates, n_params=1000)
+    # The members share exactly one rung name; the old intersection menu would
+    # have offered one option. The knapsack offers the whole frontier.
+    assert len({c.fmt for c in candidates[members[0]]}
+               & {c.fmt for c in candidates[members[1]]}) == 1
+    assert len(options) > 1
+    mixed = [o for o in options if len(set(o.member_formats.values())) > 1]
+    assert mixed, "no mixed-rung option was offered"
+    for option in options:
+        families = {f.rsplit("_R", 1)[0] for f in option.member_formats.values()}
+        assert families == {"TESSERA_E4M3_K1"}, families
 
 
 def test_the_reduction_is_reapplied_after_aggregation():

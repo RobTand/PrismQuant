@@ -86,8 +86,13 @@ python -m prismaquant.allocator \
 * `measnofuse` — measured anchors only **and** `--no-fused-aggregation`; the
   only baseline that isolates menu density, because `meas` vs `full` also
   differs in what fused-sibling intersection leaves on the menu (§8.3).
-* `nofuse` — interpolated surface with `--no-fused-aggregation`, the only arm
-  in which the family-promotion relaxation is reachable (§5).
+* `nofuse` — interpolated surface with `--no-fused-aggregation`. **Retired as
+  an arm** (§4): it drops the family constraint as well as the rate one, so
+  its assignments are not legal serving configurations. Kept below as a
+  *bound* -- the best a group could do if nothing coupled its members -- and
+  as the matched partner of `measnofuse` in the density comparison.
+* `mink` — the group knapsack: one family per fused group, a rate per member.
+  This is the arm that measures the real constraint (§4).
 
 ## 3. Tests
 
@@ -141,42 +146,100 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
 cache-miss fallbacks gained their refusal (§7): a change inside those functions
 has to be shown not to move any *other* format's render.
 
-## 4. Where the relaxation is reached, and where it is not
+## 4. The decision-unit constraint, and what the wrong one cost
 
-The brief asked for union-find promotion relaxed "so fused siblings / packed
-experts share a **family** with rates free per unit". That is implemented
-(`allocator_solver._resolve_family_group`, via
-`tessera_formats.format_promotion_class`) and tested. It is **not reached on
-the default path**, and the honest reason is two facts, neither of which is a
-defect:
+**Superseded, and the supersession is the result.** This section used to
+explain why the family relaxation was unreachable on the default path: the DP
+saw one super item per fused group with one candidate per format **name**, so
+it could only ever return a single shared rung, and `_promote_group_components`
+had nothing to do. That was recorded as a design, not a defect. It was a
+defect, and an expensive one.
 
-1. **The DP never sees a mixed-rung group.** `aggregate_fused_siblings` runs
-   *before* the solve and builds one super item per group with one candidate
-   per format **name** (`for spec in formats: … Candidate(fmt=spec.name, …)`).
-   The DP therefore returns exactly one rung for the whole group, and
-   `_promote_group_components` is a no-op on it. The call site states the
-   design outright: *"The DP can't pick mixed-sibling solutions because there's
-   only one item per group."*
-2. **The wire agrees, for a group that is one unit.**
-   `tessera.grammar.bresenham_rate_schedule(root, n_columns)` is a per-COLUMN
-   quota shared by every row. Siblings concatenated along ROWS into one unit
-   cannot hold different rates — the schedule is indexed by the axis they
-   share. Free per-sibling rates presuppose that the runtime decodes q, k and v
-   as separate units and concatenates afterwards. That is a claim about a
-   runtime; nothing attests it, so it is not made here (principle 14).
+The one-rung reading is not the serving constraint. What a fused group's
+members cannot disagree about is the **decoder** the runtime dispatches on --
+for a Tessera rung, the family (grid and arity); the rate is a point on that
+family's continuous axis and is not a dispatch property. `q_proj`
+(2048x1024) and `k_proj` (1024x1024) are different tensors with different
+sensitivities. And `--no-fused-aggregation`, the arm that used to stand in for
+the relaxation, is the opposite error: it drops the family constraint too, so
+its assignments are **not legal serving configurations** and its numbers are a
+bound, not an arm.
 
-So the relaxation is exercised only under `--no-fused-aggregation`, and the
-arms below measure both. `tests/test_tessera_menu.py::
-test_pre_aggregation_forces_one_rung_on_a_fused_group` pins fact 1 so a change
-that makes the DP mixed-rung capable has to come here and say so.
+**The exact constraint, implemented exactly.** For each fused group and each
+family F, the group's option set is the **Minkowski sum** of its members'
+`(bytes, cost)` menus restricted to F -- the group's own multi-choice knapsack
+-- kept as a Pareto set under **dominance** pruning. Never a hull: the budget
+is discrete, so an option strictly inside the hull can still be the unique
+optimum at one particular remaining capacity, and hull pruning drops exactly
+those. The outer DP then chooses among those per-family group option sets plus
+the stock per-NAME options, exactly as it chooses among rungs of a single unit.
+`tessera_group_composites` builds it; `expand_fused_sibling_assignment` reads
+the per-member rung map back out; `_promote_group_components` was already
+family-aware and is a verified no-op on the result.
 
-**A correction to an earlier read.** A partial-table smoke run collapsed to
-1.079 bpp against a 4.0 target, and that was first attributed to promotion.
-It is not: with aggregation on, promotion has nothing to do. The cause is that
-`aggregate_fused_siblings` intersects the members' menus, so a qkv group in
-which only `q_proj` was priced is left with a single common candidate. It is an
-artifact of a partial cost table, and it disappears when every member is
-priced.
+Exactness is not a claim here, it is enforced:
+
+* the fold is a full cross product at each step, Pareto-pruned by dominance,
+  and pinned against **brute force** over every member combination on a menu
+  built with a non-convex pocket
+  (`test_group_knapsack_equals_brute_force_including_a_nonconvex_pocket`);
+* a uniform-rung option exists in both constructions, and the aggregation
+  **refuses** if the per-NAME path and the group knapsack disagree about its
+  bytes or its cost;
+* summing member costs is exact only while the UCB hedge is linear. The group
+  hedge is `z*sqrt(sum stderr^2)`, which is not additive, so the fold refuses
+  at `z > 0` rather than pricing it wrong. Both flagship runs and these use
+  `z = 0` and a table whose 16893 rows all carry `stderr = 0`.
+
+**Group menu sizes and DP cost** (Qwen3-0.6B layer 0, from
+`__prismaquant__.tessera_group_knapsack`):
+
+| group | family | member menus | fold frontier | options |
+|---|---|---|---|---|
+| qkv_proj | `TESSERA_E2M1_K2` | 471 / 80 / 92 | 471 -> 629 -> 720 | 720 |
+| qkv_proj | `TESSERA_E4M3_K1` | 593 / 1133 / 1117 | 593 -> 2638 -> 3754 | 3754 |
+| gate_up_proj | `TESSERA_E2M1_K2` | 76 / 76 | 76 -> 151 | 151 |
+| gate_up_proj | `TESSERA_E4M3_K1` | 1138 / 1138 | 1138 -> 2275 | 2275 |
+
+The fold stays small because each member's menu is already a monotone
+dominance-pruned frontier; the guard that refuses a fold over 8M intermediate
+pairs is never approached here. The aggregated menu into the DP goes from
+**4315 rungs (one-rung aggregation) to 11215 -> 9328 after dominance**, and a
+full three-target sweep costs **64-67 s wall** per target end-to-end
+(allocator process, `/usr/bin/time`), against ~2.3 s of DP solve time on the
+old menu. The asymmetry in the qkv member menus (471 / 80 / 92) is the
+per-unit anchor placement described in §7, and §4a is the arm that fixes it.
+
+**What the wrong constraint cost.** All three arms priced by one script
+(`price_mink.py`) on the same full interpolated table:
+
+| target | one-rung `full` | group knapsack | `--no-fused-aggregation` (illegal) |
+|---|---|---|---|
+| 3.0 | 34.1677 @ 3.00026 bpp, 4 rungs | **27.3986 @ 3.00026 bpp, 7 rungs** | 27.1762 @ 3.00729 bpp |
+| 4.0 | 11.9033 @ 4.00026 bpp, 4 rungs | **9.19888 @ 4.00026 bpp, 7 rungs** | 9.19860 @ 4.00026 bpp |
+| 5.0 | 4.23201 @ 5.00026 bpp, 4 rungs | **3.77304 @ 5.00000 bpp, 6 rungs** | 3.77304 @ 5.00000 bpp |
+
+* **The one-rung constraint cost 1.247x / 1.294x / 1.122x** in Δloss. That is
+  the honest replacement for the "pre-DP aggregation costs 11-23%" line, which
+  was measured against an illegal relaxation.
+* **The family constraint costs 1.008x / 1.000x / 1.000x** against that
+  illegal relaxation -- and at 3.0 the comparison is not matched: the
+  `--no-fused-aggregation` point is 0.0070 bpp **fatter**, so at matched bpp
+  its 0.8% advantage is not resolved by these runs. At 4.0 and 5.0 both land
+  on the same bpp and agree to five significant figures. **Requiring one
+  family per fused group is, on this table, very nearly free; requiring one
+  rate was not.**
+* The DP picks a mixed-rung qkv at every target -- at 4.0, `q_proj` R694,
+  `k_proj` R920, `v_proj` R1372, all `TESSERA_E4M3_K1`.
+
+**The serving premise is still unattested.** Free per-member rates require
+that the runtime decodes a fused group as per-member wires it concatenates:
+`bresenham_rate_schedule(root, n_columns)` is a per-COLUMN quota shared by
+every row of ONE unit, so siblings concatenated along rows into a single unit
+could not hold different rates. That is a fact about a runtime and no pinned
+release attests it. This section states what the **allocator** may consider;
+principle 9's export gate decides what ships, and there is no Tessera export
+leg at all (§7).
 
 ## 5. Two things checked rather than assumed
 
@@ -531,6 +594,12 @@ only thing that would.
 | 4.0 | 9.199 @ 4.00026 | 12.970 @ 3.94870 | **1.410x** | 0.052 bpp |
 | 5.0 | 3.773 @ 5.00000 | 4.541 @ 4.90469 | **1.204x** | 0.095 bpp |
 
+> **Both arms in this table run `--no-fused-aggregation`**, which §4 retires
+> as a serving configuration. They are compared to each other, so the ratio is
+> a clean read on **menu density** and is unaffected; it is not a read on any
+> shippable assignment. Re-running the pair under the group knapsack is listed
+> in §7 as not done.
+
 **Interpolation is worth 1.09x–1.41x in Δloss at matched aggregation** — not
 the 1.76x–9.84x the confounded pair suggested. Part of even that is reach
 rather than ranking: the measured-only menu is **0.052 and 0.095 bpp short of
@@ -574,6 +643,14 @@ measured-only menu is intersected across fused siblings and E4M3's qkv
 intersection collapses to one rung (§8.3). Those three ratios measure that
 collapse, not interpolation. The comparison that holds aggregation fixed is
 `nofuse` vs `measnofuse`: **1.094× / 1.410× / 1.204×**.
+
+> **Superseded by §4.** The comparison below measures the one-rung constraint
+> against `--no-fused-aggregation`, which drops the family constraint too and
+> is therefore not a legal serving configuration. The correct comparison is
+> the group knapsack -- one family, a rate per member -- and it puts the
+> one-rung constraint's cost at **1.247x / 1.294x / 1.122x**, with the family
+> constraint itself costing 1.008x / 1.000x / 1.000x against this same bound.
+> The 11–23% figure below is kept as history and is not the number to cite.
 
 **Forcing fused siblings to one rate costs 11–23% in Δloss at matched bpp.**
 That is the price of the pre-DP aggregation, measured, and it is what free

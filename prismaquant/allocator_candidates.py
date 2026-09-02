@@ -2466,7 +2466,9 @@ def summarize_applicability_masks(
 def _member_activation_branch(
     member_candidates: dict[str, dict[str, Candidate]],
     members: list[str],
-    fmt: str,
+    fmt: "str | None",
+    *,
+    member_formats: dict[str, str] | None = None,
 ) -> str | None:
     """The activation-pricing branch of an AGGREGATED super item.
 
@@ -2477,10 +2479,18 @@ def _member_activation_branch(
     rows of this serving unit never saw an activation measurement" is
     precisely the fact the stamp exists to preserve.
     """
+    # ``member_formats`` is the whole-GROUP option's per-member rung map; the
+    # scalar ``fmt`` is the uniform case. Same rule either way: unanimity
+    # reports the branch, disagreement is reported as mixed.
+    picked = (
+        member_formats if member_formats is not None
+        else {m: fmt for m in members}
+    )
     branches = sorted({
-        str(member_candidates[m][fmt].activation_pricing)
+        str(member_candidates[m][picked[m]].activation_pricing)
         for m in members
-        if member_candidates[m][fmt].activation_pricing is not None
+        if picked.get(m) in member_candidates.get(m, {})
+        and member_candidates[m][picked[m]].activation_pricing is not None
     })
     if not branches:
         return None
@@ -2510,6 +2520,153 @@ def _member_serving_lane(
 _FUSED_SIBLING_MARKER = ".__siblings__."
 
 
+def _pareto_frontier(rows):
+    """``rows`` -> the Pareto set on (bytes ascending, cost descending).
+
+    Dominance only: a point is dropped when another is no larger in BYTES and
+    no larger in COST. This is exact for any knapsack whatsoever, and it is
+    explicitly NOT a convex hull -- the budget is discrete, so a point strictly
+    inside the hull can still be the optimum at one particular remaining
+    capacity, and hull pruning drops exactly those points.
+    """
+    ordered = sorted(rows, key=lambda r: (r[0], r[1]))
+    out = []
+    best = None
+    for row in ordered:
+        if best is None or row[1] < best:
+            out.append(row)
+            best = row[1]
+    return out
+
+
+#: Guard on the intermediate cross product of one fold step. A group whose
+#: members carry thousands of reduced rungs each would otherwise build a
+#: multi-gigabyte intermediate; refusing is right because the exact answer is
+#: the whole point of this path and a truncated one would be a silent
+#: approximation wearing an exactness claim.
+_GROUP_FOLD_MAX_PAIRS = 8_000_000
+
+
+def tessera_group_composites(
+    members: list[str],
+    candidates: dict[str, list["Candidate"]],
+    n_params: int,
+    *,
+    ucb_z: float = 0.0,
+    report: dict | None = None,
+) -> list["Candidate"]:
+    """One family per group, a rung per member -- the group's exact knapsack.
+
+    A fused group is ONE tensor to the runtime, so its members cannot disagree
+    about the decoder the runtime dispatches on. They can disagree about the
+    rate: ``q_proj`` (2048x1024) and ``k_proj`` (1024x1024) are different
+    tensors with different sensitivities fused into one ``qkv_proj``, and a
+    continuous rate axis whose group units are pinned to one shared rung
+    throws that away. The old aggregation intersected the members' menus by
+    format NAME, which forces exactly that: on a measured-only Tessera table
+    the qkv E4M3 intersection was a single rung.
+
+    The correct constraint is neither "one rung" (too tight -- not a serving
+    requirement) nor ``--no-fused-aggregation`` (too loose -- it drops the
+    family constraint, which IS one). It is: for each family F, the group's
+    option set is the **Minkowski sum** of its members' (bytes, cost) menus
+    restricted to F -- the group's own multi-choice knapsack -- kept as a
+    Pareto set. The outer DP then chooses among those options exactly as it
+    chooses among rungs of a single unit, and every option it can pick is a
+    legal serving configuration by construction.
+
+    Exact, not approximate:
+
+    * the fold is a full cross product at each step, Pareto-pruned by
+      **dominance** (never a hull -- see ``_pareto_frontier``), so no option
+      the DP could have wanted is discarded;
+    * costs are summed from the members' own ``Candidate.predicted_dloss``,
+      the same numbers the DP would charge if the members were separate units,
+      so a uniform-rung option prices identically to the old per-NAME
+      aggregation (asserted by the caller);
+    * summing is exact only while the UCB hedge is linear. The group hedge is
+      ``z*sqrt(sum stderr^2)``, which is not additive, so this refuses at
+      ``z > 0`` rather than quietly pricing the hedge wrong.
+    """
+    from .tessera_formats import (
+        format_promotion_class, tessera_group_option_name,
+    )
+
+    if len(members) < 2:
+        return []
+
+    by_member: list[dict[str, list[tuple[int, float, str]]]] = []
+    for member in members:
+        families: dict[str, list[tuple[int, float, str]]] = {}
+        for cand in candidates.get(member, []):
+            family = format_promotion_class(cand.fmt)
+            if family == cand.fmt:
+                continue          # a stock format; the per-NAME path owns it
+            families.setdefault(family, []).append(
+                (int(cand.memory_bytes), float(cand.predicted_dloss), cand.fmt))
+        by_member.append(families)
+
+    shared = set(by_member[0])
+    for families in by_member[1:]:
+        shared &= set(families)
+
+    # Checked HERE, not on entry: a stock-only group under a hedge has no
+    # families to fold and must be untouched by this path.
+    if shared and float(ucb_z) > 0.0:
+        raise NotImplementedError(
+            "Tessera group composites are exact by summing member costs, and "
+            "the UCB hedge z*sqrt(sum stderr^2) is not additive: at "
+            f"PRISMAQUANT_COST_UCB_Z={ucb_z} the Minkowski fold would price "
+            "the hedge as if it were linear. Set the hedge to 0 for a "
+            "Tessera group run, or extend the fold to carry sum(stderr^2) as "
+            "a third coordinate."
+        )
+
+    out: list["Candidate"] = []
+    index = 0
+    for family in sorted(shared):
+        frontier = [
+            (bytes_, cost, (fmt,))
+            for bytes_, cost, fmt in _pareto_frontier(by_member[0][family])
+        ]
+        sizes = [len(frontier)]
+        for families in by_member[1:]:
+            member_rows = _pareto_frontier(families[family])
+            pairs = len(frontier) * len(member_rows)
+            if pairs > _GROUP_FOLD_MAX_PAIRS:
+                raise AssertionError(
+                    f"group fold for {family} would build {pairs:,} "
+                    f"intermediate options ({len(frontier):,} x "
+                    f"{len(member_rows):,}), over the "
+                    f"{_GROUP_FOLD_MAX_PAIRS:,} guard. Reduce the per-unit "
+                    "menu first (reduce_continuous_menu) -- truncating here "
+                    "would make an exact construction silently approximate."
+                )
+            frontier = _pareto_frontier([
+                (a_bytes + b_bytes, a_cost + b_cost, a_fmts + (b_fmt,))
+                for a_bytes, a_cost, a_fmts in frontier
+                for b_bytes, b_cost, b_fmt in member_rows
+            ])
+            sizes.append(len(frontier))
+        for total_bytes, total_cost, fmts in frontier:
+            member_formats = dict(zip(members, fmts))
+            out.append(Candidate(
+                fmt=tessera_group_option_name(family, index),
+                bits_per_param=8.0 * total_bytes / max(int(n_params), 1),
+                memory_bytes=int(total_bytes),
+                predicted_dloss=max(float(total_cost), 0.0),
+                member_formats=member_formats,
+            ))
+            index += 1
+        if report is not None:
+            report[family] = {
+                "member_menu": [len(f[family]) for f in by_member],
+                "fold_frontier": sizes,
+                "options": len(frontier),
+            }
+    return out
+
+
 def aggregate_fused_siblings(
     stats: dict,
     costs: dict,
@@ -2521,8 +2678,19 @@ def aggregate_fused_siblings(
 ) -> tuple[dict, dict, dict]:
     """Aggregate fused siblings into single DP items.
 
-    A group whose members share NO legal format is a HARD ERROR, not a
-    fallback to individual rows. Fused siblings (q/k/v, gate/up) must load
+    Each group gets one super item carrying two kinds of option: one per stock
+    format NAME, from the intersection of the members' menus (a stock format
+    is one thing to the runtime, so the members must share it); and, for each
+    Tessera FAMILY the members share, the group's own exact multi-choice
+    knapsack over their rungs (:func:`tessera_group_composites`) -- one family
+    across the group, a rate per member. The second kind exists because a
+    Tessera rung is a family and a rate glued into one name and only the
+    family is a dispatch property; intersecting by name forced a shared rate
+    that no runtime asks for, and on a continuous axis that collapsed a
+    group's whole menu to whatever single rung its members happened to share.
+
+    A group whose members share neither a legal format NOR a legal Tessera
+    family is a HARD ERROR, not a fallback to individual rows. Fused siblings (q/k/v, gate/up) must load
     under ONE format — that is a serving invariant, not a preference — so
     members with disjoint menus cannot be coherently promoted at all: whatever
     format whole-group promotion lands on is illegal for at least one member,
@@ -2655,7 +2823,22 @@ def aggregate_fused_siblings(
             member_format_intersection = set.intersection(*member_format_sets)
         else:
             member_format_intersection = set()
-        if not member_format_intersection:
+        # An empty NAME intersection is no longer fatal on its own: a group
+        # whose members share a Tessera FAMILY but no single rung is a legal,
+        # allocatable state -- one decoder, a rate per member -- and the
+        # composite path below builds exactly those options. It is fatal when
+        # the members share neither.
+        from .tessera_formats import format_promotion_class as _promo
+        member_family_sets = [
+            {_promo(c.fmt) for c in candidates.get(m, [])
+             if _promo(c.fmt) != c.fmt}
+            for m in members
+        ]
+        shared_families = (
+            set.intersection(*member_family_sets) if member_family_sets
+            else set()
+        )
+        if not member_format_intersection and not shared_families:
             raise AssertionError(
                 _fused_group_menu_error(
                     super_name,
@@ -2664,7 +2847,7 @@ def aggregate_fused_siblings(
                     candidates,
                     member_format_intersection,
                     formats,
-                    "share no legal format",
+                    "share no legal format and no legal Tessera family",
                 )
             )
 
@@ -2674,6 +2857,7 @@ def aggregate_fused_siblings(
             }
             for member in members
         }
+        _ = member_by_name
         cands = []
         for spec in formats:
             if spec.name not in member_format_intersection:
@@ -2731,6 +2915,70 @@ def aggregate_fused_siblings(
                     if serialized_sidecar_identities else None
                 ),
             ))
+        # One family per group, a rate per member: the group's exact
+        # multi-choice knapsack over its members' Tessera menus, kept as a
+        # Pareto set. See ``tessera_group_composites``. Built AFTER the
+        # per-NAME options above so that a uniform-rung option exists in both
+        # constructions and can be cross-checked.
+        group_report: dict = {}
+        composites = tessera_group_composites(
+            members, candidates, n_params, ucb_z=ucb_z, report=group_report)
+        if composites:
+            uniform_by_name = {c.fmt: c for c in cands}
+            member_formats_by_option: dict[str, dict[str, str]] = {}
+            for composite in composites:
+                member_formats = composite.member_formats or {}
+                super_cost[composite.fmt] = {
+                    "predicted_dloss": float(composite.predicted_dloss),
+                    "predicted_dloss_stderr": 0.0,
+                    "weight_mse": (
+                        float(composite.predicted_dloss) / (0.5 * sum_h)
+                        if sum_h > 0 else 0.0),
+                }
+                if activation_pricing is not None:
+                    super_cost[composite.fmt][APPLIED_MARKER_KEY] = True
+                stats_ext[super_name]["_memory_bytes_by_format"][
+                    composite.fmt] = int(composite.memory_bytes)
+                member_formats_by_option[composite.fmt] = dict(member_formats)
+                shared = set(member_formats.values())
+                if len(shared) == 1:
+                    # The same option the per-NAME path built. It must price
+                    # identically -- summing the members' own candidate costs
+                    # is the same arithmetic the per-NAME path does through
+                    # the cost table -- and if it does not, the two
+                    # constructions disagree about what a group costs and one
+                    # of them is wrong. Refuse rather than let the DP arbitrage
+                    # the difference.
+                    twin = uniform_by_name.get(next(iter(shared)))
+                    if twin is not None:
+                        if int(twin.memory_bytes) != int(
+                                composite.memory_bytes):
+                            raise AssertionError(
+                                f"{super_name}: uniform option "
+                                f"{twin.fmt} weighs "
+                                f"{twin.memory_bytes} through the per-NAME "
+                                f"path and {composite.memory_bytes} through "
+                                "the group knapsack")
+                        lhs = float(twin.predicted_dloss)
+                        rhs = float(composite.predicted_dloss)
+                        if abs(lhs - rhs) > 1e-9 * max(abs(lhs), abs(rhs), 1e-12):
+                            raise AssertionError(
+                                f"{super_name}: uniform option {twin.fmt} "
+                                f"costs {lhs!r} through the per-NAME path and "
+                                f"{rhs!r} through the group knapsack. The two "
+                                "constructions must agree on the option they "
+                                "share (calibrated gains keyed per rung, or a "
+                                "non-zero UCB hedge, will do this).")
+                # Provenance is the join of the members', same as the
+                # per-NAME path builds for a shared format.
+                composite.activation_pricing = _member_activation_branch(
+                    {m: {c.fmt: c for c in candidates[m]} for m in members},
+                    members, None, member_formats=member_formats)
+            stats_ext[super_name]["_fused_member_formats"] = (
+                member_formats_by_option)
+            stats_ext[super_name]["_tessera_group_menu"] = dict(group_report)
+            cands.extend(composites)
+
         if not cands:
             # Unreachable via the intersection (a common candidate format
             # implies a non-error cost row for every member), so this catches
@@ -2793,11 +3041,39 @@ def _fused_group_menu_error(
 
 def expand_fused_sibling_assignment(assignment: dict[str, str],
                                     stats_ext: dict) -> dict[str, str]:
-    """Broadcast a fused-sibling super-item assignment back to members."""
+    """Expand a fused-sibling super-item assignment back to its members.
+
+    A stock format broadcasts: every member takes the one format, which is
+    what the runtime requires of them. A whole-GROUP Tessera option carries a
+    rung per member instead (``_fused_member_formats``, written by
+    ``aggregate_fused_siblings``), because the shared decoder is the serving
+    constraint and the shared rate is not. A group option whose map is missing
+    is a hard error, never a broadcast of a name that is not a rung: the
+    result would be an assignment naming a format no member can build, and
+    ``compute_achieved`` would then price the whole group off a fabricated
+    spec.
+    """
+    from .tessera_formats import is_tessera_group_option
+
     out = {}
     for name, fmt in assignment.items():
         if _FUSED_SIBLING_MARKER in name:
             members = stats_ext[name].get("_fused_siblings", [])
+            if is_tessera_group_option(fmt):
+                member_formats = (
+                    stats_ext[name].get("_fused_member_formats") or {}
+                ).get(fmt)
+                if not member_formats:
+                    raise AssertionError(
+                        f"{name} was assigned the whole-group option {fmt!r} "
+                        "but no per-member rung map was recorded for it. The "
+                        "option is not a rung and cannot be broadcast; the "
+                        "map is written beside the candidate in "
+                        "aggregate_fused_siblings."
+                    )
+                for m in members:
+                    out[m] = member_formats[m]
+                continue
             for m in members:
                 out[m] = fmt
         else:

@@ -556,7 +556,20 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--layer-stride", type=int, default=1,
                     help="price every Nth decoder layer (1 = every Linear)")
     ap.add_argument("--anchors", type=int, default=ROUND_ONE_ANCHORS)
-    ap.add_argument("--max-rounds", type=int, default=3)
+    ap.add_argument("--max-rounds", type=int, default=0,
+                    help="hard stop on adaptive rounds (0 = governed by "
+                         "--anchor-budget instead). Rounds are not the "
+                         "budget: a round adds ONE anchor to each surface "
+                         "that is still failing its gate, so capping rounds "
+                         "caps how far the worst surface can be improved, "
+                         "which is the opposite of what the adaptive loop is "
+                         "for.")
+    ap.add_argument("--anchor-budget", type=int, default=12,
+                    help="max anchors per (fused group, family) surface. The "
+                         "adaptive loop keeps splitting the worst-predicted "
+                         "interval until every member's LOO clears "
+                         "--loo-gate or this budget is spent, and the payload "
+                         "records which of the two stopped each surface.")
     ap.add_argument("--loo-gate", type=float, default=0.25,
                     help="max |log2 error| an interpolated surface may carry")
     ap.add_argument("--tp-degree", type=int, default=1)
@@ -697,41 +710,137 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     # the menu keeps every legal rung, and the ones above the envelope are
     # left unpriced rather than extrapolated into.
     cap = float(args.max_artifact_bpp)
-    families_by_unit: dict[str, dict[str, tuple[int, int]]] = {}
+    rates_by_unit: dict[str, dict[str, set[int]]] = {}
     for name in targets:
-        bounds: dict[str, tuple[int, int]] = {}
+        per_family: dict[str, set[int]] = {}
         for rung in menus[name]:
             if cap > 0 and rung.bpp > cap:
                 continue
-            lo, hi = bounds.get(rung.family, (rung.body_rate_q256,) * 2)
-            bounds[rung.family] = (
-                min(lo, rung.body_rate_q256), max(hi, rung.body_rate_q256))
-        families_by_unit[name] = bounds
+            per_family.setdefault(rung.family, set()).add(rung.body_rate_q256)
+        rates_by_unit[name] = per_family
+
+    # Anchors are placed per FUSED GROUP, not per (unit, family).
+    #
+    # The cap is a WIRE bpp and the wire->body map is shape-dependent (the
+    # CHANNEL plane amortises over rows), so solving each member's top anchor
+    # independently put fused siblings on different body grids even when they
+    # share ``in_features`` and therefore share the realisable set: on
+    # Qwen3-0.6B ``q_proj`` topped out at R1388 where ``k/v_proj`` topped out
+    # at R1372, and every bisected anchor below inherited the offset. A
+    # measured-only table then has almost nothing in the intersection of a
+    # group's menus -- the qkv E4M3 intersection was exactly one rung -- which
+    # made the group's measured baseline weak for a reason that has nothing to
+    # do with Tessera. One grid per group, from the intersection of its
+    # members' realisable sets, and every member measures the same rungs.
+    def _group_key(name: str) -> str:
+        try:
+            key = profile.fused_sibling_group(name)
+        except Exception:
+            key = None
+        return f"g:{key}" if key else f"u:{name}"
+
+    anchor_groups: dict[str, list[str]] = {}
+    for name in targets:
+        anchor_groups.setdefault(_group_key(name), []).append(name)
+    for key in anchor_groups:
+        anchor_groups[key].sort()
+
+    # The rungs every member of the group can realise, per family. A family
+    # missing from one member is not a group family at all: a shared grid over
+    # a rung one sibling cannot build is not shared.
+    group_rates: dict[str, dict[str, list[int]]] = {}
+    for key, members in anchor_groups.items():
+        per_family: dict[str, list[int]] = {}
+        families = set.intersection(*[
+            set(rates_by_unit[m].keys()) for m in members]) if members else set()
+        for family in sorted(families):
+            shared = set.intersection(*[
+                rates_by_unit[m][family] for m in members])
+            if shared:
+                per_family[family] = sorted(shared)
+        group_rates[key] = per_family
+
+    print("[campaign] anchor groups: "
+          + ", ".join(
+              f"{key}({len(members)})" for key, members
+              in sorted(anchor_groups.items())), flush=True)
+
+    def _snap(rate: int, allowed: Sequence[int]) -> "int | None":
+        """The realisable rung nearest ``rate``, or None if there is none.
+
+        ``anchor_schedule`` and ``next_anchor_rate`` both work in rate space
+        and can name a q256 no member can build; snapping keeps the group's
+        grid shared, which is the whole point of placing anchors per group.
+        """
+        if not allowed:
+            return None
+        return min(allowed, key=lambda r: (abs(int(r) - int(rate)), int(r)))
 
     # Round 1, breadth-first over units, so a deadline yields every unit priced
     # at the same depth rather than a prefix priced deeply and a tail not at all.
-    for round_index in range(1, int(args.max_rounds) + 1):
+    budget = int(args.anchor_budget)
+    # Why the group's own worst member drives the split: the grid is shared,
+    # so a rung added for one sibling is measured for all of them anyway. The
+    # gate closes for a GROUP surface only when it closes for every member.
+    surface_stop: dict[tuple[str, str], str] = {}
+    round_index = 0
+    while True:
+        round_index += 1
+        if int(args.max_rounds) > 0 and round_index > int(args.max_rounds):
+            print(f"[campaign] --max-rounds {args.max_rounds} reached",
+                  flush=True)
+            break
         pending: list[tuple[str, str, int]] = []
-        for name in targets:
-            for family, (lo, hi) in families_by_unit[name].items():
-                have = sorted(
-                    a.body_rate_q256
-                    for a in measured.get(name, {}).get(family, [])
-                )
+        for key, members in sorted(anchor_groups.items()):
+            for family, allowed in group_rates[key].items():
+                # The grid is what EVERY member actually measured: one
+                # member's failed encode must not let the group think it has
+                # an anchor there.
+                grid = sorted(set.intersection(*[
+                    {a.body_rate_q256
+                     for a in measured.get(m, {}).get(family, [])}
+                    for m in members
+                ])) if members else []
                 if round_index == 1:
-                    want = anchor_schedule(lo, hi, args.anchors)
-                    pending.extend(
-                        (name, family, r) for r in want if r not in have)
+                    want = [
+                        _snap(r, allowed) for r in
+                        anchor_schedule(allowed[0], allowed[-1], args.anchors)
+                    ]
+                    for rate in sorted({r for r in want if r is not None}):
+                        pending.extend(
+                            (m, family, rate) for m in members
+                            if rate not in sorted(
+                                a.body_rate_q256 for a
+                                in measured.get(m, {}).get(family, []))
+                        )
                     continue
-                if len(have) < 3:
+                if len(grid) >= budget:
+                    surface_stop.setdefault((key, family), "anchor_budget")
                     continue
-                surface_loo = _loo_for(measured[name][family], leave_one_anchor_out)
-                worst = float(surface_loo.get("max_abs_log2_error", 0.0) or 0.0)
+                worst = 0.0
+                worst_loo: dict = {}
+                ready = True
+                for m in members:
+                    anchors = measured.get(m, {}).get(family, [])
+                    if len(anchors) < 3:
+                        ready = False
+                        break
+                    member_loo = _loo_for(anchors, leave_one_anchor_out)
+                    value = float(
+                        member_loo.get("max_abs_log2_error", 0.0) or 0.0)
+                    if value > worst:
+                        worst, worst_loo = value, member_loo
+                if not ready:
+                    continue
                 if worst <= args.loo_gate:
+                    surface_stop.setdefault((key, family), "gate_closed")
                     continue
-                nxt = next_anchor_rate(have, surface_loo)
-                if nxt is not None:
-                    pending.append((name, family, nxt))
+                nxt = next_anchor_rate(grid, worst_loo)
+                nxt = _snap(nxt, allowed) if nxt is not None else None
+                if nxt is None or nxt in grid:
+                    surface_stop.setdefault((key, family), "no_room")
+                    continue
+                pending.extend((m, family, nxt) for m in members)
         if not pending:
             print(f"[campaign] round {round_index}: nothing pending", flush=True)
             break
@@ -782,6 +891,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             if len(anchors) >= 3:
                 loo.setdefault(name, {})[family] = _loo_for(
                     anchors, leave_one_anchor_out)
+    loo_pre = loo
 
     provenance = {
         "provenance": {
@@ -794,6 +904,43 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             "layer_stride": int(args.layer_stride),
             "anchors_round_one": int(args.anchors),
             "max_rounds": int(args.max_rounds),
+            "anchor_budget": int(args.anchor_budget),
+            "rounds_run": int(round_index),
+            "anchor_placement": "fused_group",
+            "anchor_groups": {
+                key: list(members)
+                for key, members in sorted(anchor_groups.items())
+            },
+            # Per surface: what it cost and whether its gate closed. The
+            # adaptive loop's whole purpose is to spend encodes where the
+            # interpolation is measurably failing, so "how many anchors and
+            # how many seconds did that take, and did it work" is the readout
+            # that says whether the budget was the binding constraint.
+            "surfaces": {
+                name: {
+                    family: {
+                        "anchors": len(anchors),
+                        "encode_seconds": round(
+                            sum(float(a.seconds) for a in anchors), 3),
+                        "rungs": sorted(a.body_rate_q256 for a in anchors),
+                        "loo_max_abs_log2_error": (
+                            float(loo_pre[name][family].get(
+                                "max_abs_log2_error", 0.0) or 0.0)
+                            if name in loo_pre
+                            and family in loo_pre[name] else None),
+                        "gate_closed": (
+                            bool(float(loo_pre[name][family].get(
+                                "max_abs_log2_error", 0.0) or 0.0)
+                                <= float(args.loo_gate))
+                            if name in loo_pre
+                            and family in loo_pre[name] else None),
+                        "stopped_by": surface_stop.get(
+                            (_group_key(name), family), "round_limit"),
+                    }
+                    for family, anchors in sorted(by_family.items())
+                }
+                for name, by_family in sorted(measured.items())
+            },
             "loo_gate": float(args.loo_gate),
             "max_artifact_bpp": float(args.max_artifact_bpp),
             "stopped_early": bool(stopped_early),

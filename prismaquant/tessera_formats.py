@@ -469,6 +469,18 @@ _HARDWARE_BASES: Mapping[str, tuple[int, str, int]] = {
 _FREE_BASE = re.compile(r"^LM(\d+)$")
 _FORMAT_NAME = re.compile(r"^TESSERA_([A-Z0-9]+)_K(\d+)_R(\d+)$")
 
+#: A whole fused/packed serving GROUP at one family, holding a different rung
+#: per member.  It is not a rung and deliberately does not parse as one --
+#: ``parse_tessera_format_name`` returns ``None`` and ``get_format`` raises --
+#: because there is no single rate it could stand for: the group's members have
+#: different shapes and different sensitivities, which is the entire reason the
+#: option exists.  Its bytes and its cost come from the ``Candidate`` the
+#: aggregation built, and its per-member rungs from
+#: ``Candidate.member_formats``; anything that tries to resolve it to a spec is
+#: asking the wrong question and should fail loudly rather than be handed a
+#: fabricated rate.
+_GROUP_NAME = re.compile(r"^TESSERA_([A-Z0-9]+)_K(\d+)_G(\d+)$")
+
 LANE_STOCK = "stock"
 LANE_KERNEL = "kernel"
 
@@ -984,6 +996,17 @@ def enumerate_grid_space(
     yield from seen
 
 
+
+def is_tessera_group_option(fmt: object) -> bool:
+    """True for a whole-group option name (one family, a rung per member)."""
+    return isinstance(fmt, str) and _GROUP_NAME.match(fmt) is not None
+
+
+def tessera_group_option_name(family: str, index: int) -> str:
+    """The name for the ``index``-th option of ``family`` on one group."""
+    return f"{family}_G{int(index)}"
+
+
 def parse_tessera_format_name(name: object) -> "tuple[TesseraFamily, int] | None":
     """Split ``TESSERA_E2M1_K2_R896`` into family and rung, or return None.
 
@@ -1110,7 +1133,7 @@ def format_promotion_class(fmt: object) -> str:
     """
     if not isinstance(fmt, str):
         return str(fmt)
-    match = _FORMAT_NAME.match(fmt)
+    match = _FORMAT_NAME.match(fmt) or _GROUP_NAME.match(fmt)
     if match is None:
         return fmt
     return f"TESSERA_{match.group(1)}_K{int(match.group(2))}"

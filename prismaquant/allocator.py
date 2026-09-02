@@ -590,13 +590,37 @@ def _allowed_format(target_profile: str, name: str, fmt: str) -> bool:
     return decision.legal
 
 
+def _allowed_candidate(
+    target_profile: str, name: str, candidate: Candidate,
+) -> bool:
+    """Legality of one candidate, whole-group options included.
+
+    A whole-group Tessera option is not a format name and the serving profile
+    has no row for it; asking about the name would be asking the wrong
+    question. What the profile can answer is whether each MEMBER's rung is
+    legal for that member, which is exactly the option's legality -- and it is
+    strictly stronger than the old per-NAME check, which asked once about a
+    single shared name.
+    """
+    member_formats = getattr(candidate, "member_formats", None)
+    if member_formats:
+        return all(
+            _allowed_format(target_profile, member, member_fmt)
+            for member, member_fmt in member_formats.items()
+        )
+    return _allowed_format(target_profile, name, candidate.fmt)
+
+
 def filter_candidates_for_profile(
     candidates: dict[str, list[Candidate]],
     target_profile: str,
 ) -> dict[str, list[Candidate]]:
     out = {}
     for name, cands in candidates.items():
-        kept = [c for c in cands if _allowed_format(target_profile, name, c.fmt)]
+        kept = [
+            c for c in cands
+            if _allowed_candidate(target_profile, name, c)
+        ]
         if kept:
             out[name] = kept
     return out
@@ -716,15 +740,33 @@ def _is_mtp_linear(name: str) -> bool:
     return str(name).startswith("mtp.")
 
 
+def _canonical_candidate_format(fmt: str) -> str:
+    """Canonical registry name, or the name itself for a whole-group option.
+
+    A whole-group Tessera option (``TESSERA_<F>_K<n>_G<i>``) is deliberately
+    not resolvable to a ``FormatSpec``: it stands for a different rung on each
+    member of a serving unit, so there is no single rate a spec could carry.
+    Its own name IS its canonical identity, and it can only ever appear
+    against a super-item key -- an EXPANDED assignment holds real rungs. So
+    the identity comparisons below stay exact without asking the registry a
+    question it should refuse.
+    """
+    from .tessera_formats import is_tessera_group_option
+
+    if is_tessera_group_option(fmt):
+        return str(fmt)
+    return fr.get_format(fmt).name
+
+
 def _find_candidate_for_format(
     candidates: dict[str, list[Candidate]],
     name: str,
     fmt: str,
 ) -> Candidate | None:
     """Return the scored candidate for `name` at canonical format `fmt`."""
-    canonical = fr.get_format(fmt).name
+    canonical = _canonical_candidate_format(fmt)
     for cand in candidates.get(name, []):
-        if fr.get_format(cand.fmt).name == canonical:
+        if _canonical_candidate_format(cand.fmt) == canonical:
             return cand
     return None
 
@@ -737,17 +779,18 @@ def _validate_assignment_candidate_membership(
 ) -> None:
     """Fail if promotion assigned a format no candidate row allowed."""
     available = {
-        name: {fr.get_format(cand.fmt).name for cand in per_name}
+        name: {_canonical_candidate_format(cand.fmt) for cand in per_name}
         for name, per_name in candidates.items()
     }
     for name, cand in (fixed_chosen_candidates or {}).items():
-        available.setdefault(name, set()).add(fr.get_format(cand.fmt).name)
+        available.setdefault(name, set()).add(
+            _canonical_candidate_format(cand.fmt))
 
     violations = []
     for name, fmt in sorted(assignment.items()):
         if name not in available:
             continue
-        canonical = fr.get_format(fmt).name
+        canonical = _canonical_candidate_format(fmt)
         if canonical not in available[name]:
             violations.append((name, canonical, sorted(available[name])))
     if not violations:
@@ -3204,13 +3247,19 @@ def main():
               f"groups ({packed_member_rows} member Linears priced as "
               "whole-group DP units)")
 
-    # Pre-aggregate fused siblings (qkv_proj, gate_up_proj, ...) into
-    # single DP items. The DP can't pick mixed-sibling solutions because
-    # there's only one item per group — so promote_fused becomes a no-op
-    # on aggregated items and the overshoot-tightening loop collapses to
-    # a single pass on well-behaved models. Must run AFTER the MoE
-    # aggregation (it skips `.__fused__.` and packed-group entries
-    # explicitly).
+    # Pre-aggregate fused siblings (qkv_proj, gate_up_proj, ...) into single
+    # DP items, so promote_fused is a no-op on them and the overshoot-
+    # tightening loop collapses to a single pass. Must run AFTER the MoE
+    # aggregation (it skips `.__fused__.` and packed-group entries explicitly).
+    #
+    # A super item carries one candidate per stock format NAME *and*, for each
+    # Tessera family its members share, the group's own exact multi-choice
+    # knapsack over their rungs (tessera_group_composites). So the DP CAN
+    # return a mixed-rung group -- one family, a rate per member -- which is
+    # the constraint the runtime actually imposes; this comment used to say
+    # the opposite, and the one-rung reading cost 1.12-1.29x in Δloss on the
+    # Qwen3-0.6B continuous menu.
+    tessera_group_menu_report: dict = {}
     if not args.no_fused_aggregation:
         stats, costs, candidates = aggregate_fused_siblings(
             stats, costs, specs_sorted, candidates, profile=model_profile,
@@ -3219,6 +3268,21 @@ def main():
         sib_groups = sum(1 for n in candidates if _FUSED_SIBLING_MARKER in n)
         print(f"[alloc] fused-sibling aggregation: {sib_groups} groups "
               f"(qkv_proj / gate_up_proj / ...)")
+        # The group knapsack: one family per group, a rung per member. Report
+        # what the fold cost and what it produced, per (group, family) --
+        # "how big is the option set the DP now chooses from" is the number
+        # that says whether the exact constraint is affordable.
+        tessera_group_menu_report = {
+            name: dict(stats[name].get("_tessera_group_menu") or {})
+            for name in candidates
+            if stats.get(name, {}).get("_tessera_group_menu")
+        }
+        for name, per_family in sorted(tessera_group_menu_report.items()):
+            for family, row in sorted(per_family.items()):
+                print(f"[alloc] tessera group knapsack {name} {family}: "
+                      f"member menus {row['member_menu']} -> fold "
+                      f"{row['fold_frontier']} -> {row['options']} options",
+                      flush=True)
 
     candidates = filter_candidates_for_profile(candidates, target_profile)
 
@@ -4824,6 +4888,7 @@ def main():
             # coarse-looking set of selected rates cannot be attributed: a
             # campaign that priced few rungs and a bin width that swallowed
             # many look identical in the output.
+            "tessera_group_knapsack": dict(tessera_group_menu_report),
             "tessera_menu": {
                 "per_linear": dict(tessera_menu_report),
                 "aggregated": dict(tessera_menu_report_agg),
@@ -5235,6 +5300,8 @@ def main():
                 "per_linear": dict(tessera_menu_report),
                 "aggregated": dict(tessera_menu_report_agg),
             }} if (tessera_menu_report or tessera_menu_report_agg) else {}),
+        **({"tessera_group_knapsack": dict(tessera_group_menu_report)}
+           if tessera_group_menu_report else {}),
         **({"tessera_hessian": dict(tessera_hessian_identity)}
            if (tessera_hessian_identity.get("stamped_rows")
                or tessera_hessian_identity.get("unstamped_rows")) else {}),

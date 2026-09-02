@@ -3807,6 +3807,47 @@ intercepts, and the three fallbacks above refuse. Anything else calling
 `spec.quantize_dequantize` directly still gets it, and gets what it asked for.
 It does not and will not take an H.
 
+**A fused group is one family, not one rate** (`allocator_candidates.
+tessera_group_composites`). A Tessera rung is a family and a rate glued into
+one name, and only the family is what the runtime dispatches on. The
+aggregation therefore gives each fused/packed group, per shared family, the
+**Minkowski sum** of its members' `(bytes, cost)` menus -- the group's own
+exact multi-choice knapsack -- kept as a Pareto set under **dominance**
+pruning, never a hull (the budget is discrete; a point inside the hull can be
+the unique optimum at one capacity). The outer DP chooses among those option
+sets plus the stock per-NAME options; `expand_fused_sibling_assignment` reads
+the per-member rung map back out, and `_promote_group_components` (already
+family-aware through `format_promotion_class`) is a verified no-op on the
+result. Intersecting by format NAME instead -- the previous behaviour -- forced
+a shared **rate** that no runtime asks for, and on a continuous axis collapsed
+a group's menu to whatever single rung its members happened to share: on
+Qwen3-0.6B layer 0 it cost **1.247x / 1.294x / 1.122x** in Δloss at 3/4/5 bpp,
+while the family constraint itself costs 1.008x / 1.000x / 1.000x against an
+unconstrained bound. Exactness is enforced, not claimed: the fold is pinned
+against brute force on a menu with a non-convex pocket, a uniform-rung option
+must price identically through both constructions or the aggregation refuses,
+and the fold refuses outright at `PRISMAQUANT_COST_UCB_Z > 0` because
+`z*sqrt(sum stderr^2)` is not additive. **Serving premise unattested**: free
+per-member rates require a runtime that decodes a fused group as per-member
+wires (`bresenham_rate_schedule` is a per-COLUMN quota shared by every row of
+ONE unit), and no pinned release attests it -- principle 9's export gate, not
+this, decides what ships.
+
+**Anchors are placed per fused GROUP** (`tessera_campaign`). The
+`--max-artifact-bpp` cap is a WIRE bpp and the wire->body map is
+shape-dependent (the CHANNEL plane amortises over rows), so solving each
+member's top anchor independently put siblings on different body grids even
+when they share `in_features`: `q_proj` topped out at R1388 where `k/v_proj`
+topped out at R1372, and every bisected anchor below inherited the offset. One
+grid per group, from the intersection of its members' realisable sets, and
+every member measures the same rungs. The adaptive loop then keeps splitting
+the worst-predicted interval on any surface still failing `--loo-gate` until
+it closes or `--anchor-budget` is spent; `--max-rounds` defaults to 0 (off)
+because a round adds ONE anchor per failing surface, so capping rounds capped
+how far the worst surface could be improved -- the opposite of the loop's
+purpose. Each surface records its anchors, encode seconds and which of the two
+stopped it.
+
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
 
 > **Premise correction.** This work was briefed on the belief that Tessera's

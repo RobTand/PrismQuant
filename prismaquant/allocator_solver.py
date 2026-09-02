@@ -81,6 +81,14 @@ class Candidate:
     # stops the allocator from pricing a fast path nobody backs without at
     # least recording that it did.
     serving_lane: ResolvedServingLane | None = None
+    # For a whole-GROUP option (``tessera_formats.is_tessera_group_option``):
+    # the rung each member of the fused/packed serving unit holds. One family
+    # across the group -- that is the serving constraint -- and a rate per
+    # member, which is not. None for every ordinary candidate, so a stock run
+    # never sees this field. Kept out of solver logic like the other
+    # provenance fields: the DP reads bytes and cost, and expansion reads
+    # this.
+    member_formats: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
