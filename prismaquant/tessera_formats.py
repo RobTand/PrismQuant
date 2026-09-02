@@ -76,6 +76,7 @@ __all__ = [
     "recipe_is_shape_free",
     "scale_plane_name",
     "tessera_wire_defaults",
+    "clear_recipe_cache",
     "tessera_wire_recipe",
     "wire_overhead_q256",
     "SUPERBLOCK_WEIGHTS",
@@ -98,6 +99,7 @@ class TesseraFormatError(ValueError):
 
 try:  # pragma: no cover - exercised by the import-failure path
     from tessera.alphabet import E2M1_GRID, E4M3_GRID, lloyd_max_grid, tuple_grid
+    from tessera import export as _tessera_export
     from tessera.export import WireRecipe, wire_recipe
     from tessera.grammar import (
         Q256_UNIT,
@@ -162,7 +164,25 @@ def scale_plane_name(plane: "ScalePlaneKind | str") -> str:
 
 @lru_cache(maxsize=512)
 def _recipe_for(base: str, base_size: int, arity: int, rung: "int | None") -> "WireRecipe":
-    return wire_recipe(_build_grid(base, base_size, arity), rung)
+    # Resolved off the module, not off the name bound at import: the recipe a
+    # grid gets is Tessera's decision and it moves (E4M3 is scheduled to flip
+    # from TCQ to WINDOW over CHANNEL), so a test -- or a future in-process
+    # override -- must be able to substitute ``tessera.export.wire_recipe``
+    # and be seen here.  Pair any such substitution with
+    # :func:`clear_recipe_cache`.
+    return _tessera_export.wire_recipe(_build_grid(base, base_size, arity), rung)
+
+
+def clear_recipe_cache() -> None:
+    """Forget every memoised wire recipe.
+
+    The seam caches ``wire_recipe`` per (grid, rung) because the allocator asks
+    for it once per candidate.  A caller that changes what Tessera answers --
+    only tests do this today -- must clear the cache, or the seam keeps pricing
+    and rendering the world it saw first.
+    """
+
+    _recipe_for.cache_clear()
 
 
 def tessera_wire_recipe(
@@ -179,13 +199,16 @@ def tessera_wire_recipe(
     exactly the change a stale copy prices wrongly.
 
     ``rung=None`` asks for the family's *rung-independent* recipe, which is
-    what the family's bounds are stated against.  That is not an assumption
-    this module invents: ``tessera.export._resolve_recipe`` already refuses a
-    checkpoint whose plan resolves to more than one recipe on a grid, so a
-    family really does have one body and one plane per exported artifact.  A
-    rung-varying recipe would still be legal per *unit*, and every function
-    here that prices or validates a rung takes the rung, so the only thing
-    that would need revisiting is the family-level interval.
+    what the family's bounds are stated against.  A recipe may legally vary
+    with the rung: the exporter records it per rung range (``wire.recipes`` in
+    the config, contiguous q256 intervals, with the flat
+    ``body``/``scale.plane``/``trellis.span`` keys reading "per-rung" when they
+    differ across the table), and that table is built from this same
+    per-(grid, rung) lookup, so the seam and the config cannot describe
+    different wires.  What that costs here is only the family-level
+    *interval*: every function that prices, renders or validates a rung takes
+    the rung and gets the rung's own recipe, while a bounds question asked
+    without one gets the family's rung-independent answer.
     """
     spec = get_tessera_family(family)
     return _recipe_for(spec.base, spec.base_size, spec.arity, rung)

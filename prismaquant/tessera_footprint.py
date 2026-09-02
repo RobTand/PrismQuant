@@ -22,7 +22,9 @@ audited back to the planes it was priced from.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from fractions import Fraction
+from functools import lru_cache
 import hashlib
 import json
 
@@ -41,6 +43,8 @@ from .tessera_formats import (
 
 __all__ = [
     "TESSERA_TENSOR_PAYLOAD_SCHEMA",
+    "TesseraShapeRate",
+    "tessera_exact_bits_for_shape",
     "tessera_tensor_payload_breakdown",
     "validate_tessera_tensor_payload_breakdown",
 ]
@@ -381,6 +385,100 @@ def tessera_tensor_payload_breakdown(
     }
     breakdown["pre_render_recipe_identity_sha256"] = _recipe_identity(breakdown)
     return breakdown
+
+
+@lru_cache(maxsize=4096)
+def _exact_bits_for_shape(
+    family_name: str,
+    body_rate_q256: int,
+    rows: int,
+    columns: int,
+    recipe,
+) -> Fraction:
+    payload = tessera_tensor_payload_breakdown(
+        (rows, columns),
+        family=family_name,
+        body_rate_q256=body_rate_q256,
+        recipe=recipe,
+    )
+    return Fraction(int(payload["total_bytes"]) * 8)
+
+
+def tessera_exact_bits_for_shape(
+    family: "str | TesseraFamily",
+    body_rate_q256: int,
+    shape: Sequence[int],
+    *,
+    recipe=None,
+) -> Fraction:
+    """Exact serialized bits for one Tessera tensor, planes included.
+
+    The size question asked without the report: same family, same rung, same
+    recipe, same arithmetic as :func:`tessera_tensor_payload_breakdown` --
+    literally the same call -- so a rung cannot be priced one way for a
+    ``FormatSpec`` and another way for an allocator candidate.  It is the
+    ``layout="tight"``, canonical-schedule, zero-sidecar figure, which is what
+    a format-level price is: a sidecar header belongs to a unit, not to a
+    format.
+
+    This is the answer for a wire the shape-free accountant cannot state -- a
+    CHANNEL plane charges one fp16 per output row, a WINDOW body charges a
+    ``2**L``-byte table per unit -- and it is exact for every other wire too.
+
+    A packed ``(experts, out, in)`` stack is priced as ``experts`` units of
+    ``(out, in)``, each paying its own window table and its own row field,
+    because that is what the wire does rather than a convention chosen here:
+    ``tessera.export.export_checkpoint_streaming`` encodes one unit per source
+    tensor name and every source ships ``experts.{i}.*`` as separate 2-D
+    tensors, the trellis runs down rows within a column so a fused
+    ``(experts*out, in)`` unit would carry the path across expert boundaries
+    and no single expert could be decoded alone, and the kernel lane decodes a
+    unit against its own table (``_pack_window_unit``).  It is also the rule
+    ``FormatSpec.scale_count_for_shape`` already applies to a stacked tensor:
+    outer count times the per-matrix figure.  Anything that is not 2-D or 3-D
+    is **refused** (as a ``ValueError``, which every caller of
+    ``memory_bytes_for_shape`` in the tree already treats as "this format
+    cannot take this tensor") rather than flattened into a rate.
+    """
+
+    spec = get_tessera_family(family)
+    dims = tuple(int(d) for d in shape)
+    if len(dims) not in (2, 3):
+        raise TesseraFormatError(
+            f"{spec.name}: an exact Tessera size needs a 2-D Linear weight or "
+            f"a 3-D (experts, out, in) stack of them, got shape {dims}"
+        )
+    experts = dims[0] if len(dims) == 3 else 1
+    if experts <= 0:
+        raise TesseraFormatError(
+            f"{spec.name}: a packed stack needs at least one expert, got "
+            f"shape {dims}"
+        )
+    rows, columns = dims[-2], dims[-1]
+    wire = tessera_wire_recipe(spec, body_rate_q256) if recipe is None else recipe
+    return experts * _exact_bits_for_shape(
+        spec.name, int(body_rate_q256), rows, columns, wire,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class TesseraShapeRate:
+    """The shape-aware size of one Tessera rung, as a callable.
+
+    Handed to ``FormatSpec.bits_for_shape_fn``.  A frozen dataclass rather than
+    a closure so two specs synthesized for the same rung compare equal and
+    pickle -- ``get_format`` builds a fresh ``FormatSpec`` on every call, and a
+    lambda would make those specs unequal and unsendable.
+    """
+
+    family: str
+    body_rate_q256: int
+    recipe: object
+
+    def __call__(self, shape: Sequence[int]) -> Fraction:
+        return tessera_exact_bits_for_shape(
+            self.family, self.body_rate_q256, shape, recipe=self.recipe,
+        )
 
 
 def validate_tessera_tensor_payload_breakdown(

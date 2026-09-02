@@ -97,6 +97,17 @@ class FormatSpec:
     # ``weight_bits``/``scale_bits`` terms.  Kept last to preserve the
     # positional constructor ABI.
     exact_bits_per_param: "Fraction | None" = None
+    # A *shape-dependent* exact rate, for formats whose serialized size is not
+    # a rate at all.  A Tessera unit whose wire recipe carries a per-unit plane
+    # -- one fp16 per output row (CHANNEL), or a 2**L window table for the
+    # whole tensor -- costs a different number of bits per parameter on a
+    # 2048x4096 tensor than on a 96x768 one, so no scalar can state it.  When
+    # set it is the WHOLE size, body and planes together, in bits, and it wins
+    # over ``exact_bits_per_param`` and the weight/scale terms alike; a spec
+    # that sets it has NO shape-free rate and ``effective_bits`` refuses rather
+    # than quoting a floor.  Kept last to preserve the positional constructor
+    # ABI.
+    bits_for_shape_fn: "Callable[[tuple[int, ...]], Fraction] | None" = None
 
     @property
     def act_quant_changes_input(self) -> bool:
@@ -135,7 +146,21 @@ class FormatSpec:
 
     @property
     def effective_bits(self) -> float:
-        """Average bits per parameter accounting for scales."""
+        """Average bits per parameter accounting for scales.
+
+        Refuses when the format's size is shape-dependent
+        (``bits_for_shape_fn``): there is no scalar to return, and the only
+        answers available -- the body-plus-block-plane part, or the rate at
+        some reference shape -- are floors that every consumer here would
+        multiply by a parameter count as if they were exact.  Ask
+        :meth:`bits_for_shape` or :meth:`effective_bits_for_shape` instead.
+        """
+        if self.bits_for_shape_fn is not None:
+            raise ValueError(
+                f"format {self.name!r} has a shape-dependent exact size and "
+                "therefore no shape-free bits-per-parameter rate; call "
+                "bits_for_shape(shape) or effective_bits_for_shape(shape)"
+            )
         # Backward-compatible fallback when no layer shape is available.
         if self.group_size == 0:
             if self.scale_bits == 0:
@@ -183,9 +208,43 @@ class FormatSpec:
         inner = int(shape[-1])
         return outer * math.ceil(inner / self.group_size)
 
+    def bits_for_shape(self, shape: tuple[int, ...]) -> Fraction:
+        """Exact serialized size of one tensor, in bits, as a rational.
+
+        The one shape-aware size question, answered in the order the spec
+        declares its size:
+
+          * ``bits_for_shape_fn`` -- the format's own accountant, for a wire
+            whose per-unit planes make the rate a function of the shape;
+          * ``exact_bits_per_param`` -- the declared whole rate times the
+            parameter count, exact because both factors are rational;
+          * otherwise the weight/scale model, quoted through
+            ``memory_bytes_for_shape`` so this method can never disagree with
+            it -- which means the answer is byte-rounded for those formats,
+            since that is what their serialization is.
+
+        ``memory_bytes_for_shape`` is the byte view of this same number, and
+        every byte accountant in the tree reaches it through one of the two.
+        """
+
+        if self.bits_for_shape_fn is not None:
+            return Fraction(self.bits_for_shape_fn(tuple(int(d) for d in shape)))
+        if self.exact_bits_per_param is not None:
+            n_params = int(math.prod(shape)) if len(shape) else 1
+            return Fraction(self.exact_bits_per_param) * n_params
+        return Fraction(8 * self.memory_bytes_for_shape(shape))
+
     def memory_bytes_for_shape(self, shape: tuple[int, ...]) -> int:
         """Exact-ish serialized size for a tensor in this format."""
         n_params = int(math.prod(shape)) if len(shape) else 1
+        if self.bits_for_shape_fn is not None:
+            # The format's own accountant owns the whole size, including the
+            # per-unit planes a rate cannot state.  It is also the shape gate:
+            # it raises (as a ValueError) on a shape the format cannot tile,
+            # which is what ``allocator._sort_specs_by_serialized_rate`` and
+            # ``footprint`` already expect from this call.
+            bits = self.bits_for_shape(shape)
+            return -(-bits.numerator // (bits.denominator * 8))
         if self.exact_bits_per_param is not None:
             # The declared rate already covers every plane the artifact
             # writes.  Adding the group-scale term here would charge the
