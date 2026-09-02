@@ -1288,10 +1288,26 @@ def list_producer_formats(family: str | None = None) -> list[FormatSpec]:
 
 
 def format_is_producer_eligible(name: str) -> bool:
-    """Whether a registered canonical/alias format may be newly produced."""
+    """Whether a canonical/alias format may be newly produced.
+
+    Resolved through :func:`get_format`, not through ``REGISTRY`` directly, so
+    a format whose spec is *synthesized* answers with its own
+    ``producer_eligible`` instead of with the silence of an absent registry row.
+    A continuous family addresses thousands of rungs and deliberately has no
+    static rows (``get_format``'s Tessera fallback); reading ``REGISTRY`` here
+    made every one of them ineligible and made the family's own two-gate
+    admission -- the wire can carry it AND a pinned runtime attests it --
+    unreachable, so the honest answer and the refusal were computed and then
+    thrown away.  An unknown name still raises ``KeyError`` inside
+    ``get_format``; that is "not a format", not "not producer-eligible", and it
+    is returned as False here exactly as the absent row was.
+    """
 
     canonical = canonical_format_name(name)
-    spec = REGISTRY.get(canonical)
+    try:
+        spec = get_format(canonical)
+    except KeyError:
+        return False
     if spec is None or not spec.producer_eligible:
         return False
     # Pin CB eligibility to the torch-free wire source as a second invariant;
@@ -1320,6 +1336,28 @@ def require_producer_formats(
     return [get_format(name) for name in requested]
 
 
+def is_tessera_format_name(name: object) -> bool:
+    """True for a Tessera-shaped format name, **without importing Tessera**.
+
+    Four consumers ask only "is this one of mine?" before deciding whether to
+    take the Tessera path: ``render_production_weight`` and the three
+    production-cache miss fallbacks (``weight_session``, ``perturbed_x_cache``,
+    ``aura_cost``). All four are on the hot path of every *non*-Tessera format
+    too, so the question must not drag in the answer's dependencies --
+    ``tessera_formats`` and ``tessera_render`` both require the ``tessera``
+    package at import, and an NVFP4-only pipeline must not.
+
+    So this is the family's own name grammar anchored at the start, the same
+    line ``get_format`` draws below, and it is deliberately a *prefix* test
+    rather than a parse: a ``TESSERA_``-shaped name naming an illegal rung is
+    still Tessera's to refuse, with Tessera's own error, not the registry's
+    KeyError about an unknown format.
+    """
+    if not isinstance(name, str):
+        return False
+    return name.strip().upper().startswith("TESSERA_")
+
+
 def get_format(name: str) -> FormatSpec:
     canonical = canonical_format_name(name)
     if canonical not in REGISTRY:
@@ -1329,11 +1367,19 @@ def get_format(name: str) -> FormatSpec:
         # someone has to maintain. Synthesize on demand so every consumer that
         # resolves a format by name works unchanged, then fall through to the
         # normal KeyError for anything that is not Tessera-shaped.
-        from .tessera_render import synthesize_tessera_spec
+        #
+        # The prefix test is the family's own name grammar anchored at the
+        # start (``tessera_formats._FORMAT_NAME``), and it is here rather than
+        # inside the synthesizer because reaching the synthesizer imports the
+        # ``tessera`` package: an unknown NON-Tessera name must raise KeyError
+        # naming the registry, not ModuleNotFoundError naming a package it was
+        # never asking for.  ``is_tessera_format_name`` above is that line.
+        if is_tessera_format_name(canonical):
+            from .tessera_render import synthesize_tessera_spec
 
-        spec = synthesize_tessera_spec(canonical)
-        if spec is not None:
-            return spec
+            spec = synthesize_tessera_spec(canonical)
+            if spec is not None:
+                return spec
         raise KeyError(f"Unknown format '{name}'. Available: "
                        f"{sorted((*REGISTRY.keys(), *FORMAT_ALIASES.keys()))}")
     return REGISTRY[canonical]

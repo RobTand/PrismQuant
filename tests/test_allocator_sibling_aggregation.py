@@ -864,3 +864,175 @@ def test_fused_group_hedge_is_identity_at_z_zero(monkeypatch):
         assert cand.predicted_dloss == exact_sum, (
             "z == 0 must be a bit-for-bit identity on the member sum")
         assert costs_ext[super_name][cand.fmt]["predicted_dloss"] == exact_sum
+
+
+# ---------------------------------------------------------------------------
+# One family per group, a rate per member: the group's exact knapsack
+# ---------------------------------------------------------------------------
+
+def _tessera_member_candidates(rows, family="TESSERA_E4M3_K1"):
+    """``[(bytes, cost), ...]`` -> candidates on one family."""
+    return [
+        Candidate(fmt=f"{family}_R{100 + i}", bits_per_param=0.0,
+                  memory_bytes=int(b), predicted_dloss=float(c))
+        for i, (b, c) in enumerate(rows)
+    ]
+
+
+def test_group_knapsack_equals_brute_force_including_a_nonconvex_pocket():
+    """The fold must be the group's EXACT multi-choice knapsack.
+
+    Dominance pruning, not a convex hull: the budget is discrete, so an option
+    strictly inside the hull can still be the unique optimum at one particular
+    remaining capacity, and hull pruning drops exactly those. The two menus
+    below are built with such a pocket, and the fold is checked against brute
+    force over every one of the 36 member combinations.
+    """
+    from prismaquant.allocator_candidates import tessera_group_composites
+
+    # Member A carries a pocket: (30, 5.0) is inside the hull of (20, 9.0)
+    # and (40, 2.0) but is not dominated by either.
+    a = [(10, 20.0), (20, 9.0), (30, 5.0), (40, 2.0), (50, 1.5), (60, 1.0)]
+    b = [(10, 18.0), (20, 8.0), (30, 4.5), (40, 2.2), (50, 1.4), (60, 0.9)]
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        members[0]: _tessera_member_candidates(a),
+        members[1]: _tessera_member_candidates(b),
+    }
+    options = tessera_group_composites(members, candidates, n_params=1000)
+
+    brute: dict[int, float] = {}
+    for ab, ac in a:
+        for bb, bc in b:
+            total_b, total_c = ab + bb, ac + bc
+            if total_b not in brute or total_c < brute[total_b]:
+                brute[total_b] = total_c
+    # The Pareto set of the brute-force sum, by the same dominance rule.
+    want = []
+    best = None
+    for total_b in sorted(brute):
+        if best is None or brute[total_b] < best:
+            want.append((total_b, brute[total_b]))
+            best = brute[total_b]
+
+    got = sorted((int(o.memory_bytes), round(float(o.predicted_dloss), 12))
+                 for o in options)
+    assert got == [(b, round(c, 12)) for b, c in want]
+    # Every option carries the rung each member holds, and one family.
+    for option in options:
+        assert set(option.member_formats) == set(members)
+        assert {f.rsplit("_R", 1)[0] for f in option.member_formats.values()} \
+            == {"TESSERA_E4M3_K1"}
+
+
+def test_the_group_knapsack_beats_one_shared_rung_where_it_should():
+    """The whole point: members with different sensitivities want different
+    rates. With A steep and B flat, the best equal-byte split is asymmetric,
+    and the one-rung menu cannot express it."""
+    from prismaquant.allocator_candidates import tessera_group_composites
+
+    a = [(10, 100.0), (20, 40.0), (30, 10.0)]     # steep: bytes buy a lot
+    b = [(10, 6.0), (20, 5.0), (30, 4.0)]         # flat: bytes buy little
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        members[0]: _tessera_member_candidates(a),
+        members[1]: _tessera_member_candidates(b),
+    }
+    options = {int(o.memory_bytes): o
+               for o in tessera_group_composites(
+                   members, candidates, n_params=1000)}
+    # At 40 bytes the uniform split (20, 20) costs 45.0; the group knapsack
+    # spends them where they buy the most: (30, 10) costs 16.0.
+    assert options[40].predicted_dloss == 16.0
+    assert options[40].member_formats["m.q_proj"].endswith("_R102")
+    assert options[40].member_formats["m.k_proj"].endswith("_R100")
+
+
+def test_group_options_refuse_a_ucb_hedge_rather_than_price_it_wrong():
+    """``z*sqrt(sum stderr^2)`` is not additive, so the fold cannot carry it
+    on two coordinates. Refuse, do not approximate."""
+    import pytest
+
+    from prismaquant.allocator_candidates import tessera_group_composites
+
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        m: _tessera_member_candidates([(10, 2.0), (20, 1.0)]) for m in members
+    }
+    with pytest.raises(NotImplementedError, match="not additive"):
+        tessera_group_composites(members, candidates, n_params=1000, ucb_z=1.0)
+
+
+def test_expansion_gives_each_member_its_own_rung():
+    """A whole-group option is not a format name and must never be broadcast.
+    Expansion reads the per-member map the aggregation wrote beside it."""
+    stats = {
+        "model.layers.0.self_attn.q_proj": {
+            "h_trace": 1.0, "n_params": 16, "in_features": 4,
+            "out_features": 4},
+        "model.layers.0.self_attn.k_proj": {
+            "h_trace": 1.0, "n_params": 16, "in_features": 4,
+            "out_features": 4},
+    }
+    members = sorted(stats)
+    costs = {n: {} for n in stats}
+    candidates = {
+        members[0]: _tessera_member_candidates([(10, 4.0), (20, 1.0)]),
+        members[1]: _tessera_member_candidates([(10, 3.0), (20, 2.0)]),
+    }
+    stats_ext, _costs_ext, cands_ext = aggregate_fused_siblings(
+        stats, costs, [], candidates, _FakeProfile())
+    super_name = next(n for n in cands_ext if _FUSED_SIBLING_MARKER in n)
+    option = next(c for c in cands_ext[super_name]
+                  if int(c.memory_bytes) == 30)
+    expanded = expand_fused_sibling_assignment(
+        {super_name: option.fmt}, stats_ext)
+    assert expanded == option.member_formats
+    assert len(set(expanded.values())) == 2      # a rate per member
+
+
+def test_a_group_option_without_a_member_map_is_refused():
+    import pytest
+
+    stats_ext = {
+        f"m{_FUSED_SIBLING_MARKER}g": {"_fused_siblings": ["m.q", "m.k"]},
+    }
+    with pytest.raises(AssertionError, match="per-member rung map"):
+        expand_fused_sibling_assignment(
+            {f"m{_FUSED_SIBLING_MARKER}g": "TESSERA_E4M3_K1_G3"}, stats_ext)
+
+
+def test_a_stock_menu_gains_no_group_options_at_all():
+    """A run with no Tessera rung on the menu must be byte-identical to one
+    built before the group knapsack existed."""
+    names, stats, costs = _mk_stats_and_costs()
+    specs = _format_specs()
+    cands = build_candidates(stats, costs, specs)
+    stats_ext, _costs_ext, cands_ext = aggregate_fused_siblings(
+        stats, costs, specs, cands, _FakeProfile())
+    for name, per_name in cands_ext.items():
+        for candidate in per_name:
+            assert candidate.member_formats is None, (name, candidate.fmt)
+        if _FUSED_SIBLING_MARKER in name:
+            assert "_fused_member_formats" not in stats_ext[name]
+
+
+def test_promotion_leaves_a_mixed_rung_group_alone():
+    """The serving constraint is the shared decoder, not the shared rate: an
+    expanded mixed-rung group is already coherent and promotion must not
+    'repair' it into one rung."""
+    assignment = {
+        "model.layers.0.self_attn.q_proj": "TESSERA_E4M3_K1_R694",
+        "model.layers.0.self_attn.k_proj": "TESSERA_E4M3_K1_R920",
+        "model.layers.0.self_attn.v_proj": "TESSERA_E4M3_K1_R1372",
+    }
+    format_rank = {
+        "TESSERA_E4M3_K1_R694": 0,
+        "TESSERA_E4M3_K1_R920": 1,
+        "TESSERA_E4M3_K1_R1372": 2,
+    }
+    legal = {name: set(format_rank) for name in assignment}
+    out = promote_serving_units(
+        dict(assignment), format_rank, profile=_FakeProfile(),
+        legal_formats=legal)
+    assert out == assignment

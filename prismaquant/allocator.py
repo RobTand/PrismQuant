@@ -88,11 +88,16 @@ import json
 import math
 import pickle
 import re
+import time as _time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from pathlib import Path
 
 from . import format_registry as fr
+from .tessera_menu import (
+    expand_menu_tokens_report,
+    surrogate_selection_caveat,
+)
 from .allocator_solver import (
     Candidate,
     _shape_from_stats,
@@ -123,6 +128,7 @@ from .allocator_candidates import (
     selection_serving_lane_provenance,
     serialized_candidate_payload,
     summarize_applicability_masks,
+    reduce_continuous_menu,
 )
 from .fixed_head import (
     allow_pinned_lifts_lm_head,
@@ -587,13 +593,37 @@ def _allowed_format(target_profile: str, name: str, fmt: str) -> bool:
     return decision.legal
 
 
+def _allowed_candidate(
+    target_profile: str, name: str, candidate: Candidate,
+) -> bool:
+    """Legality of one candidate, whole-group options included.
+
+    A whole-group Tessera option is not a format name and the serving profile
+    has no row for it; asking about the name would be asking the wrong
+    question. What the profile can answer is whether each MEMBER's rung is
+    legal for that member, which is exactly the option's legality -- and it is
+    strictly stronger than the old per-NAME check, which asked once about a
+    single shared name.
+    """
+    member_formats = getattr(candidate, "member_formats", None)
+    if member_formats:
+        return all(
+            _allowed_format(target_profile, member, member_fmt)
+            for member, member_fmt in member_formats.items()
+        )
+    return _allowed_format(target_profile, name, candidate.fmt)
+
+
 def filter_candidates_for_profile(
     candidates: dict[str, list[Candidate]],
     target_profile: str,
 ) -> dict[str, list[Candidate]]:
     out = {}
     for name, cands in candidates.items():
-        kept = [c for c in cands if _allowed_format(target_profile, name, c.fmt)]
+        kept = [
+            c for c in cands
+            if _allowed_candidate(target_profile, name, c)
+        ]
         if kept:
             out[name] = kept
     return out
@@ -713,15 +743,33 @@ def _is_mtp_linear(name: str) -> bool:
     return str(name).startswith("mtp.")
 
 
+def _canonical_candidate_format(fmt: str) -> str:
+    """Canonical registry name, or the name itself for a whole-group option.
+
+    A whole-group Tessera option (``TESSERA_<F>_K<n>_G<i>``) is deliberately
+    not resolvable to a ``FormatSpec``: it stands for a different rung on each
+    member of a serving unit, so there is no single rate a spec could carry.
+    Its own name IS its canonical identity, and it can only ever appear
+    against a super-item key -- an EXPANDED assignment holds real rungs. So
+    the identity comparisons below stay exact without asking the registry a
+    question it should refuse.
+    """
+    from .tessera_formats import is_tessera_group_option
+
+    if is_tessera_group_option(fmt):
+        return str(fmt)
+    return fr.get_format(fmt).name
+
+
 def _find_candidate_for_format(
     candidates: dict[str, list[Candidate]],
     name: str,
     fmt: str,
 ) -> Candidate | None:
     """Return the scored candidate for `name` at canonical format `fmt`."""
-    canonical = fr.get_format(fmt).name
+    canonical = _canonical_candidate_format(fmt)
     for cand in candidates.get(name, []):
-        if fr.get_format(cand.fmt).name == canonical:
+        if _canonical_candidate_format(cand.fmt) == canonical:
             return cand
     return None
 
@@ -734,17 +782,18 @@ def _validate_assignment_candidate_membership(
 ) -> None:
     """Fail if promotion assigned a format no candidate row allowed."""
     available = {
-        name: {fr.get_format(cand.fmt).name for cand in per_name}
+        name: {_canonical_candidate_format(cand.fmt) for cand in per_name}
         for name, per_name in candidates.items()
     }
     for name, cand in (fixed_chosen_candidates or {}).items():
-        available.setdefault(name, set()).add(fr.get_format(cand.fmt).name)
+        available.setdefault(name, set()).add(
+            _canonical_candidate_format(cand.fmt))
 
     violations = []
     for name, fmt in sorted(assignment.items()):
         if name not in available:
             continue
-        canonical = fr.get_format(fmt).name
+        canonical = _canonical_candidate_format(fmt)
         if canonical not in available[name]:
             violations.append((name, canonical, sorted(available[name])))
     if not violations:
@@ -2250,6 +2299,38 @@ def main():
     costs = cost_data["costs"]
     print(f"[alloc] stats: {len(stats)} Linears, costs: {len(costs)} Linears")
 
+    # One Hessian identity per cost table, or refuse. The Tessera encoder's
+    # shipping default consumes a per-unit XtX, so rows priced with and
+    # without one describe different bytes at the same format name, and the
+    # DP would trade them against each other. Raises on a mix; reports what
+    # it found otherwise, so "no claim" stays distinguishable from "a
+    # matching claim" (principle 14).
+    from .tessera_menu import assert_uniform_hessian_identity
+    tessera_hessian_identity = assert_uniform_hessian_identity(costs)
+    if tessera_hessian_identity.get("stamped_rows") or \
+            tessera_hessian_identity.get("unstamped_rows"):
+        print(f"[alloc] tessera hessian identity: "
+              f"supplied={tessera_hessian_identity['supplied']} "
+              f"tokens={tessera_hessian_identity['token_count']} "
+              f"sha={str(tessera_hessian_identity['text_sha'])[:12]} "
+              f"({tessera_hessian_identity['stamped_rows']} stamped, "
+              f"{tessera_hessian_identity['unstamped_rows']} unstamped rows)")
+
+    # Which runtime contract admitted this run's Tessera routes, if any. Empty
+    # when no Tessera contract is pinned -- production, where the attested menu
+    # is empty and nothing here is reached. Non-empty means the development
+    # override was in force, and the block names the exact Tessera commit and
+    # the sha256 of the contract file the reader consumed, so a shipcard can
+    # say which table attested its routes rather than that some table did.
+    from .tessera_runtime_contract import load_tessera_contract
+    _tessera_contract = load_tessera_contract()
+    tessera_dev_pin = {} if _tessera_contract is None else _tessera_contract.identity()
+    if tessera_dev_pin:
+        print(f"[alloc] tessera dev pin: commit={tessera_dev_pin['commit'][:12]} "
+              f"contract_sha={tessera_dev_pin['contract_sha256'][:12]} "
+              f"plugin={tessera_dev_pin['plugin_version']} "
+              f"contract_v{tessera_dev_pin['contract_version']}")
+
     # ---- Fisher renormalization ----
     # One shared denominator (the global calib token count) recomputed
     # from the stored raw accumulators; hard error on probes that cannot
@@ -2355,6 +2436,72 @@ def main():
         fmt_names = [s.strip() for s in args.formats.split(",") if s.strip()]
     else:
         fmt_names = cost_data["formats"]
+    # ``TESSERA`` is a menu TOKEN, not a format. It cannot expand to a fixed
+    # list the way ``NVFP4`` names one rung: a Tessera family addresses a
+    # continuous rate axis, the realisable set depends on the unit's column
+    # count, and one 0.6B Linear carries ~3000 legal rungs across the three
+    # families. So the token expands to exactly the rungs THIS RUN PRICED --
+    # the cost table's own Tessera columns -- which is both the widest menu
+    # the DP could honestly consider and a set that needs no second copy of
+    # the campaign's legality decisions. A rung the campaign did not price
+    # would be dropped by ``build_candidates`` anyway (no cost row); naming it
+    # here would only have ``require_producer_formats`` refuse the whole run.
+    # The expansion is intersected with what the pinned runtime attests, so a
+    # research-priced table read back on the default path allocates over the
+    # backed axis instead of refusing wholesale. The narrowing is printed, not
+    # inferred: an allocation over 2 rungs and one over 3060 must not look the
+    # same in a log (P9, P12).
+    priced_tessera = [
+        n for n in cost_data.get("formats", ())
+        if isinstance(n, str) and n.startswith("TESSERA_")
+    ]
+    fmt_names, unattested = expand_menu_tokens_report(
+        fmt_names, cost_data.get("formats", ()))
+    tessera_menu_widths: dict = {}
+    if priced_tessera:
+        kept = [n for n in fmt_names if n.startswith("TESSERA_")]
+        if kept:
+            tessera_menu_widths = {
+                "priced_rungs": len(priced_tessera),
+                "attested_rungs": len(kept),
+                "dropped_unattested_rungs": len(unattested),
+            }
+        print(
+            f"[alloc] Tessera menu: {len(kept)} of {len(priced_tessera)} priced "
+            f"rungs are attested by the pinned runtime"
+            + (f" ({len(unattested)} dropped as unattested)" if unattested else "")
+            + (f"; sample: {kept[:4]}" if kept else ""),
+            flush=True,
+        )
+        # The measured status of the ranking this DP is about to do. Printed
+        # here rather than at the end because it governs how the whole run's
+        # output is to be read, and stamped into provenance below because a
+        # terminal line is not a property of the artifact (P12).
+        if kept:
+            print(
+                "[alloc] WARNING: Tessera rungs are on this menu and the DP "
+                "ranks them on a surrogate MEASURED to mis-rank them at "
+                "matched bytes -- served KL 2.00x worse than a byte-matched "
+                "uniform arm at 4.0 bpp (2.33x at 3.0, 2.88x at 5.0), and "
+                "1.93x on the priced units alone. See "
+                "tessera_menu.surrogate_selection_caveat() and "
+                "docs/measurements/tessera-allocated-served-2026-09-02.md. "
+                "This assignment is a CANDIDATE, not a selection: promote it "
+                "only through SELECTION_MODE=validated-surrogate with a "
+                "byte-matched uniform arm served beside it.",
+                flush=True,
+            )
+        if unattested and not kept:
+            raise SystemExit(
+                "[alloc] ERROR: the cost table prices "
+                f"{len(priced_tessera)} Tessera rungs and the pinned runtime "
+                "attests none of them, so the TESSERA menu token expands to "
+                "nothing. Either widen the runtime's attested rungs "
+                "(candidate_rungs_q256 in the packaged runtime_contract.json) "
+                "or price a table under the attested menu; "
+                "PRISMAQUANT_TESSERA_MENU=research allocates over the whole "
+                "realisable axis for research runs that do not export."
+            )
     try:
         specs = fr.require_producer_formats(
             fmt_names, where="new allocator assignment menu"
@@ -2753,6 +2900,7 @@ def main():
             print(line, flush=True)
 
     candidate_mask_records: list[dict] = []
+    tessera_menu_report: dict = {}
     candidates = build_candidates(
         stats, costs, specs_sorted, calibrated_gains,
         source_manifest=source_manifest,
@@ -2760,6 +2908,10 @@ def main():
         mask_records=candidate_mask_records,
         cb_serialization_context=cb_serialization_context,
         activation_pricing=activation_pricing,
+        # The DP's own bin width, so a continuous Tessera menu is reduced to
+        # what THIS solver can distinguish rather than to a taste constant.
+        bit_precision=float(args.bit_precision),
+        tessera_menu_report=tessera_menu_report,
     )
     print(f"[alloc] candidates built for {len(candidates)} Linears")
 
@@ -3168,13 +3320,19 @@ def main():
               f"groups ({packed_member_rows} member Linears priced as "
               "whole-group DP units)")
 
-    # Pre-aggregate fused siblings (qkv_proj, gate_up_proj, ...) into
-    # single DP items. The DP can't pick mixed-sibling solutions because
-    # there's only one item per group — so promote_fused becomes a no-op
-    # on aggregated items and the overshoot-tightening loop collapses to
-    # a single pass on well-behaved models. Must run AFTER the MoE
-    # aggregation (it skips `.__fused__.` and packed-group entries
-    # explicitly).
+    # Pre-aggregate fused siblings (qkv_proj, gate_up_proj, ...) into single
+    # DP items, so promote_fused is a no-op on them and the overshoot-
+    # tightening loop collapses to a single pass. Must run AFTER the MoE
+    # aggregation (it skips `.__fused__.` and packed-group entries explicitly).
+    #
+    # A super item carries one candidate per stock format NAME *and*, for each
+    # Tessera family its members share, the group's own exact multi-choice
+    # knapsack over their rungs (tessera_group_composites). So the DP CAN
+    # return a mixed-rung group -- one family, a rate per member -- which is
+    # the constraint the runtime actually imposes; this comment used to say
+    # the opposite, and the one-rung reading cost 1.12-1.29x in Δloss on the
+    # Qwen3-0.6B continuous menu.
+    tessera_group_menu_report: dict = {}
     if not args.no_fused_aggregation:
         stats, costs, candidates = aggregate_fused_siblings(
             stats, costs, specs_sorted, candidates, profile=model_profile,
@@ -3183,8 +3341,38 @@ def main():
         sib_groups = sum(1 for n in candidates if _FUSED_SIBLING_MARKER in n)
         print(f"[alloc] fused-sibling aggregation: {sib_groups} groups "
               f"(qkv_proj / gate_up_proj / ...)")
+        # The group knapsack: one family per group, a rung per member. Report
+        # what the fold cost and what it produced, per (group, family) --
+        # "how big is the option set the DP now chooses from" is the number
+        # that says whether the exact constraint is affordable.
+        tessera_group_menu_report = {
+            name: dict(stats[name].get("_tessera_group_menu") or {})
+            for name in candidates
+            if stats.get(name, {}).get("_tessera_group_menu")
+        }
+        for name, per_family in sorted(tessera_group_menu_report.items()):
+            for family, row in sorted(per_family.items()):
+                print(f"[alloc] tessera group knapsack {name} {family}: "
+                      f"member menus {row['member_menu']} -> fold "
+                      f"{row['fold_frontier']} -> {row['options']} options",
+                      flush=True)
 
     candidates = filter_candidates_for_profile(candidates, target_profile)
+
+    # The aggregated super items were built one candidate per format NAME,
+    # straight from `specs_sorted` -- they never passed through the reduction
+    # `build_candidates` applies to per-Linear menus. On a continuous Tessera
+    # menu that is the difference between a group carrying five rungs and one
+    # carrying several thousand, so the reduction is re-applied here, on the
+    # post-aggregation dict, with the same two exact steps (dominance, then
+    # this DP's own charged bins). Non-Tessera items are partitioned out and
+    # returned untouched, so a stock run is byte-identical.
+    tessera_menu_report_agg: dict = {}
+    candidates = reduce_continuous_menu(
+        candidates, stats,
+        bit_precision=float(args.bit_precision),
+        report=tessera_menu_report_agg,
+    )
 
     post_aggregation_availability = {
         spec.name: sum(
@@ -3472,8 +3660,11 @@ def main():
             "exact_filter_trace": [],
         }
         _solve_diagnostics[round(requested_target, 9)] = outer_diag
+        solver_seconds_total = 0.0
+        solver_calls = 0
         for attempt in range(16):
             proposal_diag: dict = {}
+            _solve_t0 = _time.perf_counter()
             assign, solver_achieved = solve_with_promotion(
                 stats,
                 candidates,
@@ -3486,6 +3677,13 @@ def main():
                 profile=model_profile,
                 diagnostics=proposal_diag,
             )
+            # DP wall time, summed over the tightening retries this target
+            # needed. Stamped into the seed JSON so a continuous-menu run can
+            # be compared against a stock one without re-timing by hand.
+            solver_seconds_total += _time.perf_counter() - _solve_t0
+            solver_calls += 1
+            outer_diag["solver_seconds"] = solver_seconds_total
+            outer_diag["solver_calls"] = solver_calls
             outer_diag.update({
                 key: value
                 for key, value in proposal_diag.items()
@@ -4757,6 +4955,35 @@ def main():
             "cb_ladder_cross_family_verdict": cross_family_verdict,
             "serving_lane_provenance": selection_serving_lane_provenance(
                 chosen_info["assignment"], candidates, target_profile),
+            # How big the per-unit menu was BEFORE the DP saw it, and which
+            # of the two reductions shrank it (see reduce_continuous_menu).
+            # Empty on a run with no Tessera rung on the menu. Without this a
+            # coarse-looking set of selected rates cannot be attributed: a
+            # campaign that priced few rungs and a bin width that swallowed
+            # many look identical in the output.
+            "tessera_group_knapsack": dict(tessera_group_menu_report),
+            **({"tessera_dev_pin": dict(tessera_dev_pin)} if tessera_dev_pin else {}),
+            "tessera_menu": {
+                "per_linear": dict(tessera_menu_report),
+                "aggregated": dict(tessera_menu_report_agg),
+                **tessera_menu_widths,
+                **({"selection_caveat": surrogate_selection_caveat()}
+                   if tessera_menu_widths else {}),
+            },
+            # DP wall time per solved target, summed over the tightening
+            # retries that target needed. `_solve_diagnostics` was previously
+            # read only by the infeasibility message, so the cost of a solve
+            # was invisible to anything that consumed the output; a continuous
+            # menu is exactly the case where that number stops being obvious.
+            "solve_diagnostics": {
+                str(k): {
+                    "solver_seconds": v.get("solver_seconds"),
+                    "solver_calls": v.get("solver_calls"),
+                    "evals": v.get("evals"),
+                }
+                for k, v in _solve_diagnostics.items()
+                if isinstance(v, dict) and "solver_seconds" in v
+            },
             # Ultraplan P5c: which hard serving constraints were active, which
             # probed assignments the axis REJECTED and for which SLO, and
             # which constraint binds at the shipped optimum. Present on every
@@ -5138,6 +5365,38 @@ def main():
             "additive_candidate_proposal_then_exact_assignment_filter"
         ),
         "global_optimality_claimed": False,
+        # Continuous-menu provenance, written on EVERY run rather than only on
+        # the byte-budget path: how wide the Tessera menu was before the DP saw
+        # it, which of the two exact reductions shrank it (per-Linear and, for
+        # aggregated super items, again after aggregation), and what the solve
+        # cost in wall time. On a menu of thousands of rungs those are the
+        # numbers that say whether a coarse-looking result is the allocator's
+        # answer or the menu's. Absent keys mean no Tessera rung was on the
+        # menu, so a stock run's metadata is unchanged.
+        **({"tessera_menu": {
+                "per_linear": dict(tessera_menu_report),
+                "aggregated": dict(tessera_menu_report_agg),
+                **tessera_menu_widths,
+                **({"selection_caveat": surrogate_selection_caveat()}
+                   if tessera_menu_widths else {}),
+            }} if (tessera_menu_report or tessera_menu_report_agg
+                   or tessera_menu_widths) else {}),
+        **({"tessera_group_knapsack": dict(tessera_group_menu_report)}
+           if tessera_group_menu_report else {}),
+        **({"tessera_hessian": dict(tessera_hessian_identity)}
+           if (tessera_hessian_identity.get("stamped_rows")
+               or tessera_hessian_identity.get("unstamped_rows")) else {}),
+        **({"tessera_dev_pin": dict(tessera_dev_pin)} if tessera_dev_pin else {}),
+        **({"solve_diagnostics": {
+                str(k): {
+                    "solver_seconds": v.get("solver_seconds"),
+                    "solver_calls": v.get("solver_calls"),
+                }
+                for k, v in _solve_diagnostics.items()
+                if isinstance(v, dict) and "solver_seconds" in v
+            }} if any(
+                isinstance(v, dict) and "solver_seconds" in v
+                for v in _solve_diagnostics.values()) else {}),
         # The artifact-wide CB context the per-tensor identities above were
         # computed under. Without it the exporter cannot know which contract
         # produced them: it reads this key

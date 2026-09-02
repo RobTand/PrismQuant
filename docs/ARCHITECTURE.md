@@ -1,6 +1,8 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-02 · `tessera/remove-gridbook` — stamps follow, newest
+As of: 2026-09-02 · `tessera/decouple-gridbook` — the integration branch,
+carrying `tessera/remove-gridbook` and `tessera/continuous-menu`. Stamps
+follow, newest
 first, each recording its own branch and date. Re-stamped (2026-09-02,
 `tessera/remove-gridbook`) for the **retirement of the Gridbook codebook
 lane** (§1.1, §3.5, §9, §9.2, D34). Robert, 2026-09-02: *"put Tessera in
@@ -62,6 +64,53 @@ no `routed_moe` cell), and its `served_activation_quantization.executes` is
 DERIVED from the packaged table by a test rather than typed. No exporter, no
 stage, no menu default changed: `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16`.
 Re-stamped (2026-09-02,
+`tessera/continuous-menu`) for the **Tessera dev pin, the H seam and the group
+fold's measured cost** (§4.10): PrismaQuant now reads Tessera's own packaged
+`runtime_contract.json` through a named development override
+(`PRISMAQUANT_TESSERA_DEV_PIN`, commit- and sha-checked, refusing rather than
+degrading to "unattested"), and that table publishes **one rung per family and
+`max_world_size: 1`**, so the attested menu is two points and empty above tp=1
+while the research menu is ~3000 rungs per unit. Tensor-parallel legality now
+asks `tessera.layout.shard_granularity` rather than deriving a period locally;
+a mixed Bresenham schedule takes the column period to the 256-column
+superblock, which collapses a row-parallel `[3072,1024]` menu from 3060 rungs
+to 17 at tp=8. Activation-aware encoding goes through
+`tessera.export.ActivationSource`, formed in one place
+(`prismaquant/tessera_hessian.py`) for both the anchor campaign and the
+production render, and it is **CHANNEL-plane-only** at the pinned commit: E4M3
+rungs take an H, both E2M1 families are priced weights-only and stamped
+`hessian_applied: false`. The one-rung fused-group constraint is measured on a
+per-group-anchored table at **1.237x / 1.558x / 1.113x**. The `TESSERA` menu
+token now expands to priced-**and-attested** rungs and prints the narrowing:
+a cost table is priced under the campaign's menu mode while attestation is a
+property of the runtime, so a research-priced table read back on the default
+path used to make `require_producer_formats` refuse the entire run and the
+backed rungs never reached the DP. An explicitly named unattested rung still
+refuses. Measured on the default path with the dev pin: 2 of 2423 priced rungs
+attested, floor 4.000 bpp (7 x `E2M1_K2_R896`), ceiling 4.042 bpp, and
+`--target-bits 3.0` refuses as infeasible. **And the menu now carries a
+measured requirement**: served on Qwen3-0.6B against a byte-matched uniform
+arm, this menu's own allocations lose **2.00x** in KL-vs-BF16 at 4.0 bpp
+(2.33x / 2.88x at 3.0 / 5.0) with bytes exact to the bit, and the loss is in
+the cost model on the units it priced (1.93x on those seven Linears, where the
+surrogate scores them 1.13x better). `SELECTION_MODE=validated-surrogate`
+**plus a byte-matched uniform control served beside the candidate** is
+therefore a requirement of this menu, not a suggestion; the allocator warns and
+stamps `tessera_menu.selection_caveat` into provenance. Previously re-stamped
+(2026-09-02,
+`tessera/continuous-menu`) for the **Tessera continuous menu** (§4.10): the
+production allocator can now allocate across Tessera's whole realisable rate
+set — three families, ~3000 legal rungs per unit — through the `FORMATS=TESSERA`
+token, an anchor campaign that measures a few rungs per (unit, family) and
+refuses to extrapolate past them, dominance-only menu reduction (never a hull),
+and serving-unit promotion relaxed to share a FAMILY with rates free per member.
+Tensor-parallel degree and direction are per-unit legality inputs read through
+one function and stamped into provenance. Two facts the brief assumed otherwise
+are recorded rather than worked around: Tessera's embedded axis is a decode-time
+completion axis and **does not exist on the wire**, so every rung costs its own
+encode; and no pinned release attests a Tessera route, so the default menu is
+empty and research mode stamps `unattested`. No export leg, no served KL.
+Previously re-stamped (2026-09-02,
 `tessera/decouple-gridbook`) for **Gridbook contract v14** (§5.7, §9.2, D33):
 the Tessera lane serves two families — `TESSERA_E2M1_K2` (W4A4) and
 `TESSERA_E4M3_K1` (W8A8) — behind one flag pair, and one checkpoint carrying
@@ -3713,6 +3762,537 @@ the suite.
 — that points the same pricing machinery at Tessera families instead of the
 Gridbook TCQ ones. It is imported by nothing in the pipeline; the live Tessera
 seam is the registry fallback in §5.7, and this section's refusal is unchanged.
+
+### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
+
+Every other entry on the format menu is a *point*: `NVFP4` is one rate, `FP8_E4M3`
+is one rate, and a menu is the handful of them a launcher lists. A Tessera family
+is an *axis* — a rate addressable at a 1/256-bpp quantum, realised as a per-column
+Bresenham schedule — so "which rungs are on the menu" is a question with a
+per-unit answer in the thousands, not a comma-separated string. This section is
+the seam that lets the production allocator ask it.
+
+**The three families, and why not four.** `tessera_menu.menu_families()` asks
+Tessera, and gets `TESSERA_E2M1_K1`, `TESSERA_E2M1_K2`, `TESSERA_E4M3_K1`. E2M1
+arity 2 exists because it fills the rungs between arity 1's and is what makes 4.0
+bpp addressable at all. **`TESSERA_E4M3_K2` is refused by Tessera itself** — 2^16
+anchors scored per trellis step, at the wall the encoder already declines — and
+that refusal is pinned by a test rather than reproduced as a local exclusion list,
+because it is a cost refusal that would come back the day the anchor budget moves.
+**There is no BF16 family**: Tessera has no 16-bit grid, so a `BF16` rung of the
+Tessera menu does not exist and is not synthesised. BF16 stays on the menu the way
+it always has, as the passthrough rung of the stock registry (§P11).
+
+**Three gates, and only three.** A rung is a candidate when all of them agree, and
+each is a separate function so a refusal names which one:
+
+| Gate | Function | Question |
+|---|---|---|
+| wire | `tessera_render.tessera_rung_is_serialisable` | can these bytes be written at all? |
+| shape + TP | `tessera_menu.tessera_shape_legal` / `tessera_tp_legal` | does the rung tile the shard each rank will hold? |
+| route | `tessera_menu.route_admission` | does a pinned runtime execute it? |
+
+**`route_admission` is the one seam** (principle 14). It is the single function in
+the production path that reads a serving contract on Tessera's behalf; the menu,
+the campaign, the candidate gate, the lane stamp and the provenance all consume
+its `RouteAdmission`. When the Tessera serving lane publishes its own
+`runtime_contract.json`, the swap is this function's body and nothing else. It is
+memoised on `(name, the callables that answered)` rather than on the name alone —
+a cache over a runtime-contract read must not outlive the contract, and a plain
+name-keyed cache demonstrably inverted a pinned-release test that ran after one
+which patched the attestation.
+
+**The default menu is two rungs under the dev pin, and empty without it.** The
+pinned Gridbook release publishes no Tessera cell, so with no Tessera contract
+pinned `route_admission` answers `unattested` — *absence of a claim*, not
+`unbacked` — for every rung and the default `attested` menu holds none of them.
+
+Tessera now packages its own contract (`tessera/serving/runtime_contract.json`,
+schema `tessera.runtime-contract.v1`), read by `tessera_runtime_contract.py`. No
+Tessera RELEASE tag has been cut, so production admission stays fail-closed; the
+development override `PRISMAQUANT_TESSERA_DEV_PIN=<commit>` must equal
+`TESSERA_DEV_PIN_COMMIT` **and** the installed contract's sha256 must equal
+`TESSERA_DEV_PIN_CONTRACT_SHA256`, or the read raises — it never degrades to
+`unattested`, because a stale pin that silently empties the menu is exactly what
+the pin exists to prevent. The commit is declared and the sha is what attests: a
+worktree rsync'd to a second box is not a git checkout and cannot be asked its
+HEAD. The whole identity travels into provenance as `tessera_dev_pin`.
+
+Under that pin the attested menu is **two rungs, not a range**:
+
+| rung | bpp on `[2048, 1024]` | route status | serve flags | max TP world |
+|---|---|---|---|---|
+| `TESSERA_E2M1_K2_R896` | 4.000 | `backed_with_serve_flag` | `TESSERA_SERVE_MODE=resident\|streamed` | 1 |
+| `TESSERA_E4M3_K1_R1024` | 4.078 | `backed_with_serve_flag` | `TESSERA_SERVE_MODE=resident\|streamed` | 1 |
+
+Both are the family's native terminal rate, 0.078 bpp apart, so **the attested
+menu has no rate axis at all** — the continuous axis is priced and allocatable
+only under `PRISMAQUANT_TESSERA_MENU=research`, and widening it is a change to
+Tessera's published `candidate_rungs_q256`, not to anything here. Research mode
+admits every serialisable rung and stamps `route_status=unattested` on each so
+the export gate fails closed on it (principles 1 and 9: an honestly priced rung
+is never removed from the menu; the *export* is where an unbacked route is
+refused).
+
+Route status and serve flags are read off the attesting cell rather than typed:
+these cells say `backed_with_serve_flag`, and collapsing that to `backed` would
+both overstate the claim and drop the `TESSERA_SERVE_MODE` the serve needs.
+
+**REQUIREMENT: this menu may not be selected on the surrogate alone.**
+Measured 2026-09-02, served
+(`docs/measurements/tessera-allocated-served-2026-09-02.md`): three of this
+menu's own allocations were exported and served on Qwen3-0.6B against a
+**byte-matched uniform** arm, and lost at every budget — KL-vs-BF16 **0.3485 vs
+0.1746** at 4.0 bpp (2.00x), 2.33x at 3.0, 2.88x at 5.0, with bytes exact to
+the bit and 112/112 modules on the declared route. The loss is *in the cost
+model, on the units the cost model priced*: a separator pair serving only the
+seven measured Linears reads 0.02517 allocated vs 0.01306 uniform (1.93x, 95%
+of the whole-body gap in log terms) while the same seven units score 1.13x
+**better** in the allocator's own `h_trace × output_mse`. It is a
+rate-distortion **slope** error, not an ordering error: the surrogate charged
+the deep cut (`down_proj` R1006→R749) at 3.69x, its largest penalty and the
+right sign, and scored the six remaining moves as a 1.30x net win where serving
+says 1.19x loss. So:
+
+* `SELECTION_MODE=validated-surrogate` is a **requirement** of this menu, not a
+  suggestion. A Tessera `layer_config.json` produced under
+  `SELECTION_MODE=surrogate` is a *candidate*, and the allocator now prints a
+  warning saying so and stamps `tessera_menu.selection_caveat` into provenance
+  (`tessera_menu.surrogate_selection_caveat()`), so the status is a property of
+  the artifact and not of a terminal.
+* **Necessary but not sufficient**, and this is the second requirement: the
+  validated frontier re-scores the *allocator's own* Pareto points, all of them
+  surrogate-allocated (`select_validated_frontier.py` and
+  `validate_assignments_kl.py` contain no uniform/baseline/control arm in 3471
+  lines), so it can rank 4.0 against 5.0 but cannot see that *uniform at 4.0*
+  beats *allocated at 4.0*. The gate that caught this is a
+  **byte-matched uniform arm served beside the candidate** — two serves, and it
+  inverted the answer. Principle 3 applied to allocation itself.
+* `COST_MODE=aura` is deliberately **not** named as the fix. No measurement of
+  AURA on a Tessera rung exists in this tree's receipts (`docs/measurements/`
+  holds none; the two auto-memory notes that mention both say "in principle,
+  not yet run"), and naming an unmeasured estimator as the repair would be
+  exactly the assertion principle 14 forbids. It is a candidate for the repair,
+  to be decided by measurement.
+
+The repair is not in this seam. Every construction downstream of the cost —
+surface interpolation, dominance pruning, bin collapse, the group Minkowski
+fold, the DP — is exact *given* the cost and adds no independent check on it.
+The one structural guard that exists is ordinal: `TesseraRateSurface` refuses a
+non-monotone anchor set rather than laundering it into a cost (2 of 21 surfaces
+refused on the 0.6B group table). A slope error inside a monotone surface is
+invisible to it, which is precisely the measured failure.
+
+**The `TESSERA` token expands to priced-and-attested, and says how much it
+narrowed.** A cost table is priced under whatever menu mode the *campaign* ran;
+the attested set is a property of the *runtime*. A research-priced table read
+back on the default path therefore holds thousands of columns the pinned
+contract does not publish, and `expand_menu_tokens` used to hand every one of
+them to `require_producer_formats`, which refused the **whole menu** — so the
+default path could not allocate at all and the two backed rungs never reached
+the DP. The token now intersects the priced columns with
+`format_is_producer_eligible`, the same predicate the guard refuses on, so it
+can never expand to something the guard then rejects (one rule, two uses). The
+narrowing is printed — `[alloc] Tessera menu: 2 of 2423 priced rungs are
+attested by the pinned runtime` — because an allocation over two rungs and one
+over three thousand must not look the same in a log (P12); an **explicitly
+named** unattested rung still refuses, so only the token narrows; and an empty
+intersection refuses with the reason and both fixes named. Measured on the 0.6B
+group table under the dev pin: floor 4.000 bpp (7 × `E2M1_K2_R896`), ceiling
+4.042 bpp (4 × `E4M3_K1_R1024` + the `qkv` group on E2M1, because q/k priced no
+E4M3 rung at R1024), and `--target-bits 3.0` refuses as infeasible. Note which of the two attested
+rungs is measured: `E2M1_K2_R896` is the family cap and is a **measured
+anchor** on all seven units, while `E4M3_K1_R1024` is an **interpolated**
+column of the rate surface on the five units that have one — so the attested
+menu's E4M3 leg rests on interpolation in the currency impeached above.
+
+**Tensor parallelism has two legs, and both bind.** The *attestation* leg is the
+contract's `tensor_parallel` block, whose semantics are `closed_world`: it lists
+both families at `max_world_size: 1`, so **no Tessera rung is attested at TP > 1
+at any shape**, and `tessera_tp_world_attested` refuses in the attested menu
+before geometry is consulted. The research menu passes that leg by construction
+(it prices unattested rungs deliberately and stamps every one). The *geometry*
+leg is below, and a refusal names which leg answered.
+
+**Tensor parallelism is a per-unit legality input.** A Tessera rate is a schedule
+over the reduce dimension, so what a rank can encode is a function of *its* column
+count. Column-parallel Linears (q/k/v/gate/up) shard `out_features` and keep every
+column — their realisable set is unchanged at any TP degree; row-parallel ones
+(o_proj/down_proj) shard `in_features`, and at TP=8 a 1024-column unit becomes a
+128-column one with a **far** smaller realisable set: 3060 → **17** rungs on
+`[3072, 1024]` (3060 at TP≤4). Packed experts are whole units under expert
+parallelism. The degree and the kind come from the serving profile's
+`tensor_parallel` block (`serving_profiles.TensorParallelSpec`, enumerated regex
+rules — no name heuristics), the granularity from **one** function,
+`tessera_menu.tessera_shard_granularity`, which asks
+`tessera.layout.shard_granularity` (since Tessera `f3e7d0a`) by handing it the
+unit-shaped geometry the rung implies at that shape. The degree the candidate
+was gated for is stamped into its provenance.
+
+That delegation changed the answer, and the change is the reason principle 14
+exists. This module used to derive the column period from the scale plane alone
+— 32 for E8M0 groups, 16 for LUT half-blocks, **1 for a CHANNEL plane** — and
+that last number is wrong: Tessera raises the column period to the 256-column
+superblock for any rung whose Bresenham schedule is *mixed*, because the quota
+`sum(rates) == root × columns` only closes on a whole superblock. Every rung
+but the handful at integer rates is mixed, so the honest TP constraint on a
+row-parallel Linear is `cols / tp % 256 == 0`, which is what collapses 3060 to
+17 at TP=8 and what the local derivation would have admitted silently.
+
+**One function owns the encoder call, and it is H-gated**
+(`tessera_render.encode_tessera_unit`). The Tessera encoder's shipping default
+is *H-aware*: given a unit's `H = XᵀX` it applies LDLQ (sigma 1.0, block 32)
+plus an exact full-H row-scale refit, and weights-only encodes stay
+byte-identical. So a rung priced without an H is a price of different bytes at
+the same format name, and the seam refuses rather than downgrade silently:
+
+* **The seam is `tessera.export.ActivationSource`**, not a kwarg name.
+  `ActivationSource.for_unit(name, in_features, device)` turns one unit's H
+  into the encoder keywords it implies — `ldl`, `ldl_block`, `refit_metric`,
+  `refit_reach_floor` — and PrismaQuant forwards that object's output and
+  nothing else: a keyword it did not emit is refused, so this seam cannot
+  become a second place where encode settings are chosen. Capability is
+  *probed*, never assumed (principle 14): `_encoder_accepts_hessian` asks a
+  throwaway source which keywords it emits and
+  `inspect.signature(encode_linear_planes)` which it takes, and the seam
+  refuses when they disagree. Deliberately *not* "call and catch `TypeError`",
+  which would swallow every unrelated argument error.
+* **Which rungs can take an H is a fact about the WIRE, and it is measured.**
+  At Tessera `f3e7d0a` an activation-aware encode needs a **CHANNEL** scale
+  plane: on a block plane Tessera refuses `ldl` ("LDLQ is implemented for the
+  CHANNEL scale plane") *and* `refit_metric` ("read only by the CHANNEL plane's
+  refit"). Every E4M3 rung is CHANNEL; every E2M1 rung is LUT16. So **the H is
+  the FP8/W8A8 route's shipping encode and the W4A4 route has none** —
+  weights-only on E2M1 is not a downgrade, it is the only bytes that wire has,
+  and pricing it is still pricing the bytes that ship (principle 8).
+  `tessera_render.rung_accepts_hessian` is the predicate; because it restates a
+  Tessera condition, a test pins it against real encodes on every family.
+  `hessian_applied` is stamped **per cost row**, not per table, because a
+  mixed-family campaign is legitimately half H-aware.
+* **H comes from PrismaQuant's own calibration activations, never the held-out
+  / KL split**, accumulated as raw `XᵀX` over **every** calibration row the
+  Linear sees — *before* the render score's `max_act_rows` cap, since a 256-row
+  Hessian on a 3072-column `down_proj` is rank-deficient by twelve. It is
+  passed un-normalised, because Tessera's `regularize_hessian` takes a count of
+  its own and a second normalisation here would be a second spelling of the
+  encoder's.
+* **One formation, one identity, two callers** (`tessera_hessian.py`). The
+  anchor campaign and `render_tessera_production` (under
+  `ProductionWeightCache`) both call `hessian_from_rows` (fp32, one
+  accumulation order, `[b, s, in]` and `[t, in]` giving one matrix) and
+  `calibration_identity`, which emits exactly the triple Tessera requires —
+  `text_sha256`, `fit_tokens`, `fit_ids_sha256`. Both shas travel: two
+  tokenizers over one corpus are two calibrations a text sha would call the
+  same, and one tokenizer over two corpora is two an id sha separates only by
+  luck. The production render **requires** the triple in
+  `levers['tessera_hessian_identity']` and refuses without it — bytes shaped by
+  an H are not reproducible from the weights, so the capture has to be named.
+* **The LDL is hoisted out of the rate sweep.** `ldl` and `refit_metric` are
+  functions of the unit's H alone, so the campaign memoises the kwargs per unit
+  and a twelve-anchor surface factorises one `[in, in]` matrix once instead of
+  twelve times.
+* **A missing qname is a hard failure** (`HessianContractError`), not a
+  fall-through — this tree has already shipped a render whose activation lookup
+  missed, silently rendered RTN and raised nothing. The error has its own class
+  so the campaign's `except Exception: continue` per-anchor guard cannot absorb
+  a contract refusal into a skipped anchor.
+* **`--hessian {require,off}`**, default `require`, mirroring
+  `render_production_weight`'s `ldlq_missing_activation_ok=False`. `off` prices
+  weights-only *deliberately* and stamps `hessian.supplied=false` on every row
+  and on the payload, with the identity (`text_sha256`, `fit_tokens`,
+  `fit_ids_sha256`, source, split role, seed) beside it.
+* **The provenance has a consumer.** `tessera_menu.assert_uniform_hessian_
+  identity` refuses a cost table whose Tessera rows carry two different Hessian
+  identities, and the allocator calls it at load and stamps the result into
+  `__prismaquant__.tessera_hessian`. Unstamped rows are counted as
+  *unstamped*, not assumed to match. Provenance that nothing consumes is a
+  confession log; this one is a gate.
+
+* **`render_production_weight` routes Tessera here, ahead of its format
+  cascade** (`production_weight_cache.py`, `render_tessera_production`). Left to
+  the cascade, a `TESSERA_*` unit fell through to the registry's synthesized
+  `quantize_dequantize` — a *weights-only reconstruction*, not the decoded wire
+  — so an allocator-chosen Tessera unit would have been cached, KL-scored and
+  exported from bytes nobody encoded, silently on both counts. The interception
+  forms `H = XᵀX` from `activations[qname]` (calibration rows, `.to(device)`
+  explicitly — the CPU-residency landmine), refuses a missing key and refuses a
+  column count that does not match `weight.shape[1]`. The deliberate opt-out is
+  the `tessera_weights_only` lever, which whoever sets must stamp.
+
+* **The predicate does not import Tessera.** All four sites below are on the
+  hot path of every *non*-Tessera format, and `tessera_formats` /
+  `tessera_render` both require the `tessera` package at import. So the
+  question "is this mine?" is `format_registry.is_tessera_format_name` — the
+  family's name grammar anchored at the start, the same line `get_format`
+  already drew — and `tessera_render` is imported inside the Tessera branch
+  only. Pinned by a subprocess test that blocks the `tessera` import.
+* **All three cache-miss RTN fallbacks refuse Tessera** —
+  `weight_session._format_weight` and `perturbed_x_cache` (both gated by
+  `PRISMAQUANT_STRICT_PRODUCTION_CACHE`, default refuse) and `aura_cost`'s
+  `dW` fallback (gated by `require_production_cache`, **default off**). Each
+  falls back to the registry `quantize_dequantize`, which for Tessera is the
+  weights-only reconstruction again — the same silence, one function further
+  on. They now raise, as they already did for CB. `aura_cost` is the one that
+  mattered most: it is the default `COST_MODE` and its guard is off by
+  default. The orchestrator cannot reach it with a Tessera name today
+  (`run-pipeline.sh:69` refuses `FORMATS` containing the `TESSERA` token
+  before the AURA cost stage), but a direct call can.
+
+`render_tessera_weight` remains the **weights-only reference** render. It is
+reached only through the registry's synthesized `quantize_dequantize` — public
+API, so it cannot be made unreachable. The four paths by which a *pipeline*
+consumer could reach it are closed by name: `render_production_weight`
+intercepts, and the three fallbacks above refuse. Anything else calling
+`spec.quantize_dequantize` directly still gets it, and gets what it asked for.
+It does not and will not take an H.
+
+**A fused group is one family, not one rate** (`allocator_candidates.
+tessera_group_composites`). A Tessera rung is a family and a rate glued into
+one name, and only the family is what the runtime dispatches on. The
+aggregation therefore gives each fused/packed group, per shared family, the
+**Minkowski sum** of its members' `(bytes, cost)` menus -- the group's own
+exact multi-choice knapsack -- kept as a Pareto set under **dominance**
+pruning, never a hull (the budget is discrete; a point inside the hull can be
+the unique optimum at one capacity). The outer DP chooses among those option
+sets plus the stock per-NAME options; `expand_fused_sibling_assignment` reads
+the per-member rung map back out, and `_promote_group_components` (already
+family-aware through `format_promotion_class`) is a verified no-op on the
+result. Intersecting by format NAME instead -- the previous behaviour -- forced
+a shared **rate** that no runtime asks for, and on a continuous axis collapsed
+a group's menu to whatever single rung its members happened to share: on
+Qwen3-0.6B layer 0 it cost **1.247x / 1.294x / 1.122x** in Δloss at 3/4/5 bpp,
+while the family constraint itself costs 1.008x / 1.000x / 1.000x against an
+unconstrained bound. Exactness is enforced, not claimed: the fold is pinned
+against brute force on a menu with a non-convex pocket, a uniform-rung option
+must price identically through both constructions or the aggregation refuses,
+and the fold refuses outright at `PRISMAQUANT_COST_UCB_Z > 0` because
+`z*sqrt(sum stderr^2)` is not additive. Measured again on a cost table whose
+anchors were placed per group (the correct placement) the one-rung constraint
+costs **1.237x / 1.558x / 1.113x**, and at 4.0 the fold is shown to *contain*
+the unconstrained arm's own rung triple, so the family constraint there is free
+and the 0.003% residual is the outer DP's charged-bin quantisation.
+`PRISMAQUANT_TESSERA_GROUP_KNAPSACK=0` disables the fold as a debug ablation --
+that is the arm those ratios are measured against, and it stamps `__ablation__`
+into the group report so a run cannot be mistaken for a default one. **Serving premise unattested**: free
+per-member rates require a runtime that decodes a fused group as per-member
+wires (`bresenham_rate_schedule` is a per-COLUMN quota shared by every row of
+ONE unit), and no pinned release attests it -- principle 9's export gate, not
+this, decides what ships.
+
+**Anchors are placed per fused GROUP** (`tessera_campaign`). The
+`--max-artifact-bpp` cap is a WIRE bpp and the wire->body map is
+shape-dependent (the CHANNEL plane amortises over rows), so solving each
+member's top anchor independently put siblings on different body grids even
+when they share `in_features`: `q_proj` topped out at R1388 where `k/v_proj`
+topped out at R1372, and every bisected anchor below inherited the offset. One
+grid per group, from the intersection of its members' realisable sets, and
+every member measures the same rungs. The adaptive loop then keeps splitting
+the worst-predicted interval on any surface still failing `--loo-gate` until
+it closes or `--anchor-budget` is spent; `--max-rounds` defaults to 0 (off)
+because a round adds ONE anchor per failing surface, so capping rounds capped
+how far the worst surface could be improved -- the opposite of the loop's
+purpose. Each surface records its anchors, encode seconds and which of the two
+stopped it.
+
+**Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
+
+> **Premise correction.** This work was briefed on the belief that Tessera's
+> "embedded rate axis" would let one deep encode per unit yield exact decodes of
+> every lower rate. It does not, on the wire: the embedded axis is a decode-time
+> **completion** axis, `encode_linear` writes `completion=0`, `build_unit_artifact`
+> writes exactly one terminal, and a WINDOW body has no completion axis at all.
+> Every rung of every family costs its own encode. That fact is what makes a
+> campaign necessary rather than merely convenient, and it is pinned by
+> `test_no_embedded_axis_on_the_wire`.
+
+So the stage measures a few anchors per `(unit, family)`, fits a monotone
+piecewise-linear surface in `(q256, log2 dloss)`, and **refuses to extrapolate**:
+a rung outside the measured envelope is omitted from the cost table, not invented.
+A non-monotone anchor set is recorded in `non_interpolable` and that family is
+priced only where it was measured -- and a refused surface is reported as a
+refusal, never as a perfect fit: `_surface_loo` returns `None` for its
+leave-one-out error and `gate_closed: False`, and the adaptive loop skips
+refused members when taking the worst-LOO maximum. (Reading the absent error
+with a `0.0` default did the opposite, and closed the gate on exactly the
+surfaces the loop exists to keep spending on.) Anchor placement is adaptive — a second round
+splits the interval whose interior anchor its own leave-one-anchor-out check
+predicts worst — and gated on a measured LOO error, not a taste constant.
+
+Two properties make the numbers comparable with the rest of the menu:
+
+* **Priced as served.** The render is scored under the route's own activation
+  contract — NVFP4's W4A4 quantiser on E2M1 rungs, per-token FP8 on E4M3 — taken
+  *by reference* from the serving format's registry row, so the A leg is not a
+  second implementation of it. The same weight rate therefore costs differently on
+  the two routes, which is asserted directly by
+  `test_the_same_weight_rate_costs_differently_on_the_two_routes`.
+* **Rendering identity (§P8).** The tensor that is priced *is* the decoded wire:
+  `_encode_and_render` returns `read_unit_artifact(unit.blob)`, and the blob is
+  stored beside the render in the cache. Not two code paths that agree — one
+  object.
+
+Rows are written in the codebase's own currency: `output_mse` and **no**
+`predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
+`predicted_dloss` is already the `½·h_trace·mse` product. Writing the MSE into
+both fields — which the first version of this stage did — prices a Tessera rung
+`h_trace/2` times low against every other format on the menu; a test now pins it.
+Interpolated rows join `cost_entry_is_band_interpolated`'s branch, so they are
+priced from their own output-space fit and inherit
+`drop_interpolated_candidates_dominated_by_measured`.
+
+**Reducing the menu for the DP, and reporting which reduction did it**
+(`allocator_candidates.reduce_continuous_menu`). Two reductions, kept separate
+because they license different claims:
+
+* **dominance** (`tessera_menu.prune_dominated`) drops a rung only when another is
+  no larger in bytes **and** no larger in cost. Exact for any knapsack.
+  **Explicitly not a convex hull** — the budget is discrete, so a point strictly
+  inside the hull can be the optimum at one particular remaining capacity, and
+  hull pruning drops exactly those points. Refused here rather than offered behind
+  a flag.
+* **bin collapse** (`tessera_menu.collapse_to_dp_bins`) drops a rung only when
+  another lands in the same charged bin of *this* DP (`_charged_bins` at
+  `--bit-precision`, against the unit's own cheapest candidate — the baseline
+  `solve_allocation` actually uses). Exact for this solver at this precision, and
+  no stronger.
+
+Both counts, per unit, are stamped into `layer_config.json`'s
+`__prismaquant__.tessera_menu`. Without them a coarse-looking set of selected
+rates cannot be attributed: a campaign that priced few rungs and a bin width that
+swallowed many look identical in the output. Non-Tessera candidates are
+partitioned out before either reduction, so a run with no Tessera rung on the menu
+is byte-identical to one built before the function existed.
+
+**Promotion shares a family, not a rate** (`allocator_solver._resolve_family_group`).
+Serving-unit promotion exists because fused siblings and packed experts are one
+tensor to the runtime, so members cannot disagree about what the runtime
+dispatches on. For a Tessera rung that is the **family** — the grid and arity the
+decoder is compiled for — not the rung. `tessera_formats.format_promotion_class`
+returns the family for a Tessera name and *the name itself* for everything else,
+so the relaxation is unreachable on a stock menu by construction. Each member then
+takes the cheapest legal rung of the shared family at or above its own rank (the
+same non-degrading contract the uniform path has), and if any member has no legal
+rung in the family the whole thing falls back to uniform promotion — the
+relaxation can only widen what promotion accepts, never add a way for it to fail.
+This matters at 0.6B already: `q_proj` is `[2048, 1024]` and `k/v_proj` are
+`[1024, 1024]`, three different tensors fused into one `qkv_proj`, and the uniform
+rule would force a shared *rate* where only a shared *route* is required.
+
+**...but the default path never asks it to** (measured 2026-09-02). Fused
+siblings are aggregated into a single DP item *before* the solve
+(`allocator.py` → `allocator_candidates.aggregate_fused_siblings`), and that
+aggregation builds one super-item candidate **per format name** (`for spec in
+formats: … Candidate(fmt=spec.name, …)`). The DP therefore returns exactly one
+rung for the whole group, and `_promote_group_components` — relaxation included
+— is a no-op on it. The call site says so in as many words: *"The DP can't pick
+mixed-sibling solutions because there's only one item per group."* The
+relaxation is reached only when the siblings stay separate DP units, i.e. under
+`--no-fused-aggregation`. Both arms are measured in the receipt.
+
+This is also the honest reading of the **wire**: `bresenham_rate_schedule(root,
+n_columns)` is a per-COLUMN quota shared by every row of a unit
+(`tessera/grammar.py`). Siblings concatenated along ROWS into one unit *cannot*
+carry different rates — the schedule is indexed by the axis they share. Free
+per-sibling rates presuppose that the runtime decodes q, k and v as separate
+units and concatenates after, which is a claim about a runtime and is therefore
+not made here (principle 14). `tests/test_tessera_menu.py::
+test_pre_aggregation_forces_one_rung_on_a_fused_group` pins the fact so a change
+that makes the DP mixed-rung capable has to come here and say so.
+
+**The reduction is re-applied after aggregation.** Super items are built from
+`specs_sorted` directly and never pass through the per-Linear reduction, so
+`allocator.py` runs `reduce_continuous_menu` a second time on the
+post-aggregation dict (after `filter_candidates_for_profile`). Without it a
+fused group carries the entire unreduced Tessera axis into the DP. Both passes
+are reported, in `layer_config.json` under
+`__prismaquant__.tessera_menu = {per_linear, aggregated}` — written on every
+run, not only on the byte-budget path, which is where the first version of this
+stamp landed and therefore never appeared in a `--target-bits` run.
+
+> **Attestation gap, stated rather than assumed.** Whether a runtime can serve a
+> fused group whose members hold different rungs of one family is a fact about
+> that runtime, and nothing attests it — there is no Tessera export leg at all.
+> This section describes what the *allocator* may consider; §9's export gate
+> decides what ships, and under the default attested menu there are no Tessera
+> candidates for the relaxation to act on.
+
+**The route travels with the choice.** `serving_lane_route` falls through to
+`tessera_menu.tessera_resolved_serving_lane` for a `TESSERA_*` name when no profile
+declares a lane for it — which is always, since no spec can enumerate ~3000 rungs.
+Without that fallback `selection_serving_lane_provenance` reports
+`no_declared_lane` (absence of a declaration) where the truth is a declaration of
+absence (`unattested`); principle 9 wants the second one countable, and it is now.
+The fallback is deliberately *after* the profile lookup, so a profile that one day
+declares a real Tessera lane overrides it like any other format.
+
+**Wiring.** `FORMATS` accepts the token `TESSERA`;
+`tessera_menu.expand_menu_tokens` replaces it with exactly the Tessera columns the
+run's own cost table holds — the widest menu the DP could honestly consider, and a
+set that needs no second copy of the campaign's legality decisions. `run-pipeline.sh`
+refuses the token with a pointer to the campaign command until that stage is wired
+into the orchestrator, rather than emitting a cost table with no Tessera column and
+an allocation that silently contains none.
+
+**What gates the interpolation, and what does not.** The rate surface is gated
+by the campaign's own leave-one-anchor-out error and by a menu-density arm
+(solve the same targets against a menu of measured anchors only, and compare).
+That arm must hold **aggregation** fixed to mean anything: `aggregate_fused_
+siblings` intersects the members' menus by format *name*, a Tessera name
+carries its *body* rate, and the campaign's top anchor is a *wire* cap
+(`--max-artifact-bpp`) whose body equivalent is shape-dependent through the
+plane's row amortisation — so `q_proj` tops out at `R1388` where `k/v_proj` top
+out at `R1372`, every bisected anchor inherits the offset, and on a
+measured-only table the qkv E4M3 menus intersect to a single rung. Comparing an
+aggregated sparse arm against an aggregated dense one measures that collapse,
+not the interpolation. (The collapse is a property of per-unit anchor
+placement, not of discrete menus: anchoring a fused group on one shared body
+grid would dissolve it without interpolation. Not implemented.) The
+pre-existing
+`allocator_candidates.drop_interpolated_candidates_dominated_by_measured` is
+**not** in that path: it is referenced by tests and docstrings and has **no live
+call site** in this tree, so it fires on nothing, Tessera or otherwise. Stated
+here rather than quietly relied on.
+
+**DP wall time is stamped, not re-timed by hand.** `allocator.py` accumulates
+`solve_with_promotion` wall time across the tightening retries a target needs
+and writes `solver_seconds` / `solver_calls` per target into
+`layer_config.json` `__prismaquant__.solve_diagnostics` (and into
+`selection.json` on the byte-budget path). `_solve_diagnostics` was previously
+read only by the infeasibility message, so what a solve cost was invisible to
+everything downstream.
+
+**`pipeline.py` needs no entry for the token.** The declarative contract names
+`FORMATS` only as a *cache-key ingredient* (`"FORMATS<-COST_FORMATS"` and
+friends); it does not enumerate legal format names anywhere, so `TESSERA` is
+carried by `run-pipeline.sh` and `allocator.py` alone. Checked, not assumed.
+
+**Gate:** `tests/test_tessera_menu.py` (34) + `tests/test_tessera_campaign.py`
+(35; several are CUDA-marked),
+on top of `tessera_{formats,footprint}`'s own suites.
+
+**Measured on Qwen3-0.6B layer 0, 2026-09-02**
+(`docs/measurements/tessera-continuous-menu-2026-09-02.md`). Menu 3039-3063
+rungs per unit; 102 anchors expand to 16893 priced rungs (166x). The DP lands
+within 3e-4 bpp of a 3.0 / 4.0 / 5.0 target. Against measured anchors only, at
+matched aggregation, it costs **1.09-1.41x** in Delta-loss and is 0.052 /
+0.095 bpp short of the 4.0 / 5.0 budgets — and *with* aggregation it cannot
+reach the budget at all (4.639 at a 5.0 target), because the sibling
+intersection leaves E4M3 with one rung. Pre-DP fused aggregation costs 11-23%
+in Delta-loss at matched bpp. Trusted-cost error at the chosen rungs (17 fresh
+encodes) is 0.999 / 0.824 / 0.968 true-over-predicted, conservative at all
+three, while per-rung it spans 0.68-1.27 and the E4M3 LOO gate does **not**
+close on 4 of 7 units. Rung labels are *body* rates: the 3.0 assignment's
+param-weighted body is 2.929 bpp and its charged wire 3.000 bpp, and one rung
+(`R814`) costs 3.258 bpp on `q_proj` but 3.320 on `k_proj` because the plane
+amortises over fewer rows. DP time: 11 solves, 2.32 s, over a 4315-rung menu.
+
+**Not done, and not claimed:** no export leg, so nothing here has been served and
+no KL — screen or gold — was measured on a Tessera allocation. **And no anchor
+was priced with a Hessian**: the seam above is built, gated and tested, but the
+H-aware encoder branch is not in the pinned Tessera, so every measurement cited
+here is a `--hessian off` weights-only price. See
+`docs/measurements/tessera-continuous-menu-2026-09-02.md` for the receipt and the
+open list.
 
 ## 5. Formats & render
 

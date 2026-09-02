@@ -278,6 +278,20 @@ class WeightSession:
         # Strict production-cache mode turns this into a hard miss for
         # every non-BF16 format.
         self._rtn_fallbacks.append((qname, fmt_canon))
+        # Ahead of ``get_format``, whose failure path here is ``return None``:
+        # on a box without the ``tessera`` package that would turn the refusal
+        # below into a silent None, which is the shape of the bug it exists to
+        # stop.
+        if fr.is_tessera_format_name(fmt_canon):
+            raise RuntimeError(
+                f"production_weight_cache is required for Tessera "
+                f"({qname!r}, {fmt_canon!r}) in WeightSession; the registry "
+                "render is a weights-only reconstruction, not the decoded "
+                "wire and not the H-aware encode that ships, so this "
+                "fallback would price different bytes under the same format "
+                "name -- exactly what STRICT_PRODUCTION_CACHE=0 is not "
+                "permission to do"
+            )
         bf16 = self._ensure_bf16_snapshot(qname)
         if bf16 is None:
             return None

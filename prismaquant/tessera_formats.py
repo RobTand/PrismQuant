@@ -469,6 +469,18 @@ _HARDWARE_BASES: Mapping[str, tuple[int, str, int]] = {
 _FREE_BASE = re.compile(r"^LM(\d+)$")
 _FORMAT_NAME = re.compile(r"^TESSERA_([A-Z0-9]+)_K(\d+)_R(\d+)$")
 
+#: A whole fused/packed serving GROUP at one family, holding a different rung
+#: per member.  It is not a rung and deliberately does not parse as one --
+#: ``parse_tessera_format_name`` returns ``None`` and ``get_format`` raises --
+#: because there is no single rate it could stand for: the group's members have
+#: different shapes and different sensitivities, which is the entire reason the
+#: option exists.  Its bytes and its cost come from the ``Candidate`` the
+#: aggregation built, and its per-member rungs from
+#: ``Candidate.member_formats``; anything that tries to resolve it to a spec is
+#: asking the wrong question and should fail loudly rather than be handed a
+#: fabricated rate.
+_GROUP_NAME = re.compile(r"^TESSERA_([A-Z0-9]+)_K(\d+)_G(\d+)$")
+
 LANE_STOCK = "stock"
 LANE_KERNEL = "kernel"
 
@@ -987,6 +999,17 @@ def enumerate_grid_space(
     yield from seen
 
 
+
+def is_tessera_group_option(fmt: object) -> bool:
+    """True for a whole-group option name (one family, a rung per member)."""
+    return isinstance(fmt, str) and _GROUP_NAME.match(fmt) is not None
+
+
+def tessera_group_option_name(family: str, index: int) -> str:
+    """The name for the ``index``-th option of ``family`` on one group."""
+    return f"{family}_G{int(index)}"
+
+
 def parse_tessera_format_name(name: object) -> "tuple[TesseraFamily, int] | None":
     """Split ``TESSERA_E2M1_K2_R896`` into family and rung, or return None.
 
@@ -1075,3 +1098,45 @@ class TesseraRateSurface:
             sort_keys=True,
             separators=(",", ":"),
         )
+
+
+def format_promotion_class(fmt: object) -> str:
+    """The identity every member of one serving unit must share.
+
+    Serving-unit promotion (``allocator_solver._promote_group_components``)
+    exists because fused siblings and packed experts are ONE tensor to the
+    runtime, so their members cannot disagree about the thing the runtime
+    dispatches on.  For every stock format that thing is the format itself,
+    and this function returns the name unchanged -- so a menu with no Tessera
+    rung in it promotes exactly as it did before this function existed.
+
+    A Tessera rung is two facts glued into one name: the **family**
+    (``TESSERA_E2M1_K2``), which is the grid and arity the decoder is compiled
+    for, and the **rung** (``_R896``), which is a point on that family's
+    continuous rate axis.  Only the first is a dispatch property.  Returning
+    the family lets promotion require the shared decoder while leaving the
+    rate free per member -- which is the whole reason a continuous axis is
+    worth having, since q_proj (2048x1024) and k_proj (1024x1024) are
+    different tensors with different sensitivities fused into one qkv_proj.
+
+    Pure string work on the same anchored grammar
+    (:data:`_FORMAT_NAME`) the parser uses, deliberately: promotion runs
+    inside the numpy DP and must not pay for a grid build, and a second copy
+    of the name grammar would be a drift bug waiting for a family to be added.
+
+    .. warning::
+
+       Whether a runtime can serve a fused group whose members hold different
+       rungs of one family is a fact about that runtime, and no pinned release
+       attests it today (there is no Tessera export leg at all).  This function
+       states what the ALLOCATOR may consider; principle 9's export gate is
+       what decides whether it ships.  ``tessera_menu.route_admission`` carries
+       the attestation, and under the default attested menu mode there are no
+       Tessera candidates for this relaxation to act on.
+    """
+    if not isinstance(fmt, str):
+        return str(fmt)
+    match = _FORMAT_NAME.match(fmt) or _GROUP_NAME.match(fmt)
+    if match is None:
+        return fmt
+    return f"TESSERA_{match.group(1)}_K{int(match.group(2))}"

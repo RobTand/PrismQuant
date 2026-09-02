@@ -8,6 +8,7 @@ silently disagree about the same recipe.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -64,6 +65,12 @@ _NVFP4_CB_FORMAT_NAMES = ACCEPTED_CB_FORMAT_NAMES
 # ``layer_streaming._E8M0_SCALE_FMTS`` is the decode-side twin.
 _UE8M0_SCALE_FMTS = frozenset({"ue8m0", "e8m0"})
 
+#: Shape of a Tessera rung name. The authority for a rung's *legality* is
+#: ``tessera_formats.parse_tessera_format_name``; this is only the shape test
+#: that keeps a malformed recipe out of a torch-free parser, and it is
+#: deliberately the same anchored family/arity/rung grammar.
+_TESSERA_FORMAT_NAME = re.compile(r"^TESSERA_[A-Z0-9]+_K\d+_R\d+$")
+
 
 def canonicalize_format(entry: dict | str | int) -> str:
     """Map a layer-config entry to an export/runtime format name.
@@ -100,6 +107,21 @@ def canonicalize_format(entry: dict | str | int) -> str:
             name = f"FP8_CB_K{int(entry['cb_k'])}"
             if name not in _NVFP4_CB_FORMAT_NAMES:
                 raise ValueError(f"unsupported fp8_cb scheme: {entry!r}")
+            return name
+        if dt == "tessera":
+            # A Tessera rung is a point on a continuous rate axis, not a
+            # scheme: ~3000 rungs per shape across three families, and the
+            # family plus the 1/256-bpp rung is the whole identity. So the
+            # entry records the NAME rather than fields this module would have
+            # to recompose -- recomposing it would put a second copy of
+            # ``tessera_formats``'s grammar in a deliberately torch-free
+            # parser, and a second copy of a grammar is a drift bug waiting
+            # for a family to be added. The name is validated for shape here
+            # and for legality by ``get_format`` (which parses the rung and
+            # refuses an illegal one); this module stays a mapper.
+            name = str(entry.get("tessera_format", ""))
+            if not _TESSERA_FORMAT_NAME.match(name):
+                raise ValueError(f"unsupported tessera scheme: {entry!r}")
             return name
         if dt == "nv_fp" and bits == 4:
             return "NVFP4"

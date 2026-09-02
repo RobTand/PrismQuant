@@ -638,6 +638,16 @@ def _delta_w(
                 f"require_production_cache: production-rendered weight missing "
                 f"for ({name!r}, {fmt!r}); refusing silent RTN fallback. Build the "
                 f"cache for this (Linear, format) or drop --require-production-cache.")
+    # Ahead of ``get_format``, which imports the ``tessera`` package to
+    # synthesize a Tessera spec: the refusal is about the name, not the spec.
+    if fr.is_tessera_format_name(fmt):
+        raise RuntimeError(
+            f"{name}={fmt}: AURA Tessera delta requires a production-cache "
+            "render. The registry fallback is a weights-only reconstruction, "
+            "not the decoded wire and not the H-aware encode that ships, so "
+            "it would price a different dW under the same format name -- and "
+            "``strict`` defaults off, so nothing else would say so."
+        )
     spec = fr.get_format(fmt)
     if is_cb_format(spec.name):
         raise RuntimeError(

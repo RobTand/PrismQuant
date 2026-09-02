@@ -6,6 +6,12 @@
 #   MODEL_PATH=/path/to/Qwen3.6-35B-A3B \
 #   WORK_DIR=./dq-runs/qwen36 \
 #   FORMATS=NVFP4,FP8_DYNAMIC,BF16 \
+#     (FORMATS also accepts the menu TOKEN `TESSERA`, which stands for
+#      Tessera's continuous rate axis across its three serialisable families
+#      -- E2M1 arity 1 and 2 on the NVFP4/W4A4 route, E4M3 arity 1 on the
+#      FP8/W8A8 route. It is a token and not a format because the realisable
+#      rung set depends on each unit's column count: one 0.6B Linear carries
+#      ~3000 legal rungs. See the TESSERA COST STAGE guard below.)
 #   TARGET_BITS=4.75 \
 #   VISUAL_FORMAT=BF16 \
 #   CALIBRATION_MODALITY=text-only \
@@ -48,6 +54,26 @@ set -euo pipefail
 : "${MODEL_PATH:?Set MODEL_PATH to the source HF model directory}"
 : "${WORK_DIR:?Set WORK_DIR to a writable directory for artifacts}"
 : "${FORMATS:=NVFP4,FP8_DYNAMIC,BF16}"
+
+# --- TESSERA COST STAGE -----------------------------------------------------
+# The `TESSERA` menu token is priced by its OWN cost stage
+# (`python -m prismaquant.tessera_campaign`), not by the incremental cost
+# stages: a Tessera rung has no rate a shape-free menu can enumerate, and every
+# rung costs its own encode (the "embedded ladder" is a decode-time COMPLETION
+# axis and does not exist on the serialised wire), so the campaign measures a
+# few anchors per (unit, family) and interpolates between them under a
+# leave-one-anchor-out gate. Until that stage is wired into this orchestrator,
+# a run that asks for the token must be handed the campaign's cost.pkl
+# explicitly. Refusing is better than emitting a cost table with no Tessera
+# column and an allocation that silently contains none.
+if [[ ",${FORMATS}," == *",TESSERA,"* ]]; then
+  if [[ -z "${COST_PATH_OVERRIDE:-}" ]]; then
+    echo "[pipeline] ERROR: FORMATS contains the TESSERA menu token, whose cost stage is prismaquant.tessera_campaign and is not yet run by this orchestrator. Produce it first:" >&2
+    echo "[pipeline]   PRISMAQUANT_TESSERA_MENU=research python -m prismaquant.tessera_campaign --model \"\$MODEL_PATH\" --out \"\$WORK_DIR/artifacts/cost.pkl\" --cache-dir \"\$WORK_DIR/artifacts/tessera-cache\"" >&2
+    echo "[pipeline] then re-run with COST_PATH_OVERRIDE pointing at it. Note PRISMAQUANT_TESSERA_MENU: with no Tessera contract pinned the default (attested) menu is EMPTY; under PRISMAQUANT_TESSERA_DEV_PIN it is the two rungs Tessera's packaged contract publishes (E2M1_K2 R896, E4M3_K1 R1024), both at TP world size 1. Research mode admits every serialisable rung and stamps route_status=unattested on each for the export gate to fail closed on." >&2
+    exit 2
+  fi
+fi
 : "${TARGET_BITS:=4.75}"
 : "${PARETO_TARGETS:=4.5,4.6,4.7,4.75,4.85,5.0,5.25,5.5,6.0,7.0,8.25}"
 # TARGET_DISK_GB (re-vet R1, closes debt D12): the byte budget is the
