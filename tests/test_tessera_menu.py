@@ -18,6 +18,7 @@ from fractions import Fraction
 
 import pytest
 
+from prismaquant import format_registry as fr
 from prismaquant import tessera_menu as tm
 from prismaquant import tessera_runtime_contract as trc
 from prismaquant.tessera_formats import (
@@ -656,3 +657,60 @@ def test_the_reduction_is_reapplied_after_aggregation():
     head = src.split("post_aggregation_availability")[0]
     assert "reduce_continuous_menu(" in head.split(
         "aggregate_fused_siblings(")[-1]
+
+
+# ---------------------------------------------------------------------------
+# Gate 12: the TESSERA menu token narrows to what the runtime attests
+#
+# A cost table is priced under whatever menu mode the CAMPAIGN ran; the
+# attested set is a property of the RUNTIME.  A research-priced table read back
+# on the default path therefore holds thousands of columns the pinned contract
+# does not publish, and the question is what the token does with them.  Before
+# this gate it expanded to all of them and ``require_producer_formats`` refused
+# the whole run -- so the default path could not allocate at all, and the
+# backed rungs never reached the DP.  These three tests pin the split: the
+# TOKEN narrows and says so, an explicit NAME still refuses.
+# ---------------------------------------------------------------------------
+
+PRICED = [
+    "TESSERA_E2M1_K2_R896",     # attested
+    "TESSERA_E2M1_K2_R640",     # serialisable, unattested rate
+    "TESSERA_E4M3_K1_R1024",    # attested
+    "TESSERA_E4M3_K1_R512",     # serialisable, unattested rate
+    "TESSERA_E2M1_K1_R256",     # family the contract does not publish
+]
+
+
+def test_the_menu_token_expands_to_the_attested_subset_and_reports_the_rest(dev_pin):
+    """The default path allocates over the backed axis, not over nothing."""
+    menu, dropped = tm.expand_menu_tokens_report(
+        ["NVFP4", tm.MENU_TOKEN, "BF16"], PRICED)
+    assert menu == [
+        "NVFP4", "TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024", "BF16",
+    ], menu
+    # the narrowing is reported, not silent: an allocation over 2 rungs and one
+    # over 2423 must not look the same in a log (P12).
+    assert sorted(dropped) == sorted([
+        "TESSERA_E2M1_K2_R640", "TESSERA_E4M3_K1_R512", "TESSERA_E2M1_K1_R256",
+    ]), dropped
+    # and the filter is the same predicate the guard refuses on, so the token
+    # can never expand to something ``require_producer_formats`` then rejects.
+    fr.require_producer_formats(menu, where="test")
+
+
+def test_an_explicitly_named_unattested_rung_still_refuses(dev_pin):
+    """Only the token narrows. A human naming a reader-only rung is an error."""
+    menu, dropped = tm.expand_menu_tokens_report(
+        ["TESSERA_E2M1_K2_R640"], PRICED)
+    assert menu == ["TESSERA_E2M1_K2_R640"]
+    assert dropped == [], "no token, no narrowing report"
+    with pytest.raises(ValueError, match="producer-eligible"):
+        fr.require_producer_formats(menu, where="test")
+
+
+def test_the_research_menu_token_keeps_every_priced_rung(monkeypatch, dev_pin):
+    """Research prices the whole realisable axis on purpose; nothing narrows."""
+    monkeypatch.setenv(tm.MENU_MODE_ENV, tm.MENU_RESEARCH)
+    menu, dropped = tm.expand_menu_tokens_report([tm.MENU_TOKEN], PRICED)
+    assert menu == PRICED, menu
+    assert dropped == []

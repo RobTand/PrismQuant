@@ -23,8 +23,10 @@ exercised.
 ## 1. What was built
 
 `FORMATS` accepts the token `TESSERA`. `tessera_menu.expand_menu_tokens`
-replaces it with exactly the Tessera columns the run's own cost table holds, so
-the menu is the widest one the DP could honestly consider and never wider.
+replaces it with the Tessera columns the run's own cost table holds **that the
+pinned runtime attests**, so the menu is the widest one the DP could honestly
+consider, never wider, and never a set the producer-eligibility guard would
+then refuse (§10).
 Per-Linear the menu is the whole realisable rate set of every family the
 hardware bases admit, subject to three gates and nothing else — shape legality,
 route legality read from the attested contract table, and W(n≤A) by
@@ -107,13 +109,15 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_architecture_doc.py -q
 ```
 
-**118 passed, 1 skipped** on sparky (read from that command's own output; an
-earlier revision of this file said 114, which was summed from two older runs
-and counted the skip as a pass). The `CUDA` marker here is a `skipif`, not a deselect, so sparky's GPU
-means every CUDA campaign test ran; the one skip is
-`test_the_hessian_kwarg_pin_matches_the_pinned_encoder`, which has nothing to
-check while `TESSERA_HESSIAN_KWARG` is `None` and turns into a real assertion
-the moment it is pinned. The load-bearing ones:
+**138 passed, 0 skipped** on sparky (read from that command's own output).
+Two earlier revisions of this file are superseded: 114, which was summed from
+two older runs and counted a skip as a pass, and 118 passed / 1 skipped, which
+was true before the Hessian seam landed. There is no skip left --
+`test_the_hessian_kwarg_pin_matches_the_pinned_encoder` had nothing to check
+while `TESSERA_HESSIAN_KWARG` was `None`, and it became a real assertion when
+the seam became `ActivationSource` (§11). The `CUDA` marker here is a `skipif`,
+not a deselect, so sparky's GPU means every CUDA campaign test ran. The
+load-bearing ones:
 
 * `test_the_same_weight_rate_costs_differently_on_the_two_routes` — the A-leg
   pricing test the acceptance asks for. It scores one rendered rung twice, once
@@ -147,7 +151,8 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_aura_cost.py tests/test_format_registry.py -q
 ```
 
-**433 passed** (184 s, sparky), read from that command's own output. An earlier
+**436 passed** (150 s, sparky), read from that command's own output -- 433
+before the three menu-token tests of §10 were added. An earlier
 revision of this file said **349 passed, 1 skipped** over 19 suites; that number
 is stale twice over -- three suites were added (`test_tessera_footprint`,
 `test_tessera_shape_dependent_recipe`, `test_allocator_solver_bins`) and the
@@ -264,7 +269,13 @@ per-unit anchor placement described in §7, and §4a is the arm that fixes it.
   DP's charged-bin quantisation at `--bit-precision 1e-4`: a group is one item
   whose aggregate delta is rounded once, where three separate items round three
   deltas whose errors partly cancel. Read the family constraint at 4.0 as
-  **free**, and the 0.003% as bin resolution with a named mechanism.
+  **free**, and the 0.003% as bin resolution with a named mechanism --
+  named by elimination and **not separately measured**: `solve_allocation`
+  is exact over bins, so the only way it can miss a point its own menu
+  contains at identical true bytes and lower cost is that the point's
+  *binned* charge exceeds the budget. Charging `_charged_bins` for the
+  three assignments by hand would turn that deduction into a
+  measurement; it is not done here.
 * The DP picks a mixed-rung qkv at every target -- at 4.0, `q_proj` R694,
   `k_proj` R920, `v_proj` R1372, all `TESSERA_E4M3_K1`.
 
@@ -923,6 +934,42 @@ side, not a change here, and PrismaQuant should not be the place that decides
 a rung is servable. Every number in §4, §4b and §8 is a **research-menu**
 number and says so.
 
+**What the default path allocates today -- measured, not described.** Every
+allocation in this file until now ran under `PRISMAQUANT_TESSERA_MENU=research`,
+so the dev pin's stamp and the attested menu had only unit tests behind them.
+Running the same group cost table with `PRISMAQUANT_TESSERA_DEV_PIN` set and
+`PRISMAQUANT_TESSERA_MENU` **unset** found a real hole first: the `TESSERA`
+menu token expanded to every Tessera column the cost table held, and
+`require_producer_formats` then refused the *whole run* -- the whole menu, not
+the unattested part of it -- so the default path could not allocate at all and
+the two backed rungs never reached the DP. The token now expands to
+priced-and-attested, using the same predicate the guard refuses on, and prints
+the narrowing; an explicitly named unattested rung still refuses, so only the
+token narrows (`tests/test_tessera_menu.py` gate 12, 3 tests). When the
+intersection is empty the run refuses with the reason and names both fixes
+(widen `candidate_rungs_q256`, or price under the attested menu).
+
+With that, on `qwen06b_group/cost.pkl` (2423 priced Tessera columns, 7 Linears
+of layer 0), the default path reports
+`Tessera menu: 2 of 2423 priced rungs are attested by the pinned runtime` and
+allocates in ~4 s per target:
+
+| `--target-bits` | achieved | assignment | note |
+|---|---|---|---|
+| 3.0 | *infeasible* | -- | "the format floor (cheapest legal format everywhere) is 4.000 bpp" |
+| 4.0 | 4.000 | 7 x `E2M1_K2_R896` | the floor |
+| 4.1 | 4.042 | 4 x `E4M3_K1_R1024`, 3 x `E2M1_K2_R896` | the ceiling |
+| 5.0 | 4.042 | same | menu exhausted 0.96 bpp below target |
+
+The three E2M1 units are exactly the `qkv` group, and the reason is the
+refusal in §8.1 rather than a preference: `q_proj` and `k_proj` never priced an
+E4M3 rung at R1024 (their E4M3 surfaces were refused as non-interpolable), so
+the group's E4M3 Minkowski fold does not exist and the family constraint puts
+all three on E2M1. The whole attested range is **4.000-4.042 bpp on this
+model** -- 0.042 bpp wide, two routes, no axis -- and `layer_config.json`
+carries the `tessera_dev_pin` block naming commit `f3e7d0a`, contract sha
+`dff4fef7...`, plugin 0.1.0, and the development-override note.
+
 **Tensor parallelism, on Tessera's own granularity.** `tessera_shard_granularity`
 no longer derives the shard period locally; it builds the unit geometry from
 `tessera_wire_recipe` plus the family's column schedule and hands it to
@@ -998,11 +1045,42 @@ render seam handles this per rung; the exporter does not. There is no Tessera
 export leg in this tree (§7), so nothing here is blocked by it -- but the first
 export that mixes families will be.
 
+**Row 3 -- the H A/B -- is in flight, not reported here.** Two campaigns on the
+same 0.6B layer at Tessera `f3e7d0a`, identical in every argument except
+`--hessian require` vs `--hessian off`
+(`sparklina:/home/rob/tmp/run_campaign_row3.sh`, log
+`sparklina:/home/rob/tmp/row3.log`, outputs
+`/mnt/shared/tessera-runs/pq-continuous/qwen06b_h_{on,off}/`). What is
+established so far is the fail-fast leg: the H-aware path *runs*. Round 1 of
+the `require` arm reached
+`r1 40/63 model.layers.0.self_attn.q_proj TESSERA_E4M3_K1_R814 mse=0.000348269`
+with zero `FAILED` anchors, so `for_unit` -> `block_ldl` -> `encode_linear`
+with all four kwargs encodes rather than raising, on real calibration
+activations (2048 rows per Linear, `in_features` 1024-3072).
+
+**When it lands, compare it per shared anchor, not per allocation.** Both arms
+are adaptive, so after round 1 they place different anchors and an
+allocation-level comparison mixes the H effect with placement -- the same
+confound §4b exists to warn about. Round-1 anchors are deterministic, so every
+surface shares at least three rungs. On the intersection of
+`(unit, family, rung)` from `cost.anchors.json`: the E2M1 anchors must be
+**bit-identical** in dloss (weights-only in both arms), and the E4M3 anchors
+must **differ** (H applied in one, not the other). E4M3-identical would mean
+the kwargs are accepted but inert, which no unit test with a synthetic H
+catches. Row 2 vs the `off` arm on the same intersection gives the
+`3d419e7` -> `f3e7d0a` encoder drift as its own number.
+
+**Scope caveat to record with it:** `down_proj` has `in_features=3072` against
+2048 calibration rows, so its X^T X is **rank-deficient by construction**.
+`ldlq_sigma=1.0` is what keeps `block_ldl` defined there; a `down_proj` E4M3
+result is a regularised-H result and should not be read as "the H is worth
+this much" on a unit whose H is not full rank.
+
 ## 9. Where the acceptance criteria landed
 
 | asked | result |
 |---|---|
-| Tests pass, listed with the command | §3. **433 passed** on the full sweep over 22 suites, including every allocator suite this branch could regress and the seven render/cache/cost/registry suites the Tessera interception and the fallback refusals could. One pre-existing failure outside the sweep, reproduced with this branch stashed, is named in §3. |
+| Tests pass, listed with the command | §3. **436 passed** on the full sweep over 22 suites, including every allocator suite this branch could regress and the seven render/cache/cost/registry suites the Tessera interception and the fallback refusals could. One pre-existing failure outside the sweep, reproduced with this branch stashed, is named in §3. |
 | Three 0.6B allocations spanning more than a few distinct rates | §8.2. Menu 3039–3063 rungs **per unit**; 16893 priced rungs over 7 units. Assignments hit 3.00026 / 4.00026 / 5.00026 bpp with 4 distinct rungs each (4 DP items), and 6–7 distinct rungs each without pre-aggregation. Not a five-rung ladder. |
 | Anchor counts per family per unit | §8 (per-unit placement): 4–5 per family per unit, 21 surfaces, 102 anchors, 2534 s. §4b (per-**group** placement, the correct one): 4–10 per surface, 21 surfaces, **126 anchors, 2752 encode-seconds**, per-surface anchors/seconds/LOO tabulated. 19 of 21 surfaces closed the 0.25 gate; **none hit the 12-anchor budget**; two E4M3 surfaces were refused as non-interpolable. |
 | Anchors placed per fused group, adaptive until the gate closes or the budget is hit | §4b. Placement is per group unconditionally; the loop ran 9 rounds and stopped on the gate, never on the budget. |
@@ -1012,6 +1090,7 @@ export that mixes families will be.
 | `nofuse` retired as an arm | §4. It drops the family constraint too and is not a legal serving configuration; it survives only as a bound, and §4 shows the constrained menu beating that bound at matched bytes. |
 | Hessian kwarg constant set; render seam passes H through `ActivationSource` | §11. The constant is gone -- there is no kwarg name to pin. `tessera_hessian.py` forms one `ActivationSource` from PrismaQuant's own calibration activations and both callers use it. Applicability is CHANNEL-plane-only, measured, and stamped per row. |
 | Default menu attested from the packaged contract, not `MENU=research` | §10. `PRISMAQUANT_TESSERA_DEV_PIN` reads `tessera/serving/runtime_contract.json` at the named commit and sha. **The attested menu is two rungs, one per family, and empty at every tp > 1.** |
+| The default path actually allocates from the attested menu | §10. Run measured, not asserted: `2 of 2423 priced rungs are attested`, floor 4.000 bpp, ceiling 4.042 bpp, `--target-bits 3.0` infeasible, and `layer_config.json` carries the `tessera_dev_pin` block. Finding it required a fix: the `TESSERA` token used to expand to the unattested columns too, which made `require_producer_formats` refuse the whole run. |
 | TP gate on the real `shard_granularity` | §10. `tessera.layout.shard_granularity` through one function; row-parallel `[3072,1024]` collapses 3060 → 17 at tp=8, and `max_world_size: 1` closes the attested menu above tp=1. |
 | The two Hessian sources are one draw | §11, `test_the_campaign_and_the_production_render_form_one_hessian` and `test_one_identity_function_answers_for_both_paths`. |
 | A-leg pricing test exists | §3, `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and §8.2 shows it deciding a real allocation. |
@@ -1042,8 +1121,15 @@ The per-group campaign of §4b:
 `/mnt/shared/tessera-runs/pq-continuous/qwen06b_group/` — `cost.pkl`,
 `cost.anchors.json`, `cache/wire/`; driver
 `sparklina:/home/rob/tmp/run_campaign_g.sh`.
+The default-path (attested) allocations of §10:
+`/home/rob/tmp/pq-continuous/attested/lc_att_{4.0,4.1,5.0}.json` with
+`attested.log`; driver `run_attested.sh`.
+Row 3 (the Hessian A/B, Tessera `f3e7d0a`):
+`sparklina:/home/rob/tmp/row3.log`, driver
+`sparklina:/home/rob/tmp/run_campaign_row3.sh`, outputs
+`/mnt/shared/tessera-runs/pq-continuous/qwen06b_h_{on,off}/`.
 Scratch drivers: `/home/rob/tmp/pq-continuous/{run_allocations.sh,
-run_mink.sh,run_mink_group.sh,run_onerung_group.sh,run_a1.sh,
+run_mink.sh,run_mink_group.sh,run_onerung_group.sh,run_a1.sh,run_attested.sh,
 price_mink.py,price_group.py,price_onerung.py,
 measured_only_cost.py,verify_chosen.py,summarise.py,checkpoint_to_cost.py}`,
 with logs beside them (`mink_group.log`, `onerung_group.log`, `sweep_b5.log`).

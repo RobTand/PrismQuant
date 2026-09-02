@@ -18,7 +18,15 @@ to 17 at tp=8. Activation-aware encoding goes through
 production render, and it is **CHANNEL-plane-only** at the pinned commit: E4M3
 rungs take an H, both E2M1 families are priced weights-only and stamped
 `hessian_applied: false`. The one-rung fused-group constraint is measured on a
-per-group-anchored table at **1.237x / 1.558x / 1.113x**. Previously re-stamped
+per-group-anchored table at **1.237x / 1.558x / 1.113x**. The `TESSERA` menu
+token now expands to priced-**and-attested** rungs and prints the narrowing:
+a cost table is priced under the campaign's menu mode while attestation is a
+property of the runtime, so a research-priced table read back on the default
+path used to make `require_producer_formats` refuse the entire run and the
+backed rungs never reached the DP. An explicitly named unattested rung still
+refuses. Measured on the default path with the dev pin: 2 of 2423 priced rungs
+attested, floor 4.000 bpp (7 x `E2M1_K2_R896`), ceiling 4.042 bpp, and
+`--target-bits 3.0` refuses as infeasible. Previously re-stamped
 (2026-09-02,
 `tessera/continuous-menu`) for the **Tessera continuous menu** (§4.10): the
 production allocator can now allocate across Tessera's whole realisable rate
@@ -3759,6 +3767,25 @@ refused).
 Route status and serve flags are read off the attesting cell rather than typed:
 these cells say `backed_with_serve_flag`, and collapsing that to `backed` would
 both overstate the claim and drop the `TESSERA_SERVE_MODE` the serve needs.
+
+**The `TESSERA` token expands to priced-and-attested, and says how much it
+narrowed.** A cost table is priced under whatever menu mode the *campaign* ran;
+the attested set is a property of the *runtime*. A research-priced table read
+back on the default path therefore holds thousands of columns the pinned
+contract does not publish, and `expand_menu_tokens` used to hand every one of
+them to `require_producer_formats`, which refused the **whole menu** — so the
+default path could not allocate at all and the two backed rungs never reached
+the DP. The token now intersects the priced columns with
+`format_is_producer_eligible`, the same predicate the guard refuses on, so it
+can never expand to something the guard then rejects (one rule, two uses). The
+narrowing is printed — `[alloc] Tessera menu: 2 of 2423 priced rungs are
+attested by the pinned runtime` — because an allocation over two rungs and one
+over three thousand must not look the same in a log (P12); an **explicitly
+named** unattested rung still refuses, so only the token narrows; and an empty
+intersection refuses with the reason and both fixes named. Measured on the 0.6B
+group table under the dev pin: floor 4.000 bpp (7 × `E2M1_K2_R896`), ceiling
+4.042 bpp (4 × `E4M3_K1_R1024` + the `qkv` group on E2M1, because q/k priced no
+E4M3 rung at R1024), and `--target-bits 3.0` refuses as infeasible.
 
 **Tensor parallelism has two legs, and both bind.** The *attestation* leg is the
 contract's `tensor_parallel` block, whose semantics are `closed_world`: it lists

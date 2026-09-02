@@ -1021,19 +1021,49 @@ def expand_menu_tokens(names, priced_formats=()) -> list[str]:
     every rung an anchor campaign priced, and nothing else.
 
     That is the honest expansion in both directions. Wider is impossible: a
-    rung with no cost row is dropped by ``build_candidates`` regardless, and
-    naming it in the menu only makes ``require_producer_formats`` refuse the
-    whole run. Narrower would be a heuristic choosing the DP's candidate set,
-    which principle 1 vetoes.
+    rung with no cost row is dropped by ``build_candidates`` regardless.
+    Narrower would be a heuristic choosing the DP's candidate set, which
+    principle 1 vetoes.
+
+    One filter survives that veto, and it is principle 9's, not an exception:
+    **the token expands only to rungs the pinned runtime attests**. A cost
+    table is priced under whatever menu mode the campaign ran (``research``
+    prices the whole realisable axis on purpose), and the attested set is a
+    property of the *runtime*, not of the campaign. So a research-priced table
+    read back on the default path holds thousands of columns the pinned
+    contract does not publish. Expanding to them would only have
+    ``require_producer_formats`` refuse the entire run -- the whole menu, not
+    the unbacked part of it -- and the DP would never see the rungs that ARE
+    backed. The filter is the same predicate that guard refuses on, so the
+    token cannot expand to something the guard then rejects: one rule, two
+    uses, no second copy of the legality decision. An explicitly named
+    reader-only rung still refuses, exactly as before; only the token narrows,
+    and it reports what it narrowed so the run says out loud which axis it is
+    allocating over.
 
     Order is preserved and duplicates removed, so a menu with no token is
     returned unchanged (modulo de-duplication) and no caller needs to know
     whether Tessera is in play.
     """
-    priced = [
+    return expand_menu_tokens_report(names, priced_formats)[0]
+
+
+def expand_menu_tokens_report(names, priced_formats=()) -> tuple[list[str], list[str]]:
+    """``(menu, dropped)`` -- the expansion, and the priced-but-unattested rungs.
+
+    Split out so the caller can *print* the narrowing rather than discover it
+    as a smaller menu. ``dropped`` is empty whenever the token is absent.
+    """
+    from . import format_registry as fr
+
+    priced_all = [
         str(name) for name in priced_formats
         if isinstance(name, str) and name.startswith("TESSERA_")
     ]
+    dropped: list[str] = []
+    priced: list[str] = []
+    for name in priced_all:
+        (priced if fr.format_is_producer_eligible(name) else dropped).append(name)
     out: list[str] = []
     seen: set[str] = set()
     for name in names:
@@ -1042,7 +1072,7 @@ def expand_menu_tokens(names, priced_formats=()) -> list[str]:
             if item not in seen:
                 seen.add(item)
                 out.append(item)
-    return out
+    return out, ([] if not any(str(n) == MENU_TOKEN for n in names) else dropped)
 
 
 #: How a family's rungs are priced. Today every family answers the same way,

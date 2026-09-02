@@ -94,7 +94,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from . import format_registry as fr
-from .tessera_menu import expand_menu_tokens
+from .tessera_menu import expand_menu_tokens_report
 from .allocator_solver import (
     Candidate,
     _shape_from_stats,
@@ -2443,7 +2443,37 @@ def main():
     # the campaign's legality decisions. A rung the campaign did not price
     # would be dropped by ``build_candidates`` anyway (no cost row); naming it
     # here would only have ``require_producer_formats`` refuse the whole run.
-    fmt_names = expand_menu_tokens(fmt_names, cost_data.get("formats", ()))
+    # The expansion is intersected with what the pinned runtime attests, so a
+    # research-priced table read back on the default path allocates over the
+    # backed axis instead of refusing wholesale. The narrowing is printed, not
+    # inferred: an allocation over 2 rungs and one over 3060 must not look the
+    # same in a log (P9, P12).
+    priced_tessera = [
+        n for n in cost_data.get("formats", ())
+        if isinstance(n, str) and n.startswith("TESSERA_")
+    ]
+    fmt_names, unattested = expand_menu_tokens_report(
+        fmt_names, cost_data.get("formats", ()))
+    if priced_tessera:
+        kept = [n for n in fmt_names if n.startswith("TESSERA_")]
+        print(
+            f"[alloc] Tessera menu: {len(kept)} of {len(priced_tessera)} priced "
+            f"rungs are attested by the pinned runtime"
+            + (f" ({len(unattested)} dropped as unattested)" if unattested else "")
+            + (f"; sample: {kept[:4]}" if kept else ""),
+            flush=True,
+        )
+        if unattested and not kept:
+            raise SystemExit(
+                "[alloc] ERROR: the cost table prices "
+                f"{len(priced_tessera)} Tessera rungs and the pinned runtime "
+                "attests none of them, so the TESSERA menu token expands to "
+                "nothing. Either widen the runtime's attested rungs "
+                "(candidate_rungs_q256 in the packaged runtime_contract.json) "
+                "or price a table under the attested menu; "
+                "PRISMAQUANT_TESSERA_MENU=research allocates over the whole "
+                "realisable axis for research runs that do not export."
+            )
     try:
         specs = fr.require_producer_formats(
             fmt_names, where="new allocator assignment menu"
