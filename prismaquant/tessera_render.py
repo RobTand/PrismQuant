@@ -186,6 +186,30 @@ def tessera_rung_is_serialisable(name: str) -> bool:
     return grid_digest(grid) in SERIALISABLE_GRIDS
 
 
+def _producer_eligible(name: str) -> bool:
+    """Producer-eligibility for one rung: the AND of two independent gates.
+
+    (a) **The wire can carry it** -- the grid's digest is a permanent
+    commitment in ``SERIALISABLE_GRIDS``.  Unconditional: a rung that reaches
+    the DP and cannot be written dies at export with the whole production cache
+    already built.
+
+    (b) **A pinned runtime executes it** -- read from the pinned serving
+    release's own contract through ``tessera_menu.route_admission``, the single
+    seam.  Under ``PRISMAQUANT_TESSERA_MENU=research`` this half is answered
+    ``unattested`` rather than refused, and the rung enters the menu carrying
+    that status for the export gate to fail closed on (principles 1 and 9).
+
+    Conflating the two is how a rung reaches the DP that cannot be written, so
+    they stay separate here even though both currently answer the same way.
+    """
+    from .tessera_menu import menu_mode, route_admission
+
+    if not tessera_rung_is_serialisable(name):
+        return False
+    return route_admission(name).admits(menu_mode())
+
+
 def _plan(family: TesseraFamily, body_rate_q256: int, n_columns: int, recipe):
     """Rate schedule and forests for one (family, rung, width, recipe).
 
@@ -439,8 +463,41 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
         activation_qdq = fr.get_format(
             route.activation_source_format).activation_quantize_dequantize
 
+    # The layer_config entry, which is how an allocation survives the trip to
+    # disk and back.  ``schemas.validate_layer_config_payload`` requires
+    # ``data_type``, and ``layer_config.canonicalize_format`` has to be able to
+    # recover THIS rung -- not the family, the rung -- so the entry carries the
+    # name itself rather than fields a torch-free parser would have to
+    # recompose out of a second copy of Tessera's grammar.  ``bits`` is the
+    # same integer ceiling ``weight_bits`` is, and for the same reason: it is
+    # the field an old reader looks at, and a floor there would under-count.
+    # The activation fields are the route's, so a reader that never heard of
+    # Tessera still sees the right A side.
+    def _tessera_autoround_config() -> dict:
+        cfg = {
+            "data_type": "tessera",
+            "bits": -(-bpp.numerator // bpp.denominator),
+            "tessera_format": name,
+            "tessera_family": family.name,
+            "tessera_body_rate_q256": int(rung),
+            "tessera_body": str(getattr(wire.body, "name", wire.body)),
+            "tessera_scale_plane": plane,
+            "sym": True,
+            "group_size": int(scale_fields["group_size"]),
+        }
+        if route.act_bits is not None:
+            cfg.update(
+                act_bits=int(route.act_bits),
+                act_data_type=str(route.act_dtype_name),
+                act_group_size=int(route.act_group_size or 0),
+                act_dynamic=True,
+                act_sym=True,
+            )
+        return cfg
+
     return fr.FormatSpec(
         name=name,
+        autoround_config=_tessera_autoround_config,
         # ``weight_bits`` is the integer field the accountant reads; Tessera's
         # rate is fractional by construction, so the exact value travels in
         # ``exact_bits_per_param`` and this is the ceiling for anything that
@@ -471,9 +528,16 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
         # above is a layout fact, NOT an attestation: a rung whose tile would
         # materialise into NVFP4 is still not producer-eligible until the
         # pinned release's table carries a cell that names it.
-        producer_eligible=(
-            tessera_rung_is_serialisable(name) and tessera_lane_attested(name)
-        ),
+        # Asked through ``tessera_menu.route_admission``, the single seam that
+        # reads a serving contract on Tessera's behalf, so this spec and the
+        # allocator's menu cannot disagree about the same rung -- and so the
+        # research mode (``PRISMAQUANT_TESSERA_MENU``) reaches the one gate
+        # ``run-pipeline.sh`` and ``require_producer_formats`` consult, rather
+        # than being a second admission the eligibility check never sees. The
+        # wire half (a) is unconditional in both modes; only the attestation
+        # half (b) relaxes, and it relaxes into ``route_status: unattested``
+        # stamped on the candidate, which is what export fails closed on.
+        producer_eligible=_producer_eligible(name),
         # The shape-aware price, for a wire whose per-unit planes make the
         # rate a function of the tensor.  Exactly one of this and
         # ``exact_bits_per_param`` is set: a rung either has a rate or it has

@@ -93,6 +93,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from . import format_registry as fr
+from .tessera_menu import expand_menu_tokens
 from .allocator_solver import (
     Candidate,
     _shape_from_stats,
@@ -2355,6 +2356,17 @@ def main():
         fmt_names = [s.strip() for s in args.formats.split(",") if s.strip()]
     else:
         fmt_names = cost_data["formats"]
+    # ``TESSERA`` is a menu TOKEN, not a format. It cannot expand to a fixed
+    # list the way ``NVFP4`` names one rung: a Tessera family addresses a
+    # continuous rate axis, the realisable set depends on the unit's column
+    # count, and one 0.6B Linear carries ~3000 legal rungs across the three
+    # families. So the token expands to exactly the rungs THIS RUN PRICED --
+    # the cost table's own Tessera columns -- which is both the widest menu
+    # the DP could honestly consider and a set that needs no second copy of
+    # the campaign's legality decisions. A rung the campaign did not price
+    # would be dropped by ``build_candidates`` anyway (no cost row); naming it
+    # here would only have ``require_producer_formats`` refuse the whole run.
+    fmt_names = expand_menu_tokens(fmt_names, cost_data.get("formats", ()))
     try:
         specs = fr.require_producer_formats(
             fmt_names, where="new allocator assignment menu"
@@ -2753,6 +2765,7 @@ def main():
             print(line, flush=True)
 
     candidate_mask_records: list[dict] = []
+    tessera_menu_report: dict = {}
     candidates = build_candidates(
         stats, costs, specs_sorted, calibrated_gains,
         source_manifest=source_manifest,
@@ -2760,6 +2773,10 @@ def main():
         mask_records=candidate_mask_records,
         cb_serialization_context=cb_serialization_context,
         activation_pricing=activation_pricing,
+        # The DP's own bin width, so a continuous Tessera menu is reduced to
+        # what THIS solver can distinguish rather than to a taste constant.
+        bit_precision=float(args.bit_precision),
+        tessera_menu_report=tessera_menu_report,
     )
     print(f"[alloc] candidates built for {len(candidates)} Linears")
 
@@ -4757,6 +4774,13 @@ def main():
             "cb_ladder_cross_family_verdict": cross_family_verdict,
             "serving_lane_provenance": selection_serving_lane_provenance(
                 chosen_info["assignment"], candidates, target_profile),
+            # How big the per-unit menu was BEFORE the DP saw it, and which
+            # of the two reductions shrank it (see reduce_continuous_menu).
+            # Empty on a run with no Tessera rung on the menu. Without this a
+            # coarse-looking set of selected rates cannot be attributed: a
+            # campaign that priced few rungs and a bin width that swallowed
+            # many look identical in the output.
+            "tessera_menu": dict(tessera_menu_report),
             # Ultraplan P5c: which hard serving constraints were active, which
             # probed assignments the axis REJECTED and for which SLO, and
             # which constraint binds at the shipped optimum. Present on every

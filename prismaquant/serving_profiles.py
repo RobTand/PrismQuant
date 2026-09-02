@@ -704,6 +704,79 @@ class RuntimePackageSpec:
 
 
 @dataclass(frozen=True)
+class TensorParallelRule:
+    """One qname pattern and the way tensor parallelism cuts it.
+
+    ENUMERATED, never inferred.  "Fused implies column-parallel" is wrong for
+    several units PrismaQuant already allocates -- MLA's ``q_a_proj`` and
+    ``kv_a_proj_with_mqa`` are replicated, a router ``gate`` is replicated, and
+    Qwen3.5's fused DeltaNet ``in_proj_qkvz`` is not head-sharded -- so the
+    mapping is declared per profile and an unmatched qname is ``none``, which
+    makes the gate a no-op rather than a guess.
+    """
+
+    id: str
+    when: NameCondition
+    kind: str
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "TensorParallelRule":
+        kind = str(payload.get("kind", "none"))
+        if kind not in ("column", "row", "none"):
+            raise ValueError(
+                f"tensor_parallel rule {payload.get('id')!r}: kind must be "
+                f"one of column|row|none, got {kind!r}")
+        return cls(
+            id=str(payload.get("id", "")),
+            when=NameCondition.from_dict(payload.get("when", {}) or {}),
+            kind=kind,
+        )
+
+
+@dataclass(frozen=True)
+class TensorParallelSpec:
+    """The TP degree an artifact built under this profile will be SERVED at.
+
+    A declaration, and therefore a legality input: at ``world_size`` N a
+    column-parallel Linear is N units of ``out_features/N`` rows and a
+    row-parallel one is N units of ``in_features/N`` columns, and a format
+    whose layout has a shard granularity (a trellis body period, a block scale
+    plane) may be legal on the whole tensor and illegal on a shard of it.
+    Default 1, which is what every profile in the tree served at before this
+    field existed, so an undeclared profile keeps its behaviour exactly.
+
+    This is the PRODUCER's target, not a claim about the runtime.  The runtime
+    publishes its own per-format ceiling in the pinned contract's
+    ``tensor_parallel`` table (``max_world_size``, ``shard_admission``); the two
+    are compared, never conflated (principle 14).
+    """
+
+    world_size: int = 1
+    rules: tuple[TensorParallelRule, ...] = ()
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "TensorParallelSpec":
+        size = int(payload.get("world_size", 1))
+        if size < 1:
+            raise ValueError(f"tensor_parallel.world_size must be >= 1, got {size}")
+        return cls(
+            world_size=size,
+            rules=tuple(
+                TensorParallelRule.from_dict(entry)
+                for entry in payload.get("rules", ())
+            ),
+        )
+
+    def kind_for(self, qname: str | None) -> str:
+        """How TP cuts this Linear.  First matching rule wins; default none."""
+        name = qname or ""
+        for rule in self.rules:
+            if rule.when.matches(name):
+                return rule.kind
+        return "none"
+
+
+@dataclass(frozen=True)
 class ServingProfile:
     id: str
     runtime: str = ""
@@ -743,6 +816,11 @@ class ServingProfile:
     # container serializer, while this narrower policy supplies additional
     # model/device/manifest gates.
     producer_policy: str | None = None
+    # The tensor-parallel degree this profile's artifacts are served at, and
+    # the enumerated per-qname split. Consumed as a legality input by
+    # ``check_shape``: a shard is a different shape, and a format with a shard
+    # granularity can be legal on a tensor and illegal on an Nth of it.
+    tensor_parallel: TensorParallelSpec = field(default_factory=TensorParallelSpec)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ServingProfile":
@@ -785,6 +863,9 @@ class ServingProfile:
             ),
             target_platform=_optional_str(payload.get("target_platform")),
             producer_policy=_optional_str(payload.get("producer_policy")),
+            tensor_parallel=TensorParallelSpec.from_dict(
+                payload.get("tensor_parallel", {}) or {}
+            ),
         )
 
     def check_format(self, qname: str | None, fmt: str,
@@ -849,7 +930,39 @@ class ServingProfile:
         qname: str | None = None,
         in_features: int,
         out_features: int,
+        packed_expert: bool | None = None,
     ) -> ServingFormatDecision:
+        """Kernel-shape legality, on the shape the runtime will actually see.
+
+        At ``tensor_parallel.world_size`` N the runtime is handed a SHARD, and
+        every rule below is a kernel's, so they are asked about the shard
+        rather than about the whole tensor.  The split is the profile's own
+        ENUMERATED one (:meth:`TensorParallelSpec.kind_for`); an unmatched
+        qname and a packed expert both resolve to ``none``, because expert
+        parallelism cuts the stack and leaves each expert's 2-D unit whole.
+
+        A dimension that does not divide the world size is refused rather than
+        floored: that is not a format problem, it is a shape no format can be
+        served at at this degree, and silently rounding it would price a
+        tensor nobody will run.  ``world_size=1`` -- every profile in the tree
+        before this field existed -- leaves the shape untouched.
+        """
+        world = int(self.tensor_parallel.world_size)
+        kind = "none" if packed_expert else self.tensor_parallel.kind_for(qname)
+        if world > 1 and kind != "none":
+            axis = out_features if kind == "column" else in_features
+            if axis % world:
+                return ServingFormatDecision(
+                    False,
+                    "tensor_parallel_shard",
+                    f"{kind}-parallel {qname or fmt}: {axis} features on the "
+                    f"sharded axis is not divisible by the profile's "
+                    f"tensor_parallel.world_size={world}",
+                )
+            if kind == "column":
+                out_features = out_features // world
+            else:
+                in_features = in_features // world
         for rule in self.runtime_shape_validators:
             decision = rule.check(
                 fmt,
@@ -1010,6 +1123,22 @@ def load_serving_profile(profile_id: str | None) -> ServingProfile:
                     (base.target_platform for base in bases
                      if base.target_platform),
                     None,
+                )
+            ),
+            # A derived profile that declares no tensor_parallel inherits the
+            # first base that does. A scalar omitted from this merge silently
+            # drops to the default on every derived profile, which for a TP
+            # degree would mean an artifact allocated for TP=1 legality and
+            # served at TP=8.
+            tensor_parallel=(
+                profile.tensor_parallel
+                if profile.tensor_parallel.world_size != 1
+                or profile.tensor_parallel.rules
+                else next(
+                    (base.tensor_parallel for base in bases
+                     if base.tensor_parallel.world_size != 1
+                     or base.tensor_parallel.rules),
+                    profile.tensor_parallel,
                 )
             ),
             producer_policy=(
@@ -1240,8 +1369,31 @@ def serving_lane_route(
     try:
         profile = load_serving_profile(profile_id)
     except FileNotFoundError:
-        return None
-    return profile.serving_lane_for(fmt, runtime_version=runtime_version)
+        profile = None
+    lane = (
+        profile.serving_lane_for(fmt, runtime_version=runtime_version)
+        if profile is not None else None
+    )
+    if lane is not None:
+        return lane
+    # A Tessera rung is a point on a continuous rate axis: ~3000 names per
+    # shape, so no profile spec can enumerate them as declared lanes and every
+    # one of them lands here. Returning None would report "this profile
+    # declares no lane" -- absence of a declaration -- when the truth is that
+    # the Tessera admission seam DOES resolve a route and its verdict is
+    # ``unattested``. Those are different facts, and principle 9 wants the
+    # second on the card. Resolution goes through the same one seam that gates
+    # the menu (``tessera_menu.route_admission``), so a unit's stamped lane and
+    # the gate that admitted it cannot disagree.
+    #
+    # Deliberately AFTER the profile lookup, not before: a profile that one
+    # day declares a real Tessera lane overrides this, exactly as it would for
+    # any other format.
+    if isinstance(fmt, str) and fmt.startswith("TESSERA_"):
+        from .tessera_menu import tessera_resolved_serving_lane
+        return tessera_resolved_serving_lane(
+            fmt, runtime_version=(runtime_version or ""))
+    return None
 
 
 def serving_lane_catalog(profile_id: str | None) -> dict:
@@ -1282,6 +1434,7 @@ def check_serving_shape(
     qname: str | None = None,
     in_features: int,
     out_features: int,
+    packed_expert: bool | None = None,
 ) -> ServingFormatDecision:
     try:
         profile = load_serving_profile(profile_id)
@@ -1292,6 +1445,7 @@ def check_serving_shape(
         qname=qname,
         in_features=in_features,
         out_features=out_features,
+        packed_expert=packed_expert,
     )
 
 

@@ -1,0 +1,27 @@
+{
+  "schema": "prismaquant.serving_profile.v1",
+  "id": "tessera_research_sm121",
+  "runtime": "gridbook_plugin",
+  "target_platform": "sm_121",
+  "emulation_only": true,
+  "_emulation_only_rationale": "Declares NO export_lane and is not shippable. It exists so Tessera's continuous rate axis can be ALLOCATED against gates that actually fire: an exact target_platform, so the E2M1 route's SM100 floor and the E4M3 route's SM89 floor are real comparisons against the GB10 the anchors were measured on, and an explicit tensor_parallel block, so shard legality is decided on the shape a rank will hold rather than on the whole tensor. It makes NO serving claim: the pinned Gridbook release publishes no cell naming any Tessera family, so every rung resolves route_status `unattested` (tessera_menu.route_admission) and export fails closed. A Tessera rung selected under this profile is a REPORT about where the allocator would spend bytes, not an artifact.",
+  "description": "RESEARCH-ONLY allocation profile for Tessera's three serialisable families (E2M1 K1, E2M1 K2, E4M3 K1) on GB10 (Blackwell sm_121), at the continuous 1/256-bpp rate axis. It admits the family set plus the scalar terminals an honest mixed menu needs, so a DP can rank a Tessera rung against NVFP4/FP8/BF16 in one currency.",
+  "_no_format_rules_rationale": "Deliberately declares NO format_rules, exactly like the generic `research` profile and its trellis twin. Naming the ~3000 addressable rungs in an allow list would assert they are format_registry rows, and they are not: a rung's FormatSpec is synthesized on demand from its name (format_registry.get_format's Tessera fallback), because freezing a continuous rate axis into REGISTRY turns it into a menu someone has to maintain. The menu here is bounded on the Tessera side by tessera_menu.expand_tessera_menu -- family buildability, wire serialisability, shape legality, the TP shard, W(n<=A) and the route admission -- and on the scalar side by FORMATS plus check_format_applicability.",
+  "tensor_parallel": {
+    "world_size": 1,
+    "_world_size_rationale": "1 is the honest default and also the pinned runtime's own ceiling for every trellis family: gridbook_runtime_contract.0.9.1.json's tensor_parallel table pins TCQ_E2M1_R256 and TCQ_E4M3_R256 at max_world_size 1. Raising it here without a contract that raises it there would allocate for a shard the runtime says it cannot serve. The rules below are declared at world_size 1 so the vocabulary is reviewed before the degree is, and so raising the degree is a one-token change rather than a new mapping.",
+    "rules": [
+      {
+        "id": "column_parallel_attention_and_mlp_in",
+        "when": {"regex": "\\.(q_proj|k_proj|v_proj|qkv_proj|gate_proj|up_proj|gate_up_proj)$"},
+        "kind": "column"
+      },
+      {
+        "id": "row_parallel_attention_and_mlp_out",
+        "when": {"regex": "\\.(o_proj|down_proj)$"},
+        "kind": "row"
+      }
+    ],
+    "_rules_rationale": "ENUMERATED, not inferred. `fused implies column-parallel` is wrong for units PrismaQuant already allocates -- MLA's q_a_proj and kv_a_proj_with_mqa are replicated, a router gate is replicated, and Qwen3.5's fused DeltaNet in_proj_qkvz is not head-sharded -- so the mapping is a declaration and an unmatched qname resolves to `none`, which makes the gate a no-op rather than a guess. Packed experts are `none` by construction in check_shape: expert parallelism cuts the stack and leaves each expert's 2-D unit whole."
+  }
+}

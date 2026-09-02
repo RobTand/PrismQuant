@@ -657,6 +657,78 @@ def _format_kernel_supports_shape(fmt_name: str, in_features: int,
     ).legal
 
 
+#: The reason string a tensor-parallel shard refusal carries.  New reasons flow
+#: through ``summarize_applicability_masks``'s ``summary`` and ``by_shape``
+#: unchanged, so a TP refusal is countable per format without touching it.
+TP_SHARD_REASON = "tensor_parallel_shard"
+
+
+def _tensor_parallel_applicability(
+    fmt: str,
+    *,
+    qname: str | None,
+    target_profile: str | None,
+    in_features: int,
+    out_features: int,
+    packed_expert: bool,
+) -> FormatApplicability:
+    """Is this format legal on the SHARD each rank will hold?
+
+    ``check_serving_shape`` already applies the profile's declared world size
+    to the shape before asking the profile's own kernel-shape rules, which is
+    what a rule like NVFP4's ``in_features_multiple_of: 16`` needs.  This is the
+    second half, for a format whose *layout* has its own shard granularity that
+    no JSON rule can state: a Tessera unit's trellis runs across ``arity x
+    span`` row periods and its block scale plane tiles the input axis on 16 or
+    32, and its rate schedule is realisable only over column counts the
+    Bresenham root divides.  A rung can therefore be legal on a tensor and
+    illegal on an Nth of it.
+
+    The granularity is read through ONE function,
+    ``tessera_menu.tessera_shard_granularity``, which derives it from the wire's
+    own plane geometry today and will delegate to ``tessera.layout``'s own
+    ``shard_granularity`` the moment that lands.  A format with no declared
+    granularity is legal here by construction -- this gate adds a refusal, it
+    never invents one -- so every non-Tessera format is unchanged.
+    """
+    if not str(fmt).startswith("TESSERA_"):
+        return FormatApplicability(True)
+    from .serving_profiles import load_serving_profile
+    from .tessera_menu import (
+        PARALLEL_NONE, TesseraMenuError, tessera_tp_legal,
+    )
+    from .tessera_formats import parse_tessera_format_name
+
+    try:
+        profile = load_serving_profile(target_profile)
+    except FileNotFoundError:
+        profile = load_serving_profile("research")
+    world = int(profile.tensor_parallel.world_size)
+    kind = (
+        PARALLEL_NONE if packed_expert
+        else profile.tensor_parallel.kind_for(qname)
+    )
+    provenance = {"tp_degree": world, "tp_parallel_kind": kind}
+    try:
+        parsed = parse_tessera_format_name(fmt)
+    except Exception as exc:
+        return FormatApplicability(
+            False, "unknown_format", str(exc), provenance)
+    if parsed is None:
+        return FormatApplicability(True)
+    family, rung = parsed
+    try:
+        legal, reason = tessera_tp_legal(
+            family, rung, (out_features, in_features),
+            tp_degree=world, parallel_kind=kind,
+        )
+    except TesseraMenuError as exc:
+        return FormatApplicability(False, TP_SHARD_REASON, str(exc), provenance)
+    if legal:
+        return FormatApplicability(True, None, "", provenance)
+    return FormatApplicability(False, TP_SHARD_REASON, reason, provenance)
+
+
 def check_format_applicability(
     linear_shape: tuple[int, ...],
     format_spec_or_name: fr.FormatSpec | str,
@@ -732,12 +804,14 @@ def check_format_applicability(
                 f"(out_features={out_features}, in_features={in_features})",
             )
 
+    packed_expert = len(shape) >= 3
     shape_decision = check_serving_shape(
         target_profile,
         fmt,
         qname=qname,
         in_features=in_features,
         out_features=out_features,
+        packed_expert=packed_expert,
     )
     if not shape_decision.legal:
         return FormatApplicability(
@@ -745,6 +819,16 @@ def check_format_applicability(
             shape_decision.reason or "kernel_shape",
             shape_decision.detail,
         )
+    tp_verdict = _tensor_parallel_applicability(
+        fmt,
+        qname=qname,
+        target_profile=target_profile,
+        in_features=in_features,
+        out_features=out_features,
+        packed_expert=packed_expert,
+    )
+    if not tp_verdict.legal:
+        return tp_verdict
     return _source_bpp_applicability(
         shape,
         spec,
@@ -1006,6 +1090,19 @@ def cost_entry_is_source_passthrough(
 
 BAND_INTERPOLATED_COST_SOURCE = "band_interpolated"
 MIXED_COST_SOURCE = "mixed"
+#: The Tessera anchor campaign's fitted rows (``tessera_campaign.py``). Kept
+#: as its own spelling rather than reusing ``band_interpolated`` because the
+#: MECHANISM differs and a shipped artifact has to be able to say which one
+#: priced it: the CB ladder fits a per-tensor law over a handful of declared
+#: rungs, while the campaign fits a monotone piecewise-linear surface in
+#: (q256, log2 dloss) over measured anchors of ONE family on ONE unit and
+#: refuses to extrapolate past them. What the two share is the property this
+#: module's predicates actually key on -- an output-space number that is a
+#: holdout-gated PREDICTION rather than an observation -- so it joins the same
+#: branch (see ``cost_entry_is_band_interpolated``) and inherits the same
+#: guard, ``drop_interpolated_candidates_dominated_by_measured``, which is
+#: what stops an unmeasured rung displacing a measured one on noise.
+TESSERA_INTERPOLATED_COST_SOURCE = "tessera_campaign_interpolated"
 
 
 def cost_entry_is_band_interpolated(cost_entry: dict) -> bool:
@@ -1021,6 +1118,7 @@ def cost_entry_is_band_interpolated(cost_entry: dict) -> bool:
     return cost_entry.get("cost_source") in {
         BAND_INTERPOLATED_COST_SOURCE,
         MIXED_COST_SOURCE,
+        TESSERA_INTERPOLATED_COST_SOURCE,
     }
 
 
@@ -1775,6 +1873,105 @@ def _super_item_ucb_hedge(member_terms, ucb_z: float) -> tuple[float, float]:
     return hedge_linear, math.sqrt(stderr_eff_sq)
 
 
+def reduce_continuous_menu(
+    candidates: dict[str, list[Candidate]],
+    stats: dict,
+    *,
+    bit_precision: float | None = None,
+    report: dict | None = None,
+) -> dict[str, list[Candidate]]:
+    """Shrink a continuous per-unit menu without changing the DP's answer.
+
+    A Tessera family addresses a rate axis at a 1/256-bpp quantum, so one unit
+    can carry thousands of legal rungs where a stock menu carries five. Two
+    reductions apply, and they are kept apart because they license different
+    claims and a receipt has to be able to say which one made a result look
+    coarse:
+
+    * **dominance** (``tessera_menu.prune_dominated``) drops a rung only when
+      another is no larger in BYTES and no larger in COST. Exact for any
+      knapsack whatsoever. Explicitly not a convex hull: the budget is
+      discrete, so a point strictly inside the hull can still be the optimum
+      at one particular remaining capacity, and hull pruning drops exactly
+      those points.
+    * **bin collapse** (``tessera_menu.collapse_to_dp_bins``) drops a rung
+      only when another lands in the same charged bin of THIS DP
+      (``_charged_bins`` at ``bit_precision``, against the unit's own cheapest
+      candidate, which is the baseline ``solve_allocation`` uses). Exact for
+      this solver at this precision and no stronger; skipped entirely when
+      ``bit_precision`` is None.
+
+    Non-Tessera candidates are never touched -- they are partitioned out
+    before either reduction and concatenated back after -- so a run with no
+    Tessera rung on the menu is byte-identical to one built before this
+    function existed.
+    """
+    from .tessera_formats import format_promotion_class
+    from .tessera_menu import collapse_to_dp_bins, prune_dominated
+
+    per_unit: dict[str, dict] = {}
+    total_params = sum(
+        int(stats.get(name, {}).get("n_params", 0) or 0)
+        for name in candidates
+    )
+    out: dict[str, list[Candidate]] = {}
+    for name, cands in candidates.items():
+        tessera = [c for c in cands if format_promotion_class(c.fmt) != c.fmt]
+        if not tessera:
+            out[name] = cands
+            continue
+        others = [c for c in cands if format_promotion_class(c.fmt) == c.fmt]
+        rows = [(int(c.memory_bytes), float(c.predicted_dloss), c) for c in tessera]
+        n_menu = len(rows)
+        rows = prune_dominated(rows)
+        n_dom = len(rows)
+        n_params = int(stats.get(name, {}).get("n_params", 0) or 0)
+        if bit_precision is not None and n_params > 0 and total_params > 0:
+            baseline = min(
+                (c.bits_per_param for c in cands),
+                default=0.0,
+            )
+            rows = collapse_to_dp_bins(
+                rows,
+                baseline_bits_per_param=float(baseline),
+                n_params=n_params,
+                total_params=total_params,
+                bit_precision=float(bit_precision),
+            )
+        n_bins = len(rows)
+        kept = [row[2] for row in rows]
+        out[name] = others + kept
+        per_unit[name] = {
+            "menu": n_menu,
+            "after_dominance": n_dom,
+            "after_bin_collapse": n_bins,
+            "non_tessera": len(others),
+            "n_params": n_params,
+        }
+    if per_unit:
+        menu_total = sum(v["menu"] for v in per_unit.values())
+        dom_total = sum(v["after_dominance"] for v in per_unit.values())
+        bin_total = sum(v["after_bin_collapse"] for v in per_unit.values())
+        print(
+            f"[alloc] tessera menu: {len(per_unit)} unit(s), "
+            f"{menu_total} rung(s) -> {dom_total} after dominance -> "
+            f"{bin_total} after bin collapse "
+            f"(bit_precision={bit_precision})",
+            flush=True,
+        )
+        if report is not None:
+            report.update({
+                "units": len(per_unit),
+                "bit_precision": bit_precision,
+                "total_params": total_params,
+                "rungs_menu": menu_total,
+                "rungs_after_dominance": dom_total,
+                "rungs_after_bin_collapse": bin_total,
+                "per_unit": per_unit,
+            })
+    return out
+
+
 def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      calibrated_gains: dict[str, float] | None = None,
                      source_manifest: dict[str, str] | None = None,
@@ -1784,6 +1981,8 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      activation_pricing: ActivationFairPricing | None = None,
                      cost_mode: str | None = None,
                      trellis_provenance: dict | None = None,
+                     bit_precision: float | None = None,
+                     tessera_menu_report: dict | None = None,
                      ) -> dict[str, list[Candidate]]:
     """Build runtime-legal format candidates for every measured Linear.
 
@@ -2029,6 +2228,14 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     # byte-identical to one built before the seam existed. The rungs it adds
     # are ordinary multi-choice candidates priced in exact serialized bytes;
     # the DP, the fused/packed aggregation and the byte budget need no change.
+    # Continuous Tessera rungs, reduced to what this DP can distinguish. A
+    # no-op on a menu with no Tessera rung in it (see reduce_continuous_menu).
+    out = reduce_continuous_menu(
+        out,
+        stats,
+        bit_precision=bit_precision,
+        report=tessera_menu_report,
+    )
     out = trellis_menu.augment_candidates(
         out,
         stats,

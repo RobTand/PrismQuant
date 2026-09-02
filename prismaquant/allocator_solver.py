@@ -291,6 +291,55 @@ def _choose_group_format(
     return ranked[-1]
 
 
+def _resolve_family_group(
+    members: list[str],
+    assigned: dict[str, str],
+    format_rank: dict[str, int],
+    legal_formats: dict[str, set[str]] | None,
+    promotion_class: str,
+) -> dict[str, str] | None:
+    """Move a serving unit onto one FAMILY, leaving each member's rate free.
+
+    Reached only when the unit's max-rank assignment is a format whose
+    promotion class is not itself (``tessera_formats.format_promotion_class``
+    -- i.e. a Tessera rung, where the family is the decoder the runtime
+    dispatches on and the rung is a point on that family's continuous rate
+    axis). Every other menu is untouched by construction: for a stock format
+    the class IS the name, the caller never enters this branch, and the run is
+    byte-identical to one built before this function existed.
+
+    Each member takes the CHEAPEST legal rung of ``promotion_class`` at or
+    above its own current rank -- the same non-degrading contract
+    ``_choose_group_format`` implements for the uniform case, applied per
+    member instead of once for the unit, because that is exactly the
+    constraint the shared decoder imposes and no more. Returns ``None`` (and
+    the caller falls back to uniform promotion) if any member has no legal
+    rung in the family at all, so the relaxation can only ever be a widening
+    of what promotion accepts, never a new way for it to fail.
+    """
+    from .tessera_formats import format_promotion_class
+
+    out: dict[str, str] = {}
+    for member in members:
+        legal = (
+            legal_formats.get(member, set())
+            if legal_formats is not None else None
+        )
+        floor = format_rank.get(assigned[member])
+        if floor is None:
+            return None
+        rungs = [
+            fmt for fmt in format_rank
+            if format_promotion_class(fmt) == promotion_class
+            and format_rank[fmt] >= floor
+            and (legal is None or fmt in legal)
+        ]
+        if not rungs:
+            return None
+        out[member] = min(rungs, key=lambda fmt: (format_rank[fmt], fmt))
+    return out
+
+
 def _promote_group_components(
     assignment: dict[str, str],
     format_rank: dict[str, int],
@@ -310,6 +359,8 @@ def _promote_group_components(
     the unit's coherence (issue #28). Omit the argument and the legacy
     max-rank behaviour is reproduced exactly.
     """
+    from .tessera_formats import format_promotion_class
+
     out = dict(assignment)
     parent = {name: name for name in out}
 
@@ -341,6 +392,16 @@ def _promote_group_components(
         if len(members) < 2:
             continue
         best_fmt = max((out[member] for member in members), key=lambda fmt: format_rank[fmt])
+        promotion_class = format_promotion_class(best_fmt)
+        if promotion_class != best_fmt:
+            # A format whose serving identity is coarser than its name: the
+            # unit has to share the FAMILY, not the rate. Only Tessera rungs
+            # answer to this today, so no stock menu reaches the branch.
+            resolved = _resolve_family_group(
+                members, out, format_rank, legal_formats, promotion_class)
+            if resolved is not None:
+                out.update(resolved)
+                continue
         if all(_member_allows(best_fmt, member, legal_formats)
                for member in members):
             best_rank = format_rank[best_fmt]
