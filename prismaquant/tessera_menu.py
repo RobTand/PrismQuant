@@ -457,7 +457,7 @@ def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
     release publishes a fused mid-M table for these bytes: absence, priced as
     absence.
     """
-    from .serving_profiles import ResolvedServingLane, gridbook_runtime_version
+    from .serving_profiles import ResolvedServingLane, serving_runtime_version
 
     if parse_tessera_format_name(name) is None:
         return None
@@ -470,7 +470,7 @@ def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
         fused_mid_m_backed=False,
         fused_mid_m_rungs=(),
         fused_mid_m_range=None,
-        runtime_version=(runtime_version or gridbook_runtime_version()),
+        runtime_version=(runtime_version or serving_runtime_version()),
         rungs_source=admission.source,
         rung=None,
         detail=admission.detail,

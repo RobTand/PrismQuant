@@ -242,6 +242,25 @@ def test_no_constraints_selection_is_identical_to_feature_present_but_unused(
 
     stamp_a = sel_a.pop("serve_constraints")
     stamp_b = sel_b.pop("serve_constraints")
+    # ``solver_seconds`` is a wall-clock float: two runs of the same solve
+    # differ in it by construction, so comparing it asserts that the machine
+    # was equally busy both times, not that the selection is identical.  It
+    # travels in the selection AND inside the layer_config's provenance, so
+    # drop it wherever it appears and keep every count.
+    def _drop_timings(node):
+        if isinstance(node, dict):
+            node.pop("solver_seconds", None)
+            for value in node.values():
+                _drop_timings(value)
+        elif isinstance(node, list):
+            for value in node:
+                _drop_timings(value)
+        return node
+
+    _drop_timings(sel_a)
+    _drop_timings(sel_b)
+    _drop_timings(cfg_a)
+    _drop_timings(cfg_b)
     assert sel_a == sel_b, (
         "supplying a dispatch table without an SLO must not change any "
         "selection number")

@@ -57,6 +57,19 @@ from prismaquant.mx_formats import (
 )
 
 
+def act_bits_quantize_input(act_bits: "int | None") -> bool:
+    """The predicate of ``FormatSpec.act_quant_changes_input``, for callers
+    that hold an ``act_bits`` value without a ``FormatSpec`` around it.
+
+    A Tessera route record is the case this exists for: it carries the same
+    three ``act_*`` fields as a spec, is turned into config metadata before a
+    spec exists, and must reach the same answer.  One definition, two entry
+    points -- re-deriving it a third time is what
+    ``tests/test_bit_exact_cost_pricing.py`` refuses.
+    """
+    return act_bits is not None and int(act_bits) < 16
+
+
 @dataclass
 class FormatSpec:
     name: str
@@ -142,7 +155,7 @@ class FormatSpec:
         activation callable is pinned by
         tests/test_bit_exact_cost_pricing.py.
         """
-        return self.act_bits is not None and int(self.act_bits) < 16
+        return act_bits_quantize_input(self.act_bits)
 
     @property
     def effective_bits(self) -> float:

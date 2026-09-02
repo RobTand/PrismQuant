@@ -596,7 +596,7 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
             "sym": True,
             "group_size": int(scale_fields["group_size"]),
         }
-        if route.act_bits is not None:
+        if fr.act_bits_quantize_input(route.act_bits):
             cfg.update(
                 act_bits=int(route.act_bits),
                 act_data_type=str(route.act_dtype_name),
