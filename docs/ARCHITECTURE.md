@@ -2,8 +2,8 @@
 
 As of: 2026-09-02 · `tessera/decouple-gridbook` — the integration branch,
 carrying `tessera/remove-gridbook` and `tessera/continuous-menu`. Stamps
-follow, newest
-first, each recording its own branch and date. Re-stamped (2026-09-02,
+follow, newest first, each recording its own branch and date.
+Re-stamped (2026-09-02,
 `tessera/remove-gridbook`) for the **retirement of the Gridbook codebook
 lane** (§1.1, §3.5, §9, §9.2, D34). Robert, 2026-09-02: *"put Tessera in
 PrismaQuant and remove Gridbook."* PrismaQuant carries **one** non-vLLM-native
