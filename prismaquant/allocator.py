@@ -88,6 +88,7 @@ import json
 import math
 import pickle
 import re
+import time as _time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from pathlib import Path
@@ -124,6 +125,7 @@ from .allocator_candidates import (
     selection_serving_lane_provenance,
     serialized_candidate_payload,
     summarize_applicability_masks,
+    reduce_continuous_menu,
 )
 from .fixed_head import (
     allow_pinned_lifts_lm_head,
@@ -3203,6 +3205,21 @@ def main():
 
     candidates = filter_candidates_for_profile(candidates, target_profile)
 
+    # The aggregated super items were built one candidate per format NAME,
+    # straight from `specs_sorted` -- they never passed through the reduction
+    # `build_candidates` applies to per-Linear menus. On a continuous Tessera
+    # menu that is the difference between a group carrying five rungs and one
+    # carrying several thousand, so the reduction is re-applied here, on the
+    # post-aggregation dict, with the same two exact steps (dominance, then
+    # this DP's own charged bins). Non-Tessera items are partitioned out and
+    # returned untouched, so a stock run is byte-identical.
+    tessera_menu_report_agg: dict = {}
+    candidates = reduce_continuous_menu(
+        candidates, stats,
+        bit_precision=float(args.bit_precision),
+        report=tessera_menu_report_agg,
+    )
+
     post_aggregation_availability = {
         spec.name: sum(
             1 for per_name in candidates.values()
@@ -3489,8 +3506,11 @@ def main():
             "exact_filter_trace": [],
         }
         _solve_diagnostics[round(requested_target, 9)] = outer_diag
+        solver_seconds_total = 0.0
+        solver_calls = 0
         for attempt in range(16):
             proposal_diag: dict = {}
+            _solve_t0 = _time.perf_counter()
             assign, solver_achieved = solve_with_promotion(
                 stats,
                 candidates,
@@ -3503,6 +3523,13 @@ def main():
                 profile=model_profile,
                 diagnostics=proposal_diag,
             )
+            # DP wall time, summed over the tightening retries this target
+            # needed. Stamped into the seed JSON so a continuous-menu run can
+            # be compared against a stock one without re-timing by hand.
+            solver_seconds_total += _time.perf_counter() - _solve_t0
+            solver_calls += 1
+            outer_diag["solver_seconds"] = solver_seconds_total
+            outer_diag["solver_calls"] = solver_calls
             outer_diag.update({
                 key: value
                 for key, value in proposal_diag.items()
@@ -4780,7 +4807,10 @@ def main():
             # coarse-looking set of selected rates cannot be attributed: a
             # campaign that priced few rungs and a bin width that swallowed
             # many look identical in the output.
-            "tessera_menu": dict(tessera_menu_report),
+            "tessera_menu": {
+                "per_linear": dict(tessera_menu_report),
+                "aggregated": dict(tessera_menu_report_agg),
+            },
             # Ultraplan P5c: which hard serving constraints were active, which
             # probed assignments the axis REJECTED and for which SLO, and
             # which constraint binds at the shipped optimum. Present on every

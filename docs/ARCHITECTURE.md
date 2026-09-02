@@ -3809,6 +3809,35 @@ This matters at 0.6B already: `q_proj` is `[2048, 1024]` and `k/v_proj` are
 `[1024, 1024]`, three different tensors fused into one `qkv_proj`, and the uniform
 rule would force a shared *rate* where only a shared *route* is required.
 
+**...but the default path never asks it to** (measured 2026-09-02). Fused
+siblings are aggregated into a single DP item *before* the solve
+(`allocator.py` → `allocator_candidates.aggregate_fused_siblings`), and that
+aggregation builds one super-item candidate **per format name** (`for spec in
+formats: … Candidate(fmt=spec.name, …)`). The DP therefore returns exactly one
+rung for the whole group, and `_promote_group_components` — relaxation included
+— is a no-op on it. The call site says so in as many words: *"The DP can't pick
+mixed-sibling solutions because there's only one item per group."* The
+relaxation is reached only when the siblings stay separate DP units, i.e. under
+`--no-fused-aggregation`. Both arms are measured in the receipt.
+
+This is also the honest reading of the **wire**: `bresenham_rate_schedule(root,
+n_columns)` is a per-COLUMN quota shared by every row of a unit
+(`tessera/grammar.py`). Siblings concatenated along ROWS into one unit *cannot*
+carry different rates — the schedule is indexed by the axis they share. Free
+per-sibling rates presuppose that the runtime decodes q, k and v as separate
+units and concatenates after, which is a claim about a runtime and is therefore
+not made here (principle 14). `tests/test_tessera_menu.py::
+test_pre_aggregation_forces_one_rung_on_a_fused_group` pins the fact so a change
+that makes the DP mixed-rung capable has to come here and say so.
+
+**The reduction is re-applied after aggregation.** Super items are built from
+`specs_sorted` directly and never pass through the per-Linear reduction, so
+`allocator.py` runs `reduce_continuous_menu` a second time on the
+post-aggregation dict (after `filter_candidates_for_profile`). Without it a
+fused group carries the entire unreduced Tessera axis into the DP. Both passes
+are reported: `layer_config.json` `meta.tessera_menu` is now
+`{per_linear, aggregated}`.
+
 > **Attestation gap, stated rather than assumed.** Whether a runtime can serve a
 > fused group whose members hold different rungs of one family is a fact about
 > that runtime, and nothing attests it — there is no Tessera export leg at all.
@@ -3833,7 +3862,26 @@ refuses the token with a pointer to the campaign command until that stage is wir
 into the orchestrator, rather than emitting a cost table with no Tessera column and
 an allocation that silently contains none.
 
-**Gate:** `tests/test_tessera_menu.py` (24) + `tests/test_tessera_campaign.py` (9,
+**What gates the interpolation, and what does not.** The rate surface is gated
+by the campaign's own leave-one-anchor-out error and by an allocation-regret
+arm (solve the same targets against a menu of measured anchors only, and
+compare). The pre-existing
+`allocator_candidates.drop_interpolated_candidates_dominated_by_measured` is
+**not** in that path: it is referenced by tests and docstrings and has **no live
+call site** in this tree, so it fires on nothing, Tessera or otherwise. Stated
+here rather than quietly relied on.
+
+**DP wall time is stamped, not re-timed by hand.** `allocator.py` accumulates
+`solve_with_promotion` wall time across the tightening retries a target needs
+and writes `solver_seconds` / `solver_calls` into the per-target solve
+diagnostics.
+
+**`pipeline.py` needs no entry for the token.** The declarative contract names
+`FORMATS` only as a *cache-key ingredient* (`"FORMATS<-COST_FORMATS"` and
+friends); it does not enumerate legal format names anywhere, so `TESSERA` is
+carried by `run-pipeline.sh` and `allocator.py` alone. Checked, not assumed.
+
+**Gate:** `tests/test_tessera_menu.py` (26) + `tests/test_tessera_campaign.py` (9,
 three CUDA-marked), on top of `tessera_{formats,footprint}`'s own suites.
 
 **Not done, and not claimed:** no export leg, so nothing here has been served and

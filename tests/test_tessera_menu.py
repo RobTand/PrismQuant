@@ -358,3 +358,51 @@ def test_layer_config_roundtrip_recovers_the_rung():
     entry = fr.get_format(name).autoround_config()
     assert entry["data_type"] == "tessera"
     assert canonicalize_format(entry) == name
+
+
+# ---------------------------------------------------------------------------
+# Where the relaxation is, and is not, reached
+# ---------------------------------------------------------------------------
+
+def test_pre_aggregation_forces_one_rung_on_a_fused_group():
+    """The relaxation is unreachable on the DEFAULT (pre-aggregated) path.
+
+    ``aggregate_fused_siblings`` builds ONE super item per fused group with one
+    candidate per format NAME (``allocator_candidates.py``, ``for spec in
+    formats``), so the DP can only ever return a single rung for the whole
+    group and ``_promote_group_components`` -- relaxation included -- is a
+    no-op on it. That is the design the call site states outright ("The DP
+    can't pick mixed-sibling solutions because there's only one item per
+    group"), not a defect, and it is consistent with the wire: the Tessera rate
+    schedule is ``bresenham_rate_schedule(root, n_columns)``, a per-COLUMN
+    quota shared by every row, so siblings concatenated along ROWS into one
+    unit cannot carry different rates. Free per-sibling rates are therefore
+    reachable only when the siblings stay separate units, i.e. under
+    ``--no-fused-aggregation``.
+
+    This test pins the fact so a later change that makes the DP mixed-rung
+    capable has to come here and say so.
+    """
+    from prismaquant.allocator_candidates import aggregate_fused_siblings
+    import inspect
+
+    src = inspect.getsource(aggregate_fused_siblings)
+    # One candidate per format name -- the group's rate is not a free variable.
+    assert "for spec in formats:" in src
+    assert "fmt=spec.name," in src
+
+
+def test_the_reduction_is_reapplied_after_aggregation():
+    """The super item's menu passes through the same two exact reductions.
+
+    Super items are built from ``specs_sorted`` directly, bypassing the
+    reduction ``build_candidates`` applies per Linear. Without a second pass a
+    fused group would carry the full unreduced Tessera axis into the DP.
+    """
+    import inspect
+    from prismaquant import allocator
+
+    src = inspect.getsource(allocator)
+    head = src.split("post_aggregation_availability")[0]
+    assert "reduce_continuous_menu(" in head.split(
+        "aggregate_fused_siblings(")[-1]
