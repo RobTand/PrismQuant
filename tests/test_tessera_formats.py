@@ -837,6 +837,7 @@ def test_the_activation_side_is_the_serving_formats_own_quantiser():
 @pytest.mark.parametrize("label,name,recipe_args", [
     ("the exporter's default wire", "TESSERA_E2M1_K2_R896", None),
     ("the exporter's default wire", "TESSERA_E4M3_K1_R1024", None),
+    ("the exporter's default wire, below the E2M1x2 cap", "TESSERA_E2M1_K2_R768", None),
     ("span 1 / s6b (minor 0)", "TESSERA_E2M1_K1_R768", (1, "s6b", "tcq", 0)),
     ("window L=8 / channel (minor 3)", "TESSERA_E4M3_K1_R1024",
      (1, "channel", "window", 8)),
