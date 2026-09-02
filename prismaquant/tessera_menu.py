@@ -1174,3 +1174,71 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
 
 
 __all__ = list(__all__) + ["assert_uniform_hessian_identity"]
+
+
+# ---------------------------------------------------------------------------
+# The surrogate does not rank Tessera rungs.  Measured 2026-09-02, served.
+# ---------------------------------------------------------------------------
+#
+# ``docs/measurements/tessera-allocated-served-2026-09-02.md`` took this menu's
+# own allocations through export and serve on Qwen3-0.6B and compared them with
+# a **byte-matched uniform** arm.  The allocation lost at every budget: served
+# KL-vs-BF16 0.3485 against 0.1746 at 4.0 bpp, 2.33x at 3.0, 2.88x at 5.0, with
+# bytes exact to the bit and 112/112 modules on the declared route.
+#
+# The loss is in the cost model, on the units the cost model priced: a separator
+# pair serving only the seven measured Linears reads 0.02517 allocated against
+# 0.01306 uniform (1.93x), which is 95% of the whole-body gap in log terms, and
+# the same seven units score 1.13x *better* in the allocator's own currency.
+#
+# It is a **slope** error, not an ordering error, and that is why nothing in
+# this module caught it.  ``TesseraRateSurface`` refuses a non-monotone anchor
+# set rather than laundering it into a cost, so the ORDINAL assumption is
+# guarded -- but the measured failure never violates it: the surrogate got the
+# sign of the expensive move right (it charged ``down_proj`` at R749 3.69x, its
+# largest penalty) and mispriced the *gain* from bits above R1006, scoring the
+# other six moves as a 1.30x net win where serving says 1.19x loss.  Every
+# construction downstream of the cost -- surface interpolation, dominance
+# pruning, bin collapse, the group Minkowski fold, the DP itself -- is exact
+# GIVEN the cost and adds no independent check on it.
+#
+# So this is recorded, not repaired (the repair is not this seam's), and it is
+# recorded where a machine can read it: printed by the allocator and stamped
+# into every allocation's provenance, because a terminal warning is not a
+# property of the artifact.
+TESSERA_SURROGATE_RANK_MEASUREMENT = (
+    "docs/measurements/tessera-allocated-served-2026-09-02.md"
+)
+
+
+def surrogate_selection_caveat() -> dict:
+    """The measured status of surrogate ranking on Tessera rungs.
+
+    Returned as data so it lands in ``layer_config.json`` provenance and a
+    shipcard reader can refuse on it, rather than living only in a log line.
+    """
+    return {
+        "surrogate_ranks_tessera_rungs": "measured_false",
+        "measurement": TESSERA_SURROGATE_RANK_MEASUREMENT,
+        "model": "Qwen3-0.6B (dense), served through the Tessera plugin",
+        "served_kl_allocated_over_byte_matched_uniform": {
+            "3.0": 2.33, "4.0": 2.00, "5.0": 2.88,
+        },
+        "priced_units_only": {
+            "allocated": 0.02517, "uniform": 0.01306, "ratio": 1.93,
+        },
+        "failure_mode": (
+            "rate-distortion slope: the sign of a deep cut is priced right and "
+            "the gain from bits above the uniform rung is overstated, so the "
+            "allocator finances cuts with gains that do not exist"
+        ),
+        "guarded_by_this_module": (
+            "ordinal only -- TesseraRateSurface refuses a non-monotone anchor "
+            "set; a slope error inside a monotone surface is invisible to it"
+        ),
+        "requires_before_promotion": [
+            "SELECTION_MODE=validated-surrogate (real held-out KL selects)",
+            "a byte-matched uniform arm served beside the candidate",
+        ],
+        "status": "this assignment is a CANDIDATE, not a selection",
+    }

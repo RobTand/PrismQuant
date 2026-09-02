@@ -109,7 +109,8 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_architecture_doc.py -q
 ```
 
-**138 passed, 0 skipped** on sparky (read from that command's own output).
+**140 passed, 0 skipped** on sparky (read from that command's own output;
+138 before the two selection-caveat tests of §12 were added).
 Two earlier revisions of this file are superseded: 114, which was summed from
 two older runs and counted a skip as a pass, and 118 passed / 1 skipped, which
 was true before the Hessian seam landed. There is no skip left --
@@ -151,8 +152,9 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_aura_cost.py tests/test_format_registry.py -q
 ```
 
-**436 passed** (150 s, sparky), read from that command's own output -- 433
-before the three menu-token tests of §10 were added. An earlier
+**438 passed** (318 s, sparky), read from that command's own output -- 436
+before the two selection-caveat tests of §12, and 433 before the three
+menu-token tests of §10, were added. An earlier
 revision of this file said **349 passed, 1 skipped** over 19 suites; that number
 is stale twice over -- three suites were added (`test_tessera_footprint`,
 `test_tessera_shape_dependent_recipe`, `test_allocator_solver_bins`) and the
@@ -1076,11 +1078,107 @@ catches. Row 2 vs the `off` arm on the same intersection gives the
 result is a regularised-H result and should not be read as "the H is worth
 this much" on a unit whose H is not full rank.
 
+## 12. The menu is measured to need a real-KL gate, and what here depends on it
+
+*Added after this branch's own allocations were served.*
+`docs/measurements/tessera-allocated-served-2026-09-02.md` (Tessera `11b007c`,
+the allocation from this worktree at `5a320c7`) exported three of the arms
+priced in §8.2 and served them against a **byte-matched uniform** control:
+
+| budget | allocated KL | byte-matched uniform KL | ratio |
+|---|---|---|---|
+| 3.0 bpp | — | — | **2.33x** against the allocation |
+| 4.0 bpp | **0.3485** | **0.1746** | **2.00x** |
+| 5.0 bpp | — | — | **2.88x** |
+
+Bytes exact to the bit, accounting exact to the bit, 112/112 modules on the
+declared family. **The loss is in the cost model, on the units the cost model
+priced**: a separator pair serving only the seven Linears this campaign
+measured (everything else BF16 in both arms) reads **0.02517 allocated vs
+0.01306 uniform = 1.93x**, which is 95% of the whole-body gap in log terms --
+while those same seven units score **1.13x better** in the currency §8 used.
+
+**It is a slope error, not an ordering error.** The surrogate got the sign of
+the expensive move right -- it charged `down_proj` at R749 **3.69x** the
+uniform rung, the largest penalty in its ledger -- and mispriced the *gain*
+from bits above R1006: the six remaining moves score a **1.30x net win** in the
+surrogate and are a **1.19x loss** served. Decomposed, the two increments add
+to 99.3% of the whole, so this is not an interaction the surrogate could not
+have seen. It is two independently mispriced moves.
+
+**What this means for the menu, as a requirement rather than a note.**
+
+1. **`SELECTION_MODE=validated-surrogate` is required**, not suggested. A
+   Tessera `layer_config.json` produced under `SELECTION_MODE=surrogate` is a
+   *candidate*. The allocator now says so on every such run
+   (`[alloc] WARNING: ... This assignment is a CANDIDATE, not a selection`) and
+   stamps `tessera_menu.selection_caveat` -- the measurement's path, the three
+   served ratios, the priced-unit ratio, the named failure mode and what is
+   required before promotion -- into `layer_config.json`, so the status is a
+   property of the artifact and not of a terminal (P12).
+2. **That is necessary and not sufficient.** The validated frontier re-scores
+   the *allocator's own* Pareto points, every one of them surrogate-allocated
+   (`select_validated_frontier.py` and `validate_assignments_kl.py` carry no
+   uniform/baseline/control arm anywhere in 3471 lines -- checked, not assumed);
+   it can rank 4.0 against 5.0 and cannot see that *uniform at 4.0* beats
+   *allocated at 4.0*. The gate that actually caught this is a **byte-matched
+   uniform arm served beside the candidate**. Two serves, and it inverted the
+   answer. That is principle 3 -- promote on the serving metric -- applied to
+   allocation itself, and it belongs in this menu's recipe.
+3. **`COST_MODE=aura` is deliberately not named as the fix.** No measurement
+   of AURA on a Tessera rung exists in this tree's receipts (`docs/measurements/`
+   holds none; the two auto-memory notes naming both say "in principle, not yet
+   run"). Naming an unmeasured estimator as the repair would be the assertion
+   P14 forbids; it is a candidate for the repair, to be settled by measurement.
+   The repair is out of scope here by instruction, and is recorded rather than
+   attempted.
+4. **The served arms are pre-Minkowski, and that matters for reading them.**
+   The served allocation is `qwen06b/alloc/lc_full_4.0.json`, written
+   **13:11:10** on 2026-09-02; the exact fold (`tessera_group_composites`)
+   landed in **`016c10a`** at **16:00:50**, so that file is a *pre-fold*
+   one-rung-per-fused-group assignment -- which is what the served receipt
+   itself records ("q/k/v share R1083 and gate/up share R1107 **by
+   construction**", its §2). Checked by commit time against file mtime, not
+   inferred from the branch order. Consequences, both ways: the served finding
+   is about the **currency**, which the fold does not change, so it stands
+   against the fold too; and the fold's own **1.237x / 1.558x / 1.113x**
+   (§4b, measured on one cost table via the `PRISMAQUANT_TESSERA_GROUP_KNAPSACK=0`
+   ablation added in `523a219`) has **not been served**. The fold is done and
+   measured -- measured in the currency this section impeaches.
+
+**Does anything built here depend on the surrogate ranking rungs correctly?
+Yes -- structurally, all of it.** Stated plainly rather than hedged:
+
+* the rate surface, dominance pruning, bin collapse, the group Minkowski fold
+  and the DP are each **exact given the cost** and add no independent check on
+  it. §4's "the fold contains a strictly better point", §4b's 1.237/1.558/1.113x
+  and §8.2's assignments are all statements *in this currency*;
+* the one structural guard is **ordinal**: `TesseraRateSurface` refuses a
+  non-monotone anchor set rather than laundering it into a cost
+  (`trellis_rate_surface.py`, "interpolating through it would launder it into a
+  cost"), and it fired on 2 of the 21 surfaces here. **The measured failure
+  never violates it** -- a slope error inside a monotone surface is exactly
+  what it cannot see -- so that guard is not protection against this;
+* §8.5's trusted-cost error is interpolation error *against measured anchors in
+  the same currency*, so it bounds the surface, not the currency;
+* the §10 attested allocation inherits it too, and unevenly:
+  `E2M1_K2_R896` is a **measured anchor on all seven units** (it is the family
+  cap), while `E4M3_K1_R1024` is an **interpolated** column on the five units
+  that have one -- `q_proj` and `k_proj` have no E4M3 column at all, their
+  surfaces having been refused. So the attested menu's E4M3 leg rests on
+  interpolation in the impeached currency, and its E2M1 leg does not.
+
+Nothing here is retracted -- the constructions are correct and the numbers are
+what they are -- but every ratio in this file is a **surrogate** ratio, and one
+served measurement now says that currency does not rank Tessera rungs at
+matched bytes on dense Qwen. Read §4, §4b and §8 as statements about the DP,
+not about served quality.
+
 ## 9. Where the acceptance criteria landed
 
 | asked | result |
 |---|---|
-| Tests pass, listed with the command | §3. **436 passed** on the full sweep over 22 suites, including every allocator suite this branch could regress and the seven render/cache/cost/registry suites the Tessera interception and the fallback refusals could. One pre-existing failure outside the sweep, reproduced with this branch stashed, is named in §3. |
+| Tests pass, listed with the command | §3. **438 passed** on the full sweep over 22 suites, including every allocator suite this branch could regress and the seven render/cache/cost/registry suites the Tessera interception and the fallback refusals could. One pre-existing failure outside the sweep, reproduced with this branch stashed, is named in §3. |
 | Three 0.6B allocations spanning more than a few distinct rates | §8.2. Menu 3039–3063 rungs **per unit**; 16893 priced rungs over 7 units. Assignments hit 3.00026 / 4.00026 / 5.00026 bpp with 4 distinct rungs each (4 DP items), and 6–7 distinct rungs each without pre-aggregation. Not a five-rung ladder. |
 | Anchor counts per family per unit | §8 (per-unit placement): 4–5 per family per unit, 21 surfaces, 102 anchors, 2534 s. §4b (per-**group** placement, the correct one): 4–10 per surface, 21 surfaces, **126 anchors, 2752 encode-seconds**, per-surface anchors/seconds/LOO tabulated. 19 of 21 surfaces closed the 0.25 gate; **none hit the 12-anchor budget**; two E4M3 surfaces were refused as non-interpolable. |
 | Anchors placed per fused group, adaptive until the gate closes or the budget is hit | §4b. Placement is per group unconditionally; the loop ran 9 rounds and stopped on the gate, never on the budget. |
@@ -1091,6 +1189,7 @@ this much" on a unit whose H is not full rank.
 | Hessian kwarg constant set; render seam passes H through `ActivationSource` | §11. The constant is gone -- there is no kwarg name to pin. `tessera_hessian.py` forms one `ActivationSource` from PrismaQuant's own calibration activations and both callers use it. Applicability is CHANNEL-plane-only, measured, and stamped per row. |
 | Default menu attested from the packaged contract, not `MENU=research` | §10. `PRISMAQUANT_TESSERA_DEV_PIN` reads `tessera/serving/runtime_contract.json` at the named commit and sha. **The attested menu is two rungs, one per family, and empty at every tp > 1.** |
 | The default path actually allocates from the attested menu | §10. Run measured, not asserted: `2 of 2423 priced rungs are attested`, floor 4.000 bpp, ceiling 4.042 bpp, `--target-bits 3.0` infeasible, and `layer_config.json` carries the `tessera_dev_pin` block. Finding it required a fix: the `TESSERA` token used to expand to the unattested columns too, which made `require_producer_formats` refuse the whole run. |
+| Does anything built depend on the surrogate ranking rungs? | §12. **Yes, structurally** -- every construction is exact *given* the cost and adds no check on it; the only structural guard is ordinal (non-monotone anchor sets are refused) and the measured failure is a slope error inside a monotone surface. The menu now requires `SELECTION_MODE=validated-surrogate` **and** a byte-matched uniform served control; the allocator warns and stamps `tessera_menu.selection_caveat`. |
 | TP gate on the real `shard_granularity` | §10. `tessera.layout.shard_granularity` through one function; row-parallel `[3072,1024]` collapses 3060 → 17 at tp=8, and `max_world_size: 1` closes the attested menu above tp=1. |
 | The two Hessian sources are one draw | §11, `test_the_campaign_and_the_production_render_form_one_hessian` and `test_one_identity_function_answers_for_both_paths`. |
 | A-leg pricing test exists | §3, `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and §8.2 shows it deciding a real allocation. |

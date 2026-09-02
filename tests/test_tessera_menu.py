@@ -714,3 +714,42 @@ def test_the_research_menu_token_keeps_every_priced_rung(monkeypatch, dev_pin):
     menu, dropped = tm.expand_menu_tokens_report([tm.MENU_TOKEN], PRICED)
     assert menu == PRICED, menu
     assert dropped == []
+
+
+# ---------------------------------------------------------------------------
+# Gate 13: the surrogate does not rank Tessera rungs, and the artifact says so
+#
+# Measured 2026-09-02, served: this menu's own allocations lose 2.00x in
+# KL-vs-BF16 to a byte-matched uniform arm at 4.0 bpp, and the loss is in the
+# cost model on the units it priced. The repair is not this seam's; recording
+# it where a MACHINE can read it is. A warning printed to a terminal is not a
+# property of the artifact -- these two tests are what keep it one.
+# ---------------------------------------------------------------------------
+
+def test_the_selection_caveat_records_the_served_measurement():
+    caveat = tm.surrogate_selection_caveat()
+    assert caveat["surrogate_ranks_tessera_rungs"] == "measured_false"
+    assert caveat["measurement"].endswith(
+        "tessera-allocated-served-2026-09-02.md")
+    # the three served ratios, not a prose summary a gate cannot read (P14)
+    assert caveat["served_kl_allocated_over_byte_matched_uniform"] == {
+        "3.0": 2.33, "4.0": 2.00, "5.0": 2.88,
+    }
+    assert caveat["priced_units_only"]["ratio"] == 1.93
+    # both requirements, because the first alone is measured insufficient:
+    # the validated frontier re-scores only the allocator's own Pareto points.
+    requires = caveat["requires_before_promotion"]
+    assert any("validated-surrogate" in r for r in requires), requires
+    assert any("uniform" in r for r in requires), requires
+
+
+def test_the_allocator_stamps_the_caveat_rather_than_only_printing_it():
+    """A terminal line is not a property of the artifact."""
+    import inspect
+    from prismaquant import allocator
+
+    src = inspect.getsource(allocator)
+    assert src.count("surrogate_selection_caveat()") >= 2, (
+        "the caveat must reach BOTH provenance stamp sites, not just the "
+        "layer_config one")
+    assert "CANDIDATE, not a selection" in src

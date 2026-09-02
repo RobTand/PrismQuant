@@ -94,7 +94,10 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from . import format_registry as fr
-from .tessera_menu import expand_menu_tokens_report
+from .tessera_menu import (
+    expand_menu_tokens_report,
+    surrogate_selection_caveat,
+)
 from .allocator_solver import (
     Candidate,
     _shape_from_stats,
@@ -2454,8 +2457,15 @@ def main():
     ]
     fmt_names, unattested = expand_menu_tokens_report(
         fmt_names, cost_data.get("formats", ()))
+    tessera_menu_widths: dict = {}
     if priced_tessera:
         kept = [n for n in fmt_names if n.startswith("TESSERA_")]
+        if kept:
+            tessera_menu_widths = {
+                "priced_rungs": len(priced_tessera),
+                "attested_rungs": len(kept),
+                "dropped_unattested_rungs": len(unattested),
+            }
         print(
             f"[alloc] Tessera menu: {len(kept)} of {len(priced_tessera)} priced "
             f"rungs are attested by the pinned runtime"
@@ -2463,6 +2473,24 @@ def main():
             + (f"; sample: {kept[:4]}" if kept else ""),
             flush=True,
         )
+        # The measured status of the ranking this DP is about to do. Printed
+        # here rather than at the end because it governs how the whole run's
+        # output is to be read, and stamped into provenance below because a
+        # terminal line is not a property of the artifact (P12).
+        if kept:
+            print(
+                "[alloc] WARNING: Tessera rungs are on this menu and the DP "
+                "ranks them on a surrogate MEASURED to mis-rank them at "
+                "matched bytes -- served KL 2.00x worse than a byte-matched "
+                "uniform arm at 4.0 bpp (2.33x at 3.0, 2.88x at 5.0), and "
+                "1.93x on the priced units alone. See "
+                "tessera_menu.surrogate_selection_caveat() and "
+                "docs/measurements/tessera-allocated-served-2026-09-02.md. "
+                "This assignment is a CANDIDATE, not a selection: promote it "
+                "only through SELECTION_MODE=validated-surrogate with a "
+                "byte-matched uniform arm served beside it.",
+                flush=True,
+            )
         if unattested and not kept:
             raise SystemExit(
                 "[alloc] ERROR: the cost table prices "
@@ -4938,6 +4966,9 @@ def main():
             "tessera_menu": {
                 "per_linear": dict(tessera_menu_report),
                 "aggregated": dict(tessera_menu_report_agg),
+                **tessera_menu_widths,
+                **({"selection_caveat": surrogate_selection_caveat()}
+                   if tessera_menu_widths else {}),
             },
             # DP wall time per solved target, summed over the tightening
             # retries that target needed. `_solve_diagnostics` was previously
@@ -5345,7 +5376,11 @@ def main():
         **({"tessera_menu": {
                 "per_linear": dict(tessera_menu_report),
                 "aggregated": dict(tessera_menu_report_agg),
-            }} if (tessera_menu_report or tessera_menu_report_agg) else {}),
+                **tessera_menu_widths,
+                **({"selection_caveat": surrogate_selection_caveat()}
+                   if tessera_menu_widths else {}),
+            }} if (tessera_menu_report or tessera_menu_report_agg
+                   or tessera_menu_widths) else {}),
         **({"tessera_group_knapsack": dict(tessera_group_menu_report)}
            if tessera_group_menu_report else {}),
         **({"tessera_hessian": dict(tessera_hessian_identity)}

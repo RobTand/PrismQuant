@@ -26,7 +26,15 @@ path used to make `require_producer_formats` refuse the entire run and the
 backed rungs never reached the DP. An explicitly named unattested rung still
 refuses. Measured on the default path with the dev pin: 2 of 2423 priced rungs
 attested, floor 4.000 bpp (7 x `E2M1_K2_R896`), ceiling 4.042 bpp, and
-`--target-bits 3.0` refuses as infeasible. Previously re-stamped
+`--target-bits 3.0` refuses as infeasible. **And the menu now carries a
+measured requirement**: served on Qwen3-0.6B against a byte-matched uniform
+arm, this menu's own allocations lose **2.00x** in KL-vs-BF16 at 4.0 bpp
+(2.33x / 2.88x at 3.0 / 5.0) with bytes exact to the bit, and the loss is in
+the cost model on the units it priced (1.93x on those seven Linears, where the
+surrogate scores them 1.13x better). `SELECTION_MODE=validated-surrogate`
+**plus a byte-matched uniform control served beside the candidate** is
+therefore a requirement of this menu, not a suggestion; the allocator warns and
+stamps `tessera_menu.selection_caveat` into provenance. Previously re-stamped
 (2026-09-02,
 `tessera/continuous-menu`) for the **Tessera continuous menu** (§4.10): the
 production allocator can now allocate across Tessera's whole realisable rate
@@ -3768,6 +3776,51 @@ Route status and serve flags are read off the attesting cell rather than typed:
 these cells say `backed_with_serve_flag`, and collapsing that to `backed` would
 both overstate the claim and drop the `TESSERA_SERVE_MODE` the serve needs.
 
+**REQUIREMENT: this menu may not be selected on the surrogate alone.**
+Measured 2026-09-02, served
+(`docs/measurements/tessera-allocated-served-2026-09-02.md`): three of this
+menu's own allocations were exported and served on Qwen3-0.6B against a
+**byte-matched uniform** arm, and lost at every budget — KL-vs-BF16 **0.3485 vs
+0.1746** at 4.0 bpp (2.00x), 2.33x at 3.0, 2.88x at 5.0, with bytes exact to
+the bit and 112/112 modules on the declared route. The loss is *in the cost
+model, on the units the cost model priced*: a separator pair serving only the
+seven measured Linears reads 0.02517 allocated vs 0.01306 uniform (1.93x, 95%
+of the whole-body gap in log terms) while the same seven units score 1.13x
+**better** in the allocator's own `h_trace × output_mse`. It is a
+rate-distortion **slope** error, not an ordering error: the surrogate charged
+the deep cut (`down_proj` R1006→R749) at 3.69x, its largest penalty and the
+right sign, and scored the six remaining moves as a 1.30x net win where serving
+says 1.19x loss. So:
+
+* `SELECTION_MODE=validated-surrogate` is a **requirement** of this menu, not a
+  suggestion. A Tessera `layer_config.json` produced under
+  `SELECTION_MODE=surrogate` is a *candidate*, and the allocator now prints a
+  warning saying so and stamps `tessera_menu.selection_caveat` into provenance
+  (`tessera_menu.surrogate_selection_caveat()`), so the status is a property of
+  the artifact and not of a terminal.
+* **Necessary but not sufficient**, and this is the second requirement: the
+  validated frontier re-scores the *allocator's own* Pareto points, all of them
+  surrogate-allocated (`select_validated_frontier.py` and
+  `validate_assignments_kl.py` contain no uniform/baseline/control arm in 3471
+  lines), so it can rank 4.0 against 5.0 but cannot see that *uniform at 4.0*
+  beats *allocated at 4.0*. The gate that caught this is a
+  **byte-matched uniform arm served beside the candidate** — two serves, and it
+  inverted the answer. Principle 3 applied to allocation itself.
+* `COST_MODE=aura` is deliberately **not** named as the fix. No measurement of
+  AURA on a Tessera rung exists in this tree's receipts (`docs/measurements/`
+  holds none; the two auto-memory notes that mention both say "in principle,
+  not yet run"), and naming an unmeasured estimator as the repair would be
+  exactly the assertion principle 14 forbids. It is a candidate for the repair,
+  to be decided by measurement.
+
+The repair is not in this seam. Every construction downstream of the cost —
+surface interpolation, dominance pruning, bin collapse, the group Minkowski
+fold, the DP — is exact *given* the cost and adds no independent check on it.
+The one structural guard that exists is ordinal: `TesseraRateSurface` refuses a
+non-monotone anchor set rather than laundering it into a cost (2 of 21 surfaces
+refused on the 0.6B group table). A slope error inside a monotone surface is
+invisible to it, which is precisely the measured failure.
+
 **The `TESSERA` token expands to priced-and-attested, and says how much it
 narrowed.** A cost table is priced under whatever menu mode the *campaign* ran;
 the attested set is a property of the *runtime*. A research-priced table read
@@ -3785,7 +3838,11 @@ named** unattested rung still refuses, so only the token narrows; and an empty
 intersection refuses with the reason and both fixes named. Measured on the 0.6B
 group table under the dev pin: floor 4.000 bpp (7 × `E2M1_K2_R896`), ceiling
 4.042 bpp (4 × `E4M3_K1_R1024` + the `qkv` group on E2M1, because q/k priced no
-E4M3 rung at R1024), and `--target-bits 3.0` refuses as infeasible.
+E4M3 rung at R1024), and `--target-bits 3.0` refuses as infeasible. Note which of the two attested
+rungs is measured: `E2M1_K2_R896` is the family cap and is a **measured
+anchor** on all seven units, while `E4M3_K1_R1024` is an **interpolated**
+column of the rate surface on the five units that have one — so the attested
+menu's E4M3 leg rests on interpolation in the currency impeached above.
 
 **Tensor parallelism has two legs, and both bind.** The *attestation* leg is the
 contract's `tensor_parallel` block, whose semantics are `closed_world`: it lists
