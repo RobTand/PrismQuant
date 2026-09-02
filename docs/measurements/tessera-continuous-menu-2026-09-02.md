@@ -29,9 +29,9 @@ construction. Architecture: `docs/ARCHITECTURE.md` §4.10.
 
 The single seam for the runtime's own table is `tessera_menu.route_admission`.
 The single seam for tensor-parallel legality is
-`tessera_menu.tessera_shard_granularity`, which prefers
-`tessera.layout.shard_granularity` when that lands. Both are one function each,
-by design, so the incoming work swaps in without touching the menu.
+`tessera_menu.tessera_shard_granularity`, which asks
+`tessera.layout.shard_granularity` (Tessera `f3e7d0a`). Both are one function
+each, by design, so the incoming work swapped in without touching the menu.
 
 ## 2. Commands
 
@@ -295,9 +295,6 @@ leg at all (§7).
   anchor rule is per family (`family_anchor_rule`), so the incoming 16-bit
   grid is a `_HARDWARE_BASES` entry plus a contract row, not a menu rewrite.
   Until it lands, `TESSERA_BF16` is absent — not deferred, absent.
-* **`tessera.layout.shard_granularity` is not yet importable**, so
-  `tessera_shard_granularity` is running on its own fallback. The seam is one
-  function and the test asserts the fallback's contract, not its numbers.
 * **The relaxation's serving premise is unattested** (§4). Nothing here says a
   runtime can serve a fused group at mixed rungs of one family.
 * **No anchor was priced with a Hessian**, so no number here is a price of

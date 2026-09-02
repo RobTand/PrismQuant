@@ -3719,16 +3719,25 @@ over the reduce dimension, so what a rank can encode is a function of *its* colu
 count. Column-parallel Linears (q/k/v/gate/up) shard `out_features` and keep every
 column — their realisable set is unchanged at any TP degree; row-parallel ones
 (o_proj/down_proj) shard `in_features`, and at TP=8 a 1024-column unit becomes a
-128-column one with a strictly smaller realisable set (3060 → 1915 rungs on
-`[3072, 1024]`). Packed experts are whole units under expert parallelism. The
-degree and the kind come from the serving profile's new `tensor_parallel` block
-(`serving_profiles.TensorParallelSpec`, enumerated regex rules — no name
-heuristics), the granularity from **one** function,
-`tessera_menu.tessera_shard_granularity`, which derives it from the wire's own
-plane geometry today (32 for E8M0 groups, 16 for LUT half-blocks, 1 for a CHANNEL
-plane on columns; `arity × span` on rows) and will delegate to Tessera's own
-`tessera.layout.shard_granularity` the moment that branch lands. The degree the
-candidate was gated for is stamped into its provenance.
+128-column one with a **far** smaller realisable set: 3060 → **17** rungs on
+`[3072, 1024]` (3060 at TP≤4). Packed experts are whole units under expert
+parallelism. The degree and the kind come from the serving profile's
+`tensor_parallel` block (`serving_profiles.TensorParallelSpec`, enumerated regex
+rules — no name heuristics), the granularity from **one** function,
+`tessera_menu.tessera_shard_granularity`, which asks
+`tessera.layout.shard_granularity` (since Tessera `f3e7d0a`) by handing it the
+unit-shaped geometry the rung implies at that shape. The degree the candidate
+was gated for is stamped into its provenance.
+
+That delegation changed the answer, and the change is the reason principle 14
+exists. This module used to derive the column period from the scale plane alone
+— 32 for E8M0 groups, 16 for LUT half-blocks, **1 for a CHANNEL plane** — and
+that last number is wrong: Tessera raises the column period to the 256-column
+superblock for any rung whose Bresenham schedule is *mixed*, because the quota
+`sum(rates) == root × columns` only closes on a whole superblock. Every rung
+but the handful at integer rates is mixed, so the honest TP constraint on a
+row-parallel Linear is `cols / tp % 256 == 0`, which is what collapses 3060 to
+17 at TP=8 and what the local derivation would have admitted silently.
 
 **One function owns the encoder call, and it is H-gated**
 (`tessera_render.encode_tessera_unit`). The Tessera encoder's shipping default

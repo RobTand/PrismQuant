@@ -54,19 +54,112 @@ def test_e4m3_arity_2_is_refused_by_tessera_not_by_us():
 # Gate 2: shape, and the tensor-parallel shard of it
 # ---------------------------------------------------------------------------
 
-def test_shard_granularity_is_read_from_one_function():
-    """One seam, and it derives from plane geometry until Tessera exports one.
+def test_shard_granularity_matches_a_real_encoded_unit():
+    """The menu's granularity is Tessera's own, on a unit Tessera encoded.
 
-    ``tessera.layout.shard_granularity`` is the function this will call once
-    that branch merges; the derivation below is the stand-in and must agree
-    with the plane the wire actually carries.
+    ``tessera_menu`` cannot encode 3000 rungs to ask where they cut, so it
+    hands ``tessera.layout.shard_granularity`` a ``_ShardGeometry`` carrying
+    the geometry an encode *would* produce. Three of the fields that object
+    supplies are read there through ``getattr(unit, name, default)``, so an
+    omitted or mis-set one answers confidently for a different wire. This
+    encodes real units -- through the exporter's own ``encode_linear_planes``,
+    the call that writes the bytes -- under every plane and body the wire
+    recipe actually writes, and requires the two answers to be equal.
+
+    That is LUT16 and CHANNEL, not all three planes: no rung of any
+    serialisable family resolves to an S6b plane under ``wire_recipe``
+    (E2M1_K1 and E2M1_K2 are LUT16 throughout, E4M3_K1 is CHANNEL
+    throughout), so an S6b arm here would pin a wire nothing writes.
+    Both bodies do occur -- the E2M1x2 cap is TCQ, everything below it
+    is the window body.
     """
-    for name in ("TESSERA_E2M1_K1_R512", "TESSERA_E2M1_K2_R896",
-                 "TESSERA_E4M3_K1_R896"):
-        family, rung = parse_tessera_format_name(name)
-        rows, cols = tm.tessera_shard_granularity(family, rung)
-        assert rows >= 1 and cols >= 1
-        assert cols in (1, 16, 32), (name, cols)
+    from tessera.export import encode_linear_planes
+    from tessera.layout import shard_granularity as tessera_granularity
+
+    import torch
+
+    from prismaquant.tessera_formats import get_tessera_family
+
+    seen_planes = set()
+    seen_bodies = set()
+    cases = [
+        ("TESSERA_E2M1_K1", 512, (64, 512)),
+        ("TESSERA_E2M1_K1", 448, (64, 512)),
+        ("TESSERA_E2M1_K2", 896, (64, 512)),
+        ("TESSERA_E2M1_K2", 700, (64, 512)),
+        ("TESSERA_E4M3_K1", 1024, (64, 512)),
+        ("TESSERA_E4M3_K1", 1023, (64, 512)),
+        ("TESSERA_E4M3_K1", 900, (64, 512)),
+    ]
+    generator = torch.Generator().manual_seed(0)
+    for family_name, rung, shape in cases:
+        spec = get_tessera_family(family_name)
+        weight = torch.randn(shape, generator=generator, dtype=torch.float32)
+        _exported, unit, _forests = encode_linear_planes(
+            weight, grid=spec.payload_grid(), q256=rung,
+            name=f"{family_name}_R{rung}", verify=False,
+        )
+        seen_planes.add(int(unit.scale_plane))
+        seen_bodies.add(int(unit.body))
+        theirs = tessera_granularity(unit, tm.SUPERBLOCK_WEIGHTS, spec.arity)
+        ours = tm.tessera_shard_granularity(family_name, rung, shape)
+        assert ours == tuple(int(x) for x in theirs), (family_name, rung, ours, theirs)
+    from tessera.manifest import BodyKind, ScalePlaneKind
+
+    assert seen_planes == {int(ScalePlaneKind.LUT), int(ScalePlaneKind.CHANNEL)}, (
+        f"planes exercised: {sorted(seen_planes)}")
+    assert seen_bodies == {int(BodyKind.TCQ), int(BodyKind.WINDOW)}, (
+        f"bodies exercised: {sorted(seen_bodies)}")
+
+
+def test_a_mixed_schedule_raises_the_column_granularity_to_the_superblock():
+    """The fact a local derivation got wrong, kept as a test.
+
+    Until Tessera published ``shard_granularity`` this module derived the
+    column period from the scale plane alone and answered ``1`` for every
+    CHANNEL-plane rung. Tessera's own derivation says a *mixed* Bresenham
+    schedule only closes its quota on a whole superblock, so all but the
+    handful of integer-rate rungs cut on 256 columns -- which is the binding
+    TP constraint for every row-parallel Linear on this menu.
+    """
+    integer_rate = tm.tessera_shard_granularity("TESSERA_E4M3_K1", 1024, SHAPE)
+    mixed_rate = tm.tessera_shard_granularity("TESSERA_E4M3_K1", 1023, SHAPE)
+    assert integer_rate == (1, 1), integer_rate
+    assert mixed_rate == (1, tm.SUPERBLOCK_WEIGHTS), mixed_rate
+
+
+def test_the_tp_gate_asks_tessera_about_the_axis_vllm_actually_shards():
+    """``PARALLEL_COLUMN`` is vLLM's word for a cut Tessera calls ``row``.
+
+    vLLM's ColumnParallelLinear splits the OUTPUT features; those are the
+    unit's rows, and ``tessera.layout.can_shard`` takes ``axis="row"`` for
+    them. Inverting the pair answers plausibly in both directions and gates
+    exactly the wrong half of a model, so it is pinned against a rung whose
+    two granularities differ by a factor of 256.
+    """
+    from tessera.layout import can_shard
+
+    from prismaquant.tessera_formats import get_tessera_family
+    from prismaquant.tessera_menu import _shard_geometry
+
+    family, shape, rung = "TESSERA_E4M3_K1", (2048, 4096), 1023
+    spec = get_tessera_family(family)
+    geometry = _shard_geometry(family, rung, *shape)
+    assert tm.tessera_shard_granularity(family, rung, shape) == (1, 256)
+
+    # 4096 columns cut 32 ways is 128, under the 256-column period; 2048 rows
+    # cut 32 ways is 64, a multiple of the 1-row period. So the two axes give
+    # opposite answers at tp=32, which is what makes the mapping testable.
+    assert can_shard(geometry, 32, "row", tm.SUPERBLOCK_WEIGHTS, spec.arity)
+    assert not can_shard(geometry, 32, "column", tm.SUPERBLOCK_WEIGHTS, spec.arity)
+
+    legal_col, _ = tm.tessera_tp_legal(
+        family, rung, shape, tp_degree=32, parallel_kind=tm.PARALLEL_COLUMN)
+    legal_row, reason_row = tm.tessera_tp_legal(
+        family, rung, shape, tp_degree=32, parallel_kind=tm.PARALLEL_ROW)
+    assert legal_col, "a column-parallel cut of the rows is legal here"
+    assert not legal_row, "a row-parallel cut of the columns is not"
+    assert "column_granularity" in reason_row, reason_row
 
 
 def test_tp_degree_is_a_per_unit_legality_input_and_knows_the_direction():

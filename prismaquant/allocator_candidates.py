@@ -685,11 +685,12 @@ def _tensor_parallel_applicability(
     illegal on an Nth of it.
 
     The granularity is read through ONE function,
-    ``tessera_menu.tessera_shard_granularity``, which derives it from the wire's
-    own plane geometry today and will delegate to ``tessera.layout``'s own
-    ``shard_granularity`` the moment that lands.  A format with no declared
-    granularity is legal here by construction -- this gate adds a refusal, it
-    never invents one -- so every non-Tessera format is unchanged.
+    ``tessera_menu.tessera_shard_granularity``, which asks
+    ``tessera.layout.shard_granularity`` -- Tessera's own derivation from the
+    checks ``slice_unit`` applies, so a period it reports is one that slices.
+    A format with no declared granularity is legal here by construction --
+    this gate adds a refusal, it never invents one -- so every non-Tessera
+    format is unchanged.
     """
     if not str(fmt).startswith("TESSERA_"):
         return FormatApplicability(True)

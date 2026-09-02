@@ -62,6 +62,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from functools import lru_cache
+from typing import NamedTuple
 
 from .gridbook_lane_eligibility import (
     ROUTE_STATUS_BACKED,
@@ -361,66 +362,121 @@ def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
 # Gate 2: shape, and the TP shard of it
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=1024)
+class _BodyShape(NamedTuple):
+    """``unit.body_bits`` seen through the one attribute a granularity reads."""
+
+    shape: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _ShardGeometry:
+    """The fields ``tessera.layout.shard_granularity`` reads off an encoded unit.
+
+    A granularity is a property of the *encoded* unit -- Tessera derives it
+    from the very checks ``slice_unit`` applies, so a granularity it reports is
+    one that slices -- and principle 14 says PrismaQuant asks for that number
+    rather than restating the derivation.  What a menu cannot afford is the
+    encode: the answer is wanted for ~3000 rungs on every unit, before anything
+    is rendered.
+
+    So this object carries the geometry an encode *would* produce and nothing
+    else, and Tessera's own function reads it.  Every field is set explicitly.
+    Three of them (``span``, ``body``, ``scale_plane``) are read there through
+    ``getattr(unit, name, default)``, so a stub that merely omitted one would
+    silently answer for a different wire; ``test_shard_granularity_matches_a_
+    real_encoded_unit`` pins the whole object by encoding real units under all
+    three scale planes and comparing the two answers.
+    """
+
+    body_bits: _BodyShape
+    rates: tuple[int, ...]
+    span: int
+    body: object
+    scale_plane: object
+    group: int
+    half: int
+    released_positions: int
+
+
+@lru_cache(maxsize=4096)
+def _shard_geometry(
+    family: "str | TesseraFamily", body_rate_q256: int, rows: int, cols: int,
+) -> _ShardGeometry:
+    """The unit-shaped geometry of one rung at one shape.  Raises if unrealisable."""
+    from tessera.manifest import BodyKind, ScalePlaneKind
+
+    from .tessera_render import TESSERA_GROUP, TESSERA_HALF
+
+    spec = get_tessera_family(family)
+    recipe = tessera_wire_recipe(spec, body_rate_q256)
+    body = BodyKind(recipe.body)
+    if rows % spec.arity:
+        raise TesseraMenuError(
+            f"{rows} rows is not a whole number of arity-{spec.arity} tuples"
+        )
+    try:
+        rates = spec.column_schedule(body_rate_q256, cols, recipe=recipe)
+    except Exception as exc:  # tessera.grammar's GrammarError, by any name
+        raise TesseraMenuError(f"schedule: {exc}") from exc
+    return _ShardGeometry(
+        body_bits=_BodyShape((rows // spec.arity, int(cols))),
+        rates=tuple(int(r) for r in rates),
+        # A window body has no super-symbols; ``encode_linear`` resolves the
+        # span to 1 there and so does ``render_tessera_weight``.
+        span=1 if body is BodyKind.WINDOW else int(recipe.span),
+        body=body,
+        scale_plane=ScalePlaneKind(recipe.scale_plane),
+        group=int(TESSERA_GROUP),
+        half=int(TESSERA_HALF),
+        # ``render_tessera_weight`` and ``export_checkpoint`` both encode at
+        # ``completion=0``, which releases no position. A rung that released
+        # any would raise the column granularity to the superblock, which is
+        # why this is a stated zero rather than an omitted field.
+        released_positions=0,
+    )
+
+
 def tessera_shard_granularity(
-    family: "str | TesseraFamily", body_rate_q256: int,
+    family: "str | TesseraFamily",
+    body_rate_q256: int,
+    shape: Sequence[int],
 ) -> tuple[int, int]:
     """``(row_granularity, col_granularity)`` for one rung.  **The one seam.**
 
     A tensor-parallel rank is handed a *slice* of the Linear, and a Tessera unit
     is not slice-agnostic: the trellis runs down a column across ``arity``-row
-    tuples grouped into ``span``-wide super-symbols, and the block scale plane
-    tiles the input axis in fixed periods.  A slice that cuts either period
+    tuples grouped into ``span``-wide super-symbols, the block scale plane tiles
+    the input axis in fixed periods, and a mixed Bresenham schedule only closes
+    its quota on a whole superblock.  A slice that cuts any of those periods
     produces bytes no reader can decode alone.
 
-    **Where the numbers come from.**  Tessera will publish
-    ``tessera.layout.shard_granularity(unit)``; until it does, both are derived
-    from the wire's own plane geometry rather than typed:
+    **The number is Tessera's, not ours.**  ``tessera.layout.shard_granularity``
+    derives both periods from the checks ``slice_unit`` itself applies; this
+    function builds the unit-shaped geometry that rung implies at that shape
+    (:class:`_ShardGeometry`) and asks.  Until 2026-09-02 Tessera published no
+    such function and this module derived the periods itself, which was a
+    restatement waiting to drift -- and it did: the fallback answered
+    ``col_granularity == 1`` for every CHANNEL-plane rung, while Tessera's
+    answer is the 256-column superblock for any rung whose Bresenham schedule
+    is *mixed*, i.e. for all but the handful of integer-rate rungs. That is the
+    single most consequential TP fact on this menu, and no amount of care in a
+    local derivation would have produced it.
 
-    * **rows** -- ``arity * span``.  ``layout._counts_for`` refuses a geometry
-      whose ``rows % arity`` is non-zero and whose ``steps % span`` is non-zero
-      (``GrammarError``), and ``encode_unit`` raises the same two.  A WINDOW
-      body is ``span == 1``, so its row period is the arity alone -- 1 for
-      E4M3, 2 for E2M1x2 -- which is the "1 for WINDOW bodies" statement made
-      exact for a tuple grid.
-    * **columns** -- the scale plane's period along the input axis.
-      ``_counts_for`` sizes ``SCALE_REFINE`` as ``positions // half_weights``
-      (16) and ``SCALE_BASE`` as ``positions // group_weights`` (32), and the
-      halves run row-major along the input axis, so an S6b plane cuts on 32, a
-      LUT plane on 16, and a CHANNEL plane -- one fp16 per output row, no block
-      plane at all -- on 1.
-
-    The *rate schedule* is a second, rung-dependent column constraint that is
-    not a granularity: a Bresenham root is realisable over ``n`` columns only
-    when the fractional part times ``n`` is an integer.  That is checked
-    directly, against Tessera's own scheduler, in :func:`tessera_shape_legal`.
+    ``shape`` is the **whole** unit's ``[rows, cols]``: a granularity is a
+    property of the unit being cut, and the rate schedule that decides
+    ``mixed`` is a function of its column count. The sharded extents are then
+    checked against it in :func:`tessera_tp_legal`.
     """
+    geometry = _shard_geometry(
+        family, int(body_rate_q256), int(shape[-2]), int(shape[-1]),
+    )
+    from tessera.layout import shard_granularity as _tessera_granularity
+
     spec = get_tessera_family(family)
-    recipe = tessera_wire_recipe(spec, body_rate_q256)
-    try:  # Tessera's own answer, the moment it exists.
-        from tessera.layout import shard_granularity as _tessera_granularity
-    except ImportError:
-        _tessera_granularity = None
-    if _tessera_granularity is not None:  # pragma: no cover - lands with tessera
-        rows, cols = _tessera_granularity(spec.payload_grid(), recipe)
-        return int(rows), int(cols)
-
-    from tessera.manifest import BodyKind
-
-    body = BodyKind(recipe.body)
-    span = 1 if body is BodyKind.WINDOW else int(recipe.span)
-    row_granularity = int(spec.arity) * span
-
-    from .tessera_render import TESSERA_GROUP, TESSERA_HALF
-
-    plane = scale_plane_name(recipe.scale_plane)
-    if plane == "s6b":
-        col_granularity = int(TESSERA_GROUP)
-    elif plane == "lut16":
-        col_granularity = int(TESSERA_HALF)
-    else:  # "channel": one fp16 per output row, no block plane on the columns
-        col_granularity = 1
-    return row_granularity, col_granularity
+    rows, cols = _tessera_granularity(
+        geometry, SUPERBLOCK_WEIGHTS, int(spec.arity),
+    )
+    return int(rows), int(cols)
 
 
 def shard_shape(
@@ -467,12 +523,24 @@ def tessera_tp_legal(
 ) -> tuple[bool, str]:
     """Is this rung legal on every rank at ``tp_degree``?  ``(legal, reason)``.
 
-    The gate is the shard's shape, not the whole tensor's: at TP=8 a
-    ``[2048, 1024]`` column-parallel Linear is eight ``[256, 1024]`` units, each
-    encoded and decoded on its own rank, and a rung that is legal on the whole
-    is not automatically legal on an eighth of it.  Both periods bind --
-    ``row_granularity`` on the sharded output axis, ``col_granularity`` and the
-    Bresenham root on the sharded input axis.
+    Two questions, both asked of Tessera:
+
+    * **Can the whole unit be cut this way at all?**
+      ``tessera.layout.can_shard(unit, tp, axis)`` -- and the axis mapping is
+      Tessera's, not a local convention: a *column-parallel* Linear (q/k/v,
+      gate/up) splits vLLM's output features, which are this unit's **rows**,
+      so ``PARALLEL_COLUMN`` asks ``axis="row"``.  Inverting that pair would
+      gate exactly the wrong half of a model and answer plausibly on both.
+    * **Is the rung legal on the shard a rank actually holds?**
+      ``tessera_shape_legal`` on the sharded shape: at TP=8 a ``[2048, 1024]``
+      column-parallel Linear is eight ``[256, 1024]`` units, each encoded and
+      decoded on its own rank, and a rung legal on the whole is not
+      automatically legal on an eighth of it (its Bresenham root has to close
+      its quota over the shard's own column count).
+
+    ``parallel_kind`` is the unit's, from the caller's serving profile;
+    ``PARALLEL_NONE`` (a packed expert under expert parallelism, a replicated
+    head) shards nothing and answers the shape question alone.
     """
     spec = get_tessera_family(family)
     tp = int(tp_degree)
@@ -482,18 +550,28 @@ def tessera_tp_legal(
         sharded = shard_shape(shape, tp, parallel_kind)
     except TesseraMenuError as exc:
         return False, f"tp_shape:{exc}"
-    row_gran, col_gran = tessera_shard_granularity(spec, body_rate_q256)
-    rows, cols = int(sharded[-2]), int(sharded[-1])
-    if rows % row_gran:
-        return False, (
-            f"tp{tp}_row_granularity: {rows} sharded rows is not a multiple of "
-            f"{row_gran} (arity x span)"
-        )
-    if cols % col_gran:
-        return False, (
-            f"tp{tp}_col_granularity: {cols} sharded columns is not a multiple "
-            f"of {col_gran} (scale-plane period)"
-        )
+    if tp > 1 and parallel_kind != PARALLEL_NONE:
+        from tessera.layout import can_shard as _tessera_can_shard
+
+        axis = "row" if parallel_kind == PARALLEL_COLUMN else "column"
+        try:
+            geometry = _shard_geometry(
+                spec, int(body_rate_q256), int(shape[-2]), int(shape[-1]),
+            )
+        except TesseraMenuError as exc:
+            return False, f"tp{tp}_geometry:{exc}"
+        if not _tessera_can_shard(
+            geometry, tp, axis, SUPERBLOCK_WEIGHTS, int(spec.arity)
+        ):
+            row_gran, col_gran = tessera_shard_granularity(
+                spec, body_rate_q256, shape,
+            )
+            gran = row_gran if axis == "row" else col_gran
+            extent = int(shape[-2]) if axis == "row" else int(shape[-1])
+            return False, (
+                f"tp{tp}_{axis}_granularity: {extent} {axis}s cut {tp} ways is "
+                f"not a multiple of {gran} (tessera.layout.shard_granularity)"
+            )
     return tessera_shape_legal(spec, body_rate_q256, sharded)
 
 
