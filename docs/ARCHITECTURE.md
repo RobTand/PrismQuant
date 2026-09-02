@@ -3835,8 +3835,10 @@ that makes the DP mixed-rung capable has to come here and say so.
 `allocator.py` runs `reduce_continuous_menu` a second time on the
 post-aggregation dict (after `filter_candidates_for_profile`). Without it a
 fused group carries the entire unreduced Tessera axis into the DP. Both passes
-are reported: `layer_config.json` `meta.tessera_menu` is now
-`{per_linear, aggregated}`.
+are reported, in `layer_config.json` under
+`__prismaquant__.tessera_menu = {per_linear, aggregated}` — written on every
+run, not only on the byte-budget path, which is where the first version of this
+stamp landed and therefore never appeared in a `--target-bits` run.
 
 > **Attestation gap, stated rather than assumed.** Whether a runtime can serve a
 > fused group whose members hold different rungs of one family is a fact about
@@ -3873,8 +3875,11 @@ here rather than quietly relied on.
 
 **DP wall time is stamped, not re-timed by hand.** `allocator.py` accumulates
 `solve_with_promotion` wall time across the tightening retries a target needs
-and writes `solver_seconds` / `solver_calls` into the per-target solve
-diagnostics.
+and writes `solver_seconds` / `solver_calls` per target into
+`layer_config.json` `__prismaquant__.solve_diagnostics` (and into
+`selection.json` on the byte-budget path). `_solve_diagnostics` was previously
+read only by the infeasibility message, so what a solve cost was invisible to
+everything downstream.
 
 **`pipeline.py` needs no entry for the token.** The declarative contract names
 `FORMATS` only as a *cache-key ingredient* (`"FORMATS<-COST_FORMATS"` and

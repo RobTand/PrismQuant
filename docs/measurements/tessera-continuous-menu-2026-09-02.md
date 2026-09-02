@@ -1,8 +1,13 @@
 # Tessera's continuous rate axis on the production allocator — 2026-09-02
 
-**Branch** `tessera/continuous-menu` · **PrismaQuant** `90b5876` (+ this
-receipt) · **Tessera** `3d419e7b4d6ffd0259fcb7c36ea179bddc1d7ce9` (main tree
-HEAD; `src/tessera/serving/` never imported — another worker owns it) ·
+**Branch** `tessera/continuous-menu`. The allocations ran at
+`cb64eba`; `prismaquant/tessera_campaign.py` is **byte-identical from
+`4d2d9b2` through `cb64eba`** (`git diff 4d2d9b2 HEAD --stat --
+prismaquant/tessera_campaign.py` is empty), so the campaign's own code is the
+same object across every commit on this branch and the restart mid-branch
+changed nothing about how an anchor is priced. **Tessera**
+`3d419e7b4d6ffd0259fcb7c36ea179bddc1d7ce9` (main tree HEAD;
+`src/tessera/serving/` never imported — another worker owns it) ·
 **Boxes** sparky (host tests) and sparklina (probe, campaign, allocations) ·
 **Python** `/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python`.
 
@@ -140,3 +145,53 @@ priced.
   quietly relied on. What does gate the surface is the campaign's own
   leave-one-anchor-out error (`--loo-gate`, adaptive rounds) plus the regret
   arms below.
+
+## 6. Scope — read the denominator before the numbers
+
+* **The priced subset is Qwen3-0.6B decoder layer 0 only: 7 Linears**
+  (`--layer-stride 28`). Every bpp figure below is over *those* quantizable
+  parameters, not the model. The first run of this campaign covered layers
+  0/7/14/21 at three anchors each and would have been truncated by its
+  deadline mid-way through layer 7, leaving several units with an unusable
+  anchor count; it was restarted narrower so that **every** priced unit gets
+  the adaptive rounds that close the LOO gate. Widening the subset is a
+  wall-clock decision, not a capability one — the campaign resumes from its
+  own checkpoint, so `--layer-stride 7` continues rather than restarts.
+* With `--formats TESSERA` the other 190 Linears get no candidate and do not
+  appear in `layer_config.json`. The unit count in each allocation says which
+  denominator applies.
+* **The default (attested) menu is empty.** These runs set
+  `PRISMAQUANT_TESSERA_MENU=research`. Under the pinned Gridbook release the
+  attested contract table backs no Tessera route, so `route_admission` admits
+  nothing and the DP sees no Tessera candidate at all. That is the design
+  (principle 14: a route is attested, never asserted) and it means **nothing
+  in this receipt is on by default**.
+* **`parallel_kind` in the campaign is `PARALLEL_NONE`.** TP legality is a
+  menu gate and is tested, but the campaign prices at TP=1, so no priced rung
+  here exercises a sharded granularity.
+* **`TESSERA_E4M3_K2` does not exist**: Tessera's own `build_forest` refuses
+  arity 2 on the E4M3 grid, and `menu_families()` takes that refusal as the
+  answer rather than carrying a family the encoder will not build.
+
+## 7. Not done, and not claimed
+
+* **No export leg, so nothing was served and no KL was measured.** The wire is
+  produced and stored beside every priced render, but nothing writes a
+  checkpoint and nothing loads one. §9's export gate has not been exercised by
+  any of this.
+* **No BF16 family.** The three families here are what
+  `tessera_menu.menu_families()` derives from Tessera's own hardware bases
+  today: `TESSERA_E2M1_K1`, `TESSERA_E2M1_K2`, `TESSERA_E4M3_K1`. The family
+  set and the per-family activation contract are read from one table and the
+  anchor rule is per family (`family_anchor_rule`), so the incoming 16-bit
+  grid is a `_HARDWARE_BASES` entry plus a contract row, not a menu rewrite.
+  Until it lands, `TESSERA_BF16` is absent — not deferred, absent.
+* **`tessera.layout.shard_granularity` is not yet importable**, so
+  `tessera_shard_granularity` is running on its own fallback. The seam is one
+  function and the test asserts the fallback's contract, not its numbers.
+* **The relaxation's serving premise is unattested** (§4). Nothing here says a
+  runtime can serve a fused group at mixed rungs of one family.
+* **Per-unit anchor budgets are not tuned.** Three round-one anchors, adaptive
+  rounds to a LOO gate of 0.25 in |log2|, capped at three rounds. Whether that
+  is the right budget per family is unmeasured; what is measured is what the
+  budget bought.
