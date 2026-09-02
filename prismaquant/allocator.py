@@ -2253,6 +2253,23 @@ def main():
     costs = cost_data["costs"]
     print(f"[alloc] stats: {len(stats)} Linears, costs: {len(costs)} Linears")
 
+    # One Hessian identity per cost table, or refuse. The Tessera encoder's
+    # shipping default consumes a per-unit XtX, so rows priced with and
+    # without one describe different bytes at the same format name, and the
+    # DP would trade them against each other. Raises on a mix; reports what
+    # it found otherwise, so "no claim" stays distinguishable from "a
+    # matching claim" (principle 14).
+    from .tessera_menu import assert_uniform_hessian_identity
+    tessera_hessian_identity = assert_uniform_hessian_identity(costs)
+    if tessera_hessian_identity.get("stamped_rows") or \
+            tessera_hessian_identity.get("unstamped_rows"):
+        print(f"[alloc] tessera hessian identity: "
+              f"supplied={tessera_hessian_identity['supplied']} "
+              f"tokens={tessera_hessian_identity['token_count']} "
+              f"sha={str(tessera_hessian_identity['text_sha'])[:12]} "
+              f"({tessera_hessian_identity['stamped_rows']} stamped, "
+              f"{tessera_hessian_identity['unstamped_rows']} unstamped rows)")
+
     # ---- Fisher renormalization ----
     # One shared denominator (the global calib token count) recomputed
     # from the stored raw accumulators; hard error on probes that cannot
@@ -5218,6 +5235,9 @@ def main():
                 "per_linear": dict(tessera_menu_report),
                 "aggregated": dict(tessera_menu_report_agg),
             }} if (tessera_menu_report or tessera_menu_report_agg) else {}),
+        **({"tessera_hessian": dict(tessera_hessian_identity)}
+           if (tessera_hessian_identity.get("stamped_rows")
+               or tessera_hessian_identity.get("unstamped_rows")) else {}),
         **({"solve_diagnostics": {
                 str(k): {
                     "solver_seconds": v.get("solver_seconds"),

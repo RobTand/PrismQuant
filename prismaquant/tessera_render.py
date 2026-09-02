@@ -552,3 +552,233 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
         # on a 6% overcharge it invented.
         exact_bits_per_param=exact_rate,
     )
+
+
+# ---------------------------------------------------------------------------
+# The encoder seam: one function owns the call into Tessera's byte path.
+# ---------------------------------------------------------------------------
+
+class HessianContractError(RuntimeError):
+    """The Hessian contract was not met, and the encode must not proceed.
+
+    Its own class because the campaign's anchor loop wraps ``_measure_anchor``
+    in ``except Exception: continue`` -- an anchor that fails for its own
+    reasons should not abort a multi-hour run -- and a contract refusal is
+    exactly the thing that must *not* be absorbed by that. A refusal quietly
+    turned into a skipped anchor is a cost table that is weights-only in the
+    rows that were hard and H-aware in the rows that were easy, with nothing
+    on it saying so.
+    """
+
+
+#: The keyword ``tessera.export.encode_linear_planes`` will accept the per-unit
+#: Hessian under, or ``None`` while that branch is unmerged.
+#:
+#: The encoder's shipping default, once the branch lands, is *H-aware*: given
+#: ``H = XᵀX`` for a unit it applies LDLQ (sigma 1.0, block 32) plus an exact
+#: full-H row-scale refit, and weights-only encodes stay byte-identical.  So a
+#: rung priced without H is **not** the rung that ships, and the difference is
+#: not a rounding one.  Pinning the name here rather than probing for it means
+#: the day the API lands, this constant is the edit -- and until it is set,
+#: ``encode_tessera_unit`` refuses to pretend (``hessian_required=True``).
+#:
+#: It is deliberately *not* discovered by trying the call and catching
+#: ``TypeError``: that swallows every unrelated argument error the encoder
+#: raises and would silently downgrade a shipping price to a weights-only one.
+TESSERA_HESSIAN_KWARG: "str | None" = None
+
+
+@lru_cache(maxsize=1)
+def _encoder_accepts_hessian() -> "tuple[bool, tuple[str, ...]]":
+    """``(accepted, parameter names)`` for the pinned encoder.
+
+    Cached on nothing but the process, because the pinned Tessera is a
+    property of the interpreter's import, not of an argument.
+    """
+    import inspect
+
+    params = tuple(
+        inspect.signature(_tessera_export.encode_linear_planes).parameters)
+    kwarg = TESSERA_HESSIAN_KWARG
+    return (bool(kwarg) and kwarg in params), params
+
+
+def tessera_encoder_hessian_status() -> dict:
+    """What this build can do with a Hessian -- for provenance and refusals."""
+    accepted, params = _encoder_accepts_hessian()
+    return {
+        "kwarg": TESSERA_HESSIAN_KWARG,
+        "accepted": bool(accepted),
+        "reason": (
+            "supported"
+            if accepted
+            else "TESSERA_HESSIAN_KWARG is unset: the H-aware encoder branch "
+                 "is not merged into the pinned tessera.export"
+            if not TESSERA_HESSIAN_KWARG
+            else f"pinned tessera.export.encode_linear_planes does not accept "
+                 f"{TESSERA_HESSIAN_KWARG!r}; it accepts {params}"
+        ),
+    }
+
+
+def encode_tessera_unit(
+    weight,
+    format_name: str,
+    *,
+    hessian=None,
+    token_count: "int | None" = None,
+    hessian_required: bool = True,
+    verify: bool = False,
+):
+    """``(render, blob)`` for one rung -- **the** call into Tessera's byte path.
+
+    Every PrismaQuant price of a Tessera rung goes through here, so that what
+    the surrogate scores, what the KL validation would run, and what an export
+    would ship are one encode with one set of inputs (principle 8).  The render
+    returned is ``read_unit_artifact(blob)`` -- the bytes, decoded -- not a
+    second reconstruction that happens to agree.
+
+    ``hessian`` is the unit's raw ``XᵀX`` accumulated over PrismaQuant's own
+    **calibration** activations (never the held-out/KL split), with
+    ``token_count`` the rows it was accumulated over.  It is passed raw and
+    un-normalised because Tessera's ``compensate.regularize_hessian`` takes a
+    ``count`` of its own; pre-dividing here would be a second spelling of the
+    encoder's own normalisation.
+
+    ``hessian_required=True`` is the default for the same reason
+    ``render_production_weight`` defaults ``ldlq_missing_activation_ok=False``:
+    a render that quietly drops its activation input prices a different tensor
+    than the one that ships, and does so silently.  When the pinned encoder
+    cannot consume an H, this refuses rather than returning weights-only bytes
+    under a shipping label.  Pass ``hessian_required=False`` to price
+    weights-only *deliberately*; the caller must then stamp that on every row.
+    """
+    from tessera.unit_artifact import read_unit_artifact
+
+    from .tessera_formats import parse_tessera_format_name
+
+    parsed = parse_tessera_format_name(format_name)
+    if parsed is None:
+        raise ValueError(f"{format_name!r} is not a Tessera format name")
+    family, rung = parsed
+
+    accepted, _params = _encoder_accepts_hessian()
+    if hessian_required and not accepted:
+        status = tessera_encoder_hessian_status()
+        raise HessianContractError(
+            "Tessera rungs cannot be priced with a Hessian on this build: "
+            f"{status['reason']}. The H-aware encoder is the shipping default, "
+            "so pricing without one prices bytes that are not the bytes that "
+            "ship. Set prismaquant.tessera_render.TESSERA_HESSIAN_KWARG once "
+            "the encoder branch is pinned, or price weights-only deliberately "
+            "with hessian_required=False (campaign: --hessian off), which "
+            "stamps hessian.supplied=false on every row it writes."
+        )
+    if hessian_required and hessian is None:
+        raise HessianContractError(
+            f"{format_name} on a unit with no Hessian: hessian_required=True "
+            "but hessian is None. A missing H is a missing input, not a "
+            "default."
+        )
+
+    kwargs = dict(grid=_grid_for(family), q256=int(rung), name=format_name,
+                  verify=bool(verify))
+    if accepted and hessian is not None:
+        kwargs[str(TESSERA_HESSIAN_KWARG)] = hessian
+        # ``token_count`` is passed only if the pinned encoder actually takes
+        # one.  The H-aware branch may normalise internally and never expose
+        # a count; sending it unconditionally would TypeError every encode the
+        # day the H kwarg lands, which is exactly the day nobody is looking.
+        if token_count is not None and "token_count" in _params:
+            kwargs["token_count"] = int(token_count)
+    unit = _tessera_export.encode_linear(weight, **kwargs)
+    render = read_unit_artifact(unit.blob, device=str(weight.device))
+    return render.to(dtype=weight.dtype, device=weight.device), unit.blob
+
+
+__all__ += [
+    "HessianContractError",
+    "TESSERA_HESSIAN_KWARG",
+    "encode_tessera_unit",
+    "tessera_encoder_hessian_status",
+]
+
+
+def is_tessera_format(fmt: str) -> bool:
+    """True for a name the Tessera byte path owns."""
+    return parse_tessera_format_name(str(fmt).strip().upper()) is not None
+
+
+def render_tessera_production(
+    weight,
+    fmt: str,
+    *,
+    qname: str,
+    activations,
+    levers,
+):
+    """The production render for a Tessera rung: **decoded wire bytes**.
+
+    ``render_production_weight`` reaches this before its format cascade, so a
+    ``TESSERA_*`` unit in a ``layer_config`` renders through Tessera's encoder
+    rather than falling to the registry's weights-only ``quantize_dequantize``
+    reconstruction.  Two things were wrong with that fallback and both are
+    silent: it is a reconstruction rather than the bytes, and it is
+    weights-only, while the encoder's shipping default is H-aware.  Principle 8
+    wants the surrogate, the KL validation and the shipped bytes to be *one*
+    render; this is the function that makes that true for Tessera.
+
+    The Hessian is ``XᵀX`` over ``activations[qname]`` -- PrismaQuant's own
+    calibration rows, the same cache the AURA probe reads, never the held-out
+    split the KL selection uses.  A **missing** ``qname`` is a hard failure,
+    not a fallback: the recurring landmine in this codebase is a render whose
+    activation lookup misses by a key and silently prices RTN.
+
+    ``levers['tessera_weights_only']`` is the deliberate opt-out and must be
+    stamped by whoever sets it; unset, this refuses on a build whose encoder
+    cannot take an H (today's pin -- see ``TESSERA_HESSIAN_KWARG``).
+    """
+    weights_only = bool(levers.get("tessera_weights_only", False)) if levers \
+        else False
+    acts = None
+    if activations is not None:
+        try:
+            acts = activations[qname]
+        except KeyError:
+            acts = None
+        except TypeError:
+            acts = None
+    if acts is None:
+        if not weights_only:
+            raise HessianContractError(
+                f"{qname}={fmt}: no calibration activations for this qname, so "
+                "no Hessian can be formed. The Tessera encoder's shipping "
+                "default is H-aware; rendering without one would price bytes "
+                "that are not the bytes that ship. Fix the activation key (the "
+                "render cache is keyed by qname) or set the "
+                "'tessera_weights_only' lever deliberately."
+            )
+        hessian = None
+        token_count = None
+    else:
+        rows = acts.detach().to(device=weight.device, dtype=torch.float32)
+        if int(rows.shape[-1]) != int(weight.shape[1]):
+            raise HessianContractError(
+                f"{qname}={fmt}: activation rows have {int(rows.shape[-1])} "
+                f"columns but the weight has {int(weight.shape[1])} inputs; "
+                "this is a wrong-key or wrong-shard activation, not a Hessian."
+            )
+        rows = rows.reshape(-1, int(rows.shape[-1]))
+        hessian = rows.t() @ rows
+        token_count = int(rows.shape[0])
+    render, _blob = encode_tessera_unit(
+        weight,
+        fmt,
+        hessian=hessian,
+        token_count=token_count,
+        hessian_required=not weights_only,
+    )
+    return render
+
+
+__all__ += ["is_tessera_format", "render_tessera_production"]

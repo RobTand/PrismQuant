@@ -854,3 +854,69 @@ def family_anchor_rule(family: "str | TesseraFamily") -> str:
 
     get_tessera_family(family)          # refuses an unknown family
     return ANCHOR_FRESH_ENCODE
+
+
+def assert_uniform_hessian_identity(costs: "dict") -> dict:
+    """Every Tessera row in one cost table must share one Hessian identity.
+
+    The encoder's shipping default consumes a per-unit ``XᵀX``; a row priced
+    without one describes different bytes than a row priced with one, at the
+    same format name and the same bpp. A table holding both is not a menu with
+    a caveat, it is two menus wearing one label, and the DP will happily trade
+    a row of the first against a row of the second.
+
+    This is the merge guard the encoder-drift incident argued for, applied to
+    the cost table instead of the encoder: two halves built by different code
+    were invisible precisely because nothing compared them. Returns the single
+    identity (as a dict) for stamping, or raises.
+
+    Rows written before this field existed carry no ``hessian_identity``; they
+    are counted and reported as ``unstamped`` rather than assumed to match,
+    because "no claim" and "a matching claim" are different facts (P14).
+
+    The identity includes ``text_sha`` even when ``supplied`` is false, so two
+    weights-only campaigns on different calibration draws are refused as mixed
+    although their *bytes* are identical. That is deliberate and not a bug: the
+    bytes are draw-independent but the **scores** attached to them are not --
+    ``output_mse`` is measured against that draw's activations -- and it is the
+    scores the DP trades.
+    """
+    seen: dict[tuple, int] = {}
+    unstamped = 0
+    for _qname, rows in (costs or {}).items():
+        if not isinstance(rows, dict):
+            continue
+        for fmt, row in rows.items():
+            if not isinstance(row, dict) or parse_tessera_format_name(fmt) is None:
+                continue
+            ident = row.get("hessian_identity")
+            if not isinstance(ident, dict):
+                unstamped += 1
+                continue
+            key = (bool(ident.get("supplied")), ident.get("text_sha"),
+                   ident.get("token_count"), ident.get("kwarg"))
+            seen[key] = seen.get(key, 0) + 1
+    if len(seen) > 1:
+        raise ValueError(
+            "Tessera cost table mixes Hessian identities: "
+            + "; ".join(
+                f"supplied={k[0]} text_sha={str(k[1])[:12]} "
+                f"tokens={k[2]} kwarg={k[3]} ({n} rows)"
+                for k, n in sorted(seen.items(), key=lambda kv: -kv[1]))
+            + ". Rows priced with and without a Hessian, or on different "
+              "calibration draws, are not comparable prices of the same bytes. "
+              "Rebuild the cost table with one campaign, or allocate them "
+              "separately."
+        )
+    (key,) = tuple(seen) if seen else (None,)
+    return {
+        "supplied": None if key is None else key[0],
+        "text_sha": None if key is None else key[1],
+        "token_count": None if key is None else key[2],
+        "kwarg": None if key is None else key[3],
+        "stamped_rows": sum(seen.values()),
+        "unstamped_rows": int(unstamped),
+    }
+
+
+__all__ = list(__all__) + ["assert_uniform_hessian_identity"]

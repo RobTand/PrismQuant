@@ -161,44 +161,42 @@ def next_anchor_rate(
 # Measurement
 # ---------------------------------------------------------------------------
 
-def _encode_and_render(weight, format_name: str):
+def _encode_and_render(weight, format_name: str, *, hessian=None,
+                       token_count: "int | None" = None,
+                       hessian_required: bool = True):
     """``(render, blob)`` for one rung: the bytes, and what they decode to.
 
-    Goes through ``encode_linear`` rather than ``render_tessera_weight`` so the
-    cache can hold the wire, and the render is ``read_unit_artifact(blob)`` --
-    **the bytes, decoded**.  So the tensor this campaign prices is the artifact
-    the export leg will ship, by construction rather than by agreement between
-    two code paths (principle 8).
-
-    ``verify=False`` for the same reason, not to save the decode: ``verify``
-    compares ``read_unit_artifact`` against the encoder's in-memory
-    ``reconstruct_unit``, and this function never uses the latter, so the
-    comparison would be checking a tensor nothing downstream sees.  The
-    encoder's own invariant is still pinned, once, by
-    ``tests/test_tessera_campaign.py``.
+    A thin adapter over ``tessera_render.encode_tessera_unit``, which is the
+    **one** function in this tree that calls Tessera's byte path.  Everything
+    that made this function worth having -- the render is
+    ``read_unit_artifact(blob)``, i.e. the bytes decoded rather than a second
+    reconstruction (principle 8), and ``verify=False`` because the tensor
+    ``verify`` would compare against is one nothing downstream sees -- now
+    lives there, so a caller cannot reach the encoder around it and skip the
+    Hessian contract.
     """
-    from tessera.export import encode_linear
-    from tessera.unit_artifact import read_unit_artifact
+    from .tessera_render import encode_tessera_unit
 
-    from .tessera_formats import parse_tessera_format_name
-    from .tessera_render import _grid_for
-
-    parsed = parse_tessera_format_name(format_name)
-    if parsed is None:
-        raise ValueError(f"{format_name!r} is not a Tessera format name")
-    family, rung = parsed
-    grid = _grid_for(family)
-    unit = encode_linear(
-        weight, grid=grid, q256=int(rung), name=format_name, verify=False,
+    return encode_tessera_unit(
+        weight, format_name,
+        hessian=hessian, token_count=token_count,
+        hessian_required=bool(hessian_required), verify=False,
     )
-    render = read_unit_artifact(unit.blob, device=str(weight.device))
-    return render.to(dtype=weight.dtype, device=weight.device), unit.blob
 
 
 def _measure_anchor(
     *, qname: str, weight, activations, format_name: str, cache, wire_dir: Path,
+    hessians=None, token_count: "int | None" = None,
+    hessian_required: bool = True,
 ):
-    """Render one rung, price it as served, and store the wire beside it."""
+    """Render one rung, price it as served, and store the wire beside it.
+
+    ``hessians`` is the per-qname ``XᵀX`` map.  A **missing key is a hard
+    failure**, never a silently H-free encode: this codebase has already been
+    bitten once by a render whose activation lookup missed and quietly fell
+    back to RTN, raising nothing, and an H-free encode of a rung whose
+    shipping bytes are H-aware is exactly that bug with different bytes.
+    """
     import torch
 
     from . import format_registry as fr
@@ -206,11 +204,31 @@ def _measure_anchor(
         _local_forward_render_score, _store_rendered_weight_entry,
     )
     from .tessera_formats import parse_tessera_format_name
+    from .tessera_render import HessianContractError
 
     spec = fr.get_format(format_name)
     family, rung = parse_tessera_format_name(format_name)
+    hessian = None
+    if hessian_required:
+        if hessians is None:
+            raise HessianContractError(
+                f"{qname}: hessian_required=True but no Hessian map was passed "
+                "to _measure_anchor")
+        if qname not in hessians:
+            raise HessianContractError(
+                f"{qname}: no Hessian for this Linear. The map is keyed by "
+                f"qname and holds {len(hessians)} entries; a lookup that "
+                "misses must not fall through to a weights-only encode.")
+        hessian = hessians[qname]
+        if hessian is None:
+            raise HessianContractError(
+                f"{qname}: Hessian present but None -- no calibration rows "
+                "reached this Linear, so it cannot be priced as it ships.")
     started = time.time()
-    render, blob = _encode_and_render(weight, format_name)
+    render, blob = _encode_and_render(
+        weight, format_name, hessian=hessian, token_count=token_count,
+        hessian_required=hessian_required,
+    )
     elapsed = time.time() - started
 
     score, metric, quantized, _clipped = _local_forward_render_score(
@@ -286,6 +304,20 @@ def campaign_cost_payload(
         PROVENANCE_INTERPOLATED, PROVENANCE_MEASURED, TesseraRateSurface,
     )
 
+    # One identity for every row this payload writes, so a cost table that is
+    # half H-aware and half weights-only is detectable downstream instead of
+    # being an invisible merge of two encoders -- the exact shape of the
+    # encoder-drift bug this project has already paid for once.
+    _prov = dict(provenance.get("provenance", {}))
+    _h = dict(_prov.get("hessian", {})) if isinstance(
+        _prov.get("hessian"), dict) else {}
+    hessian_identity = {
+        "supplied": bool(_h.get("supplied", False)),
+        "text_sha": _h.get("text_sha"),
+        "token_count": _h.get("token_count"),
+        "kwarg": _h.get("kwarg"),
+    }
+
     costs: dict[str, dict[str, dict]] = {}
     formats: set[str] = set()
     surfaces: dict[str, dict[str, TesseraRateSurface]] = {}
@@ -316,6 +348,7 @@ def campaign_cost_payload(
                     "activation_contract": anchor.activation_contract,
                     "wire_bytes": anchor.wire_bytes,
                     "encode_seconds": anchor.seconds,
+                    "hessian_identity": hessian_identity,
                 }
                 measured_names.add(anchor.format_name)
                 formats.add(anchor.format_name)
@@ -360,6 +393,7 @@ def campaign_cost_payload(
                     "tessera_family": family,
                     "tessera_body_rate_q256": rung.body_rate_q256,
                     "activation_contract": rung.admission.activation_contract,
+                    "hessian_identity": hessian_identity,
                 }
                 formats.add(rung.format_name)
         if rows:
@@ -382,22 +416,53 @@ def campaign_cost_payload(
 # CLI
 # ---------------------------------------------------------------------------
 
-def _collect_activations(model, targets, tokens, max_rows: int, device):
-    """One forward pass per calibration batch, keeping input rows per Linear."""
+def _collect_activations(model, targets, tokens, max_rows: int, device,
+                         *, want_hessian: bool = False):
+    """One forward pass per calibration batch, per Linear.
+
+    Returns ``(rows, hessians, token_counts)``.
+
+    Two different things come out of the same hook, and they have different
+    row budgets on purpose:
+
+    * ``rows`` is capped at ``max_rows`` because it feeds
+      ``_local_forward_render_score``, whose cost is linear in rows and whose
+      job is to *rank* rungs.
+    * ``hessians`` is ``XᵀX`` accumulated over **every** calibration row the
+      Linear sees, because it feeds the encoder, whose job is to *build* the
+      bytes.  Capping it at ``max_rows`` would hand a 3072-column
+      ``down_proj`` a rank-256 Hessian -- rank-deficient by a factor of
+      twelve, and wrong in a way no downstream check would catch.  So the
+      accumulation runs before the keep's early return, not after it.
+
+    Accumulated in fp32 on the model's device and moved to CPU once at the
+    end, matching how the kept rows are handled.
+    """
     import torch
 
     store: dict[str, list] = {name: [] for name in targets}
     kept: dict[str, int] = {name: 0 for name in targets}
+    hess: dict[str, object] = {name: None for name in targets}
+    seen: dict[str, int] = {name: 0 for name in targets}
     handles = []
 
     def make_hook(name):
         def hook(_module, args):
-            if kept[name] >= max_rows or not args:
+            if not args:
                 return
             x = args[0]
             if not isinstance(x, torch.Tensor):
                 return
             flat = x.detach().reshape(-1, x.shape[-1])
+            if want_hessian:
+                # Every row, before any cap: see the docstring.
+                f32 = flat.to(dtype=torch.float32)
+                gram = f32.t() @ f32
+                if hess[name] is None:
+                    hess[name] = gram
+                else:
+                    hess[name] += gram
+                seen[name] += int(f32.shape[0])
             room = max_rows - kept[name]
             if room <= 0:
                 return
@@ -416,10 +481,15 @@ def _collect_activations(model, targets, tokens, max_rows: int, device):
     finally:
         for handle in handles:
             handle.remove()
-    return {
+    rows = {
         name: (torch.cat(chunks, dim=0) if chunks else None)
         for name, chunks in store.items()
     }
+    hessians = {
+        name: (None if h is None else h.to(device="cpu"))
+        for name, h in hess.items()
+    } if want_hessian else {}
+    return rows, hessians, dict(seen)
 
 
 def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
@@ -441,6 +511,24 @@ def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
     return out
 
 
+def _token_sha(tokens) -> str:
+    """A stable identity for the calibration draw the Hessians were built on.
+
+    Over the token *ids*, not the text, because the ids are what the forward
+    pass saw: two tokenizers over one corpus are two different calibrations,
+    and a sha over the text would call them the same.
+    """
+    import hashlib
+
+    import torch
+
+    digest = hashlib.sha256()
+    for batch in tokens:
+        digest.update(
+            batch.to(dtype=torch.int32).cpu().numpy().tobytes())
+    return digest.hexdigest()
+
+
 def main(argv: "Sequence[str] | None" = None) -> int:
     import torch
 
@@ -450,6 +538,9 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         MENU_MODES, PARALLEL_NONE, expand_tessera_menu, menu_mode,
     )
     from .tessera_rate_surface import leave_one_anchor_out
+    from .tessera_render import (
+        HessianContractError, tessera_encoder_hessian_status,
+    )
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", required=True)
@@ -475,11 +566,33 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                          "decision, not a menu one: rungs above the envelope "
                          "stay in the menu and are simply not priced, because "
                          "the surface refuses to extrapolate.")
+    ap.add_argument("--hessian", default="require", choices=("require", "off"),
+                    help="'require' (default) prices every rung with the "
+                         "per-unit XtX from this run's calibration "
+                         "activations, which is what the encoder's shipping "
+                         "default consumes; it REFUSES if the pinned encoder "
+                         "cannot take one. 'off' prices weights-only "
+                         "deliberately and stamps hessian.supplied=false on "
+                         "every row, so a weights-only price can never be "
+                         "read as a shipping one.")
     ap.add_argument("--deadline-seconds", type=float, default=0.0,
                     help="stop starting new anchors after this much wall time")
     args = ap.parse_args(argv)
 
     mode = menu_mode(args.menu_mode)
+    hessian_status = tessera_encoder_hessian_status()
+    if args.hessian == "require" and not hessian_status["accepted"]:
+        # Refuse before the model load, not after an hour of encodes.
+        raise HessianContractError(
+            "--hessian require: " + str(hessian_status["reason"]) + ". The "
+            "encoder's shipping default consumes a per-unit Hessian (LDLQ + "
+            "full-H row-scale refit), so a campaign that prices without one "
+            "prices bytes that are not the bytes that ship. Re-run with "
+            "--hessian off to price weights-only deliberately -- every row "
+            "and the payload are stamped hessian.supplied=false -- or pin "
+            "prismaquant.tessera_render.TESSERA_HESSIAN_KWARG once the "
+            "H-aware encoder branch is merged."
+        )
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -519,9 +632,21 @@ def main(argv: "Sequence[str] | None" = None) -> int:
 
     tokens = _calibration_tokens(
         args.model, args.nsamples, args.seqlen, args.seed)
-    acts = _collect_activations(
-        model, targets, tokens, args.max_act_rows, device)
-    print("[campaign] activations collected", flush=True)
+    text_sha = _token_sha(tokens)
+    want_h = args.hessian == "require"
+    acts, hessians, hessian_rows = _collect_activations(
+        model, targets, tokens, args.max_act_rows, device,
+        want_hessian=want_h)
+    # For the log line and the run-level provenance only; every encode is
+    # given its own Linear's count.
+    hessian_token_count = (
+        max(hessian_rows.values()) if hessian_rows else 0)
+    hessian_token_min = (
+        min(hessian_rows.values()) if hessian_rows else 0)
+    print(f"[campaign] activations collected "
+          f"(hessian={args.hessian}, rows/Linear "
+          f"{hessian_token_min}..{hessian_token_count})",
+          flush=True)
 
     weights = {name: dict(model.named_modules())[name].weight.detach()
                for name in targets}
@@ -626,7 +751,17 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     qname=name, weight=weights[name].to(device),
                     activations=activations.to(device),
                     format_name=fmt, cache=cache, wire_dir=wire_dir,
+                    hessians=hessians if want_h else None,
+                    # Per-Linear, not the global max: on a routed-MoE unit two
+                    # experts see different numbers of tokens, and the count is
+                    # the divisor the encoder normalises H by.
+                    token_count=hessian_rows.get(name),
+                    hessian_required=want_h,
                 )
+            except HessianContractError:
+                # Never absorbed into "one anchor failed": a contract refusal
+                # is about every row this run would write, not this one.
+                raise
             except Exception as exc:
                 print(f"[campaign] {name} {fmt}: FAILED {type(exc).__name__}: "
                       f"{exc}", flush=True)
@@ -666,6 +801,24 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             "cache_dir": str(cache_dir),
             "wire_dir": str(wire_dir),
             "tessera_commit": os.environ.get("TESSERA_COMMIT", ""),
+            "hessian": {
+                "supplied": bool(want_h),
+                "mode": str(args.hessian),
+                "reason": str(hessian_status["reason"]),
+                "consumed_by": (
+                    "prismaquant.tessera_render.encode_tessera_unit"
+                    + (f" -> tessera.export.encode_linear_planes("
+                       f"{hessian_status['kwarg']}=)" if want_h else "")),
+                "kwarg": hessian_status["kwarg"],
+                "token_count": int(hessian_token_count),
+                "token_count_min": int(hessian_token_min),
+                "text_sha": text_sha,
+                "source": "wikitext-2-raw-v1/train",
+                "split_role": "calibration",
+                "seed": int(args.seed),
+                "nsamples": int(args.nsamples),
+                "seqlen": int(args.seqlen),
+            },
         },
     }
     payload = campaign_cost_payload(

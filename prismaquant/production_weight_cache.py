@@ -4320,6 +4320,24 @@ def render_production_weight(
     from prismaquant import format_registry as fr
 
     fmt = fr.canonical_format_name(str(fmt).strip().upper())
+    # Tessera owns its own byte path. It is intercepted here, ahead of the
+    # format cascade, because the cascade's terminal branch is the registry's
+    # ``quantize_dequantize`` -- for Tessera a weights-only *reconstruction*,
+    # not the decoded wire, and not the H-aware encode that ships. One render
+    # for the surrogate, the KL and the bytes (principle 8) means this one.
+    from prismaquant.tessera_render import (
+        is_tessera_format,
+        render_tessera_production,
+    )
+
+    if is_tessera_format(fmt):
+        return render_tessera_production(
+            weight,
+            fmt,
+            qname=qname,
+            activations=activations,
+            levers=levers,
+        )
     is_cb = fr.get_format(fmt).family in {"nvfp4_cb", "fp8_cb"}
     if is_cb and cb_serialization_context is None:
         raise ValueError(

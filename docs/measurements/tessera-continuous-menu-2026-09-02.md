@@ -50,8 +50,22 @@ python -m prismaquant.tessera_campaign \
   --out   $ROOT/cost.pkl --cache-dir $ROOT/cache \
   --nsamples 4 --seqlen 512 --max-act-rows 256 \
   --layer-stride 28 --anchors 3 --max-rounds 3 --loo-gate 0.25 \
-  --max-artifact-bpp 5.5 --deadline-seconds 9000
+  --max-artifact-bpp 5.5 --deadline-seconds 9000 --hessian off
 ```
+
+> **`--hessian off`, and what that means for every number below.** The Tessera
+> encoder's shipping default is **H-aware**: given a unit's `H = XᵀX` it applies
+> LDLQ (sigma 1.0, block 32) plus an exact full-H row-scale refit. That branch
+> is **not merged into the pinned Tessera `3d419e7`** — no encoder entry point
+> there takes an `H` — so no anchor in this receipt was priced with one, and
+> `--hessian require` (the default) refuses on this build rather than pretend.
+> Weights-only encodes are reported by the encoder's author to be byte-identical
+> under the new default, so these bytes are the bytes a weights-only encode
+> still produces; they are **not** the bytes that ship. Their author's served
+> figure for the change — Qwen3-0.6B KL 0.1512 → 0.1046 at byte-identical wire
+> bpp — is **their measurement, cited, not reproduced here**. Read every rate
+> surface, every LOO number and every allocation below as a *weights-only*
+> price. §7 carries this as an open item.
 
 Allocations — three targets × five arms
 (`/home/rob/tmp/pq-continuous/run_allocations.sh` for `full`/`meas`/`nofuse`/
@@ -85,9 +99,12 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_architecture_doc.py -q
 ```
 
-**101 passed** on sparky — 26 menu + 9 campaign + 46 format + 20 doc. The
-`CUDA` marker here is a `skipif`, not a deselect, so sparky's GPU means all
-nine campaign tests ran, including the two load-bearing ones:
+**114 passed, 1 skipped** on sparky — 26 menu + 22 campaign + 46 format + 20
+doc + 1 skip. The `CUDA` marker here is a `skipif`, not a deselect, so sparky's
+GPU means every CUDA campaign test ran; the one skip is
+`test_the_hessian_kwarg_pin_matches_the_pinned_encoder`, which has nothing to
+check while `TESSERA_HESSIAN_KWARG` is `None` and turns into a real assertion
+the moment it is pinned. The load-bearing ones:
 
 * `test_the_same_weight_rate_costs_differently_on_the_two_routes` — the A-leg
   pricing test the acceptance asks for. It scores one rendered rung twice, once
@@ -111,10 +128,14 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_allocator_main_enforcement.py \
   tests/test_allocator_pareto_seed_export.py \
   tests/test_allocator_byte_budget_selection.py \
-  tests/test_interpolated_output_mse_pricing.py -q
+  tests/test_interpolated_output_mse_pricing.py \
+  tests/test_production_weight_cache.py \
+  tests/test_col_weights_render_identity.py tests/test_render_score.py -q
 ```
 
-**190 passed** (180 s, sparky, at `e0d4df2`).
+**285 passed, 1 skipped** (119 s, sparky). The last three suites were added
+when `render_production_weight` gained the Tessera interception (§7): a change
+inside that function has to be shown not to move any *other* format's render.
 
 ## 4. Where the relaxation is reached, and where it is not
 
@@ -212,6 +233,45 @@ priced.
   function and the test asserts the fallback's contract, not its numbers.
 * **The relaxation's serving premise is unattested** (§4). Nothing here says a
   runtime can serve a fused group at mixed rungs of one family.
+* **No anchor was priced with a Hessian**, so no number here is a price of
+  the bytes that ship. The encoder's shipping default consumes a per-unit
+  `H = XᵀX` (LDLQ sigma 1.0 block 32, plus an exact full-H row-scale refit);
+  the pinned Tessera `3d419e7` has no encoder parameter to pass one through.
+  **The seam is built and gated, not the pricing**: one function owns the
+  encoder call (`tessera_render.encode_tessera_unit`), the campaign computes
+  `XᵀX` over *every* calibration row (not the 256 the render score keeps) and
+  hard-fails on a qname miss, `--hessian require` is the default and refuses
+  on this build, `--hessian off` stamps `hessian.supplied=false` on every row
+  and the payload, and the allocator refuses a cost table that mixes two
+  Hessian identities. When the encoder branch is pinned, the change is the
+  single constant `TESSERA_HESSIAN_KWARG` — and a test fails if that constant
+  ever names a parameter the pinned encoder does not have. **Blocked on the
+  encoder pin, not on PrismaQuant.**
+* **`render_production_weight` now owns Tessera too, and it did not before.**
+  Until this branch, a `TESSERA_*` unit in a `layer_config` fell through that
+  function's format cascade to the registry's synthesized
+  `quantize_dequantize` — a weights-only *reconstruction*, not the decoded
+  wire. So an allocator-chosen Tessera unit fed to `build_production_cache` or
+  `validate_assignments_kl` would have been cached and KL-scored on bytes
+  nobody encoded, silently on both counts: a principle-8 break with no error.
+  It is now intercepted ahead of the cascade (`render_tessera_production`),
+  forms `H = XᵀX` from `activations[qname]`, hard-fails on a missing key or a
+  column-count mismatch, and returns the decoded wire. **No cache or KL run
+  has exercised it** — the tests do, `test_render_production_weight_does_not_
+  fall_to_the_registry_for_tessera` and
+  `test_weights_only_on_the_production_seam_is_a_stamped_lever`.
+* **Anchors are placed per `(unit, family)`, not per fused group.** The
+  campaign solves each unit's top anchor independently against the
+  `--max-artifact-bpp` wire cap, and because the wire→body map is
+  shape-dependent (§8.2) that puts fused siblings on *different* body grids
+  even when they share `in_features` and therefore share the realisable set —
+  `q_proj` tops out at `R1388` where `k/v_proj` top out at `R1372`, and every
+  bisected anchor below inherits the offset. On a measured-only table that
+  makes the qkv E4M3 intersection collapse to one rung (§8.3). The fix is on
+  the campaign side and does not need interpolation: pin a fused group's top
+  anchor at the **group-minimum** body cap and bisect once for the group.
+  Not implemented, and it means §8.3's aggregated `meas` arm is a weaker
+  baseline than it could be.
 * **Per-unit anchor budgets are not tuned.** Three round-one anchors, adaptive
   rounds to a LOO gate of 0.25 in |log2|, capped at three rounds. Whether that
   is the right budget per family is unmeasured; what is measured is what the
@@ -349,13 +409,34 @@ The `meas` arm solves the same three targets against **measured anchors only**.
 The obvious comparison — `full` vs `meas` — is **confounded**, and the confound
 is worth more than the comparison was.
 
-**The confound.** `aggregate_fused_siblings` builds a super item whose menu is
-the **intersection** of its members' menus by format name. A Tessera rung's
-name carries its realisable rate, and the realisable rate is **shape-dependent**:
-the campaign's bisection lands E4M3 anchors at 535/539/541 on
-`k`/`q`/`down` respectively, because the achievable q256 for a schedule depends
-on the unit's column count. So on the measured-only table the qkv super item's
-menus intersect to:
+**The confound, and its actual mechanism.** `aggregate_fused_siblings` builds a
+super item whose menu is the **intersection** of its members' menus by format
+name. A Tessera rung's name carries its *body* rate, and the campaign's anchors
+are placed by bisecting between a floor and a **cap that is a wire bpp** —
+`--max-artifact-bpp 5.5`. The wire→body map is shape-dependent through the
+CHANNEL plane's amortisation (§8.2), so the *same* wire cap is a *different*
+body rate on every shape:
+
+| unit | shape | top E4M3 anchor | body | charged wire | next rung up |
+|---|---|---|---|---|---|
+| `k_proj`, `v_proj` | 1024x1024 | `R1372` | 5.3594 | **5.5000** | 5.5039 (over) |
+| `q_proj` | 2048x1024 | `R1388` | 5.4219 | **5.5000** | 5.5039 (over) |
+| `o_proj` | 1024x2048 | `R1390` | 5.4297 | **5.5000** | 5.5039 (over) |
+| `gate/up_proj` | 3072x1024 | `R1393` | 5.4414 | **5.4987** | 5.5026 (over) |
+| `down_proj` | 1024x3072 | `R1396` | 5.4531 | **5.5000** | 5.5039 (over) |
+
+Column count is *not* the mechanism — `q_proj` and `k_proj` have the same 1024
+columns and therefore the same realisable body set, yet their top anchors are
+`R1388` and `R1372`. Rows are, because rows are what the plane amortises over.
+Every later anchor then **inherits** that endpoint through the bisection:
+(256+1372)/2 = 814 on k/v, (256+1388)/2 = 822 on q, then (256+814)/2 = 535 and
+(256+822)/2 = 539. The whole grid is offset by the cap.
+
+`E2M1`'s top anchors are the **families' own** caps, not the artifact cap —
+`E2M1_K1_R768` is 3.7500 bpp and `E2M1_K2_R896` is exactly 4.0000 bpp **on
+every shape**, because their s6b plane is a fixed cost per parameter. Both are
+below 5.5, so the artifact cap never binds and the grids never diverge. That is
+the whole difference between the families' intersections:
 
 | family | `q_proj` measured rungs | `k_proj` | `v_proj` | **intersection** |
 |---|---|---|---|---|
@@ -363,8 +444,8 @@ menus intersect to:
 | `E2M1_K2` | 128,320,416,512,896 | same | same | **5 rungs** |
 | `E4M3_K1` | 256,539,680,822,1388 | 256,535,674,814,1372 | 256,535,674,814,1372 | **{256}** |
 
-`E2M1`'s anchors are shape-independent and survive; **E4M3's qkv intersection
-collapses to the single lowest rung, R256 (1.07 bpp)**. That is why the
+**E4M3's qkv intersection collapses to the single lowest rung, R256 (1.07
+bpp)** — R256 survives only because it is the shared *floor*. That is why the
 aggregated `meas` arm parks q/k/v on `E2M1_K2_R512` at all three targets
 including 5.0, where it has 0.36 bpp of slack: it is not "the DP reaching
 across routes to fill bins", as an earlier draft of this section claimed — the
@@ -372,11 +453,20 @@ super item simply **had no usable E4M3 candidate on its menu**. The aggregated
 `meas` ratios (1.76x / 3.78x / 9.84x, §8.4) are therefore mostly an
 intersection artifact, and are kept below only as a footnote.
 
-This is itself a result, and a better argument for the continuous axis than the
-one it replaces: **a discrete measured menu does not survive fused-sibling
-aggregation**, because siblings with different shapes do not realise the same
-rates. The interpolated surface is defined on the whole q256 grid, so the
-intersection is the whole grid and nothing is lost.
+**But this is a wound the baseline inflicted on itself, and it is fixable
+without interpolation.** `q`, `k` and `v` share `in_features`, so they share the
+realisable body set *exactly*; only the anchor *placement* diverged, and only
+because each unit's cap was solved independently against a wire budget. A
+campaign that placed a fused group's anchors on **one shared body grid** — pin
+the group's top anchor at the group-minimum body cap (`R1372` here) and bisect
+from there — would produce identical grids on all three members and no collapse
+at all, at a fraction of the interpolated surface's encode cost. **That is not
+implemented** (see §7); the campaign anchors per `(unit, family)`. So this
+section must not be read as "the continuous axis is needed because discrete
+menus collapse": the collapse is a property of *this* anchor placement, not of
+discrete menus. The interpolated surface does dissolve it — being defined on
+the whole q256 grid, its intersection is the whole grid — but it is not the
+only thing that would.
 
 **The aggregation-matched comparison.** Holding aggregation fixed
 (`--no-fused-aggregation` on both arms) so the only difference is menu density:
@@ -395,11 +485,12 @@ budget is unspent quality. At 3.0 it does land on the budget and the gap is
 correspondingly small (1.094x).
 
 So the honest statement of what the continuous axis buys, on this subset, is:
-**a ~1.1–1.4x Δloss improvement at matched aggregation, plus the ability to
-land on the byte budget instead of near it, plus survival of fused-sibling
-aggregation at all.** The third is the largest effect and the one that is
-structural rather than numerical. §8.1's LOO is the price of that reach, and it
-does not fully close on E4M3.
+**a 1.09–1.41x Δloss improvement at matched aggregation, plus the ability to
+land on the byte budget instead of 0.05–0.10 bpp short of it.** The third
+effect an earlier draft claimed — surviving fused aggregation — is real but is
+not evidence for interpolation, because a shared per-group anchor grid would
+buy it more cheaply (above). §8.1's LOO is the price of the reach, and it does
+not close on E4M3.
 
 ### 8.4 What the fused invariant costs, and whether the relaxation binds
 
@@ -505,7 +596,7 @@ subset; what would make it a *ship* claim is a served KL, which does not exist.
 
 | asked | result |
 |---|---|
-| Tests pass, listed with the command | §3. **190 passed** on the full sweep at `e0d4df2`, including every allocator suite this branch could regress. |
+| Tests pass, listed with the command | §3. **285 passed, 1 skipped** on the full sweep, including every allocator suite this branch could regress and the three render suites the Tessera interception could. |
 | Three 0.6B allocations spanning more than a few distinct rates | §8.2. Menu 3039–3063 rungs **per unit**; 16893 priced rungs over 7 units. Assignments hit 3.00026 / 4.00026 / 5.00026 bpp with 4 distinct rungs each (4 DP items), and 6–7 distinct rungs each without pre-aggregation. Not a five-rung ladder. |
 | Anchor counts per family per unit | §8. 4–5 per family per unit, 21 surfaces, 102 anchors, 2534 s. |
 | A-leg pricing test exists | §3, `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and §8.2 shows it deciding a real allocation. |

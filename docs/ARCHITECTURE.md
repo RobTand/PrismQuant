@@ -3730,6 +3730,60 @@ plane on columns; `arity × span` on rows) and will delegate to Tessera's own
 `tessera.layout.shard_granularity` the moment that branch lands. The degree the
 candidate was gated for is stamped into its provenance.
 
+**One function owns the encoder call, and it is H-gated**
+(`tessera_render.encode_tessera_unit`). The Tessera encoder's shipping default
+is *H-aware*: given a unit's `H = XᵀX` it applies LDLQ (sigma 1.0, block 32)
+plus an exact full-H row-scale refit, and weights-only encodes stay
+byte-identical. So a rung priced without an H is a price of different bytes at
+the same format name, and the seam refuses rather than downgrade silently:
+
+* **`TESSERA_HESSIAN_KWARG`** pins the encoder's parameter name and is checked
+  against `inspect.signature(encode_linear_planes)` — a stale pin fails a test
+  instead of quietly dropping the H every encode. It is deliberately *not*
+  discovered by calling and catching `TypeError`, which would swallow every
+  unrelated argument error the encoder raises. It is `None` today: **the
+  H-aware branch is not merged into the pinned Tessera**, so
+  `hessian_required=True` (the default) refuses on this build (principle 14 —
+  a capability is detected, never assumed).
+* **H comes from PrismaQuant's own calibration activations, never the held-out
+  / KL split**, accumulated as raw `XᵀX` over **every** calibration row the
+  Linear sees — *before* the render score's `max_act_rows` cap, since a 256-row
+  Hessian on a 3072-column `down_proj` is rank-deficient by twelve. It is
+  passed un-normalised with a `token_count`, because Tessera's
+  `regularize_hessian` takes a count of its own and a second normalisation
+  here would be a second spelling of the encoder's.
+* **A missing qname is a hard failure** (`HessianContractError`), not a
+  fall-through — this tree has already shipped a render whose activation lookup
+  missed, silently rendered RTN and raised nothing. The error has its own class
+  so the campaign's `except Exception: continue` per-anchor guard cannot absorb
+  a contract refusal into a skipped anchor.
+* **`--hessian {require,off}`**, default `require`, mirroring
+  `render_production_weight`'s `ldlq_missing_activation_ok=False`. `off` prices
+  weights-only *deliberately* and stamps `hessian.supplied=false` on every row
+  and on the payload, with the identity (`text_sha` over the token ids,
+  `token_count`, source, split role, seed) beside it.
+* **The provenance has a consumer.** `tessera_menu.assert_uniform_hessian_
+  identity` refuses a cost table whose Tessera rows carry two different Hessian
+  identities, and the allocator calls it at load and stamps the result into
+  `__prismaquant__.tessera_hessian`. Unstamped rows are counted as
+  *unstamped*, not assumed to match. Provenance that nothing consumes is a
+  confession log; this one is a gate.
+
+* **`render_production_weight` routes Tessera here, ahead of its format
+  cascade** (`production_weight_cache.py`, `render_tessera_production`). Left to
+  the cascade, a `TESSERA_*` unit fell through to the registry's synthesized
+  `quantize_dequantize` — a *weights-only reconstruction*, not the decoded wire
+  — so an allocator-chosen Tessera unit would have been cached, KL-scored and
+  exported from bytes nobody encoded, silently on both counts. The interception
+  forms `H = XᵀX` from `activations[qname]` (calibration rows, `.to(device)`
+  explicitly — the CPU-residency landmine), refuses a missing key and refuses a
+  column count that does not match `weight.shape[1]`. The deliberate opt-out is
+  the `tessera_weights_only` lever, which whoever sets must stamp.
+
+`render_tessera_weight` remains the **weights-only reference** render — it is
+reached only by an explicit call, never by `render_production_weight` and never
+by the campaign, and it does not and will not take an H.
+
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
 
 > **Premise correction.** This work was briefed on the belief that Tessera's
@@ -3868,11 +3922,17 @@ an allocation that silently contains none.
 by the campaign's own leave-one-anchor-out error and by a menu-density arm
 (solve the same targets against a menu of measured anchors only, and compare).
 That arm must hold **aggregation** fixed to mean anything: `aggregate_fused_
-siblings` intersects the members' menus by format *name*, and a Tessera name
-carries its realisable rate, which is shape-dependent — so on a measured-only
-table the qkv super item's E4M3 menus intersect to a single rung. Comparing an
+siblings` intersects the members' menus by format *name*, a Tessera name
+carries its *body* rate, and the campaign's top anchor is a *wire* cap
+(`--max-artifact-bpp`) whose body equivalent is shape-dependent through the
+plane's row amortisation — so `q_proj` tops out at `R1388` where `k/v_proj` top
+out at `R1372`, every bisected anchor inherits the offset, and on a
+measured-only table the qkv E4M3 menus intersect to a single rung. Comparing an
 aggregated sparse arm against an aggregated dense one measures that collapse,
-not the interpolation. The pre-existing
+not the interpolation. (The collapse is a property of per-unit anchor
+placement, not of discrete menus: anchoring a fused group on one shared body
+grid would dissolve it without interpolation. Not implemented.) The
+pre-existing
 `allocator_candidates.drop_interpolated_candidates_dominated_by_measured` is
 **not** in that path: it is referenced by tests and docstrings and has **no live
 call site** in this tree, so it fires on nothing, Tessera or otherwise. Stated
@@ -3891,8 +3951,9 @@ everything downstream.
 friends); it does not enumerate legal format names anywhere, so `TESSERA` is
 carried by `run-pipeline.sh` and `allocator.py` alone. Checked, not assumed.
 
-**Gate:** `tests/test_tessera_menu.py` (26) + `tests/test_tessera_campaign.py` (9,
-three CUDA-marked), on top of `tessera_{formats,footprint}`'s own suites.
+**Gate:** `tests/test_tessera_menu.py` (26) + `tests/test_tessera_campaign.py`
+(22; one skips until `TESSERA_HESSIAN_KWARG` is pinned, several are CUDA-marked),
+on top of `tessera_{formats,footprint}`'s own suites.
 
 **Measured on Qwen3-0.6B layer 0, 2026-09-02**
 (`docs/measurements/tessera-continuous-menu-2026-09-02.md`). Menu 3039-3063
@@ -3911,7 +3972,10 @@ param-weighted body is 2.929 bpp and its charged wire 3.000 bpp, and one rung
 amortises over fewer rows. DP time: 11 solves, 2.32 s, over a 4315-rung menu.
 
 **Not done, and not claimed:** no export leg, so nothing here has been served and
-no KL — screen or gold — was measured on a Tessera allocation. See
+no KL — screen or gold — was measured on a Tessera allocation. **And no anchor
+was priced with a Hessian**: the seam above is built, gated and tested, but the
+H-aware encoder branch is not in the pinned Tessera, so every measurement cited
+here is a `--hessian off` weights-only price. See
 `docs/measurements/tessera-continuous-menu-2026-09-02.md` for the receipt and the
 open list.
 
