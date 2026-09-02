@@ -322,6 +322,18 @@ exact Gridbook commit in `prismaquant/gridbook_runtime/gridbook_runtime_pin.json
 must fingerprint that commit and its actual environment; a PrismaQuant document
 is never authority for a runtime default.
 
+## 7a. Tessera menu, pin and ablation flags
+
+Producer-side only; none of these reach a serving runtime. See
+`docs/ARCHITECTURE.md` §4.10 and
+`docs/measurements/tessera-continuous-menu-2026-09-02.md` §10.
+
+| flag | default | what it does |
+|---|---|---|
+| `PRISMAQUANT_TESSERA_MENU` | `attested` | `attested` offers only rungs a pinned runtime contract attests; `research` offers the whole realisable rate set (~3000 rungs per unit) and is what every measurement on this branch used. `research` is **not** shippable: nothing attests those routes. |
+| `PRISMAQUANT_TESSERA_DEV_PIN` | unset | The development override for Tessera admission, which is otherwise fail-closed until a Tessera RELEASE tag exists. Must equal `tessera_runtime_contract.TESSERA_DEV_PIN_COMMIT`, and the installed `tessera/serving/runtime_contract.json` must hash to `TESSERA_DEV_PIN_CONTRACT_SHA256`, or the read **raises**. Unset means no Tessera contract is read at all and every rung stays `unattested`; there is no third state, so a stale pin can never degrade into a silently empty menu. Stamped into provenance as `tessera_dev_pin`. |
+| `PRISMAQUANT_TESSERA_GROUP_KNAPSACK` | `1` | Debug/ablation only. `0` disables the fused-group Minkowski fold, so a fused group carries one candidate per format NAME and every member of the group must take the **same rung**. That is the constraint the allocator used to impose by accident; the lever exists so its cost can be measured on the same cost table rather than across two campaigns. A run with it off logs no `tessera group knapsack` line and stamps `__ablation__` into the group report. Never set it for a shipping build. |
+
 ## 8. GGUF lane (`docs/lanes/gguf.md`)
 
 | env var | default | what it does |

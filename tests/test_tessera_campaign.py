@@ -155,6 +155,38 @@ def test_non_monotone_anchors_are_recorded_not_laundered():
     assert f"{fam}_R128" in rows
 
 
+def test_a_refused_surface_is_not_reported_as_a_perfect_fit():
+    """A missing leave-one-out error is not a zero one.
+
+    The campaign's per-surface readout reads ``max_abs_log2_error`` with a
+    default.  A surface that refused to exist has no such key, so the default
+    used to make the one surface that does not interpolate at all read as the
+    one that interpolates perfectly -- and closed its gate, on the record, at
+    exactly the surface the adaptive loop exists to keep spending on.
+    """
+
+    from prismaquant.tessera_campaign import _loo_for, _loo_refused, _surface_loo
+    from prismaquant.tessera_rate_surface import leave_one_anchor_out
+
+    q, fam = "m.0.q_proj", "TESSERA_E2M1_K2"
+    bad = [_anchor(q, fam, r, d) for r, d in
+           ((128, 1e-4), (512, 1e-3), (896, 1e-2))]
+    good = [_anchor(q, fam, r, d) for r, d in
+            ((128, 1e-2), (512, 1e-3), (896, 1e-4))]
+
+    refused = _loo_for(bad, leave_one_anchor_out)
+    assert _loo_refused(refused), refused
+    assert _surface_loo(refused, 0.25) == (None, False)
+
+    fitted = _loo_for(good, leave_one_anchor_out)
+    assert not _loo_refused(fitted)
+    value, closed = _surface_loo(fitted, 0.25)
+    assert value is not None and closed is (value <= 0.25)
+
+    # And a surface that was never built at all is not a perfect fit either.
+    assert _surface_loo(None, 0.25) == (None, False)
+
+
 # ---------------------------------------------------------------------------
 # The wire, and the render that is the wire
 # ---------------------------------------------------------------------------
@@ -262,45 +294,157 @@ def test_the_same_weight_rate_costs_differently_on_the_two_routes():
 # The Hessian contract
 # ---------------------------------------------------------------------------
 
-def test_the_hessian_kwarg_pin_matches_the_pinned_encoder():
+def test_the_pinned_encoder_accepts_every_keyword_the_source_emits():
     """A stale API pin fails here, not silently downgrades a price.
 
-    ``TESSERA_HESSIAN_KWARG`` is a claim about the pinned ``tessera.export``.
-    If it names a parameter the pinned encoder does not have, every encode
-    would quietly drop the Hessian, so the claim is checked rather than
-    trusted (principle 14).
+    ``ActivationSource.for_unit`` decides which keywords an H-aware encode
+    needs; ``encode_linear_planes`` is what receives them. Neither is asserted
+    in PrismaQuant -- the probe asks the object what it emits and the
+    signature what it takes, and the seam refuses when they do not match
+    (principle 14).
     """
     import inspect
 
     from tessera import export as texport
 
-    from prismaquant.tessera_render import TESSERA_HESSIAN_KWARG
+    from prismaquant.tessera_render import (
+        _encoder_accepts_hessian, tessera_encoder_hessian_status,
+    )
 
-    if TESSERA_HESSIAN_KWARG is None:
-        pytest.skip("H-aware encoder branch not pinned yet")
+    accepted, required, _params = _encoder_accepts_hessian()
     params = inspect.signature(texport.encode_linear_planes).parameters
-    assert TESSERA_HESSIAN_KWARG in params, sorted(params)
+    assert required == ("ldl", "ldl_block", "refit_metric", "refit_reach_floor")
+    assert accepted, sorted(params)
+    assert all(k in params for k in required), sorted(params)
+    # And the recipe travels from Tessera's own defaults, not from a comment.
+    assert tessera_encoder_hessian_status()["recipe"] == {
+        "ldlq_sigma": 1.0, "ldlq_block": 32,
+        "refit_objective": "hessian", "refit_reach_floor": False,
+    }
+
+
+def test_the_hessian_applies_exactly_where_tessera_says_it_does():
+    """The predicate and Tessera's raise site agree, on real encodes.
+
+    ``rung_accepts_hessian`` restates a Tessera condition -- the CHANNEL scale
+    plane -- which principle 14 normally forbids. This is the attestation that
+    makes the restatement honest: for one rung of every family, build real
+    activation kwargs, encode, and require that the encode succeeds exactly
+    when the predicate said it would.
+
+    The measured answer at Tessera f3e7d0a is the load-bearing one: **only the
+    E4M3 family admits an activation-aware encode.** Both E2M1 families are
+    LUT16 block planes, where Tessera refuses ``ldl`` ("LDLQ is implemented for
+    the CHANNEL scale plane") and ``refit_metric`` ("read only by the CHANNEL
+    plane's refit"). So on the W4A4 route weights-only is not a downgrade --
+    it is the only encode the wire has, and pricing it is still pricing the
+    bytes that ship.
+    """
+    from tessera.errors import GrammarError
+
+    from prismaquant.tessera_hessian import (
+        activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
+    )
+    from prismaquant.tessera_render import rung_accepts_hessian
+
+    rows = torch.randn(64, 256)
+    source = activation_source(
+        {"q": hessian_from_rows(rows)},
+        calibration_identity("corpus", [torch.arange(4)], fit_tokens=64))
+    kwargs = encoder_kwargs(source, "q", 256)
+    weight = torch.randn(64, 256)
+
+    verdicts = {}
+    for name in ("TESSERA_E2M1_K1_R512", "TESSERA_E2M1_K2_R512",
+                 "TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024",
+                 "TESSERA_E4M3_K1_R700"):
+        predicted = rung_accepts_hessian(name)
+        try:
+            # Around the seam deliberately: the seam's whole job is to act on
+            # the predicate, so asking it would test the predicate against
+            # itself.
+            from prismaquant.tessera_formats import parse_tessera_format_name
+            from prismaquant.tessera_render import _grid_for, _tessera_export
+            family, rung = parse_tessera_format_name(name)
+            _tessera_export.encode_linear(
+                weight, grid=_grid_for(family), q256=rung, name=name,
+                verify=False, **kwargs)
+            actual = True
+        except GrammarError:
+            actual = False
+        assert predicted == actual, (name, predicted, actual)
+        verdicts[name] = actual
+    assert verdicts == {
+        "TESSERA_E2M1_K1_R512": False,
+        "TESSERA_E2M1_K2_R512": False,
+        "TESSERA_E2M1_K2_R896": False,
+        "TESSERA_E4M3_K1_R1024": True,
+        "TESSERA_E4M3_K1_R700": True,
+    }, verdicts
+
+
+def test_a_block_plane_rung_is_priced_weights_only_not_refused():
+    """The right refusal is no refusal here.
+
+    ``--hessian require`` on a mixed-family campaign must not refuse every
+    E2M1 anchor: those rungs have no H-aware encode, so their weights-only
+    bytes ARE their shipping bytes. What must be refused is passing kwargs
+    that the wire would reject, which would raise deep inside Tessera.
+    """
+    from prismaquant.tessera_hessian import (
+        activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
+    )
+    from prismaquant.tessera_render import (
+        HessianContractError, encode_tessera_unit,
+    )
+
+    weight = torch.randn(64, 256)
+    render, blob = encode_tessera_unit(
+        weight, "TESSERA_E2M1_K2_R512", hessian_required=True)
+    assert render.shape == weight.shape and len(blob) > 0
+
+    source = activation_source(
+        {"q": hessian_from_rows(torch.randn(64, 256))},
+        calibration_identity("corpus", [torch.arange(4)], fit_tokens=64))
+    with pytest.raises(HessianContractError, match="block scale plane"):
+        encode_tessera_unit(
+            weight, "TESSERA_E2M1_K2_R512",
+            activation_kwargs=encoder_kwargs(source, "q", 256))
 
 
 def test_encoding_without_a_hessian_is_refused_not_silently_downgraded():
     from prismaquant.tessera_render import (
         HessianContractError, encode_tessera_unit,
-        tessera_encoder_hessian_status,
     )
 
-    status = tessera_encoder_hessian_status()
     w = torch.randn(64, 256, dtype=torch.bfloat16)
-    if status["accepted"]:
-        # The encoder can take one; then a *missing* H is the refusal.
-        with pytest.raises(HessianContractError):
-            encode_tessera_unit(w, "TESSERA_E2M1_K2_R512", hessian=None)
-    else:
-        # The encoder cannot take one; then requiring one is the refusal, and
-        # the message must name the reason rather than say "unsupported".
-        with pytest.raises(HessianContractError) as excinfo:
-            encode_tessera_unit(w, "TESSERA_E2M1_K2_R512",
-                                hessian=torch.eye(256))
-        assert "TESSERA_HESSIAN_KWARG" in str(excinfo.value)
+    with pytest.raises(HessianContractError, match="missing input"):
+        encode_tessera_unit(w, "TESSERA_E4M3_K1_R1024", activation_kwargs=None)
+
+
+def test_h_aware_kwargs_under_a_weights_only_encode_are_refused():
+    """The other direction, and it is just as silent.
+
+    Encoding H-aware bytes while stamping ``supplied=false`` puts an
+    unreproducible artifact behind a reproducible label. Neither direction is
+    allowed to be a quiet default.
+    """
+    from prismaquant.tessera_hessian import (
+        activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
+    )
+    from prismaquant.tessera_render import (
+        HessianContractError, encode_tessera_unit,
+    )
+
+    rows = torch.randn(64, 256)
+    source = activation_source(
+        {"q": hessian_from_rows(rows)},
+        calibration_identity("corpus", [torch.arange(4)], fit_tokens=64))
+    kwargs = encoder_kwargs(source, "q", 256)
+    with pytest.raises(HessianContractError, match="applied and unrecorded"):
+        encode_tessera_unit(
+            torch.randn(64, 256), "TESSERA_E4M3_K1_R1024",
+            activation_kwargs=kwargs, hessian_required=False)
 
 
 @CUDA
@@ -313,52 +457,52 @@ def test_weights_only_is_reachable_but_only_deliberately():
     assert render.shape == w.shape and len(blob) > 0
 
 
-def test_the_seam_passes_the_hessian_through_when_the_encoder_takes_it():
-    """The pass-through itself, independent of whether the branch is merged.
+def test_the_seam_forwards_the_activation_source_and_nothing_else():
+    """What reaches ``encode_linear`` is exactly what ``for_unit`` produced.
 
-    Monkeypatches an encoder that accepts the kwarg and asserts the seam hands
-    it the tensor. Without this the whole contract is untested until the pin
-    moves, which is exactly when nobody re-reads it.
+    Captured on the real encoder call rather than a simulated one: the pin now
+    takes an H, so this is the pass-through itself and not a rehearsal of it.
+    A keyword the source did not emit is refused rather than forwarded --
+    otherwise this seam becomes a second place where encode settings are
+    chosen, which is the drift ``ActivationSource`` exists to prevent.
     """
     import prismaquant.tessera_render as tr
+    from prismaquant.tessera_hessian import (
+        activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
+    )
+
+    rows = torch.randn(64, 256)
+    source = activation_source(
+        {"q": hessian_from_rows(rows)},
+        calibration_identity("corpus", [torch.arange(4)], fit_tokens=64))
+    kwargs = encoder_kwargs(source, "q", 256)
 
     seen = {}
+    real = tr._tessera_export.encode_linear
 
-    class _Unit:
-        blob = b""
+    def capturing(weight, **kw):
+        seen.update(kw)
+        return real(weight, **kw)
 
-    def fake_encode_linear_planes(weight, *, grid, q256, name, verify=True,
-                                  gram=None, token_count=None, **kw):
-        seen["gram"] = gram
-        seen["token_count"] = token_count
-        seen["q256"] = q256
-        return None
-
-    def fake_encode_linear(weight, **kwargs):
-        fake_encode_linear_planes(weight, **kwargs)
-        return _Unit()
-
-    H = torch.eye(256)
     monkey = pytest.MonkeyPatch()
     try:
-        monkey.setattr(tr._tessera_export, "encode_linear_planes",
-                       fake_encode_linear_planes, raising=True)
-        monkey.setattr(tr._tessera_export, "encode_linear",
-                       fake_encode_linear, raising=True)
-        monkey.setattr(tr, "TESSERA_HESSIAN_KWARG", "gram", raising=False)
-        tr._encoder_accepts_hessian.cache_clear()
-        monkey.setattr(
-            "tessera.unit_artifact.read_unit_artifact",
-            lambda blob, device=None: torch.zeros(64, 256), raising=True)
+        monkey.setattr(tr._tessera_export, "encode_linear", capturing)
         tr.encode_tessera_unit(
             torch.randn(64, 256, dtype=torch.bfloat16),
-            "TESSERA_E2M1_K2_R512", hessian=H, token_count=4096)
+            "TESSERA_E4M3_K1_R1024", activation_kwargs=kwargs)
     finally:
         monkey.undo()
-        tr._encoder_accepts_hessian.cache_clear()
-    assert seen["gram"] is H, seen
-    assert seen["token_count"] == 4096
-    assert seen["q256"] == 512
+    assert seen["q256"] == 1024
+    assert torch.equal(seen["ldl"], kwargs["ldl"])
+    assert torch.equal(seen["refit_metric"], kwargs["refit_metric"])
+    assert seen["ldl_block"] == kwargs["ldl_block"]
+    assert seen["refit_reach_floor"] == kwargs["refit_reach_floor"]
+
+    from prismaquant.tessera_render import HessianContractError
+    with pytest.raises(HessianContractError, match="not keywords"):
+        tr.encode_tessera_unit(
+            torch.randn(64, 256), "TESSERA_E4M3_K1_R1024",
+            activation_kwargs={**kwargs, "scale_refit": 9})
 
 
 def test_a_missing_qname_in_the_hessian_map_is_a_hard_failure():
@@ -376,10 +520,10 @@ def test_a_missing_qname_in_the_hessian_map_is_a_hard_failure():
             qname="model.layers.0.self_attn.q_proj",
             weight=torch.randn(64, 256, dtype=torch.bfloat16),
             activations=torch.randn(8, 256),
-            format_name="TESSERA_E2M1_K2_R512",
+            format_name="TESSERA_E4M3_K1_R1024",
             cache=None, wire_dir=pathlib.Path("."),
-            hessians={"model.layers.0.self_attn.k_proj": torch.eye(256)},
-            token_count=4096, hessian_required=True,
+            activation_kwargs_for=lambda name: {},
+            hessian_required=True,
         )
     assert "q_proj" in str(excinfo.value)
 
@@ -441,13 +585,140 @@ def test_one_cost_table_carries_one_hessian_identity():
 
 
 def test_the_token_sha_identifies_the_calibration_draw():
-    from prismaquant.tessera_campaign import _token_sha
+    from prismaquant.tessera_hessian import token_ids_sha256
 
     a = [torch.arange(0, 16).reshape(1, 16)]
     b = [torch.arange(0, 16).reshape(1, 16)]
     c = [torch.arange(1, 17).reshape(1, 16)]
-    assert _token_sha(a) == _token_sha(b)
-    assert _token_sha(a) != _token_sha(c)
+    assert token_ids_sha256(a) == token_ids_sha256(b)
+    assert token_ids_sha256(a) != token_ids_sha256(c)
+
+
+# ---------------------------------------------------------------------------
+# The two Hessian sources: the campaign, and the production render
+# ---------------------------------------------------------------------------
+
+def test_the_campaign_and_the_production_render_form_one_hessian():
+    """Both paths call ``hessian_from_rows``, and it is bit-identical.
+
+    Two paths hand Tessera an H -- the anchor campaign and
+    ``render_tessera_production`` under ``ProductionWeightCache``. If they
+    formed it differently (a dtype, an accumulation order, a normalisation)
+    the campaign would price bytes the cache does not render, and principle 8
+    would be broken with nothing raising. There is one formation, so this
+    asserts the thing that makes that true rather than the two call sites.
+    """
+    from prismaquant.tessera_hessian import hessian_from_rows
+
+    rows = torch.randn(37, 64, dtype=torch.bfloat16)
+    # The campaign captures [tokens, in]; the render cache may hand back
+    # [batch, seq, in]. One matrix, or they are two draws.
+    flat = hessian_from_rows(rows)
+    shaped = hessian_from_rows(rows.reshape(1, 37, 64))
+    assert torch.equal(flat, shaped)
+    assert flat.dtype is torch.float32, "bf16 loses the small eigenvalues LDLQ reads"
+    reference = rows.to(torch.float32)
+    assert torch.equal(flat, reference.t() @ reference)
+
+
+def test_one_identity_function_answers_for_both_paths():
+    """Same draw -> same triple; a different draw -> a different triple.
+
+    The second half is what stops the guard being vacuous: an identity that
+    never changes compares equal to everything, which is exactly how the merge
+    guard this project already paid for went 8/13 vacuous.
+    """
+    from prismaquant.tessera_hessian import (
+        HESSIAN_IDENTITY_FIELDS, calibration_identity,
+    )
+
+    batches = [torch.arange(0, 16).reshape(1, 16)]
+    other = [torch.arange(1, 17).reshape(1, 16)]
+    a = calibration_identity("corpus", batches, fit_tokens=16)
+    b = calibration_identity("corpus", batches, fit_tokens=16)
+    assert all(f in a for f in HESSIAN_IDENTITY_FIELDS), sorted(a)
+    assert a == b
+    assert calibration_identity("corpus", other, fit_tokens=16) != a
+    assert calibration_identity("other", batches, fit_tokens=16) != a
+    assert calibration_identity("corpus", batches, fit_tokens=32) != a
+
+
+def test_a_production_render_refuses_rows_with_no_named_draw():
+    """Bytes shaped by an H are not reproducible from the weights.
+
+    So the capture has to be named, and the render refuses rather than
+    encoding H-aware bytes whose provenance nothing can state. Tessera's own
+    ``ActivationSource`` refuses the same way one level down; this refusal is
+    earlier and names the lever.
+    """
+    from prismaquant.tessera_render import (
+        HessianContractError, render_tessera_production,
+    )
+
+    weight = torch.randn(32, 64)
+    rows = torch.randn(48, 64)
+    with pytest.raises(HessianContractError, match="tessera_hessian_identity"):
+        render_tessera_production(
+            weight, "TESSERA_E4M3_K1_R1024", qname="m.up",
+            activations={"m.up": rows}, levers={})
+
+
+def test_the_production_render_is_h_aware_and_the_lever_is_not(tmp_path):
+    """The lever is a different encode, not a differently-labelled one.
+
+    ``tessera_weights_only`` must produce the byte-identical weights-only
+    encode, and the default must not: if the two agreed, the H was silently
+    dropped somewhere between the cache and ``encode_linear``, which is the
+    failure this whole seam exists to make impossible.
+    """
+    from prismaquant.tessera_hessian import calibration_identity
+    from prismaquant.tessera_render import (
+        encode_tessera_unit, render_tessera_production,
+    )
+
+    torch.manual_seed(0)
+    weight = torch.randn(32, 256)
+    rows = torch.randn(64, 256)
+    identity = calibration_identity("corpus", [torch.arange(8)], fit_tokens=64)
+    fmt = "TESSERA_E4M3_K1_R1024"
+
+    h_aware = render_tessera_production(
+        weight, fmt, qname="m.up", activations={"m.up": rows},
+        levers={"tessera_hessian_identity": identity})
+    weights_only = render_tessera_production(
+        weight, fmt, qname="m.up", activations=None,
+        levers={"tessera_weights_only": True})
+    direct, _blob = encode_tessera_unit(weight, fmt, hessian_required=False)
+
+    assert torch.equal(weights_only, direct), (
+        "the lever must be the plain encode, byte for byte")
+    assert not torch.equal(h_aware, weights_only), (
+        "an H that changes nothing was dropped between the cache and the encoder")
+
+
+def test_activation_kwargs_are_rung_independent_and_reusable():
+    """One block-LDL per unit, not one per rate.
+
+    The campaign memoises these across a surface's anchors. That is only sound
+    if they are a function of the Hessian alone -- assert it, because the day
+    a rate leaks into them the memo silently prices every anchor at the first
+    one's rate.
+    """
+    from prismaquant.tessera_hessian import (
+        activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
+    )
+
+    rows = torch.randn(64, 256)
+    identity = calibration_identity("corpus", [torch.arange(8)], fit_tokens=64)
+    source = activation_source({"m.up": hessian_from_rows(rows)}, identity)
+    first = encoder_kwargs(source, "m.up", 256)
+    second = encoder_kwargs(source, "m.up", 256)
+    assert sorted(first) == ["ldl", "ldl_block", "refit_metric", "refit_reach_floor"]
+    for key in ("ldl", "refit_metric"):
+        assert torch.equal(first[key], second[key])
+    # No rate reaches this call at all -- the signature has nowhere to put one.
+    import inspect
+    assert "q256" not in inspect.signature(encoder_kwargs).parameters
 
 
 def test_every_payload_row_carries_the_hessian_identity():
@@ -515,7 +786,7 @@ def test_render_production_weight_does_not_fall_to_the_registry_for_tessera():
     w = torch.randn(64, 256, dtype=torch.bfloat16)
     with pytest.raises(HessianContractError):
         render_production_weight(
-            w, "TESSERA_E2M1_K2_R256",
+            w, "TESSERA_E4M3_K1_R1024",
             qname="model.layers.0.self_attn.q_proj",
             activations={},          # the key misses -- the known landmine
             levers={},
@@ -529,7 +800,7 @@ def test_a_wrong_shaped_activation_is_refused_not_reshaped():
     w = torch.randn(64, 256, dtype=torch.bfloat16)
     with pytest.raises(HessianContractError, match="wrong-key"):
         render_production_weight(
-            w, "TESSERA_E2M1_K2_R256",
+            w, "TESSERA_E4M3_K1_R1024",
             qname="q",
             activations={"q": torch.randn(32, 128)},
             levers={},
@@ -558,70 +829,43 @@ def test_weights_only_on_the_production_seam_is_a_stamped_lever():
     assert got.shape == w.shape and got.dtype == w.dtype
 
 
-def test_token_count_is_only_sent_when_the_encoder_takes_one(monkeypatch):
-    """Pinning the H kwarg must not TypeError every encode on a signature that
-    takes H but no count."""
-    import prismaquant.tessera_render as tr
+def test_the_weights_only_lever_forms_no_hessian_at_all():
+    """``tessera_weights_only`` means weights-only, on a pin that takes an H.
 
-    seen = {}
-
-    def fake_encode_linear(weight, **kwargs):
-        seen.update(kwargs)
-        raise RuntimeError("stop after argument capture")
-
-    monkeypatch.setattr(tr, "TESSERA_HESSIAN_KWARG", "hessians")
-    monkeypatch.setattr(
-        tr, "_encoder_accepts_hessian",
-        lambda: (True, ("weight", "grid", "q256", "name", "hessians")))
-    monkeypatch.setattr(
-        tr._tessera_export, "encode_linear", fake_encode_linear)
-    w = torch.randn(8, 32, dtype=torch.bfloat16)
-    with pytest.raises(RuntimeError, match="argument capture"):
-        tr.encode_tessera_unit(
-            w, "TESSERA_E2M1_K2_R256",
-            hessian=torch.eye(32), token_count=4096)
-    assert "hessians" in seen
-    assert "token_count" not in seen
-
-
-def test_the_weights_only_lever_forms_no_hessian_at_all(monkeypatch):
-    """``tessera_weights_only`` must mean weights-only *after* the pin too.
-
-    Forming H and letting ``encode_tessera_unit`` drop it because the pinned
-    encoder cannot take one is correct exactly until the day the kwarg lands --
-    at which point a lever named "weights only" starts shipping H-aware bytes
-    under a ``supplied=false`` stamp. The monkeypatch simulates that day.
+    Forming H and letting the seam drop it was correct exactly until the day
+    the encoder could consume one -- at which point a lever named "weights
+    only" would start shipping H-aware bytes under a ``supplied=false`` stamp.
+    The pin now takes one, so this is the real check: nothing the
+    ``ActivationSource`` emits may reach ``encode_linear`` under the lever, and
+    everything it emits must reach it without.
     """
     import prismaquant.tessera_render as tr
+    from prismaquant.tessera_hessian import calibration_identity
 
-    seen = {}
+    seen: dict = {}
+    real = tr._tessera_export.encode_linear
 
-    def fake_encode_linear(weight, **kwargs):
-        seen.update(kwargs)
-        raise RuntimeError("stop after argument capture")
+    def capturing(weight, **kw):
+        seen.clear()
+        seen.update(kw)
+        return real(weight, **kw)
 
-    monkeypatch.setattr(tr, "TESSERA_HESSIAN_KWARG", "hessians")
-    monkeypatch.setattr(
-        tr, "_encoder_accepts_hessian",
-        lambda: (True, ("weight", "grid", "q256", "name", "hessians")))
-    monkeypatch.setattr(
-        tr._tessera_export, "encode_linear", fake_encode_linear)
-
-    w = torch.randn(8, 32, dtype=torch.bfloat16)
-    acts = {"q": torch.randn(64, 32)}
-    with pytest.raises(RuntimeError, match="argument capture"):
+    w = torch.randn(64, 256, dtype=torch.bfloat16)
+    acts = {"q": torch.randn(64, 256)}
+    identity = calibration_identity("corpus", [torch.arange(4)], fit_tokens=64)
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(tr._tessera_export, "encode_linear", capturing)
         tr.render_tessera_production(
-            w, "TESSERA_E2M1_K2_R256", qname="q", activations=acts,
-            levers={"tessera_weights_only": True},
-        )
-    assert "hessians" not in seen
-
-    seen.clear()
-    with pytest.raises(RuntimeError, match="argument capture"):
+            w, "TESSERA_E4M3_K1_R1024", qname="q", activations=acts,
+            levers={"tessera_weights_only": True})
+        assert "ldl" not in seen and "refit_metric" not in seen, sorted(seen)
         tr.render_tessera_production(
-            w, "TESSERA_E2M1_K2_R256", qname="q", activations=acts, levers={},
-        )
-    assert "hessians" in seen
+            w, "TESSERA_E4M3_K1_R1024", qname="q", activations=acts,
+            levers={"tessera_hessian_identity": identity})
+        assert "ldl" in seen and "refit_metric" in seen, sorted(seen)
+    finally:
+        monkey.undo()
 
 
 def test_a_production_cache_miss_does_not_fall_back_to_the_registry():

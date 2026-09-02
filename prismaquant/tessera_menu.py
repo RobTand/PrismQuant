@@ -1096,6 +1096,14 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
     bytes are draw-independent but the **scores** attached to them are not --
     ``output_mse`` is measured against that draw's activations -- and it is the
     scores the DP trades.
+
+    The per-row ``applied`` flag is deliberately **not** part of the key. At the
+    pinned Tessera an activation-aware encode needs a CHANNEL scale plane, so an
+    E4M3 row is H-aware and an E2M1 row cannot be, in the same table, from one
+    campaign, on one draw. Those rows *are* comparable -- each is the price of
+    its own rung's shipping bytes -- and refusing the table would refuse the
+    mixed-family menu this whole stage exists to build. What must match is the
+    DRAW and the run's intent, which is what the key holds.
     """
     seen: dict[tuple, int] = {}
     unstamped = 0

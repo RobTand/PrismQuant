@@ -571,62 +571,112 @@ class HessianContractError(RuntimeError):
     """
 
 
-#: The keyword ``tessera.export.encode_linear_planes`` will accept the per-unit
-#: Hessian under, or ``None`` while that branch is unmerged.
+#: The encoder keywords ``ActivationSource.for_unit`` produces.  Read from
+#: Tessera's own object rather than typed, and probed against the pinned
+#: ``encode_linear_planes`` signature, so "this build can consume an H" is a
+#: derived fact and not a constant somebody kept in step.
 #:
-#: The encoder's shipping default, once the branch lands, is *H-aware*: given
-#: ``H = XᵀX`` for a unit it applies LDLQ (sigma 1.0, block 32) plus an exact
-#: full-H row-scale refit, and weights-only encodes stay byte-identical.  So a
-#: rung priced without H is **not** the rung that ships, and the difference is
-#: not a rounding one.  Pinning the name here rather than probing for it means
-#: the day the API lands, this constant is the edit -- and until it is set,
-#: ``encode_tessera_unit`` refuses to pretend (``hessian_required=True``).
+#: The encoder's shipping default is *activation-aware*: given ``H = XᵀX`` for
+#: a unit it applies LDLQ (sigma 1.0, block 32) plus an exact full-Hessian
+#: row-scale refit, and weights-only encodes stay byte-identical.  So a rung
+#: priced without an H is **not** the rung that ships, and the difference is
+#: not a rounding one -- served KL on Qwen3-0.6B went 0.1512 -> 0.1046 at
+#: byte-identical wire bpp.
 #:
-#: It is deliberately *not* discovered by trying the call and catching
-#: ``TypeError``: that swallows every unrelated argument error the encoder
-#: raises and would silently downgrade a shipping price to a weights-only one.
-TESSERA_HESSIAN_KWARG: "str | None" = None
+#: The probe is deliberately *not* "try the call and catch ``TypeError``":
+#: that swallows every unrelated argument error the encoder raises and would
+#: silently downgrade a shipping price to a weights-only one.
 
 
 @lru_cache(maxsize=1)
-def _encoder_accepts_hessian() -> "tuple[bool, tuple[str, ...]]":
-    """``(accepted, parameter names)`` for the pinned encoder.
+def _encoder_accepts_hessian() -> "tuple[bool, tuple[str, ...], tuple[str, ...]]":
+    """``(accepted, required kwargs, encoder parameters)`` for the pinned build.
 
-    Cached on nothing but the process, because the pinned Tessera is a
-    property of the interpreter's import, not of an argument.
+    Cached on nothing but the process: the pinned Tessera is a property of the
+    interpreter's import, not of an argument.
     """
     import inspect
 
+    from .tessera_hessian import HESSIAN_IDENTITY_FIELDS, activation_source
+
     params = tuple(
         inspect.signature(_tessera_export.encode_linear_planes).parameters)
-    kwarg = TESSERA_HESSIAN_KWARG
-    return (bool(kwarg) and kwarg in params), params
+    # Ask the object which keywords it emits, on a throwaway unit, rather than
+    # listing them here. If Tessera adds one, this notices.
+    import torch
+
+    # An identity matrix, at the LDL block width, so the probe exercises the
+    # real ``block_ldl`` path rather than a shape it refuses.
+    width = int(activation_source(
+        {}, {f: ("" if f.endswith("sha256") else 0)
+             for f in HESSIAN_IDENTITY_FIELDS}).ldlq_block)
+    probe = activation_source(
+        {"probe": torch.eye(width)},
+        {f: ("" if f.endswith("sha256") else 0) for f in HESSIAN_IDENTITY_FIELDS},
+    )
+    required = tuple(sorted(probe.for_unit("probe.weight", width)))
+    return (all(k in params for k in required), required, params)
 
 
 def tessera_encoder_hessian_status() -> dict:
     """What this build can do with a Hessian -- for provenance and refusals."""
-    accepted, params = _encoder_accepts_hessian()
+    accepted, required, params = _encoder_accepts_hessian()
+    from .tessera_hessian import encoder_recipe
+
     return {
-        "kwarg": TESSERA_HESSIAN_KWARG,
+        "kwargs": list(required),
         "accepted": bool(accepted),
+        "recipe": encoder_recipe(),
         "reason": (
             "supported"
             if accepted
-            else "TESSERA_HESSIAN_KWARG is unset: the H-aware encoder branch "
-                 "is not merged into the pinned tessera.export"
-            if not TESSERA_HESSIAN_KWARG
-            else f"pinned tessera.export.encode_linear_planes does not accept "
-                 f"{TESSERA_HESSIAN_KWARG!r}; it accepts {params}"
+            else "pinned tessera.export.encode_linear_planes accepts "
+                 f"{params}, which does not cover {required}"
         ),
     }
+
+
+def rung_accepts_hessian(format_name: str, recipe=None) -> bool:
+    """Does this rung's WIRE admit an activation-aware encode?
+
+    At Tessera ``f3e7d0a`` the answer is **the CHANNEL scale plane, and only
+    it**.  Both activation-aware levers refuse on a block plane, by name:
+
+    * ``ldl`` -- "LDLQ is implemented for the CHANNEL scale plane; a block
+      plane's per-column-span [scales] ..."
+    * ``refit_metric`` -- "read only by the CHANNEL plane's refit; a block
+      plane fits its scales to within-row column spans and has no row-scale to
+      weight, so this would be silently ignored"
+
+    So on the E4M3 family (CHANNEL throughout) an H-aware encode is the
+    shipping encode, and on both E2M1 families (LUT16 throughout) there is no
+    H-aware encode at all -- weights-only there is not a downgrade, it is the
+    only bytes the wire has.  Pricing an E2M1 rung weights-only is therefore
+    still pricing the bytes that ship (principle 8), and *refusing* to price it
+    would be the wrong refusal.
+
+    This restates Tessera's condition, which principle 14 normally forbids, so
+    ``test_the_hessian_applies_exactly_where_tessera_says_it_does`` pins the
+    predicate against real encodes on every family: the predicate and the raise
+    site agree, or the test fails.
+    """
+    from tessera.manifest import ScalePlaneKind
+
+    from .tessera_formats import parse_tessera_format_name
+
+    parsed = parse_tessera_format_name(format_name)
+    if parsed is None:
+        raise ValueError(f"{format_name!r} is not a Tessera format name")
+    family, rung = parsed
+    wire = tessera_wire_recipe(family, rung) if recipe is None else recipe
+    return ScalePlaneKind(wire.scale_plane) is ScalePlaneKind.CHANNEL
 
 
 def encode_tessera_unit(
     weight,
     format_name: str,
     *,
-    hessian=None,
-    token_count: "int | None" = None,
+    activation_kwargs: "dict | None" = None,
     hessian_required: bool = True,
     verify: bool = False,
 ):
@@ -638,19 +688,15 @@ def encode_tessera_unit(
     returned is ``read_unit_artifact(blob)`` -- the bytes, decoded -- not a
     second reconstruction that happens to agree.
 
-    ``hessian`` is the unit's raw ``XᵀX`` accumulated over PrismaQuant's own
-    **calibration** activations (never the held-out/KL split), with
-    ``token_count`` the rows it was accumulated over.  It is passed raw and
-    un-normalised because Tessera's ``compensate.regularize_hessian`` takes a
-    ``count`` of its own; pre-dividing here would be a second spelling of the
-    encoder's own normalisation.
+    ``activation_kwargs`` is what ``tessera_hessian.encoder_kwargs`` returned
+    for THIS unit: the block-LDL of its regularised ``XᵀX`` and the refit
+    metric.  They are rung-independent, which is why they arrive pre-computed
+    rather than as a Hessian this function would re-factorise once per rate.
 
     ``hessian_required=True`` is the default for the same reason
     ``render_production_weight`` defaults ``ldlq_missing_activation_ok=False``:
     a render that quietly drops its activation input prices a different tensor
-    than the one that ships, and does so silently.  When the pinned encoder
-    cannot consume an H, this refuses rather than returning weights-only bytes
-    under a shipping label.  Pass ``hessian_required=False`` to price
+    than the one that ships, and does so silently.  Pass ``False`` to price
     weights-only *deliberately*; the caller must then stamp that on every row.
     """
     from tessera.unit_artifact import read_unit_artifact
@@ -662,35 +708,59 @@ def encode_tessera_unit(
         raise ValueError(f"{format_name!r} is not a Tessera format name")
     family, rung = parsed
 
-    accepted, _params = _encoder_accepts_hessian()
+    accepted, required, _params = _encoder_accepts_hessian()
+    if not rung_accepts_hessian(format_name):
+        # The wire has no activation-aware encode, so weights-only IS the
+        # shipping encode here and requiring one would refuse the only bytes
+        # this rung has. Kwargs that were built anyway are dropped -- loudly,
+        # because forwarding them raises inside Tessera and silently keeping
+        # them would be the "applied and unrecorded" error in reverse.
+        if activation_kwargs:
+            raise HessianContractError(
+                f"{format_name}: this rung's wire is a block scale plane, "
+                "which admits neither LDLQ nor the H refit; passing activation "
+                "kwargs here would raise inside Tessera. Ask "
+                "rung_accepts_hessian() before building them."
+            )
+        hessian_required = False
     if hessian_required and not accepted:
         status = tessera_encoder_hessian_status()
         raise HessianContractError(
             "Tessera rungs cannot be priced with a Hessian on this build: "
             f"{status['reason']}. The H-aware encoder is the shipping default, "
             "so pricing without one prices bytes that are not the bytes that "
-            "ship. Set prismaquant.tessera_render.TESSERA_HESSIAN_KWARG once "
-            "the encoder branch is pinned, or price weights-only deliberately "
-            "with hessian_required=False (campaign: --hessian off), which "
-            "stamps hessian.supplied=false on every row it writes."
+            "ship. Re-pin Tessera to a build whose encoder takes an "
+            "ActivationSource, or price weights-only deliberately with "
+            "hessian_required=False (campaign: --hessian off), which stamps "
+            "hessian.supplied=false on every row it writes."
         )
-    if hessian_required and hessian is None:
+    if hessian_required and not activation_kwargs:
         raise HessianContractError(
             f"{format_name} on a unit with no Hessian: hessian_required=True "
-            "but hessian is None. A missing H is a missing input, not a "
-            "default."
+            "but no activation kwargs were passed. A missing H is a missing "
+            "input, not a default."
+        )
+    if activation_kwargs and not hessian_required:
+        # Both directions are bad and both are silent, so neither is allowed:
+        # encoding H-aware bytes under a ``supplied=false`` stamp is the same
+        # class of error as dropping an H that was supplied.
+        raise HessianContractError(
+            f"{format_name}: activation kwargs were passed with "
+            "hessian_required=False. Weights-only means no Hessian is applied, "
+            "not one that is applied and unrecorded."
         )
 
     kwargs = dict(grid=_grid_for(family), q256=int(rung), name=format_name,
                   verify=bool(verify))
-    if accepted and hessian is not None:
-        kwargs[str(TESSERA_HESSIAN_KWARG)] = hessian
-        # ``token_count`` is passed only if the pinned encoder actually takes
-        # one.  The H-aware branch may normalise internally and never expose
-        # a count; sending it unconditionally would TypeError every encode the
-        # day the H kwarg lands, which is exactly the day nobody is looking.
-        if token_count is not None and "token_count" in _params:
-            kwargs["token_count"] = int(token_count)
+    if activation_kwargs:
+        unknown = sorted(set(activation_kwargs) - set(required))
+        if unknown:
+            raise HessianContractError(
+                f"{format_name}: {unknown} are not keywords "
+                "ActivationSource.for_unit produces; this seam forwards that "
+                "object's output and nothing else."
+            )
+        kwargs.update(activation_kwargs)
     unit = _tessera_export.encode_linear(weight, **kwargs)
     render = read_unit_artifact(unit.blob, device=str(weight.device))
     return render.to(dtype=weight.dtype, device=weight.device), unit.blob
@@ -698,8 +768,8 @@ def encode_tessera_unit(
 
 __all__ += [
     "HessianContractError",
-    "TESSERA_HESSIAN_KWARG",
     "encode_tessera_unit",
+    "rung_accepts_hessian",
     "tessera_encoder_hessian_status",
 ]
 
@@ -725,23 +795,40 @@ def render_tessera_production(
 
     The Hessian is ``XᵀX`` over ``activations[qname]`` -- PrismaQuant's own
     calibration rows, the same cache the AURA probe reads, never the held-out
-    split the KL selection uses.  A **missing** ``qname`` is a hard failure,
-    not a fallback: the recurring landmine in this codebase is a render whose
-    activation lookup misses by a key and silently prices RTN.
+    split the KL selection uses -- formed by ``tessera_hessian.
+    hessian_from_rows``, the same function the anchor campaign calls, so the
+    two paths cannot form it two ways.  A **missing** ``qname`` is a hard
+    failure, not a fallback: the recurring landmine in this codebase is a
+    render whose activation lookup misses by a key and silently prices RTN.
+
+    The draw's identity rides in ``levers['tessera_hessian_identity']`` and is
+    **required**: an ``ActivationSource`` refuses a provenance missing
+    ``text_sha256`` / ``fit_tokens`` / ``fit_ids_sha256``, and that refusal is
+    what makes "the campaign priced this rung and the cache rendered it" a
+    checkable claim rather than an assumption. Whoever fills the activation
+    cache stamps the triple; there is no default, because an identity of
+    ``None`` compares equal to another ``None``.
 
     ``levers['tessera_weights_only']`` is the deliberate opt-out and must be
-    stamped by whoever sets it; unset, this refuses on a build whose encoder
-    cannot take an H (today's pin -- see ``TESSERA_HESSIAN_KWARG``).
+    stamped by whoever sets it.
     """
+    from .tessera_hessian import activation_source, encoder_kwargs, hessian_from_rows
+
     weights_only = bool(levers.get("tessera_weights_only", False)) if levers \
         else False
     acts = None
     # When the lever says weights-only, no Hessian is FORMED -- not merely not
-    # required. Forming one and letting ``encode_tessera_unit`` drop it works
-    # only while the encoder cannot take an H; the day the kwarg is pinned, a
-    # lever named ``tessera_weights_only`` would start shipping H-aware bytes
-    # under a ``supplied=false`` stamp. The campaign's ``--hessian off``
-    # collects no H at all, and this must mean the same thing.
+    # required. Forming one and letting ``encode_tessera_unit`` drop it is the
+    # same class of error in the other direction: a lever named
+    # ``tessera_weights_only`` shipping H-aware bytes under a
+    # ``supplied=false`` stamp. The campaign's ``--hessian off`` collects no H
+    # at all, and this must mean the same thing.
+    if not rung_accepts_hessian(fmt):
+        # This rung's wire has no activation-aware encode (block scale plane),
+        # so the weights-only bytes ARE its shipping bytes. Priced as such,
+        # without a Hessian and without a refusal.
+        render, _blob = encode_tessera_unit(weight, fmt, hessian_required=False)
+        return render
     if activations is not None and not weights_only:
         try:
             acts = activations[qname]
@@ -759,26 +846,29 @@ def render_tessera_production(
                 "render cache is keyed by qname) or set the "
                 "'tessera_weights_only' lever deliberately."
             )
-        hessian = None
-        token_count = None
-    else:
-        rows = acts.detach().to(device=weight.device, dtype=torch.float32)
-        if int(rows.shape[-1]) != int(weight.shape[1]):
-            raise HessianContractError(
-                f"{qname}={fmt}: activation rows have {int(rows.shape[-1])} "
-                f"columns but the weight has {int(weight.shape[1])} inputs; "
-                "this is a wrong-key or wrong-shard activation, not a Hessian."
-            )
-        rows = rows.reshape(-1, int(rows.shape[-1]))
-        hessian = rows.t() @ rows
-        token_count = int(rows.shape[0])
+        render, _blob = encode_tessera_unit(weight, fmt, hessian_required=False)
+        return render
+    rows = acts.detach().to(device=weight.device, dtype=torch.float32)
+    if int(rows.shape[-1]) != int(weight.shape[1]):
+        raise HessianContractError(
+            f"{qname}={fmt}: activation rows have {int(rows.shape[-1])} "
+            f"columns but the weight has {int(weight.shape[1])} inputs; "
+            "this is a wrong-key or wrong-shard activation, not a Hessian."
+        )
+    identity = dict((levers or {}).get("tessera_hessian_identity") or {})
+    if not identity:
+        raise HessianContractError(
+            f"{qname}={fmt}: the activation cache supplied rows but no "
+            "'tessera_hessian_identity' lever. Bytes shaped by a Hessian are "
+            "not reproducible from the weights, so the capture that shaped "
+            "them has to be named (text_sha256 / fit_tokens / fit_ids_sha256) "
+            "or nothing downstream can tell this render from one built on a "
+            "different draw."
+        )
+    source = activation_source({qname: hessian_from_rows(rows)}, identity)
+    kwargs = encoder_kwargs(source, qname, int(weight.shape[1]), weight.device)
     render, _blob = encode_tessera_unit(
-        weight,
-        fmt,
-        hessian=hessian,
-        token_count=token_count,
-        hessian_required=not weights_only,
-    )
+        weight, fmt, activation_kwargs=kwargs, hessian_required=True)
     return render
 
 

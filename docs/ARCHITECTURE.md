@@ -2,6 +2,24 @@
 
 As of: 2026-09-02 · `tessera/continuous-menu` — stamps follow, newest
 first, each recording its own branch and date. Re-stamped (2026-09-02,
+`tessera/continuous-menu`) for the **Tessera dev pin, the H seam and the group
+fold's measured cost** (§4.10): PrismaQuant now reads Tessera's own packaged
+`runtime_contract.json` through a named development override
+(`PRISMAQUANT_TESSERA_DEV_PIN`, commit- and sha-checked, refusing rather than
+degrading to "unattested"), and that table publishes **one rung per family and
+`max_world_size: 1`**, so the attested menu is two points and empty above tp=1
+while the research menu is ~3000 rungs per unit. Tensor-parallel legality now
+asks `tessera.layout.shard_granularity` rather than deriving a period locally;
+a mixed Bresenham schedule takes the column period to the 256-column
+superblock, which collapses a row-parallel `[3072,1024]` menu from 3060 rungs
+to 17 at tp=8. Activation-aware encoding goes through
+`tessera.export.ActivationSource`, formed in one place
+(`prismaquant/tessera_hessian.py`) for both the anchor campaign and the
+production render, and it is **CHANNEL-plane-only** at the pinned commit: E4M3
+rungs take an H, both E2M1 families are priced weights-only and stamped
+`hessian_applied: false`. The one-rung fused-group constraint is measured on a
+per-group-anchored table at **1.237x / 1.558x / 1.113x**. Previously re-stamped
+(2026-09-02,
 `tessera/continuous-menu`) for the **Tessera continuous menu** (§4.10): the
 production allocator can now allocate across Tessera's whole realisable rate
 set — three families, ~3000 legal rungs per unit — through the `FORMATS=TESSERA`
@@ -3782,21 +3800,51 @@ plus an exact full-H row-scale refit, and weights-only encodes stay
 byte-identical. So a rung priced without an H is a price of different bytes at
 the same format name, and the seam refuses rather than downgrade silently:
 
-* **`TESSERA_HESSIAN_KWARG`** pins the encoder's parameter name and is checked
-  against `inspect.signature(encode_linear_planes)` — a stale pin fails a test
-  instead of quietly dropping the H every encode. It is deliberately *not*
-  discovered by calling and catching `TypeError`, which would swallow every
-  unrelated argument error the encoder raises. It is `None` today: **the
-  H-aware branch is not merged into the pinned Tessera**, so
-  `hessian_required=True` (the default) refuses on this build (principle 14 —
-  a capability is detected, never assumed).
+* **The seam is `tessera.export.ActivationSource`**, not a kwarg name.
+  `ActivationSource.for_unit(name, in_features, device)` turns one unit's H
+  into the encoder keywords it implies — `ldl`, `ldl_block`, `refit_metric`,
+  `refit_reach_floor` — and PrismaQuant forwards that object's output and
+  nothing else: a keyword it did not emit is refused, so this seam cannot
+  become a second place where encode settings are chosen. Capability is
+  *probed*, never assumed (principle 14): `_encoder_accepts_hessian` asks a
+  throwaway source which keywords it emits and
+  `inspect.signature(encode_linear_planes)` which it takes, and the seam
+  refuses when they disagree. Deliberately *not* "call and catch `TypeError`",
+  which would swallow every unrelated argument error.
+* **Which rungs can take an H is a fact about the WIRE, and it is measured.**
+  At Tessera `f3e7d0a` an activation-aware encode needs a **CHANNEL** scale
+  plane: on a block plane Tessera refuses `ldl` ("LDLQ is implemented for the
+  CHANNEL scale plane") *and* `refit_metric` ("read only by the CHANNEL plane's
+  refit"). Every E4M3 rung is CHANNEL; every E2M1 rung is LUT16. So **the H is
+  the FP8/W8A8 route's shipping encode and the W4A4 route has none** —
+  weights-only on E2M1 is not a downgrade, it is the only bytes that wire has,
+  and pricing it is still pricing the bytes that ship (principle 8).
+  `tessera_render.rung_accepts_hessian` is the predicate; because it restates a
+  Tessera condition, a test pins it against real encodes on every family.
+  `hessian_applied` is stamped **per cost row**, not per table, because a
+  mixed-family campaign is legitimately half H-aware.
 * **H comes from PrismaQuant's own calibration activations, never the held-out
   / KL split**, accumulated as raw `XᵀX` over **every** calibration row the
   Linear sees — *before* the render score's `max_act_rows` cap, since a 256-row
   Hessian on a 3072-column `down_proj` is rank-deficient by twelve. It is
-  passed un-normalised with a `token_count`, because Tessera's
-  `regularize_hessian` takes a count of its own and a second normalisation
-  here would be a second spelling of the encoder's.
+  passed un-normalised, because Tessera's `regularize_hessian` takes a count of
+  its own and a second normalisation here would be a second spelling of the
+  encoder's.
+* **One formation, one identity, two callers** (`tessera_hessian.py`). The
+  anchor campaign and `render_tessera_production` (under
+  `ProductionWeightCache`) both call `hessian_from_rows` (fp32, one
+  accumulation order, `[b, s, in]` and `[t, in]` giving one matrix) and
+  `calibration_identity`, which emits exactly the triple Tessera requires —
+  `text_sha256`, `fit_tokens`, `fit_ids_sha256`. Both shas travel: two
+  tokenizers over one corpus are two calibrations a text sha would call the
+  same, and one tokenizer over two corpora is two an id sha separates only by
+  luck. The production render **requires** the triple in
+  `levers['tessera_hessian_identity']` and refuses without it — bytes shaped by
+  an H are not reproducible from the weights, so the capture has to be named.
+* **The LDL is hoisted out of the rate sweep.** `ldl` and `refit_metric` are
+  functions of the unit's H alone, so the campaign memoises the kwargs per unit
+  and a twelve-anchor surface factorises one `[in, in]` matrix once instead of
+  twelve times.
 * **A missing qname is a hard failure** (`HessianContractError`), not a
   fall-through — this tree has already shipped a render whose activation lookup
   missed, silently rendered RTN and raised nothing. The error has its own class
@@ -3805,8 +3853,8 @@ the same format name, and the seam refuses rather than downgrade silently:
 * **`--hessian {require,off}`**, default `require`, mirroring
   `render_production_weight`'s `ldlq_missing_activation_ok=False`. `off` prices
   weights-only *deliberately* and stamps `hessian.supplied=false` on every row
-  and on the payload, with the identity (`text_sha` over the token ids,
-  `token_count`, source, split role, seed) beside it.
+  and on the payload, with the identity (`text_sha256`, `fit_tokens`,
+  `fit_ids_sha256`, source, split role, seed) beside it.
 * **The provenance has a consumer.** `tessera_menu.assert_uniform_hessian_
   identity` refuses a cost table whose Tessera rows carry two different Hessian
   identities, and the allocator calls it at load and stamps the result into
@@ -3872,7 +3920,14 @@ unconstrained bound. Exactness is enforced, not claimed: the fold is pinned
 against brute force on a menu with a non-convex pocket, a uniform-rung option
 must price identically through both constructions or the aggregation refuses,
 and the fold refuses outright at `PRISMAQUANT_COST_UCB_Z > 0` because
-`z*sqrt(sum stderr^2)` is not additive. **Serving premise unattested**: free
+`z*sqrt(sum stderr^2)` is not additive. Measured again on a cost table whose
+anchors were placed per group (the correct placement) the one-rung constraint
+costs **1.237x / 1.558x / 1.113x**, and at 4.0 the fold is shown to *contain*
+the unconstrained arm's own rung triple, so the family constraint there is free
+and the 0.003% residual is the outer DP's charged-bin quantisation.
+`PRISMAQUANT_TESSERA_GROUP_KNAPSACK=0` disables the fold as a debug ablation --
+that is the arm those ratios are measured against, and it stamps `__ablation__`
+into the group report so a run cannot be mistaken for a default one. **Serving premise unattested**: free
 per-member rates require a runtime that decodes a fused group as per-member
 wires (`bresenham_rate_schedule` is a per-COLUMN quota shared by every row of
 ONE unit), and no pinned release attests it -- principle 9's export gate, not
@@ -3908,7 +3963,12 @@ So the stage measures a few anchors per `(unit, family)`, fits a monotone
 piecewise-linear surface in `(q256, log2 dloss)`, and **refuses to extrapolate**:
 a rung outside the measured envelope is omitted from the cost table, not invented.
 A non-monotone anchor set is recorded in `non_interpolable` and that family is
-priced only where it was measured. Anchor placement is adaptive — a second round
+priced only where it was measured -- and a refused surface is reported as a
+refusal, never as a perfect fit: `_surface_loo` returns `None` for its
+leave-one-out error and `gate_closed: False`, and the adaptive loop skips
+refused members when taking the worst-LOO maximum. (Reading the absent error
+with a `0.0` default did the opposite, and closed the gate on exactly the
+surfaces the loop exists to keep spending on.) Anchor placement is adaptive — a second round
 splits the interval whose interior anchor its own leave-one-anchor-out check
 predicts worst — and gated on a measured LOO error, not a taste constant.
 
@@ -4060,8 +4120,8 @@ everything downstream.
 friends); it does not enumerate legal format names anywhere, so `TESSERA` is
 carried by `run-pipeline.sh` and `allocator.py` alone. Checked, not assumed.
 
-**Gate:** `tests/test_tessera_menu.py` (26) + `tests/test_tessera_campaign.py`
-(27; one skips until `TESSERA_HESSIAN_KWARG` is pinned, several are CUDA-marked),
+**Gate:** `tests/test_tessera_menu.py` (34) + `tests/test_tessera_campaign.py`
+(35; several are CUDA-marked),
 on top of `tessera_{formats,footprint}`'s own suites.
 
 **Measured on Qwen3-0.6B layer 0, 2026-09-02**

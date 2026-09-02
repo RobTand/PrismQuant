@@ -2924,8 +2924,27 @@ def aggregate_fused_siblings(
         # per-NAME options above so that a uniform-rung option exists in both
         # constructions and can be cross-checked.
         group_report: dict = {}
-        composites = tessera_group_composites(
-            members, candidates, n_params, ucb_z=ucb_z, report=group_report)
+        # An ABLATION, opt-in and off by default: with the fold disabled the
+        # group keeps only the per-NAME intersection, which is the one-rung
+        # constraint the plugin does NOT require. It exists so "what did the
+        # wrong decision-unit constraint cost?" can be measured on the same
+        # cost table as the right one instead of across two campaigns. It is
+        # not a production lever -- an allocation built with it is a strictly
+        # worse legal allocation -- and it is stamped into the group report so
+        # a receipt cannot quote an ablated run as a result.
+        fold_enabled = os.environ.get(
+            "PRISMAQUANT_TESSERA_GROUP_KNAPSACK", "1").strip() not in ("0", "off")
+        composites = (
+            tessera_group_composites(
+                members, candidates, n_params, ucb_z=ucb_z, report=group_report)
+            if fold_enabled else []
+        )
+        if not fold_enabled:
+            group_report["__ablation__"] = {
+                "group_knapsack": False,
+                "note": "PRISMAQUANT_TESSERA_GROUP_KNAPSACK=0: one rung per "
+                        "fused group, which is not the serving constraint",
+            }
         if composites:
             uniform_by_name = {c.fmt: c for c in cands}
             member_formats_by_option: dict[str, dict[str, str]] = {}

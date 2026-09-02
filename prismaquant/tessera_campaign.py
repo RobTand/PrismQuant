@@ -43,6 +43,7 @@ one for the other.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -52,6 +53,8 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import tessera_hessian as th
 
 __all__ = [
     "SCHEMA",
@@ -92,6 +95,13 @@ class CampaignAnchor:
     activation_quantized: bool
     wire_bytes: int
     seconds: float
+    #: Was a Hessian actually applied to these bytes?  A property of the RUNG'S
+    #: WIRE and not of the run: only a CHANNEL scale plane admits LDLQ and the
+    #: H refit, so every E2M1 rung is False even under ``--hessian require``.
+    #: Stamped per row rather than per table, because a mixed-family campaign
+    #: is legitimately half H-aware and a table-level flag would have to lie in
+    #: one direction or the other.
+    hessian_applied: bool = False
 
 
 def anchor_schedule(lo: int, hi: int, count: int) -> list[int]:
@@ -161,8 +171,7 @@ def next_anchor_rate(
 # Measurement
 # ---------------------------------------------------------------------------
 
-def _encode_and_render(weight, format_name: str, *, hessian=None,
-                       token_count: "int | None" = None,
+def _encode_and_render(weight, format_name: str, *, activation_kwargs=None,
                        hessian_required: bool = True):
     """``(render, blob)`` for one rung: the bytes, and what they decode to.
 
@@ -179,23 +188,26 @@ def _encode_and_render(weight, format_name: str, *, hessian=None,
 
     return encode_tessera_unit(
         weight, format_name,
-        hessian=hessian, token_count=token_count,
+        activation_kwargs=activation_kwargs,
         hessian_required=bool(hessian_required), verify=False,
     )
 
 
 def _measure_anchor(
     *, qname: str, weight, activations, format_name: str, cache, wire_dir: Path,
-    hessians=None, token_count: "int | None" = None,
-    hessian_required: bool = True,
+    activation_kwargs_for=None, hessian_required: bool = True,
 ):
     """Render one rung, price it as served, and store the wire beside it.
 
-    ``hessians`` is the per-qname ``XᵀX`` map.  A **missing key is a hard
-    failure**, never a silently H-free encode: this codebase has already been
-    bitten once by a render whose activation lookup missed and quietly fell
-    back to RTN, raising nothing, and an H-free encode of a rung whose
-    shipping bytes are H-aware is exactly that bug with different bytes.
+    ``activation_kwargs_for`` is a callable ``qname -> encoder kwargs`` (the
+    block-LDL of that unit's regularised ``XᵀX`` and its refit metric), which
+    the caller memoises per unit because they are **rung-independent**: a
+    twelve-anchor surface would otherwise factorise the same Hessian twelve
+    times.  A **missing key is a hard failure**, never a silently H-free
+    encode: this codebase has already been bitten once by a render whose
+    activation lookup missed and quietly fell back to RTN, raising nothing,
+    and an H-free encode of a rung whose shipping bytes are H-aware is exactly
+    that bug with different bytes.
     """
     import torch
 
@@ -206,27 +218,29 @@ def _measure_anchor(
     from .tessera_formats import parse_tessera_format_name
     from .tessera_render import HessianContractError
 
+    from .tessera_render import rung_accepts_hessian
+
     spec = fr.get_format(format_name)
     family, rung = parse_tessera_format_name(format_name)
-    hessian = None
+    activation_kwargs = None
+    # Whether an H can be applied is a property of the RUNG'S WIRE, not of the
+    # run: at the pinned Tessera only the CHANNEL scale plane admits LDLQ and
+    # the H refit, so every E2M1 rung's shipping bytes are weights-only bytes.
+    # Refusing to price them would refuse the only encode they have.
+    hessian_required = bool(hessian_required) and rung_accepts_hessian(format_name)
     if hessian_required:
-        if hessians is None:
+        if activation_kwargs_for is None:
             raise HessianContractError(
-                f"{qname}: hessian_required=True but no Hessian map was passed "
-                "to _measure_anchor")
-        if qname not in hessians:
+                f"{qname}: hessian_required=True but no activation-kwargs "
+                "source was passed to _measure_anchor")
+        activation_kwargs = activation_kwargs_for(qname)
+        if not activation_kwargs:
             raise HessianContractError(
-                f"{qname}: no Hessian for this Linear. The map is keyed by "
-                f"qname and holds {len(hessians)} entries; a lookup that "
-                "misses must not fall through to a weights-only encode.")
-        hessian = hessians[qname]
-        if hessian is None:
-            raise HessianContractError(
-                f"{qname}: Hessian present but None -- no calibration rows "
-                "reached this Linear, so it cannot be priced as it ships.")
+                f"{qname}: no Hessian for this Linear. A lookup that misses "
+                "must not fall through to a weights-only encode.")
     started = time.time()
     render, blob = _encode_and_render(
-        weight, format_name, hessian=hessian, token_count=token_count,
+        weight, format_name, activation_kwargs=activation_kwargs,
         hessian_required=hessian_required,
     )
     elapsed = time.time() - started
@@ -244,6 +258,7 @@ def _measure_anchor(
     )
     if metric != "output_mse":
         raise RuntimeError(f"unexpected render-score metric {metric!r}")
+    hessian_applied = bool(activation_kwargs)
 
     _store_rendered_weight_entry(
         weights=cache.weights,
@@ -278,6 +293,7 @@ def _measure_anchor(
         activation_quantized=bool(quantized),
         wire_bytes=len(blob),
         seconds=elapsed,
+        hessian_applied=hessian_applied,
     )
 
 
@@ -313,9 +329,16 @@ def campaign_cost_payload(
         _prov.get("hessian"), dict) else {}
     hessian_identity = {
         "supplied": bool(_h.get("supplied", False)),
+        # The legacy spelling, kept because ``assert_uniform_hessian_identity``
+        # compares tables written before Tessera's triple existed.
         "text_sha": _h.get("text_sha"),
         "token_count": _h.get("token_count"),
-        "kwarg": _h.get("kwarg"),
+        # Tessera's own required triple, so a row can be checked against the
+        # ActivationSource that would encode it.
+        "text_sha256": _h.get("text_sha256"),
+        "fit_ids_sha256": _h.get("fit_ids_sha256"),
+        "fit_tokens": _h.get("fit_tokens"),
+        "kwarg": tuple(_h.get("kwargs", ())) or _h.get("kwarg"),
     }
 
     costs: dict[str, dict[str, dict]] = {}
@@ -348,7 +371,9 @@ def campaign_cost_payload(
                     "activation_contract": anchor.activation_contract,
                     "wire_bytes": anchor.wire_bytes,
                     "encode_seconds": anchor.seconds,
-                    "hessian_identity": hessian_identity,
+                    "hessian_identity": {
+                        **hessian_identity, "applied": bool(anchor.hessian_applied),
+                    },
                 }
                 measured_names.add(anchor.format_name)
                 formats.add(anchor.format_name)
@@ -393,7 +418,13 @@ def campaign_cost_payload(
                     "tessera_family": family,
                     "tessera_body_rate_q256": rung.body_rate_q256,
                     "activation_contract": rung.admission.activation_contract,
-                    "hessian_identity": hessian_identity,
+                    # An interpolated row inherits the applicability of the
+                    # anchors it was interpolated between; they share a family,
+                    # so they share a scale plane and therefore an answer.
+                    "hessian_identity": {
+                        **hessian_identity,
+                        "applied": bool(ordered[0].hessian_applied),
+                    },
                 }
                 formats.add(rung.format_name)
         if rows:
@@ -501,6 +532,11 @@ def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
     data = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
     text = "\n\n".join(data["text"])
     ids = tok(text, return_tensors="pt").input_ids[0]
+    # The corpus text travels beside the ids: Tessera's identity triple wants
+    # both, and it is right to want both -- two tokenizers over one corpus are
+    # two calibrations that a text sha alone would call the same, and one
+    # tokenizer over two corpora is two calibrations an id sha would separate
+    # only by luck.
     generator = torch.Generator().manual_seed(int(seed))
     out = []
     for _ in range(int(n)):
@@ -508,25 +544,7 @@ def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
             0, max(1, ids.shape[0] - seqlen - 1), (1,), generator=generator,
         ).item())
         out.append(ids[start:start + seqlen].unsqueeze(0))
-    return out
-
-
-def _token_sha(tokens) -> str:
-    """A stable identity for the calibration draw the Hessians were built on.
-
-    Over the token *ids*, not the text, because the ids are what the forward
-    pass saw: two tokenizers over one corpus are two different calibrations,
-    and a sha over the text would call them the same.
-    """
-    import hashlib
-
-    import torch
-
-    digest = hashlib.sha256()
-    for batch in tokens:
-        digest.update(
-            batch.to(dtype=torch.int32).cpu().numpy().tobytes())
-    return digest.hexdigest()
+    return out, text
 
 
 def main(argv: "Sequence[str] | None" = None) -> int:
@@ -643,9 +661,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     print(f"[campaign] {len(targets)} target Linears, mode={mode}, "
           f"device={device}", flush=True)
 
-    tokens = _calibration_tokens(
+    tokens, corpus_text = _calibration_tokens(
         args.model, args.nsamples, args.seqlen, args.seed)
-    text_sha = _token_sha(tokens)
     want_h = args.hessian == "require"
     acts, hessians, hessian_rows = _collect_activations(
         model, targets, tokens, args.max_act_rows, device,
@@ -661,10 +678,43 @@ def main(argv: "Sequence[str] | None" = None) -> int:
           f"{hessian_token_min}..{hessian_token_count})",
           flush=True)
 
+    # The draw's identity, in Tessera's own required vocabulary and built by
+    # the function the production render also calls. An ActivationSource
+    # refuses a provenance missing any of the three, which is what makes
+    # "cost.pkl and the production cache are the same draw" a checkable claim.
+    hessian_identity = th.calibration_identity(
+        corpus_text, tokens,
+        fit_tokens=int(hessian_token_count),
+        source="wikitext-2-raw-v1/train",
+        split_role="calibration",
+        model=str(args.model),
+        seed=int(args.seed),
+        nsamples=int(args.nsamples),
+        seqlen=int(args.seqlen),
+        fit_tokens_min=int(hessian_token_min),
+    )
+
     weights = {name: dict(model.named_modules())[name].weight.detach()
                for name in targets}
     del model
     torch.cuda.empty_cache()
+
+    # ONE ActivationSource for the whole campaign, and ONE set of encoder
+    # keywords per unit. The block-LDL and the refit metric are functions of
+    # the unit's Hessian alone -- not of its rate -- so a twelve-anchor surface
+    # would otherwise factorise the same [in, in] matrix twelve times. The
+    # source is built from the same functions the production render calls
+    # (``tessera_hessian``), so the campaign's price and the cache's render are
+    # one rendering of one draw (principle 8).
+    calibration_source = None
+    if want_h:
+        calibration_source = th.activation_source(hessians, hessian_identity)
+
+    @functools.lru_cache(maxsize=None)
+    def _activation_kwargs_for(name: str) -> dict:
+        return th.encoder_kwargs(
+            calibration_source, name,
+            int(weights[name].shape[1]), device)
 
     cache = ProductionWeightCache(
         weights={}, levers={"tessera_campaign": True},
@@ -820,17 +870,32 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                 worst = 0.0
                 worst_loo: dict = {}
                 ready = True
+                interpolable = 0
                 for m in members:
                     anchors = measured.get(m, {}).get(family, [])
                     if len(anchors) < 3:
                         ready = False
                         break
                     member_loo = _loo_for(anchors, leave_one_anchor_out)
+                    if _loo_refused(member_loo):
+                        # A refused surface has no leave-one-out error, and a
+                        # missing error is not a zero one.  Reading it as 0.0
+                        # would say "this surface interpolates perfectly" about
+                        # the one surface that does not interpolate at all --
+                        # and would close the gate on it.  It contributes
+                        # nothing to ``worst`` instead, so the group keeps
+                        # spending anchors for whichever members can still use
+                        # them, and the refusal is reported as itself.
+                        continue
+                    interpolable += 1
                     value = float(
                         member_loo.get("max_abs_log2_error", 0.0) or 0.0)
                     if value > worst:
                         worst, worst_loo = value, member_loo
                 if not ready:
+                    continue
+                if not interpolable:
+                    surface_stop.setdefault((key, family), "non_interpolable")
                     continue
                 if worst <= args.loo_gate:
                     surface_stop.setdefault((key, family), "gate_closed")
@@ -860,11 +925,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     qname=name, weight=weights[name].to(device),
                     activations=activations.to(device),
                     format_name=fmt, cache=cache, wire_dir=wire_dir,
-                    hessians=hessians if want_h else None,
-                    # Per-Linear, not the global max: on a routed-MoE unit two
-                    # experts see different numbers of tokens, and the count is
-                    # the divisor the encoder normalises H by.
-                    token_count=hessian_rows.get(name),
+                    activation_kwargs_for=(
+                        _activation_kwargs_for if want_h else None),
                     hessian_required=want_h,
                 )
             except HessianContractError:
@@ -923,19 +985,24 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                         "encode_seconds": round(
                             sum(float(a.seconds) for a in anchors), 3),
                         "rungs": sorted(a.body_rate_q256 for a in anchors),
-                        "loo_max_abs_log2_error": (
-                            float(loo_pre[name][family].get(
-                                "max_abs_log2_error", 0.0) or 0.0)
-                            if name in loo_pre
-                            and family in loo_pre[name] else None),
-                        "gate_closed": (
-                            bool(float(loo_pre[name][family].get(
-                                "max_abs_log2_error", 0.0) or 0.0)
-                                <= float(args.loo_gate))
-                            if name in loo_pre
-                            and family in loo_pre[name] else None),
-                        "stopped_by": surface_stop.get(
-                            (_group_key(name), family), "round_limit"),
+                        # ``None``, never 0.0, when there is no leave-one-out
+                        # error to report: a refused surface did not fit its
+                        # own anchors perfectly, it failed to become a surface,
+                        # and a zero here would read as the former.
+                        "loo_max_abs_log2_error": _surface_loo(
+                            loo_pre.get(name, {}).get(family),
+                            float(args.loo_gate))[0],
+                        "gate_closed": _surface_loo(
+                            loo_pre.get(name, {}).get(family),
+                            float(args.loo_gate))[1],
+                        "non_interpolable": _loo_refused(
+                            loo_pre.get(name, {}).get(family) or {}),
+                        "stopped_by": (
+                            "non_interpolable"
+                            if _loo_refused(
+                                loo_pre.get(name, {}).get(family) or {})
+                            else surface_stop.get(
+                                (_group_key(name), family), "round_limit")),
                     }
                     for family, anchors in sorted(by_family.items())
                 }
@@ -954,17 +1021,20 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                 "reason": str(hessian_status["reason"]),
                 "consumed_by": (
                     "prismaquant.tessera_render.encode_tessera_unit"
-                    + (f" -> tessera.export.encode_linear_planes("
-                       f"{hessian_status['kwarg']}=)" if want_h else "")),
-                "kwarg": hessian_status["kwarg"],
+                    + (" -> tessera.export.ActivationSource.for_unit -> "
+                       "tessera.export.encode_linear_planes("
+                       + ", ".join(f"{k}=" for k in hessian_status["kwargs"])
+                       + ")" if want_h else "")),
+                "kwargs": list(hessian_status["kwargs"]),
+                "recipe": dict(hessian_status["recipe"]),
                 "token_count": int(hessian_token_count),
                 "token_count_min": int(hessian_token_min),
-                "text_sha": text_sha,
-                "source": "wikitext-2-raw-v1/train",
-                "split_role": "calibration",
-                "seed": int(args.seed),
-                "nsamples": int(args.nsamples),
-                "seqlen": int(args.seqlen),
+                # The identity triple Tessera requires, plus its context. The
+                # legacy ``text_sha`` spelling is kept because older cost
+                # tables carry it and ``assert_uniform_hessian_identity``
+                # compares tables across runs.
+                **dict(hessian_identity),
+                "text_sha": hessian_identity["fit_ids_sha256"],
             },
         },
     }
@@ -982,6 +1052,26 @@ def main(argv: "Sequence[str] | None" = None) -> int:
           f"{total} priced rungs, {len(payload['formats'])} distinct formats",
           flush=True)
     return 0
+
+
+def _loo_refused(member_loo) -> bool:
+    """Did the surface refuse to exist at all?
+
+    :func:`_loo_for` reports a refusal as an ``error`` key.  Everywhere else
+    reads ``max_abs_log2_error`` with a default, so the distinction between
+    "fits perfectly" and "is not a surface" has to be asked for explicitly.
+    """
+
+    return bool(member_loo) and "error" in member_loo
+
+
+def _surface_loo(member_loo, gate: float):
+    """``(loo_error, gate_closed)`` for one surface, refusal-aware."""
+
+    if not member_loo or _loo_refused(member_loo):
+        return None, False
+    value = float(member_loo.get("max_abs_log2_error", 0.0) or 0.0)
+    return value, bool(value <= gate)
 
 
 def _loo_for(anchors, leave_one_anchor_out) -> dict:
