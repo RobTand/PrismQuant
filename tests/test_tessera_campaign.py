@@ -644,3 +644,19 @@ def test_a_production_cache_miss_does_not_fall_back_to_the_registry():
     session._linear_by_qname["lin"] = (lin, "weight")
     with pytest.raises(RuntimeError, match="Tessera"):
         session._format_weight("lin", "TESSERA_E2M1_K2_R256")
+
+
+def test_the_aura_dw_fallback_refuses_tessera():
+    """``aura_cost``'s ``dW`` fallback is the one whose guard is off by default.
+
+    ``require_production_cache`` defaults to False, AURA is the default
+    ``COST_MODE``, and the fallback ends at the registry
+    ``quantize_dequantize``. The orchestrator refuses the ``TESSERA`` token
+    before this stage (``run-pipeline.sh:69``), but a direct call does not, and
+    "unreachable through one entry point" is not the same as closed.
+    """
+    from prismaquant.aura_cost import _delta_w
+
+    w = torch.randn(8, 32, dtype=torch.float32)
+    with pytest.raises(RuntimeError, match="Tessera"):
+        _delta_w("lin", "TESSERA_E2M1_K2_R256", w, None)

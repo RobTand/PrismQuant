@@ -99,8 +99,9 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_architecture_doc.py -q
 ```
 
-**114 passed, 1 skipped** on sparky (read from that command's own output, not
-summed). The `CUDA` marker here is a `skipif`, not a deselect, so sparky's GPU
+**116 passed, 1 skipped** on sparky (read from that command's own output; an
+earlier revision of this file said 114, which was summed from two older runs
+and counted the skip as a pass). The `CUDA` marker here is a `skipif`, not a deselect, so sparky's GPU
 means every CUDA campaign test ran; the one skip is
 `test_the_hessian_kwarg_pin_matches_the_pinned_encoder`, which has nothing to
 check while `TESSERA_HESSIAN_KWARG` is `None` and turns into a real assertion
@@ -131,11 +132,12 @@ PYTHONPATH=/home/rob/tessera/src:. python -m pytest \
   tests/test_interpolated_output_mse_pricing.py \
   tests/test_production_weight_cache.py \
   tests/test_col_weights_render_identity.py tests/test_render_score.py \
-  tests/test_weight_session.py tests/test_perturbed_x_cache.py -q
+  tests/test_weight_session.py tests/test_perturbed_x_cache.py \
+  tests/test_aura_cost.py -q
 ```
 
-**311 passed, 1 skipped** (78 s, sparky). The last five suites were added when
-`render_production_weight` gained the Tessera interception and the two
+**333 passed, 1 skipped** (118 s, sparky). The last six suites were added when
+`render_production_weight` gained the Tessera interception and the three
 cache-miss fallbacks gained their refusal (§7): a change inside those functions
 has to be shown not to move any *other* format's render.
 
@@ -266,12 +268,23 @@ priced.
   those `layer_config.json` files to `build_production_cache` **refuses today**
   unless `tessera_weights_only` is set, which is the same refusal
   `--hessian require` gives and for the same reason.
-* **The two cache-miss RTN fallbacks refuse Tessera as well.**
-  `weight_session._format_weight` and `perturbed_x_cache` both fall back to the
-  registry `quantize_dequantize` when `PRISMAQUANT_STRICT_PRODUCTION_CACHE=0`
-  — the same weights-only reconstruction, one function further on, with the
-  same silence. They now raise, as they already did for CB. Pinned by
-  `test_a_production_cache_miss_does_not_fall_back_to_the_registry`.
+* **All three cache-miss RTN fallbacks refuse Tessera as well.**
+  `weight_session._format_weight` and `perturbed_x_cache` fall back to the
+  registry `quantize_dequantize` when `PRISMAQUANT_STRICT_PRODUCTION_CACHE=0`;
+  `aura_cost._delta_w` does the same when `require_production_cache` is off,
+  **which is its default** — and AURA is the default `COST_MODE`. Same
+  weights-only reconstruction, one function further on, same silence. All
+  three raise now, as they already did for CB. The orchestrator could not
+  reach the AURA one with a Tessera name (`run-pipeline.sh:69` refuses the
+  `TESSERA` token before that stage) but a direct call could, and
+  "unreachable through one entry point" is not closed. Pinned by
+  `test_a_production_cache_miss_does_not_fall_back_to_the_registry` and
+  `test_the_aura_dw_fallback_refuses_tessera`.
+* **The opt-out is reachable from the pipeline, not just from the API.**
+  `build_production_cache` builds `levers` from `--enable` with no whitelist
+  and `run-pipeline.sh` passes `PRODUCTION_CACHE_LEVERS` straight into it, so
+  `PRODUCTION_CACHE_LEVERS=gptq,...,tessera_weights_only` lands as a truthy
+  key. Nothing sets it by default, and whoever sets it owns the stamp.
 * **Anchors are placed per `(unit, family)`, not per fused group.** The
   campaign solves each unit's top anchor independently against the
   `--max-artifact-bpp` wire cap, and because the wire→body map is
@@ -608,7 +621,7 @@ subset; what would make it a *ship* claim is a served KL, which does not exist.
 
 | asked | result |
 |---|---|
-| Tests pass, listed with the command | §3. **311 passed, 1 skipped** on the full sweep, including every allocator suite this branch could regress and the five render/cache suites the Tessera interception could. |
+| Tests pass, listed with the command | §3. **333 passed, 1 skipped** on the full sweep, including every allocator suite this branch could regress and the six render/cache/cost suites the Tessera interception and the fallback refusals could. |
 | Three 0.6B allocations spanning more than a few distinct rates | §8.2. Menu 3039–3063 rungs **per unit**; 16893 priced rungs over 7 units. Assignments hit 3.00026 / 4.00026 / 5.00026 bpp with 4 distinct rungs each (4 DP items), and 6–7 distinct rungs each without pre-aggregation. Not a five-rung ladder. |
 | Anchor counts per family per unit | §8. 4–5 per family per unit, 21 surfaces, 102 anchors, 2534 s. |
 | A-leg pricing test exists | §3, `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and §8.2 shows it deciding a real allocation. |

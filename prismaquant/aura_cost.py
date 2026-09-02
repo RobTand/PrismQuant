@@ -645,6 +645,17 @@ def _delta_w(
             "render with the production col_weights/codebook contract; "
             "refusing the unweighted direct fallback"
         )
+    from .tessera_render import is_tessera_format
+
+    if is_tessera_format(spec.name):
+        raise RuntimeError(
+            f"{name}={spec.name}: AURA Tessera delta requires a "
+            "production-cache render. The registry fallback is a weights-only "
+            "reconstruction, not the decoded wire and not the H-aware encode "
+            "that ships, so it would price a different dW under the same "
+            "format name -- and ``strict`` defaults off, so nothing else "
+            "would say so."
+        )
     qdq = getattr(spec, "quantize_dequantize", None)
     if qdq is None:
         return None

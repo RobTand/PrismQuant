@@ -3780,17 +3780,25 @@ the same format name, and the seam refuses rather than downgrade silently:
   column count that does not match `weight.shape[1]`. The deliberate opt-out is
   the `tessera_weights_only` lever, which whoever sets must stamp.
 
-* **The cache-miss RTN fallbacks refuse Tessera** (`weight_session._format_
-  weight`, `perturbed_x_cache`). Both fall back to the registry
-  `quantize_dequantize` when `PRISMAQUANT_STRICT_PRODUCTION_CACHE=0`, which
-  for Tessera is the weights-only reconstruction again — the same silence one
-  function further on. They now raise, as they already did for CB.
+* **All three cache-miss RTN fallbacks refuse Tessera** —
+  `weight_session._format_weight` and `perturbed_x_cache` (both gated by
+  `PRISMAQUANT_STRICT_PRODUCTION_CACHE`, default refuse) and `aura_cost`'s
+  `dW` fallback (gated by `require_production_cache`, **default off**). Each
+  falls back to the registry `quantize_dequantize`, which for Tessera is the
+  weights-only reconstruction again — the same silence, one function further
+  on. They now raise, as they already did for CB. `aura_cost` is the one that
+  mattered most: it is the default `COST_MODE` and its guard is off by
+  default. The orchestrator cannot reach it with a Tessera name today
+  (`run-pipeline.sh:69` refuses `FORMATS` containing the `TESSERA` token
+  before the AURA cost stage), but a direct call can.
 
 `render_tessera_weight` remains the **weights-only reference** render. It is
 reached only through the registry's synthesized `quantize_dequantize` — public
-API, so it cannot be made unreachable — but no consumer that decides or ships
-bytes goes there any more: `render_production_weight` intercepts, and both
-cache-miss fallbacks refuse. It does not and will not take an H.
+API, so it cannot be made unreachable. The four paths by which a *pipeline*
+consumer could reach it are closed by name: `render_production_weight`
+intercepts, and the three fallbacks above refuse. Anything else calling
+`spec.quantize_dequantize` directly still gets it, and gets what it asked for.
+It does not and will not take an H.
 
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
 
@@ -3960,7 +3968,7 @@ friends); it does not enumerate legal format names anywhere, so `TESSERA` is
 carried by `run-pipeline.sh` and `allocator.py` alone. Checked, not assumed.
 
 **Gate:** `tests/test_tessera_menu.py` (26) + `tests/test_tessera_campaign.py`
-(22; one skips until `TESSERA_HESSIAN_KWARG` is pinned, several are CUDA-marked),
+(25; one skips until `TESSERA_HESSIAN_KWARG` is pinned, several are CUDA-marked),
 on top of `tessera_{formats,footprint}`'s own suites.
 
 **Measured on Qwen3-0.6B layer 0, 2026-09-02**
