@@ -374,3 +374,379 @@ def test_no_tessera_rung_is_producer_eligible_today():
 
     for name in ("TESSERA_E2M1_K2_R896", "TESSERA_E2M1_K1_R640"):
         assert synthesize_tessera_spec(name).producer_eligible is False
+
+
+# ------------------------------------------------- the recipe is the unit of account
+#
+# ``tessera.export.wire_recipe`` is the single statement of which body, span,
+# scale plane and window the exporter writes for a grid at a rung.  Everything
+# below is written against *explicitly constructed* recipes rather than the
+# current default, because the default is going to move -- the window body over
+# a CHANNEL plane is measured better on E4M3 and is held behind a kernel gate,
+# not a doubt -- and a test that only exercises today's wire would go quiet on
+# the day the flip happens, which is the day it is needed.
+
+TCQ_FAMILIES = ("TESSERA_E2M1_K1", "TESSERA_E2M1_K2", "TESSERA_E4M3_K1")
+
+#: Two shapes, one square-ish and one narrow and not a power of two, so a term
+#: that is right per position and wrong per unit cannot hide in a coincidence.
+CROSS_CHECK_SHAPES = ((2048, 4096), (96, 768))
+
+
+def _recipes_under_test():
+    from prismaquant.tessera_formats import recipe_from_wire_names, tessera_wire_recipe
+
+    return [
+        ("the exporter's default", tessera_wire_recipe("TESSERA_E2M1_K2")),
+        ("span 1 / s6b (minor 0)", recipe_from_wire_names(1, "s6b")),
+        ("span 2 / lut16 (minor 1)", recipe_from_wire_names(2, "lut16")),
+        ("tcq / channel (minor 3)", recipe_from_wire_names(2, "channel")),
+        ("window L=8 / lut16", recipe_from_wire_names(1, "lut16", "window", 8)),
+        ("window L=8 / channel", recipe_from_wire_names(1, "channel", "window", 8)),
+    ]
+
+
+@pytest.mark.parametrize("shape", CROSS_CHECK_SHAPES)
+def test_the_closed_form_prices_every_recipe_the_calculator_prices(shape):
+    """``artifact_bpp`` is a second statement of what tessera computes exactly.
+
+    The allocator prices thousands of rungs per Linear and cannot afford to
+    build a plane layout for each, so the closed form has to exist -- and a
+    second statement of one number is a drift bug waiting for the wire to
+    change.  ``tessera.calculator.terminal_rate`` is the authority; this pins
+    the two together across the whole grammar rather than across the one
+    recipe that happens to be the default.
+
+    Four terms have to line up, and each of them has been wrong somewhere at
+    some point: the body's rate at the *recipe's* cap (``payload_bits`` under a
+    window body, ``payload_bits - 1`` under the TCQ trellis), the span labels,
+    the scale plane, and the two **per-unit** costs -- a CHANNEL plane's fp16
+    per output row, and a window body's ``2^L``-byte table -- which have no
+    per-position rate at all until a shape is named.
+    """
+    from fractions import Fraction
+
+    from tessera.calculator import terminal_rate
+
+    from prismaquant.tessera_formats import (
+        family_q256_bounds, family_rate_cap, scale_plane_name,
+    )
+
+    rows, columns = shape
+    checked = 0
+    for label, wire in _recipes_under_test():
+        plane = scale_plane_name(wire.scale_plane)
+        for name in TCQ_FAMILIES:
+            spec = get_tessera_family(name)
+            lo, hi = family_q256_bounds(spec, wire)
+            for q in (lo, (lo + hi) // 2, hi):
+                mine = artifact_bpp(spec, q, 0, recipe=wire, shape=shape)
+                exact = terminal_rate(
+                    q * spec.arity, rows, columns,
+                    with_scale_base=plane == "s6b",
+                    with_scale_refine=plane in ("s6b", "lut16"),
+                    with_row_scale=plane == "channel",
+                    span=wire.span,
+                    cap=family_rate_cap(spec, wire),
+                    arity=spec.arity,
+                    completion=0,
+                    window_bits=wire.window_bits,
+                )
+                assert mine == exact, (label, name, q, shape, mine, exact)
+                assert isinstance(mine, Fraction)
+                checked += 1
+    assert checked == len(_recipes_under_test()) * len(TCQ_FAMILIES) * 3
+
+
+def test_a_per_unit_wire_term_has_no_price_without_a_shape():
+    """The CHANNEL row field and the window table are charged per *unit*.
+
+    They are ``16/columns`` and ``8 * 2^L / (rows*columns)`` bits per position,
+    which is to say they are not bits per position at all until a shape is
+    named.  The shape-free accountant refuses them rather than dropping them:
+    the only consumer of the shape-free value is
+    ``FormatSpec.exact_bits_per_param``, which ``memory_bytes_for_shape``
+    multiplies by the parameter count as an *exact* rate, and a ``Fraction``
+    cannot carry "this is a floor".  Returning the floor there would be the
+    silent drop, not the guard against it.
+
+    Nothing raises on today's wire, which is the other half of the contract:
+    every family's recipe is the TCQ body over a block plane, so the closed
+    form stays exact with no shape and no caller has to learn about this.
+    """
+    from prismaquant.tessera_formats import (
+        recipe_from_wire_names, recipe_is_shape_free, tessera_wire_recipe,
+        wire_overhead_q256,
+    )
+
+    for name in TCQ_FAMILIES:
+        spec = get_tessera_family(name)
+        assert recipe_is_shape_free(tessera_wire_recipe(spec))
+        assert artifact_bpp(spec, 256) > 0          # no shape needed today
+
+    spec = get_tessera_family("TESSERA_E4M3_K1")
+    for wire in (
+        recipe_from_wire_names(2, "channel"),
+        recipe_from_wire_names(1, "lut16", "window", 8),
+    ):
+        assert not recipe_is_shape_free(wire)
+        with pytest.raises(TesseraFormatError, match="per unit"):
+            wire_overhead_q256(spec, recipe=wire)
+        with pytest.raises(TesseraFormatError, match="per unit"):
+            artifact_bpp(spec, 1024, 0, recipe=wire)
+        priced = artifact_bpp(spec, 1024, 0, recipe=wire, shape=(2048, 4096))
+        assert priced > Fraction(4)
+
+    # The per-unit terms are shape-dependent in the direction they must be:
+    # a narrower tensor pays more per weight for the same row field.
+    chan = recipe_from_wire_names(2, "channel")
+    assert (artifact_bpp(spec, 1024, 0, recipe=chan, shape=(2048, 512))
+            > artifact_bpp(spec, 1024, 0, recipe=chan, shape=(2048, 4096)))
+
+
+def test_a_window_recipe_widens_the_family_bounds():
+    """The rate ceiling is the *body's*, and the two bodies differ by a bit.
+
+    The TCQ trellis spends one bit of the payload on its convolutional code, so
+    ``|A_R| * |D(a)|`` closes at ``2^P`` with ``cap = payload_bits - 1``.  The
+    window body's shaping is the ``L - R`` bits of history a position shares
+    with its predecessors, not a code bit, so a position may spend the grid's
+    whole width -- ``R = payload_bits`` is an ordinary rung there, which is
+    E2M1x2 at 4.0 body bits per weight (``tessera.export._plan_for``).
+
+    The TCQ numbers are asserted as literals: this is the interval the DP
+    searches, and it must not move as a side effect of the bounds learning
+    about a body they do not use.
+    """
+    from prismaquant.tessera_formats import (
+        family_q256_bounds, family_rate_cap, recipe_from_wire_names,
+    )
+
+    tcq = recipe_from_wire_names(2, "lut16")
+    window = recipe_from_wire_names(1, "lut16", "window", 8)
+
+    literal = {
+        "TESSERA_E2M1_K1": ((256, 768), (256, 1024), 3, 4),
+        "TESSERA_E2M1_K2": ((128, 896), (128, 1024), 7, 8),
+        "TESSERA_E4M3_K1": ((256, 1792), (256, 2048), 7, 8),
+    }
+    for name, (tcq_bounds, win_bounds, tcq_cap, win_cap) in literal.items():
+        spec = get_tessera_family(name)
+        # Unchanged by the recipe machinery: this is what ships today.
+        assert spec.mathematical_q256_bounds == tcq_bounds, name
+        assert spec.rate_cap == tcq_cap, name
+        assert family_q256_bounds(spec, tcq) == tcq_bounds, name
+        assert family_rate_cap(spec, tcq) == tcq_cap, name
+        # Wider under a window recipe, at the top end only.
+        assert family_q256_bounds(spec, window) == win_bounds, name
+        assert family_rate_cap(spec, window) == win_cap, name
+
+        # The three functions that answer "which rungs exist" must agree with
+        # the bounds, or the menu offers something the encoder refuses.
+        lo, hi = win_bounds
+        assert realisable_rungs(spec, recipe=window)[0] == lo
+        assert realisable_rungs(spec, recipe=window)[-1] == hi
+        assert validate_body_rate_q256(spec, hi, recipe=window) == hi
+        with pytest.raises(TesseraFormatError):
+            validate_body_rate_q256(spec, hi)          # TCQ: above the cap
+        with pytest.raises(TesseraFormatError):
+            validate_body_rate_q256(spec, hi + 1, recipe=window)
+        # And the schedule really is buildable at the widened ceiling.
+        schedule = spec.column_schedule(hi, SUPERBLOCK_WEIGHTS, recipe=window)
+        assert max(schedule) == win_cap and len(schedule) == SUPERBLOCK_WEIGHTS
+
+
+def test_the_two_scalar_wire_projection_refuses_what_it_cannot_state():
+    """``tessera_wire_defaults`` is a projection, and it says so by failing.
+
+    It drops the body, the window and any per-family variation, so it is wrong
+    the day the exporter stops writing one TCQ wire for every grid.  Rather
+    than return two plausible scalars for a wire that is no longer described by
+    two scalars, it raises and names the recipe function.
+    """
+    from unittest import mock
+
+    from prismaquant import tessera_formats as tf
+
+    assert tessera_wire_defaults() == (2, "lut16")
+
+    window = tf.recipe_from_wire_names(1, "channel", "window", 14)
+    with mock.patch.object(tf, "tessera_wire_recipe", lambda *a, **k: window):
+        with pytest.raises(TesseraFormatError, match="tessera_wire_recipe"):
+            tessera_wire_defaults()
+
+
+# ------------------------------------------------------ the fifth axis: route
+
+
+def test_the_route_is_a_property_of_the_grid_and_the_plane_together():
+    """What a decoded tile executes as, carried in the fields the registry
+    already uses for it.
+
+    The activation contract is not a property of the grid alone: an E4M3 tile
+    over a per-16 block plane is still E4M3 bytes, and no stock kernel reads
+    FP8 weights at that scale granularity.  It takes both.
+
+    The representation is deliberately not a new field.  ``act_bits`` /
+    ``act_dtype_name`` / ``act_group_size`` / ``min_capability_sm`` are how
+    ``NVFP4`` (``format_registry.py:738``) and ``FP8_E4M3`` (``:878``) declare
+    the same thing, and ``FormatSpec.act_quant_changes_input`` (``:101``) is
+    the single predicate every consumer -- the bit-exact cost short-circuit,
+    the KL validator's activation assignment, the caches -- reads it through.
+    """
+    from prismaquant.tessera_formats import recipe_from_wire_names
+    from prismaquant.tessera_render import synthesize_tessera_spec
+
+    # E2M1 over a per-16 block plane -> NVFP4 -> W4A4 on Blackwell.
+    spec = synthesize_tessera_spec("TESSERA_E2M1_K2_R896")
+    assert (spec.act_bits, spec.act_dtype_name, spec.act_group_size) == (
+        4, "fp4_e2m1", 16)
+    # By reference from the registry row whose A-side the rung executes.
+    from prismaquant import format_registry as fr
+    assert spec.min_capability_sm == fr.get_format("NVFP4").min_capability_sm
+    assert spec.act_quant_changes_input is True
+
+    # E4M3 over a CHANNEL plane -> the stock per-channel FP8 pair -> W8A8.
+    channel = recipe_from_wire_names(1, "channel", "window", 8)
+    spec = synthesize_tessera_spec(
+        "TESSERA_E4M3_K1_R1024", recipe=channel, shape=(2048, 4096))
+    assert (spec.act_bits, spec.act_dtype_name, spec.act_group_size) == (
+        8, "fp8_e4m3", 0)
+    assert spec.min_capability_sm == fr.get_format("FP8_E4M3").min_capability_sm
+    assert spec.act_quant_changes_input is True
+    assert spec.group_size == 0        # per-output-channel, as FP8_E4M3 spells it
+
+    # The two combinations with no stock MMA layout: kernel lane, weight-only.
+    kernel_only = [
+        ("TESSERA_E4M3_K1_R1024", None),                      # E4M3 + block plane
+        ("TESSERA_E2M1_K2_R896", recipe_from_wire_names(2, "channel")),
+        ("TESSERA_LM16_K2_R896", None),                       # a free grid
+    ]
+    for name, wire in kernel_only:
+        spec = synthesize_tessera_spec(
+            name, recipe=wire, shape=None if wire is None else (2048, 4096))
+        assert spec.act_bits is None, name
+        assert spec.act_dtype_name is None, name
+        assert spec.act_quant_changes_input is False, name
+        assert spec.min_capability_sm == 80, name
+
+    # And none of it is a serving claim (principle 9 / 14): a layout that
+    # *would* materialise is still not a route a pinned runtime was measured
+    # taking, so nothing is producer-eligible.
+    for name, wire in [("TESSERA_E2M1_K2_R896", None),
+                       ("TESSERA_E4M3_K1_R1024", channel)]:
+        spec = synthesize_tessera_spec(
+            name, recipe=wire, shape=None if wire is None else (2048, 4096))
+        assert spec.producer_eligible is False, name
+
+
+def test_the_activation_side_is_the_serving_formats_own_quantiser():
+    """A W4A4 rung's A side must be NVFP4's, not a second implementation.
+
+    Measurement said the activation leg is what dominates at W4A4 (the EXL3
+    gap moves 1.72x -> 1.20x when the A side is priced as it serves), so an
+    A-side priced by a private copy of the group-16 dynamic RTN is a rendering
+    confound on the axis that decides the comparison.  Taken by reference from
+    the registry, it cannot drift.
+    """
+    import torch
+
+    from prismaquant import format_registry as fr
+    from prismaquant.tessera_formats import recipe_from_wire_names
+    from prismaquant.tessera_render import synthesize_tessera_spec
+
+    torch.manual_seed(0)
+    x = torch.randn(8, 256)
+
+    w4 = synthesize_tessera_spec("TESSERA_E2M1_K2_R896")
+    assert torch.equal(
+        w4.activation_quantize_dequantize(x),
+        fr.get_format("NVFP4").activation_quantize_dequantize(x),
+    )
+
+    w8 = synthesize_tessera_spec(
+        "TESSERA_E4M3_K1_R1024",
+        recipe=recipe_from_wire_names(1, "channel", "window", 8),
+        shape=(2048, 4096),
+    )
+    assert torch.equal(
+        w8.activation_quantize_dequantize(x),
+        fr.get_format("FP8_E4M3").activation_quantize_dequantize(x),
+    )
+
+    # Weight-only stays the identity.
+    kernel = synthesize_tessera_spec("TESSERA_E4M3_K1_R1024")
+    assert torch.equal(kernel.activation_quantize_dequantize(x), x)
+
+    # And the W side: a spec synthesized for a recipe must *render* that
+    # recipe, or the price and the callable inside one FormatSpec describe two
+    # different artifacts.
+    weight = torch.randn(64, 512) * 0.02
+    from prismaquant.tessera_render import render_tessera_weight
+
+    assert torch.equal(
+        w8.quantize_dequantize(weight),
+        render_tessera_weight(
+            weight, "TESSERA_E4M3_K1_R1024",
+            recipe=recipe_from_wire_names(1, "channel", "window", 8)),
+    )
+    assert not torch.equal(
+        w8.quantize_dequantize(weight),
+        render_tessera_weight(weight, "TESSERA_E4M3_K1_R1024"),
+    )
+
+
+# ---------------------------------------------- one rendering, two code paths
+
+
+@pytest.mark.parametrize("label,name,recipe_args", [
+    ("the exporter's default wire", "TESSERA_E2M1_K2_R896", None),
+    ("the exporter's default wire", "TESSERA_E4M3_K1_R1024", None),
+    ("span 1 / s6b (minor 0)", "TESSERA_E2M1_K1_R768", (1, "s6b", "tcq", 0)),
+    ("window L=8 / channel (minor 3)", "TESSERA_E4M3_K1_R1024",
+     (1, "channel", "window", 8)),
+    ("window L=8 / lut16 (minor 2)", "TESSERA_E2M1_K2_R896",
+     (1, "lut16", "window", 8)),
+])
+def test_the_render_leg_and_the_exporter_are_one_rendering(label, name, recipe_args):
+    """Principle 8, established by construction rather than by agreement.
+
+    ``render_tessera_weight`` is what the AURA cost, the allocator's price and
+    the real-KL validation all measure; ``encode_linear`` writes what ships.
+    They are two code paths, so the identity has to be asserted: every encode
+    setting the exporter resolves -- the code, the group/half geometry, the
+    scale refit count, the trellis weighting, and now the whole recipe (body,
+    span, plane, window bits and seed, source sigmas) -- has to be resolved the
+    same way on both sides.  ``encode_linear(verify=True)`` already pins its
+    own bytes to its reconstruction, so equality here means the surrogate is
+    measuring the artifact.
+
+    Leaving *any* of those out is silent: it renders a legal tensor at the
+    wrong wire.  ``encode_unit``'s own defaults are the pre-minor-1 wire, kept
+    so old artifacts stay reproducible, which is exactly what makes the
+    omission plausible.
+    """
+    from tessera.export import encode_linear
+    from tessera.unit_artifact import read_unit_artifact
+
+    from prismaquant.tessera_formats import recipe_from_wire_names
+    from prismaquant.tessera_render import _grid_for, render_tessera_weight
+
+    family, rung = parse_tessera_format_name(name)
+    recipe = None if recipe_args is None else recipe_from_wire_names(*recipe_args)
+
+    torch.manual_seed(0)
+    weight = torch.randn(64, 512, dtype=torch.float32) * 0.02
+
+    rendered = render_tessera_weight(weight, name, recipe=recipe)
+
+    kwargs = {} if recipe is None else dict(
+        span=recipe.span, scale_plane=recipe.scale_plane, body=recipe.body,
+        window_bits=recipe.window_bits, window_seed=recipe.window_seed,
+        window_sigma=recipe.window_sigma, channel_sigma=recipe.channel_sigma,
+    )
+    unit = encode_linear(
+        weight, grid=_grid_for(family), q256=rung, name=name, **kwargs)
+    off_the_wire = read_unit_artifact(unit.blob, device=weight.device)
+
+    assert torch.equal(rendered, off_the_wire.to(weight.dtype)), label

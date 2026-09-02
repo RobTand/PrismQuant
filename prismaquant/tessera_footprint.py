@@ -27,11 +27,15 @@ import hashlib
 import json
 
 from .tessera_formats import (
-    tessera_wire_defaults,
     SUPERBLOCK_WEIGHTS,
     TesseraFamily,
     TesseraFormatError,
+    family_rate_cap,
     get_tessera_family,
+    tessera_serving_route,
+    recipe_from_wire_names,
+    scale_plane_name,
+    tessera_wire_recipe,
     validate_body_rate_q256,
 )
 
@@ -43,15 +47,18 @@ __all__ = [
 
 TESSERA_TENSOR_PAYLOAD_SCHEMA = "prismaquant.tessera_tensor_payload.v1"
 
-#: Tessera's group/half geometry, from the S6b scale contract: an E8M0 base
-#: byte per 32 weights plus a 4-bit refinement per 16.  Carried on the wire
-#: rather than assumed, which is why they are named here and not inlined.
+#: Tessera's group/half geometry: the block scale planes are laid out per 32
+#: weights (the S6b E8M0 base byte) and per 16 (the S6b nibble refinement, or
+#: the LUT plane's nibble index).  The CHANNEL plane uses neither -- it is one
+#: fp16 per output row -- so these size a plane only when the recipe asks for
+#: one.  Carried on the wire rather than assumed, which is why they are named
+#: here and not inlined.
 GROUP_WEIGHTS = 32
 HALF_WEIGHTS = 16
 
 try:  # pragma: no cover
     from tessera.layout import TerminalSpec, build_planes, build_terminal
-    from tessera.manifest import Geometry
+    from tessera.manifest import BodyKind, Geometry
 except ImportError as exc:  # pragma: no cover
     raise TesseraFormatError(
         "prismaquant.tessera_footprint requires the `tessera` package, which "
@@ -81,7 +88,8 @@ def _recipe_identity(breakdown: Mapping[str, object]) -> str:
 
 
 def _alphabet_bytes(
-    spec: TesseraFamily, alphabets: "Mapping[int, Sequence[int]] | None"
+    spec: TesseraFamily, alphabets: "Mapping[int, Sequence[int]] | None",
+    cap: "int | None" = None,
 ) -> int:
     """Bytes for the anchor tables, one entry per code in the grid's width.
 
@@ -91,12 +99,13 @@ def _alphabet_bytes(
     """
     if not alphabets:
         return 0
+    cap = spec.rate_cap if cap is None else int(cap)
     width = 1 if (1 << spec.payload_bits) <= 256 else 4
     total = 0
     for rate, codes in alphabets.items():
-        if not 1 <= rate <= spec.rate_cap:
+        if not 1 <= rate <= cap:
             raise TesseraFormatError(
-                f"{spec.name}: alphabet given for rate {rate}, outside 1..{spec.rate_cap}"
+                f"{spec.name}: alphabet given for rate {rate}, outside 1..{cap}"
             )
         expected = 1 << (rate + 1)
         if len(codes) != expected:
@@ -122,13 +131,19 @@ def tessera_tensor_payload_breakdown(
     with_diagonals: bool = False,
     span: "int | None" = None,
     scale_plane: "str | None" = None,
+    recipe=None,
 ) -> dict[str, object]:
     """Exact serialized bytes for one 2-D Linear weight at one Tessera rung.
 
-    ``span`` and ``scale_plane`` default to the tessera exporter's wire
-    (``tessera_wire_defaults``), so a footprint priced here is the footprint
-    of the bytes ``encode_linear`` writes.  Both are recorded in the breakdown
-    and re-derived by ``validate_tessera_tensor_payload_breakdown``.
+    ``recipe`` -- a ``tessera.export.WireRecipe`` -- is the wire being priced,
+    and it defaults to the one the exporter writes for this family at this
+    rung (``tessera_wire_recipe``), so a footprint priced here is the footprint
+    of the bytes ``encode_linear`` writes.  ``span``/``scale_plane`` remain as
+    the two-scalar spelling for callers that predate the recipe; naming both is
+    refused.  The resolved body, span, plane and window width are all recorded
+    in the breakdown and re-derived by
+    ``validate_tessera_tensor_payload_breakdown``, so a WINDOW or CHANNEL
+    footprint revalidates as itself rather than as the default wire.
 
     ``schedule`` may be omitted, in which case the canonical Bresenham schedule
     for the rung is used -- the same one the encoder would build.  Passing one
@@ -137,14 +152,37 @@ def tessera_tensor_payload_breakdown(
     root would price a rung the artifact does not contain.
     """
     spec = get_tessera_family(family)
-    rung = validate_body_rate_q256(spec, body_rate_q256)
-    default_span, default_plane = tessera_wire_defaults()
-    span = default_span if span is None else int(span)
-    plane = default_plane if scale_plane is None else str(scale_plane)
+    if recipe is not None and (span is not None or scale_plane is not None):
+        raise TesseraFormatError(
+            "name a recipe or the span/scale_plane scalars, not both"
+        )
+    if recipe is None:
+        wire = tessera_wire_recipe(spec, body_rate_q256)
+        if span is not None or scale_plane is not None:
+            wire = recipe_from_wire_names(
+                int(wire.span if span is None else span),
+                scale_plane_name(wire.scale_plane if scale_plane is None
+                                 else scale_plane),
+            )
+    else:
+        wire = recipe
+    body = BodyKind(wire.body)
+    span = int(wire.span)
+    plane = scale_plane_name(wire.scale_plane)
+    window_bits = int(wire.window_bits)
+    # The rate ceiling is the body's, exactly as ``tessera.export.plan_for``
+    # and ``unit_artifact`` dispatch it: the TCQ trellis spends a payload bit
+    # on its code, the WINDOW body spends none.
+    cap = family_rate_cap(spec, wire)
+    rung = validate_body_rate_q256(spec, body_rate_q256, recipe=wire)
     if span < 1:
         raise TesseraFormatError(f"span must be positive, got {span}")
-    if plane not in ("s6b", "lut16"):
-        raise TesseraFormatError(f"unknown scale plane {plane!r}; s6b or lut16")
+    if body is BodyKind.WINDOW:
+        if span != 1:
+            raise TesseraFormatError("a window body is span 1")
+        if completion not in (None, 0):
+            raise TesseraFormatError("a window body has no completion axis")
+        completion = 0
 
     dims = tuple(shape)
     if len(dims) != 2 or any(type(v) is not int or v <= 0 for v in dims):
@@ -161,7 +199,7 @@ def tessera_tensor_payload_breakdown(
         raise TesseraFormatError("sidecar_header_bytes must be nonnegative")
 
     rates = (
-        spec.column_schedule(rung, columns)
+        spec.column_schedule(rung, columns, recipe=wire)
         if schedule is None
         else tuple(int(r) for r in schedule)
     )
@@ -178,34 +216,39 @@ def tessera_tensor_payload_breakdown(
             f"{spec.name}: schedule sums to {sum(rates)} bits over {columns} "
             f"columns, which is not rung {rung} (q256)"
         )
-    if any(not 1 <= r <= spec.rate_cap for r in rates):
+    if any(not 1 <= r <= cap for r in rates):
         raise TesseraFormatError(
-            f"{spec.name}: schedule has a rate outside 1..{spec.rate_cap}"
+            f"{spec.name}: schedule has a rate outside 1..{cap}"
+        )
+    if body is BodyKind.WINDOW and window_bits < max(rates):
+        raise TesseraFormatError(
+            f"{spec.name}: window_bits {window_bits} cannot hold a rate-"
+            f"{max(rates)} position's bits"
         )
 
     # --- arity: the code grid is not the weight grid -----------------------
     # A tuple code covers `arity` **consecutive rows** (tessera's `tuple_grid`:
     # codes map onto k consecutive rows, because the trellis runs down columns
-    # and a tuple must be contiguous along the trellis axis).  So the body
-    # plane has `rows // arity` code-rows, not `rows`.
+    # and a tuple must be contiguous along the trellis axis).  So the BODY and
+    # COMPLETION planes have `rows // arity` code-rows, not `rows`.
     #
-    # `Geometry.positions` is `rows * columns`, and the scale planes are quoted
-    # off it -- but S6b groups *weights*, 32 of them, not codes.  Shrinking the
-    # row count alone would undercount the scale plane by exactly `arity`.
-    # Scaling the group geometry by the same factor cancels it exactly:
-    #     positions // (32 // k) == (weights // k) // (32 // k) == weights // 32
-    # which is the honest count, with no second accountant and no correction
-    # term applied after the fact.
+    # This is declared the way the *wire* declares it: a weight-space
+    # `Geometry` plus an explicit `arity` handed to `build_planes` /
+    # `build_terminal`, which is what `tessera.unit_artifact` and
+    # `tessera.calculator.terminal_rate` both do.  It used to be declared the
+    # other way -- code rows with the group geometry divided by the same factor
+    # -- which cancels exactly for the per-code and per-block planes and so
+    # priced every TCQ artifact identically.  It does **not** cancel for a
+    # per-*row* plane: DIAG_SV holds one fp16 per output channel
+    # (`layout._counts_for`), and shrunk rows under-declared the CHANNEL scale
+    # plane by exactly `arity`.  Verified against `terminal_rate` at three
+    # shapes, both arities, both spans: identical everywhere except CHANNEL at
+    # arity 2, where this convention is the wire's and the other one was wrong.
     if rows % spec.arity:
         raise TesseraFormatError(
             f"{spec.name}: {rows} rows is not a multiple of arity {spec.arity}; "
             "a tuple code spans that many consecutive rows and cannot straddle "
             "the end of the tensor"
-        )
-    if GROUP_WEIGHTS % spec.arity or HALF_WEIGHTS % spec.arity:
-        raise TesseraFormatError(
-            f"{spec.name}: arity {spec.arity} does not divide the S6b group "
-            f"geometry ({GROUP_WEIGHTS}/{HALF_WEIGHTS})"
         )
     code_rows = rows // spec.arity
     if code_rows % span:
@@ -218,16 +261,30 @@ def tessera_tensor_payload_breakdown(
     # footprint carries; `alphabets` is the table itself.  Revalidating a report
     # must use the recorded count, or it re-prices a different unit.
     if alphabet_bytes is None:
-        alphabet_bytes = _alphabet_bytes(spec, alphabets)
+        alphabet_bytes = _alphabet_bytes(spec, alphabets, cap)
     elif type(alphabet_bytes) is not int or alphabet_bytes < 0:
         raise TesseraFormatError("alphabet_bytes must be a nonnegative integer")
+    if body is BodyKind.WINDOW:
+        # The ALPHABET plane *is* the window table: `2^window_bits` one-byte
+        # grid codes, written inline in the unit (`tessera.unit_artifact`).
+        # It is charged here because it is charged on the wire, and an
+        # accountant that left it out would disagree with the artifact by
+        # exactly the bytes that distinguish a wide window from a narrow one.
+        table_bytes = 1 << window_bits
+        if alphabets or alphabet_bytes not in (0, table_bytes):
+            raise TesseraFormatError(
+                f"{spec.name}: a window body's ALPHABET plane is its own "
+                f"{table_bytes}-byte table; an anchor alphabet cannot be "
+                "supplied alongside it"
+            )
+        alphabet_bytes = table_bytes
 
     geometry = Geometry(
-        rows=code_rows,
+        rows=rows,
         columns=columns,
         superblock_columns=SUPERBLOCK_WEIGHTS,
-        group_weights=GROUP_WEIGHTS // spec.arity,
-        half_weights=HALF_WEIGHTS // spec.arity,
+        group_weights=GROUP_WEIGHTS,
+        half_weights=HALF_WEIGHTS,
         quantizable_params=rows * columns,
     )
     terminal_spec = TerminalSpec(
@@ -241,38 +298,49 @@ def tessera_tensor_payload_breakdown(
         # only defence is that this spec now sizes the *planes* as well as the
         # terminal, so the two cannot describe different artifacts.
         completion_bits=tuple(
-            (spec.rate_cap - r) if completion is None
-            else min(completion, spec.rate_cap - r)
+            (cap - r) if completion is None
+            else min(completion, cap - r)
             for r in rates
         ),
         released_positions=0,
         # A LUT plane has no base plane; its table lives in the manifest
-        # (side bytes, outside the plane region this accountant prices).
+        # (side bytes, outside the plane region this accountant prices).  A
+        # CHANNEL plane has no block plane at all: the scale is one fp16 per
+        # output row on DIAG_SV (schema minor 3, `tessera.scale_channel`).
         with_scale_base=plane == "s6b",
-        with_scale_refine=True,
+        with_scale_refine=plane in ("s6b", "lut16"),
         with_diagonals=with_diagonals,
+        with_row_scale=plane == "channel",
     )
+    if plane == "channel" and with_diagonals:
+        raise TesseraFormatError(
+            f"{spec.name}: a CHANNEL plane *is* the DIAG_SV field; segment 2a "
+            "cannot be fitted under it (tessera.encode.encode_unit)"
+        )
     planes = build_planes(
         geometry,
         rates,
         bytes(alphabet_bytes),
         b"",
         with_diagonals=with_diagonals,
-        cap=spec.rate_cap,
+        cap=cap,
+        arity=spec.arity,
         spec=terminal_spec,
         span=span,
+        with_row_scale=plane == "channel",
     )
     record = build_terminal(
         geometry, rates, terminal_spec, planes, alphabet_bytes, 0,
-        cap=spec.rate_cap, span=span,
+        cap=cap, arity=spec.arity, span=span,
     )
 
+    route = tessera_serving_route(spec, wire, rung)
     total_bytes = record.exact_bytes + sidecar_header_bytes
     exact_bpw = Fraction(total_bytes * 8, rows * columns)
     breakdown = {
         "schema": TESSERA_TENSOR_PAYLOAD_SCHEMA,
         "wire_schema": "prismaquant.tessera.v1",
-        "format": spec.format_name(rung),
+        "format": spec.format_name(rung, recipe=wire),
         "family": spec.name,
         "grid": spec.base,
         "arity": spec.arity,
@@ -282,6 +350,9 @@ def tessera_tensor_payload_breakdown(
         "body_rate_q256": rung,
         "scale_contract": plane,
         "trellis_span": span,
+        "body_kind": body.name.lower(),
+        "window_bits": window_bits,
+        "rate_cap": cap,
         "superblock_weights": SUPERBLOCK_WEIGHTS,
         "schedule_bits_per_code_row": sum(rates),
         "code_rows": code_rows,
@@ -294,11 +365,18 @@ def tessera_tensor_payload_breakdown(
         "exact_bpp_payload": str(record.exact_bpp),
         "exact_bpw": float(exact_bpw),
         "exact_bpw_rational": [exact_bpw.numerator, exact_bpw.denominator],
-        # The stock lane materialises into `terminal_format` at load, so the
-        # resident cost is that format's, not this one's.  Reported because a
-        # byte win that disappears at load is not a byte win.
-        "terminal_format": spec.terminal_format,
-        "materialises": spec.lane == "stock",
+        # The route the decoded tile executes on: a joint property of the base
+        # grid and the scale plane, not of the grid alone.  Reported because a
+        # byte win that disappears at load is not a byte win, and a byte win on
+        # a route no kernel takes is not a byte win either (principle 12).
+        # `lane` above is the grid's -- can these values be a hardware format
+        # at all -- while these three are the *recipe's*: an E4M3 tile over a
+        # per-16 block plane is stock-lane and materialises into nothing,
+        # because no kernel reads FP8 weights at that scale granularity.
+        "terminal_format": route.terminal_format,
+        "materialises": route.materialises,
+        "activation_contract": route.contract,
+        "min_capability_sm": route.min_capability_sm,
         "pre_render_recipe_identity_scope": _IDENTITY_SCOPE,
     }
     breakdown["pre_render_recipe_identity_sha256"] = _recipe_identity(breakdown)
@@ -333,10 +411,17 @@ def validate_tessera_tensor_payload_breakdown(
         layout=str(copied.get("layout", "tight")),
         alphabet_bytes=int(copied.get("alphabet_bytes", 0)),
         sidecar_header_bytes=int(copied.get("sidecar_header_bytes", 0)),
-        # A report written before minor 1 carries neither field and means the
-        # wire of its day; one written after names what it priced.
-        span=int(copied.get("trellis_span", 1)),
-        scale_plane=str(copied.get("scale_contract", "s6b")),
+        # A report written before minor 1 carries none of these fields and
+        # means the wire of its day; one written after names what it priced.
+        # The recipe is rebuilt from the report rather than looked up, so a
+        # footprint keeps revalidating as *itself* after the exporter's default
+        # recipe moves -- which is the whole reason the fields are recorded.
+        recipe=recipe_from_wire_names(
+            span=int(copied.get("trellis_span", 1)),
+            scale_plane=str(copied.get("scale_contract", "s6b")),
+            body=str(copied.get("body_kind", "tcq")),
+            window_bits=int(copied.get("window_bits", 0)),
+        ),
     )
     claimed = copied.get("pre_render_recipe_identity_sha256")
     if claimed != _recipe_identity(copied):

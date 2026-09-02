@@ -25,14 +25,16 @@ A second copy of a rate constant is a drift bug waiting for a rate to change.
 """
 from __future__ import annotations
 
-from fractions import Fraction
 from functools import lru_cache
 
 import torch
+from tessera import export as _tessera_export
 
 from .tessera_formats import (
     TesseraFamily,
     parse_tessera_format_name,
+    scale_plane_name,
+    tessera_wire_recipe,
 )
 
 __all__ = [
@@ -48,14 +50,17 @@ __all__ = [
 #: The convolutional code the encoder profile commits to.  Memory 6 is the
 #: order every measured Tessera figure was produced at; it is not a free
 #: parameter here, because changing it changes ``encoder_profile_id`` and so
-#: changes which artifacts a reader will accept.
-TESSERA_CONV_MEMORY = 6
+#: changes which artifacts a reader will accept.  Read from
+#: ``tessera.export.DEFAULT_CODE`` rather than restated: a second spelling of
+#: the exporter's code is a rendering confound waiting for the code to change.
+TESSERA_CONV_MEMORY = _tessera_export.DEFAULT_CODE.memory
 
 #: Segment-2b scale geometry.  These are the values ``artifact_bpp`` already
 #: prices (``SCALE_PLANE_BITS_Q256``); rendering on different ones would make
-#: the surrogate and the accountant disagree about the same artifact.
-TESSERA_GROUP = 32
-TESSERA_HALF = 16
+#: the surrogate and the accountant disagree about the same artifact.  Also
+#: the exporter's (``tessera.export.DEFAULT_GROUP``/``DEFAULT_HALF``).
+TESSERA_GROUP = _tessera_export.DEFAULT_GROUP
+TESSERA_HALF = _tessera_export.DEFAULT_HALF
 
 
 #: Does a pinned runtime execute Tessera bytes natively?
@@ -127,25 +132,36 @@ def tessera_rung_is_serialisable(name: str) -> bool:
     return grid_digest(grid) in SERIALISABLE_GRIDS
 
 
-@lru_cache(maxsize=256)
-def _plan(family: TesseraFamily, body_rate_q256: int, n_columns: int):
-    """Rate schedule and forests for one (family, rung, width).
+def _plan(family: TesseraFamily, body_rate_q256: int, n_columns: int, recipe):
+    """Rate schedule and forests for one (family, rung, width, recipe).
 
-    Cached because the forests are an exhaustive per-rate optimisation and are
-    identical for every Linear of the same width at the same rung -- which, on
-    a 288-expert MoE layer, is 864 units sharing one plan.
+    This does not build a plan; it asks the exporter for **its** plan.
+    ``tessera.export.plan_for`` is the function ``encode_linear`` calls, it
+    is ``lru_cache``d there (the forests are an exhaustive per-rate
+    optimisation, identical for every Linear of the same width at the same
+    rung -- on a 288-expert MoE layer, 864 units sharing one plan), and it
+    already dispatches the two things a second implementation here would get
+    wrong: the body-dependent rate cap, and the Gaussian a TCQ forest is
+    optimised against under a CHANNEL plane.  Under a WINDOW body it returns
+    the grid itself in the forests' place, which is what ``encode_unit`` and
+    ``reconstruct_unit`` both accept there.
     """
-    from tessera.alphabet import build_forest
-    from tessera.grammar import bresenham_rate_schedule
+    from tessera.manifest import BodyKind, ScalePlaneKind
+    from tessera.scale_channel import default_channel_sigma
 
     grid = _grid_for(family)
-    # ``body_rate_q256`` is per POSITION; the trellis spends bits per CODE, and
-    # a code covers ``arity`` positions.  Getting this factor wrong is silent:
-    # it produces a legal artifact at the wrong rate.
-    root = Fraction(body_rate_q256 * family.arity, 256)
-    rates = bresenham_rate_schedule(root, n_columns, cap=grid.rate_cap)
-    forests = {rate: build_forest(rate, grid=grid) for rate in sorted(set(rates))}
-    return grid, rates, forests
+    body = BodyKind(recipe.body)
+    channel_sigma = recipe.channel_sigma
+    if ScalePlaneKind(recipe.scale_plane) is ScalePlaneKind.CHANNEL:
+        if channel_sigma is None:
+            channel_sigma = default_channel_sigma(grid)
+        source_sigma = channel_sigma
+    else:
+        source_sigma = None
+    rates, forests = _tessera_export.plan_for(
+        grid, body_rate_q256, n_columns, body, source_sigma
+    )
+    return grid, rates, forests, channel_sigma
 
 
 def render_tessera_weight(
@@ -153,28 +169,41 @@ def render_tessera_weight(
     name: str,
     *,
     col_weights: "torch.Tensor | None" = None,
+    recipe=None,
 ) -> torch.Tensor:
     """Encode ``weight`` at the rung ``name`` names and return the reconstruction.
 
     The returned tensor is what a Tessera artifact at this rung decodes to, so
     it is simultaneously the surrogate's error source, the KL validation's
-    weight, and (once an exporter exists) the bytes' meaning -- the rendering
-    identity principle 8 requires, established by construction rather than by
-    keeping three code paths in step.
+    weight, and the bytes' meaning -- the rendering identity principle 8
+    requires, established by construction rather than by keeping three code
+    paths in step.
+
+    The wire it renders is the **recipe**: ``tessera.export.wire_recipe`` is the
+    single statement of which body, span, scale plane and window the exporter
+    writes for this grid at this rung, and every knob below is resolved from it
+    exactly as ``encode_linear`` resolves its own ``None`` wire kwargs.  Passing
+    ``recipe`` explicitly renders a wire the exporter does not write by default
+    -- which is how a candidate recipe gets priced before it is the default,
+    and how the test that pins this function against ``encode_linear`` reaches
+    the WINDOW and CHANNEL wires.
+
+    This deliberately stops short of the byte path.  ``encode_linear`` verifies
+    that ``read_unit_artifact`` equals ``reconstruct_unit``, so rendering the
+    encoder's reconstruction *is* rendering the bytes -- while a grid that
+    renders but is not a wire commitment (``tessera_rung_is_serialisable``)
+    still renders here, which is the distinction the menu has to be able to
+    draw before it allocates.
 
     ``weight`` is ``[out_features, in_features]``.  The trellis runs down
     columns and a k-tuple covers ``arity`` consecutive **rows**, so tuples are
-    consecutive output channels at one input position, and the segment-2b
-    scales run along the input axis in row-major order -- the same axis
+    consecutive output channels at one input position, and the scale plane's
+    halves run along the input axis in row-major order -- the same axis
     NVFP4's group-16 scales run along.
     """
     from tessera.decode import reconstruct_unit
     from tessera.encode import encode_unit
-    from tessera.export import (
-        DEFAULT_SCALE_PLANE, DEFAULT_SPAN, DEFAULT_TRELLIS_WEIGHTING,
-    )
-    from tessera.manifest import RotationState
-    from tessera.trellis import ConvCode
+    from tessera.manifest import BodyKind, RotationState
 
     parsed = parse_tessera_format_name(name)
     if parsed is None:
@@ -198,7 +227,13 @@ def render_tessera_weight(
             "every other format already keys MoE units."
         )
     rows, cols = weight.shape
-    grid, rates, forests = _plan(family, rung, cols)
+    wire = tessera_wire_recipe(family, rung) if recipe is None else recipe
+    body = BodyKind(wire.body)
+    # A window body has no super-symbols; ``encode_linear`` resolves the span
+    # to 1 there rather than making every window caller escape a default that
+    # does not apply, and so does this.
+    span = 1 if body is BodyKind.WINDOW else int(wire.span)
+    grid, rates, forests, channel_sigma = _plan(family, rung, cols, wire)
     if rows % grid.arity:
         raise ValueError(
             f"{name}: {rows} output features is not a whole number of arity-"
@@ -209,65 +244,128 @@ def render_tessera_weight(
         weight,
         forests,
         rates,
-        ConvCode(memory=TESSERA_CONV_MEMORY),
+        _tessera_export.DEFAULT_CODE,
         rotation=RotationState.NONE,
         with_diagonals=False,
         completion=0,
         group=TESSERA_GROUP,
         half=TESSERA_HALF,
-        # The exporter's wire, read from the exporter: the surrogate prices
-        # the bytes that ship (principle 8).  ``encode_unit``'s own defaults
-        # are the pre-minor-1 wire, kept so old artifacts stay reproducible.
-        span=DEFAULT_SPAN,
-        scale_plane=DEFAULT_SCALE_PLANE,
-        trellis_weighting=DEFAULT_TRELLIS_WEIGHTING,
+        # Every encode setting below is the exporter's, read from the
+        # exporter: the surrogate prices the bytes that ship (principle 8).
+        # ``encode_unit``'s own defaults are the pre-minor-1 wire, kept so old
+        # artifacts stay reproducible, so leaving any of them out renders a
+        # different tensor than ``encode_linear`` writes.
+        scale_refit=_tessera_export.DEFAULT_SCALE_REFIT,
+        span=span,
+        scale_plane=wire.scale_plane,
+        trellis_weighting=_tessera_export.DEFAULT_TRELLIS_WEIGHTING,
+        body=body,
+        window_bits=wire.window_bits,
+        window_seed=wire.window_seed,
+        window_sigma=wire.window_sigma,
+        channel_sigma=channel_sigma,
     )
-    out = reconstruct_unit(unit, forests, ConvCode(memory=TESSERA_CONV_MEMORY))
+    out = reconstruct_unit(unit, forests, _tessera_export.DEFAULT_CODE)
     return out.to(dtype=weight.dtype, device=weight.device)
 
 
-def tessera_quantize_dequantize(name: str):
+def tessera_quantize_dequantize(name: str, recipe=None):
     """A one-argument RTN-shaped callable, for ``FormatSpec.quantize_dequantize``.
 
     Tessera *is* the quantizer -- there is no post-hoc error compensation to
     layer on top, which is precisely the "format-first over GPTQ compensation"
     preference: choosing the right ``(format, transform)`` beats correcting a
     wrong one afterwards.  So the registry callable is the whole render.
+
+    ``recipe`` is closed over so a spec synthesized for a wire the exporter
+    does not write by default still *renders* that wire.  A spec priced at one
+    recipe whose callable rendered another would be principle 8's drift with
+    both halves inside one ``FormatSpec``.
     """
 
     def _qdq(w: torch.Tensor) -> torch.Tensor:
-        return render_tessera_weight(w, name)
+        return render_tessera_weight(w, name, recipe=recipe)
 
     return _qdq
 
 
-def synthesize_tessera_spec(name: str):
+def _identity_activation(x: torch.Tensor) -> torch.Tensor:
+    """A weight-only format's activation path: the kernel reads bf16."""
+    return x
+
+
+def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
     """Build a ``FormatSpec`` for a Tessera rung on demand, or return None.
 
     Returning None rather than raising for a non-Tessera name is what lets
     ``get_format`` use this as a fallback without reordering its own error
     handling: an unknown name must still produce ``get_format``'s KeyError,
     naming the registry, not a Tessera parse failure.
+
+    ``recipe`` is the wire being described and defaults to the one the
+    exporter writes for this family at this rung.  ``shape`` is
+    ``(rows, columns)`` and is required exactly when that recipe charges
+    something per unit -- a CHANNEL row field or a WINDOW table -- because
+    ``exact_bits_per_param`` is a scalar rate that ``memory_bytes_for_shape``
+    multiplies by the parameter count.  Under every recipe shipping today
+    (TCQ over a block plane) nothing is per-unit and no shape is needed.
     """
     from . import format_registry as fr
-    from .tessera_formats import artifact_bpp, tessera_wire_defaults
+    from .tessera_formats import (
+        artifact_bpp, scale_plane_name, tessera_serving_route,
+        tessera_wire_recipe,
+    )
 
     parsed = parse_tessera_format_name(name)
     if parsed is None:
         return None
     family, rung = parsed
+    wire = tessera_wire_recipe(family, rung) if recipe is None else recipe
+    plane = scale_plane_name(wire.scale_plane)
 
-    bpp = artifact_bpp(family, rung)
-    _span, plane = tessera_wire_defaults()
+    bpp = artifact_bpp(family, rung, recipe=wire, shape=shape)
     # Descriptive fields for the scale plane the wire carries.  ``s6b`` is an
     # E8M0 byte per 32 plus a nibble per 16; ``lut16`` is a nibble per 16
-    # indexing a per-unit E4M3 table.  Both materialise to one E4M3 per 16 at
-    # load; the exact rate travels in ``exact_bits_per_param`` either way.
-    scale_fields = (
-        dict(group_size=TESSERA_GROUP, scale_bits=8, scale_dtype_name="uint8_e8m0")
-        if plane == "s6b"
-        else dict(group_size=TESSERA_HALF, scale_bits=4, scale_dtype_name="uint4_lut16_e4m3")
-    )
+    # indexing a per-unit E4M3 table; ``channel`` is one fp16 per output row
+    # over an fp32 global and no block plane at all (schema minor 3).  The
+    # first two materialise to one E4M3 per 16 at load; the exact rate travels
+    # in ``exact_bits_per_param`` in every case.
+    if plane == "s6b":
+        scale_fields = dict(
+            group_size=TESSERA_GROUP, scale_bits=8, scale_dtype_name="uint8_e8m0")
+    elif plane == "lut16":
+        scale_fields = dict(
+            group_size=TESSERA_HALF, scale_bits=4,
+            scale_dtype_name="uint4_lut16_e4m3")
+    else:
+        # ``group_size=0`` is the registry's spelling for per-output-channel
+        # (``FormatSpec.scale_count_for_shape``), the same one ``FP8_E4M3``
+        # uses.
+        scale_fields = dict(
+            group_size=0, scale_bits=16, scale_dtype_name="fp16_row_x_fp32_global")
+
+    # --- the fifth axis: what the decoded tile executes as -----------------
+    # Carried in the fields the registry already uses for exactly this --
+    # ``act_bits``/``act_dtype_name``/``act_group_size``/``min_capability_sm``,
+    # read through the single predicate ``FormatSpec.act_quant_changes_input``
+    # (``format_registry.py:101``) -- rather than in a new field, so the
+    # allocator's bit-exact cost short-circuit, the KL validator's activation
+    # assignment and the caches all see a Tessera rung's A side the way they
+    # see NVFP4's (``format_registry.py:738``) and FP8's (``:878``).
+    #
+    # The activation RTN is the *serving* format's own callable, taken by
+    # reference: an A-side priced with a second implementation of NVFP4's
+    # dynamic per-group quantiser would be a rendering confound on the axis
+    # that measurement showed dominates at W4A4.
+    route = tessera_serving_route(family, wire, rung)
+    if route.activation_source_format is None:
+        # Weight-only: the identity, spelled the way every A16 row in the
+        # registry spells it (``NVFP4A16``, ``INT8_W8A16``).
+        activation_qdq = _identity_activation
+    else:
+        activation_qdq = fr.get_format(
+            route.activation_source_format).activation_quantize_dequantize
+
     return fr.FormatSpec(
         name=name,
         # ``weight_bits`` is the integer field the accountant reads; Tessera's
@@ -278,19 +376,24 @@ def synthesize_tessera_spec(name: str):
         weight_bits=-(-bpp.numerator // bpp.denominator),
         **scale_fields,
         weight_element_dtype=f"tessera_{family.base.lower()}_k{family.arity}",
-        act_bits=None,               # W-only: the body decodes to bf16 weights
-        act_dtype_name=None,
+        act_bits=route.act_bits,
+        act_dtype_name=route.act_dtype_name,
+        act_group_size=route.act_group_size,
         family=family.name,
-        min_capability_sm=80,
-        quantize_dequantize=tessera_quantize_dequantize(name),
+        min_capability_sm=route.min_capability_sm,
+        quantize_dequantize=tessera_quantize_dequantize(name, wire),
+        activation_quantize_dequantize=activation_qdq,
         # Producer-eligibility is the AND of two independent gates, and
         # conflating them is how a rung reaches the DP that cannot be written:
         #   (a) the wire can carry it -- the grid's digest is a permanent
-        #       commitment in SERIALISABLE_GRIDS, which E4M3 is not;
+        #       commitment in SERIALISABLE_GRIDS;
         #   (b) a pinned runtime executes it -- the kernel lane has no vLLM
         #       backend yet, so this is False for every rung today (principle 9).
         # (a) is per-rung and settled here; (b) is one flag so that flipping it
         # behind an attested route CANNOT silently admit an unwritable rung.
+        # ``route`` above is a layout fact, NOT an attestation: a rung whose
+        # tile would materialise into NVFP4 is still not producer-eligible
+        # until a pinned runtime is measured loading and routing these bytes.
         producer_eligible=(
             _TESSERA_SERVING_LANE_EXISTS and tessera_rung_is_serialisable(name)
         ),

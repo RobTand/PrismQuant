@@ -24,9 +24,13 @@ to change.
 The space, and why it is continuous
 -----------------------------------
 A family is a **(base grid, arity)** pair.  A base grid of ``G`` codes at arity
-``k`` gives a code space of ``G**k``, so ``payload_bits = k*log2(G)`` and the
-rate cap is ``payload_bits - 1`` (``|A_R| * |D(a)| = 2^(R+1) * 2^(cap-R)`` has
-to close at ``2^payload_bits`` exactly).  A code covers ``k`` positions, so the
+``k`` gives a code space of ``G**k``, so ``payload_bits = k*log2(G)``, and the
+rate cap is a property of the *body* the family's wire recipe names: the TCQ
+trellis spends one payload bit on its convolutional code, so its cap is
+``payload_bits - 1`` (``|A_R| * |D(a)| = 2^(R+1) * 2^(cap-R)`` has to close at
+``2^payload_bits`` exactly), while the WINDOW body shapes with history rather
+than a code bit and caps at ``payload_bits``.  Ask :func:`family_rate_cap`,
+never the subtraction.  A code covers ``k`` positions, so the
 per-position body rate is ``rate/k`` -- which is how ``k=2`` fills the rungs
 between the ``k=1`` ones, and how 4.0 bpp becomes addressable at all.
 
@@ -62,7 +66,17 @@ __all__ = [
     "RATE_SURFACE_MODES",
     "SCALE_PLANE_BITS_Q256",
     "SCALE_LUT_BITS_Q256",
+    "SCALE_PLANE_NAMES",
+    "TesseraServingRoute",
+    "family_q256_bounds",
+    "family_rate_cap",
+    "materialised_terminal_format",
+    "tessera_serving_route",
+    "recipe_from_wire_names",
+    "recipe_is_shape_free",
+    "scale_plane_name",
     "tessera_wire_defaults",
+    "tessera_wire_recipe",
     "wire_overhead_q256",
     "SUPERBLOCK_WEIGHTS",
     "TesseraFamily",
@@ -84,12 +98,14 @@ class TesseraFormatError(ValueError):
 
 try:  # pragma: no cover - exercised by the import-failure path
     from tessera.alphabet import E2M1_GRID, E4M3_GRID, lloyd_max_grid, tuple_grid
+    from tessera.export import WireRecipe, wire_recipe
     from tessera.grammar import (
         Q256_UNIT,
         bresenham_rate_schedule,
         root_from_q256,
         superblock_quota_ok,
     )
+    from tessera.manifest import BodyKind, ScalePlaneKind
 except ImportError as exc:  # pragma: no cover
     raise TesseraFormatError(
         "prismaquant.tessera_formats requires the `tessera` package, which is "
@@ -118,43 +134,272 @@ SCALE_PLANE_BITS_Q256 = Q256_UNIT // 2
 SCALE_LUT_BITS_Q256 = Q256_UNIT // 4
 
 
+#: The wire's spelling of a scale plane, in the vocabulary this module and
+#: ``tessera_footprint`` have always quoted planes in.  ``channel`` is schema
+#: minor 3: one fp16 per output row on DIAG_SV, no block plane at all.
+SCALE_PLANE_NAMES: Mapping[int, str] = {
+    ScalePlaneKind.S6B: "s6b",
+    ScalePlaneKind.LUT: "lut16",
+    ScalePlaneKind.CHANNEL: "channel",
+}
+_PLANE_KINDS: Mapping[str, "ScalePlaneKind"] = {
+    name: kind for kind, name in SCALE_PLANE_NAMES.items()
+}
+
+
+def scale_plane_name(plane: "ScalePlaneKind | str") -> str:
+    """``ScalePlaneKind`` -> the string this module prices, or pass a string through."""
+    if isinstance(plane, str):
+        if plane not in _PLANE_KINDS:
+            legal = ", ".join(sorted(_PLANE_KINDS))
+            raise TesseraFormatError(f"unknown scale plane {plane!r}; {legal}")
+        return plane
+    try:
+        return SCALE_PLANE_NAMES[ScalePlaneKind(plane)]
+    except (KeyError, ValueError) as exc:
+        raise TesseraFormatError(f"unknown scale plane {plane!r}") from exc
+
+
+@lru_cache(maxsize=512)
+def _recipe_for(base: str, base_size: int, arity: int, rung: "int | None") -> "WireRecipe":
+    return wire_recipe(_build_grid(base, base_size, arity), rung)
+
+
+def tessera_wire_recipe(
+    family: "str | TesseraFamily", rung: "int | None" = None
+) -> "WireRecipe":
+    """The wire ``tessera``'s exporter writes for ``family`` at ``rung``.
+
+    One lookup, and it is the package's own: ``tessera.export.wire_recipe`` is
+    the single statement of which body, span, scale plane and window the
+    exporter puts on the wire for a grid at a rung, and every consumer here --
+    the render leg, both accountants, the synthesized ``FormatSpec`` -- reads
+    it rather than carrying a copy.  A PrismaQuant-side default would be the
+    second spelling of one decision, and the 2026-09-01 span/plane flip is
+    exactly the change a stale copy prices wrongly.
+
+    ``rung=None`` asks for the family's *rung-independent* recipe, which is
+    what the family's bounds are stated against.  That is not an assumption
+    this module invents: ``tessera.export._resolve_recipe`` already refuses a
+    checkpoint whose plan resolves to more than one recipe on a grid, so a
+    family really does have one body and one plane per exported artifact.  A
+    rung-varying recipe would still be legal per *unit*, and every function
+    here that prices or validates a rung takes the rung, so the only thing
+    that would need revisiting is the family-level interval.
+    """
+    spec = get_tessera_family(family)
+    return _recipe_for(spec.base, spec.base_size, spec.arity, rung)
+
+
+def recipe_is_shape_free(recipe: "WireRecipe") -> bool:
+    """Does this recipe's overhead have a per-position rate at all?
+
+    Two of the wire's terms are charged **per unit**, not per position, so
+    they have no bits-per-weight until a shape is named:
+
+    * a CHANNEL scale plane -- 16 bits per output row, i.e. ``16/columns``;
+    * a WINDOW body's table -- ``2^L`` bytes inline on the ALPHABET plane,
+      i.e. ``8 * 2^L / (rows * columns)``.
+
+    A block plane (S6b, LUT) and the TCQ span labels are flat per position,
+    so a TCQ recipe over a block plane -- everything shipping today -- is
+    shape-free and the closed-form accountants stay exact without a shape.
+    """
+    return (
+        BodyKind(recipe.body) is not BodyKind.WINDOW
+        and ScalePlaneKind(recipe.scale_plane) is not ScalePlaneKind.CHANNEL
+    )
+
+
+def recipe_from_wire_names(
+    span: int, scale_plane: str, body: "str | BodyKind" = "tcq", window_bits: int = 0,
+) -> "WireRecipe":
+    """Build a ``WireRecipe`` from the string vocabulary this module quotes.
+
+    The accountants have always taken ``span`` and a plane *name*; this is the
+    adapter that keeps those call sites working now that the recipe is the
+    unit of account, and the one place the two vocabularies meet.
+    """
+    kind = _PLANE_KINDS[scale_plane_name(scale_plane)]
+    if isinstance(body, str):
+        try:
+            body = {"tcq": BodyKind.TCQ, "window": BodyKind.WINDOW}[body.lower()]
+        except KeyError as exc:
+            raise TesseraFormatError(f"unknown body {body!r}; tcq or window") from exc
+    return WireRecipe(
+        body=BodyKind(body), span=int(span), scale_plane=kind,
+        window_bits=int(window_bits),
+    )
+
+
 def tessera_wire_defaults() -> "tuple[int, str]":
     """``(span, scale plane)`` the tessera exporter writes today.
 
-    One source of truth, read from the package that writes the bytes: the
-    render leg encodes with these, and both accountants price them.  A
-    PrismaQuant-side copy would be the third spelling of one decision, and the
-    2026-09-01 default flip (span 2 over a LUT plane) is exactly the change a
-    stale copy would have priced wrongly.
+    The **rung-independent projection** of :func:`tessera_wire_recipe`, kept
+    for the callers that predate the recipe and want the two scalars.  It
+    drops the body, the window and the recipe's per-grid variation, so it is
+    wrong the day the recipe stops being one wire for every family -- which is
+    why it refuses rather than guesses: if the hardware families resolve to
+    different ``(span, plane)`` pairs, or to a body that is not TCQ, it raises
+    and names :func:`tessera_wire_recipe`.  New code should ask for the recipe
+    of the family and rung it is pricing.
     """
-    from tessera.export import DEFAULT_SCALE_PLANE, DEFAULT_SPAN
-    from tessera.manifest import ScalePlaneKind
+    recipes = {
+        (r.span, scale_plane_name(r.scale_plane), BodyKind(r.body))
+        for r in (tessera_wire_recipe(f) for f in _hardware_families())
+    }
+    if len(recipes) != 1:
+        raise TesseraFormatError(
+            "the exporter no longer writes one wire for every family "
+            f"({sorted((s, p, b.name) for s, p, b in recipes)}); ask "
+            "tessera_wire_recipe(family, rung) for the wire being priced"
+        )
+    span, plane, body = next(iter(recipes))
+    if body is not BodyKind.TCQ:
+        raise TesseraFormatError(
+            f"the default wire's body is {body.name}, which this two-scalar "
+            "projection cannot state; ask tessera_wire_recipe(family, rung)"
+        )
+    return int(span), plane
 
-    plane = "lut16" if ScalePlaneKind(DEFAULT_SCALE_PLANE) is ScalePlaneKind.LUT else "s6b"
-    return int(DEFAULT_SPAN), plane
+
+def _hardware_families() -> "tuple[TesseraFamily, ...]":
+    """The families whose recipe a global default has to hold for.
+
+    Free (Lloyd-Max) grids are excluded because they are unexportable by
+    construction -- no identifier reproduces their values -- so the exporter
+    never writes a wire for one.
+    """
+    return tuple(
+        tessera_family(base, arity)
+        for base in sorted(_HARDWARE_BASES)
+        for arity in (1, 2)
+        if _family_fits_the_anchor_budget(base, arity)
+    )
+
+
+def _family_fits_the_anchor_budget(base: str, arity: int) -> bool:
+    try:
+        tessera_family(base, arity)
+    except TesseraFormatError:
+        return False
+    return True
+
+
+def _resolved_recipe(
+    spec: "TesseraFamily",
+    recipe: "WireRecipe | None",
+    span: "int | None",
+    scale_plane: "str | ScalePlaneKind | None",
+    rung: "int | None" = None,
+) -> "WireRecipe":
+    """One recipe from the three ways a caller may name one.
+
+    Precedence: an explicit ``recipe`` wins; otherwise the family's recipe at
+    ``rung``, with ``span``/``scale_plane`` overriding the fields they name --
+    which is the same "the caller overrides only what it names" rule
+    ``tessera.export.encode_linear`` applies to its own wire kwargs.
+    """
+    base = recipe if recipe is not None else tessera_wire_recipe(spec, rung)
+    if span is None and scale_plane is None:
+        return base
+    if recipe is not None:
+        raise TesseraFormatError(
+            "name a recipe or the span/scale_plane scalars, not both"
+        )
+    kind = (
+        ScalePlaneKind(base.scale_plane) if scale_plane is None
+        else _PLANE_KINDS[scale_plane_name(scale_plane)]
+    )
+    return WireRecipe(
+        body=base.body,
+        span=base.span if span is None else int(span),
+        scale_plane=kind,
+        window_bits=base.window_bits,
+        window_seed=base.window_seed,
+        window_sigma=base.window_sigma,
+        channel_sigma=base.channel_sigma,
+    )
 
 
 def wire_overhead_q256(
-    spec: "TesseraFamily", span: "int | None" = None, scale_plane: "str | None" = None,
+    spec: "TesseraFamily",
+    span: "int | None" = None,
+    scale_plane: "str | None" = None,
+    *,
+    recipe: "WireRecipe | None" = None,
+    shape: "Sequence[int] | None" = None,
+    rung: "int | None" = None,
 ) -> Fraction:
     """Per-position q256 the wire adds on top of the body rate.
 
-    Two terms.  The span-L trellis stores one select bit per L *codes* instead
-    of one per code and ``L - 1`` two-bit labels: ``(L - 1) / L`` extra bits
-    per code, i.e. per ``arity`` positions.  The scale plane is a flat
-    ``SCALE_PLANE_BITS_Q256`` (S6b) or ``SCALE_LUT_BITS_Q256`` (LUT).  At
-    ``span=1, s6b`` this is the half-bit every pre-minor-1 figure carried.
+    Four terms, one per thing the wire charges that is not a body bit:
+
+    * **span labels.**  A span-L trellis stores one select bit per L *codes*
+      instead of one per code and ``L - 1`` two-bit labels: ``(L - 1) / L``
+      extra bits per code, i.e. per ``arity`` positions.  A WINDOW body has no
+      super-symbols and pays none of it.
+    * **a block scale plane**: a flat ``SCALE_PLANE_BITS_Q256`` (S6b) or
+      ``SCALE_LUT_BITS_Q256`` (LUT).
+    * **a CHANNEL scale plane**: 16 bits per output *row* on DIAG_SV, which is
+      ``16 / columns`` per position -- a per-unit cost, so it needs ``shape``.
+    * **a WINDOW body's table**: ``2^window_bits`` bytes inline on the
+      ALPHABET plane, ``8 * 2^L / (rows * columns)`` per position -- likewise
+      per-unit, likewise needs ``shape``.
+
+    ``shape`` is ``(rows, columns)`` in **weight** space.  A recipe with a
+    per-unit term and no shape **raises** rather than dropping the term: the
+    only consumer of the shape-free value is ``FormatSpec.exact_bits_per_param``,
+    which ``memory_bytes_for_shape`` multiplies by the parameter count as an
+    exact rate, and a ``Fraction`` cannot carry "this is a floor".  Silently
+    returning the floor there is the drop, not the guard against it.  Nothing
+    raises today -- every family's recipe is TCQ over a block plane -- and the
+    day the recipe flips, spec synthesis fails loudly at this seam instead of
+    shipping an under-priced rung to the DP.  :func:`recipe_is_shape_free`
+    answers the question in advance; ``tessera_footprint`` prices the exact
+    bytes wherever the shape is known.
+
+    At ``span=1, s6b`` this is the half-bit every pre-minor-1 figure carried.
     """
-    default_span, default_plane = tessera_wire_defaults()
-    span = default_span if span is None else int(span)
-    plane = default_plane if scale_plane is None else str(scale_plane)
-    if span < 1:
-        raise TesseraFormatError(f"span must be positive, got {span}")
-    if plane not in ("s6b", "lut16"):
-        raise TesseraFormatError(f"unknown scale plane {plane!r}; s6b or lut16")
-    body_extra = Fraction((span - 1) * Q256_UNIT, span * spec.arity)
-    plane_bits = SCALE_PLANE_BITS_Q256 if plane == "s6b" else SCALE_LUT_BITS_Q256
-    return body_extra + plane_bits
+    wire = _resolved_recipe(spec, recipe, span, scale_plane, rung)
+    if wire.span < 1:
+        raise TesseraFormatError(f"span must be positive, got {wire.span}")
+    plane = scale_plane_name(wire.scale_plane)
+    body = BodyKind(wire.body)
+
+    total = Fraction(0)
+    if body is not BodyKind.WINDOW:
+        total += Fraction((wire.span - 1) * Q256_UNIT, wire.span * spec.arity)
+    if plane == "s6b":
+        total += SCALE_PLANE_BITS_Q256
+    elif plane == "lut16":
+        total += SCALE_LUT_BITS_Q256
+
+    if recipe_is_shape_free(wire):
+        return total
+    if shape is None:
+        raise TesseraFormatError(
+            f"{spec.name}: this wire charges per unit, not per position "
+            f"(body={body.name}, plane={plane}), so its rate is only defined "
+            "at a shape; pass shape=(rows, columns).  See recipe_is_shape_free."
+        )
+    dims = tuple(int(v) for v in shape)
+    if len(dims) != 2 or any(v <= 0 for v in dims):
+        raise TesseraFormatError(
+            f"shape must be two positive integers, got {tuple(shape)}"
+        )
+    rows, columns = dims
+    if plane == "channel":
+        # DIAG_SV: one fp16 per output row (``layout._counts_for``), over the
+        # unit's positions.  Weight rows, not code rows -- the scale is per
+        # output channel and a tuple code covers ``arity`` of them.
+        total += Fraction(16 * Q256_UNIT, columns)
+    if body is BodyKind.WINDOW:
+        # The ALPHABET plane *is* the table: ``2^L`` one-byte grid codes,
+        # inline in the unit (``tessera.calculator.terminal_rate``).
+        total += Fraction((1 << wire.window_bits) * 8 * Q256_UNIT, rows * columns)
+    return total
+
 
 #: Encoding scores ``2**payload_bits`` anchors at every trellis step, so the
 #: code space is a *cost*, not just an addressing choice.  65 536 anchors per
@@ -234,8 +479,23 @@ class TesseraFamily:
 
     @property
     def rate_cap(self) -> int:
-        """Largest legal rate per code: ``|A_R| * |D(a)|`` closes at 2^P."""
-        return self.payload_bits - 1
+        """Largest legal rate per code, **under this family's recipe**.
+
+        The TCQ trellis spends one bit of the payload on its convolutional
+        code, so ``|A_R| * |D(a)| = 2^(R+1) * 2^(cap-R)`` closes at ``2^P``
+        with ``cap = payload_bits - 1``.  The WINDOW body's shaping is the
+        ``L - R`` bits of history a position shares with its predecessors, not
+        a code bit, so a position there may spend the grid's whole width and
+        the cap is ``payload_bits`` (``tessera.export.plan_for``,
+        ``unit_artifact``).  Ask :func:`family_rate_cap` for the cap under a
+        recipe this family does not carry today.
+        """
+        return family_rate_cap(self)
+
+    @property
+    def recipe(self) -> "WireRecipe":
+        """The wire the exporter writes for this family (rung-independent)."""
+        return tessera_wire_recipe(self)
 
     @property
     def lane(self) -> str:
@@ -251,6 +511,13 @@ class TesseraFamily:
 
     @property
     def terminal_format(self) -> "str | None":
+        """What this *base grid*'s values can be written as, plane aside.
+
+        Whether a unit actually materialises into it takes the scale plane too
+        -- an E4M3 tile over a per-16 block plane is FP8 bytes no stock kernel
+        reads.  :func:`materialised_terminal_format` is the recipe-aware
+        question, and it is the one an accountant or a gate should ask.
+        """
         spec = _HARDWARE_BASES.get(self.base)
         return None if spec is None else spec[1]
 
@@ -266,15 +533,13 @@ class TesseraFamily:
         A rate is legal from 1 bit per code up to the cap, and a code covers
         ``arity`` positions.  Both ends are exact because ``Q256_UNIT`` is a
         power of two; a non-dividing arity is refused rather than rounded.
+
+        The cap is the *recipe's* (:attr:`rate_cap`), so a family whose wire is
+        the WINDOW body advertises the wider interval -- up to ``payload_bits``
+        per code rather than ``payload_bits - 1``.  Under the TCQ recipe every
+        family ships today this is unchanged.
         """
-        lo = Fraction(Q256_UNIT, self.arity)
-        hi = Fraction(self.rate_cap * Q256_UNIT, self.arity)
-        if lo.denominator != 1 or hi.denominator != 1:
-            raise TesseraFormatError(
-                f"{self.name}: arity {self.arity} does not divide the q256 grid "
-                f"exactly; bounds {lo}..{hi} are not integers"
-            )
-        return (int(lo), int(hi))
+        return family_q256_bounds(self)
 
     @property
     def artifact_q256_bounds(self) -> tuple[int, int]:
@@ -293,7 +558,7 @@ class TesseraFamily:
         the DP really can search inside it.
         """
         lo, hi = self.mathematical_q256_bounds
-        extra = wire_overhead_q256(self)
+        extra = wire_overhead_q256(self)   # raises on a per-unit wire term
         if extra.denominator != 1:
             raise TesseraFormatError(
                 f"{self.name}: the wire overhead {extra} q256 is not a whole "
@@ -301,26 +566,32 @@ class TesseraFamily:
             )
         return (lo + int(extra), hi + int(extra))
 
-    def format_name(self, body_rate_q256: int) -> str:
-        validate_body_rate_q256(self, body_rate_q256)
+    def format_name(self, body_rate_q256: int, *,
+                    recipe: "WireRecipe | None" = None) -> str:
+        validate_body_rate_q256(self, body_rate_q256, recipe=recipe)
         return f"{self.name}_R{body_rate_q256}"
 
-    def root_rate(self, body_rate_q256: int) -> Fraction:
+    def root_rate(self, body_rate_q256: int, *,
+                  recipe: "WireRecipe | None" = None) -> Fraction:
         """Per-*code* root rate for a rung, which is what a schedule quotes."""
-        validate_body_rate_q256(self, body_rate_q256)
+        validate_body_rate_q256(self, body_rate_q256, recipe=recipe)
         return root_from_q256(body_rate_q256 * self.arity)
 
     def column_schedule(
-        self, body_rate_q256: int, n_columns: int = SUPERBLOCK_WEIGHTS
+        self, body_rate_q256: int, n_columns: int = SUPERBLOCK_WEIGHTS, *,
+        recipe: "WireRecipe | None" = None,
     ) -> tuple[int, ...]:
         """The canonical per-column rates realising a rung.  Raises if it cannot.
 
         This is the function that makes "continuous" checkable rather than
         asserted: an allocator that selects a rung is selecting something the
-        encoder can be handed directly.
+        encoder can be handed directly.  The cap is the recipe's, which is what
+        ``tessera.export.plan_for`` hands the encoder.
         """
-        root = self.root_rate(body_rate_q256)
-        return bresenham_rate_schedule(root, n_columns, self.rate_cap)
+        root = self.root_rate(body_rate_q256, recipe=recipe)
+        return bresenham_rate_schedule(
+            root, n_columns, family_rate_cap(self, recipe)
+        )
 
     def payload_grid(self):
         """The live Tessera grid object -- built by tessera, never by us."""
@@ -376,13 +647,46 @@ def get_tessera_family(family: "str | TesseraFamily") -> TesseraFamily:
     return tessera_family(base, int(arity))
 
 
+def family_rate_cap(
+    spec: "str | TesseraFamily", recipe: "WireRecipe | None" = None
+) -> int:
+    """Largest legal rate per code under ``recipe`` (default: the family's).
+
+    ``payload_bits - 1`` for the TCQ trellis, ``payload_bits`` for the WINDOW
+    body -- the same dispatch ``tessera.export.plan_for`` makes when it builds
+    the schedule the encoder runs, so a rung this module offers is a rung the
+    encoder accepts.
+    """
+    fam = get_tessera_family(spec)
+    wire = tessera_wire_recipe(fam) if recipe is None else recipe
+    if BodyKind(wire.body) is BodyKind.WINDOW:
+        return fam.payload_bits
+    return fam.payload_bits - 1
+
+
+def family_q256_bounds(
+    spec: "str | TesseraFamily", recipe: "WireRecipe | None" = None
+) -> tuple[int, int]:
+    """Inclusive per-position q256 bounds on the BODY under ``recipe``."""
+    fam = get_tessera_family(spec)
+    lo = Fraction(Q256_UNIT, fam.arity)
+    hi = Fraction(family_rate_cap(fam, recipe) * Q256_UNIT, fam.arity)
+    if lo.denominator != 1 or hi.denominator != 1:
+        raise TesseraFormatError(
+            f"{fam.name}: arity {fam.arity} does not divide the q256 grid "
+            f"exactly; bounds {lo}..{hi} are not integers"
+        )
+    return (int(lo), int(hi))
+
+
 def validate_body_rate_q256(
-    family: "str | TesseraFamily", body_rate_q256: int
+    family: "str | TesseraFamily", body_rate_q256: int, *,
+    recipe: "WireRecipe | None" = None,
 ) -> int:
     spec = get_tessera_family(family)
     if type(body_rate_q256) is not int:
         raise TesseraFormatError("body_rate_q256 must be a JSON integer")
-    lower, upper = spec.mathematical_q256_bounds
+    lower, upper = family_q256_bounds(spec, recipe)
     if not lower <= body_rate_q256 <= upper:
         raise TesseraFormatError(
             f"{spec.name} body_rate_q256 must be in [{lower}, {upper}], "
@@ -392,7 +696,8 @@ def validate_body_rate_q256(
 
 
 def realisable_rungs(
-    family: "str | TesseraFamily", step_q256: int = 1
+    family: "str | TesseraFamily", step_q256: int = 1, *,
+    recipe: "WireRecipe | None" = None,
 ) -> range:
     """Every addressable rung of a family, as per-position q256.
 
@@ -403,7 +708,7 @@ def realisable_rungs(
     spec = get_tessera_family(family)
     if step_q256 < 1:
         raise TesseraFormatError(f"step_q256 must be >= 1, got {step_q256}")
-    lo, hi = spec.mathematical_q256_bounds
+    lo, hi = family_q256_bounds(spec, recipe)
     return range(lo, hi + 1, step_q256)
 
 
@@ -413,12 +718,16 @@ def artifact_bpp(
     completion: "int | None" = 0,
     span: "int | None" = None,
     scale_plane: "str | None" = None,
+    *,
+    recipe: "WireRecipe | None" = None,
+    shape: "Sequence[int] | None" = None,
 ) -> Fraction:
     """Bits per position the artifact weighs: body, completion, wire overhead.
 
-    ``span`` and ``scale_plane`` default to what the tessera exporter writes
-    (``tessera_wire_defaults``): since 2026-09-01 a span-2 trellis over a LUT
-    plane, which at ``E2M1_K2_R896`` is 3.75 + 0.25 = 4.0 bpp -- the same size
+    ``recipe`` -- or the ``span``/``scale_plane`` scalars, which override the
+    fields they name -- defaults to what the tessera exporter writes for this
+    family at this rung (``tessera_wire_recipe``): since 2026-09-01 a span-2
+    trellis over a LUT plane, which at ``E2M1_K2_R896`` is 3.75 + 0.25 = 4.0 bpp -- the same size
     as the span-1 S6b wire it replaced, at 1.125x lower output-space error on
     the GLM experts (tessera ``experiments/tessera_wire_default_check.py``).
     On an arity-1 family the stored labels cost 0.25 more per position than
@@ -433,6 +742,13 @@ def artifact_bpp(
     ``E2M1_K1``) -- and ``None`` means full depth, where body + completion sum
     to ``cap`` and every rung of a family weighs the same.
 
+    ``shape`` is ``(rows, columns)``, and it is required exactly when the
+    recipe charges something per unit rather than per position -- a CHANNEL
+    scale plane's row field or a WINDOW body's table.  Without it those recipes
+    raise; see :func:`wire_overhead_q256` for why a documented floor would be
+    the silent drop rather than the guard against it.  Under a WINDOW body
+    ``completion`` must be 0: the window table is flat, not a forest.
+
     That last sentence was, from 2026-09-01 until later the same day, this
     function's entire contract: it returned the family's cap regardless of the
     rung, because the serialiser wrote the COMPLETION plane at full width
@@ -445,8 +761,9 @@ def artifact_bpp(
     accountant writes, and the accountant now follows the spend.
     """
     spec = get_tessera_family(family)
-    validate_body_rate_q256(spec, body_rate_q256)
-    cap_q256 = Fraction(spec.rate_cap * Q256_UNIT, spec.arity)
+    wire = _resolved_recipe(spec, recipe, span, scale_plane, body_rate_q256)
+    validate_body_rate_q256(spec, body_rate_q256, recipe=wire)
+    cap_q256 = Fraction(family_rate_cap(spec, wire) * Q256_UNIT, spec.arity)
     body = Fraction(body_rate_q256)
     room = cap_q256 - body
     if completion is None:
@@ -462,7 +779,147 @@ def artifact_bpp(
         # completion it has no room for, and charging for it would reintroduce
         # the overcharge above from the other side.
         spent = min(room, Fraction(completion * Q256_UNIT, spec.arity))
-    return (body + spent + wire_overhead_q256(spec, span, scale_plane)) / Q256_UNIT
+    if BodyKind(wire.body) is BodyKind.WINDOW and spent:
+        raise TesseraFormatError(
+            f"{spec.name}: a WINDOW body has no completion axis "
+            "(tessera.encode.encode_unit); price it at completion=0"
+        )
+    overhead = wire_overhead_q256(spec, recipe=wire, shape=shape)
+    return (body + spent + overhead) / Q256_UNIT
+
+
+@dataclass(frozen=True, slots=True)
+class TesseraServingRoute:
+    """What a decoded Tessera tile executes as, on which hardware.
+
+    The fifth axis of the grammar (grid x body x rate x scale plane x
+    **route**), and it is a joint property of the *base grid* and the *scale
+    plane*, not of either alone:
+
+    * **E2M1 over a per-16 block plane** (S6b or LUT) decodes to an ordinary
+      NVFP4 tensor -- E2M1 nibbles plus one E4M3 per 16 -- so it executes W4A4
+      on the NVFP4 MMA (``tessera.decode.materialize_nvfp4``).
+    * **E4M3 over a CHANNEL plane**, at arity 1, decodes to the stock
+      ``compressed-tensors`` ``strategy: channel`` FP8 pair and executes W8A8
+      on the FP8 MMA (``tessera.decode.materialize_fp8``, which refuses
+      anything else).
+    * **Everything else** -- E4M3 over a block plane, E2M1 over a CHANNEL
+      plane, any free grid -- has no stock MMA layout.  The body is decoded
+      inside the GEMV and the matmul runs at the activation dtype: weight-only,
+      kernel lane, and no runtime serves it today.
+
+    This is a statement about *layouts*, which is all a producer may assert on
+    its own.  It is **not** an attestation that a pinned runtime routes these
+    bytes (principle 14): nothing does, which is why
+    ``tessera_render._TESSERA_SERVING_LANE_EXISTS`` is False and no rung is
+    ``producer_eligible``.  The route is what the artifact *would* execute as
+    once a lane is attested, and pricing it is how the allocator stops
+    comparing a W4A4 rung against a W8A8 one as if the A side were free.
+    """
+
+    contract: str
+    terminal_format: "str | None"
+    act_bits: "int | None"
+    act_dtype_name: "str | None"
+    act_group_size: "int | None"
+    min_capability_sm: int
+    #: The registry format whose activation RTN models this route's A side,
+    #: or None for a weight-only route.
+    activation_source_format: "str | None" = None
+
+    @property
+    def materialises(self) -> bool:
+        """Does the decoded tile land in a stock hardware format?"""
+        return self.terminal_format is not None
+
+
+#: The kernel lane's floor.  Not a stock MMA claim: the Triton decode kernel
+#: is a plain CUDA kernel, so sm80 is the compile floor the rest of the
+#: registry uses for a weight-only format, not a routed-tensor-core capability.
+_KERNEL_LANE_SM = 80
+
+_KERNEL_ROUTE = TesseraServingRoute(
+    contract="w?a16-tessera-kernel-decode",
+    terminal_format=None,
+    act_bits=None,
+    act_dtype_name=None,
+    act_group_size=None,
+    min_capability_sm=_KERNEL_LANE_SM,
+)
+
+
+def _registry_min_sm(source_format: str, fallback: int) -> int:
+    """The minimum SM the registry row this route borrows its A-side from declares.
+
+    Taken by reference, like the activation quantiser: a Tessera rung that
+    executes NVFP4's contract answers a capability gate exactly as the NVFP4
+    row does (``format_registry.py`` NVFP4 / FP8_E4M3 rows), so the two can
+    never disagree about the same contract.  ``fallback`` is the
+    ``_HARDWARE_BASES`` figure, used only if the registry row is absent.
+    """
+    from . import format_registry as fr
+
+    try:
+        return int(fr.get_format(source_format).min_capability_sm)
+    except KeyError:
+        return fallback
+
+
+def tessera_serving_route(
+    family: "str | TesseraFamily",
+    recipe: "WireRecipe | None" = None,
+    rung: "int | None" = None,
+) -> TesseraServingRoute:
+    """The route a unit of ``family`` under ``recipe`` executes on.
+
+    ``recipe`` defaults to the wire the exporter writes for the family.
+    """
+    spec = get_tessera_family(family)
+    wire = tessera_wire_recipe(spec, rung) if recipe is None else recipe
+    plane = scale_plane_name(wire.scale_plane)
+    hardware = _HARDWARE_BASES.get(spec.base)
+    if hardware is None:
+        return _KERNEL_ROUTE
+    _size, terminal, min_sm = hardware
+    if spec.base == "E2M1" and plane in ("s6b", "lut16"):
+        return TesseraServingRoute(
+            contract="w4a4-nvfp4-e2m1-group16-ue4m3",
+            terminal_format=terminal,
+            act_bits=4,
+            act_dtype_name="fp4_e2m1",
+            act_group_size=16,
+            min_capability_sm=_registry_min_sm("NVFP4", min_sm),
+            activation_source_format="NVFP4",
+        )
+    if spec.base == "E4M3" and plane == "channel" and spec.arity == 1:
+        # ``materialize_fp8`` refuses a tuple grid: the FP8 MMA takes one
+        # scale per output channel over scalar E4M3 bytes.
+        return TesseraServingRoute(
+            contract="w8a8-dynamic-e4m3-channel",
+            terminal_format=terminal,
+            act_bits=8,
+            act_dtype_name="fp8_e4m3",
+            act_group_size=0,
+            min_capability_sm=_registry_min_sm("FP8_E4M3", min_sm),
+            activation_source_format="FP8_E4M3",
+        )
+    return _KERNEL_ROUTE
+
+
+def materialised_terminal_format(
+    family: "str | TesseraFamily",
+    recipe: "WireRecipe | None" = None,
+    rung: "int | None" = None,
+) -> "str | None":
+    """The stock format this ``(family, recipe)`` decodes into, or None.
+
+    Narrower than :attr:`TesseraFamily.terminal_format`, which names what the
+    *base grid*'s values can be written as and is blind to the plane: an E4M3
+    tile over a per-16 block plane is still E4M3 bytes, but no stock kernel
+    reads FP8 weights with a per-16 E4M3 block scale, so it does not
+    materialise.  The plane is half the answer.
+    """
+    return tessera_serving_route(family, recipe, rung).terminal_format
 
 
 def enumerate_grid_space(
