@@ -541,17 +541,45 @@ def test_pipeline_contract_places_the_gate_before_export():
 
 
 def test_run_pipeline_invokes_the_gate_before_every_export_lane():
+    """Every export lane, DERIVED from the script -- not a list kept here.
+
+    A literal lane list has to be wrong in one of two directions every time
+    the lane set moves, and it was wrong in both at once: it still named
+    ``CB_EXPORT_ARGS`` after the Gridbook lane was retired on 2026-09-02, so
+    it failed on a lane that no longer exists, and it had never heard of the
+    Tessera lane, so it would have gone on passing while the gate stopped
+    covering one.  The second failure is the dangerous one, because a passing
+    test that checks nothing reads exactly like a passing test.
+
+    So the lanes are read out of ``run-pipeline.sh``: every ``EXPORT_CONTAINER``
+    arm, plus the default arm that runs when none matches.  The property is
+    that the gate precedes all of them, which is what "refuses the run before
+    ANY export lane starts" means.
+    """
+    import re
+
     script = _run_pipeline_script()
     gate_pos = script.find('"${WALK_GATE_ARGS[@]}"')
     assert gate_pos > 0, "run-pipeline.sh no longer executes the walk gate"
-    for exec_line in (
-        '"${GGUF_EXPORT_ARGS[@]}"',
-        '"${CB_EXPORT_ARGS[@]}"',
-        '"${EXPORT_ARGS[@]}"',
-    ):
-        pos = script.find(exec_line)
-        assert pos > 0, f"export invocation vanished: {exec_line}"
+
+    # Every export lane the script can take, derived two ways so a lane that
+    # is spelled unusually still has to be accounted for by one of them.
+    arms = [
+        (m.group(1), m.start())
+        for m in re.finditer(
+            r'if \[\[ "\$EXPORT_CONTAINER" == "(\w+)" \]\]; then', script)
+        if m.start() > script.find("[3c]")   # the export section, not arg parsing
+    ]
+    assert arms, "no EXPORT_CONTAINER arms found -- has the lane dispatch moved?"
+    execs = [m.start() for m in re.finditer(
+        r'"\$\{[A-Z_]*EXPORT_ARGS\[@\]\}"', script)]
+    assert execs, "no export invocation found at all"
+
+    for name, pos in arms:
         assert gate_pos < pos, \
-            f"the walk gate must precede the export lane ({exec_line})"
+            f"the walk gate must precede the {name} export lane"
+    for pos in execs:
+        assert gate_pos < pos, \
+            "the walk gate must precede every export invocation"
     # Real wiring, not a comment:
     assert "python3 -m prismaquant.model_walk" in script
