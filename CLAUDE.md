@@ -432,10 +432,14 @@ the explicit/legacy spelling that reproduces every pre-flip artifact, and a
 stale `WORK_DIR` now **rebuilds loudly** on the mode change instead of silently
 allocating on the other estimator), **`SELECTION_MODE=surrogate`** (set
 `validated-surrogate` to opt into the real-KL frontier selection that produced
-the shipped 27B), `TARGET_PROFILE=vllm_packed_moe`, `PRODUCTION_CACHE=1`,
+the shipped 27B), `TARGET_PROFILE=<unset, spec-resolved>`
+(`TARGET_PROFILE_DEFAULT=vllm_packed_moe` is the fallback when an architecture
+declares nothing — the shell itself pins nothing, re-vet R11), `PRODUCTION_CACHE=1`,
 `PRODUCTION_RECACHE=1`, `VALIDATED_SOURCE_PREFETCH=require`,
-`AURA_ADDITIVITY_GATE=measure`, `CB_EXPERT_EMPIRICAL=0`, `CB_SCALE_CODING=two_tier`
-(the last two are D15: the default is now the value every shipped driver sets).
+`AURA_ADDITIVITY_GATE=measure`, `CB_EXPERT_EMPIRICAL=<unset>` and
+`CB_SCALE_CODING=<unset>` (both lost their shell defaults with the Gridbook
+lane on 2026-09-02 and survive only as `${VAR:-}` settings-hash entries).
+`docs/ARCHITECTURE.md` §3.3 is the single source of truth for shell defaults.
 The archived cost modes / levers (`grouped-kl`, fisher, hdq, multi-shot,
 production-render-staged) **fail fast with `exit 2`** pointing at their archive.
 
