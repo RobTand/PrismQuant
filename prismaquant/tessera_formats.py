@@ -738,16 +738,16 @@ RATE_SURFACE_MODES = frozenset({
 #: Hardware grids materialise into a stock format at load, so an artifact over
 #: them serves on a runtime that has never heard of Tessera.  Free (Lloyd-Max)
 #: grids do not: `lloyd_max_grid` sets ``native=None`` precisely to say so.
-_HARDWARE_BASES: Mapping[str, tuple[int, str, int]] = {
-    # base -> (size, terminal format it materialises into, minimum SM)
-    "E2M1": (16, "NVFP4", 120),
-    "E4M3": (256, "FP8_E4M3", 89),
+_HARDWARE_BASES: Mapping[str, tuple[int, str]] = {
+    # base -> (size, terminal format it materialises into)
+    "E2M1": (16, "NVFP4"),
+    "E4M3": (256, "FP8_E4M3"),
     # 65536 codes, and it belongs here for the same reason the other two do:
     # its values come from the bit pattern, so a reader rebuilds them from the
     # name, and its decoded tile is a plain BF16 tensor -- "a plain BF16
     # tensor (W16A16)", in ``tessera.export.wire_recipe``'s own words.  The
     # wall above admits it because its wire is the WINDOW body at every rung.
-    "BF16": (65536, "BF16", 80),
+    "BF16": (65536, "BF16"),
 }
 _FREE_BASE = re.compile(r"^LM(\d+)$")
 _FORMAT_NAME = re.compile(r"^TESSERA_([A-Z0-9]+)_K(\d+)_R(\d+)$")
@@ -884,8 +884,19 @@ class TesseraFamily:
 
     @property
     def minimum_capability_sm(self) -> "int | None":
-        spec = _HARDWARE_BASES.get(self.base)
-        return None if spec is None else spec[2]
+        """The minimum SM that executes this base's stock route.  One read.
+
+        The base names its terminal format in ``_HARDWARE_BASES``; the
+        terminal names the registry row whose contract the rung executes;
+        the row owns the floor.  Read through :func:`_hardware_min_sm`, the
+        same function the admitted ``tessera_serving_route`` branches read,
+        so the allocator's capability gate and the menu's route cannot drift
+        (issue #168: E2M1 said 120 here and 100 there).  ``None`` for a free
+        grid, which materialises into no hardware format.
+        """
+        if self.base not in _HARDWARE_BASES:
+            return None
+        return _hardware_min_sm(self.base)
 
     @property
     def mathematical_q256_bounds(self) -> tuple[int, int]:
@@ -1225,21 +1236,37 @@ _KERNEL_ROUTE = TesseraServingRoute(
 )
 
 
-def _registry_min_sm(source_format: str, fallback: int) -> int:
-    """The minimum SM the registry row this route borrows its A-side from declares.
+def _hardware_min_sm(base: str) -> int:
+    """The minimum SM that executes ``base``'s stock route.  The one read.
 
-    Taken by reference, like the activation quantiser: a Tessera rung that
-    executes NVFP4's contract answers a capability gate exactly as the NVFP4
-    row does (``format_registry.py`` NVFP4 / FP8_E4M3 rows), so the two can
-    never disagree about the same contract.  ``fallback`` is the
-    ``_HARDWARE_BASES`` figure, used only if the registry row is absent.
+    The base names its terminal format in ``_HARDWARE_BASES``; the terminal
+    names the registry row whose contract the rung executes (NVFP4's A-side
+    for E2M1, the FP8 pair for E4M3, the plain tensor for BF16); the row
+    owns the floor, exactly as the activation quantiser is taken by
+    reference from the same row.  Both live gates -- the admitted
+    ``tessera_serving_route`` branches and
+    ``TesseraFamily.minimum_capability_sm`` (hence the allocator's
+    ``_capability_gate``) -- read through here, so the two can never
+    disagree about the same contract.  Fail-closed: a base with no entry,
+    or a terminal naming no registry row, raises rather than admitting
+    hardware on a guessed floor.
     """
+    try:
+        terminal = _HARDWARE_BASES[base][1]
+    except KeyError as exc:
+        raise TesseraFormatError(
+            f"no hardware base {base!r}; legal bases are "
+            f"{', '.join(sorted(_HARDWARE_BASES))}"
+        ) from exc
     from . import format_registry as fr
 
     try:
-        return int(fr.get_format(source_format).min_capability_sm)
-    except KeyError:
-        return fallback
+        return int(fr.get_format(terminal).min_capability_sm)
+    except KeyError as exc:
+        raise TesseraFormatError(
+            f"{base}: terminal format {terminal!r} names no registry row; "
+            "capability is unknown and the gate refuses"
+        ) from exc
 
 
 def tessera_serving_route(
@@ -1257,7 +1284,7 @@ def tessera_serving_route(
     hardware = _HARDWARE_BASES.get(spec.base)
     if hardware is None:
         return _KERNEL_ROUTE
-    _size, terminal, min_sm = hardware
+    _size, terminal = hardware
     if spec.base == "E2M1" and plane in ("s6b", "lut16"):
         return TesseraServingRoute(
             contract="w4a4-nvfp4-e2m1-group16-ue4m3",
@@ -1265,7 +1292,7 @@ def tessera_serving_route(
             act_bits=4,
             act_dtype_name="fp4_e2m1",
             act_group_size=16,
-            min_capability_sm=_registry_min_sm("NVFP4", min_sm),
+            min_capability_sm=_hardware_min_sm(spec.base),
             activation_source_format="NVFP4",
         )
     if spec.base == "BF16" and plane == "channel" and spec.arity == 1:
@@ -1282,7 +1309,7 @@ def tessera_serving_route(
             act_bits=16,
             act_dtype_name="bfloat16",
             act_group_size=0,
-            min_capability_sm=_registry_min_sm("BF16", min_sm),
+            min_capability_sm=_hardware_min_sm(spec.base),
             activation_source_format=None,
         )
     if spec.base == "E4M3" and plane == "channel" and spec.arity == 1:
@@ -1294,7 +1321,7 @@ def tessera_serving_route(
             act_bits=8,
             act_dtype_name="fp8_e4m3",
             act_group_size=0,
-            min_capability_sm=_registry_min_sm("FP8_E4M3", min_sm),
+            min_capability_sm=_hardware_min_sm(spec.base),
             activation_source_format="FP8_E4M3",
         )
     return _KERNEL_ROUTE

@@ -1145,6 +1145,42 @@ def test_the_route_is_a_property_of_the_grid_and_the_plane_together():
         assert spec.producer_eligible is False, name
 
 
+def test_family_floor_and_route_floor_are_one_read():
+    """Issue #168: the family minimum and the route minimum must be one read.
+
+    The menu, the render leg and the footprint carry
+    ``tessera_serving_route(...).min_capability_sm`` (taken by reference from
+    the registry row whose contract the rung executes), while the allocator's
+    ``_capability_gate`` reads ``TesseraFamily.minimum_capability_sm``.  When
+    those are two numbers -- E2M1 said 120 one way and 100 the other -- the
+    menu admits what the candidate refuses the day a lower-SM target exists.
+    Both are read off the registry row the base's terminal format names, so
+    the family set comes from ``_HARDWARE_BASES`` and the floor from the
+    registry: no SM number is typed here.
+    """
+    from prismaquant import format_registry as fr
+    from prismaquant import tessera_formats as tfm
+
+    seen = 0
+    for base in sorted(tfm._HARDWARE_BASES):
+        for arity in (1, 2):
+            try:
+                family = tfm.tessera_family(base, arity)
+            except tfm.TesseraFormatError:
+                continue  # over the anchor budget: not a family, not a gate
+            terminal = family.terminal_format
+            assert terminal is not None, family.name
+            expected = fr.get_format(terminal).min_capability_sm
+            assert family.minimum_capability_sm == expected, family.name
+            route = tfm.tessera_serving_route(
+                family, tfm.tessera_wire_recipe(family))
+            assert route.materialises, family.name
+            assert route.min_capability_sm == family.minimum_capability_sm, (
+                family.name)
+            seen += 1
+    assert seen, "no hardware family answered; the test would pass vacuously"
+
+
 def test_the_activation_side_is_the_serving_formats_own_quantiser():
     """A W4A4 rung's A side must be NVFP4's, not a second implementation.
 
