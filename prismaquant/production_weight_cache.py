@@ -105,6 +105,9 @@ CB_SOURCE_WEIGHTS_HASH_SCHEMA = (
 CB_RENDER_CONTRACT_SCHEMA = (
     "prismaquant.production_weight_cache.cb_render_contract.v1"
 )
+ACTIVATION_HOOK_SCOPE_SCHEMA = (
+    "prismaquant.production_weight_cache.activation_hook_scope.v1"
+)
 CB_RENDER_MECHANISM_ABI = "prismaquant.production_render_mechanisms.v1"
 CB_RENDER_IDENTITY_METADATA_KEY = "cb_render_identity"
 CB_CACHE_PAIR_IDENTITY_SCHEMA = (
@@ -4797,6 +4800,18 @@ def _resolve_render_mechanism_plan(levers: Mapping[str, object]):
     return mechanism_plan
 
 
+def _qname_set_sha256(qnames: Iterable[str]) -> str:
+    """Digest an unordered qname set.
+
+    Sorted, so the digest is a property of the SET and not of the order the
+    caller happened to enumerate it in. Two ``fill_production_weight_cache``
+    calls with equal digests hooked the same Linears, which (with an equal
+    ``calib_hash``) is what makes their rendered rows equal.
+    """
+    payload = "\n".join(sorted(str(q) for q in qnames))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def fill_production_weight_cache(
     model: nn.Module,
     calib_ids: torch.Tensor,
@@ -4804,6 +4819,7 @@ def fill_production_weight_cache(
     *,
     formats: Sequence[str] = ("NVFP4",),
     render_assignment: Mapping[str, str] | None = None,
+    render_qnames: Iterable[str] | None = None,
     levers: Mapping[str, bool] | None = None,
     max_act_rows: int = 256,
     progress: bool = True,
@@ -4825,12 +4841,19 @@ def fill_production_weight_cache(
       calib_ids: ``[N, T]`` token id tensor for activation collection.
       qnames: which Linears are eligible to render (skips MoE packed
         experts; handle those separately via `_quantize_3d_packed`
-        extensions).
+        extensions). This is also the set the activation collector HOOKS,
+        and the rendered bytes are a function of it: pass the whole
+        enumeration and narrow with `render_assignment`/`render_qnames`, never
+        by shortening this list (#130).
       formats: which formats to pre-render when `render_assignment` is not
         supplied.
       render_assignment: optional concrete export assignment. When supplied,
         render exactly the non-BF16 `(qname, fmt)` entries used by that
         assignment instead of the full `qnames x formats` menu.
+      render_qnames: optional render-only narrowing, orthogonal to
+        `render_assignment`. Render just these qnames (a stripe, a shard) while
+        still hooking all of `qnames`, so the shard's bytes are the whole
+        run's bytes. `None` renders everything in scope.
       levers: which production levers to enable (default: GPTQ with optional
         joint NVFP4 scale optimization when requested by the caller).
       recache_pass: when True, run a second calibration forward with the
@@ -4874,12 +4897,26 @@ def fill_production_weight_cache(
     requested_formats = tuple(
         dict.fromkeys(_canon(f) for f in formats if str(f).strip())
     )
+    # #130/#135: ``eligible_qnames`` is the enumeration the activation
+    # collector hooks, and it is deliberately NOT narrowed by anything below.
+    # One shared generator feeds every hooked Linear's priority reservoir, so
+    # the rows a Linear keeps are a function of how many rows every EARLIER
+    # hook consumed. Narrowing the hook set therefore changes the rows, the
+    # GPTQ Hessian and the rendered bytes. The invariant this buys: the bytes
+    # of a (qname, fmt) pair depend on ``qnames`` and the calibration, never on
+    # which subset of them this call happens to render. That is what makes a
+    # stripe, an assignment scope and a resume all reproduce the whole run.
     eligible_qnames = set(qnames)
+    render_scope_qnames: set[str] | None = (
+        {str(q) for q in render_qnames} if render_qnames is not None else None
+    )
     if render_assignment is not None:
         render_formats_by_qname: dict[str, tuple[str, ...]] = {}
         for qname, fmt in render_assignment.items():
             q = str(qname)
             if q not in eligible_qnames:
+                continue
+            if render_scope_qnames is not None and q not in render_scope_qnames:
                 continue
             fmt_canon = _canon(fmt)
             if fmt_canon == "BF16":
@@ -4892,7 +4929,9 @@ def fill_production_weight_cache(
             f for f in requested_formats if f != "BF16"
         )
         render_formats_by_qname = {
-            q: non_bf16_formats for q in eligible_qnames
+            q: non_bf16_formats
+            for q in eligible_qnames
+            if render_scope_qnames is None or q in render_scope_qnames
         }
         qname_set = {
             q for q, fmts in render_formats_by_qname.items() if fmts
@@ -5158,11 +5197,15 @@ def fill_production_weight_cache(
             )
         activations: dict[str, torch.Tensor] = {}
     else:
-        # Hook every relevant Linear so we always get max_abs (cheap), but
-        # only STORE full activations for Linears we still need to render.
+        # Hook the WHOLE eligible enumeration -- not the render-narrowed
+        # ``qname_set``. Hooking is cheap (an amax plus one CPU
+        # ``torch.rand`` per call), and hooking the full set is what keeps the
+        # shared priority stream identical across a stripe, an assignment
+        # scope and a resume (#130/#135). Only STORE full activations for
+        # Linears we still need to render.
         collector = _LinearActivationCollector(
             model,
-            qnames=qname_set,
+            qnames=eligible_qnames,
             max_rows=max_act_rows,
             store_qnames=qnames_needing_activation,
             store_device=activation_store_device,
@@ -5205,7 +5248,8 @@ def fill_production_weight_cache(
         activation_devices = sorted({str(t.device) for t in activations.values()})
         print(
             f"[prod-cache] collected activations for "
-            f"{len(activations)}/{len(qname_set)} Linears "
+            f"{len(activations)} of {len(qname_set)} rendered "
+            f"({len(eligible_qnames)} hooked) Linears "
             f"resident_bytes={activation_bytes:,} "
             f"devices={activation_devices}",
             flush=True,
@@ -5747,6 +5791,19 @@ def fill_production_weight_cache(
                 ),
             },
             "render_scope": render_scope,
+            # #130: render_scope alone cannot tell a reader which rows this
+            # cache was rendered against -- a stripe and a whole build both
+            # stamp "format-menu". The hooked enumeration is what the shared
+            # priority stream is a function of, so record it: two caches with
+            # equal hook digests and equal calibration rendered the same rows,
+            # whatever subset each one rendered.
+            "activation_hook_scope": {
+                "schema": ACTIVATION_HOOK_SCOPE_SCHEMA,
+                "hooked_qnames_sha256": _qname_set_sha256(eligible_qnames),
+                "hooked_qnames": len(eligible_qnames),
+                "rendered_qnames": len(qname_set),
+                "render_narrowed": len(qname_set) != len(eligible_qnames),
+            },
             "requested_formats": list(requested_formats),
             "requested_entries": int(n),
             **({

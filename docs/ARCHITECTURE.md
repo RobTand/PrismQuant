@@ -77,6 +77,30 @@ now walks `bresenham_rate_schedule` for every body, refusing in
 `TesseraFormatError`, and the sweep in `tests/test_tessera_forest_bytes.py`
 asserts the two accountants agree on which rungs EXIST as well as what they
 cost, with a bound derived from 256 | 768, 1024 rather than typed.
+Re-stamped (2026-09-03, `claude/pq-130-stripe-rows`) for **what the striped
+cache-union identity does not bind** (§5.4; issue #130). The campaign identity
+binds coverage, source, calibration, code, settings, levers, scope and formats,
+and the section read as a guarantee of equivalence with an unsharded render. It
+is not one. Measured by rendering, not by reading the diff: a stripe narrows the
+collector's *hook* set, which the shared priority generator makes every later
+Linear's row sample depend on, and 4/4 units diverge in rows and rendered bytes
+— for a non-prefix stripe, for a *prefix* stripe once `NSAMPLES >= 2`, and for
+the shipping `--render-scope assignment` default against a `format-menu` build
+of the same recipe. Hooking the full enumeration and narrowing only the render
+reproduces the unstriped bytes exactly. The claim is recorded where the
+mechanism is described, not only where the defect was found.
+Re-stamped (2026-09-03, `claude/pq-130-stripe-rows`) for the **activation hook
+set** (§5.4; issues #130, #135). A narrowed render used to keep different
+calibration rows than a whole one, so a stripe — and the shipping
+`--render-scope assignment` default — rendered different bytes than a
+`format-menu` build of the same recipe. Measured by rendering, not by reading
+the diff. The collector now hooks the caller's whole `qnames` enumeration and
+narrowing arrives as `render_assignment`/`render_qnames`, which makes the bytes
+of a `(qname, fmt)` pair a function of the enumeration and the calibration and
+not of which subset a call renders. Caches stamp the hooked enumeration
+(`activation_hook_scope`) so a reader can tell two renderings apart, which
+`render_scope` alone could not. The claim is recorded where the mechanism is
+described, not only where the defect was found.
 
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
@@ -5208,6 +5232,42 @@ without overwriting an existing output. `verify` must be run again after transfe
 operator-selected native cache-build path and is not wired as a `run-pipeline.sh` default
 (`production_cache_stripes.py`, `union_production_cache.py`,
 `tests/test_production_cache_stripes.py`, `tests/test_union_production_cache.py`).
+
+**What that identity binds, and what it does not (issues #130, #135).** The campaign identity
+binds coverage, source, calibration, producer code, settings, levers, render scope/retention,
+formats and mechanism order (`union_production_cache.py:486-553`). It does **not** bind the
+qname enumeration the activation collector hooked, and that enumeration is what the rendered
+bytes are a function of. One `torch.Generator` feeds every hooked Linear's priority reservoir
+(`production_weight_cache.py:921-922`), so the slice of the stream a Linear receives depends
+on how many rows every earlier hook consumed; rows feed the GPTQ Hessian and the Hessian feeds
+the bytes. `56c765d` draws for every *hooked* Linear, which makes `--resume` reproduce a fresh
+build because resume narrows only the *store* set. Two narrowings reached the **hook** set and
+were therefore out of its reach: a stripe, via `--include-qnames-file` shortening the `qnames`
+list before the fill call (#130), and `--render-scope assignment` — the `run-pipeline.sh:590`
+default — because `qname_set` was both the render set and the collector's hook set (#135).
+Measured on a frozen 4-layer model with GPTQ on and the reservoir under selection pressure:
+4/4 units diverged in rows *and* rendered bytes for a non-prefix stripe, for a prefix stripe
+at `NSAMPLES >= 2` (so the cause was the shared stream, never `plan_stripes`'s binning), and
+for an assignment-scoped build against a format-menu build of the same recipe. A single BF16
+unit last in the enumeration moved all 7 remaining units' bytes.
+
+**Closed by holding the hook set at the caller's enumeration.** `fill_production_weight_cache`
+hooks `eligible_qnames` and narrowing arrives as `render_assignment` or the `render_qnames`
+parameter; `--include-qnames-file` sets the latter instead of shortening `qnames`. Both
+narrowed arms then reproduce the unstriped bytes exactly
+(`experiments/stripe_row_identity_byte_baseline.py`,
+`tests/test_striped_render_row_identity.py`, 9 passing). Shortening `qnames` itself remains
+byte-moving by construction — it *is* the hook set — and is pinned as a caller error rather
+than left to be re-learned on a 90 GB cache. Every cache now stamps
+`metadata["activation_hook_scope"]` with the hooked enumeration's sha256, its size, the
+rendered count and a `render_narrowed` flag, so equal hook digests plus an equal `calib_hash`
+is a readable claim that two caches were rendered against the same rows. **Two caveats.** The
+stamp is provenance, not yet a gate: nothing refuses a union of shards whose hook digests
+disagree, and no consumer compares a cost cache's digest against the export cache's. And the
+cache directory has no render-identity guard at all — resume is file-presence only — so a
+directory whose units were rendered under a narrower hook set will keep those bytes and
+silently mix them with newly rendered ones. Rebuild an assignment-scoped cache directory
+rather than resuming it across this change.
 
 Render mechanisms are a registry with declared ordering semantics, not a lever string parsed in
 spelling order (`render_score.py:188-260`): each `RenderMechanismSpec` declares `operation`,

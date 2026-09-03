@@ -6,11 +6,13 @@ rows every *earlier* hook consumed. If priorities are drawn only for the
 Linears a run happens to STORE, then a run that stores a subset keeps
 different rows than a full run -- and the rendered bytes follow the rows.
 
-``fill_production_weight_cache`` hooks the full enumeration but stores only
-``qnames_needing_activation`` (``production_weight_cache.py`` ~:5145-5146),
-which is resume-dependent. So this invariant is what makes a ``--resume``
-build reproduce a fresh build, and it is a precondition for any per-unit
-split of a render.
+``fill_production_weight_cache`` hooks the full ``eligible_qnames``
+enumeration but stores only ``qnames_needing_activation``, which is
+resume-dependent. So this invariant is what makes a ``--resume`` build
+reproduce a fresh build, and it is a precondition for any per-unit split of a
+render. This docstring described the intended behaviour before the code had it:
+the hook set was the render-narrowed ``qname_set`` until #130/#135 restored the
+full enumeration -- see ``tests/test_striped_render_row_identity.py``.
 
 Salvaged from PR #104 (``tests/test_unit_sharding.py``
 ``test_stored_subset_keeps_the_full_runs_rows``); the sharding machinery that

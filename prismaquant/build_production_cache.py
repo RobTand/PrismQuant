@@ -832,6 +832,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 flush=True,
             )
         include_qnames = None
+        render_only: list[str] | None = None
         if args.include_qnames_file:
             include_path = Path(args.include_qnames_file)
             allowed = {
@@ -839,12 +840,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for line in include_path.read_text().splitlines()
                 if line.strip() and not line.lstrip().startswith("#")
             }
-            before = len(qnames)
-            qnames = [q for q in qnames if q in allowed]
+            # #130: this narrows the RENDER, never the enumeration handed to
+            # fill_production_weight_cache. That enumeration is the activation
+            # collector's hook set, and one shared priority generator feeds
+            # every hooked Linear's reservoir, so shortening it changes the
+            # rows -- and the GPTQ Hessian, and the bytes. A stripe rendered
+            # off a narrowed enumeration is a different artifact wearing the
+            # unstriped build's name.
+            render_only = [q for q in qnames if q in allowed]
             include_qnames = sorted(allowed)
             print(
                 f"[build-prod-cache] include-qnames-file={include_path} "
-                f"kept {len(qnames)}/{before} qnames",
+                f"renders {len(render_only)}/{len(qnames)} qnames "
+                f"(all {len(qnames)} stay hooked for row identity)",
                 flush=True,
             )
 
@@ -884,6 +892,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             model, calib_ids, qnames,
             formats=formats,
             render_assignment=render_assignment,
+            render_qnames=render_only,
             levers=levers,
             max_act_rows=args.max_act_rows,
             cache_dir=args.cache_dir,
@@ -994,7 +1003,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 validate_render_assignment_cache_coverage(
                     cache, coverage_assignment)
             else:
-                cache.validate_coverage(qnames, formats)
+                # #130: `qnames` is the hooked enumeration; coverage is owed
+                # only over what this call was asked to RENDER.
+                cache.validate_coverage(
+                    render_only if render_only is not None else qnames,
+                    formats,
+                )
             print("[build-prod-cache] coverage check passed", flush=True)
         except RuntimeError as e:
             if args.allow_incomplete:
