@@ -3,6 +3,27 @@
 As of: 2026-09-03 · `tessera/decouple-gridbook`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
+bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
+2048x1024 unit's research menu from 3055 rungs to 6764 and left both per-rung
+memos at `maxsize=4096`, which is smaller than one shape's menu: a pass evicted
+its own entries and a repeat pass hit nothing (cold 10.06 s, warm 9.958 s). The
+bound is now a product of two named factors — the widest menu one shape can
+produce, computed from `menu_families()`, times a stated shape retention — so
+it moves with the family roster and cannot fall under one shape. The two memos
+are sized apart on measured entry cost (351 B flat vs 8.7–131.6 KB, O(cols)),
+and the memory each commits is stated where it is chosen.
+
+Re-stamped (2026-09-03, `tessera/decouple-gridbook`) for the **family roster
+in §8.4's plane bullet**, which counted eleven families because it was measured
+on a worktree predating the `ANCHOR_BUDGET_BITS` widening. Re-measured on the
+merged tree: twelve, `TESSERA_BF16_K1` on WINDOW/CHANNEL climbing L=14→15→16 to
+its 4096 terminal with its plane unmoved, so the `(unit, plane)` memo key still
+holds and E4M3 and BF16 correctly share entries. The test that attests the same
+fact now derives its roster from `menu_families()` instead of naming five
+formats. *A doc re-stamped in lockstep with a stale measurement is current and
+wrong.*
+
 Re-stamped (2026-09-03, `claude/tessera-plane-drift`) for the **activation
 seam's plane axis** (§1.1, §8.4). Tessera's 2026-09-02 release made the refit
 objective a map keyed by scale plane and deleted the two CHANNEL-only guards
@@ -4135,11 +4156,41 @@ vary with the rate. `tessera_render.family_grid_is_serialisable` now asks it of
 the family, and `menu_families` reads the same predicate instead of digesting
 again; the attested menu costs 0.082 s, below where it started. The guard counts
 digest calls rather than seconds, because the defect is a quantity of work and a
-clock would only measure the box. Two neighbouring caches
-(`tessera_menu._shard_geometry`, `tessera_footprint._exact_bits_for_shape`) are
-still sized 4096 against the same 6764-rung menu and now thrash on a repeat pass
-over one shape -- research-mode only, ~10 s per unit, recorded as Tessera issue
-46 rather than resized by guess.
+clock would only measure the box.
+
+**A menu memo is sized in shapes, not in a round number.** The two neighbouring
+caches (`tessera_menu._shard_geometry`,
+`tessera_footprint._exact_bits_for_shape`) were sized 4096 against the same
+6764-rung menu, so one pass over one shape evicted its own entries and the next
+recomputed every one of them: research-mode cold 10.06 s and warm 9.958 s, no
+memo hit at all (RobTand/tessera#46). What was wrong was the bound's *unit*.
+`menu_cache_bound()` is now `menu_rungs_per_shape() * shapes`, and the first
+factor is asked of `menu_families()` — 6916 today, 3055 before the 16-bit
+family — rather than written down, so it moves when the roster does. Because
+the bound is a whole number of shapes and refuses to be fewer than one, no
+setting of `PRISMAQUANT_TESSERA_MENU_CACHE_SHAPES` can put a shape where it
+evicts itself; that is the property
+`tests/test_tessera_menu.py::test_every_menu_memo_survives_one_shapes_widest_menu`
+pins, reading `maxsize` off the live memo instead of restating a number.
+
+The two memos are sized apart because their entries differ by 25x–375x
+depending on the column count, measured
+with `tracemalloc` around a saturating pass and differenced against the same
+pass with the memo cleared. A byte total is a `Fraction` and a tuple key: **351
+B an entry at every shape tried** ((256,256), (2048,1024), (4096,16384)), so one
+shape is 2.32 MiB and the default 25 shapes — the *counted* distinct 2-D Linear
+shape roster of GLM-5.3-Flash, 25 shapes across 37,861 tensors — commits 57.9
+MiB. A `_ShardGeometry` carries Tessera's whole Bresenham column schedule, one
+integer per column: **8,735 B an entry at 1024 columns and 131,615 B at
+16,384**, i.e. 58 MiB and 868 MiB for a single shape's rungs. Retaining 25
+shapes there would be 1.4 GiB on GLM's narrowest expert and 21 GiB on its
+widest, so it retains one — which is the whole self-eviction requirement, and
+it is the memo that fills only at tp>1 (measured: 0 fills in a 6764-rung tp=1
+research pass). Back-to-back on one box state under `cProfile`, the research
+pass over a 2048x1024 unit goes from cold 22.05 s / warm 22.19 s (0.99x, 0
+hits) to cold 21.72 s / warm 1.92 s (11.3x, 6916 hits against 6916 misses —
+every rung priced exactly once); attested is untouched at 0.32 s on both sides,
+as the issue said it would be.
 
 **A window table is charged at the grid's own code width.** `PayloadGrid.
 code_bytes` is one byte up to 256 codes and two on BF16, whose code *is* a bf16

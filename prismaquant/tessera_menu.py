@@ -62,7 +62,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import NamedTuple
 
 from .lane_eligibility import (
@@ -97,6 +97,13 @@ __all__ = [
     "TesseraMenuError",
     "collapse_to_dp_bins",
     "expand_tessera_menu",
+    "MENU_CACHE_SHAPES_ENV",
+    "DEFAULT_MENU_CACHE_SHAPES",
+    "menu_rungs_per_shape",
+    "menu_cache_shapes",
+    "menu_cache_bound",
+    "menu_scaled_cache",
+    "GEOMETRY_CACHE_SHAPES",
     "menu_families",
     "menu_mode",
     "prune_dominated",
@@ -341,8 +348,11 @@ def route_admission(name: str) -> RouteAdmission:
     than the rung* -- ask it per rung and one 16-bit menu spends 34 ms a rung
     re-hashing 65536 values -- the expensive part of a menu is the per-rung
     Bresenham
-    realisability check, and ``expand_tessera_menu`` is memoised per
-    ``(shape, mode, tp)`` above it.
+    realisability check.  That check *is* memoised per ``(family, rung, shape)``
+    -- ``_shard_geometry`` and ``tessera_footprint._exact_bits_for_shape``,
+    both sized by :func:`menu_cache_bound` -- but ``expand_tessera_menu``
+    itself is not, and never was: it returns a fresh list its callers are free
+    to keep.
 
     Today it delegates to ``tessera_render.tessera_lane_attested``, which
     resolves the rung against the pinned Gridbook release's ``lane_eligibility``
@@ -485,6 +495,167 @@ def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
 
 
 # ---------------------------------------------------------------------------
+# The menu cache bound
+# ---------------------------------------------------------------------------
+#
+# Two memos below price one rung on one shape: ``_shard_geometry`` here and
+# ``tessera_footprint._exact_bits_for_shape``.  Both are keyed by
+# ``(family, rung, rows, cols)``, so their size is a product of two factors,
+# and both factors are named rather than picked -- see
+# :func:`menu_rungs_per_shape` and :func:`menu_cache_shapes`.  The bound they
+# multiply out to used to be the literal 4096, which was comfortably more than
+# a menu at three families and *less than one shape's menu* at four: a single
+# pass over one shape then evicted its own entries and the next pass recomputed
+# every one of them (tessera#46).
+
+MENU_CACHE_SHAPES_ENV = "PRISMAQUANT_TESSERA_MENU_CACHE_SHAPES"
+
+#: Distinct 2-D Linear shapes in GLM-5.3-Flash, the largest model this menu is
+#: asked about -- **counted, not assumed**.  Reading the safetensors headers of
+#: ``/mnt/shared/models/GLM-5.3-Flash-BF16`` (120 shards) finds 37,861 two-
+#: dimensional ``*.weight`` tensors outside the embedding and exactly 25
+#: distinct ``(rows, cols)`` among them, the widest being ``(154880, 4096)``
+#: and the most common ``(2048, 4096)`` at 24,854 tensors.  That ratio is the
+#: whole reason these memos exist: a pass walks *units*, and units repeat
+#: shapes roughly 1500:1, so a cache that holds every distinct shape of a model
+#: of this class prices each one once.  Recount it on another model with::
+#:
+#:     for each shard: read the safetensors header, count distinct
+#:     tuple(v["shape"]) over 2-D "*.weight" entries
+DEFAULT_MENU_CACHE_SHAPES = 25
+
+
+def menu_rungs_per_shape() -> int:
+    """The widest menu one shape can produce.  Computed, never guessed.
+
+    :func:`expand_tessera_menu` walks every ``q256`` in each family's
+    ``mathematical_q256_bounds`` at ``step_q256=1`` and prices each one at the
+    shape it was handed, so this sum *is* the number of entries one pass over
+    one shape fills -- 6916 today, against 3055 before the 16-bit family was
+    admitted.  It is the floor under :func:`menu_cache_bound`: a memo smaller
+    than this evicts a shape's own entries while that shape is still being
+    priced, which is exactly the failure tessera#46 reports.
+
+    Asked of :func:`menu_families` rather than listed, so admitting a family
+    moves this number and the bound with it.  Deliberately **not** memoised on
+    its own: it is a sum over four specs, and a second memo over a memo that a
+    test can clear (``menu_families.cache_clear``) is a staleness class bought
+    for nothing.
+    """
+    total = 0
+    for spec in menu_families():
+        lo, hi = spec.mathematical_q256_bounds
+        total += int(hi) - int(lo) + 1
+    return total
+
+
+def menu_cache_shapes() -> int:
+    """How many distinct Linear shapes one pass keeps live.  Configured.
+
+    This is the memory decision, and it is the only one here: every other term
+    in the bound is computed.  The default is
+    :data:`DEFAULT_MENU_CACHE_SHAPES` -- a count taken off a real 122B MoE, not
+    a round number -- and ``PRISMAQUANT_TESSERA_MENU_CACHE_SHAPES`` moves it for
+    a model with a wider shape roster or a box with less memory to spend.  What
+    it may **not** do is drop below one shape.  One shape is not a taste, it is
+    the requirement -- a memo that cannot hold the menu it is being asked to
+    build evicts its own entries, which is tessera#46 -- so a setting under it
+    is refused rather than clamped, and the refusal names the reason.
+    """
+    import os
+
+    raw = os.environ.get(MENU_CACHE_SHAPES_ENV, "")
+    if not raw.strip():
+        return DEFAULT_MENU_CACHE_SHAPES
+    try:
+        shapes = int(raw)
+    except ValueError:
+        raise TesseraMenuError(
+            f"{MENU_CACHE_SHAPES_ENV}={raw!r} is not an integer number of shapes"
+        ) from None
+    if shapes < 1:
+        raise TesseraMenuError(
+            f"{MENU_CACHE_SHAPES_ENV}={raw!r}: a menu memo holds whole shapes, "
+            f"so it must retain at least one"
+        )
+    return shapes
+
+
+#: Shapes the **geometry** memo retains -- one, and the reason is its entry,
+#: not its taste.  ``_ShardGeometry.rates`` is Tessera's whole Bresenham column
+#: schedule, one integer per column, so an entry costs O(cols) rather than the
+#: flat ~350 B a byte total costs: ``tracemalloc`` over a saturating pass
+#: measures **8,735 B an entry at 1024 columns and 131,615 B at 16,384**, i.e.
+#: 58 MiB and 868 MiB for a single shape's 6916 rungs.  Retaining 25 shapes
+#: there would commit 1.4 GiB on GLM's narrowest expert and 21 GiB on its
+#: widest -- a memory decision nobody would make deliberately, so it is
+#: declined deliberately instead.  One shape is the whole requirement anyway:
+#: it is exactly what makes a shape unable to evict itself, and this memo fills
+#: on the TP>1 path alone (at tp=1 ``tessera_shape_legal`` answers without it,
+#: measured: 0 fills in a 6764-rung research pass).
+GEOMETRY_CACHE_SHAPES = 1
+
+
+def menu_cache_bound(shapes: "int | None" = None) -> int:
+    """Entries a per-(rung, shape) menu memo may hold.
+
+    ``menu_rungs_per_shape() * shapes`` -- the widest menu one shape can
+    produce, times the number of shapes that memo keeps live.  The first factor
+    is computed and the second is stated; neither is a round number chosen to
+    be safe, and the product is 172,900 today against the 4096 that could not
+    hold one shape.
+
+    ``shapes`` defaults to :func:`menu_cache_shapes`.  It is a parameter
+    because the two memos this sizes do **not** cost the same per entry, and
+    averaging them would hide a factor of 25 to 375 depending on the column
+    count: see :data:`GEOMETRY_CACHE_SHAPES`.
+
+    The memory the default commits is measured, not estimated.  ``tracemalloc``
+    around a saturating pass, differenced against the same pass with the memo
+    cleared, puts ``_exact_bits_for_shape`` at **351 B an entry** -- and at 351
+    B at every shape measured, ``(256,256)``, ``(2048,1024)`` and
+    ``(4096,16384)``, because the entry is a ``Fraction`` and a tuple key and
+    neither grows with the tensor.  So one retained shape is **2.32 MiB** and
+    the default 25 shapes is **57.9 MiB**, for the whole distinct-shape roster
+    of a 122B MoE.  ``_shard_geometry`` is the other case and is sized apart.
+    """
+    per_shape = menu_cache_shapes() if shapes is None else int(shapes)
+    return menu_rungs_per_shape() * per_shape
+
+
+def menu_scaled_cache(fn=None, *, shapes: "int | None" = None):
+    """Memoise a per-(rung, shape) function at :func:`menu_cache_bound`.
+
+    ``lru_cache`` fixes its size when the decorator runs, and this bound cannot
+    be known then: it asks :func:`menu_families`, which builds every family and
+    asks Tessera which grids serialise.  So the memo is built on the first call
+    and the wrapper forwards ``cache_info`` / ``cache_clear`` -- which is what
+    lets a test read the bound off the live memo instead of restating it.
+
+    ``shapes`` overrides the shape retention for one memo whose entries are not
+    the flat ones the default was measured on.
+    """
+    def decorate(target):
+        memo: "list[object]" = []
+
+        def _memo():
+            if not memo:
+                memo.append(
+                    lru_cache(maxsize=menu_cache_bound(shapes))(target))
+            return memo[0]
+
+        @wraps(target)
+        def call(*args):
+            return _memo()(*args)
+
+        call.cache_info = lambda: _memo().cache_info()
+        call.cache_clear = lambda: memo.clear()
+        return call
+
+    return decorate if fn is None else decorate(fn)
+
+
+# ---------------------------------------------------------------------------
 # Gate 2: shape, and the TP shard of it
 # ---------------------------------------------------------------------------
 
@@ -524,16 +695,27 @@ class _ShardGeometry:
     released_positions: int
 
 
-@lru_cache(maxsize=4096)
+@menu_scaled_cache(shapes=GEOMETRY_CACHE_SHAPES)
 def _shard_geometry(
-    family: "str | TesseraFamily", body_rate_q256: int, rows: int, cols: int,
+    family_name: str, body_rate_q256: int, rows: int, cols: int,
 ) -> _ShardGeometry:
-    """The unit-shaped geometry of one rung at one shape.  Raises if unrealisable."""
+    """The unit-shaped geometry of one rung at one shape.  Raises if unrealisable.
+
+    Keyed by the family's **name**, and it refuses anything else: a
+    ``TesseraFamily`` and its ``.name`` resolve to the same answer through
+    ``get_tessera_family`` but are two different memo keys, which would double
+    the key space against :func:`menu_cache_bound` and halve the hit rate
+    without changing a single number the function returns.  Callers normalise.
+    """
     from tessera.manifest import BodyKind, ScalePlaneKind
 
     from .tessera_render import TESSERA_GROUP, TESSERA_HALF
 
-    spec = get_tessera_family(family)
+    if not isinstance(family_name, str):
+        raise TesseraMenuError(
+            f"_shard_geometry is keyed by family name; got {type(family_name).__name__}"
+        )
+    spec = get_tessera_family(family_name)
     recipe = tessera_wire_recipe(spec, body_rate_q256)
     body = BodyKind(recipe.body)
     if rows % spec.arity:
@@ -593,12 +775,12 @@ def tessera_shard_granularity(
     ``mixed`` is a function of its column count. The sharded extents are then
     checked against it in :func:`tessera_tp_legal`.
     """
+    spec = get_tessera_family(family)
     geometry = _shard_geometry(
-        family, int(body_rate_q256), int(shape[-2]), int(shape[-1]),
+        spec.name, int(body_rate_q256), int(shape[-2]), int(shape[-1]),
     )
     from tessera.layout import shard_granularity as _tessera_granularity
 
-    spec = get_tessera_family(family)
     rows, cols = _tessera_granularity(
         geometry, SUPERBLOCK_WEIGHTS, int(spec.arity),
     )
@@ -697,7 +879,7 @@ def tessera_tp_legal(
         axis = "row" if parallel_kind == PARALLEL_COLUMN else "column"
         try:
             geometry = _shard_geometry(
-                spec, int(body_rate_q256), int(shape[-2]), int(shape[-1]),
+                spec.name, int(body_rate_q256), int(shape[-2]), int(shape[-1]),
             )
         except TesseraMenuError as exc:
             return False, f"tp{tp}_geometry:{exc}"
