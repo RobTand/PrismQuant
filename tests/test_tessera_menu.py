@@ -510,19 +510,18 @@ def test_the_line_a_human_reads_says_the_bytes_are_not_the_reviewed_ones():
 def test_a_new_top_level_block_is_not_a_re_review(dev_pin, monkeypatch, tmp_path):
     """The exact mechanism #38 was re-filed on: an additive block nobody reads.
 
-    Contract v6 added ``fused_module`` and v7 added ``native_extensions``.
-    Neither carries a value ``contract_answer`` reads, so neither is a thing
-    to re-review -- and a pin that fired on them would put PrismaQuant's
-    attested path back where #38 found it, off, in a repository nobody was
-    editing.
-
-    This is written as the *rule*, not as today's roster: the block injected
-    here is invented, so the test keeps holding for v8 and v9 and does not
-    quietly become an assertion that the contract is at v7.  Both directions
-    are pinned on the same mutation, which is the point -- the additive block
-    alone loads, and the additive block plus one moved gate value refuses and
-    names the moved field.  Without the second half the first would also pass
-    against a gate that had stopped comparing anything at all.
+    Contract v6's ``fused_module`` and v7's ``native_extensions`` both carry
+    values ``contract_answer`` reads today (the serving-unit promotion and
+    the §7.4 fingerprint, respectively) -- so a pin that fired on an UNREAD
+    block would put PrismaQuant's attested path back where #38 found it, off,
+    in a repository nobody was editing. The block injected here is invented,
+    standing in for a future v8/v9 no gate reads yet, so the test keeps
+    holding as blocks keep landing and does not quietly become an assertion
+    that the contract is at v7.  Both directions are pinned on the same
+    mutation, which is the point -- the additive block alone loads, and the
+    additive block plus one moved gate value refuses and names the moved
+    field.  Without the second half the first would also pass against a gate
+    that had stopped comparing anything at all.
     """
     import json as _json
 
@@ -647,6 +646,10 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
     # ``native_extensions`` is answer because the §7.4 fingerprint gate reads
     # it; the two fields of it that name files in the RUNTIME's own tree move
     # nothing on this side, so they stay identity like ``plugin_version``.
+    # ``fused_module`` is answer because the serving-unit promotion reads its
+    # fields; the block's ``*_note`` keys are prose and stay out for the same
+    # reason ``rationale`` does, and ``container`` names a sidecar no writer
+    # here produces.
     for identity_field in ("contract_version", "plugin_version", "attested_on",
                            "rationale", "detail", "changelog",
                            "csrc/", "loaded_by",
@@ -937,6 +940,12 @@ def test_fused_siblings_share_a_family_with_rates_free():
          "k": "TESSERA_E2M1_K2_R896",
          "v": "TESSERA_E2M1_K2_R512"},
         rank, [["q", "k", "v"]], legal,
+        group_kinds=["fused"],
+        fused_licence=trc.FusedModuleLicence(
+            schema=trc.FUSED_MODULE_SCHEMA,
+            fields={"q256": "per_member"},
+            sidecar_q256="int_or_per_role_list",
+            mixed_rung_receipt=False),
     )
     assert {format_promotion_class(f) for f in out.values()} == {
         "TESSERA_E2M1_K2"}
@@ -951,7 +960,13 @@ def test_promotion_is_non_degrading_within_the_family():
     legal = {"q": set(rank), "k": {"TESSERA_E2M1_K2_R896"}}
     out = _promote_group_components(
         {"q": "TESSERA_E2M1_K2_R512", "k": "TESSERA_E2M1_K2_R896"},
-        rank, [["q", "k"]], legal)
+        rank, [["q", "k"]], legal,
+        group_kinds=["fused"],
+        fused_licence=trc.FusedModuleLicence(
+            schema=trc.FUSED_MODULE_SCHEMA,
+            fields={"q256": "per_member"},
+            sidecar_q256="int_or_per_role_list",
+            mixed_rung_receipt=False))
     assert out["k"] == "TESSERA_E2M1_K2_R896"
     assert out["q"] == "TESSERA_E2M1_K2_R512"
 

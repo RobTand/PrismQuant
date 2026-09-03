@@ -1,7 +1,26 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `muse/pq-162-slots`. Stamps
+As of: 2026-09-03 · `muse/pq-140-licence`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `muse/pq-140-licence`) for the **licensed per-member
+promotion** (RobTand/prismaquant#140 -- closing the second prose copy the
+#132 stamp below left tracked). Serving-unit promotion moved a unit onto one
+Tessera family with a rate per member on the strength of its own docstring,
+and fired for packed-expert groups the contract does not cover. The groups are
+now tagged by kind where they are built, and the family branch runs only for
+fused-kind components under the pinned contract's `fused_module` word for the
+rate field (`q256: per_member`, read through `tessera_menu.fused_module_licence`;
+`None` with no pin is the absence of a licence, not a permissive default). A
+packed-expert component takes the uniform path -- the contract's
+`expert_parallel` is a closed world with no unit in it -- a re-tightened
+`q256` collapses fused groups to one rung and re-stales the dev pin with the
+field named, and a component unioning a fused group with a packed one refuses
+rather than picking a side. Gates:
+`tests/test_allocator_family_licence.py` (packed lands on one rung, fused keeps
+its rates, shared/absent licence collapses both, mixed refuses, each shown
+failing before the fix); the pin-level refusal is #132's
+(`tests/test_tessera_menu.py::test_a_withdrawn_fused_module_licence_refuses_at_the_pin`).
 
 Re-stamped (2026-09-03, `muse/pq-162-slots`) for the **derived lane-slot
 vocabulary** (§7.1; RobTand/prismaquant#162 closed). `shipcard.ALL_SLOTS` and
@@ -14,6 +33,7 @@ a slot with no verifier is REFUSED at parse time, the same way
 `LaneGate.from_dict` refuses a null slot with no `unrecorded_reason` -- so a
 fourth lane with a novel gate is one spec file plus one verifier, and neither
 roster exists to be forgotten.
+
 
 Re-stamped (2026-09-03, `muse/pq-87-shipgate`) for the **sampled
 boundary-behavior ship gate** (§7.2; issue #87). KL/PPL and greedy-smoke are
@@ -5170,6 +5190,29 @@ This matters at 0.6B already: `q_proj` is `[2048, 1024]` and `k/v_proj` are
 `[1024, 1024]`, three different tensors fused into one `qkv_proj`, and the uniform
 rule would force a shared *rate* where only a shared *route* is required.
 
+**The per-member rates are licensed, and fused-only** (RobTand/prismaquant#140).
+The paragraph above used to assert the serving constraint in prose, at a second
+site, and for every serving-unit kind: `promote_serving_units` flattens fused
+groups and packed-expert groups into one list, and the family branch fired for
+any component whose max-rank format had a coarser promotion class. The groups
+are now tagged by kind where they are built, and the branch runs only for
+fused-kind components under the pinned contract's `fused_module` word for the
+rate field -- `q256: per_member` since contract v6, read through
+`tessera_menu.fused_module_licence`, the menu's declared one read, so the
+licence and the route admission cannot come from two Tessera builds in one run.
+A packed-expert component takes the uniform path even under a per-member word:
+`expert_parallel` publishes a closed world with no unit in it, so per-expert
+rungs under one family is a claim nothing attests. With no contract pinned --
+production, while no Tessera release tag exists -- there is no table to derive
+the rate's freedom from and every component takes the uniform path; a contract
+that re-tightens `q256` to `shared` collapses fused groups the same way and
+re-stales the dev pin with the field named, because the word is in the pin's
+answer. A component that unions a fused group with a packed one is ambiguous
+under both scopes and refuses rather than picking a side; on a stock menu the
+uniform path treats every kind identically, so overlapping stock groups behave
+exactly as before. `None` is the absence of a licence, never a permissive
+default, and a `q256` word the block does not name raises instead of guessing.
+
 **...but the default path never asks it to** (measured 2026-09-02). Fused
 siblings are aggregated into a single DP item *before* the solve
 (`allocator.py` → `allocator_candidates.aggregate_fused_siblings`), and that
@@ -5201,12 +5244,20 @@ are reported, in `layer_config.json` under
 run, not only on the byte-budget path, which is where the first version of this
 stamp landed and therefore never appeared in a `--target-bits` run.
 
-> **Attestation gap, stated rather than assumed.** Whether a runtime can serve a
+> **Attestation, read rather than assumed.** Whether a runtime can serve a
 > fused group whose members hold different rungs of one family is a fact about
-> that runtime, and nothing attests it — there is no Tessera export leg at all.
-> This section describes what the *allocator* may consider; §9's export gate
+> that runtime, and Tessera publishes it: `fused_module.fields.q256` is
+> `per_member` since contract v6 (RobTand/tessera#37), and the promotion above
+> reads that block instead of restating it. Two things the block still does not
+> say: `mixed_rung_receipt` is `false`, so no *serve* has covered such a
+> module -- the relaxation is proven by a decode identity -- and nothing in it
+> covers per-expert rungs, which is why packed components stay uniform. This
+> section describes what the *allocator* may consider; §9's export gate
 > decides what ships, and under the default attested menu there are no Tessera
-> candidates for the relaxation to act on.
+> candidates for the relaxation to act on. The export lane additionally refuses
+> routed-MoE models outright (it reads the contract's `structures: ["dense"]`
+> and the absent `routed_moe` cell), so no mixed-rung expert group can reach
+> an artifact even where the allocator states one.
 
 **The route travels with the choice.** `serving_lane_route` falls through to
 `tessera_menu.tessera_resolved_serving_lane` for a `TESSERA_*` name when no profile

@@ -21,6 +21,17 @@
   stamps `__licence__` saying so on every group with a Tessera rung on a
   member's menu. A stock-only group never asks the licence question and so
   carries no receipt: its super item is unchanged.
+- **The solver's per-member rung relaxation is licensed, and fused-only**
+  (#140; `allocator_solver.py`). `_resolve_family_group` moved a serving unit
+  onto one Tessera family with a rate per member on the strength of its own
+  docstring, and the branch fired for packed-expert groups the contract does
+  not cover. The groups are now tagged by kind where `promote_serving_units`
+  builds the list, and the branch runs only for fused-kind components under
+  the pinned contract's `fused_module` word for `q256` (`per_member`, read
+  through `tessera_menu.fused_module_licence`, which #132 added). A
+  packed-expert component takes the uniform path, a `shared` (or absent)
+  licence collapses every component to one rung, and a component unioning a
+  fused group with a packed one refuses.
 
 - **The lane-slot vocabulary is derived and every derived slot names a verifier**
   (#162; `shipcard.py`, `tests/test_lane_gate_recording.py`). `LANE_SCOPED_SLOTS`

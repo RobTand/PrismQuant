@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from math import inf
 from typing import TYPE_CHECKING
@@ -43,6 +44,26 @@ class PackedExpertRoleUnknown(RuntimeError):
 
 # Read once at import (coarse offline path; no per-call getenv).
 _SOLVER_TRACE = os.environ.get("PRISMAQUANT_SOLVER_TRACE", "") not in ("", "0")
+
+
+#: Serving-unit kinds ``promote_serving_units`` tags its groups with.  The
+#: kind is which builder produced the group -- a fused module
+#: (``profile.fused_sibling_group``) or a packed-expert unit
+#: (``profile.packed_expert_format_group``) -- never a restatement of the
+#: member names, so a renamed leaf cannot change a component's kind.  Only a
+#: fused kind may enter the family relaxation: the pinned Tessera contract's
+#: ``fused_module`` block scopes the per-member licence to one vLLM-fused
+#: module, and its ``expert_parallel`` world is closed with no unit in it.
+_GROUP_KIND_FUSED = "fused"
+_GROUP_KIND_PACKED = "packed"
+_GROUP_KINDS = frozenset({_GROUP_KIND_FUSED, _GROUP_KIND_PACKED})
+
+#: ``promote_serving_units`` / ``_promote_group_components`` default: read the
+#: pinned contract's ``fused_module`` block on first need (through
+#: ``tessera_menu.fused_module_licence``, the module's declared one read).  An
+#: explicit ``None`` is the ABSENCE of a licence -- one rung per group -- not
+#: a request to read.
+_LICENCE_FROM_CONTRACT: object = object()
 
 
 @dataclass
@@ -369,26 +390,40 @@ def _resolve_family_group(
     format_rank: dict[str, int],
     legal_formats: dict[str, set[str]] | None,
     promotion_class: str,
+    fused_licence=None,
 ) -> dict[str, str] | None:
-    """Move a serving unit onto one FAMILY, leaving each member's rate free.
+    """Move a FUSED serving unit onto one FAMILY, leaving each member's rate free.
 
-    Reached only when the unit's max-rank assignment is a format whose
-    promotion class is not itself (``tessera_formats.format_promotion_class``
-    -- i.e. a Tessera rung, where the family is the decoder the runtime
-    dispatches on and the rung is a point on that family's continuous rate
-    axis). Every other menu is untouched by construction: for a stock format
-    the class IS the name, the caller never enters this branch, and the run is
+    Reached only for a component every one of whose groups is a fused module
+    -- ``promote_serving_units`` tags the groups by kind, and packed-expert or
+    untagged components never enter (issue #140).  The per-member rates are
+    licensed, not asserted: ``fused_licence`` is the pinned Tessera contract's
+    ``fused_module`` block parsed into a
+    :class:`~prismaquant.tessera_runtime_contract.FusedModuleLicence`, and the
+    relaxation runs only while that block marks the rate field
+    (``q256``) ``per_member``.  ``None`` -- no contract pinned, no table to
+    derive the rate's freedom from -- declines rather than asserting it, so a
+    contract that re-tightens ``q256`` to ``shared`` collapses the group to
+    one rung instead of leaving promotion writing rungs the loader refuses.  A
+    ``q256`` word the block does not name at all raises (through the
+    licence's own lookup) rather than guessing either way.
+
+    Every other menu is untouched by construction: for a stock format the
+    class IS the name, the caller never enters this branch, and the run is
     byte-identical to one built before this function existed.
 
     Each member takes the CHEAPEST legal rung of ``promotion_class`` at or
     above its own current rank -- the same non-degrading contract
     ``_choose_group_format`` implements for the uniform case, applied per
-    member instead of once for the unit, because that is exactly the
-    constraint the shared decoder imposes and no more. Returns ``None`` (and
-    the caller falls back to uniform promotion) if any member has no legal
-    rung in the family at all, so the relaxation can only ever be a widening
-    of what promotion accepts, never a new way for it to fail.
+    member instead of once for the unit.  Returns ``None`` (and the caller
+    falls back to uniform promotion) if any member has no legal rung in the
+    family at all, so the relaxation can only ever be a widening of what
+    promotion accepts, never a new way for it to fail.
     """
+    if fused_licence is None:
+        return None
+    if not fused_licence.is_per_member("q256"):
+        return None
     from .tessera_formats import format_promotion_class
 
     out: dict[str, str] = {}
@@ -417,6 +452,9 @@ def _promote_group_components(
     format_rank: dict[str, int],
     groups: list[list[str]],
     legal_formats: dict[str, set[str]] | None = None,
+    *,
+    group_kinds: "Sequence[str] | None" = None,
+    fused_licence=_LICENCE_FROM_CONTRACT,
 ) -> dict[str, str]:
     """Promote connected serving-unit components to one shared format.
 
@@ -430,8 +468,42 @@ def _promote_group_components(
     illegal for a subset, and export's per-Linear shape coercion then breaks
     the unit's coherence (issue #28). Omit the argument and the legacy
     max-rank behaviour is reproduced exactly.
+
+    ``group_kinds`` tags each group ``"fused"`` or ``"packed"`` -- which
+    builder produced it (see ``_GROUP_KINDS``).  The family relaxation
+    (``_resolve_family_group``) is entered only for a component every one of
+    whose groups is fused AND under a ``q256: per_member`` licence; a packed
+    or untagged component takes the uniform path even when its max-rank
+    format is a Tessera rung, and a component that unions a fused group with
+    a packed one REFUSES, because neither licence scope covers the mix and
+    picking a side would assert what nothing attests (issue #140).  The
+    refusal fires only where the kind matters -- on a stock menu the uniform
+    path treats every kind identically, so overlapping stock groups keep the
+    behaviour they always had.
+
+    ``fused_licence`` is the pinned contract's ``fused_module`` block parsed
+    into a ``FusedModuleLicence``; ``None`` is the absence of a licence (one
+    rung per group), and the default reads the contract on first need through
+    ``tessera_menu.fused_module_licence`` -- lazily, so a stock run never
+    imports the menu reader.
     """
     from .tessera_formats import format_promotion_class
+
+    if group_kinds is not None:
+        if len(group_kinds) != len(groups):
+            raise ValueError(
+                f"promotion got {len(groups)} groups and "
+                f"{len(group_kinds)} kinds; the two lists are parallel and "
+                "must match exactly"
+            )
+        for kind in group_kinds:
+            if kind not in _GROUP_KINDS:
+                raise ValueError(
+                    f"promotion group kind {kind!r} is not one of "
+                    f"{sorted(_GROUP_KINDS)}; the kind is which builder "
+                    "produced the group, and an unknown word would silently "
+                    "widen or narrow the family relaxation"
+                )
 
     out = dict(assignment)
     parent = {name: name for name in out}
@@ -460,9 +532,26 @@ def _promote_group_components(
     for name in out:
         components.setdefault(find(name), []).append(name)
 
-    for members in components.values():
+    # Which kinds met in each component, recomputed AFTER every union so the
+    # roots are final.  A group that contributed no union (fewer than two
+    # members present) contributed no coupling either, so it lends no kind.
+    comp_kinds: dict[str, set[str]] = {}
+    comp_sources: dict[str, list[tuple[str, list[str]]]] = {}
+    if group_kinds is not None:
+        for index, group in enumerate(groups):
+            members = [m for m in group if m in out]
+            if len(members) < 2:
+                continue
+            root = find(members[0])
+            comp_kinds.setdefault(root, set()).add(group_kinds[index])
+            comp_sources.setdefault(root, []).append(
+                (group_kinds[index], sorted(members)))
+
+    licence = fused_licence
+    for root, members in components.items():
         if len(members) < 2:
             continue
+        kinds_here = comp_kinds.get(root, set())
         best_fmt = max(
             (out[member] for member in members),
             key=lambda fmt: _rank_of(
@@ -474,11 +563,39 @@ def _promote_group_components(
             # A format whose serving identity is coarser than its name: the
             # unit has to share the FAMILY, not the rate. Only Tessera rungs
             # answer to this today, so no stock menu reaches the branch.
-            resolved = _resolve_family_group(
-                members, out, format_rank, legal_formats, promotion_class)
-            if resolved is not None:
-                out.update(resolved)
-                continue
+            if _GROUP_KIND_FUSED in kinds_here and _GROUP_KIND_PACKED in kinds_here:
+                # One component coupled by a fused group and a packed group.
+                # The fused licence scopes per-member rates to one vLLM-fused
+                # module and says nothing about experts; the packed unit is
+                # outside it. Refuse rather than pick a side.
+                fused_side = sorted(
+                    src for kind, src in comp_sources.get(root, [])
+                    if kind == _GROUP_KIND_FUSED)
+                packed_side = sorted(
+                    src for kind, src in comp_sources.get(root, [])
+                    if kind == _GROUP_KIND_PACKED)
+                raise AssertionError(
+                    f"serving-unit component of {len(members)} members "
+                    f"(representative {min(members)!r}) unions a fused group "
+                    f"with a packed-expert group: fused {fused_side}, packed "
+                    f"{packed_side}. Per-member rungs are licensed only "
+                    "inside one vLLM-fused module (the pinned Tessera "
+                    "contract's fused_module block) and uniform promotion is "
+                    "the packed unit's own constraint -- the mix satisfies "
+                    "neither scope, so promotion refuses instead of choosing "
+                    "one. This is an upstream grouping bug to fix, not a "
+                    "state to promote around."
+                )
+            if kinds_here == {_GROUP_KIND_FUSED}:
+                if licence is _LICENCE_FROM_CONTRACT:
+                    from .tessera_menu import fused_module_licence as _read_licence
+                    licence = _read_licence()
+                resolved = _resolve_family_group(
+                    members, out, format_rank, legal_formats, promotion_class,
+                    licence)
+                if resolved is not None:
+                    out.update(resolved)
+                    continue
         if all(_member_allows(best_fmt, member, legal_formats)
                for member in members):
             # Shadowed by the max-choice above -- reaching here proves every
@@ -512,6 +629,7 @@ def promote_serving_units(
     include_fused: bool = True,
     include_moe: bool = True,
     legal_formats: dict[str, set[str]] | None = None,
+    fused_licence=_LICENCE_FROM_CONTRACT,
 ) -> dict[str, str]:
     """Promote all serving-coupled units in one order-independent pass.
 
@@ -519,17 +637,34 @@ def promote_serving_units(
     wherever per-row legality is known, so the shared format a unit lands on
     is one every member can actually run. Omitted, promotion keeps its legacy
     max-rank behaviour.
+
+    The groups are tagged by KIND where they are built -- fused modules vs
+    packed-expert units -- and the tags travel into
+    ``_promote_group_components`` beside the member lists, so the family
+    relaxation fires only for fused-kind components under the pinned
+    contract's ``fused_module`` licence (issue #140).  ``fused_licence`` is
+    that block parsed into a ``FusedModuleLicence``; ``None`` is the absence
+    of a licence (one rung per group), and the default reads the contract on
+    first need.
     """
     if profile is None:
         from .model_profiles import DefaultProfile
         profile = DefaultProfile()
     groups: list[list[str]] = []
+    group_kinds: list[str] = []
     if include_fused:
-        groups.extend(_group_by_profile(assignment.keys(), profile).values())
+        for members in _group_by_profile(
+                assignment.keys(), profile).values():
+            groups.append(members)
+            group_kinds.append(_GROUP_KIND_FUSED)
     if include_moe:
-        groups.extend(_packed_groups_by_profile(assignment.keys(), profile).values())
+        for members in _packed_groups_by_profile(
+                assignment.keys(), profile).values():
+            groups.append(members)
+            group_kinds.append(_GROUP_KIND_PACKED)
     return _promote_group_components(
-        assignment, format_rank, groups, legal_formats)
+        assignment, format_rank, groups, legal_formats,
+        group_kinds=group_kinds, fused_licence=fused_licence)
 
 
 def fused_siblings(name: str, profile=None) -> tuple[tuple[str, ...], str] | None:
