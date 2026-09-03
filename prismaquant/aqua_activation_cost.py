@@ -291,7 +291,10 @@ def resolve_executed_activation_formats(*, lane_id: str | None,
             "executes, or assert "
             "--lane-executes-all-activation-grids. There is no default: "
             "assuming the format registry's W4A4 claim is what priced a full "
-            "A-side onto gridbook's BF16-bridge CB lane.")
+            "A-side onto the BF16-bridge CB lane that Gridbook served until "
+            "2026-09-02 (archive/gridbook_lane_2026-09-02/). The lane is "
+            "retired; the failure mode is not, because it is a property of "
+            "trusting the registry over the lane.")
     from .lane_spec import load_lane_spec
     spec = load_lane_spec(lane_id)
     contract = spec.served_activation_quantization
@@ -342,9 +345,13 @@ def activation_dloss_table(card, model_path: str, formats: list[str], *,
         raise SystemExit(
             "REFUSE: executed_activation_formats is required. The A-side price "
             "depends on what the SERVING LANE executes, not on what the format "
-            "registry declares the format to be -- gridbook's CB lane serves "
-            "NVFP4_CB weights through the exact BF16 bridge and quantizes no "
-            "activations, so its correct A-side is exactly zero. Pass the "
+            "registry declares the format to be -- gridbook's CB lane "
+            "served NVFP4_CB weights through the exact BF16 bridge and "
+            "quantized no activations, so its correct A-side was exactly "
+            "zero (that lane retired 2026-09-02, "
+            "archive/gridbook_lane_2026-09-02/; the example is kept because "
+            "it is the measurement that made this argument mandatory). Pass "
+            "the "
             "lane's `served_activation_quantization.executes` (an empty set is "
             "a valid, common answer), or the string \"all\" for a lane that "
             "genuinely serves every format's activation grid fused.")

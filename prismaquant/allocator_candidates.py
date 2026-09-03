@@ -94,13 +94,21 @@ AURA_SUPERSURROGATE_ALLOCATOR_SEMANTICS = True
 # Serving-route token for a passthrough whose bytes the model's OWN loader
 # consumes, with no Gridbook codec in the path.
 ROUTE_DELEGATED_NATIVE = "delegated_native"
-# Gridbook-owned W8A8 dense route.  This is deliberately not described as
-# delegated/native: Gridbook 0.8.4 installs ``Mxfp8DenseLinearMethod``, embeds
-# block-128 source scales into per-32 MXFP8 weight scales, and quantizes the A
-# side dynamically to MXFP8 per 32.
-ROUTE_GRIDBOOK_MXFP8_DENSE = "gridbook_mxfp8_dense"
-# Gridbook-owned raw-resident block-128 source route. Unlike the direct G32
-# MXFP8 lane above, this route consumes BF16 activations unchanged.
+# The name of the route that USED to execute a raw-resident block-128 source
+# plane: Gridbook's ``Fp8SourceW8A16LinearMethod``, which consumed BF16
+# activations unchanged.  The lane was retired on 2026-09-02
+# (archive/gridbook_lane_2026-09-02/) and this constant is kept BECAUSE it is
+# retired: it is the ``serving_route`` on the FP8_BLOCK_UE8M0_SOURCE row below,
+# whose ``route_status`` is now BLOCKED, and that row's whole job is to say
+# which route died. Renaming it to something lane-neutral would erase the scope
+# of the measurement the row carries (principle 14's corollary: a recorded
+# capability claim inherits the scope of the artifact it was measured on).
+#
+# ``ROUTE_GRIDBOOK_MXFP8_DENSE = "gridbook_mxfp8_dense"`` sat here until
+# 2026-09-02.  It named ``Mxfp8DenseLinearMethod`` and had no reader anywhere
+# in the tree -- no contract row, no test, no consumer of the string -- so it
+# was a dangling name rather than a record of anything, and it is deleted
+# rather than archived.
 ROUTE_GRIDBOOK_FP8_SOURCE_W8A16 = "gridbook_fp8_source_w8a16"
 
 # What a MEASUREMENT says about serving a passthrough's bytes. These are
