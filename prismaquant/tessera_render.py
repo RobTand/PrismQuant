@@ -34,6 +34,7 @@ from tessera import export as _tessera_export
 
 from .tessera_formats import (
     TesseraFamily,
+    family_cache_bound,
     grid_space_rung_keys,
     lazily_sized_cache,
     parse_tessera_format_name,
@@ -298,7 +299,7 @@ def is_tessera_format(name: object) -> bool:
         return isinstance(name, str) and name.startswith("TESSERA_")
 
 
-@lru_cache(maxsize=64)
+@lazily_sized_cache(family_cache_bound)
 def _grid_for(family: TesseraFamily):
     """The grid this family renders through -- **the family's own**.
 
@@ -317,6 +318,9 @@ def _grid_for(family: TesseraFamily):
     not serialisable -- its values are fitted to the tensor and no identifier
     reproduces them, so it needs a VALUES plane first.  ``_HARDWARE_BASES``
     is the single statement of which bases are not that.
+
+    Sized by ``tessera_formats.family_cache_bound``: keyed per family, asked
+    per family.
     """
     from .tessera_formats import _HARDWARE_BASES
 
@@ -330,7 +334,7 @@ def _grid_for(family: TesseraFamily):
     return family.payload_grid()
 
 
-@lru_cache(maxsize=64)
+@lazily_sized_cache(family_cache_bound)
 def family_grid_is_serialisable(family: TesseraFamily) -> bool:
     """Is this family's grid a permanent wire commitment?
 
@@ -344,6 +348,10 @@ def family_grid_is_serialisable(family: TesseraFamily) -> bool:
     ``grid_digest`` -- computing 6916 times, at 34 ms each, an answer that
     cannot vary with the rate.  ``route_admission`` budgets 0.072 ms for this
     leg; asking the grid rather than the rung is what keeps that true.
+
+    Sized by ``tessera_formats.family_cache_bound``: keyed per family, asked
+    per family.  The ``maxsize=64`` that thrashed per rung is now this space,
+    and moves with the roster instead of the key.
     """
     from tessera.alphabet import SERIALISABLE_GRIDS, grid_digest
 

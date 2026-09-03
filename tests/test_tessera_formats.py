@@ -1524,3 +1524,164 @@ def test_a_second_unit_asks_neither_rung_keyed_memo_again():
     assert warm_names.hits - cold_names.hits == cold_names.misses
     assert warm_recipes.misses == cold_recipes.misses
     assert warm_recipes.hits > cold_recipes.hits
+
+
+# ---------------------------------------------------------------------------
+# The family-keyed memo bound (prismaquant#148)
+#
+# Five more memos are keyed on a FAMILY -- ``_build_grid``,
+# ``_tcq_body_is_reachable`` and ``tessera_family`` here, ``_grid_for`` and
+# ``family_grid_is_serialisable`` in tessera_render -- and all five were sized
+# by round numbers (64/64/256/64/64) against a roster that moved twice in a
+# week.  These tests pin the RULE, "a memo holds every (base, arity) the
+# enumerators ask", and never a count.  A count written here would be the same
+# defect one level up: the union of the two enumerators' loops, not the dozen
+# families they build today.
+# ---------------------------------------------------------------------------
+
+def _family_keyed_memos():
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_render as tr
+
+    return {
+        "tessera_formats._build_grid": tfm._build_grid,
+        "tessera_formats._tcq_body_is_reachable": tfm._tcq_body_is_reachable,
+        "tessera_formats.tessera_family": tfm.tessera_family,
+        "tessera_render._grid_for": tr._grid_for,
+        "tessera_render.family_grid_is_serialisable":
+            tr.family_grid_is_serialisable,
+    }
+
+
+def _asked_family_pairs():
+    """Every (base, arity) the two enumerators ask, from their loop inputs.
+
+    Not from their outputs: both enumerators skip the families the encoder
+    refuses, while the bound has to be stated against what is ASKED -- the
+    grid space's bases at its arities, and the menu's hardware bases at its
+    searched arities.  Read off the constants that own those loops, never
+    restated here.
+    """
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_menu as tm
+
+    grid = {(base, arity)
+            for base in (*tfm._HARDWARE_BASES, *tfm._MEASURED_FREE_BASES)
+            for arity in tfm._GRID_SPACE_ARITIES}
+    menu = {(base, arity)
+            for base in tfm._HARDWARE_BASES
+            for arity in range(1, tm._MAX_ARITY_SEARCH + 1)}
+    return grid | menu
+
+
+def _buildable_families():
+    """Every family either enumerator yields, deduplicated by (base, arity)."""
+    from prismaquant import tessera_menu as tm
+
+    seen = {}
+    for spec in list(enumerate_grid_space()) + list(tm.menu_families()):
+        seen.setdefault((spec.base, spec.arity), spec)
+    assert seen, "an empty family space would let every bound below pass"
+    return list(seen.values())
+
+
+def test_every_family_keyed_memo_is_sized_off_the_family_space():
+    """The rule for #148.  Not ``maxsize == <number>`` -- ``== the bound``.
+
+    The pre-fix literals (64/64/256/64/64) all fail the equality: 64 and 256
+    are round numbers against a 32-pair space, correct today only because no
+    eviction has been measured yet.
+    """
+    from prismaquant import tessera_formats as tfm
+
+    bound = tfm.family_cache_bound()
+    assert bound >= len(_asked_family_pairs()), (
+        f"the bound holds {bound} entries against "
+        f"{len(_asked_family_pairs())} asked (base, arity) pairs")
+    for name, memo in _family_keyed_memos().items():
+        assert memo.cache_info().maxsize == bound, (
+            f"{name} holds {memo.cache_info().maxsize} entries against a "
+            f"{bound}-family space: a round number, not the roster")
+
+
+def test_a_second_pass_over_the_family_space_recomputes_nothing():
+    """The behaviour the bound buys, measured on the memo rather than a clock.
+
+    ``_grid_for`` and ``_tcq_body_is_reachable`` are covered by the sizing
+    test above, not here: the first refuses the free bases (a miss on every
+    pass by construction) and the second is only ever asked of the
+    over-budget families, so neither stores the whole space.
+    """
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_render as tr
+
+    families = _buildable_families()
+
+    tfm._build_grid.cache_clear()
+    tfm.tessera_family.cache_clear()
+    tr.family_grid_is_serialisable.cache_clear()
+    for spec in families:
+        tfm.tessera_family(spec.base, spec.arity)
+        tfm._build_grid(spec.base, spec.base_size, spec.arity)
+        tr.family_grid_is_serialisable(spec)
+    cold = {
+        "tessera_family": tfm.tessera_family.cache_info(),
+        "_build_grid": tfm._build_grid.cache_info(),
+        "family_grid_is_serialisable":
+            tr.family_grid_is_serialisable.cache_info(),
+    }
+    assert all(info.misses == len(families) for info in cold.values())
+    for spec in families:
+        tfm.tessera_family(spec.base, spec.arity)
+        tfm._build_grid(spec.base, spec.base_size, spec.arity)
+        tr.family_grid_is_serialisable(spec)
+    warm = {
+        "tessera_family": tfm.tessera_family.cache_info(),
+        "_build_grid": tfm._build_grid.cache_info(),
+        "family_grid_is_serialisable":
+            tr.family_grid_is_serialisable.cache_info(),
+    }
+    for name in cold:
+        assert warm[name].misses == cold[name].misses, (
+            f"{name}: a repeat pass re-answered families it had answered")
+        assert warm[name].hits - cold[name].hits == len(families)
+
+
+def test_the_family_bound_moves_when_the_roster_moves(monkeypatch):
+    """Derived, not restated: shrink the roster and the live memos shrink.
+
+    The companion to the rung-space version above.  A literal cannot pass
+    this: the bound is read off ``_HARDWARE_BASES`` at sizing time, so moving
+    the roster moves every family-keyed memo with it.
+    """
+    from prismaquant import tessera_formats as tfm
+
+    def _rebuild():
+        for memo in _family_keyed_memos().values():
+            memo.cache_clear()
+
+    wide = tfm.family_cache_bound()
+    for name, memo in _family_keyed_memos().items():
+        assert memo.cache_info().maxsize == wide, name
+
+    narrower = {base: spec for base, spec in tfm._HARDWARE_BASES.items()
+                if base != "BF16"}
+    assert len(narrower) == len(tfm._HARDWARE_BASES) - 1
+    try:
+        monkeypatch.setattr(tfm, "_HARDWARE_BASES", narrower)
+        _rebuild()
+        narrow = tfm.family_cache_bound()
+        assert narrow < wide
+        for name, memo in _family_keyed_memos().items():
+            assert memo.cache_info().maxsize == narrow, name
+        assert narrow >= len(_asked_family_pairs())
+    finally:
+        # The memos were BUILT while the roster was short.  Restoring the
+        # roster does not resize them, so the clear has to come after the undo
+        # or every later test in the session runs undersized.
+        monkeypatch.undo()
+        _rebuild()
+
+    assert tfm.family_cache_bound() == wide
+    for name, memo in _family_keyed_memos().items():
+        assert memo.cache_info().maxsize == wide, name
