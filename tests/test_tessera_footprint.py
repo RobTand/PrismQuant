@@ -385,7 +385,78 @@ def test_an_exact_rate_is_the_whole_rate_not_a_body_rate():
 # ------------------------------------ the accountants price the whole grammar
 
 RECIPE_SHAPES = ((2048, 4096), (96, 768))
-RECIPE_FAMILIES = ("TESSERA_E2M1_K1", "TESSERA_E2M1_K2", "TESSERA_E4M3_K1")
+# ------------------------------------------------------------------ the sweep
+#
+# The families are ASKED FOR, not typed. This was a hand-written 3-tuple
+# (`("TESSERA_E2M1_K1", "TESSERA_E2M1_K2", "TESSERA_E4M3_K1")`) in the two
+# strongest byte-identity proofs in the tree, so the 16-bit family -- live in
+# `menu_families()` since the anchor wall became the TCQ body's -- was never
+# priced by either, and mis-charging its window table at one byte instead of
+# two passed both (#154). `menu_families()` is the roster the DP prices, and it
+# grows on a Tessera release without either sweep being edited.
+#
+# The recipes are two sets unioned: the labelled grammar wires below, which
+# deliberately include wires no family writes today because the default moves,
+# and each family's OWN resolved wires -- the pattern
+# `test_the_hessian_applies_exactly_where_tessera_says_it_does` uses -- so a
+# family whose body varies across its rate axis (E2M1x2 is WINDOW below the
+# coset cap and TCQ at it) is priced on both.
+
+def _rungs_under(spec, wire):
+    """Cheapest, middle and dearest rung this (family, wire) can express.
+
+    A window body of L bits refuses a schedule whose widest column rate
+    exceeds L (`tessera_footprint.py`, "window_bits {L} cannot hold a rate-"),
+    and a column rate is bits per CODE, covering `arity` weights -- so the
+    rung ceiling the window imposes is `L * Q256_UNIT // arity`, in the same
+    q256 bits-per-weight units the bounds use. That is a bound on the schedule
+    MEAN, hence necessary rather than sufficient (a schedule's max rate may
+    exceed its mean); the pricing calls below are what prove each swept rung
+    actually expressible. BF16 under an L=8 wire tops out at rate 8, not 16.
+    Derived from the wire rather than skipped with a try/except, so a
+    combination that stops being expressible shrinks the sweep visibly instead
+    of being swallowed.
+    """
+    from prismaquant.tessera_formats import (
+        BodyKind, Q256_UNIT, family_q256_bounds,
+    )
+
+    lo, hi = family_q256_bounds(spec, wire)
+    if BodyKind(wire.body) is BodyKind.WINDOW:
+        hi = min(hi, wire.window_bits * Q256_UNIT // spec.arity)
+    assert lo <= hi, (spec.name, wire, lo, hi)
+    return (lo, (lo + hi) // 2, hi)
+
+
+def _families_and_wires(grammar):
+    """Every menu family crossed with the grammar wires and its own wires."""
+    from prismaquant.tessera_formats import (
+        realisable_rungs, scale_plane_name, tessera_wire_recipe,
+    )
+    from prismaquant.tessera_menu import menu_families
+
+    families = list(menu_families())
+    reps = []
+    for spec in families:
+        for label, wire in grammar:
+            reps.append((spec, label, wire))
+        own = {}
+        for rung in realisable_rungs(spec):
+            wire = tessera_wire_recipe(spec, rung)
+            key = (wire.body.name, scale_plane_name(wire.scale_plane),
+                   wire.window_bits, wire.span)
+            own.setdefault(key, wire)
+        for key, wire in sorted(own.items()):
+            reps.append((spec, f"its own wire {key}", wire))
+
+    # Non-vacuity, and it bites per family rather than in total: an emptied
+    # `menu_families` or a family whose `realisable_rungs` came back empty
+    # would otherwise shrink the sweep without changing an assertion.
+    assert len(families) >= 2, [f.name for f in families]
+    assert {spec.name for spec, _, _ in reps} == {f.name for f in families}
+    assert len(reps) > len(families) * len(grammar), len(reps)
+    return families, reps
+
 
 
 def _wire_recipes():
@@ -418,33 +489,39 @@ def test_the_footprint_prices_the_recipe_the_calculator_prices(shape):
     )
 
     rows, columns = shape
+    families, reps = _families_and_wires(_wire_recipes())
     checked = 0
-    for label, wire in _wire_recipes():
+    for spec, label, wire in reps:
         plane = scale_plane_name(wire.scale_plane)
-        for name in RECIPE_FAMILIES:
-            spec = get_tessera_family(name)
-            lo, hi = family_q256_bounds(spec, wire)
-            for q in (lo, (lo + hi) // 2, hi):
-                breakdown = tessera_tensor_payload_breakdown(
-                    shape, family=spec, body_rate_q256=q, recipe=wire)
-                priced = Fraction(*breakdown["exact_bpw_rational"])
-                closed = artifact_bpp(spec, q, 0, recipe=wire, shape=shape)
-                exact = terminal_rate(
-                    q * spec.arity, rows, columns,
-                    with_scale_base=plane == "s6b",
-                    with_scale_refine=plane in ("s6b", "lut16"),
-                    with_row_scale=plane == "channel",
-                    span=wire.span, cap=family_rate_cap(spec, wire),
-                    arity=spec.arity, completion=0, window_bits=wire.window_bits,
-                    # The wire's own figure.  ``with_forest`` defaults off so
-                    # the calculator's published figures keep meaning the
-                    # position-domain rate they were derived as; a caller
-                    # pricing a whole unit passes True (#126).
-                    with_forest=BodyKind(wire.body) is BodyKind.TCQ,
-                )
-                assert priced == exact == closed, (label, name, q, shape)
-                checked += 1
-    assert checked == len(_wire_recipes()) * len(RECIPE_FAMILIES) * 3
+        for q in _rungs_under(spec, wire):
+            breakdown = tessera_tensor_payload_breakdown(
+                shape, family=spec, body_rate_q256=q, recipe=wire)
+            priced = Fraction(*breakdown["exact_bpw_rational"])
+            closed = artifact_bpp(spec, q, 0, recipe=wire, shape=shape)
+            exact = terminal_rate(
+                q * spec.arity, rows, columns,
+                with_scale_base=plane == "s6b",
+                with_scale_refine=plane in ("s6b", "lut16"),
+                with_row_scale=plane == "channel",
+                span=wire.span, cap=family_rate_cap(spec, wire),
+                arity=spec.arity, completion=0, window_bits=wire.window_bits,
+                # The GRID's answer for the code width, so the authority is not
+                # handed PrismaQuant's re-statement of it (#154): every other
+                # term here is computed, this one is read, and BF16's code IS a
+                # bf16 word.  ``with_forest`` defaults off so the calculator's
+                # published figures keep meaning the position-domain rate they
+                # were derived as; a caller pricing a whole unit passes True
+                # (#126).
+                code_bytes=spec.payload_grid().code_bytes,
+                with_forest=BodyKind(wire.body) is BodyKind.TCQ,
+            )
+            assert priced == exact == closed, (label, spec.name, q, shape)
+            checked += 1
+    assert checked == len(reps) * 3, (checked, len(reps))
+    planes = {scale_plane_name(w.scale_plane) for _, _, w in reps}
+    bodies = {BodyKind(w.body) for _, _, w in reps}
+    assert planes >= {"s6b", "lut16", "channel"}, planes
+    assert bodies == {BodyKind.TCQ, BodyKind.WINDOW}, bodies
 
 
 def test_the_channel_row_field_is_per_output_channel_not_per_code_row():
