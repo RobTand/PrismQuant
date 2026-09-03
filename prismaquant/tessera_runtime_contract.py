@@ -282,11 +282,17 @@ class TesseraNativeExtension:
     when_unavailable: Mapping[str, Mapping[str, Any]]
 
     def as_contract_row(self) -> dict:
-        """The three fields a residency predicate is made of, as published."""
+        """The four fields a residency predicate -- and the reading of an
+        absent library -- is made of, as published."""
         return {
             "module_name_prefix": self.module_name_prefix,
             "filename_glob": self.filename_glob,
             "match": self.match,
+            "when_unavailable": {
+                mode: {"status": behaviour["status"],
+                       "decoder": behaviour["decoder"]}
+                for mode, behaviour in sorted(self.when_unavailable.items())
+            },
         }
 
 
@@ -732,11 +738,14 @@ def require_pin_native_extensions_match_contract(
     resident", which is the hole that existed before 2026-09-03, when the
     pattern named no Tessera library at all.
 
-    Compared over the fields a residency predicate is MADE of -- prefix, glob
-    and the match rule -- keyed by prefix, in both directions: a library the
-    contract publishes and the pin omits makes the fingerprint go quietly
-    short, and a library the pin invents is a claim about a runtime that does
-    not load it.
+    Compared over the fields a residency predicate -- and the reading of an
+    absent library -- is MADE of -- prefix, glob, the match rule, and what
+    runs when the library is absent (``when_unavailable``) -- keyed by prefix,
+    in both directions: a library the contract publishes and the pin omits
+    makes the fingerprint go quietly short, and a library the pin invents is
+    a claim about a runtime that does not load it.  A substitute decoder the
+    pin mistranscribes names the wrong fallback in the §7.4 refusal, so the
+    block is compared value for value, not merely for presence.
     """
     from .tessera_serving_runtime_pin import (
         TesseraServingRuntimePinError,

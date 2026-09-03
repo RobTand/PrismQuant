@@ -29,6 +29,13 @@ clears it, and never calls a within-band difference a win. A current-looking
 record with a missing or stale manifest fingerprint also exits 3. Two genuinely
 legacy bare metric JSONs (no manifest or fingerprints) compare as before with a
 warning because there is no attestation to replay.
+
+Where one arm maps a pinned native extension the other does not, and the
+pinned Tessera runtime publishes a substitute decoder for that absence
+(``when_unavailable``), the refusal names it (PrismaQuant #142): that arm
+measured the substitute -- or never served -- and the drift band is not the
+reading. The note is conditional on the arm having served a Tessera artifact,
+which the manifest cannot prove, so it says so rather than asserting it.
 """
 from __future__ import annotations
 
@@ -44,12 +51,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:  # package mode (`python -m tools.kl_ab`)
     from .serve_fingerprint import (
         fingerprint,
+        native_extension_status,
         performance_stack_fingerprint,
         performance_stack_payload,
     )
 except ImportError:  # script mode (`python tools/kl_ab.py`)
     from serve_fingerprint import (  # type: ignore
         fingerprint,
+        native_extension_status,
         performance_stack_fingerprint,
         performance_stack_payload,
     )
@@ -155,6 +164,11 @@ def _validated_attestation(
         )
     if recorded_serve != expected_serve:
         return None, None, manifest, f"{label} serve_fingerprint is stale"
+    status_problem = _native_extension_status_problem(manifest)
+    if status_problem is not None:
+        return None, None, manifest, (
+            f"{label} {status_problem}"
+        )
     if root_performance is not None and root_performance != recorded_performance:
         return None, None, manifest, (
             f"{label} top-level performance_stack_fingerprint differs from "
@@ -165,6 +179,119 @@ def _validated_attestation(
             f"{label} top-level serve_fingerprint differs from its serve_manifest"
         )
     return recorded_performance, recorded_serve, manifest, None
+
+
+def _native_extension_status_problem(
+    manifest: Mapping[str, Any],
+) -> str | None:
+    """Replay the manifest's expected-vs-found extension block, if carried.
+
+    ``native_extension_status`` is a deterministic projection of
+    ``resident_extensions`` through the tool-carried rows, so a manifest
+    whose block disagrees with the replay is stale or tampered with.  A
+    manifest that predates the key carries no block and is simply legacy:
+    its fingerprints still validate, because the block is excluded from
+    both.  Rows the current tool knows and the manifest does not are
+    likewise ignored -- an older manifest beside a newer pin is still
+    evidence about the rows it does carry, and the §7.4 refusal below fires
+    on ``resident_extensions`` either way.
+    """
+    if not isinstance(manifest, Mapping):
+        return None
+    carried = manifest.get("native_extension_status")
+    if carried is None:
+        return None
+    if not isinstance(carried, list):
+        return "native_extension_status is not a list"
+    try:
+        expected = {row["module_name_prefix"]: row
+                    for row in native_extension_status(
+                        manifest.get("resident_extensions"))}
+    except Exception as exc:
+        return f"native_extension_status cannot be replayed: {exc}"
+    for row in carried:
+        if not isinstance(row, Mapping):
+            return "native_extension_status carries a non-object row"
+        prefix = row.get("module_name_prefix")
+        if prefix not in expected:
+            return (
+                f"native_extension_status carries {prefix!r}, which the "
+                "current tool rows do not publish"
+            )
+        if dict(row) != dict(expected[prefix]):
+            return (
+                f"native_extension_status for {prefix!r} disagrees with "
+                "resident_extensions"
+            )
+    return None
+
+
+def _substitute_decoder_notes(
+    left: Mapping[str, Any] | None,
+    right: Mapping[str, Any] | None,
+    *,
+    label_a: str,
+    label_b: str,
+) -> list[str]:
+    """Name the substitute decoder for a one-sided missing extension (#142).
+
+    §7.4's rule as written is a comparability warning about
+    allocator-address drift ("deltas under ~±20% across differing stacks are
+    not evidence").  With the pinned runtime's ``when_unavailable`` block in
+    hand, one specific mismatch is categorically stronger: an arm missing a
+    library the other arm maps, where the pinned table says a serve without
+    it keeps serving on a NAMED substitute decoder, measured nothing about
+    the lane at all -- at any delta.
+
+    The reading is conditional on the arm having served a Tessera artifact
+    (a stock serve is missing the same library and ran its own decoder), so
+    the note says which arm, which library, and what the pinned table
+    publishes, rather than asserting which decoder ran.
+    """
+    blocks: dict[str, dict[str, Any]] = {}
+    for label, manifest in ((label_a, left), (label_b, right)):
+        carried = (manifest.get("native_extension_status")
+                   if isinstance(manifest, Mapping) else None)
+        rows: dict[str, Any] = {}
+        if isinstance(carried, list):
+            for row in carried:
+                if (isinstance(row, Mapping)
+                        and isinstance(row.get("module_name_prefix"), str)):
+                    rows[row["module_name_prefix"]] = row
+        blocks[label] = rows
+    notes: list[str] = []
+    for prefix in sorted(set(blocks[label_a]) | set(blocks[label_b])):
+        row_a = blocks[label_a].get(prefix)
+        row_b = blocks[label_b].get(prefix)
+        resident_a = (row_a.get("resident") if isinstance(row_a, Mapping)
+                      else None)
+        resident_b = (row_b.get("resident") if isinstance(row_b, Mapping)
+                      else None)
+        if resident_a is True and resident_b is False:
+            missing, row = label_b, row_b if row_b is not None else row_a
+        elif resident_a is False and resident_b is True:
+            missing, row = label_a, row_a if row_a is not None else row_b
+        else:
+            continue
+        behaviours = (row.get("when_unavailable")
+                      if isinstance(row, Mapping) else None)
+        if not isinstance(behaviours, Mapping) or not behaviours:
+            continue
+        rendered = "; ".join(
+            f"{mode} -> {behaviour.get('status')}"
+            + (f" ({behaviour.get('decoder')})"
+               if behaviour.get("decoder") else "")
+            for mode, behaviour in sorted(behaviours.items())
+            if isinstance(behaviour, Mapping)
+        )
+        notes.append(
+            f"  !! {missing} is missing {prefix} (resident in "
+            f"{label_a if missing == label_b else label_b}): the pinned "
+            f"Tessera runtime publishes when_unavailable {{{rendered}}}. If "
+            f"{missing} was serving a Tessera artifact, it measured nothing "
+            "about the lane at all -- it ran the substitute decoder, or "
+            "never served -- at any delta.")
+    return notes
 
 
 def _performance_stack_differences(
@@ -237,6 +364,8 @@ def compare(
                else "(manifests not embedded in the result JSONs)"))
         lines.append(f"  serve_fingerprint {label_a}: {sa[:16]} (validated)")
         lines.append(f"  serve_fingerprint {label_b}: {sb[:16]} (validated)")
+        lines.extend(_substitute_decoder_notes(
+            ma, mb, label_a=label_a, label_b=label_b))
         if not allow_cross_fingerprint:
             lines.append("")
             lines.append(

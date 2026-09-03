@@ -32,11 +32,16 @@ JIT-builds a CUDA decoder and loads it as `tessera_nvfp4_<identity>.so`
 comparability on whether a lane's `.so` was resident in the serving process:
 two KLs are comparable only across serves whose native-extension residency
 matches. Since Tessera contract v7 the runtime publishes that itself, in
-`native_extensions`, as three values a consumer can act on — the
+`native_extensions`, as four values a consumer can act on — the
 `module_name_prefix` the JIT load path itself passes to `cpp_extension.load`,
 the `filename_glob` that produces (there is no exact basename: the module name
-carries a build-identity hash), and `match`, the name of the RULE a gate
-applies (`basename_fnmatch`).
+carries a build-identity hash), `match`, the name of the RULE a gate
+applies (`basename_fnmatch`), and `when_unavailable`, what a serve does when
+the library is absent (per residency mode: the substitute decoder it keeps
+running on, or that there is no serve at all).  The fourth is what lets a
+manifest say "the Tessera decoder was expected and is missing" instead of
+recording the same absent-basename list as a stack with no Tessera in it
+(PrismaQuant #142).
 
 The chain is **contract → pin → fingerprint, with a refusal at each link**:
 
