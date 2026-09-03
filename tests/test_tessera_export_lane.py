@@ -311,3 +311,44 @@ def test_the_driver_declares_the_residency_knob_and_validates_it():
     text = _run_pipeline_text()
     assert ': "${TESSERA_SERVE_MODE:=resident}"' in text
     assert "resident|streamed) ;;" in text
+
+
+def test_the_arm_invokes_exactly_the_declared_producer_tools():
+    """#119 half 2, in-repo half: the arm shells out to Tessera's tools by
+    the path the lane DECLARATION names -- no second spelling in either
+    direction. A tidy-up in the Tessera repository that moves one script, or
+    an arm edit that calls a new one, fails here instead of dying at export
+    time (or worse: resolving to a different file than the declaration
+    advertises).
+
+    Both sides are derived from the code that owns them -- the declaration's
+    `producer_tools` and the driver's `${TESSERA_REPO}` command invocations
+    (not its banner echoes, which name the serve script and the census for
+    the operator) -- so a third tool needs no test edit, only a declaration
+    the arm honors."""
+    import re
+
+    from prismaquant.lane_spec import load_lane_spec
+
+    text = _run_pipeline_text()
+    declared = {
+        f"${{TESSERA_REPO%/}}/{tool.path}"
+        for tool in load_lane_spec("tessera").producer_tools
+    }
+    assert declared, "the lane declares no producer tools at all"
+    invoked = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not (stripped.startswith("python3 ") or stripped.startswith("bash ")):
+            continue
+        invoked.update(
+            "${TESSERA_REPO%/}/" + path
+            for path in re.findall(r"\$\{TESSERA_REPO%/\}/([^\s\"]+)", line)
+        )
+    for tool in sorted(declared):
+        assert tool in invoked, (
+            f"the arm never invokes the declared producer tool {tool}")
+    undeclared = {path for path in invoked if path not in declared}
+    assert not undeclared, (
+        "the arm shells out to Tessera-repository tools the lane does not "
+        f"declare: {sorted(undeclared)}")
