@@ -108,6 +108,7 @@ CB_RENDER_CONTRACT_SCHEMA = (
 ACTIVATION_HOOK_SCOPE_SCHEMA = (
     "prismaquant.production_weight_cache.activation_hook_scope.v1"
 )
+ACTIVATION_HOOK_SCOPE_KEY = "activation_hook_scope"
 CB_RENDER_MECHANISM_ABI = "prismaquant.production_render_mechanisms.v1"
 CB_RENDER_IDENTITY_METADATA_KEY = "cb_render_identity"
 CB_CACHE_PAIR_IDENTITY_SCHEMA = (
@@ -4812,6 +4813,120 @@ def _qname_set_sha256(qnames: Iterable[str]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def validate_activation_hook_scope(
+    value: object, *, where: str = "activation_hook_scope"
+) -> dict[str, object]:
+    """Validate an ``activation_hook_scope`` stamp (#147).
+
+    Every rule below is derived from the writer in
+    ``fill_production_weight_cache``: the exact five fields, the hooked set's
+    sha256, and ``render_narrowed`` as the comparison of the two counts.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} must be a JSON object")
+    raw = dict(value)
+    if raw.get("schema") != ACTIVATION_HOOK_SCOPE_SCHEMA:
+        raise ValueError(f"{where} has unsupported schema")
+    digest = str(raw.get("hooked_qnames_sha256", "")).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError(f"{where}.hooked_qnames_sha256 must be a SHA-256 digest")
+    hooked = raw.get("hooked_qnames")
+    rendered = raw.get("rendered_qnames")
+    narrowed = raw.get("render_narrowed")
+    if (
+        not isinstance(hooked, int)
+        or isinstance(hooked, bool)
+        or hooked < 0
+        or not isinstance(rendered, int)
+        or isinstance(rendered, bool)
+        or rendered < 0
+        or rendered > hooked
+    ):
+        raise ValueError(
+            f"{where} has malformed hooked/rendered qname counts"
+        )
+    if not isinstance(narrowed, bool) or narrowed != (rendered != hooked):
+        raise ValueError(
+            f"{where}.render_narrowed must equal (rendered_qnames != "
+            "hooked_qnames)"
+        )
+    if set(raw) != {
+        "schema",
+        "hooked_qnames_sha256",
+        "hooked_qnames",
+        "rendered_qnames",
+        "render_narrowed",
+    }:
+        raise ValueError(f"{where} has unsupported fields")
+    return {
+        "schema": ACTIVATION_HOOK_SCOPE_SCHEMA,
+        "hooked_qnames_sha256": digest,
+        "hooked_qnames": int(hooked),
+        "rendered_qnames": int(rendered),
+        "render_narrowed": bool(narrowed),
+    }
+
+
+def activation_hook_scope_of(source: object) -> dict[str, object] | None:
+    """Return the validated hook scope carried by a cache or its metadata.
+
+    ``None`` when the stamp is absent (caches rendered before #130). Present
+    but malformed is an error, never a silent skip.
+    """
+    metadata = source
+    if hasattr(source, "metadata"):
+        metadata = getattr(source, "metadata")
+    if not isinstance(metadata, Mapping):
+        return None
+    raw = metadata.get(ACTIVATION_HOOK_SCOPE_KEY)
+    if raw is None:
+        return None
+    return validate_activation_hook_scope(raw)
+
+
+def assert_same_activation_hook_scope(
+    reference: Mapping[str, object] | None,
+    candidate: Mapping[str, object] | None,
+    *,
+    where: str,
+) -> dict[str, object] | None:
+    """Refuse two activation renderings that cannot be the same one (#147).
+
+    The correct rule for striped campaigns: shards of one campaign hook the
+    whole enumeration and render a slice each, so EQUAL hook digests (plus an
+    equal hooked count) is the pass condition. Binding per-shard digests into
+    the render identity would refuse every striped union; comparing nothing
+    lets two renderings ship under one name. Returns the validated reference
+    scope (``None`` when both sides predate the stamp).
+    """
+    if reference is None and candidate is None:
+        return None
+    if reference is None or candidate is None:
+        raise ValueError(
+            f"{where}: activation hook scope is present on one side and "
+            "missing on the other; cannot prove the same rendering"
+        )
+    validated_reference = validate_activation_hook_scope(
+        reference, where=f"{where} reference"
+    )
+    validated_candidate = validate_activation_hook_scope(
+        candidate, where=f"{where} candidate"
+    )
+    if (
+        validated_candidate["hooked_qnames_sha256"]
+        != validated_reference["hooked_qnames_sha256"]
+        or validated_candidate["hooked_qnames"]
+        != validated_reference["hooked_qnames"]
+    ):
+        raise ValueError(
+            f"{where}: activation hook digests differ: reference="
+            f"{validated_reference['hooked_qnames_sha256']} "
+            f"candidate={validated_candidate['hooked_qnames_sha256']}; "
+            "the two caches were rendered against different enumerations"
+        )
+    return validated_reference
+
+
 def fill_production_weight_cache(
     model: nn.Module,
     calib_ids: torch.Tensor,
@@ -5797,7 +5912,7 @@ def fill_production_weight_cache(
             # priority stream is a function of, so record it: two caches with
             # equal hook digests and equal calibration rendered the same rows,
             # whatever subset each one rendered.
-            "activation_hook_scope": {
+            ACTIVATION_HOOK_SCOPE_KEY: {
                 "schema": ACTIVATION_HOOK_SCOPE_SCHEMA,
                 "hooked_qnames_sha256": _qname_set_sha256(eligible_qnames),
                 "hooked_qnames": len(eligible_qnames),
@@ -6519,7 +6634,7 @@ def fill_packed_expert_cache_entries(
 
     Hook invariant (#145, mirrors the dense #130/#135 one): the activation
     collector hooks EVERY packed-experts module this call can see
-    (``hook_qnames``), and ``render_assignment``/``force_format`` narrow
+    (``eligible_experts_qnames``), and ``render_assignment``/``force_format`` narrow
     only which tensors get rendered. The bytes of a packed (tensor, fmt)
     pair are therefore a function of the visible modules and the
     calibration, never of which subset a call renders — a ``force_format``
@@ -6631,17 +6746,6 @@ def fill_packed_expert_cache_entries(
     in_scope: list[tuple[str, nn.Module, nn.Module, str, str, str]] = []
     experts_qnames: set[str] = set()
     eligible_experts_qnames: set[str] = set()
-    # #145: ``hook_qnames`` is the enumeration the activation collector
-    # hooks, and it is deliberately NOT narrowed by the assignment/BF16
-    # filter below. One shared generator feeds every hooked module's
-    # priority reservoir, so the rows a module keeps are a function of how
-    # many rows every EARLIER hook consumed. Narrowing the hook set
-    # therefore changes the rows, the per-expert GPTQ Hessians and the
-    # rendered bytes -- a force_format frontier build and an
-    # assignment-scoped export build would otherwise hook different module
-    # sets and ship different bytes. Hook every packed-experts module this
-    # call can see; ``experts_qnames`` narrows only the render.
-    hook_qnames: set[str] = set()
     # Every packed-expert tensor name this call can SEE, BF16 and
     # out-of-assignment included. This is the exact scope inside which stale
     # render-score / render-gate records may be pruned at the end of the call;
@@ -6698,7 +6802,15 @@ def fill_packed_expert_cache_entries(
             print("[prod-cache/experts] no non-BF16 packed experts in scope",
                   flush=True)
         return coverage
-    _stamp_packed_hook_scope(cache, hook_qnames=hook_qnames)
+    if module_acts_override is None:
+        # Resident builds hook the visible enumeration through the shared
+        # collector, so the stamp names a real rendering. Streaming builds
+        # render one materialized layer per call from supplied snapshots --
+        # no collector runs, nothing is hooked, and each call sees a
+        # different single module -- so there is no enumeration to stamp.
+        # Stamping per-layer digests would refuse the next layer as a
+        # "different rendering"; absence merges silently in the union.
+        _stamp_packed_hook_scope(cache, hook_qnames=eligible_experts_qnames)
 
     # Render-identity bookkeeping for this append. Every packed key that ends
     # up in ``cache.weights`` owes a render-score record and a render-gate
@@ -7016,14 +7128,6 @@ def fill_packed_expert_cache_entries(
         finally:
             collector.remove()
         module_acts = collector.collected()
-        # Hooking is what keeps the shared priority stream identical across
-        # a force_format build and an assignment-scoped build; STORING every
-        # hooked module's reservoir is not needed. Drop the snapshots for
-        # modules this call renders nothing for, so a mostly-BF16 assignment
-        # does not hold a full-budget reservoir per untouched module (#145).
-        for _qname in list(module_acts):
-            if _qname not in experts_qnames:
-                del module_acts[_qname]
         if progress:
             print(
                 f"[prod-cache/experts] captured {len(module_acts)} module "
@@ -7063,12 +7167,6 @@ def fill_packed_expert_cache_entries(
         finally:
             gate_collector.remove()
         gate_module_acts = gate_collector.collected()
-        # Same storage pruning as the fit reservoir above: the gate draws
-        # must happen for every hooked module (shared stream), but only
-        # rendered modules' snapshots are consumed downstream.
-        for _qname in list(gate_module_acts):
-            if _qname not in experts_qnames:
-                del gate_module_acts[_qname]
         if progress:
             print(
                 f"[prod-cache/experts] captured {len(gate_module_acts)} "

@@ -1255,6 +1255,12 @@ def _production_cache_fingerprint(
     digest = hashlib.sha256(
         _json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:16]
+    # Hook enumeration the shipped bytes were rendered against (#147,
+    # consumer 3): a shipped artifact records which enumeration its bytes
+    # saw, so a cost table priced from one rendering cannot be silently
+    # served from another. ``None`` for caches that predate the stamp.
+    from prismaquant.production_weight_cache import activation_hook_scope_of
+
     return {
         "path": str(Path(cache_dir).resolve()) if cache_dir else None,
         "n_entries": len(rows),
@@ -1262,6 +1268,7 @@ def _production_cache_fingerprint(
         "activation_max_abs_hash": act_digest,
         "metadata_hash": metadata_digest,
         "levers": dict(getattr(cache, "levers", {}) or {}),
+        "activation_hook_scope": activation_hook_scope_of(cache),
     }
 
 

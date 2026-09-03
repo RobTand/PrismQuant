@@ -3,6 +3,29 @@
 As of: 2026-09-03 · `claude/pq-126-plane-charges`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `muse/pq-147-145-hooks`) for the **activation hook
+scope gates** (§5.4; issues #145, #147). The §5.4 stamp below closed with the
+hook-scope field as provenance nothing read; the three consumers now exist.
+`union_production_cache` refuses a bundle whose shards' hook digests disagree
+— equal digests is the rule, since each stripe hooks the whole enumeration
+and renders its slice, and the merged scope sums the slices so a
+full-coverage union reads exactly like the unstriped build it reproduces.
+`synthesize_production_render_cost_payload` stamps the priced contract with
+the hook enumeration it was priced from and refuses a baseline priced from a
+different rendering. `_production_cache_fingerprint` records the enumeration
+the shipped bytes were rendered against, which reaches the artifact through
+the render levers the shipcard echoes. The same session closed the packed
+path the dense fix did not reach: `_PackedExpertActivationCollector` built
+its hook set render-narrowed while `force_format` hooked every module, so a
+frontier build and an assignment-scoped export build sampled different rows
+(measured 2/2 layer-1 expert tensors diverging on a frozen two-layer MoE);
+the collector now hooks the full visible module set with `store_qnames`
+narrowing only storage, stamps `activation_hook_scope_packed`, and the union
+merge requires agreeing packed digests. What this does NOT do: guard the
+cache directory itself (#146, still open below) — resume stays file-presence
+only. Gates: `tests/test_activation_hook_scope_gates.py` (5),
+`tests/test_packed_expert_hook_scope.py` (4).
+
 Re-stamped (2026-09-03, `muse/pq-156-158-replay`) for the **three receipt
 blocks the producers wrote and nothing replayed** (§7.1, §7.2;
 RobTand/prismaquant#156, #157, #158). Every `ship_gate` receipt carried its
@@ -5381,9 +5404,19 @@ byte-moving by construction — it *is* the hook set — and is pinned as a call
 than left to be re-learned on a 90 GB cache. Every cache now stamps
 `metadata["activation_hook_scope"]` with the hooked enumeration's sha256, its size, the
 rendered count and a `render_narrowed` flag, so equal hook digests plus an equal `calib_hash`
-is a readable claim that two caches were rendered against the same rows. **Two caveats.** The
-stamp is provenance, not yet a gate: nothing refuses a union of shards whose hook digests
-disagree, and no consumer compares a cost cache's digest against the export cache's. And the
+is a readable claim that two caches were rendered against the same rows. **The stamp is
+now read, not just written (#147).** `union_production_cache` refuses shards whose hook
+digests disagree — equal digests is the pass condition, never exact equality of the whole
+scope dict, which would refuse every striped union for rendering disjoint slices; the merged
+scope keeps the shared digest and sums the slices
+(`tests/test_activation_hook_scope_gates.py`). The render-cost payload carries the hook
+scope it was priced from in its provenance, and synthesis refuses a baseline priced from a
+different rendering; the export fingerprint records the enumeration the shipped bytes saw,
+so a shipped artifact names its rendering. Packed experts stamp the hook-only
+`metadata["activation_hook_scope_packed"]` (`fill_packed_expert_cache_entries` hooks the
+full visible module set and `store_qnames` narrows only storage, #145) and the union merge
+requires agreeing packed digests while tolerating dense-only shards. **One caveat remains.**
+The
 cache directory has no render-identity guard at all — resume is file-presence only — so a
 directory whose units were rendered under a narrower hook set will keep those bytes and
 silently mix them with newly rendered ones. Rebuild an assignment-scoped cache directory

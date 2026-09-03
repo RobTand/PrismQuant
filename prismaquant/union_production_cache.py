@@ -43,6 +43,8 @@ from prismaquant.cost_streaming import validate_streamed_model_identity
 from prismaquant.layer_config import load_assignment
 from prismaquant.nvfp4_cb_footprint import assignment_serialization_sha256
 from prismaquant.production_weight_cache import (
+    ACTIVATION_HOOK_SCOPE_KEY,
+    ACTIVATION_HOOK_SCOPE_SCHEMA,
     PACKED_ACTIVATION_HOOK_SCOPE_KEY,
     ProductionWeightCache,
     _is_cb_format_name,
@@ -51,6 +53,7 @@ from prismaquant.production_weight_cache import (
     first_identity_difference,
     identity_value_for_error,
     packed_activation_hook_scope_of,
+    validate_activation_hook_scope,
 )
 
 
@@ -1289,11 +1292,20 @@ def _merge_cache_metadata(
     # Unknown metadata may be retained only when it is exactly shared.  A
     # differing field needs an explicit semantic merge rule; silently choosing
     # one shard would make the union dependent on input order.
+    # ``activation_hook_scope`` (dense) carries per-shard slice counts, so it
+    # is excluded here and merged by its own rule below: equal hook digests
+    # are the pass condition, never exact equality of the whole dict (which
+    # would refuse every striped union).
     all_keys = set().union(*(item.keys() for item in metadata))
     shared_keys = set(_REQUIRED_SHARED_METADATA_KEYS) | set(
         _OPTIONAL_SHARED_METADATA_KEYS
     )
-    unmanaged = sorted(all_keys - shared_keys - _MERGED_METADATA_KEYS)
+    unmanaged = sorted(
+        all_keys
+        - shared_keys
+        - _MERGED_METADATA_KEYS
+        - {ACTIVATION_HOOK_SCOPE_KEY}
+    )
     for key in unmanaged:
         if key not in metadata[0]:
             raise ValueError(
@@ -1371,6 +1383,70 @@ def _merge_cache_metadata(
         reference[PACKED_ACTIVATION_HOOK_SCOPE_KEY] = copy.deepcopy(
             present_packed_scopes[0]
         )
+
+    # Dense hook scope (#147, consumer 1): a bundle assembled from shards
+    # whose hook digests disagree is a bundle of two renderings and is
+    # refused. The correct rule is EQUAL digests -- each stripe hooks the
+    # whole enumeration and renders its slice -- not per-shard digests bound
+    # into the render identity, which would refuse every striped union and
+    # amount to fixing #130 by disabling striping. The merged scope keeps
+    # the shared digest and sums the slices, so a full-coverage union reads
+    # exactly like the unstriped build it reproduces. Caches that predate
+    # the stamp carry nothing to compare and merge silently; a mix of
+    # stamped and unstamped shards cannot prove one rendering and is
+    # refused.
+    hook_scopes: list[dict[str, object] | None] = []
+    for index, item in enumerate(metadata):
+        raw = item.get(ACTIVATION_HOOK_SCOPE_KEY)
+        if raw is None:
+            hook_scopes.append(None)
+            continue
+        hook_scopes.append(
+            validate_activation_hook_scope(
+                raw,
+                where=f"cache shard {index} {ACTIVATION_HOOK_SCOPE_KEY}",
+            )
+        )
+    present_hook_scopes = [
+        scope for scope in hook_scopes if scope is not None
+    ]
+    if present_hook_scopes:
+        if len(present_hook_scopes) != len(hook_scopes):
+            missing = sorted(
+                index
+                for index, scope in enumerate(hook_scopes)
+                if scope is None
+            )
+            raise ValueError(
+                "cache shards carry mismatched activation hook provenance: "
+                f"shards {missing} have no {ACTIVATION_HOOK_SCOPE_KEY!r} "
+                "while other shards do; cannot prove the same rendering"
+            )
+        shared = present_hook_scopes[0]
+        for index, scope in enumerate(present_hook_scopes[1:], start=1):
+            if (
+                scope["hooked_qnames_sha256"]
+                != shared["hooked_qnames_sha256"]
+                or scope["hooked_qnames"] != shared["hooked_qnames"]
+            ):
+                raise ValueError(
+                    "cache shard "
+                    f"{index} activation hook digests differ: reference="
+                    f"{shared['hooked_qnames_sha256']} candidate="
+                    f"{scope['hooked_qnames_sha256']}; shards rendered "
+                    "against different enumerations cannot union into one "
+                    "bundle"
+                )
+        merged_rendered = sum(
+            int(scope["rendered_qnames"]) for scope in present_hook_scopes
+        )
+        reference[ACTIVATION_HOOK_SCOPE_KEY] = {
+            "schema": ACTIVATION_HOOK_SCOPE_SCHEMA,
+            "hooked_qnames_sha256": shared["hooked_qnames_sha256"],
+            "hooked_qnames": int(shared["hooked_qnames"]),
+            "rendered_qnames": merged_rendered,
+            "render_narrowed": merged_rendered != int(shared["hooked_qnames"]),
+        }
 
     entries = sum(len(cache) for cache in caches)
     if len(render_records) != entries:
