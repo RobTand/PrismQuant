@@ -1,7 +1,8 @@
 """Exact serialized bytes for one Tessera Linear, from Tessera's own layout.
 
-This replaces ``trellis_footprint`` in the allocator's byte path.  The two are
-not ports of each other and must not be: ``trellis_footprint`` prices the
+This replaces ``trellis_footprint`` (archived 2026-09-02 under
+``archive/trellis_wire_2026-09-02/``, #118) in the allocator's byte path.  The
+two are not ports of each other and must not be: ``trellis_footprint`` prices the
 ``gridbook.trellis.wire.v1`` layout -- an 88-byte binary header, its own row
 alignment and block-offset rules -- and Tessera has a different wire
 (``prismaquant.tessera.v1``) with a different plane set.  Re-deriving Tessera's

@@ -6,6 +6,7 @@ import math
 import operator
 import os
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,7 +39,6 @@ from .footprint import (
     format_tensor_payload_breakdown,
     plain_source_dtype_tensor_payload_breakdown,
 )
-from . import trellis_menu
 from .serving_profiles import (
     SERVING_LANE_SCHEMA,
     check_serving_format,
@@ -1987,6 +1987,53 @@ def reduce_continuous_menu(
     return out
 
 
+RETIRED_TRELLIS_SURFACE_ENV = "PRISMAQUANT_TRELLIS_SURFACE"
+
+
+def refuse_retired_trellis_surface(env: Mapping[str, str] | None = None) -> None:
+    """Refuse a run that still asks for the retired Gridbook trellis surface.
+
+    ``PRISMAQUANT_TRELLIS_SURFACE`` used to point at a manifest of trellis
+    rungs priced on the ``gridbook.trellis.wire.v1`` byte model, offered to
+    the DP through an opt-in seam that itself refused (the eight unwired
+    links). Robert retired the Gridbook lane on 2026-09-02, so the wire, its
+    menu and that seam were archived under
+    ``archive/trellis_wire_2026-09-02/``.
+
+    Dropping the variable instead of refusing on it would let a stale driver
+    keep exporting it and get a *different* allocation with no diagnostic --
+    a gate that fails open, which is the failure class of prismaquant#120.
+    The rungs no longer exist, so a run that asks for them cannot be honoured
+    at any level; it has to stop here rather than silently allocate on the
+    stock menu and look successful.
+
+    Tessera's continuous surface is the successor and needs no flag: it is
+    reduced into every menu unconditionally by
+    :func:`reduce_continuous_menu`. Its wire is ``prismaquant.tessera.v1``,
+    a different plane set, deliberately not a port of the Gridbook one.
+    """
+
+    src = os.environ if env is None else env
+    value = src.get(RETIRED_TRELLIS_SURFACE_ENV)
+    if not value:
+        return
+    raise ValueError(
+        f"{RETIRED_TRELLIS_SURFACE_ENV}={value!r} is set, but the Gridbook "
+        f"trellis rate surface it names has been retired. Its wire "
+        f"(gridbook.trellis.wire.v1), its rung vocabulary (TCQ_*_R256) and "
+        f"its menu seam were archived under "
+        f"archive/trellis_wire_2026-09-02/ when Robert retired the Gridbook "
+        f"lane on 2026-09-02 (RobTand/prismaquant#118); the sanctioned "
+        f"containers are compressed-tensors, GGUF and Tessera. This run is "
+        f"refused rather than ignoring the flag, because ignoring it would "
+        f"hand a stale manifest a DIFFERENT allocation with no diagnostic. "
+        f"Unset {RETIRED_TRELLIS_SURFACE_ENV} to solve on the stock menu; "
+        f"Tessera's continuous rungs (wire prismaquant.tessera.v1) are the "
+        f"successor surface and are already reduced into every menu with no "
+        f"flag at all."
+    )
+
+
 def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      calibrated_gains: dict[str, float] | None = None,
                      source_manifest: dict[str, str] | None = None,
@@ -1995,7 +2042,6 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      cb_serialization_context: CBSerializationContext | None = None,
                      activation_pricing: ActivationFairPricing | None = None,
                      cost_mode: str | None = None,
-                     trellis_provenance: dict | None = None,
                      bit_precision: float | None = None,
                      tessera_menu_report: dict | None = None,
                      ) -> dict[str, list[Candidate]]:
@@ -2019,6 +2065,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     consumer's fused mid-M kernel backs this rung, fallback — travels WITH
     the choice instead of being reconstructed from the format name later.
     """
+    refuse_retired_trellis_surface()
     gains = calibrated_gains or {}
     out: dict[str, list[Candidate]] = {}
     masked: dict[tuple[str, str], list[str]] = {}
@@ -2238,11 +2285,6 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
             "activation path is the identity (BF16, FP8_SOURCE, NVFP4A16, "
             "MXFP8A16) in the format menu."
         )
-    # Continuous trellis rate surface (opt-in, research). Unset
-    # PRISMAQUANT_TRELLIS_SURFACE returns `out` unchanged and this run is
-    # byte-identical to one built before the seam existed. The rungs it adds
-    # are ordinary multi-choice candidates priced in exact serialized bytes;
-    # the DP, the fused/packed aggregation and the byte budget need no change.
     # Continuous Tessera rungs, reduced to what this DP can distinguish. A
     # no-op on a menu with no Tessera rung in it (see reduce_continuous_menu).
     out = reduce_continuous_menu(
@@ -2250,16 +2292,6 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
         stats,
         bit_precision=bit_precision,
         report=tessera_menu_report,
-    )
-    out = trellis_menu.augment_candidates(
-        out,
-        stats,
-        cost_mode=(
-            cost_mode
-            if cost_mode is not None
-            else os.environ.get("COST_MODE", "aura")
-        ),
-        provenance_out=trellis_provenance,
     )
     return out
 

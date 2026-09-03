@@ -1,7 +1,8 @@
 """Tessera's grid-space, in the shape PrismaQuant's rate-distortion allocator wants.
 
-This module is the seam that replaces ``trellis_formats``.  The story is worth
-stating because the diff looks bigger than the change is.
+This module is the seam that replaces ``trellis_formats`` (archived
+2026-09-02 under ``archive/trellis_wire_2026-09-02/``, #118).  The story is
+worth stating because the diff looks bigger than the change is.
 
 ``trellis_allocator`` (1768 lines) and ``trellis_rate_surface`` (876) were
 written for the Gridbook rate-256 tail-biting trellis, but neither file mentions

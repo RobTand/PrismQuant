@@ -1,5 +1,16 @@
 # Continuous Trellis rate surface (research only)
 
+> **ARCHIVED 2026-09-02 (RobTand/prismaquant#118).** The modules this document
+> describes — the five `prismaquant/trellis_*.py`,
+> `serving_profile_specs/trellis_research_sm121.json` and the four
+> `tests/test_trellis_*.py` — now live at `archive/trellis_wire_2026-09-02/`,
+> whose README is their obituary. They priced `gridbook.trellis.wire.v1`, and
+> Robert retired the Gridbook lane on 2026-09-02, so no sanctioned runtime
+> reads those bytes. Tessera's wire is `prismaquant.tessera.v1`, a different
+> plane set and deliberately not a port. `PRISMAQUANT_TRELLIS_SURFACE` is still
+> refused, loudly, by `allocator_candidates.refuse_retired_trellis_surface`.
+> Everything below is history. See `docs/ARCHITECTURE.md` §4.9.
+
 ## Status and boundary
 
 This is an offline allocator-research surface. It creates no `FormatSpec`, no

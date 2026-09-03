@@ -3,7 +3,23 @@
 As of: 2026-09-02 · `tessera/decouple-gridbook` — the integration branch,
 carrying `tessera/remove-gridbook` and `tessera/continuous-menu`. Stamps
 follow, newest first, each recording its own branch and date.
-Re-stamped (2026-09-02,
+Re-stamped (2026-09-02, `tessera/decouple-gridbook`) for the **archival of the
+Gridbook trellis rate surface** (§4.9). The five `prismaquant/trellis_*.py`
+modules, `serving_profile_specs/trellis_research_sm121.json` and the four
+`tests/test_trellis_*.py` files are archived whole at `archive/trellis_wire_2026-09-02/`, tracked as
+RobTand/prismaquant#118. They priced `gridbook.trellis.wire.v1`, and the lane
+that read those bytes was retired the same day by the stamp below; Tessera's
+wire is `prismaquant.tessera.v1`, a different plane set and deliberately not a
+port, so there was nothing to migrate. Both seams the surface reached through
+are cut: the exporter's `parse_trellis_format_name` branch is gone and a
+`TCQ_*_R256` name now takes the generic `FORMAT_SCHEME` refusal, which still
+fails closed and still names the format; `allocator_candidates` no longer
+imports `trellis_menu`. **`PRISMAQUANT_TRELLIS_SURFACE` still refuses** — from
+`allocator_candidates.refuse_retired_trellis_surface`, called as the first
+statement of `build_candidates`, naming the retired wire and #118. Dropping the
+variable would have handed a stale driver a *different* allocation with no
+diagnostic, which is the fail-open class of prismaquant#120. Gate:
+`tests/test_retired_trellis_surface_refusal.py`. Previously stamped (2026-09-02,
 `tessera/remove-gridbook`) for the **retirement of the Gridbook codebook
 lane** (§1.1, §3.5, §9, §9.2, D34). Robert, 2026-09-02: *"put Tessera in
 PrismaQuant and remove Gridbook."* PrismaQuant carries **one** non-vLLM-native
@@ -3626,7 +3642,43 @@ small model, allocation churn against a shipped `cost.pkl` inside the known ~3%
 noise, and — for AQUA — a served W4A4-vs-W4A8 A/B. §12 D30 carries the honest
 gaps.
 
-### 4.9 The continuous trellis rate surface — opt-in, allocation-time only (2026-08-29)
+### 4.9 The continuous trellis rate surface — ARCHIVED 2026-09-02
+
+> **Archived (2026-09-02, `tessera/decouple-gridbook`, #118).** The five
+> `prismaquant/trellis_*.py` modules, the `trellis_research_sm121` profile and
+> the four `test_trellis_*.py` files now live at
+> `archive/trellis_wire_2026-09-02/`, with that directory's README as their
+> obituary. They priced **`gridbook.trellis.wire.v1`**; Rob retired the
+> Gridbook lane on 2026-09-02, so no sanctioned runtime reads those bytes any
+> more. The byte model is **not** a port of Tessera's
+> `prismaquant.tessera.v1` — a different plane set, said so in
+> `tessera_footprint.py`'s own header — so nothing migrated; the pricing
+> *machinery* had already been renamed onto Tessera
+> (`tessera_{formats,footprint,allocator,rate_surface,menu}.py`), and Tessera's
+> continuous rungs need no flag at all: `reduce_continuous_menu` folds them
+> into every menu unconditionally.
+>
+> **What changed in the live tree.** `export_native_compressed` no longer
+> imports `parse_trellis_format_name` and no longer carries a `TCQ_*`-specific
+> branch; such a name now takes the generic "absent from `FORMAT_SCHEME`"
+> refusal, which fails closed and names the format
+> (verified by execution on `TCQ_E2M1_R1000`).
+> `allocator_candidates` no longer imports `trellis_menu`, and its unused
+> `trellis_provenance=` kwarg is gone. **The flag is still refused**, by
+> `allocator_candidates.refuse_retired_trellis_surface` as the first statement
+> of `build_candidates`: a set `PRISMAQUANT_TRELLIS_SURFACE` raises, naming
+> `gridbook.trellis.wire.v1`, the archive path and #118. Dropping the variable
+> instead would have let a stale driver keep exporting it and get a
+> *different* allocation with no diagnostic — a gate that fails open, the
+> failure class of prismaquant#120. Gate:
+> `tests/test_retired_trellis_surface_refusal.py`.
+>
+> Everything below is the section as it stood on 2026-08-29 and is kept as
+> history — the design, the eight unwired links and the refusal reasoning are
+> the durable part. Read every present tense in it as past tense; the
+> file:line citations point into `archive/trellis_wire_2026-09-02/`.
+
+#### History, as the section stood on 2026-08-29: the continuous trellis rate surface — opt-in, allocation-time only
 
 `prismaquant/trellis_{formats,footprint,allocator,rate_surface}.py` (3701 LoC,
 69 tests) address and exactly price the Gridbook rate-256 tail-biting trellis
@@ -3758,10 +3810,16 @@ seam raises `TrellisSeamUnwiredError` naming every entry of `UNWIRED_LINKS`, a
 cheapest ledger entries are re-checked against the code so a stale entry fails
 the suite.
 
-**2026-09-02.** The trio has a Tessera twin — `tessera_{formats,footprint,allocator,rate_surface}.py`
+**2026-09-02 (a).** The trio has a Tessera twin — `tessera_{formats,footprint,allocator,rate_surface}.py`
 — that points the same pricing machinery at Tessera families instead of the
 Gridbook TCQ ones. It is imported by nothing in the pipeline; the live Tessera
 seam is the registry fallback in §5.7, and this section's refusal is unchanged.
+
+**2026-09-02 (b), and this is where the history above stops.** The Gridbook
+modules are archived (#118) and the seam is gone; see the banner at the top of
+this section for what the live tree does now. The Tessera twin is no longer a
+twin of anything live — it is the only one of the two left, and §4.10 is its
+seam.
 
 ### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
 

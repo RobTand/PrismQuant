@@ -10,8 +10,9 @@ backed rung set as version-keyed spec data, the route travelling on every
 ``selection.json``.  ``prismaquant/serving_profile_specs/nvfp4_cb.json`` was
 the ONLY spec in the repo that ever declared a ``serving_lanes`` block, so
 the first three lost their subject outright when it went: no surviving
-profile (gguf, research, trellis_research_sm121, vllm_glm5_next_packed_moe,
-vllm_packed_moe, vllm_qwen3_5_packed_moe) declares a lane, a
+profile (gguf, research, tessera_research_sm121,
+vllm_glm5_next_packed_moe, vllm_packed_moe, vllm_qwen3_5_packed_moe) declares
+a lane, a
 ``route_status``, an ``activation_contract`` or a ``fused_mid_m`` set.  That
 is a recorded capability loss (docs/ARCHITECTURE.md debt D34), not a bug to
 route around, and the deleted tests below say so in place rather than being
