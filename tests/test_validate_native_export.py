@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 
@@ -8,6 +9,7 @@ from prismaquant.validate_native_export import (
     _resolve_validation_target_profile,
     _speculative_config_uses_embedded_mtp,
     maybe_upgrade_flashinfer,
+    require_native_lane_artifact,
 )
 
 
@@ -100,3 +102,47 @@ def test_validation_target_profile_defaults_from_model_config(tmp_path):
 
     assert _resolve_validation_target_profile(tmp_path, None) == "vllm_packed_moe"
     assert _resolve_validation_target_profile(tmp_path, "research") == "research"
+
+
+# ---------------------------------------------------------------------------
+# The gate's lane (RobTand/prismaquant#119 half 1)
+# ---------------------------------------------------------------------------
+def _write_config(model_dir, quant_method=None, nested=False):
+    cfg = {"model_type": "qwen3"}
+    if quant_method is not None:
+        qc = {"quant_method": quant_method, "config_groups": {}}
+        if nested:
+            cfg["text_config"] = {"quantization_config": qc}
+        else:
+            cfg["quantization_config"] = qc
+    (model_dir / "config.json").write_text(json.dumps(cfg))
+
+
+def test_a_tessera_artifact_is_refused_before_vllm_loads(tmp_path):
+    """`validate_native_export` is the NATIVE lane's load gate: it builds
+    `LLM(..., quantization="compressed-tensors")`, so pointing it at a
+    Tessera artifact must refuse with the lane named -- not die inside vLLM
+    on bytes it was never going to dispatch."""
+    _write_config(tmp_path, "tessera")
+    with pytest.raises(SystemExit, match="tessera"):
+        require_native_lane_artifact(tmp_path)
+
+
+def test_a_nested_tessera_quant_config_is_refused_too(tmp_path):
+    """Multimodal checkpoints nest `quantization_config` under `text_config`;
+    the lane check must read where the loader reads."""
+    _write_config(tmp_path, "tessera", nested=True)
+    with pytest.raises(SystemExit, match="tessera"):
+        require_native_lane_artifact(tmp_path)
+
+
+def test_a_compressed_tensors_artifact_passes_the_lane_check(tmp_path):
+    _write_config(tmp_path, "compressed-tensors")
+    assert require_native_lane_artifact(tmp_path) == "compressed-tensors"
+
+
+def test_an_unquantized_checkpoint_keeps_its_legacy_behavior(tmp_path):
+    """No declared `quant_method` is not a foreign lane: refusing here would
+    change what a dense smoke does today, which is not this issue's bargain."""
+    _write_config(tmp_path, None)
+    assert require_native_lane_artifact(tmp_path) is None

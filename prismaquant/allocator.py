@@ -2275,6 +2275,23 @@ def main():
         cost_data = pickle.load(f)
     validate_probe_payload(probe, args.probe)
     validate_cost_payload(cost_data, args.costs)
+    # One DP prices in one currency: a cost table carrying Tessera-currency
+    # rows (output_mse under the route's activation contract) is admissible
+    # only on the objective those rows measure (render-score). Read from the
+    # table's attested provenance['cost_mode'], never the environment
+    # (RobTand/prismaquant#127).
+    from .cost_currency import CostCurrencyError, require_run_currency
+    try:
+        cost_currency_report = require_run_currency(cost_data)
+    except CostCurrencyError as exc:
+        raise SystemExit(f"[alloc] ERROR: cost currency: {exc}") from None
+    if cost_currency_report["tessera_rows"]:
+        print(
+            f"[alloc] cost currency: {cost_currency_report['tessera_rows']} "
+            f"Tessera rows in {cost_currency_report['expected_currency']!r} "
+            f"(COST_MODE={cost_currency_report['cost_mode']!r})",
+            flush=True,
+        )
     from .research_cost_acceptance import (
         accepted_cost_provenance,
         propagated_cost_provenance,

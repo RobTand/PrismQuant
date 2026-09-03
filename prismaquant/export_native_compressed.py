@@ -67,7 +67,7 @@ from collections import Counter, defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, NamedTuple, Sequence
+from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
 
 import torch
 import torch.nn as nn
@@ -7788,6 +7788,103 @@ EXPORTABLE_FORMATS = frozenset(
 )
 
 
+def derive_executed_activation_formats() -> frozenset[str]:
+    """The canonical formats whose scheme the runtime executes with activations.
+
+    Derived from the producer table that owns it (``FORMAT_SCHEME``): a format
+    is executed exactly when its scheme carries ``input_activations``, which
+    is what vLLM's compressed-tensors dispatcher reads to pick W4A4/W8A8
+    over W4A16 at RUNTIME. Canonicalized, so the ``MXFP8`` legacy alias does
+    not leak in as a distinct rung. Principle 14: this is the value
+    ``lane_specs/compressed_tensors.json``'s
+    ``served_activation_quantization.executes`` must equal, and
+    ``require_compressed_executes_derived_from_scheme`` refuses any drift --
+    a scheme-table edit that adds/drops ``input_activations`` (MXFP4 is one
+    field away from flipping) fails there instead of silently keeping the old
+    A-side price.
+    """
+    return frozenset(
+        _canonical_export_format(fmt)
+        for fmt, scheme in FORMAT_SCHEME.items()
+        if "input_activations" in scheme
+    )
+
+
+def executed_activation_formats_in_quantization_config(qc: Mapping) -> frozenset[str]:
+    """Read the executed set off an EMITTED ``quantization_config``.
+
+    The lane spec's own ``if_this_changes`` note asks for exactly this: the
+    set of ``config_groups`` carrying ``input_activations``, mapped back to
+    format names by matching each group (minus its ``targets``) against the
+    producer table. A group no scheme explains is refused rather than
+    skipped -- an emitted group the table cannot account for is drift, not a
+    clean bill. Groups without ``input_activations`` (today: MXFP4's) are
+    correctly absent from the answer.
+    """
+    groups = qc.get("config_groups") or {}
+    if not isinstance(groups, Mapping):
+        raise RuntimeError(
+            "quantization_config config_groups is not an object; refusing "
+            "to read the executed set off it")
+    out: set[str] = set()
+    for name, group in groups.items():
+        if not isinstance(group, Mapping) or "input_activations" not in group:
+            continue
+        stripped = {k: v for k, v in group.items() if k != "targets"}
+        matched = {
+            _canonical_export_format(fmt)
+            for fmt, scheme in FORMAT_SCHEME.items()
+            if scheme == stripped
+        }
+        if not matched:
+            raise RuntimeError(
+                f"PRINCIPLE 14: emitted config group {name!r} carries "
+                f"input_activations but matches no scheme in "
+                f"export_native_compressed.FORMAT_SCHEME. The emission path "
+                f"and the producer table have drifted apart; re-derive, "
+                f"never edit the lane spec to silence this.")
+        out |= matched
+    return frozenset(out)
+
+
+def require_compressed_executes_derived_from_scheme() -> frozenset[str]:
+    """Principle 14: refuse when the lane spec and the scheme table disagree.
+
+    ``lane_specs/compressed_tensors.json``'s
+    ``served_activation_quantization.executes`` is a claim about what the
+    serving runtime executes, and on this lane the executed contract is a
+    function of the artifact we write -- so it is either equal to what the
+    per-format scheme table implies, or it is refused. There is no third
+    answer and in particular no "the rationale explains the difference": a
+    ``rationale`` field explains, it is never the value a gate reads. The
+    export preflight runs this before any GPU render.
+    """
+    from .lane_spec import load_lane_spec
+
+    derived = derive_executed_activation_formats()
+    spec = load_lane_spec("compressed_tensors")
+    declared = spec.served_activation_quantization
+    if declared is None:
+        raise RuntimeError(
+            "lane_specs/compressed_tensors.json declares no "
+            "served_activation_quantization, so the A-side of every NVFP4/FP8 "
+            "rung would price to zero; that is a currency error, not a "
+            "missing annotation")
+    if set(declared.executes) != set(derived):
+        missing = sorted(set(derived) - set(declared.executes))
+        extra = sorted(set(declared.executes) - set(derived))
+        raise RuntimeError(
+            "PRINCIPLE 14: lane_specs/compressed_tensors.json declares "
+            f"executes={sorted(declared.executes)} but the exporter scheme "
+            f"table implies {sorted(derived)} "
+            f"(missing={missing or '-'}, extra={extra or '-'}).\n"
+            "  The producer's claim about what the serving runtime executes "
+            "must be DERIVED from the per-format scheme table's "
+            "input_activations. Re-read the table; never edit the list to "
+            "silence this.")
+    return derived
+
+
 def _fused_modules_mapping_for_profile(profile) -> dict[str, tuple[str, ...]]:
     """Return fused-module leaf mapping for target emission.
 
@@ -8321,6 +8418,11 @@ def _preflight_quantization_config(
     profile: "ModelProfile | None",
 ) -> None:
     """Run config-only export gates before GPU render and shard writes."""
+    # Principle 14, first: the lane spec's executed-activation list must equal
+    # what the scheme table implies, checked before any GPU hour is spent. A
+    # scheme-table edit that adds/drops `input_activations` refuses here
+    # instead of silently keeping the old A-side price (RobTand/prismaquant#163).
+    require_compressed_executes_derived_from_scheme()
     try:
         build_quantization_config(
             assignment,

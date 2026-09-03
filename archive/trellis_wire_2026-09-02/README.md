@@ -100,3 +100,17 @@ allocator can price but no runtime can serve is a serving gap being reported,
 not a format being offered
 (principle 9). The seam was right to refuse, and the honest end state for it
 was archival, not a port.
+
+## The generalised lesson (RobTand/prismaquant#127, 2026-09-03)
+
+The durable part is not "the Gridbook anchors were weighted SSE" but this: a
+rate-surface anchor set carries a currency, the DP ranks in one currency, and
+the two must be compared against the attested cost mode. The successor
+inherited the same mismatch and lost the refusal -- the Tessera campaign
+measures `output_mse` under the route's activation contract while the default
+`COST_MODE=aura` path prices the KL-adjoint, and `CURRENCY` sat stamped on
+every row with nothing downstream reading it. `prismaquant/cost_currency.py`
+is the ported refusal: the COST_MODE -> objective table derived from the
+COST_RENDER x COST_OBJECTIVE decomposition, the run's objective read from
+`provenance['cost_mode']` (never the environment), unstamped tables and
+unknown modes refused rather than defaulted.

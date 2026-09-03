@@ -26,6 +26,59 @@ from pathlib import Path
 
 _DEFAULT_FLASHINFER_PACKAGES = ("flashinfer-python", "flashinfer-cubin")
 
+#: The quantization this gate loads with (``LLM(..., quantization=...)`` in
+#: `_run_arm`). A module constant so the lane check below reads the same value
+#: the load uses, rather than a second spelling of it that can drift.
+NATIVE_QUANTIZATION = "compressed-tensors"
+
+
+def _artifact_quant_method(model_dir: str | Path) -> str | None:
+    """The artifact's declared ``quantization_config.quant_method``, if any.
+
+    Reads the top-level ``config.json`` entry and the multimodal nesting
+    under ``text_config`` -- the same two places the streaming loader reads
+    (``layer_streaming``) -- so a Tessera ``text_config`` cannot walk past.
+    """
+    try:
+        cfg = json.loads(Path(model_dir, "config.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    candidates = [cfg.get("quantization_config")]
+    nested = cfg.get("text_config")
+    if isinstance(nested, dict):
+        candidates.append(nested.get("quantization_config"))
+    for qc in candidates:
+        if isinstance(qc, dict) and qc.get("quant_method"):
+            return str(qc["quant_method"])
+    return None
+
+
+def require_native_lane_artifact(model_dir: str | Path) -> str | None:
+    """Refuse an artifact this gate cannot load, naming the lane that can.
+
+    This is the NATIVE lane's load gate, not a lane-generic one -- exactly as
+    the GGUF lane has its own ``llama-completion`` smoke instead
+    (RobTand/prismaquant#119). Loading a foreign-lane artifact with
+    ``quantization="compressed-tensors"`` dies inside vLLM on bytes it was
+    never going to dispatch; refusing up front says which gate to run
+    instead. Returns the declared method on pass (``None`` when the artifact
+    declares none, preserving the dense-smoke behavior).
+    """
+    found = _artifact_quant_method(model_dir)
+    if found is not None and found != NATIVE_QUANTIZATION:
+        raise SystemExit(
+            f"[validate] REFUSE: {model_dir} declares "
+            f"quantization_config.quant_method={found!r}, but this gate loads "
+            f"with quantization={NATIVE_QUANTIZATION!r}: it is the "
+            f"compressed-tensors lane's load smoke, not a lane-generic one. "
+            f"A {found!r} artifact is served by its own lane and its own "
+            f"gates (see `python -m prismaquant.lane_spec --help`); running "
+            f"it here would fail inside vLLM on bytes this quantization "
+            f"was never going to dispatch.")
+    return found
+
 
 def maybe_upgrade_flashinfer(
     version: str,
@@ -147,7 +200,7 @@ def _run_arm(args, model_dir: Path, spec: dict | None, *,
     try:
         llm = LLM(
             model=str(model_dir),
-            quantization="compressed-tensors",
+            quantization=NATIVE_QUANTIZATION,
             trust_remote_code=True,
             enforce_eager=enforce_eager,
             gpu_memory_utilization=args.gpu_memory_utilization,
@@ -278,6 +331,10 @@ def main():
         maybe_upgrade_flashinfer(version, package_names=package_names, env=env)
 
     summarize_quantization_config(model_dir / "config.json")
+
+    # The lane check runs before any vLLM import: a foreign-lane artifact
+    # must refuse here, not inside the loader.
+    require_native_lane_artifact(model_dir)
 
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
     spec = None
