@@ -34,6 +34,8 @@ from tessera import export as _tessera_export
 
 from .tessera_formats import (
     TesseraFamily,
+    grid_space_rung_keys,
+    lazily_sized_cache,
     parse_tessera_format_name,
     scale_plane_name,
     tessera_wire_recipe,
@@ -368,7 +370,7 @@ def clear_serialisable_cache() -> None:
     family_grid_is_serialisable.cache_clear()
 
 
-@lru_cache(maxsize=4096)
+@lazily_sized_cache(grid_space_rung_keys)
 def tessera_rung_is_serialisable(name: str) -> bool:
     """Can the *wire* carry this rung's bytes at all?
 
@@ -379,6 +381,20 @@ def tessera_rung_is_serialisable(name: str) -> bool:
     after the allocation and the whole production cache have been built -- so
     the menu must be able to ask up front rather than discover it in a
     traceback.
+
+    Sized by :func:`~prismaquant.tessera_formats.grid_space_rung_keys`, the
+    space this memo's key ranges over: the argument is a full format name, and
+    ``parse_tessera_format_name`` admits a name from any family
+    ``enumerate_grid_space`` can build, which is the same set the sentence
+    above states -- 14,988 rung keys over twelve families, not the 6,916 of the
+    four the menu admits.  It held ``maxsize=4096`` until 2026-09-03 and
+    measured **0 hits against 6,916 misses on every pass** over one shape's
+    research menu: the memo was smaller than the pass, so it evicted its own
+    early entries before the pass reached the end and the next pass repeated
+    all of it (RobTand/prismaquant#134, RobTand/tessera#46).  The reuse it
+    exists for is per *unit* rather than per pass -- the answer is
+    shape-independent, and a 122B MoE asks the same 6,916 names of it once per
+    Linear -- so a memo that cannot survive one pass returns none of it.
 
     ``E4M3`` used to be that gap and no longer is: it was writable all along
     and merely missing from the registry, which tessera `a4de134` fixed after

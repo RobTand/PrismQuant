@@ -70,7 +70,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
-from functools import lru_cache, wraps
+from functools import lru_cache
 from typing import NamedTuple
 
 from .lane_eligibility import (
@@ -84,6 +84,7 @@ from .tessera_formats import (
     TesseraFormatError,
     family_q256_bounds,
     get_tessera_family,
+    lazily_sized_cache,
     parse_tessera_format_name,
     scale_plane_name,
     tessera_family,
@@ -668,23 +669,14 @@ def menu_scaled_cache(fn=None, *, shapes: "int | None" = None):
 
     ``shapes`` overrides the shape retention for one memo whose entries are not
     the flat ones the default was measured on.
+
+    The mechanism itself lives in ``tessera_formats.lazily_sized_cache``, which
+    is the leaf module and where the *other* two lazily sized memos are
+    (prismaquant#134): this function is the *bound*, which is the part only the
+    menu knows.  Two spellings of one wrapper is how two memos drift apart.
     """
     def decorate(target):
-        memo: "list[object]" = []
-
-        def _memo():
-            if not memo:
-                memo.append(
-                    lru_cache(maxsize=menu_cache_bound(shapes))(target))
-            return memo[0]
-
-        @wraps(target)
-        def call(*args):
-            return _memo()(*args)
-
-        call.cache_info = lambda: _memo().cache_info()
-        call.cache_clear = lambda: memo.clear()
-        return call
+        return lazily_sized_cache(lambda: menu_cache_bound(shapes))(target)
 
     return decorate if fn is None else decorate(fn)
 
