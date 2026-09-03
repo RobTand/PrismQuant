@@ -235,6 +235,33 @@ def test_tp_gate_reason_and_provenance_reach_the_candidate_gate():
     assert "tp_parallel_kind" in verdict.provenance
 
 
+def test_tp_gate_refuses_an_unknown_profile_instead_of_becoming_research():
+    """#120's sibling seam.  ``check_serving_shape`` and ``check_serving_format``
+    already answer ``profile_mismatch`` to a profile id that names no file; this
+    gate used to catch the same ``FileNotFoundError`` and load ``research``
+    instead, so a typo'd ``--target-profile`` priced Tessera rungs under the
+    research world size.  A typo is not a research run.  ``None`` remains the
+    research spelling and still loads."""
+    from prismaquant import allocator_candidates as ac
+
+    typo = ac._tensor_parallel_applicability(
+        "TESSERA_E2M1_K2_R896", qname="model.layers.0.self_attn.q_proj",
+        target_profile="tessera_research_sm121_typo",
+        in_features=1024, out_features=2048, packed_expert=False,
+    )
+    assert not typo.legal
+    assert typo.reason == "profile_mismatch"
+    assert "tessera_research_sm121_typo" in typo.detail
+    assert typo.provenance == {"target_profile": "tessera_research_sm121_typo"}
+
+    research = ac._tensor_parallel_applicability(
+        "TESSERA_E2M1_K2_R896", qname="model.layers.0.self_attn.q_proj",
+        target_profile=None,
+        in_features=1024, out_features=2048, packed_expert=False,
+    )
+    assert research.provenance is not None and "tp_degree" in research.provenance
+
+
 def test_tp_gate_is_inert_for_stock_formats():
     from prismaquant import allocator_candidates as ac
     from prismaquant import format_registry as fr
