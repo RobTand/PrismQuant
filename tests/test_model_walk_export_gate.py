@@ -442,9 +442,10 @@ def test_decided_but_unpriced_contradiction_refuses():
 @pytest.mark.slow
 def test_dsv4_real_topology_passes_the_gate_end_to_end():
     """The motivating model, through the whole gate: shrunken real-DSv4
-    topology, real CPU forward, profile rules -> gate PASSES, wo_a's family
-    is pinned, and the decided-but-unpriced checker finds nothing (the sweep
-    verified DSv4's claim set complete; this holds it there)."""
+    topology, real CPU forward, profile rules -> gate PASSES with wo_a a
+    REAL DECISION (the grouped accumulator prices it, so the
+    decided-but-unpriced checker accepts it), and the other pinned
+    families stay out of its way."""
     import sys
 
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -456,11 +457,13 @@ def test_dsv4_real_topology_passes_the_gate_end_to_end():
         claim_rules=profile.walk_claim_rules())
     assert result.ok
     assert all(
-        c.disposition == "pin" for n, c in result.claims.items()
+        c.disposition == "decide" for n, c in result.claims.items()
         if ".wo_a." in n)
+    unpriced = find_decided_but_unpriced(result, model, profile)
+    assert unpriced == ()
     verdict = evaluate_walk_gate(
         result,
-        unpriced_decides=find_decided_but_unpriced(result, model, profile),
+        unpriced_decides=unpriced,
         scope={"profile": "deepseek_v4", "rules_source": "profile"},
     )
     assert not verdict.refused

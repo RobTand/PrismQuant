@@ -34,9 +34,16 @@ class                        read probability       what lands here
 ``held_fixed``               ``1.0``                always-active tensors the
                                                     allocator never decided —
                                                     norms, biases, routers,
-                                                    a pinned ``lm_head``,
-                                                    grouped operands the probe
-                                                    skips (DSv4 ``attn.wo_a``)
+                                                    a pinned ``lm_head``.
+                                                    (DSv4's grouped ``wo_a``
+                                                    used to be named here as
+                                                    "probe-skipped"; since the
+                                                    grouped Fisher accumulator
+                                                    landed it is priced and
+                                                    moves to ``dense`` exactly
+                                                    when an assignment covers
+                                                    it — same p=1.0 either
+                                                    way.)
 ``excluded_embedding``       ``0.0`` (excluded)     the input embedding table
                                                     of an UNTIED model: one row
                                                     is gathered per token, not
