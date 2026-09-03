@@ -2328,8 +2328,13 @@ def main():
     # override was in force, and the block names the exact Tessera commit and
     # the sha256 of the contract file the reader consumed, so a shipcard can
     # say which table attested its routes rather than that some table did.
-    from .tessera_runtime_contract import load_tessera_contract
-    _tessera_contract = load_tessera_contract()
+    # Read through tessera_menu's ONE read, not through load_tessera_contract
+    # directly: the menu's every attestation goes through that function, and
+    # a provenance block that read the pin a second time could name a table
+    # the menu never consulted (or, as it did, name none while the menu had
+    # one). "Which table answered" is one fact per run, so it is read once.
+    from .tessera_menu import tessera_runtime_contract
+    _tessera_contract = tessera_runtime_contract()
     tessera_dev_pin = {} if _tessera_contract is None else _tessera_contract.identity()
     if tessera_dev_pin:
         from .tessera_runtime_contract import describe_dev_pin
