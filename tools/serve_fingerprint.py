@@ -75,7 +75,13 @@ MODELS_ENDPOINT_BINDING_SCHEMA = (
 # runtime pins, the serving-pin reader and the DSv4 contract) left this
 # closure when the Gridbook lane was retired 2026-09-02; the files now live
 # under archive/gridbook_lane_2026-09-02/ and no gold tool imports them.
+# The Tessera serving pin JSON joined it on 2026-09-03 instead: the serve
+# fingerprint reads its extension rows from that file at runtime (below), so
+# the transported snapshot is digest-covered for the very bytes the
+# container-side tool decides on. It is the one non-`.py` member;
+# `gold_producer_identity` hashes bytes, not language.
 _GOLD_PRODUCER_COMMON_FILES = (
+    "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json",
     "tools/dsv4_wikitext_inputs.py",
     "tools/prepare_dsv4_wikitext_inputs.py",
     "tools/prismaquant_source_bootstrap.py",
@@ -105,22 +111,16 @@ _GOLD_PRODUCER_TOOL_FILES = {
 # the short-lived ``docker exec`` process that writes the manifest.
 # Three PQ_GRIDBOOK_RUNTIME_* pins and one environment registry were projected
 # here until the Gridbook lane retired 2026-09-02 -- see
-# archive/gridbook_lane_2026-09-02/. What survives is generic: the two names
-# that prove the serving process resolved its imports from the installed
-# distribution rather than a working-directory shadow.
-SERVER_ENV_ALLOWLIST = (
-    # The serving process must not carry an explicit Python module-search
-    # override.  ``server_environment_snapshot`` records only set values, so
-    # validators prove affirmative absence by requiring this allowlisted name
-    # to be missing from the exact process-environment projection.  The
-    # short-lived fingerprint writer is bootstrapped from the verified /repo
-    # snapshot with safe-path mode and no PYTHONPATH; it reads the independently
-    # running server PIDs from /proc and is not one of them.
-    "PYTHONPATH",
-    # Python's safe-path mode prevents the empty-string/script-directory entry
-    # from taking precedence over the exact installed serving package.
-    "PYTHONSAFEPATH",
-)
+# archive/gridbook_lane_2026-09-02/.
+#
+# The list is defined below, after the Tessera pin read: its third member is
+# the serving runtime's own residency knob, whose NAME comes from the pin
+# rather than being typed here.  It holds two kinds of names, and the comment
+# on each member says which: names whose ABSENCE is the proof (the serving
+# process must resolve its imports from the installed distribution rather
+# than a working-directory shadow), and the one name whose VALUE is recorded
+# (two serves of one artifact in different residency modes must not share a
+# performance-stack fingerprint).
 
 #: Extensions whose residency moves the numbers (§7.4) and that are matched by
 #: a SUBSTRING of the mapped path.
@@ -131,9 +131,14 @@ SERVER_ENV_ALLOWLIST = (
 # belongs in `TESSERA_NATIVE_EXTENSIONS` below and not in this alternation:
 # a substring search is this file's own predicate, and only the runtime's is
 # the runtime's.
+# `fla` is matched by its installed package DIRECTORY (`/fla/`), never by the
+# bare three letters: a free `fla` alternative matches any path containing
+# those letters (`libflac.so`, `conflate`), which made `flashinfer` redundant
+# and could false-refuse a comparable A/B when the spurious library is
+# resident in exactly one arm.
 SUBSTRING_EXTENSION_PATTERN = re.compile(
     r"prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|"
-    r"causal_conv1d|fla")
+    r"causal_conv1d|/fla/")
 
 #: The rule name a published table uses to say "fnmatch the glob against the
 #: BASENAME of a mapped `.so`".  Tessera's contract publishes it as a value
@@ -154,14 +159,22 @@ MATCH_BASENAME_FNMATCH = "basename_fnmatch"
 #
 # The chain is contract -> pin -> here, with a refusal at each link. This
 # module is stdlib-only by construction (it runs inside the serving container
-# from a bootstrapped snapshot that ships five tool files and no package
-# data), so it can read neither the contract nor
-# `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json` at runtime
-# and carries the rows instead;
+# from a bootstrapped snapshot that ships the tool files plus the pin JSON,
+# and no installed PrismaQuant package), so it cannot import the contract
+# reader or the pin reader module -- but it does not need to: the pin is a
+# JSON file, and `_load_tessera_native_extensions_from_pin` reads the
+# transported copy beside this tool and REFUSES a missing or malformed one.
+# There is no constant to fall back to, because a fallback would restore the
+# silent hole with a field to point at: a serving container running a snapshot
+# of this tool from an older commit, beside a newer Tessera whose extension
+# has been renamed, must refuse rather than fingerprint "no lane extension
+# resident". The pin JSON travels with the tool because it is a member of
+# `_GOLD_PRODUCER_COMMON_FILES`, so the transported snapshot is
+# digest-covered for the bytes this predicate decides on;
 # `tessera_runtime_contract.require_pin_native_extensions_match_contract`
 # refuses a pin that is not the contract's table, and
-# `tests/test_tessera_serve_fingerprint.py` refuses a table here that is not
-# the pin's -- and refuses this file's predicate if it stops agreeing with the
+# `tests/test_tessera_serve_fingerprint.py` refuses a tool that does not read
+# the pin -- and refuses this file's predicate if it stops agreeing with the
 # rule the contract names.
 #
 # Until 2026-09-03 no Tessera name was matched at all, so a serve running
@@ -170,13 +183,187 @@ MATCH_BASENAME_FNMATCH = "basename_fnmatch"
 # lane whose whole point is a custom decoder. Then it was matched by
 # `re.escape("tessera_nvfp4")` anywhere in the mapped path -- a predicate that
 # is not the runtime's, and that answers yes for
-# `/root/.cache/torch_extensions/tessera_nvfp4_9f2c/unrelated.so`.
+# `/root/.cache/torch_extensions/tessera_nvfp4_9f2c/unrelated.so`. Then the
+# rows were carried here as a constant, refused only by the test suite on the
+# tree the snapshot came from -- which is the hole this read closes.
+
+#: The pin file as seen from this tool, in a developer checkout and in the
+#: transported container snapshot alike: the snapshot root is this file's
+#: canonical parent, and the pin is tracked versioned data under it.
+TESSERA_SERVING_RUNTIME_PIN_RELATIVE = Path(
+    "prismaquant") / "tessera_runtime" / "tessera_serving_runtime_pin.json"
+
+
+def _reject_duplicate_pin_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"serving pin repeats JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _read_tessera_serving_pin_payload(
+    path: str | os.PathLike,
+) -> dict[str, Any]:
+    """The transported pin JSON as a dict, or a refusal.
+
+    Shared by the extension-rows loader and the residency-env loader: one
+    file, one refusal vocabulary. A missing or malformed pin refuses rather
+    than running unbound -- without it a Tessera serve fingerprints as a
+    stock serve, and an older snapshot's pin would fingerprint two residencies
+    identically.
+    """
+    where = str(path)
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(
+            f"Tessera serving pin is unreadable: {where}: {exc}. Without it "
+            "a Tessera serve fingerprints as a stock serve, so the "
+            "fingerprint refuses rather than runs unbound."
+        ) from exc
+    if Path(path).is_symlink():
+        raise ValueError(
+            f"Tessera serving pin must be one real file, not a symlink: {where}"
+        )
+    try:
+        payload = json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_pin_keys,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Tessera serving pin is not valid JSON: {where}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"Tessera serving pin must be a JSON object: {where}"
+        )
+    return payload
+
+
+def _load_tessera_native_extensions_from_pin(
+    path: str | os.PathLike,
+) -> tuple[dict[str, str], ...]:
+    """The pin's `serving_native_extensions` rows, or a refusal.
+
+    `path` is a parameter (rather than hard-wired to the tool-relative file)
+    so tests can prove a rename propagates and a missing file refuses; the
+    import-time call below passes the transported pin beside this tool. Every
+    failure raises `ValueError`: falling back to a constant would fingerprint
+    a renamed extension as "nothing resident" with nothing refusing it.
+    """
+    where = str(path)
+    payload = _read_tessera_serving_pin_payload(path)
+    rows = payload.get("serving_native_extensions")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(
+            f"Tessera serving pin {where} publishes no non-empty "
+            "'serving_native_extensions' table: an empty table is a "
+            "fingerprint that reports every serve identical"
+        )
+    parsed: list[dict[str, str]] = []
+    for index, row in enumerate(rows):
+        at = f"{where}.serving_native_extensions[{index}]"
+        if not isinstance(row, dict) or set(row) != {
+            "module_name_prefix", "filename_glob", "match",
+        }:
+            observed = sorted(row) if isinstance(row, dict) else []
+            raise ValueError(
+                f"{at}: expected exactly "
+                "['filename_glob', 'match', 'module_name_prefix'], got "
+                f"{observed}. The keys are the runtime contract's own spelling."
+            )
+        prefix, glob, rule = (
+            row["module_name_prefix"], row["filename_glob"], row["match"])
+        if not isinstance(prefix, str) or not prefix:
+            raise ValueError(
+                f"{at}.module_name_prefix must be a non-empty string")
+        if not isinstance(glob, str) or not glob:
+            raise ValueError(
+                f"{at}.filename_glob must be a non-empty string")
+        # By MEANING and not by spelling, the way the runtime's own validator
+        # checks it: a library name the load path can produce must match, or
+        # the pin transcribes a glob that matches nothing a serve maps.
+        if not fnmatch.fnmatch(f"{prefix}0123456789abcdef.so", glob):
+            raise ValueError(
+                f"{at}.filename_glob {glob!r} matches no library name the "
+                f"load path can produce ({prefix}<build identity>.so)"
+            )
+        if not isinstance(rule, str) or not rule:
+            raise ValueError(f"{at}.match must be a non-empty rule name")
+        parsed.append({
+            "module_name_prefix": prefix,
+            "filename_glob": glob,
+            "match": rule,
+        })
+    return tuple(parsed)
+
+
 TESSERA_NATIVE_EXTENSIONS = (
-    {
-        "module_name_prefix": "tessera_nvfp4_",
-        "filename_glob": "tessera_nvfp4_*.so",
-        "match": MATCH_BASENAME_FNMATCH,
-    },
+    _load_tessera_native_extensions_from_pin(
+        Path(__file__).resolve().parents[1]
+        / TESSERA_SERVING_RUNTIME_PIN_RELATIVE
+    )
+)
+
+
+def _load_tessera_residency_env_from_pin(
+    path: str | os.PathLike,
+) -> str:
+    """The pin's `serving_residency_env` name, or a refusal.
+
+    The serving-lane env belongs to another runtime, so the name the
+    environment projection records comes from the pin rather than being typed
+    here -- the same principle-14 shape as the extension rows, through the
+    same transported file. An older snapshot's pin has no such member, and
+    running with the two-name allowlist would fingerprint two residencies
+    identically, so that too refuses.
+    """
+    where = str(path)
+    payload = _read_tessera_serving_pin_payload(path)
+    name = payload.get("serving_residency_env")
+    if (not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None):
+        raise ValueError(
+            f"Tessera serving pin {where} publishes no "
+            "'serving_residency_env' environment-variable name: without it "
+            "the fingerprint cannot record which residency produced a receipt"
+        )
+    return name
+
+
+#: The serving runtime's one operator knob, READ from the transported pin
+#: rather than typed: a serve command that omits it serves a different
+#: residency than the pin's receipts covered. Spelled the same as the pin
+#: reader's constant because it is the same value, not a second opinion.
+TESSERA_SERVING_RESIDENCY_ENV = _load_tessera_residency_env_from_pin(
+    Path(__file__).resolve().parents[1]
+    / TESSERA_SERVING_RUNTIME_PIN_RELATIVE
+)
+
+SERVER_ENV_ALLOWLIST = (
+    # ABSENCE is the proof: the serving process must not carry an explicit
+    # Python module-search override.  ``server_environment_snapshot`` records
+    # only set values, so validators prove affirmative absence by requiring
+    # this allowlisted name to be missing from the exact process-environment
+    # projection.  The short-lived fingerprint writer is bootstrapped from the
+    # verified /repo snapshot with safe-path mode and no PYTHONPATH; it reads
+    # the independently running server PIDs from /proc and is not one of them.
+    "PYTHONPATH",
+    # ABSENCE is the proof: Python's safe-path mode prevents the
+    # empty-string/script-directory entry from taking precedence over the
+    # exact installed serving package.
+    "PYTHONSAFEPATH",
+    # VALUE is the record: the serving runtime's own residency knob, named by
+    # the pin above.  ``server_environment_snapshot`` projects it out of each
+    # server process's environment and ``performance_stack_payload`` folds the
+    # values into the performance-stack fingerprint, so two serves of one
+    # artifact in different residency modes do not hash identically.
+    TESSERA_SERVING_RESIDENCY_ENV,
 )
 
 

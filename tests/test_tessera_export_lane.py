@@ -29,6 +29,7 @@ from prismaquant.model_profiles.structure import (
 from prismaquant.serving_profiles import require_lane_supported
 from prismaquant import tessera_serving_runtime_pin as pin_module
 from prismaquant.tessera_serving_runtime_pin import (
+    TESSERA_SERVING_RESIDENCY_ENV,
     TESSERA_SERVING_RUNTIME_PIN_SCHEMA,
     TESSERA_SERVING_RUNTIME_REPOSITORY,
     require_exact_tessera_runtime_release,
@@ -52,6 +53,7 @@ def released_pin(tmp_path, monkeypatch):
         "version_is_release": True,
         "runtime_contract_schema": "tessera.runtime-contract.v1",
         "plugin_entry_point": "tessera = tessera.serving:register",
+        "serving_residency_env": TESSERA_SERVING_RESIDENCY_ENV,
         "serving_native_extensions": [
             {"module_name_prefix": "tessera_nvfp4_",
              "filename_glob": "tessera_nvfp4_*.so",

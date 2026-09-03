@@ -38,6 +38,7 @@ from prismaquant.lane_eligibility import (
 from prismaquant import tessera_serving_runtime_pin as pin_module
 from prismaquant.tessera_serving_runtime_pin import (
     TESSERA_SERVING_PLUGIN_NAME,
+    TESSERA_SERVING_RESIDENCY_ENV,
     TESSERA_SERVING_RUNTIME_COMMIT_PENDING,
     TESSERA_SERVING_RUNTIME_PIN_SCHEMA,
     TESSERA_SERVING_RUNTIME_REPOSITORY,
@@ -93,6 +94,7 @@ def released_pin(tmp_path, monkeypatch):
         "version_is_release": True,
         "runtime_contract_schema": "tessera.runtime-contract.v1",
         "plugin_entry_point": "tessera = tessera.serving:register",
+        "serving_residency_env": TESSERA_SERVING_RESIDENCY_ENV,
         "serving_native_extensions": [
             {"module_name_prefix": "tessera_nvfp4_",
              "filename_glob": "tessera_nvfp4_*.so",

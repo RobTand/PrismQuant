@@ -720,16 +720,17 @@ def require_pin_native_extensions_match_contract(
     """Refuse a pin whose extension table is not the pinned contract's.
 
     The middle link of the §7.4 chain.  ``tools/serve_fingerprint.py`` runs
-    inside a serving container from a five-file bootstrap with no package
-    data, so it can read neither this contract nor the pin: it carries the
-    rows, and ``tests/test_tessera_serve_fingerprint.py`` refuses a tool that
-    disagrees with the pin.  That test was the ONLY refusal in the chain, and
-    the link it checked was the one that was already sound -- the pin itself
-    was a hand-written claim about another runtime, maintained one repository
-    over, where nothing here could refuse it on drift.  Rename the extension
-    in the plugin and a Tessera serve fingerprinted as "nothing resident",
-    which is the hole that existed before 2026-09-03, when the pattern named
-    no Tessera library at all.
+    inside a serving container from a bootstrap with no installed package, so
+    it can read neither this contract nor the pin's reader module: it reads
+    the transported pin JSON beside itself -- a member of its gold-producer
+    source closure -- and ``tests/test_tessera_serve_fingerprint.py`` refuses
+    a tool that does not read the pin.  That test was the ONLY refusal in the
+    chain, and the link it checked was the one that was already sound -- the
+    pin itself was a hand-written claim about another runtime, maintained one
+    repository over, where nothing here could refuse it on drift.  Rename the
+    extension in the plugin and a Tessera serve fingerprinted as "nothing
+    resident", which is the hole that existed before 2026-09-03, when the
+    pattern named no Tessera library at all.
 
     Compared over the fields a residency predicate is MADE of -- prefix, glob
     and the match rule -- keyed by prefix, in both directions: a library the

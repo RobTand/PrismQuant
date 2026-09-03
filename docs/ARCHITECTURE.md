@@ -7338,9 +7338,11 @@ evidence either way and should be quoted as a range.
   torch or touches CUDA, so it cannot add a context to a 121 GiB pool), GPU name,
   `enforce_eager`, `--quantization`, `PRISMAQUANT_*` env, and the resident-extension basenames
   read from the **server's** `/proc/<pid>/maps` via `matches_tracked_extension`, which has
-  two arms: `SUBSTRING_EXTENSION_PATTERN`
-  (`prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|causal_conv1d|fla` — `gridbook`
-  was dropped on 2026-09-02 with the lane) for libraries this repository recognises by
+   two arms: `SUBSTRING_EXTENSION_PATTERN`
+   (`prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|causal_conv1d|/fla/` — `gridbook`
+   was dropped on 2026-09-02 with the lane, and bare `fla` became the package
+   directory `/fla/` on 2026-09-03: three free letters match `libflac.so`) for
+   libraries this repository recognises by
   name, and `TESSERA_NATIVE_EXTENSIONS` for a runtime that publishes its own loadable
   libraries, matched by the rule that runtime names (§9.4),
   unioned over the API-server *and* EngineCore processes — it is the engine that holds the
@@ -8538,10 +8540,17 @@ fingerprint, with a refusal at each link**:
   widening silently (`source`/`loaded_by` stay identity and travel into
   provenance).
 * `tools/serve_fingerprint.py` is stdlib-only and runs inside the serving container
-  from a bootstrapped five-file snapshot, so it can read neither file at runtime and
-  carries the same rows in `TESSERA_NATIVE_EXTENSIONS`;
+  from a bootstrapped snapshot with no installed package, so it can read neither
+  the contract nor the pin's reader module — but the pin is JSON, so the tool reads
+  the transported `tessera_serving_runtime_pin.json` beside itself (a member of its
+  gold-producer source closure, hence digest-covered) and refuses a missing or
+  malformed one instead of falling back to a constant;
   `tests/test_tessera_serve_fingerprint.py` refuses any disagreement with the pin,
-  **and refuses a predicate that is not the rule the contract names**.
+  **and refuses a predicate that is not the rule the contract names**. The refusal
+  is therefore in the container, not only in the test suite on the tree the
+  snapshot came from: a snapshot of the tool from an older commit, beside a newer
+  Tessera whose extension was renamed, refuses rather than fingerprinting "no lane
+  extension resident".
 
 Two holes this closed. Until 2026-09-03 no Tessera name was matched at all, so a
 serve running Tessera's own native span-2 decode fingerprinted identically to a
@@ -8559,9 +8568,11 @@ observes `/proc/maps`, not configuration, so those two serves already hash
 differently — but the manifest does not record *which* pinned library was expected
 and what runs instead, so a differing fingerprint reads as "±20% alignment drift,
 not evidence" when the honest reading is "this arm measured a substituted decoder
-and says nothing about the lane". `TESSERA_SERVE_MODE` is likewise absent from the
-manifest, so two serves that both map the `.so` in different residency modes hash
-identically (#142, #143).
+and says nothing about the lane" (#142, #143).
+The residency-mode half of those items is closed since 2026-09-03 (#138): the
+environment allowlist carries the pin's `serving_residency_env` name, so two serves
+that both map the `.so` in different residency modes no longer hash identically —
+only the substitution half above stays open.
 
 ## 10. Hardware & environment
 

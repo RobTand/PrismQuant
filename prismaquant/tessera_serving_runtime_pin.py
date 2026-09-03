@@ -43,7 +43,11 @@ CUDA extensions the Tessera plugin loads: since Tessera contract v7 the
 runtime publishes that itself, in ``native_extensions``, as a
 ``module_name_prefix``/``filename_glob``/``match`` triple.  The pin transcribes
 it because ``tools/serve_fingerprint.py`` runs inside a serving container from
-a five-file bootstrap and can read neither the contract nor this file, and
+a bootstrap with no installed package and can read neither the contract nor
+this reader module -- but the pin is JSON, so the tool reads the transported
+pin file beside itself (a member of its gold-producer source closure, hence
+digest-covered) and refuses a missing or malformed one instead of falling
+back to a constant -- and
 ``tessera_runtime_contract.require_pin_native_extensions_match_contract``
 refuses a transcription that is not the pinned contract's table.  So the chain
 is contract -> pin -> fingerprint with a refusal at each link, instead of a
@@ -126,7 +130,12 @@ MATCH_BASENAME_FNMATCH = "basename_fnmatch"
 
 #: The one operator knob the plugin declares.  Named here because a serve
 #: command that omits it is serving a different residency than the pin's
-#: receipts covered.
+#: receipts covered -- and transcribed into the pin JSON's
+#: ``serving_residency_env`` member because ``tools/serve_fingerprint.py``
+#: records it in the serving stack's environment projection: the tool is
+#: stdlib-only inside a serving container, so the name it projects reaches it
+#: through the JSON, not through this constant.  The parser requires the two
+#: to agree, so renaming the knob is a reviewed change to both in one commit.
 TESSERA_SERVING_RESIDENCY_ENV = "TESSERA_SERVE_MODE"
 
 _REQUIRED_MEMBERS = {
@@ -137,6 +146,7 @@ _REQUIRED_MEMBERS = {
     "version_is_release",
     "runtime_contract_schema",
     "plugin_entry_point",
+    "serving_residency_env",
     "serving_native_extensions",
 }
 _FULL_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
@@ -211,6 +221,12 @@ class TesseraServingRuntimePin:
     version_is_release: bool
     runtime_contract_schema: str
     plugin_entry_point: str
+    #: The serving runtime's one operator knob, transcribed so the serve
+    #: fingerprint can project it: ``tools/serve_fingerprint.py`` records this
+    #: name out of each server process's environment, and its value rides the
+    #: performance-stack fingerprint.  A serve that omits it serves a different
+    #: residency than the pin's receipts covered.
+    serving_residency_env: str
     #: The CUDA extensions the released plugin loads into a serving process,
     #: transcribed from the runtime contract's own ``native_extensions``
     #: table.  This is the reproducibility contract's half of the pin, not the
@@ -222,8 +238,9 @@ class TesseraServingRuntimePin:
     #: The chain is contract -> pin -> tool, with a refusal at each link.
     #: ``tessera_runtime_contract.require_pin_native_extensions_match_contract``
     #: refuses a pin that is not the pinned contract's table;
-    #: ``tools/serve_fingerprint.py`` is stdlib-only and cannot read this file
-    #: from inside a serving container, so it carries the same rows and
+    #: ``tools/serve_fingerprint.py`` is stdlib-only and cannot read this reader
+    #: module from inside a serving container, so it reads the transported pin
+    #: JSON beside itself -- and refuses a missing or malformed one -- while
     #: ``tests/test_tessera_serve_fingerprint.py`` refuses any disagreement.
     serving_native_extensions: tuple[TesseraServingNativeExtension, ...]
 
@@ -311,6 +328,22 @@ def parse_tessera_serving_runtime_pin(
             f"{TESSERA_SERVING_PLUGIN_NAME!r} vllm.general_plugins entry "
             "point the released runtime registers"
         )
+    residency_env = payload["serving_residency_env"]
+    if (not isinstance(residency_env, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", residency_env) is None):
+        raise TesseraServingRuntimePinError(
+            f"{where}: serving_residency_env must be an environment-variable "
+            f"name, got {residency_env!r}"
+        )
+    if residency_env != TESSERA_SERVING_RESIDENCY_ENV:
+        raise TesseraServingRuntimePinError(
+            f"{where}: serving_residency_env is {residency_env!r}; it must name "
+            f"the {TESSERA_SERVING_RESIDENCY_ENV!r} operator knob the released "
+            "runtime declares. A serving-lane env belongs to another runtime, "
+            "so the fingerprint projects this name rather than a typed one -- "
+            "and renaming it is a reviewed change to the JSON and the reader's "
+            "constant in one commit."
+        )
     rows = payload["serving_native_extensions"]
     if not isinstance(rows, (list, tuple)) or not rows:
         raise TesseraServingRuntimePinError(
@@ -377,6 +410,7 @@ def parse_tessera_serving_runtime_pin(
         version_is_release=released,
         runtime_contract_schema=str(payload["runtime_contract_schema"]),
         plugin_entry_point=entry_point,
+        serving_residency_env=residency_env,
         serving_native_extensions=tuple(extensions),
     )
 
