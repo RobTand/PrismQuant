@@ -42,6 +42,13 @@ from prismaquant.serving_profiles import (
 # principle 5 / CLAUDE.md principle 14). The Gridbook half of that comparison
 # retired with its lane on 2026-09-02.
 GGUF_WIRED = {"hy_v3"}
+#: The architectures wired for the Tessera lane. `qwen3` is the profile whose
+#: two fused groups Tessera's exporter stacks one-blob-per-vLLM-module and
+#: whose 0.6B checkpoint was served from a PrismaQuant allocation on the
+#: plugin (2026-09-02). Declaring the lane is not permission to build one --
+#: the preflight still refuses on the PENDING release pin -- but an
+#: architecture nobody has wired must not carry the declaration either.
+TESSERA_WIRED = {"qwen3"}
 
 PROFILE_CLASSES = list(_registry._REGISTERED)
 PROFILE_IDS = [c.__name__ for c in PROFILE_CLASSES]
@@ -55,7 +62,13 @@ def _profile(cls):
 
 
 def test_lane_vocabulary_is_the_export_container_vocabulary():
-    assert EXPORT_LANES == ("compressed-tensors", "gguf")
+    # The sanctioned three (Rob, 2026-09-02): compressed-tensors, GGUF and
+    # Tessera. This tuple pinned only the first two until 2026-09-02, which
+    # made `EXPORT_CONTAINER=tessera` fail as an UNKNOWN lane -- a vocabulary
+    # refusal three layers above the pin that is the real reason the lane
+    # cannot build. `tests/test_tessera_export_lane.py` owns the Tessera half
+    # (declaration, driver arm, the three preflight gates).
+    assert EXPORT_LANES == ("compressed-tensors", "gguf", "tessera")
     assert DEFAULT_EXPORT_LANE == "compressed-tensors"
     # One declared alias: the serving-profile side spells the native lane with
     # an underscore (`export_lane.id == "compressed_tensors"`).
@@ -92,6 +105,9 @@ def test_declared_lanes_include_native_and_match_local_gguf_wiring(cls):
         f"{profile.name}: every architecture ships through the native lane")
     assert ("gguf" in lanes) == (profile.name in GGUF_WIRED), (
         f"{profile.name}: gguf declaration disagrees with {sorted(GGUF_WIRED)}")
+    assert ("tessera" in lanes) == (profile.name in TESSERA_WIRED), (
+        f"{profile.name}: tessera declaration disagrees with "
+        f"{sorted(TESSERA_WIRED)}")
 
 
 @pytest.mark.parametrize("cls", PROFILE_CLASSES, ids=PROFILE_IDS)

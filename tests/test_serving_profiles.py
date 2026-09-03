@@ -108,6 +108,44 @@ def test_serving_profile_format_rules_are_config_backed():
     assert dense_mxfp4.rule == "dense_formats_without_vllm_fast_path"
 
 
+def test_check_serving_shape_fails_closed_on_an_unknown_profile():
+    """A gate that permits everything when it cannot identify the profile is
+    not a gate.
+
+    ``check_serving_shape`` used to catch ``FileNotFoundError`` and silently
+    resolve an unknown profile id to ``research``, whose shape rules permit
+    every shape -- while both of its siblings fail closed
+    (``check_serving_format`` returns ``profile_mismatch``,
+    ``serving_lane_route`` resolves no lane, ``serving_lane_catalog`` returns
+    ``{}``).  Ten of the archived CB load-gate tests were passing on that
+    permit-all path against a profile id that had been deleted: they asserted
+    a gate that could not refuse.
+
+    The refusal is spelled exactly like ``check_serving_format``'s, so a caller
+    that already branches on ``profile_mismatch`` needs no new case.  A shape
+    that is genuinely illegal under a REAL profile is untouched, and
+    ``profile_id=None`` still resolves to ``research`` -- that is the declared
+    default and it loads.
+    """
+    unknown = check_serving_shape(
+        "no_such_profile",
+        "NVFP4",
+        qname="model.layers.0.mlp.up_proj",
+        in_features=1024,
+        out_features=1024,
+    )
+    assert not unknown.legal
+    assert unknown.reason == "profile_mismatch"
+    assert "no_such_profile" in unknown.detail
+    # Same verdict, same reason, as the format half of the same question.
+    fmt = check_serving_format("no_such_profile", "model.layers.0.mlp.up_proj",
+                               "NVFP4")
+    assert (fmt.legal, fmt.reason) == (unknown.legal, unknown.reason)
+    # The declared default still loads and still decides on its own rules.
+    assert check_serving_shape(
+        None, "NVFP4", in_features=1024, out_features=1024).legal
+
+
 def test_serving_profile_shape_rules_are_config_backed():
     small_n = check_serving_shape(
         "research",

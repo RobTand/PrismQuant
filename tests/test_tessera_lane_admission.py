@@ -93,6 +93,7 @@ def released_pin(tmp_path, monkeypatch):
         "version_is_release": True,
         "runtime_contract_schema": "tessera.runtime-contract.v1",
         "plugin_entry_point": "tessera = tessera.serving:register",
+        "serving_extension_basenames": ["tessera_nvfp4"],
     }
     path = tmp_path / "released_pin.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -325,7 +326,12 @@ def test_lane_spec_executes_is_derived_from_the_packaged_contract():
     spec = load_lane_spec("tessera")
     assert spec.served_activation_quantization is not None
     assert set(spec.served_activation_quantization.executes) == derived
-    assert derived == {"TESSERA_E2M1_K2_R*", "TESSERA_E4M3_K1_R*"}
+    # Derived by a second implementation rather than typed: this literal
+    # re-staled within a day of being written, when the runtime published
+    # TESSERA_BF16_K1.  What is pinned is the rule, not the roster.
+    rows = _packaged_contract()["formats"]
+    assert derived == {r["name_pattern"].replace("{k}", "*") for r in rows}
+    assert len(derived) == len(rows) and derived
 
     # and every published rung of every family matches its own glob
     for row in contract["formats"]:

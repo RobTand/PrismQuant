@@ -191,7 +191,7 @@ levers or cost modes are requested.
 | `PRODUCTION_CACHE_PREFETCH` | `require` | Standalone recache prefetch policy. `require` fails fast when assignment-required weights cannot fit resident. |
 | `EXPORT_PRODUCTION_CACHE_PREFETCH` | `require` (native lane) | Export-side assignment prefetch policy (re-vet R24, closes D8) → `export_native_compressed --production-cache-prefetch {require,warn}`. `require` fails the export when the cache cannot supply a layer's assignment instead of silently degrading to per-tensor NVMe reads; the bare-CLI default stays `warn`. The CB/GGUF lanes read no production cache. |
 | `PRODUCTION_CACHE_PREFETCH_WORKERS` | `4` | Thread count for eager production-cache prefetch. |
-| `EXPORT_CONTAINER` | `compressed-tensors` | `gguf` and `nvfp4_cb` switch stage 4 to their own exporters and impose gates (see §5, §8). |
+| `EXPORT_CONTAINER` | `compressed-tensors` | `gguf` and `tessera` switch stage 4 to their own exporters and impose gates (see §8, §8a). The vocabulary is the sanctioned three; `nvfp4_cb` was the fourth until 2026-09-02 and now `exit 2`s (§5). |
 
 ## 4. CUDA / system flags
 
@@ -369,6 +369,19 @@ Producer-side only; none of these reach a serving runtime. See
 | `PRISMAQUANT_TESSERA_DEV_PIN` | unset | The development override for Tessera admission, which is otherwise fail-closed until a Tessera RELEASE tag exists. Must equal `tessera_runtime_contract.TESSERA_DEV_PIN_COMMIT`, and the installed `tessera/serving/runtime_contract.json` must hash to `TESSERA_DEV_PIN_CONTRACT_SHA256`, or the read **raises**. Unset means no Tessera contract is read at all and every rung stays `unattested`; there is no third state, so a stale pin can never degrade into a silently empty menu. Stamped into provenance as `tessera_dev_pin`. |
 | `SELECTION_MODE` (pipeline, not a `PRISMAQUANT_*` flag) | `surrogate` | **Required to be `validated-surrogate` for any Tessera menu run that is promoted.** Measured 2026-09-02: this menu's own allocations, served against a byte-matched uniform arm, lose 2.00x in KL at 4.0 bpp (2.33x / 2.88x at 3.0 / 5.0) with bytes exact to the bit (`docs/measurements/tessera-allocated-served-2026-09-02.md`). The allocator prints a warning and stamps `tessera_menu.selection_caveat` on every surrogate-selected Tessera run. Validated selection is necessary and not sufficient -- it re-scores only the allocator's own Pareto points -- so the recipe also requires a byte-matched uniform arm served beside the candidate. |
 | `PRISMAQUANT_TESSERA_GROUP_KNAPSACK` | `1` | Debug/ablation only. `0` disables the fused-group Minkowski fold, so a fused group carries one candidate per format NAME and every member of the group must take the **same rung**. That is the constraint the allocator used to impose by accident; the lever exists so its cost can be measured on the same cost table rather than across two campaigns. A run with it off logs no `tessera group knapsack` line and stamps `__ablation__` into the group report. Never set it for a shipping build. |
+
+## 8a. Tessera lane (`EXPORT_CONTAINER=tessera`, ARCHITECTURE.md §9.4)
+
+The arm NAMES Tessera's own plan translator and exporter rather than vendoring
+either, so the one path knob is where that checkout lives. It refuses on the
+PENDING release pin today (RobTand/tessera#17) before it reads any of the rest.
+
+| env var | default | what it does |
+|---|---|---|
+| `EXPORT_CONTAINER` | `compressed-tensors` | `tessera` switches stage 4 to `plan_from_layer_config.py` + `export_tessera_serving.py` under `TESSERA_REPO`, behind `prismaquant.tessera_export_lane`'s three gates: the checkpoint's structure against the packaged contract's declared `structures`, the lane spec's `executes` against the contract's `formats[]` rows (principle 14), and the release pin. Only `qwen3` declares the lane, so `require_lane_supported` refuses every other architecture first. |
+| `TESSERA_REPO` | `/home/rob/tessera` | Checkout of the pinned Tessera release. The arm refuses up front if it does not hold both named tools. Never a place to point at a working tree with local edits during a build you intend to ship. |
+| `TESSERA_SERVE_MODE` | `resident` | The plugin's single operator knob, `resident` or `streamed`. Declared rather than defaulted silently because it changes the artifact's footprint and is folded into vLLM's compile-cache key; both residencies are receipted by the contract and both must be exercised, since they decode the same bytes by different paths. Any third value refuses. |
+| `TESSERA_PLAN_COVER` | `as-allocated` | How a partial allocation becomes a whole-model plan. `as-allocated` plans exactly the units the allocation names and spells every other body Linear BF16 **explicitly** — silence would otherwise become the exporter's 4-bit default rung. `broadcast-by-role` applies the per-role assignment at every depth; it is an EXTRAPOLATION, stamps itself as one in the plan's sidecar, and is refused unless the allocation is single-layer with matching shapes. Part of the `tessera-plan` stage's settings hash, so a plan built under the other mode is not silently reused. Any third value refuses in the same up-front gate block as `TESSERA_SERVE_MODE`, not at the translator's `argparse` `choices` — the translator does not run until stage 4, and a typo must not cost a whole probe/cost/render run first. |
 
 ## 8. GGUF lane (`docs/lanes/gguf.md`)
 

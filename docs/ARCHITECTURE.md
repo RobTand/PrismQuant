@@ -1,8 +1,31 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-02 · `tessera/decouple-gridbook` — the integration branch,
-carrying `tessera/remove-gridbook` and `tessera/continuous-menu`. Stamps
+As of: 2026-09-03 · `tessera/decouple-gridbook`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `pq-tessera-lane`) for the **addition half of the
+lane decision** (§1.1, §3.3, §8.4, §9.4, D33, D34; issues #116 and
+RobTand/tessera#20). Robert's 2026-09-02 decision made the sanctioned lanes
+compressed-tensors, GGUF and Tessera; the driver implemented the retirement
+half the same day and the addition half never landed, so `EXPORT_LANES` was a
+2-tuple with a test pinning it and no Tessera artifact could be planned,
+exported or gated from here regardless of what Tessera could produce. Four
+things change. `tessera` joins the `EXPORT_CONTAINER` vocabulary and `qwen3`
+— the only architecture with served evidence and matching fused-group wiring —
+declares it. `run-pipeline.sh` gains a real `EXPORT_CONTAINER=tessera` arm
+that plans and encodes through **Tessera's own** tools under `TESSERA_REPO`
+rather than growing a second codec here, behind three fail-closed preflight
+gates (`tessera_export_lane.py`): the checkpoint's structure against the
+contract's declared `structures`, the lane spec's `executes` against the
+contract's `formats[]` rows (principle 14), and the release pin — which is the
+only one that refuses today, and does so naming RobTand/tessera#17. The serve
+fingerprint learns the Tessera decoder's `.so`, so a serve running Tessera's
+own native decode no longer reports "nothing resident" (the names are the
+pin's; deriving them from the runtime's own table is RobTand/tessera#28). And
+D34's two deferred observations are closed: `check_serving_shape` now fails
+**closed** on an unknown profile id like its three siblings instead of
+resolving silently to `research`, and `activation_pricing_branches`'s
+`unrecorded` bucket is tested again.
 Re-stamped (2026-09-02, `tessera/decouple-gridbook`) for the **archival of the
 Gridbook trellis rate surface** (§4.9). The five `prismaquant/trellis_*.py`
 modules, `serving_profile_specs/trellis_research_sm121.json` and the four
@@ -19,7 +42,8 @@ imports `trellis_menu`. **`PRISMAQUANT_TRELLIS_SURFACE` still refuses** — from
 statement of `build_candidates`, naming the retired wire and #118. Dropping the
 variable would have handed a stale driver a *different* allocation with no
 diagnostic, which is the fail-open class of prismaquant#120. Gate:
-`tests/test_retired_trellis_surface_refusal.py`. Previously stamped (2026-09-02,
+`tests/test_retired_trellis_surface_refusal.py`.
+Previously stamped (2026-09-02,
 `tessera/remove-gridbook`) for the **retirement of the Gridbook codebook
 lane** (§1.1, §3.5, §9, §9.2, D34). Robert, 2026-09-02: *"put Tessera in
 PrismaQuant and remove Gridbook."* PrismaQuant carries **one** non-vLLM-native
@@ -1365,7 +1389,7 @@ by measurement, not by the cost model (§2).
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
 | Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | maintained: NVFP4, FP8_DYNAMIC/E4M3, BF16; FP8_SOURCE remains a source-artifact compatibility codec | production default for the maintained W4A4/W8A8/BF16 menu; W8A16/source FP8 is not SM120 performance eligibility |
-| **Tessera** | `tessera` wire (`quant_method = "tessera"`) | vLLM + **Tessera's own** plugin (`tessera.serving`), installed into the stock image from an immutable pin; PrismaQuant consumes only the packaged `runtime_contract.json` | the Tessera trellis wire, synthesized and priced by name (§5.7) | **declared, not shippable**: the pin carries PENDING sentinels until a Tessera release tag exists, so `tessera_lane_attested` answers False for every rung — by the pin, not by an edit. Dense-only at TP=1; the contract carries no `routed_moe` cell |
+| **Tessera** | `tessera` wire (`quant_method = "tessera"`) | vLLM + **Tessera's own** plugin (`tessera.serving`), installed into the stock image from an immutable pin; PrismaQuant consumes only the packaged `runtime_contract.json` | the Tessera trellis wire, synthesized and priced by name (§5.7) | **declared, with a container arm, and refused by exactly one thing**: `EXPORT_CONTAINER=tessera` is a lane the driver can act on since 2026-09-02 (§9.4), and the pin's PENDING sentinels are the only refusal left — `tessera_lane_attested` answers False for every rung by the pin, not by an edit. Dense-only at TP=1; the contract carries no `routed_moe` cell |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
 
 A fourth container — the **codebook (CB) / gridbook** lane — was **retired 2026-09-02** on Robert's decision (*"put Tessera in PrismaQuant and remove Gridbook"*) and archived whole at `archive/gridbook_lane_2026-09-02/`, its served measurements included. `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s. See §9.2 for what went with it.
@@ -2160,10 +2184,15 @@ legacy all-family sweep retain the old stamp shape and rendered bytes, pinned
 against baseline `76666bd` by
 `tests/test_cbl_scope_identity.py:67-128`.
 
-`EXPORT_CONTAINER` ∈ {`compressed-tensors`, `gguf`, `nvfp4_cb`} selects the lane, and the
-preflight now **refuses a lane the architecture has not declared** (`supported_lanes`,
+`EXPORT_CONTAINER` ∈ {`compressed-tensors`, `gguf`, `tessera`} selects the lane — the
+sanctioned three (Robert, 2026-09-02); `nvfp4_cb` was the fourth until the Gridbook lane
+retired that day and now `exit 2`s (§9.2), and `tessera` was added on 2026-09-03 together
+with the driver arm that can act on it (§9.4). The
+preflight **refuses a lane the architecture has not declared** (`supported_lanes`,
 re-vet R6) — an undeclared lane does not fail at serve time, it serves uninitialised expert
-memory and generates coherent-looking garbage.
+memory and generates coherent-looking garbage. Being in the vocabulary is therefore not
+permission to build: `tessera` is declared by `qwen3` alone, and its own preflight
+(`prismaquant/tessera_export_lane.py`) still refuses every run on the PENDING release pin.
 
 **`COST_MODE=aura` is the default since 2026-07-30 (re-vet R2).** Both flagship artifacts
 (regen-27B, 35B arm-E) were produced with it and its served margin over the previous default
@@ -6929,7 +6958,7 @@ artifacts exported before the rename.
 
 | Arch | profile | prio | structure spec | `default_serving_profile` | `supported_lanes` (preferred) | gridbook opt-in | MTP |
 |---|---|---|---|---|---|---|---|
-| qwen3 (dense + routed MoE; smoke: Qwen3-30B-A3B) | `qwen3.py` | 120 | ✅ | `vllm_packed_moe` | **CT** (CT) | `Qwen3MoeForCausalLM` uses the generic per-layer FusedMoE loader. Its `nvfp4_cb` declaration was removed 2026-09-02 with the lane (§9.2) | none |
+| qwen3 (dense + routed MoE; smoke: Qwen3-30B-A3B) | `qwen3.py` | 120 | ✅ | `vllm_packed_moe` | **CT, tessera** (CT) | `Qwen3MoeForCausalLM` uses the generic per-layer FusedMoE loader. Its `nvfp4_cb` declaration was removed 2026-09-02 with the lane (§9.2). **`tessera` declared 2026-09-03** and it is the only profile that declares it: Tessera's exporter stacks exactly this profile's two fused groups one-blob-per-vLLM-module, and the 2026-09-02 allocated-vs-uniform serve built Qwen3-0.6B Tessera checkpoints from a PrismaQuant allocation and served them on the plugin. The MoE architecture this profile also claims is refused by the lane preflight, which reads the checkpoint's own expert count against the contract's `structures: ["dense"]` (§9.4) | none |
 | qwen3_5 / 3.6 MoE | `qwen3_5.py` | 110 | ✅ | `vllm_packed_moe` | **CT** (CT) | `nvfp4_cb` declaration removed 2026-09-02 with the lane (§9.2) | `build_mtp_module` → `MtpModule` (live; R12) |
 | qwen3_5_dense | `qwen3_5_dense.py` | 100 | ✅ | `vllm_packed_moe` | **CT** (CT) | no expert-loader hook; `nvfp4_cb` declaration removed 2026-09-02 with the lane (§9.2) | inherits `Qwen3_5Profile.build_mtp_module` (dead copy removed, R12) |
 | gemma4 | `gemma4.py` | 140 | ✅ | `vllm_packed_moe` | CT | ⚠ none | none |
@@ -7336,12 +7365,39 @@ decision rather than operator policy. Strix Halo enters this lane first, serving
 
 ### 9.4 tessera — the Tessera wire on Tessera's own vLLM plugin
 
-**Declared, and fail-closed.** This lane exists as a *bar* before it exists as
-a shipping path: `prismaquant/lane_specs/tessera.json` states the serve, the
-endpoint, the gate set, the KL evaluator and the executed activation contracts,
-and no PrismaQuant exporter writes a Tessera wire yet
-(`export_native_compressed.py` has no Tessera codec). The ordering is
-deliberate — the bar is what a future exporter is built against.
+**Declared, driveable, and fail-closed on one thing.** This lane existed as a
+*bar* before it existed as a shipping path: `prismaquant/lane_specs/tessera.json`
+states the serve, the endpoint, the gate set, the KL evaluator and the executed
+activation contracts. Since 2026-09-03 `run-pipeline.sh` has a real
+`EXPORT_CONTAINER=tessera` arm to go with it, and the refusal an operator now
+meets is the release pin rather than `unknown export lane` from a vocabulary
+check three layers up.
+
+**The arm calls out; it does not vendor in.** `export_native_compressed.py` still
+has no Tessera codec and is not getting one: the layer_config → plan translation
+(`experiments/plan_from_layer_config.py`) and the encode
+(`experiments/export_tessera_serving.py`) both live in the Tessera repository and
+are NAMED by the arm under `TESSERA_REPO`, the same boundary the lane spec already
+uses for the serve script and the route census. A second copy of either here would
+be a second place a wire recipe can drift, which is the failure principle 14
+exists to prevent. `TESSERA_PLAN_COVER` (`as-allocated` by default) decides whether
+a partial allocation is planned as-is with every other body Linear spelled BF16, or
+broadcast by role and stamped as the extrapolation it is; silence must never become
+a 4-bit rung.
+
+**Three preflight gates, each fail-closed on its own** (`tessera_export_lane.py`,
+run before any GPU work): the checkpoint's structure must be one the packaged
+contract declares (read from the artifact's own `config.json`, because the `qwen3`
+profile claims both the dense and the MoE architecture and only one is declared);
+the lane spec's `served_activation_quantization.executes` must EQUAL what the
+contract's `formats[]` rows imply, principle 14 in the field that asserts what the
+runtime executes; and the pinned Tessera serving runtime must be an exact reviewed
+release. The third refuses every run today and is the only thing that does.
+Beside them the arm also checks, in the same up-front block, that `TESSERA_REPO`
+holds both named tools and that `TESSERA_SERVE_MODE` and `TESSERA_PLAN_COVER`
+each carry one of their two legal values — not left to the translator's own
+`argparse` `choices`, which does not run until stage 4, because the point of
+this block is to refuse before GPU hours rather than after them.
 
 **The runtime is Tessera's.** Package `tessera.serving` in the Tessera
 repository: a `vllm.general_plugins` entry point
@@ -7391,10 +7447,26 @@ Both residency modes are receipted and both must be exercised.
 `version` are the sentinels `PENDING_TESSERA_RELEASE_COMMIT` /
 `PENDING_TESSERA_RELEASE_VERSION` with `version_is_release: false`;
 `require_exact_tessera_runtime_release` refuses them, and `tessera_lane_attested`
-ANDs that refusal in (§5.7). Cutting the tag is Rob's decision and resolves the
+ANDs that refusal in (§5.7), as does the container arm's preflight. Cutting the
+tag is Rob's decision and resolves the
 pin file *and* the reader's two release constants in one reviewed commit —
 neither half admits anything alone. Gates on this lane are ADVISORY like every
 other lane's; the shipcard is what refuses.
+
+**The pin also carries the serve fingerprint's half of §7.4.**
+`serving_extension_basenames` names the CUDA extensions the released plugin loads
+into a serving process (`tessera_nvfp4`, JIT-built as
+`tessera_nvfp4_<build identity>.so`). `tools/serve_fingerprint.py` is stdlib-only
+and runs inside the serving container from a bootstrapped five-file snapshot, so it
+cannot read the pin at runtime and carries the same tuple;
+`tests/test_tessera_serve_fingerprint.py` refuses any disagreement. Until
+2026-09-03 no Tessera name was in `EXTENSION_PATTERN` at all, so a serve running
+Tessera's own native span-2 decode fingerprinted identically to a stock serve — the
+one lane whose entire point is a custom decoder was the one lane §7.4's
+identical-residency rule could not see. **Known gap, Tessera-side:** the packaged
+`runtime_contract.json` publishes executed activation contracts but not the
+basenames of the extensions the plugin loads, so this one field is mirrored from
+the pin rather than derived from the runtime's own table (RobTand/tessera#28).
 
 ## 10. Hardware & environment
 
@@ -7648,8 +7720,8 @@ New with the 2026-07-30 merge:
 | D30 | **The Sensitivity Card's non-scalar tiers are screening surrogates, and its probe wiring has two soft spots** (added 2026-08-14, §4.8). Four honest gaps, none of them closed: (1) **No served A/B.** The `MARGINAL` tier and AQUA-AURA have never been measured on exact full-vocab vLLM KL-vs-BF16 or direct WikiText PPL. `SCALAR` is a byte-identical reproduction of today's model and carries no such debt; the other two must not be cited as results (§2.5). (2) **The rank-1 reconstruction's error is unquantified on real layers.** `H = Σ_t outer(g_t², x_t²)` is exactly rank-1 only when one token dominates; `outer(row, col)/h_trace_raw` is provably exact in that case (`rtol=1e-10`) and an approximation of unknown magnitude everywhere else. Nothing has compared it against a materialized `H` on a real Linear. (3) **The marginal identity is exact only at the two streaming sites.** `sum(fisher_row) == sum(fisher_col) == h_trace_raw` holds by construction where `h_trace_raw` is literally `chunk_h.sum()` in fp32 (`incremental_probe.py:2520`, `:2751`). On the **resident** path `h_trace_raw` comes from the bf16 outer-product-norm identity `(gy2_sq.sum(1) · x2_sq.sum(1)).sum()` (`:1667-1668`) while the marginals reduce the fp32 `chunk_h`, so the two agree mathematically but not bitwise; `SensitivityUnit.validate`'s `rtol=1e-3` is what absorbs that, and nothing measures the actual spread. (4) **One accumulation site is dead on the shipping path and therefore untested.** The batched MoE block-flush hook (`:2276-2362`) fires only for blocks whose immediate children are per-expert containers exposing the profile's projection names as `nn.Linear` — the *unpacked*-expert layout. The shipping recipe's MoE models do not take it, and `tests/test_probe_marginals.py` covers the helpers and the two streaming sites but not that branch, so its marginal emission has never executed. A transposed axis or a wrong merge rule there would surface first on a new unpacked-expert architecture, which is exactly the class of silent-garbage failure §8.5 L3 is about. | §4.8; `prismaquant/sensitivity_card.py`, `format_cost_protocol.py`, `sensitivity_card_allocate.py`; `incremental_probe.py:97-199,1667-1672,2276-2360,2501-2520,2735-2751`; `tests/test_sensitivity_card.py`, `tests/test_probe_marginals.py`; `docs/design/sensitivity_card_contract.md` §8 | MED | (1)-(2) run the rank-agreement check against measured `output_mse` on Qwen3-0.6B and an allocation-churn check against a shipped `cost.pkl` before any tier but `SCALAR` is proposed for a default; (3) record the resident-vs-streaming identity spread on one real probe, or tighten the resident path to reduce `chunk_h` for both; (4) cover the MoE block flush with a synthetic unpacked-expert fixture, or state that the branch is retired. |
 | D31 | **Shipcard replay binds recorded evidence to the serving pin at HEAD** (added 2026-08-18). Every gate slot records the runtime that actually gated it (serve-manifest `gridbook_distribution`, endpoint-contract stack), but the replay compares those records against `load_gridbook_serving_runtime_pin()` at HEAD — so the 0.8.9 pin bump made the already-published DSv4 flagship unpublishable for a docs-only README update: six slot refusals, all "is not the tracked pin", on evidence that exactly matches the pin that was tracked when it was measured. Worked around honestly for the 0.8.9 card update by running the publisher from a worktree at `0266662` (the pre-bump commit; publisher and verifier code there are byte-identical to HEAD — the bump commit `6a883bc` touched pin data and docs only — so this verifies the card against the pin that gated it, with zero tool divergence). Recurs on every serving-pin bump for every historical artifact. | `prismaquant/shipcard.py:1225,2374,2521`; `tools/publish_artifact.py` dry-run refusal 2026-08-18 | MED | Decision for Robert: accept a declarative superseded-pins record in `gridbook_serving_runtime_pin.py` (version/commit/wheel of prior released pins; replay accepts recorded == current OR recorded ∈ superseded, and the verdict names which) — keeps fail-closed against unreviewed runtimes without rotting history — or rule that docs updates to historical artifacts always re-run the publisher at the artifact's pin era. |
 | D32 | **The Fisher probe is not bit-reproducible, and nothing in the tree said so** (added 2026-08-20). Two runs of `incremental_probe` with byte-identical calibration, the same commit and the same `--layers-per-shard` differ on **379/402 units**, median `|Δh_trace|/h_trace` **2.5e-4** (max 1.1e-2); `n_tokens_seen` and the per-expert Fisher *support* are bit-identical on every unit, so the forward and the routing are exactly deterministic and only the backward moves. Mechanism: 30 of Ornith-1.5-35B-A3B's 40 layers are Gated DeltaNet, whose `fla` Triton kernels reduce over chunks in a non-deterministic order. **Why it is debt rather than a bug:** the jitter is unbiased (signed mean +6.5e-5 against its own sd 5.7e-4) and three orders below the 23% cost CV that §9 records as producing 3% assignment churn and 0σ served — but a probe-side change gated on bit-identity refuses for reasons that have nothing to do with the change, and `--layers-per-shard auto` (sized from free RAM at launch) adds a second, *avoidable* source on top. **Consequence for provenance:** probe-derived artifacts (`cost_baseline.pkl`, `cost_aura.pkl`, `cost.pkl`, the sensitivity card) must be rebuilt together from one probe run rather than half-reused, or `cost.pkl`'s stamped provenance names a probe that produced only some of its numbers. | `incremental_probe.py`; `sensitivity_probe.py` `_accumulate_packed_per_token_fisher`; measured Ornith-1.5-35B-A3B 2026-08-20 | LOW | Gate probe changes on what is invariant (`n_tokens_seen`, per-expert support, an unbiased signed mean within a *measured* floor), never on bit-identity; pin `--layers-per-shard` for any A/B. |
-| D33 | **OPEN 2026-09-02, narrowed the same day.** Tessera is priced and rendered by name (§5.7) and now has a *declared* lane (§9.4, `lane_specs/tessera.json`) and a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), but still no path out of this repository: **no exporter codec**, and no ship gate has been run on the lane. Producer eligibility is False, and the reason moved from "no runtime publishes a Tessera row" to "**no Tessera release tag exists**" — the packaged contract publishes both families with `device_qualified` native cells, and the PENDING pin is what withholds them. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_runtime/tessera_serving_runtime_pin.json` (PENDING sentinels), `tessera_serving_runtime_pin.py`, `export_native_compressed.py` (no Tessera codec) | Med | Rob cuts a Tessera release tag, then one reviewed commit resolves the pin file and the reader's two release constants together; independently, add the exporter codec so an allocation that picks a Tessera rung can be shipped from here. Until both, the lookup fails closed by design and the lane spec is a bar with nothing behind it. |
-| D34 | **The Gridbook lane is retired but its format/cost/render plumbing is not** (added 2026-09-02). The lane, its pins, exporter, serving profiles, ship-gate slots, 73 test modules (1,691 node IDs) and 27 documents were archived at `archive/gridbook_lane_2026-09-02/` and `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s (§3.5, §9.2) — so no CB rung can be exported or served, which is the property principle 9 cares about. What remains is the machinery that *prices and renders* those rungs: `cb_layout.py`, `nvfp4_cb_formats.py`, `nvfp4_cb_footprint.py`, `cb_ldlq*.py`, `cb_minchain.py`, `cb_warm_state.py`, `cb_banked_books.py`, `cb_learned_promotion.py`, `cb_anchored_cost.py`, `cb_ladder_cross_family.py`, `routed_moe_codebooks.py`, `mxfp4_widen.py`, `source_class_format_plan.py`, plus CB branches inside `production_weight_cache.py`, `allocator.py`, `format_registry.py`, `export_native_compressed.py`, `layer_config.py`, `lane_spec.py`, `serve_constraints.py` and `model_profiles/*`, and roughly 60 tests that exercise them. **Why it was left:** the excision is several hundred diffuse edits concentrated in exactly the files the continuous-menu branch is rewriting, and merging that against a live branch is more dangerous than the debt. **The risk it carries:** a `FORMATS` menu can still name a `*_CB_*` rung, the DP can still price it, and the only thing that stops it is the exporter and the `production-render-score` pairing guard — a *refusal*, not an *absence*. Four consequences are recorded separately because they are capability losses, not debt. (i) `FP8_BLOCK_UE8M0_SOURCE` is now `ROUTE_STATUS_BLOCKED` — its only route was the plugin. (ii) `MXFP4_SOURCE` keeps a backed stock-Marlin route but has no writer and no serving profile, and `MXFP8_UE8M0_G32` is the same shape — never a compressed-tensors scheme, written only by the CB *streaming* exporter, which is archived. Both keep a live `FormatSpec` and a working render; neither has a writer. (iii) **The `serving_lanes` block of a serving-profile spec now has zero live declarations.** `serving_profile_specs/nvfp4_cb.json` was the only spec that ever declared one (verified against `d263f54`), so the per-lane structured `route_status` / `activation_contract` / `fused_mid_m` table that principle 9 reads is a parser with nothing left to parse; the native lane's route status has always come from the source-passthrough contracts instead. The parser and its `route_status_source` machinery are kept because that is the shape the Tessera lane must declare in. (iv) **The sample-parallel incremental probe is unavailable**: its `prepare-run-contract` minter and its per-worker source-census revalidation were both built on `prismaquant/rtx4090_artifact_census.py`, the strict-Ada FP8-CB campaign's closed Qwen3.8-27B layout. `incremental_probe.py --global-calibration-tensor` now refuses up front rather than admitting a pre-retirement contract with one leg of its identity replay missing (`docs/design/sample_parallel_probe.md` carries the banner). Reviving it means giving the census a lane-independent source of truth. Two production observations were surfaced by the removal and deliberately **not** fixed here: `check_serving_shape` fails **open** on an unknown profile id (it catches `FileNotFoundError` and resolves silently to `research`, which permits every shape) while `serving_lane_route`/`serving_lane_catalog` fail **closed** — an asymmetry that predates this work but which made ten archived CB load-gate tests pass for the wrong reason; and `activation_pricing_branches["unrecorded"]` (`allocator_candidates.py:2153`) is now tested nowhere, its only coverage having ridden a deleted CB test. A fifth item is dead-but-kept rather than lost: `shipcard.py`'s `safetensors_content_receipt` trio has no live caller since the strict-RTX4090 publication gate retired, and is kept so receipts already on disk stay readable. `ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT` still exempts `DeepseekV4Profile` from declaring a fused-sibling source, but the lane that justified the exemption is gone; discharging it is a producer-behaviour decision, not a removal. | `archive/gridbook_lane_2026-09-02/README.md`; `docs/measurements/gridbook-lane-retired-2026-09-02.md`; §9.2 | MED | Excise the CB plumbing after the continuous-menu branch merges, in one commit whose diff is deletions plus the tests that go with them; or, if a codebook rung is wanted again for the Tessera lane, port the parts worth keeping deliberately rather than inheriting them. |
+| D33 | **OPEN 2026-09-02, narrowed twice.** Tessera is priced and rendered by name (§5.7), has a *declared* lane (§9.4, `lane_specs/tessera.json`), a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), and since **2026-09-03** a real `EXPORT_CONTAINER=tessera` arm in `run-pipeline.sh` that plans and encodes through Tessera's OWN tools under `TESSERA_REPO` (`plan_from_layer_config.py`, `export_tessera_serving.py`). **The "no exporter codec" half is re-scoped, not closed**: this repository still writes no Tessera bytes and deliberately never will — a wire recipe with two homes is how the two halves of one format drift apart — so the debt is now *the boundary*, not *the absence*: the two Tessera scripts the arm names live in `experiments/`, which their own README calls drivers rather than a supported interface. Producer eligibility is still False, and the reason has narrowed to one thing: **no Tessera release tag exists**. The packaged contract publishes both families with `device_qualified` native cells; the PENDING pin is what withholds them, and it is now also what the driver's preflight refuses on. No ship gate has been run on the lane. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_export_lane.py` (the arm's three gates), `run-pipeline.sh` (`EXPORT_CONTAINER=tessera`), `tessera_runtime/tessera_serving_runtime_pin.json` (PENDING sentinels), `tessera_serving_runtime_pin.py` | Med | Rob cuts a Tessera release tag, then one reviewed commit resolves the pin file and the reader's two release constants together — after which the arm can build. Independently: promote the two named Tessera scripts from `experiments/` to a supported entry point so the boundary is an interface rather than a path, and run the lane's load+generate gates from the driver or from a lane runner (RobTand/prismaquant#119). |
+| D34 | **The Gridbook lane is retired but its format/cost/render plumbing is not** (added 2026-09-02). The lane, its pins, exporter, serving profiles, ship-gate slots, 73 test modules (1,691 node IDs) and 27 documents were archived at `archive/gridbook_lane_2026-09-02/` and `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s (§3.5, §9.2) — so no CB rung can be exported or served, which is the property principle 9 cares about. What remains is the machinery that *prices and renders* those rungs: `cb_layout.py`, `nvfp4_cb_formats.py`, `nvfp4_cb_footprint.py`, `cb_ldlq*.py`, `cb_minchain.py`, `cb_warm_state.py`, `cb_banked_books.py`, `cb_learned_promotion.py`, `cb_anchored_cost.py`, `cb_ladder_cross_family.py`, `routed_moe_codebooks.py`, `mxfp4_widen.py`, `source_class_format_plan.py`, plus CB branches inside `production_weight_cache.py`, `allocator.py`, `format_registry.py`, `export_native_compressed.py`, `layer_config.py`, `lane_spec.py`, `serve_constraints.py` and `model_profiles/*`, and roughly 60 tests that exercise them. **Why it was left:** the excision is several hundred diffuse edits concentrated in exactly the files the continuous-menu branch is rewriting, and merging that against a live branch is more dangerous than the debt. **The risk it carries:** a `FORMATS` menu can still name a `*_CB_*` rung, the DP can still price it, and the only thing that stops it is the exporter and the `production-render-score` pairing guard — a *refusal*, not an *absence*. Four consequences are recorded separately because they are capability losses, not debt. (i) `FP8_BLOCK_UE8M0_SOURCE` is now `ROUTE_STATUS_BLOCKED` — its only route was the plugin. (ii) `MXFP4_SOURCE` keeps a backed stock-Marlin route but has no writer and no serving profile, and `MXFP8_UE8M0_G32` is the same shape — never a compressed-tensors scheme, written only by the CB *streaming* exporter, which is archived. Both keep a live `FormatSpec` and a working render; neither has a writer. (iii) **The `serving_lanes` block of a serving-profile spec now has zero live declarations.** `serving_profile_specs/nvfp4_cb.json` was the only spec that ever declared one (verified against `d263f54`), so the per-lane structured `route_status` / `activation_contract` / `fused_mid_m` table that principle 9 reads is a parser with nothing left to parse; the native lane's route status has always come from the source-passthrough contracts instead. The parser and its `route_status_source` machinery are kept because that is the shape the Tessera lane must declare in. (iv) **The sample-parallel incremental probe is unavailable**: its `prepare-run-contract` minter and its per-worker source-census revalidation were both built on `prismaquant/rtx4090_artifact_census.py`, the strict-Ada FP8-CB campaign's closed Qwen3.8-27B layout. `incremental_probe.py --global-calibration-tensor` now refuses up front rather than admitting a pre-retirement contract with one leg of its identity replay missing (`docs/design/sample_parallel_probe.md` carries the banner). Reviving it means giving the census a lane-independent source of truth. Two production observations were surfaced by the removal, deferred at the time, and **both fixed 2026-09-03** (RobTand/tessera#20): `check_serving_shape` failed **open** on an unknown profile id — it caught `FileNotFoundError` and resolved silently to `research`, which permits every shape, while `serving_lane_route`/`serving_lane_catalog`/`check_serving_format` all fail **closed**. It now returns the same `profile_mismatch` refusal `check_serving_format` does; `profile_id=None` still resolves to `research`, which is the declared default and loads, so no legal call changed. And `activation_pricing_branches["unrecorded"]` is re-homed as its own profile-independent test in `tests/test_serving_lane_metadata.py` rather than left riding a deleted CB test. A fifth item is dead-but-kept rather than lost: `shipcard.py`'s `safetensors_content_receipt` trio has no live caller since the strict-RTX4090 publication gate retired, and is kept so receipts already on disk stay readable. `ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT` still exempts `DeepseekV4Profile` from declaring a fused-sibling source, but the lane that justified the exemption is gone; discharging it is a producer-behaviour decision, not a removal. | `archive/gridbook_lane_2026-09-02/README.md`; `docs/measurements/gridbook-lane-retired-2026-09-02.md`; §9.2 | MED | Excise the CB plumbing after the continuous-menu branch merges, in one commit whose diff is deletions plus the tests that go with them; or, if a codebook rung is wanted again for the Tessera lane, port the parts worth keeping deliberately rather than inheriting them. |
 
 **Open items carried from session handovers.** Of the 41 items the handover census could not
 map to a verified closure, the prior FP4-CB fast-expander/Triton item is now closed by the

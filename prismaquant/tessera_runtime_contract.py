@@ -84,13 +84,13 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 
 #: The exact Tessera commit this pin was written against.  Declared, and
 #: compared against the environment's value so a stale export raises.
-TESSERA_DEV_PIN_COMMIT = "f3e7d0ae78e64fcc1a13d5b9553a95fe4006bef4"
+TESSERA_DEV_PIN_COMMIT = "b3908f881b488ffb7fe9a896b786bf3ed84f3695"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit.  This is
 #: the leg that actually attests: an rsync'd source tree has no git history to
 #: interrogate, and the bytes are what the reader consumed.
 TESSERA_DEV_PIN_CONTRACT_SHA256 = (
-    "dff4fef7e6db72b97d7cba306cd280ae3d989d9bb310a64b9cf9f4a94a858976"
+    "d15aa6e4beac31c501fdd6e215fdd5e27cf4954bf699d1db0f7af1435e599905"
 )
 
 #: Route statuses under which a cell says a native route EXECUTES.

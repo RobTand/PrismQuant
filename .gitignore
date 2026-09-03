@@ -44,3 +44,4 @@ tmp/
 # (sensitivity_probe.py: Path.cwd() / ".prismaquant_tmp"). Test runs leave
 # these behind, and they are never artifacts anyone means to track.
 .prismaquant_tmp/
+.worktrees/
