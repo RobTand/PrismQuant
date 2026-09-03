@@ -1595,6 +1595,9 @@ def verify(
             "build.achieved_bpp contradicts the recipe's own serialized "
             f"bytes: {cross.get('detail')}"
         )
+    # The exporter stamps ten build-lane keys; the cross-check above read one.
+    # The rest of the forensic block is replayed here (#158).
+    problems.extend(_verify_build_block(card))
 
     if required is None:
         required = required_slots(card, model_dir=model_dir)
@@ -1629,17 +1632,18 @@ def verify(
         if record.get("passed") is not True:
             problems.append(
                 f"{slot}: FAILED — {record.get('detail') or 'no detail'}")
-        # NOT a generic gate, deliberately. `_verify_ship_gate_record` ran
-        # only for the retired Gridbook codebook lane's cards, behind that
-        # lane's `is_gridbook_cb` flag. Removing the lane leaves two readings
-        # of the branch and only one of them is a REMOVAL: running it on every
-        # lane instead would be a NEW refusal that no current native card
-        # passes (missing producer commit, missing check ledger), which is how
-        # a gate teaches operators to reach for --force-unverified. So the
-        # gate goes with the lane it was written for, and generalising it is a
-        # separate, measured decision against real native cards. The verifier
-        # itself is kept below rather than archived, because it is the
-        # ready-made subject of that decision.
+        if slot == "ship_gate":
+            # Every lane. This replay ran only behind the retired Gridbook
+            # codebook lane's `is_gridbook_cb` flag until 2026-09-02, which
+            # meant a NATIVE card -- the default lane, and the one shipping
+            # artifacts today -- closed its one universal slot on a bare
+            # `passed` flag while the producer filed a threshold contract, a
+            # check ledger, token evidence and an endpoint binding nobody
+            # read (#156). None of that evidence was ever CB-specific: the
+            # catastrophic bounds, the four checks and the validator's tool
+            # identity are the same program on every lane, so generalising
+            # the replay is a REMOVAL of the flag, not a new refusal.
+            problems.extend(_verify_ship_gate_record(slot, record))
         if slot in GOLD_SLOTS:
             # Every lane. This ran under a Gridbook-CB flag until 2026-08-15,
             # which meant a NATIVE card -- the default lane, and the one
@@ -1665,6 +1669,11 @@ def verify(
                 problems.append(
                     f"{slot}: spec_decode_detected is TRUE — this is draft-model "
                     "NLL, not the artifact's; re-measure on a no-spec serve")
+        if slot.startswith("native_export."):
+            # The slot-name check above compares `record["slot"]` to the slot
+            # key; nothing compared `metrics.arm` to the slot suffix, so a
+            # fabricated or mislabeled arm record passed. Replay it here.
+            problems.extend(_verify_native_export_record(slot, record))
     return problems
 
 
@@ -1907,6 +1916,74 @@ def _verify_gold_record(
         metrics.get("n_tokens_scored"), bool
     ) or metrics.get("n_tokens_scored", 0) <= 0:
         problems.append(f"{slot}: missing positive scored-token count")
+    return problems
+
+
+def _verify_native_export_record(
+    slot: str,
+    record: Mapping[str, Any],
+) -> list[str]:
+    """Replay the smoke arm's own stamped metrics against the slot it closes.
+
+    `validate_native_export._record_arm` stamps the arm it actually ran
+    (`metrics.arm`), the residency it ran under (`enforce_eager`), and how
+    much it generated (`generated_chars`) — but `verify` compared only the
+    slot key against `record["slot"]`, so an eager receipt closed the graph
+    slot and a pass that generated nothing verified clean. The only site
+    that knows the truth already writes it; this reads it.
+    """
+    problems: list[str] = []
+    arm = slot.split(".", 1)[1] if "." in slot else slot
+    metrics = record.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return [f"{slot}: missing structured arm metrics"]
+    if metrics.get("arm") != arm:
+        problems.append(
+            f"{slot}: metrics.arm={metrics.get('arm')!r} does not match the "
+            f"slot arm {arm!r} — a mislabeled receipt, not a result"
+        )
+    # `validate_native_export._run_arm`: `arm = "eager" if enforce_eager else
+    # "graph"`. The two residencies are different numeric objects on the
+    # Tessera lane, exercised by separate gates.
+    expected_eager = {"eager": True, "graph": False}.get(arm)
+    if (
+        expected_eager is not None
+        and metrics.get("enforce_eager") is not expected_eager
+    ):
+        problems.append(
+            f"{slot}: enforce_eager={metrics.get('enforce_eager')!r} "
+            f"disagrees with the {arm} arm — this receipt ran under the "
+            "other residency"
+        )
+    produced = metrics.get("generated_chars")
+    if record.get("passed") is True:
+        if (
+            isinstance(produced, bool)
+            or not isinstance(produced, int)
+            or produced <= 0
+        ):
+            problems.append(
+                f"{slot}: passed but generated_chars={produced!r} — a smoke "
+                "pass that generated nothing is not evidence"
+            )
+    elif (
+        not isinstance(produced, bool)
+        and isinstance(produced, int)
+        and produced > 0
+    ):
+        problems.append(
+            f"{slot}: failed yet claims generated_chars={produced!r}"
+        )
+    max_new_tokens = metrics.get("max_new_tokens")
+    if max_new_tokens is not None and (
+        isinstance(max_new_tokens, bool)
+        or not isinstance(max_new_tokens, int)
+        or max_new_tokens <= 0
+    ):
+        problems.append(
+            f"{slot}: max_new_tokens={max_new_tokens!r} is not a positive "
+            "integer"
+        )
     return problems
 
 
@@ -2585,7 +2662,17 @@ def _verify_ship_gate_record(
     slot: str,
     record: Mapping[str, Any],
 ) -> list[str]:
-    """Replay the fixed catastrophic-quality thresholds and check ledger."""
+    """Replay the fixed catastrophic-quality thresholds, the check ledger
+    with its token evidence, and the endpoint binding.
+
+    The binding half is presence-and-shape, stated honestly: an offline
+    `verify` has no live session to compare against, so it refuses a record
+    that names no server, no served model and no artifact path -- but a
+    well-formed binding to the WRONG server still passes here. Catching that
+    needs the nonce-bound live-session check (the retired CB eager driver
+    did exactly that before teardown); see the `ship_gate` paragraph in
+    §7.2 of docs/ARCHITECTURE.md.
+    """
     problems: list[str] = []
     if record.get("tool") != "validate_quantized_model.py":
         problems.append(f"{slot}: not filled by validate_quantized_model.py")
@@ -2594,6 +2681,20 @@ def _verify_ship_gate_record(
         r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit
     ) is None:
         problems.append(f"{slot}: missing full producer git commit")
+    endpoint = record.get("base_url")
+    if (
+        not isinstance(endpoint, str)
+        or not endpoint.startswith(("http://", "https://"))
+    ):
+        problems.append(f"{slot}: missing endpoint binding (base_url)")
+    served = record.get("served_model_name")
+    if not isinstance(served, str) or not served.strip():
+        problems.append(
+            f"{slot}: missing served-model binding (served_model_name)")
+    source = record.get("model_sha_source")
+    if not isinstance(source, str) or not source.strip():
+        problems.append(
+            f"{slot}: missing artifact-path binding (model_sha_source)")
     metrics = record.get("metrics")
     thresholds = record.get("thresholds")
     expected_checks = {
@@ -2739,6 +2840,132 @@ def kv_shared_fisher_echo(env: Mapping[str, str] | None = None) -> dict[str, Any
             "k_proj/v_proj h_trace"
         ),
     }
+
+
+def _verify_build_block(card: Mapping[str, Any]) -> list[str]:
+    """Replay the build-lane forensic block the exporter stamps on the card.
+
+    `export_native_compressed._write_shipcard` stamps ten keys and `verify`
+    read one (`achieved_bpp`, refused above on DISAGREE) — the rest was
+    provenance theater inside the 256 KiB byte reservation (#158). So a card
+    could name any `source_model`, point at a missing recipe, mismatch its
+    own histogram, or carry an unvalidated Fisher correction, and still
+    verify.
+
+    What is replayed here, and why each half is shaped this way:
+
+    * The `kv_shared_fisher` policy bit is a gate: the echo's own caveat says
+      the allocation rode an under-counted `k_proj`/`v_proj` `h_trace`, and
+      the probe lane already refuses to PRODUCE such an allocation by default
+      (`incremental_probe.kv_shared_fisher_block_reason`) — reaching export
+      takes an explicit override, and publication past this gate takes the
+      stamped `--force-unverified` hatch. Default-path cards echo `False`
+      and are silent here.
+    * The forensic hashes and counters are shape-replayed against what the
+      producer can stamp (`file_sha256` emits 64 hex chars or None; the
+      assignment digests are 16 hex chars or None; the histogram is a
+      `Counter` rendering with positive counts), so a fabricated value is
+      refused. Their preimages are build-machine-local (the recipe file is
+      not shipped), so no offline cross-check exists for them — and none is
+      pretended.
+    * `source_model` / `layer_config` path strings are audit trail, not gate
+      input: they name build-machine paths no verifier can resolve, and the
+      same strings already travel in `mixed_native_manifest.json`. They are
+      kept, labeled here as unread-by-design, rather than dropped.
+
+    Every check fires only on a key the producer stamps, so a card written
+    before a key existed is left alone — the same tolerance the
+    `achieved_bpp` cross-check practices.
+    """
+    problems: list[str] = []
+    build = card.get("build")
+    if not isinstance(build, Mapping):
+        return problems
+    fisher = build.get("kv_shared_fisher")
+    if isinstance(fisher, Mapping):
+        flag = fisher.get("unvalidated_kv_fisher_correction")
+        if flag is True:
+            problems.append(
+                "build.kv_shared_fisher reports "
+                "unvalidated_kv_fisher_correction=true: this allocation rode "
+                "an under-counted k_proj/v_proj h_trace "
+                f"({fisher.get('caveat') or 'D24'}) — re-probe with the "
+                "KV-cotangent path enabled and without "
+                "PRISMAQUANT_ALLOW_KV_SHARED_FISHER=1, or ship it stamped "
+                "--force-unverified"
+            )
+        elif flag is not False:
+            problems.append(
+                "build.kv_shared_fisher carries no boolean "
+                f"unvalidated_kv_fisher_correction flag: {flag!r}"
+            )
+    for key, width in (
+        ("layer_config_sha", 64),
+        ("assignment_hash", 16),
+        ("config_assignment_hash", 16),
+    ):
+        value = build.get(key)
+        if value is not None and (
+            not isinstance(value, str)
+            or re.fullmatch(r"[0-9a-f]{%d}" % width, value) is None
+        ):
+            problems.append(
+                f"build.{key}={value!r} is not a {width}-char hex digest — "
+                "the producer stamps a file hash or None, nothing else"
+            )
+    entries = build.get("n_assignment_entries")
+    if entries is not None and (
+        isinstance(entries, bool)
+        or not isinstance(entries, int)
+        or entries < 0
+    ):
+        problems.append(
+            f"build.n_assignment_entries={entries!r} is not a non-negative "
+            "integer"
+        )
+    histogram = build.get("format_histogram")
+    if histogram is not None:
+        if not isinstance(histogram, Mapping):
+            problems.append(
+                "build.format_histogram is not an object "
+                f"({type(histogram).__name__})"
+            )
+        else:
+            for name, count in histogram.items():
+                if (
+                    not isinstance(name, str)
+                    or isinstance(count, bool)
+                    or not isinstance(count, int)
+                    or count <= 0
+                ):
+                    problems.append(
+                        "build.format_histogram carries a non-positive "
+                        f"render count: {name!r}={count!r}"
+                    )
+                    break
+    traffic = build.get("read_gb_per_token")
+    if traffic is not None:
+        value = traffic.get("value") if isinstance(traffic, Mapping) else None
+        if not isinstance(traffic, Mapping) or (
+            value is not None
+            and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            )
+        ):
+            problems.append(
+                "build.read_gb_per_token carries no finite non-negative "
+                f"value: {traffic!r}"
+            )
+    for key in ("render_levers", "git"):
+        value = build.get(key)
+        if value is not None and not isinstance(value, Mapping):
+            problems.append(
+                f"build.{key} is not an object ({type(value).__name__})"
+            )
+    return problems
 
 
 # A claimed bpp may legitimately sit a few percent above the priced floor

@@ -3,6 +3,37 @@
 As of: 2026-09-03 · `claude/pq-126-plane-charges`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `muse/pq-156-158-replay`) for the **three receipt
+blocks the producers wrote and nothing replayed** (§7.1, §7.2;
+RobTand/prismaquant#156, #157, #158). Every `ship_gate` receipt carried its
+threshold contract, check ledger, token evidence and endpoint binding, every
+`native_export.*` receipt its arm identity and generation evidence, and every
+card a ten-key build forensic block — and `verify` read one key of the third
+block and none of the other two, so a wrong-server receipt, a mislabeled arm,
+a lowered threshold, an empty ledger, or an unvalidated Fisher correction all
+verified clean. `verify` now replays all three: the `ship_gate` threshold
+contract against the fixed catastrophic bounds, the exact four-check ledger,
+positive scored-token evidence and the endpoint binding's presence-and-shape;
+the `native_export` arm, residency and generation evidence against the slot;
+and the build block's Fisher policy bit (refusal) plus the forensic hashes'
+shapes. Staged deliberately: the replays read what the producers already
+stamp, so previously-verifying minimal fixtures now fail and the suites carry
+producer-shaped records instead. The one honest limit is stated in §7.2: an
+offline `verify` cannot bind a well-formed receipt to the wrong server, only
+refuse one that names none. Gates: `tests/test_shipcard.py::test_ship_gate_*`,
+`::test_native_export_*`, `::test_build_*`, shown failing before the wiring.
+
+Re-stamped (2026-09-03, `muse/pq-156-158-replay`) for the **ship-gate receipt
+replay** (§7.2; RobTand/prismaquant#156). `verify` closed the one universal slot on a bare
+`passed` flag while the producer filed a threshold contract, a check ledger, token evidence
+and an endpoint binding nobody read. The replay now runs on every lane — tool identity and
+producer commit, exact catastrophic bounds against the filed thresholds, a complete passed
+ledger, perplexity numerics re-cleared with a positive scored-token count and known
+non-spec-decode state, and the endpoint binding present and shaped — with fixtures derived
+from the producer's own `DEFAULT_*` bounds and check names rather than restated. Gates:
+`tests/test_shipcard.py` (refusals for lowered bounds, missing binding, incomplete ledger,
+unscored perplexity).
+
 Re-stamped (2026-09-03, `claude/pq-tessera-lane`) for the **lane-aware ship
 record** (§7.1, §9.2, §9.4, D33; RobTand/prismaquant#119 in part, #162 filed).
 An earlier stamp below records the Tessera lane's addition. The gate set that lane
@@ -6527,7 +6558,13 @@ Also on the card: exact `artifact_bytes`, format histogram, the render-lever
 echo (`_render_lever_provenance()`, shared with the export cache's fingerprint so the two
 cannot drift), and the `PRISMAQUANT_ALLOW_KV_SHARED_FISHER` / `PRISMAQUANT_KV_COTANGENT` state
 so an allocation that rode an unvalidated Fisher correction is visible on the artifact rather
-than only in a probe log (D24) — plus five base **empty, required** serve-lane
+than only in a probe log (D24) — and since 2026-09-03 `verify` refuses a card carrying
+`unvalidated_kv_fisher_correction=true`, and shape-replays the stamped forensic hashes
+(`layer_config_sha`, the two assignment digests), the histogram counts, and the
+read-traffic value, so a fabricated forensic value no longer verifies (#158).
+The `source_model` / `layer_config` path strings stay audit trail by design: they name
+build-machine paths no verifier can resolve, and the same strings already travel in
+`mixed_native_manifest.json`. Plus five base **empty, required** serve-lane
 slots: `native_export.eager`, `native_export.graph`, `ship_gate`, `gold.kl`,
 `gold.ppl`. Gridbook CB artifacts open a sixth blocking slot,
 `perf.matched_budget_parity`; the generic record importer cannot fill it.
@@ -6549,7 +6586,14 @@ rather than the private `.tmp-*` staging root.
 
 `python -m prismaquant.shipcard_cli verify <card>` defaults the on-disk identity check to the
 card's parent directory (an explicit `--model-dir` remains available) and exits non-zero unless
-every slot holds a *passing* record whose `model_sha` matches the artifact. Every recognized
+every slot holds a *passing* record whose `model_sha` matches the artifact. The flag is not
+the whole gate: `verify` replays each slot's stamped evidence. `ship_gate` replays the
+threshold contract against the fixed catastrophic bounds (a validator that silently lowers
+`max_ppl` no longer closes the card), the exact four-check ledger, positive scored-token
+evidence with known spec-decode state, and the endpoint binding's presence-and-shape
+(#156). Each `native_export.*` slot replays its arm identity, residency
+(`enforce_eager`), and generation evidence (`generated_chars > 0` on a pass) against the
+slot suffix, so a mislabeled or empty smoke receipt no longer verifies (#157). Every recognized
 optional slot whose value is non-null joins that default replay set. Missing or null
 `mtp.dspark` remains nonblocking for a target-only artifact, but physical
 `provenance.dspark_cb_sidecar` independently makes it required. CB identity adds
@@ -6870,6 +6914,27 @@ the fixed default thresholds explicitly, supplies its generated nonce as `--mode
 replays only `ship_gate` plus the current-session bindings before server teardown. This makes the
 numeric run part of the manual eager release operation without merging its evidence semantics
 into `native_export.eager`.
+
+Honest limit of the `ship_gate` binding replay (#156): an offline `verify` has no live
+session to compare against, so it refuses a record that names no server, no served model,
+and no artifact path — but a well-formed binding to the WRONG server still passes here.
+The `model_sha` match refuses a receipt measured against a different artifact's bytes;
+binding a receipt to the live session it was measured in needs a nonce check before
+teardown (the retired CB eager driver did exactly that). That check does not exist on
+this lane: recorded as the open half of #156, not as a refusal.
+
+`verify` replays that filing on every lane (#156): the slot closed on a bare `passed` flag
+while the producer filed a threshold contract, a check ledger, token evidence and an endpoint
+binding nobody read, so a receipt measured against the wrong server, with silently lowered
+bounds, or with an empty ledger passed. The replay now demands the validator's tool identity
+and a full producer commit, the exact catastrophic bounds against the filed thresholds, every
+check present and passed, the perplexity numerics re-cleared against the bounds with a positive
+scored-token count and a known non-spec-decode state, and the endpoint binding present and
+shaped (`base_url`, `served_model_name`, `model_sha_source`). The binding half is
+presence-and-shape by construction: an offline `verify` has no live session to compare
+against, so a well-formed binding to the wrong server still passes here — catching that needs
+the nonce-bound live-session check, which was the retired CB eager driver's pattern, not this
+gate's.
 
 ### 7.3 The gold lane (manual)
 

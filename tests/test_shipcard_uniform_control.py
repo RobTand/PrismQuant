@@ -37,6 +37,13 @@ from prismaquant.shipcard import (
     write_shipcard,
 )
 from prismaquant.shipcard_cli import main as shipcard_cli
+from prismaquant.validate_quantized_model import (
+    DEFAULT_MAX_MEAN_NLL,
+    DEFAULT_MAX_P99_NLL,
+    DEFAULT_MAX_PPL,
+    DEFAULT_MIN_GEN_LEN,
+    DEFAULT_MIN_MTP_ACCEPT_P0,
+)
 from tools.publish_artifact import check_shipcard, main as publish_cli
 
 _FAKE_FINGERPRINT = "f" * 64
@@ -150,11 +157,72 @@ def _artifact(tmp_path, *, name="exported", rate_axis=True):
     return model_dir
 
 
+#: What a real ship-gate verdict carries. Thresholds come from the
+#: producer's own DEFAULT_* constants; the four ledger names are the checks
+#: `run_validation` files (the ledger's key set is pinned to the producer,
+#: not restated, by tests/test_shipcard.py::_producer_check_names).
+_SHIP_GATE_LEDGER = ("serve_ready", "generation_sanity", "perplexity",
+                     "mtp_acceptance")
+
+
+def _ship_gate_record(model_sha, *, source):
+    ledger = {name: {"passed": True} for name in _SHIP_GATE_LEDGER}
+    ledger["perplexity"] = {
+        "passed": True,
+        "perplexity": 8.33,
+        "mean_nll_per_tok": 2.12,
+        "max_nll_per_tok": 4.50,
+        "n_tokens": 8192,
+        "spec_decode_detected": False,
+    }
+    return make_record(
+        slot="ship_gate", tool="validate_quantized_model.py", passed=True,
+        model_sha=model_sha, metrics=ledger,
+        detail="serve_ready=pass; generation_sanity=pass; "
+               "perplexity=pass; mtp_acceptance=pass",
+        spec_decode_detected=False,
+        git_commit=_FAKE_COMMIT,
+        extra={
+            "base_url": "http://127.0.0.1:8000",
+            "served_model_name": "probe-artifact",
+            "thresholds": {
+                "max_ppl": DEFAULT_MAX_PPL,
+                "max_mean_nll": DEFAULT_MAX_MEAN_NLL,
+                "max_p99_nll": DEFAULT_MAX_P99_NLL,
+                "min_gen_len": DEFAULT_MIN_GEN_LEN,
+                "min_mtp_accept_p0": DEFAULT_MIN_MTP_ACCEPT_P0,
+                "bos_token": None,
+                "add_special_tokens": True,
+            },
+            "model_sha_source": source,
+        },
+    )
+
+
+def _native_record(slot, model_sha):
+    # What `validate_native_export._record_arm` files: the arm it ran
+    # (`arm = "eager" if enforce_eager else "graph"`) with one greedy
+    # decode as evidence.
+    arm = slot.split(".", 1)[1]
+    return make_record(
+        slot=slot, tool="validate_native_export.py", passed=True,
+        model_sha=model_sha,
+        metrics={"arm": arm, "generated_chars": 128,
+                 "enforce_eager": arm == "eager", "max_new_tokens": 16},
+        detail=f"{arm} smoke", git_commit=_FAKE_COMMIT)
+
+
 def _close_base_slots(model_dir, candidate_kl=_ALLOCATED_KL):
     path = model_dir / "shipcard.json"
     sha = compute_model_sha(model_dir)
     metrics = _gold_metrics(candidate_kl)
     for slot in REQUIRED_SLOTS:
+        if slot == "ship_gate":
+            fill_slot(path, slot, _ship_gate_record(sha, source=str(model_dir)))
+            continue
+        if slot.startswith("native_export."):
+            fill_slot(path, slot, _native_record(slot, sha))
+            continue
         is_gold = slot in GOLD_SLOTS
         fill_slot(path, slot, make_record(
             slot=slot,
