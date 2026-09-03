@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The Tessera TP gate fails closed on an unknown profile id** (#120's
+  fourth seam; `allocator_candidates._tensor_parallel_applicability`). It
+  caught `FileNotFoundError` and loaded `research`, pricing every Tessera rung
+  under the research world size for a profile the export would then refuse.
+  It now answers `profile_mismatch` like `check_serving_format`; `None` still
+  means `research`. No `load_serving_profile("research")` fallback remains.
+
 ### Added
 
 - **Grouped-BMM Fisher: DSv4's `attn.wo_a` is now an allocator decision**

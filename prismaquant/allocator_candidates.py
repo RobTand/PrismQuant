@@ -723,7 +723,17 @@ def _tensor_parallel_applicability(
     try:
         profile = load_serving_profile(target_profile)
     except FileNotFoundError:
-        profile = load_serving_profile("research")
+        # ``None`` is the research spelling and loads above.  A *string* that
+        # names no profile is a typo, and a typo is not a research run: the
+        # same ``profile_mismatch`` ``check_serving_format`` answers one seam
+        # over (#120).  Loading ``research`` here priced Tessera rungs under
+        # the research world size for a profile the export would then refuse.
+        return FormatApplicability(
+            False,
+            reason="profile_mismatch",
+            detail=f"unknown target profile {target_profile!r}",
+            provenance={"target_profile": target_profile},
+        )
     world = int(profile.tensor_parallel.world_size)
     kind = (
         PARALLEL_NONE if packed_expert

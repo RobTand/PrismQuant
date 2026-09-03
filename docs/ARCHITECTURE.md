@@ -3,6 +3,19 @@
 As of: 2026-09-03 · `tessera/decouple-gridbook`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `claude/pq-120-tp-fail-closed`) for the **fourth
+fail-open seam of prismaquant#120**. The stamp below says `check_serving_shape`
+now fails closed "like its three siblings"; a fourth seam had not been counted.
+`allocator_candidates._tensor_parallel_applicability` — the Tessera
+shard-granularity gate (§4.10) — caught the same `FileNotFoundError` and
+loaded `research`, so a typo'd `--target-profile` priced every Tessera rung
+under the research world size and left the export to refuse what the
+allocator had already chosen. It now returns the `profile_mismatch` refusal
+`check_serving_format` returns, naming the id in `detail` and `provenance`;
+`profile_id=None` still resolves to `research`, the declared default. Zero
+`load_serving_profile("research")` fallbacks remain in the package. Gate:
+`tests/test_tessera_menu.py::test_tp_gate_refuses_an_unknown_profile_instead_of_becoming_research`,
+shown failing on the parent commit before the change.
 Re-stamped (2026-09-03, `pq133-native-extensions`) for the **serve
 fingerprint's Tessera extensions, now derived** (§7.4, §9.4; PrismaQuant #133
 consuming RobTand/tessera#28). The pin's `serving_extension_basenames` was a
@@ -98,8 +111,9 @@ fingerprint learns the Tessera decoder's `.so`, so a serve running Tessera's
 own native decode no longer reports "nothing resident" (the names are the
 pin's; deriving them from the runtime's own table is RobTand/tessera#28). And
 D34's two deferred observations are closed: `check_serving_shape` now fails
-**closed** on an unknown profile id like its three siblings instead of
-resolving silently to `research`, and `activation_pricing_branches`'s
+**closed** on an unknown profile id like its siblings instead of resolving
+silently to `research` (a fourth seam, `_tensor_parallel_applicability`, was
+found and closed by the stamp above), and `activation_pricing_branches`'s
 `unrecorded` bucket is tested again.
 Re-stamped (2026-09-02, `tessera/decouple-gridbook`) for the **archival of the
 Gridbook trellis rate surface** (§4.9). The five `prismaquant/trellis_*.py`
