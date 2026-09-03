@@ -22,6 +22,7 @@ from prismaquant.tessera_formats import (
     LANE_STOCK,
     SCALE_LUT_BITS_Q256,
     SCALE_PLANE_BITS_Q256,
+    Q256_UNIT,
     tessera_wire_defaults,
     wire_overhead_q256,
     SUPERBLOCK_WEIGHTS,
@@ -1075,53 +1076,90 @@ def test_a_window_recipe_widens_the_family_bounds():
     whole width -- ``R = payload_bits`` is an ordinary rung there, which is
     E2M1x2 at 4.0 body bits per weight (``tessera.export._plan_for``).
 
-    The TCQ numbers are asserted as literals: this is the interval the DP
-    searches, and it must not move as a side effect of the bounds learning
-    about a body they do not use.
+    This pinned a literal map of three families' intervals and caps (#155), so
+    the family the map omitted -- BF16, the widest interval in the menu -- could
+    carry a one-bit cap error, halving the top end of the interval the DP
+    searches, with every bound assertion green.  The roster is now
+    ``menu_families()``, and the window ceiling is checked against **Tessera's
+    own** ``recipe_table``, whose last range's ``q256_hi`` is the top rung the
+    encoder resolves a recipe for.  That matters more than the roster: every
+    other function here reads ``family_rate_cap``, so a sweep over them and it
+    agrees with itself by construction.  One literal per body survives, as
+    documentation of what the two rules produce.
     """
-    from prismaquant.tessera_formats import (
-        family_q256_bounds, family_rate_cap, recipe_from_wire_names,
-    )
+    from prismaquant.tessera_menu import menu_families
 
     tcq = recipe_from_wire_names(2, "lut16")
     window = recipe_from_wire_names(1, "lut16", "window", 8)
 
-    literal = {
-        "TESSERA_E2M1_K1": ((256, 768), (256, 1024), 3, 4),
-        "TESSERA_E2M1_K2": ((128, 896), (128, 1024), 7, 8),
-        "TESSERA_E4M3_K1": ((256, 1792), (256, 2048), 7, 8),
-    }
-    for name, (tcq_bounds, win_bounds, tcq_cap, win_cap) in literal.items():
-        spec = get_tessera_family(name)
-        # The family advertises its own wire's interval, and the two literals
-        # below say which that is for each grid: E4M3 is the window body
-        # everywhere since 2026-09-02, the two E2M1 families are the trellis at
-        # the rung their bounds are stated at.
-        expected = win_bounds if name == "TESSERA_E4M3_K1" else tcq_bounds
-        assert spec.mathematical_q256_bounds == expected, name
-        assert spec.rate_cap == (win_cap if name == "TESSERA_E4M3_K1"
-                                 else tcq_cap), name
-        assert family_q256_bounds(spec, tcq) == tcq_bounds, name
-        assert family_rate_cap(spec, tcq) == tcq_cap, name
-        # Wider under a window recipe, at the top end only.
-        assert family_q256_bounds(spec, window) == win_bounds, name
-        assert family_rate_cap(spec, window) == win_cap, name
+    # Documentation, one per body and both on the one family, so that what a
+    # reader sees is the two rules producing two numbers rather than a roster
+    # in disguise: E2M1x2 is the exporter's own wire, the trellis at its cap
+    # and the window body below it.
+    e2m1x2 = get_tessera_family("TESSERA_E2M1_K2")
+    assert family_q256_bounds(e2m1x2, tcq) == (128, 896)
+    assert family_rate_cap(e2m1x2, tcq) == 7
+    assert family_q256_bounds(e2m1x2, window) == (128, 1024)
+    assert family_rate_cap(e2m1x2, window) == 8
 
-        # The three functions that answer "which rungs exist" must agree with
-        # the bounds, or the menu offers something the encoder refuses.
-        lo, hi = win_bounds
-        assert realisable_rungs(spec, recipe=window)[0] == lo
-        assert realisable_rungs(spec, recipe=window)[-1] == hi
-        assert validate_body_rate_q256(spec, hi, recipe=window) == hi
-        with pytest.raises(TesseraFormatError):
-            # Above the coset trellis's cap, named explicitly: E4M3's default
-            # recipe is the window body now, and under it `hi` is legal.
-            validate_body_rate_q256(spec, hi, recipe=tcq)
-        with pytest.raises(TesseraFormatError):
-            validate_body_rate_q256(spec, hi + 1, recipe=window)
-        # And the schedule really is buildable at the widened ceiling.
-        schedule = spec.column_schedule(hi, SUPERBLOCK_WEIGHTS, recipe=window)
-        assert max(schedule) == win_cap and len(schedule) == SUPERBLOCK_WEIGHTS
+    families = list(menu_families())
+    assert len(families) >= 2, [f.name for f in families]
+    bodies = set()
+    for spec in families:
+        # The per-position arithmetic below only means anything if the grid
+        # divides evenly into positions.
+        assert spec.payload_bits % spec.arity == 0, spec.name
+
+        # 1. The window ceiling is Tessera's, not ours.  ``recipe_table``
+        #    resolves a recipe for every rung of the grid and stops where the
+        #    encoder stops, in the same per-position q256 this module speaks.
+        table = recipe_table(spec.payload_grid())
+        assert table, spec.name
+        win_cap = family_rate_cap(spec, window)
+        assert family_q256_bounds(spec, window) == (
+            Q256_UNIT // spec.arity, table[-1].q256_hi), spec.name
+        assert win_cap * Q256_UNIT // spec.arity == table[-1].q256_hi, spec.name
+
+        # 2. The trellis spends one bit of it, and nothing else changes.
+        tcq_cap = family_rate_cap(spec, tcq)
+        assert tcq_cap == win_cap - 1, (spec.name, tcq_cap, win_cap)
+        assert family_q256_bounds(spec, tcq) == (
+            Q256_UNIT // spec.arity, tcq_cap * Q256_UNIT // spec.arity)
+
+        # 3. The family advertises the interval of its OWN wire, whichever
+        #    body that resolves to -- which is the number the DP reads when no
+        #    recipe is named.
+        own = tessera_wire_recipe(spec)
+        bodies.add(BodyKind(own.body))
+        assert spec.mathematical_q256_bounds == family_q256_bounds(spec, own), (
+            spec.name)
+        assert spec.rate_cap == family_rate_cap(spec, own), spec.name
+
+        # 4. The three functions that answer "which rungs exist" agree with the
+        #    bounds under each recipe, or the menu offers something the encoder
+        #    refuses.
+        for label, wire in (("tcq", tcq), ("window", window)):
+            lo, hi = family_q256_bounds(spec, wire)
+            assert realisable_rungs(spec, recipe=wire)[0] == lo, (spec.name, label)
+            assert realisable_rungs(spec, recipe=wire)[-1] == hi, (spec.name, label)
+            assert validate_body_rate_q256(spec, hi, recipe=wire) == hi
+            with pytest.raises(TesseraFormatError):
+                validate_body_rate_q256(spec, hi + 1, recipe=wire)
+            # And the schedule really is buildable at that ceiling.
+            schedule = spec.column_schedule(hi, SUPERBLOCK_WEIGHTS, recipe=wire)
+            assert max(schedule) == family_rate_cap(spec, wire), (spec.name, label)
+            assert len(schedule) == SUPERBLOCK_WEIGHTS
+
+        # 5. The widening is strictly at the top end, which is the claim the
+        #    test's name makes.
+        assert family_q256_bounds(spec, window)[0] == family_q256_bounds(
+            spec, tcq)[0]
+        assert family_q256_bounds(spec, window)[1] > family_q256_bounds(
+            spec, tcq)[1]
+
+    # Non-vacuity: both bodies are exercised as somebody's own wire, so neither
+    # rule is pinned only against a hypothetical recipe.
+    assert bodies == {BodyKind.TCQ, BodyKind.WINDOW}, bodies
 
 
 def test_the_two_scalar_wire_projection_refuses_what_it_cannot_state():
