@@ -2600,33 +2600,103 @@ def _pareto_frontier(rows):
 _GROUP_FOLD_MAX_PAIRS = 8_000_000
 
 
+#: The licence a fold has when no Tessera runtime contract is pinned: none.
+#: Not a permissive default and not a restrictive one -- the *absence* of a
+#: statement, which is why the fold declines instead of choosing a reading.
+_NO_FUSED_LICENCE = "unpinned"
+
+
+def _fused_group_licence(licence) -> "tuple[str, frozenset[str]]":
+    """``(the q256 licence, the shared field set)`` from the pinned contract.
+
+    ``licence`` is a
+    :class:`~prismaquant.tessera_runtime_contract.FusedModuleLicence` or
+    ``None``.  Every field this module can evaluate is looked up through
+    :meth:`FusedModuleLicence.licence_for`, which raises when the contract is
+    *silent* about it -- because silence is not permission, and a block that
+    stopped publishing ``body`` would otherwise quietly stop partitioning on
+    it.  A ``shared`` field this module does not recognise refuses outright:
+    the fold cannot hold fixed a thing it cannot evaluate, and enumerating as
+    though the field were not there is exactly the assertion this reads a
+    table to avoid.
+    """
+    from .tessera_formats import (
+        FUSED_MODULE_RATE_FIELD, FUSED_MODULE_RUNG_FIELDS,
+        FUSED_MODULE_SHAPE_FIELDS,
+    )
+
+    if licence is None:
+        return _NO_FUSED_LICENCE, frozenset()
+    known = {*FUSED_MODULE_RUNG_FIELDS, *FUSED_MODULE_SHAPE_FIELDS,
+             FUSED_MODULE_RATE_FIELD}
+    unknown = sorted(licence.shared_fields() - known)
+    if unknown:
+        raise NotImplementedError(
+            "the pinned Tessera contract's fused_module block marks "
+            f"{unknown} as fields one fused module's roles must SHARE, and "
+            "this allocator cannot evaluate them, so it cannot hold them "
+            "fixed across a group. Map them in "
+            "tessera_formats.FUSED_MODULE_RUNG_FIELDS (a rung decides it) or "
+            "FUSED_MODULE_SHAPE_FIELDS (the model decides it) and say which; "
+            "folding as though the field were absent would be the assertion "
+            "reading the contract exists to prevent."
+        )
+    shared = frozenset(
+        field for field in FUSED_MODULE_RUNG_FIELDS
+        if licence.licence_for(field) == "shared"
+    )
+    rate = str(licence.licence_for(FUSED_MODULE_RATE_FIELD))
+    if rate == "shared":
+        shared = shared | {FUSED_MODULE_RATE_FIELD}
+    return rate, shared
+
+
 def tessera_group_composites(
     members: list[str],
     candidates: dict[str, list["Candidate"]],
     n_params: int,
     *,
+    licence,
     ucb_z: float = 0.0,
     report: dict | None = None,
 ) -> list["Candidate"]:
-    """One family per group, a rung per member -- the group's exact knapsack.
+    """One decoder per group, a rung per member -- the group's exact knapsack.
 
-    A fused group is ONE tensor to the runtime, so its members cannot disagree
-    about the decoder the runtime dispatches on. They can disagree about the
-    rate: ``q_proj`` (2048x1024) and ``k_proj`` (1024x1024) are different
-    tensors with different sensitivities fused into one ``qkv_proj``, and a
-    continuous rate axis whose group units are pinned to one shared rung
-    throws that away. The old aggregation intersected the members' menus by
-    format NAME, which forces exactly that: on a measured-only Tessera table
-    the qkv E4M3 intersection was a single rung.
+    A fused group is ONE module to the runtime, so its members cannot disagree
+    about anything the runtime's loader treats as a property of that module.
+    **Which things those are is published, not assumed**: the Tessera
+    contract's ``fused_module.fields`` map gives every field a licence --
+    ``family``, ``grid``, ``body``, ``plane``, ``columns`` and ``structure``
+    are ``shared``; ``q256`` (the rate) and ``rows`` are ``per_member`` -- and
+    ``licence`` is that block, read through
+    :func:`prismaquant.tessera_menu.fused_module_licence`.  This function used
+    to carry the same claim in its own docstring, which no gate could read: a
+    contract that re-tightened ``q256`` would have left the fold enumerating
+    rungs the exporter refuses, with nothing raising until export
+    (RobTand/prismaquant#132, RobTand/tessera#37).
 
-    The correct constraint is neither "one rung" (too tight -- not a serving
-    requirement) nor ``--no-fused-aggregation`` (too loose -- it drops the
-    family constraint, which IS one). It is: for each family F, the group's
-    option set is the **Minkowski sum** of its members' (bytes, cost) menus
-    restricted to F -- the group's own multi-choice knapsack -- kept as a
-    Pareto set. The outer DP then chooses among those options exactly as it
-    chooses among rungs of a single unit, and every option it can pick is a
-    legal serving configuration by construction.
+    The rate being free per member is the point: ``q_proj`` (2048x1024) and
+    ``k_proj`` (1024x1024) are different tensors with different sensitivities
+    fused into one ``qkv_proj``, and a continuous rate axis whose group units
+    are pinned to one shared rung throws that away.  The old aggregation
+    intersected the members' menus by format NAME, which forces exactly that:
+    on a measured-only Tessera table the qkv E4M3 intersection was a single
+    rung.
+
+    The shared set is **not** the family.  ``tessera.export.wire_recipe`` is a
+    function of ``(grid, q256)``, so two rungs of one family can carry
+    different bodies -- ``E2M1x2`` writes WINDOW below the coset cap and TCQ
+    at it -- and ``body`` is a field the contract marks ``shared``.  So the
+    fold partitions each member's menu by
+    :func:`~prismaquant.tessera_formats.fused_shared_signature` and folds
+    *within* a signature.  Every option it emits agrees on every shared field
+    the contract names and is a legal module by construction; the outer DP
+    chooses among them exactly as it chooses among rungs of a single unit.
+
+    ``licence is None`` -- no contract pinned, which is production, since no
+    Tessera RELEASE tag exists -- returns no options at all and stamps why.
+    The group keeps the per-NAME options built beside this call, which assert
+    nothing about per-member anything.
 
     Exact, not approximate:
 
@@ -2642,26 +2712,68 @@ def tessera_group_composites(
       ``z > 0`` rather than quietly pricing the hedge wrong.
     """
     from .tessera_formats import (
-        format_promotion_class, tessera_group_option_name,
+        format_promotion_class, fused_shared_signature,
+        tessera_group_option_name,
     )
 
     if len(members) < 2:
         return []
 
-    by_member: list[dict[str, list[tuple[int, float, str]]]] = []
+    rate_licence, shared_fields = _fused_group_licence(licence)
+
+    # A "cell" is one (family, shared-signature) pair: the set of rungs that
+    # may sit together in one fused module. Under the published licence the
+    # signature is the family's decoder identity -- grid, body, plane -- and
+    # NOT the family alone, because the recipe is a function of (grid, q256).
+    by_member: list[dict[tuple, list[tuple[int, float, str]]]] = []
     for member in members:
-        families: dict[str, list[tuple[int, float, str]]] = {}
+        cells: dict[tuple, list[tuple[int, float, str]]] = {}
         for cand in candidates.get(member, []):
             family = format_promotion_class(cand.fmt)
             if family == cand.fmt:
                 continue          # a stock format; the per-NAME path owns it
-            families.setdefault(family, []).append(
+            signature = fused_shared_signature(cand.fmt, shared_fields)
+            if signature is None:
+                # Not a rung name, yet its promotion class differs from it --
+                # a whole-group option fed back in, which is not a member
+                # menu entry. Refuse rather than fold an option of an option.
+                raise AssertionError(
+                    f"{member} carries {cand.fmt!r}, which is not a Tessera "
+                    "rung name but does not promote to itself either; the "
+                    "group knapsack folds member RUNGS."
+                )
+            cells.setdefault((family, signature), []).append(
                 (int(cand.memory_bytes), float(cand.predicted_dloss), cand.fmt))
-        by_member.append(families)
+        by_member.append(cells)
 
     shared = set(by_member[0])
-    for families in by_member[1:]:
-        shared &= set(families)
+    for cells in by_member[1:]:
+        shared &= set(cells)
+
+    if shared and rate_licence != "per_member":
+        # The licence for the one field this fold varies. Withdrawn (or never
+        # published, i.e. no contract pinned) means there is no per-member
+        # rung to enumerate: decline, stamp why, and let the per-NAME path's
+        # uniform options stand -- they assert nothing.
+        if report is not None:
+            report["__licence__"] = {
+                "source": "tessera_runtime_contract:fused_module",
+                "q256": rate_licence,
+                "contract_shared_fields": sorted(
+                    () if licence is None else licence.shared_fields()),
+                "partitioned_on": sorted(shared_fields),
+                "folded": False,
+                "note": (
+                    "the pinned Tessera contract does not license a rate per "
+                    f"member (fused_module.fields.q256 = {rate_licence!r}), "
+                    "so this group keeps one rung per option"
+                    if rate_licence != _NO_FUSED_LICENCE else
+                    "no Tessera runtime contract is pinned, so there is no "
+                    "fused_module licence to read and the fold declines "
+                    "rather than assert one"
+                ),
+            }
+        return []
 
     # Checked HERE, not on entry: a stock-only group under a hedge has no
     # families to fold and must be untouched by this path.
@@ -2677,14 +2789,15 @@ def tessera_group_composites(
 
     out: list["Candidate"] = []
     index = 0
-    for family in sorted(shared):
+    for cell in sorted(shared):
+        family, signature = cell
         frontier = [
             (bytes_, cost, (fmt,))
-            for bytes_, cost, fmt in _pareto_frontier(by_member[0][family])
+            for bytes_, cost, fmt in _pareto_frontier(by_member[0][cell])
         ]
         sizes = [len(frontier)]
-        for families in by_member[1:]:
-            member_rows = _pareto_frontier(families[family])
+        for cells in by_member[1:]:
+            member_rows = _pareto_frontier(cells[cell])
             pairs = len(frontier) * len(member_rows)
             if pairs > _GROUP_FOLD_MAX_PAIRS:
                 raise AssertionError(
@@ -2712,12 +2825,42 @@ def tessera_group_composites(
             ))
             index += 1
         if report is not None:
-            report[family] = {
-                "member_menu": [len(f[family]) for f in by_member],
+            # Keyed by the CELL, not the family: one family can carry more
+            # than one shared signature, and reporting them under one key
+            # would hide the partition the licence forced.
+            report[_fold_cell_label(family, signature)] = {
+                "member_menu": [len(f[cell]) for f in by_member],
                 "fold_frontier": sizes,
                 "options": len(frontier),
             }
+    if report is not None:
+        report["__licence__"] = {
+            "source": "tessera_runtime_contract:fused_module",
+            "q256": rate_licence,
+            # What the contract marks shared, and the subset of it this fold
+            # evaluates from a rung. The two differ on purpose: ``columns``
+            # and ``structure`` are shared and no rung can move them, so the
+            # partition does not carry them and the stamp must not imply the
+            # contract was silent about them.
+            "contract_shared_fields": sorted(licence.shared_fields()),
+            "partitioned_on": sorted(shared_fields),
+            "folded": True,
+            "mixed_rung_receipt": bool(
+                getattr(licence, "mixed_rung_receipt", False)),
+            "sidecar_q256": str(getattr(licence, "sidecar_q256", "")),
+            "note": (
+                "a rate per member is licensed by the pinned contract's "
+                "fused_module block; mixed_rung_receipt says whether any "
+                "SERVE has covered such a module"
+            ),
+        }
     return out
+
+
+def _fold_cell_label(family: str, signature: "tuple[tuple[str, str], ...]") -> str:
+    """A report key for one (family, shared-signature) fold cell."""
+    tail = ",".join(f"{k}={v}" for k, v in signature if k != "family")
+    return f"{family}[{tail}]" if tail else str(family)
 
 
 def aggregate_fused_siblings(
@@ -2781,6 +2924,19 @@ def aggregate_fused_siblings(
 
     if not grouped:
         return stats, costs, candidates
+
+    # The pinned runtime's fused-module licence: ONE read for the whole
+    # aggregation, through ``tessera_menu``'s declared one read, so every
+    # group in a run folds under the same table.  ``None`` is production (no
+    # Tessera RELEASE tag exists), and it means the fold has no licence to
+    # read rather than a default to fall back on.
+    from .tessera_menu import fused_module_licence as _fused_module_licence
+
+    fused_licence = _fused_module_licence()
+    _fused_shared = (
+        frozenset() if fused_licence is None
+        else fused_licence.shared_fields()
+    )
 
     stats_ext = {n: stats[n] for n in ungrouped}
     costs_ext = {n: costs.get(n, {}) for n in ungrouped}
@@ -2984,16 +3140,36 @@ def aggregate_fused_siblings(
         # a receipt cannot quote an ablated run as a result.
         fold_enabled = os.environ.get(
             "PRISMAQUANT_TESSERA_GROUP_KNAPSACK", "1").strip() not in ("0", "off")
+        # ``columns`` is a field the contract marks shared, and it is the one
+        # shared field no rung can move: a fused module's roles all read the
+        # same input. Asserted rather than documented, because it is free
+        # here and because "shared by construction" is the kind of claim that
+        # stops being true when a profile groups something new.
+        if "columns" in _fused_shared:
+            widths = {
+                int(stats[m]["in_features"]) for m in members
+                if stats[m].get("in_features")
+            }
+            if len(widths) > 1:
+                raise AssertionError(
+                    f"{super_name}: the pinned Tessera contract marks "
+                    "fused_module.columns as shared across a fused module's "
+                    f"roles, and this group's members read "
+                    f"{sorted(widths)} input columns. It is not one module "
+                    "to the runtime, so it must not be aggregated as one."
+                )
         composites = (
             tessera_group_composites(
-                members, candidates, n_params, ucb_z=ucb_z, report=group_report)
+                members, candidates, n_params, licence=fused_licence,
+                ucb_z=ucb_z, report=group_report)
             if fold_enabled else []
         )
         if not fold_enabled:
             group_report["__ablation__"] = {
                 "group_knapsack": False,
                 "note": "PRISMAQUANT_TESSERA_GROUP_KNAPSACK=0: one rung per "
-                        "fused group, which is not the serving constraint",
+                        "fused group, which is not the constraint the pinned "
+                        "contract's fused_module block states",
             }
         if composites:
             uniform_by_name = {c.fmt: c for c in cands}
@@ -3048,8 +3224,14 @@ def aggregate_fused_siblings(
                     members, None, member_formats=member_formats)
             stats_ext[super_name]["_fused_member_formats"] = (
                 member_formats_by_option)
-            stats_ext[super_name]["_tessera_group_menu"] = dict(group_report)
             cands.extend(composites)
+        if group_report:
+            # Written whether or not the fold produced options. A run that
+            # declined -- no licence, a withdrawn one, or the ablation below
+            # -- is exactly the run whose provenance has to say so, and
+            # writing this inside ``if composites:`` meant the one state
+            # worth stamping was the one state that stamped nothing.
+            stats_ext[super_name]["_tessera_group_menu"] = dict(group_report)
 
         if not cands:
             # Unreachable via the intersection (a common candidate format
@@ -3058,6 +3240,20 @@ def aggregate_fused_siblings(
             # formats the member candidates were built from. Same verdict —
             # stats_ext/costs_ext are already written, so returning here would
             # drop the group from the DP silently.
+            reason = (
+                "share legal formats that this aggregation menu does not price"
+            )
+            if shared_families:
+                reason += (
+                    f" (the members do share the Tessera families "
+                    f"{sorted(shared_families)}, but the group knapsack "
+                    "produced nothing: either no rung of a shared family "
+                    "agrees with another member's on every field the pinned "
+                    "contract's fused_module block marks shared -- body and "
+                    "plane are functions of (grid, rung), so one family can "
+                    "span more than one -- or no licence was readable; the "
+                    "group's _tessera_group_menu report says which)"
+                )
             raise AssertionError(
                 _fused_group_menu_error(
                     super_name,
@@ -3066,8 +3262,7 @@ def aggregate_fused_siblings(
                     candidates,
                     member_format_intersection,
                     formats,
-                    "share legal formats that this aggregation menu does not "
-                    "price",
+                    reason,
                 )
             )
         candidates_ext[super_name] = cands

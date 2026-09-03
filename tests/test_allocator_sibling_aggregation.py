@@ -879,6 +879,50 @@ def _tessera_member_candidates(rows, family="TESSERA_E4M3_K1"):
     ]
 
 
+def _installed_fused_licence():
+    """The fused-module licence the INSTALLED Tessera actually publishes.
+
+    Parsed from the packaged ``runtime_contract.json``'s own bytes, through
+    the same parser ``load_tessera_contract`` calls, so these tests fold under
+    the table on this box rather than under a licence a test author typed.  A
+    hand-written licence would let the fold's tests pass while the contract
+    said something else, which is the failure this whole change is about.
+    """
+    import hashlib
+    import json as _json
+
+    from prismaquant import tessera_runtime_contract as trc
+
+    path = trc.contract_path()
+    raw = path.read_bytes()
+    contract = trc._parse(
+        _json.loads(raw.decode("utf-8")),
+        commit="installed",
+        sha=hashlib.sha256(raw).hexdigest(),
+        path=str(path),
+    )
+    return contract.fused_module
+
+
+def _licence_with(**overrides):
+    """The installed licence with some ``fields`` licences overridden.
+
+    ``None`` as a value DELETES the field, which models a contract that goes
+    silent about it -- a different thing from one that marks it ``shared``,
+    and both have to refuse.
+    """
+    from dataclasses import replace
+
+    base = _installed_fused_licence()
+    fields = dict(base.fields)
+    for name, licence in overrides.items():
+        if licence is None:
+            fields.pop(name, None)
+        else:
+            fields[name] = licence
+    return replace(base, fields=fields)
+
+
 def test_group_knapsack_equals_brute_force_including_a_nonconvex_pocket():
     """The fold must be the group's EXACT multi-choice knapsack.
 
@@ -899,7 +943,9 @@ def test_group_knapsack_equals_brute_force_including_a_nonconvex_pocket():
         members[0]: _tessera_member_candidates(a),
         members[1]: _tessera_member_candidates(b),
     }
-    options = tessera_group_composites(members, candidates, n_params=1000)
+    options = tessera_group_composites(
+        members, candidates, n_params=1000,
+        licence=_installed_fused_licence())
 
     brute: dict[int, float] = {}
     for ab, ac in a:
@@ -940,7 +986,8 @@ def test_the_group_knapsack_beats_one_shared_rung_where_it_should():
     }
     options = {int(o.memory_bytes): o
                for o in tessera_group_composites(
-                   members, candidates, n_params=1000)}
+                   members, candidates, n_params=1000,
+                   licence=_installed_fused_licence())}
     # At 40 bytes the uniform split (20, 20) costs 45.0; the group knapsack
     # spends them where they buy the most: (30, 10) costs 16.0.
     assert options[40].predicted_dloss == 16.0
@@ -960,12 +1007,198 @@ def test_group_options_refuse_a_ucb_hedge_rather_than_price_it_wrong():
         m: _tessera_member_candidates([(10, 2.0), (20, 1.0)]) for m in members
     }
     with pytest.raises(NotImplementedError, match="not additive"):
-        tessera_group_composites(members, candidates, n_params=1000, ucb_z=1.0)
+        tessera_group_composites(
+            members, candidates, n_params=1000, ucb_z=1.0,
+            licence=_installed_fused_licence())
 
 
-def test_expansion_gives_each_member_its_own_rung():
+def test_the_fold_declines_when_no_runtime_contract_is_pinned():
+    """No table, no licence -- and the absence of a statement is not a yes.
+
+    Production is exactly this state: no Tessera RELEASE tag exists, so
+    ``tessera_menu.fused_module_licence()`` is ``None``.  The fold must then
+    offer nothing and say why, rather than fall back on the reading its own
+    docstring used to assert (RobTand/prismaquant#132).
+    """
+    from prismaquant.allocator_candidates import tessera_group_composites
+
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        m: _tessera_member_candidates([(10, 2.0), (20, 1.0)]) for m in members
+    }
+    report: dict = {}
+    options = tessera_group_composites(
+        members, candidates, n_params=1000, licence=None, report=report)
+    assert options == []
+    assert report["__licence__"]["folded"] is False
+    assert report["__licence__"]["q256"] == "unpinned"
+    assert report["__licence__"]["contract_shared_fields"] == []
+    assert report["__licence__"]["partitioned_on"] == []
+    assert "no Tessera runtime contract is pinned" in \
+        report["__licence__"]["note"]
+
+
+def test_withdrawing_the_per_member_rate_licence_stops_the_fold():
+    """THE regression test this issue asked for.
+
+    The licence for a rate per member is
+    ``fused_module.fields.q256 == "per_member"``, published by the runtime
+    that loads the module (Tessera contract v6, RobTand/tessera#37).  If a
+    later contract re-tightens it to ``shared``, an allocator that kept
+    enumerating per-member composites would allocate rungs the exporter
+    refuses, and nothing would raise until export.  So: same members, same
+    menus, one field moved in the licence, and the mixed-rung options must be
+    gone.
+    """
+    from prismaquant.allocator_candidates import tessera_group_composites
+
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        members[0]: _tessera_member_candidates([(10, 9.0), (20, 1.0)]),
+        members[1]: _tessera_member_candidates([(10, 5.0), (20, 4.5)]),
+    }
+    licensed = tessera_group_composites(
+        members, candidates, n_params=1000,
+        licence=_installed_fused_licence())
+    assert [o for o in licensed if len(set(o.member_formats.values())) > 1], (
+        "the control arm must actually contain a mixed-rung option, or the "
+        "withdrawal below proves nothing")
+
+    report: dict = {}
+    withdrawn = tessera_group_composites(
+        members, candidates, n_params=1000,
+        licence=_licence_with(q256="shared"), report=report)
+    assert withdrawn == [], (
+        "the contract withdrew the per-member rate licence and the fold kept "
+        "enumerating per-member composites")
+    assert report["__licence__"]["q256"] == "shared"
+    assert report["__licence__"]["folded"] is False
+    assert "q256" in report["__licence__"]["contract_shared_fields"]
+    assert "q256" in report["__licence__"]["partitioned_on"]
+
+
+def test_one_family_is_not_one_decoder_so_two_bodies_never_share_a_module():
+    """``body`` is ``shared`` and the family does not fix it.
+
+    ``tessera.export.wire_recipe`` is a function of ``(grid, q256)``:
+    ``E2M1x2`` writes a WINDOW body at every rung below the coset cap and TCQ
+    at 896.  So "one family per group" -- the constraint the fold's docstring
+    used to assert -- is strictly weaker than the contract's ``shared`` set,
+    and a family-only fold offers the DP a module with two bodies in it.  The
+    numbers below are chosen so that the illegal pair would sit ON the
+    Pareto frontier if the fold partitioned by family alone.
+    """
+    from prismaquant.allocator_candidates import tessera_group_composites
+    from prismaquant.allocator_solver import Candidate
+    from prismaquant.tessera_formats import tessera_wire_recipe
+    from tessera.manifest import BodyKind
+
+    fam = "TESSERA_E2M1_K2"
+    assert BodyKind(tessera_wire_recipe(fam, 800).body) is BodyKind.WINDOW
+    assert BodyKind(tessera_wire_recipe(fam, 896).body) is BodyKind.TCQ
+
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        members[0]: [
+            Candidate(fmt=f"{fam}_R800", bits_per_param=0.0,
+                      memory_bytes=10, predicted_dloss=9.0),
+            Candidate(fmt=f"{fam}_R896", bits_per_param=0.0,
+                      memory_bytes=20, predicted_dloss=1.0),
+        ],
+        members[1]: [
+            Candidate(fmt=f"{fam}_R850", bits_per_param=0.0,
+                      memory_bytes=10, predicted_dloss=8.0),
+            Candidate(fmt=f"{fam}_R896", bits_per_param=0.0,
+                      memory_bytes=25, predicted_dloss=7.0),
+        ],
+    }
+    report: dict = {}
+    options = tessera_group_composites(
+        members, candidates, n_params=1000,
+        licence=_installed_fused_licence(), report=report)
+
+    def bodies(option):
+        return {
+            BodyKind(tessera_wire_recipe(
+                fmt.rsplit("_R", 1)[0], int(fmt.rsplit("_R", 1)[1])).body).name
+            for fmt in option.member_formats.values()
+        }
+
+    assert options, "the two legal cells must each yield an option"
+    for option in options:
+        assert len(bodies(option)) == 1, (
+            f"{option.fmt} puts {sorted(bodies(option))} in one fused "
+            "module, and the contract marks fused_module.body shared")
+    # The specific pair a family-only fold would have offered: q at the TCQ
+    # cap (20 bytes) with k on the WINDOW body (10 bytes), total 30 at cost
+    # 9.0 -- dominating nothing legal, so it would have survived pruning.
+    assert 30 not in {int(o.memory_bytes) for o in options}
+    # Two cells, reported separately, so provenance shows the partition.
+    cells = [k for k in report if not k.startswith("__")]
+    assert len(cells) == 2, cells
+    assert all("body=" in k for k in cells), cells
+
+
+def test_an_unevaluable_shared_field_refuses_rather_than_ignoring_it():
+    """A ``shared`` field this allocator cannot compute is a refusal.
+
+    The fold holds every shared field fixed across a group.  If a later
+    contract marks something shared that nothing here can evaluate, folding
+    as though the field were absent is precisely the silent assertion reading
+    the table exists to prevent.
+    """
+    import pytest
+
+    from prismaquant.allocator_candidates import tessera_group_composites
+
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        m: _tessera_member_candidates([(10, 2.0), (20, 1.0)]) for m in members
+    }
+    with pytest.raises(NotImplementedError, match="cannot evaluate"):
+        tessera_group_composites(
+            members, candidates, n_params=1000,
+            licence=_licence_with(interleave="shared"))
+
+
+def test_a_contract_silent_about_a_field_is_not_a_contract_permitting_it():
+    """Drop ``body`` from the licence and the fold refuses, not relaxes."""
+    import pytest
+
+    from prismaquant.allocator_candidates import tessera_group_composites
+    from prismaquant.tessera_runtime_contract import TesseraContractError
+
+    members = ["m.q_proj", "m.k_proj"]
+    candidates = {
+        m: _tessera_member_candidates([(10, 2.0), (20, 1.0)]) for m in members
+    }
+    with pytest.raises(TesseraContractError, match="publishes no licence"):
+        tessera_group_composites(
+            members, candidates, n_params=1000,
+            licence=_licence_with(body=None))
+
+
+def test_expansion_gives_each_member_its_own_rung(monkeypatch):
     """A whole-group option is not a format name and must never be broadcast.
     Expansion reads the per-member map the aggregation wrote beside it."""
+    import hashlib
+    import json as _json
+
+    from prismaquant import tessera_menu as tm
+    from prismaquant import tessera_runtime_contract as trc
+
+    # Substitute the module's declared ONE read, which is what supplies both
+    # the route admission and the fused-module licence, with the contract the
+    # installed Tessera publishes -- the same construction
+    # ``test_tessera_menu_real_table.installed_contract`` uses.
+    _path = trc.contract_path()
+    _raw = _path.read_bytes()
+    _contract = trc._load_at(
+        str(_path), hashlib.sha256(_raw).hexdigest(), "installed")
+    assert _json.loads(_raw.decode("utf-8"))["fused_module"]["fields"]["q256"] \
+        == "per_member", "the installed contract must license the fold"
+    monkeypatch.setattr(tm, "tessera_runtime_contract", lambda: _contract)
+
     stats = {
         "model.layers.0.self_attn.q_proj": {
             "h_trace": 1.0, "n_params": 16, "in_features": 4,

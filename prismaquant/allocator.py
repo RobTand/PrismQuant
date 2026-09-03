@@ -3324,12 +3324,15 @@ def main():
     # aggregation (it skips `.__fused__.` and packed-group entries explicitly).
     #
     # A super item carries one candidate per stock format NAME *and*, for each
-    # Tessera family its members share, the group's own exact multi-choice
-    # knapsack over their rungs (tessera_group_composites). So the DP CAN
-    # return a mixed-rung group -- one family, a rate per member -- which is
-    # the constraint the runtime actually imposes; this comment used to say
+    # (family, shared-signature) cell its members share, the group's own exact
+    # multi-choice knapsack over their rungs (tessera_group_composites). So
+    # the DP CAN return a mixed-rung group -- one decoder, a rate per member --
+    # where the pinned Tessera contract's fused_module block licenses it
+    # (fields.q256 = per_member since contract v6); this comment used to say
     # the opposite, and the one-rung reading cost 1.12-1.29x in Δloss on the
-    # Qwen3-0.6B continuous menu.
+    # Qwen3-0.6B continuous menu. It then asserted the licence instead of
+    # reading it, which is the defect issue #132 closed: with no contract
+    # pinned there are no composites at all.
     tessera_group_menu_report: dict = {}
     if not args.no_fused_aggregation:
         stats, costs, candidates = aggregate_fused_siblings(
@@ -3348,9 +3351,24 @@ def main():
             for name in candidates
             if stats.get(name, {}).get("_tessera_group_menu")
         }
-        for name, per_family in sorted(tessera_group_menu_report.items()):
-            for family, row in sorted(per_family.items()):
-                print(f"[alloc] tessera group knapsack {name} {family}: "
+        for name, per_cell in sorted(tessera_group_menu_report.items()):
+            for cell, row in sorted(per_cell.items()):
+                if cell == "__licence__":
+                    print(f"[alloc] tessera group knapsack {name} licence: "
+                          f"fused_module.fields.q256={row['q256']!r} "
+                          f"shared={row['contract_shared_fields']} "
+                          f"partitioned_on={row['partitioned_on']} "
+                          f"folded={row['folded']}"
+                          + ("" if not row["folded"] else
+                             " mixed_rung_receipt="
+                             f"{row['mixed_rung_receipt']}"),
+                          flush=True)
+                    continue
+                if cell == "__ablation__":
+                    print(f"[alloc] tessera group knapsack {name} ABLATED: "
+                          f"{row['note']}", flush=True)
+                    continue
+                print(f"[alloc] tessera group knapsack {name} {cell}: "
                       f"member menus {row['member_menu']} -> fold "
                       f"{row['fold_frontier']} -> {row['options']} options",
                       flush=True)

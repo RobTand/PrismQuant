@@ -107,6 +107,7 @@ __all__ = [
     "menu_families",
     "menu_mode",
     "prune_dominated",
+    "fused_module_licence",
     "route_admission",
     "shard_shape",
     "tessera_shape_legal",
@@ -277,6 +278,26 @@ def tessera_runtime_contract():
     from .tessera_runtime_contract import load_tessera_contract
 
     return load_tessera_contract()
+
+
+def fused_module_licence():
+    """What the pinned runtime says a fused module's roles may disagree about.
+
+    The :class:`~prismaquant.tessera_runtime_contract.FusedModuleLicence` from
+    the contract's ``fused_module`` block, or ``None`` when no contract is
+    pinned.  Routed through :func:`tessera_runtime_contract` -- this module's
+    declared one read -- so the licence and the route admission cannot come
+    from two different Tessera builds inside one run, and so substituting that
+    one function substitutes both.
+
+    ``None`` is the **absence** of a licence, not a permissive default.  The
+    group knapsack's per-member rungs are a claim about what the runtime's
+    loader accepts (RobTand/tessera#37), so with no table to derive it from
+    the fold declines and the group keeps the per-NAME options, which assert
+    nothing.
+    """
+    contract = tessera_runtime_contract()
+    return None if contract is None else contract.fused_module
 
 
 def tessera_tp_world_attested(
