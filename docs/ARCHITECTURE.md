@@ -3,6 +3,34 @@
 As of: 2026-09-03 · `claude/pq-126-plane-charges`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `claude/pq-tessera-lane`) for the **lane-aware ship
+record** (§7.1, §9.2, §9.4, D33; RobTand/prismaquant#119 in part, #162 filed).
+A later stamp below records the Tessera lane's addition. The gate set that lane
+declared was enforced by nothing: `lane_specs/tessera.json` gave `route.census`
+-- principle 12's second leg on this lane -- `shipcard_slot: null`, and the arm
+exited about 130 lines above the driver's shipcard block, so no card existed to
+carry that gate even had it named a slot. Four links hold now.
+`lane_spec.LaneGate.from_dict` refuses a null `shipcard_slot` that carries no
+`unrecorded_reason`, so "advisory by construction" is a value rather than a
+silence. `route.census` names its slot and `shipcard.LANE_SCOPED_SLOTS` knows
+it. `python -m prismaquant.lane_shipcard open --lane tessera` opens a record
+whose slots are the lane's own gates, and the tessera arm runs it before
+`exit 0` (`run-pipeline.sh:2452-2458`). And `shipcard.required_slots` UNIONS the
+lane's slots with the base set, so a lane can add a requirement and never
+subtract one; a declared slot the shipcard has no name for RAISES rather than
+being filtered away (`shipcard.lane_gate_slots`, #162). Two rosters moved into
+the declaration they belong to: `wired_architectures`, from two sets in
+`tests/test_profile_export_lanes.py`, and `producer_tools`, from a hardcoded
+`for` loop in the driver into preflight gate 4
+(`tessera_export_lane.require_producer_tools`) with each tool's `stability` and
+`tracking_issue`. `model_profiles.structure.RETIRED_EXPORT_LANES` names the wall
+`nvfp4_cb`'s code went behind, so the vocabulary refusal says where to look.
+What this does NOT do: run a gate. Each Tessera gate needs a fresh vLLM
+container with the pinned plugin editable-installed, which is R16's open half
+and stays with #119, and both producer tools remain
+`unsupported_experiments` until the release-tag commit promotes them. Gates:
+`tests/test_lane_gate_recording.py` (34), `tests/test_profile_export_lanes.py`.
+
 Re-stamped (2026-09-03, `claude/pq-120-tp-fail-closed`) for the **fourth
 fail-open seam of prismaquant#120**. The stamp below says `check_serving_shape`
 now fails closed "like its three siblings"; a fourth seam had not been counted.
@@ -6200,7 +6228,7 @@ re-render, it is the render the gate declined to keep.
 | Gold lane | `tools/measure_vllm_full_kl.py`, `tools/measure_vllm_wikitext_ppl.py` | never | manual, authoritative |
 | DSv4 CB matched-budget performance | `python -m prismaquant.validate_cb_performance` | no — operator-run after export | **blocking paired prefill/decode/mixed parity against the exact displaced container** |
 | DSv4 paired DSpark claim | `python -m prismaquant.dspark_matched_performance_collector {declare-policy,start-sampler,collect-arm}` → `python -m prismaquant.validate_dspark_target_draft attest` | no — lifecycle-owned collection around both exact operator-started serves; the collector does not launch or patch vLLM | **blocking only when `mtp.dspark` is claimed: source-closed/no-clobber arm reports, exact acceptance/routes plus matched no-MTP throughput non-regression, 256K KV, and 110/8/4-GiB headroom; target-only publication remains valid without the optional claim** |
-| Ship record | `exported/shipcard.json` (opened by the exporter) → `python -m prismaquant.shipcard_cli verify` | opened by every export | **refuses** until every serve-lane slot is closed |
+| Ship record | `exported/shipcard.json` — native lane: `export_native_compressed._write_shipcard`; Tessera lane: `python -m prismaquant.lane_shipcard open --lane tessera` → `python -m prismaquant.shipcard_cli verify` | opened by the native and Tessera lanes; **the GGUF arm opens none** | **refuses** until every serve-lane slot is closed |
 | **Publication** | `tools/publish_artifact.py` | no — operator-run | **BLOCKING**: refuses to upload (or even print the upload command) unless `shipcard.verify` passes |
 
 Nothing in the ordinary quantization pipeline blocks on an artifact-quality number — and it
@@ -6229,6 +6257,43 @@ prints the command it would run**, listing every unfilled or failing slot; a ref
 hands over a copy-pasteable command is not a refusal. Model publication accepts only the
 canonical in-tree regular, non-symlink `<artifact_dir>/shipcard.json`; an external or aliased
 receipt is never publication authority, including under the escape hatch. A parseable file
+**A declared gate becomes an enforceable one through four links, and every one of
+them is a value.** `shipcard_slot` is the whole mechanism: the build lane opens
+the slot, the serve lane fills it, and `publish_artifact` refuses a card whose
+slots are not closed. So a gate with no slot appears in `python -m
+prismaquant.lane_spec`'s output and nowhere else. That is legitimate for a
+diagnostic and illegitimate for a check an artifact's honesty rests on, and
+telling the two apart cannot be an omission: `lane_spec.LaneGate.from_dict`
+refuses `shipcard_slot: null` unless the gate also declares
+`unrecorded_reason`, and refuses a gate that carries both, because a gate that
+records is not unrecorded. `LaneSpec.unrecorded_gates` lists what remains, and
+the CLI prints it as `UNRECORDED (advisory by declaration)` beside its reason
+rather than as `UNFILLED`.
+
+The second link is the card. `shipcard.lane_gate_slots(lane)` reads
+`lane_specs/<lane>.json`'s own `gates[]`, so a lane opens a slot by declaring
+the gate that closes it and no branch here names a lane;
+`shipcard.build_shipcard(..., lane=)` stamps `card["lane"]` and opens those
+slots, and `prismaquant.lane_shipcard open --lane <lane> --artifact <dir>` is
+the entry point a driver arm calls. It refuses to clobber an existing card
+without `--overwrite`, because re-opening one discards every slot the serve
+lane has already filled. The third link is the union:
+`shipcard.required_slots` extends `REQUIRED_SLOTS` with the lane's slots and
+never replaces it, so **a lane can add a requirement and can never subtract
+one** — the GGUF lane declares no `native_export.graph` gate and is still
+required to close that slot. A slot a lane declares that this module has no
+name for RAISES; the vocabulary is enumerated because it is also the key space
+`shipcard.verify` dispatches its per-slot evidence replay on, and #162 records
+what deriving it would take. The fourth link is `publish_artifact`, above.
+
+Two lanes hold all four links: native compressed-tensors and Tessera. **The
+GGUF arm opens no card at all**, so every gate `lane_specs/gguf.json` declares
+is still enforced by nothing — `publish_artifact` refuses a GGUF artifact for
+*absence* of a card, which an operator dissolves by writing a base card by
+hand, and a hand-written base card never carries the lane's own gates. That is
+the same defect on the remaining lane, recorded here rather than presented as
+closed.
+
 with the wrong schema, missing identity/build fields or required slot keys, or non-object slot
 records is structurally malformed and is likewise never force-overrideable; force applies only
 to a structurally valid card's unfilled or failed evidence. Allow/ignore
@@ -6303,7 +6368,7 @@ unfilled strict slot, frozen replay problem, or complete-tree size breach
 returns before force confirmation or stamping; neither `--force-unverified`
 nor `--confirm-name` can publish it (`tools/publish_artifact.py`).
 
-**The ship record (`exported/shipcard.json`).** Native export and both CB exporters open a card
+**The ship record (`exported/shipcard.json`).** Native export opens a card
 carrying the build-lane
 facts it already holds — git commit, `assignment_hash`, `layer_config_sha`, achieved bpp *with
 its provenance named* (read from the **recipe's own metadata**, never recomputed under a
@@ -8133,7 +8198,10 @@ PrismaQuant exporter writes today and the runtime each requires. The Gridbook
 codebook container and its plugin, its RTX 4090 candidate and its sm_120
 validation profile were removed with the lane (§9.2) and are gone from the
 diagram; the Tessera lane (§9.4) stays deliberately absent for the opposite
-reason — it is a declared bar with no exporter behind it yet.
+reason — no PrismaQuant exporter writes those bytes, so the lane has no
+container to draw in a diagram of what this repository writes. Its arm calls
+Tessera's own exporter under `TESSERA_REPO`, which the lane declares as a
+`producer_tool` rather than vendoring (§9.4).
 
 ```mermaid
 flowchart LR
@@ -8192,6 +8260,17 @@ CB serving profiles, the CB ship-gate slots and 73 test modules (1,691 node IDs)
 measurement it produced. Read that directory's `README.md` before proposing
 anything CB-shaped: it records what the lane was, what it was worth, and what
 capability went with it.
+
+**The refusal names the wall.** `model_profiles.structure.RETIRED_EXPORT_LANES`
+maps a retired lane to the archive directory its code went behind, and
+`canonical_export_lane` appends that to `unknown export lane` — so a stale
+driver or spec naming `nvfp4_cb` tells an operator where the code is instead of
+reading as a typo. Retiring a lane moves one name from `EXPORT_LANES` to that
+dict in a single edit, and
+`tests/test_profile_export_lanes.py::test_a_lane_outside_the_vocabulary_is_refused`
+asserts the property over both rosters rather than re-typing either: no lane is
+both live and retired, a generated non-member is refused, and every retired
+lane's refusal carries its wall.
 
 Three consequences the removal actually has, stated once so no gate has to
 infer them:
@@ -8286,19 +8365,33 @@ a partial allocation is planned as-is with every other body Linear spelled BF16,
 broadcast by role and stamped as the extrapolation it is; silence must never become
 a 4-bit rung.
 
-**Three preflight gates, each fail-closed on its own** (`tessera_export_lane.py`,
+**Four preflight gates, each fail-closed on its own** (`tessera_export_lane.py`,
 run before any GPU work): the checkpoint's structure must be one the packaged
-contract declares (read from the artifact's own `config.json`, because the `qwen3`
-profile claims both the dense and the MoE architecture and only one is declared);
-the lane spec's `served_activation_quantization.executes` must EQUAL what the
-contract's `formats[]` rows imply, principle 14 in the field that asserts what the
-runtime executes; and the pinned Tessera serving runtime must be an exact reviewed
-release. The third refuses every run today and is the only thing that does.
-Beside them the arm also checks, in the same up-front block, that `TESSERA_REPO`
-holds both named tools and that `TESSERA_SERVE_MODE` and `TESSERA_PLAN_COVER`
-each carry one of their two legal values — not left to the translator's own
-`argparse` `choices`, which does not run until stage 4, because the point of
-this block is to refuse before GPU hours rather than after them.
+contract declares (`require_declared_structure`, read from the artifact's own
+`config.json`, because the `qwen3` profile claims both the dense and the MoE
+architecture and only one is declared); the lane spec's
+`served_activation_quantization.executes` must EQUAL what the contract's
+`formats[]` rows imply (`require_executes_derived_from_contract`), principle 14
+in the field that asserts what the runtime executes; every tool the lane
+declares it shells out to must exist under the env var that declaration names
+(`require_producer_tools`); and the pinned Tessera serving runtime must be an
+exact reviewed release (`require_release_pin`). The last refuses every run
+today and is the only thing that does.
+
+The producer-tool gate reads `lane_specs/tessera.json`'s `producer_tools`. It
+was a hardcoded `for` loop over two paths in `run-pipeline.sh`, which named two
+files for one lane, was invisible to a reader of the lane spec, and would have
+needed a fourth loop for a fourth lane. `TESSERA_REPO` is `export`ed by the
+driver for the same reason: the gate resolves each tool through the env var its
+own declaration names, so the value has to reach a child process
+(`run-pipeline.sh:143-149`). `preflight()` returns `producer_tools`,
+`unsupported_producer_tools`, `shipcard_slots` and `unrecorded_gates`, and the
+CLI echoes the last three, so the debt is printed where it is being incurred.
+Beside these the arm also checks, in the same up-front block, that
+`TESSERA_SERVE_MODE` and `TESSERA_PLAN_COVER` each carry one of their two legal
+values — not left to the translator's own `argparse` `choices`, which does not
+run until stage 4, because the point of this block is to refuse before GPU
+hours rather than after them.
 
 **The runtime is Tessera's.** Package `tessera.serving` in the Tessera
 repository: a `vllm.general_plugins` entry point
@@ -8351,8 +8444,61 @@ Both residency modes are receipted and both must be exercised.
 ANDs that refusal in (§5.7), as does the container arm's preflight. Cutting the
 tag is Rob's decision and resolves the
 pin file *and* the reader's two release constants in one reviewed commit —
-neither half admits anything alone. Gates on this lane are ADVISORY like every
-other lane's; the shipcard is what refuses.
+neither half admits anything alone.
+
+**The lane's gates are recorded on a card the publisher refuses on.** Gates are
+ADVISORY to the build run on this lane like every other; the shipcard is what
+refuses, at publication (§7.1). Until 2026-09-03 that sentence was not true
+here, twice over. `route.census` — the only place this lane compares the route
+it PRICED against the route it SERVED, principle 12's second leg — carried
+`shipcard_slot: null`, so it was recorded nowhere and nothing could refuse on
+it. And the arm called Tessera's exporter, which has no concept of a
+PrismaQuant shipcard, then `exit 0`ed about 130 lines above the driver's
+shipcard block, so no card existed to carry any of the six gates. Both are
+closed: `route.census` names its slot, `shipcard.LANE_SCOPED_SLOTS` carries it,
+and the arm runs `python -m prismaquant.lane_shipcard open --lane tessera
+--artifact <exported>` before exiting (`run-pipeline.sh:2452-2458`), so an
+un-run gate is an unfilled slot on a real card rather than a sentence in a JSON
+file. A Tessera card owes **seven** slots, and they arrive from two
+derivations that know nothing about each other and compose by union. The lane's
+six declared gates close six slots (`lane_gate_slots("tessera")` —
+`native_export.eager`, `native_export.graph`, `route.census`, `ship_gate`,
+`gold.kl`, `gold.ppl`), five of which are the base `REQUIRED_SLOTS` the lane
+happens to re-declare and one, `route.census`, that only this lane opens. The
+seventh is `uniform_control`, which `required_slots` adds because the artifact
+has a rate axis, not because any lane asked for it (#121, §7.1).
+`open_lane_shipcard` stamps `export_container` into the card's build block so
+that second obligation rests on the card as well as on the checkpoint's
+`config.json`.
+
+**What the card does not do is run anything.** Each of the six gates needs a
+fresh vLLM container with the pinned plugin editable-installed, and both
+residency modes, because the two decode the same bytes by different paths; the
+build lane must not spawn those inside a pipeline run. Building that runner is
+R16's open half and stays with RobTand/prismaquant#119. `verify` also gives
+`route.census` only the generic record checks — present, well-formed, `slot`
+name agrees, `model_sha` binds to the artifact, `passed is True` — and replays
+no route histogram, so the slot refuses *silence* and not yet a *wrong* census.
+
+**The lane declares its own architecture roster and its own build-tool
+dependencies.** `wired_architectures` (`["qwen3"]`) is the set of model-profile
+names permitted to export through the lane; it is REQUIRED and required to be
+non-empty, and `["*"]` (`LaneSpec.ANY_ARCHITECTURE`) is how the default lane
+says "every registered profile" without keeping a second copy of
+`model_profiles/registry.py`. The roster lived in
+`tests/test_profile_export_lanes.py` as two module-level sets named after two
+specific lanes, which a third non-default lane would have escaped entirely
+because the test asserted two lanes by name. It is now a property quantified
+over `EXPORT_LANES`: a profile declares a lane exactly when that lane declares
+the profile. `producer_tools` declares each external tool the arm shells out
+to, with `repo_env`, `path`, `stability` ∈ {`supported`,
+`unsupported_experiments`} and — mandatory for the second value —
+`tracking_issue`. Both Tessera tools are `unsupported_experiments` today: they
+live under that repository's `experiments/` with no stability promise, so a
+tidy-up there breaks a shipping lane here, and that is stated on the lane's own
+declaration rather than only in an issue tracker. Promotion rides the
+release-tag commit (RobTand/tessera#17, tracked as
+RobTand/prismaquant#119).
 
 **The pin also carries the serve fingerprint's half of §7.4, and it is DERIVED.**
 Tessera contract v7 publishes `native_extensions` — what the plugin *loads*, beside
@@ -8658,7 +8804,7 @@ New with the 2026-07-30 merge:
 | D30 | **The Sensitivity Card's non-scalar tiers are screening surrogates, and its probe wiring has two soft spots** (added 2026-08-14, §4.8). Four honest gaps, none of them closed: (1) **No served A/B.** The `MARGINAL` tier and AQUA-AURA have never been measured on exact full-vocab vLLM KL-vs-BF16 or direct WikiText PPL. `SCALAR` is a byte-identical reproduction of today's model and carries no such debt; the other two must not be cited as results (§2.5). (2) **The rank-1 reconstruction's error is unquantified on real layers.** `H = Σ_t outer(g_t², x_t²)` is exactly rank-1 only when one token dominates; `outer(row, col)/h_trace_raw` is provably exact in that case (`rtol=1e-10`) and an approximation of unknown magnitude everywhere else. Nothing has compared it against a materialized `H` on a real Linear. (3) **The marginal identity is exact only at the two streaming sites.** `sum(fisher_row) == sum(fisher_col) == h_trace_raw` holds by construction where `h_trace_raw` is literally `chunk_h.sum()` in fp32 (`incremental_probe.py:2520`, `:2751`). On the **resident** path `h_trace_raw` comes from the bf16 outer-product-norm identity `(gy2_sq.sum(1) · x2_sq.sum(1)).sum()` (`:1667-1668`) while the marginals reduce the fp32 `chunk_h`, so the two agree mathematically but not bitwise; `SensitivityUnit.validate`'s `rtol=1e-3` is what absorbs that, and nothing measures the actual spread. (4) **One accumulation site is dead on the shipping path and therefore untested.** The batched MoE block-flush hook (`:2276-2362`) fires only for blocks whose immediate children are per-expert containers exposing the profile's projection names as `nn.Linear` — the *unpacked*-expert layout. The shipping recipe's MoE models do not take it, and `tests/test_probe_marginals.py` covers the helpers and the two streaming sites but not that branch, so its marginal emission has never executed. A transposed axis or a wrong merge rule there would surface first on a new unpacked-expert architecture, which is exactly the class of silent-garbage failure §8.5 L3 is about. | §4.8; `prismaquant/sensitivity_card.py`, `format_cost_protocol.py`, `sensitivity_card_allocate.py`; `incremental_probe.py:97-199,1667-1672,2276-2360,2501-2520,2735-2751`; `tests/test_sensitivity_card.py`, `tests/test_probe_marginals.py`; `docs/design/sensitivity_card_contract.md` §8 | MED | (1)-(2) run the rank-agreement check against measured `output_mse` on Qwen3-0.6B and an allocation-churn check against a shipped `cost.pkl` before any tier but `SCALAR` is proposed for a default; (3) record the resident-vs-streaming identity spread on one real probe, or tighten the resident path to reduce `chunk_h` for both; (4) cover the MoE block flush with a synthetic unpacked-expert fixture, or state that the branch is retired. |
 | D31 | **Shipcard replay binds recorded evidence to the serving pin at HEAD** (added 2026-08-18). Every gate slot records the runtime that actually gated it (serve-manifest `gridbook_distribution`, endpoint-contract stack), but the replay compares those records against `load_gridbook_serving_runtime_pin()` at HEAD — so the 0.8.9 pin bump made the already-published DSv4 flagship unpublishable for a docs-only README update: six slot refusals, all "is not the tracked pin", on evidence that exactly matches the pin that was tracked when it was measured. Worked around honestly for the 0.8.9 card update by running the publisher from a worktree at `0266662` (the pre-bump commit; publisher and verifier code there are byte-identical to HEAD — the bump commit `6a883bc` touched pin data and docs only — so this verifies the card against the pin that gated it, with zero tool divergence). Recurs on every serving-pin bump for every historical artifact. | `prismaquant/shipcard.py:1225,2374,2521`; `tools/publish_artifact.py` dry-run refusal 2026-08-18 | MED | Decision for Robert: accept a declarative superseded-pins record in `gridbook_serving_runtime_pin.py` (version/commit/wheel of prior released pins; replay accepts recorded == current OR recorded ∈ superseded, and the verdict names which) — keeps fail-closed against unreviewed runtimes without rotting history — or rule that docs updates to historical artifacts always re-run the publisher at the artifact's pin era. |
 | D32 | **The Fisher probe is not bit-reproducible, and nothing in the tree said so** (added 2026-08-20). Two runs of `incremental_probe` with byte-identical calibration, the same commit and the same `--layers-per-shard` differ on **379/402 units**, median `|Δh_trace|/h_trace` **2.5e-4** (max 1.1e-2); `n_tokens_seen` and the per-expert Fisher *support* are bit-identical on every unit, so the forward and the routing are exactly deterministic and only the backward moves. Mechanism: 30 of Ornith-1.5-35B-A3B's 40 layers are Gated DeltaNet, whose `fla` Triton kernels reduce over chunks in a non-deterministic order. **Why it is debt rather than a bug:** the jitter is unbiased (signed mean +6.5e-5 against its own sd 5.7e-4) and three orders below the 23% cost CV that §9 records as producing 3% assignment churn and 0σ served — but a probe-side change gated on bit-identity refuses for reasons that have nothing to do with the change, and `--layers-per-shard auto` (sized from free RAM at launch) adds a second, *avoidable* source on top. **Consequence for provenance:** probe-derived artifacts (`cost_baseline.pkl`, `cost_aura.pkl`, `cost.pkl`, the sensitivity card) must be rebuilt together from one probe run rather than half-reused, or `cost.pkl`'s stamped provenance names a probe that produced only some of its numbers. | `incremental_probe.py`; `sensitivity_probe.py` `_accumulate_packed_per_token_fisher`; measured Ornith-1.5-35B-A3B 2026-08-20 | LOW | Gate probe changes on what is invariant (`n_tokens_seen`, per-expert support, an unbiased signed mean within a *measured* floor), never on bit-identity; pin `--layers-per-shard` for any A/B. |
-| D33 | **OPEN 2026-09-02, narrowed twice.** Tessera is priced and rendered by name (§5.7), has a *declared* lane (§9.4, `lane_specs/tessera.json`), a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), and since **2026-09-03** a real `EXPORT_CONTAINER=tessera` arm in `run-pipeline.sh` that plans and encodes through Tessera's OWN tools under `TESSERA_REPO` (`plan_from_layer_config.py`, `export_tessera_serving.py`). **The "no exporter codec" half is re-scoped, not closed**: this repository still writes no Tessera bytes and deliberately never will — a wire recipe with two homes is how the two halves of one format drift apart — so the debt is now *the boundary*, not *the absence*: the two Tessera scripts the arm names live in `experiments/`, which their own README calls drivers rather than a supported interface. Producer eligibility is still False, and the reason has narrowed to one thing: **no Tessera release tag exists**. The packaged contract publishes both families with `device_qualified` native cells; the PENDING pin is what withholds them, and it is now also what the driver's preflight refuses on. No ship gate has been run on the lane. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_export_lane.py` (the arm's three gates), `run-pipeline.sh` (`EXPORT_CONTAINER=tessera`), `tessera_runtime/tessera_serving_runtime_pin.json` (PENDING sentinels), `tessera_serving_runtime_pin.py` | Med | Rob cuts a Tessera release tag, then one reviewed commit resolves the pin file and the reader's two release constants together — after which the arm can build. Independently: promote the two named Tessera scripts from `experiments/` to a supported entry point so the boundary is an interface rather than a path, and run the lane's load+generate gates from the driver or from a lane runner (RobTand/prismaquant#119). |
+| D33 | **OPEN 2026-09-02, narrowed twice.** Tessera is priced and rendered by name (§5.7), has a *declared* lane (§9.4, `lane_specs/tessera.json`), a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), and since **2026-09-03** a real `EXPORT_CONTAINER=tessera` arm in `run-pipeline.sh` that plans and encodes through Tessera's OWN tools under `TESSERA_REPO` (`plan_from_layer_config.py`, `export_tessera_serving.py`). **The "no exporter codec" half is re-scoped, not closed**: this repository still writes no Tessera bytes and deliberately never will — a wire recipe with two homes is how the two halves of one format drift apart — so the debt is now *the boundary*, not *the absence*: the two Tessera scripts the arm names live in `experiments/`, which their own README calls drivers rather than a supported interface. Producer eligibility is still False, and the reason has narrowed to one thing: **no Tessera release tag exists**. The packaged contract publishes both families with `device_qualified` native cells; the PENDING pin is what withholds them, and it is now also what the driver's preflight refuses on. No ship gate has been run on the lane, and no runner exists to run one: the lane's six declared gates are now RECORDED — `route.census` names a shipcard slot and the arm opens a lane-gated card (§7.1, §9.4, 2026-09-03) — so an un-run gate is an unfilled slot the publisher refuses on rather than a sentence nothing reads, but nothing spawns the container that would fill it. The `experiments/` boundary is likewise declared rather than fixed: both tools carry `stability: "unsupported_experiments"` and a `tracking_issue` on `lane_specs/tessera.json`, which makes the debt visible to a reader and a gate without promoting anything. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_export_lane.py` (the arm's four gates), `run-pipeline.sh` (`EXPORT_CONTAINER=tessera`), `tessera_runtime/tessera_serving_runtime_pin.json` (PENDING sentinels), `tessera_serving_runtime_pin.py` | Med | Rob cuts a Tessera release tag, then one reviewed commit resolves the pin file and the reader's two release constants together — after which the arm can build. Independently, and both still open under RobTand/prismaquant#119: promote the two named Tessera scripts from `experiments/` to a supported entry point so the boundary is an interface rather than a path — after which their `stability` becomes `supported` and the `tracking_issue` goes — and build the lane runner that executes a lane's declared gates in a fresh plugin container and fills the slots the card already opens. |
 | D34 | **The Gridbook lane is retired but its format/cost/render plumbing is not** (added 2026-09-02). The lane, its pins, exporter, serving profiles, ship-gate slots, 73 test modules (1,691 node IDs) and 27 documents were archived at `archive/gridbook_lane_2026-09-02/` and `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s (§3.5, §9.2) — so no CB rung can be exported or served, which is the property principle 9 cares about. What remains is the machinery that *prices and renders* those rungs: `cb_layout.py`, `nvfp4_cb_formats.py`, `nvfp4_cb_footprint.py`, `cb_ldlq*.py`, `cb_minchain.py`, `cb_warm_state.py`, `cb_banked_books.py`, `cb_learned_promotion.py`, `cb_anchored_cost.py`, `cb_ladder_cross_family.py`, `routed_moe_codebooks.py`, `mxfp4_widen.py`, `source_class_format_plan.py`, plus CB branches inside `production_weight_cache.py`, `allocator.py`, `format_registry.py`, `export_native_compressed.py`, `layer_config.py`, `lane_spec.py`, `serve_constraints.py` and `model_profiles/*`, and roughly 60 tests that exercise them. **Why it was left:** the excision is several hundred diffuse edits concentrated in exactly the files the continuous-menu branch is rewriting, and merging that against a live branch is more dangerous than the debt. **The risk it carries:** a `FORMATS` menu can still name a `*_CB_*` rung, the DP can still price it, and the only thing that stops it is the exporter and the `production-render-score` pairing guard — a *refusal*, not an *absence*. Four consequences are recorded separately because they are capability losses, not debt. (i) `FP8_BLOCK_UE8M0_SOURCE` is now `ROUTE_STATUS_BLOCKED` — its only route was the plugin. (ii) `MXFP4_SOURCE` keeps a backed stock-Marlin route but has no writer and no serving profile, and `MXFP8_UE8M0_G32` is the same shape — never a compressed-tensors scheme, written only by the CB *streaming* exporter, which is archived. Both keep a live `FormatSpec` and a working render; neither has a writer. (iii) **The `serving_lanes` block of a serving-profile spec now has zero live declarations.** `serving_profile_specs/nvfp4_cb.json` was the only spec that ever declared one (verified against `d263f54`), so the per-lane structured `route_status` / `activation_contract` / `fused_mid_m` table that principle 9 reads is a parser with nothing left to parse; the native lane's route status has always come from the source-passthrough contracts instead. The parser and its `route_status_source` machinery are kept because that is the shape the Tessera lane must declare in. (iv) **The sample-parallel incremental probe is unavailable**: its `prepare-run-contract` minter and its per-worker source-census revalidation were both built on `prismaquant/rtx4090_artifact_census.py`, the strict-Ada FP8-CB campaign's closed Qwen3.8-27B layout. `incremental_probe.py --global-calibration-tensor` now refuses up front rather than admitting a pre-retirement contract with one leg of its identity replay missing (`docs/design/sample_parallel_probe.md` carries the banner). Reviving it means giving the census a lane-independent source of truth. Two production observations were surfaced by the removal, deferred at the time, and **both fixed 2026-09-03** (RobTand/tessera#20): `check_serving_shape` failed **open** on an unknown profile id — it caught `FileNotFoundError` and resolved silently to `research`, which permits every shape, while `serving_lane_route`/`serving_lane_catalog`/`check_serving_format` all fail **closed**. It now returns the same `profile_mismatch` refusal `check_serving_format` does; `profile_id=None` still resolves to `research`, which is the declared default and loads, so no legal call changed. And `activation_pricing_branches["unrecorded"]` is re-homed as its own profile-independent test in `tests/test_serving_lane_metadata.py` rather than left riding a deleted CB test. A fifth item is dead-but-kept rather than lost: `shipcard.py`'s `safetensors_content_receipt` trio has no live caller since the strict-RTX4090 publication gate retired, and is kept so receipts already on disk stay readable. `ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT` still exempts `DeepseekV4Profile` from declaring a fused-sibling source, but the lane that justified the exemption is gone; discharging it is a producer-behaviour decision, not a removal. | `archive/gridbook_lane_2026-09-02/README.md`; `docs/measurements/gridbook-lane-retired-2026-09-02.md`; §9.2 | MED | Excise the CB plumbing after the continuous-menu branch merges, in one commit whose diff is deletions plus the tests that go with them; or, if a codebook rung is wanted again for the Tessera lane, port the parts worth keeping deliberately rather than inheriting them. |
 
 **Open items carried from session handovers.** Of the 41 items the handover census could not
