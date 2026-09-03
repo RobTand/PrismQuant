@@ -2048,7 +2048,6 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      mask_records: list[dict] | None = None,
                      cb_serialization_context: CBSerializationContext | None = None,
                      activation_pricing: ActivationFairPricing | None = None,
-                     cost_mode: str | None = None,
                      bit_precision: float | None = None,
                      tessera_menu_report: dict | None = None,
                      ) -> dict[str, list[Candidate]]:
