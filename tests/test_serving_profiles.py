@@ -650,3 +650,102 @@ def test_vllm_lane_needs_no_passthrough_entry_of_its_own():
     assert load_serving_profile("gguf").export_lane.passthrough_formats == (
         "BF16",
     )
+
+
+def _string_leaves(node, prefix: str = ""):
+    """Every string value in a parsed JSON document, with its dotted key."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _string_leaves(value, f"{prefix}.{key}" if prefix else key)
+    elif isinstance(node, (list, tuple)):
+        for index, value in enumerate(node):
+            yield from _string_leaves(value, f"{prefix}[{index}]")
+    elif isinstance(node, str):
+        yield prefix, node
+
+
+# ---------------------------------------------------------------------------
+# No live serving profile may name a retired runtime (D34, Tessera #21)
+# ---------------------------------------------------------------------------
+def test_no_live_serving_profile_spec_names_the_retired_gridbook_runtime():
+    """A profile's `runtime` is a claim about who executes the bytes.
+
+    `tessera_research_sm121.json` declared `"runtime": "gridbook_plugin"` and
+    derived its `world_size: 1` from `gridbook_runtime_contract.0.9.1.json`'s
+    tensor_parallel table.  Both authorities left the tree on 2026-09-02
+    (`archive/gridbook_lane_2026-09-02/`) when Gridbook withdrew its Tessera
+    lane; the table that answers now is Tessera's OWN packaged
+    `runtime_contract.json`, whose tensor_parallel table pins
+    TESSERA_E2M1_K2 and TESSERA_E4M3_K1 at `max_world_size` 1.  Same
+    conclusion, checkable derivation -- principle 14 is about the value a
+    reader can verify, not only about the verdict being right.
+
+    Historical PROSE naming Gridbook is fine and deliberate everywhere in this
+    tree (`trellis_research_sm121.json` keeps a dated "it named
+    `gridbook_plugin` until 2026-09-02" note).  What this refuses is the two
+    shapes a reader cannot check: the `runtime` VALUE, and a citation of a
+    contract file that is no longer on disk.
+    """
+    import json
+    from pathlib import Path
+
+    root = (
+        Path(serving_profiles_module.__file__).parent / "serving_profile_specs"
+    )
+    specs = sorted(root.glob("*.json"))
+    assert specs, "no serving profile specs found"
+
+    for path in specs:
+        text = path.read_text()
+        payload = json.loads(text)
+        runtime = str(payload.get("runtime", ""))
+        assert "gridbook" not in runtime.lower(), (
+            f"{path.name} declares runtime={runtime!r}; the Gridbook lane was "
+            f"retired 2026-09-02 (archive/gridbook_lane_2026-09-02/)")
+        # Every remaining mention must be DATED. An undated one reads as a
+        # live derivation off a runtime that no longer answers; a dated one is
+        # the history the house style keeps. This is the machine-checkable
+        # half of "record the scope or do not record the claim".
+        for key, value in _string_leaves(payload):
+            if "gridbook" not in value.lower():
+                continue
+            assert "2026-09-02" in value, (
+                f"{path.name}:{key} names Gridbook with no retirement date; "
+                f"date it or re-derive it from a live contract")
+
+    tessera = json.loads((root / "tessera_research_sm121.json").read_text())
+    assert tessera["runtime"] == "vllm+tessera_plugin"
+    # ...and it is the same string the lane spec uses, so the two ends of the
+    # Tessera lane name one runtime rather than two.
+    lane = json.loads(
+        (Path(serving_profiles_module.__file__).parent
+         / "lane_specs" / "tessera.json").read_text())
+    assert lane["runtime"] == tessera["runtime"]
+
+
+def test_the_serve_dispatch_table_help_does_not_name_a_path_that_is_gone():
+    """`--serve-dispatch-table`'s help offered a file the tree does not ship.
+
+    It named `prismaquant/serve_dispatch_tables/gridbook_gb10_2026-08-01.
+    example.json`, which went to the archive with the Gridbook lane on
+    2026-09-02 -- `serve_dispatch_table.example_table_path()` was updated to
+    return None and the help string was not.  A CLI that points at a missing
+    file is worse than one that says there is none, because the reader spends
+    the search before learning the answer.
+    """
+    from pathlib import Path
+
+    import prismaquant.allocator as allocator_module
+    from prismaquant.serve_dispatch_table import example_table_path
+
+    assert example_table_path() is None
+    root = Path(allocator_module.__file__).parent
+    assert not (root / "serve_dispatch_tables").exists()
+
+    source = (root / "allocator.py").read_text()
+    marker = '"--serve-dispatch-table"'
+    start = source.index(marker)
+    end = source.index('ap.add_argument("--serve-workload-mix"', start)
+    help_block = source[start:end]
+    assert "serve_dispatch_tables/" not in help_block
+    assert "archive/gridbook_lane_2026-09-02/" in help_block

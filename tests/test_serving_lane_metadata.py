@@ -381,3 +381,67 @@ def test_the_applicability_report_carries_the_same_three_blocks(
     assert report["activation_fair_pricing"]["enabled"] is True
     assert (report["cb_ladder_cross_family_verdict"]["verdict"] == "fail")
     assert report["serving_lanes"]["target_profile"] == "research"
+
+
+# ---------------------------------------------------------------------------
+# The parser that has nothing left to parse (capability loss 3, D34)
+# ---------------------------------------------------------------------------
+# REGRESSION GUARD, NOT A FAIL-BEFORE. This passes on the commit that retired
+# the lane too. It exists because that retirement left the `serving_lanes`
+# parser with ZERO live declarations: `serving_profile_specs/nvfp4_cb.json`
+# was the only spec that ever carried one, and the parser was deliberately
+# kept because it is the shape the Tessera serving profile must declare in.
+# A parser with no input and no test is a parser that rots silently and is
+# discovered broken by the first profile that needs it. This gives it one
+# input, built here rather than shipped as a spec, so nothing in the tree
+# claims a lane that no runtime serves.
+def test_the_serving_lanes_parser_still_parses_a_declared_lane():
+    """One synthetic declaration, exercising every structured field a gate
+    reads: the route status source's ``structures`` (principle 9 wants
+    ``route_status`` in a field, never in prose), the activation contract,
+    the fallback route, and the version-keyed fused mid-M table whose empty
+    resolution is the designed fail-closed answer."""
+    profile = sp.ServingProfile.from_dict({
+        "id": "synthetic_lane_parser_probe",
+        "description": "test-local; never written to serving_profile_specs/",
+        "emulation_only": True,
+        "serving_lanes": [
+            {
+                "id": "synthetic_native_lane",
+                "formats": ["NVFP4"],
+                "activation_contract": "w4a4-nvfp4-e2m1-fp8-block16",
+                "fallback_route": "expand_and_gemm",
+                "detail": "synthetic; asserts the parser, not a runtime",
+                "fused_mid_m": {
+                    "m_range": [8, 64],
+                    "rungs_by_runtime_version": {"9.9.9": [28, 32]},
+                },
+                "route_status_source": {
+                    "attestation": "synthetic.lane_eligibility",
+                    "structures": ["dense", "routed_moe"],
+                },
+            }
+        ],
+    })
+
+    assert len(profile.serving_lanes) == 1
+    lane = profile.serving_lanes[0]
+    assert lane.id == "synthetic_native_lane"
+    assert lane.formats == ("NVFP4",)
+    assert lane.activation_contract == "w4a4-nvfp4-e2m1-fp8-block16"
+    assert lane.fallback_route == "expand_and_gemm"
+    assert lane.fused_mid_m_range == (8, 64)
+    assert lane.fused_mid_m_rungs_by_runtime_version == (("9.9.9", (28, 32)),)
+    assert lane.route_status_structures == ("dense", "routed_moe")
+
+    # and the lane resolves for a format it covers, and only for one it covers
+    assert lane.covers("NVFP4")
+    assert not lane.covers("FP8_DYNAMIC")
+    resolved = profile.serving_lane_for("NVFP4", runtime_version="9.9.9")
+    assert resolved is not None
+    assert resolved.activation_contract == "w4a4-nvfp4-e2m1-fp8-block16"
+    # An UNDECLARED runtime version backs nothing -- the fail-closed direction
+    # the docstring on ServingLaneSpec calls out.
+    other = profile.serving_lane_for("NVFP4", runtime_version="0.0.0")
+    assert other is not None
+    assert not other.fused_mid_m_backed

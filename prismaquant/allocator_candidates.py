@@ -94,13 +94,21 @@ AURA_SUPERSURROGATE_ALLOCATOR_SEMANTICS = True
 # Serving-route token for a passthrough whose bytes the model's OWN loader
 # consumes, with no Gridbook codec in the path.
 ROUTE_DELEGATED_NATIVE = "delegated_native"
-# Gridbook-owned W8A8 dense route.  This is deliberately not described as
-# delegated/native: Gridbook 0.8.4 installs ``Mxfp8DenseLinearMethod``, embeds
-# block-128 source scales into per-32 MXFP8 weight scales, and quantizes the A
-# side dynamically to MXFP8 per 32.
-ROUTE_GRIDBOOK_MXFP8_DENSE = "gridbook_mxfp8_dense"
-# Gridbook-owned raw-resident block-128 source route. Unlike the direct G32
-# MXFP8 lane above, this route consumes BF16 activations unchanged.
+# The name of the route that USED to execute a raw-resident block-128 source
+# plane: Gridbook's ``Fp8SourceW8A16LinearMethod``, which consumed BF16
+# activations unchanged.  The lane was retired on 2026-09-02
+# (archive/gridbook_lane_2026-09-02/) and this constant is kept BECAUSE it is
+# retired: it is the ``serving_route`` on the FP8_BLOCK_UE8M0_SOURCE row below,
+# whose ``route_status`` is now BLOCKED, and that row's whole job is to say
+# which route died. Renaming it to something lane-neutral would erase the scope
+# of the measurement the row carries (principle 14's corollary: a recorded
+# capability claim inherits the scope of the artifact it was measured on).
+#
+# ``ROUTE_GRIDBOOK_MXFP8_DENSE = "gridbook_mxfp8_dense"`` sat here until
+# 2026-09-02.  It named ``Mxfp8DenseLinearMethod`` and had no reader anywhere
+# in the tree -- no contract row, no test, no consumer of the string -- so it
+# was a dangling name rather than a record of anything, and it is deleted
+# rather than archived.
 ROUTE_GRIDBOOK_FP8_SOURCE_W8A16 = "gridbook_fp8_source_w8a16"
 
 # What a MEASUREMENT says about serving a passthrough's bytes. These are
@@ -378,8 +386,11 @@ def source_format_for_kind(source_kind: str) -> fr.FormatSpec | None:
 # already emits real rows for them on the checkpoints where they are legal,
 # and synthesizing over a table that has an entry would hide a disagreement.
 # A byte-copy contract belongs here only when BOTH its W and A paths are the
-# identity. ``FP8_BLOCK_UE8M0_SOURCE`` qualifies through Gridbook's dedicated
-# W8A16 route; runtime release status remains independently fail-closed below.
+# identity. ``FP8_BLOCK_UE8M0_SOURCE`` qualifies because its contract declares
+# exactly that (resident E4M3 + UE8M0 planes, BF16 activations unchanged);
+# whether any runtime serves it is a separate fact, and since the Gridbook
+# lane's retirement (2026-09-02) none does -- its row below is
+# ``ROUTE_STATUS_BLOCKED`` and stays fail-closed independently of membership.
 #
 # Membership is not self-certifying: ``cost_entry_is_source_passthrough``
 # additionally requires the format to be a registered passthrough format whose
@@ -426,7 +437,8 @@ PASSTHROUGH_WIRE_FORMAT_IDS: dict[str, str] = {
 # the registry name is ours to rename, the wire id is not.
 #
 # NOTE FOR ORCHESTRATOR RECONCILIATION: ``mxfp8_e4m3_e8m0_g32`` is the
-# spelling the Gridbook consumer side proposed. It diverges from this repo's
+# spelling the Gridbook consumer side proposed before the lane's retirement
+# (2026-09-02; the wire id is kept as the persisted spelling). It diverges from this repo's
 # own convention, which spells the unsigned-E8M0 scale plane ``ue8m0``
 # (``mxfp4_e2m1_ue8m0_g32``, ``fp8_e4m3_ue8m0_block128``). The consumer's
 # spelling is used verbatim here rather than guessed at; if the two repos

@@ -104,11 +104,15 @@ def uniform_column_schedule(
 ) -> tuple[int, ...]:
     """Return the flattest legal per-input-column schedule hitting a rate.
 
-    ``gridbook.trellis.wire.v1`` carries one rate code per input column,
-    shared across every output row (``schedule_scope ==
-    "tensor_input_column_shared_across_rows"``), and the ``tight_offsets``
-    layout explicitly permits variable block totals so long as the tensor-wide
-    total lands within one physical body bit of the declared q256.  That is
+    Tessera's own wire (``prismaquant.tessera.v1``) carries one rate code per
+    input column, shared across every output row -- ``Manifest`` refuses a
+    schedule whose length is not ``geometry.columns``, and Bresenham placement
+    plus ``superblock_quota_ok`` is what bounds the variation -- so the
+    tensor-wide total lands within one physical body bit of the declared q256.
+    (This paragraph cited ``gridbook.trellis.wire.v1`` until 2026-09-02.  That
+    wire is the retired predecessor's, priced by ``trellis_footprint``, and it
+    is not the authority for anything Tessera writes; the property is the same
+    but it is Tessera's manifest that asserts it.)  That is
     what makes a continuous rate surface expressible at all: the achievable
     totals are the integers, so the rate resolution is ``256/columns`` q256
     per step -- 0.25 q256 on a 1024-column Linear.
