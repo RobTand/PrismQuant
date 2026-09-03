@@ -3,6 +3,18 @@
 As of: 2026-09-03 · `tessera/decouple-gridbook`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `claude/pq-134-memo-bounds`) for the **grid-space memo
+bound** (§4.10; RobTand/prismaquant#134, the sibling of RobTand/tessera#46).
+Two more Tessera memos carried a literal — `tessera_render.
+tessera_rung_is_serialisable` at 4096 and `tessera_formats._recipe_for` at 512 —
+and the first measured **0 hits / 13,832 misses** over two passes of one shape's
+menu. Both are keyed by *(family, rung)* and reached with any family, so their
+bound is the **grid space** (12 families, 13,068 rungs), not the menu (4 and
+6,916): sizing them off `menu_rungs_per_shape()` would have left both a factor
+of two under on the day anything prices an `LM*` family. `grid_space_cache_
+bound()` takes the ceiling off each grid's `payload_bits`, which bounds both
+branches of `family_rate_cap` and so survives the next TCQ→WINDOW flip.
+
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
 2048x1024 unit's research menu from 3055 rungs to 6764 and left both per-rung
@@ -4192,6 +4204,47 @@ pass over a 2048x1024 unit goes from cold 22.05 s / warm 22.19 s (0.99x, 0
 hits) to cold 21.72 s / warm 1.92 s (11.3x, 6916 hits against 6916 misses —
 every rung priced exactly once); attested is untouched at 0.32 s on both sides,
 as the issue said it would be.
+
+**A memo keyed over the grid space is sized by the grid space, not by the
+menu.** Two more caches on the same path are keyed by *(family, rung)* with no
+shape in the key: `tessera_render.tessera_rung_is_serialisable` (the
+wire-commitment predicate, `maxsize=4096`) and `tessera_formats._recipe_for`
+(the wire lookup behind `tessera_wire_recipe`, `maxsize=512`).
+Measured over two research passes of one 256x256 unit's menu, the first
+answered **0 hits against 13,832 misses** — every lookup missed, twice over —
+and the second re-missed every rung's first lookup (6,916 added misses on a
+pass that should have added none). Both are now sized by
+`tessera_formats.grid_space_cache_bound()` = `grid_space_rungs()` +
+`grid_space_families()` = **15,000**, and a repeat pass adds **zero** misses to
+either (RobTand/prismaquant#134).
+
+The unit here is *not* the menu's. `menu_families()` is a four-family subset;
+`tessera_wire_recipe` and `get_tessera_family` take any family, so these two
+memos are keyed over `enumerate_grid_space()` — **twelve families and 13,068
+rungs** against the menu's four and 6,916. Sizing them from
+`menu_rungs_per_shape()` would leave both a factor of two under the day
+anything prices an `LM*` family, which is the same defect one level up. The
+rung term takes each grid's `payload_bits` rather than its recipe's rate cap:
+`family_rate_cap` answers `payload_bits` under WINDOW and `payload_bits - 1`
+under TCQ, so a recipe flip *moves* a family's rung count (E4M3's flipped on
+2026-09-02), and the code space bounds both branches — 14,988 against a
+recipe-aware 13,068. It is also what keeps the derivation from re-entering the
+memo it sizes; `grid_space_cache` raises a named error rather than recursing if
+a future edit makes it.
+
+They stay bounded LRUs rather than `maxsize=None`, because the key space is
+finite only for well-formed input and neither memo refuses ill-formed input:
+`tessera_rung_is_serialisable('zzz')` answers `False` and occupies a key, and
+`tessera_wire_recipe('TESSERA_LM128_K1', 999999)` answers a recipe for a family
+the space does not enumerate at a rung no family admits. Unbounded would trade
+a sizing bug for an unbounded-memory one. The ceiling costs nothing worth
+trading: `tracemalloc` over a saturating pass puts the predicate at **88 B an
+entry** and the recipe at **178 B** (the value is one of Tessera's module-level
+`WireRecipe` singletons), i.e. **1.26 MiB and 2.55 MiB** filled to the bound.
+This is a defect-class fix, not a speedup: the expensive leg of the predicate
+moved to the per-family memo above on 2026-09-02, so what the two now save is a
+parse and a lookup — about 31 ms of a 1.95 s research pass — and the deliverable
+is the derived bound, not the milliseconds.
 
 **A window table is charged at the grid's own code width.** `PayloadGrid.
 code_bytes` is one byte up to 256 codes and two on BF16, whose code *is* a bf16

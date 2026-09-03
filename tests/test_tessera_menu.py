@@ -999,3 +999,87 @@ def test_the_geometry_memo_is_keyed_by_family_name_not_by_the_family():
     assert tm._shard_geometry.cache_info().hits == 1
     with pytest.raises(tm.TesseraMenuError):
         tm._shard_geometry(spec, lo, 2048, 1024)
+
+
+# ---------------------------------------------------------------------------
+# The grid-space memos on the menu path (prismaquant#134)
+#
+# tessera#46 sized the two memos keyed by *(family, rung, shape)*.  Two more on
+# the same path are keyed by *(family, rung)* alone -- the recipe lookup and
+# the wire-commitment predicate -- and both carried a literal.  What that cost
+# is measured here on the memos rather than on a clock: a second pass over one
+# shape's menu must add no misses to either.
+# ---------------------------------------------------------------------------
+
+def _grid_space_memos():
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_render as tr
+
+    return {
+        "tessera_formats._recipe_for": tfm._recipe_for,
+        "tessera_render.tessera_rung_is_serialisable":
+            tr.tessera_rung_is_serialisable,
+    }
+
+
+def _misses_added_by_a_repeat_menu_pass(shape=(256, 256)):
+    """Fill both memos on one shape's menu, then re-walk it.  Returns the delta."""
+    from prismaquant import tessera_formats as tfm
+    from prismaquant.tessera_render import clear_serialisable_cache
+
+    tfm.clear_recipe_cache()
+    clear_serialisable_cache()
+    tm.expand_tessera_menu(shape, mode=tm.MENU_RESEARCH, step_q256=1)
+    first = {name: memo.cache_info() for name, memo in _grid_space_memos().items()}
+    tm.expand_tessera_menu(shape, mode=tm.MENU_RESEARCH, step_q256=1)
+    second = {name: memo.cache_info() for name, memo in _grid_space_memos().items()}
+    return {
+        name: (second[name].misses - first[name].misses,
+               second[name].hits - first[name].hits)
+        for name in first
+    }
+
+
+def test_a_second_menu_pass_recomputes_neither_grid_space_memo():
+    """The behaviour the derived bound buys, counted rather than timed.
+
+    A wall-clock assertion would be a coin flip on a loaded box, and it would
+    understate the finding anyway: the expensive leg of the serialisable
+    predicate moved to the per-*family* memo on 2026-09-02, so what these two
+    save is a parse and a recipe lookup, not the grid digest.  Hits and misses
+    say exactly what happened, and what happened before this was that the
+    second pass repeated every lookup of the first.
+    """
+    for name, (misses, hits) in _misses_added_by_a_repeat_menu_pass().items():
+        assert misses == 0, (
+            f"{name} re-missed {misses} keys on a repeat pass over the same "
+            f"shape: it is evicting its own entries")
+        assert hits > 0, f"{name} answered nothing from the memo at all"
+
+
+def test_the_old_literals_would_still_evict_their_own_entries(monkeypatch):
+    """The negative control, run rather than asserted.
+
+    Rebind each memo to the literal it carried and the pass above goes red --
+    which is what makes the green above a measurement instead of a tautology.
+    ``4096`` and ``512`` are written here on purpose: they are the *defect*
+    being reproduced, not a bound being restated.
+    """
+    from functools import lru_cache
+
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_render as tr
+
+    monkeypatch.setattr(
+        tfm, "_recipe_for", lru_cache(maxsize=512)(tfm._recipe_for.__wrapped__))
+    monkeypatch.setattr(
+        tr, "tessera_rung_is_serialisable",
+        lru_cache(maxsize=4096)(tr.tessera_rung_is_serialisable.__wrapped__))
+
+    added = _misses_added_by_a_repeat_menu_pass()
+    misses, hits = added["tessera_render.tessera_rung_is_serialisable"]
+    assert misses > 0 and hits == 0, (
+        "the 4096 memo is supposed to hit nothing at all on the second pass; "
+        f"got {hits} hits and {misses} misses")
+    assert added["tessera_formats._recipe_for"][0] > 0, (
+        "the 512 memo is supposed to re-miss every rung's first lookup")

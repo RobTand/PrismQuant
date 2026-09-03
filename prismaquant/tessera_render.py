@@ -34,6 +34,7 @@ from tessera import export as _tessera_export
 
 from .tessera_formats import (
     TesseraFamily,
+    grid_space_cache,
     parse_tessera_format_name,
     scale_plane_name,
     tessera_wire_recipe,
@@ -324,7 +325,7 @@ def clear_serialisable_cache() -> None:
     family_grid_is_serialisable.cache_clear()
 
 
-@lru_cache(maxsize=4096)
+@grid_space_cache
 def tessera_rung_is_serialisable(name: str) -> bool:
     """Can the *wire* carry this rung's bytes at all?
 
@@ -335,6 +336,18 @@ def tessera_rung_is_serialisable(name: str) -> bool:
     after the allocation and the whole production cache have been built -- so
     the menu must be able to ask up front rather than discover it in a
     traceback.
+
+    **Sized by the space it is keyed over, which is the sentence above.**  The
+    key is a full format name, so one entry per rung of every family the grid
+    space admits -- ``tessera_formats.grid_space_cache_bound()``, 15,000 today
+    -- and emphatically *not* ``menu_rungs_per_shape()``: the menu is a
+    four-family subset of the twelve ``_grid_for`` will render, and a bound
+    taken from it would be a factor of two under on the day anything prices an
+    ``LM*`` family.  The literal it replaces was ``maxsize=4096`` against 6,916
+    menu rungs, and it measured **0 hits / 13,832 misses** over two passes of
+    one shape's menu: every lookup missed, twice over, because a pass evicted
+    its own entries before it reached the end (prismaquant#134, the sibling of
+    tessera#46).
 
     ``E4M3`` used to be that gap and no longer is: it was writable all along
     and merely missing from the registry, which tessera `a4de134` fixed after

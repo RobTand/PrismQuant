@@ -1171,3 +1171,144 @@ def test_the_render_leg_and_the_exporter_are_one_rendering(label, name, recipe_a
     off_the_wire = read_unit_artifact(unit.blob, device=weight.device)
 
     assert torch.equal(rendered, off_the_wire.to(weight.dtype)), label
+
+
+# ---------------------------------------------------------------------------
+# The grid-space cache bound (prismaquant#134, the sibling of tessera#46)
+#
+# These pin the RULE -- "a memo keyed over the grid space is sized by the grid
+# space" -- and never a count.  A number written here would be the same defect
+# the bug was, one level up: ``maxsize=4096`` and ``maxsize=512`` were correct
+# arithmetic against some earlier space and silently wrong afterwards, and
+# ``menu_rungs_per_shape()`` would be the *next* wrong number, because the menu
+# is a four-family subset of the twelve the grid space admits.
+# ---------------------------------------------------------------------------
+
+def _grid_space_memos():
+    """Every memo keyed by ``(family, rung)`` rather than by a menu or a shape."""
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_render as tr
+
+    return {
+        "tessera_formats._recipe_for": tfm._recipe_for,
+        "tessera_render.tessera_rung_is_serialisable":
+            tr.tessera_rung_is_serialisable,
+    }
+
+
+def _clear_grid_space_memos():
+    from prismaquant import tessera_formats as tfm
+    from prismaquant.tessera_render import clear_serialisable_cache
+
+    tfm.clear_recipe_cache()
+    clear_serialisable_cache()
+
+
+def test_the_grid_space_bound_is_asked_of_the_space_not_written_down():
+    """Widen the space and the bound must move by exactly what was added.
+
+    This is the assertion a restated literal cannot pass.  A bound of 15000 --
+    today's correct number -- fails here, because the fake family below adds
+    rungs the literal knows nothing about.  It is also why the bound is built
+    on first call rather than at decoration time: ``lru_cache`` fixes its size
+    when the decorator runs, which is before anything can enumerate anything.
+    """
+    from prismaquant import tessera_formats as tfm
+
+    real = list(enumerate_grid_space())
+    extra = tessera_family("LM128", 1)     # 7 payload bits, arity 1
+    assert extra not in real, "LM128_K1 is supposed to be outside the default space"
+    added_rungs = (extra.payload_bits - 1) * 256 // extra.arity + 1
+
+    before = tfm.grid_space_cache_bound()
+    _clear_grid_space_memos()
+    for name, memo in _grid_space_memos().items():
+        assert memo.cache_info().maxsize == before, name
+
+    original = tfm.enumerate_grid_space
+    try:
+        tfm.enumerate_grid_space = lambda *a, **k: iter([*real, extra])
+        _clear_grid_space_memos()
+        after = tfm.grid_space_cache_bound()
+        # one entry per rung the family adds, plus its rung-independent key
+        assert after == before + added_rungs + 1
+        for name, memo in _grid_space_memos().items():
+            assert memo.cache_info().maxsize == after, (
+                f"{name} kept a bound of {memo.cache_info().maxsize} while the "
+                f"space it is keyed over grew to {after}: the bound is a "
+                f"number, not a derivation")
+    finally:
+        tfm.enumerate_grid_space = original
+        _clear_grid_space_memos()
+
+    assert tfm.grid_space_cache_bound() == before
+
+
+def test_the_grid_space_bound_covers_every_rung_the_space_can_address():
+    """Coverage, both sides computed: the ceiling is never under the count.
+
+    ``grid_space_rungs`` takes the cap off ``payload_bits`` rather than off the
+    recipe, so it is an upper bound on the recipe-aware count and stays one
+    when a family's wire flips from TCQ to WINDOW and *gains* a rung's worth of
+    rate cap -- which E4M3's did on 2026-09-02.
+    """
+    from prismaquant import tessera_formats as tfm
+
+    families = list(enumerate_grid_space())
+    addressable = sum(len(realisable_rungs(f)) for f in families)
+    assert tfm.grid_space_rungs() >= addressable
+    assert tfm.grid_space_families() == len(families)
+    # plus the rung-independent key ``realisable_rungs`` itself fills per family
+    assert tfm.grid_space_cache_bound() >= addressable + len(families)
+
+
+def test_the_menu_is_a_subset_of_the_space_these_memos_are_keyed_over():
+    """The invariant the bound rests on, and the one that would break it.
+
+    ``menu_families`` searches arities 1..``_MAX_ARITY_SEARCH`` (8) over the
+    hardware bases and lets the encoder's refusal filter them, while
+    ``enumerate_grid_space`` fixes ``arities=(1, 2)``.  The two agree today
+    because no higher-arity grid is in Tessera's ``SERIALISABLE_GRIDS``.  If
+    one ever is, the menu grows and the grid space does not -- and these memos,
+    sized by the grid space, would be under it.  Fail here rather than there.
+    """
+    from prismaquant import tessera_menu as tm
+
+    space = set(enumerate_grid_space())
+    missing = sorted(f.name for f in tm.menu_families() if f not in space)
+    assert not missing, (
+        f"{missing} are on the production menu and outside enumerate_grid_space, "
+        "so grid_space_cache_bound() no longer bounds the memos it sizes")
+
+
+def test_the_grid_space_bound_does_not_re_enter_the_memo_it_sizes():
+    """The derivation must not ask for a wire recipe.
+
+    ``_recipe_for`` is sized by the bound, so a bound computed from a recipe
+    would call the memo it is building.  The guard in ``grid_space_cache``
+    raises on that; this proves the live derivation never trips it, by counting
+    fills rather than by trusting the guard not to be reached.
+    """
+    from prismaquant import tessera_formats as tfm
+
+    _clear_grid_space_memos()
+    tfm.grid_space_cache_bound()
+    assert tfm._recipe_for.cache_info().misses == 0, (
+        "sizing the recipe memo filled the recipe memo")
+
+
+def test_a_memo_that_re_enters_its_own_sizing_is_refused_not_recursed():
+    """The guard itself, on a memo built for the purpose."""
+    from prismaquant import tessera_formats as tfm
+
+    @tfm.grid_space_cache
+    def circular(x):
+        return x
+
+    original = tfm.grid_space_cache_bound
+    try:
+        tfm.grid_space_cache_bound = lambda: circular(1) or 8
+        with pytest.raises(TesseraFormatError, match="re-entered"):
+            circular(0)
+    finally:
+        tfm.grid_space_cache_bound = original

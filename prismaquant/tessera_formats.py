@@ -53,7 +53,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import lru_cache
+from functools import lru_cache, wraps
 import json
 import re
 
@@ -78,6 +78,10 @@ __all__ = [
     "scale_plane_name",
     "tessera_wire_defaults",
     "clear_recipe_cache",
+    "grid_space_cache",
+    "grid_space_cache_bound",
+    "grid_space_families",
+    "grid_space_rungs",
     "tessera_wire_recipe",
     "wire_overhead_q256",
     "SUPERBLOCK_WEIGHTS",
@@ -166,8 +170,176 @@ def scale_plane_name(plane: "ScalePlaneKind | str") -> str:
         raise TesseraFormatError(f"unknown scale plane {plane!r}") from exc
 
 
-@lru_cache(maxsize=512)
+# ---------------------------------------------------------------------------
+# The bound on a memo keyed over the grid space
+#
+# Two memos in this tree are keyed by *(family, rung)* rather than by a menu
+# member or a shape: ``_recipe_for`` below and
+# ``tessera_render.tessera_rung_is_serialisable``.  Both carried a round number
+# -- 512 and 4096 -- against a space that grows, which is the defect tessera#46
+# fixed for the two shape-keyed menu memos and prismaquant#134 reports here.
+#
+# The number they must NOT be sized by is the menu's.  ``menu_families()`` is a
+# four-family subset; these two are reached with **any** family the space
+# admits (``tessera_wire_recipe`` and ``get_tessera_family`` take a name, a
+# spec, or a full format name, and neither consults the menu), so their key
+# space is ``enumerate_grid_space`` -- twelve families and 13,068 rungs today,
+# against the menu's four and 6,916.  Sizing them off ``menu_rungs_per_shape()``
+# would leave both a factor of two under on the day anything prices an ``LM*``
+# family, which is the same defect one level up.
+#
+# The functions below are defined here, above their first use, but read
+# ``enumerate_grid_space`` and ``family_q256_bounds`` from further down the
+# module; they run at first *call*, never at import.
+# ---------------------------------------------------------------------------
+
+
+def _q256_bounds_for_cap(spec: "TesseraFamily", cap: int) -> tuple[int, int]:
+    """Inclusive per-position q256 bounds for a family whose rate cap is ``cap``.
+
+    The one piece of arithmetic behind both :func:`family_q256_bounds` (which
+    passes the *recipe's* cap) and :func:`grid_space_rungs` (which passes the
+    grid's), so the two cannot drift apart on the divisibility guard.
+    """
+    lo = Fraction(Q256_UNIT, spec.arity)
+    hi = Fraction(int(cap) * Q256_UNIT, spec.arity)
+    if lo.denominator != 1 or hi.denominator != 1:
+        raise TesseraFormatError(
+            f"{spec.name}: arity {spec.arity} does not divide the q256 grid "
+            f"exactly; bounds {lo}..{hi} are not integers"
+        )
+    return (int(lo), int(hi))
+
+
+def grid_space_families() -> int:
+    """Families :func:`enumerate_grid_space` admits.  Counted, never listed.
+
+    Twelve today.  It was eleven until 2026-09-02, when the 16-bit base was
+    admitted to ``_HARDWARE_BASES`` and every enumerator that reads that map
+    grew by one without a line here changing -- which is exactly why a memo
+    over this space may not carry a literal.
+    """
+    return sum(1 for _ in enumerate_grid_space())
+
+
+def grid_space_rungs() -> int:
+    """Rungs the grid space can address, **over every family and every recipe**.
+
+    A ceiling rather than today's count, and the gap is deliberate.
+    :func:`family_rate_cap` answers ``payload_bits`` under the WINDOW body and
+    ``payload_bits - 1`` under TCQ, so a family's rung count *moves when its
+    recipe flips* -- E4M3's flipped on 2026-09-02 and the docstring of
+    :func:`family_rate_cap` says more are scheduled.  ``payload_bits`` is the
+    code space itself and bounds both branches, so a bound stated against it
+    survives the next flip in the direction that matters: a family **gaining**
+    rungs.  14,988 today against a recipe-aware 13,068 (the two WINDOW
+    families, E4M3 and BF16, are already at the ceiling and contribute the
+    difference of zero).
+
+    Recipe-free is also what makes it safe to compute *here*: the recipe
+    lookup this module memoises is :func:`_recipe_for`, and a bound that asked
+    for a recipe would re-enter the memo it is sizing.  Nothing on this path
+    touches it -- ``payload_bits`` is arithmetic on ``base_size`` and ``arity``
+    -- and ``test_the_grid_space_bound_does_not_re_enter_the_memo_it_sizes``
+    holds that true.
+    """
+    total = 0
+    for spec in enumerate_grid_space():
+        lo, hi = _q256_bounds_for_cap(spec, spec.payload_bits)
+        total += hi - lo + 1
+    return total
+
+
+def grid_space_cache_bound() -> int:
+    """Entries a memo keyed over ``(family, rung)`` may hold.
+
+    :func:`grid_space_rungs` plus :func:`grid_space_families` -- one entry per
+    addressable rung, plus one per family for the *rung-independent* key
+    (``tessera_wire_recipe(family)`` with no rung, which is what a bounds
+    question asks and what ``realisable_rungs`` fills on every family it
+    enumerates).  15,000 today; both terms are computed and neither is a round
+    number chosen to be safe.
+
+    It stays an **LRU** rather than ``maxsize=None``, and that is a measured
+    distinction rather than a taste.  The key space is finite only for
+    well-formed input, and neither memo refuses ill-formed input:
+    ``tessera_rung_is_serialisable('zzz')`` answers ``False`` and occupies a
+    key, and ``tessera_wire_recipe('TESSERA_LM128_K1', 999999)`` answers a
+    recipe for a family the space does not enumerate at a rung no family
+    admits.  Unbounded here would trade a sizing bug for an unbounded-memory
+    one; a ceiling keeps the eviction that makes that harmless.
+
+    What the ceiling commits is measured, not estimated.  ``tracemalloc``
+    around a saturating pass over all 13,068 addressable rungs, differenced
+    against the same pass with the memo cleared, puts
+    ``tessera_rung_is_serialisable`` at **88 B an entry** (the answer is a
+    bool) and ``_recipe_for`` at **178 B** (the answer is one of Tessera's
+    module-level ``WireRecipe`` singletons, so the entry is the key tuple and
+    the LRU node, not a copy).  Filled to the bound that is **1.26 MiB** and
+    **2.55 MiB**.  Neither is the memory decision ``menu_cache_shapes`` is;
+    there is nothing here to trade.
+    """
+    return grid_space_rungs() + grid_space_families()
+
+
+def grid_space_cache(fn):
+    """Memoise ``fn`` at :func:`grid_space_cache_bound`, sized on first call.
+
+    ``lru_cache`` fixes its size when the decorator runs, and this bound cannot
+    be known then: it enumerates the grid space, which builds families and asks
+    Tessera about grids.  So the memo is built on the first call and the
+    wrapper forwards ``cache_info`` / ``cache_clear`` -- which is what lets a
+    test read the bound off the live memo instead of restating it, and what
+    makes ``cache_clear`` re-derive the bound rather than preserve a stale one.
+
+    Same shape as ``tessera_menu.menu_scaled_cache`` and deliberately not
+    shared with it: that one is sized in *shapes* times a menu, this one in the
+    grid space, and one decorator taking both bounds would hide which memo is
+    keyed over which set.
+    """
+    memo: "list[object]" = []
+    sizing: "list[object]" = []
+
+    def _memo():
+        if not memo:
+            if sizing:
+                # Not hypothetical enough to leave to a stack overflow: the
+                # obvious way to state this bound is to ask each family for its
+                # rung count, and the rung count depends on the recipe's cap,
+                # and the recipe is what ``_recipe_for`` memoises.
+                # :func:`grid_space_rungs` takes the grid's ``payload_bits``
+                # instead, precisely so it cannot; this says so if it ever does.
+                raise TesseraFormatError(
+                    f"{fn.__name__}: sizing this memo re-entered it. "
+                    "grid_space_cache_bound() must not ask for anything this "
+                    "memo answers -- take the ceiling off payload_bits, not "
+                    "off a wire recipe."
+                )
+            sizing.append(True)
+            try:
+                memo.append(lru_cache(maxsize=grid_space_cache_bound())(fn))
+            finally:
+                sizing.clear()
+        return memo[0]
+
+    @wraps(fn)
+    def call(*args):
+        return _memo()(*args)
+
+    call.cache_info = lambda: _memo().cache_info()
+    call.cache_clear = lambda: memo.clear()
+    return call
+
+
+@grid_space_cache
 def _recipe_for(base: str, base_size: int, arity: int, rung: "int | None") -> "WireRecipe":
+    # Sized by :func:`grid_space_cache_bound`, not by a literal: this is
+    # reached only through ``tessera_wire_recipe`` (its sole caller), which
+    # takes ANY family rather than a menu member, so its key space is the whole
+    # grid space plus one rung-independent key per family.  At maxsize=512 a
+    # pass over one shape's menu re-missed every rung: 6,916 misses added on
+    # the first pass and 6,920 more on a second that should have added none.
+    #
     # Resolved off the module, not off the name bound at import: the recipe a
     # grid gets is Tessera's decision and it moves (E4M3 is scheduled to flip
     # from TCQ to WINDOW over CHANNEL), so a test -- or a future in-process
@@ -188,6 +360,11 @@ def clear_recipe_cache() -> None:
     ``_tcq_body_is_reachable`` is cleared with it: it memoises a decision
     derived from ``recipe_table`` over the same grids, so a substituted wire
     that leaves it standing would move the prices and not the anchor wall.
+
+    Clearing also drops the memo itself rather than emptying it, so the next
+    call re-derives :func:`grid_space_cache_bound`.  A substitution that widens
+    the space -- a test that adds a family -- gets a memo sized for the space
+    it created, not for the one the process started with.
     """
 
     _recipe_for.cache_clear()
@@ -800,14 +977,7 @@ def family_q256_bounds(
 ) -> tuple[int, int]:
     """Inclusive per-position q256 bounds on the BODY under ``recipe``."""
     fam = get_tessera_family(spec)
-    lo = Fraction(Q256_UNIT, fam.arity)
-    hi = Fraction(family_rate_cap(fam, recipe) * Q256_UNIT, fam.arity)
-    if lo.denominator != 1 or hi.denominator != 1:
-        raise TesseraFormatError(
-            f"{fam.name}: arity {fam.arity} does not divide the q256 grid "
-            f"exactly; bounds {lo}..{hi} are not integers"
-        )
-    return (int(lo), int(hi))
+    return _q256_bounds_for_cap(fam, family_rate_cap(fam, recipe))
 
 
 def validate_body_rate_q256(
