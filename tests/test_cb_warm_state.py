@@ -1,11 +1,12 @@
 """CPU-only tests for CB encoder warm-state plumbing.
 
-The expensive production encoder is represented by a tiny deterministic fake
-for fallback/verification properties.  Record validation still uses the real
-serialization context and safetensors sidecar implementation.
+Most fallback properties use a tiny deterministic fake. Byte identity uses
+the real encoder, and record validation always uses the real serialization
+context and safetensors sidecar implementation.
 """
 from __future__ import annotations
 
+import copy
 import random
 
 import pytest
@@ -19,12 +20,18 @@ from prismaquant.cb_warm_state import (
     WarmStateVerificationError,
     build_warm_record,
     execute_warm_started_encode,
+    selected_scale_state,
     tensor_value_identity,
+    warm_serialization_context,
 )
-from prismaquant.nvfp4_cb_footprint import CBSerializationContext
+from prismaquant.nvfp4_cb_footprint import (
+    CBSerializationContext,
+    cb_serialization_context_stamp,
+)
 
 
 FORMAT = "NVFP4_CB_K12"
+FP8_FORMAT = "FP8_CB_K28"
 QNAME = "model.layers.0.self_attn.q_proj"
 
 
@@ -79,6 +86,25 @@ def _fake_payload(source: torch.Tensor, scales: torch.Tensor) -> CBEncodedPayloa
     )
 
 
+def _record_with_prepatch_global_stamp(
+    record: CBWarmStateRecord,
+    *,
+    context: CBSerializationContext,
+    format_name: str,
+    drop_ldlq_scope: bool = False,
+) -> CBWarmStateRecord:
+    metadata = copy.deepcopy(dict(record.metadata))
+    # Before warm_serialization_context projected LDLQ onto one format, the
+    # writer persisted this artifact-wide serialization stamp verbatim.
+    serialization = cb_serialization_context_stamp(
+        context, formats=[format_name]
+    )
+    if drop_ldlq_scope:
+        serialization.pop("ldlq_scope")
+    metadata["serialization_context"]["serialization"] = serialization
+    return CBWarmStateRecord(metadata=metadata, scale_state=record.scale_state)
+
+
 def test_warm_record_round_trip_is_atomic_and_content_keyed(tmp_path):
     weight, col_weights, context, record = _case()
     store = CBWarmStateStore(tmp_path)
@@ -104,6 +130,269 @@ def test_warm_record_round_trip_is_atomic_and_content_keyed(tmp_path):
     changed_digest = tensor_value_identity(weight + 1)[1]
     changed_path = store.path_for(QNAME, FORMAT, changed_digest)
     assert len({path, other_path, changed_path}) == 3
+
+
+def test_missing_scope_raw_stamp_canonicalizes_to_full_identity(tmp_path):
+    weight, col_weights, context, record = _case()
+    store = CBWarmStateStore(tmp_path)
+    legacy = _record_with_prepatch_global_stamp(
+        record,
+        context=context,
+        format_name=FORMAT,
+        drop_ldlq_scope=True,
+    )
+    serialization = legacy.metadata["serialization_context"]["serialization"]
+    assert serialization["ldlq"] is False
+    assert "ldlq_scope" not in serialization
+    assert "ldlq_packed_kernel" not in serialization
+    store.write(legacy)
+
+    loaded = _load(store, weight, col_weights, context)
+
+    assert loaded is not None
+    assert loaded.metadata == record.metadata
+
+
+def test_warm_ldlq_identity_projects_artifact_scope_per_format():
+    contexts = {
+        scope: CBSerializationContext.production(
+            encode_tier="fast",
+            ldlq=scope != "none",
+            ldlq_scope=scope,
+        )
+        for scope in ("none", "nvfp4", "all")
+    }
+    stamps = {
+        scope: {
+            fmt: warm_serialization_context(context, fmt)
+            for fmt in (FORMAT, FP8_FORMAT)
+        }
+        for scope, context in contexts.items()
+    }
+
+    # NVFP4 is raw only under none; FP8 is LDLQ only under all.
+    assert stamps["none"][FORMAT] != stamps["nvfp4"][FORMAT]
+    assert stamps["nvfp4"][FORMAT] == stamps["all"][FORMAT]
+    assert stamps["none"][FP8_FORMAT] == stamps["nvfp4"][FP8_FORMAT]
+    assert stamps["nvfp4"][FP8_FORMAT] != stamps["all"][FP8_FORMAT]
+
+
+def test_missing_scope_active_stamp_means_historical_all(tmp_path):
+    generator = torch.Generator().manual_seed(13)
+    weight = torch.randn(2, 256, generator=generator) * 0.05
+    col_weights = torch.rand(256, generator=generator) + 0.1
+    all_context = CBSerializationContext.production(
+        encode_tier="fast", ldlq=True, ldlq_scope="all"
+    )
+    record = build_warm_record(
+        qname=QNAME,
+        format_name=FP8_FORMAT,
+        source_weight=weight,
+        col_weights=col_weights,
+        context=all_context,
+        fields={"scales": torch.ones(2, 1)},
+    )
+    historical = _record_with_prepatch_global_stamp(
+        record,
+        context=all_context,
+        format_name=FP8_FORMAT,
+        drop_ldlq_scope=True,
+    )
+    serialization = historical.metadata["serialization_context"][
+        "serialization"
+    ]
+    assert serialization["ldlq"] is True
+    assert "ldlq_scope" not in serialization
+    assert "ldlq_packed_kernel" in serialization
+
+    store = CBWarmStateStore(tmp_path)
+    store.write(historical)
+    assert _load(
+        store,
+        weight,
+        col_weights,
+        all_context,
+        fmt=FP8_FORMAT,
+    ) is not None
+    nvfp4_context = CBSerializationContext.production(
+        encode_tier="fast", ldlq=True, ldlq_scope="nvfp4"
+    )
+    none_context = CBSerializationContext.production(
+        encode_tier="fast", ldlq=False, ldlq_scope="none"
+    )
+    assert _load(
+        store,
+        weight,
+        col_weights,
+        nvfp4_context,
+        fmt=FP8_FORMAT,
+    ) is None
+    assert _load(
+        store,
+        weight,
+        col_weights,
+        none_context,
+        fmt=FP8_FORMAT,
+    ) is None
+
+
+def test_prepatch_global_scope_verified_warm_encode_is_byte_identical(tmp_path):
+    from prismaquant import nvfp4_cb_formats as cb
+
+    generator = torch.Generator().manual_seed(17)
+    weight = torch.randn(2, 256, generator=generator) * 0.05
+    col_weights = torch.rand(256, generator=generator) + 0.1
+    # This campaign-wide scope enables LDLQ for NVFP4 only. The FP8 cell's
+    # canonical warm identity must remain raw and independent of that setting.
+    context = CBSerializationContext.production(
+        encode_tier="fast", ldlq=True, ldlq_scope="nvfp4"
+    )
+
+    def encode(warm_scale_state=None):
+        packed, fields = cb.nvfp4_cb_pack(
+            weight,
+            28,
+            grid="fp8",
+            mode="product",
+            col_weights=col_weights,
+            scale_sweep=True,
+            scale_coding="v1",
+            encode_tier="fast",
+            warm_scale_state=warm_scale_state,
+        )
+        return CBEncodedPayload(
+            value=(packed, fields),
+            selected_scale=selected_scale_state(fields),
+            rendered={"packed": packed, "weight_scale": fields["scales"]},
+        )
+
+    original_cold = encode()
+    record = build_warm_record(
+        qname=QNAME,
+        format_name=FP8_FORMAT,
+        source_weight=weight,
+        col_weights=col_weights,
+        context=context,
+        fields=original_cold.value[1],
+    )
+    serialization = warm_serialization_context(context, FP8_FORMAT)[
+        "serialization"
+    ]
+    assert serialization["ldlq"] is False
+    assert serialization["ldlq_scope"] == "none"
+    assert "ldlq_packed_kernel" not in serialization
+
+    store = CBWarmStateStore(tmp_path)
+    prepatch = _record_with_prepatch_global_stamp(
+        record,
+        context=context,
+        format_name=FP8_FORMAT,
+    )
+    global_serialization = prepatch.metadata["serialization_context"][
+        "serialization"
+    ]
+    assert global_serialization["ldlq"] is True
+    assert global_serialization["ldlq_scope"] == "nvfp4"
+    assert "ldlq_packed_kernel" in global_serialization
+    store.write(prepatch)
+    loaded = _load(store, weight, col_weights, context, fmt=FP8_FORMAT)
+    assert loaded is not None
+    assert loaded.metadata == record.metadata
+
+    warm, outcome = execute_warm_started_encode(
+        qname=QNAME,
+        format_name=FP8_FORMAT,
+        record=loaded,
+        verify=True,
+        full_encode=encode,
+        seeded_encode=encode,
+    )
+
+    assert outcome == "verified"
+    assert torch.equal(warm.rendered["packed"], original_cold.rendered["packed"])
+    assert torch.equal(
+        warm.rendered["weight_scale"],
+        original_cold.rendered["weight_scale"],
+    )
+
+
+def test_global_scope_canonicalization_rejects_semantic_and_kernel_drift(
+    tmp_path,
+):
+    generator = torch.Generator().manual_seed(29)
+    weight = torch.randn(2, 256, generator=generator) * 0.05
+    col_weights = torch.rand(256, generator=generator) + 0.1
+    context = CBSerializationContext.production(
+        encode_tier="fast", ldlq=True, ldlq_scope="nvfp4"
+    )
+    record = build_warm_record(
+        qname=QNAME,
+        format_name=FP8_FORMAT,
+        source_weight=weight,
+        col_weights=col_weights,
+        context=context,
+        fields={"scales": torch.ones(2, 1)},
+    )
+    aggregate = _record_with_prepatch_global_stamp(
+        record,
+        context=context,
+        format_name=FP8_FORMAT,
+    )
+    cases = {}
+
+    inconsistent_bool = copy.deepcopy(aggregate)
+    inconsistent_bool.metadata["serialization_context"]["serialization"][
+        "ldlq"
+    ] = False
+    cases["scope-bool-inconsistent"] = inconsistent_bool
+
+    invalid_scope = copy.deepcopy(aggregate)
+    invalid_scope.metadata["serialization_context"]["serialization"][
+        "ldlq_scope"
+    ] = "fp8"
+    cases["invalid-scope"] = invalid_scope
+
+    wrong_kernel = copy.deepcopy(aggregate)
+    wrong_kernel.metadata["serialization_context"]["serialization"][
+        "ldlq_packed_kernel"
+    ] = {"schema": "wrong"}
+    cases["irrelevant-but-wrong-kernel"] = wrong_kernel
+
+    missing_kernel = copy.deepcopy(aggregate)
+    missing_kernel.metadata["serialization_context"]["serialization"].pop(
+        "ldlq_packed_kernel"
+    )
+    cases["irrelevant-but-missing-kernel"] = missing_kernel
+
+    inactive_with_kernel = copy.deepcopy(record)
+    inactive_with_kernel.metadata["serialization_context"]["serialization"][
+        "ldlq_packed_kernel"
+    ] = copy.deepcopy(
+        aggregate.metadata["serialization_context"]["serialization"][
+            "ldlq_packed_kernel"
+        ]
+    )
+    cases["inactive-with-extraneous-kernel"] = inactive_with_kernel
+
+    active_fp8 = CBSerializationContext.production(
+        encode_tier="fast", ldlq=True, ldlq_scope="all"
+    )
+    cases["different-effective-semantics"] = _record_with_prepatch_global_stamp(
+        record,
+        context=active_fp8,
+        format_name=FP8_FORMAT,
+    )
+
+    for name, stale in cases.items():
+        store = CBWarmStateStore(tmp_path / name)
+        store.write(stale)
+        assert _load(
+            store,
+            weight,
+            col_weights,
+            context,
+            fmt=FP8_FORMAT,
+        ) is None, name
 
 
 def test_source_digest_mismatch_refuses_record_and_falls_back(tmp_path):
