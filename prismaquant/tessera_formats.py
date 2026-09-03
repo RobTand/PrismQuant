@@ -503,8 +503,24 @@ def _forest_bytes(spec: "TesseraFamily", rung: int, columns: int, wire) -> int:
     quota cannot close over these columns, which is the same refusal
     ``tessera.calculator.terminal_rate`` makes, so the two accountants agree
     about which rungs exist as well as about what they cost.
+
+    That refusal arrives as ``tessera.errors.GrammarError``, which descends
+    from ``TesseraError`` and **not** from ``ValueError``, so it is re-raised
+    in this module's own type exactly as ``TesseraFamily.__post_init__`` does
+    with ``tuple_grid``'s refusal.  Charging the forest is what first put a
+    schedule walk underneath ``artifact_bpp``: before it, an unrealisable
+    ``(rung, columns)`` pair returned a shape-free number, and every caller
+    that guards with ``except TesseraFormatError`` -- ``menu_families``,
+    ``enumerate_grid_space``, ``expand_tessera_menu`` -- would have seen the
+    raw grammar error propagate out of the byte gate instead.
     """
-    rates = spec.column_schedule(rung, columns, recipe=wire)
+    try:
+        rates = spec.column_schedule(rung, columns, recipe=wire)
+    except GrammarError as exc:
+        raise TesseraFormatError(
+            f"{spec.name}: rung {rung} is not realisable over {columns} "
+            f"columns, so its forest has no size -- {exc}"
+        ) from exc
     return sum(forest_plane_bytes(rates, family_rate_cap(spec, wire)))
 
 

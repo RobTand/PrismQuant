@@ -243,3 +243,119 @@ def test_the_synthesized_format_spec_prices_by_shape_and_never_by_a_scalar():
         assert spec.memory_bytes_for_shape(shape) == Fraction(
             _priced_bytes(family, int(rung), shape)
         ), (name, shape)
+
+
+# ---------------------------------------------------------------------------
+# The guard that does not need the next plane to be named
+# ---------------------------------------------------------------------------
+
+#: Three shapes for the exhaustive sweep: an MoE expert column count where a
+#: per-unit term is 0.1 bpp, a wider expert, and a dense Linear where the same
+#: term rounds to 0.002 bpp and an accountant that dropped it would look right.
+SWEEP_SHAPES = ((96, 320), (96, 768), (2048, 1024))
+
+
+def _grid_name(spec) -> str:
+    """Tessera's own name for a family's payload grid."""
+    return spec.base if spec.arity == 1 else f"{spec.base}x{spec.arity}"
+
+
+def test_every_realisable_rung_of_every_family_prices_what_tessera_prices():
+    """The property, swept: no rung of no family, at no shape, disagrees.
+
+    This is the test that would catch a *thirteenth* plane without anyone
+    editing it.  Both sides are exact ``Fraction`` arithmetic over integer
+    plane extents, so the sweep is seconds rather than encodes, and neither
+    side is a table restated beside the other: the left is
+    ``artifact_bpp``, which derives its per-unit terms from
+    ``tessera.grammar.forest_plane_bytes`` and the recipe
+    ``tessera.export.wire_recipe`` resolves, and the right is
+    ``tessera.control.unit_wire_bits``, which is
+    ``tessera.calculator.terminal_rate`` -- the accountant the serializer and
+    the parser both defer to.  Add a plane to the wire and Tessera's
+    accountant moves; PrismaQuant's does not unless the term it derives from
+    covers it, and this goes red.
+
+    **What it catches:** every plane Tessera charges and PrismaQuant does not,
+    at every realisable rung of every family in the menu, at three shapes --
+    which is the failure #126 was.  Before the fix it was red on 514 of the
+    2436 (family, rung) pairs at each shape: all 513 rungs of the arity-1 TCQ
+    family at 20-56 B, and the one E2M1x2 coset-cap rung at 512 B.
+
+    **What it does not catch:** a plane *both* accountants forget.  That leg is
+    ``encode_linear``, and it is asserted above (E2M1, both arities, both sides
+    of the cap) and in
+    :func:`test_the_window_families_agree_with_the_exporter_too` (E4M3, BF16),
+    at the shapes whose encodes are seconds.  It also says nothing about
+    header and manifest side bytes, which both figures exclude by the same
+    definition, nor about a **shard**: ``artifact_bpp`` prices a whole unit,
+    and a tensor-parallel shard writes an INITIAL_STATE plane that neither
+    side of this identity carries (RobTand/prismaquant#129).
+    """
+    from prismaquant.tessera_menu import menu_families
+
+    checked = 0
+    families = 0
+    for spec in menu_families():
+        families += 1
+        grid = _grid_name(spec)
+        lo, hi = spec.mathematical_q256_bounds
+        for rows, columns in SWEEP_SHAPES:
+            for rung in range(lo, hi + 1):
+                try:
+                    priced = _priced_bytes(spec.name, rung, (rows, columns))
+                except TesseraFormatError:
+                    continue        # the quota does not close over these columns
+                assert priced == unit_wire_bits(grid, rung, rows, columns) / 8, (
+                    spec.name, rung, (rows, columns)
+                )
+                checked += 1
+    # Not vacuous: four families, and the sweep really walks the whole axis.
+    assert families == 4, families
+    assert checked > 15_000, checked
+
+
+@pytest.mark.parametrize("family,grid,rung", (
+    ("TESSERA_E4M3_K1", "E4M3", 256),
+    ("TESSERA_BF16_K1", "BF16", 256),
+))
+def test_the_window_families_agree_with_the_exporter_too(family, grid, rung):
+    """The exporter leg on the two WINDOW/CHANNEL families, not just E2M1.
+
+    The forest is a TCQ term, so these two families were never wrong -- which
+    is exactly why they belong here.  The identity above is between two
+    accountants; if a plane were added that *both* of them missed, only an
+    encode would say so, and an encode leg that covers one body kind is not a
+    statement about the wire.  One rung each, at the family's floor, on a
+    64x512 unit: about nine seconds apiece on CPU, against minutes at L=14 on
+    a wide one.
+    """
+    torch.manual_seed(11)
+    exported = encode_linear(
+        torch.randn(64, 512), grid=grid_for_name(grid), q256=rung
+    ).exact_bytes
+    assert _priced_bytes(family, rung, (64, 512)) == exported
+
+
+def test_an_unrealisable_rung_refuses_in_this_modules_own_error_type():
+    """A grammar refusal must not cross the seam as a ``tessera`` exception.
+
+    Charging the forest is what first put a Bresenham walk underneath
+    ``artifact_bpp``: before it, a TCQ rung over a block plane had a shape-free
+    price and never asked whether the quota closed.  ``bresenham_rate_schedule``
+    raises ``tessera.errors.GrammarError``, which descends from
+    ``TesseraError`` and **not** from ``ValueError``, so every caller in this
+    tree that guards a price with ``except TesseraFormatError`` --
+    ``menu_families``, ``enumerate_grid_space``, ``expand_tessera_menu`` --
+    would have seen it propagate straight out of the byte gate.  Re-raised in
+    this module's type, exactly as ``TesseraFamily.__post_init__`` does with
+    ``tuple_grid``'s refusal.
+    """
+    from tessera.errors import GrammarError
+
+    assert not issubclass(GrammarError, ValueError)
+    # R257 needs 5/4 columns at rate 2 over 320 columns: the quota cannot close.
+    with pytest.raises(TesseraFormatError, match="not realisable over 320"):
+        artifact_bpp("TESSERA_E2M1_K1", 257, shape=(96, 320))
+    # ...and it is still a rung the grammar admits at a column count that works.
+    assert _priced_bytes("TESSERA_E2M1_K1", 257, (96, 768)) > 0
