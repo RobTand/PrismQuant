@@ -700,11 +700,22 @@ def promote_moe_pair(
 
 
 def promote_fused(assignment: dict[str, str],
-                  format_rank: dict[str, int],
-                  profile=None,
-                  legal_formats: dict[str, set[str]] | None = None,
-                  ) -> dict[str, str]:
-    """Promote each fused-sibling group to one shared serving format."""
+                   format_rank: dict[str, int],
+                   profile=None,
+                   legal_formats: dict[str, set[str]] | None = None,
+                   fused_licence=_LICENCE_FROM_CONTRACT,
+                   ) -> dict[str, str]:
+    """Promote each fused-sibling group to one shared serving format.
+
+    ``fused_licence`` is the pinned Tessera contract's ``fused_module``
+    block parsed into a ``FusedModuleLicence``; ``None`` is the absence of
+    a licence (one rung per group), and the default reads the contract on
+    first need through ``tessera_menu.fused_module_licence`` -- lazily, so
+    a stock run never imports the menu reader. It is forwarded to
+    ``promote_serving_units`` unchanged, so a licensed fused group keeps
+    its per-member rungs here exactly as it does on the
+    ``solve_with_promotion`` path (issue #169).
+    """
     if profile is None:
         from .model_profiles import DefaultProfile
         profile = DefaultProfile()
@@ -715,15 +726,50 @@ def promote_fused(assignment: dict[str, str],
         include_fused=True,
         include_moe=False,
         legal_formats=legal_formats,
+        fused_licence=fused_licence,
     )
     groups = _group_by_profile(assignment.keys(), profile)
-    # Legacy per-group repass, kept for its post-check below. It cannot write:
-    # a connected component is a superset of each group it contains, so every
-    # group is already uniform here and no member's rank is below the group max.
-    # (It is also legality-blind, so writing here would be able to undo the
-    # component pass's legal-for-all choice.)
+    licence = fused_licence
+
+    def _group_is_licensed(members_present: list[str]) -> bool:
+        """Is this group's format mix a licensed per-member family, not drift?
+
+        True only while the members share one promotion family (one Tessera
+        decoder) AND the ``q256`` word licenses per-member rates. A mix
+        across families is unservable under any licence and answers False
+        without touching the contract, so a stock run never imports the
+        menu reader for a question whose answer is already no. An unnamed
+        ``q256`` word raises through the licence's own lookup rather than
+        guessing either way -- the same fail-closed read
+        ``_resolve_family_group`` performs.
+        """
+        from .tessera_formats import format_promotion_class
+        if len({format_promotion_class(out[m])
+                for m in members_present}) != 1:
+            return False
+        nonlocal licence
+        if licence is _LICENCE_FROM_CONTRACT:
+            from .tessera_menu import fused_module_licence as _read_licence
+            licence = _read_licence()
+        if licence is None:
+            return False
+        return bool(licence.is_per_member("q256"))
+
+    # Legacy per-group repass, kept for its post-check below. On an
+    # unlicensed group it cannot write: a connected component is a superset
+    # of each group it contains, so every group is already uniform here and
+    # no member's rank is below the group max. On a LICENSED group it must
+    # not write: the component pass above has deliberately left per-member
+    # rungs of one family in place (issue #140), and collapsing them to
+    # ``max(ranks)`` would silently discard exactly those rungs (issue
+    # #169). (The repass is also legality-blind, so writing here would be
+    # able to undo the component pass's legal-for-all choice.)
     for members_present in groups.values():
+        members_present = [m for m in members_present if m in out]
         if len(members_present) < 2:
+            continue
+        if len({out[m] for m in members_present}) > 1 and _group_is_licensed(
+                members_present):
             continue
         ranks = [_rank_of(out[m], format_rank,
                           where="promote_fused legacy repass",
@@ -741,6 +787,12 @@ def promote_fused(assignment: dict[str, str],
         if len(members) < 2:
             continue
         fmts = {out[m] for m in members}
+        if len(fmts) > 1 and _group_is_licensed(
+                [m for m in members if m in out]):
+            # A licensed family mix: one shared decoder with a rate per
+            # member, which is what the component pass above wrote. The
+            # uniformity post-check below is for unlicensed groups only.
+            continue
         if len(fmts) > 1:
             detail = ", ".join(f"{m}={out[m]}" for m in members)
             raise AssertionError(
