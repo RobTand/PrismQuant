@@ -649,6 +649,38 @@ def synthesize_production_render_cost_payload(
         inherited_provenance["source_format_plan_identity_sha256"] = (
             format_plan.identity_sha256
         )
+    # Cost/export pair (#147, consumer 2): on the shipping default the AURA
+    # dW cache is built format-menu and the export cache assignment-scoped,
+    # and #135's whole point is that these must be the same rendering. The
+    # priced contract therefore records the hook enumeration it was priced
+    # from, and synthesis refuses a baseline priced from a different
+    # rendering instead of letting the next narrowing regress silently.
+    from prismaquant.production_weight_cache import (
+        ACTIVATION_HOOK_SCOPE_KEY,
+        activation_hook_scope_of,
+        assert_same_activation_hook_scope,
+    )
+
+    cache_hook_scope = activation_hook_scope_of(production_cache)
+    baseline_hook_scope = (
+        activation_hook_scope_of(baseline_provenance)
+        if isinstance(baseline_provenance, Mapping)
+        else None
+    )
+    if cache_hook_scope is not None and baseline_hook_scope is not None:
+        assert_same_activation_hook_scope(
+            baseline_hook_scope,
+            cache_hook_scope,
+            where="production render cost baseline vs production cache",
+        )
+    if baseline_hook_scope is not None and cache_hook_scope is None:
+        raise ValueError(
+            "production render cost baseline records an activation hook "
+            "rendering but the production cache carries no "
+            "activation_hook_scope; cannot prove the same rendering"
+        )
+    if cache_hook_scope is not None:
+        inherited_provenance[ACTIVATION_HOOK_SCOPE_KEY] = cache_hook_scope
     return {
         "schema": SCHEMA,
         "costs": output_costs,
