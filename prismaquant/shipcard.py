@@ -8,6 +8,10 @@ can close. `python -m prismaquant.shipcard_cli verify` then exits non-zero until
 record whose `model_sha` matches the artifact on disk — which turns "we never ran
 the gate" from a silent omission into an explicit refusal.
 
+Lane-scoped slots (:data:`LANE_SCOPED_SLOTS`) are opened by the lane's own
+``lane_specs/<lane>.json`` ``gates[]`` and are required of cards stamped with
+that ``lane``.
+
 Base slots (required for every artifact):
 
 | Slot | Filled by |
@@ -89,9 +93,23 @@ UNIFORM_CONTROL_SLOT = "uniform_control"
 #: :func:`required_slots` makes it mandatory and its absence is UNFILLED.
 OPTIONAL_SLOTS: tuple[str, ...] = (UNIFORM_CONTROL_SLOT,)
 
+#: Slots a LANE opens beyond the base set, because its own declaration names a
+#: gate the base set has nowhere to put.  Precedent: the retired Gridbook
+#: codebook lane opened three of these off the artifact's own config.
+#:
+#: ``route.census`` is principle 12's second leg -- the per-module route
+#: histogram the serve actually emitted, against the histogram the artifact was
+#: PRICED on.  The Tessera lane declared that gate from the day the lane
+#: existed and gave it ``shipcard_slot: null``, so the check was named and
+#: recorded nowhere; a gate nothing can record is a gate nothing can refuse on
+#: (RobTand/prismaquant#119).  Which lanes open which of these is read from
+#: ``lane_specs/<lane>.json``'s own ``gates[]``, never from a list here: a
+#: fourth lane declaring a new gate opens its slot by declaring it.
+LANE_SCOPED_SLOTS: tuple[str, ...] = ("route.census",)
+
 #: The vocabulary accepted by :func:`make_record`.  Whether a member is
 #: required is artifact-specific and is resolved by :func:`required_slots`.
-ALL_SLOTS: tuple[str, ...] = REQUIRED_SLOTS + OPTIONAL_SLOTS
+ALL_SLOTS: tuple[str, ...] = REQUIRED_SLOTS + OPTIONAL_SLOTS + LANE_SCOPED_SLOTS
 
 #: Slots whose number is invalid if it was produced against a spec-decode serve.
 GOLD_SLOTS: frozenset[str] = frozenset({"gold.kl", "gold.ppl"})
@@ -1264,17 +1282,60 @@ def _now() -> str:
 # ---------------------------------------------------------------------------
 # Build lane
 # ---------------------------------------------------------------------------
+def lane_gate_slots(lane: str | None) -> tuple[str, ...]:
+    """The shipcard slots ``lane``'s own declaration says its gates close.
+
+    Read from ``lane_specs/<lane>.json``, so a lane that declares a gate opens
+    that gate's slot without an edit here.  An unknown or absent lane resolves
+    to ``()`` -- historical cards carry no ``lane`` and must keep verifying
+    against exactly the base set they were opened with.  It is not a widening
+    to answer ``()``: :func:`required_slots` UNIONS this with
+    :data:`REQUIRED_SLOTS` and never replaces it, so no lane can subtract a
+    base requirement by under-declaring (the GGUF lane declares no
+    ``native_export.graph`` gate and is still required to close that slot).
+    """
+    if not lane:
+        return ()
+    from prismaquant.lane_spec import lane_spec_for_container, load_lane_spec
+
+    # The card names the EXPORT_CONTAINER (`compressed-tensors`, hyphen); the
+    # spec FILE is named for the lane id (`compressed_tensors`, underscore).
+    # Resolve by container first so the card can carry the operator-facing
+    # spelling, and fall back to the id so a caller holding a spec id is not
+    # silently answered with "no slots".
+    try:
+        spec = lane_spec_for_container(str(lane))
+    except Exception:
+        try:
+            spec = load_lane_spec(str(lane))
+        except Exception:
+            return ()
+    return tuple(
+        slot for slot in spec.shipcard_slots() if slot in ALL_SLOTS
+    )
+
+
 def build_shipcard(
     model_dir: str | os.PathLike,
     *,
     build: Mapping[str, Any] | None = None,
+    lane: str | None = None,
 ) -> dict[str, Any]:
-    """Open a fresh record: build-lane facts filled, every slot empty."""
+    """Open a fresh record: build-lane facts filled, every slot empty.
+
+    ``lane`` is the ``EXPORT_CONTAINER`` this artifact was built for.  It is
+    stamped on the card and it decides which lane-scoped slots the card opens,
+    so the gates a lane DECLARES and the slots its artifact must CLOSE are one
+    object.  Omitting it reproduces the historical card exactly (base slots,
+    no ``lane`` key) -- which is what every pre-2026-09-03 native card is.
+    """
     root = Path(model_dir)
     from prismaquant.export_output_safety import directory_publication_target
 
     build_payload = dict(build or {})
-    slots = list(REQUIRED_SLOTS)
+    slots = list(REQUIRED_SLOTS) + [
+        slot for slot in lane_gate_slots(lane) if slot not in REQUIRED_SLOTS
+    ]
     # A rate-axis artifact owes the byte-matched uniform control's verdict, so
     # open the slot at export time.  `required_slots` re-derives the
     # obligation from the artifact itself either way; opening the key here is
@@ -1292,6 +1353,8 @@ def build_shipcard(
         "build": build_payload,
         "slots": {slot: None for slot in slots},
     }
+    if lane:
+        card["lane"] = str(lane)
     quant_path = root / "quant_config.json"
     if quant_path.is_file():
         try:
@@ -2587,20 +2650,30 @@ def required_slots(
 ) -> tuple[str, ...]:
     """Return every slot default verification must replay.
 
-    Container-required slots are followed by recognized optional claims that
-    are present and non-null.  Until 2026-09-02 the retired Gridbook codebook
-    lane added three lane-scoped slots here, keyed off the artifact's own
-    ``config.json``/``quant_config.json``; they are in
-    ``archive/gridbook_lane_2026-09-02/`` with the lane.
+    Container-required slots, then whatever the card's own ``lane`` declares,
+    then recognized optional claims that are present and non-null.
 
-    One live lane-scoped obligation: a **rate-axis** artifact must carry the
-    byte-matched uniform control's verdict.  It is re-derived from the
-    artifact's own ``config.json`` as well as from the card, so nulling the
-    claim or emptying the build block cannot erase the obligation -- and
-    "no control was ever served" therefore reads as ``UNFILLED`` rather than
-    as silence (#121).
+    Until 2026-09-02 the retired Gridbook codebook lane added three lane-scoped
+    slots here, keyed off the artifact's own ``config.json``/``quant_config.json``;
+    they are in ``archive/gridbook_lane_2026-09-02/`` with the lane.  The lane
+    hook came back on 2026-09-03 in a form that reads the lane's OWN
+    declaration instead of branching per lane here: the Tessera lane declares
+    ``route.census`` and that slot is now required of a Tessera card.
+
+    One live obligation is derived from the artifact rather than from a lane: a
+    **rate-axis** artifact must carry the byte-matched uniform control's
+    verdict.  It is re-derived from the artifact's own ``config.json`` as well
+    as from the card, so nulling the claim or emptying the build block cannot
+    erase the obligation -- and "no control was ever served" therefore reads as
+    ``UNFILLED`` rather than as silence (#121).
     """
     required: list[str] = list(REQUIRED_SLOTS)
+    # UNION, never replacement. A lane adds what its own gates[] declares and
+    # can subtract nothing: the GGUF lane declares no `native_export.graph`
+    # gate and is still required to close that slot, so lane-derivation cannot
+    # be used to shrink a bar (RobTand/prismaquant#134 tracks the GGUF gap
+    # itself).
+    required.extend(lane_gate_slots(card.get("lane")))
     if _is_rate_axis_artifact(card, model_dir=model_dir):
         required.append(UNIFORM_CONTROL_SLOT)
     slots = card.get("slots")

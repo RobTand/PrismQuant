@@ -22,14 +22,20 @@ import pytest
 
 from prismaquant.model_profiles import detect_profile  # noqa: F401  (API shape)
 from prismaquant.model_profiles import registry as _registry
+from prismaquant.lane_spec import (
+    all_lane_specs,
+    lane_spec_for_container,
+)
 from prismaquant.model_profiles.structure import (
     DEFAULT_EXPORT_LANE,
     EXPORT_LANES,
+    RETIRED_EXPORT_LANES,
     ModelStructureSpec,
     SCHEMA,
     canonical_export_lane,
     load_structure_spec,
 )
+from prismaquant.shipcard import ALL_SLOTS
 from prismaquant.serving_profiles import (
     load_serving_profile,
     require_lane_supported,
@@ -41,17 +47,18 @@ from prismaquant.serving_profiles import (
 # comparison is made against that one machine-readable table (AGENTS.md
 # principle 5 / CLAUDE.md principle 14). The Gridbook half of that comparison
 # retired with its lane on 2026-09-02.
-GGUF_WIRED = {"hy_v3"}
-#: The architectures wired for the Tessera lane. `qwen3` is the profile whose
-#: two fused groups Tessera's exporter stacks one-blob-per-vLLM-module and
-#: whose 0.6B checkpoint was served from a PrismaQuant allocation on the
-#: plugin (2026-09-02). Declaring the lane is not permission to build one --
-#: the preflight still refuses on the PENDING release pin -- but an
-#: architecture nobody has wired must not carry the declaration either.
-TESSERA_WIRED = {"qwen3"}
-
+#
+# `GGUF_WIRED` / `TESSERA_WIRED` lived here until 2026-09-03: two module-level
+# sets named after two specific lanes, asserted by name in one test. That is
+# the roster-instead-of-rule shape (the eighth instance across these two
+# repositories), and its cost is precise: a THIRD non-default lane would have
+# been covered by nothing, because the test named two lanes and said nothing
+# about any other. The rosters moved into `lane_specs/<lane>.json`'s
+# `wired_architectures`, beside everything else about that lane, and the
+# assertions below are properties quantified over EXPORT_LANES.
 PROFILE_CLASSES = list(_registry._REGISTERED)
 PROFILE_IDS = [c.__name__ for c in PROFILE_CLASSES]
+LANE_IDS = list(EXPORT_LANES)
 
 
 def _profile(cls):
@@ -61,26 +68,101 @@ def _profile(cls):
 # ------------------------------------------------------------------ vocabulary
 
 
-def test_lane_vocabulary_is_the_export_container_vocabulary():
-    # The sanctioned three (Rob, 2026-09-02): compressed-tensors, GGUF and
-    # Tessera. This tuple pinned only the first two until 2026-09-02, which
-    # made `EXPORT_CONTAINER=tessera` fail as an UNKNOWN lane -- a vocabulary
-    # refusal three layers above the pin that is the real reason the lane
-    # cannot build. `tests/test_tessera_export_lane.py` owns the Tessera half
-    # (declaration, driver arm, the three preflight gates).
-    assert EXPORT_LANES == ("compressed-tensors", "gguf", "tessera")
-    assert DEFAULT_EXPORT_LANE == "compressed-tensors"
+def test_the_lane_vocabulary_and_the_lane_declarations_are_one_set():
+    """PROPERTY, not a roster.
+
+    `EXPORT_LANES` is where Rob's decision of 2026-09-02 lives -- the roster
+    IS the input and there is nothing in the code to derive it from, so it is
+    declared in exactly ONE place (`model_profiles/structure.py`). What this
+    test used to do was re-type that place's contents into an assertion, which
+    made the roster the specification: adding the sanctioned third lane broke
+    a test that was supposed to COVER it. (`assert EXPORT_LANES ==
+    ("compressed-tensors", "gguf")` was the state #116 reported.)
+
+    What is checked instead is the closure: every lane in the vocabulary has a
+    declaration, and every declaration names a lane in the vocabulary. Two
+    files, two authors, one set -- so an orphan spec and a lane with no gates
+    are both caught, and a fourth lane is covered by adding its spec rather
+    than by editing this.
+    """
+    declared = {spec.export_container for spec in all_lane_specs()}
+    assert declared == set(EXPORT_LANES), (
+        "lane_specs/*.json and EXPORT_LANES disagree: "
+        f"specs-only={sorted(declared - set(EXPORT_LANES))} "
+        f"vocabulary-only={sorted(set(EXPORT_LANES) - declared)}")
+    assert DEFAULT_EXPORT_LANE in EXPORT_LANES
     # One declared alias: the serving-profile side spells the native lane with
     # an underscore (`export_lane.id == "compressed_tensors"`).
     assert canonical_export_lane("compressed_tensors") == "compressed-tensors"
+
+
+@pytest.mark.parametrize("lane", LANE_IDS)
+def test_every_lane_in_the_vocabulary_round_trips(lane):
+    assert canonical_export_lane(lane) == lane
+    assert lane_spec_for_container(lane).export_container == lane
+
+
+def test_a_lane_outside_the_vocabulary_is_refused():
+    """Any non-member, generated rather than named, plus every retired lane.
+
+    The generated name is the rule; the retired ones are the regression cases
+    the rule has to keep catching. `RETIRED_EXPORT_LANES` is beside
+    `EXPORT_LANES` in the same module, so retiring a lane moves a name between
+    two rosters in one edit and adding a lane touches neither this test nor
+    that dict.
+    """
     with pytest.raises(ValueError, match="unknown export lane"):
-        canonical_export_lane("nvfp4-cb")
-    # Retired 2026-09-02 with the Gridbook lane. The vocabulary is the
-    # EXPORT_CONTAINER vocabulary, so a stale driver or spec naming the lane
-    # now fails loudly at the preflight instead of writing bytes nothing
-    # serves.
-    with pytest.raises(ValueError, match="unknown export lane"):
-        canonical_export_lane("nvfp4_cb")
+        canonical_export_lane("no-such-lane-" + "x" * 8)
+    assert not (set(RETIRED_EXPORT_LANES) & set(EXPORT_LANES)), (
+        "a lane cannot be both live and retired")
+    for lane, wall in RETIRED_EXPORT_LANES.items():
+        with pytest.raises(ValueError, match="unknown export lane") as excinfo:
+            canonical_export_lane(lane)
+        # The refusal names the wall, so an operator meeting a stale driver
+        # learns where the code went instead of suspecting a typo.
+        assert wall in str(excinfo.value)
+
+
+@pytest.mark.parametrize("lane", LANE_IDS)
+def test_every_lane_declares_a_gate_set_that_can_refuse(lane):
+    """A declared gate either closes a known shipcard slot or says why not.
+
+    This is principle 9 on the gate list itself: a gate whose result is
+    recorded nowhere is refused on by nothing, and until 2026-09-03 the
+    Tessera lane's `route.census` -- principle 12's second leg -- was exactly
+    that (`shipcard_slot: null`, no reason, nothing reading it).
+    `LaneGate.from_dict` now refuses the ambiguous form; this pins that every
+    live lane is on the right side of it.
+    """
+    spec = lane_spec_for_container(lane)
+    assert spec.gates, f"{lane}: a lane with no declared gates declares no bar"
+    for gate in spec.gates:
+        if gate.recorded:
+            assert gate.shipcard_slot in ALL_SLOTS, (
+                f"{lane}/{gate.id}: closes {gate.shipcard_slot!r}, which is "
+                "not a shipcard slot, so no card can record it")
+        else:
+            assert gate.unrecorded_reason, (
+                f"{lane}/{gate.id}: unrecorded and unexplained")
+
+
+@pytest.mark.parametrize("lane", LANE_IDS)
+def test_every_lane_that_shells_out_declares_what_it_shells_out_to(lane):
+    """External build-tool dependencies are a value, not a bash loop.
+
+    A lane may name another repository's tool rather than vendor it -- that is
+    the boundary that keeps one wire recipe in one home. What it may not do is
+    depend on a file nobody can enumerate: the Tessera arm's two
+    `experiments/` scripts were a hardcoded loop in `run-pipeline.sh` and a
+    sentence in the spec's `notes` (RobTand/prismaquant#119).
+    """
+    spec = lane_spec_for_container(lane)
+    for tool in spec.producer_tools:
+        assert tool.stability in tool.STABILITIES
+        if tool.stability != "supported":
+            assert tool.tracking_issue, (
+                f"{lane}: {tool.path} has no stability promise and names no "
+                "tracking issue")
 
 
 def test_preferred_lane_must_be_supported():
@@ -97,17 +179,26 @@ def test_preferred_lane_must_be_supported():
 
 
 @pytest.mark.parametrize("cls", PROFILE_CLASSES, ids=PROFILE_IDS)
-def test_declared_lanes_include_native_and_match_local_gguf_wiring(cls):
-    """Locally owned lanes are checked here; Gridbook is checked externally."""
+@pytest.mark.parametrize("lane", LANE_IDS)
+def test_a_profile_declares_a_lane_exactly_when_the_lane_declares_it(cls, lane):
+    """Two files, two authors, one answer -- for EVERY lane in the vocabulary.
+
+    The profile side says which lanes an architecture supports; the lane side
+    says which architectures are wired for it. Neither is derivable from the
+    other, so both are declared and this is the agreement. The predecessor
+    checked `gguf` and `tessera` by name against two sets defined in this
+    file, which is why a fourth lane would have escaped it entirely.
+    """
     profile = _profile(cls)
     lanes = set(profile.supported_export_lanes())
     assert DEFAULT_EXPORT_LANE in lanes, (
         f"{profile.name}: every architecture ships through the native lane")
-    assert ("gguf" in lanes) == (profile.name in GGUF_WIRED), (
-        f"{profile.name}: gguf declaration disagrees with {sorted(GGUF_WIRED)}")
-    assert ("tessera" in lanes) == (profile.name in TESSERA_WIRED), (
-        f"{profile.name}: tessera declaration disagrees with "
-        f"{sorted(TESSERA_WIRED)}")
+    spec = lane_spec_for_container(lane)
+    assert (lane in lanes) == spec.wires(profile.name), (
+        f"{profile.name}: declares lane {lane!r}={lane in lanes} but "
+        f"lane_specs/{spec.id}.json's wired_architectures says "
+        f"{spec.wires(profile.name)} "
+        f"(roster: {sorted(spec.wired_architectures)})")
 
 
 @pytest.mark.parametrize("cls", PROFILE_CLASSES, ids=PROFILE_IDS)

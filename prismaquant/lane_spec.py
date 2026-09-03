@@ -14,12 +14,25 @@ native's bar by default and nothing elsewhere.
 Same idiom as `serving_profile_specs/`: JSON declarations plus a dataclass with
 `from_dict`, so a new lane is a data file rather than a branch.
 
-**Gates are ADVISORY.** They are *recorded* — each maps to a `shipcard.json`
-slot, and the shipcard is what refuses (R13) — but nothing in this module fails
-a run. The verdict's open half was whether gates should become **blocking**,
-which changes every lane's run; that is deferred to Robert and is recorded as
-such in the re-vet outcome. `LaneSpec.advisory_gates` is `True` for every lane
-and a test pins it, so a future flip is a deliberate edit rather than a drift.
+**Gates are ADVISORY *to the build run*, and BLOCKING at publication.**
+Nothing in this module fails a pipeline run — `LaneSpec.advisory_gates` is
+`True` for every lane and a test pins it, so a future flip is a deliberate
+edit rather than a drift. What makes a gate more than a printed sentence is
+its `shipcard_slot`: the build lane OPENS the slot, the serve lane FILLS it,
+and `tools/publish_artifact.py` refuses an artifact whose slots are not
+closed. Whether gates should also fail the *run* is R16's open half, deferred
+to Robert.
+
+**So a gate with no slot is enforced by nothing**, and until 2026-09-03 that
+was indistinguishable from a gate someone had simply not filled in.
+`LaneGate.from_dict` now refuses a null `shipcard_slot` that carries no
+`unrecorded_reason`, and `LaneSpec.wired_architectures` / `producer_tools` put
+the lane's architecture roster and its external build-tool dependencies in the
+same declaration instead of in a test constant and a bash loop. The chain a
+reader should be able to follow is: gate declared here -> slot opened by
+`prismaquant.lane_shipcard` in the lane's driver arm -> refused by
+`publish_artifact`. Where any link is missing, the gate is a confession log
+(RobTand/prismaquant#119, principle 9).
 """
 from __future__ import annotations
 
@@ -56,20 +69,115 @@ class LaneEndpoint:
 
 @dataclass(frozen=True)
 class LaneGate:
-    """One numeric gate, and the shipcard slot its record closes."""
+    """One numeric gate, and the shipcard slot its record closes.
+
+    **A gate that records nothing cannot refuse anything.**  ``shipcard_slot``
+    is the entire mechanism by which a declared gate becomes enforceable: the
+    build lane opens the slot, the serve lane fills it, and
+    ``tools/publish_artifact.py`` refuses an artifact whose slots are not
+    closed.  A gate with no slot is a printed sentence -- it appears in
+    ``python -m prismaquant.lane_spec``'s output and in nothing else.
+
+    That is a legitimate state for a gate that genuinely has nowhere to record
+    (a diagnostic, an operator instruction), and an illegitimate one for a
+    gate an artifact's honesty depends on.  Telling the two apart has to be a
+    VALUE, so ``shipcard_slot: null`` now requires ``unrecorded_reason``: a
+    declaration that this gate is advisory-by-construction and why.  Omitting
+    both raises at parse time, the same way ``executes`` raises rather than
+    defaulting -- the Tessera lane declared ``route.census`` (principle 12's
+    second leg) with a null slot and no reason for a day, which is exactly the
+    "named but never run" shape RobTand/prismaquant#119 describes.
+    """
 
     id: str
     runner: str
     shipcard_slot: str | None = None
     description: str = ""
+    unrecorded_reason: str = ""
+
+    @property
+    def recorded(self) -> bool:
+        """Does closing this gate leave a mark the shipcard can refuse on?"""
+        return self.shipcard_slot is not None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "LaneGate":
+        slot = _opt_str(payload.get("shipcard_slot"))
+        reason = str(payload.get("unrecorded_reason", "")).strip()
+        if slot is None and not reason:
+            raise ValueError(
+                f"lane gate {payload.get('id')!r} declares no shipcard_slot "
+                "and no `unrecorded_reason`. A gate with no slot is recorded "
+                "nowhere and refuses nothing, so a lane that wants one must "
+                "SAY that it is advisory by construction; silence reads as "
+                "an enforced gate and is not (RobTand/prismaquant#119)")
+        if slot is not None and reason:
+            raise ValueError(
+                f"lane gate {payload.get('id')!r} declares both a "
+                f"shipcard_slot ({slot!r}) and an `unrecorded_reason`; a gate "
+                "that records is not unrecorded, and carrying both leaves two "
+                "readings of one gate")
         return cls(
             id=str(payload["id"]),
             runner=str(payload["runner"]),
-            shipcard_slot=_opt_str(payload.get("shipcard_slot")),
+            shipcard_slot=slot,
             description=str(payload.get("description", "")),
+            unrecorded_reason=reason,
+        )
+
+
+@dataclass(frozen=True)
+class LaneProducerTool:
+    """One external tool this lane's BUILD arm shells out to.
+
+    PrismaQuant names a serving runtime's own tools rather than vendoring
+    them: a wire recipe with two homes is how the two halves of one format
+    drift apart.  The cost of that boundary is a dependency on a file in
+    another repository, and a dependency a reader cannot see is a dependency
+    someone tidies away.  Until 2026-09-03 the Tessera arm's two were a
+    hardcoded ``for`` loop in ``run-pipeline.sh`` and a sentence in this
+    spec's ``notes``; neither is something a gate can read, and neither
+    survives a fourth lane.
+
+    ``stability`` is the field that matters.  ``supported`` means the tool is
+    a console entry point or a public module of its package.
+    ``unsupported_experiments`` means it lives under that repository's
+    ``experiments/`` with no stability promise -- true today of both Tessera
+    tools -- and REQUIRES ``tracking_issue``, so the debt is named on the
+    artifact's own lane declaration rather than only in an issue tracker.
+    """
+
+    repo_env: str
+    path: str
+    stability: str
+    description: str = ""
+    tracking_issue: str = ""
+
+    #: The vocabulary. A new value is a deliberate edit here, not a typo in a
+    #: spec that silently reads as "supported".
+    STABILITIES = ("supported", "unsupported_experiments")
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "LaneProducerTool":
+        stability = str(payload.get("stability", "")).strip()
+        if stability not in cls.STABILITIES:
+            raise ValueError(
+                f"lane producer tool {payload.get('path')!r} declares "
+                f"stability={stability!r}; known: {list(cls.STABILITIES)}. An "
+                "absent or misspelt value must not read as `supported`")
+        tracking = str(payload.get("tracking_issue", "")).strip()
+        if stability == "unsupported_experiments" and not tracking:
+            raise ValueError(
+                f"lane producer tool {payload.get('path')!r} is declared "
+                "`unsupported_experiments` and names no `tracking_issue`; a "
+                "shipping lane may depend on a script with no stability "
+                "promise, but not silently")
+        return cls(
+            repo_env=str(payload["repo_env"]),
+            path=str(payload["path"]),
+            stability=stability,
+            description=str(payload.get("description", "")),
+            tracking_issue=tracking,
         )
 
 
@@ -159,13 +267,27 @@ class LaneSpec:
     description: str
     endpoint: LaneEndpoint
     kl_evaluator: LaneKLEvaluator
+    wired_architectures: frozenset[str] = frozenset()
     serve_scripts: tuple[str, ...] = ()
     serve_command: tuple[str, ...] = ()
     gates: tuple[LaneGate, ...] = ()
+    producer_tools: tuple[LaneProducerTool, ...] = ()
     serving_profiles: tuple[str, ...] = ()
     advisory_gates: bool = True
     notes: tuple[str, ...] = field(default=())
     served_activation_quantization: LaneActivationContract | None = None
+
+    #: ``wired_architectures`` value meaning "every architecture", used by the
+    #: default lane: every model profile ships through compressed-tensors, so
+    #: enumerating them here would be a second roster to keep in step with
+    #: ``model_profiles/registry.py``.
+    ANY_ARCHITECTURE = "*"
+
+    def wires(self, profile_name: str) -> bool:
+        """Is ``profile_name`` declared wired for this lane?"""
+        if self.ANY_ARCHITECTURE in self.wired_architectures:
+            return True
+        return profile_name in self.wired_architectures
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "LaneSpec":
@@ -184,6 +306,10 @@ class LaneSpec:
             serve_command=tuple(str(s) for s in serve.get("command", ())),
             gates=tuple(
                 LaneGate.from_dict(g) for g in payload.get("gates", ())),
+            producer_tools=tuple(
+                LaneProducerTool.from_dict(t)
+                for t in payload.get("producer_tools", ())),
+            wired_architectures=_wired_architectures(payload),
             serving_profiles=tuple(
                 str(p) for p in payload.get("serving_profiles", ())),
             advisory_gates=bool(payload.get("advisory_gates", True)),
@@ -204,6 +330,10 @@ class LaneSpec:
     def shipcard_slots(self) -> tuple[str, ...]:
         return tuple(g.shipcard_slot for g in self.gates if g.shipcard_slot)
 
+    def unrecorded_gates(self) -> tuple[LaneGate, ...]:
+        """Gates that close no shipcard slot, each with its declared reason."""
+        return tuple(g for g in self.gates if not g.recorded)
+
     def render_serve_command(self, **values: str) -> tuple[str, ...]:
         """Substitute `${NAME}` placeholders in the declared serve command.
 
@@ -217,6 +347,42 @@ class LaneSpec:
         for token in self.serve_command:
             out.append(Template(token).substitute(values))
         return tuple(out)
+
+
+def _wired_architectures(payload: Mapping[str, Any]) -> frozenset[str]:
+    """Parse the lane's declared architecture roster.
+
+    REQUIRED, and required to be non-empty.  The roster is a decision, not
+    something derivable from the code -- but it has to live in exactly ONE
+    place, and this is it.  It used to live in `tests/test_profile_export_lanes.py`
+    as two module-level sets named after two specific lanes (`GGUF_WIRED`,
+    `TESSERA_WIRED`), which a fourth lane would have escaped entirely: the
+    test asserted two lanes by name and said nothing about any other.  Here,
+    a lane declares its own roster beside everything else about that lane and
+    the profile-vs-declaration property covers every lane in the vocabulary
+    without a test edit.
+    """
+    if "wired_architectures" not in payload:
+        raise ValueError(
+            f"lane {payload.get('id')!r} must declare `wired_architectures`: "
+            "the set of model-profile names permitted to export through it "
+            f"(or [{LaneSpec.ANY_ARCHITECTURE!r}] for a lane every "
+            "architecture ships through). An absent roster is not an empty "
+            "one, and a lane nobody is wired for must say so with a value")
+    wired = payload["wired_architectures"]
+    if isinstance(wired, str) or not isinstance(wired, (list, tuple, set,
+                                                        frozenset)):
+        raise ValueError(
+            f"lane {payload.get('id')!r}: `wired_architectures` must be a "
+            f"list of model-profile names; got {type(wired).__name__}")
+    names = frozenset(str(n) for n in wired)
+    if not names:
+        raise ValueError(
+            f"lane {payload.get('id')!r}: `wired_architectures` is empty. A "
+            "lane in the EXPORT_CONTAINER vocabulary that no architecture may "
+            "use is a lane whose refusal happens three layers below where an "
+            "operator can read it; declare the roster or retire the lane")
+    return names
 
 
 def _opt_str(value: object) -> str | None:
@@ -278,6 +444,8 @@ def lane_gate_report(spec: LaneSpec, shipcard: Mapping[str, Any] | None = None
             "runner": gate.runner,
             "shipcard_slot": gate.shipcard_slot,
             "filled": bool(filled),
+            "recorded": bool(gate.recorded),
+            "unrecorded_reason": gate.unrecorded_reason or None,
             "advisory": bool(spec.advisory_gates),
         })
     return rows
@@ -310,9 +478,19 @@ def main(argv: Sequence[str] | None = None) -> int:
               f"kl={spec.kl_evaluator.kind} "
               f"gates={'ADVISORY' if spec.advisory_gates else 'BLOCKING'}")
         for row in lane_gate_report(spec, card):
-            state = "filled" if row["filled"] else "UNFILLED"
+            if not row["recorded"]:
+                state = "UNRECORDED (advisory by declaration)"
+            else:
+                state = "filled" if row["filled"] else "UNFILLED"
             print(f"    {row['gate']:<28} {row['runner']:<44} "
                   f"{row['shipcard_slot'] or '-':<20} {state}")
+            if row["unrecorded_reason"]:
+                print(f"        reason: {row['unrecorded_reason']}")
+        for tool in spec.producer_tools:
+            print(f"    [producer tool] ${{{tool.repo_env}}}/{tool.path} "
+                  f"stability={tool.stability}"
+                  + (f" tracking={tool.tracking_issue}"
+                     if tool.tracking_issue else ""))
     return 0
 
 

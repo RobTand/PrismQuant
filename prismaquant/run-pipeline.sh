@@ -141,6 +141,12 @@ fi
 # and is DECLARED rather than defaulted silently: it changes the footprint the
 # artifact occupies and is folded into vLLM's compile-cache key.
 : "${TESSERA_REPO:=/home/rob/tessera}"
+# EXPORTED, not merely set: the lane preflight resolves each declared producer
+# tool through the env var the DECLARATION names (lane_specs/tessera.json's
+# producer_tools[].repo_env), so the child process has to be able to read it.
+# It was a shell-local variable while the existence check was a loop in this
+# file, which is exactly the coupling that moved.
+export TESSERA_REPO
 : "${TESSERA_SERVE_MODE:=resident}"
 # `as-allocated` plans exactly the units the allocation names and spells every
 # other body Linear BF16 explicitly. `broadcast-by-role` EXTRAPOLATES a
@@ -396,13 +402,13 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH"; then
     exit 2
   fi
-  for _tessera_tool in experiments/plan_from_layer_config.py \
-                      experiments/export_tessera_serving.py; do
-    if [[ ! -f "${TESSERA_REPO%/}/${_tessera_tool}" ]]; then
-      echo "[pipeline] ERROR: EXPORT_CONTAINER=tessera: ${TESSERA_REPO%/}/${_tessera_tool} does not exist. This repository names Tessera's own tools instead of vendoring them; point TESSERA_REPO at the checkout of the pinned release." >&2
-      exit 2
-    fi
-  done
+  # The two Tessera-repository tools this arm shells out to are NOT listed
+  # here. They are declared in lane_specs/tessera.json's `producer_tools`,
+  # with each tool's stability and tracking issue, and the preflight above
+  # iterates that declaration (tessera_export_lane.require_producer_tools).
+  # A roster in this loop was a roster in a driver: it named two paths for one
+  # lane, a reader of the lane spec could not see it, and a fourth lane would
+  # have needed a fourth loop.
   case "$TESSERA_SERVE_MODE" in
     resident|streamed) ;;
     *)
@@ -2422,13 +2428,29 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   echo
   echo "[pipeline] done."
   echo "  Artifact: ${WORK_DIR}/exported"
-  # The build lane OPENS the ship record; the serve lane CLOSES it (R13). The
-  # gates are named, not run here: they need a fresh vLLM container with the
-  # pinned plugin editable-installed, and both residencies, because the two
-  # modes decode the same bytes by different paths.
+  # The build lane OPENS the ship record; the serve lane CLOSES it (R13).
+  #
+  # It did not, on this lane, until 2026-09-03: Tessera's exporter has no
+  # concept of a PrismaQuant shipcard and this arm exits ~130 lines above the
+  # driver's shipcard block, so every gate lane_specs/tessera.json declares was
+  # enforced by nothing (RobTand/prismaquant#119). `lane_shipcard open` opens a
+  # record whose slots ARE this lane's declared gates -- including
+  # `route.census`, principle 12's second leg, which carried no slot at all --
+  # so an un-run gate is now an unfilled slot on a real card that
+  # tools/publish_artifact.py refuses on, instead of a sentence in a JSON file.
+  #
+  # The gates are still NAMED, not RUN, here: each needs a fresh vLLM container
+  # with the pinned plugin editable-installed, and both residencies, because
+  # the two modes decode the same bytes by different paths. Building that
+  # runner is R16's open half and stays with #119.
+  python3 -m prismaquant.lane_shipcard open \
+    --lane tessera --artifact "${WORK_DIR}/exported" || {
+      echo "[pipeline] ERROR: could not open the Tessera ship record; the artifact is unpublishable until one exists." >&2
+      exit 1
+    }
   echo "  Serve:       TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE} bash ${TESSERA_REPO%/}/experiments/tessera_plugin_served.sh ${WORK_DIR}/exported <arm> ${TESSERA_SERVE_MODE}"
   echo "  Route census: python ${TESSERA_REPO%/}/tools/tessera_route_census.py --log <serve.log>"
-  echo "  Open gates:  python -m prismaquant.lane_spec --lane tessera"
+  echo "  Verify:      python -m prismaquant.shipcard_cli verify ${WORK_DIR}/exported/shipcard.json"
   exit 0
 fi
 

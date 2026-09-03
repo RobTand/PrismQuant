@@ -18,7 +18,7 @@ the encode is Tessera's ``experiments/export_tessera_serving.py``.  Copying
 either here would make this repository the second place a wire recipe lives,
 which is the failure mode principle 14 exists to prevent.
 
-**Three gates, each of which fails closed on its own.**
+**Four gates, each of which fails closed on its own.**
 
 1. :func:`require_release_pin` -- the pinned Tessera serving runtime must be an
    exact reviewed release.  It is not, today: no Tessera release tag exists
@@ -35,6 +35,13 @@ which is the failure mode principle 14 exists to prevent.
    ``structures: ["dense"]`` and carries no ``routed_moe`` cell, because no
    served measurement covers routed experts.  A model with routed experts is
    refused by reading that field, not by a hardcoded list here.
+4. :func:`require_producer_tools` -- every external tool the lane DECLARES it
+   shells out to must exist under the env var the declaration names.  This was
+   a hardcoded ``for`` loop over two paths in ``run-pipeline.sh``; it is now
+   read from ``lane_specs/tessera.json``'s ``producer_tools``, which also
+   carries each tool's stability and its tracking issue, so a shipping lane's
+   dependency on a script with no stability promise is a value a reader and a
+   gate can both see (RobTand/prismaquant#119).
 """
 from __future__ import annotations
 
@@ -241,21 +248,96 @@ def require_declared_structure(model_path: str | Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gate 4 -- the external tools the arm shells out to
+# ---------------------------------------------------------------------------
+def require_producer_tools(
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Refuse unless every tool the lane DECLARES it shells out to is present.
+
+    The arm calls two scripts in the Tessera repository, because a wire recipe
+    with two homes is how the two halves of one format drift apart.  The cost
+    of naming rather than vendoring is a dependency on a file in another
+    repository -- and until 2026-09-03 that dependency was a hardcoded
+    ``for`` loop in ``run-pipeline.sh`` plus a sentence in the lane spec's
+    ``notes``.  Neither is something a gate can read, and neither would have
+    survived a fourth lane: the loop names two paths for one lane.
+
+    Now the roster lives in ``lane_specs/tessera.json``'s ``producer_tools``,
+    where the reader who touches the lane sees it, and this gate iterates it.
+    A tool declared ``unsupported_experiments`` is not refused -- the honest
+    state today is that both Tessera tools live under ``experiments/`` with no
+    stability promise -- but it must name a tracking issue, which
+    ``LaneProducerTool.from_dict`` enforces, and it is echoed on every run so
+    the debt is visible where it is being incurred (RobTand/prismaquant#119).
+    """
+    import os
+
+    from .lane_spec import load_lane_spec
+
+    env = os.environ if env is None else env
+    spec = load_lane_spec("tessera")
+    if not spec.producer_tools:
+        raise TesseraExportLaneError(
+            "lane_specs/tessera.json declares no `producer_tools`, but the "
+            "arm shells out to Tessera's own plan translator and exporter. An "
+            "undeclared external dependency is one nobody can check for, and "
+            "one a tidy-up in the other repository deletes silently"
+        )
+    resolved: list[str] = []
+    for tool in spec.producer_tools:
+        root = str(env.get(tool.repo_env, "") or "").strip()
+        if not root:
+            raise TesseraExportLaneError(
+                f"{tool.repo_env} is unset, so {tool.path} cannot be located. "
+                "This repository NAMES Tessera's tools instead of vendoring "
+                f"them; point {tool.repo_env} at the checkout of the pinned "
+                "release."
+            )
+        path = Path(root.rstrip("/")) / tool.path
+        if not path.is_file():
+            raise TesseraExportLaneError(
+                f"{path} does not exist. It is declared in "
+                f"lane_specs/tessera.json's producer_tools as "
+                f"stability={tool.stability!r}"
+                + (f" ({tool.tracking_issue})" if tool.tracking_issue else "")
+                + f": {tool.description}"
+            )
+        resolved.append(str(path))
+    return tuple(resolved)
+
+
+# ---------------------------------------------------------------------------
 # The driver's entry point
 # ---------------------------------------------------------------------------
 def preflight(model_path: str | Path) -> dict:
     """Every gate, in the order that puts the cheapest refusal first."""
     structure = require_declared_structure(model_path)
     executes = require_executes_derived_from_contract()
+    producer_tools = require_producer_tools()
     require_release_pin()
     from .tessera_serving_runtime_pin import (
         load_tessera_serving_runtime_pin,
     )
 
     pin = load_tessera_serving_runtime_pin()
+    from .lane_spec import load_lane_spec
+    from .shipcard import lane_gate_slots
+
+    spec = load_lane_spec("tessera")
     return {
         "structure": structure,
         "executes": list(executes),
+        "producer_tools": list(producer_tools),
+        "unsupported_producer_tools": [
+            f"${{{tool.repo_env}}}/{tool.path} ({tool.tracking_issue})"
+            for tool in spec.producer_tools if tool.stability != "supported"
+        ],
+        "shipcard_slots": list(lane_gate_slots("tessera")),
+        "unrecorded_gates": [
+            {"gate": g.id, "reason": g.unrecorded_reason}
+            for g in spec.unrecorded_gates()
+        ],
         "pinned_version": pin.version,
         "pinned_commit": pin.commit,
         "quant_method": "tessera",
@@ -282,6 +364,14 @@ def main(argv: Sequence[str] | None = None) -> int:
           f"structure={report['structure']} "
           f"executes={report['executes']} "
           f"pin={report['pinned_version']}@{report['pinned_commit'][:12]}")
+    print("[preflight] ship record this artifact must close: "
+          + ", ".join(report["shipcard_slots"]))
+    for gate in report["unrecorded_gates"]:
+        print(f"[preflight] gate {gate['gate']} is ADVISORY BY DECLARATION "
+              f"(closes no shipcard slot): {gate['reason']}")
+    for tool in report["unsupported_producer_tools"]:
+        print(f"[preflight] producer-tool debt: {tool} has no stability "
+              "promise")
     return 0
 
 
