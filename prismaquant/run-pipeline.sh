@@ -11,7 +11,7 @@
 #      -- E2M1 arity 1 and 2 on the NVFP4/W4A4 route, E4M3 arity 1 on the
 #      FP8/W8A8 route. It is a token and not a format because the realisable
 #      rung set depends on each unit's column count: one 0.6B Linear carries
-#      ~3000 legal rungs. See the TESSERA COST STAGE guard below.)
+#      thousands of legal rungs. See the TESSERA COST STAGE guard below.)
 #   TARGET_BITS=4.75 \
 #   VISUAL_FORMAT=BF16 \
 #   CALIBRATION_MODALITY=text-only \

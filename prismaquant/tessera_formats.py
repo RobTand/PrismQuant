@@ -98,7 +98,10 @@ class TesseraFormatError(ValueError):
 
 
 try:  # pragma: no cover - exercised by the import-failure path
-    from tessera.alphabet import E2M1_GRID, E4M3_GRID, lloyd_max_grid, tuple_grid
+    from tessera.alphabet import (
+        BF16_GRID, E2M1_GRID, E4M3_GRID, lloyd_max_grid, tuple_grid,
+    )
+    from tessera.errors import GrammarError
     from tessera import export as _tessera_export
     from tessera.export import WireRecipe, wire_recipe
     from tessera.grammar import (
@@ -180,9 +183,14 @@ def clear_recipe_cache() -> None:
     for it once per candidate.  A caller that changes what Tessera answers --
     only tests do this today -- must clear the cache, or the seam keeps pricing
     and rendering the world it saw first.
+
+    ``_tcq_body_is_reachable`` is cleared with it: it memoises a decision
+    derived from ``recipe_table`` over the same grids, so a substituted wire
+    that leaves it standing would move the prices and not the anchor wall.
     """
 
     _recipe_for.cache_clear()
+    _tcq_body_is_reachable.cache_clear()
 
 
 def tessera_wire_recipe(
@@ -382,9 +390,14 @@ def wire_overhead_q256(
       ``SCALE_LUT_BITS_Q256`` (LUT).
     * **a CHANNEL scale plane**: 16 bits per output *row* on DIAG_SV, which is
       ``16 / columns`` per position -- a per-unit cost, so it needs ``shape``.
-    * **a WINDOW body's table**: ``2^window_bits`` bytes inline on the
-      ALPHABET plane, ``8 * 2^L / (rows * columns)`` per position -- likewise
-      per-unit, likewise needs ``shape``.
+    * **a WINDOW body's table**: ``code_bytes * 2^window_bits`` bytes inline
+      on the ALPHABET plane, ``8 * code_bytes * 2^L / (rows * columns)`` per
+      position -- likewise per-unit, likewise needs ``shape``.  The width is
+      the *grid's* (``PayloadGrid.code_bytes``), not a constant: a code is as
+      wide as the code space, and BF16's code IS a bf16 word, so its table is
+      two bytes an entry.  ``tessera.calculator.terminal_rate`` takes the same
+      figure from the same place, which is what keeps this accountant and the
+      wire agreeing byte for byte on the 16-bit route.
 
     ``shape`` is ``(rows, columns)`` in **weight** space.  A recipe with a
     per-unit term and no shape **raises** rather than dropping the term: the
@@ -434,19 +447,36 @@ def wire_overhead_q256(
         # output channel and a tuple code covers ``arity`` of them.
         total += Fraction(16 * Q256_UNIT, columns)
     if body is BodyKind.WINDOW:
-        # The ALPHABET plane *is* the table: ``2^L`` one-byte grid codes,
-        # inline in the unit (``tessera.calculator.terminal_rate``).
-        total += Fraction((1 << wire.window_bits) * 8 * Q256_UNIT, rows * columns)
+        # The ALPHABET plane *is* the table: ``2^L`` grid codes of
+        # ``code_bytes`` each, inline in the unit
+        # (``tessera.calculator.terminal_rate``, ``code_bytes=``).
+        total += Fraction(
+            spec.code_bytes * (1 << wire.window_bits) * 8 * Q256_UNIT,
+            rows * columns,
+        )
     return total
 
 
-#: Encoding scores ``2**payload_bits`` anchors at every trellis step, so the
-#: code space is a *cost*, not just an addressing choice.  65 536 anchors per
+#: A **TCQ** step scores ``2**payload_bits`` anchors, so on that body the code
+#: space is a *cost* and not just an addressing choice.  65 536 anchors per
 #: step is the level the encoder already refuses -- it is why k=4 over E2M1 is
-#: not offered -- so a family that reaches it is refused here too, rather than
-#: being handed to a DP that would cheerfully select something nothing can
-#: encode.  E4M3 at arity 2 lands exactly on this wall and is excluded by it,
-#: which is the intended reading and not an off-by-one.
+#: not offered -- so a family whose wire reaches it on a TCQ body is refused
+#: here too, rather than being handed to a DP that would cheerfully select
+#: something nothing can encode.  E4M3 at arity 2 lands exactly on this wall
+#: and is excluded by it, which is the intended reading and not an off-by-one.
+#:
+#: **It is a property of the body, not of the grid**, and reading it as the
+#: latter cost the whole 16-bit half of the rate axis.  A WINDOW body has no
+#: forest at all -- ``tessera.export._plan_for`` returns the grid in the
+#: forests' place -- and scores ``2^window_bits`` states per step, 16 384 at
+#: the default L=14, independent of how wide the grid is; the 65 536-code
+#: BF16 grid is touched once per unit, to snap that table.  Tessera says so
+#: itself, in ``alphabet.SERIALISABLE_GRIDS``: "BF16 reaches the same code
+#: count and is admitted because the window body never scores the grid -- it
+#: scores ``2^window_bits`` states -- so the two are not the same question."
+#: Nothing here caps the window's own width: ``export._window_bits_for``
+#: widens L to the rate rather than refusing it, and inventing a wall Tessera
+#: does not have would be this module deciding the DP's candidate set.
 ANCHOR_BUDGET_BITS = 16
 
 RATE_SURFACE_ALL_LEGAL = "all_legal"
@@ -465,6 +495,12 @@ _HARDWARE_BASES: Mapping[str, tuple[int, str, int]] = {
     # base -> (size, terminal format it materialises into, minimum SM)
     "E2M1": (16, "NVFP4", 120),
     "E4M3": (256, "FP8_E4M3", 89),
+    # 65536 codes, and it belongs here for the same reason the other two do:
+    # its values come from the bit pattern, so a reader rebuilds them from the
+    # name, and its decoded tile is a plain BF16 tensor -- "a plain BF16
+    # tensor (W16A16)", in ``tessera.export.wire_recipe``'s own words.  The
+    # wall above admits it because its wire is the WINDOW body at every rung.
+    "BF16": (65536, "BF16", 80),
 }
 _FREE_BASE = re.compile(r"^LM(\d+)$")
 _FORMAT_NAME = re.compile(r"^TESSERA_([A-Z0-9]+)_K(\d+)_R(\d+)$")
@@ -500,13 +536,28 @@ class TesseraFamily:
             raise TesseraFormatError(
                 f"base grid size must be a power of two >= 2, got {self.base_size}"
             )
-        if self.payload_bits >= ANCHOR_BUDGET_BITS:
+        if self.payload_bits < ANCHOR_BUDGET_BITS:
+            return          # nothing this narrow can reach the wall
+        try:
+            tcq = _tcq_body_is_reachable(self.base, self.base_size, self.arity)
+        except GrammarError as exc:
+            # Tessera declines to build the grid at all (``tuple_grid`` refuses
+            # above 2^16 codes).  Its refusal, re-raised in this module's own
+            # error type so every caller's ``except TesseraFormatError`` --
+            # ``menu_families``, ``enumerate_grid_space`` -- keeps working.
+            raise TesseraFormatError(
+                f"{self.name}: tessera will not build this grid -- {exc}"
+            ) from exc
+        if tcq:
             raise TesseraFormatError(
                 f"{self.name} needs {1 << self.payload_bits} anchors scored per "
                 f"trellis step, at or above the {1 << ANCHOR_BUDGET_BITS} wall "
-                f"the encoder already refuses. "
+                f"the encoder already refuses, and its wire reaches the TCQ "
+                f"body at some rung. "
                 "This is a cost refusal, not a grammar one: the rungs are "
-                "legal, nothing can afford to encode them."
+                "legal, nothing can afford to encode them.  A grid this wide "
+                "whose every rung is the WINDOW body is NOT refused -- the "
+                "window scores 2^L states, never the grid."
             )
 
     @property
@@ -527,6 +578,18 @@ class TesseraFamily:
     def payload_bits(self) -> int:
         """Width of the code space: ``arity * log2(base_size)``."""
         return (self.base_size.bit_length() - 1) * self.arity
+
+    @property
+    def code_bytes(self) -> int:
+        """Bytes one code occupies on a code plane -- **Tessera's answer**.
+
+        ``PayloadGrid.code_bytes``, read rather than derived: the ALPHABET and
+        DESCENDANT planes store codes, a code is as wide as the grid, and
+        BF16's code *is* a bf16 word.  The writer, the reader and this
+        accountant must not disagree about it, so there is one authority and
+        it is the grid's.
+        """
+        return int(self.payload_grid().code_bytes)
 
     @property
     def rate_cap(self) -> int:
@@ -652,10 +715,26 @@ class TesseraFamily:
 @lru_cache(maxsize=64)
 def _build_grid(base: str, base_size: int, arity: int):
     if base in _HARDWARE_BASES:
-        scalar = {"E2M1": E2M1_GRID, "E4M3": E4M3_GRID}[base]
+        scalar = {"E2M1": E2M1_GRID, "E4M3": E4M3_GRID, "BF16": BF16_GRID}[base]
     else:
         scalar = lloyd_max_grid(base_size)
     return scalar if arity == 1 else tuple_grid(scalar, arity)
+
+
+@lru_cache(maxsize=64)
+def _tcq_body_is_reachable(base: str, base_size: int, arity: int) -> bool:
+    """Does this grid's wire use the TCQ body at ANY rung?
+
+    Asked of ``tessera.export.recipe_table``, which resolves the recipe at
+    every rung of a grid and returns contiguous ranges, so this needs no
+    assumption that a family's body is rung-independent -- E2M1x2's is not
+    (WINDOW below the coset cap, TCQ at it), and a family that one day varies
+    across the anchor wall answers correctly here without anyone noticing they
+    had to think about it.  0.6-4.6 ms per grid, memoised, and only the
+    over-budget families ever ask.
+    """
+    table = _tessera_export.recipe_table(_build_grid(base, base_size, arity))
+    return any(BodyKind(entry.recipe.body) is BodyKind.TCQ for entry in table)
 
 
 @lru_cache(maxsize=256)
@@ -945,6 +1024,23 @@ def tessera_serving_route(
             min_capability_sm=_registry_min_sm("NVFP4", min_sm),
             activation_source_format="NVFP4",
         )
+    if spec.base == "BF16" and plane == "channel" and spec.arity == 1:
+        # A statement about the LAYOUT the decode lands in, which is all a
+        # producer may assert on its own (see this function's docstring):
+        # Tessera's ``wire_recipe`` says the BF16 grid's "decoded tile is a
+        # plain BF16 tensor (W16A16)", so the A side is unquantised and there
+        # is no registry row whose activation RTN models it.  Whether any
+        # runtime ROUTES these bytes is ``route_admission``'s question, and
+        # today the answer is no -- Tessera issue #9.
+        return TesseraServingRoute(
+            contract="w16a16-bf16-channel",
+            terminal_format=terminal,
+            act_bits=16,
+            act_dtype_name="bfloat16",
+            act_group_size=0,
+            min_capability_sm=_registry_min_sm("BF16", min_sm),
+            activation_source_format=None,
+        )
     if spec.base == "E4M3" and plane == "channel" and spec.arity == 1:
         # ``materialize_fp8`` refuses a tuple grid: the FP8 MMA takes one
         # scale per output channel over scalar E4M3 bytes.
@@ -982,12 +1078,15 @@ def enumerate_grid_space(
 ) -> Iterator[TesseraFamily]:
     """Every family the cost budget admits, cheapest code space first.
 
-    Defaults to the two hardware bases plus the free grids that have been
-    measured.  Families over the anchor budget are skipped rather than raising,
-    because enumerating a space is asking what is *available*.
+    Defaults to **every** hardware base plus the free grids that have been
+    measured.  The hardware half is read off ``_HARDWARE_BASES`` rather than
+    listed, because a hand-listed default is how the 16-bit family stayed
+    invisible after the wall stopped refusing it.  Families over the anchor
+    budget are skipped rather than raising, because enumerating a space is
+    asking what is *available*.
     """
     if bases is None:
-        bases = ("E2M1", "E4M3", "LM8", "LM16", "LM32", "LM64")
+        bases = (*sorted(_HARDWARE_BASES), "LM8", "LM16", "LM32", "LM64")
     seen = []
     for base in bases:
         for arity in arities:

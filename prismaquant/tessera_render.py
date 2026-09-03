@@ -253,17 +253,34 @@ def is_tessera_format(name: object) -> bool:
 
 @lru_cache(maxsize=64)
 def _grid_for(family: TesseraFamily):
-    from tessera.alphabet import E2M1_GRID, E4M3_GRID, tuple_grid
+    """The grid this family renders through -- **the family's own**.
 
-    bases = {"E2M1": E2M1_GRID, "E4M3": E4M3_GRID}
-    if family.base not in bases:
+    Deliberately not a second base->grid map.  This function held one until
+    2026-09-02, listing ``E2M1`` and ``E4M3``, while ``tessera_formats`` held
+    the map the pricing, the footprint and the menu read.  When ``BF16`` was
+    admitted to that map the family became namable, priceable and enumerable
+    and *silently unallocatable*: the copy here still called it a free base,
+    so ``tessera_rung_is_serialisable`` answered False, so
+    ``_producer_eligible`` answered False, so the menu dropped every rung of
+    it in **both** modes.  Nothing raised, and the family looked finished
+    from every side an accountant can see.  One map, read here.
+
+    The refusal that remains is a fact about the grid rather than a fact
+    about this module's knowledge: a free/Lloyd-Max base is measurable but
+    not serialisable -- its values are fitted to the tensor and no identifier
+    reproduces them, so it needs a VALUES plane first.  ``_HARDWARE_BASES``
+    is the single statement of which bases are not that.
+    """
+    from .tessera_formats import _HARDWARE_BASES
+
+    if family.base not in _HARDWARE_BASES:
         raise NotImplementedError(
             f"{family.name}: only hardware base grids render today "
-            f"({sorted(bases)}). A free/Lloyd-Max base is measurable but not "
-            "serialisable -- its values are fitted to the tensor and no "
-            "identifier reproduces them, so it needs a VALUES plane first."
+            f"({sorted(_HARDWARE_BASES)}). A free/Lloyd-Max base is measurable "
+            "but not serialisable -- its values are fitted to the tensor and "
+            "no identifier reproduces them, so it needs a VALUES plane first."
         )
-    return tuple_grid(bases[family.base], family.arity)
+    return family.payload_grid()
 
 
 @lru_cache(maxsize=64)

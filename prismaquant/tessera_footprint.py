@@ -97,14 +97,19 @@ def _alphabet_bytes(
 ) -> int:
     """Bytes for the anchor tables, one entry per code in the grid's width.
 
-    A grid of at most 256 codes indexes in a byte; wider grids need four.  The
-    tables are per *rate*, because a rate's anchor set is ``2^(R+1)`` codes and
-    a unit that mixes rates carries a table for each rate it uses.
+    The width is ``PayloadGrid.code_bytes`` -- Tessera's own answer, one byte
+    up to 256 codes and two up to 65536, refusing anything wider as a schema
+    change.  It used to be a local ``1 or 4``, which is a second spelling of a
+    wire fact and disagreed with the grid above 256 codes; no shipping figure
+    moves (every family that reaches this path is a byte-coded one), and the
+    disagreement is gone.  The tables are per *rate*, because a rate's anchor
+    set is ``2^(R+1)`` codes and a unit that mixes rates carries a table for
+    each rate it uses.
     """
     if not alphabets:
         return 0
     cap = spec.rate_cap if cap is None else int(cap)
-    width = 1 if (1 << spec.payload_bits) <= 256 else 4
+    width = spec.code_bytes
     total = 0
     for rate, codes in alphabets.items():
         if not 1 <= rate <= cap:
@@ -269,12 +274,14 @@ def tessera_tensor_payload_breakdown(
     elif type(alphabet_bytes) is not int or alphabet_bytes < 0:
         raise TesseraFormatError("alphabet_bytes must be a nonnegative integer")
     if body is BodyKind.WINDOW:
-        # The ALPHABET plane *is* the window table: `2^window_bits` one-byte
-        # grid codes, written inline in the unit (`tessera.unit_artifact`).
-        # It is charged here because it is charged on the wire, and an
-        # accountant that left it out would disagree with the artifact by
-        # exactly the bytes that distinguish a wide window from a narrow one.
-        table_bytes = 1 << window_bits
+        # The ALPHABET plane *is* the window table: `2^window_bits` grid codes
+        # of `PayloadGrid.code_bytes` each, written inline in the unit
+        # (`tessera.unit_artifact`).  It is charged here because it is charged
+        # on the wire, and an accountant that left it out would disagree with
+        # the artifact by exactly the bytes that distinguish a wide window from
+        # a narrow one -- or, with the width hardcoded to one byte, by exactly
+        # the bytes that distinguish the 16-bit route from the 8-bit one.
+        table_bytes = spec.code_bytes << window_bits
         if alphabets or alphabet_bytes not in (0, table_bytes):
             raise TesseraFormatError(
                 f"{spec.name}: a window body's ALPHABET plane is its own "

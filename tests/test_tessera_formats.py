@@ -39,7 +39,8 @@ from prismaquant.tessera_formats import (
     tessera_wire_recipe,
     validate_body_rate_q256,
 )
-from tessera.export import TCQ_RECIPE
+from tessera.calculator import terminal_rate
+from tessera.export import TCQ_RECIPE, recipe_table
 from tessera.manifest import BodyKind
 
 
@@ -211,7 +212,177 @@ def test_a_code_space_at_the_encoder_wall_is_refused():
         tessera_family("E4M3", 2)
     with pytest.raises(TesseraFormatError):
         tessera_family("E2M1", 4)
-    assert all(f.payload_bits < ANCHOR_BUDGET_BITS for f in enumerate_grid_space())
+    # The budget is the TCQ body's, not the grid's, so this is the invariant
+    # that holds over the whole space -- and the flat ``payload_bits <
+    # ANCHOR_BUDGET_BITS`` it replaces was the wrong one: it is what made the
+    # 16-bit family unnamable and took the top half of the rate axis with it.
+    for spec in enumerate_grid_space():
+        if spec.payload_bits < ANCHOR_BUDGET_BITS:
+            continue
+        bodies = {
+            BodyKind(entry.recipe.body)
+            for entry in recipe_table(spec.payload_grid())
+        }
+        assert BodyKind.TCQ not in bodies, (
+            f"{spec.name} is offered at {spec.payload_bits} payload bits and "
+            "its wire reaches the TCQ body: that is 2^payload_bits anchors "
+            "scored per step, which the encoder refuses"
+        )
+
+
+def test_the_window_body_admits_a_grid_the_trellis_could_not_afford():
+    """The 16-bit family exists, and it exists for the reason Tessera gives.
+
+    ``TesseraFamily.__post_init__`` used to refuse ``payload_bits >= 16`` flat,
+    which reads the anchor budget as a property of the GRID.  It is a property
+    of the BODY: a WINDOW step scores ``2^window_bits`` states (16384 at the
+    default L=14) and has no forest at all, so the 65536-code BF16 grid is
+    touched once per unit to snap its table.  Tessera says exactly this in
+    ``alphabet.SERIALISABLE_GRIDS``, and the consequence of not hearing it was
+    that PrismaQuant could not name the family at all.
+    """
+    fam = tessera_family("BF16")
+    assert fam.payload_bits == ANCHOR_BUDGET_BITS
+    assert fam.name == "TESSERA_BF16_K1"
+    # every rung of this grid is the window body; nothing here is a TCQ rung
+    assert {BodyKind(e.recipe.body) for e in recipe_table(fam.payload_grid())} == {
+        BodyKind.WINDOW}
+    # ...and the family is now enumerable, which is what "allocatable" needs
+    assert "TESSERA_BF16_K1" in {f.name for f in enumerate_grid_space()}
+    # the cap is the window's -- the whole width of the grid, not width - 1
+    assert family_rate_cap(fam) == 16
+    assert fam.mathematical_q256_bounds == (256, 4096)
+    # BF16 at k=2 stays refused, and by Tessera's own raise rather than ours
+    with pytest.raises(TesseraFormatError, match="tessera will not build this grid"):
+        tessera_family("BF16", 2)
+
+
+def test_the_bf16_family_is_allocatable_and_not_merely_namable(monkeypatch):
+    """Namable, priceable and enumerable is not the same as allocatable.
+
+    The family cleared every gate an accountant can see -- ``tessera_family``
+    built it, ``enumerate_grid_space`` listed it, both footprints priced it --
+    and the allocator still could not pick a single rung of it, because
+    ``tessera_render._grid_for`` held a SECOND base->grid map that had never
+    heard of BF16.  It answered ``NotImplementedError`` ("a free base"), so
+    ``tessera_rung_is_serialisable`` answered False, so ``_producer_eligible``
+    answered False, so the menu dropped every BF16 rung in *both* modes and
+    ``require_producer_formats`` -- the allocator's own gate -- refused the
+    name.  Nothing raised anywhere; the family simply never appeared.
+
+    So this test asks the question the issue asked, in the allocator's own
+    vocabulary rather than the family's: does the registry synthesize a spec,
+    does the guard accept the name, does the menu carry rungs, and does each
+    of those rungs resolve back through ``get_format``.  A test that only
+    asks ``tessera_formats`` cannot see a second map living somewhere else.
+    """
+    from prismaquant import format_registry as fr
+    from prismaquant import tessera_menu as tm
+    from prismaquant.tessera_footprint import tessera_exact_bits_for_shape
+    from prismaquant.tessera_render import tessera_rung_is_serialisable
+
+    name = "TESSERA_BF16_K1_R2048"
+    fam = tessera_family("BF16")
+    shape = (2048, 1024)
+
+    # (a) the wire gate: this grid's digest is one of Tessera's commitments
+    assert tessera_rung_is_serialisable(name) is True
+
+    monkeypatch.setenv(tm.MENU_MODE_ENV, tm.MENU_RESEARCH)
+
+    # (b) the registry synthesizes a spec, and its A side is the route's
+    spec = fr.get_format(name)
+    assert (spec.act_bits, spec.act_dtype_name, spec.act_group_size) == (
+        16, "bfloat16", 0)
+    assert spec.bits_for_shape_fn is not None
+    assert Fraction(spec.bits_for_shape_fn(shape)) == tessera_exact_bits_for_shape(
+        fam, 2048, shape)
+
+    # (c) the allocator's own gate accepts the name
+    assert fr.format_is_producer_eligible(name) is True
+    fr.require_producer_formats([name], where="bf16 allocatability")
+
+    # (d) the menu carries rungs of it, and every one resolves back
+    rungs = tm.expand_tessera_menu(
+        shape, mode=tm.MENU_RESEARCH, families=(fam,), step_q256=256)
+    assert rungs, "the research menu holds no BF16 rung"
+    for rung in rungs:
+        assert fr.get_format(rung.format_name).act_bits == 16
+        assert rung.admission.terminal_format == "BF16"
+        assert rung.admission.route_status == tm.ROUTE_STATUS_UNATTESTED
+
+    # ...and attestation is untouched: the pinned contract publishes no BF16
+    # cell, so the attested menu still refuses the family outright.
+    monkeypatch.setenv(tm.MENU_MODE_ENV, tm.MENU_ATTESTED)
+    assert fr.format_is_producer_eligible(name) is False
+    with pytest.raises(ValueError, match="producer-eligible"):
+        fr.require_producer_formats([name], where="bf16 allocatability")
+
+
+def _scalar_grid_for_test(base):
+    from tessera.alphabet import BF16_GRID, E2M1_GRID, E4M3_GRID
+
+    return {"E2M1": E2M1_GRID, "E4M3": E4M3_GRID, "BF16": BF16_GRID}[base]
+
+
+def test_the_render_leg_and_the_accountants_read_one_grid():
+    """Regression guard (passes on both sides): one grid per family, everywhere.
+
+    ``tessera_render._grid_for`` used to build its own
+    ``tuple_grid(SCALAR, arity)`` while the pricing built ``_build_grid``,
+    which returns the scalar itself at arity 1.  The two agreed by luck --
+    ``tuple_grid(g, 1) is g`` -- so the duplication cost nothing until a base
+    was added to one map and not the other, and then it cost the whole family.
+    This pins the agreement as a property rather than a coincidence: the
+    render leg's grid IS the family's, for every family the menu can build,
+    so a grid added anywhere is added everywhere.  It also states, for the
+    record, that fixing the map moved no bytes -- the grid the renderer gets
+    for the pre-existing families is the object it always got.
+    """
+    from tessera.alphabet import tuple_grid
+    from prismaquant.tessera_render import _grid_for
+
+    checked = 0
+    for fam in enumerate_grid_space():
+        try:
+            grid = _grid_for(fam)
+        except NotImplementedError:
+            assert fam.lane == LANE_KERNEL, fam.name   # free grids only
+            continue
+        assert grid is fam.payload_grid(), fam.name
+        # ...and identical to the spelling the render leg used before
+        assert grid == tuple_grid(_scalar_grid_for_test(fam.base), fam.arity)
+        checked += 1
+    assert checked >= 4, checked
+
+
+@pytest.mark.parametrize("base", ["BF16", "E4M3"])
+@pytest.mark.parametrize("shape", [(2048, 1024), (512, 256), (4096, 4096)])
+def test_a_window_table_is_charged_at_the_grids_own_code_width(base, shape):
+    """The ALPHABET plane holds ``code_bytes * 2^L`` bytes, not ``2^L``.
+
+    A code is as wide as the code space and BF16's code IS a bf16 word, so its
+    window table is two bytes an entry.  Charging it at one byte under-prices
+    the 16-bit route by half its table -- 0.0625 bpp on a 2048x1024 unit at
+    L=14 -- and the byte budget is spent in this currency, so the accountant
+    and the wire have to agree exactly.  Pinned against
+    ``tessera.calculator.terminal_rate``, which takes ``code_bytes`` from the
+    same grid, as exact Fractions.
+    """
+    fam = tessera_family(base)
+    lo, hi = fam.mathematical_q256_bounds
+    for rung in (lo, 1024, 2048, hi):
+        if not lo <= rung <= hi:
+            continue
+        wire = tessera_wire_recipe(fam, rung)
+        assert BodyKind(wire.body) is BodyKind.WINDOW
+        assert artifact_bpp(fam, rung, shape=shape) == terminal_rate(
+            rung, shape[0], shape[1],
+            with_scale_base=False, with_scale_refine=False, with_row_scale=True,
+            cap=family_rate_cap(fam), arity=fam.arity, span=1,
+            window_bits=wire.window_bits, code_bytes=fam.code_bytes,
+        ), (base, rung, shape)
+    assert fam.code_bytes == (2 if base == "BF16" else 1)
 
 
 def test_format_names_round_trip_and_foreign_names_are_not_claimed():
@@ -397,11 +568,12 @@ def test_a_rung_that_renders_can_still_be_unwritable():
     The example used to be E4M3, which was writable all along and merely
     missing from the registry (tessera `a4de134` admitted it).  With it in,
     the renderable set and the writable set **coincide today**: the renderer
-    takes hardware base grids only, and all three hardware-derived grids that
-    fit in a one-byte plane entry are now registered.  A free Lloyd-Max grid is
-    unwritable for a reason no registry line can fix -- its values are fitted
-    to the tensor, so no reader rebuilds them from a name -- but it does not
-    render either, so it cannot demonstrate the gap.
+    takes hardware base grids only, and all four hardware-derived grids
+    Tessera commits to -- E2M1, E2M1x2, E4M3 and the two-byte-coded BF16 --
+    are registered.  A free Lloyd-Max grid is unwritable for a reason no
+    registry line can fix -- its values are fitted to the tensor, so no reader
+    rebuilds them from a name -- but it does not render either, so it cannot
+    demonstrate the gap.
 
     The gap is therefore asserted through the mechanism rather than through an
     example: remove a grid's digest from the wire commitment and the predicate

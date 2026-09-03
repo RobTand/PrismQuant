@@ -3,6 +3,22 @@
 As of: 2026-09-02 · `tessera/decouple-gridbook` — the integration branch,
 carrying `tessera/remove-gridbook` and `tessera/continuous-menu`. Stamps
 follow, newest first, each recording its own branch and date.
+Re-stamped (2026-09-02, `pq-allocator-menu`) for the **16-bit Tessera family**
+(§4.10): `ANCHOR_BUDGET_BITS` is now the TCQ body's refusal rather than the
+grid's, so `TESSERA_BF16_K1` is namable, enumerable and priceable and
+`menu_families()` returns four. The wall is asked of
+`tessera.export.recipe_table` — does this grid reach the TCQ body at any rung —
+so `TESSERA_E4M3_K2` stays refused for the reason it always was and nothing
+here caps the window's own width. Both byte accountants now charge a WINDOW
+table at `PayloadGrid.code_bytes * 2^L`, which is a 2x correction on BF16 and a
+no-op on every other family, pinned exactly against
+`tessera.calculator.terminal_rate`. Nothing about attestation moved: the
+attested menu is still the pinned contract's two rungs, none of them BF16
+(Tessera issue #9). Also in this stamp: the Tessera menu path gains its first
+end-to-end test against a real campaign cost table
+(`tests/test_tessera_menu_real_table.py`, Tessera issue #19) — the class of
+failure that hid the `TESSERA`-token expansion hole was that every test asked
+one function about one hand-written list.
 Re-stamped (2026-09-02,
 `tessera/remove-gridbook`) for the **retirement of the Gridbook codebook
 lane** (§1.1, §3.5, §9, §9.2, D34). Robert, 2026-09-02: *"put Tessera in
@@ -70,7 +86,8 @@ fold's measured cost** (§4.10): PrismaQuant now reads Tessera's own packaged
 (`PRISMAQUANT_TESSERA_DEV_PIN`, commit- and sha-checked, refusing rather than
 degrading to "unattested"), and that table publishes **one rung per family and
 `max_world_size: 1`**, so the attested menu is two points and empty above tp=1
-while the research menu is ~3000 rungs per unit. Tensor-parallel legality now
+while the research menu is thousands of rungs per unit (6764 on a 2048x1024
+unit, 3709 of them the 16-bit family's). Tensor-parallel legality now
 asks `tessera.layout.shard_granularity` rather than deriving a period locally;
 a mixed Bresenham schedule takes the column period to the 256-column
 superblock, which collapses a row-parallel `[3072,1024]` menu from 3060 rungs
@@ -100,7 +117,7 @@ stamps `tessera_menu.selection_caveat` into provenance. Previously re-stamped
 (2026-09-02,
 `tessera/continuous-menu`) for the **Tessera continuous menu** (§4.10): the
 production allocator can now allocate across Tessera's whole realisable rate
-set — three families, ~3000 legal rungs per unit — through the `FORMATS=TESSERA`
+set — four families, thousands of legal rungs per unit — through the `FORMATS=TESSERA`
 token, an anchor campaign that measures a few rungs per (unit, family) and
 refuses to extrapolate past them, dominance-only menu reduction (never a hull),
 and serving-unit promotion relaxed to share a FAMILY with rates free per member.
@@ -3772,16 +3789,73 @@ Bresenham schedule — so "which rungs are on the menu" is a question with a
 per-unit answer in the thousands, not a comma-separated string. This section is
 the seam that lets the production allocator ask it.
 
-**The three families, and why not four.** `tessera_menu.menu_families()` asks
-Tessera, and gets `TESSERA_E2M1_K1`, `TESSERA_E2M1_K2`, `TESSERA_E4M3_K1`. E2M1
-arity 2 exists because it fills the rungs between arity 1's and is what makes 4.0
-bpp addressable at all. **`TESSERA_E4M3_K2` is refused by Tessera itself** — 2^16
-anchors scored per trellis step, at the wall the encoder already declines — and
-that refusal is pinned by a test rather than reproduced as a local exclusion list,
-because it is a cost refusal that would come back the day the anchor budget moves.
-**There is no BF16 family**: Tessera has no 16-bit grid, so a `BF16` rung of the
-Tessera menu does not exist and is not synthesised. BF16 stays on the menu the way
-it always has, as the passthrough rung of the stock registry (§P11).
+**The four families, and why not five.** `tessera_menu.menu_families()` asks
+Tessera, and gets `TESSERA_BF16_K1`, `TESSERA_E2M1_K1`, `TESSERA_E2M1_K2`,
+`TESSERA_E4M3_K1`. E2M1 arity 2 exists because it fills the rungs between arity
+1's and is what makes 4.0 bpp addressable at all.
+
+**`TESSERA_E4M3_K2` is refused by Tessera itself** — 2^16 anchors scored per
+trellis step, at the wall the encoder already declines — and that refusal is
+pinned by a test rather than reproduced as a local exclusion list, because it is
+a cost refusal that would come back the day the anchor budget moves.
+
+**`TESSERA_BF16_K1` is the 16-bit family, and the anchor budget is the body's,
+not the grid's.** `ANCHOR_BUDGET_BITS` used to refuse `payload_bits >= 16` flat,
+at family construction, which reads the wall as a property of the code space. It
+is a property of the **body**: a TCQ step scores `2^payload_bits` anchors, while
+a WINDOW step scores `2^window_bits` states (16 384 at the default L=14) and has
+no forest at all — `tessera.export._plan_for` returns the grid in the forests'
+place — so the 65 536-code BF16 grid is touched once per unit, to snap its
+table. Tessera says exactly this about its own serialisable set, and admits
+BF16 for that reason while keeping `E4M3^2` out. Read flatly, the budget made
+the whole 16-bit half of the rate axis unallocatable: the family could not be
+named, so `menu_families()` never saw it and no cost table could hold a column
+for it. `TesseraFamily.__post_init__` now asks
+`tessera.export.recipe_table(grid)` whether the TCQ body is reachable at **any**
+rung and refuses only then, so a family whose body varies with the rung
+(E2M1x2's does) is answered per rung rather than by assumption, and nothing here
+caps the window's own width — `export._window_bits_for` widens L to the rate
+rather than refusing it, and a wall Tessera does not have would be this module
+deciding the DP's candidate set (P1). A grid Tessera declines to build at all
+(`tuple_grid` above 2^16 codes, e.g. `BF16^2`) is refused with Tessera's own
+message re-raised as a `TesseraFormatError`.
+
+**One map, not two.** Admitting the base to `tessera_formats._HARDWARE_BASES`
+made the family namable, priceable and enumerable, and left it *unallocatable*:
+`tessera_render._grid_for` held a second base→grid map, still listing E2M1 and
+E4M3 only, so it called BF16 a free Lloyd-Max base —
+`tessera_rung_is_serialisable` went False, `_producer_eligible` went False, and
+the menu dropped every rung of the family in **both** modes while nothing
+raised. `_grid_for` now reads `_HARDWARE_BASES` and returns the family's own
+`payload_grid()`, and the family's allocatability test asks the question in the
+allocator's vocabulary — does `require_producer_formats` accept the name, does
+`expand_tessera_menu` carry rungs of it, does each of those resolve back
+through `get_format` — because a test that asks only `tessera_formats` cannot
+see a second map living in another module.
+
+The family is here to be **priced**, not to be served: no pinned runtime attests
+a Tessera BF16 route (Tessera issue #9), so the attested menu still offers two
+rungs and neither is this family's, and a BF16 allocation is reachable only
+under `PRISMAQUANT_TESSERA_MENU=research`, stamped `unattested`, for the export
+gate to fail closed on. Its layout claim — `tessera_serving_route` answers
+`w16a16-bf16-channel`, terminal `BF16` — is a statement about what the decode
+lands in, in Tessera's own words ("a plain BF16 tensor (W16A16)",
+`export.wire_recipe`), never an attestation (P14).
+
+**A window table is charged at the grid's own code width.** `PayloadGrid.
+code_bytes` is one byte up to 256 codes and two on BF16, whose code *is* a bf16
+word, so its ALPHABET plane is `2 * 2^L` bytes. Both accountants —
+`tessera_formats.wire_overhead_q256` and
+`tessera_footprint.tessera_tensor_payload_breakdown` — read it from the grid;
+charging it at one byte under-priced the 16-bit route by half its table (0.0625
+bpp on a 2048x1024 unit at L=14), and the byte budget is spent in this currency.
+Pinned as exact `Fraction`s against `tessera.calculator.terminal_rate`, which
+takes `code_bytes` from the same place.
+
+Stock `BF16` is unaffected and stays what it was, the passthrough rung of the
+stock registry (§P11): a Tessera BF16 rung is named `TESSERA_BF16_K1_R<q>` and
+is a lossy 1-to-16-bit trellis code over a bf16 alphabet, not a passthrough, so
+`PASSTHROUGH_SOURCE_REQUIREMENTS` (which keys on the format NAME) never sees it.
 
 **Three gates, and only three.** A rung is a candidate when all of them agree, and
 each is a separate function so a refusal names which one:
@@ -4218,7 +4292,8 @@ stamp landed and therefore never appeared in a `--target-bits` run.
 
 **The route travels with the choice.** `serving_lane_route` falls through to
 `tessera_menu.tessera_resolved_serving_lane` for a `TESSERA_*` name when no profile
-declares a lane for it — which is always, since no spec can enumerate ~3000 rungs.
+declares a lane for it — which is always, since no spec can enumerate a
+continuous rate axis.
 Without that fallback `selection_serving_lane_provenance` reports
 `no_declared_lane` (absence of a declaration) where the truth is a declaration of
 absence (`unattested`); principle 9 wants the second one countable, and it is now.

@@ -105,14 +105,22 @@ def test_every_family_prices_at_the_bounds_it_advertises():
     times their real cost -- LM64 k=2 at 11.5 bpp against a 6.00 ceiling."""
     for spec in enumerate_grid_space():
         rungs = realisable_rungs(spec)
-        # The interval a family advertises is stated on its *family-level*
-        # recipe (the rung-independent one), so the ends are priced on that
-        # same wire -- otherwise this compares a window rung against a coset
-        # interval and calls the difference a bug.
-        wire = spec.recipe
-        per_unit = not recipe_is_shape_free(wire)
+        # A SHAPE-FREE family advertises a closed-form interval, and that
+        # interval is stated on its *family-level* recipe (the rung-independent
+        # one), so both ends are priced on that same wire -- otherwise this
+        # compares a window rung against a coset interval and calls the
+        # difference a bug.  A PER-UNIT family advertises no such interval (its
+        # rate is a function of the shape), so its ends are priced on the wire
+        # the exporter writes AT THAT RUNG: BF16's window widens from L=14 to
+        # L=16 to hold a rate-16 position (``export._window_bits_for``), and
+        # pricing its ceiling on the family-level L=14 recipe asks the
+        # accountant for a wire the encoder would refuse -- which it says, and
+        # which is the accountant being right rather than a bug.
+        family_wire = spec.recipe
+        per_unit = not recipe_is_shape_free(family_wire)
         bounds = None if per_unit else spec.artifact_q256_bounds
         for end, rung in enumerate((rungs[0], rungs[-1])):
+            wire = tessera_wire_recipe(spec, rung) if per_unit else family_wire
             out = tessera_tensor_payload_breakdown(
                 SHAPE, family=spec, body_rate_q256=rung, recipe=wire,
                 alphabet_bytes=0 if per_unit else None,

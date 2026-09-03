@@ -1,6 +1,7 @@
 """Price Tessera's continuous rate axis by anchor campaign.
 
-Three families address ~3000 rungs at every shape, and one encode is seconds.
+Four families address thousands of rungs at every shape, and one encode is
+seconds.
 Rendering the menu is not a cost model, it is a week of a shared GPU.  So this
 stage renders a small **measured anchor** set per (unit, family) and fills the
 rest of the axis from ``tessera_rate_surface``, which interpolates monotonically

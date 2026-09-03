@@ -47,8 +47,14 @@ def dev_pin(monkeypatch):
 def test_families_are_the_serialisable_set_tessera_declares():
     names = sorted(f.name for f in tm.menu_families())
     assert names == [
-        "TESSERA_E2M1_K1", "TESSERA_E2M1_K2", "TESSERA_E4M3_K1",
+        "TESSERA_BF16_K1", "TESSERA_E2M1_K1", "TESSERA_E2M1_K2",
+        "TESSERA_E4M3_K1",
     ], names
+    # BF16 is the fourth because Tessera admitted it to SERIALISABLE_GRIDS and
+    # the anchor budget stopped reading a WINDOW grid as a TCQ forest.  It is
+    # here to be PRICED, not to be served: no pinned runtime attests a Tessera
+    # BF16 route (Tessera issue #9), so the attested menu below still offers
+    # exactly two rungs and none of them is this family's.
 
 
 def test_e4m3_arity_2_is_refused_by_tessera_not_by_us():
