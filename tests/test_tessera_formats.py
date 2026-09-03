@@ -325,6 +325,84 @@ def _scalar_grid_for_test(base):
     return {"E2M1": E2M1_GRID, "E4M3": E4M3_GRID, "BF16": BF16_GRID}[base]
 
 
+def test_the_wire_commitment_is_asked_of_the_grid_not_of_every_rate(monkeypatch):
+    """A menu digests each grid once, however many rungs it enumerates.
+
+    Whether a grid is a permanent wire commitment cannot vary with the rate
+    the body runs at, so asking it per rung is pure recomputation -- and the
+    recomputation is a SHA over every value in the grid.  It was free while
+    the widest grid held 256 values and stopped being free the moment the
+    16-bit family was admitted at 65536: one 2048x1024 unit's **attested**
+    menu went from 0.19 s to 52 s, with 234 of 234.5 profiled seconds inside
+    ``grid_digest``, because the per-rung ``lru_cache`` was sized 64 against a
+    menu of 6916 names and thrashed on every one.
+
+    So the guard counts calls rather than seconds: a clock measures the box,
+    and the defect here is a quantity of work.  It is stated as "at most once
+    per family" because that is the property that makes the cost independent
+    of how many rates a family offers.
+    """
+    import tessera.alphabet as alphabet
+
+    from prismaquant import tessera_menu as tm
+    from prismaquant import tessera_render as tr
+
+    monkeypatch.delenv(tm.MENU_MODE_ENV, raising=False)
+
+    calls = []
+    real_digest = alphabet.grid_digest
+
+    def counting_digest(grid):
+        calls.append(len(grid.values))
+        return real_digest(grid)
+
+    monkeypatch.setattr(alphabet, "grid_digest", counting_digest)
+
+    # Cleared by name so the guard measures the *work*, not the presence of
+    # whichever helper happens to hold the memo today.
+    for cached in ("family_grid_is_serialisable", "tessera_rung_is_serialisable",
+                   "_grid_for"):
+        fn = getattr(tr, cached, None)
+        if fn is not None:
+            fn.cache_clear()
+    tm.menu_families.cache_clear()
+
+    families = tm.menu_families()
+    baseline = len(calls)
+    # Once per *candidate* family -- the enumeration digests the arities it
+    # then rejects too, and that bound is the search space, not the menu.
+    from prismaquant.tessera_formats import _HARDWARE_BASES
+
+    ceiling = len(_HARDWARE_BASES) * tm._MAX_ARITY_SEARCH
+    assert len(families) <= baseline <= ceiling, (
+        f"{baseline} digests to enumerate {len(families)} families "
+        f"from {ceiling} candidates"
+    )
+
+    rungs = tm.expand_tessera_menu((2048, 1024), mode=tm.MENU_ATTESTED, step_q256=16)
+    assert len(rungs) >= 0  # the attested set may be empty; the cost may not vary
+    after_menu = len(calls)
+
+    # The whole point: enumerating hundreds of rungs adds no digests at all.
+    assert after_menu == baseline, (
+        f"{after_menu - baseline} extra grid digests while expanding a menu; "
+        "the wire commitment is a property of the grid, not of the rate"
+    )
+
+    # And the research menu, which keeps every priced rung, is no different.
+    research = tm.expand_tessera_menu(
+        (2048, 1024), mode=tm.MENU_RESEARCH, step_q256=16
+    )
+    assert research, "the research menu should carry rungs"
+    assert len(calls) == baseline, (
+        f"{len(calls) - baseline} extra grid digests over {len(research)} "
+        "research rungs"
+    )
+
+    # Guard the guard: the counter is wired to something that really is called.
+    assert baseline >= 1 and max(calls) >= 256
+
+
 def test_the_render_leg_and_the_accountants_read_one_grid():
     """Regression guard (passes on both sides): one grid per family, everywhere.
 
@@ -584,6 +662,7 @@ def test_a_rung_that_renders_can_still_be_unwritable():
 
     import tessera.alphabet as alphabet
     from prismaquant.tessera_render import (
+        clear_serialisable_cache,
         render_tessera_weight,
         tessera_rung_is_serialisable,
     )
@@ -598,15 +677,19 @@ def test_a_rung_that_renders_can_still_be_unwritable():
                if grid.name != "E4M3"}
     assert len(without) == len(alphabet.SERIALISABLE_GRIDS) - 1
     with mock.patch.object(alphabet, "SERIALISABLE_GRIDS", without):
-        # The predicate is lru_cached -- it is asked once per rung per run on a
-        # menu of thousands -- so a test that patches the registry underneath
-        # it must clear the cache or it reads its own earlier answer.
-        tessera_rung_is_serialisable.cache_clear()
+        # The predicate is memoised at two levels -- per rung, and per family
+        # since the digest became the dominant cost of a menu -- so a test that
+        # patches the registry underneath it must clear both or it reads its
+        # own earlier answer.  The seam's own function does that, so a third
+        # level would be cleared here without this test being edited again.
+        clear_serialisable_cache()
         # Still renders -- if it stopped, this would pass for the wrong reason.
         assert render_tessera_weight(
             weight, "TESSERA_E4M3_K1_R1024").shape == (64, 512)
         assert tessera_rung_is_serialisable("TESSERA_E4M3_K1_R1024") is False
-    tessera_rung_is_serialisable.cache_clear()
+    # Both levels again on the way out: the verdict cached under the patched
+    # registry is the one the next test in this file would otherwise read.
+    clear_serialisable_cache()
 
 
 def test_an_attested_lane_cannot_admit_an_unwritable_rung():

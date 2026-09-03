@@ -337,7 +337,10 @@ def route_admission(name: str) -> RouteAdmission:
     key this cache would need is the identity of the contract itself, which it
     cannot state, so it does not get a cache. It does not need one: the whole
     lookup is ~0.1 ms (parse 0.002, attest 0.016, serialisable 0.072, recipe +
-    route 0.006 ms), the expensive part of a menu is the per-rung Bresenham
+    route 0.006 ms) *because the serialisable leg asks the family's grid rather
+    than the rung* -- ask it per rung and one 16-bit menu spends 34 ms a rung
+    re-hashing 65536 values -- the expensive part of a menu is the per-rung
+    Bresenham
     realisability check, and ``expand_tessera_menu`` is memoised per
     ``(shape, mode, tp)`` above it.
 
@@ -845,9 +848,8 @@ def menu_families() -> tuple[TesseraFamily, ...]:
     reason ``tessera_rung_is_serialisable`` exists: it renders and cannot be
     written.
     """
-    from tessera.alphabet import SERIALISABLE_GRIDS, grid_digest
-
     from .tessera_formats import _HARDWARE_BASES
+    from .tessera_render import family_grid_is_serialisable
 
     out: list[TesseraFamily] = []
     for base in sorted(_HARDWARE_BASES):
@@ -857,10 +859,10 @@ def menu_families() -> tuple[TesseraFamily, ...]:
             except TesseraFormatError:
                 continue  # the encoder refuses this family's cost
             try:
-                digest = grid_digest(spec.payload_grid())
+                writable = family_grid_is_serialisable(spec)
             except Exception:
                 continue
-            if digest in SERIALISABLE_GRIDS:
+            if writable:
                 out.append(spec)
     out.sort(key=lambda f: (f.base, f.arity))
     return tuple(out)

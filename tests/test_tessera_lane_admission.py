@@ -325,7 +325,19 @@ def test_lane_spec_executes_is_derived_from_the_packaged_contract():
     spec = load_lane_spec("tessera")
     assert spec.served_activation_quantization is not None
     assert set(spec.served_activation_quantization.executes) == derived
-    assert derived == {"TESSERA_E2M1_K2_R*", "TESSERA_E4M3_K1_R*"}
+    assert derived == {
+        "TESSERA_E2M1_K2_R*", "TESSERA_E4M3_K1_R*", "TESSERA_BF16_K1_R*",
+    }
+
+    # The third row is published with no rungs and no cell (tessera f6bdb42),
+    # so deriving the glob attests nothing: the executes table says the decoder
+    # reads the pattern, and admission is still answered by the cells.
+    bf16 = [r for r in contract["formats"]
+            if r["name_pattern"] == "TESSERA_BF16_K1_R{k}"]
+    assert len(bf16) == 1 and list(bf16[0]["candidate_rungs_q256"]) == []
+    assert not [c for c in contract["lane_eligibility"]["cells"]
+                if c["family"] == "TESSERA_BF16_K1"]
+    assert tr.tessera_lane_attested("TESSERA_BF16_K1_R2048") is False
 
     # and every published rung of every family matches its own glob
     for row in contract["formats"]:

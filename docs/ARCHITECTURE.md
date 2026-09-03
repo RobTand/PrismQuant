@@ -3833,14 +3833,38 @@ allocator's vocabulary — does `require_producer_formats` accept the name, does
 through `get_format` — because a test that asks only `tessera_formats` cannot
 see a second map living in another module.
 
-The family is here to be **priced**, not to be served: no pinned runtime attests
-a Tessera BF16 route (Tessera issue #9), so the attested menu still offers two
-rungs and neither is this family's, and a BF16 allocation is reachable only
-under `PRISMAQUANT_TESSERA_MENU=research`, stamped `unattested`, for the export
-gate to fail closed on. Its layout claim — `tessera_serving_route` answers
+The family is here to be **priced**, not to be served. The pinned contract
+publishes the pattern and attests no rung of it: since tessera `f6bdb42`
+("Publish the rungs the decoder reads, and refuse the ones it does not") a
+`TESSERA_BF16_K1_R{k}` row exists in `formats[]` with an **empty**
+`candidate_rungs_q256` and no `lane_eligibility` cell. So the lane spec's
+`executes` list carries the third glob -- deriving a list from a table means
+copying the table, not filtering it to the rows we like (P14) -- while
+`route_admission` still refuses every rung of the family for want of a cell, the
+attested menu is the two rungs it always was, and a BF16 allocation is reachable
+only under `PRISMAQUANT_TESSERA_MENU=research`, stamped `unattested`, for the
+export gate to fail closed on. The published-but-unrung row is the honest shape
+of "the decoder reads these bytes, the runtime serves none of them yet". Its layout claim — `tessera_serving_route` answers
 `w16a16-bf16-channel`, terminal `BF16` — is a statement about what the decode
 lands in, in Tessera's own words ("a plain BF16 tensor (W16A16)",
 `export.wire_recipe`), never an attestation (P14).
+
+**A wire commitment is asked of the grid, once.** Widening the widest grid by
+256x turned a cost that had always been redundant into the dominant one:
+`tessera_rung_is_serialisable` hashed the family's whole grid per *rung*, behind
+an `lru_cache` sized 64 against menus of thousands of names, so the cache
+thrashed and one 2048x1024 unit's **attested** menu -- which then drops every
+BF16 rung as unattested -- went from 0.19 s to 52 s. A profile put 234.0 of
+234.5 s in `grid_digest`: 6916 calls at 34 ms, computing an answer that cannot
+vary with the rate. `tessera_render.family_grid_is_serialisable` now asks it of
+the family, and `menu_families` reads the same predicate instead of digesting
+again; the attested menu costs 0.082 s, below where it started. The guard counts
+digest calls rather than seconds, because the defect is a quantity of work and a
+clock would only measure the box. Two neighbouring caches
+(`tessera_menu._shard_geometry`, `tessera_footprint._exact_bits_for_shape`) are
+still sized 4096 against the same 6764-rung menu and now thrash on a repeat pass
+over one shape -- research-mode only, ~10 s per unit, recorded as Tessera issue
+46 rather than resized by guess.
 
 **A window table is charged at the grid's own code width.** `PayloadGrid.
 code_bytes` is one byte up to 256 codes and two on BF16, whose code *is* a bf16
