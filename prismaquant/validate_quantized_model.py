@@ -13,16 +13,23 @@ Checks, in order:
 
   1. **Serve check** — vLLM actually starts the model (load, MTP
      wrapper, CUDA graph capture) with the recipe's flags.
-  2. **Generation sanity** — small set of prompts must produce
-     coherent outputs. Filters obvious catastrophic breakage
-     (NaN/repetition loops/nonsense) before wasting on stats.
-  3. **Perplexity / NLL** — logprobs over a diverse held-out
-     prompt suite. Hard thresholds: `ppl < MAX_PPL` and
-     worst per-prompt NLL < `MAX_P99_NLL` (legacy flag name).
-     The worst-prompt guard catches the 27B failure mode where
-     80% of prompts scored NLL~10 while 2/10 scored normally.
-  4. **MTP acceptance** — if spec-decode is on, per-position
-     acceptance > `MIN_MTP_ACCEPT_P0` at position 0.
+   2. **Generation sanity** — small set of prompts must produce
+      coherent outputs. Filters obvious catastrophic breakage
+      (NaN/repetition loops/nonsense) before wasting on stats.
+   3. **Boundary behavior** — sampled (temperature > 0) generations over
+      terse boundary-stressing prompts (`BOUNDARY_PROMPTS`), scored
+      mechanically for `</think>` stutter/loop, zero-tag runaway, and
+      cap-truncation-before-answer. Zero defects allowed by default. This
+      is the axis KL/PPL (distribution distance) and greedy-smoke (argmax
+      agreement) cannot see at any threshold: three DSV4-Flash quants
+      within ~3% PPL spanned a 6x behavioral gap (14/180 to 83/180).
+   4. **Perplexity / NLL** — logprobs over a diverse held-out
+      prompt suite. Hard thresholds: `ppl < MAX_PPL` and
+      worst per-prompt NLL < `MAX_P99_NLL` (legacy flag name).
+      The worst-prompt guard catches the 27B failure mode where
+      80% of prompts scored NLL~10 while 2/10 scored normally.
+   5. **MTP acceptance** — if spec-decode is on, per-position
+      acceptance > `MIN_MTP_ACCEPT_P0` at position 0.
 
 Use from CI or pre-ship hook:
 
@@ -109,6 +116,46 @@ GEN_PROMPTS: list[str] = [
     "The single most important fact about photosynthesis is",
 ]
 
+# Boundary-behavior prompts — terse, boundary-token-stressing inputs scored
+# under SAMPLING for `</think>` stutter/loop, zero-tag runaway, and
+# cap-truncation-before-answer (issue #87).
+#
+# Why this gate exists: quantized DSV4-Flash artifacts stutter or fail to emit
+# a clean `</think>` on ultra-short numeric prompts under sampling while the
+# answer stays correct. Greedy takes the argmax path where the boundary token
+# still wins, and KL/PPL average a per-token near-tie at one boundary position
+# into noise — so no argmax-agreement or distributional-distance gate can see
+# the defect at any threshold, while under a token cap the model never reaches
+# its answer. Three independently built DSV4-Flash quants sat within ~3% PPL
+# of each other while the behavioral battery spanned 14/180 → 83/180.
+#
+# Strata (proposal: ultra-short numeric, terse QA, short recall). The first
+# three prompts are verbatim from the issue report (`144÷12`, `9²`, and the
+# spider-legs terse QA that zero-tag-ran 5/6 on the broken artifact); the last
+# two are same-strata companions (one more ultra-short numeric, one short
+# recall) so each stratum is exercised more than once.
+BOUNDARY_PROMPTS: tuple[str, ...] = (
+    "144÷12",
+    "9²",
+    "How many legs does a spider have?",
+    "What is 7×8?",
+    "Name the capital of France.",
+)
+
+#: Closed defect vocabulary for one sampled generation. `zero_tag` (no
+#: `</think>` emitted — the runaway shape), `think_stutter` (more than one
+#: `</think>` — the stutter/loop shape), and `cap_truncation` (the server
+#: stopped on `length`: on these terse prompts a clean model answers in far
+#: fewer tokens, so hitting the cap means the model never reached its answer
+#: — the hang presentation from the issue).
+BOUNDARY_DEFECTS: tuple[str, ...] = (
+    "zero_tag",
+    "think_stutter",
+    "cap_truncation",
+)
+
+THINK_CLOSE_TAG = "</think>"
+
 
 # -----------------------------------------------------------------
 # Default thresholds (tune via CLI if needed)
@@ -118,6 +165,20 @@ DEFAULT_MAX_P99_NLL = 6.0
 DEFAULT_MAX_MEAN_NLL = 3.0
 DEFAULT_MIN_GEN_LEN = 30               # chars in each generated completion
 DEFAULT_MIN_MTP_ACCEPT_P0 = 0.60       # position-0 accept fraction
+# Boundary-behavior gate (issue #87). `MAX_BOUNDARY_DEFECTS = 0` is not a
+# tuned knob: any stutter/zero-tag/cap-hit on a terse prompt is a functional
+# failure (the answer is never reached), and the clean reference scores 0 on
+# this stratum (official unquantized 0/60 terse, fixed quant 0/60). Sampling
+# temperature 1.0 is the unmodified distribution — any temperature > 0 leaves
+# the argmax path and exposes the near-tie; 1.0 adds no tuning. `MAX_TOKENS`
+# 64 is far above what these prompts need, so `length` means runaway/loop.
+# `REPS` 6 is the published battery's own replication count (30 prompts × 6
+# reps main + 24 reps × 5 numeric stackext): 5 prompts × 6 reps = 30 sampled
+# generations, minutes of serve time.
+DEFAULT_MAX_BOUNDARY_DEFECTS = 0
+DEFAULT_BOUNDARY_TEMPERATURE = 1.0
+DEFAULT_BOUNDARY_MAX_TOKENS = 64
+DEFAULT_BOUNDARY_REPS = 6
 
 
 # -----------------------------------------------------------------
@@ -298,6 +359,119 @@ def check_generation_sanity(base_url: str, model_name: str,
         name="generation_sanity",
         passed=True,
         detail=f"all {len(GEN_PROMPTS)} completions ≥ {min_gen_len} chars",
+    )
+
+
+def score_boundary_text(
+    text: str,
+    finish_reason: str | None = None,
+) -> dict:
+    """Score one sampled generation for boundary-token defects (pure).
+
+    Stdlib-only and server-free, so the gate's decision rule is unit-testable
+    without a serve: the same function the live check calls is what the tests
+    pin. Returns `{"think_tag_count": int, "defects": [...]}` with defects
+    drawn from :data:`BOUNDARY_DEFECTS`.
+    """
+    body = text if isinstance(text, str) else ""
+    count = body.count(THINK_CLOSE_TAG)
+    defects: list[str] = []
+    if count == 0:
+        defects.append("zero_tag")
+    elif count > 1:
+        defects.append("think_stutter")
+    if finish_reason == "length":
+        defects.append("cap_truncation")
+    return {"think_tag_count": count, "defects": defects}
+
+
+def check_boundary_behavior(
+    base_url: str,
+    model_name: str,
+    max_defects: int = DEFAULT_MAX_BOUNDARY_DEFECTS,
+    *,
+    temperature: float = DEFAULT_BOUNDARY_TEMPERATURE,
+    max_tokens: int = DEFAULT_BOUNDARY_MAX_TOKENS,
+    reps: int = DEFAULT_BOUNDARY_REPS,
+    prompts: tuple[str, ...] | list[str] = BOUNDARY_PROMPTS,
+) -> CheckResult:
+    """Sample boundary-stressing prompts and score `</think>` behavior.
+
+    Each prompt is sampled `reps` times at `temperature > 0` (sampling, not
+    the argmax path greedy-smoke takes) with a small `max_tokens` cap, and
+    every generation is scored by :func:`score_boundary_text`. Fails when
+    total defects exceed `max_defects` (default 0: any stutter, zero-tag
+    runaway, or cap-truncation on these terse prompts is a functional
+    failure). Runs alongside KL/PPL, not replacing them.
+    """
+    if not temperature or temperature <= 0:
+        return CheckResult(
+            name="boundary_behavior",
+            passed=False,
+            detail=f"boundary_temperature={temperature!r} is not sampling — "
+                   "the defect this check exists for is invisible at temp 0",
+        )
+    n_defects = 0
+    by_kind: dict[str, int] = {kind: 0 for kind in BOUNDARY_DEFECTS}
+    failing_examples: list[dict] = []
+    n_generations = 0
+    for prompt in prompts:
+        for _rep in range(reps):
+            try:
+                r = _post_json(
+                    f"{base_url}/v1/completions",
+                    {
+                        "model": model_name,
+                        "prompt": prompt,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    },
+                )
+                choice = r["choices"][0]
+                text = choice.get("text") or ""
+                finish = choice.get("finish_reason")
+            except Exception as e:
+                return CheckResult(
+                    name="boundary_behavior",
+                    passed=False,
+                    detail=f"request failed on {prompt!r}: "
+                           f"{type(e).__name__}: {e}",
+                )
+            scored = score_boundary_text(text, finish)
+            n_generations += 1
+            for kind in scored["defects"]:
+                by_kind[kind] = by_kind.get(kind, 0) + 1
+            if scored["defects"]:
+                n_defects += 1
+                if len(failing_examples) < 5:
+                    failing_examples.append({
+                        "prompt": prompt,
+                        "defects": list(scored["defects"]),
+                        "think_tag_count": scored["think_tag_count"],
+                        "finish_reason": finish,
+                        "excerpt": text[:200],
+                    })
+    metrics = {
+        "n_prompts": len(list(prompts)),
+        "reps": reps,
+        "n_generations": n_generations,
+        "n_defects": n_defects,
+        "max_defects": max_defects,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "defects_by_kind": by_kind,
+        "failing_examples": failing_examples,
+    }
+    passed = n_defects <= max_defects
+    return CheckResult(
+        name="boundary_behavior",
+        passed=passed,
+        detail=(f"{n_defects}/{n_generations} boundary-defective generations "
+                f"(≤ {max_defects} allowed)"
+                if not passed else
+                f"all {n_generations} sampled generations clean "
+                f"({len(list(prompts))} prompts × {reps} reps)"),
+        metrics=metrics,
     )
 
 
@@ -485,6 +659,10 @@ def run_validation(
     max_p99_nll: float = DEFAULT_MAX_P99_NLL,
     min_gen_len: int = DEFAULT_MIN_GEN_LEN,
     min_mtp_accept_p0: float = DEFAULT_MIN_MTP_ACCEPT_P0,
+    max_boundary_defects: int = DEFAULT_MAX_BOUNDARY_DEFECTS,
+    boundary_temperature: float = DEFAULT_BOUNDARY_TEMPERATURE,
+    boundary_max_tokens: int = DEFAULT_BOUNDARY_MAX_TOKENS,
+    boundary_reps: int = DEFAULT_BOUNDARY_REPS,
     wait_seconds: float = 900.0,
     bos_token: str | None = None,
     add_special_tokens: bool = True,
@@ -507,6 +685,10 @@ def run_validation(
             "max_p99_nll": max_p99_nll,
             "min_gen_len": min_gen_len,
             "min_mtp_accept_p0": min_mtp_accept_p0,
+            "max_boundary_defects": max_boundary_defects,
+            "boundary_temperature": boundary_temperature,
+            "boundary_max_tokens": boundary_max_tokens,
+            "boundary_reps": boundary_reps,
             "bos_token": bos_token,
             "add_special_tokens": add_special_tokens,
         },
@@ -524,6 +706,13 @@ def run_validation(
 
     rep.checks.append(check_serve_ready(base_url))
     rep.checks.append(check_generation_sanity(base_url, model_name, min_gen_len))
+    rep.checks.append(check_boundary_behavior(
+        base_url, model_name,
+        max_boundary_defects,
+        temperature=boundary_temperature,
+        max_tokens=boundary_max_tokens,
+        reps=boundary_reps,
+    ))
     rep.checks.append(check_perplexity(
         base_url, model_name,
         max_ppl=max_ppl, max_p99_nll=max_p99_nll, max_mean_nll=max_mean_nll,
@@ -633,9 +822,9 @@ def _fill_shipcard(args, rep: "ValidationReport") -> None:
 # -----------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Pre-ship quality validator for PrismaQuant artifacts. "
+                description="Pre-ship quality validator for PrismaQuant artifacts. "
                     "Hits a running vLLM endpoint and runs serve / generation "
-                    "sanity / perplexity / MTP acceptance checks.")
+                    "sanity / perplexity / MTP acceptance / boundary-behavior checks.")
     ap.add_argument("--base-url", default=os.environ.get("VLLM_URL",
                                                          "http://localhost:8000"),
                     help="vLLM OpenAI-compatible server URL")
@@ -648,6 +837,19 @@ def main() -> int:
     ap.add_argument("--min-gen-len", type=int, default=DEFAULT_MIN_GEN_LEN)
     ap.add_argument("--min-mtp-accept-p0", type=float,
                     default=DEFAULT_MIN_MTP_ACCEPT_P0)
+    ap.add_argument("--max-boundary-defects", type=int,
+                    default=DEFAULT_MAX_BOUNDARY_DEFECTS,
+                    help="Max sampled boundary-defective generations allowed "
+                         "(stutter/zero-tag/cap-truncation on terse prompts)")
+    ap.add_argument("--boundary-temperature", type=float,
+                    default=DEFAULT_BOUNDARY_TEMPERATURE,
+                    help="Sampling temperature for the boundary check; must "
+                         "stay > 0 (the defect is invisible at temp 0)")
+    ap.add_argument("--boundary-max-tokens", type=int,
+                    default=DEFAULT_BOUNDARY_MAX_TOKENS)
+    ap.add_argument("--boundary-reps", type=int,
+                    default=DEFAULT_BOUNDARY_REPS,
+                    help="Sampled repetitions per boundary prompt")
     ap.add_argument("--bos-token", default=None,
                     help="Optional literal BOS string to prepend before "
                          "perplexity prompts for BOS-sensitive tokenizers "
@@ -680,6 +882,10 @@ def main() -> int:
         max_p99_nll=args.max_p99_nll,
         min_gen_len=args.min_gen_len,
         min_mtp_accept_p0=args.min_mtp_accept_p0,
+        max_boundary_defects=args.max_boundary_defects,
+        boundary_temperature=args.boundary_temperature,
+        boundary_max_tokens=args.boundary_max_tokens,
+        boundary_reps=args.boundary_reps,
         wait_seconds=args.wait_seconds,
         bos_token=args.bos_token,
         add_special_tokens=args.add_special_tokens,

@@ -2715,7 +2715,8 @@ def _verify_ship_gate_record(
     metrics = record.get("metrics")
     thresholds = record.get("thresholds")
     expected_checks = {
-        "serve_ready", "generation_sanity", "perplexity", "mtp_acceptance"
+        "serve_ready", "generation_sanity", "perplexity", "mtp_acceptance",
+        "boundary_behavior",
     }
     if not isinstance(metrics, Mapping) or set(metrics) != expected_checks:
         return problems + [f"{slot}: validation check ledger is incomplete"]
@@ -2728,6 +2729,10 @@ def _verify_ship_gate_record(
         "max_p99_nll": 6.0,
         "min_gen_len": 30,
         "min_mtp_accept_p0": 0.60,
+        "max_boundary_defects": 0,
+        "boundary_temperature": 1.0,
+        "boundary_max_tokens": 64,
+        "boundary_reps": 6,
     }
     if not isinstance(thresholds, Mapping):
         problems.append(f"{slot}: missing threshold contract")
@@ -2773,6 +2778,45 @@ def _verify_ship_gate_record(
             )
     else:
         problems.append(f"{slot}: missing structured perplexity evidence")
+    boundary = metrics.get("boundary_behavior")
+    if isinstance(boundary, Mapping):
+        # The behavioral replay: a sampled check with no generations, run at
+        # temp 0, or with defects over the zero-tolerance bound is not
+        # evidence — it is the old argmax-blind gate wearing the new name.
+        generations = boundary.get("n_generations")
+        if (
+            isinstance(generations, bool)
+            or not isinstance(generations, int)
+            or generations <= 0
+        ):
+            problems.append(
+                f"{slot}: boundary check sampled no generations")
+        defects = boundary.get("n_defects")
+        if (
+            isinstance(defects, bool)
+            or not isinstance(defects, int)
+            or defects < 0
+            or defects > 0
+        ):
+            problems.append(
+                f"{slot}: boundary check reports {defects!r} defective "
+                "generations — the bound is zero "
+                "(any stutter/zero-tag/cap-truncation on a terse prompt "
+                "is a functional failure)"
+            )
+        temperature = boundary.get("temperature")
+        if (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or not math.isfinite(float(temperature))
+            or float(temperature) <= 0
+        ):
+            problems.append(
+                f"{slot}: boundary check temperature={temperature!r} is not "
+                "sampling — the defect is invisible at temp 0"
+            )
+    else:
+        problems.append(f"{slot}: missing structured boundary evidence")
     return problems
 
 

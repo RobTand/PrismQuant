@@ -37,6 +37,10 @@ from prismaquant.shipcard import (
 )
 from prismaquant.shipcard_cli import main as shipcard_cli
 from prismaquant.validate_quantized_model import (
+    DEFAULT_BOUNDARY_MAX_TOKENS,
+    DEFAULT_BOUNDARY_REPS,
+    DEFAULT_BOUNDARY_TEMPERATURE,
+    DEFAULT_MAX_BOUNDARY_DEFECTS,
     DEFAULT_MAX_MEAN_NLL,
     DEFAULT_MAX_P99_NLL,
     DEFAULT_MAX_PPL,
@@ -130,8 +134,8 @@ def _producer_check_names() -> frozenset:
     Each check constructor names its own CheckResult without needing a live
     server: against a refused localhost port every probe fails fast and
     returns its (failing) verdict, whose name is what `run_validation` files
-    under. A fifth check added to the producer appears here on its own; a
-    roster restated from today's four names would not.
+    under. A sixth check added to the producer appears here on its own; a
+    roster restated from today's five names would not.
     """
     from prismaquant import validate_quantized_model as vqm
 
@@ -143,6 +147,7 @@ def _producer_check_names() -> frozenset:
             _REFUSED_URL, "probe",
             DEFAULT_MAX_PPL, DEFAULT_MAX_P99_NLL, DEFAULT_MAX_MEAN_NLL).name,
         vqm.check_mtp_acceptance(_REFUSED_URL, DEFAULT_MIN_MTP_ACCEPT_P0).name,
+        vqm.check_boundary_behavior(_REFUSED_URL, "probe").name,
     })
 
 
@@ -166,9 +171,27 @@ def _ship_gate_record(model_sha, *, passed=True, source="artifact",
         "n_tokens": 8192,
         "spec_decode_detected": False,
     }
+    if "boundary_behavior" in ledger:
+        # A bare {"passed": True} is the old argmax-blind shape wearing the
+        # new name: the replay requires sampled generations at temp > 0 with
+        # zero defects, so the fixture must look like a real measurement.
+        ledger["boundary_behavior"] = {
+            "passed": True,
+            "n_prompts": 5,
+            "reps": 6,
+            "n_generations": 30,
+            "n_defects": 0,
+            "max_defects": 0,
+            "temperature": 1.0,
+            "max_tokens": 64,
+            "defects_by_kind": {
+                "zero_tag": 0, "think_stutter": 0, "cap_truncation": 0},
+            "failing_examples": [],
+        }
     if detail is None:
         detail = ("serve_ready=pass; generation_sanity=pass; "
-                  "perplexity=pass; mtp_acceptance=pass")
+                  "perplexity=pass; mtp_acceptance=pass; "
+                  "boundary_behavior=pass")
     return make_record(
         slot="ship_gate", tool="validate_quantized_model.py", passed=passed,
         model_sha=model_sha, metrics=ledger,
@@ -184,6 +207,10 @@ def _ship_gate_record(model_sha, *, passed=True, source="artifact",
                 "max_p99_nll": DEFAULT_MAX_P99_NLL,
                 "min_gen_len": DEFAULT_MIN_GEN_LEN,
                 "min_mtp_accept_p0": DEFAULT_MIN_MTP_ACCEPT_P0,
+                "max_boundary_defects": DEFAULT_MAX_BOUNDARY_DEFECTS,
+                "boundary_temperature": DEFAULT_BOUNDARY_TEMPERATURE,
+                "boundary_max_tokens": DEFAULT_BOUNDARY_MAX_TOKENS,
+                "boundary_reps": DEFAULT_BOUNDARY_REPS,
                 "bos_token": None,
                 "add_special_tokens": True,
             },
