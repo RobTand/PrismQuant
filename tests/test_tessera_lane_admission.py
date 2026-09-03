@@ -283,7 +283,7 @@ def test_the_rungs_a_cell_names_are_the_whole_admitted_set(tmp_path,
             cell["rungs_q256"] = [1024]
     for row in contract["formats"]:
         if row["family"] == "TESSERA_E2M1_K2":
-            row["candidate_rungs_q256"] = [896]
+            row["attested_rungs_q256"] = [896]
             row["reader_rate_range_q256"] = [768, 896]
     table, formats = _load(_write(tmp_path, contract, "narrow.json"))
     assert tr.tessera_lane_attested(

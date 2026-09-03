@@ -2497,7 +2497,7 @@ def main():
                 f"{len(priced_tessera)} Tessera rungs and the pinned runtime "
                 "attests none of them, so the TESSERA menu token expands to "
                 "nothing. Either widen the runtime's attested rungs "
-                "(candidate_rungs_q256 in the packaged runtime_contract.json) "
+                "(attested_rungs_q256 in the packaged runtime_contract.json) "
                 "or price a table under the attested menu; "
                 "PRISMAQUANT_TESSERA_MENU=research allocates over the whole "
                 "realisable axis for research runs that do not export."

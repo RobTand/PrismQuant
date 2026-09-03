@@ -896,8 +896,9 @@ def load_published_formats(
     a ``kind`` discriminator: a ``cb_product`` row carries ``grid``/``mode``/
     ``n_sub``/``rungs``, while a RATE-addressed row (``tcq_trellis`` in a
     retired Gridbook contract, ``tessera_wire`` in Tessera's) carries
-    ``candidate_rungs_q256``/``reader_rate_range_q256``/
-    ``native_terminal_q256``. A unit's payload family, sub-table split, rung
+    ``attested_rungs_q256`` (named ``candidate_rungs_q256`` before contract v2,
+    which Tessera keeps as a deprecated alias and says it drops at schema v2)
+    /``reader_rate_range_q256``/``native_terminal_q256``. A unit's payload family, sub-table split, rung
     legality and body rate are therefore genuinely DERIVED here rather than
     read out of a local table -- which is the point of principle 14.
     """
