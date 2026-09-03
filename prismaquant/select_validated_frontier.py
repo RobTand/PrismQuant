@@ -197,6 +197,63 @@ TAIL_REPEAT_COLUMNS: tuple[str, ...] = tuple(f"{c}_repeats" for c in TAIL_VETO_C
 DEFAULT_TAIL_VETO: str = "kl_max"
 #: `--tail-eta auto`: derive the slack instead of picking one (house rule 2).
 DEFAULT_TAIL_ETA: str = "auto"
+#: Exit status when the selector refuses to certify a rate-axis pick (#117).
+#: The recipe files are still written -- the byte-matched uniform control is
+#: built FROM the candidate plan downstream -- but the pipeline must not walk
+#: on to export on an uncertified selection.
+RATE_AXIS_UNCERTIFIED_EXIT: int = 2
+
+
+def rate_axis_rungs(assignment: Mapping[str, str]) -> list[str]:
+    """Sorted unique rate-axis rung names in a selected assignment.
+
+    The axis is defined by the code that owns the name grammar
+    (``format_registry.is_tessera_format_name``), never by a list restated
+    here: today the only rate-axis container is Tessera, and a future
+    container adds itself by widening the definition this reads, in the commit
+    that declares its lane.
+    """
+    return sorted({
+        str(fmt)
+        for fmt in assignment.values()
+        if fr.is_tessera_format_name(fmt)
+    })
+
+
+def rate_axis_candidate_status(
+    *,
+    selected: Mapping,
+    rungs: Sequence[str],
+    n_rows: int,
+) -> dict:
+    """The uncertified-selection record stamped on a rate-axis pick (#117).
+
+    Measured 2026-09-02: a Tessera allocation served 2.00x worse KL than a
+    byte-matched uniform arm while every check this stage owns passed, and an
+    oracle over the same menu reaches only 0.941x of uniform -- so no ranking
+    this stage can do closes the gap. The validated frontier re-ranks the
+    allocator's own Pareto rows and carries no uniform arm, so the pick ships
+    as a candidate with the comparison, the bytes, and what would pass named
+    in data, not just in a log line.
+    """
+    return {
+        "status": "outstanding",
+        "rate_axis_formats": list(rungs),
+        "selected_label": selected.get("label"),
+        "selected_measured_kl": selected.get("kl"),
+        "selected_bpp": selected.get("bpp"),
+        "selected_artifact_bytes": selected.get("artifact_bytes"),
+        "compared": (
+            f"re-ranked {n_rows} allocator Pareto rows on measured KL; "
+            "no byte-matched uniform arm in the validation set"
+        ),
+        "to_pass": (
+            "build the byte-matched uniform control from the candidate plan, "
+            "serve it beside the candidate, and close the shipcard "
+            "uniform_control slot (shipcard_cli fill-control); verify and "
+            "publish refuse until then"
+        ),
+    }
 
 
 def tail_eta_auto(row: Mapping, column: str) -> tuple[float, str]:
@@ -1046,6 +1103,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         # validation always takes the resolved branch above.
         selected_payload = _load_json(selected["path"])
         assignment = _load_assignment(selected["path"])
+    # A rate-axis pick (#117) is a candidate until a byte-matched uniform arm
+    # corroborates it. The validated frontier re-ranks the allocator's own
+    # Pareto rows and carries no uniform arm, so no input to this stage can
+    # corroborate -- the absence is structural, and the served comparison that
+    # would close it is one this stage cannot run. Recorded in data below and
+    # refused at the end: the recipe files the control loop needs are still
+    # written, but the pipeline must not walk on to export certified.
+    rate_axis = rate_axis_rungs(assignment)
+    uniform_control_status = (
+        rate_axis_candidate_status(
+            selected=selected, rungs=rate_axis, n_rows=len(results),
+        )
+        if rate_axis else None
+    )
     selected_cb_context, selected_cb_stamps = (
         cb_serialization_metadata_from_assignment_payload(selected_payload)
         if isinstance(selected_payload, Mapping)
@@ -1157,6 +1228,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     carried.pop("cb_serialized_payload", None)
     carried.pop("cb_render_identity", None)
     carried.pop("whole_artifact_budget", None)
+    if uniform_control_status is not None:
+        carried["uniform_control"] = uniform_control_status
     if (
         carried
         or selected_cb_context is not None
@@ -1227,6 +1300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "unstable_policy": args.unstable_policy,
         "n_results": len(results),
         "n_frontier": len(frontier),
+        "uniform_control": uniform_control_status,
         "output_layer_config": str(layer_config_path),
         "output_assignment": str(assignment_path),
     }
@@ -1341,6 +1415,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     print(f"[frontier-select] layer_config -> {layer_config_path}", flush=True)
     print(f"[frontier-select] summary -> {summary_path}", flush=True)
+    if uniform_control_status is not None:
+        selected_bytes = selected.get("artifact_bytes")
+        byte_clause = (
+            f"{int(selected_bytes)} bytes (bpp {selected.get('bpp')})"
+            if selected_bytes is not None
+            else f"unpriced bytes (bpp {selected.get('bpp')})"
+        )
+        print(
+            f"[frontier-select] REFUSED: {selected.get('label')} is a "
+            f"rate-axis pick ({len(rate_axis)} distinct rung(s), e.g. "
+            f"{', '.join(rate_axis[:4])}) and this stage cannot corroborate "
+            "it against a byte-matched uniform arm -- the validation set "
+            f"holds {len(results)} allocator Pareto rows and no uniform arm, "
+            "and the corroborating measurement (served gold KL on both arms) "
+            "is one this stage cannot run. Compared: "
+            f"{selected.get('label')} KL={selected.get('kl'):.8g} re-ranked "
+            f"among {len(results)} Pareto rows; uniform arm: ABSENT. At "
+            f"{byte_clause}. This pick ships as a CANDIDATE, not a "
+            "selection: build the byte-matched uniform control from the "
+            "candidate plan, serve it beside the candidate, and close the "
+            "shipcard uniform_control slot (shipcard_cli fill-control) -- "
+            "verify and publish refuse until then (prismaquant#117).",
+            flush=True,
+        )
+        return RATE_AXIS_UNCERTIFIED_EXIT
     return 0
 
 

@@ -1300,3 +1300,130 @@ def test_tail_veto_inert_reason_only_fires_when_no_row_carries_the_column():
     assert tail_veto_inert_reason(bare, "kl_max") == "tail_column_absent_on_every_row"
     # Inert -> the envelope is the mean-only one, not an empty frontier.
     assert len(_frontier_from_rows(bare, tail_veto="kl_max")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Rate-axis gate (#117): a Tessera pick is a candidate until a byte-matched
+# uniform arm corroborates it
+# ---------------------------------------------------------------------------
+
+#: A real attested rung, so the fixture allocates over the axis, not a mock.
+_TESSERA_RUNG = "TESSERA_E2M1_K2_R896"
+#: The 2026-09-02 receipt's own candidate bytes (1761722368 bits), so the
+#: refusal names a measurement rather than an invented number.
+_RECEIPT_CANDIDATE_BYTES = 1761722368 // 8
+
+
+def _rate_axis_cli_fixture(tmp_path, *, formats):
+    assignment_path = tmp_path / "rate_axis_candidate.json"
+    assignment_path.write_text(json.dumps({
+        "schema": "prismaquant.allocator.pareto_assignment.v1",
+        "assignment": {
+            "model.layers.0.self_attn.q_proj": formats[0],
+            "model.layers.0.mlp.down_proj": formats[1],
+        },
+    }))
+    validation_path = tmp_path / "validation.json"
+    validation_path.write_text(json.dumps({
+        "results": [
+            {
+                "label": "alloc_4.0",
+                "path": str(assignment_path),
+                "bpp": 4.0,
+                "last_token_kl": 0.02,
+                "whole_artifact_upper_bound_bytes": _RECEIPT_CANDIDATE_BYTES,
+                "format_counts": {formats[0]: 1, formats[1]: 1},
+            },
+            {
+                "label": "alloc_5.0",
+                "path": str(assignment_path),
+                "bpp": 5.0,
+                "last_token_kl": 0.015,
+                "whole_artifact_upper_bound_bytes": _RECEIPT_CANDIDATE_BYTES,
+                "format_counts": {formats[0]: 1, formats[1]: 1},
+            },
+        ],
+    }))
+    layer_config = tmp_path / "layer_config.json"
+    layer_config.write_text(json.dumps({
+        "__prismaquant__": {"target_profile": "research"},
+    }))
+    return (
+        validation_path,
+        layer_config,
+        tmp_path / "selected_assignment.json",
+        tmp_path / "selection.json",
+    )
+
+
+def _run_selector(*args):
+    return subprocess.run(
+        [sys.executable, "-m", "prismaquant.select_validated_frontier", *args],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_tessera_pick_refuses_without_a_byte_matched_uniform_arm(tmp_path):
+    """The shipping point must not certify what it cannot corroborate.
+
+    Measured 2026-09-02: a Tessera allocation served 2.00x worse KL than a
+    byte-matched uniform arm while every check this stage owns passed, and an
+    oracle over the same menu reaches only 0.941x of uniform -- so no ranking
+    this stage can do closes the gap. The validated frontier re-ranks the
+    allocator's own Pareto points and cannot see uniform beating the pick, so
+    the pick ships as a candidate with the refusal naming the comparison, the
+    bytes, and what would pass.
+    """
+    from prismaquant.select_validated_frontier import (
+        RATE_AXIS_UNCERTIFIED_EXIT,
+    )
+
+    validation_path, layer_config, assignment_out, summary = (
+        _rate_axis_cli_fixture(
+            tmp_path, formats=(_TESSERA_RUNG, "NVFP4"))
+    )
+    proc = _run_selector(
+        "--validation-json", str(validation_path),
+        "--mode", "best-kl",
+        "--output-layer-config", str(layer_config),
+        "--output-assignment", str(assignment_out),
+        "--output-summary", str(summary),
+    )
+    assert proc.returncode == RATE_AXIS_UNCERTIFIED_EXIT, proc.stdout + proc.stderr
+    refused = proc.stdout + proc.stderr
+    assert "REFUSED" in refused
+    assert "byte-matched uniform" in refused
+    assert "alloc_5.0" in refused
+    assert str(_RECEIPT_CANDIDATE_BYTES) in refused
+
+    # The recipe the control loop needs is still written -- the control is
+    # built FROM the candidate plan -- but stamped as a candidate whose
+    # uniform corroboration is outstanding, not as a selection.
+    stamped = json.loads(summary.read_text())["uniform_control"]
+    assert stamped["status"] == "outstanding"
+    assert stamped["selected_label"] == "alloc_5.0"
+    assert stamped["selected_artifact_bytes"] == _RECEIPT_CANDIDATE_BYTES
+    assert stamped["rate_axis_formats"] == [_TESSERA_RUNG]
+    meta = json.loads(layer_config.read_text())["__prismaquant__"]
+    assert meta["uniform_control"]["status"] == "outstanding"
+    # bpp provenance is factual and stays: this IS the validated-frontier
+    # pick; what is refused is certifying it shippable.
+    assert meta["selected_by"] == "validated_frontier:best-kl"
+
+
+def test_a_format_menu_pick_still_certifies_without_a_uniform_arm(tmp_path):
+    """Scope guard: no rung axis, no uniform rung, no refusal."""
+    validation_path, layer_config, assignment_out, summary = (
+        _rate_axis_cli_fixture(tmp_path, formats=("NVFP4", "BF16"))
+    )
+    proc = _run_selector(
+        "--validation-json", str(validation_path),
+        "--mode", "best-kl",
+        "--output-layer-config", str(layer_config),
+        "--output-assignment", str(assignment_out),
+        "--output-summary", str(summary),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(summary.read_text())["uniform_control"] is None
