@@ -53,9 +53,10 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import lru_cache
+from functools import lru_cache, wraps
 import json
 import re
+import threading
 
 __all__ = [
     "ANCHOR_BUDGET_BITS",
@@ -86,6 +87,9 @@ __all__ = [
     "artifact_bpp",
     "enumerate_grid_space",
     "get_tessera_family",
+    "grid_space_rung_keys",
+    "lazily_sized_cache",
+    "recipe_cache_bound",
     "parse_tessera_format_name",
     "realisable_rungs",
     "tessera_family",
@@ -166,7 +170,154 @@ def scale_plane_name(plane: "ScalePlaneKind | str") -> str:
         raise TesseraFormatError(f"unknown scale plane {plane!r}") from exc
 
 
-@lru_cache(maxsize=512)
+# ---------------------------------------------------------------------------
+# Sizing a memo over the space it is keyed on
+# ---------------------------------------------------------------------------
+#
+# Every memo on this path is keyed on a *rung*, and there are thousands of
+# them: one pass over the space asks each key once, so a memo smaller than the
+# space evicts its own entries mid-pass and answers nothing on the next pass.
+# That is RobTand/tessera#46, and a bigger literal is the same defect with a
+# bigger number in it -- ``enumerate_grid_space`` went from eleven families to
+# twelve on 2026-09-02 with nobody touching a cache line.  So the bound is
+# computed from the space, and the mechanism below exists because the space
+# cannot be counted at import time (counting it builds every grid).
+
+
+def lazily_sized_cache(bound):
+    """``lru_cache`` whose ``maxsize`` is computed on the first call.
+
+    ``lru_cache`` fixes its size when the decorator runs, which for a bound
+    derived from :func:`enumerate_grid_space` is too early: counting the space
+    builds every grid in it, and a module import may not do that.  So the memo
+    is built on the first call and the wrapper forwards ``cache_info`` and
+    ``cache_clear`` -- which is also what lets a test read the bound off the
+    live memo instead of restating it, and what makes a cleared memo pick up a
+    bound that has since moved.
+
+    A bound that asks the memo it is sizing is refused rather than quietly
+    answered uncached: that is a design error in the bound (the sizing would
+    recurse), and hiding it behind a fallback would hide the one thing this
+    wrapper cannot fix.  :func:`recipe_cache_bound` is deliberately stated
+    against ``payload_bits`` for that reason -- see its docstring.
+
+    The refusal is *reentrancy*, which is a property of one thread, so it is
+    keyed on the thread that is sizing and the build itself is behind a lock.
+    A second thread arriving mid-build waits and then finds the memo, rather
+    than reading a "reentrant" refusal it did not cause -- these functions are
+    called from the render path, which encodes on worker threads.
+    """
+
+    def decorate(target):
+        memo: "list[object]" = []
+        sizing: "list[int]" = []
+        lock = threading.Lock()
+
+        def _memo():
+            if memo:
+                return memo[0]
+            if sizing and sizing[0] == threading.get_ident():
+                raise TesseraFormatError(
+                    f"sizing the {target.__name__} memo asked {target.__name__} "
+                    "for an answer: a bound that reenters the memo it sizes "
+                    "cannot be computed. State the bound against a property "
+                    "that does not go through this function."
+                )
+            with lock:
+                if memo:
+                    return memo[0]
+                sizing.append(threading.get_ident())
+                try:
+                    size = int(bound())
+                    if size < 1:
+                        raise TesseraFormatError(
+                            f"the bound for the {target.__name__} memo counted "
+                            f"{size} keys; a memo sized zero is not a memo, and "
+                            "an empty key space means the space, not the bound, "
+                            "is wrong"
+                        )
+                    memo.append(lru_cache(maxsize=size)(target))
+                finally:
+                    sizing.clear()
+                return memo[0]
+
+        @wraps(target)
+        def call(*args):
+            return _memo()(*args)
+
+        call.cache_info = lambda: _memo().cache_info()
+        call.cache_clear = lambda: memo.clear()
+        return call
+
+    return decorate
+
+
+def grid_space_rung_keys() -> int:
+    """Distinct rung keys the grid space can address.  Computed, never listed.
+
+    Every memo keyed on a rung -- a full format name, or a
+    ``(family, rung)`` tuple -- ranges over exactly this set, so this is the
+    floor under its bound: a memo smaller than this evicts entries a single
+    pass over the space is still filling (tessera#46).  **It is not
+    ``tessera_menu.menu_rungs_per_shape()``**, which counts the four families
+    :func:`~prismaquant.tessera_menu.menu_families` admits; these memos are
+    keyed on a name, and a name is admitted by
+    :func:`parse_tessera_format_name`, which takes any family
+    :func:`enumerate_grid_space` can build -- twelve today, the eight
+    ``TESSERA_LM*`` families included.  Sizing them off the menu would leave
+    them 2x undersized the day something prices an ``LM*`` family, which is the
+    same drift one level up.
+
+    The interval is counted at the **grammar's** cap, ``payload_bits`` per
+    code, rather than at :func:`family_rate_cap`'s recipe-dependent one, for
+    two reasons and neither is slack:
+
+    * ``family_rate_cap`` reads the family's recipe, i.e. it calls
+      ``tessera_wire_recipe`` -> ``_recipe_for``, so a bound stated against it
+      would reenter the memo it is sizing;
+    * ``tessera_wire_recipe(family, rung)`` never validates ``rung``, so every
+      rung up to the grammar's cap is a reachable key there whatever the
+      recipe currently says.  A recipe flip that widens a cap (E4M3's
+      scheduled TCQ -> WINDOW move is one) moves the reachable set and does not
+      move this number.
+
+    It over-counts the *name* space by the rungs above each recipe's cap --
+    14,988 against 13,068 today -- and that costs nothing: ``lru_cache`` does
+    not preallocate, so an entry exists only once a key is asked.
+
+    A family whose arity does not divide the q256 grid has no rung interval at
+    all (:func:`family_q256_bounds` refuses it) and contributes no keys, which
+    is why it is skipped rather than rounded.
+    """
+    total = 0
+    for spec in enumerate_grid_space():
+        lo, rem = divmod(Q256_UNIT, spec.arity)
+        if rem:
+            continue        # no integer rung interval; not a key space at all
+        hi = spec.payload_bits * Q256_UNIT // spec.arity
+        total += hi - lo + 1
+    return total
+
+
+def recipe_cache_bound() -> int:
+    """Entries the wire-recipe memo may hold: every rung, plus every family.
+
+    :func:`_recipe_for` is keyed ``(base, base_size, arity, rung)``.  The
+    ``(base, base_size, arity)`` triple is one family -- ``base_size`` is
+    redundant with ``base``, which is why the count is per family and not per
+    triple -- so the key space is :func:`grid_space_rung_keys` plus the one
+    ``rung=None`` entry per family that ``tessera_wire_recipe`` asks for when a
+    caller wants the family's rung-independent wire (``TesseraFamily.recipe``,
+    ``family_rate_cap``, every bounds question).  15,000 today, against the
+    ``maxsize=512`` that held it until 2026-09-03: 512 was under the space by
+    25x, and a full menu pass measured **34,580 hits and 6,920 misses on its
+    second pass** -- every hit intra-rung, five lookups of one key while that
+    rung is priced, and not one hit across rungs.
+    """
+    return grid_space_rung_keys() + sum(1 for _ in enumerate_grid_space())
+
+
+@lazily_sized_cache(recipe_cache_bound)
 def _recipe_for(base: str, base_size: int, arity: int, rung: "int | None") -> "WireRecipe":
     # Resolved off the module, not off the name bound at import: the recipe a
     # grid gets is Tessera's decision and it moves (E4M3 is scheduled to flip

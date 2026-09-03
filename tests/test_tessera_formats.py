@@ -1260,3 +1260,267 @@ def test_the_render_leg_and_the_exporter_are_one_rendering(label, name, recipe_a
     off_the_wire = read_unit_artifact(unit.blob, device=weight.device)
 
     assert torch.equal(rendered, off_the_wire.to(weight.dtype)), label
+
+
+# ---------------------------------------------------------------------------
+# The rung-keyed memo bound (prismaquant#134, and tessera#46 one level up)
+#
+# Two memos on this path are keyed on a RUNG -- ``tessera_rung_is_serialisable``
+# on the full format name, ``_recipe_for`` on ``(base, base_size, arity, rung)``
+# -- and both were sized by a round number, 4096 and 512.  These tests pin the
+# RULE, "a memo survives one pass over the space its key ranges over", and
+# never a count.  A count written here would be the same defect one level up:
+# 6916 is the right answer to a different question (the four families
+# ``menu_families`` admits) and is short of the twelve ``enumerate_grid_space``
+# builds, so a memo sized off it goes undersized the day something prices an
+# ``LM*`` family.
+# ---------------------------------------------------------------------------
+
+def _rung_keyed_memos():
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_render as tr
+
+    return {
+        "tessera_render.tessera_rung_is_serialisable":
+            tr.tessera_rung_is_serialisable,
+        "tessera_formats._recipe_for": tfm._recipe_for,
+    }
+
+
+def _grid_space_rung_names():
+    """Every rung name the grid space addresses, which is the memos' key set."""
+    return [
+        spec.format_name(rung)
+        for spec in enumerate_grid_space()
+        for rung in realisable_rungs(spec)
+    ]
+
+
+def test_the_rung_key_space_is_the_grid_space_and_not_the_menu():
+    """Which space, and why it is not the one tessera#46 counted.
+
+    Both memos are keyed on a rung of *any* family a name can name, and
+    ``parse_tessera_format_name`` admits every family
+    ``enumerate_grid_space`` can build -- the eight ``TESSERA_LM*`` ones
+    included -- while ``menu_rungs_per_shape`` counts the four the menu
+    admits.  The bound has to cover the wider set, so this pins the
+    containment rather than either number.
+    """
+    from prismaquant import tessera_menu as tm
+    from prismaquant.tessera_formats import (
+        grid_space_rung_keys, recipe_cache_bound,
+    )
+
+    families = list(enumerate_grid_space())
+    reachable = len(_grid_space_rung_names())
+
+    # The bound covers every reachable rung name, and every rung above a
+    # recipe's cap that ``tessera_wire_recipe`` will still accept as a key.
+    assert grid_space_rung_keys() >= reachable
+    assert recipe_cache_bound() >= reachable + len(families)
+
+    # And the menu's count does not cover it: strictly fewer families, so
+    # strictly fewer rungs, so sizing either memo off the menu is undersized
+    # by construction -- today by about 2x.
+    menu = {spec.name for spec in tm.menu_families()}
+    grid = {spec.name for spec in families}
+    assert menu < grid, "the menu is meant to be a subset of the grid space"
+    assert grid_space_rung_keys() > tm.menu_rungs_per_shape()
+
+
+def test_every_rung_keyed_memo_survives_one_pass_over_its_key_space():
+    """The rule.  Not ``maxsize == <number>`` -- ``maxsize >= the key space``.
+
+    A memo smaller than its key space evicts its own entries while a pass is
+    still filling them, and then answers nothing on the next pass: measured at
+    0 hits against 6916 misses *per pass* on the serialisable memo at
+    ``maxsize=4096``, and 0 cross-rung hits on ``_recipe_for`` at 512.
+    """
+    from prismaquant.tessera_formats import enumerate_grid_space
+
+    families = list(enumerate_grid_space())
+    rungs = len(_grid_space_rung_names())
+    floors = {
+        "tessera_render.tessera_rung_is_serialisable": rungs,
+        # plus the one rung-independent (``rung=None``) entry per family.
+        "tessera_formats._recipe_for": rungs + len(families),
+    }
+    for name, memo in _rung_keyed_memos().items():
+        held = memo.cache_info().maxsize
+        assert held is None or held >= floors[name], (
+            f"{name} holds {held} entries against a {floors[name]}-key space: "
+            "one pass evicts itself")
+
+
+def test_a_second_pass_over_the_whole_key_space_recomputes_nothing():
+    """The behaviour the bound buys, measured on the memo rather than a clock.
+
+    A wall-clock assertion would be a coin flip on a loaded box; hits and
+    misses say the same thing and say it exactly.  The second half of the test
+    is its own sensitivity check: the same sweep against the literal that
+    shipped until 2026-09-03 must reproduce the reported failure, or this test
+    would pass over the bug it is about.
+    """
+    from functools import lru_cache
+
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_render as tr
+
+    names = _grid_space_rung_names()
+
+    tr.clear_serialisable_cache()
+    tfm.clear_recipe_cache()
+    for name in names:
+        tr.tessera_rung_is_serialisable(name)
+    cold = tr.tessera_rung_is_serialisable.cache_info()
+    assert cold.hits == 0 and cold.misses == len(names)
+    for name in names:
+        tr.tessera_rung_is_serialisable(name)
+    warm = tr.tessera_rung_is_serialisable.cache_info()
+    assert warm.misses == cold.misses, (
+        "a repeat pass re-answered rungs the memo had already answered")
+    assert warm.hits == len(names)
+
+    tfm.clear_recipe_cache()
+    for spec in enumerate_grid_space():
+        tessera_wire_recipe(spec)                   # the rung=None entry
+        for rung in realisable_rungs(spec):
+            tessera_wire_recipe(spec, rung)
+    cold = tfm._recipe_for.cache_info()
+    for spec in enumerate_grid_space():
+        tessera_wire_recipe(spec)
+        for rung in realisable_rungs(spec):
+            tessera_wire_recipe(spec, rung)
+    warm = tfm._recipe_for.cache_info()
+    assert warm.misses == cold.misses
+    assert warm.currsize == cold.currsize
+    # ``>=`` and not ``==``: ``realisable_rungs`` asks the family's own
+    # rung-independent recipe once per family to find the interval, so a sweep
+    # makes twelve more lookups than it has keys.  Those are hits too.
+    assert warm.hits - cold.hits >= cold.misses
+
+    # Sensitivity: the pre-fix literal, on the same sweep.  13,068 distinct
+    # keys cycled through 4096 slots is the worst case for an LRU -- every
+    # access evicts the entry the next access wants -- which is exactly the
+    # "0 hits / 13 832 misses" the issue reported from a two-pass menu.
+    undersized = lru_cache(maxsize=4096)(
+        tr.tessera_rung_is_serialisable.__wrapped__)
+    for _ in range(2):
+        for name in names:
+            undersized(name)
+    starved = undersized.cache_info()
+    assert starved.hits == 0
+    assert starved.misses == 2 * len(names)
+    assert starved.currsize == 4096
+
+
+def test_the_bound_moves_when_the_family_roster_moves(monkeypatch):
+    """Derived, not restated: shrink the roster and the live memos shrink.
+
+    This is the test a literal cannot pass.  ``enumerate_grid_space`` went from
+    eleven families to twelve on 2026-09-02 with nobody touching a cache line,
+    so the property worth pinning is that the bound is a function of the
+    roster -- checked by moving the roster now, rather than by waiting for the
+    next family and hoping someone notices.  BF16 is the one removed because
+    admitting it is the growth that broke the old numbers.
+    """
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_render as tr
+
+    def _rebuild():
+        tr.clear_serialisable_cache()
+        tfm.clear_recipe_cache()
+
+    wide_keys = tfm.grid_space_rung_keys()
+    wide_bound = tfm.recipe_cache_bound()
+    assert tr.tessera_rung_is_serialisable.cache_info().maxsize == wide_keys
+    assert tfm._recipe_for.cache_info().maxsize == wide_bound
+
+    narrower = {base: spec for base, spec in tfm._HARDWARE_BASES.items()
+                if base != "BF16"}
+    assert len(narrower) == len(tfm._HARDWARE_BASES) - 1
+    try:
+        monkeypatch.setattr(tfm, "_HARDWARE_BASES", narrower)
+        _rebuild()
+        narrow_keys = tfm.grid_space_rung_keys()
+        assert narrow_keys < wide_keys
+        assert tr.tessera_rung_is_serialisable.cache_info().maxsize == narrow_keys
+        assert tfm._recipe_for.cache_info().maxsize == tfm.recipe_cache_bound()
+        assert tfm.recipe_cache_bound() < wide_bound
+    finally:
+        # The memos were BUILT while the roster was short.  Restoring the
+        # roster does not resize them, so the clear has to come after the undo
+        # or every later test in the session runs undersized.
+        monkeypatch.undo()
+        _rebuild()
+
+    assert tfm.grid_space_rung_keys() == wide_keys
+    assert tr.tessera_rung_is_serialisable.cache_info().maxsize == wide_keys
+    assert tfm._recipe_for.cache_info().maxsize == wide_bound
+
+
+def test_sizing_the_recipe_memo_does_not_ask_the_recipe_memo():
+    """Why the interval is counted at ``payload_bits`` and not at the cap.
+
+    ``family_rate_cap`` reads the family's recipe, so a bound stated against it
+    would call ``_recipe_for`` while sizing ``_recipe_for``.  The guard in
+    ``lazily_sized_cache`` refuses that rather than answering it uncached, and
+    this pins that the live bound does not need the guard: forcing the lazy
+    build must leave the memo empty.
+    """
+    from prismaquant import tessera_formats as tfm
+
+    tfm.clear_recipe_cache()
+    info = tfm._recipe_for.cache_info()          # forces the sizing
+    assert info.maxsize == tfm.recipe_cache_bound()
+    assert (info.hits, info.misses, info.currsize) == (0, 0, 0), (
+        "counting the key space asked the memo it was sizing")
+
+
+def test_a_bound_that_reenters_the_memo_it_sizes_is_refused():
+    """The guard itself, on a toy memo: refused loudly, not answered quietly.
+
+    A fallback that silently answered uncached would hide the one failure this
+    wrapper cannot repair -- a bound that cannot be computed at all.
+    """
+    from prismaquant.tessera_formats import lazily_sized_cache
+
+    @lazily_sized_cache(lambda: doubled(1))
+    def doubled(n):
+        return 2 * n
+
+    with pytest.raises(TesseraFormatError, match="reenters the memo it sizes"):
+        doubled(2)
+
+
+def test_a_second_unit_asks_neither_rung_keyed_memo_again():
+    """The reuse these memos exist for is per UNIT, not per pass.
+
+    Both answers are shape-independent, and ``tessera_campaign`` expands a menu
+    once per Linear (``for name in targets``), so on a model whose 37,861 units
+    share 25 distinct shapes the same 6916 names are asked ~37,861 times.  At
+    ``maxsize=4096`` none of that was cashed: a *different* shape's pass paid
+    6916 misses on each memo, every time.  So the check is a second pass at a
+    second shape, where a shape-keyed memo legitimately misses and these two
+    must not.
+    """
+    from prismaquant import tessera_formats as tfm
+    from prismaquant import tessera_menu as tm
+    from prismaquant import tessera_render as tr
+
+    tr.clear_serialisable_cache()
+    tfm.clear_recipe_cache()
+    tm.expand_tessera_menu((256, 256), mode=tm.MENU_RESEARCH, step_q256=1)
+    cold_names = tr.tessera_rung_is_serialisable.cache_info()
+    cold_recipes = tfm._recipe_for.cache_info()
+    assert cold_names.misses > 0 and cold_recipes.misses > 0
+
+    tm.expand_tessera_menu((512, 256), mode=tm.MENU_RESEARCH, step_q256=1)
+    warm_names = tr.tessera_rung_is_serialisable.cache_info()
+    warm_recipes = tfm._recipe_for.cache_info()
+
+    assert warm_names.misses == cold_names.misses, (
+        "a second unit re-answered rungs the first unit had already answered")
+    assert warm_names.hits - cold_names.hits == cold_names.misses
+    assert warm_recipes.misses == cold_recipes.misses
+    assert warm_recipes.hits > cold_recipes.hits

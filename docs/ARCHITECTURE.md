@@ -101,6 +101,23 @@ not of which subset a call renders. Caches stamp the hooked enumeration
 (`activation_hook_scope`) so a reader can tell two renderings apart, which
 `render_scope` alone could not. The claim is recorded where the mechanism is
 described, not only where the defect was found.
+Re-stamped (2026-09-03, `claude/pq134-memo-key-space`) for the **rung-keyed
+memo bounds** (§4.10; RobTand/prismaquant#134). The two memos next to the ones
+below were sized by round numbers against the wrong space:
+`tessera_render.tessera_rung_is_serialisable` at 4096 and
+`tessera_formats._recipe_for` at 512, both keyed on a rung of *any* family a
+name can name -- 13,068 over the twelve `enumerate_grid_space()` builds, not
+the 6916 of the four the menu admits. Measured before: the serialisable memo
+took **0 hits against 6916 misses on every pass**, and `_recipe_for` hit only
+within a rung (34,580 hits, 6,920 misses on its *second* pass over one shape).
+Both are now sized by `grid_space_rung_keys()`, counted off the grid space at
+the grammar's cap so the sizing cannot reenter the memo it sizes; after, a
+second pass and a second *shape* both recompute nothing. The mechanism moved to
+the leaf module (`tessera_formats.lazily_sized_cache`) so there is one spelling
+of it. tessera#46's own two memos were re-checked against the wider space and
+are correctly bounded: a non-serialisable family is refused at the first menu
+gate, so a 13,068-rung grid-space pass at tp=2 fills the geometry memo with
+exactly 6916 entries and no more.
 
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
@@ -4328,6 +4345,50 @@ setting of `PRISMAQUANT_TESSERA_MENU_CACHE_SHAPES` can put a shape where it
 evicts itself; that is the property
 `tests/test_tessera_menu.py::test_every_menu_memo_survives_one_shapes_widest_menu`
 pins, reading `maxsize` off the live memo instead of restating a number.
+
+**A rung-keyed memo is sized over the grid space, which is not the menu.** Two
+more memos on the same call graph are keyed on a *rung* rather than on a
+(rung, shape): `tessera_render.tessera_rung_is_serialisable` on the full format
+name, and `tessera_formats._recipe_for` on `(base, base_size, arity, rung)`.
+Both carried round numbers -- 4096 and 512 -- and the count that bounds them is
+**not** `menu_rungs_per_shape()`. A name is admitted by
+`parse_tessera_format_name`, which takes any family `enumerate_grid_space()`
+can build: twelve today, the eight `TESSERA_LM*` ones included, **13,068
+rungs** against the menu's 6916 (measured, prismaquant#134). Sizing either off
+the menu count would leave it 2x short the day something prices an `LM*`
+family, which is the same drift one level up. So the bound is
+`tessera_formats.grid_space_rung_keys()`, summed over the grid space at the
+*grammar's* cap (`payload_bits` per code) rather than at `family_rate_cap`'s:
+the recipe-dependent cap reads `tessera_wire_recipe`, so a bound stated against
+it would call `_recipe_for` while sizing `_recipe_for`, and `tessera_wire_recipe`
+never validates its rung, so every rung up to the grammar's cap is a reachable
+key whatever the recipe says. 14,988 keys against 13,068 reachable, and the
+over-count is free: an `lru_cache` does not preallocate. `_recipe_for` adds one
+`rung=None` entry per family (15,000).
+
+What the old bounds cost, measured on the memos rather than on a clock: over
+one 6916-rung research pass the serialisable memo took **0 hits and 6916
+misses, on every pass** -- the "0 hits / 13,832 misses" in the issue is two
+such passes -- and `_recipe_for` took 34,580 hits and 6,920 misses on its
+*second* pass over the *same* shape, every hit intra-rung (five lookups of one
+key while that rung is priced) and not one across rungs. After: a second pass
+takes 6916 hits / 0 misses, and so does a pass over a *different* shape, which
+is the reuse these two exist for -- their answers are shape-independent and
+`tessera_campaign` expands a menu once per Linear, so a model with 37,861 units
+over 25 distinct shapes asks the same 6916 names ~37,861 times.
+
+The lazy-sizing mechanism now lives once, in the leaf module
+(`tessera_formats.lazily_sized_cache`); `menu_scaled_cache` is the *bound*,
+which is the part only the menu knows. A bound that asks the memo it is sizing
+is refused rather than answered uncached, because that is a design error in the
+bound and a fallback would hide it.
+
+tessera#46's own two memos are correct under this wider standard, checked
+rather than assumed: `RouteAdmission.admits` returns False for a
+non-serialisable family in *both* menu modes, so no `LM*` rung reaches the
+shape-keyed memos. A 13,068-rung grid-space pass at tp=2 asks the serialisable
+memo 13,068 times and fills `_shard_geometry` with exactly
+`menu_rungs_per_shape()` = 6916 entries, which is its bound.
 
 The two memos are sized apart because their entries differ by 25x–375x
 depending on the column count, measured
