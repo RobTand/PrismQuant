@@ -14,11 +14,12 @@ import struct
 
 import pytest
 
+import prismaquant.name_projection as npx
 from prismaquant import footprint as fp
 from prismaquant import format_registry as fr
+from prismaquant.model_profiles.base import ModelProfile
+from prismaquant.model_profiles.qwen3 import Qwen3Profile
 from prismaquant.nvfp4_cb_footprint import CBSerializationContext
-
-
 def _write_safetensors(path, tensors):
     """Write a minimal valid .safetensors file. tensors: {name: (dtype, shape)}.
 
@@ -951,3 +952,145 @@ def test_partition_allows_the_shipping_shape(tmp_path):
     # Unchanged from the no-universe call: the guard refuses, it never reprices.
     assert part == fp.partitioned_source_total_bytes(
         m, total, ["mtp."], context="unit")
+
+
+# ---------------------------------------------------------------------------
+# Name derivation routes through the shared projection layer (R5,
+# walker/consumer-footprint): footprint keeps no private name mapping.
+# The leaf rule and the packed-expert alias ARE
+# prismaquant.name_projection's; these pins hold the projection-object
+# path byte-identical to the raw-accessor path and hold refusals loud.
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingCheckpointProfile(ModelProfile):
+    """A profile whose checkpoint_to_live_name is a declaration bug."""
+
+    name = "exploding-checkpoint-stub"
+
+    @classmethod
+    def matches(cls, model_type, architectures):
+        return False
+
+    def structure_spec(self):
+        return None
+
+    def checkpoint_to_live_name(self, ckpt_key, *, multimodal=False):
+        raise RuntimeError("spec exploded")
+
+
+def test_footprint_holds_no_private_name_mapping():
+    """The leaf rule and the packed-expert parser are THE layer's.
+
+    ``footprint`` re-exports them for the historic import paths; it does
+    not reimplement them."""
+    assert fp.strip_weight_leaf is npx.strip_weight_leaf
+    assert fp.packed_expert_alias is npx.packed_expert_alias
+    # The span-identity helper is a thin alias over the layer's leaf rule.
+    assert fp.source_span_identity("a.b.weight") == npx.strip_weight_leaf(
+        "a.b.weight")
+    assert fp.source_span_identity("a.b") == "a.b"
+
+
+def _projection_parity_checkpoint(tmp_path):
+    """Per-expert-on-disk MoE spans, an fp8 scale sibling with no base
+    tensor, a declined MTP tensor, and the BF16 floor — everything the
+    manifest's name mapping has to survive identically under both forms."""
+    _write_safetensors(tmp_path / "m.safetensors", {
+        "model.layers.0.mlp.experts.0.gate_proj.weight": ("BF16", (16, 32)),
+        "model.layers.0.mlp.experts.0.up_proj.weight": ("BF16", (16, 32)),
+        "model.layers.0.mlp.experts.0.down_proj.weight": ("BF16", (32, 16)),
+        "model.layers.0.mlp.experts.1.gate_proj.weight": ("BF16", (16, 32)),
+        "model.layers.0.mlp.experts.1.up_proj.weight": ("BF16", (16, 32)),
+        "model.layers.0.mlp.experts.1.down_proj.weight": ("BF16", (32, 16)),
+        "model.layers.0.self_attn.q_proj.weight_scale_inv": ("F32", (1, 1)),
+        "mtp.fc.weight": ("BF16", (8, 8)),                          # 128
+        "embed.weight": ("BF16", (100, 8)),                         # 1600
+    })
+
+
+def test_manifest_via_projection_matches_the_raw_accessor_path(tmp_path):
+    _projection_parity_checkpoint(tmp_path)
+    profile = Qwen3Profile()
+    legacy = fp.source_tensor_bytes_manifest(
+        str(tmp_path),
+        name_map=profile.checkpoint_to_live_name,
+        expert_parent_for_projection=(
+            profile.packed_expert_parent_for_projection),
+    )
+    via_layer = fp.source_tensor_bytes_manifest(
+        str(tmp_path), projection=npx.NameProjection(profile))
+
+    # Byte-for-byte identical manifest, provenance included.
+    assert dict(via_layer) == dict(legacy)
+    assert via_layer.spans == legacy.spans
+
+    # The interesting branches really fired on this fixture:
+    # per-expert spans aggregate into the packed allocator names ...
+    assert via_layer["model.layers.0.mlp.experts.gate_up_proj"] == 4 * 1024
+    assert via_layer["model.layers.0.mlp.experts.down_proj"] == 2 * 1024
+    # ... a DECLARED drop keeps its raw checkpoint spelling (MTP) ...
+    assert via_layer["mtp.fc"] == 128
+    # ... and a standalone sidecar gets no entry of its own.
+    assert "model.layers.0.self_attn.q_proj.weight_scale_inv" not in via_layer
+
+
+def test_floor_bytes_for_model_accepts_a_projection(tmp_path):
+    _case_a_per_expert_disk(tmp_path)
+    profile = Qwen3Profile()
+    via_layer = fp.floor_bytes_for_model(
+        str(tmp_path), _PACKED_NAMES, _PACKED_STATS,
+        projection=npx.NameProjection(profile))
+    legacy = fp.floor_bytes_for_model(
+        str(tmp_path), _PACKED_NAMES, _PACKED_STATS,
+        name_map=profile.checkpoint_to_live_name,
+        expert_parent_for_projection=profile.packed_expert_parent_for_projection)
+    assert via_layer["floor_bytes"] == legacy["floor_bytes"] == 1600
+    assert via_layer["reencoded_source_bytes"] == \
+        legacy["reencoded_source_bytes"] == 6 * 1024
+    assert dict(via_layer["source_manifest"]) == dict(legacy["source_manifest"])
+    assert via_layer["source_manifest"].spans == legacy["source_manifest"].spans
+
+
+def test_projection_and_raw_accessors_are_mutually_exclusive(tmp_path):
+    _partitioned_disk(tmp_path)
+    proj = npx.NameProjection(Qwen3Profile())
+    with pytest.raises(ValueError, match="never both"):
+        fp.source_tensor_bytes_manifest(
+            str(tmp_path), name_map=lambda k: k, projection=proj)
+    with pytest.raises(ValueError, match="never both"):
+        fp.floor_bytes_for_model(
+            str(tmp_path), ["layers.0.mlp.gate_proj"], {},
+            name_map=lambda k: k, projection=proj)
+
+
+def test_layer_refusals_propagate_out_of_the_manifest(tmp_path):
+    """Requirement: a refused name propagates as a refusal — it must not be
+    swallowed into a skip/None/zero (silent-zero is how wo_a stayed
+    invisible). A raising or malformed profile accessor is a structured
+    NameProjectionError out of source_tensor_bytes_manifest."""
+    _write_safetensors(tmp_path / "m.safetensors",
+                       {"a.weight": ("BF16", (2, 2))})
+    proj = npx.NameProjection(_ExplodingCheckpointProfile())
+    with pytest.raises(npx.NameProjectionError) as raising:
+        fp.source_tensor_bytes_manifest(str(tmp_path), projection=proj)
+    assert raising.value.code == "profile_accessor_failed"
+    assert raising.value.name == "a.weight"
+
+    class _Malformed(ModelProfile):
+        name = "malformed-checkpoint-stub"
+
+        @classmethod
+        def matches(cls, model_type, architectures):
+            return False
+
+        def structure_spec(self):
+            return None
+
+        def checkpoint_to_live_name(self, ckpt_key, *, multimodal=False):
+            return 42
+
+    with pytest.raises(npx.NameProjectionError) as malformed:
+        fp.source_tensor_bytes_manifest(
+            str(tmp_path), projection=npx.NameProjection(_Malformed()))
+    assert malformed.value.code == "malformed_profile_result"

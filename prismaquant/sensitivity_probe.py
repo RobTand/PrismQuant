@@ -81,6 +81,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .name_projection import NameProjection
+
 
 _STAGED_TEMP_DIRS: list[Path] = []
 
@@ -1809,6 +1811,18 @@ class FisherAccumulator:
             except Exception:
                 model_profile = None
         self.model_profile = model_profile
+        # One shared name projection (R5 consumer migration). Block
+        # identity and the declared structural spellings are read through
+        # prismaquant.name_projection, never re-derived here from string
+        # surgery. When the model's own profile is unavailable, fall back
+        # to DefaultProfile exactly like `_packed_expert_param_name_set`
+        # above; NameProjection itself refuses a None profile by contract,
+        # so the fallback is an explicit declaration, not a silent degrade.
+        if self.model_profile is not None:
+            self._name_projection = NameProjection(self.model_profile)
+        else:
+            from .model_profiles import DefaultProfile
+            self._name_projection = NameProjection(DefaultProfile())
 
         # Per-layer accumulator for full per-weight Fisher diagonal.
         # Keyed by Linear qname -> CPU fp64 tensor of shape [out, in]
@@ -1866,13 +1880,27 @@ class FisherAccumulator:
         self._h_packed_channel: dict[str, torch.Tensor] = {}
         # Pre-compute the BF16-skip set: profile-pinned Linears end up BF16
         # in serving, so accumulating their full per-weight Fisher matrix is
-        # dead work. Keep the embedding fallback for older profiles; embeddings
-        # are normally not nn.Linear and therefore never enter this loop.
+        # dead work. The embedding spelling is the profile's DECLARATION
+        # (ModelProfile.embedding_name), not a probe substring test; the
+        # embedding fallback only fires for profiles that implement the
+        # table as an nn.Linear (embeddings are normally not nn.Linear and
+        # therefore never enter this loop).
+        #
+        # Both accessors are read defensively, for the same reason: skipping
+        # here is an OPTIMIZATION, never a correctness gate, so a profile that
+        # declares neither simply does the extra work. `model_profile` is a
+        # loosely-typed optional kwarg that duck-typed objects reach (see
+        # tests/test_incremental_measure_quant_cost.py), and a probe must not
+        # start refusing profiles over a field that only saves it work.
+        _embedding_decl = getattr(
+            self._name_projection.profile, "embedding_name", None)
+        _declared_embedding = (
+            str(_embedding_decl()) if _embedding_decl is not None else None)
         def _skip_fisher_name(qname: str) -> bool:
             checker = getattr(self.model_profile, "is_pinned_name", None)
             if checker is not None and checker(qname):
                 return True
-            return qname == "model.embed_tokens" or qname.endswith(".embed_tokens")
+            return qname == _declared_embedding
 
         # Detect MoE expert blocks for batched Fisher accumulation. A block
         # qualifies if its immediate children all expose w1/w2/w3 nn.Linear
@@ -2010,10 +2038,14 @@ class FisherAccumulator:
                 # by layer).
                 experts_qname = meta.pop("_packed_experts_module")
                 meta.pop("_packed_param", None)
-                # Heuristic: include packed entry if any of its conjugate
-                # "in this same parent layer" Linears are tracked. This
-                # makes shard regexes (`model.layers.X.`) work cleanly.
-                parent_layer = ".".join(experts_qname.split(".")[:3])  # e.g. model.layers.7
+                # Include the packed entry iff its BLOCK has tracked
+                # Linears, so shard regexes (`model.layers.X.`) work
+                # cleanly. The block id comes from the shared name
+                # projection (decision_units.block_id_from_qname via
+                # NameProjection.block_id) — not a positional slice of
+                # the qname, which is only correct by accident when the
+                # layer prefix happens to be two components wide.
+                parent_layer = self._name_projection.block_id(experts_qname)
                 if any(t.startswith(parent_layer + ".") for t in self.tracked):
                     self.stats[full_name] = meta
                     # Register a forward hook on the experts module to

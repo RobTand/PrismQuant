@@ -41,6 +41,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import format_registry as fr
+from .name_projection import strip_weight_leaf
 from .nvfp4_cb_footprint import (
     cb_fields_for_context,
     cb_cost_provenance,
@@ -320,8 +321,9 @@ def cb_render_provenance_for_results(
     source_weights: dict[str, torch.Tensor] = {}
     for param_name, param in model.named_parameters():
         candidates = [str(param_name)]
-        if str(param_name).endswith(".weight"):
-            candidates.append(str(param_name)[:-7])
+        module_spelling = strip_weight_leaf(str(param_name))
+        if module_spelling != str(param_name):
+            candidates.append(module_spelling)
         for candidate in candidates:
             resolved = resolve_cost_target_name(candidate, targets, profile)
             if resolved in targets and resolved not in source_weights:
