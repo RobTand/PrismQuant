@@ -1088,7 +1088,12 @@ def test_a_stock_menu_gains_no_group_options_at_all():
 def test_promotion_leaves_a_mixed_rung_group_alone():
     """The serving constraint is the shared decoder, not the shared rate: an
     expanded mixed-rung group is already coherent and promotion must not
-    'repair' it into one rung."""
+    'repair' it into one rung -- while the pinned contract licenses it."""
+    from prismaquant.tessera_runtime_contract import (
+        FUSED_MODULE_SCHEMA,
+        FusedModuleLicence,
+    )
+
     assignment = {
         "model.layers.0.self_attn.q_proj": "TESSERA_E4M3_K1_R694",
         "model.layers.0.self_attn.k_proj": "TESSERA_E4M3_K1_R920",
@@ -1102,7 +1107,12 @@ def test_promotion_leaves_a_mixed_rung_group_alone():
     legal = {name: set(format_rank) for name in assignment}
     out = promote_serving_units(
         dict(assignment), format_rank, profile=_FakeProfile(),
-        legal_formats=legal)
+        legal_formats=legal,
+        fused_licence=FusedModuleLicence(
+            schema=FUSED_MODULE_SCHEMA,
+            fields={"q256": "per_member"},
+            sidecar_q256="int_or_per_role_list",
+            mixed_rung_receipt=False))
     assert out == assignment
 
 
