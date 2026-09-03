@@ -18,6 +18,9 @@ lane will be admitted through.
 """
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from prismaquant.model_profiles import detect_profile  # noqa: F401  (API shape)
@@ -103,6 +106,8 @@ def _lanes_keyed_by_a_serving_profile() -> frozenset:
         if spec.serving_profiles
     )
 
+
+ROOT = Path(__file__).resolve().parents[1]
 
 PROFILE_CLASSES = list(_registry._REGISTERED)
 PROFILE_IDS = [c.__name__ for c in PROFILE_CLASSES]
@@ -354,16 +359,35 @@ def test_preferred_lane_is_supported_and_defaults_to_native(cls):
         assert preferred == DEFAULT_EXPORT_LANE
 
 
-def test_the_script_driven_lane_is_declared():
-    """The GGUF lane is tribal knowledge today; hy_v3 is the arch whose
-    shipped artifact came off it.
+def test_an_explicit_lane_preference_is_the_one_the_serving_route_reaches():
+    """An architecture that states a preference states its serving route.
 
-    Laguna's `preferred_lane` was `nvfp4_cb` until 2026-09-02 and is now the
-    default native lane: its shipped artifact came off the retired codebook
-    lane, and it has no other declared preference.
+    This pinned two literals -- `hy_v3` prefers gguf, `laguna` prefers the
+    native lane -- which documents two rows and checks no rule. The rule is
+    that a spec bothering to declare `preferred_lane` is declaring the lane its
+    own `default_serving_profile` resolves to, and the general "preferred is
+    supported / defaults to native" half is pinned by the parametrized test
+    above. Discovered from the specs, so an arch that gains a preference is
+    checked without this test being edited.
     """
-    assert load_structure_spec("hy_v3").preferred_lane == "gguf"
-    assert load_structure_spec("laguna").preferred_lane == "compressed-tensors"
+    checked = 0
+    for cls in PROFILE_CLASSES:
+        profile = _profile(cls)
+        spec = load_structure_spec(profile.name)
+        if spec is None or not spec.preferred_lane:
+            continue
+        assert spec.preferred_lane in profile.supported_export_lanes(), (
+            profile.name, spec.preferred_lane)
+        reached = _resolved_serving_lane(profile)
+        if reached is None:
+            continue                    # no serving profile to compare against
+        assert reached == spec.preferred_lane, (
+            f"{profile.name}: prefers the {spec.preferred_lane!r} lane but its "
+            f"serving route reaches {reached!r}")
+        checked += 1
+    # Non-vacuity: at least one arch states a preference AND a serving profile,
+    # or the loop above compares nothing.
+    assert checked >= 1, checked
 
 
 # ------------------------------------------------------------------- preflight
@@ -420,23 +444,73 @@ def test_require_lane_supported_is_inert_without_the_accessor():
 # profile pinned a non-default `export_lane.id`.
 
 
-def test_no_shipped_lane_run_becomes_illegal():
-    """Non-regression: every in-tree launch script's (arch, EXPORT_CONTAINER)
-    pair must still pass the preflight.
+def test_no_declared_lane_run_becomes_illegal():
+    """Non-regression: every (arch, lane) pair the tree declares clears the
+    preflight.
 
-    The `nvfp4_cb` pairs — qwen3_5, qwen3_5_dense, hy_v3, laguna, deepseek_v4 —
-    were removed on 2026-09-02 along with their launch scripts. Those runs ARE
-    now illegal, deliberately: `canonical_export_lane` refuses the container
-    before the profile is consulted (pinned above).
+    This was six hand-written pairs under a docstring promising "every in-tree
+    launch script's pair" -- so a new pair nobody typed went unexercised and a
+    dropped row silently un-covered a regression, in the test whose whole
+    subject is that protection (#152). The pairs are now enumerated from the
+    registry crossed with each profile's own `supported_export_lanes()`, which
+    is the set the preflight reads, so the enumeration cannot fall behind the
+    declarations it checks.
     """
-    cases = [
-        ("hy_v3", "gguf"),
-        ("qwen3_5", "compressed-tensors"),
-        ("gemma4", "compressed-tensors"),
-        ("lfm2_moe", "compressed-tensors"),
-        ("minimax_m2", "compressed-tensors"),
-        ("deepseek_v4", "compressed-tensors"),
+    pairs = [
+        (_profile(cls), lane)
+        for cls in PROFILE_CLASSES
+        for lane in sorted(_profile(cls).supported_export_lanes())
     ]
-    by_name = {c().name: c() for c in PROFILE_CLASSES}
-    for name, lane in cases:
-        assert require_lane_supported(by_name[name], lane) == lane
+    # Non-vacuity, and it bites per profile rather than in total: an
+    # architecture whose declaration came back empty would otherwise vanish
+    # from the sweep without changing an assertion.
+    assert len(PROFILE_CLASSES) >= 2, PROFILE_IDS
+    covered = {profile.name for profile, _ in pairs}
+    assert covered == {_profile(cls).name for cls in PROFILE_CLASSES}, covered
+    assert len(pairs) > len(covered), pairs        # someone declares two lanes
+    for profile, lane in pairs:
+        assert require_lane_supported(profile, lane) == lane
+
+
+def test_every_in_tree_launch_scripts_container_is_live_or_refused_by_name():
+    """The other half of the promise the old docstring made and did not keep.
+
+    The only in-tree launch script that sets `EXPORT_CONTAINER` names
+    `nvfp4_cb`, retired with the Gridbook lane on 2026-09-02 -- so "every
+    launch script's pair passes the preflight" was not true and could not be
+    made true by adding rows. The honest rule: a script's container is either
+    a live lane some architecture declares, or it is a name the vocabulary
+    refuses *and* records as retired, so an operator running that script is
+    told where the code went rather than handed a bare unknown-lane error.
+    `RETIRED_EXPORT_LANES` is that record, and it is read here rather than
+    grepped for in the driver: a lane name mentioned in a shell comment is not
+    a refusal a machine can act on.
+    """
+    scripts = sorted((ROOT / "scripts").rglob("*.sh"))
+    assert scripts, "no launch scripts found; the sweep below is vacuous"
+
+    containers: dict[str, list[str]] = {}
+    for script in scripts:
+        for match in re.finditer(
+            r"^\s*(?:export\s+)?EXPORT_CONTAINER=([\w.-]+)",
+            script.read_text(encoding="utf-8"), re.MULTILINE,
+        ):
+            containers.setdefault(match.group(1), []).append(script.name)
+    assert containers, "no script sets EXPORT_CONTAINER; nothing checked"
+
+    declared = {
+        lane for cls in PROFILE_CLASSES
+        for lane in _profile(cls).supported_export_lanes()
+    }
+    for container, where in sorted(containers.items()):
+        if container in EXPORT_LANES:
+            assert container in declared, (container, where)
+            continue
+        assert container in RETIRED_EXPORT_LANES, (
+            f"{container} ({', '.join(where)}) is neither a live lane nor a "
+            f"retired one; the vocabulary cannot tell an operator what "
+            f"happened to it")
+        wall = RETIRED_EXPORT_LANES[container]
+        assert (ROOT / wall).exists(), (container, wall)
+        with pytest.raises(ValueError, match=re.escape(wall)):
+            canonical_export_lane(container)
