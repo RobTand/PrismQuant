@@ -176,13 +176,41 @@ def activation_source(hessians: Mapping[str, Any], identity: Mapping[str, Any],
         hessians=dict(hessians), provenance=dict(identity), **overrides)
 
 
-def encoder_kwargs(source, qname: str, in_features: int, device="cpu") -> dict:
+def encoder_kwargs(source, qname: str, in_features: int, device="cpu", *,
+                   scale_plane) -> dict:
     """One unit's encoder keywords from an ``ActivationSource``.
 
-    This is where the block-LDL is factorised and the refit metric chosen, so
-    it is rung-independent and worth hoisting out of a rate sweep.  A missing
-    key or a wrong width raises inside Tessera, by design: both would otherwise
-    be silent, and a wrong key encodes the unit weights-only, which raises
-    nothing and quietly prices a different artifact.
+    ``scale_plane`` is **required and has no default**, and it must come from
+    the recipe the encode itself resolved -- ``tessera_wire_recipe(family,
+    rung).scale_plane``, threaded as an object, never a second lookup.  What
+    it selects is the refit objective, and Tessera keys that by plane because
+    the two answers were measured separately and disagree: ``hessian`` (the
+    exact quadratic, closed-form on a CHANNEL row scale) against ``h^1.0`` (a
+    diagonal power, because under the full H the LUT plane's coupled blocks
+    converge to a worse point of their own quadratic).  A caller that does not
+    name the plane cannot be served a default, so Tessera refuses -- and the
+    refusal is right: pricing a unit under the other plane's objective prices
+    an artifact the export does not ship (principle 8).
+
+    **What is hoistable, and what is not.**  Two of the four keywords are a
+    function of the Hessian alone -- ``ldl`` (the block-LDL factorisation,
+    which is the expensive part) and ``ldl_block`` -- and the other two are a
+    function of the Hessian *and the plane*.  The plane is a function of the
+    grid, not of the rung: measured over every family PrismaQuant allocates
+    (``realisable_rungs`` x ``tessera_wire_recipe``), the plane is constant
+    across every rung of every family, and differs across families --
+    ``channel`` on ``TESSERA_E4M3_K1``, ``lut16`` on both E2M1 families and
+    every free grid.  ``TESSERA_E2M1_K2`` changes *body* at the coset cap
+    (WINDOW below q896, TCQ at it) and keeps its plane through the change.
+
+    So the hoist out of a rate sweep survives -- no rate reaches this call and
+    the signature has nowhere to put one -- but it is keyed by ``(unit,
+    plane)``, not by unit.  The bound is one factorisation per unit per
+    distinct plane actually encoded, which on a single-family surface is one.
+
+    A missing key or a wrong width raises inside Tessera, by design: both
+    would otherwise be silent, and a wrong key encodes the unit weights-only,
+    which raises nothing and quietly prices a different artifact.
     """
-    return source.for_unit(f"{str(qname)}.weight", int(in_features), device)
+    return source.for_unit(f"{str(qname)}.weight", int(in_features), device,
+                           scale_plane=scale_plane)

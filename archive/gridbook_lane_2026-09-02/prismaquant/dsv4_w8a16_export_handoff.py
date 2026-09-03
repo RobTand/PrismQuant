@@ -544,6 +544,46 @@ _PUBLISHED_FILES = frozenset({
 #       next iteration, so a mistake would be a loud `NameError`, never a
 #       silent byte.  It frees GPU transients; `rendered` and `packed_param`,
 #       the two tensors the score and the store consume, survive.
+# RE-FROZEN 2026-09-02 (the R5 discovery-walker export gate, #99), reviewed
+# against THIS handoff rather than re-hashed:
+#   model_profiles/base.py -- `walk_claim_rules()` appends two ClaimRules
+#     between the `ndim<=1` exclude and the final Linear-decide rule (a
+#     router-class pin and an `*Experts` packed-stack decide), and renumbers
+#     the docstring 9->11.  Verified by per-definition AST comparison with
+#     docstrings elided (origin/main -> this branch): 79 definitions -> 79,
+#     ZERO added, ZERO removed, and exactly ONE body changed --
+#     `ModelProfile.walk_claim_rules`.  Nothing else in the file moved.
+#     Why this lane cannot observe it: `walk_claim_rules()` is read at
+#     exactly four sites -- `model_walk.py` (the walker and its CLI) and the
+#     three profiles that extend it (`deepseek_v4.py`, `glm5_next.py`,
+#     `qwen4_exp.py`).  A grep over this closure finds NO exporter,
+#     completeness, decode-source, footprint, output-safety or namespace
+#     consumer of the method.
+#     On the DSv4 walk itself the two new rules are strictly shadowed or
+#     equivalent, so this lane's claims are byte-identical:
+#     * `DeepseekV4Profile.walk_claim_rules` returns `rules + super()...`,
+#       i.e. it PREPENDS its own five pins, and `apply_claim_rules`
+#       (`model_walk.py:675-688`) takes the FIRST match and `break`s.  Both
+#       DSv4 routers (`DeepseekV4TopKRouter`, `DeepseekV4HashRouter`) are
+#       pinned by those prepended rules, so they keep their original
+#       disposition AND reason; the new base router pin never reaches them.
+#     * The packed-stack rule matches `node.kind == "parameter"` on an owner
+#       class containing "expert", and yields `decide` -- the same
+#       disposition the final Linear-decide rule already gave those weights.
+#       It changes `Claim.reason`/`rule_index`, never a disposition.
+#     Off this lane the rules do two different things, and only one of them
+#     is pure coverage.  On the R5 sweep's six/seven unclaimed profiles the
+#     router rule claims nodes that previously had NO claim at all.  On
+#     gemma4 it is a DISPOSITION CHANGE, and that is the point of it:
+#     `Gemma4TextRouter` is a name-excluded Linear, `Gemma4Profile` does not
+#     override `walk_claim_rules`, so the final Linear-decide rule used to
+#     claim it `decide` while nothing ever priced it -- the wrong polarity
+#     inside the claim table.  It becomes `pin`, like every other router.
+#     That flip is real for the ALLOCATOR on gemma4 and inert for THIS lane,
+#     which never instantiates a gemma4 profile.
+#   The other 14 files in the closure are unchanged by #99: the gate names
+#   exactly `model_profiles/base.py` and nothing else, and the 24 remaining
+#   tests in `tests/test_dsv4_w8a16_export_handoff.py` pass unchanged.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
         "dfffc634a7275e76a4c4b3bd0299e8b0775673dca23f6f5c56ca31f8b748b8a5"
@@ -561,7 +601,7 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "fb20303ed1b017a5a7f3a035d5ef43880822d775e252c28a08f32a67f8104c95"
     ),
     "prismaquant/model_profiles/base.py": (
-        "147699331599870a8ba153ae5132f5bda1f32f5ba4e0298a784c3084df05207a"
+        "7cff3a4af253777d831094838a35ec56b9cd5e4c1022654431449163be8a848e"
     ),
     "prismaquant/model_profiles/registry.py": (
         "5da03be05dafd7e804be9588854bfeabed2aec29b76ea2f6c6cbef2c6067188d"

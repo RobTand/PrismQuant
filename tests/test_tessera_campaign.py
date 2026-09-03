@@ -326,22 +326,32 @@ def test_the_pinned_encoder_accepts_every_keyword_the_source_emits():
 def test_the_hessian_applies_exactly_where_tessera_says_it_does():
     """The predicate and Tessera's raise site agree, on real encodes.
 
-    ``rung_accepts_hessian`` restates a Tessera condition -- the CHANNEL scale
-    plane -- which principle 14 normally forbids. This is the attestation that
-    makes the restatement honest: for one rung of every family, build real
-    activation kwargs, encode, and require that the encode succeeds exactly
-    when the predicate said it would.
+    ``rung_accepts_hessian`` DERIVES its answer -- does the pinned
+    ``ActivationSource`` emit an H-bearing keyword for this rung's plane --
+    rather than restating Tessera's condition, which principle 14 forbids. This
+    is the attestation: for one rung of every family, build real activation
+    kwargs **on that rung's own resolved plane**, encode, and require that the
+    encode succeeds exactly when the predicate said it would.
 
-    The measured answer at Tessera f3e7d0a is the load-bearing one: **only the
-    E4M3 family admits an activation-aware encode.** Both E2M1 families are
-    LUT16 block planes, where Tessera refuses ``ldl`` ("LDLQ is implemented for
-    the CHANNEL scale plane") and ``refit_metric`` ("read only by the CHANNEL
-    plane's refit"). So on the W4A4 route weights-only is not a downgrade --
-    it is the only encode the wire has, and pricing it is still pricing the
-    bytes that ship.
+    Each format gets its own kwargs, because that is the contract: the refit
+    objective is keyed by scale plane, and one shared kwargs dict for all five
+    formats -- what this test used to build -- prices four of them under the
+    fifth's objective. That construction is why the old verdict map read
+    ``False`` for E2M1: it probed a LUT-plane encode with the CHANNEL plane's
+    answer.
+
+    The map is now all ``True``, and that is a Tessera fact, not a taste.
+    Tessera deleted both CHANNEL-only guards on 2026-09-02
+    (``tessera-ldlq-lut-plane-served-2026-09-02.md``); on the LUT plane the
+    H-aware wire is served KL 0.5310 against the weights-only wire's 0.6404 at
+    identical bytes. So weights-only on the W4A4 route is a downgrade after
+    all, and pricing it that way priced bytes the exporter does not write.
     """
     from tessera.errors import GrammarError
 
+    from prismaquant.tessera_formats import (
+        parse_tessera_format_name, tessera_wire_recipe,
+    )
     from prismaquant.tessera_hessian import (
         activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
     )
@@ -351,21 +361,21 @@ def test_the_hessian_applies_exactly_where_tessera_says_it_does():
     source = activation_source(
         {"q": hessian_from_rows(rows)},
         calibration_identity("corpus", [torch.arange(4)], fit_tokens=64))
-    kwargs = encoder_kwargs(source, "q", 256)
     weight = torch.randn(64, 256)
 
     verdicts = {}
     for name in ("TESSERA_E2M1_K1_R512", "TESSERA_E2M1_K2_R512",
                  "TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024",
                  "TESSERA_E4M3_K1_R700"):
-        predicted = rung_accepts_hessian(name)
+        family, rung = parse_tessera_format_name(name)
+        wire = tessera_wire_recipe(family, rung)
+        kwargs = encoder_kwargs(source, "q", 256, scale_plane=wire.scale_plane)
+        predicted = rung_accepts_hessian(name, wire)
         try:
             # Around the seam deliberately: the seam's whole job is to act on
             # the predicate, so asking it would test the predicate against
             # itself.
-            from prismaquant.tessera_formats import parse_tessera_format_name
             from prismaquant.tessera_render import _grid_for, _tessera_export
-            family, rung = parse_tessera_format_name(name)
             _tessera_export.encode_linear(
                 weight, grid=_grid_for(family), q256=rung, name=name,
                 verify=False, **kwargs)
@@ -375,41 +385,67 @@ def test_the_hessian_applies_exactly_where_tessera_says_it_does():
         assert predicted == actual, (name, predicted, actual)
         verdicts[name] = actual
     assert verdicts == {
-        "TESSERA_E2M1_K1_R512": False,
-        "TESSERA_E2M1_K2_R512": False,
-        "TESSERA_E2M1_K2_R896": False,
+        "TESSERA_E2M1_K1_R512": True,
+        "TESSERA_E2M1_K2_R512": True,
+        "TESSERA_E2M1_K2_R896": True,
         "TESSERA_E4M3_K1_R1024": True,
         "TESSERA_E4M3_K1_R700": True,
     }, verdicts
 
 
-def test_a_block_plane_rung_is_priced_weights_only_not_refused():
-    """The right refusal is no refusal here.
+def test_a_block_plane_rung_is_h_aware_too_and_the_bytes_prove_it():
+    """The 4-bit route's H is applied, not excused.
 
-    ``--hessian require`` on a mixed-family campaign must not refuse every
-    E2M1 anchor: those rungs have no H-aware encode, so their weights-only
-    bytes ARE their shipping bytes. What must be refused is passing kwargs
-    that the wire would reject, which would raise deep inside Tessera.
+    This used to assert the opposite -- that an E2M1 rung "has no H-aware
+    encode, so its weights-only bytes ARE its shipping bytes", and that kwargs
+    passed to one must be refused. Tessera deleted the two CHANNEL-only guards
+    that made it true on 2026-09-02, and measured what the block was costing:
+    served KL 0.5310 H-aware against 0.6404 weights-only at identical bytes
+    (``tessera-ldlq-lut-plane-served-2026-09-02.md``). PrismaQuant's own export
+    lane hands the encode to Tessera's exporter, which applies the H on every
+    plane, so the old behaviour priced bytes the export does not write.
+
+    The check is on the bytes, not on the absence of a raise: an H that changes
+    nothing was dropped somewhere between the source and ``encode_linear``,
+    which is the failure this seam exists to make impossible.
     """
+    from prismaquant.tessera_formats import (
+        parse_tessera_format_name, tessera_wire_recipe,
+    )
     from prismaquant.tessera_hessian import (
         activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
     )
     from prismaquant.tessera_render import (
-        HessianContractError, encode_tessera_unit,
+        encode_tessera_unit, rung_accepts_hessian,
     )
 
+    torch.manual_seed(0)
+    fmt = "TESSERA_E2M1_K2_R512"
     weight = torch.randn(64, 256)
-    render, blob = encode_tessera_unit(
-        weight, "TESSERA_E2M1_K2_R512", hessian_required=True)
-    assert render.shape == weight.shape and len(blob) > 0
+    wire = tessera_wire_recipe(*parse_tessera_format_name(fmt))
+    assert scale_plane_is(wire, "lut16"), wire
+    assert rung_accepts_hessian(fmt, wire), "the LUT plane admits LDLQ and a refit"
 
     source = activation_source(
         {"q": hessian_from_rows(torch.randn(64, 256))},
         calibration_identity("corpus", [torch.arange(4)], fit_tokens=64))
-    with pytest.raises(HessianContractError, match="block scale plane"):
-        encode_tessera_unit(
-            weight, "TESSERA_E2M1_K2_R512",
-            activation_kwargs=encoder_kwargs(source, "q", 256))
+    kwargs = encoder_kwargs(source, "q", 256, scale_plane=wire.scale_plane)
+
+    h_aware, h_blob = encode_tessera_unit(
+        weight, fmt, activation_kwargs=kwargs, recipe=wire)
+    plain, plain_blob = encode_tessera_unit(
+        weight, fmt, hessian_required=False, recipe=wire)
+    assert h_aware.shape == weight.shape and len(h_blob) > 0
+    assert len(h_blob) == len(plain_blob), (
+        "the H must change the bytes, not the byte count")
+    assert not torch.equal(h_aware, plain), (
+        "an H that changes nothing was dropped before encode_linear")
+
+
+def scale_plane_is(recipe, name: str) -> bool:
+    from prismaquant.tessera_formats import scale_plane_name
+
+    return scale_plane_name(recipe.scale_plane) == name
 
 
 def test_encoding_without_a_hessian_is_refused_not_silently_downgraded():
@@ -429,6 +465,9 @@ def test_h_aware_kwargs_under_a_weights_only_encode_are_refused():
     unreproducible artifact behind a reproducible label. Neither direction is
     allowed to be a quiet default.
     """
+    from prismaquant.tessera_formats import (
+        parse_tessera_format_name, tessera_wire_recipe,
+    )
     from prismaquant.tessera_hessian import (
         activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
     )
@@ -440,11 +479,13 @@ def test_h_aware_kwargs_under_a_weights_only_encode_are_refused():
     source = activation_source(
         {"q": hessian_from_rows(rows)},
         calibration_identity("corpus", [torch.arange(4)], fit_tokens=64))
-    kwargs = encoder_kwargs(source, "q", 256)
+    wire = tessera_wire_recipe(
+        *parse_tessera_format_name("TESSERA_E4M3_K1_R1024"))
+    kwargs = encoder_kwargs(source, "q", 256, scale_plane=wire.scale_plane)
     with pytest.raises(HessianContractError, match="applied and unrecorded"):
         encode_tessera_unit(
             torch.randn(64, 256), "TESSERA_E4M3_K1_R1024",
-            activation_kwargs=kwargs, hessian_required=False)
+            activation_kwargs=kwargs, hessian_required=False, recipe=wire)
 
 
 @CUDA
@@ -467,6 +508,9 @@ def test_the_seam_forwards_the_activation_source_and_nothing_else():
     chosen, which is the drift ``ActivationSource`` exists to prevent.
     """
     import prismaquant.tessera_render as tr
+    from prismaquant.tessera_formats import (
+        parse_tessera_format_name, tessera_wire_recipe,
+    )
     from prismaquant.tessera_hessian import (
         activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
     )
@@ -475,7 +519,9 @@ def test_the_seam_forwards_the_activation_source_and_nothing_else():
     source = activation_source(
         {"q": hessian_from_rows(rows)},
         calibration_identity("corpus", [torch.arange(4)], fit_tokens=64))
-    kwargs = encoder_kwargs(source, "q", 256)
+    wire = tessera_wire_recipe(
+        *parse_tessera_format_name("TESSERA_E4M3_K1_R1024"))
+    kwargs = encoder_kwargs(source, "q", 256, scale_plane=wire.scale_plane)
 
     seen = {}
     real = tr._tessera_export.encode_linear
@@ -696,14 +742,27 @@ def test_the_production_render_is_h_aware_and_the_lever_is_not(tmp_path):
         "an H that changes nothing was dropped between the cache and the encoder")
 
 
-def test_activation_kwargs_are_rung_independent_and_reusable():
-    """One block-LDL per unit, not one per rate.
+def test_activation_kwargs_are_rung_independent_but_plane_dependent():
+    """One block-LDL per unit PER PLANE, not one per rate and not one per unit.
 
-    The campaign memoises these across a surface's anchors. That is only sound
-    if they are a function of the Hessian alone -- assert it, because the day
-    a rate leaks into them the memo silently prices every anchor at the first
-    one's rate.
+    The campaign memoises these across a surface's anchors, and the memo key is
+    what this pins. Two halves:
+
+    * **Rung-independent, still.** No rate reaches the call and the signature
+      has nowhere to put one, so a rate cannot leak into the memo and price
+      every anchor at the first one's rate.
+    * **Plane-dependent, newly.** Tessera keys the refit objective by scale
+      plane -- ``hessian`` on a CHANNEL row scale, ``h^1.0`` on the LUT plane's
+      coupled blocks -- because the two answers were measured separately and
+      disagree. A memo keyed by unit alone would price a unit's second family
+      under the first family's objective, silently. The expensive half (the
+      block-LDL) is genuinely shared, which is what keeps the hoist worth
+      having: the bound is one factorisation per unit per plane.
     """
+    import inspect
+
+    from tessera.manifest import ScalePlaneKind
+
     from prismaquant.tessera_hessian import (
         activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
     )
@@ -711,14 +770,30 @@ def test_activation_kwargs_are_rung_independent_and_reusable():
     rows = torch.randn(64, 256)
     identity = calibration_identity("corpus", [torch.arange(8)], fit_tokens=64)
     source = activation_source({"m.up": hessian_from_rows(rows)}, identity)
-    first = encoder_kwargs(source, "m.up", 256)
-    second = encoder_kwargs(source, "m.up", 256)
+
+    plane = ScalePlaneKind.CHANNEL
+    first = encoder_kwargs(source, "m.up", 256, scale_plane=plane)
+    second = encoder_kwargs(source, "m.up", 256, scale_plane=plane)
     assert sorted(first) == ["ldl", "ldl_block", "refit_metric", "refit_reach_floor"]
     for key in ("ldl", "refit_metric"):
         assert torch.equal(first[key], second[key])
+
+    other = encoder_kwargs(source, "m.up", 256, scale_plane=ScalePlaneKind.LUT)
+    assert torch.equal(first["ldl"], other["ldl"]), (
+        "the block-LDL is a function of the Hessian alone; if it moved with the "
+        "plane the hoist would be worthless")
+    assert first["refit_metric"].shape != other["refit_metric"].shape or \
+        not torch.equal(first["refit_metric"], other["refit_metric"]), (
+        "the refit metric must move with the plane -- CHANNEL takes the exact "
+        "quadratic, LUT a diagonal power -- or the memo may drop the plane")
+
     # No rate reaches this call at all -- the signature has nowhere to put one.
-    import inspect
     assert "q256" not in inspect.signature(encoder_kwargs).parameters
+    # And the plane is required, with no default: a caller that omits it would
+    # otherwise be served one plane's objective for another plane's wire.
+    plane_param = inspect.signature(encoder_kwargs).parameters["scale_plane"]
+    assert plane_param.default is inspect.Parameter.empty
+    assert plane_param.kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_every_payload_row_carries_the_hessian_identity():

@@ -984,6 +984,7 @@ if [[ "$COST_MODE" == "aura" ]]; then
 fi
 echo "  EXPORT_GPTQ=$EXPORT_GPTQ EXPORT_SCALE_SWEEP=$EXPORT_SCALE_SWEEP"
 echo "  PIPELINE_SPEC_PATH=$PIPELINE_SPEC_PATH"
+echo "  WALK_GATE_EXECUTION=${WALK_GATE_EXECUTION:-auto->fake} WALK_GATE_SEQLEN=${WALK_GATE_SEQLEN:-8} PRISMAQUANT_WALK_GATE_OVERRIDE=${PRISMAQUANT_WALK_GATE_OVERRIDE:+<set>}"
 echo "  PRISMAQUANT_NVFP4_SCALE_RULE=${PRISMAQUANT_NVFP4_SCALE_RULE:-static_6}"
 echo "  PRODUCTION_CACHE_LRU_GB=$PRODUCTION_CACHE_LRU_GB PRODUCTION_CACHE_PREFETCH=$PRODUCTION_CACHE_PREFETCH"
 echo "  VALIDATED_FRONTIER_SKIP_CALIB=$VALIDATED_FRONTIER_SKIP_CALIB VALIDATED_FRONTIER_DATASET=$VALIDATED_FRONTIER_DATASET"
@@ -2327,6 +2328,46 @@ print(f"[pipeline] [3c] additivity stamped into {cost_path}: "
 PY
   fi
 fi
+
+# -----------------------------------------------------------------------
+# [3d] Discovery-walker export gate (R5; §8.8 +
+# docs/design/model_coverage_ledgers.md).
+#
+# The pipeline's decision universe used to be defined by the pipeline's own
+# enumeration — the exact hole `attn.wo_a` shipped through (17.9% of DSv4
+# decode read traffic, fed by a grouped einsum on a module class the probe
+# skips, never an allocator decision, every coverage stat still green). This
+# stage re-derives the universe from the object itself: module tree plus one
+# FakeTensorMode forward over a META load (no GPU, no weight I/O), every node
+# claimed decide/pin/exclude by the profile's walk_claim_rules().
+#
+# FAIL-CLOSED: exit 2 refuses the run before ANY export lane starts. A refusal
+# is decided from STRUCTURED fields only (failure kinds; per-node op/equation/
+# module lists in artifacts/model_walk.json) — never prose. An explicit
+# PRISMAQUANT_WALK_GATE_OVERRIDE=<reason> excuses TRACE INCOMPLETENESS ONLY
+# (e.g. DSv4's data-dependent scalar aborting the fake trace); it is stamped
+# into the report and NEVER excuses an unclaimed node — claims are pinned with
+# reasons in ModelProfile.walk_claim_rules(), not waived at export time.
+# -----------------------------------------------------------------------
+: "${WALK_GATE_SEQLEN:=8}"
+# auto->fake: the fake trace is the intended cheap path; an abort becomes a
+# structured incomplete-trace refusal (override env or --execution real via a
+# manual gate run), never a silent pass.
+: "${WALK_GATE_EXECUTION:=fake}"
+: "${PRISMAQUANT_WALK_GATE_OVERRIDE:=}"
+MODEL_WALK_REPORT="${WORK_DIR}/artifacts/model_walk.json"
+echo "[pipeline] [3d] discovery-walker export gate ..."
+WALK_GATE_ARGS=(
+  python3 -m prismaquant.model_walk
+  --model "$MODEL_PATH"
+  --execution "$WALK_GATE_EXECUTION"
+  --seq-len "$WALK_GATE_SEQLEN"
+  --output "$MODEL_WALK_REPORT"
+)
+[[ -n "$PRISMAQUANT_WALK_GATE_OVERRIDE" ]] && WALK_GATE_ARGS+=(
+  --override-reason "$PRISMAQUANT_WALK_GATE_OVERRIDE"
+)
+"${WALK_GATE_ARGS[@]}" 2>&1 | tee "${WORK_DIR}/logs/model_walk.log"
 
 if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   # Tessera lane: one blob per vLLM module on the Tessera wire, served by
