@@ -349,17 +349,32 @@ def test_lane_spec_executes_is_derived_from_the_packaged_contract():
 
 
 def test_lane_spec_activation_contracts_match_the_cells():
-    """Every contract a cell publishes is a contract the rationale names.
+    """The priced A side is what the attesting cells execute -- checked in code.
 
-    The roster used to be a literal pair here, and it went stale the day
+    Issue #165: the allocator prices ``tessera_serving_route``'s layout fact
+    while the serve executes the cells' ``activation_contract``, and the two
+    vocabularies do not match character for character
+    (``w4a4-nvfp4-e2m1-group16-ue4m3`` vs ``e2m1_group16_ue4m3_static``).  The
+    roster used to be a literal pair here, and it went stale the day
     Tessera's contract reached v5 and the 16-bit family gained its two cells
     -- a third family the test had no room for.  So the roster is read from
     the contract, and what is asserted is the property that has to hold at
     any number of families: a cell's family agrees with itself about its A
-    side, and the value it publishes appears in the rationale a human reads.
-    The second leg is the one that catches drift, because the rationale is
-    prose and prose does not fail to parse.
+    side, and the value it publishes is the value the admission prices.
+
+    The second leg is deliberately NOT substring containment in the lane
+    spec's rationale prose: a test gate that reads prose is fixed by editing
+    prose, which is the exact edit the field's own ``if_this_changes`` note
+    forbids.  It is the runtime comparison
+    (``tessera_menu.check_tessera_activation_agreement``), exercised here on
+    the real packaged table through the real seam.
     """
+    from prismaquant import tessera_menu as tm
+    from prismaquant.tessera_formats import (
+        tessera_serving_route, tessera_wire_recipe,
+    )
+    from prismaquant.tessera_runtime_contract import cell_activation_projection
+
     contract = _packaged_contract()
     by_family: dict[str, set[str]] = {}
     for cell in contract["lane_eligibility"]["cells"]:
@@ -375,13 +390,87 @@ def test_lane_spec_activation_contracts_match_the_cells():
     for family, contracts in by_family.items():
         assert rows[family]["activation_contract"] == next(iter(contracts))
 
-    from prismaquant.lane_spec import load_lane_spec
+    # and the producer prices what the cells execute, at every rung the
+    # cells attest -- derived from both owners, never a literal triple.
+    for family, contracts in sorted(by_family.items()):
+        bits, group = cell_activation_projection(next(iter(contracts)))
+        rungs = sorted({
+            rung
+            for cell in contract["lane_eligibility"]["cells"]
+            if cell["family"] == family
+            for rung in cell["rungs_q256"]
+        })
+        assert rungs, f"{family} attests no rungs at all"
+        for rung in rungs:
+            wire = tessera_wire_recipe(family, rung)
+            route = tessera_serving_route(family, wire, rung)
+            assert (route.act_bits, route.act_group_size) == (bits, group), (
+                f"{family} R{rung}: priced {(route.act_bits, route.act_group_size)} "
+                f"but the cells execute {next(iter(contracts))} -> {(bits, group)}")
+            # through the real seam, on the real packaged table: agreement
+            # holds, so admission reports the priced value without raising.
+            admission = tm.route_admission(f"{family}_R{rung}")
+            assert admission.activation_contract == route.contract
 
-    rationale = load_lane_spec(
-        "tessera").served_activation_quantization.rationale
-    for contracts in by_family.values():
-        for value in contracts:
-            assert value in rationale
+
+def test_a_priced_a_side_the_cells_do_not_execute_is_refused():
+    """Disagreement between the priced route and the executed contract raises."""
+    from prismaquant import tessera_menu as tm
+    from prismaquant.tessera_formats import (
+        tessera_serving_route, tessera_wire_recipe,
+    )
+
+    wire = tessera_wire_recipe("TESSERA_E2M1_K2", 896)
+    route = tessera_serving_route("TESSERA_E2M1_K2", wire, 896)
+    assert (route.act_bits, route.act_group_size) == (4, 16)
+    with pytest.raises(tm.TesseraMenuError, match="not what the attesting cells execute"):
+        tm.check_tessera_activation_agreement(
+            "TESSERA_E2M1_K2_R896", route, ["fp8_per_token_dynamic"])
+
+
+def test_cells_disagreeing_about_the_a_side_are_refused():
+    """One rung cannot execute two activation contracts."""
+    from prismaquant import tessera_menu as tm
+    from prismaquant.tessera_formats import (
+        tessera_serving_route, tessera_wire_recipe,
+    )
+
+    wire = tessera_wire_recipe("TESSERA_E2M1_K2", 896)
+    route = tessera_serving_route("TESSERA_E2M1_K2", wire, 896)
+    with pytest.raises(tm.TesseraMenuError, match="disagree about the executed A side"):
+        tm.check_tessera_activation_agreement(
+            "TESSERA_E2M1_K2_R896", route,
+            ["e2m1_group16_ue4m3_static", "fp8_per_token_dynamic"])
+
+
+def test_an_unknown_cell_vocabulary_is_refused_not_guessed():
+    """A runtime vocabulary the projection does not transcribe raises."""
+    from prismaquant import tessera_menu as tm
+    from prismaquant.tessera_formats import (
+        tessera_serving_route, tessera_wire_recipe,
+    )
+
+    wire = tessera_wire_recipe("TESSERA_E2M1_K2", 896)
+    route = tessera_serving_route("TESSERA_E2M1_K2", wire, 896)
+    with pytest.raises(tm.TesseraMenuError, match="not a published vocabulary"):
+        tm.check_tessera_activation_agreement(
+            "TESSERA_E2M1_K2_R896", route, ["w99a99-future-static"])
+
+
+def test_route_admission_refuses_a_drifted_a_side(tmp_path, monkeypatch):
+    """The seam, not just the helper: a packaged table whose cells execute a
+    different A side than the producer prices makes ``route_admission`` raise.
+    """
+    from prismaquant import tessera_menu as tm
+
+    contract = _packaged_contract()
+    for cell in contract["lane_eligibility"]["cells"]:
+        if cell["family"] == "TESSERA_E2M1_K2":
+            cell["activation_contract"] = "fp8_per_token_dynamic"
+    table, formats = _load(_write(tmp_path, contract, "a_side_drift.json"))
+    monkeypatch.setattr(tr, "_pinned_serving_table", lambda: (table, formats))
+    with pytest.raises(tm.TesseraMenuError, match="not what the attesting cells execute"):
+        tm.route_admission("TESSERA_E2M1_K2_R896")
 
 
 def test_the_tessera_lane_is_declared_and_advisory():

@@ -105,6 +105,7 @@ __all__ = [
     "MenuRung",
     "RouteAdmission",
     "TesseraMenuError",
+    "check_tessera_activation_agreement",
     "collapse_to_dp_bins",
     "expand_tessera_menu",
     "MENU_CACHE_SHAPES_ENV",
@@ -216,7 +217,10 @@ class RouteAdmission:
     payload_family: str
     #: The activation contract the decoded tile executes under, from
     #: ``tessera_serving_route``.  A *layout* fact, which is all a producer may
-    #: assert on its own; it is not the attestation.
+    #: assert on its own; it is not the attestation.  What makes it safe to
+    #: price is :func:`check_tessera_activation_agreement`, which
+    #: :func:`route_admission` runs whenever cells attest the rung: the priced
+    #: triple must project to the cells' executed ``activation_contract``.
     activation_contract: str
     terminal_format: "str | None"
     act_bits: "int | None"
@@ -349,6 +353,54 @@ def tessera_tp_world_attested(
     return True, ""
 
 
+def check_tessera_activation_agreement(name, route, cell_contracts) -> None:
+    """Refuse a priced A side the attesting cells do not execute.
+
+    The allocator prices ``route`` -- ``tessera_serving_route``'s layout fact,
+    carried on every :class:`RouteAdmission`, byte breakdown and campaign row
+    -- while the serve executes the attesting cells' ``activation_contract``,
+    and the two vocabularies do not match character for character
+    (``w4a4-nvfp4-e2m1-group16-ue4m3`` vs ``e2m1_group16_ue4m3_static``).  So
+    the comparison is on the projection both sides price in --
+    ``(act_bits, act_group_size)`` -- via
+    :func:`prismaquant.tessera_runtime_contract.cell_activation_projection`.
+    Cells that disagree with each other, a cell vocabulary the projection
+    does not transcribe, or a priced triple the cells do not execute all
+    raise: pricing one A side while the serve executes another is the
+    currency error that misallocated 87 GB on NVFP4_CB (2026-08-17), and an
+    admission that papered over it would be the unread *value* on the active
+    pricing path (#165).  No attesting cells is agreement by absence -- the
+    rung is unattested for its own reason, and there is nothing to disagree
+    with.
+    """
+    from .tessera_runtime_contract import (
+        TesseraContractError, cell_activation_projection,
+    )
+
+    distinct = tuple(dict.fromkeys(str(value) for value in cell_contracts))
+    if len(distinct) > 1:
+        raise TesseraMenuError(
+            f"{name}: the attesting cells disagree about the executed A side "
+            f"({sorted(distinct)}); one rung cannot execute two activation "
+            "contracts and this reader will not pick one"
+        )
+    if not distinct:
+        return
+    try:
+        bits, group = cell_activation_projection(distinct[0])
+    except TesseraContractError as exc:
+        raise TesseraMenuError(f"{name}: {exc}") from exc
+    if (route.act_bits, route.act_group_size) != (bits, group):
+        raise TesseraMenuError(
+            f"{name}: priced activation {route.contract} "
+            f"(act_bits={route.act_bits}, "
+            f"act_group_size={route.act_group_size}) is not what the "
+            f"attesting cells execute ({distinct[0]}: act_bits={bits}, "
+            f"act_group_size={group}); pricing one A side while the serve "
+            "executes another is a currency error"
+        )
+
+
 def route_admission(name: str) -> RouteAdmission:
     """The pinned runtime's verdict on one Tessera rung.  **The one seam.**
 
@@ -389,10 +441,15 @@ def route_admission(name: str) -> RouteAdmission:
     for every rung.  The ``detail`` says which conjunct, verbatim from the
     admission, because a rung refused by the pin and a rung refused by an
     absent cell need different fixes and must not read the same.
+
+    Before any of that, it runs :func:`check_tessera_activation_agreement`
+    whenever cells attest the rung: the priced ``route`` and the executed
+    cell ``activation_contract`` must project to the same ``(act_bits,
+    act_group_size)``, on both the dev-pin and the packaged-contract paths.
     """
     from .tessera_render import (
-        _pinned_serving_table, tessera_lane_admission, tessera_lane_attested,
-        tessera_rung_is_serialisable,
+        _pinned_serving_table, tessera_attesting_cells, tessera_lane_admission,
+        tessera_lane_attested, tessera_rung_is_serialisable,
     )
 
     parsed = parse_tessera_format_name(name)
@@ -434,6 +491,10 @@ def route_admission(name: str) -> RouteAdmission:
                     "one rung cannot be two routes and this reader will not "
                     "pick one"
                 )
+            check_tessera_activation_agreement(
+                name, route,
+                [cell.activation_contract for cell in cells],
+            )
         else:
             status = ROUTE_STATUS_UNATTESTED
             published = sorted(contract.attested_rungs.get(family.name, ()))
@@ -444,13 +505,13 @@ def route_admission(name: str) -> RouteAdmission:
                 f"the pinned Tessera contract does not publish {family.name}"
             )
     else:
-        table, _formats = _pinned_serving_table()
+        table, formats = _pinned_serving_table()
         source = _packaged_attestation_source(table)
         # The VERDICT stays ``tessera_lane_attested``: it is the seam every
         # gate consults and the one the tests substitute.  The REASON is read
         # separately and only when the verdict is False, so patching the
         # verdict cannot invent a rationale the contract never gave.
-        if bool(tessera_lane_attested(name)):
+        if bool(tessera_lane_attested(name, table=table, formats=formats)):
             status = ROUTE_STATUS_BACKED
             detail = (
                 "the packaged Tessera contract attests a device-qualified "
@@ -458,7 +519,13 @@ def route_admission(name: str) -> RouteAdmission:
             )
         else:
             status = ROUTE_STATUS_UNATTESTED
-            detail = tessera_lane_admission(name)[1]
+            detail = tessera_lane_admission(name, table=table, formats=formats)[1]
+        attesting = tessera_attesting_cells(name, table=table, formats=formats)
+        if attesting:
+            check_tessera_activation_agreement(
+                name, route,
+                [cell.activation_contract for cell in attesting],
+            )
     return RouteAdmission(
         format_name=name,
         payload_family=family.name,

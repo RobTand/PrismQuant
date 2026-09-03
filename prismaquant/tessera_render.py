@@ -48,6 +48,7 @@ __all__ = [
     "TESSERA_HALF",
     "is_tessera_format",
     "render_tessera_weight",
+    "tessera_attesting_cells",
     "tessera_lane_admission",
     "tessera_lane_attested",
     "tessera_serving_contract_path",
@@ -158,6 +159,38 @@ def _release_pin_satisfied() -> bool:
     return True
 
 
+def tessera_attesting_cells(name: str, *, table=None, formats=None) -> tuple:
+    """The native device-qualified cells covering this rung, or ``()``.
+
+    The match predicate of :func:`tessera_lane_admission`'s first conjunct,
+    factored so :func:`prismaquant.tessera_menu.route_admission` can ask the
+    same question without re-deriving it: which cells attest that a pinned
+    runtime executes these bytes.  An empty tuple is absence, never a
+    verdict -- the caller reports *why* (no table, unpublished family, rate
+    no cell names), exactly as the admission does.  The plugin-requirement
+    check stays in the admission: it is a defect verdict, not a match rule.
+    """
+    from .lane_eligibility import resolve_payload_rung
+
+    if table is None or formats is None:
+        pinned_table, pinned_formats = _pinned_serving_table()
+        table = pinned_table if table is None else table
+        formats = pinned_formats if formats is None else formats
+    if not table.present:
+        return ()
+    family, _k, rate = resolve_payload_rung(name, published_formats=formats)
+    if rate is None or not table.governs(family):
+        return ()
+    return tuple(
+        cell for cell in table.cells
+        if cell.is_trellis
+        and cell.family == family
+        and rate in cell.rungs_q256
+        and cell.qualification == "device_qualified"
+        and cell.route_status in _NATIVE_ROUTE_STATUSES
+    )
+
+
 def tessera_lane_admission(
         name: str, *, table=None, formats=None) -> tuple[bool, str]:
     """Does a pinned runtime execute this Tessera rung natively, and why not?
@@ -231,14 +264,7 @@ def tessera_lane_admission(
     if not table.governs(family):
         return False, (
             f"the packaged Tessera contract does not publish {family}")
-    matched = [
-        cell for cell in table.cells
-        if cell.is_trellis
-        and cell.family == family
-        and rate in cell.rungs_q256
-        and cell.qualification == "device_qualified"
-        and cell.route_status in _NATIVE_ROUTE_STATUSES
-    ]
+    matched = list(tessera_attesting_cells(name, table=table, formats=formats))
     if not matched:
         published = _published_rungs(formats, family)
         return False, (
