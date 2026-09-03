@@ -575,17 +575,34 @@ def dev_pin_requested() -> str:
     return str(os.environ.get(TESSERA_DEV_PIN_ENV, "")).strip()
 
 
-def contract_path() -> Path:
-    """Where the packaged contract lives, by path arithmetic on ``tessera``.
+def contract_path():
+    """Where the packaged contract lives: the actually-importable package's table.
 
-    Deliberately **not** ``importlib.resources.files("tessera.serving")``:
-    importing that package registers the vLLM plugin, and a producer-side
-    contract read must not have that side effect.  ``tessera.__init__`` is a
-    version string and a schema id; its directory is the anchor.
+    ``importlib.resources.files("tessera.serving")`` rather than path
+    arithmetic on ``tessera.__file__``, so a wheel install, an editable
+    install and an in-repo checkout all resolve identically -- and so this
+    reads the table of the ``tessera.serving`` package that is actually
+    importable, never a copy.  This is the one resolver both producer readers
+    share: ``tessera_render.tessera_serving_contract_path`` delegates here
+    rather than carrying a second policy for the same file.
+
+    That call does import the ``tessera.serving`` package, but the import is
+    cheap by the runtime's own design: its ``__init__`` defines ``register()``
+    (which imports vLLM and registers the config) and calls nothing at module
+    scope, importing neither torch nor vLLM, so locating the contract
+    registers nothing and needs no GPU.
+    ``tests/test_tessera_serving_contract_path.py`` pins that property in a
+    subprocess rather than in prose, so drift in the runtime's import
+    behaviour fails a test instead of silently aging this docstring.  What a
+    producer must not need is the serving-side *code*:
+    ``tessera.serving.contract``'s validator imports the plugin's dispatch
+    tables, which is a serving-side import a producer must not need on a
+    machine with no GPU -- so the JSON is read directly rather than through
+    that module.
     """
-    import tessera
+    from importlib import resources
 
-    return Path(tessera.__file__).resolve().parent / "serving" / "runtime_contract.json"
+    return resources.files("tessera.serving").joinpath("runtime_contract.json")
 
 
 def _require(block: Mapping[str, Any], key: str, where: str) -> Any:
@@ -907,31 +924,33 @@ def load_tessera_contract() -> "TesseraContract | None":
     requested = dev_pin_requested()
     if not requested:
         return None
-    path = contract_path()
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise TesseraContractError(
-            f"cannot read the packaged Tessera contract at {path}: {exc}"
-        ) from exc
-    sha = hashlib.sha256(raw).hexdigest()
-    contract = _load_at(str(path), sha, TESSERA_DEV_PIN_COMMIT)
-    drift = _answer_drift(TESSERA_DEV_PIN_ANSWER, contract_answer(contract))
-    if drift:
-        raise TesseraContractError(
-            "Tessera moved and its answer moved with it -- re-review the pin.\n"
-            f"The pin in {__name__} was reviewed against Tessera "
-            f"{TESSERA_DEV_PIN_COMMIT} (contract sha256 "
-            f"{TESSERA_DEV_PIN_CONTRACT_SHA256}); {path} hashes to {sha} and "
-            "publishes a different answer:\n" + "\n".join(drift) + "\n"
-            "This is not a corruption warning. Read what moved, decide whether "
-            "PrismaQuant should admit it, and update TESSERA_DEV_PIN_ANSWER "
-            "(with the commit and sha) in the same commit -- that diff is the "
-            "review."
-        )
-    # The middle link of the §7.4 chain, checked wherever both objects are in
-    # hand.  It is deliberately AFTER the answer check: a moved answer is the
-    # more informative refusal, and the pin cannot be judged against a
-    # contract this producer has not accepted.
-    require_pin_native_extensions_match_contract(contract)
-    return contract
+    from importlib.resources import as_file
+
+    with as_file(contract_path()) as path:
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise TesseraContractError(
+                f"cannot read the packaged Tessera contract at {path}: {exc}"
+            ) from exc
+        sha = hashlib.sha256(raw).hexdigest()
+        contract = _load_at(str(path), sha, TESSERA_DEV_PIN_COMMIT)
+        drift = _answer_drift(TESSERA_DEV_PIN_ANSWER, contract_answer(contract))
+        if drift:
+            raise TesseraContractError(
+                "Tessera moved and its answer moved with it -- re-review the pin.\n"
+                f"The pin in {__name__} was reviewed against Tessera "
+                f"{TESSERA_DEV_PIN_COMMIT} (contract sha256 "
+                f"{TESSERA_DEV_PIN_CONTRACT_SHA256}); {path} hashes to {sha} and "
+                "publishes a different answer:\n" + "\n".join(drift) + "\n"
+                "This is not a corruption warning. Read what moved, decide whether "
+                "PrismaQuant should admit it, and update TESSERA_DEV_PIN_ANSWER "
+                "(with the commit and sha) in the same commit -- that diff is the "
+                "review."
+            )
+        # The middle link of the §7.4 chain, checked wherever both objects are in
+        # hand.  It is deliberately AFTER the answer check: a moved answer is the
+        # more informative refusal, and the pin cannot be judged against a
+        # contract this producer has not accepted.
+        require_pin_native_extensions_match_contract(contract)
+        return contract
