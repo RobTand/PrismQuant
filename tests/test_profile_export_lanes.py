@@ -56,6 +56,54 @@ from prismaquant.serving_profiles import (
 # about any other. The rosters moved into `lane_specs/<lane>.json`'s
 # `wired_architectures`, beside everything else about that lane, and the
 # assertions below are properties quantified over EXPORT_LANES.
+#
+# `wired_architectures` moved the roster beside the lane, which is the right
+# home for it, and the agreement below is two files written by two authors
+# answering one question. What neither file can answer is whether the wiring
+# EXISTS: there is no per-architecture lane-wiring table in this repository
+# (GGUF's architecture comes out of llama.cpp's own skeleton at export time,
+# and Tessera's gate constrains structure -- "dense" -- rather than
+# architecture), so a lockstep edit across the two files still satisfies the
+# agreement, which is the Laguna failure mode (`9a79963`) in two files instead
+# of one. #150 therefore adds a THIRD conjunct, derived from a place neither
+# roster maintains: `serving_profile_specs/*.json` declare an `export_lane`,
+# layered through `extends`, so an architecture's `default_serving_profile`
+# resolves to exactly one lane, and `lane_specs/*.json` say which serving
+# profiles serve a lane. An architecture whose serving profile goes to
+# compressed-tensors cannot declare the GGUF lane, whatever either roster says.
+#
+# It is a weaker claim than "the exporter is wired for this arch" and says so.
+# The Tessera lane is the honest hole: its own spec declares NO serving
+# profiles, because the plugin is chosen by the checkpoint's
+# `quantization_config.quant_method`, so the third conjunct has nothing to bite
+# on there and `qwen3`'s declaration rests on the two rosters alone. That
+# absence is read out of the lane spec below rather than encoded as a name to
+# skip.
+
+
+def _resolved_serving_lane(profile) -> "str | None":
+    """The export lane this architecture's own serving route reaches.
+
+    Read through `load_serving_profile`, so `extends` inheritance answers --
+    `vllm_glm5_next_packed_moe` declares no `export_lane` of its own and
+    reaches compressed-tensors through `vllm_packed_moe`.
+    """
+    spec = load_structure_spec(profile.name)
+    profile_id = getattr(spec, "default_serving_profile", None) if spec else None
+    if not profile_id:
+        return None
+    lane = load_serving_profile(profile_id).export_lane
+    return None if lane is None else canonical_export_lane(lane.id)
+
+
+def _lanes_keyed_by_a_serving_profile() -> frozenset:
+    """The lanes whose own spec names the serving profiles that serve them."""
+    return frozenset(
+        spec.export_container for spec in all_lane_specs()
+        if spec.serving_profiles
+    )
+
+
 PROFILE_CLASSES = list(_registry._REGISTERED)
 PROFILE_IDS = [c.__name__ for c in PROFILE_CLASSES]
 LANE_IDS = list(EXPORT_LANES)
@@ -199,6 +247,101 @@ def test_a_profile_declares_a_lane_exactly_when_the_lane_declares_it(cls, lane):
         f"lane_specs/{spec.id}.json's wired_architectures says "
         f"{spec.wires(profile.name)} "
         f"(roster: {sorted(spec.wired_architectures)})")
+
+
+@pytest.mark.parametrize("cls", PROFILE_CLASSES, ids=PROFILE_IDS)
+def test_a_declared_lane_is_one_this_archs_serving_route_reaches(cls):
+    """The third conjunct: a place neither roster maintains (#150).
+
+    Every architecture ships through the native lane by contract. Every *other*
+    declared lane has to be a lane this architecture's own
+    `default_serving_profile` resolves to -- for the lanes whose spec keys on a
+    serving profile at all. Two rosters edited in lockstep agree with each
+    other; they do not agree with this.
+    """
+    profile = _profile(cls)
+    lanes = set(profile.supported_export_lanes())
+    arch_keyed = _lanes_keyed_by_a_serving_profile()
+    # Non-vacuity: with no lane keyed on a serving profile the loop below would
+    # be empty for every profile and this test would pass on nothing.
+    assert len(arch_keyed) >= 2, sorted(arch_keyed)
+    reached = _resolved_serving_lane(profile)
+    for lane in sorted(lanes - {DEFAULT_EXPORT_LANE}):
+        if lane not in arch_keyed:
+            continue                    # the Tessera hole, pinned below
+        assert reached == lane, (
+            f"{profile.name}: declares the {lane!r} export lane, but its "
+            f"serving route reaches {reached!r} -- no in-tree serving profile "
+            f"takes this architecture to {lane!r}, so the declaration promises "
+            f"bytes nothing loads")
+
+
+def test_a_serving_route_that_reaches_a_lane_is_declared_by_that_arch():
+    """Reverse half: the declaration cannot go missing either.
+
+    An architecture whose serving profile resolves to a lane must declare it,
+    or `require_lane_supported` refuses the only container that architecture is
+    set up to serve -- by reading the declaration, which is the failure this
+    direction catches.
+    """
+    arch_keyed = _lanes_keyed_by_a_serving_profile()
+    checked = 0
+    for cls in PROFILE_CLASSES:
+        profile = _profile(cls)
+        reached = _resolved_serving_lane(profile)
+        if reached is None or reached not in arch_keyed:
+            continue
+        assert reached in profile.supported_export_lanes(), (
+            f"{profile.name}: its serving route reaches the {reached!r} lane "
+            f"but the profile declares "
+            f"{sorted(profile.supported_export_lanes())}")
+        checked += 1
+    # Non-vacuity, and not a count of today's registry: two is what it takes
+    # for "every" to mean anything, and the registry only grows.
+    assert checked >= 2, checked
+
+
+def test_every_declared_lane_resolves_to_the_consumer_it_names():
+    """A declaration names a lane the tree can actually run.
+
+    The lane's round trip and its gate set are pinned above; what is checked
+    here is the one consumer every lane spec names in code -- the KL evaluator
+    -- imports and holds the attribute. A lane that names a consumer nobody
+    wrote fails here rather than at frontier-selection time.
+    """
+    import importlib
+
+    declared = {
+        lane for cls in PROFILE_CLASSES
+        for lane in _profile(cls).supported_export_lanes()
+    }
+    assert len(declared) >= 2, sorted(declared)
+    for lane in sorted(declared):
+        spec = lane_spec_for_container(lane)
+        module, _, attr = spec.kl_evaluator.entrypoint.partition(":")
+        assert hasattr(importlib.import_module(module), attr), (
+            f"{lane}: kl_evaluator {spec.kl_evaluator.entrypoint} does not "
+            f"resolve")
+
+
+def test_the_tessera_lane_declares_that_it_is_not_keyed_by_serving_profile():
+    """The one lane the third conjunct cannot witness, read and not assumed.
+
+    `_lanes_keyed_by_a_serving_profile` skips Tessera because Tessera's own lane
+    spec declares no serving profiles: the plugin is chosen by the checkpoint's
+    `quant_method`, so there is no serving-profile hop for a model profile's
+    declaration to be checked against. If Tessera ever gains one, the skip in
+    the forward test above stops applying on its own and `qwen3`'s declaration
+    starts being checked -- which is why the absence is asserted here rather
+    than encoded as a lane name to ignore.
+    """
+    tessera = lane_spec_for_container("tessera")
+    assert tessera.serving_profiles == (), tessera.serving_profiles
+    assert "tessera" not in _lanes_keyed_by_a_serving_profile()
+    # And the other two are, so this is a property of Tessera rather than of
+    # the accessor returning nothing for everybody.
+    assert _lanes_keyed_by_a_serving_profile() == frozenset(
+        {"compressed-tensors", "gguf"})
 
 
 @pytest.mark.parametrize("cls", PROFILE_CLASSES, ids=PROFILE_IDS)
