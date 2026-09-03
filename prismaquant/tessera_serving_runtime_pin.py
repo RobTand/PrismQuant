@@ -37,6 +37,20 @@ halves), resolving the tag means editing, in a single commit: the JSON pin's
 pin to equal the constants, so a JSON edit alone cannot admit anything and a
 constant edit alone cannot either.
 
+**THE EXTENSION TABLE IS TRANSCRIBED, AND REFUSED AGAINST ITS SOURCE.**
+``serving_native_extensions`` is not this repository's opinion about which
+CUDA extensions the Tessera plugin loads: since Tessera contract v7 the
+runtime publishes that itself, in ``native_extensions``, as a
+``module_name_prefix``/``filename_glob``/``match`` triple.  The pin transcribes
+it because ``tools/serve_fingerprint.py`` runs inside a serving container from
+a five-file bootstrap and can read neither the contract nor this file, and
+``tessera_runtime_contract.require_pin_native_extensions_match_contract``
+refuses a transcription that is not the pinned contract's table.  So the chain
+is contract -> pin -> fingerprint with a refusal at each link, instead of a
+refusal at the last link only.  It used to be the last link only, and the
+hand-written value was already wrong by one character: the pin said
+``"tessera_nvfp4"`` where the load path's constant is ``"tessera_nvfp4_"``.
+
 **No wheel digest, and why.**  Gridbook's serving pin additionally binds an
 exact reviewed wheel SHA-256, because Gridbook is installed into a serving
 container from a published archive.  Tessera's plugin is installed from a
@@ -55,6 +69,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import fnmatch
 from functools import lru_cache
 import json
 from pathlib import Path
@@ -100,6 +115,15 @@ TESSERA_SERVING_PLUGIN_NAME = "tessera"
 #: There is no enable flag; the checkpoint selects the runtime.
 TESSERA_SERVING_QUANT_METHOD = "tessera"
 
+#: The rule the runtime names for turning a ``filename_glob`` into a
+#: decision: fnmatch the glob against the BASENAME of a mapped ``.so``.  It is
+#: a VALUE in the contract (``native_extensions[].match``) rather than prose,
+#: because a consumer cannot otherwise tell a stem from a prefix from a
+#: pattern -- and a substring search over the whole mapped path, which is what
+#: this repository used to do, is a different predicate that matches
+#: ``/x/tessera_nvfp4/unrelated.so`` too.
+MATCH_BASENAME_FNMATCH = "basename_fnmatch"
+
 #: The one operator knob the plugin declares.  Named here because a serve
 #: command that omits it is serving a different residency than the pin's
 #: receipts covered.
@@ -113,17 +137,69 @@ _REQUIRED_MEMBERS = {
     "version_is_release",
     "runtime_contract_schema",
     "plugin_entry_point",
-    "serving_extension_basenames",
+    "serving_native_extensions",
 }
 _FULL_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _VERSION_RE = re.compile(r"[0-9]+(?:[.][0-9]+)*(?:[A-Za-z0-9.+-]*)?")
-#: A JIT extension basename is a Python module name, and the loaded `.so` is
-#: that name plus a build identity suffix, so the pin declares the PREFIX.
-_EXTENSION_BASENAME_RE = re.compile(r"[a-z][a-z0-9_]*")
+
+#: The exact keys one ``serving_native_extensions`` row carries, spelled the
+#: way the runtime's ``native_extensions`` table spells them.  Verbatim, so the
+#: contract-vs-pin refusal in ``tessera_runtime_contract`` is a dict
+#: comparison over the same field names rather than a re-mapping that could
+#: itself be the drift.
+_NATIVE_EXTENSION_MEMBERS = {
+    "module_name_prefix",
+    "filename_glob",
+    "match",
+}
+
+#: A JIT extension module name is a Python identifier and the loaded `.so` is
+#: that name plus a build-identity suffix, so what the pin declares is the
+#: PREFIX -- including its trailing separator, exactly as the runtime
+#: publishes it.
+_EXTENSION_PREFIX_RE = re.compile(r"[a-z][a-z0-9_]*")
 
 
 class TesseraServingRuntimePinError(ValueError):
     """The Tessera serving pin is missing, pending, or malformed."""
+
+
+@dataclass(frozen=True)
+class TesseraServingNativeExtension:
+    """One row of the runtime's ``native_extensions`` table, transcribed.
+
+    Three fields and no fourth, because these three are what a residency
+    decision is made of: WHICH module the load path builds
+    (``module_name_prefix``), WHICH filename that produces
+    (``filename_glob``), and WHICH RULE turns the glob into a decision
+    (``match``).  ``source``/``loaded_by``/``routes``/``when_unavailable`` are
+    published too and are read from the contract where they are needed; they
+    are not transcribed here, because a pin field nothing reads is a field
+    nothing keeps honest.
+    """
+
+    #: The constant Tessera's JIT load path itself passes to
+    #: ``cpp_extension.load``, e.g. ``"tessera_nvfp4_"``.  It carries its
+    #: trailing separator: the module name is the prefix plus a build-identity
+    #: hash, so the prefix is not a stem and trimming it would be a
+    #: transcription that changed the value.
+    module_name_prefix: str
+    #: The library name that produces, e.g. ``"tessera_nvfp4_*.so"``.  There is
+    #: no exact basename to pin -- the build identity is in the name.
+    filename_glob: str
+    #: The rule a consumer applies, named by the runtime rather than guessed by
+    #: the consumer: ``"basename_fnmatch"`` means fnmatch the glob against the
+    #: BASENAME of a mapped ``.so``.  A substring search over the whole mapped
+    #: path is a DIFFERENT predicate and only one of them is the runtime's.
+    match: str
+
+    def as_contract_row(self) -> dict:
+        """The row as the contract spells it, for a field-level comparison."""
+        return {
+            "module_name_prefix": self.module_name_prefix,
+            "filename_glob": self.filename_glob,
+            "match": self.match,
+        }
 
 
 @dataclass(frozen=True)
@@ -135,18 +211,25 @@ class TesseraServingRuntimePin:
     version_is_release: bool
     runtime_contract_schema: str
     plugin_entry_point: str
-    #: Basename PREFIXES of the CUDA extensions the released plugin loads into
-    #: a serving process, e.g. ``("tessera_nvfp4",)`` for the span-2 NVFP4
-    #: decoder that ``tessera.serving.ext`` JIT-builds as
-    #: ``tessera_nvfp4_<build identity>.so``.  This is the reproducibility
-    #: contract's half of the pin, not the admission half: §7.4 says an A/B's
-    #: arms must have identical extension residency, and a lane whose `.so` no
-    #: fingerprint pattern matches reports "nothing resident" -- a serve
-    #: running Tessera's own native decode looking exactly like a stock serve.
+    #: The CUDA extensions the released plugin loads into a serving process,
+    #: transcribed from the runtime contract's own ``native_extensions``
+    #: table.  This is the reproducibility contract's half of the pin, not the
+    #: admission half: §7.4 says an A/B's arms must have identical extension
+    #: residency, and a lane whose `.so` no fingerprint pattern matches
+    #: reports "nothing resident" -- a serve running Tessera's own native
+    #: decode looking exactly like a stock serve.
+    #:
+    #: The chain is contract -> pin -> tool, with a refusal at each link.
+    #: ``tessera_runtime_contract.require_pin_native_extensions_match_contract``
+    #: refuses a pin that is not the pinned contract's table;
     #: ``tools/serve_fingerprint.py`` is stdlib-only and cannot read this file
-    #: from inside a serving container, so it carries the same tuple and
+    #: from inside a serving container, so it carries the same rows and
     #: ``tests/test_tessera_serve_fingerprint.py`` refuses any disagreement.
-    serving_extension_basenames: tuple[str, ...]
+    serving_native_extensions: tuple[TesseraServingNativeExtension, ...]
+
+    def native_extension_rows(self) -> list[dict]:
+        """Every row as the contract spells it, in the pin's order."""
+        return [ext.as_contract_row() for ext in self.serving_native_extensions]
 
     @property
     def commit_is_resolved(self) -> bool:
@@ -228,16 +311,64 @@ def parse_tessera_serving_runtime_pin(
             f"{TESSERA_SERVING_PLUGIN_NAME!r} vllm.general_plugins entry "
             "point the released runtime registers"
         )
-    basenames = payload["serving_extension_basenames"]
-    if (not isinstance(basenames, (list, tuple)) or not basenames
-            or not all(isinstance(name, str)
-                       and _EXTENSION_BASENAME_RE.fullmatch(name)
-                       for name in basenames)):
+    rows = payload["serving_native_extensions"]
+    if not isinstance(rows, (list, tuple)) or not rows:
         raise TesseraServingRuntimePinError(
-            f"{where}: serving_extension_basenames must be a non-empty list "
-            "of lowercase module-name prefixes naming the CUDA extensions the "
-            "released plugin loads into a serving process"
+            f"{where}: serving_native_extensions must be a non-empty list of "
+            "rows transcribing the runtime contract's native_extensions "
+            "table; an empty table is a fingerprint that reports every serve "
+            "identical"
         )
+    extensions: list[TesseraServingNativeExtension] = []
+    seen: set[str] = set()
+    for i, row in enumerate(rows):
+        at = f"{where}.serving_native_extensions[{i}]"
+        if not isinstance(row, Mapping) or set(row) != _NATIVE_EXTENSION_MEMBERS:
+            observed = sorted(row) if isinstance(row, Mapping) else []
+            raise TesseraServingRuntimePinError(
+                f"{at}: expected exactly {sorted(_NATIVE_EXTENSION_MEMBERS)}, "
+                f"got {observed}. The keys are the runtime contract's own "
+                "spelling so the two tables compare field for field."
+            )
+        prefix = row["module_name_prefix"]
+        if (not isinstance(prefix, str)
+                or _EXTENSION_PREFIX_RE.fullmatch(prefix) is None):
+            raise TesseraServingRuntimePinError(
+                f"{at}.module_name_prefix must be a lowercase module-name "
+                f"prefix, got {prefix!r}"
+            )
+        if prefix in seen:
+            raise TesseraServingRuntimePinError(
+                f"{at}.module_name_prefix {prefix!r} is declared twice"
+            )
+        seen.add(prefix)
+        glob = row["filename_glob"]
+        if not isinstance(glob, str) or not glob:
+            raise TesseraServingRuntimePinError(
+                f"{at}.filename_glob must be a non-empty string"
+            )
+        # Checked by MEANING and not by spelling, the way the runtime's own
+        # validator checks it: a library name the load path can produce must
+        # match, or the pin transcribes a glob that matches nothing a serve
+        # maps -- which reads as "no lane extension resident" on every arm.
+        if not fnmatch.fnmatch(f"{prefix}0123456789abcdef.so", glob):
+            raise TesseraServingRuntimePinError(
+                f"{at}.filename_glob {glob!r} matches no library name the "
+                f"load path can produce ({prefix}<build identity>.so)"
+            )
+        rule = row["match"]
+        if rule != MATCH_BASENAME_FNMATCH:
+            raise TesseraServingRuntimePinError(
+                f"{at}.match is {rule!r}; this reader knows only "
+                f"{MATCH_BASENAME_FNMATCH!r} and will not guess at another "
+                "rule's predicate. The rule is a value because a consumer "
+                "cannot otherwise tell a stem from a prefix from a pattern."
+            )
+        extensions.append(TesseraServingNativeExtension(
+            module_name_prefix=prefix,
+            filename_glob=glob,
+            match=rule,
+        ))
     return TesseraServingRuntimePin(
         schema=str(payload["schema"]),
         repository=str(payload["repository"]),
@@ -246,7 +377,7 @@ def parse_tessera_serving_runtime_pin(
         version_is_release=released,
         runtime_contract_schema=str(payload["runtime_contract_schema"]),
         plugin_entry_point=entry_point,
-        serving_extension_basenames=tuple(str(n) for n in basenames),
+        serving_native_extensions=tuple(extensions),
     )
 
 
@@ -333,6 +464,7 @@ def require_exact_tessera_runtime_release(
 
 
 __all__ = [
+    "MATCH_BASENAME_FNMATCH",
     "TESSERA_SERVING_PLUGIN_NAME",
     "TESSERA_SERVING_QUANT_METHOD",
     "TESSERA_SERVING_RESIDENCY_ENV",
@@ -343,6 +475,7 @@ __all__ = [
     "TESSERA_SERVING_RUNTIME_RELEASE_VERSION",
     "TESSERA_SERVING_RUNTIME_REPOSITORY",
     "TESSERA_SERVING_RUNTIME_VERSION_PENDING",
+    "TesseraServingNativeExtension",
     "TesseraServingRuntimePin",
     "TesseraServingRuntimePinError",
     "load_tessera_serving_runtime_pin",

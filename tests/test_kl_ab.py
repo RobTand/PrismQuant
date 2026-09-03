@@ -23,7 +23,7 @@ from tools.kl_ab import CROSS_STACK_BAND, compare
 from tools.kl_ab import main as kl_ab_cli
 import tools.serve_fingerprint as serve_fingerprint
 from tools.serve_fingerprint import (
-    EXTENSION_PATTERN,
+    SUBSTRING_EXTENSION_PATTERN,
     collect_manifest,
     elide_argv_paths,
     fingerprint,
@@ -105,8 +105,8 @@ def test_extension_pattern_matches_the_tracked_sos():
         "/usr/lib/python3/site-packages/fla/ops/_triton.so",
         "/repo/prismaquant/kernels/nvfp4_fused.so",
     ):
-        assert EXTENSION_PATTERN.search(path), path
-    assert not EXTENSION_PATTERN.search("/usr/lib/libcudart.so.13")
+        assert SUBSTRING_EXTENSION_PATTERN.search(path), path
+    assert not SUBSTRING_EXTENSION_PATTERN.search("/usr/lib/libcudart.so.13")
 
 
 def test_self_manifest_reads_this_process(tmp_path):

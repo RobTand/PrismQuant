@@ -6,6 +6,13 @@ behind which serve flags, at which tensor-parallel world size -- is read from
 ``tessera/serving/runtime_contract.json``, the table the plugin packages and
 publishes, or it is refused.  Nothing here decides anything; it parses.
 
+Since Tessera contract v7 that table also publishes what the plugin *LOADS*
+(``native_extensions``: which CUDA library, under which filename pattern,
+matched by which named rule, and what runs instead when it is absent), which
+is the other §7.4 fact PrismaQuant used to maintain on this side by hand.
+:func:`require_pin_native_extensions_match_contract` is the refusal that keeps
+the serving pin a transcription of it.
+
 **Why this is not** ``lane_eligibility``.  That module is the generic
 engine: it reads a serving release's contract through that lane's pin and
 admits units against it.  It was written for the Gridbook lane's schemas
@@ -63,6 +70,7 @@ shipcard records which table admitted its units.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -78,6 +86,7 @@ from .lane_eligibility import (
 )
 
 __all__ = [
+    "MATCH_BASENAME_FNMATCH",
     "TESSERA_CONTRACT_SCHEMA",
     "TESSERA_DEV_PIN_COMMIT",
     "TESSERA_DEV_PIN_ANSWER",
@@ -86,11 +95,13 @@ __all__ = [
     "TESSERA_LANE_SCHEMA",
     "TesseraContract",
     "TesseraContractError",
+    "TesseraNativeExtension",
     "TesseraRouteCell",
     "contract_answer",
     "describe_dev_pin",
     "dev_pin_requested",
     "load_tessera_contract",
+    "require_pin_native_extensions_match_contract",
 ]
 
 
@@ -110,13 +121,15 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: The Tessera commit this pin's answer was reviewed against.  Declared and
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
 #: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
-#: contract v7, whose two additive blocks (``fused_module`` at v6, Tessera
-#: issue #37; ``native_extensions`` at v7, Tessera issue #28) move no value in
-#: :func:`contract_answer` -- the v5 and v7 answers are equal object for
-#: object.  Advancing this constant is therefore bookkeeping, not a gate
-#: change; it exists so ``bytes_are_the_reviewed_bytes`` keeps meaning "these
-#: are the bytes somebody read" rather than decaying to a permanent False.
-TESSERA_DEV_PIN_COMMIT = "b46ffd212c3b0bb74c69dad0dee4f18a2e951e3c"
+#: contract v7 (Tessera master 35f57b4; contract bytes identical to b46ffd2).
+#: Of v7's two additive blocks, ``fused_module`` (v6, Tessera #37) moves no
+#: value in :func:`contract_answer`; ``native_extensions`` (v7, Tessera #28)
+#: DOES -- the serve fingerprint reads it (prismaquant #133), so a renamed or
+#: moved extension re-stales this pin with a named field instead of passing
+#: silently.  Advancing this constant on unchanged bytes is bookkeeping; it
+#: exists so ``bytes_are_the_reviewed_bytes`` keeps meaning "these are the
+#: bytes somebody read" rather than decaying to a permanent False.
+TESSERA_DEV_PIN_COMMIT = "35f57b49553c4cd0a6f0606e5492aa034b3eaf5e"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
 #: bytes a human read when the answer below was accepted.  Recorded, and
@@ -131,12 +144,21 @@ TESSERA_DEV_PIN_CONTRACT_SHA256 = (
 #: bytes, is what refuses: a Tessera commit that rewrites prose, reorders keys
 #: or bumps ``contract_version`` publishes the same answer and does not
 #: re-stale the pin, while any move in a family, a rate range, an attested
-#: rung, a world-size ceiling, a cell or the canonical ``quant_method`` does --
-#: with a field-level diff naming it.  The git diff of this literal is the
-#: review.
+#: rung, a world-size ceiling, a cell, the canonical ``quant_method``, or a
+#: published native extension (its prefix, its glob, the ``match`` rule, the
+#: routes that need it, or what runs when it is absent) does -- with a
+#: field-level diff naming it.  The git diff of this literal is the review.
 TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
      'lane_schema': 'tessera.lane-eligibility.v3',
      'quant_method': 'tessera',
+     'native_extensions': [{'module_name_prefix': 'tessera_nvfp4_',
+                            'filename_glob': 'tessera_nvfp4_*.so',
+                            'match': 'basename_fnmatch',
+                            'routes': ['TESSERA_NVFP4'],
+                            'when_unavailable': {'resident': {'status': 'substituted',
+                                                              'decoder': 'torch_materialize_stock'},
+                                                 'streamed': {'status': 'refused',
+                                                              'decoder': None}}}],
      'families': {'TESSERA_BF16_K1': {'reader_rate_range_q256': [256, 4096],
                                       'attested_rungs_q256': [1792],
                                       'max_world_size': 1},
@@ -220,6 +242,55 @@ _NATIVE_ROUTE_STATUSES = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
+class TesseraNativeExtension:
+    """One ``native_extensions[]`` row, verbatim in the fields we read.
+
+    The contract says what the plugin EXECUTES in ``formats`` /
+    ``lane_eligibility``; this table says what it LOADS.  PrismaQuant needs it
+    because §7.4 keys reproducibility on extension residency: a KL is
+    bit-identical inside one container session and drifts 4-8x across them,
+    keyed purely on whether a lane's ``.so`` was resident, so an A/B is
+    comparable only across serves whose native-extension residency matches.
+    A lane whose library no fingerprint pattern matches reports "nothing
+    resident", and two serves the rule cannot tell apart get compared.
+
+    ``match`` is the field that makes this principle 14 rather than a guess:
+    the runtime names the RULE a consumer applies, so a consumer does not have
+    to decide whether the published string is a stem, a prefix or a pattern.
+    """
+
+    #: The constant the runtime's JIT load path passes to
+    #: ``cpp_extension.load``, trailing separator included.
+    module_name_prefix: str
+    #: The library name that produces.  A glob, because the module name
+    #: carries a build-identity hash and no exact basename exists.
+    filename_glob: str
+    #: The rule that turns ``filename_glob`` into a decision.
+    match: str
+    #: Where the sources live in the runtime's tree -- identity, not answer.
+    source: str
+    #: The runtime module that loads it -- identity, not answer.
+    loaded_by: str
+    #: The routes that need it.
+    routes: tuple[str, ...]
+    #: Per residency mode, what a serve does when the library is absent:
+    #: ``{"resident": {"status": "substituted", "decoder": "..."},
+    #: "streamed": {"status": "refused", "decoder": None}}``.  This is what
+    #: makes an absent ``.so`` readable: in one mode the serve keeps running on
+    #: a NAMED substitute decoder and is a different numeric object, in the
+    #: other there is no serve at all.
+    when_unavailable: Mapping[str, Mapping[str, Any]]
+
+    def as_contract_row(self) -> dict:
+        """The three fields a residency predicate is made of, as published."""
+        return {
+            "module_name_prefix": self.module_name_prefix,
+            "filename_glob": self.filename_glob,
+            "match": self.match,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TesseraRouteCell:
     """One ``lane_eligibility.cells[]`` row, verbatim in the fields we read."""
 
@@ -253,6 +324,10 @@ class TesseraContract:
     #: ``family -> the rungs a ``lane_eligibility`` cell attests``.
     attested_rungs: Mapping[str, frozenset[int]]
     cells: tuple[TesseraRouteCell, ...]
+    #: The libraries the plugin loads into a serving process, in the table's
+    #: order.  Non-empty by construction: :func:`_parse` refuses a contract
+    #: that publishes no table rather than reading one as "loads nothing".
+    native_extensions: tuple[TesseraNativeExtension, ...]
     #: ``family -> max tensor-parallel world size``, closed world.
     max_world_size: Mapping[str, int]
     quant_method: str
@@ -301,6 +376,22 @@ class TesseraContract:
             "plugin_version": self.plugin_version,
             "quant_method": self.quant_method,
             "attested_on": dict(self.attested_on),
+            "native_extensions": [
+                {
+                    "module_name_prefix": ext.module_name_prefix,
+                    "filename_glob": ext.filename_glob,
+                    "match": ext.match,
+                    "source": ext.source,
+                    "loaded_by": ext.loaded_by,
+                    "routes": list(ext.routes),
+                    "when_unavailable": {
+                        mode: dict(behaviour)
+                        for mode, behaviour in sorted(
+                            ext.when_unavailable.items())
+                    },
+                }
+                for ext in self.native_extensions
+            ],
             "note": (
                 "development override: no Tessera RELEASE tag exists, so this "
                 "allocation's Tessera routes were admitted by the packaged "
@@ -335,19 +426,20 @@ def describe_dev_pin(identity: "Mapping[str, Any]") -> str:
 
 
 def contract_answer(contract: "TesseraContract") -> dict:
-    """Exactly the values the ADMISSION gate reads, canonicalised, and no more.
+    """Exactly the values the gates on THIS pin decide on, canonicalised, and no more.
 
-    Read the first word.  The scope is admission -- which ``(family, rate)``
-    the allocator may put on the menu and under which route status -- because
-    that is what this pin gates.  It is deliberately NOT every value any
-    PrismaQuant gate reads out of this file: ``lane_eligibility.structures``,
+    Two gates read the dev pin: admission -- which ``(family, rate)`` the
+    allocator may put on the menu and under which route status -- and the
+    serve fingerprint's native-extension residency (prismaquant #133).  The
+    answer is their union and nothing else.  It is deliberately NOT every
+    value any PrismaQuant gate reads out of this file: ``lane_eligibility.structures``,
     ``platforms`` and ``regimes`` are read by the EXPORT lane's own reader
     (``tessera_export_lane.require_declared_structure`` through
     ``lane_eligibility.load_eligibility_table``), which is gated by the
     RELEASE pin -- an exact commit and sha, fail-closed today on PENDING
     sentinels.  Pulling them in here would make an export-lane edit re-stale
     the allocator's menu, which is issue #38's own failure mode wearing a
-    different hat.  Each pin covers the values its own gate reads.
+    different hat.  Each pin covers the values its own gates read.
 
     Principle 14's line, made mechanical.  ``detail``, ``rationale``, the
     changelog and every other prose field explains; none of them is a value a
@@ -356,16 +448,43 @@ def contract_answer(contract: "TesseraContract") -> dict:
     which travels into provenance, and a version bump that moved no answer is
     not a thing to re-review.
 
-    What is here is what an admission decision is made of -- which families
-    exist, the rate range the decoder accepts for each, the rungs a cell
-    attests, the tensor-parallel ceiling, the canonical ``quant_method`` this
-    producer writes into the checkpoint, and every cell field the route gate
-    reads.  Two contracts with the same answer admit the same units.
+    What is here is what a GATE decides on.  Most of it is the admission
+    decision -- which families exist, the rate range the decoder accepts for
+    each, the rungs a cell attests, the tensor-parallel ceiling, the canonical
+    ``quant_method`` this producer writes into the checkpoint, and every cell
+    field the route gate reads.  Two contracts with the same answer admit the
+    same units.
+
+    ``native_extensions`` is here for a second gate, not the admission one:
+    §7.4 says an A/B's arms must have identical native-extension residency,
+    ``tools/serve_fingerprint.py`` decides residency by matching mapped
+    libraries, and the prefix, the glob and the ``match`` rule are the values
+    that decision is made of -- with ``when_unavailable`` the value that says
+    what an ABSENT library means (a named substitute decoder, or no serve at
+    all).  Those move the fingerprint's behaviour, so they are answer.
+    ``source`` and ``loaded_by`` name files and modules in the runtime's own
+    tree and move nothing on this side, so they are identity and stay out,
+    exactly like ``plugin_version``.
     """
     return {
         "schema": TESSERA_CONTRACT_SCHEMA,
         "lane_schema": TESSERA_LANE_SCHEMA,
         "quant_method": contract.quant_method,
+        "native_extensions": [
+            {
+                "module_name_prefix": ext.module_name_prefix,
+                "filename_glob": ext.filename_glob,
+                "match": ext.match,
+                "routes": sorted(ext.routes),
+                "when_unavailable": {
+                    mode: {"status": behaviour["status"],
+                           "decoder": behaviour["decoder"]}
+                    for mode, behaviour in sorted(ext.when_unavailable.items())
+                },
+            }
+            for ext in sorted(contract.native_extensions,
+                              key=lambda e: e.module_name_prefix)
+        ],
         "families": {
             family: {
                 "reader_rate_range_q256": [int(rng[0]), int(rng[1])],
@@ -416,6 +535,27 @@ def _answer_drift(reviewed: Mapping[str, Any], installed: Mapping[str, Any]
                         f"  families[{family}].{k}: reviewed "
                         f"{r_fam[family].get(k)!r}, installed "
                         f"{i_fam[family].get(k)!r}")
+    r_ext = {row["module_name_prefix"]: row
+             for row in reviewed.get("native_extensions", ())}
+    i_ext = {row["module_name_prefix"]: row
+             for row in installed.get("native_extensions", ())}
+    for prefix in sorted(set(r_ext) | set(i_ext)):
+        if prefix not in r_ext:
+            lines.append(
+                f"  native_extensions[{prefix}]: NEW, not in the reviewed "
+                "answer -- a library a serve can map that no fingerprint on "
+                "this side was reviewed against")
+        elif prefix not in i_ext:
+            lines.append(
+                f"  native_extensions[{prefix}]: GONE from the installed "
+                "contract")
+        elif r_ext[prefix] != i_ext[prefix]:
+            for key in sorted(set(r_ext[prefix]) | set(i_ext[prefix])):
+                if r_ext[prefix].get(key) != i_ext[prefix].get(key):
+                    lines.append(
+                        f"  native_extensions[{prefix}].{key}: reviewed "
+                        f"{r_ext[prefix].get(key)!r}, installed "
+                        f"{i_ext[prefix].get(key)!r}")
     r_cells = {tuple(c[:1])[0]: c for c in reviewed.get("cells", ())}
     i_cells = {tuple(c[:1])[0]: c for c in installed.get("cells", ())}
     for cell_id in sorted(set(r_cells) | set(i_cells)):
@@ -452,6 +592,176 @@ def _require(block: Mapping[str, Any], key: str, where: str) -> Any:
     if key not in block:
         raise TesseraContractError(f"{where} publishes no {key!r}")
     return block[key]
+
+
+#: The one ``native_extensions[].match`` rule this reader implements.  A
+#: contract naming another rule is REFUSED rather than read with this one:
+#: the whole reason ``match`` is a value is that the predicate is not
+#: guessable from the glob.
+MATCH_BASENAME_FNMATCH = "basename_fnmatch"
+
+_NATIVE_EXTENSION_MEMBERS = (
+    "module_name_prefix", "filename_glob", "match", "source", "loaded_by",
+    "routes", "when_unavailable",
+)
+
+
+def _parse_native_extensions(
+    entries: Any, *, where: str
+) -> tuple[TesseraNativeExtension, ...]:
+    """Read ``native_extensions``, refusing anything a fingerprint can't use.
+
+    Published since Tessera contract v7.  An older table does not carry it,
+    and the honest answer there is a refusal: "this contract does not say what
+    the plugin loads" is not the same statement as "the plugin loads nothing",
+    and reading the second from the first is how a Tessera serve came to
+    fingerprint as a stock serve in the first place.
+    """
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise TesseraContractError(f"{where} must be a JSON array")
+    if not entries:
+        raise TesseraContractError(
+            f"{where} is empty. A contract that publishes no loadable library "
+            "makes every serve fingerprint identical on the one axis §7.4 "
+            "keys reproducibility on, so an empty table is refused rather "
+            "than read as 'loads nothing'."
+        )
+    parsed: list[TesseraNativeExtension] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(entries):
+        at = f"{where}[{i}]"
+        if not isinstance(entry, Mapping):
+            raise TesseraContractError(f"{at} must be a JSON object")
+        for member in _NATIVE_EXTENSION_MEMBERS:
+            _require(entry, member, at)
+        prefix = str(entry["module_name_prefix"])
+        if not prefix:
+            raise TesseraContractError(
+                f"{at}.module_name_prefix must be a non-empty string")
+        if prefix in seen:
+            raise TesseraContractError(
+                f"{at}.module_name_prefix {prefix!r} is declared twice")
+        seen.add(prefix)
+        rule = str(entry["match"])
+        if rule != MATCH_BASENAME_FNMATCH:
+            raise TesseraContractError(
+                f"{at}.match is {rule!r}; this reader implements only "
+                f"{MATCH_BASENAME_FNMATCH!r} (fnmatch the glob against the "
+                "BASENAME of a mapped .so) and will not apply that predicate "
+                "to a rule it does not know. The rule is a published value "
+                "precisely because it is not guessable from the glob."
+            )
+        glob = str(entry["filename_glob"])
+        # By MEANING, not by spelling, the same way the runtime's own
+        # validator checks it: a library name this load path can produce must
+        # match. A glob that matches nothing a serve maps is a fingerprint
+        # that reports every serve identical.
+        if not fnmatch.fnmatch(f"{prefix}0123456789abcdef.so", glob):
+            raise TesseraContractError(
+                f"{at}.filename_glob {glob!r} matches no library name the "
+                f"load path can produce ({prefix}<build identity>.so)"
+            )
+        when = entry["when_unavailable"]
+        if not isinstance(when, Mapping) or not when:
+            raise TesseraContractError(
+                f"{at}.when_unavailable must be a non-empty object keyed by "
+                "residency mode"
+            )
+        behaviours: dict[str, Mapping[str, Any]] = {}
+        for mode, behaviour in when.items():
+            if not isinstance(behaviour, Mapping):
+                raise TesseraContractError(
+                    f"{at}.when_unavailable[{mode!r}] must be an object")
+            _require(behaviour, "status", f"{at}.when_unavailable[{mode!r}]")
+            _require(behaviour, "decoder", f"{at}.when_unavailable[{mode!r}]")
+            behaviours[str(mode)] = {
+                "status": str(behaviour["status"]),
+                "decoder": (None if behaviour["decoder"] is None
+                            else str(behaviour["decoder"])),
+            }
+        routes = entry["routes"]
+        if (not isinstance(routes, Sequence)
+                or isinstance(routes, (str, bytes)) or not routes):
+            raise TesseraContractError(
+                f"{at}.routes must name at least one route that needs it")
+        parsed.append(TesseraNativeExtension(
+            module_name_prefix=prefix,
+            filename_glob=glob,
+            match=rule,
+            source=str(entry["source"]),
+            loaded_by=str(entry["loaded_by"]),
+            routes=tuple(str(r) for r in routes),
+            when_unavailable=behaviours,
+        ))
+    return tuple(parsed)
+
+
+def require_pin_native_extensions_match_contract(
+    contract: "TesseraContract",
+    pin: "Any | None" = None,
+) -> None:
+    """Refuse a pin whose extension table is not the pinned contract's.
+
+    The middle link of the §7.4 chain.  ``tools/serve_fingerprint.py`` runs
+    inside a serving container from a five-file bootstrap with no package
+    data, so it can read neither this contract nor the pin: it carries the
+    rows, and ``tests/test_tessera_serve_fingerprint.py`` refuses a tool that
+    disagrees with the pin.  That test was the ONLY refusal in the chain, and
+    the link it checked was the one that was already sound -- the pin itself
+    was a hand-written claim about another runtime, maintained one repository
+    over, where nothing here could refuse it on drift.  Rename the extension
+    in the plugin and a Tessera serve fingerprinted as "nothing resident",
+    which is the hole that existed before 2026-09-03, when the pattern named
+    no Tessera library at all.
+
+    Compared over the fields a residency predicate is MADE of -- prefix, glob
+    and the match rule -- keyed by prefix, in both directions: a library the
+    contract publishes and the pin omits makes the fingerprint go quietly
+    short, and a library the pin invents is a claim about a runtime that does
+    not load it.
+    """
+    from .tessera_serving_runtime_pin import (
+        TesseraServingRuntimePinError,
+        load_tessera_serving_runtime_pin,
+    )
+
+    if pin is None:
+        pin = load_tessera_serving_runtime_pin()
+    published = {row["module_name_prefix"]: row
+                 for row in (ext.as_contract_row()
+                             for ext in contract.native_extensions)}
+    pinned = {row["module_name_prefix"]: row
+              for row in pin.native_extension_rows()}
+    lines: list[str] = []
+    for prefix in sorted(set(published) | set(pinned)):
+        if prefix not in pinned:
+            lines.append(
+                f"  {prefix!r}: the contract publishes it and the pin omits "
+                "it -- a serve loading it would fingerprint as nothing "
+                "resident")
+        elif prefix not in published:
+            lines.append(
+                f"  {prefix!r}: the pin declares it and the contract "
+                "publishes no such extension")
+        elif published[prefix] != pinned[prefix]:
+            for key in sorted(set(published[prefix]) | set(pinned[prefix])):
+                if published[prefix].get(key) != pinned[prefix].get(key):
+                    lines.append(
+                        f"  {prefix!r}.{key}: contract "
+                        f"{published[prefix].get(key)!r}, pin "
+                        f"{pinned[prefix].get(key)!r}")
+    if lines:
+        raise TesseraServingRuntimePinError(
+            "The Tessera serving pin's serving_native_extensions is not the "
+            f"pinned contract's native_extensions table ({contract.path}):\n"
+            + "\n".join(lines) + "\n"
+            "The pin is a TRANSCRIPTION of that table (principle 14: a claim "
+            "about another runtime is attested, never asserted), and "
+            "tools/serve_fingerprint.py carries the same rows because it "
+            "cannot read either file from inside a serving container. Fix the "
+            "pin, and the tool's TESSERA_NATIVE_EXTENSIONS with it, in one "
+            "commit."
+        )
 
 
 def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
@@ -534,6 +844,11 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
                 str(f) for f in cell.get("requires_serve_flags", ())),
         ))
 
+    extensions = _parse_native_extensions(
+        _require(payload, "native_extensions", path),
+        where=f"{path}.native_extensions",
+    )
+
     tp = _require(payload, "tensor_parallel", path)
     if str(tp.get("semantics")) != "closed_world":
         raise TesseraContractError(
@@ -554,6 +869,7 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
         reader_rate_range=reader_range,
         attested_rungs=attested,
         cells=tuple(cells),
+        native_extensions=extensions,
         max_world_size=world,
         quant_method=str(method.get("canonical", "")),
         contract_version=int(payload.get("contract_version", 0)),
@@ -613,4 +929,9 @@ def load_tessera_contract() -> "TesseraContract | None":
             "(with the commit and sha) in the same commit -- that diff is the "
             "review."
         )
+    # The middle link of the §7.4 chain, checked wherever both objects are in
+    # hand.  It is deliberately AFTER the answer check: a moved answer is the
+    # more informative refusal, and the pin cannot be judged against a
+    # contract this producer has not accepted.
+    require_pin_native_extensions_match_contract(contract)
     return contract
