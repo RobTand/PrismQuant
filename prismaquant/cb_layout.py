@@ -1,9 +1,14 @@
-"""Torch-free source of truth for the Gridbook CB serialized layout.
+"""Torch-free source of truth for the retired Gridbook CB serialized layout.
 
 This module owns producer-side facts that used to be repeated by the format
-registry, layer-config parser, packer, and exact byte accountant.  Gridbook is
-an intentionally independent consumer implementation; cross-repository CI
-compares its packaged runtime contract with these values field by field.
+registry, layer-config parser, packer, and exact byte accountant.  Gridbook was
+an intentionally independent consumer implementation, and until 2026-09-02 a
+cross-repository CI job compared its packaged runtime contract with these
+values field by field.  The lane was retired that day
+(archive/gridbook_lane_2026-09-02/) and the job went with it
+(.github/workflows/ci.yml); the layout is kept so persisted CB assignments
+still parse and price, but no exporter writes it and no sanctioned lane
+serves it.
 """
 from __future__ import annotations
 

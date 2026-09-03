@@ -689,10 +689,13 @@ def _mxfp8_ue8m0_weight_rtn(w: torch.Tensor) -> torch.Tensor:
 def _mxfp8_ue8m0_activation_rtn(x: torch.Tensor) -> torch.Tensor:
     """MXFP8_UE8M0_G32 ACTIVATION RTN — dynamic per-32 E8M0, same ceil rule.
 
-    Mirrors the Gridbook lane's A side exactly (``Mxfp8DenseLinearMethod``
-    quantizes activations to MXFP8 per 32-element group each forward), so
-    ``output_mse`` measured through this closure is the real W8A8 error rather
-    than weight-only error.
+    Mirrors the A side the retired Gridbook lane executed (its
+    ``Mxfp8DenseLinearMethod`` quantized activations to MXFP8 per 32-element
+    group each forward; lane retired 2026-09-02), so ``output_mse`` measured
+    through this closure is the W8A8 error of that contract rather than
+    weight-only error.  No sanctioned lane executes this format today, and
+    ``allocator_candidates`` prices it accordingly -- see the format comment
+    below.
     """
     return mxfp8_ue8m0_activation_qdq(x).dequant.to(x.dtype)
 
@@ -869,8 +872,11 @@ register_format(FormatSpec(
     activation_quantize_dequantize=lambda x: x,
 ))
 
-# MXFP8_UE8M0_G32 — MX-FP8 for the Gridbook lane, with the saturating-ceil
-# shared-exponent rule and a native ``float8_e8m0fnu`` scale plane.
+# MXFP8_UE8M0_G32 — MX-FP8 with the saturating-ceil shared-exponent rule and
+# a native ``float8_e8m0fnu`` scale plane.  Built for the Gridbook lane, which
+# was retired 2026-09-02 (archive/gridbook_lane_2026-09-02/); the format stays
+# registered and priceable, but no exporter writes it and no live serving
+# profile admits it (docs/ARCHITECTURE.md, D34).
 #
 # WHY THIS IS NOT JUST ``MXFP8_E4M3``. It has the same element grid (E4M3),
 # the same group (32 along K) and the same 8.25 bpw, so the obvious question
@@ -884,9 +890,10 @@ register_format(FormatSpec(
 #     exactness property below. See ``mx_formats.mxfp8_ue8m0_shared_exponent``.
 #   * SCALE DTYPE. The stock lane serializes E8M0 as ``uint8``; this one
 #     serializes ``float8_e8m0fnu``, the spelling DeepSeek-V4 already uses for
-#     its own block scales and the one the Gridbook consumer reads.
-#   * LANE. It rides its own wire id and its own (currently UNBACKED) serving
-#     lane, not the compressed-tensors scheme.
+#     its own block scales and the one the retired Gridbook consumer read.
+#   * LANE. It rides its own wire id, not the compressed-tensors scheme.  The
+#     lane that served it is retired (2026-09-02); no sanctioned lane
+#     (compressed-tensors, GGUF, Tessera) executes these bytes.
 #
 # That is the same "different on-disk contract, therefore a different format"
 # call FP8_BLOCK_UE8M0_SOURCE made against FP8_SOURCE, and the reason the
@@ -914,16 +921,23 @@ register_format(FormatSpec(
 # legal on ANY source dtype: it has a real encoder, so it is deliberately
 # absent from SOURCE_PASSTHROUGH_CONTRACTS and is not source-gated.
 #
-# W8A8, WITH THE A SIDE MEASURED. The Gridbook lane that serves this
-# (``Mxfp8DenseLinearMethod``, gridbook/mxfp8_dense_lane.py) quantizes
-# activations dynamically to MXFP8 per 32 reduction-axis elements, using the
+# W8A8, WITH THE A SIDE MEASURED. The A-side contract priced here is the one
+# the Gridbook lane executed until its retirement on 2026-09-02
+# (``Mxfp8DenseLinearMethod``, archive/gridbook_lane_2026-09-02/): activations
+# quantized dynamically to MXFP8 per 32 reduction-axis elements, using the
 # SAME saturating-ceil rule as the weights — no static global scale to fit,
 # unlike NVFP4's ``nv_fp4_with_static_gs``. Declaring that here is not
 # bookkeeping: ``act_bits=8`` is what makes the cost stage apply
 # ``activation_quantize_dequantize`` before measuring ``output_mse``, so a
 # measured row carries genuine W8A8 error. Declaring A16 instead would price
-# an activation path the runtime does not take, and on a block-FP8 source
+# an activation path that contract did not take, and on a block-FP8 source
 # (weight_mse exactly 0.0) would hand the DP a free zero-cost rung.
+#
+# SCOPE OF THAT CONTRACT (principle 14). It is the retired lane's executed
+# contract, not a live runtime's: since 2026-09-02 no sanctioned lane executes
+# this format at any unit kind, so the row is priced but never exportable.
+# Should a lane ever back it, its executed A-side contract must be read from
+# that runtime's packaged contract table, not from this comment.
 #
 # effective_bits = 8 + 8/32 = 8.25 bpw exactly.
 register_format(FormatSpec(
@@ -1053,13 +1067,17 @@ register_format(FormatSpec(
 #     tensor the checkpoint's own loader does not expect — the opposite of a
 #     passthrough.
 #
-# Serving: this block-128 wire contract is consumed by Gridbook's dedicated
-# ``Fp8SourceW8A16LinearMethod``.  The stored E4M3 weight plane and UE8M0 scale
-# plane remain resident and byte-verbatim; BF16 activations cross the route
-# unchanged.  It is deliberately distinct from ``MXFP8_UE8M0_G32`` above,
-# which is a producer re-encode with dynamic per-32 MXFP8 activations (W8A8).
-# Runtime admission is feature-gated by the pinned Gridbook runtime contract;
-# this registry declaration states the numerical contract, not release status.
+# Serving: this block-128 wire contract WAS consumed by the retired Gridbook
+# lane's dedicated ``Fp8SourceW8A16LinearMethod`` (lane retired 2026-09-02,
+# archive/gridbook_lane_2026-09-02/).  Under that contract the stored E4M3
+# weight plane and UE8M0 scale plane stayed resident and byte-verbatim and
+# BF16 activations crossed the route unchanged -- which is why the format sits
+# in ``SOURCE_PASSTHROUGH_CONTRACTS`` (W and A both identity).  It is
+# deliberately distinct from ``MXFP8_UE8M0_G32`` above, which is a producer
+# re-encode with dynamic per-32 MXFP8 activations (W8A8).  Since the
+# retirement no sanctioned lane serves this wire: ``allocator_candidates``
+# carries the row as ``ROUTE_STATUS_BLOCKED`` and export fails closed on it.
+# This registry declaration states the numerical contract, not release status.
 register_format(FormatSpec(
     name="FP8_BLOCK_UE8M0_SOURCE",
     weight_bits=8, group_size=128, scale_bits=8,
@@ -1240,10 +1258,10 @@ def _make_fp8_cb_spec(k: int, *, producer_eligible: bool) -> FormatSpec:
         scale_dtype_name="fp8_cb_vq",
         weight_element_dtype=f"fp8_cb_k{k}",
         act_bits=8, act_dtype_name="fp8_e4m3", act_group_size=0,
-        # Ada has native FP8 tensor-core execution for Gridbook's SM89 decode
-        # and expand+CUTLASS routes.  A production artifact still needs the
-        # separate device-qualified lane-v2 cells; this floor is capability
-        # metadata, never a replacement for that release gate.
+        # Ada has native FP8 tensor-core execution, which the retired
+        # Gridbook lane's SM89 decode and expand+CUTLASS routes used (lane
+        # retired 2026-09-02).  This floor is capability metadata about the
+        # silicon, never a serving claim: no sanctioned lane serves FP8-CB.
         family="fp8_cb", min_capability_sm=89,
         producer_eligible=producer_eligible,
         autoround_config=(
