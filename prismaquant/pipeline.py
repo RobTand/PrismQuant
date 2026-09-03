@@ -442,6 +442,16 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     # --- GGUF lane ---------------------------------------------------------
     # llama.cpp's converter reads only the checkpoint.
     "gguf-skeleton": _key_pairs("MODEL_PATH"),
+    # --- Tessera lane ------------------------------------------------------
+    # The plan is a projection of the allocation onto the exporter's per-tensor
+    # vocabulary, so its identity is (checkpoint, coverage decision). The
+    # allocation itself is guarded upstream by `layer_config.json`'s own
+    # stages; what is NOT recoverable from that file is the coverage mode, and
+    # it is the one setting that changes the artifact without changing the
+    # allocation: `broadcast-by-role` extrapolates a single-layer allocation to
+    # every depth, `as-allocated` does not. A skip-if-exists plan built under
+    # the other mode is a different artifact.
+    "tessera-plan": _key_pairs("MODEL_PATH", "COVER<-TESSERA_PLAN_COVER"),
 }
 
 

@@ -58,8 +58,18 @@ def test_detects_real_checkpoint_config():
     assert resolved.name == "qwen3"
     assert resolved.vllm_architecture_class() == "Qwen3MoeForCausalLM"
     # `nvfp4_cb` left this tuple on 2026-09-02 with the Gridbook lane
-    # (archive/gridbook_lane_2026-09-02/).
-    assert resolved.supported_export_lanes() == ("compressed-tensors",)
+    # (archive/gridbook_lane_2026-09-02/); `tessera` joined it the next day,
+    # the addition half of the same decision.
+    #
+    # Note what this config is: a ROUTED-MoE Qwen3 resolving to the profile
+    # that declares the Tessera lane. Declaring the lane is not permission to
+    # build one for this checkpoint -- the packaged contract declares
+    # structures ["dense"] and carries no routed_moe cell, so
+    # `prismaquant.tessera_export_lane` refuses this shape by reading that
+    # table (tests/test_tessera_export_lane.py). Lane membership is a
+    # vocabulary fact; buildability is a gate.
+    assert resolved.supported_export_lanes() == (
+        "compressed-tensors", "tessera")
 
 
 def test_dense_qwen3_still_resolves_to_the_same_contract_profile():

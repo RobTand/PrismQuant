@@ -126,9 +126,26 @@ SERVER_ENV_ALLOWLIST = (
 # (archive/gridbook_lane_2026-09-02/). A lane whose kernels are not matched
 # here fingerprints as "nothing resident", so any new serving lane must add
 # its extension basenames.
+#
+# The Tessera alternatives below belong to the PIN, not to this file's
+# judgement: they are the basename prefixes
+# `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json` declares in
+# `serving_extension_basenames`, i.e. the CUDA extensions the pinned Tessera
+# release's plugin loads into a serving process. This module is stdlib-only by
+# construction (it runs inside the serving container from a bootstrapped
+# snapshot that ships five tool files and no package data), so it cannot READ
+# that pin at runtime and carries the tuple instead;
+# `tests/test_tessera_serve_fingerprint.py` refuses any disagreement between
+# the two, which is what keeps this a copy of the pin rather than a guess
+# about the runtime. Until 2026-09-02 no Tessera name was here at all, so a
+# serve running Tessera's own native span-2 decode fingerprinted identically
+# to a stock serve and §7.4's "identical extension residency" rule could not
+# see the one lane whose whole point is a custom decoder.
+TESSERA_EXTENSION_BASENAMES = ("tessera_nvfp4",)
 EXTENSION_PATTERN = re.compile(
     r"prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|"
-    r"causal_conv1d|fla")
+    r"causal_conv1d|fla|"
+    + r"|".join(re.escape(name) for name in TESSERA_EXTENSION_BASENAMES))
 
 #: Packages whose version pins the numeric stack.
 TRACKED_PACKAGES = (

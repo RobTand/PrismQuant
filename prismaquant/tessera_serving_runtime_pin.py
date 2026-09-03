@@ -113,9 +113,13 @@ _REQUIRED_MEMBERS = {
     "version_is_release",
     "runtime_contract_schema",
     "plugin_entry_point",
+    "serving_extension_basenames",
 }
 _FULL_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _VERSION_RE = re.compile(r"[0-9]+(?:[.][0-9]+)*(?:[A-Za-z0-9.+-]*)?")
+#: A JIT extension basename is a Python module name, and the loaded `.so` is
+#: that name plus a build identity suffix, so the pin declares the PREFIX.
+_EXTENSION_BASENAME_RE = re.compile(r"[a-z][a-z0-9_]*")
 
 
 class TesseraServingRuntimePinError(ValueError):
@@ -131,6 +135,18 @@ class TesseraServingRuntimePin:
     version_is_release: bool
     runtime_contract_schema: str
     plugin_entry_point: str
+    #: Basename PREFIXES of the CUDA extensions the released plugin loads into
+    #: a serving process, e.g. ``("tessera_nvfp4",)`` for the span-2 NVFP4
+    #: decoder that ``tessera.serving.ext`` JIT-builds as
+    #: ``tessera_nvfp4_<build identity>.so``.  This is the reproducibility
+    #: contract's half of the pin, not the admission half: §7.4 says an A/B's
+    #: arms must have identical extension residency, and a lane whose `.so` no
+    #: fingerprint pattern matches reports "nothing resident" -- a serve
+    #: running Tessera's own native decode looking exactly like a stock serve.
+    #: ``tools/serve_fingerprint.py`` is stdlib-only and cannot read this file
+    #: from inside a serving container, so it carries the same tuple and
+    #: ``tests/test_tessera_serve_fingerprint.py`` refuses any disagreement.
+    serving_extension_basenames: tuple[str, ...]
 
     @property
     def commit_is_resolved(self) -> bool:
@@ -212,6 +228,16 @@ def parse_tessera_serving_runtime_pin(
             f"{TESSERA_SERVING_PLUGIN_NAME!r} vllm.general_plugins entry "
             "point the released runtime registers"
         )
+    basenames = payload["serving_extension_basenames"]
+    if (not isinstance(basenames, (list, tuple)) or not basenames
+            or not all(isinstance(name, str)
+                       and _EXTENSION_BASENAME_RE.fullmatch(name)
+                       for name in basenames)):
+        raise TesseraServingRuntimePinError(
+            f"{where}: serving_extension_basenames must be a non-empty list "
+            "of lowercase module-name prefixes naming the CUDA extensions the "
+            "released plugin loads into a serving process"
+        )
     return TesseraServingRuntimePin(
         schema=str(payload["schema"]),
         repository=str(payload["repository"]),
@@ -220,6 +246,7 @@ def parse_tessera_serving_runtime_pin(
         version_is_release=released,
         runtime_contract_schema=str(payload["runtime_contract_schema"]),
         plugin_entry_point=entry_point,
+        serving_extension_basenames=tuple(str(n) for n in basenames),
     )
 
 

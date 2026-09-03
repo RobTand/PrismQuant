@@ -46,14 +46,26 @@ SPEC_DEFAULT_PRIORITY = 1000
 # ---------------------------------------------------------------------------
 # Export lanes (EXPORT_CONTAINER vocabulary)
 # ---------------------------------------------------------------------------
-EXPORT_LANES = ("compressed-tensors", "gguf")
-# "nvfp4_cb" was the third lane until 2026-09-02, when the Gridbook codebook
-# lane was retired (archive/gridbook_lane_2026-09-02/). A spec that still
-# names it now fails to load, loudly, which is the intent: a lane declaration
-# is a promise that a runtime serves those bytes, and none does. Tessera is
-# deliberately NOT added here by this removal: this tuple is the
-# EXPORT_CONTAINER vocabulary, and `run-pipeline.sh` has no tessera container
-# arm (debt D33 -- no exporter codec). Admission lands with the pin.
+EXPORT_LANES = ("compressed-tensors", "gguf", "tessera")
+# "nvfp4_cb" was a lane until 2026-09-02, when the Gridbook codebook lane was
+# retired (archive/gridbook_lane_2026-09-02/). A spec that still names it now
+# fails to load, loudly, which is the intent: a lane declaration is a promise
+# that a runtime serves those bytes, and none does.
+#
+# "tessera" is the third sanctioned container (Rob, 2026-09-02: the sanctioned
+# lanes are compressed-tensors, GGUF and Tessera). The removal commit left it
+# out on the grounds that this tuple is the EXPORT_CONTAINER vocabulary and
+# `run-pipeline.sh` had no tessera arm; that arm now exists (the
+# `EXPORT_CONTAINER=tessera` block, which drives the pinned Tessera release's
+# own plan translator and exporter rather than vendoring either), so the
+# vocabulary and the driver agree again.
+#
+# Being IN this vocabulary is not permission to build: `require_lane_supported`
+# still refuses an architecture that does not DECLARE the lane, and the tessera
+# arm additionally refuses until the Tessera serving pin names a reviewed
+# release (RobTand/tessera#17). What this entry buys is that the refusal is the
+# pin's, spoken where an operator can act on it, instead of "unknown export
+# lane" from a vocabulary check three layers up.
 DEFAULT_EXPORT_LANE = "compressed-tensors"
 # The serving-profile side spells the native lane with an underscore
 # (`serving_profile_specs/vllm_packed_moe.json` -> export_lane.id

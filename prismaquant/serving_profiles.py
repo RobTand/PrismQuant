@@ -1426,10 +1426,33 @@ def check_serving_shape(
     out_features: int,
     packed_expert: bool | None = None,
 ) -> ServingFormatDecision:
+    """Shape legality under a target profile.  FAILS CLOSED on an unknown id.
+
+    ``profile_id=None`` still resolves to ``research`` -- that is the declared
+    default and it loads, so nothing about the historical call shape changes.
+    What changed on 2026-09-02 is the case where a *named* profile does not
+    exist: this used to catch ``FileNotFoundError`` and silently substitute
+    ``research``, whose shape rules permit everything.  Its two siblings both
+    fail closed already (``serving_lane_route`` resolves no lane,
+    ``serving_lane_catalog`` returns ``{}``, ``check_serving_format`` returns
+    ``profile_mismatch``), so a gate that could not identify the profile
+    answered "legal" while the gates either side of it answered "unknown".
+
+    That is not a hypothetical: ten of the archived CB load-gate tests passed
+    against a profile id that no longer existed, asserting a gate that could
+    not refuse -- a tautology wearing a gate's docstring
+    (``tests/test_serving_lane_metadata.py``'s deletion note).  The refusal is
+    spelled exactly like ``check_serving_format``'s so a caller that already
+    branches on ``profile_mismatch`` needs no new case.
+    """
     try:
         profile = load_serving_profile(profile_id)
     except FileNotFoundError:
-        profile = load_serving_profile("research")
+        return ServingFormatDecision(
+            False,
+            "profile_mismatch",
+            f"unknown target profile {profile_id!r}",
+        )
     return profile.check_shape(
         fmt,
         qname=qname,

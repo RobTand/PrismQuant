@@ -132,6 +132,22 @@ if [[ "$EXPORT_CONTAINER" == "nvfp4_cb" ]]; then
   echo "[pipeline] ERROR: EXPORT_CONTAINER=nvfp4_cb is RETIRED. The Gridbook codebook serving lane was removed on 2026-09-02; see archive/gridbook_lane_2026-09-02/README.md. Use compressed-tensors, gguf, or the Tessera lane." >&2
   exit 2
 fi
+# Tessera lane knobs. TESSERA_REPO is where the pinned release's checkout
+# lives: PrismaQuant NAMES Tessera's own plan translator and exporter rather
+# than vendoring either (the same "named, not copied" boundary
+# lane_specs/tessera.json already uses for the serve script and the route
+# census), because a wire recipe with two homes is how the two halves of one
+# format drift apart. TESSERA_SERVE_MODE is the plugin's single operator knob
+# and is DECLARED rather than defaulted silently: it changes the footprint the
+# artifact occupies and is folded into vLLM's compile-cache key.
+: "${TESSERA_REPO:=/home/rob/tessera}"
+: "${TESSERA_SERVE_MODE:=resident}"
+# `as-allocated` plans exactly the units the allocation names and spells every
+# other body Linear BF16 explicitly. `broadcast-by-role` EXTRAPOLATES a
+# single-layer allocation to every depth and stamps itself as an
+# extrapolation; it is never the default, because silence must not become a
+# 4-bit rung.
+: "${TESSERA_PLAN_COVER:=as-allocated}"
 if [[ "$EXPORT_CONTAINER" == "gguf" ]]; then
   : "${ACTIVATION_ROWS_LIMIT:=1024}"
 else
@@ -359,6 +375,52 @@ if [[ "$EXPORT_CONTAINER" == "gguf" ]]; then
     echo "[pipeline] ERROR: EXPORT_CONTAINER=gguf resolves the serving profile to '${TARGET_PROFILE_RESOLVED}', not gguf (the exporter hard-fails on non-GGUF formats in the assignment). Declare default_serving_profile=gguf in the architecture spec, or set TARGET_PROFILE=gguf." >&2
     exit 2
   fi
+fi
+
+# Tessera lane consistency gates. Three refusals, cheapest first, and every
+# one of them is a fact read from the pinned runtime's own published table
+# rather than a belief held here (principle 14):
+#
+#   * the checkpoint's structure must be one the packaged contract declares
+#     (it declares `dense` and carries no routed_moe cell, because no served
+#     measurement covers routed experts);
+#   * lane_specs/tessera.json's `served_activation_quantization.executes` must
+#     EQUAL what the contract's formats[] rows imply;
+#   * the pinned Tessera serving runtime must be an exact reviewed release.
+#
+# The third one refuses every run today, and it is the ONLY thing that does:
+# there is no Tessera release tag (RobTand/tessera#17). That is the honest
+# state of the lane, said here where an operator can act on it, instead of
+# `unknown export lane` from a vocabulary check three layers up.
+if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
+  if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH"; then
+    exit 2
+  fi
+  for _tessera_tool in experiments/plan_from_layer_config.py \
+                      experiments/export_tessera_serving.py; do
+    if [[ ! -f "${TESSERA_REPO%/}/${_tessera_tool}" ]]; then
+      echo "[pipeline] ERROR: EXPORT_CONTAINER=tessera: ${TESSERA_REPO%/}/${_tessera_tool} does not exist. This repository names Tessera's own tools instead of vendoring them; point TESSERA_REPO at the checkout of the pinned release." >&2
+      exit 2
+    fi
+  done
+  case "$TESSERA_SERVE_MODE" in
+    resident|streamed) ;;
+    *)
+      echo "[pipeline] ERROR: TESSERA_SERVE_MODE must be 'resident' or 'streamed' (the two residencies the packaged contract's cells receipt); got '${TESSERA_SERVE_MODE}'." >&2
+      exit 2
+      ;;
+  esac
+  # Checked here and not only by the translator's argparse `choices`, because
+  # the translator does not run until the export stage: a typo would otherwise
+  # cost the whole probe/cost/render run before anything refused it, and
+  # refusing before GPU hours is this block's entire purpose.
+  case "$TESSERA_PLAN_COVER" in
+    as-allocated|broadcast-by-role) ;;
+    *)
+      echo "[pipeline] ERROR: TESSERA_PLAN_COVER must be 'as-allocated' or 'broadcast-by-role'; got '${TESSERA_PLAN_COVER}'." >&2
+      exit 2
+      ;;
+  esac
 fi
 
 # NVFP4-CB / FP8-CB codebook lane consistency gates (docs/lanes/nvfp4-cb/
@@ -1062,6 +1124,7 @@ STAGE_SETTINGS_ENV=(
   "VALIDATED_FRONTIER_CALIB_REPEATS=$VALIDATED_FRONTIER_CALIB_REPEATS"
   "VALIDATED_FRONTIER_CALIB_SKIP_FIRST=$VALIDATED_FRONTIER_CALIB_SKIP_FIRST"
   "VALIDATED_FRONTIER_KL_SCOPE=$VALIDATED_FRONTIER_KL_SCOPE"
+  "TESSERA_PLAN_COVER=$TESSERA_PLAN_COVER"
   "${RENDER_ENV_SETTINGS[@]}"
 )
 STAGE_SETTINGS_ARGS=()
@@ -2263,6 +2326,69 @@ print(f"[pipeline] [3c] additivity stamped into {cost_path}: "
       f"residual={add['residual']} z={add['residual_z']}")
 PY
   fi
+fi
+
+if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
+  # Tessera lane: one blob per vLLM module on the Tessera wire, served by
+  # Tessera's OWN vLLM plugin (package `tessera.serving`, entry point under
+  # vllm.general_plugins, quant_method "tessera"). There is no enable flag --
+  # the checkpoint selects the plugin -- and the one operator knob is
+  # TESSERA_SERVE_MODE.
+  #
+  # TWO CALLS OUT, ZERO CODECS IN. The layer_config -> plan translation and
+  # the encode both live in the Tessera repository and are NAMED here, never
+  # copied: `plan_from_layer_config.py` is the only place the
+  # `TESSERA_<BASE>_K<arity>_R<rung>` spelling is turned into the exporter's
+  # (grid, q256), and `export_tessera_serving.py` is the only place the wire
+  # is written. A second copy of either in this repository would be a second
+  # place a wire recipe can drift, which is exactly what the producer/consumer
+  # boundary exists to prevent. The lane preflight above has already refused
+  # if TESSERA_REPO does not hold both.
+  TESSERA_PLAN="${WORK_DIR}/artifacts/tessera_plan.json"
+  require_stage_settings "$TESSERA_PLAN" tessera-plan
+  if [[ ! -f "$TESSERA_PLAN" ]]; then
+    echo "[pipeline] [4/4] translating layer_config.json -> Tessera plan (cover=${TESSERA_PLAN_COVER}) ..."
+    # Write-then-rename: a crashed translation must not leave a partial plan
+    # that the skip-gate above then trusts.
+    python3 "${TESSERA_REPO%/}/experiments/plan_from_layer_config.py" \
+      "${WORK_DIR}/artifacts/layer_config.json" \
+      "$MODEL_PATH" \
+      "${TESSERA_PLAN}.tmp" \
+      --cover "$TESSERA_PLAN_COVER" \
+      --prismaquant "$PIPELINE_SCRIPT_DIR/.." \
+      2>&1 | tee "${WORK_DIR}/logs/tessera_plan.log"
+    mv "${TESSERA_PLAN}.tmp" "$TESSERA_PLAN"
+    # The translator writes `<out>.provenance.json` beside the plan: the
+    # source path, the allocation's own __prismaquant__ block, the coverage
+    # decision, and the per-unit shape/rung/wire-bytes table an export is
+    # checked against. It moves with the plan, not after it. An explicit `if`
+    # rather than `[[ ... ]] &&` because a false test would be this block's
+    # exit status under `set -e`.
+    if [[ -f "${TESSERA_PLAN}.tmp.provenance.json" ]]; then
+      mv "${TESSERA_PLAN}.tmp.provenance.json" "${TESSERA_PLAN}.provenance.json"
+    fi
+  else
+    echo "[pipeline] [4/4] Tessera plan exists, skipping"
+  fi
+
+  echo "[pipeline] [4/4] exporting to the Tessera wire ..."
+  python3 "${TESSERA_REPO%/}/experiments/export_tessera_serving.py" \
+    "$MODEL_PATH" "${WORK_DIR}/exported" \
+    --plan-json "$TESSERA_PLAN" \
+    --device "$EXPORT_DEVICE" \
+    2>&1 | tee "${WORK_DIR}/logs/export.log"
+
+  echo
+  echo "[pipeline] done."
+  echo "  Artifact: ${WORK_DIR}/exported"
+  # The build lane OPENS the ship record; the serve lane CLOSES it (R13). The
+  # gates are named, not run here: they need a fresh vLLM container with the
+  # pinned plugin editable-installed, and both residencies, because the two
+  # modes decode the same bytes by different paths.
+  echo "  Serve:       TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE} bash ${TESSERA_REPO%/}/experiments/tessera_plugin_served.sh ${WORK_DIR}/exported <arm> ${TESSERA_SERVE_MODE}"
+  echo "  Route census: python ${TESSERA_REPO%/}/tools/tessera_route_census.py --log <serve.log>"
+  echo "  Open gates:  python -m prismaquant.lane_spec --lane tessera"
+  exit 0
 fi
 
 if [[ "$EXPORT_CONTAINER" == "gguf" ]]; then

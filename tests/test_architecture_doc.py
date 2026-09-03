@@ -167,12 +167,14 @@ def _documented_lane_claim(
     )
     assert match is not None
 
-    aliases = {
-        "CT": "compressed-tensors",
-        "compressed-tensors": "compressed-tensors",
-        "nvfp4_cb": "nvfp4_cb",
-        "gguf": "gguf",
-    }
+    # Derived from EXPORT_LANES, not re-typed: this table listed the retired
+    # `nvfp4_cb` and not `tessera` for a day after the vocabulary moved, so a
+    # correct §8.4 cell failed while a stale one passed. One spelling alias
+    # (the table's shorthand for the native lane) is declared on top.
+    from prismaquant.model_profiles.structure import EXPORT_LANES
+
+    aliases = {lane: lane for lane in EXPORT_LANES}
+    aliases["CT"] = "compressed-tensors"
     documented_lanes = tuple(part.strip() for part in match.group(1).split(","))
     unknown = tuple(lane for lane in documented_lanes if lane not in aliases)
     _assert_84_cell(

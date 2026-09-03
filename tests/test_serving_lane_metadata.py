@@ -163,14 +163,50 @@ def test_profiles_without_a_declared_lane_return_none():
 # tests exist to check has no subject.  The laneless case is still covered
 # end to end by test_selection_json_carries_the_p5a_and_p5b_provenance below.
 #
-# ONE live assertion went with them and is now untested anywhere:
-# test_selection_provenance_reads_the_route_off_the_chosen_candidate also
-# pinned the ``activation_pricing_branches`` stamping for an expanded member
-# with no candidate of its own (``branches["unrecorded"] == 1``, total == 3).
-# That code path (prismaquant/allocator_candidates.py, the branch_counts
-# accumulation behind "activation_pricing_branches") is profile independent
-# and still works under ``research``; it is left un-re-homed here rather than
-# smuggled into a renamed test.
+# ONE live assertion went with them: test_selection_provenance_reads_the_route
+# _off_the_chosen_candidate also pinned the ``activation_pricing_branches``
+# stamping for an expanded member with no candidate of its own
+# (``branches["unrecorded"] == 1``, total == 3).  That code path
+# (prismaquant/allocator_candidates.py, the branch_counts accumulation behind
+# "activation_pricing_branches") is profile independent and still works under
+# ``research``, so it is RE-HOMED below rather than smuggled into a renamed
+# test -- as its own test, against the function directly, with no CB profile
+# in the frame.
+
+
+def test_a_unit_with_no_candidate_is_stamped_unrecorded_not_omitted():
+    """``activation_pricing_branches`` must account for every selected unit.
+
+    An expanded member of an aggregated super item has no ``Candidate`` of its
+    own, so nothing recorded which estimator priced its activation side.  The
+    honest answer is the ``unrecorded`` bucket: a census that silently dropped
+    those rows would make the branch histogram sum to fewer units than the
+    assignment, and "no row" would read as "no activation cost" -- the same
+    absence-as-evidence error ``units_without_declared_lane`` exists to stop.
+
+    This is the assertion that rode the deleted CB test above; it is profile
+    independent, so it is pinned here against ``research``.
+    """
+    from prismaquant.allocator_candidates import (
+        selection_serving_lane_provenance,
+    )
+
+    assignment = {
+        "model.layers.0.mlp.gate_proj": "NVFP4",
+        "model.layers.0.mlp.up_proj": "NVFP4",
+        "model.layers.0.mlp.down_proj": "FP8_E4M3",
+    }
+    report = selection_serving_lane_provenance(
+        assignment, candidates=None, target_profile="research")
+
+    branches = report["activation_pricing_branches"]
+    assert branches == {"unrecorded": 3}
+    assert sum(branches.values()) == report["units_total"] == len(assignment)
+    # `research` declares no lane, so the route census says so rather than
+    # reporting a clean bill.
+    assert report["units_without_declared_lane"] == len(assignment)
+    assert report["route_status_counts"] == {"no_declared_lane": 3}
+    assert report["route_status_attested"] is False
 
 
 # ---------------------------------------------------------------------------
