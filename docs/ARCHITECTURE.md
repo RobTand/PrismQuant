@@ -168,10 +168,16 @@ screen ships honestly unmeasured (`output_mse_measured=False`) for grouped
 units because the dense screen mis-models the contraction. No shipped artifact
 changes: the DSpark sidecar contract keeps all three `wo_a` bases on
 source-FP8 W8A16 (`dspark_cb_expected_physical_targets`), CB export still
-refuses grouped operands, and the W8A16 handoff's frozen source closure now
-names three drifted files (`model_profiles/base.py`,
-`model_profiles/deepseek_v4.py`, `specs/deepseek_v4.json`) that require a
-reviewed re-freeze before the next handoff verification passes.
+refuses grouped operands, and and the W8A16 handoff's frozen source closure
+drifted on three files (`model_profiles/base.py`,
+`model_profiles/deepseek_v4.py`, `specs/deepseek_v4.json`), which are
+re-frozen in this stack with the review recorded in
+`dsv4_w8a16_export_handoff.py` (spec data-only, `deepseek_v4.py`
+docstring-only by whole-module AST, `base.py` one added accessor with zero
+existing bodies changed; no exporter, completeness, decode-source or
+footprint consumer reads either declaration). `wo_a` becoming an allocator
+decision means the 92 GB budget split must be re-checked on the next DSv4
+export rather than inherited.
 
 Re-stamped (2026-08-29, `rescue/walker-export-gate`) for
 **the discovery walker as a fail-closed export gate** (§8.8,
