@@ -22,7 +22,8 @@ APPROVED_RESOURCE_OWNERS: dict[str, frozenset[str]] = {
     "rendered_weights": frozenset({"ProductionWeightCache"}),
     "perturbed_activations": frozenset({"PerturbedActivationCache"}),
     # layer_streaming.LayerCache is the real streaming-weight owner
-    # (layer_streaming.py:1253). The former placeholder names
+    # (`class LayerCache` in layer_streaming.py; the cite carried a line
+    # number that had already drifted). The former placeholder names
     # (StreamingActivationCache / StreamingModelPrefetch) were never
     # implemented anywhere in the tree and were deleted with re-vet R5/D10.
     "streaming_model_weights": frozenset({"LayerCache"}),
