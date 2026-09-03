@@ -64,7 +64,7 @@ import subprocess
 import time
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 SCHEMA = "prismaquant.shipcard/1"
 
@@ -81,6 +81,16 @@ REQUIRED_SLOTS: tuple[str, ...] = (
 
 #: The byte-matched uniform control's verdict (RobTand/prismaquant#121).
 UNIFORM_CONTROL_SLOT = "uniform_control"
+
+#: The priced-vs-served route census verdict (PrismaQuant #136).  Tessera's
+#: plugin stamps which decoder ran on every route record, and a serve whose
+#: extension did not build keeps serving on a named substitute -- so a KL
+#: priced as TESSERA_NVFP4 but measured on torch_materialize_stock is a
+#: different number wearing the right name.  The slot carries the priced
+#: routes, the served records and the known substitute set, and `verify`
+#: replays the comparison from those carried values rather than trusting the
+#: carried boolean.
+ROUTE_CENSUS_SLOT = "route.census"
 
 #: Claims that can be attached to an already exported artifact.  Missing/null
 #: claims remain non-blocking for target-only artifacts, but every non-null
@@ -112,7 +122,7 @@ OPTIONAL_SLOTS: tuple[str, ...] = (UNIFORM_CONTROL_SLOT,)
 #: here is REFUSED by :func:`lane_gate_slots` rather than silently dropped, and
 #: admitting it is one edit here plus the verifier that replays it
 #: (RobTand/prismaquant#162).
-LANE_SCOPED_SLOTS: tuple[str, ...] = ("route.census",)
+LANE_SCOPED_SLOTS: tuple[str, ...] = (ROUTE_CENSUS_SLOT,)
 
 #: The vocabulary accepted by :func:`make_record`.  Whether a member is
 #: required is artifact-specific and is resolved by :func:`required_slots`.
@@ -1629,6 +1639,13 @@ def verify(
             problems.extend(_verify_uniform_control_record(
                 slot, record, card=card, model_dir=model_dir))
             continue
+        if slot == ROUTE_CENSUS_SLOT:
+            # Routed PAST the generic `passed` check for the same reason:
+            # the verdict lives in the carried route records, and the
+            # verifier below replays the priced-vs-served comparison from
+            # them, so a hand-set flag buys nothing.
+            problems.extend(_verify_route_census_record(slot, record))
+            continue
         if record.get("passed") is not True:
             problems.append(
                 f"{slot}: FAILED — {record.get('detail') or 'no detail'}")
@@ -2770,6 +2787,126 @@ def unfilled_slots(
         for slot in required_slots(card, model_dir=model_dir)
         if not slots.get(slot)
     ]
+
+
+# ---------------------------------------------------------------------------
+# The priced-vs-served route census receipt (#136)
+# ---------------------------------------------------------------------------
+def make_route_census_record(
+    *,
+    tool: str,
+    model_sha: str | None,
+    priced_routes: Sequence[str],
+    route_records: Sequence[Mapping[str, Any]],
+    substitute_decoders: Sequence[str],
+    serve_fingerprint: str | None = None,
+    git_commit: str | None = None,
+) -> dict[str, Any]:
+    """Close `route.census` from the priced routes and the served records.
+
+    The comparison runs HERE, at fill time, and its verdict is what the
+    record carries -- but `verify` replays it from the carried values
+    (`_verify_route_census_record`), so filling a `passed=true` over
+    substitute-decoder records still refuses at publication.
+    """
+    from prismaquant.tessera_route_receipt import check_route_receipt
+
+    verdict = check_route_receipt(
+        priced_routes=list(priced_routes),
+        route_records=[dict(row) for row in route_records],
+        substitute_decoders=list(substitute_decoders),
+    )
+    return make_record(
+        slot=ROUTE_CENSUS_SLOT,
+        tool=tool,
+        passed=bool(verdict["passed"]),
+        model_sha=model_sha,
+        metrics={
+            "n_records": verdict["n_records"],
+            "n_served_routes": len(verdict["served_routes"]),
+            "n_substitute_hits": len(verdict["substitute_hits"]),
+        },
+        detail=verdict["detail"],
+        serve_fingerprint=serve_fingerprint,
+        git_commit=git_commit,
+        extra={
+            "priced_routes": verdict["priced_routes"],
+            "route_records": [
+                {"route": row["route"], "decoder": row["decoder"],
+                 "count": row["count"]}
+                for row in parse_route_records_for_card(route_records)
+            ],
+            "served_routes": verdict["served_routes"],
+            "served_decoders": verdict["served_decoders"],
+            "substitute_decoders": sorted(set(substitute_decoders)),
+        },
+    )
+
+
+def parse_route_records_for_card(
+    route_records: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """The carried rows in canonical form (parse once, replay forever)."""
+    from prismaquant.tessera_route_receipt import parse_route_records
+
+    return parse_route_records(list(route_records),
+                               where="route.census route_records")
+
+
+def _verify_route_census_record(
+    slot: str,
+    record: Mapping[str, Any],
+) -> list[str]:
+    """Replay the priced-vs-served comparison from the carried values."""
+    from prismaquant.tessera_route_receipt import (
+        TesseraRouteReceiptError,
+        check_route_receipt,
+    )
+
+    problems: list[str] = []
+    priced = record.get("priced_routes")
+    rows = record.get("route_records")
+    substitutes = record.get("substitute_decoders")
+    if not isinstance(priced, list) or not priced:
+        problems.append(
+            f"{slot}: record carries no priced_routes; the receipt must say "
+            "which routes the artifact priced")
+    if not isinstance(rows, list) or not rows:
+        problems.append(
+            f"{slot}: record carries no route_records; an absent census is "
+            "not a clean bill")
+    if not isinstance(substitutes, list) or not substitutes:
+        problems.append(
+            f"{slot}: record carries no substitute_decoders; a gate that "
+            "knows no substitute detects nothing")
+    if problems:
+        return problems
+    try:
+        verdict = check_route_receipt(
+            priced_routes=priced,
+            route_records=rows,
+            substitute_decoders=substitutes,
+        )
+    except TesseraRouteReceiptError as exc:
+        return [f"{slot}: carried census is malformed: {exc}"]
+    if not verdict["passed"]:
+        problems.append(f"{slot}: FAILED — {verdict['detail']}")
+    if record.get("passed") is not True and verdict["passed"]:
+        problems.append(
+            f"{slot}: record carries passed={record.get('passed')!r} but "
+            "its own records replay to agreement; re-fill the slot")
+    if record.get("passed") is True and not verdict["passed"]:
+        problems.append(
+            f"{slot}: record claims passed=true but its own records replay "
+            f"to refusal: {verdict['detail']}")
+    for key, carried_key in (("served_routes", "served_routes"),
+                             ("served_decoders", "served_decoders")):
+        if record.get(carried_key) != verdict[key]:
+            problems.append(
+                f"{slot}: carried {carried_key} "
+                f"{record.get(carried_key)!r} disagrees with the replay "
+                f"{verdict[key]!r}")
+    return problems
 
 
 def required_slots(

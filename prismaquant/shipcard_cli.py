@@ -28,6 +28,7 @@ from pathlib import Path
 from prismaquant.shipcard import (
     GOLD_SLOTS,
     OPTIONAL_SLOTS,
+    ROUTE_CENSUS_SLOT,
     UNIFORM_CONTROL_METRIC_KEYS,
     UNIFORM_CONTROL_SLOT,
     _verify_gold_record,
@@ -37,6 +38,7 @@ from prismaquant.shipcard import (
     fill_slot,
     load_shipcard,
     make_record,
+    make_route_census_record,
     make_uniform_control_record,
     record_uniform_control_override,
     required_slots,
@@ -336,6 +338,70 @@ def _cmd_fill_control(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_fill_route_census(args: argparse.Namespace) -> int:
+    """Close `route.census` from the priced routes and the served records."""
+    from prismaquant.tessera_route_receipt import (
+        TesseraRouteReceiptError,
+        substitute_decoders_from_contract_answer,
+    )
+
+    model_dir = args.model_dir or str(Path(args.shipcard).resolve().parent)
+    try:
+        records = json.loads(Path(args.census).read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[shipcard] ERROR: cannot read census rows from "
+              f"{args.census}: {exc}", file=sys.stderr)
+        return 2
+    substitutes = list(args.substitute_decoder or ())
+    if not substitutes:
+        try:
+            from prismaquant import tessera_runtime_contract as trc
+
+            contract = trc.load_tessera_contract()
+            if contract is not None:
+                substitutes = list(
+                    substitute_decoders_from_contract_answer(
+                        trc.contract_answer(contract)))
+        except trc.TesseraContractError as exc:
+            print(f"[shipcard] ERROR: {exc}", file=sys.stderr)
+            return 2
+    if not substitutes:
+        print("[shipcard] ERROR: no substitute decoder is known -- pass "
+              "--substitute-decoder explicitly (repeatable) or set "
+              "PRISMAQUANT_TESSERA_DEV_PIN so the pinned contract answer "
+              "can be read. A gate that knows no substitute detects "
+              "nothing.", file=sys.stderr)
+        return 2
+    try:
+        record = make_route_census_record(
+            tool=args.tool or f"route-census:{Path(args.census).name}",
+            model_sha=compute_model_sha(model_dir),
+            priced_routes=list(args.priced_route),
+            route_records=records,
+            substitute_decoders=substitutes,
+        )
+    except TesseraRouteReceiptError as exc:
+        print(f"[shipcard] REFUSED: {args.census} cannot be a census "
+              f"receipt: {exc}", file=sys.stderr)
+        return 2
+    # Lane-scoped, not optional: the slot exists on cards the lane opened
+    # (`lane_shipcard open --lane tessera`).  Filling a card that never
+    # opened it is a refusal, not an auto-added key -- a slot the card does
+    # not owe is a slot the receipt does not belong on.
+    card = load_shipcard(args.shipcard)
+    if ROUTE_CENSUS_SLOT not in (card.get("slots") or {}):
+        print(f"[shipcard] REFUSED: {args.shipcard} has no "
+              f"{ROUTE_CENSUS_SLOT} slot; open a Tessera lane card first "
+              f"(python -m prismaquant.lane_shipcard open --lane tessera "
+              f"--artifact {model_dir})", file=sys.stderr)
+        return 2
+    fill_slot(args.shipcard, ROUTE_CENSUS_SLOT, record)
+    print(f"[shipcard] filled {ROUTE_CENSUS_SLOT} from {args.census} "
+          f"(passed={record['passed']})")
+    print(f"[shipcard]   {record['detail']}")
+    return 0
+
+
 def _confirm_artifact_name(model_dir: str, typed: str | None) -> str | None:
     """Re-typing the basename is the confirmation, as `publish_artifact` has it."""
     expected = Path(model_dir).resolve().name
@@ -496,6 +562,28 @@ def main(argv: list[str] | None = None) -> int:
         help="re-typed artifact directory basename (required with no tty)")
     p_override.add_argument("--model-dir", default=None)
     p_override.set_defaults(func=_cmd_override_control)
+
+    p_census = sub.add_parser(
+        "fill-route-census",
+        help="close route.census from the priced routes and the serve's "
+             "route records (Tessera lane: priced-vs-served decoder gate)",
+    )
+    p_census.add_argument("shipcard")
+    p_census.add_argument(
+        "--census", required=True,
+        help="JSON array of {route, decoder[, count]} rows as Tessera's "
+             "tools/tessera_route_census.py parses them from the serve log")
+    p_census.add_argument(
+        "--priced-route", required=True, action="append", default=[],
+        help="a route the artifact priced (repeatable, at least one)")
+    p_census.add_argument(
+        "--substitute-decoder", action="append", default=[],
+        help="a decoder a serve falls back to (repeatable; default: derived "
+             "from the pinned Tessera contract answer, which needs "
+             "PRISMAQUANT_TESSERA_DEV_PIN)")
+    p_census.add_argument("--model-dir", default=None)
+    p_census.add_argument("--tool", default=None)
+    p_census.set_defaults(func=_cmd_fill_route_census)
 
     args = ap.parse_args(argv)
     return int(args.func(args))

@@ -11,7 +11,13 @@
     {
       "module_name_prefix": "tessera_nvfp4_",
       "filename_glob": "tessera_nvfp4_*.so",
-      "match": "basename_fnmatch"
+      "match": "basename_fnmatch",
+      "when_unavailable": {
+        "resident": {"status": "substituted",
+                     "decoder": "torch_materialize_stock"},
+        "streamed": {"status": "refused",
+                     "decoder": null}
+      }
     }
   ]
 }

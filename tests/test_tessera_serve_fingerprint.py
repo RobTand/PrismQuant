@@ -103,6 +103,11 @@ def test_the_pin_transcribes_the_contracts_native_extensions_table():
     published = [
         {key: row[key] for key in
          ("module_name_prefix", "filename_glob", "match")}
+        | {"when_unavailable": {
+            mode: {"status": behaviour["status"],
+                   "decoder": behaviour["decoder"]}
+            for mode, behaviour in sorted(
+                row["when_unavailable"].items())}}
         for row in _published_rows()
     ]
     assert pin.native_extension_rows() == published
@@ -290,7 +295,14 @@ def test_the_tool_loads_its_rows_from_the_pin_file(tmp_path):
     payload["serving_native_extensions"] = [
         {"module_name_prefix": "tessera_renamed_",
          "filename_glob": "tessera_renamed_*.so",
-         "match": MATCH_BASENAME_FNMATCH},
+         "match": MATCH_BASENAME_FNMATCH,
+         # Renamed but well-formed: the loader propagates the row, and the
+         # when_unavailable block rides with it (derived from the installed
+         # contract, not typed -- the rename is what this test proves).
+         "when_unavailable": {
+             mode: dict(behaviour)
+             for mode, behaviour in sorted(
+                 _published_rows()[0]["when_unavailable"].items())}},
     ]
     renamed = tmp_path / "tessera_serving_runtime_pin.json"
     renamed.write_text(json.dumps(payload), encoding="utf-8")
@@ -419,6 +431,16 @@ def test_the_pin_requires_at_least_one_extension():
       "match": MATCH_BASENAME_FNMATCH}, "must be a lowercase module-name"),
 ])
 def test_the_pin_refuses_a_row_no_fingerprint_could_use(row, expected):
+    # Every case but the "expected exactly" one carries a well-formed
+    # when_unavailable block -- derived from the installed contract, not
+    # typed -- so the refusal under test is the named field's, not the
+    # missing fourth member's.  The "expected exactly" case keeps testing
+    # the member set itself.
+    if expected != "expected exactly":
+        row = dict(row, when_unavailable={
+            mode: dict(behaviour)
+            for mode, behaviour in sorted(
+                _published_rows()[0]["when_unavailable"].items())})
     payload = json.loads(
         tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
     payload["serving_native_extensions"] = [row]

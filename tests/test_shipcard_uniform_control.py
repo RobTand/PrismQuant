@@ -24,12 +24,14 @@ if not (pathlib.Path(__file__).resolve().parents[1] / "tools").is_dir():
 from prismaquant.shipcard import (
     GOLD_SLOTS,
     REQUIRED_SLOTS,
+    ROUTE_CENSUS_SLOT,
     UNIFORM_CONTROL_SLOT,
     build_shipcard,
     compute_model_sha,
     fill_slot,
     load_shipcard,
     make_record,
+    make_route_census_record,
     make_uniform_control_record,
     required_slots,
     uniform_control_summary,
@@ -152,7 +154,12 @@ def _artifact(tmp_path, *, name="exported", rate_axis=True):
     # one checkpoint, and the gate says so ("compared against itself").
     (model_dir / "model-00001-of-00001.safetensors").write_bytes(
         b"weights of " + name.encode())
-    card = build_shipcard(model_dir, build={"achieved_bpp": {"value": 4.0}})
+    # A rate-axis artifact is a Tessera-lane card: the lane union (not a
+    # rate-axis special case) is what opens and requires its route.census
+    # slot, so the card under test carries the lane a real tessera export
+    # opens with (`lane_shipcard open --lane tessera`).
+    card = build_shipcard(model_dir, build={"achieved_bpp": {"value": 4.0}},
+                          lane=("tessera" if rate_axis else None))
     write_shipcard(model_dir / "shipcard.json", card)
     return model_dir
 
@@ -252,6 +259,33 @@ def _fill_control(path, model_dir, *, block, arm=None, key="kl_mean"):
     return record
 
 
+def _fill_census(path, model_dir):
+    """A passing route-census receipt, so `_built` means every slot closed.
+
+    The substitute set is derived from the pinned contract answer, never
+    typed; the native decoder is synthetic, which is honest here because the
+    gate's rule is "refuse the derived substitute set", not "assert a native
+    name this repository does not publish".
+    """
+    from prismaquant.tessera_route_receipt import (
+        substitute_decoders_from_contract_answer,
+    )
+    from prismaquant.tessera_runtime_contract import TESSERA_DEV_PIN_ANSWER
+
+    record = make_route_census_record(
+        tool="test",
+        model_sha=compute_model_sha(model_dir),
+        priced_routes=["TESSERA_NVFP4"],
+        route_records=[{"route": "TESSERA_NVFP4",
+                        "decoder": "native_test_decoder", "count": 128}],
+        substitute_decoders=substitute_decoders_from_contract_answer(
+            TESSERA_DEV_PIN_ANSWER),
+    )
+    assert record["passed"] is True
+    fill_slot(path, ROUTE_CENSUS_SLOT, record)
+    return record
+
+
 def _built(tmp_path, *, candidate=_ALLOCATED_KL, control=_CONTROL_KL,
            measured=True, arm=None, rate_axis=True, key="kl_mean"):
     """An artifact with every base slot closed and one control verdict."""
@@ -263,6 +297,8 @@ def _built(tmp_path, *, candidate=_ALLOCATED_KL, control=_CONTROL_KL,
         arm=arm if arm is not None else _control_arm(control),
         key=key,
     )
+    if rate_axis:
+        _fill_census(path, model_dir)
     return model_dir, path
 
 
@@ -681,6 +717,7 @@ def test_fill_control_closes_the_slot_from_two_measurements(tmp_path):
         "--control-record", str(record_path),
         "--tool", "test",
     ]) == 0
+    _fill_census(path, model_dir)
     assert _problems(model_dir, path) == []
     assert _publish(model_dir) == 0
 

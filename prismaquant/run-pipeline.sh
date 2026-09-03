@@ -2458,6 +2458,7 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   fi
   echo "  Serve:       TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE} bash ${TESSERA_REPO%/}/experiments/tessera_plugin_served.sh ${WORK_DIR}/exported <arm> ${TESSERA_SERVE_MODE}"
   echo "  Route census: python ${TESSERA_REPO%/}/tools/tessera_route_census.py --log <serve.log>"
+  echo "  Close census: python -m prismaquant.shipcard_cli fill-route-census ${WORK_DIR}/exported/shipcard.json --census <census.json> --priced-route TESSERA_NVFP4 [...]"
   echo "  Verify:      python -m prismaquant.shipcard_cli verify ${WORK_DIR}/exported/shipcard.json"
   exit 0
 fi

@@ -41,8 +41,10 @@ constant edit alone cannot either.
 ``serving_native_extensions`` is not this repository's opinion about which
 CUDA extensions the Tessera plugin loads: since Tessera contract v7 the
 runtime publishes that itself, in ``native_extensions``, as a
-``module_name_prefix``/``filename_glob``/``match`` triple.  The pin transcribes
-it because ``tools/serve_fingerprint.py`` runs inside a serving container from
+``module_name_prefix``/``filename_glob``/``match`` triple plus the
+``when_unavailable`` block saying what a serve does when the library is
+absent.  The pin transcribes all four because
+``tools/serve_fingerprint.py`` runs inside a serving container from
 a bootstrap with no installed package and can read neither the contract nor
 this reader module -- but the pin is JSON, so the tool reads the transported
 pin file beside itself (a member of its gold-producer source closure, hence
@@ -156,11 +158,16 @@ _VERSION_RE = re.compile(r"[0-9]+(?:[.][0-9]+)*(?:[A-Za-z0-9.+-]*)?")
 #: way the runtime's ``native_extensions`` table spells them.  Verbatim, so the
 #: contract-vs-pin refusal in ``tessera_runtime_contract`` is a dict
 #: comparison over the same field names rather than a re-mapping that could
-#: itself be the drift.
+#: itself be the drift.  ``when_unavailable`` joined this set for PrismaQuant
+#: #142: a manifest that records only the basenames it *found* cannot say what
+#: an absent library *means*, so the pin transcribes the block that says it --
+#: per residency mode, the substitute decoder a serve keeps running on, or
+#: that there is no serve at all.
 _NATIVE_EXTENSION_MEMBERS = {
     "module_name_prefix",
     "filename_glob",
     "match",
+    "when_unavailable",
 }
 
 #: A JIT extension module name is a Python identifier and the loaded `.so` is
@@ -178,14 +185,19 @@ class TesseraServingRuntimePinError(ValueError):
 class TesseraServingNativeExtension:
     """One row of the runtime's ``native_extensions`` table, transcribed.
 
-    Three fields and no fourth, because these three are what a residency
-    decision is made of: WHICH module the load path builds
-    (``module_name_prefix``), WHICH filename that produces
-    (``filename_glob``), and WHICH RULE turns the glob into a decision
-    (``match``).  ``source``/``loaded_by``/``routes``/``when_unavailable`` are
-    published too and are read from the contract where they are needed; they
-    are not transcribed here, because a pin field nothing reads is a field
-    nothing keeps honest.
+    Four fields and no fifth, because these four are what a residency
+    decision -- and the reading of an ABSENT library -- is made of: WHICH
+    module the load path builds (``module_name_prefix``), WHICH filename that
+    produces (``filename_glob``), WHICH RULE turns the glob into a decision
+    (``match``), and WHAT RUNS INSTEAD when the library is absent
+    (``when_unavailable``: per residency mode, the substitute decoder a serve
+    keeps running on, or that there is no serve at all).  ``source``/
+    ``loaded_by``/``routes`` name files, modules and route ids in the
+    runtime's own tree and move nothing on this side, so they are identity and
+    stay out -- exactly like ``plugin_version`` stays out of the dev-pin
+    answer -- while ``when_unavailable`` is read by ``tools/kl_ab.py``'s §7.4
+    refusal (PrismaQuant #142), which is why it is transcribed here rather
+    than merely read from the contract where it is needed.
     """
 
     #: The constant Tessera's JIT load path itself passes to
@@ -202,6 +214,13 @@ class TesseraServingNativeExtension:
     #: BASENAME of a mapped ``.so``.  A substring search over the whole mapped
     #: path is a DIFFERENT predicate and only one of them is the runtime's.
     match: str
+    #: Per residency mode, what a serve does when the library is absent, e.g.
+    #: ``{"resident": {"status": "substituted",
+    #: "decoder": "torch_materialize_stock"}, "streamed": {"status":
+    #: "refused", "decoder": None}}``.  Stored as a plain
+    #: ``{mode: {"status": str, "decoder": str | None}}`` mapping, modes in
+    #: sorted order, so the transcription compares field for field.
+    when_unavailable: Mapping[str, Mapping[str, str | None]]
 
     def as_contract_row(self) -> dict:
         """The row as the contract spells it, for a field-level comparison."""
@@ -209,6 +228,11 @@ class TesseraServingNativeExtension:
             "module_name_prefix": self.module_name_prefix,
             "filename_glob": self.filename_glob,
             "match": self.match,
+            "when_unavailable": {
+                mode: {"status": behaviour["status"],
+                       "decoder": behaviour["decoder"]}
+                for mode, behaviour in sorted(self.when_unavailable.items())
+            },
         }
 
 
@@ -397,10 +421,48 @@ def parse_tessera_serving_runtime_pin(
                 "rule's predicate. The rule is a value because a consumer "
                 "cannot otherwise tell a stem from a prefix from a pattern."
             )
+        when = row["when_unavailable"]
+        if not isinstance(when, Mapping) or not when:
+            raise TesseraServingRuntimePinError(
+                f"{at}.when_unavailable must be a non-empty object keyed by "
+                "residency mode, transcribing the runtime contract's "
+                "native_extensions table: it says what a serve does when "
+                "this library is absent, which is what makes an absent .so "
+                "readable"
+            )
+        behaviours: dict[str, dict[str, str | None]] = {}
+        for mode, behaviour in when.items():
+            bat = f"{at}.when_unavailable[{mode!r}]"
+            if not isinstance(mode, str) or not mode:
+                raise TesseraServingRuntimePinError(
+                    f"{at}.when_unavailable keys must be non-empty residency "
+                    f"mode names, got {mode!r}")
+            if not isinstance(behaviour, Mapping):
+                raise TesseraServingRuntimePinError(
+                    f"{bat} must be an object with 'status' and 'decoder'")
+            for member in ("status", "decoder"):
+                if member not in behaviour:
+                    raise TesseraServingRuntimePinError(
+                        f"{bat} publishes no {member!r}")
+            status = behaviour["status"]
+            decoder = behaviour["decoder"]
+            if not isinstance(status, str) or not status:
+                raise TesseraServingRuntimePinError(
+                    f"{bat}.status must be a non-empty string, "
+                    f"got {status!r}")
+            if decoder is not None and (
+                    not isinstance(decoder, str) or not decoder):
+                raise TesseraServingRuntimePinError(
+                    f"{bat}.decoder must be a decoder name or null, "
+                    f"got {decoder!r}")
+            behaviours[str(mode)] = {"status": str(status),
+                                     "decoder": (None if decoder is None
+                                                 else str(decoder))}
         extensions.append(TesseraServingNativeExtension(
             module_name_prefix=prefix,
             filename_glob=glob,
             match=rule,
+            when_unavailable=behaviours,
         ))
     return TesseraServingRuntimePin(
         schema=str(payload["schema"]),

@@ -98,7 +98,14 @@ def released_pin(tmp_path, monkeypatch):
         "serving_native_extensions": [
             {"module_name_prefix": "tessera_nvfp4_",
              "filename_glob": "tessera_nvfp4_*.so",
-             "match": "basename_fnmatch"},
+             "match": "basename_fnmatch",
+             # A synthetic released pin, not a transcription of the runtime:
+             # the release gate under test reads commit/version, never this
+             # block.  It carries the contracted shape so the fixture parses.
+             "when_unavailable": {
+                 "resident": {"status": "substituted",
+                              "decoder": "torch_materialize_stock"},
+                 "streamed": {"status": "refused", "decoder": None}}},
         ],
     }
     path = tmp_path / "released_pin.json"

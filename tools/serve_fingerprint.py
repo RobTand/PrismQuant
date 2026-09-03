@@ -22,6 +22,12 @@ This module makes the stack an object:
 * `fingerprint()` = sha256 of the canonical JSON of the manifest **minus argv
   paths**, so two artifacts served the same way share a fingerprint (an A/B
   needs that) while a changed image / extension set / eager flag does not.
+* `native_extension_status` records, per pinned native-extension row, whether
+  the scan found the library plus the row's `when_unavailable` block, so a
+  §7.4 refusal can name the substitute decoder a serve without the library
+  ran on (PrismaQuant #142). It is a deterministic projection of
+  `resident_extensions` and is excluded from both fingerprints, so manifests
+  written before it compare unchanged.
 
 CLI (run inside the serving container, after READY):
 
@@ -186,6 +192,17 @@ MATCH_BASENAME_FNMATCH = "basename_fnmatch"
 # `/root/.cache/torch_extensions/tessera_nvfp4_9f2c/unrelated.so`. Then the
 # rows were carried here as a constant, refused only by the test suite on the
 # tree the snapshot came from -- which is the hole this read closes.
+#
+# Since PrismaQuant #142 each row also carries the contract's
+# `when_unavailable` block -- per residency mode, the substitute decoder a
+# serve keeps running on when this library is absent, or that there is no
+# serve at all. The manifest's `native_extension_status` projects these rows
+# against what the scan found, so a §7.4 refusal names the substitute instead
+# of implying a drift band. The block arrives through the pin read above,
+# refused missing or malformed like the other three members, because a
+# constant here would be a transcription no container-side refusal keeps
+# honest; `tests/test_tessera_substitute_decoder.py` refuses a carried block
+# that is not the pin's.
 
 #: The pin file as seen from this tool, in a developer checkout and in the
 #: transported container snapshot alike: the snapshot root is this file's
@@ -247,7 +264,7 @@ def _read_tessera_serving_pin_payload(
 
 def _load_tessera_native_extensions_from_pin(
     path: str | os.PathLike,
-) -> tuple[dict[str, str], ...]:
+) -> tuple[dict[str, Any], ...]:
     """The pin's `serving_native_extensions` rows, or a refusal.
 
     `path` is a parameter (rather than hard-wired to the tool-relative file)
@@ -255,6 +272,14 @@ def _load_tessera_native_extensions_from_pin(
     import-time call below passes the transported pin beside this tool. Every
     failure raises `ValueError`: falling back to a constant would fingerprint
     a renamed extension as "nothing resident" with nothing refusing it.
+
+    Since PrismaQuant #142 each row also carries the contract's
+    `when_unavailable` block -- per residency mode, the substitute decoder a
+    serve keeps running on when this library is absent, or that there is no
+    serve at all. It is refused missing or malformed like the other members:
+    the manifest's `native_extension_status` projects it, and a §7.4 refusal
+    names the substitute, so a mistranscribed block would name the wrong
+    fallback with nothing refusing it.
     """
     where = str(path)
     payload = _read_tessera_serving_pin_payload(path)
@@ -265,16 +290,18 @@ def _load_tessera_native_extensions_from_pin(
             "'serving_native_extensions' table: an empty table is a "
             "fingerprint that reports every serve identical"
         )
-    parsed: list[dict[str, str]] = []
+    parsed: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
         at = f"{where}.serving_native_extensions[{index}]"
         if not isinstance(row, dict) or set(row) != {
             "module_name_prefix", "filename_glob", "match",
+            "when_unavailable",
         }:
             observed = sorted(row) if isinstance(row, dict) else []
             raise ValueError(
                 f"{at}: expected exactly "
-                "['filename_glob', 'match', 'module_name_prefix'], got "
+                "['filename_glob', 'match', 'module_name_prefix', "
+                "'when_unavailable'], got "
                 f"{observed}. The keys are the runtime contract's own spelling."
             )
         prefix, glob, rule = (
@@ -295,10 +322,47 @@ def _load_tessera_native_extensions_from_pin(
             )
         if not isinstance(rule, str) or not rule:
             raise ValueError(f"{at}.match must be a non-empty rule name")
+        when = row["when_unavailable"]
+        if not isinstance(when, dict) or not when:
+            raise ValueError(
+                f"{at}.when_unavailable must be a non-empty object keyed by "
+                "residency mode: it says what a serve does when this library "
+                "is absent, which is what makes an absent .so readable"
+            )
+        behaviours: dict[str, dict[str, Any]] = {}
+        for mode, behaviour in when.items():
+            bat = f"{at}.when_unavailable[{mode!r}]"
+            if not isinstance(mode, str) or not mode:
+                raise ValueError(
+                    f"{at}.when_unavailable keys must be non-empty residency "
+                    f"mode names, got {mode!r}")
+            if not isinstance(behaviour, dict):
+                raise ValueError(
+                    f"{bat} must be an object with 'status' and 'decoder'")
+            if set(behaviour) != {"status", "decoder"}:
+                raise ValueError(
+                    f"{bat}: expected exactly ['decoder', 'status'], got "
+                    f"{sorted(behaviour)}")
+            status, decoder = behaviour["status"], behaviour["decoder"]
+            if not isinstance(status, str) or not status:
+                raise ValueError(
+                    f"{bat}.status must be a non-empty string, "
+                    f"got {status!r}")
+            if decoder is not None and (
+                    not isinstance(decoder, str) or not decoder):
+                raise ValueError(
+                    f"{bat}.decoder must be a decoder name or null, "
+                    f"got {decoder!r}")
+            behaviours[mode] = {"status": status, "decoder": decoder}
         parsed.append({
             "module_name_prefix": prefix,
             "filename_glob": glob,
             "match": rule,
+            "when_unavailable": {
+                mode: {"status": behaviour["status"],
+                       "decoder": behaviour["decoder"]}
+                for mode, behaviour in sorted(behaviours.items())
+            },
         })
     return tuple(parsed)
 
@@ -428,6 +492,45 @@ def matches_tracked_extension(path: str) -> bool:
     return any(extension_predicate(entry)(path, entry)
                for entry in TESSERA_NATIVE_EXTENSIONS)
 
+
+def native_extension_status(
+    resident_basenames: Sequence[str] | None,
+) -> list[dict[str, Any]]:
+    """Expected-vs-found per pinned native-extension row (PrismaQuant #142).
+
+    One entry per row of ``TESSERA_NATIVE_EXTENSIONS``: the row's
+    ``module_name_prefix``/``filename_glob``/``match``, whether any found
+    basename satisfies the row's own rule, and the row's ``when_unavailable``
+    block saying what an absent library *means*.  This is a PROJECTION of
+    ``resident_extensions`` through the carried rows, not a second
+    observation, so it cannot disagree with the scan -- and it is why the
+    manifest can distinguish "the Tessera decoder was expected and is
+    missing" from "this stack simply has no Tessera in it".
+
+    ``resident_basenames`` is ``resident_extensions`` as the scan recorded it
+    (``None`` reads as nothing found, never as proof of anything).
+    """
+    found = [str(name) for name in (resident_basenames or ())]
+    status: list[dict[str, Any]] = []
+    for entry in TESSERA_NATIVE_EXTENSIONS:
+        predicate = extension_predicate(entry)
+        resident = any(predicate(name, entry) for name in found)
+        status.append(
+            {
+                "module_name_prefix": entry["module_name_prefix"],
+                "filename_glob": entry["filename_glob"],
+                "match": entry["match"],
+                "resident": bool(resident),
+                "when_unavailable": {
+                    mode: {"status": behaviour["status"],
+                           "decoder": behaviour["decoder"]}
+                    for mode, behaviour in sorted(
+                        entry["when_unavailable"].items())
+                },
+            }
+        )
+    return status
+
 #: Packages whose version pins the numeric stack.
 TRACKED_PACKAGES = (
     "vllm", "torch", "flashinfer-python", "prismaquant",
@@ -445,6 +548,16 @@ _FINGERPRINT_EXCLUDED = frozenset({
     # Live PIDs define a session, not a numeric serving stack. Their stable
     # identities remain represented by ``processes``/``serve_session_id``.
     "measurement_parent_pid", "engine_descendant_pids",
+    # Expected-vs-found per pinned native-extension row (PrismaQuant #142).
+    # Excluded deliberately: it is a deterministic projection of
+    # ``resident_extensions`` -- which IS fingerprinted -- through the
+    # tool-carried rows, so it adds no identity beyond what the hash already
+    # covers, and including it would move every recorded fingerprint and make
+    # no manifest written before the change compare to one written after.
+    # ``tools/kl_ab.py`` replays it against ``resident_extensions`` and
+    # refuses a manifest whose projection is stale, so the exclusion hides
+    # nothing: a tampered block fails validation rather than passing quietly.
+    "native_extension_status",
 })
 
 _IN_PROCESS_OBSERVED_FIELDS = frozenset({
@@ -2060,6 +2173,13 @@ def collect_manifest(
         "speculative_config": _flag_value(launch_argv, "--speculative-config"),
         "package_versions": installed_packages,
         "resident_extensions": extensions,
+        # Expected-vs-found per pinned native-extension row (PrismaQuant
+        # #142): which libraries the pinned runtime was expected to load, and
+        # which of them the scan found, plus what an absent one means.  Only
+        # the basenames the scan found move the fingerprint; this block is
+        # their deterministic projection and is excluded from it (see
+        # `_FINGERPRINT_EXCLUDED`), so old and new manifests stay comparable.
+        "native_extension_status": native_extension_status(extensions),
         # False whenever any inspected process's address space could not be
         # read (the host-side-of-a-container case): an unverified scan must not
         # fingerprint the same as a verified "nothing resident".
