@@ -335,7 +335,9 @@ def test_lane_spec_executes_is_derived_from_the_packaged_contract():
 
     # and every published rung of every family matches its own glob
     for row in contract["formats"]:
-        for rung in row["candidate_rungs_q256"]:
+        # the current key, with the alias Tessera deprecates at schema v2 as a
+        # fallback -- the same precedence tessera_runtime_contract.py parses by.
+        for rung in row.get("attested_rungs_q256", row.get("candidate_rungs_q256")):
             name = str(row["name_pattern"]).replace("{k}", str(rung))
             assert spec.served_activation_quantization.matches(name)
 

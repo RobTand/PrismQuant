@@ -2439,8 +2439,8 @@ def main():
     # ``TESSERA`` is a menu TOKEN, not a format. It cannot expand to a fixed
     # list the way ``NVFP4`` names one rung: a Tessera family addresses a
     # continuous rate axis, the realisable set depends on the unit's column
-    # count, and one 0.6B Linear carries ~3000 legal rungs across the three
-    # families. So the token expands to exactly the rungs THIS RUN PRICED --
+    # count, and one 0.6B Linear carries thousands of legal rungs across the
+    # four families. So the token expands to exactly the rungs THIS RUN PRICED --
     # the cost table's own Tessera columns -- which is both the widest menu
     # the DP could honestly consider and a set that needs no second copy of
     # the campaign's legality decisions. A rung the campaign did not price

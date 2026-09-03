@@ -1,6 +1,6 @@
 """The production menu over Tessera's continuous rate axis.
 
-``tessera_formats`` says which rungs *exist* (~3000 of them across three
+``tessera_formats`` says which rungs *exist* (thousands of them across four
 families, at a 1/256-bpp quantum) and ``tessera_render`` says how to price one.
 This module is the third thing the production allocator needs: **which of them
 may enter a menu for THIS unit, on THIS target**, and it is the only place that
@@ -49,8 +49,9 @@ Nothing here can make an unattested rung exportable.
 
 The rate axis is priced by campaign, not by enumeration
 -------------------------------------------------------
-Three families address 3075 rungs at every shape.  Rendering all of them is not
-a cost model, it is a week.  :mod:`prismaquant.tessera_campaign` renders a small
+Four families address thousands of rungs at every shape -- 6764 on a
+2048x1024 unit, 3709 of them the 16-bit family's.  Rendering all of them is
+not a cost model, it is a week.  :mod:`prismaquant.tessera_campaign` renders a small
 measured **anchor** set per (unit, family) and interpolates the rest through
 ``tessera_rate_surface``, with leave-one-anchor-out and allocation-regret gates
 deciding how many anchors that is.  This module supplies the *legal* set the
@@ -336,7 +337,10 @@ def route_admission(name: str) -> RouteAdmission:
     key this cache would need is the identity of the contract itself, which it
     cannot state, so it does not get a cache. It does not need one: the whole
     lookup is ~0.1 ms (parse 0.002, attest 0.016, serialisable 0.072, recipe +
-    route 0.006 ms), the expensive part of a menu is the per-rung Bresenham
+    route 0.006 ms) *because the serialisable leg asks the family's grid rather
+    than the rung* -- ask it per rung and one 16-bit menu spends 34 ms a rung
+    re-hashing 65536 values -- the expensive part of a menu is the per-rung
+    Bresenham
     realisability check, and ``expand_tessera_menu`` is memoised per
     ``(shape, mode, tp)`` above it.
 
@@ -834,15 +838,18 @@ class MenuRung:
 def menu_families() -> tuple[TesseraFamily, ...]:
     """The families a production menu enumerates, asked rather than listed.
 
-    ``tessera_family`` refuses a family the encoder cannot afford (E4M3 at
-    arity 2 needs 65536 anchors scored per trellis step, above the encoder's own
-    wall), so the refusal is the filter.  A family whose grid is not in
-    Tessera's ``SERIALISABLE_GRIDS`` is dropped for the same reason
-    ``tessera_rung_is_serialisable`` exists: it renders and cannot be written.
+    ``tessera_family`` refuses a family whose **body** the encoder cannot
+    afford, so the refusal is the filter.  The wall is the TCQ body's, not the
+    grid's: a coset step scores ``2^payload_bits`` anchors, so E4M3 at arity 2
+    is refused at 65536 of them -- while BF16, whose grid is twice as wide
+    again, is admitted, because every rung of it is the WINDOW body, which
+    scores ``2^window_bits`` states and has no forest at all.  A family whose
+    grid is not in Tessera's ``SERIALISABLE_GRIDS`` is dropped for the same
+    reason ``tessera_rung_is_serialisable`` exists: it renders and cannot be
+    written.
     """
-    from tessera.alphabet import SERIALISABLE_GRIDS, grid_digest
-
     from .tessera_formats import _HARDWARE_BASES
+    from .tessera_render import family_grid_is_serialisable
 
     out: list[TesseraFamily] = []
     for base in sorted(_HARDWARE_BASES):
@@ -852,10 +859,10 @@ def menu_families() -> tuple[TesseraFamily, ...]:
             except TesseraFormatError:
                 continue  # the encoder refuses this family's cost
             try:
-                digest = grid_digest(spec.payload_grid())
+                writable = family_grid_is_serialisable(spec)
             except Exception:
                 continue
-            if digest in SERIALISABLE_GRIDS:
+            if writable:
                 out.append(spec)
     out.sort(key=lambda f: (f.base, f.arity))
     return tuple(out)
@@ -1015,7 +1022,7 @@ def expand_menu_tokens(names, priced_formats=()) -> list[str]:
     ``FORMATS=NVFP4,FP8_DYNAMIC,TESSERA`` is how a launcher asks for "the
     stock two, plus Tessera". The token cannot expand to a static list: a
     family's realisable rungs depend on the unit's column count, and a single
-    0.6B Linear carries ~3000 of them across the three families, so the menu
+    0.6B Linear carries thousands of them across the four families, so the menu
     is a per-unit object and not a comma-separated string. What it expands to
     instead is the set of Tessera columns the run's own cost table holds --
     every rung an anchor campaign priced, and nothing else.

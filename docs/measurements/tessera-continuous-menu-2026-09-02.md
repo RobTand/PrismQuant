@@ -438,9 +438,15 @@ comparisons made are within a table.
   produced and stored beside every priced render, but nothing writes a
   checkpoint and nothing loads one. §9's export gate has not been exercised by
   any of this.
-* **No BF16 family.** The three families here are what
-  `tessera_menu.menu_families()` derives from Tessera's own hardware bases
-  today: `TESSERA_E2M1_K1`, `TESSERA_E2M1_K2`, `TESSERA_E4M3_K1`. The family
+* **No BF16 family.** *(Superseded the same day, `pq-allocator-menu`: the
+  anchor wall was a property of the TCQ body, not of the grid, and BF16 is a
+  WINDOW body at every rung. `menu_families()` returns four now, and
+  `TESSERA_BF16_K1` is allocatable under `research`, unattested. Nothing
+  measured below re-ran, so every number in this document remains a
+  three-family number.)* The three families here are what
+  `tessera_menu.menu_families()` derived from Tessera's own hardware bases
+  when it was written: `TESSERA_E2M1_K1`, `TESSERA_E2M1_K2`,
+  `TESSERA_E4M3_K1`. The family
   set and the per-family activation contract are read from one table and the
   anchor rule is per family (`family_anchor_rule`), so the incoming 16-bit
   grid is a `_HARDWARE_BASES` entry plus a contract row, not a menu rewrite.

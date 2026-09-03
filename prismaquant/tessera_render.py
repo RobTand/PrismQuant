@@ -253,20 +253,78 @@ def is_tessera_format(name: object) -> bool:
 
 @lru_cache(maxsize=64)
 def _grid_for(family: TesseraFamily):
-    from tessera.alphabet import E2M1_GRID, E4M3_GRID, tuple_grid
+    """The grid this family renders through -- **the family's own**.
 
-    bases = {"E2M1": E2M1_GRID, "E4M3": E4M3_GRID}
-    if family.base not in bases:
+    Deliberately not a second base->grid map.  This function held one until
+    2026-09-02, listing ``E2M1`` and ``E4M3``, while ``tessera_formats`` held
+    the map the pricing, the footprint and the menu read.  When ``BF16`` was
+    admitted to that map the family became namable, priceable and enumerable
+    and *silently unallocatable*: the copy here still called it a free base,
+    so ``tessera_rung_is_serialisable`` answered False, so
+    ``_producer_eligible`` answered False, so the menu dropped every rung of
+    it in **both** modes.  Nothing raised, and the family looked finished
+    from every side an accountant can see.  One map, read here.
+
+    The refusal that remains is a fact about the grid rather than a fact
+    about this module's knowledge: a free/Lloyd-Max base is measurable but
+    not serialisable -- its values are fitted to the tensor and no identifier
+    reproduces them, so it needs a VALUES plane first.  ``_HARDWARE_BASES``
+    is the single statement of which bases are not that.
+    """
+    from .tessera_formats import _HARDWARE_BASES
+
+    if family.base not in _HARDWARE_BASES:
         raise NotImplementedError(
             f"{family.name}: only hardware base grids render today "
-            f"({sorted(bases)}). A free/Lloyd-Max base is measurable but not "
-            "serialisable -- its values are fitted to the tensor and no "
-            "identifier reproduces them, so it needs a VALUES plane first."
+            f"({sorted(_HARDWARE_BASES)}). A free/Lloyd-Max base is measurable "
+            "but not serialisable -- its values are fitted to the tensor and "
+            "no identifier reproduces them, so it needs a VALUES plane first."
         )
-    return tuple_grid(bases[family.base], family.arity)
+    return family.payload_grid()
 
 
 @lru_cache(maxsize=64)
+def family_grid_is_serialisable(family: TesseraFamily) -> bool:
+    """Is this family's grid a permanent wire commitment?
+
+    A property of the **grid**, so it is asked once per family and never once
+    per rate.  It was asked per rung until 2026-09-02, behind an ``lru_cache``
+    sized 64 against menus of thousands of names -- so the cache thrashed and
+    every rung re-hashed the whole grid.  That cost nothing while the widest
+    grid held 256 values and became the dominant cost of a menu the moment the
+    16-bit family was admitted at 65536: one 2048x1024 unit's *attested* menu
+    went from 0.19 s to 52 s, and a profile put 234 of 234.5 s in
+    ``grid_digest`` -- computing 6916 times, at 34 ms each, an answer that
+    cannot vary with the rate.  ``route_admission`` budgets 0.072 ms for this
+    leg; asking the grid rather than the rung is what keeps that true.
+    """
+    from tessera.alphabet import SERIALISABLE_GRIDS, grid_digest
+
+    try:
+        grid = _grid_for(family)
+    except NotImplementedError:
+        return False           # a free base: no identifier reproduces its values
+    return grid_digest(grid) in SERIALISABLE_GRIDS
+
+
+def clear_serialisable_cache() -> None:
+    """Forget which grids are wire commitments.
+
+    ``SERIALISABLE_GRIDS`` is a permanent registry, so memoising against it is
+    safe in production and only a test ever moves it.  When one does, it has to
+    clear **both** levels: the answer is cached per family as well as per rung
+    since 2026-09-02, and a test that clears only the rung cache reads the
+    family's stale verdict and passes for the wrong reason -- which is what
+    ``test_a_rung_that_renders_can_still_be_unwritable`` did the moment the
+    per-family memo landed under it.  One function, so that a third level, if
+    it ever appears, is cleared by everyone who already calls this.
+    """
+
+    tessera_rung_is_serialisable.cache_clear()
+    family_grid_is_serialisable.cache_clear()
+
+
+@lru_cache(maxsize=4096)
 def tessera_rung_is_serialisable(name: str) -> bool:
     """Can the *wire* carry this rung's bytes at all?
 
@@ -285,16 +343,10 @@ def tessera_rung_is_serialisable(name: str) -> bool:
     still has to exist: it is what keeps them from silently diverging when a
     fourth grid renders.
     """
-    from tessera.alphabet import SERIALISABLE_GRIDS, grid_digest
-
     parsed = parse_tessera_format_name(name)
     if parsed is None:
         return False
-    try:
-        grid = _grid_for(parsed[0])
-    except NotImplementedError:
-        return False           # a free base: no identifier reproduces its values
-    return grid_digest(grid) in SERIALISABLE_GRIDS
+    return family_grid_is_serialisable(parsed[0])
 
 
 def _producer_eligible(name: str) -> bool:

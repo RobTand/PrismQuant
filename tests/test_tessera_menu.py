@@ -48,8 +48,14 @@ def dev_pin(monkeypatch):
 def test_families_are_the_serialisable_set_tessera_declares():
     names = sorted(f.name for f in tm.menu_families())
     assert names == [
-        "TESSERA_E2M1_K1", "TESSERA_E2M1_K2", "TESSERA_E4M3_K1",
+        "TESSERA_BF16_K1", "TESSERA_E2M1_K1", "TESSERA_E2M1_K2",
+        "TESSERA_E4M3_K1",
     ], names
+    # BF16 is the fourth because Tessera admitted it to SERIALISABLE_GRIDS and
+    # the anchor budget stopped reading a WINDOW grid as a TCQ forest.  It is
+    # here to be PRICED, not to be served: no pinned runtime attests a Tessera
+    # BF16 route (Tessera issue #9), so the attested menu below still offers
+    # exactly two rungs and none of them is this family's.
 
 
 def test_e4m3_arity_2_is_refused_by_tessera_not_by_us():
@@ -270,20 +276,41 @@ def test_attested_menu_is_closed_with_no_tessera_contract_pinned():
     assert rungs == []
 
 
-def test_the_dev_pin_attests_exactly_the_two_rungs_the_contract_publishes(dev_pin):
-    """The attested menu is two rungs, and it has no rate axis.
+def test_the_dev_pin_attests_exactly_the_rungs_the_contract_publishes(dev_pin):
+    """The attested menu is the contract's own cells, and it has no rate axis.
 
     This is the headline the pin buys and the honest limit of "allocate
-    continuously": Tessera's packaged contract publishes ONE candidate rung per
-    family -- each family's native terminal rate -- so the attested menu is two
-    points 0.078 bpp apart on this shape, not a range. The continuous axis is
-    reachable only under the research menu, and widening the attested one is a
-    change to the contract's `candidate_rungs_q256`, not to PrismaQuant.
+    continuously": Tessera's packaged contract attests ONE rung per family, so
+    the attested menu is a handful of points rather than a range, and the
+    continuous axis is reachable only under the research menu.  Widening it is
+    a change to the contract's ``attested_rungs_q256``, not to PrismaQuant.
+
+    **Derived, not typed.**  This test asserted the literal two-element list
+    ``[E2M1_K2_R896, E4M3_K1_R1024]`` and went red the day the runtime attested
+    a third family -- reporting a *correct* menu as a defect, which is the one
+    thing an anti-staleness test must never do.  What is pinned now is the
+    rule: the attested menu is exactly the rungs the contract's own native
+    cells cover, in the menu's order, one per family, and every one of them
+    carries the cell's status rather than a status this file typed.
     """
+    contract = trc.load_tessera_contract()
+    expected = {
+        f"{family}_R{rung}"
+        for family in contract.reader_rate_range
+        for rung in sorted(contract.attested_rungs.get(family, ()))
+        if contract.native_cells(family, rung)
+    }
     rungs = tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED)
-    assert [r.format_name for r in rungs] == [
-        "TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024",
-    ], [r.format_name for r in rungs]
+    names = [r.format_name for r in rungs]
+    assert set(names) == expected, (names, sorted(expected))
+    assert len(names) == len(set(names)), names
+
+    # No rate axis: at most one attested rung per family, so no family offers
+    # a choice of rate on the default path.  This is the claim the docstring
+    # makes, and it is the one that would quietly stop being true.
+    families = [r.admission.payload_family for r in rungs]
+    assert len(families) == len(set(families)), families
+
     for rung in rungs:
         # Read off the cell, not typed: these cells are backed_with_serve_flag.
         assert rung.admission.route_status == tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
@@ -291,6 +318,10 @@ def test_the_dev_pin_attests_exactly_the_two_rungs_the_contract_publishes(dev_pi
             "TESSERA_SERVE_MODE=resident|streamed",)
         assert rung.admission.source.startswith("tessera_dev_pin:runtime_contract:")
         assert rung.admission.max_world_size == 1
+
+    # ...and the derivation is not vacuous: the contract must actually attest
+    # something, or an empty menu would pass every assertion above.
+    assert expected, "the pinned contract attests no rung at all"
 
 
 def test_a_rate_the_contract_does_not_publish_is_unattested_not_backed(dev_pin):

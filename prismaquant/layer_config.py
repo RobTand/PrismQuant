@@ -110,7 +110,7 @@ def canonicalize_format(entry: dict | str | int) -> str:
             return name
         if dt == "tessera":
             # A Tessera rung is a point on a continuous rate axis, not a
-            # scheme: ~3000 rungs per shape across three families, and the
+            # scheme: thousands of rungs per shape across four families, and
             # family plus the 1/256-bpp rung is the whole identity. So the
             # entry records the NAME rather than fields this module would have
             # to recompose -- recomposing it would put a second copy of
