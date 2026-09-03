@@ -155,6 +155,18 @@ def test_dense_cb_pair_resume_binds_activation_sampling_budget(
     monkeypatch.setattr(pwc, "_production_cache_git_commit", lambda: "d" * 40)
     _fill(model, tmp_path, max_act_rows=8)
 
+    # #146: the directory-level render-identity guard refuses first, naming
+    # the same field, before the per-pair contract is even consulted.
+    with pytest.raises(ValueError, match=r"max_act_rows") as exc_info:
+        _fill(model, tmp_path, max_act_rows=9)
+    assert "rebuild this directory" in str(exc_info.value)
+
+    # The per-pair contract still binds the budget underneath: admit the
+    # directory identity and the CB resume gate refuses on the same field.
+    sidecar_path = tmp_path / pwc.RENDER_IDENTITY_SIDECAR_FILENAME
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["max_act_rows"] = 9
+    sidecar_path.write_text(json.dumps(sidecar, indent=2, sort_keys=True))
     with pytest.raises(
         RuntimeError,
         match=r"render_input_contract\.max_act_rows.*differs",
