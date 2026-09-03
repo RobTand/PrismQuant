@@ -7,24 +7,33 @@ exactly what principle 8 (one rendering behind the surrogate, the KL and the
 exported bytes) exists to prevent.
 
 ``56c765d`` closed the ``--resume`` half by drawing reservoir priorities for
-every *hooked* Linear. Two narrowings reach the **hook** set itself and are
-therefore out of its reach:
+every *hooked* Linear. Two narrowings reached the **hook** set itself and were
+out of its reach:
 
-  * ``build_production_cache.py:843`` -- ``--include-qnames-file``, i.e. every
-    ``production_cache_stripes`` stripe;
-  * ``production_weight_cache.py:4888`` + ``:5164`` -- ``qname_set`` is the
+  * ``build_production_cache.py`` -- ``--include-qnames-file`` shortened the
+    ``qnames`` list before the fill call, i.e. every
+    ``production_cache_stripes`` stripe (#130);
+  * ``production_weight_cache.py`` -- ``qname_set`` was the
     assignment-narrowed render set AND the collector's hook set, so every
     ``--render-scope assignment`` build (``run-pipeline.sh:590``, the shipping
-    default) hooks fewer Linears than a ``format-menu`` build of the same model.
+    default) hooked fewer Linears than a ``format-menu`` build of the same
+    model (#135).
 
-Issue #130. The gap is a *ratchet*, not a bare xfail, per this repo's
-convention: the divergence tests first assert the gap is still real and only
-then xfail, so closing it turns them red with an instruction rather than
-passing silently. ``test_widening_the_hook_set_restores_the_unstriped_bytes``
-is a plain passing test and pins the shape of the fix.
+Both are closed here. The collector hooks the caller's whole
+``eligible_qnames`` enumeration and narrowing arrives as ``render_assignment``
+or ``render_qnames``, which gives the invariant these tests hold to:
 
-The full digest matrix, the N_CALIB discriminator (bin shape vs shared stream)
-and the machine-readable receipt live in
+    the bytes of a (qname, fmt) pair are a function of ``qnames`` and the
+    calibration, never of which subset a call renders.
+
+One narrowing is deliberately still byte-moving and is pinned as such:
+shortening ``qnames`` itself. That is now a caller error the docstring names,
+not the way a stripe is expressed --
+``test_shortening_the_enumeration_still_moves_the_bytes`` exists so nobody
+re-learns it on a 90 GB cache.
+
+The full digest matrix, the N_CALIB discriminator (bin shape vs shared stream),
+the real-assignment census and the machine-readable receipt live in
 ``experiments/stripe_row_identity_byte_baseline.py``.
 """
 from __future__ import annotations
@@ -78,39 +87,14 @@ def test_the_render_is_deterministic(bb, frozen):
     assert control["weights"] == reference["weights"]
 
 
-@pytest.mark.parametrize(
-    "label,indices",
-    [
-        ("non-prefix stripe (the plan_stripes LPT bin shape)", (1, 3)),
-        ("prefix stripe (a contiguous partition)", (0, 1)),
-    ],
-)
-def test_striped_render_keeps_the_unstriped_rows(bb, frozen, label, indices):
-    """RATCHET (#130): narrowing the qnames argument must not move the bytes."""
-    state, calib, reference = frozen
-    arm = bb.run_arm(state, calib, bb.layer_qnames(indices))
-    rows, byts = bb.compare(arm, reference)
-    n = len(arm["weights"])
-    assert n == 4, "arm did not render the expected unit count"
-    if not byts:
-        return  # gap closed on this arm; the ratchet has nothing to xfail
-    assert len(rows) == n and len(byts) == n, (
-        f"#130 changed shape on {label}: {len(rows)}/{n} units keep different "
-        f"rows and {len(byts)}/{n} render different bytes. Re-measure with "
-        f"{_EXPERIMENT.name} before editing this ratchet."
-    )
-    pytest.xfail(
-        f"#130 open: {label} -- {len(byts)}/{n} units render different bytes "
-        "than the unstriped run (build_production_cache.py:843)"
-    )
-
-
 def test_assignment_render_scope_keeps_the_format_menu_rows(bb, frozen):
-    """RATCHET (#130): the shipping default's scope switch must not move bytes.
+    """#135: the shipping default's scope switch must not move the bytes.
 
     Same ``qnames`` argument in both arms. The only difference is whether the
-    narrowing arrives as ``render_assignment``, which ``:4888`` folds into the
-    collector's hook set at ``:5164``.
+    narrowing arrives as ``render_assignment``. Under the shipping default
+    ``SELECTION_MODE=surrogate`` the AURA dW cost cache is built
+    ``format-menu`` and the export cache ``assignment``, so this equality is
+    what makes the surrogate's rendered dW the bytes that ship.
     """
     state, calib, reference = frozen
     stripe = set(bb.layer_qnames((1, 3)))
@@ -121,61 +105,152 @@ def test_assignment_render_scope_keeps_the_format_menu_rows(bb, frozen):
         state, calib, bb.all_qnames(), render_assignment=assigned
     )
     rows, byts = bb.compare(arm, reference)
-    n = len(arm["weights"])
-    assert n == len(stripe)
-    if not byts:
-        return
-    assert len(rows) == n and len(byts) == n, (
-        f"#130 changed shape on the assignment scope: {len(rows)}/{n} rows, "
-        f"{len(byts)}/{n} bytes. Re-measure before editing this ratchet."
+    assert len(arm["weights"]) == len(stripe)
+    assert not rows, (
+        f"--render-scope assignment kept different rows on {len(rows)} units "
+        f"than --render-scope format-menu. Re-run {_EXPERIMENT.name}."
     )
-    pytest.xfail(
-        f"#130 open: --render-scope assignment renders {len(byts)}/{n} units "
-        "differently from --render-scope format-menu "
-        "(production_weight_cache.py:4888 -> :5164)"
+    assert not byts, (
+        f"--render-scope assignment rendered {len(byts)} units differently "
+        "from --render-scope format-menu: the cost cache and the export cache "
+        "are two renderings again (#135)."
     )
 
 
-def test_widening_the_hook_set_restores_the_unstriped_bytes(bb, frozen):
-    """The fix's shape, priced by rendering rather than argued.
+@pytest.mark.parametrize(
+    "label,indices",
+    [
+        ("non-prefix stripe (the plan_stripes LPT bin shape)", (1, 3)),
+        ("prefix stripe (a contiguous partition)", (0, 1)),
+    ],
+)
+def test_a_stripe_expressed_as_render_qnames_keeps_the_unstriped_bytes(
+    bb, frozen, label, indices,
+):
+    """#130: a stripe must reproduce the unsharded run's bytes exactly.
 
-    Hook the full eligible enumeration and let only the RENDER narrow, and both
-    narrowed arms reproduce the unstriped bytes exactly. This is the
-    byte-preserving option; a per-qname derived seed would also decouple the
-    streams but moves every fresh unstriped build's bytes as well.
+    Both bin shapes, because the issue blamed ``plan_stripes``'s LPT binning.
+    It was never the binning -- see the N_CALIB sweep in the harness -- so a
+    contiguous partition must pass here for the same reason a non-prefix one
+    does, and neither may be the thing that makes it pass.
+    """
+    state, calib, reference = frozen
+    arm = bb.run_arm(
+        state, calib, bb.all_qnames(), render_qnames=bb.layer_qnames(indices)
+    )
+    rows, byts = bb.compare(arm, reference)
+    assert len(arm["weights"]) == 4, "arm did not render the expected units"
+    assert not rows, f"{label}: {len(rows)} units kept different rows"
+    assert not byts, (
+        f"{label}: {len(byts)} units rendered different bytes than the "
+        f"unstriped run. Re-run {_EXPERIMENT.name} before editing this test."
+    )
+
+
+def test_one_bf16_unit_last_in_the_enumeration_does_not_move_the_bytes(
+    bb, frozen,
+):
+    """The real assignment shape, not a half-the-model carve.
+
+    A production ``layer_config.json`` BF16s a handful of units: 4 of 504 on
+    ``qwen38-27b-scout20``, 228 of 614 on ``prod-27b-nvfp4cb-5p5``. The
+    hardest case for "surely four units cannot matter" is ONE BF16 unit last
+    in the enumeration -- within a single forward pass every earlier hook
+    fires at the same stream offset, so a one-sample run would agree anyway.
+    It is the second calibration sample that re-enters the stream behind a
+    shorter hook set, and production runs 32.
     """
     state, calib, reference = frozen
     full = bb.all_qnames()
-    stripe = set(bb.layer_qnames((1, 3)))
-    assigned = {q: (bb.FORMAT if q in stripe else "BF16") for q in full}
+    assert bb.N_CALIB >= 2, "this case only bites from the 2nd sample on"
+    assigned = {q: bb.FORMAT for q in full[:-1]}
+    assigned[full[-1]] = "BF16"
 
-    for label, qnames in (
-        ("assignment scope", full),
-        ("stripe as a render scope", sorted(stripe)),
-    ):
-        arm = bb.run_arm(
-            state, calib, qnames,
-            render_assignment=assigned,
-            hook_qnames=set(full),
-        )
-        rows, byts = bb.compare(arm, reference)
-        assert len(arm["weights"]) == len(stripe)
-        assert not rows, f"{label}: {len(rows)} units kept different rows"
-        assert not byts, f"{label}: {len(byts)} units rendered different bytes"
+    arm = bb.run_arm(state, calib, full, render_assignment=assigned)
+    rows, byts = bb.compare(arm, reference)
+    assert len(arm["weights"]) == len(full) - 1
+    assert not rows and not byts, (
+        f"one BF16 unit moved {len(byts)} of {len(arm['weights'])} units' "
+        "bytes; the hook set is being narrowed again"
+    )
 
 
-def test_the_hook_set_is_the_render_narrowed_set_today(bb):
-    """Pin the line the ratchets blame, so a refactor cannot silently move it."""
+def test_shortening_the_enumeration_still_moves_the_bytes(bb, frozen):
+    """The one narrowing that is still byte-moving, pinned deliberately.
+
+    ``qnames`` IS the hook set, so a caller who shortens it renders different
+    bytes -- by construction, not by defect. Callers narrow with
+    ``render_assignment``/``render_qnames`` instead. This test asserts the
+    hazard is still real so the docstring warning stays load-bearing; if a
+    future change makes a shortened enumeration safe too, it turns red and
+    should be deleted with a note rather than left passing silently.
+    """
+    state, calib, reference = frozen
+    arm = bb.run_arm(state, calib, bb.layer_qnames((1, 3)))
+    rows, byts = bb.compare(arm, reference)
+    n = len(arm["weights"])
+    assert n == 4
+    assert len(rows) == n and len(byts) == n, (
+        f"shortening qnames moved {len(byts)}/{n} units' bytes, not all of "
+        "them. The hook set's coupling changed shape; re-measure with "
+        f"{_EXPERIMENT.name} before editing this test."
+    )
+
+
+def test_the_cache_records_which_enumeration_it_hooked(bb, frozen):
+    """Provenance a reader can use: render_scope alone cannot say.
+
+    A stripe and a whole build both stamp ``render_scope="format-menu"``, and
+    ``union_production_cache._render_identity`` binds that string -- so two
+    caches rendered against different row sets used to produce the same render
+    identity. The hooked-enumeration digest is what distinguishes them.
+    """
+    state, calib, reference = frozen
+    assert reference["hook_scope"] is not None, "no activation_hook_scope stamp"
+    whole = reference["hook_scope"]
+    assert whole["hooked_qnames"] == len(bb.all_qnames())
+    assert whole["render_narrowed"] is False
+
+    stripe = bb.layer_qnames((1, 3))
+    arm = bb.run_arm(state, calib, bb.all_qnames(), render_qnames=stripe)
+    shard = arm["hook_scope"]
+    assert shard["render_narrowed"] is True
+    assert shard["rendered_qnames"] == len(stripe)
+    # Equal hook digests + equal calibration is the readable claim "these two
+    # caches were rendered against the same rows".
+    assert shard["hooked_qnames_sha256"] == whole["hooked_qnames_sha256"]
+
+    narrowed = bb.run_arm(state, calib, stripe)
+    assert (
+        narrowed["hook_scope"]["hooked_qnames_sha256"]
+        != whole["hooked_qnames_sha256"]
+    ), "a shortened enumeration must be visible in the stamp"
+
+
+def test_the_hook_set_is_the_full_enumeration_at_both_fixed_sites():
+    """Pin both fix sites, so a refactor cannot re-narrow them quietly."""
     import inspect
 
+    import prismaquant.build_production_cache as bpc
     import prismaquant.production_weight_cache as pwc
 
-    source = inspect.getsource(pwc.fill_production_weight_cache)
-    assert "qname_set = set(render_formats_by_qname)" in source, (
-        "the assignment-narrowing at production_weight_cache.py:4888 moved; "
-        "re-locate it before trusting these ratchets"
+    fill = inspect.getsource(pwc.fill_production_weight_cache)
+    assert "qnames=eligible_qnames," in fill, (
+        "the activation collector no longer hooks the full eligible "
+        "enumeration; #130/#135 have regressed. Re-run "
+        "experiments/stripe_row_identity_byte_baseline.py"
     )
-    assert "qnames=qname_set," in source, (
-        "the collector no longer hooks qname_set; #130 may be fixed or moved. "
-        "Re-run experiments/stripe_row_identity_byte_baseline.py"
+    assert "qnames=qname_set," not in fill, (
+        "the collector hooks the render-narrowed qname_set again (#135)"
+    )
+
+    main = inspect.getsource(bpc.main)
+    assert "qnames = [q for q in qnames if q in allowed]" not in main, (
+        "--include-qnames-file shortens the enumeration handed to "
+        "fill_production_weight_cache again, so a stripe renders different "
+        "rows than an unsharded build (#130)"
+    )
+    assert "render_qnames=render_only," in main, (
+        "--include-qnames-file no longer narrows via render_qnames; re-check "
+        "how the stripe's render is scoped"
     )

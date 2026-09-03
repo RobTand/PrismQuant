@@ -1,33 +1,44 @@
 """Byte proof for PrismaQuant #130: does a narrowed render keep the full run's rows?
 
 The production cache hooks Linears off ONE ``torch.Generator``
-(``production_weight_cache._LinearActivationCollector`` :920-922), so the slice
-of the priority stream a given Linear receives is a function of how many rows
-every *earlier* hook consumed. ``56c765d`` made the draw happen for every
-**hooked** Linear, which fixes ``--resume`` (that narrows the *store* set, not
-the hook set). Anything that narrows the **hook** set is out of its reach.
+(``production_weight_cache._LinearActivationCollector``), so the slice of the
+priority stream a given Linear receives is a function of how many rows every
+*earlier* hook consumed. ``56c765d`` made the draw happen for every **hooked**
+Linear, which fixes ``--resume`` (that narrows the *store* set, not the hook
+set). Anything that narrows the **hook** set was out of its reach.
 
-Three narrowings reach the hook set. Only the third is fixed:
+Three narrowings reached the hook set:
 
-  1. ``build_production_cache.py:843``   ``qnames = [q for q in qnames if q in allowed]``
-     -- ``--include-qnames-file``, i.e. every stripe.
-  2. ``production_weight_cache.py:4888`` ``qname_set = set(render_formats_by_qname)``
-     fed to the collector as the hook set at ``:5164`` -- i.e. every
-     ``--render-scope assignment`` build, which is the shipping default
-     (``run-pipeline.sh:590``).
+  1. ``build_production_cache.py`` ``--include-qnames-file``, i.e. every
+     stripe, which shortened the ``qnames`` list before the fill call.
+  2. ``production_weight_cache.py`` ``qname_set = set(render_formats_by_qname)``
+     fed to the collector as the hook set -- i.e. every ``--render-scope
+     assignment`` build, which is the shipping default (``run-pipeline.sh:590``).
   3. ``store_qnames`` -- resume. Fixed by ``56c765d``.
 
-Reading that is not evidence. This renders. Everything is held identical across
-arms except the narrowing: one frozen state_dict, one frozen calibration, GPTQ
-on, NVFP4 out, ``cache_dir=None`` so the arms cannot resume off each other.
+(1) and (2) are fixed on this branch: the collector now hooks the caller's whole
+``eligible_qnames`` enumeration and narrowing arrives as ``render_assignment``
+or the new ``render_qnames``. The invariant that buys, and that sections [4]-[6]
+hold to: **the bytes of a (qname, fmt) pair are a function of ``qnames`` and the
+calibration, never of which subset this call renders.** Section [2] keeps
+pricing the one narrowing that still changes bytes -- shortening ``qnames``
+itself -- because that is now a documented caller error rather than the way a
+stripe is expressed.
+
+Reading a diff is not evidence. This renders. Everything is held identical
+across arms except the narrowing: one frozen state_dict, one frozen
+calibration, GPTQ on, NVFP4 out, ``cache_dir=None`` so the arms cannot resume
+off each other.
 
 Sections:
   [0] the reservoir must be selecting, or an agreement proves nothing
   [1] the render must be deterministic, or a divergence proves nothing
-  [2] stripe arms: non-prefix (what ``plan_stripes`` LPT produces) and prefix
+  [2] the pre-fix convention: a shortened ``qnames`` still moves the bytes
   [3] the N_CALIB sweep -- is the cause the bin SHAPE or the shared stream?
-  [4] ``--render-scope assignment``, the shipping default, same question
-  [5] the candidate fix, priced by rendering rather than argued
+  [4] ``--render-scope assignment``, the shipping default -- now identical
+  [5] the stripe as a ``render_qnames`` narrowing -- now identical
+  [6] the real shape: ONE BF16 unit, last in the enumeration
+  [7] how much do real production assignments narrow the hook set?
 
 Run:
   CUDA_VISIBLE_DEVICES="" PYTHONPATH=. \
@@ -115,18 +126,51 @@ def frozen_calib(n_calib: int = N_CALIB) -> torch.Tensor:
     return torch.randint(0, 64, (n_calib, SEQLEN), dtype=torch.long)
 
 
-def _wide_collector_class(hook_qnames: set[str]):
-    """The candidate fix: hook the full enumeration, store/render a subset."""
-    base = pwc._LinearActivationCollector
+REAL_ASSIGNMENTS = (
+    ("qwen38-27b-scout20", "/home/rob/dq-runs/qwen38-27b-scout20/artifacts/layer_config.json"),
+    ("prod-27b-nvfp4cb-5p5", "/home/rob/dq-runs/prod-27b-nvfp4cb-5p5/artifacts/layer_config.json"),
+    ("fc45-0p6b-nvfp4", "/home/rob/dq-runs/fc45-0p6b-nvfp4/artifacts/layer_config.json"),
+)
 
-    class _Wide(base):  # type: ignore[misc,valid-type]
-        def __init__(self, model, qnames, max_rows, store_qnames=None, **kw):
-            super().__init__(
-                model, set(hook_qnames), max_rows,
-                store_qnames=store_qnames, **kw,
+
+def real_assignment_census() -> list[dict]:
+    """How much does a REAL layer_config.json narrow the hook set?
+
+    ``--render-scope assignment`` drops every BF16 entry from the set the
+    collector hooks (``production_weight_cache.py`` :4888/:5182 pre-fix), so
+    the BF16 count IS the narrowing. A toy shows the mechanism; this says
+    whether production ever exercises it. Records the file digest so the row
+    is checkable.
+    """
+    from prismaquant.production_recache import _load_assignment
+
+    rows: list[dict] = []
+    for label, path in REAL_ASSIGNMENTS:
+        f = Path(path)
+        if not f.is_file():
+            continue
+        row: dict = {
+            "label": label,
+            "path": str(f),
+            "sha256": hashlib.sha256(f.read_bytes()).hexdigest(),
+        }
+        try:
+            assignment = _load_assignment(str(f))
+            units = len(assignment)
+            bf16 = sum(
+                1 for fmt in assignment.values()
+                if str(fmt).strip().upper() == "BF16"
             )
-
-    return _Wide
+            row.update({
+                "units": units,
+                "bf16": bf16,
+                "non_bf16": units - bf16,
+                "narrowed_pct": (100.0 * bf16 / units) if units else 0.0,
+            })
+        except Exception as exc:  # a stale/foreign config must not abort
+            row["error"] = f"{type(exc).__name__}: {exc}"
+        rows.append(row)
+    return rows
 
 
 def run_arm(
@@ -135,13 +179,15 @@ def run_arm(
     qnames,
     *,
     render_assignment=None,
-    hook_qnames: set[str] | None = None,
+    render_qnames=None,
     max_act_rows: int = MAX_ACT_ROWS,
 ) -> dict:
-    """Render ``qnames``; digest the rows handed to the renderer and the bytes.
+    """Render a subset of ``qnames``; digest the rows AND the rendered bytes.
 
-    ``hook_qnames`` simulates the candidate fix by widening the collector's
-    hook set without changing anything else.
+    ``qnames`` is the enumeration the collector hooks. ``render_assignment``
+    and ``render_qnames`` narrow only what gets rendered. Shortening
+    ``qnames`` is the pre-fix calling convention and is what section [2]
+    prices.
     """
     model = _Model()
     model.load_state_dict(state)
@@ -149,7 +195,6 @@ def run_arm(
 
     captured: dict[str, torch.Tensor] = {}
     orig_render = pwc.render_production_weight
-    orig_collector = pwc._LinearActivationCollector
 
     def spy(weight, fmt, *, qname, activations, **kwargs):
         rows = activations.get(qname)
@@ -160,13 +205,12 @@ def run_arm(
         )
 
     pwc.render_production_weight = spy
-    if hook_qnames is not None:
-        pwc._LinearActivationCollector = _wide_collector_class(hook_qnames)
     try:
         cache = pwc.fill_production_weight_cache(
             model, calib, list(qnames),
             formats=[FORMAT],
             render_assignment=render_assignment,
+            render_qnames=render_qnames,
             levers=LEVERS,
             max_act_rows=max_act_rows,
             cache_dir=None,          # no resume between arms
@@ -174,14 +218,15 @@ def run_arm(
         )
     finally:
         pwc.render_production_weight = orig_render
-        pwc._LinearActivationCollector = orig_collector
 
+    metadata = cache.metadata or {}
     return {
         "weights": {
             q: digest(t) for (q, f), t in cache.weights.items() if f == FORMAT
         },
         "rows": {q: digest(t) for q, t in captured.items()},
         "row_shapes": {q: tuple(t.shape) for q, t in captured.items()},
+        "hook_scope": metadata.get("activation_hook_scope"),
     }
 
 
@@ -237,8 +282,8 @@ def main() -> int:
         print("    ABORT: render nondeterminism; no arm comparison is readable.")
         return 2
 
-    print("\n[2] stripe arms -- the qnames ARGUMENT narrowed "
-          "(build_production_cache.py:843)")
+    print("\n[2] the PRE-FIX convention -- the qnames ARGUMENT itself "
+          "narrowed, which shortens the hook set")
     summary = {
         "stripe_nonprefix_L1L3": _line(
             "non-prefix stripe (layers 1,3) -- the LPT shape",
@@ -273,7 +318,8 @@ def main() -> int:
 
     print("\n[4] --render-scope assignment -- the SHIPPING default "
           "(run-pipeline.sh:590). Same qnames argument in both arms; the "
-          "narrowing arrives only as render_assignment.")
+          "narrowing arrives only as render_assignment, so the hook set is "
+          "held at the full enumeration and the bytes must match.")
     assigned = {
         q: (FORMAT if q in set(stripe_np) else "BF16") for q in full_names
     }
@@ -282,20 +328,53 @@ def main() -> int:
         run_arm(state, calib, full_names, render_assignment=assigned),
         reference)
 
-    print("\n[5] candidate fix -- hook the full enumeration, narrow the render")
-    summary["fix_wide_hook_assignment"] = _line(
-        "wide hook + render_assignment narrowed",
-        run_arm(state, calib, full_names, render_assignment=assigned,
-                hook_qnames=set(full_names)),
+    print("\n[5] the stripe, expressed as a render narrowing rather than an "
+          "enumeration narrowing (build_production_cache.py render_qnames)")
+    summary["stripe_via_render_qnames_nonprefix"] = _line(
+        "non-prefix stripe (layers 1,3) via render_qnames",
+        run_arm(state, calib, full_names, render_qnames=stripe_np),
         reference)
-    summary["fix_wide_hook_stripe"] = _line(
-        "wide hook + stripe as a render scope",
-        run_arm(state, calib, stripe_np, render_assignment=assigned,
-                hook_qnames=set(full_names)),
+    summary["stripe_via_render_qnames_prefix"] = _line(
+        "prefix stripe (layers 0,1) via render_qnames",
+        run_arm(state, calib, full_names, render_qnames=stripe_p),
         reference)
 
+    # [6] The real-assignment shape. A production assignment does not carve
+    #     the model in half -- it BF16s a handful of units, and the ones it
+    #     BF16s can be anywhere. The worst case for "surely a few units cannot
+    #     matter" is a single BF16 unit LAST in the enumeration: within one
+    #     forward pass every earlier hook fires at the same stream offset, so
+    #     a single-sample run would agree. It is the second calibration sample
+    #     that re-enters the stream behind a shorter hook set.
+    print("\n[6] the real shape -- ONE BF16 unit, LAST in the enumeration")
+    one_bf16 = {q: FORMAT for q in full_names[:-1]}
+    one_bf16[full_names[-1]] = "BF16"
+    summary["one_bf16_last_old_convention"] = _line(
+        "pre-fix convention: qnames shortened to the 7 rendered",
+        run_arm(state, calib, full_names[:-1]), reference)
+    summary["one_bf16_last_fixed"] = _line(
+        "fixed: full enumeration hooked, assignment narrows the render",
+        run_arm(state, calib, full_names, render_assignment=one_bf16),
+        reference)
+
+    # [7] How much do REAL assignments narrow the hook set? A toy proves the
+    #     mechanism; this prices it. Skipped (not failed) when the work dirs
+    #     are absent, so the harness stays runnable off this box.
+    print("\n[7] real assignments -- how much would the pre-fix hook set "
+          "have been narrowed?")
+    census = real_assignment_census()
+    for row in census:
+        if row.get("error"):
+            print(f"  {row['label']:<28} unreadable: {row['error']}")
+            continue
+        print(f"  {row['label']:<28} {row['non_bf16']:>4}/{row['units']:<4} "
+              f"hooked  narrowed by {row['bf16']} "
+              f"({row['narrowed_pct']:.1f}%)")
+    if not census:
+        print("  (no layer_config.json found on this box -- section skipped)")
+
     out = {
-        "schema": "prismaquant.stripe_row_identity_byte_baseline.v1",
+        "schema": "prismaquant.stripe_row_identity_byte_baseline.v2",
         "settings": {
             "layers": LAYERS, "hidden": HIDDEN, "n_calib": N_CALIB,
             "seqlen": SEQLEN, "max_act_rows": MAX_ACT_ROWS,
@@ -307,6 +386,7 @@ def main() -> int:
         },
         "reference_digests": reference,
         "n_calib_sweep": sweep,
+        "real_assignment_census": census,
         "summary": summary,
     }
     dest = REPO_ROOT / "experiments" / "results" / "pq130_stripe_row_identity.json"

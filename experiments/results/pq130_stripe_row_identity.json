@@ -23,7 +23,43 @@
       "units": 4
     }
   ],
+  "real_assignment_census": [
+    {
+      "bf16": 4,
+      "label": "qwen38-27b-scout20",
+      "narrowed_pct": 0.7936507936507936,
+      "non_bf16": 500,
+      "path": "/home/rob/dq-runs/qwen38-27b-scout20/artifacts/layer_config.json",
+      "sha256": "8f2b8149d5c3061438c7255db050842e41f521d16654a0e259858184834e40c8",
+      "units": 504
+    },
+    {
+      "bf16": 228,
+      "label": "prod-27b-nvfp4cb-5p5",
+      "narrowed_pct": 37.13355048859935,
+      "non_bf16": 386,
+      "path": "/home/rob/dq-runs/prod-27b-nvfp4cb-5p5/artifacts/layer_config.json",
+      "sha256": "03364db802922379b51a52fb744a734142cb106c6476eadedb5477cbbfcd6385",
+      "units": 614
+    },
+    {
+      "bf16": 0,
+      "label": "fc45-0p6b-nvfp4",
+      "narrowed_pct": 0.0,
+      "non_bf16": 196,
+      "path": "/home/rob/dq-runs/fc45-0p6b-nvfp4/artifacts/layer_config.json",
+      "sha256": "72b6a597beb296fb16844f67182124920286caec42778f7b79aa19bb4d120dc3",
+      "units": 196
+    }
+  ],
   "reference_digests": {
+    "hook_scope": {
+      "hooked_qnames": 8,
+      "hooked_qnames_sha256": "6637477139cfe12895c47773013ba34d94eb63d3f306bb6c9dff764b4ee29fdb",
+      "render_narrowed": false,
+      "rendered_qnames": 8,
+      "schema": "prismaquant.production_weight_cache.activation_hook_scope.v1"
+    },
     "row_shapes": {
       "layers.0.o_proj": [
         16,
@@ -79,7 +115,7 @@
       "layers.3.q_proj": "566dad93d38bf7329f58a4a3fb4c799ad9a1f7065a2a9a1ed87ca5020675f88d"
     }
   },
-  "schema": "prismaquant.stripe_row_identity_byte_baseline.v1",
+  "schema": "prismaquant.stripe_row_identity_byte_baseline.v2",
   "settings": {
     "format": "NVFP4",
     "hidden": 64,
@@ -94,29 +130,35 @@
     "seqlen": 40
   },
   "summary": {
-    "fix_wide_hook_assignment": {
+    "one_bf16_last_fixed": {
       "bytes_differ": [],
       "rows_differ": [],
-      "units": 4
+      "units": 7
     },
-    "fix_wide_hook_stripe": {
-      "bytes_differ": [],
-      "rows_differ": [],
-      "units": 4
-    },
-    "render_scope_assignment": {
+    "one_bf16_last_old_convention": {
       "bytes_differ": [
+        "layers.0.o_proj",
+        "layers.0.q_proj",
         "layers.1.o_proj",
         "layers.1.q_proj",
-        "layers.3.o_proj",
+        "layers.2.o_proj",
+        "layers.2.q_proj",
         "layers.3.q_proj"
       ],
       "rows_differ": [
+        "layers.0.o_proj",
+        "layers.0.q_proj",
         "layers.1.o_proj",
         "layers.1.q_proj",
-        "layers.3.o_proj",
+        "layers.2.o_proj",
+        "layers.2.q_proj",
         "layers.3.q_proj"
       ],
+      "units": 7
+    },
+    "render_scope_assignment": {
+      "bytes_differ": [],
+      "rows_differ": [],
       "units": 4
     },
     "stripe_nonprefix_L1L3": {
@@ -147,6 +189,16 @@
         "layers.1.o_proj",
         "layers.1.q_proj"
       ],
+      "units": 4
+    },
+    "stripe_via_render_qnames_nonprefix": {
+      "bytes_differ": [],
+      "rows_differ": [],
+      "units": 4
+    },
+    "stripe_via_render_qnames_prefix": {
+      "bytes_differ": [],
+      "rows_differ": [],
       "units": 4
     }
   }
