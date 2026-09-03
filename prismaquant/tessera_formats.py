@@ -86,6 +86,7 @@ __all__ = [
     "TesseraRateSurface",
     "artifact_bpp",
     "enumerate_grid_space",
+    "family_cache_bound",
     "get_tessera_family",
     "grid_space_rung_keys",
     "lazily_sized_cache",
@@ -315,6 +316,39 @@ def recipe_cache_bound() -> int:
     rung is priced, and not one hit across rungs.
     """
     return grid_space_rung_keys() + sum(1 for _ in enumerate_grid_space())
+
+
+def family_cache_bound() -> int:
+    """Entries a family-keyed memo may hold: every (base, arity) asked.
+
+    ``enumerate_grid_space`` asks its bases at ``_GRID_SPACE_ARITIES``;
+    ``menu_families`` asks every hardware base at arities 1 through the menu's
+    own search ceiling.  The union is the key space of ``_build_grid``,
+    ``_tcq_body_is_reachable``, ``tessera_family``, ``_grid_for`` and
+    ``family_grid_is_serialisable`` -- 32 pairs today, of which a dozen build.
+    A refused family raises inside the memo and stores nothing, so the bound
+    only has to hold what *can* be stored; over-counting costs nothing because
+    ``lru_cache`` does not preallocate.
+
+    The menu's ceiling is read off ``tessera_menu`` at sizing time rather than
+    restated, and the bases off ``_HARDWARE_BASES``: admitting a base or
+    widening the search moves this number, and the memo rebuilt after a clear
+    picks it up.  The import is deferred because ``tessera_menu`` reads this
+    module at its own import; the bound runs on first memo use, never then.
+    """
+    from .tessera_menu import _MAX_ARITY_SEARCH
+
+    menu_pairs = {
+        (base, arity)
+        for base in _HARDWARE_BASES
+        for arity in range(1, _MAX_ARITY_SEARCH + 1)
+    }
+    grid_pairs = {
+        (base, arity)
+        for base in (*_HARDWARE_BASES, *_MEASURED_FREE_BASES)
+        for arity in _GRID_SPACE_ARITIES
+    }
+    return len(menu_pairs | grid_pairs)
 
 
 @lazily_sized_cache(recipe_cache_bound)
@@ -752,6 +786,16 @@ _HARDWARE_BASES: Mapping[str, tuple[int, str]] = {
 _FREE_BASE = re.compile(r"^LM(\d+)$")
 _FORMAT_NAME = re.compile(r"^TESSERA_([A-Z0-9]+)_K(\d+)_R(\d+)$")
 
+#: Free bases ``enumerate_grid_space`` measures.  Named rather than listed at
+#: the call site so :func:`family_cache_bound` counts the same roster the
+#: enumerator builds -- a hand-listed default is how the 16-bit family stayed
+#: invisible once already.
+_MEASURED_FREE_BASES = ("LM8", "LM16", "LM32", "LM64")
+
+#: Arities ``enumerate_grid_space`` builds per base by default.  Named for the
+#: same reason: the signature default below and the bound both read it.
+_GRID_SPACE_ARITIES = (1, 2)
+
 #: A whole fused/packed serving GROUP at one family, holding a different rung
 #: per member.  It is not a rung and deliberately does not parse as one --
 #: ``parse_tessera_format_name`` returns ``None`` and ``get_format`` raises --
@@ -957,8 +1001,13 @@ class TesseraFamily:
         return _build_grid(self.base, self.base_size, self.arity)
 
 
-@lru_cache(maxsize=64)
+@lazily_sized_cache(family_cache_bound)
 def _build_grid(base: str, base_size: int, arity: int):
+    """One family's grid, built by tessera and never here.
+
+    Sized by :func:`family_cache_bound`: ``base_size`` is redundant with
+    ``base``, so the key space is the (base, arity) pairs the enumerators ask.
+    """
     if base in _HARDWARE_BASES:
         scalar = {"E2M1": E2M1_GRID, "E4M3": E4M3_GRID, "BF16": BF16_GRID}[base]
     else:
@@ -966,7 +1015,7 @@ def _build_grid(base: str, base_size: int, arity: int):
     return scalar if arity == 1 else tuple_grid(scalar, arity)
 
 
-@lru_cache(maxsize=64)
+@lazily_sized_cache(family_cache_bound)
 def _tcq_body_is_reachable(base: str, base_size: int, arity: int) -> bool:
     """Does this grid's wire use the TCQ body at ANY rung?
 
@@ -977,18 +1026,22 @@ def _tcq_body_is_reachable(base: str, base_size: int, arity: int) -> bool:
     across the anchor wall answers correctly here without anyone noticing they
     had to think about it.  0.6-4.6 ms per grid, memoised, and only the
     over-budget families ever ask.
+
+    Sized by :func:`family_cache_bound`: keyed per family, asked per family.
     """
     table = _tessera_export.recipe_table(_build_grid(base, base_size, arity))
     return any(BodyKind(entry.recipe.body) is BodyKind.TCQ for entry in table)
 
 
-@lru_cache(maxsize=256)
+@lazily_sized_cache(family_cache_bound)
 def tessera_family(base: str, arity: int = 1) -> TesseraFamily:
     """Build a family from a base-grid name and an arity.
 
     ``base`` is ``E2M1``, ``E4M3``, or ``LM<n>`` for a free Lloyd-Max grid of
     ``n`` levels.  Free grids are kernel-lane only, which is a fact about the
     grid and not a policy choice: they materialise into no hardware format.
+
+    Sized by :func:`family_cache_bound`: keyed per family, asked per family.
     """
     hardware = _HARDWARE_BASES.get(base)
     if hardware is not None:
@@ -1345,19 +1398,19 @@ def materialised_terminal_format(
 
 def enumerate_grid_space(
     bases: "Sequence[str] | None" = None,
-    arities: Sequence[int] = (1, 2),
+    arities: Sequence[int] = _GRID_SPACE_ARITIES,
 ) -> Iterator[TesseraFamily]:
     """Every family the cost budget admits, cheapest code space first.
 
     Defaults to **every** hardware base plus the free grids that have been
-    measured.  The hardware half is read off ``_HARDWARE_BASES`` rather than
-    listed, because a hand-listed default is how the 16-bit family stayed
-    invisible after the wall stopped refusing it.  Families over the anchor
-    budget are skipped rather than raising, because enumerating a space is
-    asking what is *available*.
+    measured.  Both halves are read off ``_HARDWARE_BASES`` and
+    ``_MEASURED_FREE_BASES`` rather than listed, because a hand-listed default
+    is how the 16-bit family stayed invisible after the wall stopped refusing
+    it.  Families over the anchor budget are skipped rather than raising,
+    because enumerating a space is asking what is *available*.
     """
     if bases is None:
-        bases = (*sorted(_HARDWARE_BASES), "LM8", "LM16", "LM32", "LM64")
+        bases = (*sorted(_HARDWARE_BASES), *_MEASURED_FREE_BASES)
     seen = []
     for base in bases:
         for arity in arities:

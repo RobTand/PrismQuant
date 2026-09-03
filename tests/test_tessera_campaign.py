@@ -1103,3 +1103,57 @@ print("OK")
                          env=env, capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "OK" in out.stdout
+
+
+# ---------------------------------------------------------------------------
+# One menu per shape, not one per Linear (prismaquant#149, host-only)
+# ---------------------------------------------------------------------------
+
+def test_menu_expansion_expands_once_per_distinct_shape(monkeypatch):
+    """The count, not a clock: N units over K shapes cost K expansions.
+
+    ``expand_tessera_menu`` takes nothing but the shape and the run
+    configuration, so two units of one shape get identical lists -- and on a
+    model whose units repeat shapes ~1500:1, expanding per Linear is ~1500x
+    more work than the answer needs.  The pre-fix loop called it once per
+    name by construction; this pins the reuse the fix adds.
+    """
+    from prismaquant import tessera_campaign as tc
+    from prismaquant import tessera_menu as tm
+
+    calls = []
+
+    def fake_expand(shape, **kwargs):
+        calls.append((tuple(int(d) for d in shape), dict(kwargs)))
+        return ["menu-for-%dx%d" % tuple(int(d) for d in shape)]
+
+    monkeypatch.setattr(tm, "expand_tessera_menu", fake_expand)
+
+    weights = {
+        "l0.attn.q": torch.empty(1024, 1024),
+        "l0.attn.k": torch.empty(1024, 1024),
+        "l0.attn.v": torch.empty(2048, 1024),
+        "l1.attn.q": torch.empty(1024, 1024),
+        "l1.mlp.gate": torch.empty(2048, 1024),
+        "l1.mlp.up": torch.empty(4096, 1024),
+    }
+    targets = list(weights)
+    menus = tc.expand_menus_for_targets(
+        weights, targets, mode=tm.MENU_RESEARCH, tp_degree=1,
+        parallel_kind=tm.PARALLEL_NONE)
+
+    # Six units, three shapes, three expansions -- and every expansion saw
+    # the run configuration the caller was given.
+    assert sorted(shape for shape, _ in calls) == [
+        (1024, 1024), (2048, 1024), (4096, 1024)]
+    for _, kwargs in calls:
+        assert kwargs == {"mode": tm.MENU_RESEARCH, "tp_degree": 1,
+                          "parallel_kind": tm.PARALLEL_NONE}
+
+    # Every unit keeps its menu under its own name, and same-shape units
+    # share the one list -- exact reuse, same arguments in, same list out.
+    assert set(menus) == set(targets)
+    assert menus["l0.attn.q"] is menus["l0.attn.k"] is menus["l1.attn.q"]
+    assert menus["l0.attn.v"] is menus["l1.mlp.gate"]
+    assert menus["l0.attn.q"] is not menus["l0.attn.v"]
+    assert menus["l1.mlp.up"] == ["menu-for-4096x1024"]

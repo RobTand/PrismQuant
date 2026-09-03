@@ -561,14 +561,41 @@ def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
     return out, text
 
 
+def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
+                             parallel_kind) -> dict[str, list]:
+    """One Tessera menu per distinct shape, shared across same-shape units.
+
+    ``expand_tessera_menu`` takes nothing but the shape and the run
+    configuration -- no argument identifies the unit, and ``MenuRung`` carries
+    no unit field -- so two units of one shape get identical lists.  Units
+    repeat shapes ~1500:1 on a production MoE, so expanding per Linear repeats
+    the same answer thousands of times; keying by shape expands once per
+    distinct answer instead.  Exact rather than approximate: same arguments,
+    same list.  The lists are shared, not copied -- downstream only iterates
+    them -- which is also what makes ``menu_cache_shapes``' retention the
+    thing that bounds the work.
+    """
+    from .tessera_menu import expand_tessera_menu
+
+    by_shape: dict[tuple, list] = {}
+    menus: dict[str, list] = {}
+    for name in targets:
+        shape = tuple(weights[name].shape)
+        if shape not in by_shape:
+            by_shape[shape] = expand_tessera_menu(
+                shape, mode=mode, tp_degree=tp_degree,
+                parallel_kind=parallel_kind,
+            )
+        menus[name] = by_shape[shape]
+    return menus
+
+
 def main(argv: "Sequence[str] | None" = None) -> int:
     import torch
 
     from . import format_registry as fr
     from .production_weight_cache import ProductionWeightCache
-    from .tessera_menu import (
-        MENU_MODES, PARALLEL_NONE, expand_tessera_menu, menu_mode,
-    )
+    from .tessera_menu import MENU_MODES, PARALLEL_NONE, menu_mode
     from .tessera_rate_surface import leave_one_anchor_out
     from .tessera_render import (
         HessianContractError, tessera_encoder_hessian_status,
@@ -741,13 +768,10 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         cache_dir=str(cache_dir),
         metadata={"schema": SCHEMA, "menu_mode": mode},
     )
-    menus: dict[str, list] = {}
-    for name in targets:
-        shape = tuple(weights[name].shape)
-        menus[name] = expand_tessera_menu(
-            shape, mode=mode, tp_degree=args.tp_degree,
-            parallel_kind=PARALLEL_NONE,
-        )
+    menus = expand_menus_for_targets(
+        weights, targets, mode=mode, tp_degree=args.tp_degree,
+        parallel_kind=PARALLEL_NONE,
+    )
 
     measured: dict[str, dict[str, list[CampaignAnchor]]] = {}
     if checkpoint.is_file():
