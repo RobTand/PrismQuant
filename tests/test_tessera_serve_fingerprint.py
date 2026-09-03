@@ -335,6 +335,36 @@ def test_an_unrelated_shared_object_is_still_not_matched():
         assert module.matches_tracked_extension(mapped) is False
 
 
+def test_the_residency_scan_records_the_decoder(tmp_path, monkeypatch):
+    """End to end through the function the manifest actually calls.
+
+    The predicate tests above prove the rule; this proves ``residency_scan``
+    applies it to what ``/proc/<pid>/maps`` says, which is the only place the
+    fingerprint ever reads it from.  With the call to
+    ``matches_tracked_extension`` removed the scan records nothing and this
+    fails on ``found``; with the substring predicate restored it records the
+    build directory's unrelated library too.
+    """
+    module = _serve_fingerprint()
+    prefix = _published_rows()[0]["module_name_prefix"]
+    stem = f"{prefix}9f2c"
+    maps = tmp_path / "1234" / "maps"
+    maps.parent.mkdir()
+    maps.write_text(
+        "7f00-7f01 r-xp 00000000 00:00 1 "
+        f"/root/.cache/torch_extensions/py312/{stem}/{stem}.so\n"
+        "7f02-7f03 r-xp 00000000 00:00 2 "
+        f"/root/.cache/torch_extensions/py312/{stem}/libtorch_python.so\n"
+        "7f04-7f05 r-xp 00000000 00:00 3 /usr/lib/libcudart.so.13\n",
+        encoding="utf-8")
+    monkeypatch.setattr(
+        module, "Path",
+        lambda p: Path(str(p).replace("/proc", str(tmp_path))))
+    found, readable, unreadable = module.residency_scan(["1234", "4321"])
+    assert found == [f"{stem}.so"]
+    assert readable == [1234] and unreadable == [4321]
+
+
 def test_an_unknown_match_rule_is_refused_rather_than_approximated():
     """The tool implements a named set of rules and refuses a name outside it.
 
