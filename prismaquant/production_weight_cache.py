@@ -5491,10 +5491,20 @@ def validate_packed_append_identity(
     # pairs are adopted on the next append) rather than stranding the
     # directory — fail-closed still holds, since every base field below
     # raises on its own and the merged map refuses same-pair conflicts.
-    if set(raw) != base_field_set and set(raw) != (
-        base_field_set | {"pair_fit_calibration_hashes"}
-    ):
-        raise ValueError(f"{where} has unsupported fields")
+    # Two distinct refusals, not one: an unknown field and a missing base
+    # field are different faults, and a single set-equality test reports
+    # both as "unsupported fields" -- a message that names the wrong
+    # reason for half the sidecars it rejects.
+    unknown = set(raw) - base_field_set - {"pair_fit_calibration_hashes"}
+    if unknown:
+        raise ValueError(
+            f"{where} has unsupported fields: {sorted(unknown)}"
+        )
+    absent = base_field_set - set(raw)
+    if absent:
+        raise ValueError(
+            f"{where} is missing required fields: {sorted(absent)}"
+        )
     budget = raw.get("module_token_budget")
     if not isinstance(budget, int) or isinstance(budget, bool) or budget < 1:
         raise ValueError(f"{where}.module_token_budget must be a positive int")

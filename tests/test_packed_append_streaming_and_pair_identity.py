@@ -318,3 +318,44 @@ def test_base_fill_adopts_streaming_sidecar(tmp_path, monkeypatch):
     assert set(
         merged[STREAMING_APPEND_SIDECAR_KEY]["layers"]
     ) == {"mlp.experts"}
+
+
+# A #170-era sidecar, hand-built rather than produced by this module's own
+# writer.  Round-tripping our writer would pass whatever the writer emits,
+# including a schema nothing on disk actually has; the point of this fixture
+# is that it is the shape written BEFORE #173 existed.
+_V1_PACKED_SECTION = {
+    "schema": "prismaquant.production_weight_cache.packed_append_identity.v1",
+    "module_token_budget": 128,
+    "max_rows_per_expert": 32,
+    "eval_rows_per_expert": 16,
+    "render_mode": "batched",
+    "gate_calibration_hash": None,
+    "gate_token_budget": None,
+    "hooked_qnames_sha256": "0" * 64,
+    "hooked_qnames": 4,
+    "max_layers": None,
+}
+
+
+def test_pre_173_sidecar_without_pair_map_still_validates():
+    """Every cache directory on disk predates the pair map; none may strand."""
+    got = pwc.validate_packed_append_identity(
+        dict(_V1_PACKED_SECTION), where="v1 sidecar"
+    )
+    assert got["module_token_budget"] == 128
+    assert not got.get("pair_fit_calibration_hashes")
+
+
+def test_unknown_field_and_missing_field_refuse_for_their_own_reason():
+    """A refusal that names the wrong fault sends the reader to the wrong fix."""
+    extra = dict(_V1_PACKED_SECTION, nonsense=1)
+    with pytest.raises(ValueError, match=r"unsupported fields: \['nonsense'\]"):
+        pwc.validate_packed_append_identity(extra, where="v1 sidecar")
+
+    short = dict(_V1_PACKED_SECTION)
+    del short["render_mode"]
+    with pytest.raises(
+        ValueError, match=r"missing required fields: \['render_mode'\]"
+    ):
+        pwc.validate_packed_append_identity(short, where="v1 sidecar")
