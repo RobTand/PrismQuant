@@ -3335,12 +3335,16 @@ def main():
     # aggregation (it skips `.__fused__.` and packed-group entries explicitly).
     #
     # A super item carries one candidate per stock format NAME *and*, for each
-    # Tessera family its members share, the group's own exact multi-choice
-    # knapsack over their rungs (tessera_group_composites). So the DP CAN
-    # return a mixed-rung group -- one family, a rate per member -- which is
-    # the constraint the runtime actually imposes; this comment used to say
+    # (family, shared-signature) cell its members share, the group's own exact
+    # multi-choice knapsack over their rungs (tessera_group_composites). So
+    # the DP CAN return a mixed-rung group -- one decoder, a rate per member --
+    # WHERE the pinned Tessera contract's fused_module block licenses it
+    # (fields.q256 = per_member since contract v6); this comment used to say
     # the opposite, and the one-rung reading cost 1.12-1.29x in Δloss on the
-    # Qwen3-0.6B continuous menu.
+    # Qwen3-0.6B continuous menu. It then asserted the licence instead of
+    # reading it, which is the defect prismaquant #132 closed: with no
+    # contract pinned there are no composites at all, and the __licence__
+    # stamp below says so.
     tessera_group_menu_report: dict = {}
     if not args.no_fused_aggregation:
         stats, costs, candidates = aggregate_fused_siblings(
@@ -3350,8 +3354,9 @@ def main():
         sib_groups = sum(1 for n in candidates if _FUSED_SIBLING_MARKER in n)
         print(f"[alloc] fused-sibling aggregation: {sib_groups} groups "
               f"(qkv_proj / gate_up_proj / ...)")
-        # The group knapsack: one family per group, a rung per member. Report
-        # what the fold cost and what it produced, per (group, family) --
+        # The group knapsack: one decoder per group, a rung per member where
+        # the contract licenses it. Report what the fold cost and what it
+        # produced, per (group, cell) --
         # "how big is the option set the DP now chooses from" is the number
         # that says whether the exact constraint is affordable.
         tessera_group_menu_report = {
@@ -3359,9 +3364,18 @@ def main():
             for name in candidates
             if stats.get(name, {}).get("_tessera_group_menu")
         }
-        for name, per_family in sorted(tessera_group_menu_report.items()):
-            for family, row in sorted(per_family.items()):
-                print(f"[alloc] tessera group knapsack {name} {family}: "
+        for name, per_class in sorted(tessera_group_menu_report.items()):
+            for label, row in sorted(per_class.items()):
+                if label.startswith("__"):
+                    # A stamp, not a fold: ``__licence__`` (what the pinned
+                    # contract freed) and ``__ablation__`` (the fold switched
+                    # off). Printed as itself so a run that produced no
+                    # composite says why, instead of KeyError-ing on a
+                    # ``member_menu`` it never had.
+                    print(f"[alloc] tessera group knapsack {name} {label}: "
+                          f"{row}", flush=True)
+                    continue
+                print(f"[alloc] tessera group knapsack {name} {label}: "
                       f"member menus {row['member_menu']} -> fold "
                       f"{row['fold_frontier']} -> {row['options']} options",
                       flush=True)
