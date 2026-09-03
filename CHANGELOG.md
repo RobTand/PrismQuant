@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- **The group knapsack's per-member rung licence is read from the Tessera
+  contract, not from its own docstring** (#132, RobTand/tessera#37;
+  `allocator_candidates.tessera_group_composites`,
+  `tessera_menu.fused_module_licence`, `tessera_formats.fused_shared_signature`).
+  Contract v6's `fused_module.fields` block says which fields one vLLM-fused
+  module's roles must share and which are free per member, and the fold now
+  reads it: `fused_module` is part of `contract_answer`, so a contract that
+  re-tightens `q256` re-stales the pin with a named field instead of leaving
+  the allocator to pick rungs the exporter refuses. The same read narrows the
+  fold -- `wire_recipe` is a function of `(grid, q256)`, so one family can span
+  two bodies and only rungs agreeing on every shared field are summed -- and a
+  `shared` field the allocator cannot evaluate refuses rather than being
+  skipped. **Behaviour change:** with no Tessera contract pinned, which is
+  production, the fold now returns no options where it previously folded, and
+  stamps `__licence__` saying so on every group with a Tessera rung on a
+  member's menu. A stock-only group never asks the licence question and so
+  carries no receipt: its super item is unchanged.
+
 - **The Tessera TP gate fails closed on an unknown profile id** (#120's
   fourth seam; `allocator_candidates._tensor_parallel_applicability`). It
   caught `FileNotFoundError` and loaded `research`, pricing every Tessera rung

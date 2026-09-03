@@ -1,7 +1,39 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `claude/pq-126-plane-charges`. Stamps
+As of: 2026-09-03 · `pq132-fused-licence`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `pq132-fused-licence`) for the **fused module's
+per-member rung licence, read from the contract** (§4.10; PrismaQuant #132
+consuming RobTand/tessera#37). The group knapsack gave each member of a fused
+group its own rung on the strength of its own docstring -- "they can disagree
+about the rate" -- which is a claim about what the serving runtime's loader
+accepts, carried in a field no gate can read. Tessera publishes the same fact
+machine-readably (contract v6's `fused_module.fields`, checked on the Tessera
+side against `tessera.serving.scheme.FUSED_MODULE_FIELDS`, the dict the loader
+itself gates on), and the fold now reads it. The read runs **both** ways, and
+the second direction is where the defect was: holding only the FAMILY fixed
+does not honour the block's `shared` fields, because `wire_recipe` is a
+function of `(grid, q256)`. Measured on the parent commit, a family-only fold
+put a WINDOW-body rung (`TESSERA_E2M1_K2_R850`) and a TCQ one (`R896`) in one
+module, on the frontier at 30 bytes -- two `body` values where the contract
+publishes one
+(`tests/test_allocator_sibling_aggregation.py::test_one_family_is_not_one_decoder_so_two_bodies_never_share_a_module`).
+The fold now partitions each member's menu by the shared fields a rung decides
+and sums only within a class; a `shared` field it cannot evaluate refuses
+outright rather than being skipped; and `fused_module` is inside
+`contract_answer`, so a contract that re-tightens `q256` re-stales the pin with
+a named field instead of silently changing what may be allocated.
+**Default behaviour changed**: with no contract pinned -- production today,
+since no Tessera RELEASE tag exists -- the fold returns no options at all where
+it previously folded, and stamps `__licence__` saying so. The stamp is written
+for every group with a Tessera rung on a member's menu; a group whose members
+carry only stock formats never asks the licence question and its super item is
+byte-identical to before. `mixed_rung_receipt`
+is still `false`: the relaxation is proven by a decode identity, not by a
+serve. The solver's second, still-prose copy of the same licence
+(`allocator_solver._resolve_family_group`) is out of scope here and tracked as
+PrismaQuant #140.
 
 Re-stamped (2026-09-03, `muse/pq-147-145-hooks`) for the **activation hook
 scope gates** (§5.4; issues #145, #147). The §5.4 stamp below closed with the
@@ -4922,11 +4954,62 @@ the unconstrained arm's own rung triple, so the family constraint there is free
 and the 0.003% residual is the outer DP's charged-bin quantisation.
 `PRISMAQUANT_TESSERA_GROUP_KNAPSACK=0` disables the fold as a debug ablation --
 that is the arm those ratios are measured against, and it stamps `__ablation__`
-into the group report so a run cannot be mistaken for a default one. **Serving premise unattested**: free
-per-member rates require a runtime that decodes a fused group as per-member
-wires (`bresenham_rate_schedule` is a per-COLUMN quota shared by every row of
-ONE unit), and no pinned release attests it -- principle 9's export gate, not
-this, decides what ships.
+into the group report so a run cannot be mistaken for a default one.
+
+**The licence is the contract's, and it narrows the fold as well as opening
+it** (PrismaQuant #132, `allocator_candidates.tessera_group_composites`,
+`tessera_menu.fused_module_licence`, `tessera_formats.fused_shared_signature`).
+What one vLLM-fused module's roles may disagree about is a fact about the
+serving runtime, so it is read from Tessera's `runtime_contract.json`
+`fused_module.fields` block -- checked on the Tessera side against
+`tessera.serving.scheme.FUSED_MODULE_FIELDS`, the dict the loader itself gates
+on -- and never asserted here. It publishes `family`, `structure`, `grid`,
+`body`, `plane`, `columns` as **shared** and `q256`, `rows` as **per_member**
+(contract v6, RobTand/tessera#37). The read is one read per run, through
+`tessera_menu.tessera_runtime_contract`, so the licence a group folds under and
+the route admission that priced its rungs cannot come from two Tessera builds
+inside one run. Four consequences, all of them enforced rather than described:
+
+* `q256: per_member` is the licence for the fold at all. Withdraw it and the
+  fold enumerates nothing, so the group keeps the per-NAME intersection, which
+  asserts nothing per member. **With no contract pinned -- production today,
+  since no Tessera RELEASE tag exists -- there is no licence to read and the
+  fold likewise declines, where before this change it folded.** Either way it
+  stamps `__licence__` into the group report, so a receipt can tell "the
+  runtime says one rung" from "nothing was asked" -- but only where the
+  question arises: a group with no Tessera rung on any member's menu returns
+  before the stamp, so the per-NAME path's super items are untouched
+  (`tests/test_allocator_sibling_aggregation.py::test_a_stock_menu_gains_no_group_options_at_all`).
+* **holding the family fixed is not enough to honour the shared fields.**
+  `tessera.export.wire_recipe` is a function of `(grid, q256)`, not of the
+  family: on `E2M1x2` it writes a WINDOW body over LUT16 below the TCQ cap and
+  a TCQ body at 896. Measured on the parent commit, a family-only fold offered
+  `q_proj` at R896 (TCQ) beside `k_proj` at R850 (WINDOW) -- two `body` values
+  in one module, on the frontier at 30 bytes, and `body` is `shared`. The fold
+  now runs per **coherence class**, keyed by the shared fields a rung decides
+  (`family`, `grid`, `body`, `plane`), so only rungs that agree on all of them
+  are summed, and one family may now span more than one class.
+* a `shared` field the fold cannot evaluate is a **refusal**, not a skip: the
+  vocabulary is closed by `tessera_formats.FUSED_MODULE_RUNG_FIELDS` (a rung
+  decides it) and `FUSED_MODULE_SHAPE_FIELDS` (it is fixed before the allocator
+  chooses anything), and a `shared` field in neither raises. `columns` is the
+  one shared shape field that a *profile* could violate, so it is checked where
+  it can differ -- on the group the profile built, in
+  `aggregate_fused_siblings` -- and a group whose members read different input
+  widths declines the fold with the widths named in its receipt rather than
+  failing the run.
+* the block is inside `contract_answer`, so a Tessera commit that re-tightens
+  it re-stales the pin with a field-level diff instead of silently changing
+  what this producer may allocate.
+
+**Serving premise attested for the LOADER, not for a serve**: the contract's
+`mixed_rung_receipt` is `false` -- the relaxation is proven by a decode
+identity (a real Qwen3-0.6B q/k/v at three rungs decoding element-for-element
+to what the three roles decode alone), not by a vLLM serve. Principle 9's
+export gate, not this, decides what ships. The remaining prose licence is
+`allocator_solver._resolve_family_group`, which states the same relaxation in
+its docstring and applies it to packed-MoE groups the contract does not cover
+(`expert_parallel.units` is `[]`); tracked as PrismaQuant #140.
 
 **Anchors are placed per fused GROUP** (`tessera_campaign`). The
 `--max-artifact-bpp` cap is a WIRE bpp and the wire->body map is

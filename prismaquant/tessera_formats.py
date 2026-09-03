@@ -50,7 +50,7 @@ which are worth encoding is a measurement, and only four of them have one.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import lru_cache, wraps
@@ -66,11 +66,15 @@ __all__ = [
     "RATE_SURFACE_ALL_LEGAL",
     "RATE_SURFACE_DENSE",
     "RATE_SURFACE_MODES",
+    "FUSED_MODULE_RATE_FIELD",
+    "FUSED_MODULE_RUNG_FIELDS",
+    "FUSED_MODULE_SHAPE_FIELDS",
     "SCALE_PLANE_BITS_Q256",
     "SCALE_LUT_BITS_Q256",
     "SCALE_PLANE_NAMES",
     "TesseraServingRoute",
     "family_q256_bounds",
+    "fused_shared_signature",
     "family_rate_cap",
     "materialised_terminal_format",
     "tessera_serving_route",
@@ -1523,6 +1527,108 @@ class TesseraRateSurface:
         )
 
 
+#: The ``fused_module.fields`` names a Tessera **rung** decides, and that this
+#: module can therefore evaluate from a format name alone.
+#:
+#: The Tessera runtime contract publishes, per field, whether one vLLM-fused
+#: module's roles must agree on it (``shared``) or may differ (``per_member``).
+#: These four are the ones a group knapsack can violate by handing two members
+#: different rungs:
+#:
+#: * ``family`` and ``grid`` -- a Tessera family IS a (base grid, arity) pair
+#:   here, so the family component pins the grid too and both read off the
+#:   name;
+#: * ``body`` and ``plane`` -- read from ``tessera.export.wire_recipe`` AT THAT
+#:   RUNG, because the recipe is a function of ``(grid, q256)`` and not of the
+#:   grid alone.  On ``E2M1x2`` it flips at the TCQ cap: rungs below 896 write
+#:   a WINDOW body and 896 writes TCQ.  Two members of one family at 850 and
+#:   896 therefore put two bodies in one module, which the contract marks
+#:   ``shared``.
+FUSED_MODULE_RUNG_FIELDS = ("family", "grid", "body", "plane")
+
+#: The ``fused_module.fields`` names **no rung can move**, listed to be
+#: RECOGNISED rather than evaluated.
+#:
+#: The rule, not the roster: a field belongs here when the value is fixed
+#: before the allocator chooses anything, so no choice it makes can put two
+#: values of it inside one module.  ``rows`` and ``columns`` come from the
+#: tensor and ``structure`` from the model graph.  They are named because a
+#: ``shared`` field this module can neither evaluate nor recognise is refused
+#: (``allocator_candidates._fused_group_licence``) -- silently folding as
+#: though it were absent is the assertion reading the contract exists to
+#: prevent -- and because *recognised* is not *unchecked*: whether the members
+#: of one fused group really do read the same ``columns`` is decided by the
+#: profile that grouped them, and ``aggregate_fused_siblings`` checks it there.
+#: ``structure`` and ``rows`` get no such check on this side: ``rows`` the
+#: contract marks ``per_member`` anyway, and one ``structure`` per model is the
+#: only thing a per-model graph can produce.
+FUSED_MODULE_SHAPE_FIELDS = ("structure", "columns", "rows")
+
+#: The rate's field name in that block -- the one field the group knapsack
+#: varies, and therefore the one whose licence decides whether the fold may
+#: run at all.
+FUSED_MODULE_RATE_FIELD = "q256"
+
+
+def fused_shared_signature(
+    fmt: object, shared_fields: "Collection[str]"
+) -> "tuple[tuple[str, str], ...] | None":
+    """What ``fmt`` commits one fused module to, over the contract's shared set.
+
+    Two rungs may sit in the same module exactly when this returns the same
+    value for both.  ``None`` means ``fmt`` is not a Tessera rung name, i.e.
+    the question does not apply.
+
+    ``shared_fields`` comes from the pinned runtime contract
+    (``TesseraContract.fused_module.shared_fields()``) and is never a literal
+    here: which fields a fused module's roles must agree on is a fact about
+    the serving runtime, so it is read from the table that runtime publishes
+    or it is refused (principle 14).  Passing a narrower set widens what a
+    group may hold and a wider one tightens it -- both directions follow the
+    contract, which is the point.
+
+    Deliberately lenient about the rung's legality: this answers "can these
+    two live in one module", not "is this rung realisable", and the second
+    question has its own gate (:func:`validate_body_rate_q256`, the menu's
+    realisability check).  Raising here would make a coherence question fail
+    on an unrelated one.
+    """
+    if not isinstance(fmt, str):
+        return None
+    match = _FORMAT_NAME.match(fmt)
+    if match is None:
+        return None
+    base, arity, rung = match.group(1), int(match.group(2)), int(match.group(3))
+    wanted_set = set(shared_fields)
+    wanted = [
+        field for field in (*FUSED_MODULE_RUNG_FIELDS, FUSED_MODULE_RATE_FIELD)
+        if field in wanted_set
+    ]
+    if not wanted:
+        return ()
+    spec = tessera_family(base, arity)
+    out: list[tuple[str, str]] = []
+    recipe = None
+    for field in wanted:
+        if field == "family":
+            out.append((field, spec.name))
+        elif field == "grid":
+            # The grid's own spelling, from the authority that builds it, so
+            # this cannot drift from Tessera's name for the same object.
+            out.append((field, str(
+                _build_grid(spec.base, spec.base_size, spec.arity).name)))
+        elif field == FUSED_MODULE_RATE_FIELD:
+            out.append((field, str(rung)))
+        else:
+            if recipe is None:
+                recipe = tessera_wire_recipe(spec, rung)
+            if field == "body":
+                out.append((field, BodyKind(recipe.body).name))
+            else:                              # "plane"
+                out.append((field, scale_plane_name(recipe.scale_plane)))
+    return tuple(out)
+
+
 def format_promotion_class(fmt: object) -> str:
     """The identity every member of one serving unit must share.
 
@@ -1549,13 +1655,23 @@ def format_promotion_class(fmt: object) -> str:
 
     .. warning::
 
-       Whether a runtime can serve a fused group whose members hold different
-       rungs of one family is a fact about that runtime, and no pinned release
-       attests it today (there is no Tessera export leg at all).  This function
-       states what the ALLOCATOR may consider; principle 9's export gate is
-       what decides whether it ships.  ``tessera_menu.route_admission`` carries
-       the attestation, and under the default attested menu mode there are no
-       Tessera candidates for this relaxation to act on.
+       This function is a *name* projection and nothing more.  Whether a
+       runtime serves a fused module whose members hold different rungs of one
+       family is a fact about that runtime, and it is **not** decided here: it
+       is published, per field, in the Tessera contract's ``fused_module``
+       block (``q256: per_member`` since contract v6, RobTand/tessera#37) and
+       read through ``tessera_menu.fused_module_licence`` -- that module's declared
+       one read.  The group
+       knapsack folds over that block and holds every ``shared`` field fixed
+       -- including ``body`` and ``plane``, which the family alone does NOT
+       fix, because ``wire_recipe`` is a function of ``(grid, q256)``; see
+       :func:`fused_shared_signature`.  Returning the family here is what lets
+       ``allocator_solver`` promote a unit onto one decoder; it is not a claim
+       that the rate is free, and callers must not read it as one.
+
+       Principle 9's export gate still decides whether such an assignment
+       ships, and ``mixed_rung_receipt`` is ``false``: no vLLM serve has
+       covered a mixed-rung module, only a decode identity.
     """
     if not isinstance(fmt, str):
         return str(fmt)

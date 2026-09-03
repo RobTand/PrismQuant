@@ -405,6 +405,9 @@ def test_a_prose_only_tessera_edit_does_not_re_stale_the_pin(dev_pin, monkeypatc
         for axis in unit.get("loader_axes", ()) or ():
             if isinstance(axis, dict):
                 axis["reason"] = "rewritten prose that no gate reads"
+    for note in ("fields_note", "sidecar_q256_note",
+                 "mixed_rung_receipt_note"):
+        payload["fused_module"][note] = "rewritten prose that no gate reads"
     # Reverse every mapping's key order and both arrays the reader iterates.
     payload = {k: payload[k] for k in reversed(list(payload))}
     payload["formats"] = list(reversed(payload["formats"]))
@@ -601,19 +604,124 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
     """
     answer = trc.contract_answer(trc.load_tessera_contract())
     assert set(answer) == {"schema", "lane_schema", "quant_method",
-                           "native_extensions", "families", "cells"}
+                           "native_extensions", "fused_module",
+                           "families", "cells"}
     flat = repr(answer)
     # ``native_extensions`` is answer because the §7.4 fingerprint gate reads
     # it; the two fields of it that name files in the RUNTIME's own tree move
     # nothing on this side, so they stay identity like ``plugin_version``.
     for identity_field in ("contract_version", "plugin_version", "attested_on",
                            "rationale", "detail", "changelog",
-                           "csrc/", "loaded_by"):
+                           "csrc/", "loaded_by",
+                           "fields_note", "sidecar_q256_note",
+                           "mixed_rung_receipt_note"):
         assert identity_field not in flat, (
             f"{identity_field} is identity or prose, not an answer")
     for family in ("TESSERA_E2M1_K2", "TESSERA_E4M3_K1", "TESSERA_BF16_K1"):
         assert set(answer["families"][family]) == {
             "reader_rate_range_q256", "attested_rungs_q256", "max_world_size"}
+
+
+def test_the_fused_module_answer_is_the_values_a_gate_reads(dev_pin):
+    """The rule, not today's roster: the answer IS what the reader parsed.
+
+    ``contract_answer`` may carry a ``fused_module`` key only when the reader
+    keeps that key, and the reader keeps a key only when a gate on this side
+    decides on it -- which is what :class:`FusedModuleLicence` is for.  So the
+    two sets are compared to each other rather than to a literal, and the
+    block's remaining keys are shown to be unreachable: a gate cannot read a
+    value the parsed licence does not carry.  ``container`` is today's example
+    -- there is no Tessera export leg to write a sidecar with, so nothing here
+    reads the magic -- and the day a writer reads it, it joins the licence and
+    the answer together or this test fails.
+
+    The other half of the rule, that every parsed value reaches a gate's
+    receipt, is
+    ``tests/test_allocator_sibling_aggregation.py::test_every_parsed_licence_value_reaches_the_folds_receipt``.
+    """
+    import dataclasses
+    import json as _json
+
+    contract = trc.load_tessera_contract()
+    answer = trc.contract_answer(contract)
+    parsed = {f.name
+              for f in dataclasses.fields(trc.FusedModuleLicence)}
+    assert set(answer["fused_module"]) == parsed
+
+    block = _json.loads(
+        trc.contract_path().read_text(encoding="utf-8"))["fused_module"]
+    # The contract's own prose convention, asserted rather than assumed: an
+    # ``X_note`` key documents the ``X`` beside it.
+    prose = {key for key in block if key.endswith("_note")}
+    assert prose, "the block must carry its prose as *_note keys"
+    for note in prose:
+        assert note[:-len("_note")] in block, note
+    for key in set(block) - parsed - prose:
+        assert not hasattr(contract.fused_module, key), (
+            f"{key!r} is parsed onto the licence but missing from the answer, "
+            "so a gate could decide on a value the pin does not cover")
+        assert key not in answer["fused_module"]
+
+
+def test_a_withdrawn_fused_module_licence_refuses_at_the_pin(
+        tmp_path, monkeypatch, dev_pin):
+    """The second leg of the same guarantee, one stage earlier.
+
+    ``tests/test_allocator_sibling_aggregation`` pins that the FOLD declines
+    when the licence is withdrawn.  This pins that a run never gets that far:
+    ``fused_module.fields.q256`` is a value a gate reads, so it is in the
+    answer, so a contract that re-tightens it refuses at pin-load with the
+    field named -- not at export, three stages later.
+    """
+    import json as _json
+
+    payload = _json.loads(trc.contract_path().read_text(encoding="utf-8"))
+    assert payload["fused_module"]["fields"]["q256"] == "per_member"
+    payload["fused_module"]["fields"]["q256"] = "shared"
+    moved = tmp_path / "runtime_contract.json"
+    moved.write_text(_json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(trc, "contract_path", lambda: moved)
+
+    with pytest.raises(trc.TesseraContractError) as excinfo:
+        trc.load_tessera_contract()
+    assert "fused_module.fields[q256]" in str(excinfo.value)
+    assert "'per_member'" in str(excinfo.value)
+
+
+def test_a_third_fused_module_licence_value_is_refused(tmp_path, monkeypatch,
+                                                       dev_pin):
+    """``shared``/``per_member`` is the whole vocabulary this reader knows."""
+    import json as _json
+
+    payload = _json.loads(trc.contract_path().read_text(encoding="utf-8"))
+    payload["fused_module"]["fields"]["q256"] = "per_member_if_the_loader_says"
+    moved = tmp_path / "runtime_contract.json"
+    moved.write_text(_json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(trc, "contract_path", lambda: moved)
+
+    with pytest.raises(trc.TesseraContractError, match="will not guess"):
+        trc.load_tessera_contract()
+
+
+def test_the_licence_and_the_route_admission_come_from_one_read(monkeypatch):
+    """One read per run: substituting it substitutes both.
+
+    ``tessera_menu.tessera_runtime_contract`` is this module's declared one
+    read, and :func:`tessera_menu.fused_module_licence` goes through it rather
+    than calling ``load_tessera_contract`` a second time -- so the licence the
+    group knapsack folds under and the route admission that priced its rungs
+    cannot come from two different Tessera builds inside one run.
+    """
+    calls = []
+
+    def _one_read():
+        calls.append(1)
+        return None
+
+    monkeypatch.setattr(tm, "tessera_runtime_contract", _one_read)
+    assert tm.fused_module_licence() is None
+    assert len(calls) == 1, (
+        "fused_module_licence bypassed the module's one read")
 
 
 def test_reading_the_contract_needs_no_serving_code():
@@ -897,17 +1005,23 @@ def test_pre_aggregation_offers_a_fused_group_one_family_and_free_rates():
     collapses for a reason that has nothing to do with Tessera.
 
     So the group's option set is now the Minkowski sum of its members' (bytes,
-    cost) menus restricted to one family -- the group's own exact multi-choice
-    knapsack, kept as a Pareto set under dominance (never a hull). Every option
-    is one family across the group and a rate per member.
+    cost) menus restricted to one ``(family, shared-signature)`` cell -- the
+    group's own exact multi-choice knapsack, kept as a Pareto set under
+    dominance (never a hull). Every option agrees on every field the pinned
+    contract marks shared and carries a rate per member.
 
-    **The serving premise is still unattested.** Whether a runtime decodes a
-    fused group as per-member wires it concatenates -- which is what free
-    per-member rates require, since ``bresenham_rate_schedule(root,
-    n_columns)`` is a per-COLUMN quota shared by every row of ONE unit -- is a
-    fact about that runtime, and no pinned release attests it. Principle 9's
-    export gate is what decides whether such an assignment ships; this pins
-    only what the allocator may consider.
+    **The premise is now attested, and read rather than asserted (#132).**
+    That a runtime decodes a fused module as per-member wires it concatenates
+    -- what free per-member rates require, since
+    ``bresenham_rate_schedule(root, n_columns)`` is a per-COLUMN quota shared
+    by every row of ONE unit -- is a fact about that runtime, and Tessera
+    publishes it: ``fused_module.fields`` marks ``q256`` ``per_member``
+    (contract v6, RobTand/tessera#37), and the fold reads that block instead
+    of restating it. The licence passed below is the installed contract's own,
+    so this enumerates mixed rungs only while that block says so. Two things
+    it still does not say: ``mixed_rung_receipt`` is ``false``, so no *serve*
+    has covered such a module, and principle 9's export gate is what decides
+    whether such an assignment ships.
     """
     from prismaquant.allocator_candidates import tessera_group_composites
     from prismaquant.allocator_solver import Candidate
@@ -927,7 +1041,12 @@ def test_pre_aggregation_offers_a_fused_group_one_family_and_free_rates():
                       memory_bytes=20, predicted_dloss=4.5),
         ],
     }
-    options = tessera_group_composites(members, candidates, n_params=1000)
+    options = tessera_group_composites(
+        members, candidates, n_params=1000,
+        licence=trc._load_at(
+            str(trc.contract_path()),
+            hashlib.sha256(trc.contract_path().read_bytes()).hexdigest(),
+            "installed").fused_module)
     # The members share exactly one rung name; the old intersection menu would
     # have offered one option. The knapsack offers the whole frontier.
     assert len({c.fmt for c in candidates[members[0]]}

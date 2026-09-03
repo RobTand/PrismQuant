@@ -86,6 +86,9 @@ from .lane_eligibility import (
 )
 
 __all__ = [
+    "FUSED_MODULE_FIELD_LICENCES",
+    "FUSED_MODULE_SCHEMA",
+    "FusedModuleLicence",
     "MATCH_BASENAME_FNMATCH",
     "TESSERA_CONTRACT_SCHEMA",
     "TESSERA_DEV_PIN_COMMIT",
@@ -114,6 +117,14 @@ class TesseraContractError(RuntimeError):
 #: wrong error to hand someone whose contract predates the field.
 TESSERA_CONTRACT_SCHEMA = "tessera.runtime-contract.v1"
 TESSERA_LANE_SCHEMA = "tessera.lane-eligibility.v3"
+#: The ``fused_module`` block's own schema id, checked the same way.
+FUSED_MODULE_SCHEMA = "tessera.fused-module.v1"
+
+#: The only two licences a ``fused_module.fields`` entry may carry.  An
+#: unknown token is REFUSED rather than mapped onto either: "shared" and
+#: "per_member" are the two answers a group allocator can act on, and a third
+#: word this reader does not know is a constraint it would silently drop.
+FUSED_MODULE_FIELD_LICENCES = frozenset({"shared", "per_member"})
 
 #: The development override.  See the module docstring; there is no default.
 TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
@@ -122,13 +133,15 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
 #: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
 #: contract v7 (Tessera master 35f57b4; contract bytes identical to b46ffd2).
-#: Of v7's two additive blocks, ``fused_module`` (v6, Tessera #37) moves no
-#: value in :func:`contract_answer`; ``native_extensions`` (v7, Tessera #28)
-#: DOES -- the serve fingerprint reads it (prismaquant #133), so a renamed or
-#: moved extension re-stales this pin with a named field instead of passing
-#: silently.  Advancing this constant on unchanged bytes is bookkeeping; it
-#: exists so ``bytes_are_the_reviewed_bytes`` keeps meaning "these are the
-#: bytes somebody read" rather than decaying to a permanent False.
+#: Both of v7's additive blocks move a value in :func:`contract_answer`:
+#: ``native_extensions`` (v7, Tessera #28) because the serve fingerprint reads
+#: it (prismaquant #133), and ``fused_module`` (v6, Tessera #37) because the
+#: group knapsack's fold reads it (prismaquant #132) -- so a renamed extension
+#: or a re-tightened fused-module licence re-stales this pin with a named field
+#: instead of passing silently.  Advancing this constant on unchanged bytes is
+#: bookkeeping; it exists so ``bytes_are_the_reviewed_bytes`` keeps meaning
+#: "these are the bytes somebody read" rather than decaying to a permanent
+#: False.
 TESSERA_DEV_PIN_COMMIT = "35f57b49553c4cd0a6f0606e5492aa034b3eaf5e"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
@@ -151,6 +164,17 @@ TESSERA_DEV_PIN_CONTRACT_SHA256 = (
 TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
      'lane_schema': 'tessera.lane-eligibility.v3',
      'quant_method': 'tessera',
+     'fused_module': {'schema': 'tessera.fused-module.v1',
+                      'fields': {'body': 'shared',
+                                 'columns': 'shared',
+                                 'family': 'shared',
+                                 'grid': 'shared',
+                                 'plane': 'shared',
+                                 'q256': 'per_member',
+                                 'rows': 'per_member',
+                                 'structure': 'shared'},
+                      'sidecar_q256': 'int_or_per_role_list',
+                      'mixed_rung_receipt': False},
      'native_extensions': [{'module_name_prefix': 'tessera_nvfp4_',
                             'filename_glob': 'tessera_nvfp4_*.so',
                             'match': 'basename_fnmatch',
@@ -316,6 +340,94 @@ class TesseraRouteCell:
 
 
 @dataclass(frozen=True, slots=True)
+class FusedModuleLicence:
+    """``fused_module``: what one vLLM-fused module's roles must SHARE.
+
+    The value a producer's group allocator reads instead of guessing.  vLLM
+    merges q/k/v and gate/up into one Linear and builds ONE quant method per
+    module, so everything that selects a method or a tile is a module fact;
+    the RATE is not, because every decoder in the plugin is fed from each
+    member's own parsed manifest.  Which of the two a field is is exactly what
+    :attr:`fields` says, and it is checked on the Tessera side against
+    ``tessera.serving.scheme.FUSED_MODULE_FIELDS`` -- the dict the loader
+    itself gates on -- so the table cannot drift from the code.
+
+    Read, never inferred.  ``prismaquant.allocator_candidates`` folds a fused
+    group's menu over the fields this block marks ``per_member`` and holds
+    every ``shared`` one fixed; a contract that re-tightens ``q256`` to
+    ``shared`` therefore stops the fold rather than leaving it enumerating
+    rungs the exporter refuses (prismaquant #132, RobTand/tessera#37).
+
+    Every attribute here is a value a gate on this side decides on, which is
+    what makes :meth:`answer` the block's whole projection into
+    :func:`contract_answer`.  The block's ``container`` is deliberately not
+    among them: nothing here reads the sidecar's magic, because there is no
+    Tessera export leg to write one with.
+    """
+
+    #: The block's own schema id.  A gate: the reader refuses a block carrying
+    #: another id rather than reading it as a subset of this one.
+    schema: str
+    #: ``field -> "shared" | "per_member"``, verbatim.
+    fields: Mapping[str, str]
+    #: How a mixed-rung module is SPELLED in the checkpoint's scheme.
+    #: Recorded and carried into the fold's receipt; there is no writer yet.
+    sidecar_q256: str
+    #: Whether a container receipt covers a SERVED mixed-rung module.  False
+    #: today: the relaxation is proven by a decode identity, not by a serve.
+    #: A shipcard for an artifact that ships one has to say so.
+    mixed_rung_receipt: bool
+
+    def licence_for(self, field: str) -> str:
+        """``"shared"``/``"per_member"`` for ``field``; an unpublished field raises.
+
+        Absence is not permission.  A field the contract does not name is one
+        this runtime has published nothing about, and guessing either way is
+        the assertion principle 14 refuses.
+        """
+        try:
+            return self.fields[str(field)]
+        except KeyError:
+            raise TesseraContractError(
+                f"the Tessera contract's fused_module block publishes no "
+                f"licence for {field!r}; it names "
+                f"{sorted(self.fields)}. A field it does not name is not "
+                "'probably per-member' -- ask Tessera to publish it."
+            ) from None
+
+    def is_per_member(self, field: str) -> bool:
+        """Is ``field`` free to differ between one module's roles?"""
+        return self.licence_for(field) == "per_member"
+
+    def shared_fields(self) -> frozenset[str]:
+        """Every field the module's roles must agree on."""
+        return frozenset(
+            name for name, licence in self.fields.items() if licence == "shared"
+        )
+
+    def per_member_fields(self) -> frozenset[str]:
+        """Every field each role may hold on its own."""
+        return frozenset(
+            name for name, licence in self.fields.items()
+            if licence == "per_member"
+        )
+
+    def answer(self) -> dict:
+        """The gate-read projection, for :func:`contract_answer`.
+
+        Derived from this object rather than from the JSON block, so the
+        answer carries exactly what the reader kept and a field the reader
+        does not parse cannot reach the pin.
+        """
+        return {
+            "schema": str(self.schema),
+            "fields": {str(k): str(v) for k, v in sorted(self.fields.items())},
+            "sidecar_q256": str(self.sidecar_q256),
+            "mixed_rung_receipt": bool(self.mixed_rung_receipt),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TesseraContract:
     """The plugin's packaged contract, parsed.  Every field is read, not typed."""
 
@@ -330,6 +442,8 @@ class TesseraContract:
     native_extensions: tuple[TesseraNativeExtension, ...]
     #: ``family -> max tensor-parallel world size``, closed world.
     max_world_size: Mapping[str, int]
+    #: What one vLLM-fused module's roles must share, and what is free.
+    fused_module: FusedModuleLicence
     quant_method: str
     contract_version: int
     plugin_version: str
@@ -465,11 +579,22 @@ def contract_answer(contract: "TesseraContract") -> dict:
     ``source`` and ``loaded_by`` name files and modules in the runtime's own
     tree and move nothing on this side, so they are identity and stay out,
     exactly like ``plugin_version``.
+
+    ``fused_module`` is here for a third (prismaquant #132): the group
+    knapsack's fold reads it, so a contract that re-tightened ``q256`` to
+    ``shared`` would change what this producer may allocate.  It carries
+    exactly the block's values this reader parses -- see
+    :class:`FusedModuleLicence` -- which is why ``container`` is NOT here.
+    Nothing on this side reads the sidecar's magic (there is no Tessera export
+    leg to write one with), and a value in the answer that no gate reads makes
+    a re-review out of a field nobody uses.  The block's three ``*_note`` keys
+    are prose and stay out for the same reason ``rationale`` does.
     """
     return {
         "schema": TESSERA_CONTRACT_SCHEMA,
         "lane_schema": TESSERA_LANE_SCHEMA,
         "quant_method": contract.quant_method,
+        "fused_module": contract.fused_module.answer(),
         "native_extensions": [
             {
                 "module_name_prefix": ext.module_name_prefix,
@@ -522,6 +647,28 @@ def _answer_drift(reviewed: Mapping[str, Any], installed: Mapping[str, Any]
             lines.append(
                 f"  {key}: reviewed {reviewed.get(key)!r}, installed "
                 f"{installed.get(key)!r}")
+    r_fused = dict(reviewed.get("fused_module", {}))
+    i_fused = dict(installed.get("fused_module", {}))
+    r_lic = dict(r_fused.pop("fields", {}) or {})
+    i_lic = dict(i_fused.pop("fields", {}) or {})
+    for key in sorted(set(r_fused) | set(i_fused)):
+        if r_fused.get(key) != i_fused.get(key):
+            lines.append(
+                f"  fused_module.{key}: reviewed {r_fused.get(key)!r}, "
+                f"installed {i_fused.get(key)!r}")
+    for field in sorted(set(r_lic) | set(i_lic)):
+        if field not in r_lic:
+            lines.append(
+                f"  fused_module.fields[{field}]: NEW ({i_lic[field]!r}), not "
+                "in the reviewed answer")
+        elif field not in i_lic:
+            lines.append(
+                f"  fused_module.fields[{field}]: GONE from the installed "
+                f"contract (reviewed {r_lic[field]!r})")
+        elif r_lic[field] != i_lic[field]:
+            lines.append(
+                f"  fused_module.fields[{field}]: reviewed "
+                f"{r_lic[field]!r}, installed {i_lic[field]!r}")
     r_fam, i_fam = reviewed.get("families", {}), installed.get("families", {})
     for family in sorted(set(r_fam) | set(i_fam)):
         if family not in r_fam:
@@ -781,6 +928,68 @@ def require_pin_native_extensions_match_contract(
             "commit."
         )
 
+def _parse_fused_module(payload: Mapping[str, Any], path: str
+                        ) -> FusedModuleLicence:
+    """Read ``fused_module``, or refuse.
+
+    Required, not defaulted.  A contract without this block has published
+    nothing about what a fused module's roles may disagree on, and the two
+    ways to default it are both assertions: "everything shared" would invent a
+    constraint this runtime does not state, and "the rate is free" is the exact
+    prose claim reading the block exists to replace.
+
+    Only the values a gate on this side decides on are kept, which is what
+    makes :meth:`FusedModuleLicence.answer` the whole block's projection.
+    ``container`` is read past deliberately: there is no Tessera export leg to
+    write a sidecar with, so nothing here consumes the magic, and parsing it
+    would put a field nobody uses into the pin's answer and make a re-review
+    out of it.  The day a writer reads it, it joins the dataclass and the
+    answer in one commit.
+    """
+    where = f"{path}.fused_module"
+    block = _require(payload, "fused_module", path)
+    if not isinstance(block, Mapping):
+        raise TesseraContractError(f"{where} must be a JSON object")
+    schema = block.get("schema")
+    if schema != FUSED_MODULE_SCHEMA:
+        raise TesseraContractError(
+            f"{where}.schema must be {FUSED_MODULE_SCHEMA!r}, got {schema!r}. "
+            "A block with another id is not a subset of this one, so it is "
+            "refused rather than partially read."
+        )
+    fields = _require(block, "fields", where)
+    if not isinstance(fields, Mapping) or not fields:
+        raise TesseraContractError(
+            f"{where}.fields must be a non-empty object mapping a field name "
+            "to its licence"
+        )
+    parsed: dict[str, str] = {}
+    for name, licence in fields.items():
+        if licence not in FUSED_MODULE_FIELD_LICENCES:
+            raise TesseraContractError(
+                f"{where}.fields[{name!r}] is {licence!r}; this reader knows "
+                f"only {sorted(FUSED_MODULE_FIELD_LICENCES)} and will not "
+                "guess at a third licence's meaning -- a token it mapped onto "
+                "'per_member' would widen a group allocator's menu on a word "
+                "it did not understand"
+            )
+        parsed[str(name)] = str(licence)
+    receipt = _require(block, "mixed_rung_receipt", where)
+    if not isinstance(receipt, bool):
+        raise TesseraContractError(
+            f"{where}.mixed_rung_receipt must be a JSON boolean, got "
+            f"{receipt!r}. It is the difference between "
+            "\"a serve has covered a mixed-rung module\" and \"a decode "
+            "identity has\", and a truthy string answers neither question."
+        )
+    return FusedModuleLicence(
+        schema=str(schema),
+        fields=parsed,
+        sidecar_q256=str(_require(block, "sidecar_q256", where)),
+        mixed_rung_receipt=receipt,
+    )
+
+
 
 def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
            ) -> TesseraContract:
@@ -881,6 +1090,8 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
         world[str(_require(unit, "unit", where))] = int(
             _require(unit, "max_world_size", where))
 
+    fused = _parse_fused_module(payload, path)
+
     versions = payload.get("versions", {})
     method = payload.get("quant_method", {})
     return TesseraContract(
@@ -889,6 +1100,7 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
         cells=tuple(cells),
         native_extensions=extensions,
         max_world_size=world,
+        fused_module=fused,
         quant_method=str(method.get("canonical", "")),
         contract_version=int(payload.get("contract_version", 0)),
         plugin_version=str(versions.get("tessera", "")),
