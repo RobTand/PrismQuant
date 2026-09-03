@@ -85,6 +85,29 @@ and stays with #119, and both producer tools remain
 `unsupported_experiments` until the release-tag commit promotes them. Gates:
 `tests/test_lane_gate_recording.py` (34), `tests/test_profile_export_lanes.py`.
 
+Re-stamped (2026-09-03, `muse/pq-136-141-142-receipts`, rebased onto the
+#137/#138/#139 fingerprint and #119 lane-record work) for the **three
+Tessera receipt fields nothing consumed** (§7.1, §7.4; PrismaQuant #136,
+#142 — #141 filed against work that has not landed here, so it is recorded
+as open, not closed). The serve manifest recorded only the `.so` basenames
+it *found*, so a resident serve that kept serving on the named substitute
+decoder fingerprinted differently with nothing naming what ran; the pin now
+transcribes the contract's `when_unavailable` block beside prefix/glob/match
+under the same contract→pin refusal, and the fingerprint tool reads that
+block from the transported pin JSON (no carried constant survives) and
+records per-row expected-vs-found status on every manifest -- excluded from
+both fingerprints, so no recorded fingerprint moves. `kl_ab` replays the
+block and names the substitute in the §7.4 refusal instead of implying the
+drift band. And the route `decoder` Tessera stamps on every route record
+finally has a consumer: the priced-vs-served comparison
+(`prismaquant/tessera_route_receipt.py`) refuses a census run on a known
+substitute, without a decoder, or disagreeing with the priced routes either
+way, and the receipt closes the lane's required `route.census` slot --
+required through the lane union, not a rate-axis special case -- replayed
+from the carried records at publication. Gate:
+`tests/test_tessera_substitute_decoder.py`,
+`tests/test_tessera_route_receipt.py`, each shown failing before the fix.
+
 Re-stamped (2026-09-03, `claude/pq-120-tp-fail-closed`) for the **fourth
 fail-open seam of prismaquant#120**. The stamp below says `check_serving_shape`
 now fails closed "like its three siblings"; a fourth seam had not been counted.
@@ -6435,6 +6458,24 @@ claim travels with its quality caveat). Known limit: `uniform_control_summary`
 prints producer-declared fields (`candidate_bpp`, `control_bpp`,
 `relative_slack_ppm`) beside the bpp rather than the replayed values; `verify`
 still refuses on the replay.
+
+**`route.census` (Tessera-lane cards; PrismaQuant #136).** The shipcard of a
+Tessera-lane card carries the lane's required `route.census` slot: the receipt
+that the routes the serve actually emitted -- each stamped by the plugin with
+the decoder that ran -- are the routes the artifact priced
+(`prismaquant/tessera_route_receipt.py`, `make_route_census_record`; CLI
+`fill-route-census`; the lane spec's `route.census` gate names this slot).
+The requirement travels with the lane declaration (`required_slots` UNIONS
+the lane's slots), not with a rate-axis special case. `verify` replays the
+priced-vs-served comparison from the carried records
+rather than trusting the carried boolean, and refuses a census run on a known
+substitute decoder (derived from the pinned contract's `when_unavailable`,
+never hardcoded), without a decoder, empty, or disagreeing with the priced
+routes in either direction -- plus a hand-set `passed` flag that disagrees
+with the replay. "No census was ever compared" reads as `UNFILLED`. Known
+limit: coverage strictness is uncalibrated against a real serve (nothing has
+been served yet on this side) -- both directions refuse, and relaxing either
+needs a measured serve, not an argument.
 
 The strict RTX4090 FP8-CB lane is the explicit exception to that generic
 escape hatch. Strictness is re-derived from the canonical policy/profile,

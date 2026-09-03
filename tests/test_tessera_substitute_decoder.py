@@ -17,7 +17,6 @@ defect, not the check.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
@@ -29,17 +28,6 @@ from tools.serve_fingerprint import (
     fingerprint,
     performance_stack_fingerprint,
 )
-
-
-def _tool():
-    """The tool by path, the way the container bootstrap loads it."""
-    path = (Path(__file__).resolve().parents[1]
-            / "tools" / "serve_fingerprint.py")
-    spec = importlib.util.spec_from_file_location(
-        "serve_fingerprint_by_path", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _published_rows():
@@ -62,36 +50,18 @@ def _substitute_decoders():
 
 
 # --- the pin carries what runs when the library is absent --------------------
-
-def test_the_pin_transcribes_when_unavailable_from_the_contract():
-    """One more transcription under the same contract->pin refusal (#133).
-
-    The pin carries prefix/glob/match today; without ``when_unavailable`` the
-    manifest cannot say what an absent library *means*, only that it is
-    absent.  Both halves are derived from the installed table, so a runtime
-    that renames its substitute decoder fails here rather than passing with
-    a stale name.
-    """
-    from prismaquant.tessera_serving_runtime_pin import (
-        load_tessera_serving_runtime_pin,
-    )
-
-    pin = load_tessera_serving_runtime_pin()
-    published = {
-        row["module_name_prefix"]: {
-            mode: {"status": behaviour["status"],
-                   "decoder": behaviour["decoder"]}
-            for mode, behaviour in sorted(row["when_unavailable"].items())
-        }
-        for row in _published_rows()
-    }
-    assert published, "the contract must publish at least one extension row"
-    pinned = {
-        row["module_name_prefix"]: dict(row["when_unavailable"])
-        for row in pin.native_extension_rows()
-    }
-    assert pinned == published
-
+#
+# NOTE (rebase onto #137/#138/#139): the pin-vs-contract transcription test
+# that lived here was dropped -- the sibling's
+# `test_the_pin_transcribes_the_contracts_native_extensions_table` already
+# covers it, now including the `when_unavailable` projection, and two tests
+# asserting one transcription would rot as one.  Likewise the tool-carries-
+# the-pin-rows test below duplicates the sibling's
+# `test_the_tools_rows_are_the_pins_and_not_this_files_opinion`, which the
+# tool now satisfies by READING the pin JSON rather than carrying a
+# constant: both were removed in favour of the sibling's, and what remains
+# here is what the sibling does not cover -- the reader refusal, the status
+# projection, its fingerprint exclusion, and the §7.4 naming.
 
 def test_a_pin_row_without_when_unavailable_is_refused():
     """A transcription that drops the block is not a transcription of it."""
@@ -113,22 +83,33 @@ def test_a_pin_row_without_when_unavailable_is_refused():
         parse_tessera_serving_runtime_pin(payload)
 
 
-def test_the_tool_carries_the_pin_rows_including_when_unavailable():
-    """The container bootstrap ships five tool files and no package data, so
-    the tool carries the rows -- now with the block that says what an absent
-    library means -- and any disagreement fails here."""
+def test_the_tool_reads_the_block_from_the_pin_file(tmp_path):
+    """The tool carries no constant to go stale: its rows ARE the pin read.
+
+    The sibling's `test_the_tools_rows_are_the_pins...` already asserts the
+    tool rows equal the pin reader's on the tracked file; this asserts the
+    fourth member rides that same read -- a pin without the block refuses in
+    the container, and a well-formed one propagates the substitute naming.
+    """
+    import tools.serve_fingerprint as serve_fingerprint
     from prismaquant.tessera_serving_runtime_pin import (
-        load_tessera_serving_runtime_pin,
+        tessera_serving_runtime_pin_path,
     )
 
-    module = _tool()
-    pin = load_tessera_serving_runtime_pin()
-    assert (list(module.TESSERA_NATIVE_EXTENSIONS)
-            == pin.native_extension_rows())
-    for row in module.TESSERA_NATIVE_EXTENSIONS:
-        assert set(row["when_unavailable"]), (
-            "a carried row with no when_unavailable block says nothing "
-            "about an absent library")
+    tracked = json.loads(
+        tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    stripped = json.loads(json.dumps(tracked))
+    for row in stripped["serving_native_extensions"]:
+        row.pop("when_unavailable", None)
+    rejected = tmp_path / "pin_without_when_unavailable.json"
+    rejected.write_text(json.dumps(stripped), encoding="utf-8")
+    with pytest.raises(ValueError, match="when_unavailable"):
+        serve_fingerprint._load_tessera_native_extensions_from_pin(rejected)
+    loaded = serve_fingerprint._load_tessera_native_extensions_from_pin(
+        tessera_serving_runtime_pin_path())
+    assert [row["when_unavailable"] for row in loaded] == [
+        row["when_unavailable"]
+        for row in serve_fingerprint.TESSERA_NATIVE_EXTENSIONS]
 
 
 # --- the manifest records expected-vs-found per pinned row -------------------

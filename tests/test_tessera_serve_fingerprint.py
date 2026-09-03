@@ -295,7 +295,14 @@ def test_the_tool_loads_its_rows_from_the_pin_file(tmp_path):
     payload["serving_native_extensions"] = [
         {"module_name_prefix": "tessera_renamed_",
          "filename_glob": "tessera_renamed_*.so",
-         "match": MATCH_BASENAME_FNMATCH},
+         "match": MATCH_BASENAME_FNMATCH,
+         # Renamed but well-formed: the loader propagates the row, and the
+         # when_unavailable block rides with it (derived from the installed
+         # contract, not typed -- the rename is what this test proves).
+         "when_unavailable": {
+             mode: dict(behaviour)
+             for mode, behaviour in sorted(
+                 _published_rows()[0]["when_unavailable"].items())}},
     ]
     renamed = tmp_path / "tessera_serving_runtime_pin.json"
     renamed.write_text(json.dumps(payload), encoding="utf-8")
