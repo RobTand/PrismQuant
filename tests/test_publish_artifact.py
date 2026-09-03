@@ -35,6 +35,10 @@ from prismaquant.shipcard import (
 import tools.publish_artifact as publisher
 from tools.publish_artifact import main as publish_cli
 from prismaquant.validate_quantized_model import (
+    DEFAULT_BOUNDARY_MAX_TOKENS,
+    DEFAULT_BOUNDARY_REPS,
+    DEFAULT_BOUNDARY_TEMPERATURE,
+    DEFAULT_MAX_BOUNDARY_DEFECTS,
     DEFAULT_MAX_MEAN_NLL,
     DEFAULT_MAX_P99_NLL,
     DEFAULT_MAX_PPL,
@@ -74,11 +78,11 @@ _GOLD_METRICS = {
 
 
 #: What a real ship-gate verdict carries. Thresholds come from the
-#: producer's own DEFAULT_* constants; the four ledger names are the checks
+#: producer's own DEFAULT_* constants; the five ledger names are the checks
 #: `run_validation` files (the ledger's key set is pinned to the producer,
 #: not restated, by tests/test_shipcard.py::_producer_check_names).
 _SHIP_GATE_LEDGER = ("serve_ready", "generation_sanity", "perplexity",
-                     "mtp_acceptance")
+                     "mtp_acceptance", "boundary_behavior")
 
 
 def _ship_gate_record(model_sha, *, source, passed=True):
@@ -91,11 +95,24 @@ def _ship_gate_record(model_sha, *, source, passed=True):
         "n_tokens": 8192,
         "spec_decode_detected": False,
     }
+    ledger["boundary_behavior"] = {
+        "passed": True,
+        "n_prompts": 5,
+        "reps": DEFAULT_BOUNDARY_REPS,
+        "n_generations": 5 * DEFAULT_BOUNDARY_REPS,
+        "n_defects": 0,
+        "max_defects": DEFAULT_MAX_BOUNDARY_DEFECTS,
+        "temperature": DEFAULT_BOUNDARY_TEMPERATURE,
+        "max_tokens": DEFAULT_BOUNDARY_MAX_TOKENS,
+        "defects_by_kind": {"zero_tag": 0, "think_stutter": 0,
+                            "cap_truncation": 0},
+        "failing_examples": [],
+    }
     return make_record(
         slot="ship_gate", tool="validate_quantized_model.py", passed=passed,
         model_sha=model_sha, metrics=ledger,
         detail="serve_ready=pass; generation_sanity=pass; "
-               "perplexity=pass; mtp_acceptance=pass",
+               "perplexity=pass; mtp_acceptance=pass; boundary_behavior=pass",
         spec_decode_detected=False,
         git_commit=_FAKE_COMMIT,
         extra={
@@ -107,6 +124,10 @@ def _ship_gate_record(model_sha, *, source, passed=True):
                 "max_p99_nll": DEFAULT_MAX_P99_NLL,
                 "min_gen_len": DEFAULT_MIN_GEN_LEN,
                 "min_mtp_accept_p0": DEFAULT_MIN_MTP_ACCEPT_P0,
+                "max_boundary_defects": DEFAULT_MAX_BOUNDARY_DEFECTS,
+                "boundary_temperature": DEFAULT_BOUNDARY_TEMPERATURE,
+                "boundary_max_tokens": DEFAULT_BOUNDARY_MAX_TOKENS,
+                "boundary_reps": DEFAULT_BOUNDARY_REPS,
                 "bos_token": None,
                 "add_special_tokens": True,
             },

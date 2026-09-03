@@ -1,8 +1,20 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `pq132-fused-licence`. Stamps
+As of: 2026-09-03 · `muse/pq-87-shipgate`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `muse/pq-87-shipgate`) for the **sampled
+boundary-behavior ship gate** (§7.2; issue #87). KL/PPL and greedy-smoke are
+argmax- and distribution-distance measures, structurally blind to
+boundary-token defects that only manifest under sampling (three DSV4-Flash
+quants within ~3% PPL spanning a 6x behavioral gap). `run_validation` now
+files a fifth check, `boundary_behavior`: 5 terse prompts × 6 reps sampled at
+temperature 1.0 under a 64-token cap, scored by the server-free
+`score_boundary_text` for `zero_tag` / `think_stutter` / `cap_truncation`
+with a zero bound. `verify` replays the ledger membership, the exact
+boundary thresholds, and the evidence (positive generation count, zero
+defects, sampling temperature). Gates:
+`tests/test_ship_boundary_behavior.py` (14).
 Re-stamped (2026-09-03, `pq132-fused-licence`) for the **fused module's
 per-member rung licence, read from the contract** (§4.10; PrismaQuant #132
 consuming RobTand/tessera#37). The group knapsack gave each member of a fused
@@ -2339,7 +2351,7 @@ flowchart TD
 
   subgraph GATE["ship gate -- NOT executed by the pipeline"]
     VNE["validate_native_export<br/>vLLM eager+graph load + greedy smoke<br/>echoed at :1704-1705"]
-    VQM["validate_quantized_model<br/>PPL 25 / mean-NLL 3 / worst-NLL 6 / MTP p0 0.60<br/>validate_quantized_model.py:116-120 -- never echoed"]
+    VQM["validate_quantized_model<br/>PPL 25 / mean-NLL 3 / worst-NLL 6 / MTP p0 0.60<br/>+ sampled boundary 0 defects (5 prompts x 6 reps, temp 1.0)<br/>validate_quantized_model.py -- never echoed"]
     GOLD["gold lane, invoked by hand<br/>measure_vllm_full_kl.py -- n=8 x 512<br/>DSv4 all-position topK-1024 + tail KL<br/>measure_vllm_wikitext_ppl.py -- 8192-token PPL"]
   end
 
@@ -7034,9 +7046,11 @@ served displaced-container arm.
 
 ### 7.2 `validate_quantized_model.py` — the numeric ship gate
 
-Check order `:12-25`: serve → generation sanity → perplexity/NLL → MTP acceptance. Fixed
-12-prompt PPL suite `:87-100`, 4-prompt generation suite `:105-110`. Thresholds `:116-120`,
-CLI-overridable `:513-518`:
+Check order `:12-31`: serve → generation sanity → boundary behavior →
+perplexity/NLL → MTP acceptance. Fixed
+12-prompt PPL suite `:94-107`, 4-prompt generation suite `:112-118`,
+5-prompt boundary suite `:137-144`. Thresholds `:163-181`,
+CLI-overridable:
 
 | Constant | Value | Rationale |
 |---|---|---|
@@ -7045,6 +7059,24 @@ CLI-overridable `:513-518`:
 | `DEFAULT_MAX_MEAN_NLL` | 3.0 | mean NLL |
 | `DEFAULT_MIN_GEN_LEN` | 30 chars | per completion |
 | `DEFAULT_MIN_MTP_ACCEPT_P0` | 0.60 | position-0 draft acceptance |
+| `DEFAULT_MAX_BOUNDARY_DEFECTS` | 0 | any `</think>` stutter/zero-tag/cap-truncation on a terse prompt is a functional failure (the answer is never reached); the clean reference scores 0 on this stratum (official unquantized 0/60 terse) |
+| `DEFAULT_BOUNDARY_TEMPERATURE` | 1.0 | the unmodified distribution — any temperature > 0 leaves the argmax path greedy-smoke takes; temp 0 is refused, not sampled |
+| `DEFAULT_BOUNDARY_MAX_TOKENS` | 64 | far above what these prompts need, so `length` means runaway/loop |
+| `DEFAULT_BOUNDARY_REPS` | 6 | the published battery's own replication count (30 prompts × 6 reps): 5 prompts × 6 reps = 30 sampled generations |
+
+**Sampled boundary behavior (#87).** KL/PPL (distribution distance) and
+greedy-smoke (argmax agreement) are structurally blind to boundary-token
+distribution defects that only manifest under sampling: three DSV4-Flash
+quants within ~3% PPL spanned a 6x behavioral gap (14/180 to 83/180) on the
+frozen battery, because greedy takes the argmax path where the boundary token
+still wins and KL/PPL average a per-token near-tie at one boundary position
+into noise. `check_boundary_behavior` (`:388`) samples the terse
+boundary-stressing prompts (ultra-short numeric, terse QA, short recall —
+the first three verbatim from the report) at temperature > 0 under a small
+cap and scores every generation with the server-free `score_boundary_text`
+(`:360`) for the closed defect vocabulary `zero_tag` / `think_stutter` /
+`cap_truncation`. It runs alongside KL/PPL, not replacing them: a few dozen
+sampled generations, minutes of serve time, no reference model needed.
 
 **Spec-decode refusal.** `_spec_decode_on` scrapes `/metrics` for
 `vllm:spec_decode`; if present the perplexity check **refuses a verdict** rather than return
@@ -7097,7 +7129,10 @@ binding nobody read, so a receipt measured against the wrong server, with silent
 bounds, or with an empty ledger passed. The replay now demands the validator's tool identity
 and a full producer commit, the exact catastrophic bounds against the filed thresholds, every
 check present and passed, the perplexity numerics re-cleared against the bounds with a positive
-scored-token count and a known non-spec-decode state, and the endpoint binding present and
+scored-token count and a known non-spec-decode state, the boundary evidence replayed
+(positive sampled-generation count, zero defects against the zero bound, sampling
+temperature > 0 — a temp-0 "sampled" check is the old argmax-blind gate wearing the new
+name), and the endpoint binding present and
 shaped (`base_url`, `served_model_name`, `model_sha_source`). The binding half is
 presence-and-shape by construction: an offline `verify` has no live session to compare
 against, so a well-formed binding to the wrong server still passes here — catching that needs

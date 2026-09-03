@@ -89,9 +89,16 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
                 }
             else:
                 # Plain generation request: return a short stub completion.
-                txt = ("Pretend this is a coherent completion about the topic "
-                       "that goes on for enough characters.")
-                body = {"choices": [{"text": txt}]}
+                # Boundary-stressing prompts get a clean boundary shape
+                # (exactly one </think>, finish stop) so the healthy arm is
+                # healthy on every check; anything else gets generic prose.
+                if prompt in vqm.BOUNDARY_PROMPTS:
+                    body = {"choices": [{"text": "<think>12</think> 12",
+                                         "finish_reason": "stop"}]}
+                else:
+                    txt = ("Pretend this is a coherent completion about the topic "
+                           "that goes on for enough characters.")
+                    body = {"choices": [{"text": txt}]}
 
             out = json.dumps(body).encode("utf-8")
             self.send_response(200)
