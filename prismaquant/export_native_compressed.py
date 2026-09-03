@@ -109,6 +109,10 @@ from .nvfp4_cb_footprint import (
     enforce_whole_artifact_budget,
     whole_artifact_budget_from_assignment_payload,
 )
+from .render_score import (
+    normalize_clipped_fisher_row_weights,
+    resolve_fisher_row_weight_clip,
+)
 
 # ---------------------------------------------------------------------------
 # NVFP4 packing. The byte layout (two 4-bit indices/byte, element-0 low nibble,
@@ -832,7 +836,9 @@ def _normalize_fisher_row_weights(
     least-squares GPTQ objective, `X.T @ diag(g²) @ X` is equivalent to
     scaling each activation row by `sqrt(g²)`.  Normalizing the selected
     slice to mean 1 preserves the scale expected by the existing damping
-    candidates and local error gates.
+    candidates and local error gates. The normalise-then-clip rule itself
+    lives in render_score.normalize_clipped_fisher_row_weights so the cost
+    paths cannot drift (issue #159).
     """
     if row_weights is None or n_rows <= 0:
         return None
@@ -843,22 +849,9 @@ def _normalize_fisher_row_weights(
     if rw.numel() < n_rows:
         return None
     rw = rw[:n_rows]
-    rw = torch.where(torch.isfinite(rw), rw, torch.zeros_like(rw))
-    rw = rw.clamp_min(0.0)
-    mean = rw.mean()
-    if not torch.isfinite(mean) or float(mean.item()) <= 0.0:
-        return None
-    rw = rw / mean.clamp_min(1e-12)
-    try:
-        clip = float(os.environ.get("PRISMAQUANT_FISHER_GPTQ_ROW_WEIGHT_CLIP", "64"))
-    except Exception:
-        clip = 64.0
-    if clip > 0.0:
-        rw = rw.clamp_max(float(clip))
-        mean2 = rw.mean()
-        if torch.isfinite(mean2) and float(mean2.item()) > 0.0:
-            rw = rw / mean2.clamp_min(1e-12)
-    return rw
+    return normalize_clipped_fisher_row_weights(
+        rw, resolve_fisher_row_weight_clip(), require_positive_mean=True
+    )
 
 
 def _activation_col_importance_for_gptq(

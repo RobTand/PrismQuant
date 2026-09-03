@@ -30,15 +30,97 @@ class RenderGateDecision:
     reason: str
 
 
+# Fisher row-weight clip: single source of truth (issue #159).
+#
+# The render scorer, the quant-cost probe, and the native exporter all weight
+# activation rows by per-token Fisher (gradient-squared) importance normalized
+# to mean 1, then cap the largest weight so one hot token cannot dominate the
+# local objective. The cap lives here, and only here: every other module
+# resolves it through resolve_fisher_row_weight_clip() and applies it through
+# normalize_clipped_fisher_row_weights(). A second copy of the
+# normalise-then-clip arithmetic anywhere else is a drift bug by definition.
+FISHER_ROW_WEIGHT_CLIP_DEFAULT = 64.0
+FISHER_ROW_WEIGHT_CLIP_ENV = "PRISMAQUANT_FISHER_OUTPUT_MSE_ROW_WEIGHT_CLIP"
+# Older spelling from the GPTQ-named era, kept as a fallback so existing
+# scripts and reproductions keep working. New code sets the canonical name.
+FISHER_ROW_WEIGHT_CLIP_ALIAS_ENV = "PRISMAQUANT_FISHER_GPTQ_ROW_WEIGHT_CLIP"
+
+# Derivation gap (house principle 2: thresholds come from the objective, not
+# intuition): 64 has no in-repo derivation -- no sweep, KL/bpp comparison, or
+# analysis selects it. What is known is the computable bound: a mean-1 vector
+# over n_rows rows reaches at most n_rows (a fully concentrated row is exactly
+# n_rows), so any cap below n_rows binds by construction, and 64 is below
+# n_rows for every production calibration (n_rows is in the thousands). The
+# cap is therefore on the binding side everywhere it matters, by arithmetic
+# rather than by measurement. Whether 64 is the right value is a separate
+# measured question; do not retune it here.
+
+
+def resolve_fisher_row_weight_clip() -> float:
+    """Return the Fisher row-weight clip from the environment.
+
+    The canonical var wins; the alias is a documented fallback; anything
+    unreadable falls back to the default.
+    """
+    try:
+        return float(os.environ.get(
+            FISHER_ROW_WEIGHT_CLIP_ENV,
+            os.environ.get(
+                FISHER_ROW_WEIGHT_CLIP_ALIAS_ENV,
+                str(FISHER_ROW_WEIGHT_CLIP_DEFAULT),
+            ),
+        ))
+    except Exception:
+        return float(FISHER_ROW_WEIGHT_CLIP_DEFAULT)
+
+
+def normalize_clipped_fisher_row_weights(
+    rw: torch.Tensor,
+    clip: float,
+    *,
+    require_positive_mean: bool,
+) -> torch.Tensor | None:
+    """Mean-1 normalize ``rw``, clamp it at ``clip``, renormalize to mean 1.
+
+    This is the one copy of the normalise-then-clip arithmetic shared by the
+    render scorer, the quant-cost probe, and the native exporter. ``rw`` is
+    the already-sliced 1-D float32 vector on its target device. When
+    ``require_positive_mean`` is set, a degenerate (all-zero or non-finite
+    mean) input returns None so the caller falls back to the unweighted
+    objective; otherwise the legacy scorer policy applies and the degenerate
+    input comes back as zeros.
+    """
+    rw = torch.nan_to_num(rw, nan=0.0, posinf=0.0, neginf=0.0)
+    rw = rw.clamp_min(0.0)
+    mean = rw.mean()
+    if require_positive_mean and (
+        not torch.isfinite(mean) or float(mean.item()) <= 0.0
+    ):
+        return None
+    rw = rw / mean.clamp_min(1e-12)
+    if clip > 0.0:
+        rw = rw.clamp_max(float(clip))
+        mean2 = rw.mean()
+        if torch.isfinite(mean2) and float(mean2.item()) > 0.0:
+            rw = rw / mean2.clamp_min(1e-12)
+    return rw
+
+
 def normalize_row_weights(
     row_weights: torch.Tensor | None,
     n_rows: int,
     device: torch.device,
     *,
-    clip_env: str = "PRISMAQUANT_FISHER_GPTQ_ROW_WEIGHT_CLIP",
-    default_clip: float = 64.0,
+    clip_env: str = FISHER_ROW_WEIGHT_CLIP_ALIAS_ENV,
+    default_clip: float = FISHER_ROW_WEIGHT_CLIP_DEFAULT,
 ) -> torch.Tensor | None:
-    """Return nonnegative row weights normalized to mean 1."""
+    """Return nonnegative row weights normalized to mean 1.
+
+    With default arguments the clip is the single-sourced
+    resolve_fisher_row_weight_clip(). ``clip_env``/``default_clip`` are a
+    deprecated explicit override kept so older call sites keep working; no
+    in-repo caller passes them.
+    """
 
     if row_weights is None or n_rows <= 0:
         return None
@@ -48,17 +130,20 @@ def normalize_row_weights(
         return None
     if rw.numel() < n_rows:
         return None
-    rw = torch.nan_to_num(rw[:n_rows], nan=0.0, posinf=0.0, neginf=0.0)
-    rw = rw.clamp_min(0.0)
-    rw = rw / rw.mean().clamp_min(1e-12)
-    try:
-        clip = float(os.environ.get(clip_env, str(default_clip)))
-    except Exception:
-        clip = float(default_clip)
-    if clip > 0.0:
-        rw = rw.clamp_max(float(clip))
-        rw = rw / rw.mean().clamp_min(1e-12)
-    return rw
+    rw = rw[:n_rows]
+    if (
+        clip_env != FISHER_ROW_WEIGHT_CLIP_ALIAS_ENV
+        or default_clip != FISHER_ROW_WEIGHT_CLIP_DEFAULT
+    ):
+        try:
+            clip = float(os.environ.get(clip_env, str(default_clip)))
+        except Exception:
+            clip = float(default_clip)
+    else:
+        clip = resolve_fisher_row_weight_clip()
+    return normalize_clipped_fisher_row_weights(
+        rw, clip, require_positive_mean=False
+    )
 
 
 def score_render_error(

@@ -42,6 +42,10 @@ import torch.nn.functional as F
 
 from . import format_registry as fr
 from .name_projection import strip_weight_leaf
+from .render_score import (
+    normalize_clipped_fisher_row_weights,
+    resolve_fisher_row_weight_clip,
+)
 from .nvfp4_cb_footprint import (
     cb_fields_for_context,
     cb_cost_provenance,
@@ -900,7 +904,13 @@ def _normalize_fisher_output_mse_row_weights(
     n_rows: int,
     device: torch.device,
 ) -> torch.Tensor | None:
-    """Return non-negative per-row Fisher weights normalized to mean 1."""
+    """Return non-negative per-row Fisher weights normalized to mean 1.
+
+    The index-select preamble is local to the cost probe; the
+    normalise-then-clip rule itself lives in
+    render_score.normalize_clipped_fisher_row_weights so the cost paths
+    cannot drift (issue #159).
+    """
     if row_weights is None or row_indices is None or n_rows <= 0:
         return None
     try:
@@ -914,25 +924,9 @@ def _normalize_fisher_output_mse_row_weights(
     if int(idx.min().item()) < 0 or int(idx.max().item()) >= int(source.numel()):
         return None
     rw = source.index_select(0, idx)
-    rw = torch.nan_to_num(rw, nan=0.0, posinf=0.0, neginf=0.0)
-    rw = rw.clamp_min(0.0)
-    mean = rw.mean()
-    if not torch.isfinite(mean) or float(mean.item()) <= 0.0:
-        return None
-    rw = rw / mean.clamp_min(1e-12)
-    try:
-        clip = float(os.environ.get(
-            "PRISMAQUANT_FISHER_OUTPUT_MSE_ROW_WEIGHT_CLIP",
-            os.environ.get("PRISMAQUANT_FISHER_GPTQ_ROW_WEIGHT_CLIP", "64"),
-        ))
-    except Exception:
-        clip = 64.0
-    if clip > 0.0:
-        rw = rw.clamp_max(float(clip))
-        mean2 = rw.mean()
-        if torch.isfinite(mean2) and float(mean2.item()) > 0.0:
-            rw = rw / mean2.clamp_min(1e-12)
-    return rw
+    return normalize_clipped_fisher_row_weights(
+        rw, resolve_fisher_row_weight_clip(), require_positive_mean=True
+    )
 
 
 # ---------------------------------------------------------------------------
