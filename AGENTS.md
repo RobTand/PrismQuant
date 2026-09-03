@@ -127,6 +127,42 @@ Before implementing new functionality, read this file,
     the envelope fraction also estimates remaining headroom, which wall-clock
     cannot. Do not diagnose a GPU hot path from utilization.
 
+14. **File the finding before you move on -- and err aggressive.** A defect
+    you noticed and did not file is a defect that dies with your context. The
+    cost of a duplicate issue is thirty seconds and a close; the cost of a lost
+    one is that it is rediscovered months later by an artifact. So the bar for
+    filing is **"I believe this is wrong"**, not "I have proved it is wrong and
+    scoped the fix" -- over-filing is explicitly sanctioned (Rob, 2026-09-03:
+    *"I don't care if we're too aggressive"*).
+
+    The rule is *timely* as well as accurate. File it in the same working
+    session you found it, before starting the next task -- not at the end of the
+    day, not in a handover, not in a summary. A finding held in context for
+    "later" has already failed the rule.
+
+    What a filed issue owes, and it is little: the **evidence at `file:line`**
+    (read the line, do not repeat a claim), what breaks and under what inputs,
+    a **severity** from the rubric below, and what would fix it -- or, when the
+    fix is a judgment call, the options and who decides. Say plainly what you
+    did *not* measure. A finding you are unsure of is filed with the
+    uncertainty stated, not withheld until it is certain.
+
+    **Severity rubric.** `P0` -- can ship or serve a wrong artifact. `P1` -- a
+    gate that cannot catch its own defect, or a wrong or underived number that
+    a decision reads. `P2` -- provenance, observability, or a claim beyond its
+    evidence. `P3` -- cleanup with no decision riding on it. Two orthogonal
+    labels: `measurement-needed` when a GPU or served A/B decides it, and
+    `needs-decision` when the answer is a trade only Rob prices.
+
+    **Two exceptions, both narrow.** (a) A finding in prose -- a doc, a
+    comment, a docstring -- is *fixed on sight*, not filed: reading the cited
+    line IS the verification, so a stale sentence is a one-line commit, not a
+    ticket. (b) A worker inside a delegated task does not widen scope and does
+    not file; it records the finding in its report with `file:line` and a
+    proposed severity, in a form the coordinator can file verbatim -- and the
+    **coordinator files it before starting the next task**, not after the queue
+    drains.
+
 ## Implementation Checklist
 
 Before editing:
