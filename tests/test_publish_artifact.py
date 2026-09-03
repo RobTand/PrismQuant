@@ -78,41 +78,65 @@ _GOLD_METRICS = {
 
 
 #: What a real ship-gate verdict carries. Thresholds come from the
-#: producer's own DEFAULT_* constants; the five ledger names are the checks
-#: `run_validation` files (the ledger's key set is pinned to the producer,
-#: not restated, by tests/test_shipcard.py::_producer_check_names).
-_SHIP_GATE_LEDGER = ("serve_ready", "generation_sanity", "perplexity",
-                     "mtp_acceptance", "boundary_behavior")
+#: producer's own DEFAULT_* constants; the ledger's key set is derived from
+#: the producer that owns it (see `_producer_check_names`), never restated
+#: here, so a check the producer renames or adds moves this fixture with it.
+_REFUSED_URL = "http://127.0.0.1:1"
+
+
+def _producer_check_names() -> frozenset:
+    """The ship-gate ledger's key set, derived from the producer that owns it.
+
+    Each check constructor names its own CheckResult without needing a live
+    server: against a refused localhost port every probe fails fast and
+    returns its (failing) verdict, whose name is what `run_validation` files
+    under (the same shape as tests/test_shipcard.py::_producer_check_names,
+    issue #171). Deliberately uncached, so a producer change is picked up
+    without an invalidation step.
+    """
+    from prismaquant import validate_quantized_model as vqm
+
+    return frozenset({
+        vqm.check_serve_ready(_REFUSED_URL).name,
+        vqm.check_generation_sanity(
+            _REFUSED_URL, "probe", DEFAULT_MIN_GEN_LEN).name,
+        vqm.check_perplexity(
+            _REFUSED_URL, "probe",
+            DEFAULT_MAX_PPL, DEFAULT_MAX_P99_NLL, DEFAULT_MAX_MEAN_NLL).name,
+        vqm.check_mtp_acceptance(_REFUSED_URL, DEFAULT_MIN_MTP_ACCEPT_P0).name,
+        vqm.check_boundary_behavior(_REFUSED_URL, "probe").name,
+    })
 
 
 def _ship_gate_record(model_sha, *, source, passed=True):
-    ledger = {name: {"passed": True} for name in _SHIP_GATE_LEDGER}
-    ledger["perplexity"] = {
-        "passed": True,
-        "perplexity": 8.33,
-        "mean_nll_per_tok": 2.12,
-        "max_nll_per_tok": 4.50,
-        "n_tokens": 8192,
-        "spec_decode_detected": False,
-    }
-    ledger["boundary_behavior"] = {
-        "passed": True,
-        "n_prompts": 5,
-        "reps": DEFAULT_BOUNDARY_REPS,
-        "n_generations": 5 * DEFAULT_BOUNDARY_REPS,
-        "n_defects": 0,
-        "max_defects": DEFAULT_MAX_BOUNDARY_DEFECTS,
-        "temperature": DEFAULT_BOUNDARY_TEMPERATURE,
-        "max_tokens": DEFAULT_BOUNDARY_MAX_TOKENS,
-        "defects_by_kind": {"zero_tag": 0, "think_stutter": 0,
-                            "cap_truncation": 0},
-        "failing_examples": [],
-    }
+    ledger = {name: {"passed": True} for name in _producer_check_names()}
+    if "perplexity" in ledger:
+        ledger["perplexity"] = {
+            "passed": True,
+            "perplexity": 8.33,
+            "mean_nll_per_tok": 2.12,
+            "max_nll_per_tok": 4.50,
+            "n_tokens": 8192,
+            "spec_decode_detected": False,
+        }
+    if "boundary_behavior" in ledger:
+        ledger["boundary_behavior"] = {
+            "passed": True,
+            "n_prompts": 5,
+            "reps": DEFAULT_BOUNDARY_REPS,
+            "n_generations": 5 * DEFAULT_BOUNDARY_REPS,
+            "n_defects": 0,
+            "max_defects": DEFAULT_MAX_BOUNDARY_DEFECTS,
+            "temperature": DEFAULT_BOUNDARY_TEMPERATURE,
+            "max_tokens": DEFAULT_BOUNDARY_MAX_TOKENS,
+            "defects_by_kind": {"zero_tag": 0, "think_stutter": 0,
+                                "cap_truncation": 0},
+            "failing_examples": [],
+        }
     return make_record(
         slot="ship_gate", tool="validate_quantized_model.py", passed=passed,
         model_sha=model_sha, metrics=ledger,
-        detail="serve_ready=pass; generation_sanity=pass; "
-               "perplexity=pass; mtp_acceptance=pass; boundary_behavior=pass",
+        detail="; ".join(f"{name}=pass" for name in sorted(ledger)),
         spec_decode_detected=False,
         git_commit=_FAKE_COMMIT,
         extra={
@@ -806,5 +830,29 @@ def test_json_round_trip_of_a_forced_card(tmp_path):
     ))
     raw = json.loads((model_dir / "shipcard.json").read_text())
     assert raw["forced_unverified"] is True
+
+
+def test_ship_gate_ledger_follows_the_producer_not_a_roster(monkeypatch):
+    """Issue #171: the fixture asks the producer for its check names.
+
+    Simulate the producer renaming a check: the ledger this fixture builds
+    must carry the producer's new name. A roster restated from today's five
+    names keeps the old one, so the card it builds silently stops matching
+    what the producer files.
+    """
+    import dataclasses
+
+    from prismaquant import validate_quantized_model as vqm
+
+    real = vqm.check_mtp_acceptance
+
+    def renamed(base_url, min_p0):
+        return dataclasses.replace(
+            real(base_url, min_p0), name="mtp_acceptance_v2")
+
+    monkeypatch.setattr(vqm, "check_mtp_acceptance", renamed)
+    ledger = _ship_gate_record("0" * 64, source="test")["metrics"]
+    assert "mtp_acceptance_v2" in ledger
+    assert "mtp_acceptance" not in ledger
 
 
