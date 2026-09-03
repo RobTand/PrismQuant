@@ -5,7 +5,7 @@ follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-03, `claude/pq-tessera-lane`) for the **lane-aware ship
 record** (§7.1, §9.2, §9.4, D33; RobTand/prismaquant#119 in part, #162 filed).
-A later stamp below records the Tessera lane's addition. The gate set that lane
+An earlier stamp below records the Tessera lane's addition. The gate set that lane
 declared was enforced by nothing: `lane_specs/tessera.json` gave `route.census`
 -- principle 12's second leg on this lane -- `shipcard_slot: null`, and the arm
 exited about 130 lines above the driver's shipcard block, so no card existed to
@@ -6286,9 +6286,20 @@ name for RAISES; the vocabulary is enumerated because it is also the key space
 `shipcard.verify` dispatches its per-slot evidence replay on, and #162 records
 what deriving it would take. The fourth link is `publish_artifact`, above.
 
-Two lanes hold all four links: native compressed-tensors and Tessera. **The
-GGUF arm opens no card at all**, so every gate `lane_specs/gguf.json` declares
-is still enforced by nothing — `publish_artifact` refuses a GGUF artifact for
+One lane holds all four links, and it is Tessera. Native
+compressed-tensors holds the first, third and fourth but not the second:
+`export_native_compressed._write_shipcard` calls `build_shipcard(out_dir,
+build=build)` (`export_native_compressed.py:8487`) with no `lane=`, so a native
+card carries no `lane` key and `required_slots` derives nothing from the lane.
+That omission is deliberate -- `build_shipcard`'s own docstring says omitting
+the argument reproduces the historical card exactly -- and a native artifact is
+held to the same bar anyway, but **by coincidence rather than by derivation**:
+`lane_gate_slots("compressed-tensors")` returns exactly `REQUIRED_SLOTS`, the
+same five slots, so the lane-gated card and the base card are one card on this
+lane. Read that as an equality that happens to hold today, not as a link. Add a
+sixth gate to `lane_specs/compressed-tensors.json` and the native card will not
+open its slot. **The GGUF arm opens no card at all**, so every gate
+`lane_specs/gguf.json` declares is still enforced by nothing — `publish_artifact` refuses a GGUF artifact for
 *absence* of a card, which an operator dissolves by writing a base card by
 hand, and a hand-written base card never carries the lane's own gates. That is
 the same defect on the remaining lane, recorded here rather than presented as
