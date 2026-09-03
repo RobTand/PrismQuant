@@ -59,9 +59,12 @@ An exact pin on those four therefore asserted summation order, not the
 property this module exists to protect -- the same defect, and the same fix,
 as ``tests/test_math_reunderwrite_pins.py`` (PR #90).
 
-Regenerate ONLY when a behaviour change is intended and argued::
+Regenerate ONLY when a behaviour change is intended and argued -- and the
+argument is required, not requested: ``--regen`` refuses without it and
+stamps it into the fixture beside the digest::
 
-    PYTHONPATH=. python tests/test_super_item_menu_byte_identity.py --regen
+    PRISMAQUANT_REGEN_GOLDEN_REASON="why this change is intended" \\
+        PYTHONPATH=. python tests/test_super_item_menu_byte_identity.py --regen
 """
 from __future__ import annotations
 
@@ -71,6 +74,8 @@ import os
 import sys
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from prismaquant import allocator_candidates as alloc_cand
 from prismaquant import format_registry as fr
@@ -403,6 +408,28 @@ def _canonical(payload: dict) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+REGEN_REASON_ENV = "PRISMAQUANT_REGEN_GOLDEN_REASON"
+
+
+def regen_reason(env) -> str:
+    """The argued reason for rewriting the golden, or a refusal.
+
+    ``--regen`` can turn any regression in default-path code into a green
+    suite, so it refuses unless the argument travels with it.  The reason is
+    stamped beside the ``digest`` -- provenance, not compared payload, so the
+    gate itself is unaffected.
+    """
+    reason = (env.get(REGEN_REASON_ENV) or "").strip()
+    if not reason:
+        raise SystemExit(
+            f"refusing to rewrite {GOLDEN_PATH.name}: set "
+            f'{REGEN_REASON_ENV}="<why this behaviour change is intended>" '
+            "alongside --regen. A golden regenerated to make a red run green "
+            "is not a gate."
+        )
+    return reason
+
+
 def digest(payload: dict) -> str:
     """Provenance stamp written by ``--regen``.
 
@@ -620,6 +647,24 @@ def test_the_golden_is_load_bearing():
     )
 
 
+def test_regeneration_refuses_without_an_argued_reason():
+    """``--regen`` rewrites the gate's own record, so it must be argued.
+
+    The docstring has always said "regenerate ONLY when a behaviour change is
+    intended and argued".  Nothing enforced it, and an unenforced rule loses
+    to the next red run: rewriting the golden turns any regression into a
+    green suite.  The reason is now required, and stamped into the fixture
+    beside the digest.
+    """
+    for env in ({}, {REGEN_REASON_ENV: "   "}):
+        with pytest.raises(SystemExit) as caught:
+            regen_reason(env)
+        assert REGEN_REASON_ENV in str(caught.value), str(caught.value)
+    assert regen_reason(
+        {REGEN_REASON_ENV: "  the packed hedge changed on purpose  "}
+    ) == "the packed hedge changed on purpose"
+
+
 def test_passthrough_rows_are_not_swallowed_by_either_aggregator():
     payload = _build_payload()
     fused = payload["scenarios"]["fused_plain"]
@@ -636,8 +681,10 @@ if __name__ == "__main__":  # pragma: no cover - regeneration entry point
 
     if "--regen" not in sys.argv:
         raise SystemExit("pass --regen to rewrite the golden")
+    _reason = regen_reason(os.environ)
     _payload = _build_payload()
     _payload["digest"] = digest(_payload)
+    _payload["regen_reason"] = _reason
     GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN_PATH.write_text(json.dumps(_payload, indent=1, sort_keys=True) + "\n")
-    print(f"wrote {GOLDEN_PATH} digest={_payload['digest']}")
+    print(f"wrote {GOLDEN_PATH} digest={_payload['digest']} reason={_reason!r}")

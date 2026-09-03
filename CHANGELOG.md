@@ -13,6 +13,17 @@
 
 ### Added
 
+- **A byte-identity gate on the two super-item aggregators** (#128;
+  `tests/test_super_item_menu_byte_identity.py`,
+  `tests/fixtures/super_item_menu_golden.json`). Rescued from closed PR #92,
+  whose digest `033adb45...` still reproduces on this tree unregenerated. The
+  golden pins every super item's whole menu -- order, `fmt`, bytes, both
+  serialized identities, activation pricing, membership -- exactly, and the
+  four accumulated floats to 16 ulps of `sys.float_info.epsilon`. Its
+  load-bearing tooth now perturbs the loop that orders the menu today
+  (`for spec in formats:`), and `--regen` refuses without
+  `PRISMAQUANT_REGEN_GOLDEN_REASON`, which it stamps beside the digest.
+
 - **The shipcard carries the byte-matched uniform control's verdict, and
   refuses a loss** (#121; `shipcard.py`, `shipcard_cli.py fill-control /
   override-control`, `tools/publish_artifact.py`). A rate-axis artifact must
