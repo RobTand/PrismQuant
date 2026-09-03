@@ -109,6 +109,24 @@ def test_extension_pattern_matches_the_tracked_sos():
     assert not SUBSTRING_EXTENSION_PATTERN.search("/usr/lib/libcudart.so.13")
 
 
+def test_extension_pattern_does_not_match_free_fla_substrings():
+    """The `fla` lane is the installed `fla` package directory, not three
+    letters anywhere in the path: a bare `fla` alternative matches
+    `libflac.so` and `conflate`, which can only false-refuse a comparable A/B
+    when the spurious library is resident in one arm and not the other."""
+    for path in (
+        "/usr/lib/x86_64-linux-gnu/libflac.so.8",
+        "/opt/conflate/x.so",
+    ):
+        assert not SUBSTRING_EXTENSION_PATTERN.search(path), path
+    # The package directory still matches, and `flashinfer` still matches on
+    # its own alternative rather than as a free substring of `fla`.
+    assert SUBSTRING_EXTENSION_PATTERN.search(
+        "/usr/lib/python3/site-packages/fla/ops/_triton.so")
+    assert SUBSTRING_EXTENSION_PATTERN.search(
+        "/usr/lib/python3/site-packages/flashinfer/_kernels.so")
+
+
 def test_self_manifest_reads_this_process(tmp_path):
     manifest = self_manifest(image="test-image")
     assert manifest["source"] == "in_process"

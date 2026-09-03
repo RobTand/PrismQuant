@@ -131,9 +131,14 @@ SERVER_ENV_ALLOWLIST = (
 # belongs in `TESSERA_NATIVE_EXTENSIONS` below and not in this alternation:
 # a substring search is this file's own predicate, and only the runtime's is
 # the runtime's.
+# `fla` is matched by its installed package DIRECTORY (`/fla/`), never by the
+# bare three letters: a free `fla` alternative matches any path containing
+# those letters (`libflac.so`, `conflate`), which made `flashinfer` redundant
+# and could false-refuse a comparable A/B when the spurious library is
+# resident in exactly one arm.
 SUBSTRING_EXTENSION_PATTERN = re.compile(
     r"prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|"
-    r"causal_conv1d|fla")
+    r"causal_conv1d|/fla/")
 
 #: The rule name a published table uses to say "fnmatch the glob against the
 #: BASENAME of a mapped `.so`".  Tessera's contract publishes it as a value

@@ -7338,9 +7338,11 @@ evidence either way and should be quoted as a range.
   torch or touches CUDA, so it cannot add a context to a 121 GiB pool), GPU name,
   `enforce_eager`, `--quantization`, `PRISMAQUANT_*` env, and the resident-extension basenames
   read from the **server's** `/proc/<pid>/maps` via `matches_tracked_extension`, which has
-  two arms: `SUBSTRING_EXTENSION_PATTERN`
-  (`prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|causal_conv1d|fla` — `gridbook`
-  was dropped on 2026-09-02 with the lane) for libraries this repository recognises by
+   two arms: `SUBSTRING_EXTENSION_PATTERN`
+   (`prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|causal_conv1d|/fla/` — `gridbook`
+   was dropped on 2026-09-02 with the lane, and bare `fla` became the package
+   directory `/fla/` on 2026-09-03: three free letters match `libflac.so`) for
+   libraries this repository recognises by
   name, and `TESSERA_NATIVE_EXTENSIONS` for a runtime that publishes its own loadable
   libraries, matched by the rule that runtime names (§9.4),
   unioned over the API-server *and* EngineCore processes — it is the engine that holds the
