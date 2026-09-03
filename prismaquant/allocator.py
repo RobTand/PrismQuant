@@ -2269,6 +2269,28 @@ def main():
         cost_data = pickle.load(f)
     validate_probe_payload(probe, args.probe)
     validate_cost_payload(cost_data, args.costs)
+    # One DP prices in one currency (RobTand/prismaquant#127).  The run's
+    # objective is the table's ATTESTED provenance['cost_mode'], never the
+    # environment -- run-pipeline.sh does not export COST_MODE, so an environ
+    # read here would compare the table against whatever shell launched this
+    # process.  A declared row currency in another objective, an unstamped
+    # table carrying declared rows, or a stamp naming no objective all refuse
+    # before any candidate is built; the verdict is stamped into every
+    # provenance payload below so the artifact says what was compared.
+    from .cost_currency import CostCurrencyError, require_cost_currency
+    try:
+        cost_currency_verdict = require_cost_currency(
+            cost_data, where=f"cost table {args.costs}")
+    except CostCurrencyError as exc:
+        raise SystemExit(f"[alloc] ERROR: {exc}") from None
+    print(
+        "[alloc] cost currency: "
+        f"{cost_currency_verdict['verdict']} "
+        f"(cost_mode={cost_currency_verdict['cost_mode']!r}, "
+        f"objective={cost_currency_verdict['objective']!r}, "
+        f"declared={cost_currency_verdict['declared']})",
+        flush=True,
+    )
     from .research_cost_acceptance import (
         accepted_cost_provenance,
         propagated_cost_provenance,
@@ -4961,6 +4983,11 @@ def main():
             # many look identical in the output.
             "tessera_group_knapsack": dict(tessera_group_menu_report),
             **({"tessera_dev_pin": dict(tessera_dev_pin)} if tessera_dev_pin else {}),
+            # What the currency gate compared (prismaquant#127): the attested
+            # mode, its objective, and every declared row currency.  Written on
+            # EVERY run so a stock table records ``undeclared_unstamped`` or
+            # ``single_currency`` rather than nothing.
+            "cost_currency": dict(cost_currency_verdict),
             "tessera_menu": {
                 "per_linear": dict(tessera_menu_report),
                 "aggregated": dict(tessera_menu_report_agg),
@@ -5381,6 +5408,8 @@ def main():
                    or tessera_menu_widths) else {}),
         **({"tessera_group_knapsack": dict(tessera_group_menu_report)}
            if tessera_group_menu_report else {}),
+        # The currency gate's verdict (prismaquant#127), on every run.
+        "cost_currency": dict(cost_currency_verdict),
         **({"tessera_hessian": dict(tessera_hessian_identity)}
            if (tessera_hessian_identity.get("stamped_rows")
                or tessera_hessian_identity.get("unstamped_rows")) else {}),

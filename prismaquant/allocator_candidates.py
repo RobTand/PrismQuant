@@ -24,6 +24,7 @@ from .activation_fair_pricing import (
     CalibrationRow,
 )
 from .activation_fair_pricing import calibrate as _calibrate_activation_pricing
+from .cost_currency import ANCHORED_AURA_COST_CURRENCY
 from .allocator_solver import (
     Candidate,
     PackedExpertRoleUnknown,
@@ -69,7 +70,9 @@ SOURCE_PASSTHROUGH_COST_SOURCE = "source_passthrough"
 # and the three stamps below are what identify them. Defined HERE, not in
 # ``anchored_cost``, because that module imports this one — one definition,
 # no cycle.
-ANCHORED_AURA_COST_CURRENCY = "aura_predicted_dloss"
+# ``ANCHORED_AURA_COST_CURRENCY`` is imported above from ``cost_currency`` --
+# the leaf the allocator's currency gate reads -- so the stamp a producer
+# writes and the value the gate compares cannot drift apart (prismaquant#127).
 ANCHORED_AURA_COST_SOURCE = "production_arm_render"
 # The activation-pricing branch label such a row is stamped with.
 ANCHORED_AURA_BRANCH = "anchored_aura_extrapolation"

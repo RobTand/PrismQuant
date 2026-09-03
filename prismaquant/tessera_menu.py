@@ -62,7 +62,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
-from functools import lru_cache, wraps
+from functools import lru_cache
 from typing import NamedTuple
 
 from .lane_eligibility import (
@@ -71,6 +71,7 @@ from .lane_eligibility import (
     ROUTE_STATUS_UNATTESTED,
 )
 from .tessera_formats import (
+    derived_bound_cache,
     SUPERBLOCK_WEIGHTS,
     TesseraFamily,
     TesseraFormatError,
@@ -632,25 +633,16 @@ def menu_scaled_cache(fn=None, *, shapes: "int | None" = None):
     and the wrapper forwards ``cache_info`` / ``cache_clear`` -- which is what
     lets a test read the bound off the live memo instead of restating it.
 
+    One mechanism, ``tessera_formats.derived_bound_cache``, shared with the
+    grid-keyed memos (pq#134); only the bound differs, and it is the menu's
+    because these memos are keyed over the menu.
+
     ``shapes`` overrides the shape retention for one memo whose entries are not
     the flat ones the default was measured on.
     """
     def decorate(target):
-        memo: "list[object]" = []
-
-        def _memo():
-            if not memo:
-                memo.append(
-                    lru_cache(maxsize=menu_cache_bound(shapes))(target))
-            return memo[0]
-
-        @wraps(target)
-        def call(*args):
-            return _memo()(*args)
-
-        call.cache_info = lambda: _memo().cache_info()
-        call.cache_clear = lambda: memo.clear()
-        return call
+        return derived_bound_cache(
+            lambda: menu_cache_bound(shapes), name=target.__name__)(target)
 
     return decorate if fn is None else decorate(fn)
 

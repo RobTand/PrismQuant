@@ -53,11 +53,14 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import lru_cache
+from functools import lru_cache, wraps
 import json
 import re
 
 __all__ = [
+    "derived_bound_cache",
+    "grid_rung_count",
+    "grid_cache_bound",
     "ANCHOR_BUDGET_BITS",
     "MIN_TRELLIS_STEPS",
     "Q256_UNIT",
@@ -166,8 +169,118 @@ def scale_plane_name(plane: "ScalePlaneKind | str") -> str:
         raise TesseraFormatError(f"unknown scale plane {plane!r}") from exc
 
 
-@lru_cache(maxsize=512)
+# ---------------------------------------------------------------------------
+# Memos keyed over the grid space, and the bound they are sized by
+# ---------------------------------------------------------------------------
+#
+# Two memos are keyed over *every* rung of *every* family this module can
+# build -- ``_recipe_for`` below and ``tessera_render.tessera_rung_is_
+# serialisable`` -- not over the four-family menu ``tessera_menu`` prices.
+# ``tessera_wire_recipe`` takes any family, and ``_grid_for`` admits any
+# hardware base, so the key space is :func:`enumerate_grid_space`: twelve
+# families and 13,068 rungs on 2026-09-03, against ``maxsize=512`` and
+# ``maxsize=4096``.  Measured on that day, a walk over the grid space missed
+# every rung twice (13,080 misses, then 13,080 more) and two menu passes
+# missed the serialisable memo 13,832 times with no hit at all (pq#134).
+# tessera#46 fixed the same defect on the menu-keyed memos by asking the roster
+# for the bound; these ask the grid space, because that is what they are keyed
+# over, and sizing them from the menu would leave them 2x under the day
+# something prices an ``LM*`` family.
+
+
+def grid_rung_count() -> int:
+    """Every rung of every family :func:`enumerate_grid_space` can build.
+
+    Computed, never written down: the sum of ``len(realisable_rungs(f))`` at
+    ``step_q256=1`` over the enumeration, so admitting a base or moving a
+    family's cap moves this number and every bound derived from it.  Asked
+    fresh on each call and deliberately *not* memoised on its own: it is
+    twelve range lengths, and a memo over a memo a test can clear is a
+    staleness class bought for nothing.
+    """
+    return sum(len(realisable_rungs(family)) for family in enumerate_grid_space())
+
+
+def grid_cache_bound() -> int:
+    """Entries a memo keyed by ``(family, rung | None)`` must hold.
+
+    :func:`grid_rung_count` plus one ``rung=None`` entry per family -- the
+    rung-independent recipe every bounds question asks for, which is a key of
+    its own in ``_recipe_for``.  This is the floor at which one walk over the
+    grid space cannot evict its own entries; it is not a round number and
+    it is not chosen.
+    """
+    return grid_rung_count() + sum(1 for _ in enumerate_grid_space())
+
+
+def derived_bound_cache(bound, *, name: str = ""):
+    """``lru_cache`` whose ``maxsize`` is *computed* on first use.
+
+    ``lru_cache`` fixes its size when the decorator runs, and a bound derived
+    from the family roster cannot be known then -- deriving it builds every
+    family and asks Tessera for its recipes.  So the memo is built on the
+    first call, and the wrapper forwards ``cache_info`` / ``cache_clear`` so
+    a test can read the bound off the live memo instead of restating it.
+    ``cache_clear`` drops the memo itself, so the next call re-derives the
+    bound against whatever the roster is by then.
+
+    **Re-entrant while the bound is being derived.**  ``grid_cache_bound``
+    reaches ``_recipe_for`` (``realisable_rungs`` -> ``family_q256_bounds``
+    -> ``family_rate_cap`` -> ``tessera_wire_recipe``), i.e. the memo asks
+    for its own size through itself.  A call that arrives while the bound is
+    still being computed is answered by the bare function rather than by a
+    memo that does not exist yet; nothing is cached from inside the
+    derivation, and nothing recurses.
+
+    ``name`` labels the memo in ``cache_bound()`` errors only.
+    """
+    def decorate(target):
+        state: dict = {"memo": None, "deriving": False}
+
+        def _memo():
+            if state["memo"] is None and not state["deriving"]:
+                state["deriving"] = True
+                try:
+                    size = int(bound())
+                finally:
+                    state["deriving"] = False
+                if size < 1:
+                    raise TesseraFormatError(
+                        f"{name or target.__name__}: derived cache bound "
+                        f"{size} is not positive")
+                state["memo"] = lru_cache(maxsize=size)(target)
+            return state["memo"]
+
+        @wraps(target)
+        def call(*args):
+            memo = _memo()
+            if memo is None:           # re-entered from inside bound()
+                return target(*args)
+            return memo(*args)
+
+        def cache_info():
+            return _memo().cache_info()
+
+        def cache_clear():
+            state["memo"] = None
+
+        call.cache_info = cache_info
+        call.cache_clear = cache_clear
+        call.cache_bound = bound
+        return call
+
+    return decorate
+
+
+@derived_bound_cache(grid_cache_bound, name="_recipe_for")
 def _recipe_for(base: str, base_size: int, arity: int, rung: "int | None") -> "WireRecipe":
+    # Sized by ``grid_cache_bound`` -- one entry per rung of the grid space
+    # plus one ``rung=None`` per family -- rather than by a literal: at
+    # ``maxsize=512`` a walk over the 13,080-key space evicted itself 25x
+    # over (pq#134).  Derived here, in the leaf module, because
+    # ``tessera_menu`` imports this one and the menu count is the wrong
+    # quantity anyway.
+    #
     # Resolved off the module, not off the name bound at import: the recipe a
     # grid gets is Tessera's decision and it moves (E4M3 is scheduled to flip
     # from TCQ to WINDOW over CHANNEL), so a test -- or a future in-process
@@ -188,6 +301,9 @@ def clear_recipe_cache() -> None:
     ``_tcq_body_is_reachable`` is cleared with it: it memoises a decision
     derived from ``recipe_table`` over the same grids, so a substituted wire
     that leaves it standing would move the prices and not the anchor wall.
+
+    Clearing ``_recipe_for`` also forgets its derived bound, so the next call
+    re-derives it against the roster as it then stands.
     """
 
     _recipe_for.cache_clear()

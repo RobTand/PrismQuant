@@ -56,6 +56,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import tessera_hessian as th
+from .cost_currency import (
+    CostCurrencyError,
+    ROW_CURRENCY_OBJECTIVE,
+    TESSERA_CAMPAIGN_CURRENCY,
+    cost_mode_for_currency,
+)
 
 __all__ = [
     "SCHEMA",
@@ -69,8 +75,19 @@ __all__ = [
 SCHEMA = "prismaquant.tessera_campaign_cost.v1"
 
 #: The currency every row is measured or interpolated in.  Named, because the
-#: allocator's cost-source precedence reads a field, not a convention.
-CURRENCY = "output_mse_under_route_activation_contract"
+#: allocator's cost-source precedence reads a field, not a convention -- and
+#: read, since 2026-09-03, by ``cost_currency.require_cost_currency`` in the
+#: allocator (RobTand/prismaquant#127).  The string lives in ``cost_currency``
+#: so the writer and the gate cannot spell it differently.
+CURRENCY = TESSERA_CAMPAIGN_CURRENCY
+#: The ``COST_MODE`` whose objective this currency measures, DERIVED from the
+#: currency rather than written down: output MSE under the route's activation
+#: contract is ``production-render-score``'s ``--score-field output_mse``.
+#: Stamped into ``provenance["cost_mode"]`` by :func:`campaign_cost_payload`
+#: so the allocator's currency gate and ``run-pipeline.sh``'s
+#: ``cost_table_reusable`` both read an attested mode, not an inference.
+COST_MODE = cost_mode_for_currency(CURRENCY)
+COST_OBJECTIVE = ROW_CURRENCY_OBJECTIVE[CURRENCY]
 
 #: Round 1's anchors: both endpoints plus the middle.  The endpoints are
 #: mandatory rather than chosen -- a surface that does not span its family's
@@ -443,7 +460,20 @@ def campaign_cost_payload(
                 formats.add(rung.format_name)
         if rows:
             costs[qname] = rows
+    # The attested mode.  A caller that already stamped a DIFFERENT mode is
+    # refused rather than overwritten: the stamp says what produced the rows,
+    # and this function knows what produced them.
+    prior_mode = _prov.get("cost_mode")
+    if prior_mode not in (None, "", COST_MODE):
+        raise CostCurrencyError(
+            f"campaign provenance is stamped cost_mode={prior_mode!r} but the "
+            f"rows are measured in {CURRENCY!r}, which is {COST_MODE!r}'s "
+            f"objective ({COST_OBJECTIVE!r}); refusing to stamp a mode the "
+            "rows were not produced under")
     payload = dict(provenance)
+    payload["provenance"] = {
+        **_prov, "cost_mode": COST_MODE, "cost_objective": COST_OBJECTIVE,
+    }
     payload.update({
         "schema": SCHEMA,
         "costs": costs,

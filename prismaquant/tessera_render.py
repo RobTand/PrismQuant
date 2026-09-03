@@ -34,6 +34,8 @@ from tessera import export as _tessera_export
 
 from .tessera_formats import (
     TesseraFamily,
+    derived_bound_cache,
+    grid_rung_count,
     parse_tessera_format_name,
     scale_plane_name,
     tessera_wire_recipe,
@@ -324,9 +326,17 @@ def clear_serialisable_cache() -> None:
     family_grid_is_serialisable.cache_clear()
 
 
-@lru_cache(maxsize=4096)
+@derived_bound_cache(grid_rung_count, name="tessera_rung_is_serialisable")
 def tessera_rung_is_serialisable(name: str) -> bool:
     """Can the *wire* carry this rung's bytes at all?
+
+    Memoised per format name at ``tessera_formats.grid_rung_count()`` -- one
+    entry per rung of the whole grid space, because ``_grid_for`` admits any
+    hardware base and this predicate is asked of every rung a menu enumerates.
+    It was ``maxsize=4096`` against 13,068 names, and two passes over one menu
+    measured 0 hits / 13,832 misses: every lookup evicted an earlier one
+    (pq#134).  The bound is asked of the enumeration, not written here, so
+    the next family admitted moves it.
 
     Distinct from "does a runtime serve it".  ``_grid_for`` admits any
     *hardware* base, while the reader resolves a grid by digest against
