@@ -108,15 +108,21 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 
 #: The Tessera commit this pin's answer was reviewed against.  Declared and
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
-#: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.
-TESSERA_DEV_PIN_COMMIT = "c6d52e2b53e0fb4593e4fb828fab0f681c43563e"
+#: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
+#: contract v7, whose two additive blocks (``fused_module`` at v6, Tessera
+#: issue #37; ``native_extensions`` at v7, Tessera issue #28) move no value in
+#: :func:`contract_answer` -- the v5 and v7 answers are equal object for
+#: object.  Advancing this constant is therefore bookkeeping, not a gate
+#: change; it exists so ``bytes_are_the_reviewed_bytes`` keeps meaning "these
+#: are the bytes somebody read" rather than decaying to a permanent False.
+TESSERA_DEV_PIN_COMMIT = "b46ffd212c3b0bb74c69dad0dee4f18a2e951e3c"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
 #: bytes a human read when the answer below was accepted.  Recorded, and
 #: compared into provenance against the bytes this run read, so prose-only
 #: drift is visible; it is not the refusal.
 TESSERA_DEV_PIN_CONTRACT_SHA256 = (
-    "0523b05b65607b2a9ab0faf4003f95553670de9d9210ae2fc57d445c89073028"
+    "bedb74655ae21a9b6e8f7547271954843ae81388f540dd1146bef5233b462920"
 )
 
 #: The ANSWER this pin was reviewed against -- every value a gate reads, in
