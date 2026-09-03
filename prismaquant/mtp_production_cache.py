@@ -26,12 +26,15 @@ from prismaquant.measure_quant_cost import (
     resolve_cost_target_name,
 )
 from prismaquant.production_weight_cache import (
+    MTP_APPEND_SIDECAR_KEY,
     ProductionWeightCache,
     _FisherRowWeightCache,
+    _check_and_record_append_identity,
     _fused_sibling_leaf_mapping_from_profile,
     _is_cb_format_name,
     _weighted_render_family,
     _write_render_score_sidecar,
+    build_mtp_append_identity,
 )
 from prismaquant.streaming_production_cache import _render_dense_layer
 
@@ -223,6 +226,33 @@ def _preflight_activation_rows(
     return row_counts
 
 
+def _mtp_activation_source_hash(
+    act_index: ActivationIndex,
+    linears: Mapping[str, nn.Linear],
+    profile,
+) -> str:
+    """Hash the activation rows the MTP append will render from (#170).
+
+    The directory path that held the probe rows is not value-bearing — its
+    content is. Hashing the per-module row tensors binds the append to the
+    exact rows, so two appends over different probe outputs cannot land in
+    one cache directory under a still-matching sidecar.
+    """
+    from prismaquant.perturbed_x_cache import calibration_data_hash
+
+    row_tensors: dict[str, torch.Tensor] = {}
+    for qname in sorted(linears):
+        canonical = resolve_cost_target_name(qname, act_index, profile)
+        inputs, _ = act_index.load_with_row_indices(canonical)
+        row_tensors[qname] = (
+            inputs.detach().to(device="cpu", dtype=torch.float32).contiguous()
+        )
+    source_hash = calibration_data_hash(row_tensors)
+    for tensor in row_tensors.values():
+        del tensor
+    return source_hash
+
+
 def _preflight_weighted_rows(
     formats_by_qname: Mapping[str, Sequence[str]],
     linears: Mapping[str, nn.Linear],
@@ -394,6 +424,35 @@ def fill_profile_mtp_production_cache(
         }
 
         cache_dir_path = _cache_dir_for_append(cache, cache_dir)
+        if cache_dir_path is not None:
+            # #170: the base render-identity sidecar covers only the dense
+            # fill, yet this append streams further shards into the same
+            # directory under its own value-bearing inputs (activation
+            # source, reservoir size, profile/source binding).
+            # Compare-or-write this append's own sidecar section BEFORE any
+            # render, so a hand-mixed append configuration refuses instead
+            # of landing in one directory under a still-matching sidecar.
+            # The render narrowing (which mtp.* subset this call appends)
+            # is deliberately NOT bound: the append replaces its scope, so
+            # consecutive stripes stay legal.
+            _check_and_record_append_identity(
+                cache_dir_path,
+                MTP_APPEND_SIDECAR_KEY,
+                build_mtp_append_identity(
+                    max_act_rows=int(max_act_rows),
+                    activation_source_hash=_mtp_activation_source_hash(
+                        act_index, selected_linears, profile
+                    ),
+                    activation_rows=dict(sorted(activation_rows.items())),
+                    source_prefix=profile.mtp_source_prefix(),
+                    source_tensor_count=int(source_tensor_count),
+                    profile_name=(
+                        str(getattr(profile, "name", ""))
+                        or type(profile).__name__
+                    ),
+                ),
+                progress=progress,
+            )
         if cache.activation_max_abs is None:
             cache.activation_max_abs = {}
             cache.activation_scales = cache.activation_max_abs

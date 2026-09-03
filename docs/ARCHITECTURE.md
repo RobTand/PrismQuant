@@ -1,7 +1,24 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `muse/pq-146-cache`. Stamps
+As of: 2026-09-03 · `muse/pq-170-append`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `muse/pq-170-append`) for the **production cache
+append-identity guard** (§5.4; RobTand/prismaquant#170). #146's sidecar
+covered the dense fill only, so the MTP and packed-expert appends — which
+stream further shards into the same `--cache-dir` after that fill returns —
+could land two configurations in one directory under a still-matching
+sidecar. Each append now compare-or-writes its own `mtp_append` /
+`packed_expert_append` section of `render_identity.json` (budgets, gate
+corpus, MTP activation source, hooked enumeration) before any capture or
+render, and refuses naming the field on mismatch; the base fill compares
+its base projection only and preserves both sections. Deliberately unbound:
+the render narrowing (MTP stripes replace scope; the M4 lazy gap-fill
+renders disjoint subsets with identical bytes) and the packed fit corpus
+(existing shards are never re-rendered, and the sanctioned gap-fill runs on
+the render-split calib). Gates:
+`tests/test_production_cache_append_identity.py` (8, each refusal shown
+failing before the fix).
 
 Re-stamped (2026-09-03, `muse/pq-146-cache`) for the **production cache
 directory's render-identity guard** (§5.4; RobTand/prismaquant#146). Resume
