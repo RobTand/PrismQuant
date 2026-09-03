@@ -1,6 +1,6 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `tessera/decouple-gridbook`. Stamps
+As of: 2026-09-03 · `claude/pq-126-plane-charges`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-03, `claude/pq-120-tp-fail-closed`) for the **fourth
@@ -54,6 +54,30 @@ through the same verifier the candidate's is (`fill-control`). What the gate
 does not do: fix the allocator -- the oracle ceiling for this loss is 0.941x,
 so the closure is a gate, not a better cost. Gate:
 `tests/test_shipcard_uniform_control.py` (27).
+Re-stamped (2026-09-03, `claude/pq-126-plane-charges`) for the **TCQ forest** in the
+byte accountant (§8.4). `wire_overhead_q256` had four terms and no forest, so
+the ALPHABET and DESCENDANT planes a trellis body writes per unit were priced
+at zero and `tessera_footprint` handed the plane builder an empty descendant
+blob; the cap rung of E2M1x2 was 512 B light per unit and the arity-1 E2M1
+rungs 24-44 B (RobTand/prismaquant#126). The forest is now sized by
+`tessera.grammar.forest_plane_bytes`, which makes every TCQ recipe
+shape-dependent: `recipe_is_shape_free` and `artifact_q256_bounds` are deleted
+rather than made to return a floor nothing may price bytes with.
+Amended (2026-09-03, `claude/pq-126-plane-charges`, at merge): two things the
+forest term exposed. (i) `expand_tessera_menu`'s **W(n<=A)** rule compared
+`bits_per_param` -- planes and forest included -- against the route's
+activation width, so the day the forest was charged the attested E2M1x2 cap
+rung (R896, 3.5 b/wt) left the A4 menu and every family's cap rung would have
+left its own route; the rule is about the weight's coding rate and now
+compares `rung / 256`. (ii) The accountant asked Tessera's grammar whether a
+`(rung, columns)` pair is realisable only on the TCQ body (to size the
+forest); a WINDOW rung the encoder refuses at a width (257/256 over 320
+columns needs 5/4 columns at rate 2) was priced and offered. `_schedule_rates`
+now walks `bresenham_rate_schedule` for every body, refusing in
+`TesseraFormatError`, and the sweep in `tests/test_tessera_forest_bytes.py`
+asserts the two accountants agree on which rungs EXIST as well as what they
+cost, with a bound derived from 256 | 768, 1024 rather than typed.
+
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
 2048x1024 unit's research menu from 3055 rungs to 6764 and left both per-rung
@@ -4310,6 +4334,34 @@ bpp on a 2048x1024 unit at L=14), and the byte budget is spent in this currency.
 Pinned as exact `Fraction`s against `tessera.calculator.terminal_rate`, which
 takes `code_bytes` from the same place.
 
+**A TCQ body's forest is charged too, and it is why no Tessera rung has a rate
+without a shape.** A trellis body writes an ALPHABET plane of `2^(R+1)` anchor
+codes and a DESCENDANT plane of `2^(cap+1)` bytes *per distinct rate in the
+schedule*, once per unit -- one byte per anchor whatever `code_bytes` is, and
+independent of how many positions the unit has. PrismaQuant priced both at zero
+until 2026-09-03, so every arity-1 E2M1 unit came out 24-44 B light and every
+E2M1x2 unit at the coset cap 512 B light (RobTand/prismaquant#126); the
+exporter's bytes were always right, only the accountant was not. The size is
+taken from `tessera.grammar.forest_plane_bytes(rates, cap)` and never
+re-derived here (P14) -- `wire_overhead_q256` has five terms now, and its TCQ
+branch takes a `rung` because the schedule, hence the set of distinct rates,
+hence the forest, is a function of the rung and the column count.
+
+The consequence is a contract change, not a constant: `wire_overhead_q256`
+requires `shape` on every recipe, `recipe_is_shape_free` is *gone* (its answer
+became "no" universally, and a predicate with one answer is a comment), and
+`TesseraFamily.artifact_q256_bounds` is gone with it (its premise -- that the
+per-rung interval is the position-domain one shifted by a constant -- is false
+in both shape and rung). Every synthesized Tessera `FormatSpec` therefore
+carries `bits_for_shape_fn` and no `exact_bits_per_param`, so `effective_bits`
+raises rather than quoting a rate that is not the artifact's. `R896` is not
+4.0 bpp: it is 4.0556 on a 96x768 unit, 4.1333 on 96x320 and 4.0013 on
+1024x3072. Three-way exactness -- `artifact_bpp` x
+`tessera.control.unit_wire_bits` x `encode_linear(...).exact_bytes` -- is pinned
+with no tolerance in `tests/test_tessera_forest_bytes.py`, and
+`tessera_footprint.tessera_tensor_payload_breakdown` now hands the plane
+builder the descendant blob it had been passing empty.
+
 Stock `BF16` is unaffected and stays what it was, the passthrough rung of the
 stock registry (§P11): a Tessera BF16 rung is named `TESSERA_BF16_K1_R<q>` and
 is a lossy 1-to-16-bit trellis code over a bf16 alphabet, not a passthrough, so
@@ -5196,21 +5248,23 @@ serving route — and PrismaQuant's seam to it is two modules and one registry
 fallback:
 
 - `tessera_formats.py` — grammar and pricing. `parse_tessera_format_name`
-  (`:987`) splits `TESSERA_E2M1_K2_R896` into a family and a rung; a family is
-  a (base grid, arity) pair (`tessera_family :650`); the rate cap is a property
-  of the body the family's wire recipe names (`family_rate_cap :689`, never a
+  (`:1160`) splits `TESSERA_E2M1_K2_R896` into a family and a rung; a family is
+  a (base grid, arity) pair (`tessera_family :779`); the rate cap is a property
+  of the body the family's wire recipe names (`family_rate_cap :818`, never a
   subtraction); the rate axis is continuous at a 1/256-bpp quantum and
-  `validate_body_rate_q256` (`:721`) / `realisable_rungs` (`:737`) say which
-  rungs encode; `tessera_wire_recipe` (`:188`) is the one source of body and
-  scale plane per grid and rung; `artifact_bpp` (`:754`) and
-  `wire_overhead_q256` (`:364`) are the byte accountant; `tessera_serving_route`
-  (`:910`) is the fifth axis.
-- `tessera_render.py` — the render adapter. `render_tessera_weight` (`:332`)
+  `validate_body_rate_q256` (`:850`) / `realisable_rungs` (`:866`) say which
+  rungs encode; `tessera_wire_recipe` (`:197`) is the one source of body and
+  scale plane per grid and rung; `artifact_bpp` (`:883`) and
+  `wire_overhead_q256` (`:376`) are the byte accountant, and **both require a
+  shape** (below); `tessera_serving_route` (`:1049`) is the fifth axis.
+- `tessera_render.py` — the render adapter. `render_tessera_weight` (`:408`)
   encodes and decodes through the `tessera` package and holds no numeric
   constant of its own (`TESSERA_CONV_MEMORY`, `TESSERA_GROUP`, `TESSERA_HALF`
   are read from `tessera.export`, because a second copy of a rate constant is a
-  drift bug waiting for a rate to change). `synthesize_tessera_spec` (`:462`)
-  builds a `FormatSpec` on demand; `tessera_rung_is_serialisable` (`:270`) asks
+  drift bug waiting for a rate to change). `synthesize_tessera_spec` (`:538`)
+  builds a `FormatSpec` on demand -- always a `bits_for_shape_fn`, never a
+  scalar rate, because no Tessera rung has one; `tessera_rung_is_serialisable`
+  (`:328`) asks
   the wire whether a grid is committed (a rung that renders but is not
   committed would otherwise die in `alphabet_plane()` at export, after the whole
   production cache is built); `tessera_lane_attested` (`:157`) is the admission

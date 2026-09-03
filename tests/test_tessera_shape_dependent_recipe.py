@@ -258,16 +258,24 @@ def test_the_shape_rate_is_comparable_and_picklable(flipped_e4m3):
 
 
 def test_the_e2m1_families_do_not_move_when_e4m3_flips(flipped_e4m3):
-    """The flip is per grid, and the seam must not generalise it."""
+    """The flip is per grid, and the seam must not generalise it.
+
+    E2M1x2 keeps the coset trellis over LUT16 at the cap, and that is what is
+    asserted -- its *body and plane*, not a scalar rate.  It briefly had one:
+    until 2026-09-03 this rung declared ``exact_bits_per_param == 4`` because
+    the accountant did not charge a TCQ body's forest, which is 512 bytes per
+    unit and gives the rung a shape (#126).  Every Tessera rung now prices
+    through ``bits_for_shape_fn``; the flip still does not move E2M1x2's wire.
+    """
 
     spec = fr.get_format("TESSERA_E2M1_K2_R896")
-    assert spec.bits_for_shape_fn is None
-    assert spec.exact_bits_per_param == Fraction(4)
-    # ``effective_bits`` is the registry's legacy weight-plus-group-scale
-    # model, untouched here; what matters is that it answers rather than
-    # refusing, because this rung HAS a rate.
-    assert spec.effective_bits == pytest.approx(4.25)
-    assert spec.bits_for_shape((2048, 4096)) == Fraction(4) * 2048 * 4096
+    assert spec.exact_bits_per_param is None
+    assert spec.bits_for_shape_fn is not None
+    with pytest.raises(ValueError, match="shape-dependent"):
+        spec.effective_bits
+    # 4.0 in the position domain, plus one 512-byte forest over the unit.
+    assert spec.bits_for_shape((2048, 4096)) == (
+        Fraction(4) * 2048 * 4096 + 512 * 8)
     family = tfm.get_tessera_family("TESSERA_E2M1_K2")
     assert tfm.family_rate_cap(family) == 7
     assert tfm.family_q256_bounds(family) == (128, 896)
@@ -292,7 +300,6 @@ def test_the_unpatched_wire_for_e4m3_is_the_window_over_channel():
         assert tfm.tessera_wire_recipe(family, rung) == LIVE_RECIPE
     assert LIVE_RECIPE.body is BodyKind.WINDOW
     assert LIVE_RECIPE.scale_plane is ScalePlaneKind.CHANNEL
-    assert not tfm.recipe_is_shape_free(LIVE_RECIPE)
 
     # Priced by a function, not by a rate, and exact against terminal_rate at
     # the width tessera actually ships.
@@ -340,10 +347,15 @@ def test_the_sub_cap_e2m1x2_wire_is_shape_dependent_too():
     assert sub_cap.bits_for_shape_fn is not None
     with pytest.raises(ValueError, match="shape-dependent"):
         sub_cap.effective_bits
-    # At the cap: the coset trellis, a rate, and still exactly 4.0 bpp -- the
-    # rung every published Tessera number is quoted at.
-    assert at_cap.exact_bits_per_param == Fraction(4)
-    assert at_cap.bits_for_shape_fn is None
+    # At the cap: the coset trellis -- and a function too, because its forest
+    # is a per-unit plane like the sub-cap table (#126).  "Exactly 4.0 bpp",
+    # the rung every published Tessera number is quoted at, is the
+    # position-domain figure; on the wire the unit also carries 512 bytes.
+    assert at_cap.exact_bits_per_param is None
+    assert at_cap.bits_for_shape_fn is not None
+    for rows, columns in ((2048, 4096), (96, 768)):
+        assert at_cap.bits_for_shape((rows, columns)) == (
+            Fraction(4) * rows * columns + 512 * 8)
 
 
 # ---------------------------------------------------------------------------

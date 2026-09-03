@@ -89,6 +89,7 @@ from .tessera_formats import (
     tessera_family,
     tessera_serving_route,
     tessera_wire_recipe,
+    Q256_UNIT,
 )
 
 __all__ = [
@@ -1138,8 +1139,15 @@ def expand_tessera_menu(
             bits = tessera_exact_bits_for_shape(spec, rung, dims, recipe=recipe)
             bpp = bits / n_params
             # W(n<=A): never offer a weight rate wider than the route serves.
+            # The weight rate is the body's coding rate, ``rung / 256`` bits
+            # per weight -- not ``bpp``, which also carries the scale plane,
+            # a window table or a forest.  Those bytes buy the route nothing
+            # either way and are not what "a 4-bit weight" means; comparing
+            # ``bpp`` here dropped E2M1x2's attested cap rung (R896, 3.5 b/wt)
+            # from the A4 menu the day the forest was charged (#126), and
+            # would have dropped every family's cap rung from its own route.
             ceiling = admission.act_bits if max_act_bits is None else max_act_bits
-            if ceiling is not None and bpp > Fraction(int(ceiling)):
+            if ceiling is not None and Fraction(int(rung), Q256_UNIT) > int(ceiling):
                 continue
             out.append(MenuRung(
                 format_name=name,

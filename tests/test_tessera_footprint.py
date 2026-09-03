@@ -29,13 +29,37 @@ from prismaquant.tessera_formats import (
     enumerate_grid_space,
     get_tessera_family,
     realisable_rungs,
-    recipe_is_shape_free,
     scale_plane_name,
     tessera_wire_recipe,
 )
+from tessera.grammar import forest_plane_bytes
 from tessera.manifest import BodyKind
 
 SHAPE = (4096, 4096)
+
+
+def _forest_bpp(family, rung, shape, wire=None):
+    """What a TCQ unit's forest costs per position at ``shape``.
+
+    The ALPHABET and DESCENDANT planes, one anchor table and one descendant
+    table per *distinct* rate in the schedule, written per unit
+    (``tessera.unit_artifact._forest_planes``).  The published ladders below
+    are **position-domain** figures -- body plus scale plane, the quantity they
+    were derived as -- so they are compared against the artifact's rate minus
+    this rather than restated; the size comes from Tessera's own
+    ``forest_plane_bytes`` and never from a formula written here (#126).
+    """
+    from prismaquant.tessera_formats import family_rate_cap
+
+    spec = get_tessera_family(family)
+    wire = tessera_wire_recipe(spec, rung) if wire is None else wire
+    if BodyKind(wire.body) is not BodyKind.TCQ:
+        return Fraction(0)
+    rates = spec.column_schedule(rung, shape[1], recipe=wire)
+    return Fraction(
+        sum(forest_plane_bytes(rates, family_rate_cap(spec, wire))) * 8,
+        shape[0] * shape[1],
+    )
 
 # (family, body q256, published artifact bpp) -- published on the span-1 S6b
 # wire (tessera schema minor 0), which is therefore named explicitly below: a
@@ -77,7 +101,12 @@ def test_the_measured_ladder_prices_at_its_published_bpp(family, q256, bpp):
     out = tessera_tensor_payload_breakdown(
         SHAPE, family=spec, body_rate_q256=q256, span=1, scale_plane="s6b",
     )
-    assert out["exact_bpw"] == pytest.approx(bpp, abs=1e-9)
+    from prismaquant.tessera_formats import recipe_from_wire_names
+    forest = _forest_bpp(family, q256, SHAPE, recipe_from_wire_names(1, "s6b"))
+    assert Fraction(*out["exact_bpw_rational"]) - forest == Fraction(
+        int(bpp * 256), 256)
+    # ...and the artifact weighs the forest more than the published figure.
+    assert out["exact_bpw"] > bpp
     assert out["schema"] == TESSERA_TENSOR_PAYLOAD_SCHEMA
     assert out["wire_schema"] == "prismaquant.tessera.v1"
     assert out["trellis_span"] == 1 and out["scale_contract"] == "s6b"
@@ -88,7 +117,8 @@ def test_the_default_wire_prices_the_bytes_the_exporter_writes(family, q256, bpp
     """No wire named: the price is the exporter's wire, read from tessera."""
     spec = get_tessera_family(family)
     out = tessera_tensor_payload_breakdown(SHAPE, family=spec, body_rate_q256=q256)
-    assert out["exact_bpw"] == pytest.approx(bpp, abs=1e-9)
+    assert Fraction(*out["exact_bpw_rational"]) - _forest_bpp(
+        family, q256, SHAPE) == Fraction(int(bpp * 2 ** 20), 2 ** 20)
     # The wire is read off the recipe, not asserted as a constant: which body
     # and plane this rung gets is tessera's decision per (grid, rung).
     wire = tessera_wire_recipe(spec, q256)
@@ -105,32 +135,23 @@ def test_every_family_prices_at_the_bounds_it_advertises():
     times their real cost -- LM64 k=2 at 11.5 bpp against a 6.00 ceiling."""
     for spec in enumerate_grid_space():
         rungs = realisable_rungs(spec)
-        # A SHAPE-FREE family advertises a closed-form interval, and that
-        # interval is stated on its *family-level* recipe (the rung-independent
-        # one), so both ends are priced on that same wire -- otherwise this
-        # compares a window rung against a coset interval and calls the
-        # difference a bug.  A PER-UNIT family advertises no such interval (its
-        # rate is a function of the shape), so its ends are priced on the wire
-        # the exporter writes AT THAT RUNG: BF16's window widens from L=14 to
-        # L=16 to hold a rate-16 position (``export._window_bits_for``), and
-        # pricing its ceiling on the family-level L=14 recipe asks the
-        # accountant for a wire the encoder would refuse -- which it says, and
-        # which is the accountant being right rather than a bug.
-        family_wire = spec.recipe
-        per_unit = not recipe_is_shape_free(family_wire)
-        bounds = None if per_unit else spec.artifact_q256_bounds
-        for end, rung in enumerate((rungs[0], rungs[-1])):
-            wire = tessera_wire_recipe(spec, rung) if per_unit else family_wire
+        # No family advertises a closed-form interval any more: every wire
+        # charges something per unit -- a window table, a CHANNEL row field,
+        # a TCQ forest -- so both ends are priced at a shape, on the wire the
+        # exporter writes AT THAT RUNG.  The rung matters as well as the
+        # shape: BF16's window widens from L=14 to L=16 to hold a rate-16
+        # position (``export._window_bits_for``), and a TCQ schedule that
+        # spans two rates carries two forests.  What is asserted is that the
+        # two PrismaQuant accountants -- the closed form and the layout --
+        # give one number.
+        for rung in (rungs[0], rungs[-1]):
+            wire = tessera_wire_recipe(spec, rung)
             out = tessera_tensor_payload_breakdown(
                 SHAPE, family=spec, body_rate_q256=rung, recipe=wire,
-                alphabet_bytes=0 if per_unit else None,
             )
             priced = Fraction(*out["exact_bpw_rational"])
-            want = (
-                artifact_bpp(spec, rung, recipe=wire, shape=SHAPE) if per_unit
-                else Fraction(bounds[end], 256)
-            )
-            assert priced == want, (spec.name, rung)
+            assert priced == artifact_bpp(
+                spec, rung, recipe=wire, shape=SHAPE), (spec.name, rung)
 
 
 def test_bytes_are_monotone_in_the_rung():
@@ -335,6 +356,9 @@ def test_the_rung_name_is_the_rate(q256):
         extra += Fraction((1 << wire.window_bits) * 8, shape[0] * shape[1])
     else:
         extra += Fraction((wire.span - 1) * 256, wire.span * 2) / 256
+        # ...and the forest, which is the third per-unit term and was priced
+        # at zero until 2026-09-03 (#126).
+        extra += _forest_bpp("TESSERA_E2M1_K2", q256, shape, wire)
     want = Fraction(q256, 256) + extra
     assert spec.bits_for_shape(shape) == want * shape[0] * shape[1]
     assert spec.effective_bits_for_shape(shape) == float(want)
@@ -412,6 +436,11 @@ def test_the_footprint_prices_the_recipe_the_calculator_prices(shape):
                     with_row_scale=plane == "channel",
                     span=wire.span, cap=family_rate_cap(spec, wire),
                     arity=spec.arity, completion=0, window_bits=wire.window_bits,
+                    # The wire's own figure.  ``with_forest`` defaults off so
+                    # the calculator's published figures keep meaning the
+                    # position-domain rate they were derived as; a caller
+                    # pricing a whole unit passes True (#126).
+                    with_forest=BodyKind(wire.body) is BodyKind.TCQ,
                 )
                 assert priced == exact == closed, (label, name, q, shape)
                 checked += 1
@@ -447,15 +476,23 @@ def test_the_channel_row_field_is_per_output_channel_not_per_code_row():
         recipe=channel)
     # 2048 output rows x fp16 = 4096 bytes of row field, at BOTH arities.  A
     # code-space geometry would have charged k=2 half of that.
-    for breakdown, body_bits_per_position in ((k1, Fraction(3)), (k2, Fraction(7, 2))):
+    for breakdown, body_bits_per_position, rung in (
+        (k1, Fraction(3), 768), (k2, Fraction(7, 2), 896),
+    ):
         body_bytes = int(body_bits_per_position * rows * columns) // 8
-        assert breakdown["total_bytes"] - body_bytes == rows * 2
+        # The forest rides along on a TCQ body whatever the scale plane is, so
+        # it is subtracted here rather than folded into the row field (#126).
+        forest = int(_forest_bpp(
+            breakdown["family"], rung, (rows, columns), channel)
+            * rows * columns) // 8
+        assert breakdown["total_bytes"] - body_bytes - forest == rows * 2
 
     # And the row field really is the whole plane: dropping to a block plane
     # swaps 16 bits per row for 4 bits per 16 weights.
     k2_lut = tessera_tensor_payload_breakdown(
         (rows, columns), family="TESSERA_E2M1_K2", body_rate_q256=896,
         recipe=lut)
+    # Both are TCQ over the same schedule, so the forest cancels in the diff.
     assert (k2_lut["total_bytes"] - k2["total_bytes"]
             == rows * columns // 16 // 2 - rows * 2)
 
