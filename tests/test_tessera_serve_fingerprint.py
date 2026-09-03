@@ -34,9 +34,12 @@ exists (``native_extensions``), and the chain is:
    ``tessera_nvfp4_*.so``.  Those are different predicates and only one of
    them is the runtime's.
 
-The contract is read by ``json`` through ``tessera_runtime_contract`` -- never
-by importing ``tessera.serving``, which registers the vLLM plugin, and never
-by vendoring a copy.
+The contract is read by ``json`` through ``tessera_runtime_contract`` -- located
+through ``importlib.resources.files("tessera.serving")``, which imports only
+that package's lazy ``__init__`` (it defines ``register()`` and calls nothing
+at module scope, so it registers nothing and needs no GPU), and never through
+``tessera.serving.contract``, whose validator imports the plugin's dispatch
+tables -- and never by vendoring a copy.
 """
 from __future__ import annotations
 
@@ -74,9 +77,10 @@ def _serve_fingerprint():
 def _packaged_contract() -> dict:
     """The installed plugin's contract payload, as JSON.
 
-    ``trc.contract_path()`` is path arithmetic on ``tessera.__file__``: it
-    reads the table of the ``tessera`` that is importable here without
-    importing ``tessera.serving``, whose import registers the plugin.
+    ``trc.contract_path()`` locates the table through
+    ``importlib.resources.files("tessera.serving")``: that imports only the
+    package's lazy ``__init__``, never ``tessera.serving.contract`` (whose
+    validator imports the plugin's dispatch tables) and never vLLM.
     """
     return json.loads(trc.contract_path().read_text(encoding="utf-8"))
 

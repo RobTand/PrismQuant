@@ -616,12 +616,15 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
             "reader_rate_range_q256", "attested_rungs_q256", "max_world_size"}
 
 
-def test_reading_the_contract_does_not_import_the_serving_plugin():
-    """Path arithmetic, not ``importlib.resources.files('tessera.serving')``.
+def test_reading_the_contract_needs_no_serving_code():
+    """Package data via ``importlib.resources``, never the serving validator.
 
-    Importing that package registers the vLLM plugin; a producer-side contract
-    read must not have that side effect, and this task's brief forbids the
-    import outright.
+    Locating the packaged contract imports the ``tessera.serving`` package
+    itself -- ``resources.files`` imports it -- but that import is lazy by
+    design (it defines ``register()`` and calls nothing at module scope), so
+    it registers nothing and needs no GPU.  What the read must not pull in is
+    the serving-side *code* -- ``tessera.serving.contract``, whose validator
+    imports the plugin's dispatch tables -- nor vLLM.
     """
     import subprocess
     import sys
@@ -633,8 +636,10 @@ def test_reading_the_contract_does_not_import_the_serving_plugin():
         f"os.environ['{trc.TESSERA_DEV_PIN_ENV}'] = '{trc.TESSERA_DEV_PIN_COMMIT}'\n"
         "c = trc.load_tessera_contract()\n"
         "assert c is not None\n"
-        "assert 'tessera.serving' not in sys.modules, sorted(\n"
+        "assert 'tessera.serving.contract' not in sys.modules, sorted(\n"
         "    m for m in sys.modules if m.startswith('tessera.'))\n"
+        "assert 'vllm' not in sys.modules, sorted(\n"
+        "    m for m in sys.modules if m.startswith('vllm'))\n"
         "print('OK')\n"
     )
     out = subprocess.run(

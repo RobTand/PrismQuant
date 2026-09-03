@@ -92,12 +92,13 @@ TESSERA_SERVING_PLUGIN = TESSERA_SERVING_PLUGIN_NAME
 def tessera_serving_contract_path():
     """The contract Tessera's own serving plugin PACKAGES, as a real path.
 
-    ``importlib.resources`` rather than repo-root arithmetic, so a wheel
-    install, an editable install and an in-repo checkout all resolve
-    identically -- and so this reads the table of the ``tessera.serving``
-    package that is actually importable, never a copy.  The JSON is read
-    directly rather than through ``tessera.serving.contract`` because that
-    module's validator imports the plugin's dispatch tables, which is a
+    Delegates to ``tessera_runtime_contract.contract_path``, the one resolver
+    both producer readers share -- see that function for why
+    ``importlib.resources`` is the policy (the actually-importable package's
+    table, identically from a wheel, an editable install or a checkout) and
+    why the anchor import registers nothing and needs no GPU.  The JSON is
+    read directly rather than through ``tessera.serving.contract`` because
+    that module's validator imports the plugin's dispatch tables, which is a
     serving-side import a producer must not need on a machine with no GPU.
 
     Importing ``tessera`` here is allowed and importing ``gridbook`` is not:
@@ -105,9 +106,9 @@ def tessera_serving_contract_path():
     render adapter above encodes and decodes through ``tessera.export``),
     whereas the CB serving runtime is installed only in a serving container.
     """
-    from importlib import resources
+    from .tessera_runtime_contract import contract_path as _canonical_contract_path
 
-    return resources.files("tessera.serving").joinpath("runtime_contract.json")
+    return _canonical_contract_path()
 
 
 @functools.lru_cache(maxsize=1)
