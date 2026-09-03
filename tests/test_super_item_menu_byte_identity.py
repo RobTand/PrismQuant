@@ -77,8 +77,6 @@ from prismaquant.activation_fair_pricing import (
 from prismaquant.allocator_candidates import (
     _FUSED_SIBLING_MARKER,
     _PACKED_GROUP_MARKER,
-    aggregate_fused_siblings,
-    aggregate_packed_serving_groups,
     build_candidates,
     packed_role_split_profile,
 )
@@ -285,7 +283,7 @@ def _run_fused(ucb_z: str, *, gains, pricing):
         cands = build_candidates(
             stats, costs, specs, calibrated_gains=gains,
             activation_pricing=pricing)
-        return aggregate_fused_siblings(
+        return alloc_cand.aggregate_fused_siblings(
             stats, costs, specs, cands, _DenseProfile(),
             calibrated_gains=gains, activation_pricing=pricing)
 
@@ -300,7 +298,7 @@ def _run_packed(ucb_z: str, *, gains, pricing, role_split: bool):
         cands = build_candidates(
             stats, costs, specs, calibrated_gains=gains,
             activation_pricing=pricing)
-        return aggregate_packed_serving_groups(
+        return alloc_cand.aggregate_packed_serving_groups(
             stats, costs, specs, cands, profile,
             calibrated_gains=gains, activation_pricing=pricing)
 
@@ -546,7 +544,12 @@ def test_the_golden_is_load_bearing():
 
     STRUCTURAL: reorder every super item's menu (same SET of formats, different
     DP order -- the minimal perturbation an order-blind record would miss).
-    No float tolerance can absorb this, and none should.
+    No float tolerance can absorb this, and none should.  The perturbation is
+    equivalent to editing the aggregators' menu loop to ``for spec in
+    reversed(formats):``; that edit was run against this fixture and the
+    comparison reported ``menu[0]/fmt: 'BF16' != 'NVFP4'`` and the matching
+    ``memory_bytes`` / ``bits_per_param`` / ``predicted_dloss`` swaps on every
+    super item of all five scenarios.
 
     NUMERIC: scale every member's predicted dloss by 1 + 1e-12.  This is the
     tooth the tolerance could blunt, so it is asserted in-tree rather than
@@ -560,13 +563,30 @@ def test_the_golden_is_load_bearing():
     golden = json.loads(GOLDEN_PATH.read_text())
     assert not compare_to_golden(_build_payload(), golden)
 
-    original_menu = alloc_cand._super_menu_format_names
+    # The order-deriving step is the aggregators' own ``for spec in formats:``
+    # loop over the candidate list (``allocator_candidates.py`` :2925 fused,
+    # :3270 packed).  Reversing the sequence those loops walk is exactly the
+    # one-token driver edit ``for spec in reversed(formats):``, reached without
+    # editing the module under test.  ``reversed`` rather than a sort so the
+    # order is guaranteed to differ for any menu of two or more distinct rungs,
+    # whatever MENU happens to hold.
+    assert len(set(MENU)) >= 2, "a one-rung menu has no order to perturb"
+    originals = {
+        name: getattr(alloc_cand, name)
+        for name in ("aggregate_fused_siblings", "aggregate_packed_serving_groups")
+    }
 
-    def reordered(formats, member_menu_intersection):
-        return tuple(sorted(original_menu(formats, member_menu_intersection)))
+    def _reversed_menu_order(original):
+        def aggregate(stats, costs, formats, *args, **kwargs):
+            return original(stats, costs, list(reversed(formats)), *args, **kwargs)
+        return aggregate
 
-    with mock.patch.object(
-        alloc_cand, "_super_menu_format_names", reordered
+    with mock.patch.multiple(
+        alloc_cand,
+        **{
+            name: _reversed_menu_order(original)
+            for name, original in originals.items()
+        },
     ):
         assert compare_to_golden(_build_payload(), golden), (
             "reordering every super item's menu did not fail the comparison "
