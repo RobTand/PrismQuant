@@ -3944,6 +3944,22 @@ mechanism; `--kl-scope full_sequence` since M26) → `select_validated_frontier`
 `MSE_PROMOTION` rewrite → `production_recache` re-fits activation scales for the selected
 assignment.
 
+A rate-axis pick is not a selection until a byte-matched uniform arm corroborates it
+(#117): `select_validated_frontier` re-ranks only the allocator's own Pareto rows and
+carries no uniform arm, so on a non-uniform Tessera assignment it cannot see uniform
+beating the pick at matched bytes. It therefore writes the recipe files the control loop
+needs, stamps `uniform_control.status: outstanding` (selected label, measured KL, bytes,
+and what would pass) into the layer config and the selection summary, and exits nonzero
+(`RATE_AXIS_UNCERTIFIED_EXIT`) rather than certifying. The refusal is a gate, not a wall:
+`--acknowledge-outstanding-uniform-control RUN_ID` (or
+`PRISMAQUANT_ACKNOWLEDGE_OUTSTANDING_UNIFORM_CONTROL`; an explicit flag wins) stamps
+`status: acknowledged` with the run id and returns 0 so the pipeline can build the
+candidate the control is built from -- building it is a precondition of the comparison,
+not a way around it. A pick that is itself uniform (one distinct format over every
+assigned unit) is its own control and exits 0 with `status: not_applicable`. The wall
+sits at publication: `verify`/publish (#121) refuse until the served control closes the
+slot.
+
 `select_validated_frontier.py` builds an **η-dominance** envelope: rows sorted by (bpp, kl), a
 point enters only if it beats the running best by more than `--kl-noise-floor`
 (`_frontier_from_rows`). Picks: `kneedle` (default without a card), `budget` (**the default

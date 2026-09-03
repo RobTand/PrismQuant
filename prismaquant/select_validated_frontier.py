@@ -1,10 +1,14 @@
-"""Select a measured frontier point from assignment-KL validation output."""
+"""Select a measured frontier point from assignment-KL validation output.
+
+A rate-axis pick is refused by default because the byte-matched uniform comparison is absent, and acknowledged per run because building the candidate is a precondition of that comparison, not a way around it (#117).
+"""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import math
+import os
 import statistics
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -197,6 +201,119 @@ TAIL_REPEAT_COLUMNS: tuple[str, ...] = tuple(f"{c}_repeats" for c in TAIL_VETO_C
 DEFAULT_TAIL_VETO: str = "kl_max"
 #: `--tail-eta auto`: derive the slack instead of picking one (house rule 2).
 DEFAULT_TAIL_ETA: str = "auto"
+#: Exit status when the selector refuses to certify a rate-axis pick (#117).
+#: The recipe files are still written -- the byte-matched uniform control is
+#: built FROM the candidate plan downstream -- but the pipeline must not walk
+#: on to export on an uncertified selection.
+RATE_AXIS_UNCERTIFIED_EXIT: int = 2
+#: Env spelling of the per-run acknowledgement key: carries the same run id
+#: for drivers that cannot pass the flag. An explicit flag always wins.
+ACKNOWLEDGE_OUTSTANDING_UNIFORM_CONTROL_ENV: str = (
+    "PRISMAQUANT_ACKNOWLEDGE_OUTSTANDING_UNIFORM_CONTROL"
+)
+
+
+def rate_axis_rungs(assignment: Mapping[str, str]) -> list[str]:
+    """Sorted unique rate-axis rung names in a selected assignment.
+
+    The axis is defined by the code that owns the name grammar
+    (``format_registry.is_tessera_format_name``), never by a list restated
+    here: today the only rate-axis container is Tessera, and a future
+    container adds itself by widening the definition this reads, in the commit
+    that declares its lane.
+    """
+    return sorted({
+        str(fmt)
+        for fmt in assignment.values()
+        if fr.is_tessera_format_name(fmt)
+    })
+
+
+def rate_axis_uniform_control_status(
+    *,
+    selected: Mapping,
+    assignment: Mapping[str, str],
+    rungs: Sequence[str],
+    n_rows: int,
+    acknowledged: tuple[str, str] | None,
+) -> dict:
+    """The uniform-control record stamped on a rate-axis pick (#117).
+
+    Measured 2026-09-02: a Tessera allocation served 2.00x worse KL than a
+    byte-matched uniform arm while every check this stage owns passed, and an
+    oracle over the same menu reaches only 0.941x of uniform -- so no ranking
+    this stage can do closes the gap. Three states, all stamped in data, not
+    just in a log line:
+
+    * ``outstanding`` -- the pick is non-uniform and no key was given: the
+      comparison is absent, so the stage refuses to certify (the caller exits
+      ``RATE_AXIS_UNCERTIFIED_EXIT``).
+    * ``acknowledged`` -- the pick is non-uniform and a per-run key was given:
+      the comparison is still absent, but building the candidate is a
+      precondition of running it, not a way around it, so the stage walks on
+      with the run id stamped. The wall sits at publication (#121).
+    * ``not_applicable`` -- the pick is itself uniform (one distinct format
+      over every assigned unit, BF16 included): a uniform arm is its own
+      control, so there is nothing to corroborate at this stage.
+    """
+    record = {
+        "rate_axis_formats": list(rungs),
+        "selected_label": selected.get("label"),
+        "selected_measured_kl": selected.get("kl"),
+        "selected_bpp": selected.get("bpp"),
+        "selected_artifact_bytes": selected.get("artifact_bytes"),
+    }
+    n_units = len(assignment)
+    if len({str(fmt) for fmt in assignment.values()}) <= 1:
+        return {
+            **record,
+            "status": "not_applicable",
+            "reason": "uniform_assignment",
+            "compared": (
+                "nothing: the selected assignment is itself uniform "
+                f"({n_units} assigned unit(s), one distinct format); a "
+                "uniform arm is its own control"
+            ),
+            "to_pass": (
+                "nothing at this stage; what the artifact owes at "
+                "publication is the publication gate's decision (shipcard "
+                "uniform_control slot)"
+            ),
+        }
+    if acknowledged is not None:
+        run, via = acknowledged
+        return {
+            **record,
+            "status": "acknowledged",
+            "acknowledged_run": run,
+            "acknowledged_via": via,
+            "compared": (
+                f"re-ranked {n_rows} allocator Pareto rows on measured KL; "
+                "no byte-matched uniform arm in the validation set; "
+                f"acknowledged by run {run!r} via {via} to proceed with "
+                "building the candidate the control needs"
+            ),
+            "to_pass": (
+                "build the byte-matched uniform control from the candidate "
+                "plan, serve it beside the candidate, and close the shipcard "
+                "uniform_control slot (shipcard_cli fill-control); verify "
+                "and publish refuse until then"
+            ),
+        }
+    return {
+        **record,
+        "status": "outstanding",
+        "compared": (
+            f"re-ranked {n_rows} allocator Pareto rows on measured KL; "
+            "no byte-matched uniform arm in the validation set"
+        ),
+        "to_pass": (
+            "build the byte-matched uniform control from the candidate plan, "
+            "serve it beside the candidate, and close the shipcard "
+            "uniform_control slot (shipcard_cli fill-control); verify and "
+            "publish refuse until then"
+        ),
+    }
 
 
 def tail_eta_auto(row: Mapping, column: str) -> tuple[float, str]:
@@ -912,7 +1029,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-layer-config", required=True)
     parser.add_argument("--output-assignment", required=True)
     parser.add_argument("--output-summary", required=True)
+    parser.add_argument(
+        "--acknowledge-outstanding-uniform-control", type=str, default=None,
+        metavar="RUN_ID",
+        help="Per-run key past a rate-axis refusal (#117): stamps the run id "
+             "as an ACKNOWLEDGED (not served) outstanding control and returns "
+             "0 so the pipeline can build the candidate the control is built "
+             "from. Same run id may come through "
+             f"{ACKNOWLEDGE_OUTSTANDING_UNIFORM_CONTROL_ENV}; an explicit "
+             "flag always wins. The wall sits at publication (#121): verify "
+             "and publish still refuse until the served control closes the "
+             "shipcard slot.",
+    )
     args = parser.parse_args(argv)
+    # The acknowledgement key is a run id, an opaque token: only an empty
+    # value counts as unset (an explicit flag always wins over the env).
+    ack_flag = str(args.acknowledge_outstanding_uniform_control or "").strip()
+    ack_env = str(
+        os.environ.get(ACKNOWLEDGE_OUTSTANDING_UNIFORM_CONTROL_ENV, "")
+    ).strip()
+    if ack_flag:
+        acknowledged: tuple[str, str] | None = (ack_flag, "flag")
+    elif ack_env:
+        acknowledged = (ack_env, "env")
+    else:
+        acknowledged = None
     requested_budget_bytes = None
     if args.mode == "budget":
         if (
@@ -1046,6 +1187,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         # validation always takes the resolved branch above.
         selected_payload = _load_json(selected["path"])
         assignment = _load_assignment(selected["path"])
+    # A rate-axis pick (#117) is a candidate until a byte-matched uniform arm
+    # corroborates it. The validated frontier re-ranks the allocator's own
+    # Pareto rows and carries no uniform arm, so no input to this stage can
+    # corroborate a non-uniform pick -- the absence is structural, and the
+    # served comparison that would close it is one this stage cannot run.
+    # Recorded in data below and refused at the end, unless a per-run key
+    # acknowledges the outstanding control (building the candidate is a
+    # precondition of that comparison, not a way around it) or the pick is
+    # itself uniform (a uniform arm is its own control): the recipe files the
+    # control loop needs are still written either way.
+    rate_axis = rate_axis_rungs(assignment)
+    uniform_control_status = (
+        rate_axis_uniform_control_status(
+            selected=selected,
+            assignment=assignment,
+            rungs=rate_axis,
+            n_rows=len(results),
+            acknowledged=acknowledged,
+        )
+        if rate_axis else None
+    )
     selected_cb_context, selected_cb_stamps = (
         cb_serialization_metadata_from_assignment_payload(selected_payload)
         if isinstance(selected_payload, Mapping)
@@ -1157,6 +1319,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     carried.pop("cb_serialized_payload", None)
     carried.pop("cb_render_identity", None)
     carried.pop("whole_artifact_budget", None)
+    if uniform_control_status is not None:
+        carried["uniform_control"] = uniform_control_status
     if (
         carried
         or selected_cb_context is not None
@@ -1227,6 +1391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "unstable_policy": args.unstable_policy,
         "n_results": len(results),
         "n_frontier": len(frontier),
+        "uniform_control": uniform_control_status,
         "output_layer_config": str(layer_config_path),
         "output_assignment": str(assignment_path),
     }
@@ -1341,6 +1506,66 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     print(f"[frontier-select] layer_config -> {layer_config_path}", flush=True)
     print(f"[frontier-select] summary -> {summary_path}", flush=True)
+    if uniform_control_status is None:
+        if acknowledged is not None:
+            print(
+                "[frontier-select] acknowledgement key set but the pick "
+                "carries no rate-axis rung; nothing to acknowledge.",
+                flush=True,
+            )
+        return 0
+    status = uniform_control_status.get("status")
+    if status == "not_applicable":
+        if acknowledged is not None:
+            print(
+                "[frontier-select] acknowledgement key set but the pick is "
+                "itself a uniform rate-axis plan; nothing to acknowledge.",
+                flush=True,
+            )
+        print(
+            f"[frontier-select] uniform rate-axis assignment "
+            f"({', '.join(rate_axis[:4])}): the plan is its own control, "
+            "so there is nothing to corroborate at this stage.",
+            flush=True,
+        )
+        return 0
+    if status == "acknowledged":
+        print(
+            f"[frontier-select] ACKNOWLEDGED: {selected.get('label')} ships "
+            f"as a CANDIDATE with the uniform control outstanding "
+            f"(run {uniform_control_status.get('acknowledged_run')!r} via "
+            f"{uniform_control_status.get('acknowledged_via')}) to proceed "
+            "with building the candidate the control needs -- verify and "
+            "publish refuse until the served control closes the shipcard "
+            "slot (prismaquant#117).",
+            flush=True,
+        )
+        return 0
+    if uniform_control_status is not None:
+        selected_bytes = selected.get("artifact_bytes")
+        byte_clause = (
+            f"{int(selected_bytes)} bytes (bpp {selected.get('bpp')})"
+            if selected_bytes is not None
+            else f"unpriced bytes (bpp {selected.get('bpp')})"
+        )
+        print(
+            f"[frontier-select] REFUSED: {selected.get('label')} is a "
+            f"rate-axis pick ({len(rate_axis)} distinct rung(s), e.g. "
+            f"{', '.join(rate_axis[:4])}) and this stage cannot corroborate "
+            "it against a byte-matched uniform arm -- the validation set "
+            f"holds {len(results)} allocator Pareto rows and no uniform arm, "
+            "and the corroborating measurement (served gold KL on both arms) "
+            "is one this stage cannot run. Compared: "
+            f"{selected.get('label')} KL={selected.get('kl'):.8g} re-ranked "
+            f"among {len(results)} Pareto rows; uniform arm: ABSENT. At "
+            f"{byte_clause}. This pick ships as a CANDIDATE, not a "
+            "selection: build the byte-matched uniform control from the "
+            "candidate plan, serve it beside the candidate, and close the "
+            "shipcard uniform_control slot (shipcard_cli fill-control) -- "
+            "verify and publish refuse until then (prismaquant#117).",
+            flush=True,
+        )
+        return RATE_AXIS_UNCERTIFIED_EXIT
     return 0
 
 
