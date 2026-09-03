@@ -17,13 +17,21 @@ def update_priority_reservoir(
     new_rows: torch.Tensor,
     *,
     max_rows: int,
-    generator: torch.Generator,
+    generator: torch.Generator | None = None,
+    new_priorities: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
     """Return an updated uniform row sample.
 
     ``current_priorities`` must contain the random priorities for
     ``current_rows`` and is kept on CPU. ``new_rows`` may live on CPU or CUDA;
     returned rows stay on the same device/dtype as the candidate row tensor.
+
+    ``new_priorities`` lets the caller draw the incoming rows' priorities
+    itself. A caller that hooks many tensors off one generator must draw for
+    *every* hooked tensor, or a run that stores a subset consumes a different
+    slice of the stream and the surviving rows stop being the rows the full
+    run would have kept — see ``_LinearActivationCollector``. Exactly one of
+    ``generator`` / ``new_priorities`` is required.
     """
     limit = int(max_rows)
     if limit <= 0 or new_rows.numel() == 0:
@@ -32,12 +40,26 @@ def update_priority_reservoir(
         raise ValueError("priority reservoir expects 2D row tensors")
 
     incoming = new_rows.detach()
-    new_priorities = torch.rand(
-        int(incoming.shape[0]),
-        generator=generator,
-        dtype=torch.float32,
-        device="cpu",
-    )
+    if (generator is None) == (new_priorities is None):
+        raise ValueError(
+            "priority reservoir requires exactly one of generator / "
+            "new_priorities"
+        )
+    if new_priorities is None:
+        new_priorities = torch.rand(
+            int(incoming.shape[0]),
+            generator=generator,
+            dtype=torch.float32,
+            device="cpu",
+        )
+    else:
+        new_priorities = new_priorities.detach().to(
+            device="cpu", dtype=torch.float32
+        )
+        if int(new_priorities.shape[0]) != int(incoming.shape[0]):
+            raise ValueError(
+                "new_priorities length must match the incoming row count"
+            )
     if current_rows is None:
         candidates = incoming
         priorities = new_priorities

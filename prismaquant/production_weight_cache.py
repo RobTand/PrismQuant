@@ -965,6 +965,27 @@ class _LinearActivationCollector:
                 if prev is None
                 else torch.maximum(prev, x_abs_max.detach())
             )
+            # Draw this call's row priorities for EVERY hooked Linear,
+            # stored or not. One generator feeds every Linear's reservoir, so
+            # the slice of the stream a Linear receives is a function of how
+            # many rows every earlier hook consumed. Drawing only for stored
+            # Linears makes a run that stores a subset -- a `--resume` build
+            # that skips already-rendered units, or any per-unit split of a
+            # render -- keep DIFFERENT rows than the full run, and the
+            # rendered bytes follow the rows. Draws are CPU floats; the cost
+            # is noise next to the D2H copy below.
+            last_dim = int(x.shape[-1]) if x.dim() >= 1 else 0
+            n_rows = (x.numel() // last_dim) if last_dim > 0 else 0
+            new_priorities = (
+                torch.rand(
+                    int(n_rows),
+                    generator=self._activation_generator,
+                    dtype=torch.float32,
+                    device="cpu",
+                )
+                if n_rows > 0 and self.max_rows > 0
+                else None
+            )
             # Only store the full activation tensor if this Linear is in
             # the store set.  Memory bound: store_qnames × max_rows × in.
             if key not in self.store_qnames:
@@ -987,7 +1008,7 @@ class _LinearActivationCollector:
                 self._activation_priorities.get(key),
                 flat,
                 max_rows=self.max_rows,
-                generator=self._activation_generator,
+                new_priorities=new_priorities,
             )
             self.activations[key] = [] if sampled is None else [sampled]
             if priorities is None:
