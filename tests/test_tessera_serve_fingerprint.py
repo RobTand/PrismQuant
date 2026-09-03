@@ -326,6 +326,71 @@ def test_the_tool_refuses_an_unreadable_pin_instead_of_a_constant(tmp_path):
         load(empty)
 
 
+# --- the residency mode the fingerprint was blind to -------------------------
+
+def test_the_tool_records_the_pins_residency_env_name():
+    """`TESSERA_SERVE_MODE` is the plugin's one operator knob, so the name in
+    the allowlist is the pin's, not this file's opinion -- the same
+    principle-14 shape as the extension rows, through the same pin read."""
+    import tools.serve_fingerprint as serve_fingerprint
+
+    from prismaquant.tessera_serving_runtime_pin import (
+        TESSERA_SERVING_RESIDENCY_ENV,
+    )
+
+    pin = json.loads(
+        tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    assert pin["serving_residency_env"] == TESSERA_SERVING_RESIDENCY_ENV
+    assert (serve_fingerprint.SERVER_ENV_ALLOWLIST
+            == ("PYTHONPATH", "PYTHONSAFEPATH", pin["serving_residency_env"]))
+    assert (serve_fingerprint.TESSERA_SERVING_RESIDENCY_ENV
+            == pin["serving_residency_env"])
+
+
+def test_the_pins_residency_env_is_a_flag_the_contract_requires():
+    """The pin transcribes the runtime's knob; the contract's cells require
+    it. Derived from the packaged contract's own `requires_serve_flags`, so a
+    runtime rename refuses here rather than silently un-recording residency."""
+    pin = json.loads(
+        tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for row in _packaged_contract()["lane_eligibility"]["cells"]:
+        for flag in row.get("requires_serve_flags", ()):
+            names.add(str(flag).split("=", 1)[0])
+    assert names, "the contract must require at least one serve flag"
+    assert pin["serving_residency_env"] in names
+
+
+def test_the_pin_refuses_a_residency_env_that_is_not_the_reviewed_knob():
+    """Renaming the knob is a reviewed change to the JSON and the reader's
+    constant together: a JSON edit alone cannot move what the fingerprint
+    records, and a constant edit alone cannot either."""
+    from prismaquant.tessera_serving_runtime_pin import (
+        TESSERA_SERVING_RESIDENCY_ENV,
+    )
+
+    payload = json.loads(
+        tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    assert payload["serving_residency_env"] == TESSERA_SERVING_RESIDENCY_ENV
+    payload["serving_residency_env"] = "TESSERA_OTHER_MODE"
+    with pytest.raises(TesseraServingRuntimePinError, match="serving_residency_env"):
+        parse_tessera_serving_runtime_pin(payload)
+
+
+def test_the_tool_refuses_a_pin_without_the_residency_env(tmp_path):
+    """An older snapshot's pin has no knob to record: refuse, do not run with
+    the two-name allowlist and fingerprint two residencies identically."""
+    import tools.serve_fingerprint as serve_fingerprint
+
+    payload = json.loads(
+        tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    del payload["serving_residency_env"]
+    old = tmp_path / "old_pin.json"
+    old.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="serving_residency_env"):
+        serve_fingerprint._load_tessera_residency_env_from_pin(old)
+
+
 def test_the_pin_requires_at_least_one_extension():
     """An empty list would restore the silent failure with a field to point at."""
     payload = json.loads(

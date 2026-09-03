@@ -127,6 +127,27 @@ def test_extension_pattern_does_not_match_free_fla_substrings():
         "/usr/lib/python3/site-packages/flashinfer/_kernels.so")
 
 
+def test_residency_mode_moves_the_performance_stack_fingerprint(monkeypatch):
+    """`TESSERA_SERVE_MODE` is the plugin's one operator knob: a serve that
+    omits it serves a different residency than the pin's receipts covered, so
+    two serves of one artifact in different modes must not share a
+    `performance_stack_fingerprint`. End to end through `collect_manifest`,
+    so the allowlist projection is what is tested, not a literal."""
+    import os
+
+    kwargs = {"pids": [os.getpid()], "launch_argv": ["vllm", "serve", "/m"]}
+    monkeypatch.setenv("TESSERA_SERVE_MODE", "resident")
+    resident = collect_manifest(**kwargs)
+    monkeypatch.setenv("TESSERA_SERVE_MODE", "streamed")
+    streamed = collect_manifest(**kwargs)
+    assert resident["server_process_environment"]["values"].get(
+        "TESSERA_SERVE_MODE") == "resident"
+    assert streamed["server_process_environment"]["values"].get(
+        "TESSERA_SERVE_MODE") == "streamed"
+    assert (resident["performance_stack_fingerprint"]
+            != streamed["performance_stack_fingerprint"])
+
+
 def test_self_manifest_reads_this_process(tmp_path):
     manifest = self_manifest(image="test-image")
     assert manifest["source"] == "in_process"

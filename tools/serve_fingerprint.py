@@ -111,22 +111,16 @@ _GOLD_PRODUCER_TOOL_FILES = {
 # the short-lived ``docker exec`` process that writes the manifest.
 # Three PQ_GRIDBOOK_RUNTIME_* pins and one environment registry were projected
 # here until the Gridbook lane retired 2026-09-02 -- see
-# archive/gridbook_lane_2026-09-02/. What survives is generic: the two names
-# that prove the serving process resolved its imports from the installed
-# distribution rather than a working-directory shadow.
-SERVER_ENV_ALLOWLIST = (
-    # The serving process must not carry an explicit Python module-search
-    # override.  ``server_environment_snapshot`` records only set values, so
-    # validators prove affirmative absence by requiring this allowlisted name
-    # to be missing from the exact process-environment projection.  The
-    # short-lived fingerprint writer is bootstrapped from the verified /repo
-    # snapshot with safe-path mode and no PYTHONPATH; it reads the independently
-    # running server PIDs from /proc and is not one of them.
-    "PYTHONPATH",
-    # Python's safe-path mode prevents the empty-string/script-directory entry
-    # from taking precedence over the exact installed serving package.
-    "PYTHONSAFEPATH",
-)
+# archive/gridbook_lane_2026-09-02/.
+#
+# The list is defined below, after the Tessera pin read: its third member is
+# the serving runtime's own residency knob, whose NAME comes from the pin
+# rather than being typed here.  It holds two kinds of names, and the comment
+# on each member says which: names whose ABSENCE is the proof (the serving
+# process must resolve its imports from the installed distribution rather
+# than a working-directory shadow), and the one name whose VALUE is recorded
+# (two serves of one artifact in different residency modes must not share a
+# performance-stack fingerprint).
 
 #: Extensions whose residency moves the numbers (§7.4) and that are matched by
 #: a SUBSTRING of the mapped path.
@@ -211,16 +205,16 @@ def _reject_duplicate_pin_keys(
     return result
 
 
-def _load_tessera_native_extensions_from_pin(
+def _read_tessera_serving_pin_payload(
     path: str | os.PathLike,
-) -> tuple[dict[str, str], ...]:
-    """The pin's `serving_native_extensions` rows, or a refusal.
+) -> dict[str, Any]:
+    """The transported pin JSON as a dict, or a refusal.
 
-    `path` is a parameter (rather than hard-wired to the tool-relative file)
-    so tests can prove a rename propagates and a missing file refuses; the
-    import-time call below passes the transported pin beside this tool. Every
-    failure raises `ValueError`: falling back to a constant would fingerprint
-    a renamed extension as "nothing resident" with nothing refusing it.
+    Shared by the extension-rows loader and the residency-env loader: one
+    file, one refusal vocabulary. A missing or malformed pin refuses rather
+    than running unbound -- without it a Tessera serve fingerprints as a
+    stock serve, and an older snapshot's pin would fingerprint two residencies
+    identically.
     """
     where = str(path)
     try:
@@ -248,6 +242,22 @@ def _load_tessera_native_extensions_from_pin(
         raise ValueError(
             f"Tessera serving pin must be a JSON object: {where}"
         )
+    return payload
+
+
+def _load_tessera_native_extensions_from_pin(
+    path: str | os.PathLike,
+) -> tuple[dict[str, str], ...]:
+    """The pin's `serving_native_extensions` rows, or a refusal.
+
+    `path` is a parameter (rather than hard-wired to the tool-relative file)
+    so tests can prove a rename propagates and a missing file refuses; the
+    import-time call below passes the transported pin beside this tool. Every
+    failure raises `ValueError`: falling back to a constant would fingerprint
+    a renamed extension as "nothing resident" with nothing refusing it.
+    """
+    where = str(path)
+    payload = _read_tessera_serving_pin_payload(path)
     rows = payload.get("serving_native_extensions")
     if not isinstance(rows, list) or not rows:
         raise ValueError(
@@ -298,6 +308,62 @@ TESSERA_NATIVE_EXTENSIONS = (
         Path(__file__).resolve().parents[1]
         / TESSERA_SERVING_RUNTIME_PIN_RELATIVE
     )
+)
+
+
+def _load_tessera_residency_env_from_pin(
+    path: str | os.PathLike,
+) -> str:
+    """The pin's `serving_residency_env` name, or a refusal.
+
+    The serving-lane env belongs to another runtime, so the name the
+    environment projection records comes from the pin rather than being typed
+    here -- the same principle-14 shape as the extension rows, through the
+    same transported file. An older snapshot's pin has no such member, and
+    running with the two-name allowlist would fingerprint two residencies
+    identically, so that too refuses.
+    """
+    where = str(path)
+    payload = _read_tessera_serving_pin_payload(path)
+    name = payload.get("serving_residency_env")
+    if (not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None):
+        raise ValueError(
+            f"Tessera serving pin {where} publishes no "
+            "'serving_residency_env' environment-variable name: without it "
+            "the fingerprint cannot record which residency produced a receipt"
+        )
+    return name
+
+
+#: The serving runtime's one operator knob, READ from the transported pin
+#: rather than typed: a serve command that omits it serves a different
+#: residency than the pin's receipts covered. Spelled the same as the pin
+#: reader's constant because it is the same value, not a second opinion.
+TESSERA_SERVING_RESIDENCY_ENV = _load_tessera_residency_env_from_pin(
+    Path(__file__).resolve().parents[1]
+    / TESSERA_SERVING_RUNTIME_PIN_RELATIVE
+)
+
+SERVER_ENV_ALLOWLIST = (
+    # ABSENCE is the proof: the serving process must not carry an explicit
+    # Python module-search override.  ``server_environment_snapshot`` records
+    # only set values, so validators prove affirmative absence by requiring
+    # this allowlisted name to be missing from the exact process-environment
+    # projection.  The short-lived fingerprint writer is bootstrapped from the
+    # verified /repo snapshot with safe-path mode and no PYTHONPATH; it reads
+    # the independently running server PIDs from /proc and is not one of them.
+    "PYTHONPATH",
+    # ABSENCE is the proof: Python's safe-path mode prevents the
+    # empty-string/script-directory entry from taking precedence over the
+    # exact installed serving package.
+    "PYTHONSAFEPATH",
+    # VALUE is the record: the serving runtime's own residency knob, named by
+    # the pin above.  ``server_environment_snapshot`` projects it out of each
+    # server process's environment and ``performance_stack_payload`` folds the
+    # values into the performance-stack fingerprint, so two serves of one
+    # artifact in different residency modes do not hash identically.
+    TESSERA_SERVING_RESIDENCY_ENV,
 )
 
 

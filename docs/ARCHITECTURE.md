@@ -8568,9 +8568,11 @@ observes `/proc/maps`, not configuration, so those two serves already hash
 differently — but the manifest does not record *which* pinned library was expected
 and what runs instead, so a differing fingerprint reads as "±20% alignment drift,
 not evidence" when the honest reading is "this arm measured a substituted decoder
-and says nothing about the lane". `TESSERA_SERVE_MODE` is likewise absent from the
-manifest, so two serves that both map the `.so` in different residency modes hash
-identically (#142, #143).
+and says nothing about the lane" (#142, #143).
+The residency-mode half of those items is closed since 2026-09-03 (#138): the
+environment allowlist carries the pin's `serving_residency_env` name, so two serves
+that both map the `.so` in different residency modes no longer hash identically —
+only the substitution half above stays open.
 
 ## 10. Hardware & environment
 

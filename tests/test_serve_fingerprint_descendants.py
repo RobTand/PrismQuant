@@ -48,17 +48,31 @@ def test_stable_fingerprint_excludes_phase_but_binds_runtime_stack_fields():
         assert mutated["serve_fingerprint"] != pre["serve_fingerprint"]
 
 
-def test_server_environment_allowlist_is_only_the_interpreter_path_vars():
-    """Three runtime pins and a lane registry left this list on 2026-09-02.
+def test_server_environment_allowlist_is_path_vars_plus_the_pinned_residency_knob():
+    """Two interpreter-path variables that must be ABSENT, plus one serving
+    runtime knob whose VALUE is recorded.
 
-    They were the Gridbook lane's (archive/gridbook_lane_2026-09-02/).  What
-    stays is lane-independent: the two variables that can silently change which
-    Python code the server imports, which is what the fingerprint is for.
+    The first two prove the serving process resolved its imports from the
+    installed distribution rather than a working-directory shadow, which is
+    what the fingerprint is for. The third is the Tessera plugin's one
+    operator knob: a serve that omits it serves a different residency than the
+    pin's receipts covered, so its value rides the performance-stack
+    fingerprint. The name is the pin's
+    (`prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`), not this
+    file's opinion -- a serving-lane env belongs to another runtime.
     """
+    import json
+    from pathlib import Path
+
+    pin = json.loads((
+        Path(__file__).resolve().parents[1] / "prismaquant" / "tessera_runtime"
+        / "tessera_serving_runtime_pin.json"
+    ).read_text(encoding="utf-8"))
 
     assert serve_fingerprint.SERVER_ENV_ALLOWLIST == (
         "PYTHONPATH",
         "PYTHONSAFEPATH",
+        pin["serving_residency_env"],
     )
 
 
