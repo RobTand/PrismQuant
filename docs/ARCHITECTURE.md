@@ -77,6 +77,18 @@ now walks `bresenham_rate_schedule` for every body, refusing in
 `TesseraFormatError`, and the sweep in `tests/test_tessera_forest_bytes.py`
 asserts the two accountants agree on which rungs EXIST as well as what they
 cost, with a bound derived from 256 | 768, 1024 rather than typed.
+Re-stamped (2026-09-03, `claude/pq-130-stripe-rows`) for **what the striped
+cache-union identity does not bind** (§5.4; issue #130). The campaign identity
+binds coverage, source, calibration, code, settings, levers, scope and formats,
+and the section read as a guarantee of equivalence with an unsharded render. It
+is not one. Measured by rendering, not by reading the diff: a stripe narrows the
+collector's *hook* set, which the shared priority generator makes every later
+Linear's row sample depend on, and 4/4 units diverge in rows and rendered bytes
+— for a non-prefix stripe, for a *prefix* stripe once `NSAMPLES >= 2`, and for
+the shipping `--render-scope assignment` default against a `format-menu` build
+of the same recipe. Hooking the full enumeration and narrowing only the render
+reproduces the unstriped bytes exactly. The claim is recorded where the
+mechanism is described, not only where the defect was found.
 
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
@@ -5208,6 +5220,27 @@ without overwriting an existing output. `verify` must be run again after transfe
 operator-selected native cache-build path and is not wired as a `run-pipeline.sh` default
 (`production_cache_stripes.py`, `union_production_cache.py`,
 `tests/test_production_cache_stripes.py`, `tests/test_union_production_cache.py`).
+
+**What that identity binds, and what it does not (issue #130).** The campaign identity binds
+coverage, source, calibration, producer code, settings, levers, render scope/retention,
+formats and mechanism order (`union_production_cache.py:486-553`). It does **not** bind the
+qname enumeration the activation collector hooked, and today a striped shard is measurably
+*not* byte-equal to the same unit rendered by an unstriped run. One `torch.Generator` feeds
+every hooked Linear's priority reservoir (`production_weight_cache.py:921-922`), so the slice
+of the stream a Linear receives depends on how many rows every earlier hook consumed.
+`56c765d` draws for every *hooked* Linear, which makes `--resume` reproduce a fresh build
+because resume narrows only the *store* set. A stripe narrows the **hook** set, at
+`build_production_cache.py:843` (`qnames = [q for q in qnames if q in allowed]`), and so does
+`--render-scope assignment`, because `qname_set` is both the render set
+(`production_weight_cache.py:4888`) and the collector's hook set (`:5164`). Rows feed the GPTQ
+Hessian and the Hessian feeds the bytes. Measured on a frozen 4-layer model with GPTQ on and
+the reservoir under selection pressure: 4/4 units diverge in rows *and* rendered bytes for a
+non-prefix stripe, for a prefix stripe at `NSAMPLES >= 2`, and for an assignment-scoped build
+against a format-menu build of the same recipe; hooking the full enumeration and narrowing
+only the render reproduces the unstriped bytes exactly
+(`experiments/stripe_row_identity_byte_baseline.py`,
+`tests/test_striped_render_row_identity.py`). Read the union's guarantee as internal
+consistency of the bundle, not as equivalence with an unsharded render, until #130 closes.
 
 Render mechanisms are a registry with declared ordering semantics, not a lever string parsed in
 spelling order (`render_score.py:188-260`): each `RenderMechanismSpec` declares `operation`,

@@ -1,0 +1,153 @@
+{
+  "gates": {
+    "render_deterministic": true,
+    "reservoir_selects": true
+  },
+  "n_calib_sweep": [
+    {
+      "n_calib": 1,
+      "nonprefix_bytes_differ": 4,
+      "prefix_bytes_differ": 0,
+      "units": 4
+    },
+    {
+      "n_calib": 2,
+      "nonprefix_bytes_differ": 4,
+      "prefix_bytes_differ": 4,
+      "units": 4
+    },
+    {
+      "n_calib": 3,
+      "nonprefix_bytes_differ": 4,
+      "prefix_bytes_differ": 4,
+      "units": 4
+    }
+  ],
+  "reference_digests": {
+    "row_shapes": {
+      "layers.0.o_proj": [
+        16,
+        64
+      ],
+      "layers.0.q_proj": [
+        16,
+        64
+      ],
+      "layers.1.o_proj": [
+        16,
+        64
+      ],
+      "layers.1.q_proj": [
+        16,
+        64
+      ],
+      "layers.2.o_proj": [
+        16,
+        64
+      ],
+      "layers.2.q_proj": [
+        16,
+        64
+      ],
+      "layers.3.o_proj": [
+        16,
+        64
+      ],
+      "layers.3.q_proj": [
+        16,
+        64
+      ]
+    },
+    "rows": {
+      "layers.0.o_proj": "5841c5962c8f3a0dbfc5d09004ed32a491a6952730275d04bbd0b9b13a529e25",
+      "layers.0.q_proj": "ad014e25966b572e43bdd31068a3c32ca85ad4405a38fee76f5ae86c6cba5194",
+      "layers.1.o_proj": "b131a84cde2c456e8092a7f9ae4bbc89e608943770f3cf198f3cf138d013907b",
+      "layers.1.q_proj": "1680d165b33673eb719978276ad6c88ebe303f65b645c16a8089b0692c49e42a",
+      "layers.2.o_proj": "b4d1c4a1144427deb37d16447b83ffb7067781c3b5c4756e0b36d70117cf46f7",
+      "layers.2.q_proj": "d250ead03feba1ca59990c6c57496eb342527f0988e35e72d0752e96dddd6e37",
+      "layers.3.o_proj": "b1d19aa72aa25fca638dae232e8cc36f9dee623ae94a83f8dc88e9e2ae277c89",
+      "layers.3.q_proj": "8c2bbe1bc2b92030c1dc2e4126510521560c7af715105bea60e39a7240abb46c"
+    },
+    "weights": {
+      "layers.0.o_proj": "aea58f99fb0afadff5fb4324303e21ac30a075cfe5035509b7832857b9c0b6d1",
+      "layers.0.q_proj": "11b6f23493fb451077db165ed73a3ce998dd7dd8318a798e84a3c79e621874c1",
+      "layers.1.o_proj": "9cb3ccd61017b18ee26955e74115ef281868e58221adac8f96f200530e3d8b29",
+      "layers.1.q_proj": "5e9a62dbc4d1fe25f8583396bf4aa04f8365a26e34b66643c28956bf57f5e388",
+      "layers.2.o_proj": "9791f72fc00587e41829c5f9b46606a20b6f8e9d3adf48fbfa278e0cfb3a1142",
+      "layers.2.q_proj": "691412b21bf92bda94e71749e574331dd31fcd53b60adacc16cc269c2c093843",
+      "layers.3.o_proj": "80e43f7afef6196e48767dd95462dba8c40d6712e579913cc4c0f6dcfb0c91e8",
+      "layers.3.q_proj": "566dad93d38bf7329f58a4a3fb4c799ad9a1f7065a2a9a1ed87ca5020675f88d"
+    }
+  },
+  "schema": "prismaquant.stripe_row_identity_byte_baseline.v1",
+  "settings": {
+    "format": "NVFP4",
+    "hidden": 64,
+    "layers": 4,
+    "levers": {
+      "gptq": true,
+      "joint_scale_opt": false,
+      "static_act_order": true
+    },
+    "max_act_rows": 16,
+    "n_calib": 3,
+    "seqlen": 40
+  },
+  "summary": {
+    "fix_wide_hook_assignment": {
+      "bytes_differ": [],
+      "rows_differ": [],
+      "units": 4
+    },
+    "fix_wide_hook_stripe": {
+      "bytes_differ": [],
+      "rows_differ": [],
+      "units": 4
+    },
+    "render_scope_assignment": {
+      "bytes_differ": [
+        "layers.1.o_proj",
+        "layers.1.q_proj",
+        "layers.3.o_proj",
+        "layers.3.q_proj"
+      ],
+      "rows_differ": [
+        "layers.1.o_proj",
+        "layers.1.q_proj",
+        "layers.3.o_proj",
+        "layers.3.q_proj"
+      ],
+      "units": 4
+    },
+    "stripe_nonprefix_L1L3": {
+      "bytes_differ": [
+        "layers.1.o_proj",
+        "layers.1.q_proj",
+        "layers.3.o_proj",
+        "layers.3.q_proj"
+      ],
+      "rows_differ": [
+        "layers.1.o_proj",
+        "layers.1.q_proj",
+        "layers.3.o_proj",
+        "layers.3.q_proj"
+      ],
+      "units": 4
+    },
+    "stripe_prefix_L0L1": {
+      "bytes_differ": [
+        "layers.0.o_proj",
+        "layers.0.q_proj",
+        "layers.1.o_proj",
+        "layers.1.q_proj"
+      ],
+      "rows_differ": [
+        "layers.0.o_proj",
+        "layers.0.q_proj",
+        "layers.1.o_proj",
+        "layers.1.q_proj"
+      ],
+      "units": 4
+    }
+  }
+}
