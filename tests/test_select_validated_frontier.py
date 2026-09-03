@@ -1427,3 +1427,93 @@ def test_a_format_menu_pick_still_certifies_without_a_uniform_arm(tmp_path):
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert json.loads(summary.read_text())["uniform_control"] is None
+
+
+def test_an_acknowledged_rate_axis_pick_builds_the_candidate(tmp_path):
+    """The refusal is a gate, not a wall: the uniform control is built FROM
+    the candidate plan, so a per-run acknowledgement lets the pipeline walk on
+    to export while stamping the control outstanding -- acknowledged, never
+    served -- in both output files. The wall sits at publication (#121)."""
+    validation_path, layer_config, assignment_out, summary = (
+        _rate_axis_cli_fixture(tmp_path, formats=(_TESSERA_RUNG, "NVFP4"))
+    )
+    proc = _run_selector(
+        "--validation-json", str(validation_path),
+        "--mode", "best-kl",
+        "--acknowledge-outstanding-uniform-control",
+        "run-2026-09-04-build-candidate",
+        "--output-layer-config", str(layer_config),
+        "--output-assignment", str(assignment_out),
+        "--output-summary", str(summary),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ACKNOWLEDGED" in (proc.stdout + proc.stderr)
+    stamped = json.loads(summary.read_text())["uniform_control"]
+    assert stamped["status"] == "acknowledged"
+    assert stamped["acknowledged_run"] == "run-2026-09-04-build-candidate"
+    assert stamped["acknowledged_via"] == "flag"
+    assert stamped["selected_label"] == "alloc_5.0"
+    assert stamped["selected_artifact_bytes"] == _RECEIPT_CANDIDATE_BYTES
+    meta = json.loads(layer_config.read_text())["__prismaquant__"]
+    assert meta["uniform_control"]["status"] == "acknowledged"
+    assert (meta["uniform_control"]["acknowledged_run"]
+            == "run-2026-09-04-build-candidate")
+
+
+def test_the_env_spelling_acknowledges_and_the_flag_wins(tmp_path, monkeypatch):
+    """`PRISMAQUANT_ACKNOWLEDGE_OUTSTANDING_UNIFORM_CONTROL` carries the same
+    run id for drivers that cannot pass the flag; an explicit flag wins."""
+    monkeypatch.setenv(
+        "PRISMAQUANT_ACKNOWLEDGE_OUTSTANDING_UNIFORM_CONTROL", "run-env-1")
+    validation_path, layer_config, assignment_out, summary = (
+        _rate_axis_cli_fixture(tmp_path, formats=(_TESSERA_RUNG, "NVFP4"))
+    )
+    both = _run_selector(
+        "--validation-json", str(validation_path),
+        "--mode", "best-kl",
+        "--acknowledge-outstanding-uniform-control", "run-flag-1",
+        "--output-layer-config", str(layer_config),
+        "--output-assignment", str(assignment_out),
+        "--output-summary", str(summary),
+    )
+    assert both.returncode == 0, both.stdout + both.stderr
+    stamped = json.loads(summary.read_text())["uniform_control"]
+    assert stamped["acknowledged_run"] == "run-flag-1"
+    assert stamped["acknowledged_via"] == "flag"
+
+    env_only = _run_selector(
+        "--validation-json", str(validation_path),
+        "--mode", "best-kl",
+        "--output-layer-config", str(layer_config),
+        "--output-assignment", str(assignment_out),
+        "--output-summary", str(summary),
+    )
+    assert env_only.returncode == 0, env_only.stdout + env_only.stderr
+    stamped = json.loads(summary.read_text())["uniform_control"]
+    assert stamped["acknowledged_run"] == "run-env-1"
+    assert stamped["acknowledged_via"] == "env"
+
+
+def test_a_uniform_rate_axis_plan_is_its_own_control(tmp_path):
+    """One format over every assigned unit IS a byte-matched uniform arm --
+    refusing it and telling it to go build a uniform control would compare the
+    plan against itself. It exits 0 with the status recording that there is
+    nothing to corroborate."""
+    validation_path, layer_config, assignment_out, summary = (
+        _rate_axis_cli_fixture(
+            tmp_path, formats=(_TESSERA_RUNG, _TESSERA_RUNG))
+    )
+    proc = _run_selector(
+        "--validation-json", str(validation_path),
+        "--mode", "best-kl",
+        "--output-layer-config", str(layer_config),
+        "--output-assignment", str(assignment_out),
+        "--output-summary", str(summary),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    stamped = json.loads(summary.read_text())["uniform_control"]
+    assert stamped["status"] == "not_applicable"
+    assert stamped["reason"] == "uniform_assignment"
+    assert stamped["rate_axis_formats"] == [_TESSERA_RUNG]
+    meta = json.loads(layer_config.read_text())["__prismaquant__"]
+    assert meta["uniform_control"]["status"] == "not_applicable"
