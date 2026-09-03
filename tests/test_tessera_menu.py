@@ -889,3 +889,113 @@ def test_the_allocator_stamps_the_caveat_rather_than_only_printing_it():
         "the caveat must reach BOTH provenance stamp sites, not just the "
         "layer_config one")
     assert "CANDIDATE, not a selection" in src
+
+
+# ---------------------------------------------------------------------------
+# The menu cache bound (tessera#46)
+#
+# These pin the RULE -- "a memo must survive one shape's widest menu" -- and
+# never the roster.  A number written here would be the same mistake the bug
+# was: ``maxsize=4096`` was correct arithmetic against a three-family menu and
+# silently wrong the moment a fourth family was admitted.
+# ---------------------------------------------------------------------------
+
+def _menu_memos():
+    from prismaquant import tessera_footprint as tf
+
+    return {
+        "tessera_menu._shard_geometry": tm._shard_geometry,
+        "tessera_footprint._exact_bits_for_shape": tf._exact_bits_for_shape,
+    }
+
+
+def test_the_menu_rung_count_is_asked_of_the_families_not_listed():
+    """The first factor of the bound is computed, so a new family moves it."""
+    expected = sum(
+        spec.mathematical_q256_bounds[1] - spec.mathematical_q256_bounds[0] + 1
+        for spec in tm.menu_families()
+    )
+    assert tm.menu_rungs_per_shape() == expected
+    # and it really is the ceiling on what one pass over one shape fills --
+    # today also the exact count, since every rung is legal at this shape, but
+    # the rule is the ceiling.  A family whose span or Bresenham root refuses
+    # some shapes would lower the fill without touching the bound, and pinning
+    # equality here would fail for a reason that has nothing to do with the
+    # cache.
+    for memo in _menu_memos().values():
+        memo.cache_clear()
+    tm.expand_tessera_menu((256, 256), mode=tm.MENU_RESEARCH, step_q256=1)
+    from prismaquant import tessera_footprint as tf
+
+    fills = tf._exact_bits_for_shape.cache_info().misses
+    assert 0 < fills <= tm.menu_rungs_per_shape()
+
+
+def test_every_menu_memo_survives_one_shapes_widest_menu(monkeypatch):
+    """The rule.  Not ``maxsize == <number>`` -- ``maxsize >= one shape``.
+
+    A memo smaller than the widest menu one shape can produce evicts its own
+    entries while that shape is still being priced, which is tessera#46
+    exactly: 6764 rungs into a 4096-entry memo, cold 10.06 s and warm 9.958 s.
+    """
+    floor = tm.menu_rungs_per_shape()
+    for name, memo in _menu_memos().items():
+        assert memo.cache_info().maxsize >= floor, (
+            f"{name} holds {memo.cache_info().maxsize} entries against a "
+            f"{floor}-rung menu: one shape evicts itself")
+
+    # By construction, not by the value of a constant: the bound is a whole
+    # number of shapes and at least one, so no setting of the knob can put it
+    # under a shape.
+    for shapes in ("1", "3", "25", "512"):
+        monkeypatch.setenv(tm.MENU_CACHE_SHAPES_ENV, shapes)
+        assert tm.menu_cache_bound() == floor * int(shapes)
+        assert tm.menu_cache_bound() >= floor
+    for refused in ("0", "-4", "", "  ", "lots", "1.5"):
+        monkeypatch.setenv(tm.MENU_CACHE_SHAPES_ENV, refused)
+        if refused.strip() == "":
+            assert tm.menu_cache_shapes() == tm.DEFAULT_MENU_CACHE_SHAPES
+            continue
+        with pytest.raises(tm.TesseraMenuError):
+            tm.menu_cache_shapes()
+
+
+def test_a_second_pass_over_one_shape_recomputes_nothing():
+    """The behaviour the bound buys, measured on the memo rather than a clock.
+
+    A wall-clock assertion would be a coin flip on a loaded box; hits and
+    misses say the same thing and say it exactly.
+    """
+    from prismaquant import tessera_footprint as tf
+
+    for memo in _menu_memos().values():
+        memo.cache_clear()
+    shape = (256, 256)
+    first = tm.expand_tessera_menu(shape, mode=tm.MENU_RESEARCH, step_q256=1)
+    cold = tf._exact_bits_for_shape.cache_info()
+    assert cold.hits == 0 and cold.misses > 0
+    second = tm.expand_tessera_menu(shape, mode=tm.MENU_RESEARCH, step_q256=1)
+    warm = tf._exact_bits_for_shape.cache_info()
+    assert first == second
+    assert warm.misses == cold.misses, (
+        "a repeat pass over one shape recomputed rungs it had already priced")
+    assert warm.hits == cold.misses
+
+
+def test_the_geometry_memo_is_keyed_by_family_name_not_by_the_family():
+    """One answer, one key.  A spec and its name would be two.
+
+    ``get_tessera_family`` takes either, so the two spellings agree on the
+    answer and disagree on the key -- which halves the hit rate against a bound
+    that was sized in rungs, without changing a single number.
+    """
+    spec = tm.menu_families()[0]
+    lo, _hi = spec.mathematical_q256_bounds
+    tm._shard_geometry.cache_clear()
+    by_name = tm._shard_geometry(spec.name, lo, 2048, 1024)
+    after_one = tm._shard_geometry.cache_info()
+    assert after_one.misses == 1 and after_one.currsize == 1
+    assert tm._shard_geometry(spec.name, lo, 2048, 1024) is by_name
+    assert tm._shard_geometry.cache_info().hits == 1
+    with pytest.raises(tm.TesseraMenuError):
+        tm._shard_geometry(spec, lo, 2048, 1024)
