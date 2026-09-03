@@ -29,6 +29,7 @@ from functools import lru_cache
 import hashlib
 import json
 
+from .tessera_menu import menu_scaled_cache
 from .tessera_formats import (
     SUPERBLOCK_WEIGHTS,
     TesseraFamily,
@@ -395,7 +396,7 @@ def tessera_tensor_payload_breakdown(
     return breakdown
 
 
-@lru_cache(maxsize=4096)
+@menu_scaled_cache
 def _exact_bits_for_shape(
     family_name: str,
     body_rate_q256: int,
@@ -403,6 +404,17 @@ def _exact_bits_for_shape(
     columns: int,
     recipe,
 ) -> Fraction:
+    """One rung's exact bits at one shape, memoised at the menu cache bound.
+
+    This is the expensive half of a menu -- ``build_planes`` and the Bresenham
+    schedule run per rung -- and it is the memo tessera#46 caught undersized:
+    at ``maxsize=4096`` against a 6916-rung menu a pass over one shape evicted
+    its own entries, so the second pass hit nothing.  The bound is
+    ``tessera_menu.menu_cache_bound()``, which is the widest menu one shape can
+    produce times the shapes a pass keeps live; the first factor is what makes
+    self-eviction impossible, and it is asked of the family roster rather than
+    written down here.
+    """
     payload = tessera_tensor_payload_breakdown(
         (rows, columns),
         family=family_name,
