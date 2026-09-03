@@ -22,6 +22,18 @@
   member's menu. A stock-only group never asks the licence question and so
   carries no receipt: its super item is unchanged.
 
+- **The lane-slot vocabulary is derived and every derived slot names a verifier**
+  (#162; `shipcard.py`, `tests/test_lane_gate_recording.py`). `LANE_SCOPED_SLOTS`
+  and `ALL_SLOTS` were two enumerated tuples while the declaration side was
+  already derived, so a fourth lane declaring a novel gate could not be honoured
+  without a code edit -- and admitting it by derivation alone would have given it
+  the generic checks and no replay. The vocabulary is now every `shipcard_slot`
+  any `lane_specs/<lane>.json` declares, union the base set; each derived slot
+  names its replay in `shipcard.LANE_SLOT_VERIFIERS`, and a declaration with no
+  verifier is refused at parse time. `route.census`'s entry is the #136
+  priced-vs-served replay, dispatched through the registry, so the slot refuses
+  a wrong census as well as silence.
+
 - **The Tessera TP gate fails closed on an unknown profile id** (#120's
   fourth seam; `allocator_candidates._tensor_parallel_applicability`). It
   caught `FileNotFoundError` and loaded `research`, pricing every Tessera rung

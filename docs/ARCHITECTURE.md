@@ -1,7 +1,19 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `muse/pq-87-shipgate`. Stamps
+As of: 2026-09-03 · `muse/pq-162-slots`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `muse/pq-162-slots`) for the **derived lane-slot
+vocabulary** (§7.1; RobTand/prismaquant#162 closed). `shipcard.ALL_SLOTS` and
+`shipcard.LANE_SCOPED_SLOTS` are no longer two enumerated tuples: the
+vocabulary is every `shipcard_slot` any `lane_specs/<lane>.json` declares,
+union the base set, and each derived slot names its replay in
+`shipcard.LANE_SLOT_VERIFIERS`. `route.census`'s entry is the #136
+priced-vs-served replay, dispatched through the registry. A lane that declares
+a slot with no verifier is REFUSED at parse time, the same way
+`LaneGate.from_dict` refuses a null slot with no `unrecorded_reason` -- so a
+fourth lane with a novel gate is one spec file plus one verifier, and neither
+roster exists to be forgotten.
 
 Re-stamped (2026-09-03, `muse/pq-87-shipgate`) for the **sampled
 boundary-behavior ship gate** (§7.2; issue #87). KL/PPL and greedy-smoke are
@@ -15,6 +27,7 @@ with a zero bound. `verify` replays the ledger membership, the exact
 boundary thresholds, and the evidence (positive generation count, zero
 defects, sampling temperature). Gates:
 `tests/test_ship_boundary_behavior.py` (14).
+
 Re-stamped (2026-09-03, `pq132-fused-licence`) for the **fused module's
 per-member rung licence, read from the contract** (§4.10; PrismaQuant #132
 consuming RobTand/tessera#37). The group knapsack gave each member of a fused
@@ -110,13 +123,14 @@ exited about 130 lines above the driver's shipcard block, so no card existed to
 carry that gate even had it named a slot. Four links hold now.
 `lane_spec.LaneGate.from_dict` refuses a null `shipcard_slot` that carries no
 `unrecorded_reason`, so "advisory by construction" is a value rather than a
-silence. `route.census` names its slot and `shipcard.LANE_SCOPED_SLOTS` knows
-it. `python -m prismaquant.lane_shipcard open --lane tessera` opens a record
+silence. `route.census` names its slot and the derived vocabulary knows
+it (`shipcard.lane_scoped_slots`, #162 closed). `python -m prismaquant.lane_shipcard open --lane tessera` opens a record
 whose slots are the lane's own gates, and the tessera arm runs it before
 `exit 0` (`run-pipeline.sh:2452-2458`). And `shipcard.required_slots` UNIONS the
 lane's slots with the base set, so a lane can add a requirement and never
-subtract one; a declared slot the shipcard has no name for RAISES rather than
-being filtered away (`shipcard.lane_gate_slots`, #162). Two rosters moved into
+subtract one; a declared slot with no registered verifier RAISES rather than
+being filtered away (`shipcard.lane_gate_slots`, #162 closed: the vocabulary
+is derived from every lane spec and each derived slot names its replay). Two rosters moved into
 the declaration they belong to: `wired_architectures`, from two sets in
 `tests/test_profile_export_lanes.py`, and `producer_tools`, from a hardcoded
 `for` loop in the driver into preflight gate 4
@@ -6474,10 +6488,10 @@ lane has already filled. The third link is the union:
 `shipcard.required_slots` extends `REQUIRED_SLOTS` with the lane's slots and
 never replaces it, so **a lane can add a requirement and can never subtract
 one** — the GGUF lane declares no `native_export.graph` gate and is still
-required to close that slot. A slot a lane declares that this module has no
-name for RAISES; the vocabulary is enumerated because it is also the key space
-`shipcard.verify` dispatches its per-slot evidence replay on, and #162 records
-what deriving it would take. The fourth link is `publish_artifact`, above.
+required to close that slot. The vocabulary is derived from every lane spec
+(`shipcard.all_slots`), and each derived slot names the verifier
+`shipcard.verify` replays for it (`shipcard.LANE_SLOT_VERIFIERS`, dispatched
+by registry, #162 closed). The fourth link is `publish_artifact`, above.
 
 One lane holds all four links, and it is Tessera. Native
 compressed-tensors holds the first, third and fourth but not the second:
@@ -8743,7 +8757,8 @@ it PRICED against the route it SERVED, principle 12's second leg — carried
 it. And the arm called Tessera's exporter, which has no concept of a
 PrismaQuant shipcard, then `exit 0`ed about 130 lines above the driver's
 shipcard block, so no card existed to carry any of the six gates. Both are
-closed: `route.census` names its slot, `shipcard.LANE_SCOPED_SLOTS` carries it,
+closed: `route.census` names its slot, the derived vocabulary carries it
+(`shipcard.lane_scoped_slots`, #162 closed),
 and the arm runs `python -m prismaquant.lane_shipcard open --lane tessera
 --artifact <exported>` before exiting (`run-pipeline.sh:2452-2458`), so an
 un-run gate is an unfilled slot on a real card rather than a sentence in a JSON
@@ -8763,10 +8778,11 @@ that second obligation rests on the card as well as on the checkpoint's
 fresh vLLM container with the pinned plugin editable-installed, and both
 residency modes, because the two decode the same bytes by different paths; the
 build lane must not spawn those inside a pipeline run. Building that runner is
-R16's open half and stays with RobTand/prismaquant#119. `verify` also gives
-`route.census` only the generic record checks — present, well-formed, `slot`
-name agrees, `model_sha` binds to the artifact, `passed is True` — and replays
-no route histogram, so the slot refuses *silence* and not yet a *wrong* census.
+R16's open half and stays with RobTand/prismaquant#119. `verify` replays
+`route.census` through its registered verifier (`_verify_route_census_record`):
+the record must carry the priced-vs-served `route_census` block and its
+verdict must agree with it, so the slot refuses a *wrong* census as well as
+*silence* (#162).
 
 **The lane declares its own architecture roster and its own build-tool
 dependencies.** `wired_architectures` (`["qwen3"]`) is the set of model-profile
