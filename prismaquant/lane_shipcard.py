@@ -102,8 +102,19 @@ def open_lane_shipcard(
         )
     # The EXPORT_CONTAINER spelling, not the spec-file id: the card records
     # what the operator set and what `canonical_export_lane` speaks.
+    #
+    # `export_container` is also stamped into the BUILD block, because a
+    # second obligation is derived from it: `shipcard._is_rate_axis_artifact`
+    # ORs the card's build block with the artifact's own `config.json`, and
+    # ORing is the whole design -- an obligation a single erasure removes is
+    # not an obligation (#121). Without the stamp the Tessera lane's
+    # `uniform_control` slot would rest on `config.json` alone, so a card
+    # opened beside a checkpoint whose config went missing would owe the
+    # control nothing. A caller that already declared the key keeps it.
+    build_payload = dict(build or {})
+    build_payload.setdefault("export_container", spec.export_container)
     card = build_shipcard(
-        root, build=dict(build or {}), lane=spec.export_container)
+        root, build=build_payload, lane=spec.export_container)
     write_shipcard(path, card)
     return path
 

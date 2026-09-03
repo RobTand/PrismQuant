@@ -102,9 +102,16 @@ OPTIONAL_SLOTS: tuple[str, ...] = (UNIFORM_CONTROL_SLOT,)
 #: PRICED on.  The Tessera lane declared that gate from the day the lane
 #: existed and gave it ``shipcard_slot: null``, so the check was named and
 #: recorded nowhere; a gate nothing can record is a gate nothing can refuse on
-#: (RobTand/prismaquant#119).  Which lanes open which of these is read from
-#: ``lane_specs/<lane>.json``'s own ``gates[]``, never from a list here: a
-#: fourth lane declaring a new gate opens its slot by declaring it.
+#: (RobTand/prismaquant#119).
+#:
+#: WHICH lanes open which of these is read from ``lane_specs/<lane>.json``'s
+#: own ``gates[]`` and from no list here, so a lane opens one of these slots by
+#: declaring the gate that closes it.  The MEMBERSHIP of this tuple is still
+#: enumerated, because it is also the key space :func:`verify` dispatches its
+#: per-slot evidence replay on: a fourth lane declaring a slot that is not
+#: here is REFUSED by :func:`lane_gate_slots` rather than silently dropped, and
+#: admitting it is one edit here plus the verifier that replays it
+#: (RobTand/prismaquant#162).
 LANE_SCOPED_SLOTS: tuple[str, ...] = ("route.census",)
 
 #: The vocabulary accepted by :func:`make_record`.  Whether a member is
@@ -1293,6 +1300,13 @@ def lane_gate_slots(lane: str | None) -> tuple[str, ...]:
     :data:`REQUIRED_SLOTS` and never replaces it, so no lane can subtract a
     base requirement by under-declaring (the GGUF lane declares no
     ``native_export.graph`` gate and is still required to close that slot).
+
+    A declared slot outside :data:`ALL_SLOTS` RAISES.  Filtering it away would
+    mean the lane declared a gate, the card never opened it and ``verify``
+    passed an artifact that closed nothing -- the same silence one link
+    earlier that RobTand/prismaquant#119 reported.  Admitting a new one is an
+    edit here plus the verifier ``verify`` replays for it
+    (RobTand/prismaquant#162).
     """
     if not lane:
         return ()
@@ -1310,9 +1324,23 @@ def lane_gate_slots(lane: str | None) -> tuple[str, ...]:
             spec = load_lane_spec(str(lane))
         except Exception:
             return ()
-    return tuple(
-        slot for slot in spec.shipcard_slots() if slot in ALL_SLOTS
-    )
+    declared = spec.shipcard_slots()
+    # FAIL CLOSED, not filter. A lane that declares a slot this module has no
+    # name for is a repository defect, and the two ways of meeting it are not
+    # equivalent: dropping the slot means the lane declared a gate, the card
+    # never opened it, and `verify` passed an artifact that closed nothing --
+    # silently, which is the exact shape #119 reported one link earlier.
+    # Raising says which lane and which slot, so the fix is one edit here.
+    unknown = [slot for slot in declared if slot not in ALL_SLOTS]
+    if unknown:
+        raise KeyError(
+            f"lane {lane!r} declares shipcard slot(s) {unknown} that "
+            f"shipcard.py does not know; known: {list(ALL_SLOTS)}. Add the "
+            "slot to LANE_SCOPED_SLOTS together with the verifier `verify` "
+            "must replay for it -- a slot with no verifier is a slot any "
+            "record closes (RobTand/prismaquant#162)"
+        )
+    return declared
 
 
 def build_shipcard(
@@ -2671,8 +2699,7 @@ def required_slots(
     # UNION, never replacement. A lane adds what its own gates[] declares and
     # can subtract nothing: the GGUF lane declares no `native_export.graph`
     # gate and is still required to close that slot, so lane-derivation cannot
-    # be used to shrink a bar (RobTand/prismaquant#134 tracks the GGUF gap
-    # itself).
+    # be used to shrink a bar.
     required.extend(lane_gate_slots(card.get("lane")))
     if _is_rate_axis_artifact(card, model_dir=model_dir):
         required.append(UNIFORM_CONTROL_SLOT)

@@ -225,6 +225,36 @@ def test_lane_gate_slots_reads_the_lane_declaration():
     assert lane_gate_slots("no_such_lane") == ()
 
 
+def test_a_lane_declaring_a_slot_the_shipcard_has_no_name_for_is_REFUSED(
+    monkeypatch,
+):
+    """Not filtered away. #162 records why the vocabulary is still a roster.
+
+    `lane_gate_slots` checks each declared slot against `shipcard.ALL_SLOTS`,
+    which is also the key space `verify` dispatches its per-slot evidence
+    replay on. Dropping an unknown slot would mean the lane declared a gate,
+    the card never opened it, and `verify` passed an artifact that closed
+    nothing -- the same silence one link earlier that #119 reported. So it
+    raises, and the refusal names the lane and the slot.
+    """
+    import dataclasses
+
+    from prismaquant import lane_spec as lane_spec_mod
+
+    real = lane_spec_for_container("tessera")
+    bogus = dataclasses.replace(
+        real,
+        gates=real.gates + (
+            LaneGate(id="route.entropy", runner="true",
+                     shipcard_slot="route.entropy"),
+        ),
+    )
+    monkeypatch.setattr(
+        lane_spec_mod, "lane_spec_for_container", lambda _lane: bogus)
+    with pytest.raises(KeyError, match="route.entropy"):
+        lane_gate_slots("tessera")
+
+
 def test_a_lane_can_add_a_requirement_and_can_never_subtract_one():
     """UNION, not replacement.
 
@@ -254,8 +284,45 @@ def test_opening_a_tessera_record_opens_the_gates_the_lane_declares(tmp_path):
     path = open_lane_shipcard(model_dir, "tessera")
     card = load_shipcard(path)
     assert card["lane"] == "tessera"
-    assert set(card["slots"]) == set(REQUIRED_SLOTS) | {"route.census"}
+    assert set(card["slots"]) == set(REQUIRED_SLOTS) | {
+        "route.census", "uniform_control"}
     assert all(v is None for v in card["slots"].values())
+
+
+def test_a_tessera_card_owes_its_lanes_gates_AND_the_rate_axis_control(
+    tmp_path,
+):
+    """Two mechanisms, one card, and neither knows about the other.
+
+    `route.census` is opened because the LANE declares the gate
+    (`lane_gate_slots`); `uniform_control` is opened because the ARTIFACT has
+    a rate axis (`_is_rate_axis_artifact`, #121). They compose by union in
+    `required_slots`, which is the property worth pinning: a card that owed
+    only one of them would be a card one of the two closures does not cover,
+    and nothing else in the tree exercises both on one card.
+    """
+    model_dir = _artifact(tmp_path)
+    card = load_shipcard(open_lane_shipcard(model_dir, "tessera"))
+    required = set(required_slots(card, model_dir=model_dir))
+    assert "route.census" in required
+    assert "uniform_control" in required
+    assert set(REQUIRED_SLOTS).issubset(required)
+
+
+def test_the_rate_axis_obligation_survives_a_missing_artifact_config(tmp_path):
+    """The card must carry it too, not only the checkpoint.
+
+    `_is_rate_axis_artifact` ORs the card's build block with the artifact's
+    own `config.json` because an obligation a single erasure removes is not
+    an obligation. `open_lane_shipcard` therefore stamps `export_container`
+    into the build block: without it a Tessera card would owe the control on
+    the strength of a file outside the card.
+    """
+    model_dir = _artifact(tmp_path)
+    card = load_shipcard(open_lane_shipcard(model_dir, "tessera"))
+    assert card["build"]["export_container"] == "tessera"
+    # No model_dir at all -- the CLI's `verify` defaults to none.
+    assert "uniform_control" in required_slots(card)
 
 
 def test_an_unclosed_tessera_record_refuses_on_the_route_census(tmp_path):
@@ -300,6 +367,24 @@ def test_the_tessera_arm_opens_the_record_it_says_it_opens():
     arm = arm.split("\nfi\n")[0]
     assert "--lane tessera" in arm
     assert "--artifact" in arm
+
+
+def test_the_arm_keeps_an_existing_record_instead_of_dying_on_the_refusal():
+    """Skip-if-exists, like every other stage in this driver.
+
+    `open_lane_shipcard` refuses an existing card without `--overwrite`,
+    because re-opening one discards every slot the serve lane has filled. The
+    driver's stages are skip-if-exists, so a re-run over a completed build
+    reaches this step with a card already there: the refusal is correct and
+    dying on it is not -- and the first spelling's message ("unpublishable
+    until one exists") was false in exactly that case, one existed.
+    """
+    arm = DRIVER.split('if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then')[-1]
+    arm = arm.split("\nfi\n")[0]
+    assert '[[ -f "${WORK_DIR}/exported/shipcard.json" ]]' in arm
+    # Every other refusal in this arm is `exit 2`; this one was `exit 1`.
+    open_step = arm.split("prismaquant.lane_shipcard open")[-1]
+    assert "exit 2" in open_step.split("\n  echo")[0]
 
 
 def test_the_gate_set_of_every_lane_is_reachable_from_its_spec_alone():

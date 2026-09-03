@@ -2443,11 +2443,19 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   # with the pinned plugin editable-installed, and both residencies, because
   # the two modes decode the same bytes by different paths. Building that
   # runner is R16's open half and stays with #119.
-  python3 -m prismaquant.lane_shipcard open \
-    --lane tessera --artifact "${WORK_DIR}/exported" || {
-      echo "[pipeline] ERROR: could not open the Tessera ship record; the artifact is unpublishable until one exists." >&2
-      exit 1
-    }
+  #
+  # Skip-if-exists like every other stage in this driver, and for the same
+  # reason plus one: re-opening a card DISCARDS every slot the serve lane has
+  # already filled, so `lane_shipcard open` refuses without --overwrite. A
+  # re-run over a completed build would otherwise die here on a refusal whose
+  # message ("unpublishable until one exists") is false -- one exists.
+  if [[ -f "${WORK_DIR}/exported/shipcard.json" ]]; then
+    echo "  Ship record: ${WORK_DIR}/exported/shipcard.json exists, kept (re-open would discard filled slots)"
+  elif ! python3 -m prismaquant.lane_shipcard open \
+         --lane tessera --artifact "${WORK_DIR}/exported"; then
+    echo "[pipeline] ERROR: EXPORT_CONTAINER=tessera: could not open the Tessera ship record. The artifact is unpublishable without one, and writing a base card by hand would omit this lane's own gates, so the export is not done until this succeeds." >&2
+    exit 2
+  fi
   echo "  Serve:       TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE} bash ${TESSERA_REPO%/}/experiments/tessera_plugin_served.sh ${WORK_DIR}/exported <arm> ${TESSERA_SERVE_MODE}"
   echo "  Route census: python ${TESSERA_REPO%/}/tools/tessera_route_census.py --log <serve.log>"
   echo "  Verify:      python -m prismaquant.shipcard_cli verify ${WORK_DIR}/exported/shipcard.json"
