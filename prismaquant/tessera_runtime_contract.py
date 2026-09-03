@@ -88,6 +88,7 @@ __all__ = [
     "TesseraContractError",
     "TesseraRouteCell",
     "contract_answer",
+    "describe_dev_pin",
     "dev_pin_requested",
     "load_tessera_contract",
 ]
@@ -302,6 +303,27 @@ class TesseraContract:
                 "reviewed bytes; bytes_are_the_reviewed_bytes says which"
             ),
         }
+
+
+def describe_dev_pin(identity: "Mapping[str, Any]") -> str:
+    """One human-readable line for a :meth:`TesseraContract.identity` block.
+
+    Since the pin became an *answer* pin, bytes that differ from the reviewed
+    ones are legal: a Tessera commit adding a block no gate reads moves the
+    file and not the answer, and the answer is what admitted the routes.  But
+    that makes ``bytes_are_the_reviewed_bytes`` the one field a reader needs
+    and the one the old log line left out -- it printed a sha with nothing to
+    compare it against, so "these are not the bytes a human reviewed" existed
+    only inside a provenance blob nobody opens.  Name it here.
+    """
+
+    line = (f"commit={identity['commit'][:12]} "
+            f"contract_sha={identity['contract_sha256'][:12]}")
+    if not identity["bytes_are_the_reviewed_bytes"]:
+        line += (f" (reviewed {identity['reviewed_contract_sha256'][:12]}, "
+                 "answer equal)")
+    return (f"{line} plugin={identity['plugin_version']} "
+            f"contract_v{identity['contract_version']}")
 
 
 def contract_answer(contract: "TesseraContract") -> dict:

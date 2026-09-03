@@ -377,6 +377,48 @@ def test_a_prose_only_tessera_edit_does_not_re_stale_the_pin(dev_pin, monkeypatc
         "provenance must say the bytes drifted even though the answer did not")
 
 
+def test_the_line_a_human_reads_says_the_bytes_are_not_the_reviewed_ones():
+    """The drift flag has to appear where a person will see it.
+
+    ``identity()`` has recorded ``bytes_are_the_reviewed_bytes`` since the pin
+    became an answer pin, and it travels into ``layer_config.json``.  But the
+    allocator's one human-facing line printed a contract sha with nothing to
+    compare it against, so a run reading unreviewed bytes looked exactly like a
+    run reading reviewed ones.  A field that exists only in a JSON blob nobody
+    opens is a confession log, not a notice.
+    """
+
+    reviewed = dict(
+        commit="c6d52e2b53e0fb4593e4fb828fab0f681c43563e",
+        contract_sha256="b" * 64,
+        reviewed_contract_sha256="b" * 64,
+        bytes_are_the_reviewed_bytes=True,
+        plugin_version="0.1.0",
+        contract_version=7,
+    )
+    drifted = dict(reviewed,
+                   contract_sha256="a" * 64,
+                   reviewed_contract_sha256="b" * 64,
+                   bytes_are_the_reviewed_bytes=False)
+
+    quiet = trc.describe_dev_pin(reviewed)
+    loud = trc.describe_dev_pin(drifted)
+
+    # The matching case stays quiet: nothing to compare, nothing to say.
+    assert "reviewed" not in quiet, quiet
+    assert "bbbbbbbbbbbb" in quiet and "c6d52e2b53e0" in quiet
+
+    # The drifted case names both shas and says the answer still matches, which
+    # is why the run was allowed to proceed at all.
+    assert "aaaaaaaaaaaa" in loud, loud
+    assert "reviewed bbbbbbbbbbbb" in loud, loud
+    assert "answer equal" in loud, loud
+
+    # Both carry the identity fields a reader needs to reproduce the read.
+    for line in (quiet, loud):
+        assert "plugin=0.1.0" in line and "contract_v7" in line, line
+
+
 def test_a_moved_answer_refuses_and_names_the_field(dev_pin, monkeypatch, tmp_path):
     """The other half: a value a gate reads moves, and the read raises.
 

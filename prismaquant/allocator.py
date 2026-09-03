@@ -2326,10 +2326,8 @@ def main():
     _tessera_contract = load_tessera_contract()
     tessera_dev_pin = {} if _tessera_contract is None else _tessera_contract.identity()
     if tessera_dev_pin:
-        print(f"[alloc] tessera dev pin: commit={tessera_dev_pin['commit'][:12]} "
-              f"contract_sha={tessera_dev_pin['contract_sha256'][:12]} "
-              f"plugin={tessera_dev_pin['plugin_version']} "
-              f"contract_v{tessera_dev_pin['contract_version']}")
+        from .tessera_runtime_contract import describe_dev_pin
+        print(f"[alloc] tessera dev pin: {describe_dev_pin(tessera_dev_pin)}")
 
     # ---- Fisher renormalization ----
     # One shared denominator (the global calib token count) recomputed
