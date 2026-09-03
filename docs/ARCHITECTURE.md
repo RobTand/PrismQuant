@@ -1,7 +1,28 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `muse/pq-170-append`. Stamps
+As of: 2026-09-03 · `muse/pq-146-stamp`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `muse/pq-146-stamp`) for the **pre-guard
+trust-admission record** (§5.4; RobTand/prismaquant#146, remaining leg). The
+guard admitted a directory holding shards but no sidecar on trust with a
+WARNING, then wrote the current identity as if guarded since birth — from that
+moment the directory was indistinguishable from one guarded throughout, and a
+downstream artifact could not say part of it rested on unverified shards. The
+first write now records `pre_guard_admission` in the sidecar itself (the
+trusted shard count plus their sorted `.pt` names; a fresh directory carries
+no such record), and every later sidecar write carries it forward: the append
+merge preserves the stored file, the base adoption re-validates the record
+through the same validator, and the match path rewrites nothing — so the guard
+cannot launder its own confession on the next run. The record is history,
+never render input: it is excluded from the comparison, so a guarded directory
+carrying it still resumes cleanly. Warn-and-admit stays, since refusing would
+strand every existing cache. No downstream consumer is wired: nothing outside
+`production_weight_cache.py` reads `render_identity.json`, so no shipcard or
+receipt echoes the admission; the sidecar is the record. Gates:
+`tests/test_production_cache_render_identity.py` (7 new: a hand-built v1
+sidecar resumes, pre-guard records while fresh does not, the append merge and
+the base adoption preserve, no false mismatch, malformed refuses).
 
 Re-stamped (2026-09-03, `muse/pq-170-append`) for the **production cache
 append-identity guard** (§5.4; RobTand/prismaquant#170). #146's sidecar

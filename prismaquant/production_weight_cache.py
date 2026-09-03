@@ -132,6 +132,7 @@ RENDER_IDENTITY_PACKED_APPEND_SCHEMA = (
 )
 MTP_APPEND_SIDECAR_KEY = "mtp_append"
 PACKED_APPEND_SIDECAR_KEY = "packed_expert_append"
+PRE_GUARD_ADMISSION_SIDECAR_KEY = "pre_guard_admission"
 
 
 # Formats whose WEIGHT PLANE is the same artifact and must therefore get the
@@ -4939,6 +4940,92 @@ def assert_same_activation_hook_scope(
     return validated_reference
 
 
+def _pre_guard_trusted_shards(cache_dir_path: str | Path) -> list[str]:
+    """Sorted names of rendered ``.pt`` shards already on disk.
+
+    This is the same file-presence predicate the resume loop admits units
+    by, so the admission record names exactly the shards the guard lets
+    through on trust.
+    """
+    try:
+        entries = list(Path(cache_dir_path).iterdir())
+    except OSError:
+        return []
+    return sorted(
+        entry.name
+        for entry in entries
+        if entry.is_file() and entry.suffix == ".pt"
+    )
+
+
+def build_pre_guard_admission(trusted_shards: Sequence[str]) -> dict[str, object]:
+    """Build the trust-admission record for a pre-guard directory (#146).
+
+    A directory that holds rendered shards but no sidecar is admitted on
+    trust — refusing would strand every existing cache — but the admission
+    is recorded in the sidecar itself: that shards were admitted, how many,
+    and their sorted shard names. A fresh directory (no shards) carries no
+    record at all.
+    """
+    names = [str(name) for name in trusted_shards]
+    if not names or any(not name for name in names):
+        raise ValueError("pre-guard admission requires a nonempty shard list")
+    if list(names) != sorted(names):
+        raise ValueError("pre-guard admission shard names must be sorted")
+    return {
+        "admitted_on_trust": True,
+        "trusted_shard_count": len(names),
+        "trusted_shards": list(names),
+    }
+
+
+def validate_pre_guard_admission(
+    value: object, *, where: str = "pre-guard admission"
+) -> dict[str, object]:
+    """Validate a ``pre_guard_admission`` sidecar section.
+
+    Every rule below is derived from the writer in
+    :func:`build_pre_guard_admission`: the exact field set, the true
+    admission flag, and the shard count matching the named shards. Present
+    but malformed is an error, never a silent skip.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} must be a JSON object")
+    raw = dict(value)
+    if set(raw) != {
+        "admitted_on_trust",
+        "trusted_shard_count",
+        "trusted_shards",
+    }:
+        raise ValueError(f"{where} has unsupported fields")
+    if raw.get("admitted_on_trust") is not True:
+        raise ValueError(f"{where}.admitted_on_trust must be true")
+    count = raw.get("trusted_shard_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise ValueError(
+            f"{where}.trusted_shard_count must be a positive int"
+        )
+    shards = raw.get("trusted_shards")
+    if (
+        not isinstance(shards, list)
+        or not shards
+        or any(not isinstance(name, str) or not name for name in shards)
+        or list(shards) != sorted(shards)
+    ):
+        raise ValueError(
+            f"{where}.trusted_shards must be a sorted nonempty string list"
+        )
+    if count != len(shards):
+        raise ValueError(
+            f"{where}.trusted_shard_count must match len(trusted_shards)"
+        )
+    return {
+        "admitted_on_trust": True,
+        "trusted_shard_count": int(count),
+        "trusted_shards": list(shards),
+    }
+
+
 def build_production_cache_render_identity(
     *,
     render_scope: str,
@@ -5057,13 +5144,17 @@ def validate_production_cache_render_identity(
         "max_act_rows",
     }
     append_fields = {MTP_APPEND_SIDECAR_KEY, PACKED_APPEND_SIDECAR_KEY}
+    admission_fields = {PRE_GUARD_ADMISSION_SIDECAR_KEY}
     # Not `set(raw) < base_fields`: that is a PROPER-subset test, so a
     # sidecar missing a base field but carrying an append section is
     # neither a subset nor an unknown-field case and would fall through
     # here.  Every base field does raise on its own below, so nothing
     # got past this in practice -- but a field check should refuse for
     # the reason it names.
-    if set(raw) - base_fields - append_fields or not base_fields <= set(raw):
+    if (
+        set(raw) - base_fields - append_fields - admission_fields
+        or not base_fields <= set(raw)
+    ):
         raise ValueError(f"{where} has unsupported fields")
     if not isinstance(raw.get("render_scope"), str) or not raw["render_scope"]:
         raise ValueError(f"{where}.render_scope must be a nonempty string")
@@ -5143,6 +5234,15 @@ def validate_production_cache_render_identity(
         identity[PACKED_APPEND_SIDECAR_KEY] = validate_packed_append_identity(
             raw[PACKED_APPEND_SIDECAR_KEY],
             where=f"{where}.{PACKED_APPEND_SIDECAR_KEY}",
+        )
+    # The trust admission (#146) is history, not render input: it is owned
+    # by the guard writers, carried forward by every later sidecar write,
+    # and never compared, so a guarded directory carrying it still resumes
+    # cleanly against a caller identity computed without it.
+    if PRE_GUARD_ADMISSION_SIDECAR_KEY in raw:
+        identity[PRE_GUARD_ADMISSION_SIDECAR_KEY] = validate_pre_guard_admission(
+            raw[PRE_GUARD_ADMISSION_SIDECAR_KEY],
+            where=f"{where}.{PRE_GUARD_ADMISSION_SIDECAR_KEY}",
         )
     return identity
 
@@ -5515,6 +5615,10 @@ def _check_and_record_append_identity(
     the first differing field. A directory whose sidecar predates the section
     gains it without disturbing the base identity; a directory with no
     sidecar at all records an append-only file the base fill later adopts.
+    A ``pre_guard_admission`` record (#146), when present, is carried
+    forward untouched by the section merge and by that later adoption; an
+    append running first in a pre-guard directory records it the same way
+    the base fill does.
     """
     if section_key == MTP_APPEND_SIDECAR_KEY:
         current = validate_mtp_append_identity(
@@ -5539,11 +5643,29 @@ def _check_and_record_append_identity(
     cache_dir = Path(cache_dir_path)
     sidecar_path = cache_dir / RENDER_IDENTITY_SIDECAR_FILENAME
     if not sidecar_path.is_file():
+        payload: dict[str, object] = {section_key: current}
+        trusted = _pre_guard_trusted_shards(cache_dir)
+        if trusted:
+            # An append running first in a pre-guard directory meets the
+            # same shards-on-trust admission as the base fill; the record
+            # goes in now so the base fill's later adoption carries it
+            # forward instead of laundering it.
+            if progress:
+                print(
+                    "[prod-cache] WARNING: cache directory "
+                    f"{cache_dir} holds rendered shards but no "
+                    f"{RENDER_IDENTITY_SIDECAR_FILENAME} (pre-guard "
+                    "directory); admitting existing shards on trust and "
+                    f"recording the {PRE_GUARD_ADMISSION_SIDECAR_KEY} "
+                    f"alongside the {section_key} section.",
+                    flush=True,
+                )
+            payload[PRE_GUARD_ADMISSION_SIDECAR_KEY] = (
+                build_pre_guard_admission(trusted)
+            )
         atomic_write_bytes(
             sidecar_path,
-            json.dumps(
-                {section_key: current}, indent=2, sort_keys=True
-            ).encode("utf-8"),
+            json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"),
         )
         return
     try:
@@ -5639,14 +5761,21 @@ def _check_production_cache_render_identity(
     ``render_identity.json``; every later fill compares and refuses on the
     first differing field. A missing sidecar means a pre-guard directory:
     warn and admit its shards on trust (refusing would strand existing work),
-    then write the current identity so later mismatches refuse.
+    then write the current identity so later mismatches refuse. The admission
+    itself is recorded in the sidecar as ``pre_guard_admission`` — the
+    trusted shard count plus their sorted shard names — so a downstream
+    artifact can read that part of the directory rests on unverified shards.
+    A fresh directory (no shards) carries no such record.
 
     Append sections (#170) are compared by their own writers, never here:
     the stored base projection is compared against the current base identity
     while recorded ``mtp_append`` / ``packed_expert_append`` sections are
     preserved untouched. A sidecar that holds only append sections (an
     append ran before any base fill) is adopted the same way: the current
-    base identity is merged in alongside the validated sections.
+    base identity is merged in alongside the validated sections. The trust
+    admission is history rather than render input, so it is carried forward
+    by the adoption instead of compared: a guarded directory carrying it
+    still resumes cleanly against a caller identity computed without it.
     """
     current_identity = validate_production_cache_render_identity(
         _canonical_json_value(dict(current), where="production cache render identity"),
@@ -5661,25 +5790,25 @@ def _check_production_cache_render_identity(
     }
     sidecar_path = cache_dir_path / RENDER_IDENTITY_SIDECAR_FILENAME
     if not sidecar_path.is_file():
-        has_shards = False
-        try:
-            has_shards = any(
-                entry.is_file() and entry.suffix == ".pt"
-                for entry in cache_dir_path.iterdir()
-            )
-        except OSError:
-            has_shards = False
-        if has_shards:
+        trusted_shards = _pre_guard_trusted_shards(cache_dir_path)
+        if trusted_shards:
             print(
                 "[prod-cache] WARNING: cache directory "
                 f"{cache_dir_path} holds rendered shards but no "
                 f"{RENDER_IDENTITY_SIDECAR_FILENAME} (pre-guard directory); "
                 "admitting existing shards on trust — confirm the directory "
                 "was rendered under one configuration, then resume only with "
-                "identical settings. Writing the current render identity; "
-                "future mismatches refuse.",
+                "identical settings. Writing the current render identity "
+                f"with a {PRE_GUARD_ADMISSION_SIDECAR_KEY} record naming "
+                "the trusted shards; future mismatches refuse.",
                 flush=True,
             )
+            current_identity = {
+                **current_identity,
+                PRE_GUARD_ADMISSION_SIDECAR_KEY: build_pre_guard_admission(
+                    trusted_shards
+                ),
+            }
         atomic_write_bytes(
             sidecar_path,
             json.dumps(
@@ -5723,6 +5852,7 @@ def _check_production_cache_render_identity(
         unknown = (
             set(stored_raw) - base_fields
             - {MTP_APPEND_SIDECAR_KEY, PACKED_APPEND_SIDECAR_KEY}
+            - {PRE_GUARD_ADMISSION_SIDECAR_KEY}
         )
         if not stored_base_raw and stored_sections and not unknown:
             try:
