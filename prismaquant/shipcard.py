@@ -8,9 +8,11 @@ can close. `python -m prismaquant.shipcard_cli verify` then exits non-zero until
 record whose `model_sha` matches the artifact on disk — which turns "we never ran
 the gate" from a silent omission into an explicit refusal.
 
-Lane-scoped slots (:data:`LANE_SCOPED_SLOTS`) are opened by the lane's own
+Lane-scoped slots (``shipcard.lane_scoped_slots()``, read as
+:data:`LANE_SCOPED_SLOTS`) are opened by the lane's own
 ``lane_specs/<lane>.json`` ``gates[]`` and are required of cards stamped with
-that ``lane``.
+that ``lane``.  The vocabulary is derived from every lane spec, and each
+derived slot names its replay in ``shipcard.LANE_SLOT_VERIFIERS`` (#162).
 
 Base slots (required for every artifact):
 
@@ -29,6 +31,15 @@ choosing a rung per Linear beats spending the same bytes everywhere:
 | Slot | Filled by |
 |---|---|
 | `uniform_control` | `python -m prismaquant.shipcard_cli fill-control` |
+
+And one lane-declared evidence slot, required of cards stamped with the lane
+that declares it — principle 12's second leg, the priced-vs-served route
+comparison (#136): the priced routes, the served route records with the
+decoder each ran, and the known substitute set:
+
+| Slot | Filled by |
+|---|---|
+| `route.census` | `python -m prismaquant.shipcard_cli fill-route-census`, replayed from the carried records by `verify` |
 
 That claim was measured false on 2026-09-02 (2.00x worse served KL than the
 byte-matched uniform arm at 4.0 bpp) while every other check passed, so it is
@@ -64,7 +75,7 @@ import subprocess
 import time
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 SCHEMA = "prismaquant.shipcard/1"
 
@@ -114,19 +125,74 @@ OPTIONAL_SLOTS: tuple[str, ...] = (UNIFORM_CONTROL_SLOT,)
 #: recorded nowhere; a gate nothing can record is a gate nothing can refuse on
 #: (RobTand/prismaquant#119).
 #:
-#: WHICH lanes open which of these is read from ``lane_specs/<lane>.json``'s
-#: own ``gates[]`` and from no list here, so a lane opens one of these slots by
-#: declaring the gate that closes it.  The MEMBERSHIP of this tuple is still
-#: enumerated, because it is also the key space :func:`verify` dispatches its
-#: per-slot evidence replay on: a fourth lane declaring a slot that is not
-#: here is REFUSED by :func:`lane_gate_slots` rather than silently dropped, and
-#: admitting it is one edit here plus the verifier that replays it
-#: (RobTand/prismaquant#162).
-LANE_SCOPED_SLOTS: tuple[str, ...] = (ROUTE_CENSUS_SLOT,)
+#: There is deliberately NO enumerated roster of these here
+#: (RobTand/prismaquant#162).  The vocabulary is derived -- every
+#: ``shipcard_slot`` any ``lane_specs/<lane>.json`` declares, union the base
+#: set (:func:`all_slots`, served to attribute readers as ``ALL_SLOTS``).
+#: WHICH lanes open which slot is read from that lane's own ``gates[]``
+#: (:func:`lane_gate_slots`); WHETHER a derived slot is admittable is read
+#: from :data:`LANE_SLOT_VERIFIERS` -- the verifier :func:`verify` replays
+#: for it, defined beside the verifiers below.  ``route.census``'s entry is
+#: the #136 priced-vs-served replay.  A lane that declares a slot with no
+#: verifier is REFUSED at parse time -- a slot with no verifier is a slot any
+#: record closes -- so adding a fourth lane with a novel gate is one spec
+#: file plus one verifier entry, and there is no second list to forget.
 
-#: The vocabulary accepted by :func:`make_record`.  Whether a member is
-#: required is artifact-specific and is resolved by :func:`required_slots`.
-ALL_SLOTS: tuple[str, ...] = REQUIRED_SLOTS + OPTIONAL_SLOTS + LANE_SCOPED_SLOTS
+
+def _base_slots() -> tuple[str, ...]:
+    """Slots no lane declaration is needed for: required plus optional."""
+    return tuple(dict.fromkeys(tuple(REQUIRED_SLOTS) + tuple(OPTIONAL_SLOTS)))
+
+
+def lane_scoped_slots() -> tuple[str, ...]:
+    """Slots lanes open beyond the base set, derived from every lane spec.
+
+    Every ``shipcard_slot`` any ``lane_specs/<lane>.json`` declares, minus the
+    base set.  A derived slot with no entry in :data:`LANE_SLOT_VERIFIERS`
+    RAISES: admitting it would give it the generic record checks and no
+    replay, which is the "written into the receipt and replayed by nothing"
+    shape (RobTand/prismaquant#162).
+    """
+    from prismaquant.lane_spec import all_lane_specs
+
+    base = set(_base_slots())
+    seen: list[str] = []
+    for spec in all_lane_specs():
+        for slot in spec.shipcard_slots():
+            if slot not in base and slot not in seen:
+                seen.append(slot)
+    missing = [slot for slot in seen if slot not in LANE_SLOT_VERIFIERS]
+    if missing:
+        raise KeyError(
+            f"lane spec(s) declare shipcard slot(s) {missing} with no "
+            "verifier in shipcard.LANE_SLOT_VERIFIERS; a slot with no "
+            "verifier is a slot any record closes "
+            "(RobTand/prismaquant#162)"
+        )
+    return tuple(sorted(seen))
+
+
+def all_slots() -> tuple[str, ...]:
+    """The vocabulary :func:`make_record` accepts: base set plus derived lane slots."""
+    base = _base_slots()
+    return tuple(
+        list(base) + [slot for slot in lane_scoped_slots() if slot not in base]
+    )
+
+
+def __getattr__(name: str) -> Any:
+    # PEP 562: LANE_SCOPED_SLOTS and ALL_SLOTS read as derived attributes so
+    # no enumerated roster exists to be forgotten (#162), while existing
+    # `from prismaquant.shipcard import ALL_SLOTS` readers keep working.
+    if name == "LANE_SCOPED_SLOTS":
+        return lane_scoped_slots()
+    if name == "ALL_SLOTS":
+        return all_slots()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | {"LANE_SCOPED_SLOTS", "ALL_SLOTS"})
 
 #: Slots whose number is invalid if it was produced against a spec-decode serve.
 GOLD_SLOTS: frozenset[str] = frozenset({"gold.kl", "gold.ppl"})
@@ -1311,12 +1377,13 @@ def lane_gate_slots(lane: str | None) -> tuple[str, ...]:
     base requirement by under-declaring (the GGUF lane declares no
     ``native_export.graph`` gate and is still required to close that slot).
 
-    A declared slot outside :data:`ALL_SLOTS` RAISES.  Filtering it away would
-    mean the lane declared a gate, the card never opened it and ``verify``
-    passed an artifact that closed nothing -- the same silence one link
-    earlier that RobTand/prismaquant#119 reported.  Admitting a new one is an
-    edit here plus the verifier ``verify`` replays for it
-    (RobTand/prismaquant#162).
+    A declared slot with no verifier in :data:`LANE_SLOT_VERIFIERS` RAISES.
+    Filtering it away would mean the lane declared a gate, the card never
+    opened it and ``verify`` passed an artifact that closed nothing -- the
+    same silence one link earlier that RobTand/prismaquant#119 reported.
+    Admitting a new one is registering the verifier ``verify`` replays for it
+    (RobTand/prismaquant#162): the vocabulary itself is derived, so there is
+    no roster edit.
     """
     if not lane:
         return ()
@@ -1335,20 +1402,27 @@ def lane_gate_slots(lane: str | None) -> tuple[str, ...]:
         except Exception:
             return ()
     declared = spec.shipcard_slots()
-    # FAIL CLOSED, not filter. A lane that declares a slot this module has no
-    # name for is a repository defect, and the two ways of meeting it are not
+    # FAIL CLOSED, not filter. A lane that declares a slot with no verifier
+    # is a repository defect, and the two ways of meeting it are not
     # equivalent: dropping the slot means the lane declared a gate, the card
     # never opened it, and `verify` passed an artifact that closed nothing --
     # silently, which is the exact shape #119 reported one link earlier.
-    # Raising says which lane and which slot, so the fix is one edit here.
-    unknown = [slot for slot in declared if slot not in ALL_SLOTS]
+    # Raising says which lane and which slot, so the fix is registering the
+    # verifier beside the slot. Base slots need no entry: their replay is the
+    # generic checks (plus the gold/uniform branches in `verify`).
+    base = set(REQUIRED_SLOTS) | set(OPTIONAL_SLOTS)
+    unknown = [
+        slot for slot in declared
+        if slot not in base and slot not in LANE_SLOT_VERIFIERS
+    ]
     if unknown:
         raise KeyError(
-            f"lane {lane!r} declares shipcard slot(s) {unknown} that "
-            f"shipcard.py does not know; known: {list(ALL_SLOTS)}. Add the "
-            "slot to LANE_SCOPED_SLOTS together with the verifier `verify` "
-            "must replay for it -- a slot with no verifier is a slot any "
-            "record closes (RobTand/prismaquant#162)"
+            f"lane {lane!r} declares shipcard slot(s) {unknown} with no "
+            f"verifier in shipcard.LANE_SLOT_VERIFIERS; known: "
+            f"{sorted(base | set(LANE_SLOT_VERIFIERS))}. Register the "
+            "verifier `verify` must replay for the slot -- a slot with no "
+            "verifier is a slot any record closes "
+            "(RobTand/prismaquant#162)"
         )
     return declared
 
@@ -1470,10 +1544,17 @@ def make_record(
     git_commit: str | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One serve-lane verdict block."""
-    if slot not in ALL_SLOTS:
+    """One serve-lane verdict block.
+
+    The vocabulary is derived (:func:`all_slots`): base slots plus every
+    lane-declared slot with a registered verifier.  The check here reads the
+    live base set plus :data:`LANE_SLOT_VERIFIERS` rather than a roster, so a
+    fourth lane's verified slot is fillable with no edit here.
+    """
+    known = set(REQUIRED_SLOTS) | set(OPTIONAL_SLOTS) | set(LANE_SLOT_VERIFIERS)
+    if slot not in known:
         raise KeyError(
-            f"unknown shipcard slot {slot!r}; known: {list(ALL_SLOTS)}")
+            f"unknown shipcard slot {slot!r}; known: {sorted(known)}")
     record: dict[str, Any] = {
         "slot": slot,
         "tool": tool,
@@ -1643,8 +1724,11 @@ def verify(
             # Routed PAST the generic `passed` check for the same reason:
             # the verdict lives in the carried route records, and the
             # verifier below replays the priced-vs-served comparison from
-            # them, so a hand-set flag buys nothing.
-            problems.extend(_verify_route_census_record(slot, record))
+            # them, so a hand-set flag buys nothing.  Dispatched through the
+            # lane-slot registry (#162) so the admission invariant and the
+            # replay read the same entry.
+            problems.extend(LANE_SLOT_VERIFIERS[ROUTE_CENSUS_SLOT](
+                slot, record))
             continue
         if record.get("passed") is not True:
             problems.append(
@@ -1691,6 +1775,16 @@ def verify(
             # key; nothing compared `metrics.arm` to the slot suffix, so a
             # fabricated or mislabeled arm record passed. Replay it here.
             problems.extend(_verify_native_export_record(slot, record))
+        # Lane-scoped slots beyond the ones routed past the generic checks
+        # above replay through the verifier the slot names in
+        # LANE_SLOT_VERIFIERS (#162): a fourth lane's novel slot is replayed
+        # the moment its verifier is registered, and a derived slot with no
+        # verifier never reaches here because lane_gate_slots / make_record /
+        # lane_scoped_slots refuse it.  Lane-slot verifiers take
+        # ``(slot, record)``, the same convention as the base-slot replays.
+        verifier = LANE_SLOT_VERIFIERS.get(slot)
+        if verifier is not None:
+            problems.extend(verifier(slot, record))
     return problems
 
 
@@ -2951,6 +3045,17 @@ def _verify_route_census_record(
                 f"{record.get(carried_key)!r} disagrees with the replay "
                 f"{verdict[key]!r}")
     return problems
+
+
+#: The verifier :func:`verify` replays for each lane-scoped slot, keyed by
+#: slot name.  This is the one code-side entry a fourth lane with a novel gate
+#: adds: the slot's vocabulary membership is derived from the lane's own spec
+#: (:func:`lane_scoped_slots`), and the replay is named here.  A derived slot
+#: with no entry here is REFUSED wherever it is declared, filled, or verified
+#: (RobTand/prismaquant#162).  Lane-slot verifiers take ``(slot, record)``.
+LANE_SLOT_VERIFIERS: dict[str, Callable[..., list[str]]] = {
+    ROUTE_CENSUS_SLOT: _verify_route_census_record,
+}
 
 
 def required_slots(

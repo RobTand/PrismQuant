@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import Mapping
 
 import pytest
 
@@ -228,14 +229,14 @@ def test_lane_gate_slots_reads_the_lane_declaration():
 def test_a_lane_declaring_a_slot_the_shipcard_has_no_name_for_is_REFUSED(
     monkeypatch,
 ):
-    """Not filtered away. #162 records why the vocabulary is still a roster.
+    """Not filtered away. #162 closed the roster but kept the refusal.
 
-    `lane_gate_slots` checks each declared slot against `shipcard.ALL_SLOTS`,
-    which is also the key space `verify` dispatches its per-slot evidence
-    replay on. Dropping an unknown slot would mean the lane declared a gate,
-    the card never opened it, and `verify` passed an artifact that closed
-    nothing -- the same silence one link earlier that #119 reported. So it
-    raises, and the refusal names the lane and the slot.
+    `lane_gate_slots` admits a declared slot that is in the base set or names
+    a verifier in `shipcard.LANE_SLOT_VERIFIERS`. Dropping any other slot
+    would mean the lane declared a gate, the card never opened it, and
+    `verify` passed an artifact that closed nothing -- the same silence one
+    link earlier that #119 reported. So it raises, and the refusal names the
+    lane and the slot.
     """
     import dataclasses
 
@@ -425,3 +426,162 @@ def test_the_driver_exports_the_env_var_each_declaration_names(lane):
         assert f"export {tool.repo_env}" in DRIVER, (
             f"{lane}: {tool.repo_env} is read by the preflight but not "
             "exported by the driver")
+
+
+# ---------------------------------------------------------------------------
+# 5 -- #162: the slot vocabulary is derived, and every derived slot replays
+# ---------------------------------------------------------------------------
+def test_every_derived_lane_slot_names_a_verifier_verify_replays():
+    """A slot admitted by derivation alone gets the generic checks and no replay.
+
+    That is the "written into the receipt and replayed by nothing" shape
+    (#156 / #157), reached by widening the vocabulary rather than by a
+    half-written verifier. So the vocabulary derivation and the verifier
+    registry are one invariant: every lane-declared slot outside the base set
+    must name the verifier `verify` replays for it. Quantified over
+    `all_lane_specs()`, so a fourth lane's novel slot is covered without a
+    test edit.
+    """
+    import prismaquant.shipcard as shipcard_mod
+
+    base = set(REQUIRED_SLOTS) | set(shipcard_mod.OPTIONAL_SLOTS)
+    derived = sorted({
+        slot
+        for spec in all_lane_specs()
+        for slot in spec.shipcard_slots()
+        if slot not in base
+    })
+    assert derived, (
+        "no lane declares a slot beyond the base set; the property is vacuous")
+    verifiers = getattr(shipcard_mod, "LANE_SLOT_VERIFIERS", {})
+    missing = [slot for slot in derived if slot not in verifiers]
+    assert not missing, (
+        f"lane-declared slot(s) {missing} name no verifier: a record with "
+        "passed=True would close them on the generic checks alone. Register "
+        "the verifier beside the slot (shipcard.LANE_SLOT_VERIFIERS)")
+    for slot in derived:
+        assert callable(verifiers[slot]), f"{slot}: verifier is not callable"
+
+
+def test_verify_replays_route_census_evidence(tmp_path):
+    """`route.census` refuses silence, and refuses a wrong census.
+
+    The replay is the #136 priced-vs-served comparison, dispatched through
+    `shipcard.LANE_SLOT_VERIFIERS`: a bare `passed=True` record with no
+    carried census is refused, a receipt whose records replay to agreement
+    closes the slot, and a `passed=true` over substitute-decoder records is
+    refused at publication.
+    """
+    from prismaquant.shipcard import make_record, make_route_census_record
+
+    model_dir = _artifact(tmp_path)
+    card = load_shipcard(open_lane_shipcard(model_dir, "tessera"))
+    sha = card["model_sha"]
+    priced = ["TESSERA_NVFP4"]
+    substitutes = ["torch_materialize_stock"]
+
+    bare = make_record(
+        slot="route.census", tool="tessera_route_census",
+        passed=True, model_sha=sha, detail="routes match")
+    card["slots"]["route.census"] = bare
+    problems = verify(card, model_dir=model_dir, required=["route.census"])
+    assert any("route.census" in problem for problem in problems), (
+        "verify passed a route.census record that carries no census "
+        f"evidence: problems={problems!r}")
+
+    good = make_route_census_record(
+        tool="tessera_route_census", model_sha=sha,
+        priced_routes=priced,
+        route_records=[{
+            "route": "TESSERA_NVFP4", "decoder": "tessera_nvfp4", "count": 12,
+        }],
+        substitute_decoders=substitutes)
+    assert good["passed"] is True
+    card["slots"]["route.census"] = good
+    problems = verify(card, model_dir=model_dir, required=["route.census"])
+    assert not [p for p in problems if "route.census" in p], problems
+
+    lying = make_route_census_record(
+        tool="tessera_route_census", model_sha=sha,
+        priced_routes=priced,
+        route_records=[{
+            "route": "TESSERA_NVFP4", "decoder": "torch_materialize_stock",
+            "count": 12,
+        }],
+        substitute_decoders=substitutes)
+    assert lying["passed"] is False
+    lying = dict(lying)
+    lying["passed"] = True
+    card["slots"]["route.census"] = lying
+    problems = verify(card, model_dir=model_dir, required=["route.census"])
+    assert any("route.census" in problem for problem in problems), (
+        "verify passed a route.census record whose verdict disagrees with "
+        f"its own records: problems={problems!r}")
+    census_problems = [p for p in problems if "route.census" in p]
+    assert len(census_problems) == len(set(census_problems)), (
+        "route.census replayed twice -- the registry dispatch overlaps the "
+        f"explicit branch: problems={problems!r}")
+
+
+def test_a_fourth_lane_slot_with_a_verifier_needs_no_roster_edit(monkeypatch):
+    """Adding a lane with a novel gate is one spec plus one verifier.
+
+    A fourth lane declares `route.entropy` closing a slot no live lane names.
+    With a verifier registered beside it, the lane's gates open, `make_record`
+    accepts the slot, and `verify` replays the evidence -- with no edit to any
+    roster in `shipcard.py`. Without the verifier the declaration is still
+    refused (the existing `..._is_REFUSED` test pins that half).
+    """
+    import dataclasses
+
+    import prismaquant.shipcard as shipcard_mod
+    from prismaquant import lane_spec as lane_spec_mod
+
+    verifiers = getattr(shipcard_mod, "LANE_SLOT_VERIFIERS", None)
+    assert verifiers is not None, (
+        "shipcard has no verifier registry: a fourth lane's novel slot still "
+        "needs a roster edit (RobTand/prismaquant#162)")
+
+    def _verify_entropy(slot, record, *, card=None, model_dir=None):
+        block = record.get("route_entropy")
+        if not isinstance(block, Mapping):
+            return [f"{slot}: carries no route_entropy block, "
+                    "so there is nothing to replay"]
+        if block.get("match") is not True:
+            return [f"{slot}: route_entropy match is "
+                    f"{block.get('match')!r}, not True"]
+        return []
+
+    monkeypatch.setitem(verifiers, "route.entropy", _verify_entropy)
+    real = lane_spec_for_container("tessera")
+    bogus = dataclasses.replace(
+        real,
+        gates=real.gates + (
+            LaneGate(id="route.entropy", runner="true",
+                     shipcard_slot="route.entropy"),
+        ),
+    )
+    monkeypatch.setattr(
+        lane_spec_mod, "lane_spec_for_container", lambda _lane: bogus)
+
+    assert "route.entropy" in lane_gate_slots("tessera")
+    assert "route.entropy" in shipcard_mod.required_slots(
+        {"lane": "tessera", "slots": {}})
+
+    sha = "abc"
+    passing = shipcard_mod.make_record(
+        slot="route.entropy", tool="true", passed=True, model_sha=sha,
+        extra={"route_entropy": {"match": True}})
+    problems = shipcard_mod.verify(
+        {"model_sha": sha, "slots": {"route.entropy": passing}},
+        required=["route.entropy"])
+    assert not [p for p in problems if "route.entropy" in p], problems
+
+    failing = dict(passing)
+    failing["route_entropy"] = {"match": False}
+    problems = shipcard_mod.verify(
+        {"model_sha": sha, "slots": {"route.entropy": failing}},
+        required=["route.entropy"])
+    assert any("route.entropy" in p for p in problems), (
+        "verify passed a route.entropy record whose evidence refuses: "
+        f"problems={problems!r}")
