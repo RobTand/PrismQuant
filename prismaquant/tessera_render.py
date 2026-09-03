@@ -546,21 +546,22 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
     ``recipe`` is the wire being described and defaults to the one the
     exporter writes for this family at this rung.
 
-    A recipe that charges something **per unit** -- a CHANNEL row field, a
-    WINDOW table -- has no bits-per-parameter rate at all: the same rung costs
-    a different rate on a 2048x4096 tensor than on a 96x768 one.  Such a spec
-    is synthesized with no ``exact_bits_per_param`` and with a
-    ``bits_for_shape_fn`` instead (:class:`TesseraShapeRate`), so every byte
-    accountant in the tree prices it at the shape it actually has and the
-    shape-free number is refused rather than floored.  ``shape`` is accepted
-    for the shape-free case, where it is redundant, and does not change what a
-    per-unit recipe returns.
+    Every recipe charges something **per unit** -- a CHANNEL row field, a
+    WINDOW table, a TCQ forest -- so no Tessera rung has a bits-per-parameter
+    rate at all: the same rung costs a different rate on a 2048x4096 tensor
+    than on a 96x768 one.  Every spec is therefore synthesized with no
+    ``exact_bits_per_param`` and with a ``bits_for_shape_fn``
+    (:class:`TesseraShapeRate`), so every byte accountant in the tree prices it
+    at the shape it actually has and the shape-free number is refused rather
+    than floored.  ``shape`` is accepted and ignored: it is a vestige of the
+    era when a TCQ rung over a block plane was thought to have a flat rate,
+    which is the belief that priced the forest at zero (#126).
     """
     from . import format_registry as fr
     from .tessera_footprint import TesseraShapeRate
     from .tessera_formats import (
-        artifact_bpp, recipe_is_shape_free, scale_plane_name,
-        tessera_serving_route, tessera_wire_recipe,
+        artifact_bpp, scale_plane_name, tessera_serving_route,
+        tessera_wire_recipe,
     )
 
     parsed = parse_tessera_format_name(name)
@@ -570,26 +571,23 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
     wire = tessera_wire_recipe(family, rung) if recipe is None else recipe
     plane = scale_plane_name(wire.scale_plane)
 
-    shape_free = recipe_is_shape_free(wire)
-    if shape_free:
-        bpp = artifact_bpp(family, rung, recipe=wire, shape=shape)
-        exact_rate = bpp
-        shape_rate = None
-    else:
-        # The price is a function, not a rate.  ``bpp`` below survives only as
-        # the integer ``weight_bits`` label: it is the rate at a documented
-        # reference shape, NOT a bound over shapes (a window table costs a
-        # whole extra bit per weight on a 64x512 unit and 0.004 on a
-        # 2048x4096 one), and nothing prices bytes with it.
-        bpp = artifact_bpp(family, rung, recipe=wire, shape=_LABEL_SHAPE)
-        exact_rate = None
-        shape_rate = TesseraShapeRate(family.name, rung, wire)
+    # The price is a function, not a rate -- on every Tessera wire, since
+    # every one of them charges something per unit: a WINDOW body its table, a
+    # CHANNEL plane its row field, a TCQ body its forest (#126).  ``bpp``
+    # below survives only as the integer ``weight_bits`` label: it is the rate
+    # at a documented reference shape, NOT a bound over shapes (a window table
+    # costs a whole extra bit per weight on a 64x512 unit and 0.004 on a
+    # 2048x4096 one), and nothing prices bytes with it.
+    bpp = artifact_bpp(family, rung, recipe=wire, shape=_LABEL_SHAPE)
+    exact_rate = None
+    shape_rate = TesseraShapeRate(family.name, rung, wire)
     # Descriptive fields for the scale plane the wire carries.  ``s6b`` is an
     # E8M0 byte per 32 plus a nibble per 16; ``lut16`` is a nibble per 16
     # indexing a per-unit E4M3 table; ``channel`` is one fp16 per output row
     # over an fp32 global and no block plane at all (schema minor 3).  The
     # first two materialise to one E4M3 per 16 at load; the exact rate travels
-    # in ``exact_bits_per_param`` in every case.
+    # in ``bits_for_shape_fn`` in every case, because there is no shape-free
+    # one to travel in ``exact_bits_per_param`` (#126).
     if plane == "s6b":
         scale_fields = dict(
             group_size=TESSERA_GROUP, scale_bits=8, scale_dtype_name="uint8_e8m0")
@@ -705,13 +703,17 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
         # rate a function of the tensor.  Exactly one of this and
         # ``exact_bits_per_param`` is set: a rung either has a rate or it has
         # an accountant, never both, so no consumer can pick the cheaper one.
+        # Since #126 it is *always* this one -- every wire charges something
+        # per unit -- so ``exact_bits_per_param`` is always None here and
+        # ``FormatSpec.effective_bits`` raises on a Tessera spec by design.
         bits_for_shape_fn=shape_rate,
-        # The whole rate, body and scale planes together -- which is what
-        # ``artifact_bpp`` computes.  Without this the generic accountant
-        # charges ``ceil(bpp)`` plus a *second* group-scale term on top of a
-        # number that already includes the scales: R896 priced at 4.25 bpp
-        # against an artifact the exporter's byte-exact accountant measures at
-        # 4.002.  The allocator would have been ranking Tessera against NVFP4
+        # What the accountant behind that function computes is the whole rate,
+        # body and scale planes and per-unit side information together.
+        # Without it the generic accountant charges ``ceil(bpp)`` plus a
+        # *second* group-scale term on top of a number that already includes
+        # the scales: R896 priced at 4.25 bpp against an artifact the
+        # exporter's byte-exact accountant measures at 4.0013 on a 1024x3072
+        # unit.  The allocator would have been ranking Tessera against NVFP4
         # on a 6% overcharge it invented.
         exact_bits_per_param=exact_rate,
     )

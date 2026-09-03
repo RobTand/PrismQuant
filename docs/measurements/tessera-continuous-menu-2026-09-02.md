@@ -929,11 +929,25 @@ contract version 1, plugin 0.1.0):
 Four cells, two families, **one rung each**.
 
 **So the attested menu has no rate axis.** On any shape it is exactly two
-rungs: `TESSERA_E2M1_K2_R896` at 4.0000 bpp and `TESSERA_E4M3_K1_R1024` at
-4.0573 bpp on a `[3072, 1024]` Linear (4.1406 on `[1024, 1024]` -- the CHANNEL
-row field is charged per unit, so its bpp is shape-dependent). They are not two
-points on one axis: they are two *routes*, W4A4 and W8A8, that happen to land
-within 0.06-0.14 bpp of each other in weight bytes.
+rungs: `TESSERA_E2M1_K2_R896` at 4.0013 bpp and `TESSERA_E4M3_K1_R1024` at
+4.0573 bpp on a `[3072, 1024]` Linear (4.0039 and 4.1406 on `[1024, 1024]` --
+both wires charge a plane per unit, so both bpps are shape-dependent). They are
+not two points on one axis: they are two *routes*, W4A4 and W8A8, that happen
+to land within 0.056-0.137 bpp of each other in weight bytes.
+
+> **Correction, 2026-09-03 (RobTand/prismaquant#126).** As measured, the
+> `TESSERA_E2M1_K2_R896` figures in this document came from an accountant that
+> priced a TCQ body's ALPHABET and DESCENDANT planes at zero, so every E2M1x2
+> number here is **512 bytes per unit light** and every arity-1 `TESSERA_E2M1_K1`
+> number 24-44 B light; the `E4M3`/`BF16` window figures are unaffected (a
+> window body has no forest). `4.0000` above was never the artifact's rate --
+> it was the position-domain rate, which is what the light accountant returned.
+> Read every E2M1 bpp in §4, §4b and §8 with that offset, and do **not** assume
+> the rankings survive it: the offset is not constant across rungs of one family
+> (a sub-cap window rung carries no forest, the cap rung carries 512 B), which
+> is precisely the non-monotonicity Tessera's own `rate_menu` reports. A
+> re-solve on the corrected accountant has not been run; these tables are
+> history, not a live claim.
 
 **This is the honest limit of "allocate continuously."** The allocator can
 address ~3060 rungs per unit and the DP will use them; the runtime currently

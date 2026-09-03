@@ -62,6 +62,7 @@ GROUP_WEIGHTS = 32
 HALF_WEIGHTS = 16
 
 try:  # pragma: no cover
+    from tessera.grammar import forest_plane_bytes
     from tessera.layout import TerminalSpec, build_planes, build_terminal
     from tessera.manifest import BodyKind, Geometry
 except ImportError as exc:  # pragma: no cover
@@ -267,13 +268,39 @@ def tessera_tensor_payload_breakdown(
             f"span-{span} super-symbols; this shape cannot carry the span"
         )
 
+    # The **forest**: a TCQ body's two anchor planes, and the term this
+    # accountant charged at zero until 2026-09-03 (RobTand/prismaquant#126).
+    # ALPHABET holds `2^(R+1)` anchor codes and DESCENDANT `2^(cap+1)` bytes,
+    # once per *distinct* rate in the schedule, both written inline in the unit
+    # (`tessera.unit_artifact._forest_planes`).  Sized by tessera's own
+    # `forest_plane_bytes` -- called, not restated -- because a second
+    # implementation of one accountant is exactly the defect being repaired.
+    # A window body has no forest: its ALPHABET plane is its table and its
+    # DESCENDANT plane is empty.
+    forest_alphabet, descendant_bytes = (
+        (0, 0) if body is BodyKind.WINDOW else forest_plane_bytes(rates, cap)
+    )
     # `alphabet_bytes` is the already-counted figure, which is what a recorded
     # footprint carries; `alphabets` is the table itself.  Revalidating a report
     # must use the recorded count, or it re-prices a different unit.
     if alphabet_bytes is None:
-        alphabet_bytes = _alphabet_bytes(spec, alphabets, cap)
+        alphabet_bytes = (
+            _alphabet_bytes(spec, alphabets, cap) if alphabets else forest_alphabet
+        )
     elif type(alphabet_bytes) is not int or alphabet_bytes < 0:
         raise TesseraFormatError("alphabet_bytes must be a nonnegative integer")
+    if body is BodyKind.TCQ and alphabet_bytes != forest_alphabet:
+        # The forest is not a caller's choice.  The exporter writes one anchor
+        # table per distinct rate whatever a caller supplies, so a count that
+        # disagrees is a report of a unit the artifact does not hold -- which
+        # includes every footprint recorded before this term existed, and those
+        # SHOULD be refused: their `total_bytes` is light by exactly this.
+        raise TesseraFormatError(
+            f"{spec.name}: a TCQ body's ALPHABET plane is its forest -- "
+            f"{forest_alphabet} bytes over the {len(set(rates))} distinct "
+            f"rate(s) rung {rung} schedules -- and the wire writes it whatever "
+            f"the caller supplies; got alphabet_bytes={alphabet_bytes}"
+        )
     if body is BodyKind.WINDOW:
         # The ALPHABET plane *is* the window table: `2^window_bits` grid codes
         # of `PayloadGrid.code_bytes` each, written inline in the unit
@@ -329,11 +356,17 @@ def tessera_tensor_payload_breakdown(
             f"{spec.name}: a CHANNEL plane *is* the DIAG_SV field; segment 2a "
             "cannot be fitted under it (tessera.encode.encode_unit)"
         )
+    # Zero-filled blobs of the wire's own lengths: `build_planes` charges a
+    # plane by its extent and the contents never reach the byte count.  Routed
+    # through it rather than added afterwards so any alignment the descriptors
+    # impose is charged too -- the same thing `tessera.calculator.terminal_rate`
+    # does under `with_forest=True`.  The second argument was a hardcoded `b""`
+    # until 2026-09-03, which charged zero DESCENDANT bytes on every rung.
     planes = build_planes(
         geometry,
         rates,
         bytes(alphabet_bytes),
-        b"",
+        bytes(descendant_bytes),
         with_diagonals=with_diagonals,
         cap=cap,
         arity=spec.arity,
@@ -342,7 +375,7 @@ def tessera_tensor_payload_breakdown(
         with_row_scale=plane == "channel",
     )
     record = build_terminal(
-        geometry, rates, terminal_spec, planes, alphabet_bytes, 0,
+        geometry, rates, terminal_spec, planes, alphabet_bytes, descendant_bytes,
         cap=cap, arity=spec.arity, span=span,
     )
 
@@ -370,6 +403,7 @@ def tessera_tensor_payload_breakdown(
         "code_rows": code_rows,
         "distinct_rates": sorted(set(rates)),
         "alphabet_bytes": alphabet_bytes,
+        "descendant_bytes": descendant_bytes,
         "sidecar_header_bytes": sidecar_header_bytes,
         "plane_elements": list(record.plane_elements),
         "payload_bytes": record.exact_bytes,

@@ -74,7 +74,6 @@ __all__ = [
     "materialised_terminal_format",
     "tessera_serving_route",
     "recipe_from_wire_names",
-    "recipe_is_shape_free",
     "scale_plane_name",
     "tessera_wire_defaults",
     "clear_recipe_cache",
@@ -108,6 +107,7 @@ try:  # pragma: no cover - exercised by the import-failure path
     from tessera.grammar import (
         Q256_UNIT,
         bresenham_rate_schedule,
+        forest_plane_bytes,
         root_from_q256,
         superblock_quota_ok,
     )
@@ -223,24 +223,27 @@ def tessera_wire_recipe(
     return _recipe_for(spec.base, spec.base_size, spec.arity, rung)
 
 
-def recipe_is_shape_free(recipe: "WireRecipe") -> bool:
-    """Does this recipe's overhead have a per-position rate at all?
-
-    Two of the wire's terms are charged **per unit**, not per position, so
-    they have no bits-per-weight until a shape is named:
-
-    * a CHANNEL scale plane -- 16 bits per output row, i.e. ``16/columns``;
-    * a WINDOW body's table -- ``2^L`` bytes inline on the ALPHABET plane,
-      i.e. ``8 * 2^L / (rows * columns)``.
-
-    A block plane (S6b, LUT) and the TCQ span labels are flat per position,
-    so a TCQ recipe over a block plane -- everything shipping today -- is
-    shape-free and the closed-form accountants stay exact without a shape.
-    """
-    return (
-        BodyKind(recipe.body) is not BodyKind.WINDOW
-        and ScalePlaneKind(recipe.scale_plane) is not ScalePlaneKind.CHANNEL
-    )
+# ``recipe_is_shape_free(recipe) -> bool`` used to live here, and it answered
+# "does this recipe's overhead have a per-position rate at all?".  It is
+# deleted rather than repaired, because since issue #126 the answer is **no for
+# every recipe Tessera writes** and a predicate that is constantly False is an
+# invitation to re-add the True branch:
+#
+# * a WINDOW body charges its ``2^L``-byte table per unit;
+# * a CHANNEL scale plane charges 16 bits per output *row*;
+# * a TCQ body charges its **forest** -- the ALPHABET and DESCENDANT planes,
+#   ``2^(R+1)`` and ``2^(cap+1)`` bytes per distinct rate in the schedule
+#   (``tessera.grammar.forest_plane_bytes``).  That last one was the hole: the
+#   accountant priced the position planes only, so every E2M1x2 unit at the
+#   coset cap came out 512 B light and every arity-1 E2M1 unit 20-44 B light,
+#   which is 0.13 bpp on a 96x320 expert and invisible on a 1024x3072 dense
+#   Linear.  It is the third term of its class and it is the one that leaves
+#   nothing behind.
+#
+# So the statement lives in exactly one place now -- the raise in
+# ``wire_overhead_q256`` -- and every Tessera ``FormatSpec`` carries a
+# ``bits_for_shape_fn`` and no ``exact_bits_per_param``.  ``FormatSpec``
+# already holds exactly one of the two, so no consumer can pick the cheaper.
 
 
 def recipe_from_wire_names(
@@ -381,7 +384,7 @@ def wire_overhead_q256(
 ) -> Fraction:
     """Per-position q256 the wire adds on top of the body rate.
 
-    Four terms, one per thing the wire charges that is not a body bit:
+    Five terms, one per thing the wire charges that is not a body bit:
 
     * **span labels.**  A span-L trellis stores one select bit per L *codes*
       instead of one per code and ``L - 1`` two-bit labels: ``(L - 1) / L``
@@ -399,20 +402,38 @@ def wire_overhead_q256(
       two bytes an entry.  ``tessera.calculator.terminal_rate`` takes the same
       figure from the same place, which is what keeps this accountant and the
       wire agreeing byte for byte on the 16-bit route.
+    * **a TCQ body's forest**: the ALPHABET plane holds ``2^(R+1)`` anchor
+      codes and the DESCENDANT plane ``2^(cap+1)`` bytes, once per *distinct*
+      rate the schedule uses, both written inline in the unit
+      (``tessera.unit_artifact._forest_planes``).  Sized by
+      :func:`tessera.grammar.forest_plane_bytes`, **called and not restated**:
+      a second implementation of one accountant is the defect this term is
+      here to repair, and Tessera's is the one the exporter writes with.  It
+      needs the ``rung`` as well as the ``shape``, because the forest is a sum
+      over the schedule's distinct rates and an arity-1 schedule that spans
+      two of them carries two forests -- which is why R511 outweighs the
+      uniform R512 above it.
 
-    ``shape`` is ``(rows, columns)`` in **weight** space.  A recipe with a
-    per-unit term and no shape **raises** rather than dropping the term: the
-    only consumer of the shape-free value is ``FormatSpec.exact_bits_per_param``,
-    which ``memory_bytes_for_shape`` multiplies by the parameter count as an
-    exact rate, and a ``Fraction`` cannot carry "this is a floor".  Silently
-    returning the floor there is the drop, not the guard against it.  Nothing
-    raises today -- every family's recipe is TCQ over a block plane -- and the
-    day the recipe flips, spec synthesis fails loudly at this seam instead of
-    shipping an under-priced rung to the DP.  :func:`recipe_is_shape_free`
-    answers the question in advance; ``tessera_footprint`` prices the exact
-    bytes wherever the shape is known.
+    ``shape`` is ``(rows, columns)`` in **weight** space, and a recipe with a
+    per-unit term and no shape **raises** rather than dropping the term.  That
+    is now *every* recipe: a WINDOW body has its table, a CHANNEL plane its
+    row field, and a TCQ body its forest, so no Tessera rung has a
+    bits-per-parameter rate and every synthesized ``FormatSpec`` prices
+    through ``bits_for_shape_fn``.  A floor is not an acceptable substitute:
+    the only consumer of a shape-free value was
+    ``FormatSpec.exact_bits_per_param``, which ``memory_bytes_for_shape``
+    multiplies by the parameter count as an exact rate, and a ``Fraction``
+    cannot carry "this is a floor".  Returning the floor there is the drop,
+    not the guard against it.
 
-    At ``span=1, s6b`` this is the half-bit every pre-minor-1 figure carried.
+    Until 2026-09-03 this had four terms and no forest, and the docstring said
+    "nothing raises today -- every family's recipe is TCQ over a block plane".
+    That sentence was the bug: TCQ over a block plane is exactly the wire that
+    was being priced 512 bytes light (RobTand/prismaquant#126), and the
+    accountant's own shape-free branch was what hid it.
+
+    At ``span=1, s6b`` the block-plane term is the half-bit every pre-minor-1
+    figure carried.
     """
     wire = _resolved_recipe(spec, recipe, span, scale_plane, rung)
     if wire.span < 1:
@@ -428,13 +449,11 @@ def wire_overhead_q256(
     elif plane == "lut16":
         total += SCALE_LUT_BITS_Q256
 
-    if recipe_is_shape_free(wire):
-        return total
     if shape is None:
         raise TesseraFormatError(
             f"{spec.name}: this wire charges per unit, not per position "
             f"(body={body.name}, plane={plane}), so its rate is only defined "
-            "at a shape; pass shape=(rows, columns).  See recipe_is_shape_free."
+            "at a shape; pass shape=(rows, columns)."
         )
     dims = tuple(int(v) for v in shape)
     if len(dims) != 2 or any(v <= 0 for v in dims):
@@ -455,7 +474,38 @@ def wire_overhead_q256(
             spec.code_bytes * (1 << wire.window_bits) * 8 * Q256_UNIT,
             rows * columns,
         )
+    else:
+        # The forest, sized by tessera's own ``forest_plane_bytes``.  A byte
+        # per anchor whatever the grid's ``code_bytes`` is -- the plane holds
+        # anchor *codes*, indices into the grid, not the values
+        # (``tessera.alphabet.AnchorForest.alphabet_plane``), which is why
+        # ``code_bytes`` scales the window table above and not this.
+        if rung is None:
+            raise TesseraFormatError(
+                f"{spec.name}: a TCQ body's forest is sized by the schedule's "
+                "distinct rates, so its rate is only defined at a rung; pass "
+                "rung=<body_rate_q256>."
+            )
+        total += Fraction(
+            _forest_bytes(spec, int(rung), columns, wire) * 8 * Q256_UNIT,
+            rows * columns,
+        )
     return total
+
+
+@lru_cache(maxsize=8192)
+def _forest_bytes(spec: "TesseraFamily", rung: int, columns: int, wire) -> int:
+    """ALPHABET + DESCENDANT bytes one TCQ unit's forest weighs on the wire.
+
+    Memoised because the allocator prices thousands of rungs and the schedule
+    is a ``columns``-long Bresenham walk; the answer depends only on the four
+    arguments, all of them hashable.  ``column_schedule`` refuses a rung the
+    quota cannot close over these columns, which is the same refusal
+    ``tessera.calculator.terminal_rate`` makes, so the two accountants agree
+    about which rungs exist as well as about what they cost.
+    """
+    rates = spec.column_schedule(rung, columns, recipe=wire)
+    return sum(forest_plane_bytes(rates, family_rate_cap(spec, wire)))
 
 
 #: A **TCQ** step scores ``2**payload_bits`` anchors, so on that body the code
@@ -656,30 +706,17 @@ class TesseraFamily:
         """
         return family_q256_bounds(self)
 
-    @property
-    def artifact_q256_bounds(self) -> tuple[int, int]:
-        """What ships: the body interval plus the wire's flat overhead.
-
-        ``mathematical_q256_bounds`` describes the BODY plane, running from 1
-        bit per code to the cap; the artifact adds ``wire_overhead_q256`` --
-        the scale plane and, at span > 1, the trellis's stored labels -- at
-        both ends, so this is that interval shifted, not collapsed.
-
-        It *was* collapsed to a point for a few hours on 2026-09-01, on the
-        reading that COMPLETION takes exactly the width BODY gives up.  That
-        was true of the serialiser at the time and false of the format: the
-        plane was written at full width whatever depth the encoder spent
-        (tessera `a96064b`).  A family really does advertise an interval, and
-        the DP really can search inside it.
-        """
-        lo, hi = self.mathematical_q256_bounds
-        extra = wire_overhead_q256(self)   # raises on a per-unit wire term
-        if extra.denominator != 1:
-            raise TesseraFormatError(
-                f"{self.name}: the wire overhead {extra} q256 is not a whole "
-                "q256 unit; the family's bounds cannot be stated at 1/256 bpp"
-            )
-        return (lo + int(extra), hi + int(extra))
+    # ``artifact_q256_bounds`` used to live here: the body interval shifted by
+    # a flat ``wire_overhead_q256``.  It is deleted, not repaired, because both
+    # halves of its premise are gone.  The overhead is no longer flat in the
+    # *shape* -- a window table, a CHANNEL row field and a TCQ forest are all
+    # charged per unit -- and since issue #126 it is not flat in the *rung*
+    # either: the forest is a sum over the schedule's distinct rates, so R511
+    # carries two forests and R512 one, and "the interval, shifted" cannot
+    # state that.  A family advertises a body interval
+    # (``mathematical_q256_bounds``, which is what the allocator and the menu
+    # read) and an accountant that takes a rung and a shape; there is no third
+    # thing in between.  Nothing in ``prismaquant/`` called it.
 
     def format_name(self, body_rate_q256: int, *,
                     recipe: "WireRecipe | None" = None) -> str:
@@ -858,11 +895,18 @@ def artifact_bpp(
     ``recipe`` -- or the ``span``/``scale_plane`` scalars, which override the
     fields they name -- defaults to what the tessera exporter writes for this
     family at this rung (``tessera_wire_recipe``): since 2026-09-01 a span-2
-    trellis over a LUT plane, which at ``E2M1_K2_R896`` is 3.75 + 0.25 = 4.0 bpp -- the same size
-    as the span-1 S6b wire it replaced, at 1.125x lower output-space error on
-    the GLM experts (tessera ``experiments/tessera_wire_default_check.py``).
-    On an arity-1 family the stored labels cost 0.25 more per position than
-    the LUT plane saves, so those rungs weigh 0.25 bpp more than they did.
+    trellis over a LUT plane, which at ``E2M1_K2_R896`` is 3.75 body + 0.25
+    plane -- the same position-domain size as the span-1 S6b wire it replaced,
+    at 1.125x lower output-space error on the GLM experts (tessera
+    ``experiments/tessera_wire_default_check.py``).  On an arity-1 family the
+    stored labels cost 0.25 more per position than the LUT plane saves, so
+    those rungs weigh 0.25 bpp more than they did.
+
+    **4.0 is not the artifact's rate, and quoting it as one was #126.**  On
+    top of the position planes a TCQ body writes its forest -- 512 bytes at
+    the E2M1x2 coset cap -- per *unit*, so R896 is 4.0556 bpp on a 96x768
+    expert, 4.1333 on a 96x320 one and 4.0013 on a 1024x3072 dense Linear.
+    That is why ``shape`` is not optional.
 
     The rate is **two-dimensional**.  A column at body rate ``R`` writes ``R``
     body bits and may spend up to ``cap - R`` further bits selecting among the
@@ -873,12 +917,13 @@ def artifact_bpp(
     ``E2M1_K1``) -- and ``None`` means full depth, where body + completion sum
     to ``cap`` and every rung of a family weighs the same.
 
-    ``shape`` is ``(rows, columns)``, and it is required exactly when the
-    recipe charges something per unit rather than per position -- a CHANNEL
-    scale plane's row field or a WINDOW body's table.  Without it those recipes
-    raise; see :func:`wire_overhead_q256` for why a documented floor would be
-    the silent drop rather than the guard against it.  Under a WINDOW body
-    ``completion`` must be 0: the window table is flat, not a forest.
+    ``shape`` is ``(rows, columns)``, and it is required on **every** recipe,
+    because every recipe charges something per unit rather than per position:
+    a CHANNEL scale plane's row field, a WINDOW body's table, or a TCQ body's
+    forest.  Without it they raise; see :func:`wire_overhead_q256` for why a
+    documented floor would be the silent drop rather than the guard against
+    it.  Under a WINDOW body ``completion`` must be 0: the window table is
+    flat, not a forest.
 
     That last sentence was, from 2026-09-01 until later the same day, this
     function's entire contract: it returned the family's cap regardless of the
@@ -915,7 +960,9 @@ def artifact_bpp(
             f"{spec.name}: a WINDOW body has no completion axis "
             "(tessera.encode.encode_unit); price it at completion=0"
         )
-    overhead = wire_overhead_q256(spec, recipe=wire, shape=shape)
+    overhead = wire_overhead_q256(
+        spec, recipe=wire, shape=shape, rung=body_rate_q256,
+    )
     return (body + spent + overhead) / Q256_UNIT
 
 
