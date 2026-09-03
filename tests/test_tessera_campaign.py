@@ -348,8 +348,9 @@ def test_the_hessian_applies_exactly_where_tessera_says_it_does():
 
     The roster is derived, not named. It used to be five hand-written format
     strings, which is the "pin the rule, not the roster" defect: when the
-    ``ANCHOR_BUDGET_BITS`` widening admitted ``BF16_K1`` -- a twelfth family, a
-    third window width -- the five names did not notice, and the new family
+    ``ANCHOR_BUDGET_BITS`` wall became the TCQ body's rather than the grid's
+    and admitted ``BF16_K1`` -- a twelfth family, a third window width -- the
+    five names did not notice, and the new family
     went unprobed by the test whose whole subject is "every family". So the
     roster is now asked for: ``menu_families()`` (the families that both render
     and serialise) crossed with the **distinct wire recipes** each one resolves
@@ -395,12 +396,18 @@ def test_the_hessian_applies_exactly_where_tessera_says_it_does():
             cheapest.setdefault(key, (spec, rung, wire))
         reps.extend(cheapest.values())
 
-    # The menu is not empty and the sweep is not accidentally one family: if a
-    # refactor emptied ``menu_families`` this test would pass vacuously, which
-    # is the failure mode that let the five-name roster rot in the first place.
-    assert len({spec.name for spec, _, _ in reps}) >= 4, reps
-    assert len({(w.body.name, scale_plane_name(w.scale_plane), w.window_bits)
-                for _, _, w in reps}) >= 4, reps
+    # Not counts. A ``>= 4`` is today's roster wearing a number -- the same
+    # defect one level up. The properties instead: the sweep is non-empty (an
+    # emptied ``menu_families`` would otherwise pass vacuously), every family
+    # the menu offers is represented (one whose ``realisable_rungs`` came back
+    # empty would vanish silently), and every scale plane the menu resolves to
+    # is probed, which is what "the predicate is asked about every plane" means.
+    families = list(menu_families())
+    assert reps
+    assert {spec.name for spec, _, _ in reps} == {s.name for s in families}, reps
+    menu_planes = {scale_plane_name(tessera_wire_recipe(s, r).scale_plane)
+                   for s in families for r in realisable_rungs(s)}
+    assert {scale_plane_name(w.scale_plane) for _, _, w in reps} == menu_planes, reps
 
     rows = torch.randn(64, 256)
     source = activation_source(

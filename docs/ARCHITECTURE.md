@@ -16,7 +16,8 @@ and the memory each commits is stated where it is chosen.
 
 Re-stamped (2026-09-03, `tessera/decouple-gridbook`) for the **family roster
 in §8.4's plane bullet**, which counted eleven families because it was measured
-on a worktree predating the `ANCHOR_BUDGET_BITS` widening. Re-measured on the
+on a worktree predating the day `ANCHOR_BUDGET_BITS` became the TCQ body's
+refusal rather than the grid's. Re-measured on the
 merged tree: twelve, `TESSERA_BF16_K1` on WINDOW/CHANNEL climbing L=14→15→16 to
 its 4096 terminal with its plane unmoved, so the `(unit, plane)` memo key still
 holds and E4M3 and BF16 correctly share entries. The test that attests the same
@@ -4447,8 +4448,10 @@ the same format name, and the seam refuses rather than downgrade silently:
   `realisable_rungs` × `tessera_wire_recipe`, **12 families**, every rung): E4M3_K1 is WINDOW/CHANNEL
   L=14 at every rung (256–2048); BF16_K1 is WINDOW/CHANNEL too and climbs
   L=14→15→16 as its rate reaches its 4096 terminal, plane unmoved — it is the
-  twelfth family, constructible only since the `ANCHOR_BUDGET_BITS` widening,
-  and a plane table measured before that merge counts eleven; E2M1_K2 is LUT16
+  twelfth family, constructible only since `ANCHOR_BUDGET_BITS` became the TCQ
+  body's refusal rather than the grid's (§4.10 — the constant is still 16; what
+  moved is who is asked), and a plane table measured before that merge counts
+  eleven; E2M1_K2 is LUT16
   at every rung and changes *body* at the q896 coset cap (WINDOW below it, TCQ
   at it) while keeping its plane through the change; E2M1_K1 and all eight LM
   families are TCQ/LUT16. So the plane is
