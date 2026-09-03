@@ -4392,11 +4392,15 @@ the same format name, and the seam refuses rather than downgrade silently:
   `hessian_applied` is stamped **per cost row**, not per table, because a
   mixed-family campaign is legitimately half H-aware.
 * **The plane is a property of the family, and the memo is keyed by it.**
-  Enumerated over every family PrismaQuant allocates (`realisable_rungs` ×
-  `tessera_wire_recipe`, 11 families, every rung): E4M3_K1 is WINDOW/CHANNEL
-  L=14 at every rung; E2M1_K2 is LUT16 at every rung and changes *body* at the
-  q896 coset cap (WINDOW below it, TCQ at it) while keeping its plane through
-  the change; E2M1_K1 and all eight LM families are TCQ/LUT16. So the plane is
+  Enumerated over every family PrismaQuant allocates (`enumerate_grid_space` ×
+  `realisable_rungs` × `tessera_wire_recipe`, **12 families**, every rung): E4M3_K1 is WINDOW/CHANNEL
+  L=14 at every rung (256–2048); BF16_K1 is WINDOW/CHANNEL too and climbs
+  L=14→15→16 as its rate reaches its 4096 terminal, plane unmoved — it is the
+  twelfth family, constructible only since the `ANCHOR_BUDGET_BITS` widening,
+  and a plane table measured before that merge counts eleven; E2M1_K2 is LUT16
+  at every rung and changes *body* at the q896 coset cap (WINDOW below it, TCQ
+  at it) while keeping its plane through the change; E2M1_K1 and all eight LM
+  families are TCQ/LUT16. So the plane is
   constant across rungs and differs across families — `encoder_kwargs` stays
   hoisted out of the rate sweep (no rate reaches it, and the signature has
   nowhere to put one) but its per-unit memo is keyed `(unit, plane)`, since the

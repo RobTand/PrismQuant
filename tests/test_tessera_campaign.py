@@ -342,33 +342,65 @@ def test_the_hessian_applies_exactly_where_tessera_says_it_does():
     ``rung_accepts_hessian`` DERIVES its answer -- does the pinned
     ``ActivationSource`` emit an H-bearing keyword for this rung's plane --
     rather than restating Tessera's condition, which principle 14 forbids. This
-    is the attestation: for one rung of every family, build real activation
-    kwargs **on that rung's own resolved plane**, encode, and require that the
-    encode succeeds exactly when the predicate said it would.
+    is the attestation: build real activation kwargs **on that rung's own
+    resolved plane**, encode, and require that the encode succeeds exactly when
+    the predicate said it would.
 
-    Each format gets its own kwargs, because that is the contract: the refit
-    objective is keyed by scale plane, and one shared kwargs dict for all five
-    formats -- what this test used to build -- prices four of them under the
-    fifth's objective. That construction is why the old verdict map read
-    ``False`` for E2M1: it probed a LUT-plane encode with the CHANNEL plane's
-    answer.
+    The roster is derived, not named. It used to be five hand-written format
+    strings, which is the "pin the rule, not the roster" defect: when the
+    ``ANCHOR_BUDGET_BITS`` widening admitted ``BF16_K1`` -- a twelfth family, a
+    third window width -- the five names did not notice, and the new family
+    went unprobed by the test whose whole subject is "every family". So the
+    roster is now asked for: ``menu_families()`` (the families that both render
+    and serialise) crossed with the **distinct wire recipes** each one resolves
+    to over ``realisable_rungs``, keeping the lowest rung that exhibits each.
+    That is exactly the set of (body, plane, window width, span) the predicate
+    can be asked about, at the cheapest rung per combination, and a Tessera
+    release that adds a family or splits a window band grows it on its own.
 
-    The map is now all ``True``, and that is a Tessera fact, not a taste.
+    Each rep gets its own kwargs, because that is the contract: the refit
+    objective is keyed by scale plane, and one shared kwargs dict -- what this
+    test used to build -- prices the other planes under the first's objective.
+    That construction is why the old verdict map read ``False`` for E2M1: it
+    probed a LUT-plane encode with the CHANNEL plane's answer.
+
+    Every verdict is ``True``, and that is a Tessera fact, not a taste.
     Tessera deleted both CHANNEL-only guards on 2026-09-02
     (``tessera-ldlq-lut-plane-served-2026-09-02.md``); on the LUT plane the
     H-aware wire is served KL 0.5310 against the weights-only wire's 0.6404 at
     identical bytes. So weights-only on the W4A4 route is a downgrade after
-    all, and pricing it that way priced bytes the exporter does not write.
+    all, and pricing it that way priced bytes the exporter does not write. The
+    assertion is therefore ``all(...)`` over a derived roster rather than a
+    literal map: a map would be a roster again, and would have to be edited
+    every time the menu grows.
     """
     from tessera.errors import GrammarError
 
     from prismaquant.tessera_formats import (
-        parse_tessera_format_name, tessera_wire_recipe,
+        realisable_rungs, scale_plane_name, tessera_wire_recipe,
     )
     from prismaquant.tessera_hessian import (
         activation_source, calibration_identity, encoder_kwargs, hessian_from_rows,
     )
+    from prismaquant.tessera_menu import menu_families
     from prismaquant.tessera_render import rung_accepts_hessian
+
+    reps: list[tuple[object, int, object]] = []
+    for spec in menu_families():
+        cheapest: dict[tuple, tuple] = {}
+        for rung in realisable_rungs(spec):
+            wire = tessera_wire_recipe(spec, rung)
+            key = (wire.body.name, scale_plane_name(wire.scale_plane),
+                   wire.window_bits, wire.span)
+            cheapest.setdefault(key, (spec, rung, wire))
+        reps.extend(cheapest.values())
+
+    # The menu is not empty and the sweep is not accidentally one family: if a
+    # refactor emptied ``menu_families`` this test would pass vacuously, which
+    # is the failure mode that let the five-name roster rot in the first place.
+    assert len({spec.name for spec, _, _ in reps}) >= 4, reps
+    assert len({(w.body.name, scale_plane_name(w.scale_plane), w.window_bits)
+                for _, _, w in reps}) >= 4, reps
 
     rows = torch.randn(64, 256)
     source = activation_source(
@@ -377,11 +409,8 @@ def test_the_hessian_applies_exactly_where_tessera_says_it_does():
     weight = torch.randn(64, 256)
 
     verdicts = {}
-    for name in ("TESSERA_E2M1_K1_R512", "TESSERA_E2M1_K2_R512",
-                 "TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024",
-                 "TESSERA_E4M3_K1_R700"):
-        family, rung = parse_tessera_format_name(name)
-        wire = tessera_wire_recipe(family, rung)
+    for spec, rung, wire in reps:
+        name = f"TESSERA_{spec.base}_K{spec.arity}_R{rung}"
         kwargs = encoder_kwargs(source, "q", 256, scale_plane=wire.scale_plane)
         predicted = rung_accepts_hessian(name, wire)
         try:
@@ -390,20 +419,14 @@ def test_the_hessian_applies_exactly_where_tessera_says_it_does():
             # itself.
             from prismaquant.tessera_render import _grid_for, _tessera_export
             _tessera_export.encode_linear(
-                weight, grid=_grid_for(family), q256=rung, name=name,
+                weight, grid=_grid_for(spec), q256=rung, name=name,
                 verify=False, **kwargs)
             actual = True
         except GrammarError:
             actual = False
         assert predicted == actual, (name, predicted, actual)
         verdicts[name] = actual
-    assert verdicts == {
-        "TESSERA_E2M1_K1_R512": True,
-        "TESSERA_E2M1_K2_R512": True,
-        "TESSERA_E2M1_K2_R896": True,
-        "TESSERA_E4M3_K1_R1024": True,
-        "TESSERA_E4M3_K1_R700": True,
-    }, verdicts
+    assert all(verdicts.values()), verdicts
 
 
 def test_a_block_plane_rung_is_h_aware_too_and_the_bytes_prove_it():
