@@ -226,8 +226,8 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
    so it can be rewritten wholesale — but **(a) the serialization formats vLLM
    reads and (b) the quality of future shipped artifacts** are hard constraints.
 7. **GPU-first / GPU-or-bust.** Every production hot path (probe, cost, cache
-   fill, recache, export, validation — polish was on this list while it was
-   live; it is archived at `archive/polish_2026-05-15/`) must be GPU-bound. CPU/disk/NVMe
+   fill, recache, export, validation) must be GPU-bound. Polish was on this
+   list while it was live; it is archived at `archive/polish_2026-05-15/`. CPU/disk/NVMe
    pressure on a hot path is a **bug** — the fix is to use/repair/extend the
    prefetch path so resident data is ready, never to tolerate the slow path.
    `run-pipeline.sh` and `gpu_guard.require_cuda_hot_path` refuse to run on CPU.
@@ -371,8 +371,8 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
 **Gates & discipline:**
 - **Held-out split is disjoint from cost generation.** A prior audit found the
   "validation" KL was in-sample; selection KL must use text the surrogates never
-   saw. Kneedle and artifact metadata use the held-out split (archived
-   coord-descent did too, while it was live).
+  saw. Kneedle and artifact metadata use the held-out split (archived
+  coord-descent did too, while it was live).
 - **Reproducibility/provenance is a gate.** KL is bit-identical *within* a docker
   session but can drift 4–8× *across* sessions (stale live-model state). Bake
   git commit, calibration hash, assignment hash, cache hit/miss/RTN-fallback

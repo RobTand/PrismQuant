@@ -15,10 +15,31 @@ def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def _shell_assign_default(script: str, name: str) -> str | None:
-    """Value of `: "${NAME:=default}"` in the driver, or None if no such line."""
-    m = re.search(rf': "\$\{{{name}:=([^}}]*)\}}"', script)
-    return m.group(1) if m else None
+def _shell_assign_defaults(script: str, name: str) -> list[str]:
+    """Every `: "${NAME:=default}"` value in file order (usually one; the
+    driver legitimately assigns SELECTION_MODE twice, once per branch)."""
+    return re.findall(rf': "\$\{{{name}:=([^}}]*)\}}"', script)
+
+
+def _defaults_block_claims(doc: str) -> dict[str, str]:
+    """VAR=value claims from CLAUDE.md's shell-defaults block.
+
+    Only backticked spans inside the block, whitespace-split (the block packs
+    `NSAMPLES=32 SEQLEN=1024` into one span). Spans without `=` (`WORK_DIR`,
+    `validated-surrogate`, `${VAR:-}`) are not claims and are ignored. The two
+    anchors only locate the parse region — they assert nothing about wording;
+    if either ever goes missing the test errors loudly instead of passing.
+    """
+    start = doc.index("Defaults in `run-pipeline.sh` today:")
+    end = doc.index("The archived cost modes", start)
+    claims: dict[str, str] = {}
+    for span in re.findall(r"`([^`]+)`", doc[start:end]):
+        for token in span.split():
+            m = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(\S+)", token)
+            if m:
+                claims[m.group(1)] = m.group(2)
+    assert claims, "CLAUDE.md shell-defaults block has no parseable VAR=value claims"
+    return claims
 
 
 def test_164_claude_shell_defaults_match_driver():
@@ -29,21 +50,35 @@ def test_164_claude_shell_defaults_match_driver():
     doc = _read("CLAUDE.md")
 
     # Driver side, derived — not re-typed.
-    assert _shell_assign_default(script, "TARGET_PROFILE") == "", (
+    assert _shell_assign_defaults(script, "TARGET_PROFILE") == [""], (
         "driver changed: TARGET_PROFILE is no longer deliberately unset; "
         "update this test and both docs"
     )
-    assert _shell_assign_default(script, "TARGET_PROFILE_DEFAULT") == "vllm_packed_moe"
-    assert _shell_assign_default(script, "CB_EXPERT_EMPIRICAL") is None, (
+    assert _shell_assign_defaults(script, "TARGET_PROFILE_DEFAULT") == ["vllm_packed_moe"]
+    assert _shell_assign_defaults(script, "CB_EXPERT_EMPIRICAL") == [], (
         "driver changed: CB_EXPERT_EMPIRICAL regained a shell default"
     )
-    assert _shell_assign_default(script, "CB_SCALE_CODING") is None, (
+    assert _shell_assign_defaults(script, "CB_SCALE_CODING") == [], (
         "driver changed: CB_SCALE_CODING regained a shell default"
     )
     assert "CB_SCALE_CODING=${CB_SCALE_CODING:-}" in script
 
-    # Doc side: no declared-value default claims for vars the driver leaves
-    # unset/defaultless.
+    # Doc side: the block's own VAR=value claims must match the shell. An
+    # `<unset...>` claim requires no non-empty driver default; any other claim
+    # must be one of the driver's assigned values. A wrong claim in new words
+    # fails here; the fixed wrong strings below are the regression tooth.
+    for var, claimed in _defaults_block_claims(doc).items():
+        assigned = _shell_assign_defaults(script, var)
+        if claimed.startswith("<unset"):
+            assert not [v for v in assigned if v != ""], (
+                f"CLAUDE.md claims {var} is {claimed} but run-pipeline.sh "
+                f"assigns {assigned!r}"
+            )
+        else:
+            assert claimed in assigned, (
+                f"CLAUDE.md claims {var}={claimed} but run-pipeline.sh "
+                f"assigns {assigned!r}"
+            )
     assert "`TARGET_PROFILE=vllm_packed_moe`" not in doc, (
         "CLAUDE.md still pins TARGET_PROFILE=vllm_packed_moe as a shell "
         "default; the driver leaves TARGET_PROFILE unset (R11)"
@@ -55,15 +90,6 @@ def test_164_claude_shell_defaults_match_driver():
     assert "`CB_SCALE_CODING=two_tier`" not in doc, (
         "CLAUDE.md still claims a CB_SCALE_CODING=two_tier shell default; "
         "the driver keeps it as a settings-hash entry only"
-    )
-    # And the doc must say how resolution actually works + where truth lives.
-    assert "spec-resolved" in doc and "TARGET_PROFILE_DEFAULT" in doc, (
-        "CLAUDE.md must document TARGET_PROFILE as unset/spec-resolved "
-        "with TARGET_PROFILE_DEFAULT as the fallback"
-    )
-    assert "ARCHITECTURE.md" in doc and "3.3" in doc, (
-        "CLAUDE.md defaults block must point at ARCHITECTURE.md §3.3 "
-        "as the single source of truth"
     )
 
 
