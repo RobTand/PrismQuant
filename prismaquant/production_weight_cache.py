@@ -130,8 +130,12 @@ RENDER_IDENTITY_MTP_APPEND_SCHEMA = (
 RENDER_IDENTITY_PACKED_APPEND_SCHEMA = (
     "prismaquant.production_weight_cache.packed_append_identity.v1"
 )
+RENDER_IDENTITY_PACKED_STREAMING_APPEND_SCHEMA = (
+    "prismaquant.production_weight_cache.packed_streaming_append_identity.v1"
+)
 MTP_APPEND_SIDECAR_KEY = "mtp_append"
 PACKED_APPEND_SIDECAR_KEY = "packed_expert_append"
+PACKED_STREAMING_APPEND_SIDECAR_KEY = "packed_expert_streaming_append"
 
 
 # Formats whose WEIGHT PLANE is the same artifact and must therefore get the
@@ -5056,7 +5060,11 @@ def validate_production_cache_render_identity(
         "rendered_pairs",
         "max_act_rows",
     }
-    append_fields = {MTP_APPEND_SIDECAR_KEY, PACKED_APPEND_SIDECAR_KEY}
+    append_fields = {
+        MTP_APPEND_SIDECAR_KEY,
+        PACKED_APPEND_SIDECAR_KEY,
+        PACKED_STREAMING_APPEND_SIDECAR_KEY,
+    }
     # Not `set(raw) < base_fields`: that is a PROPER-subset test, so a
     # sidecar missing a base field but carrying an append section is
     # neither a subset nor an unknown-field case and would fall through
@@ -5143,6 +5151,13 @@ def validate_production_cache_render_identity(
         identity[PACKED_APPEND_SIDECAR_KEY] = validate_packed_append_identity(
             raw[PACKED_APPEND_SIDECAR_KEY],
             where=f"{where}.{PACKED_APPEND_SIDECAR_KEY}",
+        )
+    if PACKED_STREAMING_APPEND_SIDECAR_KEY in raw:
+        identity[PACKED_STREAMING_APPEND_SIDECAR_KEY] = (
+            validate_packed_streaming_append_identity(
+                raw[PACKED_STREAMING_APPEND_SIDECAR_KEY],
+                where=f"{where}.{PACKED_STREAMING_APPEND_SIDECAR_KEY}",
+            )
         )
     return identity
 
@@ -5301,6 +5316,7 @@ def build_packed_expert_append_identity(
     gate_token_budget: int | None,
     hooked_qnames: Iterable[str],
     max_layers: int | None,
+    pair_fit_calibration_hashes: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Build the render identity for one packed-expert append (#170).
 
@@ -5314,14 +5330,20 @@ def build_packed_expert_append_identity(
     * the render narrowing (which packed tensors this call renders) — the
       eager format-menu build and the lazy per-Pareto-point gap-fill render
       different subsets with identical bytes, so binding the subset would
-      refuse the exact sequence M4 relies on;
-    * the fit corpus hash — existing shards are never re-rendered (the
-      resume path scores the bytes on disk instead), so a differing fit
-      calib can only affect NEW pairs, and the sanctioned M4 gap-fill
-      renders disjoint missing pairs on the render-split calib. Pipeline
-      builds pass one calib to the fill and all its appends, so the base
-      identity's ``calib_hash`` still covers that path, and CB pairs bind
-      their own fit hash per pair.
+      refuse the exact sequence M4 relies on.
+
+    The fit corpus IS bound, but per pair (#173), not per section: each
+    ``"qname|FMT"`` entry records the ``calibration_data_hash`` of the fit
+    corpus its bytes were fitted on. A section-level bind was tried for
+    #170 and reverted — it refused the sanctioned M4 lazy gap-fill, which
+    legitimately renders a disjoint split of the cache under the
+    render-split calibration. Per-pair binding lets that split record its
+    own entries: disjoint pairs merge, while the same pair under a
+    different hash refuses (existing shards are never re-rendered, so the
+    recorded hash is always the bytes on disk). Pipeline builds pass one
+    calib to the fill and all its appends, so the base identity's
+    ``calib_hash`` still covers that path, and CB pairs bind their own fit
+    hash per pair.
     """
     budget = int(module_token_budget)
     if budget < 1:
@@ -5373,6 +5395,10 @@ def build_packed_expert_append_identity(
             raise ValueError(
                 "packed-expert append identity requires max_layers >= 1"
             )
+    pair_map = _validate_pair_fit_map(
+        pair_fit_calibration_hashes,
+        where="packed-expert append identity",
+    )
     return {
         "schema": RENDER_IDENTITY_PACKED_APPEND_SCHEMA,
         "module_token_budget": budget,
@@ -5384,7 +5410,53 @@ def build_packed_expert_append_identity(
         "hooked_qnames_sha256": _qname_set_sha256(hooked),
         "hooked_qnames": len(hooked),
         "max_layers": layers,
+        "pair_fit_calibration_hashes": pair_map,
     }
+
+
+def _validate_pair_fit_map(
+    value: Mapping[str, str] | None, *, where: str
+) -> dict[str, str]:
+    """Validate a ``pair -> fit calibration hash`` map (#173).
+
+    Keys are ``"qname|FMT"`` pair names (nonempty, pipe-separated, exactly
+    as the packed render loop names them); values are content hashes of
+    the fit corpus the pair's bytes were fitted on. The shape rule is
+    derived from ``calibration_data_hash`` (blake2b-128 hex, 32 chars;
+    the 32..64 window admits longer digests without admitting garbage).
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            f"{where} requires pair_fit_calibration_hashes to be a JSON "
+            "object"
+        )
+    pair_map: dict[str, str] = {}
+    for pair, fit_hash in value.items():
+        if (
+            not isinstance(pair, str)
+            or not pair
+            or "|" not in pair
+            or not pair.split("|")[0]
+            or not pair.split("|")[1]
+        ):
+            raise ValueError(
+                f"{where}.pair_fit_calibration_hashes keys must be "
+                '"qname|FMT" pair names'
+            )
+        digest = str(fit_hash or "").strip().lower() if isinstance(
+            fit_hash, str
+        ) else ""
+        if re.fullmatch(r"[0-9a-f]{32,64}", digest) is None:
+            raise ValueError(
+                f"{where}.pair_fit_calibration_hashes[{pair!r}] must be a "
+                "hex digest"
+            )
+        pair_map[str(pair)] = digest
+    return _canonical_json_value(
+        pair_map, where=f"{where}.pair_fit_calibration_hashes"
+    )
 
 
 def validate_packed_append_identity(
@@ -5402,7 +5474,7 @@ def validate_packed_append_identity(
     raw = dict(value)
     if raw.get("schema") != RENDER_IDENTITY_PACKED_APPEND_SCHEMA:
         raise ValueError(f"{where} has unsupported schema")
-    if set(raw) != {
+    base_field_set = {
         "schema",
         "module_token_budget",
         "max_rows_per_expert",
@@ -5413,7 +5485,15 @@ def validate_packed_append_identity(
         "hooked_qnames_sha256",
         "hooked_qnames",
         "max_layers",
-    }:
+    }
+    # #173 added ``pair_fit_calibration_hashes``; a sidecar written by the
+    # #170 guard has the base ten fields and no pair map. Admit it (its
+    # pairs are adopted on the next append) rather than stranding the
+    # directory — fail-closed still holds, since every base field below
+    # raises on its own and the merged map refuses same-pair conflicts.
+    if set(raw) != base_field_set and set(raw) != (
+        base_field_set | {"pair_fit_calibration_hashes"}
+    ):
         raise ValueError(f"{where} has unsupported fields")
     budget = raw.get("module_token_budget")
     if not isinstance(budget, int) or isinstance(budget, bool) or budget < 1:
@@ -5483,6 +5563,17 @@ def validate_packed_append_identity(
         ):
             raise ValueError(f"{where}.max_layers must be a positive int")
         layers = int(layers_raw)
+    pair_raw = raw.get("pair_fit_calibration_hashes")
+    pair_map: dict[str, str] = {}
+    if pair_raw is not None:
+        if not isinstance(pair_raw, Mapping):
+            raise ValueError(
+                f"{where}.pair_fit_calibration_hashes must be a JSON object"
+            )
+        pair_map = _validate_pair_fit_map(
+            {str(pair): fit for pair, fit in pair_raw.items()},
+            where=where,
+        )
     return {
         "schema": RENDER_IDENTITY_PACKED_APPEND_SCHEMA,
         "module_token_budget": int(budget),
@@ -5494,7 +5585,338 @@ def validate_packed_append_identity(
         "hooked_qnames_sha256": hook_digest,
         "hooked_qnames": int(hooked),
         "max_layers": layers,
+        "pair_fit_calibration_hashes": pair_map,
     }
+
+
+def build_packed_streaming_append_identity(
+    *,
+    module_token_budget: int,
+    max_rows_per_expert: int,
+    eval_rows_per_expert: int,
+    render_mode: str,
+    max_layers: int | None,
+    layers: Mapping[str, str],
+) -> dict[str, object]:
+    """Build the render identity for streaming packed-expert appends (#172).
+
+    One streaming call sees a single materialized module (``_render_packed_layer``
+    feeds each layer's input snapshot via ``module_acts_override``), so no
+    single section can describe the directory — the #170 guard recorded
+    nothing at all for that path and the union merged silently. This section
+    is the union: shared budgets/mode plus a per-layer map keyed by the
+    experts-module qname each call saw, each entry holding the content hash
+    of that module's activation snapshot. Consecutive layers merge; the same
+    module under a different budget or a different snapshot refuses.
+    Deliberately NOT bound: the render narrowing (which packed tensors each
+    layer renders) and any cross-domain gate corpus (unsupported on the
+    streaming path, so there is none to bind).
+    """
+    budget = int(module_token_budget)
+    if budget < 1:
+        raise ValueError(
+            "packed streaming append identity requires "
+            "module_token_budget >= 1"
+        )
+    fit_rows = int(max_rows_per_expert)
+    if fit_rows < 1:
+        raise ValueError(
+            "packed streaming append identity requires "
+            "max_rows_per_expert >= 1"
+        )
+    eval_rows = int(eval_rows_per_expert)
+    if eval_rows < 1:
+        raise ValueError(
+            "packed streaming append identity requires "
+            "eval_rows_per_expert >= 1"
+        )
+    mode = str(render_mode or "").strip()
+    if mode not in {"batched", "per_expert"}:
+        raise ValueError(
+            "packed streaming append identity requires "
+            "render_mode in {'batched', 'per_expert'}"
+        )
+    max_l: int | None = None
+    if max_layers is not None:
+        max_l = int(max_layers)
+        if max_l < 1:
+            raise ValueError(
+                "packed streaming append identity requires max_layers >= 1"
+            )
+    layer_map = _validate_streaming_layer_map(
+        layers, where="packed streaming append identity"
+    )
+    if not layer_map:
+        raise ValueError(
+            "packed streaming append identity requires a nonempty layers map"
+        )
+    return {
+        "schema": RENDER_IDENTITY_PACKED_STREAMING_APPEND_SCHEMA,
+        "module_token_budget": budget,
+        "max_rows_per_expert": fit_rows,
+        "eval_rows_per_expert": eval_rows,
+        "render_mode": mode,
+        "max_layers": max_l,
+        "layers": layer_map,
+    }
+
+
+def _validate_streaming_layer_map(
+    value: object, *, where: str
+) -> dict[str, str]:
+    """Validate a ``layers`` map of experts-module qname to snapshot hash."""
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError(f"{where}.layers must be a nonempty JSON object")
+    layer_map: dict[str, str] = {}
+    for qname, snapshot_hash in value.items():
+        if not isinstance(qname, str) or not qname:
+            raise ValueError(
+                f"{where}.layers keys must be nonempty qnames"
+            )
+        digest = (
+            str(snapshot_hash or "").strip().lower()
+            if isinstance(snapshot_hash, str)
+            else ""
+        )
+        if re.fullmatch(r"[0-9a-f]{32,64}", digest) is None:
+            raise ValueError(
+                f"{where}.layers[{qname!r}] must be a hex digest"
+            )
+        layer_map[str(qname)] = digest
+    return _canonical_json_value(layer_map, where=f"{where}.layers")
+
+
+def validate_packed_streaming_append_identity(
+    value: object, *, where: str = "packed streaming append identity"
+) -> dict[str, object]:
+    """Validate a packed streaming append identity section.
+
+    Every rule below is derived from the writer in
+    :func:`build_packed_streaming_append_identity`: the exact field set,
+    the shared budgets, and the per-layer snapshot hashes. Present but
+    malformed is an error, never a silent skip.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} must be a JSON object")
+    raw = dict(value)
+    if raw.get("schema") != RENDER_IDENTITY_PACKED_STREAMING_APPEND_SCHEMA:
+        raise ValueError(f"{where} has unsupported schema")
+    if set(raw) != {
+        "schema",
+        "module_token_budget",
+        "max_rows_per_expert",
+        "eval_rows_per_expert",
+        "render_mode",
+        "max_layers",
+        "layers",
+    }:
+        raise ValueError(f"{where} has unsupported fields")
+    budget = raw.get("module_token_budget")
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 1:
+        raise ValueError(f"{where}.module_token_budget must be a positive int")
+    fit_rows = raw.get("max_rows_per_expert")
+    if (
+        not isinstance(fit_rows, int)
+        or isinstance(fit_rows, bool)
+        or fit_rows < 1
+    ):
+        raise ValueError(
+            f"{where}.max_rows_per_expert must be a positive int"
+        )
+    eval_rows = raw.get("eval_rows_per_expert")
+    if (
+        not isinstance(eval_rows, int)
+        or isinstance(eval_rows, bool)
+        or eval_rows < 1
+    ):
+        raise ValueError(
+            f"{where}.eval_rows_per_expert must be a positive int"
+        )
+    if raw.get("render_mode") not in {"batched", "per_expert"}:
+        raise ValueError(
+            f"{where}.render_mode must be 'batched' or 'per_expert'"
+        )
+    layers_raw = raw.get("max_layers")
+    max_l: int | None = None
+    if layers_raw is not None:
+        if (
+            not isinstance(layers_raw, int)
+            or isinstance(layers_raw, bool)
+            or layers_raw < 1
+        ):
+            raise ValueError(f"{where}.max_layers must be a positive int")
+        max_l = int(layers_raw)
+    layer_map = _validate_streaming_layer_map(
+        raw.get("layers"), where=where
+    )
+    return {
+        "schema": RENDER_IDENTITY_PACKED_STREAMING_APPEND_SCHEMA,
+        "module_token_budget": int(budget),
+        "max_rows_per_expert": int(fit_rows),
+        "eval_rows_per_expert": int(eval_rows),
+        "render_mode": str(raw["render_mode"]),
+        "max_layers": max_l,
+        "layers": layer_map,
+    }
+
+
+def _refuse_append_mismatch(
+    cache_dir: Path, section_key: str, field: str, cached: object,
+    now: object,
+) -> ValueError:
+    return ValueError(
+        f"production cache directory {cache_dir} {section_key} render "
+        f"identity differs at {field!r}: "
+        f"cached={identity_value_for_error(cached)} "
+        f"current={identity_value_for_error(now)}; the directory holds "
+        "appends from a different configuration — rebuild this directory "
+        "(fresh --cache-dir) instead of appending to it"
+    )
+
+
+def _merge_packed_pair_map_or_refuse(
+    cache_dir: Path,
+    section_key: str,
+    stored_section: Mapping[str, object],
+    current: Mapping[str, object],
+    stored_raw: dict[str, object],
+    sidecar_path: Path,
+    *,
+    progress: bool = True,
+) -> None:
+    """Merge one resident packed append's per-pair fit map (#173).
+
+    Shared fields (budgets, mode, gate corpus, hooked enumeration) compare
+    exactly and refuse on the first difference. The per-pair fit map unions:
+    pairs the directory has never seen are recorded, pairs already recorded
+    under the same hash are idempotent, and the same pair under a different
+    hash refuses — the bytes on disk are the first render's (existing shards
+    are never re-rendered), so a second hash for the same pair names bytes
+    that do not exist. The sanctioned M4 lazy gap-fill renders disjoint
+    pairs under the render-split calib, so it merges without refusing.
+    """
+    stored_shared = {
+        key: value
+        for key, value in stored_section.items()
+        if key != "pair_fit_calibration_hashes"
+    }
+    current_shared = {
+        key: value
+        for key, value in current.items()
+        if key != "pair_fit_calibration_hashes"
+    }
+    difference = first_identity_difference(stored_shared, current_shared)
+    if difference is not None:
+        field, cached, now = difference
+        raise _refuse_append_mismatch(
+            cache_dir, section_key, field, cached, now
+        )
+    stored_pairs = dict(stored_section.get("pair_fit_calibration_hashes") or {})
+    current_pairs = dict(current.get("pair_fit_calibration_hashes") or {})
+    if not isinstance(stored_pairs, Mapping) or not isinstance(
+        current_pairs, Mapping
+    ):
+        raise _refuse_append_mismatch(
+            cache_dir, section_key, "pair_fit_calibration_hashes",
+            stored_pairs, current_pairs,
+        )
+    for pair, fit_hash in current_pairs.items():
+        cached_hash = stored_pairs.get(pair)
+        if cached_hash is not None and cached_hash != fit_hash:
+            raise _refuse_append_mismatch(
+                cache_dir, section_key,
+                f"pair_fit_calibration_hashes[{pair!r}]",
+                cached_hash, fit_hash,
+            )
+    if all(
+        stored_pairs.get(pair) == fit_hash
+        for pair, fit_hash in current_pairs.items()
+    ):
+        if progress:
+            print(
+                f"[prod-cache] append resume: {section_key} render identity "
+                "matches; reusing on-disk shards",
+                flush=True,
+            )
+        return
+    merged_section = dict(stored_section)
+    merged_section["pair_fit_calibration_hashes"] = {
+        **stored_pairs, **current_pairs,
+    }
+    merged = dict(stored_raw)
+    merged[section_key] = merged_section
+    atomic_write_bytes(
+        sidecar_path,
+        json.dumps(merged, indent=2, sort_keys=True).encode("utf-8"),
+    )
+
+
+def _merge_streaming_layer_map_or_refuse(
+    cache_dir: Path,
+    section_key: str,
+    stored_section: Mapping[str, object],
+    current: Mapping[str, object],
+    stored_raw: dict[str, object],
+    sidecar_path: Path,
+    *,
+    progress: bool = True,
+) -> None:
+    """Merge one streaming packed append's per-layer map (#172).
+
+    Shared budgets/mode compare exactly and refuse on the first difference,
+    so layers appended under different budgets cannot land in one directory.
+    The per-layer map unions keyed by experts-module qname: unseen modules
+    are recorded, a re-appended module under the same snapshot hash is
+    idempotent, and the same module under a different snapshot hash refuses.
+    """
+    stored_shared = {
+        key: value
+        for key, value in stored_section.items()
+        if key != "layers"
+    }
+    current_shared = {
+        key: value for key, value in current.items() if key != "layers"
+    }
+    difference = first_identity_difference(stored_shared, current_shared)
+    if difference is not None:
+        field, cached, now = difference
+        raise _refuse_append_mismatch(
+            cache_dir, section_key, field, cached, now
+        )
+    stored_layers = dict(stored_section.get("layers") or {})
+    current_layers = dict(current.get("layers") or {})
+    if not isinstance(stored_layers, Mapping) or not isinstance(
+        current_layers, Mapping
+    ):
+        raise _refuse_append_mismatch(
+            cache_dir, section_key, "layers", stored_layers, current_layers,
+        )
+    for qname, snapshot_hash in current_layers.items():
+        cached_hash = stored_layers.get(qname)
+        if cached_hash is not None and cached_hash != snapshot_hash:
+            raise _refuse_append_mismatch(
+                cache_dir, section_key, f"layers[{qname!r}]",
+                cached_hash, snapshot_hash,
+            )
+    if all(
+        stored_layers.get(qname) == snapshot_hash
+        for qname, snapshot_hash in current_layers.items()
+    ):
+        if progress:
+            print(
+                f"[prod-cache] append resume: {section_key} render identity "
+                "matches; reusing on-disk shards",
+                flush=True,
+            )
+        return
+    merged_section = dict(stored_section)
+    merged_section["layers"] = {**stored_layers, **current_layers}
+    merged = dict(stored_raw)
+    merged[section_key] = merged_section
+    atomic_write_bytes(
+        sidecar_path,
+        json.dumps(merged, indent=2, sort_keys=True).encode("utf-8"),
+    )
 
 
 def _check_and_record_append_identity(
@@ -5515,6 +5937,12 @@ def _check_and_record_append_identity(
     the first differing field. A directory whose sidecar predates the section
     gains it without disturbing the base identity; a directory with no
     sidecar at all records an append-only file the base fill later adopts.
+
+    Two sections merge rather than compare whole (#172, #173): the resident
+    packed section unions its per-pair fit map (disjoint pairs merge, the
+    same pair under a different hash refuses), and the streaming section
+    unions its per-layer map (new layers merge, the same module under a
+    different budget or snapshot refuses).
     """
     if section_key == MTP_APPEND_SIDECAR_KEY:
         current = validate_mtp_append_identity(
@@ -5531,6 +5959,14 @@ def _check_and_record_append_identity(
                 where="packed-expert append identity",
             ),
             where="packed-expert append identity",
+        )
+    elif section_key == PACKED_STREAMING_APPEND_SIDECAR_KEY:
+        current = validate_packed_streaming_append_identity(
+            _canonical_json_value(
+                dict(current_section),
+                where="packed streaming append identity",
+            ),
+            where="packed streaming append identity",
         )
     else:
         raise ValueError(
@@ -5567,6 +6003,7 @@ def _check_and_record_append_identity(
         stored_raw.get("schema") != RENDER_IDENTITY_SCHEMA
         and MTP_APPEND_SIDECAR_KEY not in stored_raw
         and PACKED_APPEND_SIDECAR_KEY not in stored_raw
+        and PACKED_STREAMING_APPEND_SIDECAR_KEY not in stored_raw
     ):
         raise ValueError(
             f"production cache directory {cache_dir} has an unrecognized "
@@ -5590,6 +6027,14 @@ def _check_and_record_append_identity(
                     f"cache directory {cache_dir} MTP append identity"
                 ),
             )
+        elif section_key == PACKED_STREAMING_APPEND_SIDECAR_KEY:
+            stored_section = validate_packed_streaming_append_identity(
+                stored_section_raw,
+                where=(
+                    f"cache directory {cache_dir} packed streaming append "
+                    "identity"
+                ),
+            )
         else:
             stored_section = validate_packed_append_identity(
                 stored_section_raw,
@@ -5605,6 +6050,18 @@ def _check_and_record_append_identity(
             f"{exc}; refusing append — rebuild this directory (fresh "
             "--cache-dir) instead of appending to it"
         ) from exc
+    if section_key == PACKED_APPEND_SIDECAR_KEY:
+        _merge_packed_pair_map_or_refuse(
+            cache_dir, section_key, stored_section, current, stored_raw,
+            sidecar_path, progress=progress,
+        )
+        return
+    if section_key == PACKED_STREAMING_APPEND_SIDECAR_KEY:
+        _merge_streaming_layer_map_or_refuse(
+            cache_dir, section_key, stored_section, current, stored_raw,
+            sidecar_path, progress=progress,
+        )
+        return
     difference = first_identity_difference(stored_section, current)
     if difference is not None:
         field, cached, now = difference
@@ -5641,12 +6098,13 @@ def _check_production_cache_render_identity(
     warn and admit its shards on trust (refusing would strand existing work),
     then write the current identity so later mismatches refuse.
 
-    Append sections (#170) are compared by their own writers, never here:
-    the stored base projection is compared against the current base identity
-    while recorded ``mtp_append`` / ``packed_expert_append`` sections are
-    preserved untouched. A sidecar that holds only append sections (an
-    append ran before any base fill) is adopted the same way: the current
-    base identity is merged in alongside the validated sections.
+    Append sections (#170, #172) are compared by their own writers, never
+    here: the stored base projection is compared against the current base
+    identity while recorded ``mtp_append`` / ``packed_expert_append`` /
+    ``packed_expert_streaming_append`` sections are preserved untouched. A
+    sidecar that holds only append sections (an append ran before any base
+    fill) is adopted the same way: the current base identity is merged in
+    alongside the validated sections.
     """
     current_identity = validate_production_cache_render_identity(
         _canonical_json_value(dict(current), where="production cache render identity"),
@@ -5657,7 +6115,11 @@ def _check_production_cache_render_identity(
     current_identity = {
         key: value
         for key, value in current_identity.items()
-        if key not in (MTP_APPEND_SIDECAR_KEY, PACKED_APPEND_SIDECAR_KEY)
+        if key not in (
+            MTP_APPEND_SIDECAR_KEY,
+            PACKED_APPEND_SIDECAR_KEY,
+            PACKED_STREAMING_APPEND_SIDECAR_KEY,
+        )
     }
     sidecar_path = cache_dir_path / RENDER_IDENTITY_SIDECAR_FILENAME
     if not sidecar_path.is_file():
@@ -5709,7 +6171,11 @@ def _check_production_cache_render_identity(
         key: stored_raw[key] for key in base_fields if key in stored_raw
     }
     stored_sections: dict[str, object] = {}
-    for key in (MTP_APPEND_SIDECAR_KEY, PACKED_APPEND_SIDECAR_KEY):
+    for key in (
+        MTP_APPEND_SIDECAR_KEY,
+        PACKED_APPEND_SIDECAR_KEY,
+        PACKED_STREAMING_APPEND_SIDECAR_KEY,
+    ):
         if key in stored_raw:
             stored_sections[key] = stored_raw[key]
     if set(stored_base_raw) != base_fields:
@@ -5722,7 +6188,11 @@ def _check_production_cache_render_identity(
         # sidecar.
         unknown = (
             set(stored_raw) - base_fields
-            - {MTP_APPEND_SIDECAR_KEY, PACKED_APPEND_SIDECAR_KEY}
+            - {
+                MTP_APPEND_SIDECAR_KEY,
+                PACKED_APPEND_SIDECAR_KEY,
+                PACKED_STREAMING_APPEND_SIDECAR_KEY,
+            }
         )
         if not stored_base_raw and stored_sections and not unknown:
             try:
@@ -7686,56 +8156,76 @@ def fill_packed_expert_cache_entries(
             print("[prod-cache/experts] no non-BF16 packed experts in scope",
                   flush=True)
         return coverage
-    if module_acts_override is None and cache_dir_path is not None:
-        # #170: the base render-identity sidecar covers only the dense fill,
-        # yet this append streams further shards into the same directory
-        # under its own value-bearing inputs (reservoir budgets, gate
-        # corpus, render mode, hooked enumeration). Compare-or-write this
-        # append's own sidecar section BEFORE any capture or render, so a
-        # hand-mixed append configuration refuses instead of landing in one
-        # directory under a still-matching sidecar. The render narrowing
-        # (which packed tensors this call renders) is deliberately NOT
-        # bound: the eager format-menu build and the lazy per-Pareto-point
-        # gap-fill render different subsets with identical bytes.
-        #
-        # Streaming builds (module_acts_override) render one materialized
-        # layer per call from supplied snapshots — each call sees a
-        # different single module, so there is no stable enumeration to
-        # stamp and the union merges layers silently. The guard is skipped
-        # there for the same reason the hook-scope stamp is skipped below.
+    if cache_dir_path is not None:
         from prismaquant.perturbed_x_cache import calibration_data_hash
 
-        _check_and_record_append_identity(
-            cache_dir_path,
-            PACKED_APPEND_SIDECAR_KEY,
-            build_packed_expert_append_identity(
-                module_token_budget=int(module_token_budget),
-                max_rows_per_expert=int(max_rows_per_expert),
-                eval_rows_per_expert=int(eval_rows_per_expert),
-                render_mode=str(render_mode),
-                gate_calibration_hash=(
-                    calibration_data_hash(gate_calib_ids)
-                    if gate_calib_ids is not None
-                    else None
+        if module_acts_override is None:
+            _check_and_record_append_identity(
+                cache_dir_path,
+                PACKED_APPEND_SIDECAR_KEY,
+                build_packed_expert_append_identity(
+                    module_token_budget=int(module_token_budget),
+                    max_rows_per_expert=int(max_rows_per_expert),
+                    eval_rows_per_expert=int(eval_rows_per_expert),
+                    render_mode=str(render_mode),
+                    gate_calibration_hash=(
+                        calibration_data_hash(gate_calib_ids)
+                        if gate_calib_ids is not None
+                        else None
+                    ),
+                    gate_token_budget=(
+                        int(gate_token_budget or module_token_budget)
+                        if gate_calib_ids is not None
+                        else None
+                    ),
+                    hooked_qnames=eligible_experts_qnames,
+                    max_layers=max_layers,
+                    pair_fit_calibration_hashes={
+                        f"{full}|{fmt}": calibration_data_hash(calib_ids)
+                        for (_q, _m, _p, _pn, full, fmt) in in_scope
+                    },
                 ),
-                gate_token_budget=(
-                    int(gate_token_budget or module_token_budget)
-                    if gate_calib_ids is not None
-                    else None
-                ),
-                hooked_qnames=eligible_experts_qnames,
-                max_layers=max_layers,
-            ),
-            progress=progress,
-        )
+                progress=progress,
+            )
+        else:
+            # #172: streaming builds render one materialized layer per call
+            # from supplied snapshots — each call sees a different single
+            # module, so no single section can describe the directory. Record
+            # a per-layer section list keyed by the module this call saw
+            # (the union of what each streaming call rendered) BEFORE any
+            # render, so a hand-mixed streaming configuration refuses instead
+            # of merging silently. The render narrowing (which packed tensors
+            # this layer renders) is deliberately NOT bound, exactly as on
+            # the resident path.
+            snapshot_layers = {
+                str(experts_qname): calibration_data_hash(
+                    module_acts_override[experts_qname]
+                )
+                for experts_qname in sorted(experts_qnames)
+                if experts_qname in module_acts_override
+            }
+            if snapshot_layers:
+                _check_and_record_append_identity(
+                    cache_dir_path,
+                    PACKED_STREAMING_APPEND_SIDECAR_KEY,
+                    build_packed_streaming_append_identity(
+                        module_token_budget=int(module_token_budget),
+                        max_rows_per_expert=int(max_rows_per_expert),
+                        eval_rows_per_expert=int(eval_rows_per_expert),
+                        render_mode=str(render_mode),
+                        max_layers=max_layers,
+                        layers=snapshot_layers,
+                    ),
+                    progress=progress,
+                )
     if module_acts_override is None:
         # Resident builds hook the visible enumeration through the shared
         # collector, so the stamp names a real rendering. Streaming builds
         # render one materialized layer per call from supplied snapshots --
         # no collector runs, nothing is hooked, and each call sees a
         # different single module -- so there is no enumeration to stamp.
-        # Stamping per-layer digests would refuse the next layer as a
-        # "different rendering"; absence merges silently in the union.
+        # The per-layer sidecar union (#172) is what guards that path, not
+        # this stamp.
         _stamp_packed_hook_scope(cache, hook_qnames=eligible_experts_qnames)
 
     # Render-identity bookkeeping for this append. Every packed key that ends

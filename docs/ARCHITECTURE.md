@@ -1,7 +1,24 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `muse/pq-170-append`. Stamps
+As of: 2026-09-03 · `muse/pq-172-173-append`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `muse/pq-172-173-append`) for the **append-identity
+follow-ups** (§5.4; RobTand/prismaquant#172, #173). Two configurations the
+#170 guard could not describe now have a section each. Streaming packed
+appends (`module_acts_override`, one materialized module per call) record a
+`packed_expert_streaming_append` union keyed by the experts-module qname
+each call saw — shared budgets/mode plus each layer's activation-snapshot
+hash — so consecutive layers merge while the same module under a different
+budget or snapshot refuses. The resident `packed_expert_append` section binds
+the fit corpus per pair (`pair_fit_calibration_hashes`, `"qname|FMT"` to
+`calibration_data_hash`): disjoint pairs under a different calib merge with
+each pair keeping its own hash — the sanctioned M4 lazy gap-fill renders
+disjoint FP8 pairs on the render-split calib — while the same pair under a
+different hash refuses, since the bytes on disk are the first render's.
+Deliberately still unbound: the render narrowing on both paths. Gates:
+`tests/test_packed_append_streaming_and_pair_identity.py` (8, each shown
+failing before the fix).
 
 Re-stamped (2026-09-03, `muse/pq-170-append`) for the **production cache
 append-identity guard** (§5.4; RobTand/prismaquant#170). #146's sidecar
