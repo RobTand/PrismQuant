@@ -96,7 +96,7 @@ def test_166_claude_polish_guarantee_is_historical():
 
     # Doc side: the guarantee paragraph must be past-tense and walled.
     guarantee = next(
-        line for line in doc.splitlines() if "The guarantee" in line
+        line for line in doc.splitlines() if "guarantee" in line.lower()
     )
     assert "archived" in doc[doc.index(guarantee):doc.index(guarantee) + 800], (
         "CLAUDE.md 'guarantee' paragraph must say polish is archived "
