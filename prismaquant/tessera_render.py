@@ -699,34 +699,60 @@ class HessianContractError(RuntimeError):
 #: silently downgrade a shipping price to a weights-only one.
 
 
+#: The keywords ``for_unit`` emits that carry the Hessian itself.  A plane
+#: whose emitted set contains neither has no activation-aware encode: the
+#: encode would be byte-identical to the weights-only one, and forwarding the
+#: rest would be an H-free encode wearing an H-aware stamp.
+_H_BEARING_KWARGS = frozenset({"ldl", "refit_metric"})
+
+
 @lru_cache(maxsize=1)
 def _encoder_accepts_hessian() -> "tuple[bool, tuple[str, ...], tuple[str, ...]]":
     """``(accepted, required kwargs, encoder parameters)`` for the pinned build.
+
+    ``required`` is the **union over every scale plane**, because the emitted
+    set is plane-dependent -- a plane whose refit objective is ``"plain"``
+    emits no ``refit_metric`` -- and this tuple is what the seam's forwarded-key
+    whitelist is checked against.  Probing one plane would narrow the whitelist
+    to that plane's keys and make the seam refuse another plane's legitimate
+    keyword as "unknown".  Ask :func:`_encoder_kwargs_for_plane` for one plane's
+    own set.
 
     Cached on nothing but the process: the pinned Tessera is a property of the
     interpreter's import, not of an argument.
     """
     import inspect
 
-    from .tessera_hessian import HESSIAN_IDENTITY_FIELDS, activation_source
-
     params = tuple(
         inspect.signature(_tessera_export.encode_linear_planes).parameters)
-    # Ask the object which keywords it emits, on a throwaway unit, rather than
-    # listing them here. If Tessera adds one, this notices.
+    required = tuple(sorted(
+        set().union(*(_encoder_kwargs_for_plane(plane)
+                      for plane in _tessera_export._PLANE_NAMES))))
+    return (all(k in params for k in required), required, params)
+
+
+@lru_cache(maxsize=8)
+def _encoder_kwargs_for_plane(scale_plane) -> "frozenset[str]":
+    """The keywords ``ActivationSource.for_unit`` emits on ``scale_plane``.
+
+    Asked of Tessera's own object on a throwaway unit rather than listed here.
+    This is the derivation :func:`rung_accepts_hessian` reads, and it is why
+    that predicate is no longer a restatement: what a plane admits is whatever
+    the pinned source emits for it, so a Tessera release that adds, removes or
+    re-plumbs a keyword moves the predicate with it (principle 14).
+    """
     import torch
 
+    from .tessera_hessian import HESSIAN_IDENTITY_FIELDS, activation_source
+
+    identity = {f: ("" if f.endswith("sha256") else 0)
+                for f in HESSIAN_IDENTITY_FIELDS}
     # An identity matrix, at the LDL block width, so the probe exercises the
     # real ``block_ldl`` path rather than a shape it refuses.
-    width = int(activation_source(
-        {}, {f: ("" if f.endswith("sha256") else 0)
-             for f in HESSIAN_IDENTITY_FIELDS}).ldlq_block)
-    probe = activation_source(
-        {"probe": torch.eye(width)},
-        {f: ("" if f.endswith("sha256") else 0) for f in HESSIAN_IDENTITY_FIELDS},
-    )
-    required = tuple(sorted(probe.for_unit("probe.weight", width)))
-    return (all(k in params for k in required), required, params)
+    width = int(activation_source({}, identity).ldlq_block)
+    probe = activation_source({"probe": torch.eye(width)}, identity)
+    return frozenset(probe.for_unit("probe.weight", width,
+                                    scale_plane=scale_plane))
 
 
 def tessera_encoder_hessian_status() -> dict:
@@ -750,29 +776,54 @@ def tessera_encoder_hessian_status() -> dict:
 def rung_accepts_hessian(format_name: str, recipe=None) -> bool:
     """Does this rung's WIRE admit an activation-aware encode?
 
-    At Tessera ``f3e7d0a`` the answer is **the CHANNEL scale plane, and only
-    it**.  Both activation-aware levers refuse on a block plane, by name:
+    **Derived, not restated.**  The answer is whether the pinned
+    ``ActivationSource`` emits an H-bearing keyword -- ``ldl`` or
+    ``refit_metric`` -- for the plane this rung's recipe resolves to.  If it
+    emits neither, the H-aware encode and the weights-only encode are the same
+    bytes and pricing it weights-only is pricing what ships.  If it emits
+    either, they are not, and a weights-only price is a price of bytes the
+    exporter will not write.
+
+    This used to restate Tessera's condition -- "the CHANNEL scale plane, and
+    only it, at ``f3e7d0a``" -- quoting two refusals verbatim:
 
     * ``ldl`` -- "LDLQ is implemented for the CHANNEL scale plane; a block
-      plane's per-column-span [scales] ..."
-    * ``refit_metric`` -- "read only by the CHANNEL plane's refit; a block
-      plane fits its scales to within-row column spans and has no row-scale to
-      weight, so this would be silently ignored"
+      plane's per-column-span scales would have to be scheduled with it"
+    * ``refit_metric`` -- "read only by the CHANNEL plane's refit"
 
-    So on the E4M3 family (CHANNEL throughout) an H-aware encode is the
-    shipping encode, and on both E2M1 families (LUT16 throughout) there is no
-    H-aware encode at all -- weights-only there is not a downgrade, it is the
-    only bytes the wire has.  Pricing an E2M1 rung weights-only is therefore
-    still pricing the bytes that ship (principle 8), and *refusing* to price it
-    would be the wrong refusal.
+    **Tessera deleted both guards on 2026-09-02**
+    (``docs/measurements/tessera-ldlq-lut-plane-served-2026-09-02.md``: "That
+    reason does not survive reading the loop it guards"), and the restatement
+    went stale where nothing could see it.  ``refit_metric`` is now refused
+    only on S6b, ``ldl`` on no plane at all, and the same release keyed the
+    refit objective **by** plane -- which is the ``scale_plane`` argument
+    ``for_unit`` now demands.  One relaxation, two symptoms.
 
-    This restates Tessera's condition, which principle 14 normally forbids, so
+    What the staleness cost: on the LUT plane the H-aware wire is measured at
+    served KL 0.5310 against the weights-only wire's 0.6404 on Qwen3-0.6B at
+    the E2M1x2 q896 cap, at **identical bytes** (both 220,301,312 wire bytes,
+    4.0018 bpp).  PrismaQuant priced and rendered every E2M1 rung weights-only
+    while its own export lane hands the encode to Tessera's exporter
+    (``experiments/export_tessera_serving.py:633``), which applies
+    ``for_unit(..., scale_plane=recipe.scale_plane)`` on every plane whenever a
+    Hessian is supplied.  The surrogate was pricing bytes the export does not
+    write -- principle 8, across the repository boundary.
+
+    ``recipe`` is the resolved wire the encode itself uses, threaded rather
+    than looked up again: ``_recipe_for`` is memoised and a
+    ``clear_recipe_cache`` between two lookups (tests do this) is exactly the
+    split that would let the price and the encode disagree.
+
+    One residual plane guard is Tessera's alone and is deliberately not
+    mirrored here: ``refit_reach_floor`` is CHANNEL-only, and the source
+    default is ``False``, so it reaches a block plane only when a caller turns
+    it on -- at which point Tessera raises by name, which is the runtime
+    speaking for itself rather than this module speaking for it.
+
     ``test_the_hessian_applies_exactly_where_tessera_says_it_does`` pins the
-    predicate against real encodes on every family: the predicate and the raise
-    site agree, or the test fails.
+    derivation against real encodes on every family, each built with its own
+    resolved plane: the predicate and the raise site agree, or the test fails.
     """
-    from tessera.manifest import ScalePlaneKind
-
     from .tessera_formats import parse_tessera_format_name
 
     parsed = parse_tessera_format_name(format_name)
@@ -780,7 +831,8 @@ def rung_accepts_hessian(format_name: str, recipe=None) -> bool:
         raise ValueError(f"{format_name!r} is not a Tessera format name")
     family, rung = parsed
     wire = tessera_wire_recipe(family, rung) if recipe is None else recipe
-    return ScalePlaneKind(wire.scale_plane) is ScalePlaneKind.CHANNEL
+    emitted = _encoder_kwargs_for_plane(wire.scale_plane)
+    return bool(emitted & _H_BEARING_KWARGS)
 
 
 def encode_tessera_unit(
@@ -790,6 +842,7 @@ def encode_tessera_unit(
     activation_kwargs: "dict | None" = None,
     hessian_required: bool = True,
     verify: bool = False,
+    recipe=None,
 ):
     """``(render, blob)`` for one rung -- **the** call into Tessera's byte path.
 
@@ -800,9 +853,30 @@ def encode_tessera_unit(
     second reconstruction that happens to agree.
 
     ``activation_kwargs`` is what ``tessera_hessian.encoder_kwargs`` returned
-    for THIS unit: the block-LDL of its regularised ``XᵀX`` and the refit
-    metric.  They are rung-independent, which is why they arrive pre-computed
-    rather than as a Hessian this function would re-factorise once per rate.
+    for THIS unit **on this rung's scale plane**: the block-LDL of its
+    regularised ``XᵀX`` and the plane's refit metric.  They carry no rate, so
+    they arrive pre-computed rather than as a Hessian this function would
+    re-factorise once per rate; they do carry a plane, so the caller memoises
+    them per ``(unit, plane)`` and not per unit.
+
+    ``recipe`` is the resolved wire, threaded from the caller so that the
+    plane the kwargs were built on, the plane the predicate reads, and the
+    plane the encode writes are one object rather than three lookups.  Omit it
+    and this resolves its own; the two agree today because ``_recipe_for`` is
+    memoised, and disagree the moment anything clears that cache between two
+    lookups -- which is exactly what ``clear_recipe_cache`` exists for and
+    what the tests do.
+
+    **The invariant that makes "the same recipe" true across the boundary:**
+    the only keywords forwarded to ``encode_linear`` are ``grid``/``q256``/
+    ``name``/``verify`` plus the set ``ActivationSource.for_unit`` emits, and
+    anything else is refused below by name.  No recipe axis -- ``span``,
+    ``scale_plane``, ``body``, ``window_bits`` -- can reach the encoder from
+    here, so Tessera resolves the recipe internally with no override and its
+    answer equals ``tessera_wire_recipe(family, rung)`` by value.  That
+    equality is what the refusal in ``for_unit`` is warning about, and it
+    holds because the whitelist is structural rather than because a caller
+    remembered.
 
     ``hessian_required=True`` is the default for the same reason
     ``render_production_weight`` defaults ``ldlq_missing_activation_ok=False``:
@@ -818,19 +892,27 @@ def encode_tessera_unit(
     if parsed is None:
         raise ValueError(f"{format_name!r} is not a Tessera format name")
     family, rung = parsed
+    wire = tessera_wire_recipe(family, rung) if recipe is None else recipe
 
     accepted, required, _params = _encoder_accepts_hessian()
-    if not rung_accepts_hessian(format_name):
-        # The wire has no activation-aware encode, so weights-only IS the
-        # shipping encode here and requiring one would refuse the only bytes
-        # this rung has. Kwargs that were built anyway are dropped -- loudly,
-        # because forwarding them raises inside Tessera and silently keeping
-        # them would be the "applied and unrecorded" error in reverse.
+    if not rung_accepts_hessian(format_name, wire):
+        # The pinned source emits no H-bearing keyword for this plane, so the
+        # H-aware encode and the weights-only one are the same bytes: requiring
+        # a Hessian would refuse the only bytes this rung has. Kwargs built
+        # anyway are refused rather than dropped -- forwarding them would be an
+        # H-free encode wearing an H-aware stamp.
+        #
+        # Dormant at the pin, not dead: every plane PrismaQuant resolves emits
+        # both ``ldl`` and ``refit_metric`` since Tessera's 2026-09-02 release
+        # (see ``rung_accepts_hessian``). It stays because the branch is a
+        # consequence of what the source emits, and the source is Tessera's to
+        # change.
         if activation_kwargs:
             raise HessianContractError(
-                f"{format_name}: this rung's wire is a block scale plane, "
-                "which admits neither LDLQ nor the H refit; passing activation "
-                "kwargs here would raise inside Tessera. Ask "
+                f"{format_name}: the pinned ActivationSource emits no "
+                f"H-bearing keyword on the "
+                f"{_tessera_export._PLANE_NAMES[wire.scale_plane]!r} scale "
+                "plane, so this encode is weights-only whatever is passed. Ask "
                 "rung_accepts_hessian() before building them."
             )
         hessian_required = False
@@ -923,7 +1005,17 @@ def render_tessera_production(
     ``levers['tessera_weights_only']`` is the deliberate opt-out and must be
     stamped by whoever sets it.
     """
+    from .tessera_formats import parse_tessera_format_name
     from .tessera_hessian import activation_source, encoder_kwargs, hessian_from_rows
+
+    # ONE resolve for this render, threaded to the predicate, to the kwargs and
+    # to the encode. Three independent lookups would agree today only because
+    # ``_recipe_for`` memoises them; the plane priced and the plane encoded have
+    # to be the same object, not the same value by luck.
+    parsed = parse_tessera_format_name(fmt)
+    if parsed is None:
+        raise ValueError(f"{fmt!r} is not a Tessera format name")
+    wire = tessera_wire_recipe(*parsed)
 
     weights_only = bool(levers.get("tessera_weights_only", False)) if levers \
         else False
@@ -934,11 +1026,12 @@ def render_tessera_production(
     # ``tessera_weights_only`` shipping H-aware bytes under a
     # ``supplied=false`` stamp. The campaign's ``--hessian off`` collects no H
     # at all, and this must mean the same thing.
-    if not rung_accepts_hessian(fmt):
-        # This rung's wire has no activation-aware encode (block scale plane),
-        # so the weights-only bytes ARE its shipping bytes. Priced as such,
+    if not rung_accepts_hessian(fmt, wire):
+        # The pinned source emits no H-bearing keyword on this plane, so the
+        # weights-only bytes ARE this rung's shipping bytes. Priced as such,
         # without a Hessian and without a refusal.
-        render, _blob = encode_tessera_unit(weight, fmt, hessian_required=False)
+        render, _blob = encode_tessera_unit(
+            weight, fmt, hessian_required=False, recipe=wire)
         return render
     if activations is not None and not weights_only:
         try:
@@ -957,7 +1050,8 @@ def render_tessera_production(
                 "render cache is keyed by qname) or set the "
                 "'tessera_weights_only' lever deliberately."
             )
-        render, _blob = encode_tessera_unit(weight, fmt, hessian_required=False)
+        render, _blob = encode_tessera_unit(
+            weight, fmt, hessian_required=False, recipe=wire)
         return render
     rows = acts.detach().to(device=weight.device, dtype=torch.float32)
     if int(rows.shape[-1]) != int(weight.shape[1]):
@@ -977,9 +1071,11 @@ def render_tessera_production(
             "different draw."
         )
     source = activation_source({qname: hessian_from_rows(rows)}, identity)
-    kwargs = encoder_kwargs(source, qname, int(weight.shape[1]), weight.device)
+    kwargs = encoder_kwargs(source, qname, int(weight.shape[1]), weight.device,
+                            scale_plane=wire.scale_plane)
     render, _blob = encode_tessera_unit(
-        weight, fmt, activation_kwargs=kwargs, hessian_required=True)
+        weight, fmt, activation_kwargs=kwargs, hessian_required=True,
+        recipe=wire)
     return render
 
 

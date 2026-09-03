@@ -172,7 +172,7 @@ def next_anchor_rate(
 # ---------------------------------------------------------------------------
 
 def _encode_and_render(weight, format_name: str, *, activation_kwargs=None,
-                       hessian_required: bool = True):
+                       hessian_required: bool = True, recipe=None):
     """``(render, blob)`` for one rung: the bytes, and what they decode to.
 
     A thin adapter over ``tessera_render.encode_tessera_unit``, which is the
@@ -190,6 +190,7 @@ def _encode_and_render(weight, format_name: str, *, activation_kwargs=None,
         weight, format_name,
         activation_kwargs=activation_kwargs,
         hessian_required=bool(hessian_required), verify=False,
+        recipe=recipe,
     )
 
 
@@ -199,15 +200,22 @@ def _measure_anchor(
 ):
     """Render one rung, price it as served, and store the wire beside it.
 
-    ``activation_kwargs_for`` is a callable ``qname -> encoder kwargs`` (the
-    block-LDL of that unit's regularised ``XᵀX`` and its refit metric), which
-    the caller memoises per unit because they are **rung-independent**: a
-    twelve-anchor surface would otherwise factorise the same Hessian twelve
-    times.  A **missing key is a hard failure**, never a silently H-free
-    encode: this codebase has already been bitten once by a render whose
-    activation lookup missed and quietly fell back to RTN, raising nothing,
-    and an H-free encode of a rung whose shipping bytes are H-aware is exactly
-    that bug with different bytes.
+    ``activation_kwargs_for`` is a callable ``(qname, scale_plane) -> encoder
+    kwargs`` -- the block-LDL of that unit's regularised ``XᵀX`` and the
+    plane's refit metric -- which the caller memoises per ``(unit, plane)``.
+    Per unit alone would be wrong and silently so: the refit objective is keyed
+    by scale plane, so a memo that ignored the plane would price a unit's
+    second family under the first family's objective.  Per rung would be
+    wasteful: no rate reaches that call, and a twelve-anchor surface would
+    otherwise factorise the same Hessian twelve times.  The plane is constant
+    across every rung of a family and differs between families, so the bound is
+    one factorisation per unit per family-plane.
+
+    A **missing key is a hard failure**, never a silently H-free encode: this
+    codebase has already been bitten once by a render whose activation lookup
+    missed and quietly fell back to RTN, raising nothing, and an H-free encode
+    of a rung whose shipping bytes are H-aware is exactly that bug with
+    different bytes.
     """
     import torch
 
@@ -215,32 +223,37 @@ def _measure_anchor(
     from .production_weight_cache import (
         _local_forward_render_score, _store_rendered_weight_entry,
     )
-    from .tessera_formats import parse_tessera_format_name
+    from .tessera_formats import parse_tessera_format_name, tessera_wire_recipe
     from .tessera_render import HessianContractError
 
     from .tessera_render import rung_accepts_hessian
 
     spec = fr.get_format(format_name)
     family, rung = parse_tessera_format_name(format_name)
+    # ONE resolve for this anchor. The plane the kwargs are built on, the plane
+    # the predicate reads and the plane the encode writes are this object --
+    # not three lookups that agree only while nothing clears the recipe memo.
+    wire = tessera_wire_recipe(family, rung)
     activation_kwargs = None
     # Whether an H can be applied is a property of the RUNG'S WIRE, not of the
-    # run: at the pinned Tessera only the CHANNEL scale plane admits LDLQ and
-    # the H refit, so every E2M1 rung's shipping bytes are weights-only bytes.
-    # Refusing to price them would refuse the only encode they have.
-    hessian_required = bool(hessian_required) and rung_accepts_hessian(format_name)
+    # run, and it is DERIVED from what the pinned ActivationSource emits for
+    # that wire's plane rather than restated here (``rung_accepts_hessian``).
+    # It reads True on every plane PrismaQuant resolves at this pin.
+    hessian_required = bool(hessian_required) and rung_accepts_hessian(
+        format_name, wire)
     if hessian_required:
         if activation_kwargs_for is None:
             raise HessianContractError(
                 f"{qname}: hessian_required=True but no activation-kwargs "
                 "source was passed to _measure_anchor")
-        activation_kwargs = activation_kwargs_for(qname)
+        activation_kwargs = activation_kwargs_for(qname, wire.scale_plane)
         if not activation_kwargs:
             raise HessianContractError(
                 f"{qname}: no Hessian for this Linear. A lookup that misses "
                 "must not fall through to a weights-only encode.")
     started = time.time()
     render, blob = _encode_and_render(
-        weight, format_name, activation_kwargs=activation_kwargs,
+        weight, format_name, recipe=wire, activation_kwargs=activation_kwargs,
         hessian_required=hessian_required,
     )
     elapsed = time.time() - started
@@ -700,21 +713,27 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     torch.cuda.empty_cache()
 
     # ONE ActivationSource for the whole campaign, and ONE set of encoder
-    # keywords per unit. The block-LDL and the refit metric are functions of
-    # the unit's Hessian alone -- not of its rate -- so a twelve-anchor surface
+    # keywords per unit PER SCALE PLANE. The block-LDL is a function of the
+    # unit's Hessian alone -- not of its rate -- so a twelve-anchor surface
     # would otherwise factorise the same [in, in] matrix twelve times. The
-    # source is built from the same functions the production render calls
-    # (``tessera_hessian``), so the campaign's price and the cache's render are
-    # one rendering of one draw (principle 8).
+    # refit metric is a function of the Hessian AND the plane, because Tessera
+    # keys the refit objective by plane (the exact quadratic on a CHANNEL row
+    # scale, a diagonal power on the LUT plane's coupled blocks) and the two
+    # measured answers disagree. The plane is a property of the family, not of
+    # the rung, so the memo is keyed by (unit, plane) and the bound is one
+    # factorisation per unit per family-plane. The source is built from the
+    # same functions the production render calls (``tessera_hessian``), so the
+    # campaign's price and the cache's render are one rendering of one draw
+    # (principle 8).
     calibration_source = None
     if want_h:
         calibration_source = th.activation_source(hessians, hessian_identity)
 
     @functools.lru_cache(maxsize=None)
-    def _activation_kwargs_for(name: str) -> dict:
+    def _activation_kwargs_for(name: str, scale_plane) -> dict:
         return th.encoder_kwargs(
             calibration_source, name,
-            int(weights[name].shape[1]), device)
+            int(weights[name].shape[1]), device, scale_plane=scale_plane)
 
     cache = ProductionWeightCache(
         weights={}, levers={"tessera_campaign": True},
