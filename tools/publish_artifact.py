@@ -52,6 +52,7 @@ from prismaquant.shipcard import (  # noqa: E402
     load_shipcard,
     required_slots,
     unfilled_slots,
+    uniform_control_summary,
     verify,
     write_shipcard,
 )
@@ -210,6 +211,30 @@ def _shipcard_structure_problems(
                 "shipcard omits required slot key(s): " + ", ".join(missing)
             )
     return problems
+
+
+def _print_bpp_claim_with_control(
+    card: Mapping[str, Any],
+    artifact_dir: Path,
+) -> dict[str, Any]:
+    """Print the published bpp beside the verdict that qualifies it.
+
+    Principle 12: a bpp is a claim that those bytes were spent well, and on a
+    rate-axis artifact the byte-matched uniform control is the only thing that
+    tests it.  So the two are printed together at the publication point, and
+    ``not applicable`` is printed rather than omitted -- a stated scope is not
+    silence.  The refusal itself is `verify`'s; this is the line the person
+    publishing reads.
+    """
+    achieved = ((card.get("build") or {}).get("achieved_bpp") or {})
+    print(
+        f"[publish] bpp claim: {achieved.get('value')} "
+        f"({achieved.get('source')})"
+    )
+    summary = uniform_control_summary(card, model_dir=artifact_dir)
+    flag = "  [OVERRIDDEN]" if summary.get("overridden") else ""
+    print(f"[publish] uniform control: {summary.get('detail')}{flag}")
+    return summary
 
 
 def _confirm_forced(artifact_dir: Path, confirm_name: str | None) -> bool:
@@ -1174,6 +1199,8 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 2
+
+    _print_bpp_claim_with_control(card, artifact_dir)
 
     forced_override_confirmed = False
     if problems:

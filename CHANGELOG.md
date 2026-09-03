@@ -13,6 +13,14 @@
 
 ### Added
 
+- **The shipcard carries the byte-matched uniform control's verdict, and
+  refuses a loss** (#121; `shipcard.py`, `shipcard_cli.py fill-control /
+  override-control`, `tools/publish_artifact.py`). A rate-axis artifact must
+  show its allocation beat spending the same bytes uniformly on the gold lane;
+  a loss refuses at `verify` and at publish unless overridden with the
+  re-typed-basename ceremony, which stamps the forgiven ratio onto the card.
+  The override binds to the card, not the directory name.
+
 - **Grouped-BMM Fisher: DSv4's `attn.wo_a` is now an allocator decision**
   (`sensitivity_probe.py`, `incremental_probe.py`, `measure_quant_cost.py`,
   `model_profiles/*`). The grouped operand — 33.5M params × 43 layers, 17.9%
