@@ -24,8 +24,8 @@ therefore explicit, named, and loud:
 * ``PRISMAQUANT_TESSERA_DEV_PIN=<anything non-empty>`` opts in.  The value is
   recorded verbatim in provenance as what the operator asked for; it is not
   the gate.
-* the installed contract's **answer** -- every value a gate reads, in the
-  vocabulary of :func:`contract_answer` -- must equal
+* the installed contract's **answer** -- every value the ADMISSION gate
+  reads, in the vocabulary of :func:`contract_answer` -- must equal
   :data:`TESSERA_DEV_PIN_ANSWER` or the read raises, with a field-level diff
   naming what moved.
 * unset is production: no Tessera contract is read at all, and every rung
@@ -125,8 +125,8 @@ TESSERA_DEV_PIN_CONTRACT_SHA256 = (
     "bedb74655ae21a9b6e8f7547271954843ae81388f540dd1146bef5233b462920"
 )
 
-#: The ANSWER this pin was reviewed against -- every value a gate reads, in
-#: the vocabulary of :func:`contract_answer`.  This literal, not the file's
+#: The ANSWER this pin was reviewed against -- every value the ADMISSION
+#: gate reads, in the vocabulary of :func:`contract_answer`.  This literal, not the file's
 #: bytes, is what refuses: a Tessera commit that rewrites prose, reorders keys
 #: or bumps ``contract_version`` publishes the same answer and does not
 #: re-stale the pin, while any move in a family, a rate range, an attested
@@ -303,15 +303,29 @@ class TesseraContract:
             "note": (
                 "development override: no Tessera RELEASE tag exists, so this "
                 "allocation's Tessera routes were admitted by the packaged "
-                "contract, whose ANSWER (every value a gate reads) equals the "
-                "one reviewed at the named commit. The bytes need not be the "
+                "contract, whose ANSWER (every value the admission gate "
+                "reads) equals the one reviewed at the named commit. Its "
+                "scope is admission: the export lane's structures/platforms/"
+                "regimes are the RELEASE pin's. The bytes need not be the "
                 "reviewed bytes; bytes_are_the_reviewed_bytes says which"
             ),
         }
 
 
 def contract_answer(contract: "TesseraContract") -> dict:
-    """Exactly the values a gate reads, canonicalised, and nothing else.
+    """Exactly the values the ADMISSION gate reads, canonicalised, and no more.
+
+    Read the first word.  The scope is admission -- which ``(family, rate)``
+    the allocator may put on the menu and under which route status -- because
+    that is what this pin gates.  It is deliberately NOT every value any
+    PrismaQuant gate reads out of this file: ``lane_eligibility.structures``,
+    ``platforms`` and ``regimes`` are read by the EXPORT lane's own reader
+    (``tessera_export_lane.require_declared_structure`` through
+    ``lane_eligibility.load_eligibility_table``), which is gated by the
+    RELEASE pin -- an exact commit and sha, fail-closed today on PENDING
+    sentinels.  Pulling them in here would make an export-lane edit re-stale
+    the allocator's menu, which is issue #38's own failure mode wearing a
+    different hat.  Each pin covers the values its own gate reads.
 
     Principle 14's line, made mechanical.  ``detail``, ``rationale``, the
     changelog and every other prose field explains; none of them is a value a

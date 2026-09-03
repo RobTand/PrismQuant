@@ -4237,9 +4237,9 @@ schema `tessera.runtime-contract.v1`), read by `tessera_runtime_contract.py`. No
 Tessera RELEASE tag has been cut, so production admission stays fail-closed; the
 development override `PRISMAQUANT_TESSERA_DEV_PIN` opts in (any non-empty
 value, recorded verbatim in provenance), and the installed contract's **answer**
-— every value a gate reads, canonicalised by `contract_answer()` — must equal
-`TESSERA_DEV_PIN_ANSWER` or the read raises with a field-level diff naming what
-moved. It never degrades to `unattested`, because a stale pin that silently
+— every value the *admission* gate reads, canonicalised by `contract_answer()`
+— must equal `TESSERA_DEV_PIN_ANSWER` or the read raises with a field-level
+diff naming what moved. It never degrades to `unattested`, because a stale pin that silently
 empties the menu is exactly what the pin exists to prevent.
 
 **The pin gates on the answer, not on identity** (issue #38, fixed 2026-09-02).
@@ -4265,6 +4265,16 @@ accepted. Provenance carries both, plus the bytes *this* run read and a
 `bytes_are_the_reviewed_bytes` flag, so prose-only drift is visible without
 being fatal. This is deliberately weaker than a release pin and says so; a
 Tessera RELEASE tag is what retires the override.
+
+**Its scope is admission, and the split is deliberate.** `contract_answer()`
+covers what the *allocator menu* is made of. The export lane reads three other
+values out of the same file — `lane_eligibility.structures`, `platforms` and
+`regimes`, through `lane_eligibility.load_eligibility_table` in
+`tessera_export_lane.require_declared_structure` — and those are the RELEASE
+pin's to gate: an exact commit and sha, fail-closed today on `PENDING`
+sentinels. Folding them into the dev pin would make an export-lane edit
+re-stale the allocator's menu, which is #38's own failure mode wearing a
+different hat. Each pin covers the values its own gate reads.
 
 Under that pin the attested menu is **three rungs, not a range**:
 
