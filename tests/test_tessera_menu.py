@@ -377,6 +377,68 @@ def test_a_prose_only_tessera_edit_does_not_re_stale_the_pin(dev_pin, monkeypatc
         "provenance must say the bytes drifted even though the answer did not")
 
 
+def test_a_new_top_level_block_is_not_a_re_review(dev_pin, monkeypatch, tmp_path):
+    """The exact mechanism #38 was re-filed on: an additive block nobody reads.
+
+    Contract v6 added ``fused_module`` and v7 added ``native_extensions``.
+    Neither carries a value ``contract_answer`` reads, so neither is a thing
+    to re-review -- and a pin that fired on them would put PrismaQuant's
+    attested path back where #38 found it, off, in a repository nobody was
+    editing.
+
+    This is written as the *rule*, not as today's roster: the block injected
+    here is invented, so the test keeps holding for v8 and v9 and does not
+    quietly become an assertion that the contract is at v7.  Both directions
+    are pinned on the same mutation, which is the point -- the additive block
+    alone loads, and the additive block plus one moved gate value refuses and
+    names the moved field.  Without the second half the first would also pass
+    against a gate that had stopped comparing anything at all.
+    """
+    import json as _json
+
+    base = _json.loads(trc.contract_path().read_text(encoding="utf-8"))
+    reviewed = trc.contract_answer(trc.load_tessera_contract())
+
+    def _written(payload):
+        moved = tmp_path / f"runtime_contract_{len(list(tmp_path.iterdir()))}.json"
+        moved.write_text(_json.dumps(payload, indent=1), encoding="utf-8")
+        monkeypatch.setattr(trc, "contract_path", lambda: moved)
+        return moved
+
+    # A future contract version publishes a block this reader has never heard
+    # of, exactly as v6 and v7 did.
+    additive = _json.loads(_json.dumps(base))
+    additive["contract_version"] = int(base["contract_version"]) + 1
+    additive["a_block_this_reader_has_never_heard_of"] = {
+        "schema": "tessera.some-future-table.v1",
+        "rows": [{"id": "invented", "value": 17}],
+        "detail": "prose no gate reads",
+    }
+    additive.setdefault("changelog", []).append(
+        {"contract_version": additive["contract_version"],
+         "change": "additive: a block this reader has never heard of"})
+    moved = _written(additive)
+    assert (hashlib.sha256(moved.read_bytes()).hexdigest()
+            != trc.TESSERA_DEV_PIN_CONTRACT_SHA256), "the bytes must differ"
+
+    contract = trc.load_tessera_contract()
+    assert trc.contract_answer(contract) == reviewed, (
+        "a block no gate reads cannot move the answer")
+    assert contract.identity()["bytes_are_the_reviewed_bytes"] is False, (
+        "provenance must still say which bytes this run read")
+
+    # Same additive block, and one value a gate DOES read moved with it.  The
+    # gate must fire, or the pass above proved nothing.
+    also_moved = _json.loads(_json.dumps(additive))
+    for entry in also_moved["formats"]:
+        if entry["family"] == "TESSERA_E2M1_K2":
+            entry["reader_rate_range_q256"] = [256, 896]
+    _written(also_moved)
+    with pytest.raises(trc.TesseraContractError) as exc:
+        trc.load_tessera_contract()
+    assert "families[TESSERA_E2M1_K2].reader_rate_range_q256" in str(exc.value)
+
+
 def test_a_moved_answer_refuses_and_names_the_field(dev_pin, monkeypatch, tmp_path):
     """The other half: a value a gate reads moves, and the read raises.
 
