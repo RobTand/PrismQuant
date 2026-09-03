@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
+from functools import lru_cache
 
 import pytest
 
@@ -35,6 +36,13 @@ from prismaquant.shipcard import (
     write_shipcard,
 )
 from prismaquant.shipcard_cli import main as shipcard_cli
+from prismaquant.validate_quantized_model import (
+    DEFAULT_MAX_MEAN_NLL,
+    DEFAULT_MAX_P99_NLL,
+    DEFAULT_MAX_PPL,
+    DEFAULT_MIN_GEN_LEN,
+    DEFAULT_MIN_MTP_ACCEPT_P0,
+)
 
 
 def _artifact(
@@ -84,6 +92,24 @@ _GOLD_METRICS = {
 
 def _fill_all(path, model_sha, *, spec=False, passed=True):
     for slot in REQUIRED_SLOTS:
+        if slot == "ship_gate":
+            fill_slot(path, slot, _ship_gate_record(
+                model_sha, passed=passed, source=str(path.parent)))
+            continue
+        if slot.startswith("native_export."):
+            # A passing smoke stamps what it ran and what it generated; the
+            # exception path stamps no generation evidence. Both shapes must
+            # replay through `_verify_native_export_record`.
+            arm = slot.split(".")[1]
+            metrics = {"arm": arm, "enforce_eager": arm == "eager"}
+            if passed:
+                metrics.update(
+                    {"generated_chars": 128, "max_new_tokens": 16})
+            fill_slot(path, slot, make_record(
+                slot=slot, tool="validate_native_export.py", passed=passed,
+                model_sha=model_sha, metrics=metrics,
+                detail=f"{arm} smoke", git_commit=_FAKE_COMMIT))
+            continue
         is_gold = slot in GOLD_SLOTS
         fill_slot(path, slot, make_record(
             slot=slot, tool="test", passed=passed, model_sha=model_sha,
@@ -92,6 +118,78 @@ def _fill_all(path, model_sha, *, spec=False, passed=True):
             serve_fingerprint=(_FAKE_FINGERPRINT if is_gold else None),
             git_commit=(_FAKE_COMMIT if is_gold else None),
         ))
+
+
+_REFUSED_URL = "http://127.0.0.1:1"
+
+
+@lru_cache(maxsize=1)
+def _producer_check_names() -> frozenset:
+    """The ship-gate ledger's key set, derived from the producer that owns it.
+
+    Each check constructor names its own CheckResult without needing a live
+    server: against a refused localhost port every probe fails fast and
+    returns its (failing) verdict, whose name is what `run_validation` files
+    under. A fifth check added to the producer appears here on its own; a
+    roster restated from today's four names would not.
+    """
+    from prismaquant import validate_quantized_model as vqm
+
+    return frozenset({
+        vqm.check_serve_ready(_REFUSED_URL).name,
+        vqm.check_generation_sanity(
+            _REFUSED_URL, "probe", DEFAULT_MIN_GEN_LEN).name,
+        vqm.check_perplexity(
+            _REFUSED_URL, "probe",
+            DEFAULT_MAX_PPL, DEFAULT_MAX_P99_NLL, DEFAULT_MAX_MEAN_NLL).name,
+        vqm.check_mtp_acceptance(_REFUSED_URL, DEFAULT_MIN_MTP_ACCEPT_P0).name,
+    })
+
+
+def _ship_gate_record(model_sha, *, passed=True, source="artifact",
+                      spec_decode_detected=False, detail=None):
+    """A ship_gate record shaped like a real validator verdict.
+
+    Thresholds are derived from the producer's own DEFAULT_* constants, not
+    restated: if the catastrophic bounds move, this fixture moves with them
+    and only the verifier's independent replay may refuse. Likewise the
+    ledger's key set comes from `_producer_check_names`, so a check the
+    producer adds is required here without anyone retyping a roster.
+    """
+    ledger = {name: {"passed": True} for name in _producer_check_names()}
+    ledger["perplexity"] = {
+        "passed": True,
+        # Well clear of the catastrophic bounds (not near any limit).
+        "perplexity": 8.33,
+        "mean_nll_per_tok": 2.12,
+        "max_nll_per_tok": 4.50,
+        "n_tokens": 8192,
+        "spec_decode_detected": False,
+    }
+    if detail is None:
+        detail = ("serve_ready=pass; generation_sanity=pass; "
+                  "perplexity=pass; mtp_acceptance=pass")
+    return make_record(
+        slot="ship_gate", tool="validate_quantized_model.py", passed=passed,
+        model_sha=model_sha, metrics=ledger,
+        detail=detail,
+        spec_decode_detected=spec_decode_detected,
+        git_commit=_FAKE_COMMIT,
+        extra={
+            "base_url": "http://127.0.0.1:8000",
+            "served_model_name": "probe-artifact",
+            "thresholds": {
+                "max_ppl": DEFAULT_MAX_PPL,
+                "max_mean_nll": DEFAULT_MAX_MEAN_NLL,
+                "max_p99_nll": DEFAULT_MAX_P99_NLL,
+                "min_gen_len": DEFAULT_MIN_GEN_LEN,
+                "min_mtp_accept_p0": DEFAULT_MIN_MTP_ACCEPT_P0,
+                "bos_token": None,
+                "add_special_tokens": True,
+            },
+            "model_sha_source": source,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -285,16 +383,36 @@ def test_shipcard_fixed_reservation_survives_every_slot_fill(tmp_path):
     model_sha = compute_model_sha(model_dir)
     for slot in REQUIRED_SLOTS:
         is_gold = slot in GOLD_SLOTS
-        fill_slot(path, slot, make_record(
-            slot=slot,
-            tool="fixed-size-test",
-            passed=True,
-            model_sha=model_sha,
-            metrics={"detail": "x" * 4096, **_GOLD_METRICS.get(slot, {})},
-            spec_decode_detected=False if is_gold else None,
-            serve_fingerprint=(_FAKE_FINGERPRINT if is_gold else None),
-            git_commit=(_FAKE_COMMIT if is_gold else None),
-        ))
+        if slot == "ship_gate":
+            # The ledger's key set is contractual: padding rides in `detail`,
+            # never as an extra metrics key.
+            record = _ship_gate_record(
+                model_sha, source=str(model_dir), detail="x" * 4096)
+        elif slot.startswith("native_export."):
+            arm = slot.split(".")[1]
+            record = make_record(
+                slot=slot,
+                tool="validate_native_export.py",
+                passed=True,
+                model_sha=model_sha,
+                metrics={"arm": arm, "generated_chars": 128,
+                         "enforce_eager": arm == "eager",
+                         "max_new_tokens": 16},
+                detail="x" * 4096,
+                git_commit=_FAKE_COMMIT,
+            )
+        else:
+            record = make_record(
+                slot=slot,
+                tool="fixed-size-test",
+                passed=True,
+                model_sha=model_sha,
+                metrics={"detail": "x" * 4096, **_GOLD_METRICS.get(slot, {})},
+                spec_decode_detected=False if is_gold else None,
+                serve_fingerprint=(_FAKE_FINGERPRINT if is_gold else None),
+                git_commit=(_FAKE_COMMIT if is_gold else None),
+            )
+        fill_slot(path, slot, record)
         assert path.stat().st_size == SHIPCARD_RESERVED_BYTES
 
     assert verify(load_shipcard(path), model_dir=model_dir) == []
@@ -360,12 +478,81 @@ def test_failed_record_is_refused(tmp_path):
     model_dir = _artifact(tmp_path)
     path = _open_card(tmp_path, model_dir)
     _fill_all(path, compute_model_sha(model_dir))
-    fill_slot(path, "ship_gate", make_record(
-        slot="ship_gate", tool="test", passed=False,
-        model_sha=compute_model_sha(model_dir), detail="p99 NLL 9.4 > 6.0"))
+    fill_slot(path, "ship_gate", _ship_gate_record(
+        compute_model_sha(model_dir), passed=False,
+        source=str(model_dir), detail="p99 NLL 9.4 > 6.0"))
 
     problems = verify(load_shipcard(path), model_dir=model_dir)
     assert problems == ["ship_gate: FAILED — p99 NLL 9.4 > 6.0"]
+
+
+# ---------------------------------------------------------------------------
+# ship_gate replay (#156): the receipt's threshold contract, check ledger,
+# token evidence and endpoint binding are replayed by `verify`, not filed.
+# Each test below fails while the replay is unwired (the mutated record
+# verifies clean) and passes once it is.
+# ---------------------------------------------------------------------------
+def test_ship_gate_lowered_threshold_is_refused(tmp_path):
+    model_dir = _artifact(tmp_path)
+    path = _open_card(tmp_path, model_dir)
+    sha = compute_model_sha(model_dir)
+    _fill_all(path, sha)
+    rec = _ship_gate_record(sha, source=str(model_dir))
+    rec["thresholds"] = {
+        **rec["thresholds"], "max_ppl": DEFAULT_MAX_PPL * 4}
+    fill_slot(path, "ship_gate", rec)
+
+    problems = verify(load_shipcard(path), model_dir=model_dir)
+    assert any("threshold max_ppl" in p for p in problems)
+
+
+@pytest.mark.parametrize("field", [
+    "base_url", "served_model_name", "model_sha_source"])
+def test_ship_gate_missing_endpoint_binding_is_refused(tmp_path, field):
+    model_dir = _artifact(tmp_path)
+    path = _open_card(tmp_path, model_dir)
+    sha = compute_model_sha(model_dir)
+    _fill_all(path, sha)
+    rec = _ship_gate_record(sha, source=str(model_dir))
+    rec[field] = ""
+    fill_slot(path, "ship_gate", rec)
+
+    problems = verify(load_shipcard(path), model_dir=model_dir)
+    assert any(field in p for p in problems)
+
+
+def test_ship_gate_incomplete_ledger_is_refused(tmp_path):
+    model_dir = _artifact(tmp_path)
+    path = _open_card(tmp_path, model_dir)
+    sha = compute_model_sha(model_dir)
+    _fill_all(path, sha)
+    rec = _ship_gate_record(sha, source=str(model_dir))
+    # Even the most-evidenced single check is not the ledger: keep only the
+    # perplexity entry (named in the producer's own vocabulary) and drop the
+    # rest of the derived key set.
+    rec["metrics"] = {"perplexity": rec["metrics"]["perplexity"]}
+    assert set(rec["metrics"]) != set(_producer_check_names())
+    fill_slot(path, "ship_gate", rec)
+
+    problems = verify(load_shipcard(path), model_dir=model_dir)
+    assert any("ledger is incomplete" in p for p in problems)
+
+
+def test_ship_gate_unscored_perplexity_is_refused(tmp_path):
+    model_dir = _artifact(tmp_path)
+    path = _open_card(tmp_path, model_dir)
+    sha = compute_model_sha(model_dir)
+    _fill_all(path, sha)
+    rec = _ship_gate_record(sha, source=str(model_dir))
+    # The producer backfills a missing token count with 0
+    # (validate_quantized_model.py); the replay must read that 0 as "no
+    # evidence", not as a number.
+    rec["metrics"]["perplexity"] = {
+        **rec["metrics"]["perplexity"], "n_tokens": 0}
+    fill_slot(path, "ship_gate", rec)
+
+    problems = verify(load_shipcard(path), model_dir=model_dir)
+    assert any("scored no tokens" in p for p in problems)
 
 
 @pytest.mark.parametrize("spec, expected", [
@@ -1107,5 +1294,166 @@ def test_cross_check_undershoot_is_also_coverage_gated(tmp_path):
     assert cross["claim_is_below_floor"] is True
     assert "below" in cross["detail"]
     assert verify({"build": {"achieved_bpp": got}}, model_dir=None, required=[]) == []
+
+
+# ---------------------------------------------------------------------------
+# native_export arm replay (issue #157)
+# ---------------------------------------------------------------------------
+def _native_record(slot, model_sha, metrics, *, passed=True):
+    return make_record(
+        slot=slot, tool="validate_native_export.py", passed=passed,
+        model_sha=model_sha, metrics=metrics,
+        detail=f"{slot} smoke", git_commit=_FAKE_COMMIT)
+
+
+def test_native_export_refuses_a_mislabeled_arm(tmp_path):
+    """An eager receipt must not close the graph slot (or vice versa).
+
+    `validate_native_export._record_arm` stamps `metrics.arm` from the arm it
+    actually ran, but `verify` compared only the slot key against
+    `record["slot"]` — never `metrics.arm` against the slot suffix — so a
+    mislabeled receipt verified clean.
+    """
+    model_dir = _artifact(tmp_path)
+    path = _open_card(tmp_path, model_dir)
+    sha = compute_model_sha(model_dir)
+    _fill_all(path, sha)
+    fill_slot(path, "native_export.graph", _native_record(
+        "native_export.graph", sha,
+        {"arm": "eager", "generated_chars": 128, "enforce_eager": True,
+         "max_new_tokens": 16}))
+
+    problems = verify(load_shipcard(path), model_dir=model_dir)
+    assert any(
+        p.startswith("native_export.graph:") and "metrics.arm" in p
+        for p in problems
+    ), problems
+
+
+def test_native_export_refuses_a_pass_with_no_generation(tmp_path):
+    """`passed=true` with `generated_chars=0` is not a smoke result.
+
+    The eager/graph smoke's whole evidence is one greedy decode; a pass that
+    generated nothing verified clean because `verify` never read the metrics.
+    """
+    model_dir = _artifact(tmp_path)
+    path = _open_card(tmp_path, model_dir)
+    sha = compute_model_sha(model_dir)
+    _fill_all(path, sha)
+    fill_slot(path, "native_export.eager", _native_record(
+        "native_export.eager", sha,
+        {"arm": "eager", "generated_chars": 0, "enforce_eager": True,
+         "max_new_tokens": 16}))
+
+    problems = verify(load_shipcard(path), model_dir=model_dir)
+    assert any(
+        p.startswith("native_export.eager:") and "generated_chars" in p
+        for p in problems
+    ), problems
+
+
+def test_native_export_refuses_an_arm_running_under_the_wrong_residency(tmp_path):
+    """`enforce_eager` must agree with the arm the slot names.
+
+    On the Tessera lane the two residencies are different numeric objects
+    exercised by separate gates; an eager-engine receipt sitting in the graph
+    slot (or vice versa) is a mislabeled receipt, not a result.
+    """
+    model_dir = _artifact(tmp_path)
+    path = _open_card(tmp_path, model_dir)
+    sha = compute_model_sha(model_dir)
+    _fill_all(path, sha)
+    fill_slot(path, "native_export.graph", _native_record(
+        "native_export.graph", sha,
+        {"arm": "graph", "generated_chars": 128, "enforce_eager": True,
+         "max_new_tokens": 16}))
+
+    problems = verify(load_shipcard(path), model_dir=model_dir)
+    assert any(
+        p.startswith("native_export.graph:") and "enforce_eager" in p
+        for p in problems
+    ), problems
+
+
+# ---------------------------------------------------------------------------
+# build forensic replay (issue #158)
+# ---------------------------------------------------------------------------
+def _forensic_build(**overrides):
+    """A build block shaped like the exporter's `_write_shipcard` output."""
+    build = {
+        "git": {"commit": _FAKE_COMMIT, "dirty": False},
+        "source_model": "/models/Qwen3-4B",
+        "layer_config": "/recipes/layer_config.json",
+        "layer_config_sha": "b" * 64,
+        "assignment_hash": "c" * 16,
+        "config_assignment_hash": "d" * 16,
+        "n_assignment_entries": 208,
+        "achieved_bpp": {"value": 4.75},
+        "read_gb_per_token": {"value": 3.127, "source": "measured"},
+        "format_histogram": {"NVFP4/packed": 208},
+        "render_levers": {"PRISMAQUANT_DO_NO_HARM": "1"},
+        "kv_shared_fisher": kv_shared_fisher_echo({}),
+    }
+    build.update(overrides)
+    return {"build": build}
+
+
+def test_build_refuses_an_unvalidated_kv_fisher_correction():
+    """An allocation that rode an under-counted h_trace must not verify.
+
+    The exporter echoes the KV-cotangent / shared-Fisher flag state onto the
+    card (D24), but `verify` never read it, so a card carrying
+    `unvalidated_kv_fisher_correction=true` verified clean. The echo is
+    derived from the function that owns it, not restated.
+    """
+    card = _forensic_build(kv_shared_fisher=kv_shared_fisher_echo(
+        {"PRISMAQUANT_ALLOW_KV_SHARED_FISHER": "1"}))
+    assert card["build"]["kv_shared_fisher"][
+        "unvalidated_kv_fisher_correction"] is True
+
+    problems = verify(card, model_dir=None, required=[])
+    assert any("unvalidated_kv_fisher_correction" in p for p in problems), (
+        problems)
+
+    clean = _forensic_build()
+    assert clean["build"]["kv_shared_fisher"][
+        "unvalidated_kv_fisher_correction"] is False
+    assert verify(clean, model_dir=None, required=[]) == []
+
+
+def test_build_refuses_fabricated_forensic_hashes():
+    """The stamped hashes must look like what the producer can stamp.
+
+    `file_sha256` emits 64 hex chars or None; the assignment digests are 16
+    hex chars or None. A card claiming any other string for them verified
+    clean because nothing read the keys.
+    """
+    card = _forensic_build(layer_config_sha="whatever-the-recipe-was")
+    problems = verify(card, model_dir=None, required=[])
+    assert any("layer_config_sha" in p for p in problems), problems
+
+    card = _forensic_build(assignment_hash="definitely-16-chars!!")
+    problems = verify(card, model_dir=None, required=[])
+    assert any("assignment_hash" in p for p in problems), problems
+
+
+def test_build_refuses_a_malformed_format_histogram():
+    """The histogram is a Counter rendering: string keys, positive counts."""
+    card = _forensic_build(format_histogram={"NVFP4/packed": 0})
+    problems = verify(card, model_dir=None, required=[])
+    assert any("format_histogram" in p for p in problems), problems
+
+
+def test_build_without_forensics_is_left_alone():
+    """A card written before a forensic key existed carries no verdict.
+
+    The replay fires only on keys the producer stamps — the same tolerance
+    the `achieved_bpp` cross-check practices — so historical cards keep
+    verifying.
+    """
+    assert verify({"build": {}}, model_dir=None, required=[]) == []
+    legacy = {"build": {"achieved_bpp": {"value": 4.3065, "source": "x"}}}
+    assert verify(legacy, model_dir=None, required=[]) == []
+    assert verify(_forensic_build(), model_dir=None, required=[]) == []
 
 
