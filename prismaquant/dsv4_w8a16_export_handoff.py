@@ -584,6 +584,38 @@ _PUBLISHED_FILES = frozenset({
 #   The other 14 files in the closure are unchanged by #99: the gate names
 #   exactly `model_profiles/base.py` and nothing else, and the 24 remaining
 #   tests in `tests/test_dsv4_w8a16_export_handoff.py` pass unchanged.
+# RE-FROZEN 2026-09-02 (the exact grouped Fisher for `wo_a`, #103), reviewed
+# against THIS handoff rather than re-hashed. Three files drift; each is
+# verified, and none is readable from this lane:
+#   specs/deepseek_v4.json -- DATA ONLY. `DeepseekV4GroupedLinear` moves from
+#     `probe.skip_module_class_names` (now `[]`) to the new
+#     `probe.grouped_module_class_names`. Verified by diff: no other key in
+#     the file moves.
+#   model_profiles/deepseek_v4.py -- DOCSTRING ONLY. `walk_claim_rules()`
+#     re-describes `wo_a` as decided rather than pinned. Verified by
+#     whole-module AST comparison with docstrings elided: IDENTICAL (18
+#     definitions -> 18, zero added, zero removed, zero bodies changed).
+#   model_profiles/base.py -- ONE new method,
+#     `ModelProfile.probe_grouped_module_class_names()`, which returns the
+#     spec tuple and nothing else. Verified by per-definition AST comparison
+#     with docstrings elided: 79 definitions -> 80, exactly ONE added, ZERO
+#     removed, ZERO existing bodies changed.
+#   Why this lane cannot observe any of the three: the two changed
+#   declarations are read at exactly four sites --
+#   `model_profiles/structure.py` (spec parsing), `base.py` itself,
+#   `sensitivity_probe.py` (the probe), and `model_walk.py` (the walker). A
+#   grep over the whole closure finds NO exporter, completeness,
+#   decode-source, footprint, output-safety or namespace consumer of either
+#   `probe_skip_module_class_names` or `probe_grouped_module_class_names`.
+#   Corroborated behaviourally: with only the digests stale, the other four
+#   tests in `tests/test_dsv4_w8a16_export_handoff.py` pass unchanged, so the
+#   lane's emitted receipt and physical targets are unmoved.
+#   NOTE FOR THE NEXT EXPORT (not a gate, a debt): `wo_a` is now an allocator
+#   decision rather than an inherited source-precision pin, so the 92 GB
+#   budget split (87.403 body + 4.597 draft) must be RE-CHECKED on the next
+#   DSv4 export rather than inherited. The DSpark sidecar contract still keeps
+#   all three `wo_a` bases on source-FP8 W8A16 and CB export still refuses
+#   grouped operands, so no shipped artifact changes today.
 _FROZEN_EXPORT_SOURCE_SHA256 = {
     "prismaquant/export_nvfp4_cb_streaming.py": (
         "dfffc634a7275e76a4c4b3bd0299e8b0775673dca23f6f5c56ca31f8b748b8a5"
@@ -601,16 +633,16 @@ _FROZEN_EXPORT_SOURCE_SHA256 = {
         "fb20303ed1b017a5a7f3a035d5ef43880822d775e252c28a08f32a67f8104c95"
     ),
     "prismaquant/model_profiles/base.py": (
-        "7cff3a4af253777d831094838a35ec56b9cd5e4c1022654431449163be8a848e"
+        "0f7ff9245a03e5b937223f3143efd2aafccbd5d797561c32cbeb8821c0fc3b64"
     ),
     "prismaquant/model_profiles/registry.py": (
         "5da03be05dafd7e804be9588854bfeabed2aec29b76ea2f6c6cbef2c6067188d"
     ),
     "prismaquant/model_profiles/deepseek_v4.py": (
-        "6368f5657fbfb3b77a886e9bc0c589885d9240c49fdb77635d4bf2a74164b6f6"
+        "06cf8a5ed7bc0a11cca415147110465ffa9030e65fa5cb6fa65cfe28085d562f"
     ),
     "prismaquant/model_profiles/specs/deepseek_v4.json": (
-        "b8f3b22c16484a6859494d96ff052e5c5229c9a7c3afb7ae829e9cf5e26ecbf4"
+        "cbfaeb815f3b51d23a29d943a0bb57deff87ed1ae4f61ce560f74feee5b13a7b"
     ),
     "prismaquant/cb_source_decode.py": (
         "d9a06483d008bf2361b0522bc258ab291db870d1c2432f9d4cd8d7a8cbacefbe"
