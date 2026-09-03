@@ -467,6 +467,12 @@ def wire_overhead_q256(
         # output channel and a tuple code covers ``arity`` of them.
         total += Fraction(16 * Q256_UNIT, columns)
     if body is BodyKind.WINDOW:
+        # Existence first: a WINDOW rung is realisable over these columns or
+        # it is not a rung here, and Tessera's accountant asks the same
+        # question before it prices (``terminal_rate`` -> ``bresenham_rate_
+        # schedule``).  The rates themselves price nothing on this body.
+        if rung is not None:
+            _schedule_rates(spec, int(rung), columns, wire)
         # The ALPHABET plane *is* the table: ``2^L`` grid codes of
         # ``code_bytes`` each, inline in the unit
         # (``tessera.calculator.terminal_rate``, ``code_bytes=``).
@@ -494,6 +500,35 @@ def wire_overhead_q256(
 
 
 @lru_cache(maxsize=8192)
+def _schedule_rates(
+    spec: "TesseraFamily", rung: int, columns: int, wire,
+) -> tuple[int, ...]:
+    """The per-column rates realising ``rung`` over ``columns`` -- or a refusal.
+
+    One walk, for every body.  ``bresenham_rate_schedule`` decides which
+    ``(rung, columns)`` pairs EXIST -- 257/256 over 320 columns needs 5/4
+    columns at rate 2 and is nobody's rung -- and ``tessera.calculator.
+    terminal_rate`` makes the same call before it prices anything, WINDOW or
+    TCQ.  Until 2026-09-03 only the TCQ branch walked it (to size the forest),
+    so a WINDOW rung the encoder refuses at this width was priced, offered to
+    the DP, and could be selected: the allocator building what it cannot
+    build.  The refusal arrives as ``tessera.errors.GrammarError``, which is
+    not a ``ValueError``; it is re-raised in this module's own type exactly as
+    ``TesseraFamily.__post_init__`` does with ``tuple_grid``'s refusal, so
+    every caller that guards with ``except TesseraFormatError`` --
+    ``menu_families``, ``enumerate_grid_space``, ``expand_tessera_menu`` --
+    sees one refusal type.
+    """
+    try:
+        return tuple(spec.column_schedule(rung, columns, recipe=wire))
+    except GrammarError as exc:
+        raise TesseraFormatError(
+            f"{spec.name}: rung {rung} is not realisable over {columns} "
+            f"columns -- {exc}"
+        ) from exc
+
+
+@lru_cache(maxsize=8192)
 def _forest_bytes(spec: "TesseraFamily", rung: int, columns: int, wire) -> int:
     """ALPHABET + DESCENDANT bytes one TCQ unit's forest weighs on the wire.
 
@@ -514,13 +549,7 @@ def _forest_bytes(spec: "TesseraFamily", rung: int, columns: int, wire) -> int:
     ``enumerate_grid_space``, ``expand_tessera_menu`` -- would have seen the
     raw grammar error propagate out of the byte gate instead.
     """
-    try:
-        rates = spec.column_schedule(rung, columns, recipe=wire)
-    except GrammarError as exc:
-        raise TesseraFormatError(
-            f"{spec.name}: rung {rung} is not realisable over {columns} "
-            f"columns, so its forest has no size -- {exc}"
-        ) from exc
+    rates = _schedule_rates(spec, rung, columns, wire)
     return sum(forest_plane_bytes(rates, family_rate_cap(spec, wire)))
 
 

@@ -220,6 +220,27 @@ def test_tp_gate_refuses_a_shard_that_does_not_divide():
     assert reason
 
 
+def test_w_n_le_a_compares_the_body_rate_not_the_bytes_on_disk():
+    """W(n<=A) is a statement about the weight's coding rate.
+
+    A rung at exactly the route's activation width is admitted even though
+    its bytes on disk -- scale plane, forest or window table on top -- exceed
+    that width; a rung one q256 step above is not.  Before this test the
+    comparison used ``bits_per_param`` and the E2M1x2 cap rung fell out of the
+    A4 menu the day the forest was charged (#126): every family's cap rung
+    would leave its own route the same way.
+    """
+    fam = next(f for f in tm.menu_families() if f.name == "TESSERA_E2M1_K1")
+    rungs = tm.expand_tessera_menu(
+        SHAPE, mode=tm.MENU_RESEARCH, families=[fam], max_act_bits=2,
+    )
+    top = max(r.body_rate_q256 for r in rungs)
+    assert top == 512, top                       # 2.0 b/wt, exactly the ceiling
+    at_cap = next(r for r in rungs if r.body_rate_q256 == 512)
+    assert at_cap.bits_per_param > 2, at_cap.bits_per_param   # planes on top, still admitted
+    assert all(r.body_rate_q256 <= 512 for r in rungs)
+
+
 def test_tp_gate_reason_and_provenance_reach_the_candidate_gate():
     """The allocator's own applicability gate consumes the TP verdict."""
     from prismaquant import allocator_candidates as ac

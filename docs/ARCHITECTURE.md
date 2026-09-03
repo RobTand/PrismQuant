@@ -63,6 +63,20 @@ rungs 24-44 B (RobTand/prismaquant#126). The forest is now sized by
 `tessera.grammar.forest_plane_bytes`, which makes every TCQ recipe
 shape-dependent: `recipe_is_shape_free` and `artifact_q256_bounds` are deleted
 rather than made to return a floor nothing may price bytes with.
+Amended (2026-09-03, `claude/pq-126-plane-charges`, at merge): two things the
+forest term exposed. (i) `expand_tessera_menu`'s **W(n<=A)** rule compared
+`bits_per_param` -- planes and forest included -- against the route's
+activation width, so the day the forest was charged the attested E2M1x2 cap
+rung (R896, 3.5 b/wt) left the A4 menu and every family's cap rung would have
+left its own route; the rule is about the weight's coding rate and now
+compares `rung / 256`. (ii) The accountant asked Tessera's grammar whether a
+`(rung, columns)` pair is realisable only on the TCQ body (to size the
+forest); a WINDOW rung the encoder refuses at a width (257/256 over 320
+columns needs 5/4 columns at rate 2) was priced and offered. `_schedule_rates`
+now walks `bresenham_rate_schedule` for every body, refusing in
+`TesseraFormatError`, and the sweep in `tests/test_tessera_forest_bytes.py`
+asserts the two accountants agree on which rungs EXIST as well as what they
+cost, with a bound derived from 256 | 768, 1024 rather than typed.
 
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one

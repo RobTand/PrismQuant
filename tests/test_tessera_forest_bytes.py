@@ -36,6 +36,7 @@ import os
 from fractions import Fraction
 
 import pytest
+from tessera.errors import GrammarError
 import torch
 
 from prismaquant.tessera_footprint import tessera_tensor_payload_breakdown
@@ -295,24 +296,38 @@ def test_every_realisable_rung_of_every_family_prices_what_tessera_prices():
     from prismaquant.tessera_menu import menu_families
 
     checked = 0
+    refused = 0
+    total_rungs = 0
     families = 0
     for spec in menu_families():
         families += 1
         grid = _grid_name(spec)
         lo, hi = spec.mathematical_q256_bounds
+        total_rungs += hi - lo + 1
         for rows, columns in SWEEP_SHAPES:
             for rung in range(lo, hi + 1):
                 try:
                     priced = _priced_bytes(spec.name, rung, (rows, columns))
                 except TesseraFormatError:
-                    continue        # the quota does not close over these columns
+                    # The quota does not close over these columns.  Then
+                    # Tessera must refuse the same pair: the two accountants
+                    # agree about which rungs EXIST, not only what they cost.
+                    with pytest.raises(GrammarError):
+                        unit_wire_bits(grid, rung, rows, columns)
+                    refused += 1
+                    continue
                 assert priced == unit_wire_bits(grid, rung, rows, columns) / 8, (
                     spec.name, rung, (rows, columns)
                 )
                 checked += 1
-    # Not vacuous: four families, and the sweep really walks the whole axis.
-    assert families == 4, families
-    assert checked > 15_000, checked
+    # Not vacuous, and the bound is derived rather than typed: 256 divides
+    # 768 and 1024, so every rung of every family is realisable at those two
+    # widths and the sweep must have priced all of them there; 320 is not a
+    # multiple of 256, so some rungs are refused there and the refusal path
+    # above must have been exercised.
+    assert families >= 4, families
+    assert checked >= 2 * total_rungs, (checked, total_rungs)
+    assert refused > 0, refused
 
 
 @pytest.mark.parametrize("family,grid,rung", (
