@@ -8540,10 +8540,17 @@ fingerprint, with a refusal at each link**:
   widening silently (`source`/`loaded_by` stay identity and travel into
   provenance).
 * `tools/serve_fingerprint.py` is stdlib-only and runs inside the serving container
-  from a bootstrapped five-file snapshot, so it can read neither file at runtime and
-  carries the same rows in `TESSERA_NATIVE_EXTENSIONS`;
+  from a bootstrapped snapshot with no installed package, so it can read neither
+  the contract nor the pin's reader module — but the pin is JSON, so the tool reads
+  the transported `tessera_serving_runtime_pin.json` beside itself (a member of its
+  gold-producer source closure, hence digest-covered) and refuses a missing or
+  malformed one instead of falling back to a constant;
   `tests/test_tessera_serve_fingerprint.py` refuses any disagreement with the pin,
-  **and refuses a predicate that is not the rule the contract names**.
+  **and refuses a predicate that is not the rule the contract names**. The refusal
+  is therefore in the container, not only in the test suite on the tree the
+  snapshot came from: a snapshot of the tool from an older commit, beside a newer
+  Tessera whose extension was renamed, refuses rather than fingerprinting "no lane
+  extension resident".
 
 Two holes this closed. Until 2026-09-03 no Tessera name was matched at all, so a
 serve running Tessera's own native span-2 decode fingerprinted identically to a

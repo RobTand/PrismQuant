@@ -43,7 +43,11 @@ CUDA extensions the Tessera plugin loads: since Tessera contract v7 the
 runtime publishes that itself, in ``native_extensions``, as a
 ``module_name_prefix``/``filename_glob``/``match`` triple.  The pin transcribes
 it because ``tools/serve_fingerprint.py`` runs inside a serving container from
-a five-file bootstrap and can read neither the contract nor this file, and
+a bootstrap with no installed package and can read neither the contract nor
+this reader module -- but the pin is JSON, so the tool reads the transported
+pin file beside itself (a member of its gold-producer source closure, hence
+digest-covered) and refuses a missing or malformed one instead of falling
+back to a constant -- and
 ``tessera_runtime_contract.require_pin_native_extensions_match_contract``
 refuses a transcription that is not the pinned contract's table.  So the chain
 is contract -> pin -> fingerprint with a refusal at each link, instead of a
@@ -222,8 +226,9 @@ class TesseraServingRuntimePin:
     #: The chain is contract -> pin -> tool, with a refusal at each link.
     #: ``tessera_runtime_contract.require_pin_native_extensions_match_contract``
     #: refuses a pin that is not the pinned contract's table;
-    #: ``tools/serve_fingerprint.py`` is stdlib-only and cannot read this file
-    #: from inside a serving container, so it carries the same rows and
+    #: ``tools/serve_fingerprint.py`` is stdlib-only and cannot read this reader
+    #: module from inside a serving container, so it reads the transported pin
+    #: JSON beside itself -- and refuses a missing or malformed one -- while
     #: ``tests/test_tessera_serve_fingerprint.py`` refuses any disagreement.
     serving_native_extensions: tuple[TesseraServingNativeExtension, ...]
 

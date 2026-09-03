@@ -236,17 +236,94 @@ def test_the_tools_rows_are_the_pins_and_not_this_files_opinion():
     """Principle 14's shape, as far as this seam can carry it.
 
     ``serve_fingerprint`` runs inside the serving container from a
-    bootstrapped snapshot of five tool files and no package data, so it can
-    read neither the contract nor the pin at runtime and carries the rows
-    instead. This test is what makes them a transcription rather than a guess
-    about the runtime: a pin edit that is not mirrored here fails, and vice
-    versa.
+    bootstrapped snapshot with no installed package, so it can read neither
+    the contract nor the pin's reader module -- but the pin is JSON, so the
+    tool reads the transported pin file beside itself and refuses a missing
+    or malformed one. This test pins that wiring to the tracked pin: a pin
+    edit propagates into the tool with no mirror edit here, and a tool that
+    stopped reading the pin fails here.
     """
     module = _serve_fingerprint()
     pin = load_tessera_serving_runtime_pin()
     assert (list(module.TESSERA_NATIVE_EXTENSIONS)
             == pin.native_extension_rows())
     assert module.MATCH_BASENAME_FNMATCH == MATCH_BASENAME_FNMATCH
+
+
+def test_the_pin_json_is_bound_into_the_gold_producer_closure():
+    """The container-side copy is refused in the repository, not the container.
+
+    A serving container running a snapshot of ``serve_fingerprint.py`` from an
+    older commit, beside a newer Tessera whose extension has been renamed,
+    fingerprints as "no lane extension resident" and nothing in that container
+    refuses it. Binding the pin JSON into ``gold_producer_identity``'s source
+    closure means the transported snapshot is digest-covered like the tool
+    files, and the tool reads that file rather than a constant.
+    """
+    import subprocess
+
+    import tools.serve_fingerprint as serve_fingerprint
+
+    pin_relative = "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json"
+    assert pin_relative in serve_fingerprint._GOLD_PRODUCER_COMMON_FILES
+    root = Path(__file__).resolve().parents[1]
+    assert (root / pin_relative).is_file()
+    # The transported root is a `git archive` snapshot: only tracked files
+    # travel, so an untracked pin would be absent beside the tool.
+    subprocess.run(
+        ["git", "ls-files", "--error-unmatch", pin_relative],
+        cwd=root, check=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def test_the_tool_loads_its_rows_from_the_pin_file(tmp_path):
+    """A rename in the pin propagates through the tool's own loader.
+
+    A constant cannot propagate a rename; this loader must, because the
+    container-side tool reads the transported pin rather than carrying rows.
+    """
+    import tools.serve_fingerprint as serve_fingerprint
+
+    payload = json.loads(
+        tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    payload["serving_native_extensions"] = [
+        {"module_name_prefix": "tessera_renamed_",
+         "filename_glob": "tessera_renamed_*.so",
+         "match": MATCH_BASENAME_FNMATCH},
+    ]
+    renamed = tmp_path / "tessera_serving_runtime_pin.json"
+    renamed.write_text(json.dumps(payload), encoding="utf-8")
+    assert (list(serve_fingerprint._load_tessera_native_extensions_from_pin(
+        renamed)) == payload["serving_native_extensions"])
+    # And the import-time rows are that same function's output on the tracked
+    # file, which is the pin's table.
+    module = _serve_fingerprint()
+    assert (list(module.TESSERA_NATIVE_EXTENSIONS)
+            == list(serve_fingerprint._load_tessera_native_extensions_from_pin(
+                tessera_serving_runtime_pin_path())))
+    assert (list(module.TESSERA_NATIVE_EXTENSIONS)
+            == load_tessera_serving_runtime_pin().native_extension_rows())
+
+
+def test_the_tool_refuses_an_unreadable_pin_instead_of_a_constant(tmp_path):
+    """A fallback would restore the silent hole with a field to point at."""
+    import tools.serve_fingerprint as serve_fingerprint
+
+    load = serve_fingerprint._load_tessera_native_extensions_from_pin
+    with pytest.raises(ValueError, match="serving pin"):
+        load(tmp_path / "absent.json")
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="serving pin"):
+        load(malformed)
+    empty = tmp_path / "empty.json"
+    payload = json.loads(
+        tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    payload["serving_native_extensions"] = []
+    empty.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="non-empty"):
+        load(empty)
 
 
 def test_the_pin_requires_at_least_one_extension():
