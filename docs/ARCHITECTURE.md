@@ -1,7 +1,20 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `tessera/decouple-gridbook`. Stamps
+As of: 2026-09-03 · `ts-133-fingerprint-native-extensions`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `ts-133-fingerprint-native-extensions`) for the **serve
+fingerprint's Tessera predicate** (§7.4, §9.4; issue #133). The extension
+basenames were a hand-copy of a hand-written pin, and the pin was a
+producer-side claim about Tessera's runtime that nothing here could refuse on
+drift — principle 14 read backwards. Tessera contract v7 publishes
+`native_extensions`, so the pin's rows are now derived from it
+(`native_extension_pin_payload`), refused against it on every contract read
+(`require_serving_pin_matches_contract`), carried in the reviewed dev-pin answer,
+and the tool applies the `basename_fnmatch` rule the table names instead of a
+substring search of its own. The §7.4 mechanisation bullet said no Tessera
+extension was in the pattern while §9.4 and the code said one was; that
+contradiction is corrected here rather than carried.
 
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
@@ -6932,11 +6945,12 @@ evidence either way and should be quoted as a range.
   torch or touches CUDA, so it cannot add a context to a 121 GiB pool), GPU name,
   `enforce_eager`, `--quantization`, `PRISMAQUANT_*` env, and the resident-extension basenames
   read from the **server's** `/proc/<pid>/maps`
-  (`prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|causal_conv1d|fla` — `gridbook`
-  was dropped from the alternation on 2026-09-02 with the lane, and **no Tessera
-  extension has replaced it**, so a Tessera serve fingerprints as "no lane extension
-  resident"; giving `EXTENSION_PATTERN` a Tessera alternative belongs to the
-  admission half, with the pin),
+  (two predicates, joined by `matches_tracked_extension`: the alternation
+  `prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|causal_conv1d|fla` for names this
+  repository owns and runtimes that publish no table — `gridbook` was dropped from it on
+  2026-09-02 with the lane — plus, since 2026-09-03, the Tessera rows matched by the rule
+  **Tessera's own contract names** (`basename_fnmatch` of `filename_glob` against the mapped
+  library's basename), derived from `native_extensions` through the pin: §9.4),
   unioned over the API-server *and* EngineCore processes — it is the engine that holds the
   kernels). Client-side is not an option: the measuring client cannot see the server's address
   space — reading a root-owned container process's maps from the host is *denied*, and the
@@ -8024,20 +8038,49 @@ pin file *and* the reader's two release constants in one reviewed commit —
 neither half admits anything alone. Gates on this lane are ADVISORY like every
 other lane's; the shipcard is what refuses.
 
-**The pin also carries the serve fingerprint's half of §7.4.**
-`serving_extension_basenames` names the CUDA extensions the released plugin loads
-into a serving process (`tessera_nvfp4`, JIT-built as
-`tessera_nvfp4_<build identity>.so`). `tools/serve_fingerprint.py` is stdlib-only
-and runs inside the serving container from a bootstrapped five-file snapshot, so it
-cannot read the pin at runtime and carries the same tuple;
-`tests/test_tessera_serve_fingerprint.py` refuses any disagreement. Until
-2026-09-03 no Tessera name was in `EXTENSION_PATTERN` at all, so a serve running
+**The pin also carries the serve fingerprint's half of §7.4, and it is DERIVED.**
+`serving_native_extensions` carries, per extension, the `module_name_prefix`,
+`filename_glob` and `match` rule Tessera's packaged `runtime_contract.json`
+publishes in `native_extensions` at `contract_version` 7 (RobTand/tessera#28) —
+the span-2 NVFP4 decoder `tessera.serving.ext` JIT-builds as
+`tessera_nvfp4_<build identity>.so`, whose module name always carries a
+source/toolchain/arch hash, so **no exact basename exists to publish**. The chain
+is `runtime_contract.json` → pin → `tools/serve_fingerprint.py`, with a refusal at
+each link: `native_extension_pin_payload` produces the pin's rows from the table
+and `require_serving_pin_matches_contract` refuses a drifted pin on every contract
+read; the three fields are in `contract_answer`, so a Tessera rename refuses the
+dev pin with a field-level diff instead of silently un-matching a serve; and
+`tests/test_tessera_serve_fingerprint.py` refuses the last link, comparing the
+tool's **behaviour** — not only its constant — against the table, because the tool
+is stdlib-only, runs inside the serving container from a bootstrapped five-file
+snapshot, and cannot read either file at runtime.
+
+The predicate is the runtime's too. Until 2026-09-03 the tool matched by a bare
+substring search over the whole mapped path; the contract says `basename_fnmatch`,
+and the two disagree on real paths — a substring matches a *build directory* named
+after the extension, and matches `tessera_nvfp4.so`, a file the plugin never
+builds. `match` is published as a value precisely so a consumer never guesses
+whether the string is a stem, a prefix or a pattern, and a rule the tool does not
+implement raises at import rather than falling back to one of its own. Until
+2026-09-03 no Tessera name was in the predicate at all, so a serve running
 Tessera's own native span-2 decode fingerprinted identically to a stock serve — the
 one lane whose entire point is a custom decoder was the one lane §7.4's
-identical-residency rule could not see. **Known gap, Tessera-side:** the packaged
-`runtime_contract.json` publishes executed activation contracts but not the
-basenames of the extensions the plugin loads, so this one field is mirrored from
-the pin rather than derived from the runtime's own table (RobTand/tessera#28).
+identical-residency rule could not see.
+
+**What the fingerprint still cannot say** (`when_unavailable`, issue #136). The
+table publishes what a serve does when the `.so` cannot build: `resident`
+substitutes `tessera.stock.materialize_stock` and keeps serving, `streamed`
+refuses outright. Native and substituted therefore already fingerprint
+*differently* — the library is in `resident_extensions` for one and not the other,
+and the contract calls the substituted serve a different numeric object, so
+refusing to compare them is correct. What no fingerprint can distinguish is
+"Tessera, substituted" from "not Tessera at all": that is the artifact's identity,
+which `performance_stack_fingerprint` excludes on purpose. Telling them apart is
+route telemetry's job — Tessera stamps `decoder` on every route record — and
+nothing in this repository reads it yet. The tool's rows are also still a
+*constant* inside a serving container — the pin JSON is not part of the bound
+source closure it reads from there, so the last link's refusal is test-time
+(#137), and the fingerprint records no residency mode at all (#138).
 
 ## 10. Hardware & environment
 

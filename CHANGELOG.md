@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Changed
+
+- **The serve fingerprint's Tessera extension rows are derived from Tessera's
+  contract, not hand-copied** (`tools/serve_fingerprint.py`,
+  `prismaquant/tessera_runtime_contract.py`,
+  `prismaquant/tessera_serving_runtime_pin.py`,
+  `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`; issue #133).
+  `TESSERA_EXTENSION_BASENAMES = ("tessera_nvfp4",)` was a hand-copy of a
+  hand-written pin field, and the pin was a producer-side claim about another
+  runtime that nothing here could refuse on drift -- principle 14 read
+  backwards. Tessera contract v7 publishes `native_extensions`
+  (`module_name_prefix` / `filename_glob` / `match` / `source` / `loaded_by` /
+  `routes` / `when_unavailable`), so the reader parses it, **refuses** a
+  contract that does not publish it (a pre-v7 table is not read as "this runtime
+  loads nothing"), refuses a `match` rule PrismaQuant does not implement rather
+  than approximating it, and refuses a `filename_glob` that cannot match its own
+  `module_name_prefix`. The pin's rows are produced from the table by
+  `native_extension_pin_payload` and refused against it by
+  `require_serving_pin_matches_contract` on every contract read; the three
+  decidable fields joined `contract_answer`, so a Tessera rename is a review
+  event with a field-level diff. The pin schema moved to
+  `prismaquant.tessera_serving_runtime_pin.v2` with the member set. The tool now
+  applies the rule the table names -- `fnmatch` of `filename_glob` against a
+  mapped library's basename -- instead of a substring search over the whole
+  path, which matched a build *directory* named after the extension and matched
+  `tessera_nvfp4.so`, a file the plugin never builds. Adjacent gaps filed rather
+  than papered over: #136 (nothing reads Tessera's route `decoder`, so a receipt
+  can claim the native route for a substituted serve), #137 (the tool's rows are
+  still a container-side constant), #138 (`TESSERA_SERVE_MODE` is not
+  fingerprinted), #139 (`EXTENSION_PATTERN`'s bare `fla` alternative).
+
 ### Added
 
 - **Grouped-BMM Fisher: DSv4's `attn.wo_a` is now an allocator decision**

@@ -449,8 +449,19 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
     """
     answer = trc.contract_answer(trc.load_tessera_contract())
     assert set(answer) == {"schema", "lane_schema", "quant_method",
-                           "families", "cells"}
+                           "families", "cells", "native_extensions"}
+    # ``native_extensions`` joined on 2026-09-03 (issue #133) because a gate
+    # started reading it: the serve fingerprint's Tessera predicate is derived
+    # from these three fields.  Only those three -- the row's ``source``,
+    # ``loaded_by``, ``routes`` and ``when_unavailable`` describe the runtime
+    # and no gate here reads them, so they stay out until one does.
+    for row in answer["native_extensions"]:
+        assert len(row) == 3, row
     flat = repr(answer)
+    for unread_native_field in ("loaded_by", "when_unavailable",
+                                "torch_materialize_stock"):
+        assert unread_native_field not in flat, (
+            f"{unread_native_field} is in the answer but no gate reads it")
     for identity_field in ("contract_version", "plugin_version", "attested_on",
                            "rationale", "detail", "changelog"):
         assert identity_field not in flat, (

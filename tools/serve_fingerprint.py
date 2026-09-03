@@ -40,6 +40,7 @@ import argparse
 import ast
 import base64
 import csv
+import fnmatch
 import hashlib
 import importlib
 import importlib.metadata as importlib_metadata
@@ -125,27 +126,95 @@ SERVER_ENV_ALLOWLIST = (
 # The Gridbook `.so` was named here until that lane retired 2026-09-02
 # (archive/gridbook_lane_2026-09-02/). A lane whose kernels are not matched
 # here fingerprints as "nothing resident", so any new serving lane must add
-# its extension basenames.
-#
-# The Tessera alternatives below belong to the PIN, not to this file's
-# judgement: they are the basename prefixes
-# `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json` declares in
-# `serving_extension_basenames`, i.e. the CUDA extensions the pinned Tessera
-# release's plugin loads into a serving process. This module is stdlib-only by
-# construction (it runs inside the serving container from a bootstrapped
-# snapshot that ships five tool files and no package data), so it cannot READ
-# that pin at runtime and carries the tuple instead;
-# `tests/test_tessera_serve_fingerprint.py` refuses any disagreement between
-# the two, which is what keeps this a copy of the pin rather than a guess
-# about the runtime. Until 2026-09-02 no Tessera name was here at all, so a
-# serve running Tessera's own native span-2 decode fingerprinted identically
-# to a stock serve and §7.4's "identical extension residency" rule could not
-# see the one lane whose whole point is a custom decoder.
-TESSERA_EXTENSION_BASENAMES = ("tessera_nvfp4",)
+# its extensions. This alternation is the lane-agnostic half: names this
+# repository owns, plus the third-party runtimes that publish no table of
+# their own.
 EXTENSION_PATTERN = re.compile(
     r"prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|"
-    r"causal_conv1d|fla|"
-    + r"|".join(re.escape(name) for name in TESSERA_EXTENSION_BASENAMES))
+    r"causal_conv1d|fla")
+
+#: The rule Tessera's contract names, and the only one this file implements:
+#: `fnmatch` an entry's `filename_glob` against the BASENAME of a mapped `.so`.
+MATCH_BASENAME_FNMATCH = "basename_fnmatch"
+
+#: The Tessera rows below are the RUNTIME'S table, not this file's judgement
+#: and no longer a hand-copy of a hand-written pin (issue #133). Tessera's
+#: packaged `runtime_contract.json` publishes `native_extensions` at
+#: contract_version 7 (RobTand/tessera#28);
+#: `tessera_runtime_contract.native_extension_pin_payload` DERIVES
+#: `serving_native_extensions` in
+#: `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json` from it, and
+#: `require_serving_pin_matches_contract` refuses a pin that has drifted. So
+#: the chain is contract -> pin -> this constant, with a refusal at each link
+#: rather than at the last one only.
+#:
+#: This module is stdlib-only by construction and cannot import PrismaQuant
+#: where it runs: `scripts/lib/serve_manifest.sh` invokes it by path inside the
+#: serving container, and `SERVER_ENV_ALLOWLIST` below requires PYTHONPATH to
+#: be absent. The gold lane binds it in a source closure of five `.py` files
+#: (`_GOLD_PRODUCER_COMMON_FILES`) that contains no package data, so no pin or
+#: contract file is proven to travel with it. It therefore carries the rows,
+#: and the last link's refusal is test-time:
+#: `tests/test_tessera_serve_fingerprint.py` compares this file's BEHAVIOUR --
+#: not only its constant -- against the runtime's table. Making that link
+#: refuse in the container means binding the pin JSON into the closure and
+#: reading it here; that is issue #137, not this constant.
+#:
+#: `match` is carried because the PREDICATE is the runtime's too. The library
+#: on disk is `tessera_nvfp4_<build identity>.so` -- the module name always
+#: carries a source/toolchain/arch hash, so no exact basename exists to name --
+#: and the table says how to turn the glob into a decision. A substring search
+#: over the whole path, which is what stood here until 2026-09-03, is a
+#: different predicate: it matches a build DIRECTORY named after the extension
+#: and it matches `tessera_nvfp4.so`, a file the plugin never builds. Only the
+#: rule the table names is applied, and a rule this file does not implement
+#: refuses at import rather than falling back to one of its own.
+TESSERA_NATIVE_EXTENSIONS = (
+    {
+        "module_name_prefix": "tessera_nvfp4_",
+        "filename_glob": "tessera_nvfp4_*.so",
+        "match": MATCH_BASENAME_FNMATCH,
+    },
+)
+
+
+def _require_implemented_match_rules(
+    entries: Sequence[Mapping[str, str]] = TESSERA_NATIVE_EXTENSIONS,
+) -> None:
+    """Refuse a pinned match rule this file cannot apply.
+
+    Not a formality: the whole reason the contract publishes `match` as a value
+    is that a consumer must not guess whether the string is a stem, a prefix or
+    a pattern. A file that met an unknown rule and fell back to its own would
+    record a residency the runtime does not have, and two different serving
+    stacks would then compare as one.
+    """
+    for entry in entries:
+        if entry["match"] != MATCH_BASENAME_FNMATCH:
+            raise RuntimeError(
+                "serve_fingerprint implements only the "
+                f"{MATCH_BASENAME_FNMATCH!r} match rule; the pinned Tessera "
+                f"runtime contract publishes {entry['match']!r} for "
+                f"{entry['module_name_prefix']!r}. Teach this file that rule "
+                "in the same commit that pins it."
+            )
+
+
+_require_implemented_match_rules()
+
+
+def matches_tracked_extension(path: str) -> bool:
+    """Is this mapped library one whose residency moves the numbers?
+
+    Two predicates because two kinds of claim: `EXTENSION_PATTERN` is a
+    substring alternation over names this repository owns, and the Tessera rows
+    are matched by the rule the Tessera runtime publishes for them.
+    """
+    if EXTENSION_PATTERN.search(path):
+        return True
+    basename = os.path.basename(path)
+    return any(fnmatch.fnmatch(basename, entry["filename_glob"])
+               for entry in TESSERA_NATIVE_EXTENSIONS)
 
 #: Packages whose version pins the numeric stack.
 TRACKED_PACKAGES = (
@@ -683,7 +752,7 @@ def residency_scan(
                 continue
             if ".so" not in path:
                 continue
-            if EXTENSION_PATTERN.search(path):
+            if matches_tracked_extension(path):
                 found.add(os.path.basename(path))
     return sorted(found), readable, unreadable
 
