@@ -29,11 +29,12 @@ from prismaquant.tessera_formats import (
     TesseraRateSurface,
     artifact_bpp,
     enumerate_grid_space,
+    family_q256_bounds,
     family_rate_cap,
     get_tessera_family,
     parse_tessera_format_name,
     realisable_rungs,
-    recipe_is_shape_free,
+    recipe_from_wire_names,
     scale_plane_name,
     tessera_family,
     tessera_wire_recipe,
@@ -41,7 +42,34 @@ from prismaquant.tessera_formats import (
 )
 from tessera.calculator import terminal_rate
 from tessera.export import TCQ_RECIPE, recipe_table
+from tessera.grammar import forest_plane_bytes
 from tessera.manifest import BodyKind
+
+#: Big enough that the per-unit terms are small, and a multiple of the
+#: 256-column superblock so every rung is realisable over it.
+REFERENCE_SHAPE = (4096, 4096)
+
+
+def _forest_bpp(spec, rung, shape, wire=None):
+    """What a TCQ unit's forest costs per position at ``shape``.
+
+    A TCQ body writes an ALPHABET and a DESCENDANT plane per unit -- one
+    anchor table and one descendant table per *distinct* rate in the schedule
+    -- so a rung's artifact rate is its position-domain rate plus this
+    (RobTand/prismaquant#126).  The published ladders below are position-domain
+    figures, so they are compared against ``artifact_bpp`` minus this term
+    rather than restated at the artifact's rate; the size comes from Tessera's
+    own ``forest_plane_bytes``, never from a formula written here.
+    """
+    wire = tessera_wire_recipe(spec, rung) if wire is None else wire
+    if BodyKind(wire.body) is not BodyKind.TCQ:
+        return Fraction(0)
+    rows, columns = shape
+    rates = spec.column_schedule(rung, columns, recipe=wire)
+    return Fraction(
+        sum(forest_plane_bytes(rates, family_rate_cap(spec, wire))) * 8,
+        rows * columns,
+    )
 
 
 def _coset_rungs(spec):
@@ -80,10 +108,26 @@ MEASURED_LADDER = [
 @pytest.mark.parametrize("label,family,q256,bpp", MEASURED_LADDER)
 def test_the_measured_rungs_price_at_their_published_bpp(label, family, q256, bpp):
     """Published on the span-1 S6b wire (tessera schema minor 0), so priced
-    on it: a published figure belongs to the wire it was measured on."""
+    on it: a published figure belongs to the wire it was measured on.
+
+    And to the *domain* it was measured in.  These are **position-domain**
+    rates -- body plus block plane, the quantity the ladder was derived as --
+    while ``artifact_bpp`` states what a unit weighs on the wire, which since
+    #126 includes the forest.  The two differ by a per-unit term, so the
+    published figure is recovered by subtracting it rather than by asking the
+    accountant for a number it no longer means.  Tessera made the same split
+    on its side: ``terminal_rate``'s ``with_forest`` defaults to False so its
+    published position-domain figures still mean what they were derived as.
+    """
     spec = get_tessera_family(family)
     assert validate_body_rate_q256(spec, q256) == q256
-    assert artifact_bpp(spec, q256, span=1, scale_plane="s6b") == Fraction(int(bpp * 256), 256), label
+    wire = recipe_from_wire_names(1, "s6b")
+    priced = artifact_bpp(
+        spec, q256, span=1, scale_plane="s6b", shape=REFERENCE_SHAPE)
+    position_domain = priced - _forest_bpp(spec, q256, REFERENCE_SHAPE, wire)
+    assert position_domain == Fraction(int(bpp * 256), 256), label
+    # ...and the artifact really does weigh more than the published rate.
+    assert priced > position_domain, label
 
 
 def test_the_default_wire_keeps_k2_at_four_and_lifts_arity_one_by_a_quarter():
@@ -92,12 +136,21 @@ def test_the_default_wire_keeps_k2_at_four_and_lifts_arity_one_by_a_quarter():
     arity 2 the two cancel and at arity 1 they do not.
 
     E2M1x2 keeps that wire **at** the trellis's cap, which is the rung 4.0 bpp
-    is addressed at, so the headline number is unmoved by the 2026-09-02 flip.
+    is addressed at, so the position-domain headline is unmoved by the
+    2026-09-02 flip.  "4.0 bpp" is that headline and not the artifact's rate:
+    the unit also carries a 512-byte forest, which is 0.0013 bpp here and
+    0.1333 on a 96x320 expert (#126).
     """
-    assert artifact_bpp("TESSERA_E2M1_K2", 896) == Fraction(4)
-    assert artifact_bpp("TESSERA_E2M1_K1", 768) == Fraction(15, 4)
-    assert artifact_bpp("TESSERA_E2M1_K2", 896) == artifact_bpp(
-        "TESSERA_E2M1_K2", 896, span=1, scale_plane="s6b")
+    k2 = get_tessera_family("TESSERA_E2M1_K2")
+    k1 = get_tessera_family("TESSERA_E2M1_K1")
+    priced_k2 = artifact_bpp(k2, 896, shape=REFERENCE_SHAPE)
+    assert priced_k2 - _forest_bpp(k2, 896, REFERENCE_SHAPE) == Fraction(4)
+    assert (artifact_bpp(k1, 768, shape=REFERENCE_SHAPE)
+            - _forest_bpp(k1, 768, REFERENCE_SHAPE)) == Fraction(15, 4)
+    # The span-2 LUT wire and the span-1 S6b wire weigh the same, forest and
+    # all: both are TCQ over the same schedule, so the forest cancels.
+    assert priced_k2 == artifact_bpp(
+        k2, 896, span=1, scale_plane="s6b", shape=REFERENCE_SHAPE)
 
 
 def test_the_e4m3_rung_has_a_size_but_no_rate():
@@ -111,7 +164,8 @@ def test_the_e4m3_rung_has_a_size_but_no_rate():
     """
     from prismaquant import format_registry as fr
 
-    assert not recipe_is_shape_free(tessera_wire_recipe("TESSERA_E4M3_K1", 1024))
+    assert BodyKind(tessera_wire_recipe("TESSERA_E4M3_K1", 1024).body) is (
+        BodyKind.WINDOW)
     with pytest.raises(TesseraFormatError, match="per unit"):
         artifact_bpp("TESSERA_E4M3_K1", 1024)
 
@@ -157,7 +211,9 @@ def test_arity_is_what_fills_the_rungs_between():
         validate_body_rate_q256(scalar, 896)
     assert validate_body_rate_q256(tup, 896) == 896
     assert tup.root_rate(896) == Fraction(7)          # 7 bits per k=2 code
-    assert artifact_bpp(tup, 896) == Fraction(4)      # 3.5 body + 0.5 scale
+    # 3.5 body + 0.5 scale in the position domain, plus the unit's forest.
+    assert (artifact_bpp(tup, 896, shape=REFERENCE_SHAPE)
+            - _forest_bpp(tup, 896, REFERENCE_SHAPE)) == Fraction(4)
 
 
 def test_rate_cap_closes_the_code_space():
@@ -483,36 +539,38 @@ def test_a_tessera_shaped_name_with_an_illegal_rung_raises():
 def test_the_scale_plane_is_half_a_bit_everywhere():
     """A flat half-bit on top of the body, at BOTH ends of the family.
 
-    This checked only the top for a stretch, because the artifact bounds had
-    been collapsed to a point at the cap on the reading that COMPLETION
-    backfills whatever BODY does not spend.  Checking both ends is what makes
-    it a statement about the scale plane rather than about the rate span: if
-    the two ends ever needed different offsets, one of them would not be the
-    scale plane.
+    "Flat" is now a statement about the *scale plane* alone, not about the
+    wire's whole overhead.  The overhead also carries the per-unit forest, so
+    it varies with both the shape and the rung -- a two-rate schedule carries
+    two forests -- and the family-level "interval shifted by a constant"
+    (``artifact_q256_bounds``) is gone with it (#126).  What survives, and is
+    what this test was ever about, is that the block plane costs the same at
+    both ends of every family: measure it as the overhead at a fixed shape
+    minus the forest at that shape.
     """
     assert SCALE_PLANE_BITS_Q256 == 128
+    rows, columns = REFERENCE_SHAPE
     checked = 0
     for spec in enumerate_grid_space():
-        if not recipe_is_shape_free(spec.recipe):
-            # A per-unit wire has no per-position overhead to compare against;
-            # its offset is a function of the shape and is checked there.
-            continue
-        body_lo, body_hi = spec.mathematical_q256_bounds
-        art_lo, art_hi = spec.artifact_q256_bounds
-        extra = wire_overhead_q256(spec)
-        assert art_lo - body_lo == extra, spec.name
-        assert art_hi - body_hi == extra, spec.name
-        assert art_hi > art_lo, (spec.name, "a family advertises an interval")
-        checked += 1
-    assert checked, "no family left with a per-position wire to check"
-    # The overhead is the exporter's wire and nothing else: span-1 S6b is the
-    # historical half-bit; the shipping span-2 LUT wire is a quarter-bit of
-    # plane plus half a bit per CODE of stored labels.
+        for span, plane, flat in (
+            (1, "s6b", SCALE_PLANE_BITS_Q256),
+            (2, "lut16", SCALE_LUT_BITS_Q256 + Fraction(128, spec.arity)),
+        ):
+            wire = recipe_from_wire_names(span, plane)
+            # The bounds are the *recipe's*: a TCQ body caps a bit lower than
+            # the window body a family's own wire may name.
+            body_lo, body_hi = family_q256_bounds(spec, wire)
+            for rung in (body_lo, body_hi):
+                extra = wire_overhead_q256(
+                    spec, span, plane, shape=REFERENCE_SHAPE, rung=rung)
+                forest = _forest_bpp(spec, rung, REFERENCE_SHAPE, wire) * 256
+                assert extra - forest == flat, (spec.name, rung, plane)
+                checked += 1
+    assert checked >= 16, checked
+    # And the per-unit half is real: without a shape there is no rate at all.
     for spec in enumerate_grid_space():
-        assert wire_overhead_q256(spec, 1, "s6b") == SCALE_PLANE_BITS_Q256
-        assert wire_overhead_q256(spec, 2, "lut16") == (
-            SCALE_LUT_BITS_Q256 + Fraction(128, spec.arity)
-        )
+        with pytest.raises(TesseraFormatError, match="per unit"):
+            wire_overhead_q256(spec, 1, "s6b")
 
 
 def test_an_adaptive_surface_must_name_its_evidence():
@@ -583,13 +641,21 @@ def test_the_bpp_formula_agrees_with_tesseras_exact_byte_accountant():
             # position, so the arity factor has to be applied by the caller.
             for depth in (0, cap):
                 exact = terminal_rate(
-                    q * spec.arity, 4096, 4096, with_scale_refine=True,
+                    q * spec.arity, *REFERENCE_SHAPE, with_scale_refine=True,
                     with_scale_base=plane == "s6b", span=wire.span,
                     cap=cap, arity=spec.arity, completion=depth,
+                    # The wire's own figure, forest and all -- ``with_forest``
+                    # is off by default so the calculator's published
+                    # position-domain figures keep meaning what they meant,
+                    # and a caller pricing a whole unit passes True (#126).
+                    with_forest=True,
                 )
-                assert artifact_bpp(spec, q, depth) == exact, (spec.name, q, depth)
+                assert artifact_bpp(
+                    spec, q, depth, shape=REFERENCE_SHAPE) == exact, (
+                        spec.name, q, depth)
                 checked += 1
-            assert artifact_bpp(spec, q, None) == artifact_bpp(spec, q, cap)
+            assert artifact_bpp(spec, q, None, shape=REFERENCE_SHAPE) == (
+                artifact_bpp(spec, q, cap, shape=REFERENCE_SHAPE))
     assert checked >= 12
 
 
@@ -616,10 +682,23 @@ def test_the_rung_sets_the_size_and_the_completion_depth_is_the_other_axis():
             continue
         cap = family_rate_cap(spec, TCQ_RECIPE)
         wire = tessera_wire_recipe(spec, rungs[0])
-        overhead = wire_overhead_q256(spec, recipe=wire) / 256
+        # The overhead is per unit now, so it is measured at a shape -- and
+        # the forest inside it depends on the rung, so the flat part is what
+        # is left after subtracting it.  ``_forest_bpp`` is already per
+        # position; the rest is quoted in q256, hence the /256.
+        def _flat(rung):
+            return (wire_overhead_q256(
+                spec, recipe=wire, shape=REFERENCE_SHAPE, rung=rung) / 256
+                - _forest_bpp(spec, rung, REFERENCE_SHAPE, wire))
+        overhead = _flat(rungs[0])
+        assert all(_flat(q) == overhead for q in rungs), spec.name
         ceiling = Fraction(cap * 256, spec.arity) / 256 + overhead
 
-        priced = [artifact_bpp(spec, q, recipe=wire) for q in rungs]
+        priced = [
+            artifact_bpp(spec, q, recipe=wire, shape=REFERENCE_SHAPE)
+            - _forest_bpp(spec, q, REFERENCE_SHAPE, wire)
+            for q in rungs
+        ]
         assert priced == sorted(priced), spec.name
         assert len(set(priced)) == len(rungs), (spec.name, "flat ladder")
         for rung, bpp in zip(rungs, priced):
@@ -627,7 +706,11 @@ def test_the_rung_sets_the_size_and_the_completion_depth_is_the_other_axis():
         if rungs[-1] * spec.arity == cap * 256:
             assert priced[-1] == ceiling
 
-        at_full = {artifact_bpp(spec, q, None, recipe=wire) for q in rungs}
+        at_full = {
+            artifact_bpp(spec, q, None, recipe=wire, shape=REFERENCE_SHAPE)
+            - _forest_bpp(spec, q, REFERENCE_SHAPE, wire)
+            for q in rungs
+        }
         assert at_full == {ceiling}, (spec.name, sorted(map(float, at_full)))
         checked += 1
     assert checked, "no family left with a completion axis to check"
@@ -792,12 +875,15 @@ def test_the_closed_form_prices_every_recipe_the_calculator_prices(shape):
     the two together across the whole grammar rather than across the one
     recipe that happens to be the default.
 
-    Four terms have to line up, and each of them has been wrong somewhere at
+    Five terms have to line up, and each of them has been wrong somewhere at
     some point: the body's rate at the *recipe's* cap (``payload_bits`` under a
     window body, ``payload_bits - 1`` under the TCQ trellis), the span labels,
-    the scale plane, and the two **per-unit** costs -- a CHANNEL plane's fp16
-    per output row, and a window body's ``2^L``-byte table -- which have no
-    per-position rate at all until a shape is named.
+    the scale plane, and the three **per-unit** costs -- a CHANNEL plane's
+    fp16 per output row, a window body's ``2^L``-byte table, and a TCQ body's
+    forest -- none of which has a per-position rate until a shape is named.
+    The forest is the one that was missing until 2026-09-03 (#126), and it is
+    also why ``with_forest=True`` is passed here: the calculator's default is
+    the position domain its published figures were derived in.
     """
     from fractions import Fraction
 
@@ -826,6 +912,7 @@ def test_the_closed_form_prices_every_recipe_the_calculator_prices(shape):
                     arity=spec.arity,
                     completion=0,
                     window_bits=wire.window_bits,
+                    with_forest=BodyKind(wire.body) is BodyKind.TCQ,
                 )
                 assert mine == exact, (label, name, q, shape, mine, exact)
                 assert isinstance(mine, Fraction)
@@ -834,28 +921,28 @@ def test_the_closed_form_prices_every_recipe_the_calculator_prices(shape):
 
 
 def test_a_per_unit_wire_term_has_no_price_without_a_shape():
-    """The CHANNEL row field and the window table are charged per *unit*.
+    """Every Tessera wire charges something per *unit*, so none has a rate.
 
-    They are ``16/columns`` and ``8 * 2^L / (rows*columns)`` bits per position,
-    which is to say they are not bits per position at all until a shape is
-    named.  The shape-free accountant refuses them rather than dropping them:
-    the only consumer of the shape-free value is
-    ``FormatSpec.exact_bits_per_param``, which ``memory_bytes_for_shape``
-    multiplies by the parameter count as an *exact* rate, and a ``Fraction``
-    cannot carry "this is a floor".  Returning the floor there would be the
-    silent drop, not the guard against it.
+    Three terms, and none of them is bits per position until a shape is named:
+    a CHANNEL plane's ``16/columns`` row field, a window body's
+    ``8 * 2^L / (rows*columns)`` table, and a TCQ body's forest, which is the
+    third and the one that closed the last shape-free branch (#126).  The
+    accountant refuses them rather than dropping them, because the only
+    consumer of a shape-free value is ``FormatSpec.exact_bits_per_param``,
+    which ``memory_bytes_for_shape`` multiplies by the parameter count as an
+    *exact* rate, and a ``Fraction`` cannot carry "this is a floor".
 
-    Which of today's wires this bites is a per-(grid, rung) fact, so the test
-    asks rather than assumes: a rung on the coset trellis over a block plane
-    still prices with no shape at all, and one on the window body or the
-    CHANNEL plane refuses.  Both halves are checked on the live recipes.
+    The previous version of this test split the wires into a shape-free half
+    and a per-unit half and asserted both were non-empty.  The shape-free half
+    is now empty by construction, which is the fix rather than a loss of
+    coverage: it was populated entirely by TCQ-over-a-block-plane rungs, i.e.
+    by exactly the rungs that were priced 512 bytes light.
     """
     from prismaquant.tessera_formats import (
-        recipe_from_wire_names, recipe_is_shape_free, tessera_wire_recipe,
-        wire_overhead_q256,
+        recipe_from_wire_names, tessera_wire_recipe, wire_overhead_q256,
     )
 
-    free = per_unit = 0
+    per_unit = 0
     for name in TCQ_FAMILIES:
         spec = get_tessera_family(name)
         for q in (spec.mathematical_q256_bounds[0], 1024):
@@ -863,29 +950,31 @@ def test_a_per_unit_wire_term_has_no_price_without_a_shape():
                 validate_body_rate_q256(spec, q)
             except TesseraFormatError:
                 continue
-            wire = tessera_wire_recipe(spec, q)
-            if recipe_is_shape_free(wire):
-                assert artifact_bpp(spec, q) > 0
-                free += 1
-            else:
-                with pytest.raises(TesseraFormatError, match="per unit"):
-                    artifact_bpp(spec, q)
-                assert artifact_bpp(spec, q, shape=(2048, 4096)) > 0
-                per_unit += 1
-    assert free and per_unit, (free, per_unit)
+            with pytest.raises(TesseraFormatError, match="per unit"):
+                artifact_bpp(spec, q)
+            assert artifact_bpp(spec, q, shape=(2048, 4096)) > 0
+            per_unit += 1
+    assert per_unit, per_unit
 
     spec = get_tessera_family("TESSERA_E4M3_K1")
     for wire in (
         recipe_from_wire_names(2, "channel"),
         recipe_from_wire_names(1, "lut16", "window", 8),
+        recipe_from_wire_names(2, "lut16"),          # TCQ over a block plane
     ):
-        assert not recipe_is_shape_free(wire)
         with pytest.raises(TesseraFormatError, match="per unit"):
             wire_overhead_q256(spec, recipe=wire)
         with pytest.raises(TesseraFormatError, match="per unit"):
             artifact_bpp(spec, 1024, 0, recipe=wire)
         priced = artifact_bpp(spec, 1024, 0, recipe=wire, shape=(2048, 4096))
         assert priced > Fraction(4)
+
+    # A TCQ rung priced with a shape but no rung has no forest to size, and
+    # says so rather than dropping it.
+    with pytest.raises(TesseraFormatError, match="only defined at a rung"):
+        wire_overhead_q256(
+            spec, recipe=recipe_from_wire_names(2, "lut16"),
+            shape=(2048, 4096))
 
     # The per-unit terms are shape-dependent in the direction they must be:
     # a narrower tensor pays more per weight for the same row field.
