@@ -4,6 +4,8 @@
   "export_container": "gguf",
   "runtime": "llama.cpp",
   "description": "One GGUF artifact serves llama.cpp natively (and vLLM via the GGUF path). The lane's own harness is llama-perplexity, which is why its KL evaluator is an adapter rather than the resident one — the artifact cannot be materialised into a torch model without leaving the format under test.",
+  "wired_architectures": ["hy_v3"],
+  "wired_architectures_note": "hy_v3 is the architecture whose shipped artifact came off this lane. Moved here from tests/test_profile_export_lanes.py's GGUF_WIRED on 2026-09-03: the roster is a decision and belongs beside the lane it decides, not in a test that names two lanes and would miss a third.",
   "serving_profiles": ["gguf"],
   "endpoint": {
     "kind": "llama_server",

@@ -71,6 +71,28 @@ def released_pin(tmp_path, monkeypatch):
     return pin
 
 
+@pytest.fixture
+def tessera_repo(tmp_path, monkeypatch):
+    """A TESSERA_REPO holding exactly the tools the lane spec declares.
+
+    Gate 4 resolves each declared `producer_tools` entry through the env var
+    the declaration names, so a preflight run with no TESSERA_REPO refuses --
+    correctly, and it is why this fixture exists rather than the test reaching
+    into the real checkout: the gate under test must be satisfied by
+    something, and a hermetic something is what keeps the pin the only
+    variable.
+    """
+    from prismaquant.lane_spec import load_lane_spec
+
+    root = tmp_path / "tessera-checkout"
+    for tool in load_lane_spec("tessera").producer_tools:
+        path = root / tool.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# fixture\n", encoding="utf-8")
+    monkeypatch.setenv("TESSERA_REPO", str(root))
+    return root
+
+
 def _model_dir(tmp_path, **config):
     directory = tmp_path / "model"
     directory.mkdir(exist_ok=True)
@@ -83,11 +105,20 @@ def _model_dir(tmp_path, **config):
 # ---------------------------------------------------------------------------
 # The vocabulary
 # ---------------------------------------------------------------------------
-def test_the_lane_vocabulary_is_the_sanctioned_three():
-    """Rob, 2026-09-02: compressed-tensors, GGUF, Tessera."""
-    assert EXPORT_LANES == ("compressed-tensors", "gguf", "tessera")
-    assert DEFAULT_EXPORT_LANE == "compressed-tensors"
+def test_tessera_is_in_the_vocabulary_and_the_retired_lane_is_not():
+    """This file owns the TESSERA half; it does not re-type the roster.
+
+    `assert EXPORT_LANES == (<three literals>)` lived here and in
+    `tests/test_profile_export_lanes.py`, two copies of one roster, each of
+    which had to be edited to ADD the lane the issue was asking for. The
+    vocabulary-as-a-whole properties (closure against `lane_specs/*.json`, the
+    retired set, per-lane round-trip) are in that file, quantified over
+    `EXPORT_LANES`; what belongs here is the one membership this file's subject
+    depends on, and the assurance that gaining it relaxed nothing.
+    """
+    assert "tessera" in EXPORT_LANES
     assert canonical_export_lane("tessera") == "tessera"
+    assert DEFAULT_EXPORT_LANE == "compressed-tensors"
     # The retired lane stays unknown -- adding one is not relaxing the check.
     with pytest.raises(ValueError, match="unknown export lane"):
         canonical_export_lane("nvfp4_cb")
@@ -125,7 +156,7 @@ def test_the_preflight_refuses_on_the_pending_pin_and_says_so(tmp_path):
 
 
 def test_under_a_released_pin_the_whole_preflight_passes(
-        released_pin, tmp_path):
+        released_pin, tmp_path, tessera_repo):
     """The other half of "refused by the pin".
 
     With ONLY the release boundary satisfied -- the real packaged contract,

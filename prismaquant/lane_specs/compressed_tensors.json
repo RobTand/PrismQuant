@@ -4,6 +4,8 @@
   "export_container": "compressed-tensors",
   "runtime": "vllm",
   "description": "The default lane: a stock compressed-tensors checkpoint that vanilla vLLM serves with no forked runtime and no custom kernels. This is the only lane whose correctness depends on nothing we maintain, which is why it is the default even where CB wins the matched-byte accuracy pair.",
+  "wired_architectures": ["*"],
+  "wired_architectures_note": "The default lane: `*` means every registered model profile, because every architecture ships through compressed-tensors (`DEFAULT_EXPORT_LANE`) and enumerating them here would be a second roster to keep in step with model_profiles/registry.py. A NON-default lane names its architectures explicitly.",
   "serving_profiles": [
     "vllm_packed_moe",
     "vllm_qwen3_5_packed_moe",

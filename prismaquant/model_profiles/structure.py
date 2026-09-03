@@ -66,6 +66,18 @@ EXPORT_LANES = ("compressed-tensors", "gguf", "tessera")
 # release (RobTand/tessera#17). What this entry buys is that the refusal is the
 # pin's, spoken where an operator can act on it, instead of "unknown export
 # lane" from a vocabulary check three layers up.
+#: Lanes that WERE in the vocabulary and are not any more, each with the wall
+#: its code went behind.  Named so a retirement is a fact a test can read
+#: rather than a literal re-typed into one: the property is "a retired lane is
+#: refused", and the retired set is the roster it is refused from.  Adding a
+#: lane to :data:`EXPORT_LANES` never touches this, and retiring one moves a
+#: name from there to here in a single edit.
+RETIRED_EXPORT_LANES: dict[str, str] = {
+    # Rob, 2026-09-02: the Gridbook codebook lane was retired by decision, not
+    # by defect, and Tessera took its place among the sanctioned three.
+    "nvfp4_cb": "archive/gridbook_lane_2026-09-02/",
+}
+
 DEFAULT_EXPORT_LANE = "compressed-tensors"
 # The serving-profile side spells the native lane with an underscore
 # (`serving_profile_specs/vllm_packed_moe.json` -> export_lane.id
@@ -81,8 +93,14 @@ def canonical_export_lane(name: str) -> str:
     """
     lane = _EXPORT_LANE_ALIASES.get(str(name), str(name))
     if lane not in EXPORT_LANES:
+        wall = RETIRED_EXPORT_LANES.get(lane)
+        retired = (
+            f" — {lane!r} was RETIRED and its code is at {wall}"
+            if wall else ""
+        )
         raise ValueError(
             f"unknown export lane {name!r}; known lanes: {list(EXPORT_LANES)}"
+            f"{retired}"
         )
     return lane
 

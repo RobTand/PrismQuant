@@ -13,6 +13,21 @@
 
 ### Added
 
+- **A lane's declared gates are recorded on a lane-gated ship record** (#119 in
+  part, #162 filed; `lane_spec.py`, `lane_shipcard.py`, `shipcard.py`,
+  `lane_specs/*.json`, `run-pipeline.sh`). `route.census` — principle 12's
+  second leg on the Tessera lane — carried `shipcard_slot: null` and the arm
+  opened no card, so every gate the lane declared was enforced by nothing. A
+  null slot now requires an `unrecorded_reason`, `lane_shipcard open --lane
+  <lane>` opens a record whose slots are that lane's gates, `required_slots`
+  unions them with the base set so a lane can add a requirement and never
+  subtract one, and a declared slot the shipcard has no name for raises rather
+  than being dropped. Two rosters moved into the lane declaration:
+  `wired_architectures` and `producer_tools` (with `stability` and a mandatory
+  `tracking_issue`), the latter now preflight gate 4. `RETIRED_EXPORT_LANES`
+  names the archive wall in the unknown-lane refusal. Nothing runs a gate yet;
+  that half stays with #119.
+
 - **A byte-identity gate on the two super-item aggregators** (#128;
   `tests/test_super_item_menu_byte_identity.py`,
   `tests/fixtures/super_item_menu_golden.json`). Rescued from closed PR #92,
