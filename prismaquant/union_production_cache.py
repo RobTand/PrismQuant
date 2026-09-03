@@ -43,12 +43,14 @@ from prismaquant.cost_streaming import validate_streamed_model_identity
 from prismaquant.layer_config import load_assignment
 from prismaquant.nvfp4_cb_footprint import assignment_serialization_sha256
 from prismaquant.production_weight_cache import (
+    PACKED_ACTIVATION_HOOK_SCOPE_KEY,
     ProductionWeightCache,
     _is_cb_format_name,
     _production_cache_git_commit,
     _production_cache_source_sha256,
     first_identity_difference,
     identity_value_for_error,
+    packed_activation_hook_scope_of,
 )
 
 
@@ -109,6 +111,7 @@ _MERGED_METADATA_KEYS = frozenset({
     "render_gates",
     "four_over_six",
     "fisher_weighted_gptq",
+    PACKED_ACTIVATION_HOOK_SCOPE_KEY,
 })
 
 
@@ -1344,6 +1347,29 @@ def _merge_cache_metadata(
             expert_coverage,
             coverage,
             where="packed-expert coverage",
+        )
+
+    # Packed hook scope (#145): a dense-only shard carries no stamp (it
+    # rendered no packed experts), so absence merges silently. Two stamps
+    # that disagree are two renderings sharing one union and are refused --
+    # the stamp is hook-enumeration-only (no rendered counts), so equal
+    # digests merge exactly and a striped union is never refused for
+    # rendering disjoint slices.
+    packed_hook_scopes = [
+        packed_activation_hook_scope_of(item) for item in metadata
+    ]
+    present_packed_scopes = [
+        scope for scope in packed_hook_scopes if scope is not None
+    ]
+    if present_packed_scopes:
+        for index, scope in enumerate(present_packed_scopes[1:], start=1):
+            _assert_identity_equal(
+                present_packed_scopes[0],
+                scope,
+                where=f"packed activation hook scope shard {index}",
+            )
+        reference[PACKED_ACTIVATION_HOOK_SCOPE_KEY] = copy.deepcopy(
+            present_packed_scopes[0]
         )
 
     entries = sum(len(cache) for cache in caches)

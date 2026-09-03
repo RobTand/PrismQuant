@@ -5886,10 +5886,24 @@ class _PackedExpertActivationCollector:
         store_device: torch.device | str,
         store_dtype: torch.dtype = torch.float32,
         profile=None,
+        store_qnames: set[str] | None = None,
     ):
         self.model = model
         self.profile = profile
+        # #145: ``experts_qnames`` is the enumeration the collector HOOKS --
+        # the full visible module set -- and ``store_qnames`` narrows only
+        # which modules keep full activation tensors. One shared generator
+        # feeds every hooked module's priority reservoir, so the rows a
+        # module keeps are a function of how many rows every EARLIER hook
+        # consumed; narrowing the hook set therefore changes the rows, the
+        # per-expert Hessians and the rendered bytes. This mirrors the dense
+        # ``_LinearActivationCollector`` (``qnames``/``store_qnames``) fix
+        # from #130/#135: hook the whole enumeration, narrow only the render.
         self.experts_qnames = set(experts_qnames)
+        self.store_qnames = (
+            set(store_qnames) if store_qnames is not None
+            else set(experts_qnames)
+        )
         self.module_token_budget = int(module_token_budget)
         self.store_device = torch.device(store_device)
         self.store_dtype = store_dtype
@@ -5906,7 +5920,8 @@ class _PackedExpertActivationCollector:
             if qname not in self.experts_qnames:
                 continue
             self._modules_by_qname[qname] = mod
-            self.activations[qname] = []
+            if qname in self.store_qnames:
+                self.activations[qname] = []
 
     def install(self) -> None:
         for qname, mod in self._modules_by_qname.items():
@@ -5919,6 +5934,31 @@ class _PackedExpertActivationCollector:
             if not args or not isinstance(args[0], torch.Tensor):
                 return
             x = args[0]
+            # Draw this call's row priorities for EVERY hooked module,
+            # stored or not. One generator feeds every module's reservoir, so
+            # the slice of the stream a module receives is a function of how
+            # many rows every earlier hook consumed. Drawing only for stored
+            # modules makes a run that renders a subset -- an assignment scope
+            # that BF16s one layer's experts, or the force_format frontier
+            # build vs the export build -- keep DIFFERENT rows than the full
+            # run, and the rendered bytes follow the rows. Draws are CPU
+            # floats; the cost is noise next to the D2H copy below. Only
+            # modules in the store set keep the full activation tensor.
+            # Memory bound: store_qnames x module_token_budget x hidden.
+            last_dim = int(x.shape[-1]) if x.dim() >= 1 else 0
+            n_rows = (x.numel() // last_dim) if last_dim > 0 else 0
+            new_priorities = (
+                torch.rand(
+                    int(n_rows),
+                    generator=self._gen,
+                    dtype=torch.float32,
+                    device="cpu",
+                )
+                if n_rows > 0 and self.module_token_budget > 0
+                else None
+            )
+            if qname not in self.store_qnames:
+                return
             # NOT non_blocking: async D2H into pageable memory can read
             # the tensor before the producing kernel finishes under GPU
             # contention, deterministically corrupting the snapshot to NaN
@@ -5937,7 +5977,7 @@ class _PackedExpertActivationCollector:
                 self._priorities.get(qname),
                 flat,
                 max_rows=self.module_token_budget,
-                generator=self._gen,
+                new_priorities=new_priorities,
             )
             self.activations[qname] = [] if sampled is None else [sampled]
             if priorities is None:
@@ -5965,6 +6005,109 @@ PACKED_EXPERT_RENDER_SCORE_SCHEMA = (
 PACKED_EXPERT_RENDER_GATE_SCHEMA = (
     "prismaquant.production_render_gates.packed_expert.v1"
 )
+PACKED_ACTIVATION_HOOK_SCOPE_SCHEMA = (
+    "prismaquant.production_weight_cache.packed_activation_hook_scope.v1"
+)
+PACKED_ACTIVATION_HOOK_SCOPE_KEY = "activation_hook_scope_packed"
+
+
+def _stamp_packed_hook_scope(
+    cache: ProductionWeightCache,
+    *,
+    hook_qnames: set[str],
+) -> None:
+    """Stamp which packed-experts enumeration a render hooked (#145).
+
+    The stamp carries ONLY the hooked enumeration (digest + count), never a
+    rendered count: the M4 lazy gap-fill calls this path repeatedly with
+    overlapping assignments, so any rendered subset would describe the last
+    call rather than the cache. The hook enumeration is what the shared
+    priority stream is a function of, so equal digests (+ equal calibration)
+    is the readable claim "these packed bytes were rendered against the same
+    rows". A repeat call that hooked a different enumeration is a different
+    rendering and is refused rather than silently re-stamped.
+    """
+    scope = {
+        "schema": PACKED_ACTIVATION_HOOK_SCOPE_SCHEMA,
+        "hooked_qnames_sha256": _qname_set_sha256(hook_qnames),
+        "hooked_qnames": len(hook_qnames),
+    }
+    metadata = cache.metadata
+    if metadata is None:
+        cache.metadata = metadata = {}
+    existing = metadata.get(PACKED_ACTIVATION_HOOK_SCOPE_KEY)
+    if existing is None:
+        metadata[PACKED_ACTIVATION_HOOK_SCOPE_KEY] = scope
+        return
+    if not isinstance(existing, Mapping):
+        raise ValueError(
+            "ProductionWeightCache activation_hook_scope_packed is malformed"
+        )
+    if (
+        existing.get("schema") != scope["schema"]
+        or existing.get("hooked_qnames_sha256")
+        != scope["hooked_qnames_sha256"]
+        or int(existing.get("hooked_qnames", -1)) != scope["hooked_qnames"]
+    ):
+        raise ValueError(
+            "packed-expert activation hook enumeration differs from the "
+            "cache's stamped rendering; refusing to mix two renderings in "
+            "one cache"
+        )
+
+
+def packed_activation_hook_scope_of(
+    source: object,
+) -> dict[str, object] | None:
+    """Canonical reader for the packed activation-hook stamp (#145).
+
+    Returns the stamped enumeration (schema, digest, count), or ``None``
+    when the cache rendered no packed experts. A present-but-malformed
+    stamp is refused: "no stamp" (dense-only cache) and "a stamp that
+    cannot be checked" must not be conflated. ``union_production_cache``
+    and the cost/export pair gate share this reader so the digest
+    comparison is one rule, not three.
+    """
+    metadata = (
+        source.metadata if isinstance(source, ProductionWeightCache) else source
+    )
+    if not isinstance(metadata, Mapping):
+        raise ValueError(
+            "packed activation hook scope needs a cache or metadata mapping"
+        )
+    scope = metadata.get(PACKED_ACTIVATION_HOOK_SCOPE_KEY)
+    if scope is None:
+        return None
+    if not isinstance(scope, Mapping):
+        raise ValueError(
+            "ProductionWeightCache activation_hook_scope_packed is malformed"
+        )
+    digest = str(scope.get("hooked_qnames_sha256", "")).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError(
+            "ProductionWeightCache activation_hook_scope_packed digest "
+            "is malformed"
+        )
+    if scope.get("schema") != PACKED_ACTIVATION_HOOK_SCOPE_SCHEMA:
+        raise ValueError(
+            "ProductionWeightCache activation_hook_scope_packed schema "
+            "is unsupported"
+        )
+    count = scope.get("hooked_qnames")
+    if (
+        not isinstance(count, int)
+        or isinstance(count, bool)
+        or int(count) < 0
+    ):
+        raise ValueError(
+            "ProductionWeightCache activation_hook_scope_packed count "
+            "is malformed"
+        )
+    return {
+        "schema": PACKED_ACTIVATION_HOOK_SCOPE_SCHEMA,
+        "hooked_qnames_sha256": digest,
+        "hooked_qnames": int(count),
+    }
 
 
 def _packed_expert_score_rows(
@@ -6374,6 +6517,15 @@ def fill_packed_expert_cache_entries(
     cached 3-D dequant and re-packs it — exactly the
     ``_pack_production_cached_2d`` contract, lifted to packed experts.
 
+    Hook invariant (#145, mirrors the dense #130/#135 one): the activation
+    collector hooks EVERY packed-experts module this call can see
+    (``hook_qnames``), and ``render_assignment``/``force_format`` narrow
+    only which tensors get rendered. The bytes of a packed (tensor, fmt)
+    pair are therefore a function of the visible modules and the
+    calibration, never of which subset a call renders — a ``force_format``
+    frontier build and an assignment-scoped export build that BF16s one
+    layer's experts render identical bytes for the rest.
+
     Args:
       cache: the ``ProductionWeightCache`` produced by
         ``fill_production_weight_cache``.  New 3-D ``(experts_qname.pn, fmt)``
@@ -6463,8 +6615,33 @@ def fill_packed_expert_cache_entries(
 
     # 1. Resolve in-scope packed-expert tensors (non-BF16 in the assignment).
     #    Each entry: (experts_qname, mod, parent, pn, full, fmt).
+    #
+    #    #145: ``eligible_experts_qnames`` is the enumeration the activation
+    #    collector hooks, and it is deliberately NOT narrowed by the
+    #    render assignment below. One shared generator feeds every hooked
+    #    module's priority reservoir, so the rows a module keeps are a
+    #    function of how many rows every EARLIER hook consumed. Narrowing
+    #    the hook set therefore changes the rows, the per-expert Hessians
+    #    and the rendered bytes. The invariant this buys -- the same one
+    #    #130/#135 bought the dense path: the bytes of a (tensor, fmt) pair
+    #    depend on the visible modules and the calibration, never on which
+    #    subset of them this call happens to render. That is what makes a
+    #    force_format frontier build and an assignment-scoped export build
+    #    reproduce each other's bytes.
     in_scope: list[tuple[str, nn.Module, nn.Module, str, str, str]] = []
     experts_qnames: set[str] = set()
+    eligible_experts_qnames: set[str] = set()
+    # #145: ``hook_qnames`` is the enumeration the activation collector
+    # hooks, and it is deliberately NOT narrowed by the assignment/BF16
+    # filter below. One shared generator feeds every hooked module's
+    # priority reservoir, so the rows a module keeps are a function of how
+    # many rows every EARLIER hook consumed. Narrowing the hook set
+    # therefore changes the rows, the per-expert GPTQ Hessians and the
+    # rendered bytes -- a force_format frontier build and an
+    # assignment-scoped export build would otherwise hook different module
+    # sets and ship different bytes. Hook every packed-experts module this
+    # call can see; ``experts_qnames`` narrows only the render.
+    hook_qnames: set[str] = set()
     # Every packed-expert tensor name this call can SEE, BF16 and
     # out-of-assignment included. This is the exact scope inside which stale
     # render-score / render-gate records may be pruned at the end of the call;
@@ -6486,6 +6663,10 @@ def fill_packed_expert_cache_entries(
         if max_layers is not None and modules_seen >= max_layers:
             break
         modules_seen += 1
+        # Hooked whether or not this module renders below: the hook set is
+        # the visible enumeration, and the render assignment narrows only
+        # the render (#145).
+        eligible_experts_qnames.add(experts_qname)
         parent = _packed_experts_parent_module(model, experts_qname)
         for pn in _packed_experts_param_names(mod, profile):
             full = f"{experts_qname}.{pn}" if experts_qname else pn
@@ -6517,6 +6698,7 @@ def fill_packed_expert_cache_entries(
             print("[prod-cache/experts] no non-BF16 packed experts in scope",
                   flush=True)
         return coverage
+    _stamp_packed_hook_scope(cache, hook_qnames=hook_qnames)
 
     # Render-identity bookkeeping for this append. Every packed key that ends
     # up in ``cache.weights`` owes a render-score record and a render-gate
@@ -6700,8 +6882,9 @@ def fill_packed_expert_cache_entries(
     if progress:
         print(
             f"[prod-cache/experts] {len(in_scope)} packed-expert tensors across "
-            f"{len(experts_qnames)} modules; capturing module activations "
-            f"(budget={module_token_budget} tokens/module)",
+            f"{len(experts_qnames)} modules "
+            f"({len(eligible_experts_qnames)} hooked); capturing module "
+            f"activations (budget={module_token_budget} tokens/module)",
             flush=True,
         )
 
@@ -6804,9 +6987,17 @@ def fill_packed_expert_cache_entries(
         # in the CUDA pool fragments/OOMs the capture (observed). CPU storage
         # keeps them out of the CUDA segment pool; derive moves one module's X
         # back to GPU transiently. Pinned for faster H2D at render.
+        #
+        # Hook the WHOLE eligible enumeration -- not the render-narrowed
+        # ``experts_qnames``. Hooking is cheap (one CPU ``torch.rand`` per
+        # call), and hooking the full set is what keeps the shared priority
+        # stream identical across a force_format frontier build and an
+        # assignment-scoped export build (#145). Only STORE full activations
+        # for modules we still need to render.
         collector = _PackedExpertActivationCollector(
             model,
-            experts_qnames,
+            eligible_experts_qnames,
+            store_qnames=experts_qnames,
             module_token_budget=module_token_budget,
             store_device=torch.device("cpu"),
             store_dtype=torch.float32,
@@ -6825,6 +7016,14 @@ def fill_packed_expert_cache_entries(
         finally:
             collector.remove()
         module_acts = collector.collected()
+        # Hooking is what keeps the shared priority stream identical across
+        # a force_format build and an assignment-scoped build; STORING every
+        # hooked module's reservoir is not needed. Drop the snapshots for
+        # modules this call renders nothing for, so a mostly-BF16 assignment
+        # does not hold a full-budget reservoir per untouched module (#145).
+        for _qname in list(module_acts):
+            if _qname not in experts_qnames:
+                del module_acts[_qname]
         if progress:
             print(
                 f"[prod-cache/experts] captured {len(module_acts)} module "
@@ -6844,7 +7043,8 @@ def fill_packed_expert_cache_entries(
     if work_remaining and gate_calib_ids is not None:
         gate_collector = _PackedExpertActivationCollector(
             model,
-            experts_qnames,
+            eligible_experts_qnames,
+            store_qnames=experts_qnames,
             module_token_budget=int(gate_token_budget or module_token_budget),
             store_device=torch.device("cpu"),
             store_dtype=torch.float32,
@@ -6863,6 +7063,12 @@ def fill_packed_expert_cache_entries(
         finally:
             gate_collector.remove()
         gate_module_acts = gate_collector.collected()
+        # Same storage pruning as the fit reservoir above: the gate draws
+        # must happen for every hooked module (shared stream), but only
+        # rendered modules' snapshots are consumed downstream.
+        for _qname in list(gate_module_acts):
+            if _qname not in experts_qnames:
+                del gate_module_acts[_qname]
         if progress:
             print(
                 f"[prod-cache/experts] captured {len(gate_module_acts)} "
