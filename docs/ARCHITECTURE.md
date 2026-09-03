@@ -3,6 +3,24 @@
 As of: 2026-09-03 · `tessera/decouple-gridbook`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `pq133-native-extensions`) for the **serve
+fingerprint's Tessera extensions, now derived** (§7.4, §9.4; PrismaQuant #133
+consuming RobTand/tessera#28). The pin's `serving_extension_basenames` was a
+hand-written claim about which CUDA libraries the Tessera plugin loads, with a
+refusal only at the last link (pin → tool) — the link that was already sound —
+and the hand-written value was wrong by one character. The tool matched it by
+substring over the whole mapped path, which is not the predicate the runtime
+publishes. Contract v7's `native_extensions` is now the source: the reader
+refuses a contract that does not publish the table, the table is part of
+`contract_answer`, `require_pin_native_extensions_match_contract` refuses a pin
+that is not the contract's table in either direction (under the dev pin at
+runtime, and in the test suite always — the release admission path does not call
+it), and the tool applies the `match` rule the table names and refuses a rule it
+does not implement. The
+`when_unavailable` half — a resident serve that substitutes
+`torch_materialize_stock`, and `TESSERA_SERVE_MODE` being absent from the
+manifest entirely — is recorded as open, not closed (#142, #143).
+
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
 2048x1024 unit's research menu from 3055 rungs to 6764 and left both per-rung
@@ -6941,12 +6959,12 @@ evidence either way and should be quoted as a range.
   `vllm`/`torch`/driver versions (`importlib.metadata` + NVML only — the writer never imports
   torch or touches CUDA, so it cannot add a context to a 121 GiB pool), GPU name,
   `enforce_eager`, `--quantization`, `PRISMAQUANT_*` env, and the resident-extension basenames
-  read from the **server's** `/proc/<pid>/maps`
+  read from the **server's** `/proc/<pid>/maps` via `matches_tracked_extension`, which has
+  two arms: `SUBSTRING_EXTENSION_PATTERN`
   (`prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|causal_conv1d|fla` — `gridbook`
-  was dropped from the alternation on 2026-09-02 with the lane, and **no Tessera
-  extension has replaced it**, so a Tessera serve fingerprints as "no lane extension
-  resident"; giving `EXTENSION_PATTERN` a Tessera alternative belongs to the
-  admission half, with the pin),
+  was dropped on 2026-09-02 with the lane) for libraries this repository recognises by
+  name, and `TESSERA_NATIVE_EXTENSIONS` for a runtime that publishes its own loadable
+  libraries, matched by the rule that runtime names (§9.4),
   unioned over the API-server *and* EngineCore processes — it is the engine that holds the
   kernels). Client-side is not an option: the measuring client cannot see the server's address
   space — reading a root-owned container process's maps from the host is *denied*, and the
@@ -8034,20 +8052,57 @@ pin file *and* the reader's two release constants in one reviewed commit —
 neither half admits anything alone. Gates on this lane are ADVISORY like every
 other lane's; the shipcard is what refuses.
 
-**The pin also carries the serve fingerprint's half of §7.4.**
-`serving_extension_basenames` names the CUDA extensions the released plugin loads
-into a serving process (`tessera_nvfp4`, JIT-built as
-`tessera_nvfp4_<build identity>.so`). `tools/serve_fingerprint.py` is stdlib-only
-and runs inside the serving container from a bootstrapped five-file snapshot, so it
-cannot read the pin at runtime and carries the same tuple;
-`tests/test_tessera_serve_fingerprint.py` refuses any disagreement. Until
-2026-09-03 no Tessera name was in `EXTENSION_PATTERN` at all, so a serve running
-Tessera's own native span-2 decode fingerprinted identically to a stock serve — the
-one lane whose entire point is a custom decoder was the one lane §7.4's
-identical-residency rule could not see. **Known gap, Tessera-side:** the packaged
-`runtime_contract.json` publishes executed activation contracts but not the
-basenames of the extensions the plugin loads, so this one field is mirrored from
-the pin rather than derived from the runtime's own table (RobTand/tessera#28).
+**The pin also carries the serve fingerprint's half of §7.4, and it is DERIVED.**
+Tessera contract v7 publishes `native_extensions` — what the plugin *loads*, beside
+the routes it *executes* — as three values a consumer can act on: the
+`module_name_prefix` its JIT load path itself passes to `cpp_extension.load`
+(`tessera_nvfp4_`), the `filename_glob` that produces (`tessera_nvfp4_*.so`; there
+is no exact basename, the module name carries a build-identity hash), and `match`,
+the name of the **rule** a gate applies (`basename_fnmatch` — fnmatch the glob
+against the basename of a mapped `.so`). The chain is **contract → pin →
+fingerprint, with a refusal at each link**:
+
+* `tessera_runtime_contract` parses the table and **refuses a contract that does
+  not publish it** — "does not say what it loads" is not "loads nothing" — refuses
+  an empty table, and refuses a `match` rule it does not implement rather than
+  approximating the predicate.
+* `require_pin_native_extensions_match_contract` refuses a pin whose
+  `serving_native_extensions` is not the pinned contract's table, in both
+  directions, with a field-level diff. **Scope, stated:** `load_tessera_contract`
+  calls it, so an allocation under the **dev pin** refuses on drift, and the test
+  suite runs it against the installed contract on every run — but the *release*
+  admission path (`tessera_lane_attested` → `_pinned_serving_table` →
+  `lane_eligibility`) does not read this module at all, so on the day a tag is
+  cut the pin↔contract link is test-enforced, not runtime-enforced. Wiring it
+  into that path is a separate change. The table is part of
+  `contract_answer`, so a library rename re-stales the reviewed answer instead of
+  widening silently (`source`/`loaded_by` stay identity and travel into
+  provenance).
+* `tools/serve_fingerprint.py` is stdlib-only and runs inside the serving container
+  from a bootstrapped five-file snapshot, so it can read neither file at runtime and
+  carries the same rows in `TESSERA_NATIVE_EXTENSIONS`;
+  `tests/test_tessera_serve_fingerprint.py` refuses any disagreement with the pin,
+  **and refuses a predicate that is not the rule the contract names**.
+
+Two holes this closed. Until 2026-09-03 no Tessera name was matched at all, so a
+serve running Tessera's own native span-2 decode fingerprinted identically to a
+stock serve — the one lane whose entire point is a custom decoder was the one lane
+§7.4's identical-residency rule could not see. Then it was matched by
+`re.escape("tessera_nvfp4")` anywhere in the mapped path, from a hand-written pin
+that was already wrong by one character (`tessera_nvfp4` where the load path's
+constant is `tessera_nvfp4_`) — a predicate that is not the runtime's, and that
+answers yes for `/root/.cache/torch_extensions/tessera_nvfp4_9f2c/unrelated.so`.
+
+**Open, and named:** the contract's `when_unavailable` block says a *resident*-mode
+serve whose `.so` cannot build keeps serving on a named substitute decoder
+(`torch_materialize_stock`) while a *streamed*-mode serve refuses. The fingerprint
+observes `/proc/maps`, not configuration, so those two serves already hash
+differently — but the manifest does not record *which* pinned library was expected
+and what runs instead, so a differing fingerprint reads as "±20% alignment drift,
+not evidence" when the honest reading is "this arm measured a substituted decoder
+and says nothing about the lane". `TESSERA_SERVE_MODE` is likewise absent from the
+manifest, so two serves that both map the `.so` in different residency modes hash
+identically (#142, #143).
 
 ## 10. Hardware & environment
 

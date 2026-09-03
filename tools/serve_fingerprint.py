@@ -40,6 +40,7 @@ import argparse
 import ast
 import base64
 import csv
+import fnmatch
 import hashlib
 import importlib
 import importlib.metadata as importlib_metadata
@@ -121,31 +122,124 @@ SERVER_ENV_ALLOWLIST = (
     "PYTHONSAFEPATH",
 )
 
-#: The extensions whose residency moves the numbers (§7.4).
+#: Extensions whose residency moves the numbers (§7.4) and that are matched by
+#: a SUBSTRING of the mapped path.
 # The Gridbook `.so` was named here until that lane retired 2026-09-02
 # (archive/gridbook_lane_2026-09-02/). A lane whose kernels are not matched
-# here fingerprints as "nothing resident", so any new serving lane must add
-# its extension basenames.
-#
-# The Tessera alternatives below belong to the PIN, not to this file's
-# judgement: they are the basename prefixes
-# `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json` declares in
-# `serving_extension_basenames`, i.e. the CUDA extensions the pinned Tessera
-# release's plugin loads into a serving process. This module is stdlib-only by
-# construction (it runs inside the serving container from a bootstrapped
-# snapshot that ships five tool files and no package data), so it cannot READ
-# that pin at runtime and carries the tuple instead;
-# `tests/test_tessera_serve_fingerprint.py` refuses any disagreement between
-# the two, which is what keeps this a copy of the pin rather than a guess
-# about the runtime. Until 2026-09-02 no Tessera name was here at all, so a
-# serve running Tessera's own native span-2 decode fingerprinted identically
-# to a stock serve and §7.4's "identical extension residency" rule could not
-# see the one lane whose whole point is a custom decoder.
-TESSERA_EXTENSION_BASENAMES = ("tessera_nvfp4",)
-EXTENSION_PATTERN = re.compile(
+# here fingerprints as "nothing resident", so any new serving lane must be
+# matched -- but a lane whose runtime PUBLISHES how to match its libraries
+# belongs in `TESSERA_NATIVE_EXTENSIONS` below and not in this alternation:
+# a substring search is this file's own predicate, and only the runtime's is
+# the runtime's.
+SUBSTRING_EXTENSION_PATTERN = re.compile(
     r"prismaquant|pq_(?:cb|mxfp8|fp8_source)|flashinfer|"
-    r"causal_conv1d|fla|"
-    + r"|".join(re.escape(name) for name in TESSERA_EXTENSION_BASENAMES))
+    r"causal_conv1d|fla")
+
+#: The rule name a published table uses to say "fnmatch the glob against the
+#: BASENAME of a mapped `.so`".  Tessera's contract publishes it as a value
+#: (`native_extensions[].match`) rather than as prose, precisely because a
+#: consumer cannot otherwise tell a stem from a prefix from a pattern.
+MATCH_BASENAME_FNMATCH = "basename_fnmatch"
+
+#: The CUDA extensions the pinned Tessera release's plugin loads into a
+#: serving process, and HOW to recognise them.
+#
+# These rows belong to the pinned Tessera RUNTIME CONTRACT, not to this file's
+# judgement and not to a hand-written pin: since Tessera contract v7 the
+# plugin publishes `native_extensions`, and each row's `module_name_prefix` is
+# the very constant its JIT load path passes to `cpp_extension.load`. There is
+# no exact basename to name -- the module name carries a build-identity hash,
+# so the library on disk is `tessera_nvfp4_<identity>.so` -- which is why the
+# table publishes a glob plus the `match` rule to apply it with.
+#
+# The chain is contract -> pin -> here, with a refusal at each link. This
+# module is stdlib-only by construction (it runs inside the serving container
+# from a bootstrapped snapshot that ships five tool files and no package
+# data), so it can read neither the contract nor
+# `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json` at runtime
+# and carries the rows instead;
+# `tessera_runtime_contract.require_pin_native_extensions_match_contract`
+# refuses a pin that is not the contract's table, and
+# `tests/test_tessera_serve_fingerprint.py` refuses a table here that is not
+# the pin's -- and refuses this file's predicate if it stops agreeing with the
+# rule the contract names.
+#
+# Until 2026-09-03 no Tessera name was matched at all, so a serve running
+# Tessera's own native span-2 decode fingerprinted identically to a stock
+# serve and §7.4's "identical extension residency" rule could not see the one
+# lane whose whole point is a custom decoder. Then it was matched by
+# `re.escape("tessera_nvfp4")` anywhere in the mapped path -- a predicate that
+# is not the runtime's, and that answers yes for
+# `/root/.cache/torch_extensions/tessera_nvfp4_9f2c/unrelated.so`.
+TESSERA_NATIVE_EXTENSIONS = (
+    {
+        "module_name_prefix": "tessera_nvfp4_",
+        "filename_glob": "tessera_nvfp4_*.so",
+        "match": MATCH_BASENAME_FNMATCH,
+    },
+)
+
+
+def _basename_fnmatch(path: str, entry: Mapping[str, str]) -> bool:
+    """`fnmatch` the row's glob against the basename of a mapped library.
+
+    `fnmatch.fnmatch` and not `fnmatchcase` because it is the call the
+    publishing runtime's own validator and reference test make, and "apply the
+    rule the table names" means the same predicate rather than a defensible
+    one.  (They differ only where `os.path.normcase` is not the identity, i.e.
+    not on the Linux serving container.)
+    """
+    return fnmatch.fnmatch(os.path.basename(path), entry["filename_glob"])
+
+
+#: Every `match` rule this module implements.  A row naming anything else is
+#: REFUSED at import rather than matched with a rule of this file's choosing:
+#: silently falling back to a substring search is how a fingerprint comes to
+#: report a predicate the runtime never published.
+_MATCH_RULES = {MATCH_BASENAME_FNMATCH: _basename_fnmatch}
+
+
+def extension_predicate(entry: Mapping[str, str]):
+    """The callable a published row's `match` rule names, or a refusal."""
+    rule = entry.get("match")
+    if rule not in _MATCH_RULES:
+        raise ValueError(
+            f"native extension row {entry!r} names match rule {rule!r}, which "
+            f"this fingerprint does not implement (it knows "
+            f"{sorted(_MATCH_RULES)}). A rule is published as a value because "
+            "the predicate is not guessable from the glob, so an unknown rule "
+            "is refused rather than approximated."
+        )
+    return _MATCH_RULES[rule]
+
+
+# Fail at import, not at scan time: an unmatched row makes a Tessera serve
+# fingerprint as a stock serve, and a scan that silently matched nothing is
+# exactly the invisible failure §7.4 exists to prevent. The empty table is
+# refused for the same reason the pin and the contract reader refuse it --
+# "publishes nothing loadable" makes every serve fingerprint identical on the
+# one axis §7.4 keys reproducibility on.
+if not TESSERA_NATIVE_EXTENSIONS:
+    raise ValueError(
+        "TESSERA_NATIVE_EXTENSIONS is empty: a serve that maps the pinned "
+        "runtime's decoder would fingerprint identically to a stock serve")
+for _entry in TESSERA_NATIVE_EXTENSIONS:
+    extension_predicate(_entry)
+del _entry
+
+
+def matches_tracked_extension(path: str) -> bool:
+    """Is this mapped library one whose residency moves the numbers?
+
+    Two arms, because the tracked lanes answer the question two ways: the
+    substring alternation for libraries this repository recognises by name,
+    and -- for a runtime that publishes its own loadable libraries -- the rule
+    that runtime names, applied to the glob it publishes.
+    """
+    if SUBSTRING_EXTENSION_PATTERN.search(path):
+        return True
+    return any(extension_predicate(entry)(path, entry)
+               for entry in TESSERA_NATIVE_EXTENSIONS)
 
 #: Packages whose version pins the numeric stack.
 TRACKED_PACKAGES = (
@@ -683,7 +777,7 @@ def residency_scan(
                 continue
             if ".so" not in path:
                 continue
-            if EXTENSION_PATTERN.search(path):
+            if matches_tracked_extension(path):
                 found.add(os.path.basename(path))
     return sorted(found), readable, unreadable
 

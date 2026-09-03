@@ -553,10 +553,14 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
     """
     answer = trc.contract_answer(trc.load_tessera_contract())
     assert set(answer) == {"schema", "lane_schema", "quant_method",
-                           "families", "cells"}
+                           "native_extensions", "families", "cells"}
     flat = repr(answer)
+    # ``native_extensions`` is answer because the §7.4 fingerprint gate reads
+    # it; the two fields of it that name files in the RUNTIME's own tree move
+    # nothing on this side, so they stay identity like ``plugin_version``.
     for identity_field in ("contract_version", "plugin_version", "attested_on",
-                           "rationale", "detail", "changelog"):
+                           "rationale", "detail", "changelog",
+                           "csrc/", "loaded_by"):
         assert identity_field not in flat, (
             f"{identity_field} is identity or prose, not an answer")
     for family in ("TESSERA_E2M1_K2", "TESSERA_E4M3_K1", "TESSERA_BF16_K1"):

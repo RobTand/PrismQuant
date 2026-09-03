@@ -25,25 +25,46 @@ three fields in this file, and the constants
 `prismaquant/tessera_serving_runtime_pin.py`. The reader requires the file to
 equal the constants, so neither half admits anything alone.
 
-**`serving_extension_basenames` names what the plugin LOADS, not what it
-executes.** Tessera's serving plugin JIT-builds a CUDA decoder and loads it as
-`tessera_nvfp4_<identity>.so` (`tessera/serving/ext.py`), and §7.4's
-reproducibility contract keys KL comparability on whether a lane's `.so` was
-resident in the serving process. `tools/serve_fingerprint.py` is stdlib-only by
-construction -- it runs *inside* the serving container from a bootstrapped
-snapshot of five tool files and no package data -- so it cannot read this pin at
-runtime and carries the same tuple as a constant;
-`tests/test_tessera_serve_fingerprint.py` refuses any disagreement between the
-two, which is what makes the tool's copy a copy of the pin rather than an
-opinion. The member is required, so the JSON and
-`tessera_serving_runtime_pin.py`'s member set move in one commit, the same rule
-the release constants carry. **This one field is mirrored, not derived**, and
-that is the gap: `runtime_contract.json` publishes what the plugin *executes*
-(`formats[]`, from which `lane_specs/tessera.json`'s `executes` list is derived
-under principle 14) but nothing about the extensions it *loads*. A
-`native_extensions` block in the contract would close it -- filed as
-RobTand/tessera#28. Until then this is the honest shape: a reviewed pin, tested
-against its only consumer, and a named issue for the derivation.
+**`serving_native_extensions` names what the plugin LOADS, not what it
+executes — and it is DERIVED, not asserted.** Tessera's serving plugin
+JIT-builds a CUDA decoder and loads it as `tessera_nvfp4_<identity>.so`
+(`tessera/serving/ext.py`), and §7.4's reproducibility contract keys KL
+comparability on whether a lane's `.so` was resident in the serving process:
+two KLs are comparable only across serves whose native-extension residency
+matches. Since Tessera contract v7 the runtime publishes that itself, in
+`native_extensions`, as three values a consumer can act on — the
+`module_name_prefix` the JIT load path itself passes to `cpp_extension.load`,
+the `filename_glob` that produces (there is no exact basename: the module name
+carries a build-identity hash), and `match`, the name of the RULE a gate
+applies (`basename_fnmatch`).
+
+The chain is **contract → pin → fingerprint, with a refusal at each link**:
+
+* `tessera_runtime_contract.require_pin_native_extensions_match_contract`
+  refuses a pin whose rows are not the pinned contract's table, in both
+  directions — a library the contract publishes and the pin omits makes the
+  fingerprint go quietly short, and a library the pin invents is a claim about
+  a runtime that does not load it. `contract_answer` carries the table, so a
+  Tessera commit that renames the library re-stales the dev pin with a
+  field-level diff instead of widening silently.
+* `tools/serve_fingerprint.py` is stdlib-only by construction — it runs
+  *inside* the serving container from a bootstrapped snapshot of five tool
+  files and no package data — so it cannot read either file at runtime and
+  carries the same rows as a constant;
+  `tests/test_tessera_serve_fingerprint.py` refuses any disagreement, and also
+  refuses a tool whose PREDICATE stops being the rule the contract names.
+* the member is required, so the JSON and `tessera_serving_runtime_pin.py`'s
+  member set move in one commit, the same rule the release constants carry.
+
+History worth keeping: until 2026-09-03 this field was a hand-written
+`serving_extension_basenames` with nothing here able to refuse it on drift
+(principle 14 read backwards), and it was already wrong by one character —
+`"tessera_nvfp4"` where the load path's constant is `"tessera_nvfp4_"`. The
+fingerprint also matched it with a bare substring search over the whole mapped
+path, which answers yes for
+`/root/.cache/torch_extensions/tessera_nvfp4_9f2c/unrelated.so` and is not the
+runtime's predicate. RobTand/tessera#28 published the table; PrismaQuant #133
+consumed it.
 
 **The repository is local-only today.** `repository` is the reviewed identity
 the release will be cut from; the tree lives at `/home/rob/tessera` and has not
