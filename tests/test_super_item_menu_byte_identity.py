@@ -45,10 +45,15 @@ rather than the aggregation:
     a 9-member packed group's ``predicted_dloss`` is one builtin ``sum()``
     over floats, and CPython 3.12 gave that ``sum()`` Neumaier compensated
     summation (gh-100425) where 3.11 sums naively left-to-right.  Same
-    aggregation, same inputs, 1-2 ulp apart.  Measured: swapping ONLY the
-    summation algorithm reproduces all eight divergent values exactly,
-    including the three CI reported.  (That CI report blamed a numpy skew.
-    There is no numpy anywhere in this call chain.)
+    aggregation, same inputs, a fraction of a ulp apart.  Measured on this
+    interpreter (3.12.3, where ``sum([1e16, 1.0, -1e16])`` returns ``1.0``,
+    so the compensation is live) by shadowing ``sum`` inside
+    ``allocator_candidates`` while the payload is built: of the 48 float
+    reductions the five scenarios run (lengths 2, 3, 6 and 9), 6 differ from
+    the naive left-to-right accumulation of the same terms, the worst by
+    0.833 ulps of ``eps * |value|`` -- against the 16-ulp bound below.  No
+    numpy takes part in this call chain, so the interpreter's reduction is
+    the whole of the difference.
 
 An exact pin on those four therefore asserted summation order, not the
 property this module exists to protect -- the same defect, and the same fix,
@@ -108,11 +113,12 @@ _FLOAT_FIELDS = frozenset({
 # sum whose condition number is 1, is a bound near 9 ulps; 16 is the next
 # power of two above it and matches the multiplier PR #90 derived the same way.
 #
-# Measured against the 3.11 reduction, the worst divergence across all five
-# scenarios is 1.5 ulps in these units (2.0 ulps of the value's own spacing),
-# against a bound of 16 -- so the tolerance is neither tuned to the observed
-# noise nor a headroom guess.  ``test_the_golden_is_load_bearing`` records how
-# large a driver perturbation the bound still catches.
+# Measured against the naive left-to-right reduction 3.11's ``sum()`` used
+# (the module docstring records the check), the worst divergence across all
+# five scenarios is 0.833 ulps in these units, against a bound of 16 -- so the
+# tolerance is neither tuned to the observed noise nor a headroom guess.
+# ``test_the_golden_is_load_bearing`` records how large a driver perturbation
+# the bound still catches.
 _FLOAT_TOLERANCE_ULPS = 16.0
 _FLOAT64_EPS = sys.float_info.epsilon
 
@@ -554,9 +560,10 @@ def test_the_golden_is_load_bearing():
     NUMERIC: scale every member's predicted dloss by 1 + 1e-12.  This is the
     tooth the tolerance could blunt, so it is asserted in-tree rather than
     only recorded in a commit message.  1e-12 relative sits ~280x above the
-    3.55e-15 bound and ~3000x above the largest reduction difference measured
-    (1.5 ulps), so it can neither flake nor pass.  Bisected on this tree:
-    1e-14 is CAUGHT (56 mismatches), 1e-15 is NOT -- the gate resolves a
+    3.55e-15 bound and far above the largest reduction difference measured
+    (0.833 ulps), so it can neither flake nor pass.  Bisected on this tree:
+    1e-14 is CAUGHT (56 mismatches, as is 1e-12), 1e-15 is NOT -- the gate
+    resolves a
     driver change nine orders of magnitude finer than the 1e-5 / 1e-6
     threshold PR #90 settled for in float32.
     """
