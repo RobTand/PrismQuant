@@ -14,6 +14,7 @@ afterwards are the exact ones (dominance, never a hull), and pin that a menu
 with no Tessera rung on it behaves exactly as it did before any of this
 existed.
 """
+import hashlib
 from fractions import Fraction
 
 import pytest
@@ -301,27 +302,131 @@ def test_a_rate_the_contract_does_not_publish_is_unattested_not_backed(dev_pin):
     assert "R1023" in off.detail and "[1024]" in off.detail
 
 
-def test_the_dev_pin_refuses_a_commit_it_was_not_written_against(monkeypatch):
-    """A stale pin raises. It never degrades to 'unattested'.
+def test_a_prose_only_tessera_edit_does_not_re_stale_the_pin(dev_pin, monkeypatch, tmp_path):
+    """Issue #38, the whole point: the pin gates on the ANSWER, not the bytes.
 
-    Degrading would turn a pin pointing at the wrong Tessera into a silently
-    empty menu -- an allocation that looks like a correct fail-closed and is
-    actually a mis-read table.
+    Rewrite every prose field the contract carries, reorder its keys, bump
+    ``contract_version``, and hand the reader a file with a different sha256.
+    Not one value a gate reads has moved, so the read must succeed -- because
+    principle 14 says prose explains and is never a value a gate reads, and a
+    pin that fired on it turned PrismaQuant's attested path off on every
+    Tessera commit that touched a comment.
     """
-    monkeypatch.setenv(trc.TESSERA_DEV_PIN_ENV, "0" * 40)
-    with pytest.raises(trc.TesseraContractError, match="not the commit"):
+    import json as _json
+
+    payload = _json.loads(trc.contract_path().read_text(encoding="utf-8"))
+    payload["contract_version"] = int(payload["contract_version"]) + 1
+    payload["changelog"] = [{"contract_version": 999, "change": "prose only"}]
+    for entry in payload["formats"]:
+        entry["detail"] = "rewritten prose that no gate reads"
+    for cell in payload["lane_eligibility"]["cells"]:
+        cell["rationale"] = "rewritten prose that no gate reads"
+        cell["detail"] = "also rewritten"
+    for unit in payload["tensor_parallel"].get("units", ()):
+        for axis in unit.get("loader_axes", ()) or ():
+            if isinstance(axis, dict):
+                axis["reason"] = "rewritten prose that no gate reads"
+    # Reverse every mapping's key order and both arrays the reader iterates.
+    payload = {k: payload[k] for k in reversed(list(payload))}
+    payload["formats"] = list(reversed(payload["formats"]))
+    payload["lane_eligibility"]["cells"] = list(
+        reversed(payload["lane_eligibility"]["cells"]))
+
+    moved = tmp_path / "runtime_contract.json"
+    moved.write_text(_json.dumps(payload, indent=1), encoding="utf-8")
+    assert (hashlib.sha256(moved.read_bytes()).hexdigest()
+            != trc.TESSERA_DEV_PIN_CONTRACT_SHA256), "the bytes must differ"
+    monkeypatch.setattr(trc, "contract_path", lambda: moved)
+
+    contract = trc.load_tessera_contract()
+    assert contract is not None
+    assert contract.contract_version == payload["contract_version"]
+    ident = contract.identity()
+    assert ident["bytes_are_the_reviewed_bytes"] is False, (
+        "provenance must say the bytes drifted even though the answer did not")
+
+
+def test_a_moved_answer_refuses_and_names_the_field(dev_pin, monkeypatch, tmp_path):
+    """The other half: a value a gate reads moves, and the read raises.
+
+    It must name the field. A refusal that only says "the contract changed"
+    is the corruption warning #38 was filed about; the operator's next move is
+    to review what moved, so the message has to carry it.
+    """
+    import json as _json
+
+    payload = _json.loads(trc.contract_path().read_text(encoding="utf-8"))
+    for entry in payload["formats"]:
+        if entry["family"] == "TESSERA_E4M3_K1":
+            entry["attested_rungs_q256"] = [1024, 1280]
+            entry.pop("candidate_rungs_q256", None)
+    moved = tmp_path / "runtime_contract.json"
+    moved.write_text(_json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(trc, "contract_path", lambda: moved)
+
+    with pytest.raises(trc.TesseraContractError) as exc:
+        trc.load_tessera_contract()
+    msg = str(exc.value)
+    assert "re-review" in msg
+    assert "families[TESSERA_E4M3_K1].attested_rungs_q256" in msg
+    assert "[1024]" in msg and "[1024, 1280]" in msg
+    assert "not a corruption warning" in msg
+
+
+def test_a_new_cell_is_a_moved_answer_even_though_nothing_was_removed(
+        dev_pin, monkeypatch, tmp_path):
+    """Additive is not free. A cell PrismaQuant never reviewed attests routes.
+
+    Tessera's changelog calls a family-adding edit ADDITIVE, and for a v1
+    *reader* it is. For an *admission gate* it is not: a new cell admits units
+    that no human on this side looked at. Contract v5 adding the BF16 family
+    is exactly that edit, which is why the gate has to fire on it.
+    """
+    import copy
+    import json as _json
+
+    payload = _json.loads(trc.contract_path().read_text(encoding="utf-8"))
+    cells = payload["lane_eligibility"]["cells"]
+    extra = copy.deepcopy(cells[0])
+    extra["id"] = extra["id"] + "_invented"
+    cells.append(extra)
+    moved = tmp_path / "runtime_contract.json"
+    moved.write_text(_json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(trc, "contract_path", lambda: moved)
+
+    with pytest.raises(trc.TesseraContractError, match="NEW, not in the reviewed"):
         trc.load_tessera_contract()
 
 
-def test_the_dev_pin_refuses_a_contract_whose_bytes_are_not_its_own(dev_pin, monkeypatch):
-    """The sha is the leg that attests; the commit is only declared.
+def test_the_reviewed_answer_is_the_installed_one(dev_pin):
+    """Anti-staleness: the literal must describe the Tessera on this box.
 
-    An rsync'd source tree is not a git checkout and cannot be asked its HEAD,
-    so the bytes the reader consumed are what travels.
+    Without this the pin drifts the other way -- a literal nobody regenerated
+    keeps passing against a contract nobody read, because the only thing that
+    reads the literal is the gate that compares it to itself.
     """
-    monkeypatch.setattr(trc, "TESSERA_DEV_PIN_CONTRACT_SHA256", "f" * 64)
-    with pytest.raises(trc.TesseraContractError, match="hashes to"):
-        trc.load_tessera_contract()
+    contract = trc.load_tessera_contract()
+    assert trc.contract_answer(contract) == trc.TESSERA_DEV_PIN_ANSWER
+
+
+def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
+    """``contract_answer`` is the principle-14 line, so state where it sits.
+
+    Identity travels into provenance and must NOT be in the answer, or a
+    version bump is a re-review; the values an admission decision is made of
+    MUST be, or the gate is decorative.
+    """
+    answer = trc.contract_answer(trc.load_tessera_contract())
+    assert set(answer) == {"schema", "lane_schema", "quant_method",
+                           "families", "cells"}
+    flat = repr(answer)
+    for identity_field in ("contract_version", "plugin_version", "attested_on",
+                           "rationale", "detail", "changelog"):
+        assert identity_field not in flat, (
+            f"{identity_field} is identity or prose, not an answer")
+    for family in ("TESSERA_E2M1_K2", "TESSERA_E4M3_K1", "TESSERA_BF16_K1"):
+        assert set(answer["families"][family]) == {
+            "reader_rate_range_q256", "attested_rungs_q256", "max_world_size"}
 
 
 def test_reading_the_contract_does_not_import_the_serving_plugin():

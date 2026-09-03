@@ -107,8 +107,8 @@ Re-stamped (2026-09-02,
 `tessera/continuous-menu`) for the **Tessera dev pin, the H seam and the group
 fold's measured cost** (§4.10): PrismaQuant now reads Tessera's own packaged
 `runtime_contract.json` through a named development override
-(`PRISMAQUANT_TESSERA_DEV_PIN`, commit- and sha-checked, refusing rather than
-degrading to "unattested"), and that table publishes **one rung per family and
+(`PRISMAQUANT_TESSERA_DEV_PIN`, checked on the contract's *answer* rather than
+its bytes since issue #38, refusing rather than degrading to "unattested"), and that table publishes **one rung per family and
 `max_world_size: 1`**, so the attested menu is two points and empty above tp=1
 while the research menu is ~3000 rungs per unit. Tensor-parallel legality now
 asks `tessera.layout.shard_granularity` rather than deriving a period locally;
@@ -4017,13 +4017,36 @@ pinned `route_admission` answers `unattested` — *absence of a claim*, not
 Tessera now packages its own contract (`tessera/serving/runtime_contract.json`,
 schema `tessera.runtime-contract.v1`), read by `tessera_runtime_contract.py`. No
 Tessera RELEASE tag has been cut, so production admission stays fail-closed; the
-development override `PRISMAQUANT_TESSERA_DEV_PIN=<commit>` must equal
-`TESSERA_DEV_PIN_COMMIT` **and** the installed contract's sha256 must equal
-`TESSERA_DEV_PIN_CONTRACT_SHA256`, or the read raises — it never degrades to
-`unattested`, because a stale pin that silently empties the menu is exactly what
-the pin exists to prevent. The commit is declared and the sha is what attests: a
-worktree rsync'd to a second box is not a git checkout and cannot be asked its
-HEAD. The whole identity travels into provenance as `tessera_dev_pin`.
+development override `PRISMAQUANT_TESSERA_DEV_PIN` opts in (any non-empty
+value, recorded verbatim in provenance), and the installed contract's **answer**
+— every value a gate reads, canonicalised by `contract_answer()` — must equal
+`TESSERA_DEV_PIN_ANSWER` or the read raises with a field-level diff naming what
+moved. It never degrades to `unattested`, because a stale pin that silently
+empties the menu is exactly what the pin exists to prevent.
+
+**The pin gates on the answer, not on identity** (issue #38, fixed 2026-09-02).
+It used to compare the environment's value against an exact commit *and* the
+file's sha256 against a recorded one. Both legs fired on identity, and the
+thing they name is an editable checkout on the same box, so every Tessera
+commit that touched a `detail` string, a changelog paragraph or
+`contract_version` turned PrismaQuant's attested path off and seven tests red
+in a repo nobody was editing — while the rungs' meaning had not moved. That is
+principle 14 read backwards: prose explains and is never a value a gate reads,
+so a prose edit is not a thing to re-review. `contract_answer()` draws that
+line mechanically — families, reader rate ranges, attested rungs, world-size
+ceilings, every cell field the route gate reads, and the canonical
+`quant_method`; **not** `contract_version`, `plugin_version`, `attested_on`,
+`detail` or `rationale`, which are identity or prose and travel into
+provenance instead. A commit that moves no answer passes silently; one that
+moves any answer — including *adding* a family or a cell, which Tessera's
+changelog correctly calls additive for a reader and which is emphatically not
+additive for an admission gate — refuses and says which field.
+`TESSERA_DEV_PIN_COMMIT` and `TESSERA_DEV_PIN_CONTRACT_SHA256` survive as the
+record of the review: the build and the bytes a human read when the answer was
+accepted. Provenance carries both, plus the bytes *this* run read and a
+`bytes_are_the_reviewed_bytes` flag, so prose-only drift is visible without
+being fatal. This is deliberately weaker than a release pin and says so; a
+Tessera RELEASE tag is what retires the override.
 
 Under that pin the attested menu is **two rungs, not a range**:
 
@@ -4035,7 +4058,18 @@ Under that pin the attested menu is **two rungs, not a range**:
 Both are the family's native terminal rate, 0.078 bpp apart, so **the attested
 menu has no rate axis at all** — the continuous axis is priced and allocatable
 only under `PRISMAQUANT_TESSERA_MENU=research`, and widening it is a change to
-Tessera's published `candidate_rungs_q256`, not to anything here. Research mode
+Tessera's published `attested_rungs_q256`, not to anything here.
+
+**Two, not three, and the third one's absence is PrismaQuant's.** Since Tessera
+contract v5 the table publishes a *third* attested family, `TESSERA_BF16_K1` at
+`q256 1792` with two dense sm_121 cells. It is not on this menu, and not
+because anything here refuses it: `tessera_formats._HARDWARE_BASES` holds
+`E2M1` and `E4M3` only, and a BF16 base would be refused one level down by
+`ANCHOR_BUDGET_BITS = 16` — a 16-bit payload costs `2**16` anchors per trellis
+step under the budget's arity-only arithmetic. That is issue #14: the budget
+has to become body-aware before the family can be constructed at all. So the
+attested menu being two rungs is a producer-side gap with a filed cause, not a
+statement about what the runtime serves. Research mode
 admits every serialisable rung and stamps `route_status=unattested` on each so
 the export gate fails closed on it (principles 1 and 9: an honestly priced rung
 is never removed from the menu; the *export* is where an unbacked route is

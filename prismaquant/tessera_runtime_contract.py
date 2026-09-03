@@ -21,19 +21,41 @@ the route-status vocabulary, imported rather than restated.
 Tessera RELEASE tag exists, and none has been cut.  A development override is
 therefore explicit, named, and loud:
 
-* ``PRISMAQUANT_TESSERA_DEV_PIN=<commit>`` must equal
-  :data:`TESSERA_DEV_PIN_COMMIT` -- the exact Tessera commit this pin was
-  written against -- or the read raises.
-* the installed contract's sha256 must equal
-  :data:`TESSERA_DEV_PIN_CONTRACT_SHA256` or the read raises.  The commit is
-  *declared*; the sha is what actually travels, because a worktree rsync'd to
-  a second box is not a git checkout and cannot be asked its HEAD.
+* ``PRISMAQUANT_TESSERA_DEV_PIN=<anything non-empty>`` opts in.  The value is
+  recorded verbatim in provenance as what the operator asked for; it is not
+  the gate.
+* the installed contract's **answer** -- every value a gate reads, in the
+  vocabulary of :func:`contract_answer` -- must equal
+  :data:`TESSERA_DEV_PIN_ANSWER` or the read raises, with a field-level diff
+  naming what moved.
 * unset is production: no Tessera contract is read at all, and every rung
   stays ``unattested`` exactly as before.
 
 There is no third state.  A mismatch never degrades to "unattested" -- that
 would turn a stale pin into a silently empty menu, which is the failure mode
 this whole file exists to prevent.
+
+**Why the answer and not the bytes** (issue #38).  This pin used to compare
+the environment's value against an exact commit and the file's sha256 against
+a recorded one.  Both legs fired on *identity*, and the thing they name is an
+editable checkout on the same box, so every Tessera commit that touched the
+contract -- a prose ``detail``, a changelog paragraph, a ``contract_version``
+bump -- turned PrismaQuant's attested path off and a fistful of tests red in a
+repo nobody was editing, while the two rungs' meaning had not moved at all.
+That is principle 14 read backwards: prose fields explain, they are never a
+value a gate reads, so a prose edit is not a thing to re-review.  The gate now
+reads the answer.  A commit that moves no answer passes silently; a commit
+that moves one refuses and says which field, which is a review prompt rather
+than a corruption warning.  :data:`TESSERA_DEV_PIN_COMMIT` and
+:data:`TESSERA_DEV_PIN_CONTRACT_SHA256` survive as the *record of the review*
+-- the build and the bytes a human read when the answer was accepted -- and
+travel into provenance alongside the bytes this run actually read, so
+prose-only drift is visible without being fatal.
+
+This is deliberately weaker than a release pin and says so: it admits any
+Tessera whose table answers identically, which is exactly the claim
+PrismaQuant makes about it.  A Tessera RELEASE tag (issue #17) is still what
+retires the override.
 
 The contract's own identity (commit, sha, path, schema, contract_version)
 travels into every allocation's provenance as ``tessera_dev_pin`` so a
@@ -58,12 +80,14 @@ from .lane_eligibility import (
 __all__ = [
     "TESSERA_CONTRACT_SCHEMA",
     "TESSERA_DEV_PIN_COMMIT",
+    "TESSERA_DEV_PIN_ANSWER",
     "TESSERA_DEV_PIN_CONTRACT_SHA256",
     "TESSERA_DEV_PIN_ENV",
     "TESSERA_LANE_SCHEMA",
     "TesseraContract",
     "TesseraContractError",
     "TesseraRouteCell",
+    "contract_answer",
     "dev_pin_requested",
     "load_tessera_contract",
 ]
@@ -82,16 +106,105 @@ TESSERA_LANE_SCHEMA = "tessera.lane-eligibility.v3"
 #: The development override.  See the module docstring; there is no default.
 TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 
-#: The exact Tessera commit this pin was written against.  Declared, and
-#: compared against the environment's value so a stale export raises.
-TESSERA_DEV_PIN_COMMIT = "c6d52e2"
+#: The Tessera commit this pin's answer was reviewed against.  Declared and
+#: recorded; NOT compared to anything.  A moving ``master`` is not a review
+#: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.
+TESSERA_DEV_PIN_COMMIT = "c6d52e2b53e0fb4593e4fb828fab0f681c43563e"
 
-#: sha256 of ``tessera/serving/runtime_contract.json`` at that commit.  This is
-#: the leg that actually attests: an rsync'd source tree has no git history to
-#: interrogate, and the bytes are what the reader consumed.
+#: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
+#: bytes a human read when the answer below was accepted.  Recorded, and
+#: compared into provenance against the bytes this run read, so prose-only
+#: drift is visible; it is not the refusal.
 TESSERA_DEV_PIN_CONTRACT_SHA256 = (
     "0523b05b65607b2a9ab0faf4003f95553670de9d9210ae2fc57d445c89073028"
 )
+
+#: The ANSWER this pin was reviewed against -- every value a gate reads, in
+#: the vocabulary of :func:`contract_answer`.  This literal, not the file's
+#: bytes, is what refuses: a Tessera commit that rewrites prose, reorders keys
+#: or bumps ``contract_version`` publishes the same answer and does not
+#: re-stale the pin, while any move in a family, a rate range, an attested
+#: rung, a world-size ceiling, a cell or the canonical ``quant_method`` does --
+#: with a field-level diff naming it.  The git diff of this literal is the
+#: review.
+TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
+     'lane_schema': 'tessera.lane-eligibility.v3',
+     'quant_method': 'tessera',
+     'families': {'TESSERA_BF16_K1': {'reader_rate_range_q256': [256, 4096],
+                                      'attested_rungs_q256': [1792],
+                                      'max_world_size': 1},
+                  'TESSERA_E2M1_K2': {'reader_rate_range_q256': [896, 896],
+                                      'attested_rungs_q256': [896],
+                                      'max_world_size': 1},
+                  'TESSERA_E4M3_K1': {'reader_rate_range_q256': [256, 2048],
+                                      'attested_rungs_q256': [1024],
+                                      'max_world_size': 1}},
+     'cells': [['tessera_bf16_k1_dense_sm121_batch_mm_w16a16',
+                'sm_121',
+                'TESSERA_BF16_K1',
+                'dense',
+                'batch',
+                [1792],
+                'bf16_unquantized',
+                'backed_with_serve_flag',
+                'device_qualified',
+                'tessera',
+                ['TESSERA_SERVE_MODE=resident|streamed']],
+               ['tessera_bf16_k1_dense_sm121_decode_mm_w16a16',
+                'sm_121',
+                'TESSERA_BF16_K1',
+                'dense',
+                'decode',
+                [1792],
+                'bf16_unquantized',
+                'backed_with_serve_flag',
+                'device_qualified',
+                'tessera',
+                ['TESSERA_SERVE_MODE=resident|streamed']],
+               ['tessera_e2m1_k2_dense_sm121_batch_scaled_mm_w4a4',
+                'sm_121',
+                'TESSERA_E2M1_K2',
+                'dense',
+                'batch',
+                [896],
+                'e2m1_group16_ue4m3_static',
+                'backed_with_serve_flag',
+                'device_qualified',
+                'tessera',
+                ['TESSERA_SERVE_MODE=resident|streamed']],
+               ['tessera_e2m1_k2_dense_sm121_decode_scaled_mm_w4a4',
+                'sm_121',
+                'TESSERA_E2M1_K2',
+                'dense',
+                'decode',
+                [896],
+                'e2m1_group16_ue4m3_static',
+                'backed_with_serve_flag',
+                'device_qualified',
+                'tessera',
+                ['TESSERA_SERVE_MODE=resident|streamed']],
+               ['tessera_e4m3_k1_dense_sm121_batch_scaled_mm_w8a8',
+                'sm_121',
+                'TESSERA_E4M3_K1',
+                'dense',
+                'batch',
+                [1024],
+                'fp8_per_token_dynamic',
+                'backed_with_serve_flag',
+                'device_qualified',
+                'tessera',
+                ['TESSERA_SERVE_MODE=resident|streamed']],
+               ['tessera_e4m3_k1_dense_sm121_decode_scaled_mm_w8a8',
+                'sm_121',
+                'TESSERA_E4M3_K1',
+                'dense',
+                'decode',
+                [1024],
+                'fp8_per_token_dynamic',
+                'backed_with_serve_flag',
+                'device_qualified',
+                'tessera',
+                ['TESSERA_SERVE_MODE=resident|streamed']]]}
 
 #: Route statuses under which a cell says a native route EXECUTES.
 _NATIVE_ROUTE_STATUSES = frozenset(
@@ -130,8 +243,8 @@ class TesseraContract:
 
     #: ``family -> (lo, hi)`` inclusive q256 rate range the reader accepts.
     reader_rate_range: Mapping[str, tuple[int, int]]
-    #: ``family -> the rungs the contract publishes as candidates``.
-    candidate_rungs: Mapping[str, frozenset[int]]
+    #: ``family -> the rungs a ``lane_eligibility`` cell attests``.
+    attested_rungs: Mapping[str, frozenset[int]]
     cells: tuple[TesseraRouteCell, ...]
     #: ``family -> max tensor-parallel world size``, closed world.
     max_world_size: Mapping[str, int]
@@ -159,10 +272,22 @@ class TesseraContract:
         )
 
     def identity(self) -> dict:
-        """The ``tessera_dev_pin`` provenance block."""
+        """The ``tessera_dev_pin`` provenance block.
+
+        Records the review *and* the read: which Tessera build and bytes a
+        human accepted this answer against, which bytes this run actually
+        consumed, and whether the two are the same file.  They can differ
+        legitimately -- the gate is the answer, not the bytes -- and a
+        shipcard that could not tell the two apart would be asserting a
+        review it did not get.
+        """
         return {
+            "requested": dev_pin_requested(),
             "commit": self.commit,
             "contract_sha256": self.sha256,
+            "reviewed_contract_sha256": TESSERA_DEV_PIN_CONTRACT_SHA256,
+            "bytes_are_the_reviewed_bytes":
+                self.sha256 == TESSERA_DEV_PIN_CONTRACT_SHA256,
             "contract_path": self.path,
             "schema": TESSERA_CONTRACT_SCHEMA,
             "contract_version": self.contract_version,
@@ -172,9 +297,95 @@ class TesseraContract:
             "note": (
                 "development override: no Tessera RELEASE tag exists, so this "
                 "allocation's Tessera routes were admitted by the packaged "
-                "contract at the named commit rather than by a pinned release"
+                "contract, whose ANSWER (every value a gate reads) equals the "
+                "one reviewed at the named commit. The bytes need not be the "
+                "reviewed bytes; bytes_are_the_reviewed_bytes says which"
             ),
         }
+
+
+def contract_answer(contract: "TesseraContract") -> dict:
+    """Exactly the values a gate reads, canonicalised, and nothing else.
+
+    Principle 14's line, made mechanical.  ``detail``, ``rationale``, the
+    changelog and every other prose field explains; none of them is a value a
+    gate reads, so none of them appears here.  Neither do ``contract_version``,
+    ``plugin_version`` or ``attested_on``: those are the table's *identity*,
+    which travels into provenance, and a version bump that moved no answer is
+    not a thing to re-review.
+
+    What is here is what an admission decision is made of -- which families
+    exist, the rate range the decoder accepts for each, the rungs a cell
+    attests, the tensor-parallel ceiling, the canonical ``quant_method`` this
+    producer writes into the checkpoint, and every cell field the route gate
+    reads.  Two contracts with the same answer admit the same units.
+    """
+    return {
+        "schema": TESSERA_CONTRACT_SCHEMA,
+        "lane_schema": TESSERA_LANE_SCHEMA,
+        "quant_method": contract.quant_method,
+        "families": {
+            family: {
+                "reader_rate_range_q256": [int(rng[0]), int(rng[1])],
+                "attested_rungs_q256": sorted(
+                    int(r) for r in contract.attested_rungs.get(family, ())),
+                "max_world_size": int(contract.max_world_size.get(family, 0)),
+            }
+            for family, rng in sorted(contract.reader_rate_range.items())
+        },
+        "cells": sorted(
+            [
+                cell.cell_id,
+                cell.platform,
+                cell.family,
+                cell.structure,
+                cell.regime,
+                sorted(int(r) for r in cell.rungs_q256),
+                cell.activation_contract,
+                cell.route_status,
+                cell.qualification,
+                cell.requires_plugin,
+                sorted(cell.requires_serve_flags),
+            ]
+            for cell in contract.cells
+        ),
+    }
+
+
+def _answer_drift(reviewed: Mapping[str, Any], installed: Mapping[str, Any]
+                  ) -> list[str]:
+    """Field-level lines naming what moved, so the refusal is reviewable."""
+    lines: list[str] = []
+    for key in ("schema", "lane_schema", "quant_method"):
+        if reviewed.get(key) != installed.get(key):
+            lines.append(
+                f"  {key}: reviewed {reviewed.get(key)!r}, installed "
+                f"{installed.get(key)!r}")
+    r_fam, i_fam = reviewed.get("families", {}), installed.get("families", {})
+    for family in sorted(set(r_fam) | set(i_fam)):
+        if family not in r_fam:
+            lines.append(f"  families[{family}]: NEW, not in the reviewed answer")
+        elif family not in i_fam:
+            lines.append(f"  families[{family}]: GONE from the installed contract")
+        elif r_fam[family] != i_fam[family]:
+            for k in sorted(set(r_fam[family]) | set(i_fam[family])):
+                if r_fam[family].get(k) != i_fam[family].get(k):
+                    lines.append(
+                        f"  families[{family}].{k}: reviewed "
+                        f"{r_fam[family].get(k)!r}, installed "
+                        f"{i_fam[family].get(k)!r}")
+    r_cells = {tuple(c[:1])[0]: c for c in reviewed.get("cells", ())}
+    i_cells = {tuple(c[:1])[0]: c for c in installed.get("cells", ())}
+    for cell_id in sorted(set(r_cells) | set(i_cells)):
+        if cell_id not in r_cells:
+            lines.append(f"  cells[{cell_id}]: NEW, not in the reviewed answer")
+        elif cell_id not in i_cells:
+            lines.append(f"  cells[{cell_id}]: GONE from the installed contract")
+        elif list(r_cells[cell_id]) != list(i_cells[cell_id]):
+            lines.append(
+                f"  cells[{cell_id}]: reviewed {r_cells[cell_id]!r}, installed "
+                f"{i_cells[cell_id]!r}")
+    return lines
 
 
 def dev_pin_requested() -> str:
@@ -211,7 +422,7 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             "is refused rather than partially read."
         )
     reader_range: dict[str, tuple[int, int]] = {}
-    candidates: dict[str, frozenset[int]] = {}
+    attested: dict[str, frozenset[int]] = {}
     formats = _require(payload, "formats", path)
     if not isinstance(formats, Sequence) or isinstance(formats, (str, bytes)):
         raise TesseraContractError(f"{path}.formats must be a JSON array")
@@ -229,9 +440,21 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
         family = str(_require(entry, "family", where))
         lo, hi = (int(v) for v in _require(entry, "reader_rate_range_q256", where))
         reader_range[family] = (lo, hi)
-        candidates[family] = frozenset(
-            int(r) for r in _require(entry, "candidate_rungs_q256", where)
-        )
+        # ``attested_rungs_q256`` is the field's name since Tessera contract
+        # v2; ``candidate_rungs_q256`` is the deprecated alias it kept so the
+        # rename stayed additive, and Tessera's own reader refuses the two if
+        # they disagree.  Read the current name first so this reader survives
+        # the alias being dropped, and accept the alias alone so it can still
+        # read a v1 table.  Reading the alias *preferentially* is how the gap
+        # the rename closed would reopen: the alias never was the decodable
+        # set.
+        rungs = entry.get("attested_rungs_q256", entry.get("candidate_rungs_q256"))
+        if rungs is None:
+            raise TesseraContractError(
+                f"{where} publishes no 'attested_rungs_q256' (nor its "
+                "deprecated alias 'candidate_rungs_q256')"
+            )
+        attested[family] = frozenset(int(r) for r in rungs)
 
     lane = _require(payload, "lane_eligibility", path)
     if not isinstance(lane, Mapping):
@@ -287,7 +510,7 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
     method = payload.get("quant_method", {})
     return TesseraContract(
         reader_rate_range=reader_range,
-        candidate_rungs=candidates,
+        attested_rungs=attested,
         cells=tuple(cells),
         max_world_size=world,
         quant_method=str(method.get("canonical", "")),
@@ -319,19 +542,13 @@ def load_tessera_contract() -> "TesseraContract | None":
 
     ``None`` means the pin is not requested, which is production: no Tessera
     route is attested and the attested menu is empty.  Every other failure --
-    a commit that is not this pin's, a contract whose bytes are not this pin's,
-    a missing or malformed file -- raises.
+    a contract whose *answer* is not the reviewed one, a missing or malformed
+    file -- raises.  A mismatch never degrades to "unattested"; that would turn
+    a stale pin into a silently empty menu.
     """
     requested = dev_pin_requested()
     if not requested:
         return None
-    if requested != TESSERA_DEV_PIN_COMMIT:
-        raise TesseraContractError(
-            f"{TESSERA_DEV_PIN_ENV}={requested!r} is not the commit this pin "
-            f"was written against ({TESSERA_DEV_PIN_COMMIT}). The pin names one "
-            "exact Tessera build; pointing it at another would attest routes "
-            "against a table nobody read."
-        )
     path = contract_path()
     try:
         raw = path.read_bytes()
@@ -340,10 +557,18 @@ def load_tessera_contract() -> "TesseraContract | None":
             f"cannot read the packaged Tessera contract at {path}: {exc}"
         ) from exc
     sha = hashlib.sha256(raw).hexdigest()
-    if sha != TESSERA_DEV_PIN_CONTRACT_SHA256:
+    contract = _load_at(str(path), sha, TESSERA_DEV_PIN_COMMIT)
+    drift = _answer_drift(TESSERA_DEV_PIN_ANSWER, contract_answer(contract))
+    if drift:
         raise TesseraContractError(
-            f"{path} hashes to {sha}, not the {TESSERA_DEV_PIN_CONTRACT_SHA256} "
-            f"this pin recorded for {TESSERA_DEV_PIN_COMMIT}. The installed "
-            "Tessera is not the one the pin names."
+            "Tessera moved and its answer moved with it -- re-review the pin.\n"
+            f"The pin in {__name__} was reviewed against Tessera "
+            f"{TESSERA_DEV_PIN_COMMIT} (contract sha256 "
+            f"{TESSERA_DEV_PIN_CONTRACT_SHA256}); {path} hashes to {sha} and "
+            "publishes a different answer:\n" + "\n".join(drift) + "\n"
+            "This is not a corruption warning. Read what moved, decide whether "
+            "PrismaQuant should admit it, and update TESSERA_DEV_PIN_ANSWER "
+            "(with the commit and sha) in the same commit -- that diff is the "
+            "review."
         )
-    return _load_at(str(path), sha, TESSERA_DEV_PIN_COMMIT)
+    return contract

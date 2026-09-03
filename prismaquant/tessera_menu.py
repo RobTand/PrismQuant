@@ -392,7 +392,7 @@ def route_admission(name: str) -> RouteAdmission:
                 )
         else:
             status = ROUTE_STATUS_UNATTESTED
-            published = sorted(contract.candidate_rungs.get(family.name, ()))
+            published = sorted(contract.attested_rungs.get(family.name, ()))
             detail = (
                 f"the pinned Tessera contract publishes {family.name} at "
                 f"rungs {published} and no native cell covers R{rung}"
