@@ -370,3 +370,58 @@ def test_the_tessera_lane_is_declared_and_advisory():
     assert any("release tag" in note.lower() for note in spec.notes)
     assert any("routed_moe" in note or "dense-only" in note.lower()
                for note in spec.notes)
+
+
+# ---------------------------------------------------------------------------
+# The provenance the answer travels under
+# ---------------------------------------------------------------------------
+def test_the_stamped_attestation_source_names_the_table_that_answered():
+    """``RouteAdmission.source`` is provenance, and provenance must not lie.
+
+    Until this test, every Tessera unit built without a development override
+    was stamped ``gridbook_serving_runtime_pin:lane_eligibility`` -- a module
+    archived on 2026-09-02 (``archive/gridbook_lane_2026-09-02/``) whose pin
+    no longer governs anything.  The table that actually answers is Tessera's
+    OWN packaged ``runtime_contract.json``, read through
+    ``tessera_render._pinned_serving_table``.  Principle 14 is about the
+    *value* a gate reads, not only about where the verdict comes from: a
+    correct verdict carrying the name of a retired runtime is still an
+    unattested claim about a runtime.
+    """
+    from prismaquant import tessera_menu as tm
+
+    table, _formats = tr._pinned_serving_table()
+    admission = tm.route_admission("TESSERA_E2M1_K2_R896")
+
+    assert "gridbook" not in admission.source
+    assert admission.source.startswith("tessera_packaged_contract:")
+    # and it names the release the table came from, so two runs against
+    # different packaged contracts cannot both claim "the Tessera contract".
+    assert table.runtime_version
+    assert admission.source.endswith(table.runtime_version)
+
+
+def test_the_unattested_detail_names_the_conjunct_that_actually_refused():
+    """The refusal today is the PIN's, and the detail has to say so.
+
+    The packaged contract publishes ``TESSERA_E2M1_K2`` and carries a
+    device-qualified native cell naming R896 -- the released-pin test above
+    proves it by admitting the same rung with only the release boundary
+    moved.  So a detail reading "the pinned serving release publishes no cell
+    covering this family and rate" is false about the contract on disk, and it
+    points a reader at re-pinning a table that already carries the row.
+    """
+    from prismaquant import tessera_menu as tm
+
+    admission = tm.route_admission("TESSERA_E2M1_K2_R896")
+    assert admission.route_status == tm.ROUTE_STATUS_UNATTESTED
+    assert "no cell covering" not in admission.detail
+    assert "pin" in admission.detail
+
+    # and a family the packaged contract never publishes keeps its OWN reason,
+    # so the two refusals are not spelled the same: this one is fixed by a
+    # contract that names the family, not by cutting a release tag.
+    absent = tm.route_admission("TESSERA_E2M1_K1_R640")
+    assert absent.route_status == tm.ROUTE_STATUS_UNATTESTED
+    assert "pin" not in absent.detail
+    assert "formats table publishes" in absent.detail

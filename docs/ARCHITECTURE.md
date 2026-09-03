@@ -1,8 +1,63 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-02 · `tessera/decouple-gridbook` — the integration branch,
-carrying `tessera/remove-gridbook` and `tessera/continuous-menu`. Stamps
+As of: 2026-09-02 · `pq-gridbook-debt` — the integration branch
+`tessera/decouple-gridbook` plus the Gridbook-residue pass. Stamps
 follow, newest first, each recording its own branch and date.
+Re-stamped (2026-09-02, `pq-gridbook-debt`) for **the attestation source the
+Tessera menu stamps** (§5.7). `RouteAdmission.source` read
+`gridbook_serving_runtime_pin:lane_eligibility` on every unit built without a
+development override — a module archived that morning
+(`archive/gridbook_lane_2026-09-02/`) whose pin stopped governing Tessera
+admission when Gridbook withdrew its Tessera lane. The table that actually
+answered was Tessera's OWN packaged `runtime_contract.json` (v0.1.0, publishing
+`TESSERA_E2M1_K2` and `TESSERA_E4M3_K1`), so the verdict was right and its
+provenance named a runtime that no longer speaks — the unattested assertion
+principle 14 refuses, in the field a gate reads. It now reads
+`tessera_packaged_contract:lane_eligibility:<version>`. The `detail` was wrong
+in the same place and for the same reason: it said the release "publishes no
+cell covering this family and rate" when the contract publishes exactly that
+rung, and what refuses is `_release_pin_satisfied()` — no Tessera release tag.
+`tessera_render.tessera_lane_admission` now returns the refusing conjunct
+beside the verdict and four honest strings replace the one wrong one; the
+VERDICT is still `tessera_lane_attested`, so patching it cannot invent a
+rationale the contract never gave. Two smaller residues in the same pass: the
+sample-parallel probe's retirement refusal moved to parse time (it sat below
+`load_num_hidden_layers`, so a retired mode's refusal needed a live checkpoint
+to reach, and was untestable without one), and the dead
+`ROUTE_GRIDBOOK_MXFP8_DENSE` constant — no reader anywhere in the tree — was
+deleted. Three more residues in the same pass, all of them a value or a
+string a reader would ACT on rather than prose they would merely read.
+(a) `serving_profile_specs/tessera_research_sm121.json` declared
+`"runtime": "gridbook_plugin"` and derived its `world_size: 1` from
+`gridbook_runtime_contract.0.9.1.json`'s tensor_parallel table — a runtime name
+and a contract file that both left the tree that morning. It now declares
+`vllm+tessera_plugin`, the same string `lane_specs/tessera.json` uses, and
+re-derives the ceiling from Tessera's own packaged contract, whose
+tensor_parallel table pins `TESSERA_E2M1_K2` and `TESSERA_E4M3_K1` at
+`max_world_size` 1 — same conclusion, checkable derivation. Its
+`_emulation_only_rationale` said the pinned Gridbook release publishes no cell
+naming any Tessera family; the packaged Tessera contract publishes both
+families, so what refuses is the pin, and the rationale now says which.
+(b) `allocator.py`'s `--serve-dispatch-table` help offered
+`prismaquant/serve_dispatch_tables/gridbook_gb10_2026-08-01.example.json`,
+which went to the archive with the lane while `example_table_path()` was
+correctly updated to return `None` — a CLI pointing at a file the tree does not
+ship. (c) `allocator.py`'s `--allow-quantized-pinned` help said `embed_tokens`
+is servable "on the GRIDBOOK lane only, via the quantized_embedding
+declaration". That was the only route, so with the lane retired there is now
+**no sanctioned route for a quantized token embedding at all** — a fifth
+capability loss alongside the four Tessera #21 names, recorded on that issue.
+Three smaller present-tense claims were re-scoped to the past in the same pass
+(`mxfp4_widen`'s `MXFP8_GROUPED_ROUTE_EVIDENCE`, which is a constant a gate
+reads and a test pins, and two `aqua_activation_cost` refusal strings that cite
+the CB lane's zero A-side as live). Guarded by
+`tests/test_serving_profiles.py::test_no_live_serving_profile_spec_names_the_retired_gridbook_runtime`,
+which requires every remaining mention of Gridbook in a live serving-profile
+spec to carry its retirement date — the machine-checkable half of "record the
+scope or do not record the claim". Three decisions were surfaced rather than
+taken: the `trellis_*` stack (#118), `check_serving_shape`'s fail-open (#120),
+and the 111 undated Gridbook mentions still in module docstrings and comments (#123). D34
+otherwise unchanged.
 Re-stamped (2026-09-02,
 `tessera/remove-gridbook`) for the **retirement of the Gridbook codebook
 lane** (§1.1, §3.5, §9, §9.2, D34). Robert, 2026-09-02: *"put Tessera in
@@ -3795,17 +3850,35 @@ each is a separate function so a refusal names which one:
 **`route_admission` is the one seam** (principle 14). It is the single function in
 the production path that reads a serving contract on Tessera's behalf; the menu,
 the campaign, the candidate gate, the lane stamp and the provenance all consume
-its `RouteAdmission`. When the Tessera serving lane publishes its own
-`runtime_contract.json`, the swap is this function's body and nothing else. It is
-memoised on `(name, the callables that answered)` rather than on the name alone —
-a cache over a runtime-contract read must not outlive the contract, and a plain
-name-keyed cache demonstrably inverted a pinned-release test that ran after one
-which patched the attestation.
+its `RouteAdmission`. It is **deliberately not memoised**: a cache over a
+runtime-contract read must not outlive the contract, and the key that would be
+needed is the identity of the contract itself, which the cache cannot state. A
+name-keyed `lru_cache` demonstrably inverted a pinned-release test that ran
+after one which patched the attestation; putting the callables in the key fixed
+that case and not the next (a test patching `_pinned_serving_table` changes the
+contract without changing any function object, and the stale verdict came
+straight back). The whole lookup is ~0.1 ms and `expand_tessera_menu` is
+memoised above it.
 
-**The default menu is two rungs under the dev pin, and empty without it.** The
-pinned Gridbook release publishes no Tessera cell, so with no Tessera contract
-pinned `route_admission` answers `unattested` — *absence of a claim*, not
-`unbacked` — for every rung and the default `attested` menu holds none of them.
+**The default menu is two rungs under the dev pin, and empty without it — and
+the reason is the PIN, not the table.** With no development contract pinned,
+`route_admission` reads Tessera's **own** packaged `runtime_contract.json`
+through `tessera_render._pinned_serving_table`, which publishes
+`TESSERA_E2M1_K2` and `TESSERA_E4M3_K1` and carries `device_qualified` native
+cells for both receipted rungs. What withholds them is
+`_release_pin_satisfied()` — no reviewed Tessera release tag exists — so every
+rung answers `unattested` (*absence of a claim*, not `unbacked`) and the default
+`attested` menu holds none of them. `tessera_lane_admission` returns that reason
+beside the verdict and `RouteAdmission.detail` carries it verbatim, because a
+rung refused by the pin and a rung refused by an absent cell need different
+fixes and must not read the same. `RouteAdmission.source` names the table that
+answered — `tessera_packaged_contract:lane_eligibility:<version>` in production,
+`tessera_dev_pin:runtime_contract:<commit>` under the override. It named
+`gridbook_serving_runtime_pin:lane_eligibility` until 2026-09-02; that pin is
+archived and stopped governing Tessera admission when Gridbook withdrew its
+Tessera lane, so the string had become a claim about a runtime that no longer
+answers — the unattested assertion principle 14 refuses, in the field a gate
+reads (`tests/test_tessera_lane_admission.py`).
 
 Tessera now packages its own contract (`tessera/serving/runtime_contract.json`,
 schema `tessera.runtime-contract.v1`), read by `tessera_runtime_contract.py`. No

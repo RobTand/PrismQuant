@@ -4487,6 +4487,18 @@ def _run_mtp_streaming_shard(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+#: Why the sample-parallel worker entry refuses. ONE spelling, raised from two
+#: places (parse time, and the deep branch it guards) so a restorer cannot
+#: delete one and leave the mode half-open with a different message.
+SAMPLE_PARALLEL_RETIRED = (
+    "sample-parallel probe is unavailable since 2026-09-02: its run contract "
+    "and per-worker source census were built on the strict-Ada FP8-CB "
+    "artifact census, archived with the Gridbook lane "
+    "(archive/gridbook_lane_2026-09-02/). Run without "
+    "--global-calibration-tensor/--sample-partition-index."
+)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -4675,6 +4687,13 @@ def main():
     ap.add_argument("--mm-max-text-len", type=int, default=128,
                     help="Max text tokens per multimodal calibration sample.")
     args = ap.parse_args()
+    if args.global_calibration_tensor is not None:
+        # Fires HERE, before the pairing checks and before any model read, so
+        # the refusal needs no checkpoint on disk to reach. It used to sit ~50
+        # lines below `load_num_hidden_layers(args.model)`, which made a
+        # retired mode's refusal depend on having a live model -- and made it
+        # untestable without one. See SAMPLE_PARALLEL_RETIRED.
+        raise SystemExit(SAMPLE_PARALLEL_RETIRED)
     if (args.global_calibration_tensor is None) != (
         args.sample_partition_index is None
     ):
@@ -4747,13 +4766,12 @@ def main():
         # refuse, so it refuses. Re-enabling sample parallelism means giving
         # the census a lane-independent source of truth, not deleting this
         # gate. Recorded as debt D34.
-        raise SystemExit(
-            "sample-parallel probe is unavailable since 2026-09-02: its run "
-            "contract and per-worker source census were built on the "
-            "strict-Ada FP8-CB artifact census, archived with the Gridbook "
-            "lane (archive/gridbook_lane_2026-09-02/). Run without "
-            "--global-calibration-tensor/--sample-partition-index."
-        )
+        #
+        # Unreachable from `main` since the same refusal moved to parse time
+        # above; kept as the second leg because everything below it is the
+        # SHAPE to restore, and a restorer must not be able to delete the
+        # parse-time guard and find this path silently live again.
+        raise SystemExit(SAMPLE_PARALLEL_RETIRED)
         from prismaquant.sample_parallel_probe import (
             _load_json_mapping,
             activation_scope_receipt,

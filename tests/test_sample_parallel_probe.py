@@ -76,10 +76,29 @@ def test_trusted_json_loader_rejects_nested_duplicate_member(tmp_path):
         producer._load_json_mapping(artifact)
 
 
-def test_incremental_sample_worker_requires_signed_cover():
+def test_the_sample_parallel_worker_entry_refuses_the_retired_mode():
+    """The mode is a recorded capability LOSS, and the refusal is the record.
+
+    Until 2026-09-02 this asserted the argparse pairing message
+    ("--sample-cover is required exactly"), which is a check on how to invoke
+    a mode that still ran. The mode does not run: its run-contract minter and
+    per-worker source census were built on `rtx4090_artifact_census`, archived
+    with the Gridbook lane (archive/gridbook_lane_2026-09-02/), so nothing can
+    mint a contract and a pre-retirement one on disk would be admitted with
+    one leg of its identity replay missing.
+
+    So the assertion moves to the refusal itself. It is checked through the
+    real CLI, with a model path that does not exist, because that is the
+    property that matters: the refusal must not depend on reaching a
+    checkpoint. Deleting this test rather than re-pointing it would leave the
+    loss recorded only in prose.
+    """
+    from prismaquant.incremental_probe import SAMPLE_PARALLEL_RETIRED
+
     command = [
         sys.executable, "-m", "prismaquant.incremental_probe",
-        "--model", "model", "--global-calibration-tensor", "calibration.pt",
+        "--model", "no/such/model",
+        "--global-calibration-tensor", "calibration.pt",
         "--sample-partition-index", "0",
         "--sample-run-contract", "run-contract.json",
         "--output", "probe.pkl", "--activation-cache-dir", "act",
@@ -89,8 +108,20 @@ def test_incremental_sample_worker_requires_signed_cover():
         command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         check=False,
     )
-    assert completed.returncode == 2
-    assert "--sample-cover is required exactly" in completed.stderr
+    assert completed.returncode != 0
+    assert SAMPLE_PARALLEL_RETIRED in completed.stderr
+    assert "archive/gridbook_lane_2026-09-02/" in completed.stderr
+    # ...and it refuses even when every companion flag the old pairing checks
+    # demanded is absent, i.e. the retirement gate is not one of those checks.
+    minimal = subprocess.run(
+        [sys.executable, "-m", "prismaquant.incremental_probe",
+         "--model", "no/such/model",
+         "--global-calibration-tensor", "calibration.pt",
+         "--output", "probe.pkl", "--activation-cache-dir", "act",
+         "--work-dir", "work"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert SAMPLE_PARALLEL_RETIRED in minimal.stderr
 
 
 def test_prepare_worker_source_cache_creates_then_exactly_reuses(

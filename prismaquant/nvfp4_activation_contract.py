@@ -876,7 +876,8 @@ def routed_moe_attested_module_names(
     disjoint from this one before an artifact ships.  The K0.2 record's own
     field set stays byte-identical, because it is a pinned cross-repository
     contract whose consumer rejects unknown keys outright
-    (tests/test_gridbook_attestation_interop.py) — widening it "additively" is
+    (archive/gridbook_lane_2026-09-02/tests/test_gridbook_attestation_interop.py,
+    archived 2026-09-02 with the lane) — widening it "additively" is
     exactly the failure that test exists to catch.
     """
 

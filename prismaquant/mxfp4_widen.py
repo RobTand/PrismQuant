@@ -40,9 +40,12 @@ with how this repo reads the source.
 WHAT THIS MODULE DELIBERATELY DOES NOT DO. It does not decide *whether* a unit
 should be widened, does not touch the exporter's declaration, and does not
 claim a serving route. Widening doubles the element plane (4 -> 8 bits/weight,
-scales unchanged), and the MXFP8 route for *grouped/MoE* stacks is UNAUDITED on
-sm_121 — Gridbook's MXFP8 lane is dense-only. Producing these bytes is a
-capability; serving them is a separate, evidence-gated question.
+scales unchanged), and the MXFP8 route for *grouped/MoE* stacks has never been
+audited on sm_121 — and since 2026-09-02 the DENSE half is gone too, because
+the only MXFP8 lane that ever served it was Gridbook's
+(archive/gridbook_lane_2026-09-02/). Producing these bytes is a capability;
+serving them is a separate, evidence-gated question, and today no sanctioned
+lane answers it either way.
 
 Standard-library + torch only, so the exactness property is testable on CPU
 with neither compressed-tensors nor vLLM present.
@@ -76,19 +79,26 @@ __all__ = [
 #:
 #: Widening is only interesting for a unit that is MXFP4 in the source, and in
 #: DSv4-Flash every such unit is a ROUTED-EXPERT stack — a grouped/MoE GEMM.
-#: Gridbook's MXFP8 lane (``mxfp8_e4m3_e8m0_g32``) is DENSE-ONLY; the audited
+#: Gridbook's MXFP8 lane (``mxfp8_e4m3_e8m0_g32``) was DENSE-ONLY; the audited
 #: grouped route on sm_121 is Marlin, and Marlin was audited for MXFP4, not
-#: MXFP8. So there is no measured grouped MXFP8 route on our target, and this
-#: module must not imply one.
+#: MXFP8. So there was no measured grouped MXFP8 route on our target, and this
+#: module must not imply one. The status did not improve when that lane was
+#: retired on 2026-09-02 (``archive/gridbook_lane_2026-09-02/``): it got
+#: strictly worse, because the dense route went with it. ``pending`` is still
+#: the honest word -- nothing was ever MEASURED and refused for the grouped
+#: case, which is what ``blocked`` would claim.
 MXFP8_GROUPED_ROUTE_STATUS = "pending"
 MXFP8_GROUPED_ROUTE_EVIDENCE = (
-    "Gridbook's MXFP8 dense lane serves LINEAR units only "
+    "Gridbook's MXFP8 dense lane served LINEAR units only "
     "(gridbook/mxfp8_dense_lane.py, unit_kind='linear'); no grouped/MoE MXFP8 "
-    "kernel has been audited on sm_121. The sm_121 grouped route that IS "
-    "audited is Marlin, for mxfp4_e2m1_ue8m0_g32. Widened expert stacks are "
-    "therefore producible but not servable until a grouped MXFP8 audit "
-    "exists. Widening a DENSE unit (an MTP body linear) rides the existing "
-    "OPT-IN dense lane and needs no new audit."
+    "kernel was ever audited on sm_121. The sm_121 grouped route that IS "
+    "audited is Marlin, for mxfp4_e2m1_ue8m0_g32. Since 2026-09-02 the dense "
+    "half is gone too: that lane was retired "
+    "(archive/gridbook_lane_2026-09-02/) and no sanctioned lane -- vanilla "
+    "vLLM, llama.cpp/vLLM-GGUF, the Tessera plugin -- serves MXFP8_UE8M0_G32 "
+    "at any unit kind. Widened stacks are producible and servable nowhere; "
+    "the DENSE case, which used to ride an OPT-IN Gridbook lane with no new "
+    "audit, now needs a route before it needs an audit."
 )
 
 #: The 16 E2M1 code points in code order (index == nibble value). Code 0x8 is

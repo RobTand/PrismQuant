@@ -1888,12 +1888,15 @@ def main():
                          "n_params. Empty = current behavior (backwards-compat). "
                          "Shipping a quantized pinned name also needs cache "
                          "render + export packing + vLLM serving support "
-                         "(lm_head: yes, native lane; embed_tokens: yes on the "
-                         "GRIDBOOK lane only, via the quantized_embedding "
-                         "declaration -- the native compressed-tensors "
-                         "embedding path accepts weight-only INT and RAISES "
-                         "for FP8/NVFP4, so a stock config_groups entry does "
-                         "not mis-serve, it refuses to load).")
+                         "(lm_head: yes, native lane; embed_tokens: NO "
+                         "sanctioned lane since 2026-09-02 -- the only route "
+                         "was the Gridbook lane's quantized_embedding "
+                         "declaration and it retired with that lane, "
+                         "archive/gridbook_lane_2026-09-02/. The native "
+                         "compressed-tensors embedding path accepts "
+                         "weight-only INT and RAISES for FP8/NVFP4, so a "
+                         "stock config_groups entry does not mis-serve, it "
+                         "refuses to load).")
     ap.add_argument("--pareto-targets",
                     default="4.5,4.6,4.7,4.75,4.85,5.0,5.25,5.5,6.0,7.0,8.25",
                     help="Comma-separated budgets to sweep for Pareto curve")
@@ -2064,12 +2067,15 @@ def main():
                     help="Path to a measured serve dispatch table "
                          "(prismaquant.serve_dispatch_table.v1): per "
                          "(format-family, phase, M-regime, lane) relative "
-                         "serving costs, every row citing its source. An "
-                         "example built only from published Gridbook "
-                         "measurements ships at "
-                         "prismaquant/serve_dispatch_tables/"
-                         "gridbook_gb10_2026-08-01.example.json and is "
-                         "PROPOSAL DATA, not a qualified serving model.")
+                         "serving costs, every row citing its source. The "
+                         "tree ships NO example table since 2026-09-02 "
+                         "(serve_dispatch_table.example_table_path() returns "
+                         "None): the only one it ever had was PROPOSAL DATA "
+                         "built from the retired Gridbook codebook lane's "
+                         "published measurements, and it went to "
+                         "archive/gridbook_lane_2026-09-02/ with that lane. "
+                         "Point this at a table measured on your own "
+                         "hardware.")
     ap.add_argument("--serve-workload-mix", default=None,
                     help="Workload M-regime mix, e.g. "
                          "'prefill:dense_prefill_1400=1.0,"

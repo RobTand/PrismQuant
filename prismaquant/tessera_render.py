@@ -46,6 +46,7 @@ __all__ = [
     "TESSERA_HALF",
     "is_tessera_format",
     "render_tessera_weight",
+    "tessera_lane_admission",
     "tessera_lane_attested",
     "tessera_serving_contract_path",
     "synthesize_tessera_spec",
@@ -154,8 +155,15 @@ def _release_pin_satisfied() -> bool:
     return True
 
 
-def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
-    """Does a pinned runtime execute this Tessera rung natively?  DERIVED.
+def tessera_lane_admission(
+        name: str, *, table=None, formats=None) -> tuple[bool, str]:
+    """Does a pinned runtime execute this Tessera rung natively, and why not?
+
+    Returns ``(attested, reason)``.  ``reason`` is empty when the answer is
+    True and otherwise names **which conjunct refused**, because "unattested"
+    alone is four different facts and a menu that reports the wrong one sends
+    a reader to fix the wrong thing.  :func:`tessera_lane_attested` is the
+    boolean half; nothing may re-derive the reason beside this body.
 
     Principle 9 makes this a *measured platform fact*, and principle 14 says
     the fact is read from the runtime's own table, never asserted here.  The
@@ -209,10 +217,17 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
         table = pinned_table if table is None else table
         formats = pinned_formats if formats is None else formats
     if not table.present:
-        return False
+        return False, (
+            "no packaged Tessera serving contract is readable"
+            + (f" ({table.absent_reason})" if table.absent_reason else ""))
     family, _k, rate = resolve_payload_rung(name, published_formats=formats)
-    if rate is None or not table.governs(family):
-        return False
+    if rate is None:
+        return False, (
+            f"{name} resolves to no rung the packaged Tessera contract's "
+            f"formats table publishes")
+    if not table.governs(family):
+        return False, (
+            f"the packaged Tessera contract does not publish {family}")
     matched = [
         cell for cell in table.cells
         if cell.is_trellis
@@ -222,7 +237,10 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
         and cell.route_status in _NATIVE_ROUTE_STATUSES
     ]
     if not matched:
-        return False
+        published = _published_rungs(formats, family)
+        return False, (
+            f"the packaged Tessera contract publishes {family} at rungs "
+            f"{published} and no device-qualified native cell names R{rate}")
     # Conjunct 2 is checked BEFORE the pin, deliberately.  A defective packaged
     # contract must be loud the day it lands, not on the day Rob cuts a tag.
     unstated = [cell.id for cell in matched
@@ -236,7 +254,33 @@ def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
             "artifact be admitted whose serve command need not install the "
             "runtime that reads it. This is a contract defect -- fix the "
             "packaged table, never this gate.")
-    return _release_pin_satisfied()
+    if not _release_pin_satisfied():
+        # The table HAS the row.  Saying anything else here would point a
+        # reader at re-pinning a contract that already publishes the cell,
+        # when what is missing is a reviewed Tessera release tag.
+        return False, (
+            f"the packaged Tessera contract attests {len(matched)} native "
+            f"cell(s) for {family} R{rate}, but the tracked serving pin is "
+            f"not an exact reviewed release, so no rung is producer-eligible")
+    return True, ""
+
+
+def _published_rungs(formats, family: str) -> list[int]:
+    """The rates the packaged contract's ``formats`` row names for a family."""
+    row = formats.get(family) if hasattr(formats, "get") else None
+    if not isinstance(row, dict):
+        return []
+    return sorted(int(r) for r in row.get("candidate_rungs_q256", ()))
+
+
+def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
+    """The boolean half of :func:`tessera_lane_admission`.  **The one seam.**
+
+    Kept as its own name because it is what every gate consults and what the
+    tests substitute; the reason string is a separate read so that patching
+    the verdict cannot silently invent a rationale for it.
+    """
+    return tessera_lane_admission(name, table=table, formats=formats)[0]
 
 
 def is_tessera_format(name: object) -> bool:

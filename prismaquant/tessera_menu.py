@@ -23,14 +23,22 @@ Three gates, and they are deliberately separate
 
 Gate 3 is closed for every Tessera rung today
 ---------------------------------------------
-The pinned serving release is ``gridbook 0.9.1``, whose contract publishes the
-families ``NVFP4_CB_K``, ``FP8_CB_K``, ``TCQ_E2M1_R256`` and ``TCQ_E4M3_R256``.
-``lane_eligibility.resolve_payload_rung`` matches a format name against
-those families' ``name_pattern`` heads, and no Tessera name
-(``TESSERA_E2M1_K2_R896``) starts with one, so every Tessera rung resolves to a
-family the table does not govern and :data:`ROUTE_STATUS_UNATTESTED` is the
-honest answer.  Re-pinning to a release that publishes Tessera's own rows is
-what flips it -- an edit here cannot, and that is the point.
+The table that answers is **Tessera's own** packaged
+``tessera/serving/runtime_contract.json`` -- the plugin Tessera ships under
+``vllm.general_plugins`` since 2026-09-02, when Gridbook's Tessera lane was
+withdrawn (``archive/gridbook_lane_2026-09-02/``).  It publishes
+``TESSERA_E2M1_K2`` and ``TESSERA_E4M3_K1``, and it carries device-qualified
+native cells for the two receipted rungs, so the family and the rate are *not*
+what refuses.  **The pin is.**  There is no reviewed Tessera release tag, so
+``tessera_serving_runtime_pin`` carries PENDING sentinels,
+``require_exact_tessera_runtime_release`` refuses them, and every rung answers
+:data:`ROUTE_STATUS_UNATTESTED`.  Cutting a release tag is what flips it -- an
+edit here cannot, and that is the point.
+
+Which is why the ``detail`` on an unattested rung names the conjunct that
+actually refused (``tessera_render.tessera_lane_admission`` returns it beside
+the verdict).  "Unattested" alone is four different facts, and reporting the
+wrong one sends a reader to re-pin a contract that already has the row.
 
 So the menu carries a **mode**, and the default is the attested one::
 
@@ -211,8 +219,11 @@ class RouteAdmission:
     route_status: str
     #: Can Tessera's wire carry these bytes at all?  Independent of the runtime.
     serialisable: bool
-    #: Which table answered.  ``gridbook_serving_runtime_pin:...`` in
-    #: production; ``tessera_dev_pin:...`` under the development override.
+    #: Which table answered.  ``tessera_packaged_contract:...`` in production
+    #: -- the ``runtime_contract.json`` Tessera's own vLLM plugin packages --
+    #: and ``tessera_dev_pin:...`` under the development override.  Both carry
+    #: the release they were read from, so two runs against different Tessera
+    #: builds cannot both claim "the Tessera contract".
     source: str
     detail: str = ""
     #: The serve flags the attesting cell requires, verbatim.  Empty when
@@ -241,11 +252,18 @@ class RouteAdmission:
         )
 
 
-#: Where the attestation is read from when no Tessera contract is pinned.  It
-#: travels into every unit's provenance so an artifact records which table
-#: admitted it -- and, when that table publishes no Tessera family, which table
-#: declined to.
-_GRIDBOOK_ATTESTATION_SOURCE = "gridbook_serving_runtime_pin:lane_eligibility"
+#: Where the attestation is read from when no development contract is pinned:
+#: the ``runtime_contract.json`` packaged inside Tessera's own vLLM plugin,
+#: parsed by the shared ``lane_eligibility`` reader.  It travels into every
+#: unit's provenance so an artifact records which table admitted it -- and,
+#: when nothing does, which table declined to.
+#:
+#: It named ``gridbook_serving_runtime_pin:lane_eligibility`` until 2026-09-02.
+#: That pin is archived (``archive/gridbook_lane_2026-09-02/``) and stopped
+#: governing Tessera admission when Gridbook withdrew its Tessera lane, so the
+#: string had become a claim about a runtime that no longer answers -- exactly
+#: the unattested assertion principle 14 refuses, in the field a gate reads.
+_PACKAGED_ATTESTATION_SOURCE = "tessera_packaged_contract:lane_eligibility"
 #: Where it is read from under the development override.  The commit is
 #: appended by :func:`_tessera_attestation_source`, so two runs against
 #: different Tessera builds cannot both claim "the Tessera contract".
@@ -254,6 +272,12 @@ _TESSERA_ATTESTATION_SOURCE = "tessera_dev_pin:runtime_contract"
 
 def _tessera_attestation_source(contract) -> str:
     return f"{_TESSERA_ATTESTATION_SOURCE}:{contract.commit[:12]}"
+
+
+def _packaged_attestation_source(table) -> str:
+    """The packaged contract's provenance string, stamped with its release."""
+    version = getattr(table, "runtime_version", "") or "unknown"
+    return f"{_PACKAGED_ATTESTATION_SOURCE}:{version}"
 
 
 def tessera_runtime_contract():
@@ -340,15 +364,19 @@ def route_admission(name: str) -> RouteAdmission:
     realisability check, and ``expand_tessera_menu`` is memoised per
     ``(shape, mode, tp)`` above it.
 
-    Today it delegates to ``tessera_render.tessera_lane_attested``, which
-    resolves the rung against the pinned Gridbook release's ``lane_eligibility``
-    cells.  That table publishes no Tessera family, so the honest answer for
-    every rung is :data:`ROUTE_STATUS_UNATTESTED` -- absence, not ``unbacked``,
-    because the contract is a closed world about the families it *does* publish
-    and says nothing at all about these bytes.
+    Today it delegates to ``tessera_render.tessera_lane_admission``, which
+    resolves the rung against **Tessera's own** packaged
+    ``runtime_contract.json`` through the shared ``lane_eligibility`` parser.
+    That table publishes both Tessera families and names the two receipted
+    rungs, so what refuses is the third conjunct -- there is no reviewed
+    Tessera release tag -- and the answer is :data:`ROUTE_STATUS_UNATTESTED`
+    for every rung.  The ``detail`` says which conjunct, verbatim from the
+    admission, because a rung refused by the pin and a rung refused by an
+    absent cell need different fixes and must not read the same.
     """
     from .tessera_render import (
-        tessera_lane_attested, tessera_rung_is_serialisable,
+        _pinned_serving_table, tessera_lane_admission, tessera_lane_attested,
+        tessera_rung_is_serialisable,
     )
 
     parsed = parse_tessera_format_name(name)
@@ -400,16 +428,21 @@ def route_admission(name: str) -> RouteAdmission:
                 f"the pinned Tessera contract does not publish {family.name}"
             )
     else:
-        source = _GRIDBOOK_ATTESTATION_SOURCE
+        table, _formats = _pinned_serving_table()
+        source = _packaged_attestation_source(table)
+        # The VERDICT stays ``tessera_lane_attested``: it is the seam every
+        # gate consults and the one the tests substitute.  The REASON is read
+        # separately and only when the verdict is False, so patching the
+        # verdict cannot invent a rationale the contract never gave.
         if bool(tessera_lane_attested(name)):
             status = ROUTE_STATUS_BACKED
-            detail = "the pinned serving release publishes a cell naming this rate"
+            detail = (
+                "the packaged Tessera contract attests a device-qualified "
+                "native cell naming this rate, under a reviewed release pin"
+            )
         else:
             status = ROUTE_STATUS_UNATTESTED
-            detail = (
-                "the pinned serving release publishes no cell covering this "
-                "family and rate"
-            )
+            detail = tessera_lane_admission(name)[1]
     return RouteAdmission(
         format_name=name,
         payload_family=family.name,
