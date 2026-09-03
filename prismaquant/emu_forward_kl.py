@@ -14,11 +14,17 @@ log-probs (fp32, CPU) chunk-by-chunk; pass 2 swaps the weights in place and
 computes KL against the buffer. Original weights are restored after.
 
 KL / confident-position / top-1 convention is the repo's served metric
-(``/home/rob/dq-runs/kl_tool.py``): ``KL(P_bf16 || Q_quant) = Σ_v p·(log p −
-log q)`` per position; a position is **BF16-confident** when the teacher top-1
-probability > 0.5 (floor-negligible, the clean lane); top-1 agreement is
+(``KL(P_bf16 || Q_quant) = Σ_v p·(log p −
+log q)`` per position); it matches the historical served-scoring script's
+convention. A position is **BF16-confident** when the teacher top-1
+probability strictly exceeds ``_CONFIDENT_PROB`` (0.5 — the majority
+threshold, derived next to the constant); top-1 agreement is
 ``argmax P == argmax Q``. Here it is computed full-vocab in fp32 (bf16 KL
 differencing is a known measurement floor in this repo), not from served top-K.
+Every emitted result stamps the cut that produced it as
+``confident_prob_cut``, so a ``kl_confident`` number always carries the
+convention it was computed under and cannot silently disagree with another
+tool's number.
 """
 
 from __future__ import annotations
@@ -37,8 +43,20 @@ from . import format_registry as fr
 from .allocator_candidates import PASSTHROUGH_SOURCE_REQUIREMENTS
 from .measure_quant_cost import canonical_linear_name
 
-# Teacher-confident threshold: teacher top-1 prob must exceed this for a
-# position to enter the clean confident lane (kl_tool.py:43).
+# Teacher-confident threshold: teacher top-1 prob must strictly exceed this
+# for a position to enter the clean confident lane.
+#
+# The value 0.5 is the majority threshold, not an intuition number, and the
+# derivation is the cut itself: a top-1 probability strictly above 0.5 means
+# the top-1 token holds more mass than all other tokens combined, so the
+# argmax is invariant to ANY redistribution of the remaining mass. No smaller
+# cut has that property (at top-1 <= 0.5 the runner-up mass can tie or beat
+# the leader under some redistribution), and no larger cut is needed for it.
+# That invariance is exactly what "the model has actually decided" means for
+# a lane whose job is to separate decided positions from undecided ones, so
+# 0.5 is the unique cut with the required property. Do not retune it without
+# re-deriving the lane; the value stamped into each result
+# (``confident_prob_cut``) names the convention that produced the number.
 _CONFIDENT_PROB = 0.5
 
 
@@ -305,7 +323,21 @@ class _KLAccumulator:
 
     def result(self) -> dict:
         n = max(self.n, 1)
-        nc = max(self.n_conf, 1)
+        if self.n_conf == 0:
+            # An empty confident lane has no mean: dividing by
+            # max(n_conf, 1) would emit kl_confident = 0.0 — the best possible
+            # score, computed over nothing — and report a win on an empty set.
+            # Refuse instead; the only caller (measure_emulated_kl) already
+            # carries ValueError for empty/ambiguous inputs, so fail closed
+            # there too rather than emitting a number no consumer can trust.
+            raise ValueError(
+                "emu_forward_kl: confident lane is empty "
+                f"(confident_prob_cut={_CONFIDENT_PROB!r}, "
+                f"n_positions={int(self.n)}): no teacher top-1 probability "
+                "strictly exceeded the cut, so kl_confident has no mean. "
+                "Refusing rather than emitting 0.0 over nothing."
+            )
+        nc = self.n_conf
         return {
             "kl_all": self.kl_sum / n,
             "kl_confident": self.kl_conf_sum / nc,
@@ -313,6 +345,9 @@ class _KLAccumulator:
             "top1_agreement_all": self.agree_all / n,
             "n_positions": int(self.n),
             "n_confident": int(self.n_conf),
+            # Stamp the cut that produced kl_confident/top1_agreement so any
+            # consumer of the number can see which convention it came from.
+            "confident_prob_cut": _CONFIDENT_PROB,
         }
 
 
@@ -354,7 +389,12 @@ def measure_emulated_kl(
         pass True to tolerate, in which case ``n_targets_missing`` and
         ``missing_targets`` are reported in the result.
     Returns ``{kl_all, kl_confident, top1_agreement, n_positions, ...,
-    provenance{git_commit, assignment_sha256, dataset_sha256}}``.
+    confident_prob_cut, provenance{git_commit, assignment_sha256,
+    dataset_sha256}}``. ``confident_prob_cut`` stamps the teacher top-1
+    probability cut the confident lane was computed under. Raises ValueError
+    when the confident lane is empty (no teacher top-1 strictly exceeded the
+    cut): an empty lane has no mean, and emitting 0.0 over nothing would
+    report a win on an empty set.
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
