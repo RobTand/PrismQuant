@@ -445,3 +445,33 @@ def test_the_serving_lanes_parser_still_parses_a_declared_lane():
     other = profile.serving_lane_for("NVFP4", runtime_version="0.0.0")
     assert other is not None
     assert not other.fused_mid_m_backed
+
+
+def test_no_live_serving_profile_declares_a_serving_lane():
+    """Capability loss 3 (RobTand/tessera#21, debt D34): the `serving_lanes`
+    block of a serving-profile spec has zero live declarations.
+
+    `serving_profile_specs/nvfp4_cb.json` was the only spec that ever carried
+    one; it went to `archive/gridbook_lane_2026-09-02/` with the lane, and the
+    parser above was kept because it is the shape the first Tessera serving
+    profile must declare in. That future profile UPDATES this test -- a new
+    lane declaration is a capability regained, not drift -- but nothing today
+    may declare one silently.
+
+    The vocabulary is discovered from `serving_profile_names` (the code that
+    owns it), not hand-listed, and each profile is loaded through the real
+    loader so an `extends`-inherited lane counts too. What is pinned is the
+    declaration (`serving_lanes == ()`), not `serving_lane_route`: the Tessera
+    admission seam resolves `TESSERA_*` rungs to an `unattested` verdict with
+    no declaration at all, and those are different facts.
+    """
+    names = sp.serving_profile_names()
+    assert names, "serving profile vocabulary is empty"
+    for name in names:
+        profile = sp.load_serving_profile(name)
+        assert profile.serving_lanes == (), (
+            f"{name} declares serving_lanes {[lane.id for lane in profile.serving_lanes]}; "
+            f"since 2026-09-02 no live spec declares one "
+            f"(archive/gridbook_lane_2026-09-02/). A new lane declaration "
+            f"updates this test deliberately, it does not slip past it")
+        assert sp.serving_lane_catalog(name)["lanes"] == {}, name
