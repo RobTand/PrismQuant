@@ -120,6 +120,10 @@ CB_CACHE_PAIR_SIDECAR_SCHEMA = (
 CB_TRANSIENT_CONSUMER_RECEIPT_SCHEMA = (
     "prismaquant.production_weight_cache.cb_transient_consumer_receipt.v1"
 )
+RENDER_IDENTITY_SCHEMA = (
+    "prismaquant.production_weight_cache.render_identity.v1"
+)
+RENDER_IDENTITY_SIDECAR_FILENAME = "render_identity.json"
 
 
 # Formats whose WEIGHT PLANE is the same artifact and must therefore get the
@@ -4927,6 +4931,280 @@ def assert_same_activation_hook_scope(
     return validated_reference
 
 
+def build_production_cache_render_identity(
+    *,
+    render_scope: str,
+    requested_formats: Sequence[str],
+    levers: Mapping[str, object],
+    mechanism_plan,
+    calib_hash: str,
+    eligible_qnames: Iterable[str],
+    render_formats_by_qname: Mapping[str, Sequence[str]],
+    max_act_rows: int,
+) -> dict[str, object]:
+    """Build the render identity a cache directory's shards were rendered under.
+
+    This is the directory-level equivalent of the union campaign's
+    ``_render_identity`` (which binds the same render semantics per shard
+    bundle): every value-bearing input that changes the rendered bytes is a
+    field here — the render scope, the requested format menu, the resolved
+    levers plus their mechanism order, the calibration hash, the hooked
+    enumeration digest (#130: what the shared priority stream — and therefore
+    every Linear's rows — is a function of), the exact rendered
+    ``qname|fmt`` pairs (what an assignment scope or an
+    ``--include-qnames-file`` narrowing renders), and ``max_act_rows`` (the
+    reservoir size, hence the rows kept). Two fills that admit the same
+    sidecar rendered the same bytes; anything else refuses with the differing
+    field named.
+    """
+    if not isinstance(levers, Mapping):
+        raise ValueError("production cache render identity requires levers")
+    ordered = getattr(mechanism_plan, "ordered", mechanism_plan)
+    if ordered is None:
+        raise ValueError(
+            "production cache render identity requires a render mechanism plan"
+        )
+    mechanism_records = []
+    for raw in ordered:
+        if isinstance(raw, Mapping):
+            record = {
+                str(key): raw[key]
+                for key in (
+                    "name", "operation", "scope", "gate_metric"
+                )
+                if key in raw
+            }
+        else:
+            record = {
+                "name": str(getattr(raw, "name", raw)),
+                **({
+                    key: getattr(raw, key)
+                    for key in ("operation", "scope", "gate_metric")
+                    if hasattr(raw, key)
+                }),
+            }
+        mechanism_records.append(record)
+    hooked = sorted({str(q) for q in eligible_qnames})
+    rendered_pairs = sorted({
+        f"{str(qname)}|{str(fmt).strip().upper()}"
+        for qname, fmts in render_formats_by_qname.items()
+        for fmt in fmts
+    })
+    digest = str(calib_hash or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{32,64}", digest) is None:
+        raise ValueError(
+            "production cache render identity requires a value-bearing "
+            "calib_hash"
+        )
+    rows = int(max_act_rows)
+    if rows < 1:
+        raise ValueError("production cache render identity requires max_act_rows >= 1")
+    return {
+        "schema": RENDER_IDENTITY_SCHEMA,
+        "render_scope": str(render_scope),
+        "requested_formats": sorted({
+            str(fmt).strip().upper()
+            for fmt in requested_formats
+            if str(fmt).strip()
+        }),
+        "levers": _canonical_json_value(
+            dict(levers), where="production cache render levers"
+        ),
+        "render_mechanism_order": _canonical_json_value(
+            mechanism_records, where="production cache render mechanism order"
+        ),
+        "calib_hash": digest,
+        "hooked_qnames_sha256": _qname_set_sha256(hooked),
+        "hooked_qnames": len(hooked),
+        "rendered_pairs": rendered_pairs,
+        "max_act_rows": rows,
+    }
+
+
+def validate_production_cache_render_identity(
+    value: object, *, where: str = "production cache render identity"
+) -> dict[str, object]:
+    """Validate a render-identity sidecar payload.
+
+    Every rule below is derived from the writer in
+    :func:`build_production_cache_render_identity`: the exact field set, the
+    sorted format/pair lists, and the digest shapes. Present but malformed is
+    an error, never a silent skip.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} must be a JSON object")
+    raw = dict(value)
+    if raw.get("schema") != RENDER_IDENTITY_SCHEMA:
+        raise ValueError(f"{where} has unsupported schema")
+    if set(raw) != {
+        "schema",
+        "render_scope",
+        "requested_formats",
+        "levers",
+        "render_mechanism_order",
+        "calib_hash",
+        "hooked_qnames_sha256",
+        "hooked_qnames",
+        "rendered_pairs",
+        "max_act_rows",
+    }:
+        raise ValueError(f"{where} has unsupported fields")
+    if not isinstance(raw.get("render_scope"), str) or not raw["render_scope"]:
+        raise ValueError(f"{where}.render_scope must be a nonempty string")
+    formats = raw.get("requested_formats")
+    if (
+        not isinstance(formats, list)
+        or not formats
+        or any(not isinstance(fmt, str) or not fmt for fmt in formats)
+        or list(formats) != sorted(formats)
+    ):
+        raise ValueError(
+            f"{where}.requested_formats must be a sorted nonempty string list"
+        )
+    levers = raw.get("levers")
+    if not isinstance(levers, Mapping) or not levers:
+        raise ValueError(f"{where}.levers must be a nonempty JSON object")
+    _canonical_json_value(dict(levers), where=f"{where}.levers")
+    mechanism_order = raw.get("render_mechanism_order")
+    if not isinstance(mechanism_order, list) or not all(
+        isinstance(record, Mapping) for record in mechanism_order
+    ):
+        raise ValueError(
+            f"{where}.render_mechanism_order must be a list of JSON objects"
+        )
+    digest = str(raw.get("calib_hash", "")).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{32,64}", digest) is None:
+        raise ValueError(f"{where}.calib_hash must be a hex digest")
+    hook_digest = str(raw.get("hooked_qnames_sha256", "")).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", hook_digest) is None:
+        raise ValueError(
+            f"{where}.hooked_qnames_sha256 must be a SHA-256 digest"
+        )
+    hooked = raw.get("hooked_qnames")
+    if not isinstance(hooked, int) or isinstance(hooked, bool) or hooked < 0:
+        raise ValueError(f"{where}.hooked_qnames must be a non-negative int")
+    pairs = raw.get("rendered_pairs")
+    if (
+        not isinstance(pairs, list)
+        or not pairs
+        or any(not isinstance(pair, str) or "|" not in pair for pair in pairs)
+        or list(pairs) != sorted(pairs)
+    ):
+        raise ValueError(
+            f"{where}.rendered_pairs must be a sorted nonempty "
+            '"qname|FMT" string list'
+        )
+    rows = raw.get("max_act_rows")
+    if not isinstance(rows, int) or isinstance(rows, bool) or rows < 1:
+        raise ValueError(f"{where}.max_act_rows must be a positive int")
+    return {
+        "schema": RENDER_IDENTITY_SCHEMA,
+        "render_scope": str(raw["render_scope"]),
+        "requested_formats": list(formats),
+        "levers": _canonical_json_value(
+            dict(levers), where=f"{where}.levers"
+        ),
+        "render_mechanism_order": _canonical_json_value(
+            list(mechanism_order),
+            where=f"{where}.render_mechanism_order",
+        ),
+        "calib_hash": digest,
+        "hooked_qnames_sha256": hook_digest,
+        "hooked_qnames": int(hooked),
+        "rendered_pairs": list(pairs),
+        "max_act_rows": int(rows),
+    }
+
+
+def _check_production_cache_render_identity(
+    cache_dir_path: Path,
+    current: Mapping[str, object],
+    *,
+    progress: bool = True,
+) -> None:
+    """Enforce one rendering per cache directory (#146).
+
+    The resume loop admits a unit as done by file presence alone, so without
+    this gate a directory resumed under a different scope, include-file,
+    lever string or calibration silently mixes units rendered under different
+    conditions. The first fill writes its render identity into
+    ``render_identity.json``; every later fill compares and refuses on the
+    first differing field. A missing sidecar means a pre-guard directory:
+    warn and admit its shards on trust (refusing would strand existing work),
+    then write the current identity so later mismatches refuse.
+    """
+    current_identity = validate_production_cache_render_identity(
+        _canonical_json_value(dict(current), where="production cache render identity"),
+        where="production cache render identity",
+    )
+    sidecar_path = cache_dir_path / RENDER_IDENTITY_SIDECAR_FILENAME
+    if not sidecar_path.is_file():
+        has_shards = False
+        try:
+            has_shards = any(
+                entry.is_file() and entry.suffix == ".pt"
+                for entry in cache_dir_path.iterdir()
+            )
+        except OSError:
+            has_shards = False
+        if has_shards:
+            print(
+                "[prod-cache] WARNING: cache directory "
+                f"{cache_dir_path} holds rendered shards but no "
+                f"{RENDER_IDENTITY_SIDECAR_FILENAME} (pre-guard directory); "
+                "admitting existing shards on trust — confirm the directory "
+                "was rendered under one configuration, then resume only with "
+                "identical settings. Writing the current render identity; "
+                "future mismatches refuse.",
+                flush=True,
+            )
+        atomic_write_bytes(
+            sidecar_path,
+            json.dumps(
+                current_identity, indent=2, sort_keys=True
+            ).encode("utf-8"),
+        )
+        return
+    try:
+        stored_raw = json.loads(sidecar_path.read_bytes().decode("utf-8"))
+    except Exception as exc:
+        raise ValueError(
+            f"production cache directory {cache_dir_path} has an unreadable "
+            f"{RENDER_IDENTITY_SIDECAR_FILENAME}: {exc}; refusing resume — "
+            "rebuild this directory (fresh --cache-dir) instead of mixing "
+            "renders"
+        ) from exc
+    try:
+        stored = validate_production_cache_render_identity(
+            stored_raw,
+            where=f"cache directory {cache_dir_path} render identity",
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"production cache directory {cache_dir_path} has an invalid "
+            f"{RENDER_IDENTITY_SIDECAR_FILENAME}: {exc}; refusing resume — "
+            "rebuild this directory (fresh --cache-dir) instead of mixing "
+            "renders"
+        ) from exc
+    difference = first_identity_difference(stored, current_identity)
+    if difference is not None:
+        field, cached, now = difference
+        raise ValueError(
+            f"production cache directory {cache_dir_path} render identity "
+            f"differs at {field!r}: cached={identity_value_for_error(cached)} "
+            f"current={identity_value_for_error(now)}; the directory holds "
+            "renders from a different configuration — rebuild this directory "
+            "(fresh --cache-dir) instead of resuming it"
+        )
+    if progress:
+        print(
+            "[prod-cache] resume: render identity matches "
+            f"({len(current_identity['rendered_pairs'])} pairs); "
+            "reusing on-disk shards",
+            flush=True,
+        )
+
+
 def fill_production_weight_cache(
     model: nn.Module,
     calib_ids: torch.Tensor,
@@ -5124,9 +5402,28 @@ def fill_production_weight_cache(
     if cache_dir is not None:
         cache_dir_path = Path(cache_dir)
         cache_dir_path.mkdir(parents=True, exist_ok=True)
-        if cb_render_identity is not None:
-            from prismaquant.perturbed_x_cache import calibration_data_hash
+        from prismaquant.perturbed_x_cache import calibration_data_hash
 
+        # #146: resume admits a unit as done by file presence alone, so a
+        # directory resumed under a different scope, include-file, lever
+        # string or calibration would silently mix units rendered under
+        # different conditions. Compare this call's render identity against
+        # the sidecar before any shard is read or written; refuse on mismatch.
+        _check_production_cache_render_identity(
+            cache_dir_path,
+            build_production_cache_render_identity(
+                render_scope=render_scope,
+                requested_formats=requested_formats,
+                levers=levers,
+                mechanism_plan=mechanism_plan,
+                calib_hash=calibration_data_hash(calib_ids),
+                eligible_qnames=eligible_qnames,
+                render_formats_by_qname=render_formats_by_qname,
+                max_act_rows=max_act_rows,
+            ),
+            progress=progress,
+        )
+        if cb_render_identity is not None:
             cb_pair_context = validate_cb_render_identity_metadata(
                 cb_render_identity,
                 expected_context=cb_serialization_context,

@@ -1,7 +1,28 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `muse/pq-140-licence`. Stamps
+As of: 2026-09-03 · `muse/pq-146-cache`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-03, `muse/pq-146-cache`) for the **production cache
+directory's render-identity guard** (§5.4; RobTand/prismaquant#146). Resume
+admitted a unit by file presence alone, so the same `--cache-dir` resumed
+under a different `--render-scope`, include-file, lever string, `max_act_rows`
+or calibration mixed units rendered against different row sets into one
+directory, and the settings were stamped into `cache.metadata` only at the
+END of a fill and never read back at the start. `build_production_cache_
+render_identity` now canonicalises every value-bearing render input — scope,
+requested formats, resolved levers, mechanism order, calibration hash, the
+hooked-enumeration digest and count, the exact rendered `qname|FMT` pairs, and
+`max_act_rows` — into a `render_identity.json` sidecar written atomically on
+the first fill and compared on every later one, immediately after the
+`cache_dir` mkdir and before any shard is read or written. A mismatch names
+the exact field and says to rebuild rather than resume; an unreadable sidecar
+refuses fail-closed. **A directory with no sidecar (every cache built before
+this) is admitted on trust with a WARNING** — refusing them would strand every
+existing 90 GB cache, and that trade is recorded here rather than hidden in the
+code. Gates: `tests/test_production_cache_render_identity.py` (9),
+`tests/test_cb_cache_pair_resume_identity.py` (updated for the earlier, louder
+refusal).
 
 Re-stamped (2026-09-03, `muse/pq-140-licence`) for the **licensed per-member
 promotion** (RobTand/prismaquant#140 -- closing the second prose copy the
@@ -99,8 +120,8 @@ frontier build and an assignment-scoped export build sampled different rows
 the collector now hooks the full visible module set with `store_qnames`
 narrowing only storage, stamps `activation_hook_scope_packed`, and the union
 merge requires agreeing packed digests. What this does NOT do: guard the
-cache directory itself (#146, still open below) — resume stays file-presence
-only. Gates: `tests/test_activation_hook_scope_gates.py` (5),
+cache directory itself — that is #146, closed by the stamp below. Gates:
+`tests/test_activation_hook_scope_gates.py` (5),
 `tests/test_packed_expert_hook_scope.py` (4).
 
 Re-stamped (2026-09-03, `muse/pq-156-158-replay`) for the **three receipt
