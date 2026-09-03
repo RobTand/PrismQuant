@@ -2175,13 +2175,13 @@ def _verify_uniform_control_override(
         problems.append(
             f"{slot}: override records no re-typed artifact directory name"
         )
-    elif model_dir is not None:
-        expected = Path(model_dir).resolve().name
-        if typed != expected:
-            problems.append(
-                f"{slot}: override confirms {typed!r} but the artifact "
-                f"directory is {expected!r}"
-            )
+    # The re-typed name is checked against the directory ONCE, when it is
+    # typed (``shipcard_cli override-control``), exactly as ``--force-unverified``
+    # checks its re-type at publish time.  It is not re-checked here: ``verify``
+    # runs on the publisher's snapshot copy under a randomised basename and on
+    # downloaded artifacts wherever they land, and a stamp that stops verifying
+    # when the directory moves is a stamp bound to a path, not to the card.
+    # What binds the override to THIS card is below: model_sha and the ratio.
     forgiven = _finite_float(override.get("candidate_over_control"))
     if forgiven is None or ratio is None or not _close(forgiven, ratio):
         problems.append(

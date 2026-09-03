@@ -34,6 +34,26 @@ does not implement. The
 `torch_materialize_stock`, and `TESSERA_SERVE_MODE` being absent from the
 manifest entirely — is recorded as open, not closed (#142, #143).
 
+Re-stamped (2026-09-03, `claude/pq-121-uniform-gate`) for the **byte-matched
+uniform control on the shipcard** (§7.1; PrismaQuant #121, the closure of the
+served 2.00x loss in #117 / RobTand/tessera#1). A rate-axis artifact (one whose
+`quantization_config.quant_method` is `tessera`) now carries a required
+`uniform_control` slot: the verdict of the allocated arm against the
+byte-matched uniform arm, measured on the gold lane. `verify` REFUSES a card
+whose allocation lost to its control, and refuses the ways a loss could be
+dressed up -- a control that is not byte-matched, a self-widened tolerance, a
+control whose `model_sha` is the candidate's own, a `passed` flag that
+disagrees with the KL it sits beside, a control that never served. The hatch
+is `shipcard_cli override-control`: basename re-typed at stamp time (the
+`--force-unverified` ceremony), stamped with the forgiven ratio and bound to
+the card's `model_sha`; `verify` re-checks the binding, never the directory
+name, because the publisher verifies a snapshot copy under a randomised
+basename. `publish_artifact` prints the verdict beside the bpp claim. The
+control's KL comes from outside the card, as a gold-shaped record replayed
+through the same verifier the candidate's is (`fill-control`). What the gate
+does not do: fix the allocator -- the oracle ceiling for this loss is 0.941x,
+so the closure is a gate, not a better cost. Gate:
+`tests/test_shipcard_uniform_control.py` (27).
 Re-stamped (2026-09-03, `claude/pq-menu-cache-bound`) for the **menu memo
 bound** (§4.10; RobTand/tessera#46). Admitting the 16-bit family took one
 2048x1024 unit's research menu from 3055 rungs to 6764 and left both per-rung
@@ -6007,6 +6027,26 @@ operator to **re-type the artifact directory's basename** (interactively, or `--
 for scripts) and stamps `forced_unverified: true` plus the overridden problems into the
 shipcard, so the artifact itself carries the record that it shipped ungated. Tests:
 `tests/test_publish_artifact.py`.
+
+**`uniform_control` (rate-axis artifacts only; PrismaQuant #121).** The
+shipcard of a Tessera artifact carries one more required slot: the verdict of
+its allocation against the byte-matched uniform control (`shipcard.py`
+`_verify_uniform_control_record`, `make_uniform_control_record`,
+`record_uniform_control_override`; CLI `fill-control` / `override-control`).
+`verify` refuses a card whose allocation LOST to spending the same bytes
+uniformly, and refuses the substitutes for a loss -- a control that is not
+byte-matched (the match is replayed from integer bit counts, the carried flag
+cross-checked), a self-widened tolerance above `MAX_CONTROL_RELATIVE_SLACK`, a
+control arm whose `model_sha` equals the candidate's ("compared against
+itself is not a control"), a `passed` flag that disagrees with the KL beside
+it, or a control that never SERVED. The override hatch re-types the basename
+at stamp time and binds to the card (`model_sha`, forgiven ratio) -- not to
+the directory, which the publisher's snapshot renames. `publish_artifact`
+prints the verdict on the same line as the bpp claim (principle 12: a size
+claim travels with its quality caveat). Known limit: `uniform_control_summary`
+prints producer-declared fields (`candidate_bpp`, `control_bpp`,
+`relative_slack_ppm`) beside the bpp rather than the replayed values; `verify`
+still refuses on the replay.
 
 The strict RTX4090 FP8-CB lane is the explicit exception to that generic
 escape hatch. Strictness is re-derived from the canonical policy/profile,

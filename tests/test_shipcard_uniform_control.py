@@ -141,7 +141,10 @@ def _artifact(tmp_path, *, name="exported", rate_axis=True):
         config["quantization_config"] = {
             "quant_method": "tessera", "format": "mixed-precision"}
     (model_dir / "config.json").write_text(json.dumps(config))
-    (model_dir / "model-00001-of-00001.safetensors").write_bytes(b"weights")
+    # Distinct bytes per artifact: two directories with identical bytes ARE
+    # one checkpoint, and the gate says so ("compared against itself").
+    (model_dir / "model-00001-of-00001.safetensors").write_bytes(
+        b"weights of " + name.encode())
     card = build_shipcard(model_dir, build={"achieved_bpp": {"value": 4.0}})
     write_shipcard(model_dir / "shipcard.json", card)
     return model_dir
@@ -561,6 +564,30 @@ def test_the_override_refuses_when_there_is_nothing_to_override(tmp_path):
 # ---------------------------------------------------------------------------
 # The fill path
 # ---------------------------------------------------------------------------
+def test_the_override_survives_the_directory_being_renamed(tmp_path):
+    """The re-typed basename is a stamp-time ceremony, not a verify-time key.
+
+    ``--force-unverified`` checks the re-typed name against the directory at
+    the moment of typing and never again; the override must do the same,
+    because the publisher verifies a *snapshot copy* under a randomised name
+    and a downloaded artifact sits wherever the downloader put it.  What the
+    override binds to at verify time is the card: model_sha and the forgiven
+    ratio.  Before this test, publishing any overridden artifact refused with
+    "override confirms 'exported' but the artifact directory is
+    '.prismaquant-publish-snapshot-…'".
+    """
+    model_dir, path = _built(tmp_path)
+    assert shipcard_cli([
+        "override-control", str(path),
+        "--reason", "r", "--authorized-by", "a",
+        "--confirm-name", model_dir.name,
+    ]) == 0
+    moved = tmp_path / "somewhere-else"
+    model_dir.rename(moved)
+    assert _problems(moved, moved / "shipcard.json") == []
+    assert _publish(moved) == 0
+
+
 def test_fill_control_closes_the_slot_from_two_measurements(tmp_path):
     model_dir = _artifact(tmp_path)
     path = _close_base_slots(model_dir, candidate_kl=0.1500)
