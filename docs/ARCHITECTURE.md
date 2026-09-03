@@ -3,6 +3,18 @@
 As of: 2026-09-03 · `tessera/decouple-gridbook`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-03, `claude/tessera-plane-drift`) for the **activation
+seam's plane axis** (§1.1, §8.4). Tessera's 2026-09-02 release made the refit
+objective a map keyed by scale plane and deleted the two CHANNEL-only guards
+this document quoted. PrismaQuant read half that change: `for_unit` refused
+every caller (the symptom that raised) while `rung_accepts_hessian` went on
+pricing both E2M1 families weights-only (the one that did not). The plane is
+now threaded from the recipe the encode itself resolved, the predicate is
+derived from what the pinned `ActivationSource` emits rather than restated, and
+the campaign's per-unit memo is keyed `(unit, plane)`. The sections that read
+"CHANNEL-plane-only" are retracted in place. *Currency is not truth*: this file
+was re-stamped twice in lockstep with that false belief.
+
 Re-stamped (2026-09-03, `tessera/decouple-gridbook`) for the **Tessera dev
 pin's move from identity to answer, and the third attested rung** (§4.10,
 §10.x; RobTand/tessera#38, #14). The pin compared the environment's value
@@ -164,9 +176,14 @@ superblock, which collapses a row-parallel `[3072,1024]` menu from 3060 rungs
 to 17 at tp=8. Activation-aware encoding goes through
 `tessera.export.ActivationSource`, formed in one place
 (`prismaquant/tessera_hessian.py`) for both the anchor campaign and the
-production render, and it is **CHANNEL-plane-only** at the pinned commit: E4M3
-rungs take an H, both E2M1 families are priced weights-only and stamped
-`hessian_applied: false`. The one-rung fused-group constraint is measured on a
+production render, and since Tessera's 2026-09-02 release it reaches **every
+plane**: E4M3 (CHANNEL) and both E2M1 families (LUT16) all take an H, and
+`for_unit` requires the unit's `scale_plane` because the refit objective is a
+map keyed by plane. The former "CHANNEL-plane-only" reading is **retracted** —
+it restated two Tessera guards that release deleted, and under it the W4A4
+route was priced against bytes the export does not write: Tessera measures
+served KL 0.6404 weights-only against the H-aware wire's 0.5310 at identical
+bytes. The one-rung fused-group constraint is measured on a
 per-group-anchored table at **1.237x / 1.558x / 1.113x**. The `TESSERA` menu
 token now expands to priced-**and-attested** rungs and prints the narrowing:
 a cost table is priced under the campaign's menu mode while attestation is a
@@ -4343,9 +4360,10 @@ byte-identical. So a rung priced without an H is a price of different bytes at
 the same format name, and the seam refuses rather than downgrade silently:
 
 * **The seam is `tessera.export.ActivationSource`**, not a kwarg name.
-  `ActivationSource.for_unit(name, in_features, device)` turns one unit's H
-  into the encoder keywords it implies — `ldl`, `ldl_block`, `refit_metric`,
-  `refit_reach_floor` — and PrismaQuant forwards that object's output and
+  `ActivationSource.for_unit(name, in_features, device, scale_plane=...)`
+  turns one unit's H into the encoder keywords it implies — `ldl`,
+  `ldl_block`, `refit_metric`, `refit_reach_floor` — and PrismaQuant forwards
+  that object's output and
   nothing else: a keyword it did not emit is refused, so this seam cannot
   become a second place where encode settings are chosen. Capability is
   *probed*, never assumed (principle 14): `_encoder_accepts_hessian` asks a
@@ -4353,18 +4371,41 @@ the same format name, and the seam refuses rather than downgrade silently:
   `inspect.signature(encode_linear_planes)` which it takes, and the seam
   refuses when they disagree. Deliberately *not* "call and catch `TypeError`",
   which would swallow every unrelated argument error.
-* **Which rungs can take an H is a fact about the WIRE, and it is measured.**
-  At Tessera `f3e7d0a` an activation-aware encode needs a **CHANNEL** scale
-  plane: on a block plane Tessera refuses `ldl` ("LDLQ is implemented for the
-  CHANNEL scale plane") *and* `refit_metric` ("read only by the CHANNEL plane's
-  refit"). Every E4M3 rung is CHANNEL; every E2M1 rung is LUT16. So **the H is
-  the FP8/W8A8 route's shipping encode and the W4A4 route has none** —
-  weights-only on E2M1 is not a downgrade, it is the only bytes that wire has,
-  and pricing it is still pricing the bytes that ship (principle 8).
-  `tessera_render.rung_accepts_hessian` is the predicate; because it restates a
-  Tessera condition, a test pins it against real encodes on every family.
+* **Which rungs can take an H is a fact about the WIRE, and it is DERIVED —
+  never restated.** The paragraph that stood here quoted two Tessera guards
+  verbatim ("LDLQ is implemented for the CHANNEL scale plane", "read only by
+  the CHANNEL plane's refit") and concluded that the W4A4 route had no H-aware
+  encode at all. Tessera's 2026-09-02 release deleted both — its own receipt
+  says why, *"That reason does not survive reading the loop it guards"*: the
+  plane is read once per pass, before the block loop, whatever its column
+  granularity. `refit_metric` is refused only on S6b now and `ldl` on no plane
+  at all. The restatement went stale where nothing could see it, which is
+  exactly what principle 14 forbids a producer-side claim about another runtime
+  from being able to do. So `tessera_render.rung_accepts_hessian` no longer
+  states a condition: it **asks the pinned `ActivationSource` what it emits for
+  this rung's plane** (`_encoder_kwargs_for_plane`) and answers on whether an
+  H-bearing keyword (`ldl`, `refit_metric`) is in that set. A Tessera release
+  that moves a keyword moves the predicate with it. The seam's forwarded-key
+  whitelist (`_encoder_accepts_hessian`) takes the **union over planes**,
+  because s6b emits no `refit_metric` and probing one plane would narrow the
+  whitelist until it refused another plane's legitimate keyword as unknown.
   `hessian_applied` is stamped **per cost row**, not per table, because a
   mixed-family campaign is legitimately half H-aware.
+* **The plane is a property of the family, and the memo is keyed by it.**
+  Enumerated over every family PrismaQuant allocates (`realisable_rungs` ×
+  `tessera_wire_recipe`, 11 families, every rung): E4M3_K1 is WINDOW/CHANNEL
+  L=14 at every rung; E2M1_K2 is LUT16 at every rung and changes *body* at the
+  q896 coset cap (WINDOW below it, TCQ at it) while keeping its plane through
+  the change; E2M1_K1 and all eight LM families are TCQ/LUT16. So the plane is
+  constant across rungs and differs across families — `encoder_kwargs` stays
+  hoisted out of the rate sweep (no rate reaches it, and the signature has
+  nowhere to put one) but its per-unit memo is keyed `(unit, plane)`, since the
+  campaign prices one unit on every family in its menu and a unit-only key
+  would price the second family under the first family's objective, silently.
+  `scale_plane` is keyword-only with **no default**: a default would be one
+  plane's measured answer applied to another plane's wire. The expensive half
+  is unaffected — the block-LDL is a function of the Hessian alone, asserted in
+  the test, because if it moved with the plane the hoist would be worthless.
 * **H comes from PrismaQuant's own calibration activations, never the held-out
   / KL split**, accumulated as raw `XᵀX` over **every** calibration row the
   Linear sees — *before* the render score's `max_act_rows` cap, since a 256-row

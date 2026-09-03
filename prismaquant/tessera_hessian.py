@@ -28,9 +28,22 @@ one name and nothing raises.  So both call the functions here:
   from Tessera's own defaults rather than restated on either side.
 
 The LDL factorisation is the expensive part and it is **rung-independent**: one
-unit's H yields one ``ldl`` and one ``refit_metric`` that every rate on that
-unit reuses.  Callers that sweep rungs compute the kwargs once per unit --
-a twelve-anchor surface otherwise pays for twelve identical block-LDLs.
+unit's H yields one ``ldl`` that every rate on that unit reuses, so callers
+that sweep rungs compute the kwargs once rather than paying for twelve
+identical block-LDLs across a twelve-anchor surface.
+
+It is **not plane-independent**.  Tessera keys the refit objective by scale
+plane -- the exact quadratic on a CHANNEL row scale, a diagonal power on the
+LUT plane's coupled blocks -- because the two answers were measured separately
+and disagree, and ``for_unit`` refuses a caller that does not name the plane
+rather than serving it one of them.  The plane is a property of the grid and
+not of the rung (constant across every rung of every family PrismaQuant
+allocates; ``channel`` on E4M3, ``lut16`` on E2M1 and the free grids), so the
+memo key is ``(unit, plane)`` and the bound is one factorisation per unit per
+family-plane.  The plane must come from the recipe the encode itself resolved,
+threaded as an object: a second lookup agrees only while nothing clears
+``tessera_formats._recipe_for``, and pricing a unit under the other plane's
+objective prices an artifact the export does not ship (principle 8).
 """
 from __future__ import annotations
 
@@ -142,16 +155,26 @@ def encoder_recipe() -> dict:
 
     Read from Tessera's own dataclass defaults, so a receipt quoting "sigma
     1.0, block 32, exact-H refit" is quoting the encoder rather than a comment.
+
+    ``refit_objective`` is a **map from scale plane to objective** since
+    Tessera's 2026-09-02 release gave the LUT plane a refit of its own: the
+    receipt records all of it, because a single objective quoted here would be
+    a true statement about one plane printed over an artifact built on
+    another.  It is copied into a plain ``dict`` -- Tessera hands back a
+    ``MappingProxyType``, which this block is stamped into cost payloads that
+    ``json.dumps`` would refuse.
     """
     from tessera.export import ActivationSource
 
     source = ActivationSource(
         hessians={}, provenance={f: "" if f.endswith("sha256") else 0
                                  for f in HESSIAN_IDENTITY_FIELDS})
+    objective = source.refit_objective
     return {
         "ldlq_sigma": source.ldlq_sigma,
         "ldlq_block": source.ldlq_block,
-        "refit_objective": source.refit_objective,
+        "refit_objective": (objective if isinstance(objective, str)
+                            else dict(objective)),
         "refit_reach_floor": source.refit_reach_floor,
     }
 

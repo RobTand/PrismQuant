@@ -313,14 +313,27 @@ def test_the_pinned_encoder_accepts_every_keyword_the_source_emits():
 
     accepted, required, _params = _encoder_accepts_hessian()
     params = inspect.signature(texport.encode_linear_planes).parameters
+    # The UNION over planes: the emitted set is plane-dependent (s6b's grouped
+    # words have no metric-aware refit, so that plane emits no
+    # ``refit_metric``), and this tuple is the seam's forwarded-key whitelist.
+    # Probing one plane would narrow it and make the seam refuse another
+    # plane's legitimate keyword as unknown.
     assert required == ("ldl", "ldl_block", "refit_metric", "refit_reach_floor")
     assert accepted, sorted(params)
     assert all(k in params for k in required), sorted(params)
-    # And the recipe travels from Tessera's own defaults, not from a comment.
+    # And the recipe travels from Tessera's own defaults, not from a comment --
+    # including the fact that the refit objective is now keyed BY PLANE. A
+    # receipt that quoted one objective would print a true statement about one
+    # plane over an artifact built on another.
     assert tessera_encoder_hessian_status()["recipe"] == {
         "ldlq_sigma": 1.0, "ldlq_block": 32,
-        "refit_objective": "hessian", "refit_reach_floor": False,
+        "refit_objective": {"channel": "hessian", "lut16": "h^1.0",
+                            "s6b": "plain"},
+        "refit_reach_floor": False,
     }
+    # Plain dicts all the way down: this block is stamped into cost payloads.
+    import json
+    json.dumps(tessera_encoder_hessian_status()["recipe"])
 
 
 def test_the_hessian_applies_exactly_where_tessera_says_it_does():
@@ -568,7 +581,7 @@ def test_a_missing_qname_in_the_hessian_map_is_a_hard_failure():
             activations=torch.randn(8, 256),
             format_name="TESSERA_E4M3_K1_R1024",
             cache=None, wire_dir=pathlib.Path("."),
-            activation_kwargs_for=lambda name: {},
+            activation_kwargs_for=lambda name, plane: {},
             hessian_required=True,
         )
     assert "q_proj" in str(excinfo.value)
