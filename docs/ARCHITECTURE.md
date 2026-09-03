@@ -4707,6 +4707,17 @@ Route status and serve flags are read off the attesting cell rather than typed:
 these cells say `backed_with_serve_flag`, and collapsing that to `backed` would
 both overstate the claim and drop the `TESSERA_SERVE_MODE` the serve needs.
 
+The priced A side is compared against the executed one before any of that.
+`route_admission` prices `tessera_serving_route`'s layout fact while the serve
+executes the attesting cells' `activation_contract`, and the two vocabularies
+do not match character for character, so `check_tessera_activation_agreement`
+compares their `(act_bits, act_group_size)` projection
+(`tessera_runtime_contract.cell_activation_projection`). Cells that disagree
+with each other, a cell vocabulary the projection does not transcribe, or a
+priced triple the cells do not execute all raise rather than admitting: pricing
+one A side while the serve executes another is a currency error
+(`tests/test_tessera_lane_admission.py`).
+
 **REQUIREMENT: this menu may not be selected on the surrogate alone.**
 Measured 2026-09-02, served
 (`docs/measurements/tessera-allocated-served-2026-09-02.md`): three of this

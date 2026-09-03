@@ -100,6 +100,7 @@ __all__ = [
     "TesseraContractError",
     "TesseraNativeExtension",
     "TesseraRouteCell",
+    "cell_activation_projection",
     "contract_answer",
     "describe_dev_pin",
     "dev_pin_requested",
@@ -263,6 +264,57 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
 _NATIVE_ROUTE_STATUSES = frozenset(
     {ROUTE_STATUS_BACKED, ROUTE_STATUS_BACKED_WITH_SERVE_FLAG}
 )
+
+
+#: What a published ``activation_contract`` string executes as, in the
+#: vocabulary the allocator prices in: ``(act_bits, act_group_size)``.
+#: A transcription of the runtime's vocabulary, in exactly one place, and
+#: fail-closed: a contract string not listed here raises rather than
+#: guessing, because guessing an A side is the currency error this table
+#: exists to prevent (2026-08-17, 87 GB on NVFP4_CB).  Each leg is pinned
+#: against the producer route for the family that publishes it -- the
+#: ``tessera_serving_route`` contract quoted -- so the two halves of one
+#: A side cannot drift apart without renaming one of them:
+#:
+#: * ``e2m1_group16_ue4m3_static``: 4-bit E2M1 activations in groups of 16
+#:   with static scales -- ``w4a4-nvfp4-e2m1-group16-ue4m3``,
+#:   ``(act_bits, act_group_size) == (4, 16)``.
+#: * ``fp8_per_token_dynamic``: 8-bit FP8 activations with per-token dynamic
+#:   scales -- ``w8a8-dynamic-e4m3-channel``, ``(8, 0)``: group 0 is the
+#:   registry's spelling for ungrouped (the same one the ``FP8_E4M3`` row
+#:   carries), and the dynamic half lives in the activation quantiser the
+#:   route borrows by reference, not in the group size.
+#: * ``bf16_unquantized``: 16-bit activations, no quantisation --
+#:   ``w16a16-bf16-channel``, ``(16, 0)``.
+_CELL_ACTIVATION_PROJECTION = {
+    "e2m1_group16_ue4m3_static": (4, 16),
+    "fp8_per_token_dynamic": (8, 0),
+    "bf16_unquantized": (16, 0),
+}
+
+
+def cell_activation_projection(cell_contract: str) -> tuple[int, int]:
+    """Project a cell's ``activation_contract`` onto ``(act_bits, act_group_size)``.
+
+    The comparison :func:`prismaquant.tessera_menu.route_admission` runs:
+    the producer prices ``tessera_serving_route``'s ``(act_bits,
+    act_group_size)`` while the runtime executes the cell's string, and the
+    two vocabularies do not match character for character.  Comparing the
+    projection refuses a family whose priced A side is not the executed one.
+    An unpublished string raises :class:`TesseraContractError` -- a new
+    runtime vocabulary is a thing to transcribe in
+    :data:`_CELL_ACTIVATION_PROJECTION`, never a thing to admit blind.
+    """
+    try:
+        return _CELL_ACTIVATION_PROJECTION[str(cell_contract)]
+    except KeyError:
+        raise TesseraContractError(
+            f"cell activation contract {cell_contract!r} is not a published "
+            f"vocabulary this reader transcribes "
+            f"({sorted(_CELL_ACTIVATION_PROJECTION)}); transcribing a new "
+            "runtime vocabulary is a review, and admitting it blind would "
+            "price an A side nothing executed"
+        ) from None
 
 
 @dataclass(frozen=True, slots=True)

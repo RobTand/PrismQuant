@@ -65,7 +65,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, TYPE_CHECKING
+
+from tessera.errors import GrammarError
 
 from .tessera_allocator import (
     TesseraAllocatorCandidate,
@@ -73,13 +75,15 @@ from .tessera_allocator import (
     tessera_solver_candidate_menu,
 )
 from .tessera_formats import (
-    MIN_TRELLIS_STEPS,
     SUPERBLOCK_WEIGHTS,
     TesseraFamily,
     TesseraFormatError,
     get_tessera_family,
     validate_body_rate_q256,
 )
+
+if TYPE_CHECKING:
+    from tessera.export import WireRecipe
 
 __all__ = [
     "TesseraRateSurface",
@@ -101,6 +105,7 @@ def uniform_column_schedule(
     body_rate_q256: int,
     *,
     family: str | TesseraFamily,
+    recipe: "WireRecipe | None" = None,
 ) -> tuple[int, ...]:
     """Return the flattest legal per-input-column schedule hitting a rate.
 
@@ -117,14 +122,23 @@ def uniform_column_schedule(
     totals are the integers, so the rate resolution is ``256/columns`` q256
     per step -- 0.25 q256 on a 1024-column Linear.
 
-    Flattest-legal is the neutral default: rates differ by at most one across
-    columns, ordered deterministically.  A caller holding per-column
-    importance should shape the schedule itself; this function deliberately
-    does not invent a ranking it cannot justify.
+    This is ``TesseraFamily.column_schedule`` -- ``bresenham_rate_schedule``
+    -- asked directly, so the schedule offered is the schedule the encoder
+    accepts, by construction rather than by a second implementation of its
+    rule.  Flattest-legal is what the grammar returns: the two rates
+    bracketing the root, spread deterministically.  There is deliberately no
+    per-block floor on coded positions here: the grammar has none (a schedule
+    is legal iff every rate is in ``1..cap`` and the quota closes), and the
+    ``MIN_TRELLIS_STEPS = 8`` floor this helper used to carry was the retired
+    Gridbook wire's ``STATE_MEMORY_BITS``, refused by no Tessera check --
+    which is why it punched menu holes at exactly the high-rate rungs the
+    allocator most wants (#161).  A rung this width cannot realise is refused
+    by the grammar and re-raised in this module's error type, so every caller
+    that guards with ``except TesseraFormatError`` keeps working.
     """
 
     spec = get_tessera_family(family)
-    rate = validate_body_rate_q256(spec, body_rate_q256)
+    rate = validate_body_rate_q256(spec, body_rate_q256, recipe=recipe)
     if type(columns) is not int or columns <= 0:
         raise TesseraFormatError("columns must be a positive integer")
     if columns % SUPERBLOCK_WEIGHTS:
@@ -133,42 +147,13 @@ def uniform_column_schedule(
             f"final block is legal on the wire but its rate accounting is "
             f"the caller's to declare, not this helper's to guess"
         )
-
-    total_bits = round(rate * columns / SUPERBLOCK_WEIGHTS)
-    base, remainder = divmod(total_bits, columns)
-    if base < 1 or (base + (1 if remainder else 0)) > spec.bypass_rate:
+    try:
+        return spec.column_schedule(rate, columns, recipe=recipe)
+    except GrammarError as exc:
         raise TesseraFormatError(
-            f"body rate {rate} q256 needs per-column rates outside "
-            f"[1, {spec.bypass_rate}] for {columns} columns"
-        )
-    # SPREAD the remainder across columns rather than packing it at the
-    # front.  Contiguous placement concentrates the dearer columns into whole
-    # superblocks, and on E2M1 (bypass_rate 4) a block made entirely of
-    # bypass columns has ZERO coded steps and the wire refuses it -- at rates
-    # the research range genuinely uses, not in some unused corner.  A
-    # Bresenham distribution gives every block its proportional share and is
-    # deterministic.
-    schedule = [
-        base + 1
-        if (column * remainder) // columns
-        != ((column + 1) * remainder) // columns
-        else base
-        for column in range(columns)
-    ]
-
-    # Every block needs MIN_TRELLIS_STEPS genuinely coded (non-bypass)
-    # positions.  Flattest-legal only risks this at the very top of the
-    # range, above the research ceiling, but the check is cheap and a silent
-    # violation would surface as an unexplained wire refusal much later.
-    for start in range(0, columns, SUPERBLOCK_WEIGHTS):
-        block = schedule[start:start + SUPERBLOCK_WEIGHTS]
-        coded = sum(value < spec.bypass_rate for value in block)
-        if coded < MIN_TRELLIS_STEPS:
-            raise TesseraFormatError(
-                f"body rate {rate} q256 leaves {coded} coded steps in block "
-                f"at column {start}; {MIN_TRELLIS_STEPS} are required"
-            )
-    return tuple(schedule)
+            f"{spec.name}: rung {rate} is not realisable over {columns} "
+            f"columns -- {exc}"
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,7 +332,6 @@ def densify_rate_surface(
     if len(dims) != 2:
         raise TesseraFormatError("shape must be two dimensions")
     columns = dims[1]
-    spec = get_tessera_family(surface.family)
     built: list[TesseraAllocatorCandidate] = []
     for rate in sorted(set(int(value) for value in q256_values)):
         schedule = (
@@ -360,8 +344,11 @@ def densify_rate_surface(
         # Each rung uses only the rates its own schedule contains, and
         # `validate_alphabets` requires the mapping to match EXACTLY -- a
         # superset is refused.  So the caller supplies every alphabet it
-        # holds and the rung selects the ones it actually spends.
-        used = {rate for rate in schedule if rate < spec.bypass_rate}
+        # holds and the rung selects the ones it actually spends.  Every
+        # scheduled rate is a coded trellis rate needing its table: "bypass"
+        # was the retired Gridbook wire's word and Tessera has no uncoded
+        # rate, so the set is the schedule's rates, unfiltered (#161).
+        used = set(schedule)
         missing = used - set(alphabets)
         if missing:
             raise TesseraFormatError(
