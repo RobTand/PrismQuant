@@ -28,14 +28,22 @@ from pathlib import Path
 from prismaquant.shipcard import (
     GOLD_SLOTS,
     OPTIONAL_SLOTS,
+    UNIFORM_CONTROL_METRIC_KEYS,
+    UNIFORM_CONTROL_SLOT,
     _verify_gold_record,
+    assert_weight_stat_attestation,
     compute_model_sha,
+    ensure_optional_slot,
     fill_slot,
     load_shipcard,
     make_record,
+    make_uniform_control_record,
+    record_uniform_control_override,
     required_slots,
     reattest_weight_stats,
+    uniform_control_summary,
     verify,
+    write_shipcard,
 )
 
 #: Metrics lifted out of a gold-lane result JSON onto the record, in the order
@@ -83,6 +91,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"  git_commit:     {(build.get('git') or {}).get('commit')}")
     print(f"  achieved_bpp:   {(build.get('achieved_bpp') or {}).get('value')}"
           f"  ({(build.get('achieved_bpp') or {}).get('source')})")
+    # Principle 12: the bpp claim and the verdict of the arm that tests
+    # whether those bytes were spent well are printed together, always.
+    summary = uniform_control_summary(
+        card, model_dir=Path(args.shipcard).resolve().parent)
+    print(f"  uniform control: {summary['detail']}"
+          + ("  [OVERRIDDEN]" if summary["overridden"] else ""))
     print(f"  artifact_bytes: {card.get('artifact_bytes')}")
     print("  slots:")
     for slot in slots_shown:
@@ -262,6 +276,130 @@ def _cmd_fill(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_fill_control(args: argparse.Namespace) -> int:
+    """Close `uniform_control` from Tessera's block plus the control's own KL."""
+    card = load_shipcard(args.shipcard)
+    model_dir = args.model_dir or str(Path(args.shipcard).resolve().parent)
+    block = json.loads(Path(args.control_block).read_text())
+    payload = json.loads(Path(args.control_record).read_text())
+
+    verdict = (block.get("verdict") or {}) if isinstance(block, dict) else {}
+    if not verdict.get("measured") and not args.allow_unserved:
+        print(
+            f"[shipcard] REFUSED: {args.control_block} carries an UNSERVED "
+            "verdict — the control was built and priced but neither arm was "
+            "served. A built control is not a passed gate. Re-run Tessera's "
+            "`experiments/uniform_control.py verify` with both served KLs, or "
+            "pass --allow-unserved to record the absence (verify will still "
+            "refuse).",
+            file=sys.stderr)
+        return 2
+
+    control_model_dir = args.control_model_dir
+    if control_model_dir is None:
+        candidate = payload.get("model")
+        if candidate and Path(str(candidate)).is_dir():
+            control_model_dir = str(candidate)
+    if control_model_dir is None:
+        print("[shipcard] ERROR: cannot resolve the CONTROL checkpoint's "
+              "directory — the record JSON has no local 'model' path; pass "
+              "--control-model-dir", file=sys.stderr)
+        return 2
+
+    control_arm = {
+        "tool": args.tool or f"record:{Path(args.control_record).name}",
+        "model_sha": compute_model_sha(control_model_dir),
+        "git_commit": (payload.get("git_commit")
+                       or (payload.get("git") or {}).get("commit")),
+        "serve_fingerprint": payload.get("serve_fingerprint"),
+        "spec_decode_detected": payload.get("spec_decode_detected"),
+        "metrics": {k: payload[k] for k in CARRIED_METRIC_KEYS if k in payload},
+        "measured_model": payload.get("model"),
+        "record_path": str(Path(args.control_record).resolve()),
+    }
+    record = make_uniform_control_record(
+        tool=args.tool or f"uniform_control:{Path(args.control_block).name}",
+        model_sha=compute_model_sha(model_dir),
+        control_block=block,
+        control_arm=control_arm,
+        gold_metric_key=args.gold_metric_key,
+        git_commit=(payload.get("git_commit")
+                    or (payload.get("git") or {}).get("commit")),
+    )
+    ensure_optional_slot(args.shipcard, UNIFORM_CONTROL_SLOT)
+    fill_slot(args.shipcard, UNIFORM_CONTROL_SLOT, record)
+    summary = uniform_control_summary(
+        load_shipcard(args.shipcard), model_dir=model_dir)
+    print(f"[shipcard] filled {UNIFORM_CONTROL_SLOT} from "
+          f"{args.control_block} (passed={record['passed']})")
+    print(f"[shipcard]   {summary['detail']}")
+    return 0
+
+
+def _confirm_artifact_name(model_dir: str, typed: str | None) -> str | None:
+    """Re-typing the basename is the confirmation, as `publish_artifact` has it."""
+    expected = Path(model_dir).resolve().name
+    if typed is None:
+        if not sys.stdin.isatty():
+            print(
+                "[shipcard] REFUSED: override-control needs the artifact "
+                f"directory basename re-typed ({expected!r}); no tty, so pass "
+                "--confirm-name", file=sys.stderr)
+            return None
+        typed = input(
+            "[shipcard] Type the artifact directory name to ship an "
+            f"allocation that LOST to its uniform control ({expected}): ")
+    if str(typed).strip() != expected:
+        print(f"[shipcard] REFUSED: typed {str(typed).strip()!r} != "
+              f"{expected!r}; the confirmation must match the artifact "
+              "directory basename", file=sys.stderr)
+        return None
+    return expected
+
+
+def _cmd_override_control(args: argparse.Namespace) -> int:
+    """Ship an allocation that lost to its control — deliberately, and stamped."""
+    card = load_shipcard(args.shipcard)
+    model_dir = args.model_dir or str(Path(args.shipcard).resolve().parent)
+    summary = uniform_control_summary(card, model_dir=model_dir)
+    if not summary["filled"]:
+        print("[shipcard] REFUSED: no uniform_control record to override; "
+              "fill the slot first (fill-control)", file=sys.stderr)
+        return 2
+    if not summary["measured"]:
+        print("[shipcard] REFUSED: this control was never SERVED. An override "
+              "forgives a measured loss; it is not a way to skip the "
+              "measurement. Serve the control arm, or publish with "
+              "--force-unverified and wear that stamp instead.",
+              file=sys.stderr)
+        return 2
+    if summary["beat_control"]:
+        print("[shipcard] REFUSED: this allocation BEAT its uniform control "
+              f"({summary['candidate_over_control']!r}x); there is nothing to "
+              "override.", file=sys.stderr)
+        return 2
+
+    typed = _confirm_artifact_name(model_dir, args.confirm_name)
+    if typed is None:
+        return 1
+    if card.get("weight_stat_attestation") is not None:
+        assert_weight_stat_attestation(card, model_dir)
+    record_uniform_control_override(
+        card,
+        reason=args.reason,
+        authorized_by=args.authorized_by,
+        confirmed_artifact_name=typed,
+    )
+    write_shipcard(args.shipcard, card)
+    print(f"[shipcard] stamped uniform_control_override=true into "
+          f"{args.shipcard}: this artifact ships an allocation "
+          f"{summary['candidate_over_control']!r}x worse than spending the "
+          "same bytes at one rung")
+    problems = verify(card, model_dir=model_dir)
+    print(f"[shipcard] remaining problems: {problems or 'none'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -313,6 +451,51 @@ def main(argv: list[str] | None = None) -> int:
                         help="record a gold number measured under spec-decode "
                              "anyway (verify still refuses it)")
     p_fill.set_defaults(func=_cmd_fill)
+
+    p_control = sub.add_parser(
+        "fill-control",
+        help="close uniform_control from Tessera's control block plus the "
+             "control checkpoint's own served KL",
+    )
+    p_control.add_argument("shipcard")
+    p_control.add_argument(
+        "--control-block", required=True,
+        help="JSON from tessera.control.control_block() / Tessera's "
+             "experiments/uniform_control.py verify")
+    p_control.add_argument(
+        "--control-record", required=True,
+        help="the CONTROL checkpoint's gold KL result JSON, written by the "
+             "same tool that filled this card's gold.kl")
+    p_control.add_argument(
+        "--control-model-dir", default=None,
+        help="the control checkpoint's directory (default: the record's own "
+             "'model' path)")
+    p_control.add_argument("--model-dir", default=None)
+    p_control.add_argument(
+        "--gold-metric-key", default="kl_mean",
+        choices=sorted(UNIFORM_CONTROL_METRIC_KEYS),
+        help="which gold KL metric both arms are compared on")
+    p_control.add_argument("--tool", default=None)
+    p_control.add_argument(
+        "--allow-unserved", action="store_true",
+        help="record a control that was built but never served (verify still "
+             "refuses it)")
+    p_control.set_defaults(func=_cmd_fill_control)
+
+    p_override = sub.add_parser(
+        "override-control",
+        help="ship an allocation that LOST to its byte-matched uniform "
+             "control; requires the artifact basename re-typed and stamps "
+             "the card",
+    )
+    p_override.add_argument("shipcard")
+    p_override.add_argument("--reason", required=True)
+    p_override.add_argument("--authorized-by", required=True)
+    p_override.add_argument(
+        "--confirm-name", default=None,
+        help="re-typed artifact directory basename (required with no tty)")
+    p_override.add_argument("--model-dir", default=None)
+    p_override.set_defaults(func=_cmd_override_control)
 
     args = ap.parse_args(argv)
     return int(args.func(args))
