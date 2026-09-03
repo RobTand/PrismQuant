@@ -129,11 +129,14 @@ unary cost* over `(Linear, format)`, solved by a multi-choice knapsack DP:
   budget** ("fit the card", `footprint.py` exact) plus the saturation point B*;
   **kneedle is demoted to a diagnostic** — it is axis-dependent and
   LOO-unstable (fp32 4B: elbow at 5.00 in only 454/1000 bootstraps).
-- **The guarantee.** Coordinate-descent polish accepts only single-unit flips
-  that *strictly* reduce measured real KL — *provably no worse* than the chosen
-  frontier point (a contractual guarantee under the fixed polish-time evaluator,
-  explicitly **not** an optimality claim, and re-validated end-to-end after
-  export).
+- **The (retired) guarantee.** Coordinate-descent polish *accepted* only
+  single-unit flips that *strictly* reduced measured real KL — *provably no
+  worse* than the chosen frontier point under the fixed polish-time evaluator
+  (explicitly **not** an optimality claim, and re-validated end-to-end after
+  export). That mechanism was **archived on 2026-05-15**
+  (`archive/polish_2026-05-15/`); `run-pipeline.sh` does not invoke it, so the
+  shipping pipeline ends at frontier selection and this paragraph is history,
+  not a stage to budget.
 
 ### History: the retired cascade
 
@@ -223,7 +226,8 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
    so it can be rewritten wholesale — but **(a) the serialization formats vLLM
    reads and (b) the quality of future shipped artifacts** are hard constraints.
 7. **GPU-first / GPU-or-bust.** Every production hot path (probe, cost, cache
-   fill, recache, polish, export, validation) must be GPU-bound. CPU/disk/NVMe
+   fill, recache, export, validation) must be GPU-bound. Polish was on this
+   list while it was live; it is archived at `archive/polish_2026-05-15/`. CPU/disk/NVMe
    pressure on a hot path is a **bug** — the fix is to use/repair/extend the
    prefetch path so resident data is ready, never to tolerate the slow path.
    `run-pipeline.sh` and `gpu_guard.require_cuda_hot_path` refuse to run on CPU.
@@ -367,7 +371,8 @@ within 1–2%. The decision-unit *framing* from CLADO is kept
 **Gates & discipline:**
 - **Held-out split is disjoint from cost generation.** A prior audit found the
   "validation" KL was in-sample; selection KL must use text the surrogates never
-  saw. Coord-descent, kneedle, and artifact metadata all use the held-out split.
+  saw. Kneedle and artifact metadata use the held-out split (archived
+  coord-descent did too, while it was live).
 - **Reproducibility/provenance is a gate.** KL is bit-identical *within* a docker
   session but can drift 4–8× *across* sessions (stale live-model state). Bake
   git commit, calibration hash, assignment hash, cache hit/miss/RTN-fallback
@@ -432,10 +437,14 @@ the explicit/legacy spelling that reproduces every pre-flip artifact, and a
 stale `WORK_DIR` now **rebuilds loudly** on the mode change instead of silently
 allocating on the other estimator), **`SELECTION_MODE=surrogate`** (set
 `validated-surrogate` to opt into the real-KL frontier selection that produced
-the shipped 27B), `TARGET_PROFILE=vllm_packed_moe`, `PRODUCTION_CACHE=1`,
+the shipped 27B), `TARGET_PROFILE=<unset, spec-resolved>`
+(`TARGET_PROFILE_DEFAULT=vllm_packed_moe` is the fallback when an architecture
+declares nothing — the shell itself pins nothing, re-vet R11), `PRODUCTION_CACHE=1`,
 `PRODUCTION_RECACHE=1`, `VALIDATED_SOURCE_PREFETCH=require`,
-`AURA_ADDITIVITY_GATE=measure`, `CB_EXPERT_EMPIRICAL=0`, `CB_SCALE_CODING=two_tier`
-(the last two are D15: the default is now the value every shipped driver sets).
+`AURA_ADDITIVITY_GATE=measure`, `CB_EXPERT_EMPIRICAL=<unset>` and
+`CB_SCALE_CODING=<unset>` (both lost their shell defaults with the Gridbook
+lane on 2026-09-02 and survive only as `${VAR:-}` settings-hash entries).
+`docs/ARCHITECTURE.md` §3.3 is the single source of truth for shell defaults.
 The archived cost modes / levers (`grouped-kl`, fisher, hdq, multi-shot,
 production-render-staged) **fail fast with `exit 2`** pointing at their archive.
 

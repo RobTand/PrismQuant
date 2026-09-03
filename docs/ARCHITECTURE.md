@@ -8271,27 +8271,31 @@ evaluator are declared in `prismaquant/lane_specs/*.json` (re-vet **R16**); the 
 advisory and the shipcard is what refuses — at **publication**, via `tools/publish_artifact.py`
 (§7.1).
 
-**DIAGRAM-2 — Serving lanes (re-drawn 2026-09-02):** the two artifact containers a
-PrismaQuant exporter writes today and the runtime each requires. The Gridbook
+**DIAGRAM-2 — Serving lanes (re-drawn 2026-09-03):** the three artifact containers the
+`EXPORT_CONTAINER` lanes can act on and the runtime each requires (§1.1). The Gridbook
 codebook container and its plugin, its RTX 4090 candidate and its sm_120
 validation profile were removed with the lane (§9.2) and are gone from the
-diagram; the Tessera lane (§9.4) stays deliberately absent for the opposite
-reason — no PrismaQuant exporter writes those bytes, so the lane has no
-container to draw in a diagram of what this repository writes. Its arm calls
-Tessera's own exporter under `TESSERA_REPO`, which the lane declares as a
-`producer_tool` rather than vendoring (§9.4).
+diagram; the Tessera container (§9.4) is drawn **fail-closed on the release pin**:
+since 2026-09-03 `run-pipeline.sh` has a real `EXPORT_CONTAINER=tessera` arm that
+plans and encodes through Tessera's own tools under `TESSERA_REPO` — which the lane
+declares as `producer_tool`s rather than vendoring — and the pin's PENDING sentinels
+are the only refusal left (`tessera_lane_attested` answers False for every rung
+until a Tessera release tag exists). No served measurement covers the lane yet, so
+its runtime edge stays dashed.
 
 ```mermaid
 flowchart LR
   subgraph CONT["artifact containers"]
     A1["compressed-tensors<br/>maintained: NVFP4 / FP8_DYNAMIC / BF16<br/>FP8_SOURCE: source-artifact compatibility<br/>export_native_compressed.py"]
     A3["GGUF<br/>Q2_K..Q8_0 + IQ family<br/>export_gguf.py"]
+    A4["Tessera wire<br/>quant_method = tessera<br/>planned + encoded via TESSERA_REPO tools<br/>fail-closed: PENDING release pin"]
   end
 
   subgraph RT["runtimes"]
     R1["vanilla vLLM<br/>no plugin, no forked runtime, no custom kernels<br/>CUTLASS NVFP4 path on Blackwell"]
     R3["llama.cpp"]
     R4["vLLM GGUF path<br/>in-tree up to vLLM 0.19; official vllm-gguf-plugin after"]
+    R5["Tessera's own vLLM plugin<br/>tessera.serving, stock image + pin<br/>no served measurement yet"]
   end
 
   subgraph HW["hardware"]
@@ -8302,10 +8306,12 @@ flowchart LR
   A1 -->|"serving profile vllm_packed_moe"| R1
   A3 -->|"serving profile gguf"| R3
   A3 -->|"serving profile gguf"| R4
+  A4 -->|"lane spec tessera, fail-closed on PENDING pin"| R5
 
   R1 -->|"Spark-proven -- shipped rdtand artifacts"| H1
   R3 -->|"Spark-proven -- 295B-class at 2.8 bpp; the KL harness for this lane"| H1
   R4 -->|"smoke-verified on the 0.19.2 venv only, never KL-measured"| H1
+  R5 -.->|"no admittable artifact until a Tessera release tag exists"| H1
 
   R3 -.->|"no qualified deployment"| H2
   R4 -.->|"no qualified deployment"| H2
@@ -8314,6 +8320,7 @@ flowchart LR
   classDef pending stroke:#c07800,stroke-width:2px,stroke-dasharray:4
   classDef unsupported stroke:#c0392b,stroke-width:2px,stroke-dasharray:4
   class H1 proven
+  class A4,R5 pending
   class H2 unsupported
 ```
 
