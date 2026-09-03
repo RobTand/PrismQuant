@@ -341,16 +341,31 @@ def test_lane_spec_executes_is_derived_from_the_packaged_contract():
 
 
 def test_lane_spec_activation_contracts_match_the_cells():
-    """The rationale's two contracts are the cells' own values, per family."""
+    """Every contract a cell publishes is a contract the rationale names.
+
+    The roster used to be a literal pair here, and it went stale the day
+    Tessera's contract reached v5 and the 16-bit family gained its two cells
+    -- a third family the test had no room for.  So the roster is read from
+    the contract, and what is asserted is the property that has to hold at
+    any number of families: a cell's family agrees with itself about its A
+    side, and the value it publishes appears in the rationale a human reads.
+    The second leg is the one that catches drift, because the rationale is
+    prose and prose does not fail to parse.
+    """
     contract = _packaged_contract()
     by_family: dict[str, set[str]] = {}
     for cell in contract["lane_eligibility"]["cells"]:
         by_family.setdefault(cell["family"], set()).add(
             cell["activation_contract"])
-    assert by_family == {
-        "TESSERA_E2M1_K2": {"e2m1_group16_ue4m3_static"},
-        "TESSERA_E4M3_K1": {"fp8_per_token_dynamic"},
-    }
+    assert by_family, "the packaged contract publishes no cells at all"
+    for family, contracts in by_family.items():
+        assert len(contracts) == 1, (
+            f"{family} publishes {len(contracts)} activation contracts across "
+            f"its cells: {sorted(contracts)}")
+    # and the formats[] row agrees with the cells that name it
+    rows = {r["name_pattern"].split("_R{")[0]: r for r in contract["formats"]}
+    for family, contracts in by_family.items():
+        assert rows[family]["activation_contract"] == next(iter(contracts))
 
     from prismaquant.lane_spec import load_lane_spec
 
