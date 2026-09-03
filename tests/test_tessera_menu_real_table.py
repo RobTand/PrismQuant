@@ -109,8 +109,16 @@ def installed_contract(monkeypatch):
     return contract
 
 
-def _allocate(tmp_path, monkeypatch, *, target_bits="4.0"):
-    """Run the allocator's own entry point; return the parsed layer config."""
+def _allocate(tmp_path, monkeypatch, *, target_bits="4.5"):
+    """Run the allocator's own entry point; return the parsed layer config.
+
+    The target sits above the format floor of THIS table.  Over 2423 columns
+    the grammar refuses E4M3 R896 (root 7/2 needs 2423/2 columns), so the
+    cheapest rung the runtime attests everywhere is R1024 and the allocator
+    reports the floor as 4.002 bpp; a 4.0 target is infeasible by that
+    0.002, and until prismaquant #126 the accountant never asked the grammar,
+    so these tests passed on an allocation Tessera could not build.
+    """
     from prismaquant import allocator
 
     tmp_path.mkdir(parents=True, exist_ok=True)
