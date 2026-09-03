@@ -287,12 +287,90 @@ def test_late_override_resolves_a_missing_key(tmp_path):
 
 
 def test_approved_resource_owners_name_real_implementations():
-    """D10: two of the three owner names were never implemented anywhere."""
+    """D10: two of the three owner names were never implemented anywhere.
+
+    The name SET is not pinned (#150-#155's defect class): it was
+    `== {"ProductionWeightCache", "PerturbedActivationCache", "LayerCache"}`,
+    which goes red on a legitimate fourth owner and stays green on a corrupted
+    mapping, since swapping two values preserves the union. What is load-
+    bearing is per-owner and per-resource, so that is what is asserted; the
+    mapping itself is checked against the stages that consume it below.
+    """
     owners = {o for names in pipeline.APPROVED_RESOURCE_OWNERS.values()
               for o in names}
-    assert owners == {"ProductionWeightCache", "PerturbedActivationCache",
-                      "LayerCache"}
+    # Non-vacuity: an emptied mapping must not pass the loop below on nothing.
+    assert len(owners) >= 2, owners
+    for resource, allowed in pipeline.APPROVED_RESOURCE_OWNERS.items():
+        assert allowed, f"{resource}: approves no owner, so it governs nothing"
+    sources = [f.read_text(encoding="utf-8")
+               for f in (ROOT / "prismaquant").rglob("*.py")]
     for owner in owners:
-        hits = list((ROOT / "prismaquant").rglob("*.py"))
-        assert any(f"class {owner}" in p.read_text(encoding="utf-8")
-                   for p in hits), f"{owner} has no implementation in the tree"
+        assert any(f"class {owner}" in text for text in sources), (
+            f"{owner} has no implementation in the tree")
+
+
+def test_the_owners_the_mapping_approves_are_the_owners_the_stages_declare():
+    """The mapping is only as true as the pipeline that reads it.
+
+    `APPROVED_RESOURCE_OWNERS` is enforced per resource (`pipeline.py`'s
+    validation rejects `resource.owner not in allowed`), so the claim it
+    carries is a claim about the live stage graph: rendered weights flow
+    through `ProductionWeightCache`, activations through
+    `PerturbedActivationCache`, streaming weights through
+    `layer_streaming.LayerCache`. Reading the mapping's union tells you none of
+    that -- swap two values and the union is unchanged. This asks the stages
+    instead, which is the only place the pairing is observable.
+    """
+    spec = pipeline.default_production_pipeline_spec()
+    declared: dict[str, set[str]] = {}
+    for stage in spec.stages:
+        for resource in stage.resources:
+            declared.setdefault(resource.resource, set()).add(resource.owner)
+
+    governed = sorted(set(declared) & set(pipeline.APPROVED_RESOURCE_OWNERS))
+    # Non-vacuity twice over: the mapping must govern resources the pipeline
+    # actually declares, and it must govern more than one of them, or a stage
+    # graph that stopped declaring resources would satisfy this silently.
+    assert len(governed) >= 2, (governed, sorted(declared))
+    assert set(pipeline.APPROVED_RESOURCE_OWNERS) <= set(declared), (
+        "the mapping governs a resource no stage declares: "
+        f"{sorted(set(pipeline.APPROVED_RESOURCE_OWNERS) - set(declared))}")
+
+    owner_errors = [e for e in spec.validate().errors if "must use one of" in e]
+    assert not owner_errors, owner_errors
+
+
+def test_a_wrong_but_implemented_owner_is_refused_by_stage_validation():
+    """The reverse rule, and the reason the union is the wrong thing to pin.
+
+    `LayerCache` is a real class and a legitimate owner -- of streaming model
+    weights. Handed `rendered_weights` it is the corrupted mapping, and the
+    enforcement has to name it. A test that only checked "every owner names a
+    real class" cannot tell this apart from the truth.
+    """
+    import dataclasses
+
+    spec = pipeline.default_production_pipeline_spec()
+    resource = "rendered_weights"
+    approved = pipeline.APPROVED_RESOURCE_OWNERS[resource]
+    wrong = sorted(
+        {o for r, names in pipeline.APPROVED_RESOURCE_OWNERS.items()
+         if r != resource for o in names} - set(approved))
+    assert wrong, "no other approved owner to mis-assign; the rule is untestable"
+
+    stages = []
+    swapped = 0
+    for stage in spec.stages:
+        contracts = []
+        for contract in stage.resources:
+            if contract.resource == resource:
+                contract = dataclasses.replace(contract, owner=wrong[0])
+                swapped += 1
+            contracts.append(contract)
+        stages.append(dataclasses.replace(stage, resources=tuple(contracts)))
+    assert swapped, f"no stage declares {resource}"
+
+    errors = dataclasses.replace(spec, stages=tuple(stages)).validate().errors
+    naming = [e for e in errors
+              if resource in e and "must use one of" in e and wrong[0] in e]
+    assert len(naming) == swapped, (naming, errors)

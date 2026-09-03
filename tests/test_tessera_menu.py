@@ -46,16 +46,53 @@ def dev_pin(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_families_are_the_serialisable_set_tessera_declares():
+    """Gate 1, as the crossing rather than as today's four names.
+
+    This asserted a four-element literal (#153).  The dangerous direction is
+    omission: any body returning those four names passed, so a Tessera release
+    that admits a fifth grid while ``menu_families`` silently drops it stayed
+    green and the allocator never priced the new family.  The suite already
+    knows this failure shape -- the dev-pin test below documents a literal
+    two-element list going red on a *correct* menu -- and this was the last
+    literal roster in the file.
+
+    What is pinned instead is the crossing ``menu_families`` claims to be:
+    every hardware base, every arity the search covers, kept when
+    ``tessera_family`` admits the family's cost AND Tessera's own
+    ``SERIALISABLE_GRIDS`` registry holds its grid's digest.  The
+    serialisability leg is spelled out against the registry rather than by
+    re-calling ``family_grid_is_serialisable``, which is the filter under test.
+    """
+    from tessera.alphabet import SERIALISABLE_GRIDS, grid_digest
+
+    from prismaquant.tessera_formats import _HARDWARE_BASES, tessera_family
+
+    expected = []
+    for base in sorted(_HARDWARE_BASES):
+        for arity in range(1, tm._MAX_ARITY_SEARCH + 1):
+            try:
+                spec = tessera_family(base, arity)
+            except TesseraFormatError:
+                continue                  # the encoder refuses this body's cost
+            if grid_digest(spec.payload_grid()) in SERIALISABLE_GRIDS:
+                expected.append(spec.name)
+
     names = sorted(f.name for f in tm.menu_families())
-    assert names == [
-        "TESSERA_BF16_K1", "TESSERA_E2M1_K1", "TESSERA_E2M1_K2",
-        "TESSERA_E4M3_K1",
-    ], names
-    # BF16 is the fourth because Tessera admitted it to SERIALISABLE_GRIDS and
-    # the anchor budget stopped reading a WINDOW grid as a TCQ forest.  It is
-    # here to be PRICED, not to be served: no pinned runtime attests a Tessera
-    # BF16 route (Tessera issue #9), so the attested menu below still offers
-    # exactly two rungs and none of them is this family's.
+    assert names == sorted(expected), (names, sorted(expected))
+    # Non-vacuity: an emptied menu and an emptied crossing would agree.
+    assert len(names) >= 2, names
+
+    # And the per-member properties, which a name list only implies: every
+    # family the menu offers is over a hardware base (a free/Lloyd-Max base is
+    # measurable and not serialisable), and every one of them has a rung to
+    # price.  Whether a family is SERVED is the pinned contract's answer, not
+    # this gate's -- that is what the attested-menu tests below read.
+    from prismaquant.tessera_formats import realisable_rungs
+
+    for family in tm.menu_families():
+        assert family.base in _HARDWARE_BASES, family.name
+        assert grid_digest(family.payload_grid()) in SERIALISABLE_GRIDS, family.name
+        assert len(realisable_rungs(family)) >= 1, family.name
 
 
 def test_e4m3_arity_2_is_refused_by_tessera_not_by_us():
