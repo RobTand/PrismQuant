@@ -60,7 +60,6 @@ import threading
 
 __all__ = [
     "ANCHOR_BUDGET_BITS",
-    "MIN_TRELLIS_STEPS",
     "Q256_UNIT",
     "RATE_SURFACE_ADAPTIVE",
     "RATE_SURFACE_ALL_LEGAL",
@@ -130,9 +129,21 @@ except ImportError as exc:  # pragma: no cover
 #: the allocator already accounts in.
 SUPERBLOCK_WEIGHTS = 256
 
-#: Shortest run that still carries a trellis.  Below it the body degenerates to
-#: a scalar quantiser and should be priced as a terminal format instead.
-MIN_TRELLIS_STEPS = 8
+# ``MIN_TRELLIS_STEPS`` used to live here (value 8): a per-256-column floor
+# on genuinely coded (non-bypass) positions, inherited verbatim from the
+# retired Gridbook wire (``archive/trellis_wire_2026-09-02/``,
+# ``MIN_TRELLIS_STEPS = STATE_MEMORY_BITS``).  It is deleted, not lowered,
+# because the authority it deferred to -- ``tessera.grammar`` /
+# ``tessera.manifest`` -- has no such floor: a schedule is legal iff every
+# rate is in ``1..cap`` and the quota closes (``validate_rate_schedule`` +
+# ``superblock_quota_ok``), and "bypass" is the old wire's word --
+# ``TesseraFamily`` has no ``bypass_rate``, every scheduled rate is a coded
+# trellis rate.  Verified against the installed ``tessera`` package 2026-09-03
+# (``grammar`` exposes no minimum-step constant; ``manifest`` validates only
+# length, quota and per-superblock quota; ``trellis.ConvCode`` refuses only
+# ``memory < 1``, a property of the code, not of a schedule).  Do not re-add
+# a floor here: ask ``TesseraFamily.column_schedule``, which is
+# ``bresenham_rate_schedule`` and refuses what the wire refuses.
 
 #: The S6b scale plane: an E8M0 base byte per group of 32 plus a 4-bit
 #: refinement per half of 16.  A flat 0.5 bits per position on top of the body.
