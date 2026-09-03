@@ -454,6 +454,19 @@ def campaign_cost_payload(
         },
         "non_interpolable": refused,
     })
+    # The attested objective this table prices (re-vet R2; read for reuse by
+    # `cost_currency.require_run_currency`, never from the environment). Every
+    # row here is an `output_mse` under the route's activation contract --
+    # the render-score objective -- so the stamp is unconditional: a caller
+    # claim of any other mode would launder cross-currency rows into that
+    # run's knapsack (RobTand/prismaquant#127).
+    from .cost_currency import RENDER_SCORE_COST_MODE
+
+    nested = payload.get("provenance")
+    if not isinstance(nested, dict):
+        nested = {}
+        payload["provenance"] = nested
+    nested["cost_mode"] = RENDER_SCORE_COST_MODE
     return payload
 
 
