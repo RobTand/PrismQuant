@@ -67,6 +67,33 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
+      # Resolve the compatibility pin without importing prismaquant: its
+      # package surface is exactly what this job has not installed yet.
+      - name: Resolve Tessera development pin
+        id: tessera-pin
+        run: echo "commit=$(python tools/resolve_tessera_dev_pin.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Require Tessera repository token
+        env:
+          TESSERA_REPO_TOKEN: ${{ secrets.TESSERA_REPO_TOKEN }}
+        run: |
+          if [ -z "${TESSERA_REPO_TOKEN:-}" ]; then
+            echo "::error::TESSERA_REPO_TOKEN is required to check out pinned private Tessera"
+            exit 1
+          fi
+
+      - name: Check out pinned private Tessera
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: RobTand/tessera
+          ref: ${{ steps.tessera-pin.outputs.commit }}
+          token: ${{ secrets.TESSERA_REPO_TOKEN }}
+          persist-credentials: false
+          path: .ci/tessera
+
+      - name: Install pinned Tessera
+        run: python -m pip install --no-deps .ci/tessera
+
       # CPU torch explicitly: the default PyPI wheel drags a full CUDA stack
       # (~2.5 GB of runner disk and minutes of download) that no test here can
       # use. Installed first so the project's own `torch>=2.6` is satisfied and
@@ -101,6 +128,27 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Resolve Tessera development pin
+        id: tessera-pin
+        run: echo "commit=$(python tools/resolve_tessera_dev_pin.py)" >> "$GITHUB_OUTPUT"
+      - name: Require Tessera repository token
+        env:
+          TESSERA_REPO_TOKEN: ${{ secrets.TESSERA_REPO_TOKEN }}
+        run: |
+          if [ -z "${TESSERA_REPO_TOKEN:-}" ]; then
+            echo "::error::TESSERA_REPO_TOKEN is required to check out pinned private Tessera"
+            exit 1
+          fi
+      - name: Check out pinned private Tessera
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: RobTand/tessera
+          ref: ${{ steps.tessera-pin.outputs.commit }}
+          token: ${{ secrets.TESSERA_REPO_TOKEN }}
+          persist-credentials: false
+          path: .ci/tessera
+      - name: Install pinned Tessera
+        run: python -m pip install --no-deps .ci/tessera
       - name: Install CPU torch
         run: |
           python -m pip install --upgrade pip
