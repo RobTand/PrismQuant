@@ -71,7 +71,9 @@ jobs:
       # package surface is exactly what this job has not installed yet.
       - name: Resolve Tessera development pin
         id: tessera-pin
-        run: echo "commit=$(python tools/resolve_tessera_dev_pin.py)" >> "$GITHUB_OUTPUT"
+        run: |
+          tessera_commit="$(python tools/resolve_tessera_dev_pin.py)"
+          printf 'commit=%s\n' "$tessera_commit" >> "$GITHUB_OUTPUT"
 
       - name: Require Tessera repository token
         env:
@@ -130,7 +132,9 @@ jobs:
           cache: pip
       - name: Resolve Tessera development pin
         id: tessera-pin
-        run: echo "commit=$(python tools/resolve_tessera_dev_pin.py)" >> "$GITHUB_OUTPUT"
+        run: |
+          tessera_commit="$(python tools/resolve_tessera_dev_pin.py)"
+          printf 'commit=%s\n' "$tessera_commit" >> "$GITHUB_OUTPUT"
       - name: Require Tessera repository token
         env:
           TESSERA_REPO_TOKEN: ${{ secrets.TESSERA_REPO_TOKEN }}

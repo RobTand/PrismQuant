@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +43,53 @@ def _job(workflow: str, name: str) -> str:
     )
     assert match is not None, f"CI workflow has no {name!r} job"
     return match.group(0)
+
+
+@pytest.mark.parametrize("job_name", ["tests", "imports"])
+@pytest.mark.parametrize("valid_pin", [False, True])
+def test_ci_pin_step_propagates_resolver_status(tmp_path, job_name, valid_pin):
+    job = _job(WORKFLOW.read_text(encoding="utf-8"), job_name)
+    step = re.search(
+        r"(?ms)^      - name: Resolve Tessera development pin\n"
+        r"(.*?)(?=^      -|\Z)",
+        job,
+    )
+    assert step is not None
+    run = re.search(r"(?m)^        run: (.*)$", step.group(1))
+    assert run is not None
+    command = run.group(1)
+    if command == "|":
+        command = textwrap.dedent(step.group(1)[run.end():])
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / PIN_RESOLVER.name).write_text(
+        PIN_RESOLVER.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (tmp_path / "prismaquant").mkdir()
+    pin = _dev_pin_literal() if valid_pin else "not-a-commit"
+    (tmp_path / "prismaquant" / PIN_SOURCE.name).write_text(
+        f"TESSERA_DEV_PIN_COMMIT = {pin!r}\n", encoding="utf-8"
+    )
+    output = tmp_path / "github-output"
+    completed = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", command],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(output),
+            "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if valid_pin:
+        assert completed.returncode == 0, completed.stderr
+        assert output.read_text(encoding="utf-8") == f"commit={pin}\n"
+    else:
+        assert completed.returncode != 0, "CI masked a failed pin resolver"
+        assert "must be a full lowercase Git SHA" in completed.stderr
+        assert not output.exists() or not output.read_text(encoding="utf-8")
 
 
 def test_stdlib_resolver_reads_the_authoritative_pin_without_package_imports():
