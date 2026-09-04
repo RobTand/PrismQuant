@@ -1,5 +1,8 @@
 # PrismaQuant Architecture
 
+As of: 2026-09-04 · `codex/pq87-physical-ab`. Stamps
+follow, newest first, each recording its own branch and date.
+
 Re-stamped (2026-09-04, `codex/pq87-physical-ab`) for the opt-in bounded
 physical boundary controller. `experiments/pq87_physical_ab.py` freezes and
 hashes native BF16 source before starting one read-only-model server, then
@@ -62,8 +65,38 @@ defect bounds now fail before HTTP, rather than producing an empty pass or
 asking the endpoint to validate the measurement contract. This does not
 change any shipping threshold. Gate: `tests/test_ship_boundary_behavior.py`.
 
-As of: 2026-09-04 · `codex/pq-ship-integration`. Stamps
-follow, newest first, each recording its own branch and date.
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **complete encoder
+recipe provenance** (§5.4). The default activation-aware recipe is projected
+from Tessera's `ActivationSource.config_block()`, excluding only Hessian
+capture identity and explanatory prose. It retains every producer setting,
+including an unset trailing refit objective, a disabled Gauss-Seidel sweep
+and producer-normalized per-plane maps. Encoder defaults and bytes do not
+change. Gate: `tests/test_tessera_encoder_recipe.py`; both completeness
+regressions failed before the fix on the omitted settings.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **legacy scope
+honesty** (§5.7). The context-free v4 lookup remains compatible, but an
+explicit runtime query on a legacy table is now unattested. A caller's image
+and execution mode cannot be serialized beside a backed family-only claim.
+The same refusal covers generic, development, released-pin and menu admission;
+candidate masking honors an explicit query even when the legacy table itself
+does not require context. Opt-in research remains writable and unattested.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **runtime-scoped
+Tessera admission** (§5.7, §9.4; Tessera #126, approved by Rob). A v5 cell
+requires an exact image digest and explicit eager/compiled execution modes;
+the shared parser retains both and refuses malformed or overlapping scopes.
+An immutable `ServingContext` supplies platform, per-unit structure, residency,
+runtime image and execution mode. Admission requires every declared regime
+under that same context. Menu and candidate provenance retain it, and campaign
+and candidate caches include it in their keys. Missing context remains
+unattested; a unit whose final candidate is excluded is refused by name rather
+than omitted from allocation. Explicit legacy v4 reads remain supported.
+This adds no positive MoE attestation and changes no image default, wire bytes
+or quality threshold. The development source pin remains the reviewed v4
+source until a separate review of the producer's v5 contract; the release pin
+remains PENDING. Name-only/CLI callers without an explicit context remain
+closed under v5 rather than guessing a model-wide MoE or runtime scope.
 
 Re-stamped (2026-09-04, `codex/pq-175-ci-tessera`) for the **pinned Tessera
 CI dependency** (§8.6; RobTand/prismaquant#175). Both CPU jobs resolve the
@@ -78,6 +111,7 @@ status is preserved by a separate shell assignment, so an empty ref cannot
 fall back to Tessera's default branch. Gate:
 `tests/test_ci_tessera_install.py` (pre-fix: the workflow contained no pinned
 Tessera checkout).
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **development
 admission's predicate refusal** (§5.7). The shared parser retained cell
 predicates, but the shape-free development reader discarded them. It now
@@ -5060,15 +5094,14 @@ row-parallel Linear is `cols / tp % 256 == 0`, which is what collapses 3060 to
 **One function owns the encoder call, and it is H-gated**
 (`tessera_render.encode_tessera_unit`). The Tessera encoder's shipping default
 is *H-aware*: given a unit's `H = XᵀX` it applies LDLQ (sigma 1.0, block 32)
-plus an exact full-H row-scale refit, and weights-only encodes stay
+and the producer's plane-specific refit policy, and weights-only encodes stay
 byte-identical. So a rung priced without an H is a price of different bytes at
 the same format name, and the seam refuses rather than downgrade silently:
 
 * **The seam is `tessera.export.ActivationSource`**, not a kwarg name.
   `ActivationSource.for_unit(name, in_features, device, scale_plane=...)`
-  turns one unit's H into the encoder keywords it implies — `ldl`,
-  `ldl_block`, `refit_metric`, `refit_reach_floor` — and PrismaQuant forwards
-  that object's output and
+  turns one unit's H into the encoder keywords it implies, including the
+  plane-specific refit settings, and PrismaQuant forwards that object's output and
   nothing else: a keyword it did not emit is refused, so this seam cannot
   become a second place where encode settings are chosen. Capability is
   *probed*, never assumed (principle 14): `_encoder_accepts_hessian` asks a
@@ -5076,6 +5109,11 @@ the same format name, and the seam refuses rather than downgrade silently:
   `inspect.signature(encode_linear_planes)` which it takes, and the seam
   refuses when they disagree. Deliberately *not* "call and catch `TypeError`",
   which would swallow every unrelated argument error.
+  The recorded default recipe comes from the same producer object's
+  `config_block()`, excluding only capture identity and explanatory prose.
+  Unset and disabled settings are retained, as are producer-normalized
+  per-plane maps; a producer setting cannot disappear from provenance merely
+  because a consumer-maintained field list predates it.
 * **Which rungs can take an H is a fact about the WIRE, and it is DERIVED —
   never restated.** The paragraph that stood here quoted two Tessera guards
   verbatim ("LDLQ is implemented for the CHANNEL scale plane", "read only by
@@ -5951,8 +5989,8 @@ read §9.2's Tessera passage as history. The per-artifact question (this
 platform, this unit's regimes) still stays with `resolve_unit_route` at export.
 
 **One cell parser, with explicit version semantics.** `lane_eligibility.py`
-reads Tessera's v4 table for export and for `tessera_runtime_contract.py`'s
-development pin. A v4 cell requires `requires_plugin: "tessera"`, non-empty
+reads Tessera's v4/v5 tables for export and for `tessera_runtime_contract.py`'s
+development pin. A v4 or v5 cell requires `requires_plugin: "tessera"`, non-empty
 `executes` pairs and exactly one residency selector bounded by its family's
 `residency_modes`. Two cells may not claim the same platform/family/structure/
 regime/residency scope, even at different rungs. `resolve_unit_route` takes an
@@ -5962,6 +6000,22 @@ includes those values, so changing a decoder cannot retain the old answer.
 Explicit legacy Tessera v3 tables retain their original grammar and carry no
 fabricated launches. Gridbook schemas remain refused. Release admission is
 still gated by the exact PENDING release pin.
+Legacy context-free behavior is preserved, not expanded: supplying new
+runtime-image/execution scope to a legacy schema is refused with the shared
+`legacy_runtime_scope_refusal` message. The caller's requested context remains
+in provenance beside `unattested`, never beside a borrowed backed verdict.
+V5 additionally requires `runtime: {image, execution_modes}` on every cell:
+an immutable image reference and a non-empty subset of `eager`/`compiled`,
+never an implicit fallback to `versions.attested_on`. Its overlap key includes
+the image and each execution mode. `ServingContext` supplies every lookup
+axis explicitly; the shared matcher reads all five fields before admitting
+cells. The development menu and released-pin helpers require all declared
+regimes on that one context, and both the runtime scopes and the required
+regime roster enter the reviewed answer. `context_by_unit` threads explicit
+contexts through campaign and candidate APIs; caches key by shape/format
+**and context**, so a rank-two expert cannot borrow a same-shaped dense menu.
+Research mode can retain a writable but explicitly unattested rung; attested
+mode cannot, and removing a unit's last candidate produces a named refusal.
 The development reader also refuses non-empty cell predicates: its family/rate
 menu lookup has no unit facts with which to evaluate a shape constraint.
 Export's `resolve_unit_route` has those facts and evaluates the predicates.
@@ -8996,7 +9050,8 @@ are NAMED by the lane spec, never vendored.
 (`prismaquant.tessera_serving_runtime_pin.v1`), read by
 `tessera_serving_runtime_pin.py`; and the contract the plugin packages,
 `tessera/serving/runtime_contract.json` (`tessera.runtime-contract.v1`, lane
-table `tessera.lane-eligibility.v4`), read through `importlib.resources`.
+table `tessera.lane-eligibility.v4`, with the consumer also supporting the
+runtime-scoped v5 revision), read through `importlib.resources`.
 PrismaQuant never vendors or imports the serving half. Unlike the Gridbook
 serving pin this one binds no wheel digest: Tessera publishes no wheel and is
 installed from a source checkout, so a digest would be a claim about an
@@ -9006,7 +9061,7 @@ artifact that does not exist.
 `requires_plugin: "tessera"` — stock vLLM has no reader for these bytes, so the
 route is not merely flag-gated, and an export gate has to be able to refuse an
 artifact whose serve command would not install the runtime. The shared parser
-carries it as a required v4 cell key (optional only in legacy v3) and
+carries it as a required v4/v5 cell key (optional only in legacy v3) and
 aggregates it as `requires_plugins`
 through `RegimeRoute` / `UnitRoute` / `EligibilityTable.provenance()`;
 `tessera_lane_attested` RAISES on a cell that claims a native route without it,
