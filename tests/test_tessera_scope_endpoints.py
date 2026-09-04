@@ -148,13 +148,15 @@ def test_campaign_main_passes_live_model_topology_to_real_menu_boundary(tmp_path
 
 
 def _allocator_inputs(tmp_path, fmt="BF16"):
+    from prismaquant.tessera_formats import SUPERBLOCK_WEIGHTS
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps({
         "model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]}))
     stats = _stats()
     for row in stats.values():
-        row.update(h_trace=1.0, n_params=128 * 128, in_features=128, out_features=128)
+        row.update(h_trace=1.0, n_params=SUPERBLOCK_WEIGHTS ** 2,
+                   in_features=SUPERBLOCK_WEIGHTS, out_features=SUPERBLOCK_WEIGHTS)
     probe = tmp_path / "probe.pkl"
     costs = tmp_path / "cost.pkl"
     probe.write_bytes(pickle.dumps({"stats": stats, "meta": {"model": str(model_dir)}}))
