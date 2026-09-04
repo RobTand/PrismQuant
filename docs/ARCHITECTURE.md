@@ -1,6 +1,6 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq-175-ci-tessera`. Stamps
+As of: 2026-09-04 · `codex/pq-ship-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-04, `codex/pq-175-ci-tessera`) for the **pinned Tessera
@@ -16,6 +16,23 @@ status is preserved by a separate shell assignment, so an empty ref cannot
 fall back to Tessera's default branch. Gate:
 `tests/test_ci_tessera_install.py` (pre-fix: the workflow contained no pinned
 Tessera checkout).
+Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **development
+admission's predicate refusal** (§5.7). The shared parser retained cell
+predicates, but the shape-free development reader discarded them. It now
+refuses non-empty predicates before constructing an unconditional menu; the
+export resolver continues to evaluate predicates against unit facts. The
+reviewed contract has no predicated cells, so its current menu is unchanged.
+Test: `test_tessera_dev_predicates.py`.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **Tessera lane
+schema v4 consumption** (§5.7, §9.4). Development and export readers now share
+the cell parser. Executed `(symbol, decoder)` pairs and explicit residency
+scope are retained; malformed launches, missing plugin/residency declarations
+and overlapping scopes refuse. Per-unit route resolution requires a residency
+for v4 and records the selected launches. The development answer is reviewed
+against Tessera `1221d2a`, including its window-GEMV native extension, while
+the exact release pin remains PENDING and no routed-MoE attestation is added.
+Tests: `test_lane_eligibility_v4.py`, `test_tessera_contract_v4.py`.
 
 Re-stamped (2026-09-03, `muse/pq-172-173-append`) for the **append-identity
 follow-ups** (§5.4; RobTand/prismaquant#172, #173). Two configurations the
@@ -123,18 +140,22 @@ fourth lane with a novel gate is one spec file plus one verifier, and neither
 roster exists to be forgotten.
 
 
-Re-stamped (2026-09-03, `muse/pq-87-shipgate`) for the **sampled
-boundary-behavior ship gate** (§7.2; issue #87). KL/PPL and greedy-smoke are
-argmax- and distribution-distance measures, structurally blind to
-boundary-token defects that only manifest under sampling (three DSV4-Flash
-quants within ~3% PPL spanning a 6x behavioral gap). `run_validation` now
-files a fifth check, `boundary_behavior`: 5 terse prompts × 6 reps sampled at
-temperature 1.0 under a 64-token cap, scored by the server-free
-`score_boundary_text` for `zero_tag` / `think_stutter` / `cap_truncation`
-with a zero bound. `verify` replays the ledger membership, the exact
-boundary thresholds, and the evidence (positive generation count, zero
-defects, sampling temperature). Gates:
-`tests/test_ship_boundary_behavior.py` (14).
+Re-stamped (2026-09-04, `codex/pq-87-boundary-chat`) for the **sampled
+boundary-behavior request contract** (§7.2; issue #87, still open). The first
+physical run showed that the original implementation posted bare prompts to
+`/v1/completions`; vLLM applies no chat template there, so healthy DSV4 and
+Qwen references both failed 30/30 before artifact behavior was exercised. The
+check now posts a user `messages` body to `/v1/chat/completions`, explicitly
+enables thinking and reasoning output, and recovers the raw boundary semantics
+from either unparsed `message.content` or vLLM's structured `reasoning` /
+`reasoning_content` split. The endpoint plus request/response schema are filed
+in the check metrics and replayed by `shipcard.verify`, so a copied zero count
+from the old route cannot certify an artifact. **This fixes only the request
+contract.** The same run disproved the universal 64-token/zero-defect policy
+(healthy DSV4: 7/30 at 64; stock Qwen3-8B: 10/15 even at 600), so those values
+remain fail-closed historical defaults pending a same-session control-derived
+cap and control-relative verdict; no artifact is promoted and #87 is not
+closed on this commit. Gate: `tests/test_ship_boundary_behavior.py`.
 
 Re-stamped (2026-09-03, `pq132-fused-licence`) for the **fused module's
 per-member rung licence, read from the contract** (§4.10; PrismaQuant #132
@@ -5820,7 +5841,7 @@ under `vllm.general_plugins`, registering `quant_method = "tessera"`, selected
 by the checkpoint with no enable flag and one operator knob
 `TESSERA_SERVE_MODE=resident|streamed`. `tessera_lane_attested(name)` resolves
 the name to its payload family and rate through
-`gridbook_lane_eligibility.resolve_payload_rung` against the contract that
+`lane_eligibility.resolve_payload_rung` against the contract that
 plugin PACKAGES — `tessera/serving/runtime_contract.json`, reached by
 `importlib.resources.files("tessera.serving")`, never repo-root arithmetic —
 and answers True only on the AND of three conjuncts, each of which fails closed
@@ -5846,7 +5867,7 @@ alone:
    dependency — and a producer-side import is not a serving release.
 
 **It is False today by the PIN, not by an edit and not by an absent table.**
-Tessera's packaged contract publishes both families with `device_qualified`
+Tessera's packaged contract publishes its attested families with `device_qualified`
 native cells and the package imports fine here; what withholds them is
 `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, whose `commit`
 and `version` are the conspicuous sentinels `PENDING_TESSERA_RELEASE_COMMIT` /
@@ -5867,35 +5888,35 @@ lane is withdrawn and the Gridbook pin no longer governs Tessera admission**;
 read §9.2's Tessera passage as history. The per-artifact question (this
 platform, this unit's regimes) still stays with `resolve_unit_route` at export.
 
-**The parser is shared, and the widenings are additive.**
-`gridbook_lane_eligibility.py` reads both vendors' tables — the v3 cell grammar
-is identical and a second copy of it would be a drift bug — through three
-additive changes: `LANE_ELIGIBILITY_SCHEMAS` accepts
-`tessera.lane-eligibility.v3` beside `gridbook.lane-eligibility.v3`;
-`FORMAT_KIND_TESSERA_WIRE` joins `tcq_trellis` in
-`RATE_ADDRESSED_FORMAT_KINDS`, so `EligibilityCell.is_trellis` now means
-"rate-addressed" and both dispatch sites (`_published_families`,
-`resolve_payload_rung`) test the set rather than one constant; and
-`requires_plugin` is an OPTIONAL cell key, emitted from `as_dict()` only when
-non-empty, so a Gridbook cell serializes byte-for-byte as it did. Every
-pre-existing Gridbook eligibility test passes unchanged.
+**One cell parser, with explicit version semantics.** `lane_eligibility.py`
+reads Tessera's v4 table for export and for `tessera_runtime_contract.py`'s
+development pin. A v4 cell requires `requires_plugin: "tessera"`, non-empty
+`executes` pairs and exactly one residency selector bounded by its family's
+`residency_modes`. Two cells may not claim the same platform/family/structure/
+regime/residency scope, even at different rungs. `resolve_unit_route` takes an
+explicit `residency`; omission is unattested, and a resolved `RegimeRoute`
+carries both the residency and launches. The reviewed development answer
+includes those values, so changing a decoder cannot retain the old answer.
+Explicit legacy Tessera v3 tables retain their original grammar and carry no
+fabricated launches. Gridbook schemas remain refused. Release admission is
+still gated by the exact PENDING release pin.
+The development reader also refuses non-empty cell predicates: its family/rate
+menu lookup has no unit facts with which to evaluate a shape constraint.
+Export's `resolve_unit_route` has those facts and evaluates the predicates.
 
-**What is not here.** No PrismaQuant exporter writes a Tessera wire
-(`export_native_compressed.py` has no Tessera codec; every Tessera checkpoint
-served so far was written by the Tessera repository's own exporter), no ship
-gate has been RUN on this lane, no `run-pipeline.sh` stage names a Tessera
-format, and `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16`. What IS here since
-2026-09-02 is the declared bar: `prismaquant/lane_specs/tessera.json` (§9.4)
-states the serve, endpoint, gates, KL evaluator and executed activation
-contracts before an exporter exists, which is the order that makes the bar
-something an exporter is built against.
-`tessera_{allocator,footprint,rate_surface}.py` are the §4.9 trellis trio
-re-pointed at Tessera families (36 lines differ after renaming), imported by
-nothing in the pipeline; `trellis_menu` remains the only allocation-time seam
-and still refuses (§4.9). Tests (collected):
-`tests/test_tessera_formats.py` (44), `tests/test_tessera_footprint.py` (42),
-`tests/test_tessera_shape_dependent_recipe.py` (15),
-`tests/test_tessera_lane_admission.py` (16). Register entry: D33.
+**The boundary has an export arm, not a second codec.**
+`prismaquant/run-pipeline.sh` selects `EXPORT_CONTAINER=tessera`, preflights
+the lane and calls Tessera's own plan and encoding tools under `TESSERA_REPO`.
+`export_native_compressed.py` deliberately has no Tessera codec. The arm opens
+a lane-gated shipcard; `prismaquant/lane_specs/tessera.json` (§9.4) declares the
+serve, endpoint, gates, KL evaluator and executed activation contracts.
+Allocation uses `tessera_menu` and its reviewed development contract; that
+research menu does not bypass the exact release pin required for export.
+The pending release and supported producer-tool boundary remain D33, rather
+than an absence of pipeline integration. Tests include
+`test_tessera_formats.py`, `test_tessera_footprint.py`,
+`test_tessera_shape_dependent_recipe.py`, `test_tessera_lane_admission.py`,
+`test_tessera_menu.py` and `test_tessera_export_lane.py`.
 
 ## 6. Export & serving invariants
 
@@ -7228,9 +7249,9 @@ CLI-overridable:
 | `DEFAULT_MAX_MEAN_NLL` | 3.0 | mean NLL |
 | `DEFAULT_MIN_GEN_LEN` | 30 chars | per completion |
 | `DEFAULT_MIN_MTP_ACCEPT_P0` | 0.60 | position-0 draft acceptance |
-| `DEFAULT_MAX_BOUNDARY_DEFECTS` | 0 | any `</think>` stutter/zero-tag/cap-truncation on a terse prompt is a functional failure (the answer is never reached); the clean reference scores 0 on this stratum (official unquantized 0/60 terse) |
+| `DEFAULT_MAX_BOUNDARY_DEFECTS` | 0 | fail-closed historical value, **not a calibrated universal bound**: stock Qwen3-8B produced 10/15 at a 600-token cap. Replacement requires a same-session control-relative policy; #87 remains open |
 | `DEFAULT_BOUNDARY_TEMPERATURE` | 1.0 | the unmodified distribution — any temperature > 0 leaves the argmax path greedy-smoke takes; temp 0 is refused, not sampled |
-| `DEFAULT_BOUNDARY_MAX_TOKENS` | 64 | far above what these prompts need, so `length` means runaway/loop |
+| `DEFAULT_BOUNDARY_MAX_TOKENS` | 64 | fail-closed historical value, **known too short**: healthy DSV4 produced 7/30 cap truncations. It remains only until the paired control derives its finishing cap from the model/context contract |
 | `DEFAULT_BOUNDARY_REPS` | 6 | the published battery's own replication count (30 prompts × 6 reps): 5 prompts × 6 reps = 30 sampled generations |
 
 **Sampled boundary behavior (#87).** KL/PPL (distribution distance) and
@@ -7239,13 +7260,32 @@ distribution defects that only manifest under sampling: three DSV4-Flash
 quants within ~3% PPL spanned a 6x behavioral gap (14/180 to 83/180) on the
 frozen battery, because greedy takes the argmax path where the boundary token
 still wins and KL/PPL average a per-token near-tie at one boundary position
-into noise. `check_boundary_behavior` (`:388`) samples the terse
-boundary-stressing prompts (ultra-short numeric, terse QA, short recall —
-the first three verbatim from the report) at temperature > 0 under a small
-cap and scores every generation with the server-free `score_boundary_text`
-(`:360`) for the closed defect vocabulary `zero_tag` / `think_stutter` /
-`cap_truncation`. It runs alongside KL/PPL, not replacing them: a few dozen
-sampled generations, minutes of serve time, no reference model needed.
+into noise. `check_boundary_behavior` samples the terse boundary-stressing
+prompts (ultra-short numeric, terse QA, short recall — the first three
+verbatim from the report) at temperature > 0 and scores every generation with
+the server-free `score_boundary_text` for the closed defect vocabulary
+`zero_tag` / `think_stutter` / `cap_truncation`. The request contract is
+`prismaquant.boundary_chat_request/1`: POST `/v1/chat/completions`, one user
+`messages` row, thinking enabled in the chat-template kwargs, reasoning
+included, and special tokens retained. The response contract is
+`prismaquant.boundary_chat_response/1`: raw `message.content` is scored
+directly; when vLLM's reasoning parser has consumed the first close token and
+split the response into `reasoning` (or legacy `reasoning_content`) plus
+`content`, the client reconstructs exactly that one boundary only when both
+reasoning-side and answer-side content are non-empty. A later close remains
+visible as stutter, while either empty side remains zero-tag/cap-truncation.
+Both schema identities and the endpoint are filed in the shipcard and replayed
+offline.
+
+This endpoint fix is necessary and insufficient. Physical evidence invalidated
+the current 64-token cap and a universal zero roster: healthy DSV4 still filed
+7/30 cap truncations at 64, while stock Qwen3-8B filed 10/15 even at 600. The
+pending policy is a same-session BF16 control whose cap grows until the control
+reaches its own finishing fixed point, bounded by the declared model context
+and an explicit backstop; the quantized arm is then scored control-relative at
+that exact cap. Until that paired receipt is specified and replayed, the old
+64/zero values remain fail-closed, #87 remains `needs-decision`, and a boundary
+check cannot promote an artifact.
 
 **Spec-decode refusal.** `_spec_decode_on` scrapes `/metrics` for
 `vllm:spec_decode`; if present the perplexity check **refuses a verdict** rather than return
@@ -7255,7 +7295,7 @@ ship-ready requires both. The same refusal now also guards the gold lane (§7.3)
 exist only here.
 
 **The guard fails closed, and the URL it uses is not `--base-url` verbatim (2026-08-14).**
-`--base-url` is the **server** root: the module appends `/v1/completions` itself and reads
+`--base-url` is the **server** root: the module appends its `/v1/*` endpoints itself and reads
 `/health` and `/metrics` off the root. The `compressed_tensors` lane spec published the OpenAI
 root (`http://127.0.0.1:8000/v1`), so on the Qwen3.8-27B ship gate `wait_for_ready` polled
 `/v1/health` — 404 — for 11 minutes and would have burned its whole 900 s timeout without
@@ -8859,9 +8899,11 @@ hours rather than after them.
 **The runtime is Tessera's.** Package `tessera.serving` in the Tessera
 repository: a `vllm.general_plugins` entry point
 `tessera = "tessera.serving:register"` registering `quant_method = "tessera"`,
-two dense routes (NVFP4 W4A4 at `e2m1_group16_ue4m3_static`, per-channel FP8
-W8A8 at `fp8_per_token_dynamic`), a streamed window decoder and the span-2
-NVFP4 CUDA decoder. **There is no enable flag**: the checkpoint's
+the routes and executed decoders published by its packaged contract. The
+reviewed development contract includes NVFP4 W4A4 at
+`e2m1_group16_ue4m3_static`, FP8 W8A8 at `fp8_per_token_dynamic` and BF16 at
+`bf16_unquantized`; each route's cells name its residency and launches.
+**There is no enable flag**: the checkpoint's
 `quantization_config.quant_method` selects the plugin, and the single operator
 knob is `TESSERA_SERVE_MODE=resident|streamed`, declared rather than defaulted
 because it changes the artifact's footprint and is folded into vLLM's
@@ -8877,7 +8919,7 @@ are NAMED by the lane spec, never vendored.
 (`prismaquant.tessera_serving_runtime_pin.v1`), read by
 `tessera_serving_runtime_pin.py`; and the contract the plugin packages,
 `tessera/serving/runtime_contract.json` (`tessera.runtime-contract.v1`, lane
-table `tessera.lane-eligibility.v3`), read through `importlib.resources`.
+table `tessera.lane-eligibility.v4`), read through `importlib.resources`.
 PrismaQuant never vendors or imports the serving half. Unlike the Gridbook
 serving pin this one binds no wheel digest: Tessera publishes no wheel and is
 installed from a source checkout, so a digest would be a claim about an
@@ -8887,14 +8929,15 @@ artifact that does not exist.
 `requires_plugin: "tessera"` — stock vLLM has no reader for these bytes, so the
 route is not merely flag-gated, and an export gate has to be able to refuse an
 artifact whose serve command would not install the runtime. The shared parser
-carries it as an optional cell key and aggregates it as `requires_plugins`
+carries it as a required v4 cell key (optional only in legacy v3) and
+aggregates it as `requires_plugins`
 through `RegimeRoute` / `UnitRoute` / `EligibilityTable.provenance()`;
 `tessera_lane_attested` RAISES on a cell that claims a native route without it,
 because a contract defect must be loud rather than silently admitted.
 
 **Scope, from the table and not from prose.** `structures: ["dense"]` and no
 `routed_moe` cell — no served measurement covers routed experts, and absence is
-the honest state under a closed-world v3 table, not a refusal. Both
+the honest state under a closed-world v4 table, not a refusal. The published
 `tensor_parallel` units declare `max_world_size: 1`: a Tessera unit is one blob
 per vLLM module against a shared rate schedule, so a sharded form needs
 per-rank wires rather than a byte range. `expert_parallel.units` is empty.

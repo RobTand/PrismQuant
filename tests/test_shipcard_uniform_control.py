@@ -40,6 +40,9 @@ from prismaquant.shipcard import (
 )
 from prismaquant.shipcard_cli import main as shipcard_cli
 from prismaquant.validate_quantized_model import (
+    BOUNDARY_ENDPOINT,
+    BOUNDARY_REQUEST_SCHEMA,
+    BOUNDARY_RESPONSE_SCHEMA,
     DEFAULT_BOUNDARY_MAX_TOKENS,
     DEFAULT_BOUNDARY_REPS,
     DEFAULT_BOUNDARY_TEMPERATURE,
@@ -213,6 +216,9 @@ def _ship_gate_record(model_sha, *, source):
     if "boundary_behavior" in ledger:
         ledger["boundary_behavior"] = {
             "passed": True,
+            "endpoint": BOUNDARY_ENDPOINT,
+            "request_schema": BOUNDARY_REQUEST_SCHEMA,
+            "response_schema": BOUNDARY_RESPONSE_SCHEMA,
             "n_prompts": 5,
             "reps": DEFAULT_BOUNDARY_REPS,
             "n_generations": 5 * DEFAULT_BOUNDARY_REPS,

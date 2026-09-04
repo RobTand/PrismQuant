@@ -456,7 +456,7 @@ def route_admission(name: str) -> RouteAdmission:
     Today it delegates to ``tessera_render.tessera_lane_admission``, which
     resolves the rung against **Tessera's own** packaged
     ``runtime_contract.json`` through the shared ``lane_eligibility`` parser.
-    That table publishes both Tessera families and names the two receipted
+    That table publishes the attested Tessera families and their receipted
     rungs, so what refuses is the third conjunct -- there is no reviewed
     Tessera release tag -- and the answer is :data:`ROUTE_STATUS_UNATTESTED`
     for every rung.  The ``detail`` says which conjunct, verbatim from the

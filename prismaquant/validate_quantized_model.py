@@ -19,7 +19,10 @@ Checks, in order:
    3. **Boundary behavior** — sampled (temperature > 0) generations over
       terse boundary-stressing prompts (`BOUNDARY_PROMPTS`), scored
       mechanically for `</think>` stutter/loop, zero-tag runaway, and
-      cap-truncation-before-answer. Zero defects allowed by default. This
+      cap-truncation-before-answer. The chat endpoint is mandatory: raw
+      completions do not apply the model's reasoning template. Zero defects
+      under 64 tokens remains a fail-closed historical default pending #87's
+      paired-control policy; it is not a calibrated universal claim. This
       is the axis KL/PPL (distribution distance) and greedy-smoke (argmax
       agreement) cannot see at any threshold: three DSV4-Flash quants
       within ~3% PPL spanned a 6x behavioral gap (14/180 to 83/180).
@@ -85,6 +88,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass, field, asdict
 
 
@@ -156,6 +160,19 @@ BOUNDARY_DEFECTS: tuple[str, ...] = (
 
 THINK_CLOSE_TAG = "</think>"
 
+# The boundary gate must exercise the model's chat template.  Raw
+# ``/v1/completions`` continues the literal user string and therefore never
+# enters a thinking model's reasoning scaffold.  These values are also filed
+# in the shipcard metrics so offline replay can reject a clean-looking count
+# produced under the old, structurally blind request.
+BOUNDARY_ENDPOINT = "/v1/chat/completions"
+BOUNDARY_REQUEST_SCHEMA = "prismaquant.boundary_chat_request/1"
+BOUNDARY_RESPONSE_SCHEMA = "prismaquant.boundary_chat_response/1"
+BOUNDARY_CHAT_TEMPLATE_KWARGS = {
+    "thinking": True,
+    "enable_thinking": True,
+}
+
 
 # -----------------------------------------------------------------
 # Default thresholds (tune via CLI if needed)
@@ -165,16 +182,14 @@ DEFAULT_MAX_P99_NLL = 6.0
 DEFAULT_MAX_MEAN_NLL = 3.0
 DEFAULT_MIN_GEN_LEN = 30               # chars in each generated completion
 DEFAULT_MIN_MTP_ACCEPT_P0 = 0.60       # position-0 accept fraction
-# Boundary-behavior gate (issue #87). `MAX_BOUNDARY_DEFECTS = 0` is not a
-# tuned knob: any stutter/zero-tag/cap-hit on a terse prompt is a functional
-# failure (the answer is never reached), and the clean reference scores 0 on
-# this stratum (official unquantized 0/60 terse, fixed quant 0/60). Sampling
-# temperature 1.0 is the unmodified distribution — any temperature > 0 leaves
-# the argmax path and exposes the near-tie; 1.0 adds no tuning. `MAX_TOKENS`
-# 64 is far above what these prompts need, so `length` means runaway/loop.
-# `REPS` 6 is the published battery's own replication count (30 prompts × 6
-# reps main + 24 reps × 5 numeric stackext): 5 prompts × 6 reps = 30 sampled
-# generations, minutes of serve time.
+# Boundary-behavior gate (issue #87).  Temperature 1.0 is the unmodified
+# distribution and `REPS` 6 is the published battery's own replication count.
+# The zero bound and 64-token cap are retained as fail-closed historical
+# defaults only while the paired-control policy is unresolved: a first real
+# endpoint audit found healthy DSV4 at 7/30 defects under 64 tokens and stock
+# Qwen3-8B at 10/15 even under 600.  They are not calibrated universal claims
+# and must not be used to close #87 or promote an artifact without the pending
+# same-session control decision.
 DEFAULT_MAX_BOUNDARY_DEFECTS = 0
 DEFAULT_BOUNDARY_TEMPERATURE = 1.0
 DEFAULT_BOUNDARY_MAX_TOKENS = 64
@@ -385,6 +400,59 @@ def score_boundary_text(
     return {"think_tag_count": count, "defects": defects}
 
 
+def _boundary_text_from_chat_choice(choice: Mapping) -> tuple[str, str]:
+    """Recover boundary semantics from one chat-completion choice.
+
+    vLLM without a reasoning parser returns the raw generated text in
+    ``message.content``.  With a parser, it consumes the first ``</think>`` and
+    returns the two sides as ``message.reasoning`` (current spelling) or
+    ``message.reasoning_content`` (older OpenAI-compatible spelling).  In the
+    structured case we synthesize exactly that one consumed delimiter only
+    when both reasoning-side and answer-side content are non-empty.  A second
+    delimiter remains in content and is still scored as stutter; an empty
+    side remains zero-tag/cap-truncation rather than receiving an invented
+    close token.
+
+    The accepted shapes are deliberately closed.  An ambiguous pair of
+    non-null reasoning fields or a non-string field is a malformed response,
+    not a clean generation.
+    """
+    if not isinstance(choice, Mapping):
+        raise TypeError("chat choice is not an object")
+    message = choice.get("message")
+    if not isinstance(message, Mapping):
+        raise TypeError("chat choice is missing message object")
+
+    content = message.get("content")
+    if content is not None and not isinstance(content, str):
+        raise TypeError("chat message.content is not a string or null")
+
+    structured: list[tuple[str, str]] = []
+    for field_name in ("reasoning", "reasoning_content"):
+        value = message.get(field_name)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise TypeError(
+                f"chat message.{field_name} is not a string or null")
+        structured.append((field_name, value))
+    if len(structured) > 1:
+        raise ValueError(
+            "chat message carries both reasoning and reasoning_content")
+
+    if structured:
+        field_name, reasoning = structured[0]
+        if reasoning and content:
+            return reasoning + THINK_CLOSE_TAG + content, field_name
+        if not reasoning:
+            return reasoning, f"{field_name}_empty"
+        return reasoning, f"{field_name}_without_content"
+    if content is None:
+        raise TypeError(
+            "chat message has neither content nor structured reasoning")
+    return content, "content"
+
+
 def check_boundary_behavior(
     base_url: str,
     model_name: str,
@@ -395,11 +463,15 @@ def check_boundary_behavior(
     reps: int = DEFAULT_BOUNDARY_REPS,
     prompts: tuple[str, ...] | list[str] = BOUNDARY_PROMPTS,
 ) -> CheckResult:
-    """Sample boundary-stressing prompts and score `</think>` behavior.
+    """Sample chat-templated prompts and score `</think>` behavior.
 
     Each prompt is sampled `reps` times at `temperature > 0` (sampling, not
     the argmax path greedy-smoke takes) with a small `max_tokens` cap, and
-    every generation is scored by :func:`score_boundary_text`. Fails when
+    every generation is scored by :func:`score_boundary_text`.  The request
+    uses ``/v1/chat/completions`` with a ``messages`` body; raw completions do
+    not apply the model's chat template and cannot exercise this boundary.
+    Reasoning-parser responses are recovered through
+    :func:`_boundary_text_from_chat_choice` before scoring. Fails when
     total defects exceed `max_defects` (default 0: any stutter, zero-tag
     runaway, or cap-truncation on these terse prompts is a functional
     failure). Runs alongside KL/PPL, not replacing them.
@@ -413,23 +485,33 @@ def check_boundary_behavior(
         )
     n_defects = 0
     by_kind: dict[str, int] = {kind: 0 for kind in BOUNDARY_DEFECTS}
+    response_modes: dict[str, int] = {}
     failing_examples: list[dict] = []
     n_generations = 0
     for prompt in prompts:
         for _rep in range(reps):
             try:
                 r = _post_json(
-                    f"{base_url}/v1/completions",
+                    f"{_server_root(base_url)}{BOUNDARY_ENDPOINT}",
                     {
                         "model": model_name,
-                        "prompt": prompt,
+                        "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": max_tokens,
                         "temperature": temperature,
+                        "include_reasoning": True,
+                        "skip_special_tokens": False,
+                        "chat_template_kwargs": dict(
+                            BOUNDARY_CHAT_TEMPLATE_KWARGS),
                     },
                 )
                 choice = r["choices"][0]
-                text = choice.get("text") or ""
+                text, response_mode = _boundary_text_from_chat_choice(choice)
+                response_modes[response_mode] = (
+                    response_modes.get(response_mode, 0) + 1)
                 finish = choice.get("finish_reason")
+                if finish is not None and not isinstance(finish, str):
+                    raise TypeError(
+                        "chat choice.finish_reason is not a string or null")
             except Exception as e:
                 return CheckResult(
                     name="boundary_behavior",
@@ -452,6 +534,10 @@ def check_boundary_behavior(
                         "excerpt": text[:200],
                     })
     metrics = {
+        "endpoint": BOUNDARY_ENDPOINT,
+        "request_schema": BOUNDARY_REQUEST_SCHEMA,
+        "response_schema": BOUNDARY_RESPONSE_SCHEMA,
+        "response_modes": response_modes,
         "n_prompts": len(list(prompts)),
         "reps": reps,
         "n_generations": n_generations,

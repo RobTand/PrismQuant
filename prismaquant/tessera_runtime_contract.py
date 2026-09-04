@@ -13,16 +13,13 @@ is the other §7.4 fact PrismaQuant used to maintain on this side by hand.
 :func:`require_pin_native_extensions_match_contract` is the refusal that keeps
 the serving pin a transcription of it.
 
-**Why this is not** ``lane_eligibility``.  That module is the generic
-engine: it reads a serving release's contract through that lane's pin and
-admits units against it.  It was written for the Gridbook lane's schemas
-(``gridbook.lane-eligibility.v3``, ``cb_product``/``tcq_trellis`` format
-kinds) and kept its shape when that lane was retired on 2026-09-02.  Tessera publishes its own
-contract with its own schema ids and its own ``tessera_wire`` format kind, and
-the honest reading of a second runtime's table is a second reader -- not a
-widened set of accepted schema strings on the first, which would let either
-runtime's table answer a question asked about the other.  The two share only
-the route-status vocabulary, imported rather than restated.
+The cell grammar has one home in ``lane_eligibility``. This reader adds the
+development answer pin, format ranges, native-extension identity and fused
+module licence; export uses the same parsed cells under the separate release
+pin. Since lane schema v4, residency scopes each cell and ``executes`` names
+its launches. Both readers retain those fields and reject malformed or
+overlapping claims through the shared parser. Neither accepts a Gridbook
+schema; that serving lane was retired on 2026-09-02.
 
 **The dev pin.**  PrismaQuant's Tessera admission is fail-closed until a
 Tessera RELEASE tag exists, and none has been cut.  A development override is
@@ -80,9 +77,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .lane_eligibility import (
+    LANE_ELIGIBILITY_SCHEMA_TESSERA,
+    LaneEligibilityError,
     QUALIFICATION_DEVICE_QUALIFIED,
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
+    _parse_table,
 )
 
 __all__ = [
@@ -117,7 +117,7 @@ class TesseraContractError(RuntimeError):
 #: read: an older table is not a subset of this one, and "missing field" is the
 #: wrong error to hand someone whose contract predates the field.
 TESSERA_CONTRACT_SCHEMA = "tessera.runtime-contract.v1"
-TESSERA_LANE_SCHEMA = "tessera.lane-eligibility.v3"
+TESSERA_LANE_SCHEMA = LANE_ELIGIBILITY_SCHEMA_TESSERA
 #: The ``fused_module`` block's own schema id, checked the same way.
 FUSED_MODULE_SCHEMA = "tessera.fused-module.v1"
 
@@ -133,24 +133,18 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: The Tessera commit this pin's answer was reviewed against.  Declared and
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
 #: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
-#: contract v7 (Tessera master 35f57b4; contract bytes identical to b46ffd2).
-#: Both of v7's additive blocks move a value in :func:`contract_answer`:
-#: ``native_extensions`` (v7, Tessera #28) because the serve fingerprint reads
-#: it (prismaquant #133), and ``fused_module`` (v6, Tessera #37) because the
-#: group knapsack's fold reads it (prismaquant #132) -- so a renamed extension
-#: or a re-tightened fused-module licence re-stales this pin with a named field
-#: instead of passing silently.  Advancing this constant on unchanged bytes is
-#: bookkeeping; it exists so ``bytes_are_the_reviewed_bytes`` keeps meaning
-#: "these are the bytes somebody read" rather than decaying to a permanent
-#: False.
-TESSERA_DEV_PIN_COMMIT = "35f57b49553c4cd0a6f0606e5492aa034b3eaf5e"
+#: contract v14 / lane schema v4 (Tessera 1221d2a). Launches, residency,
+#: native extensions and fused-module licences are part of the reviewed
+#: answer. The release pin remains PENDING: this is development admission,
+#: not a serving release or routed-MoE promotion.
+TESSERA_DEV_PIN_COMMIT = "1221d2a4207a6baeffbe9726bce13125fc1649ae"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
 #: bytes a human read when the answer below was accepted.  Recorded, and
 #: compared into provenance against the bytes this run read, so prose-only
 #: drift is visible; it is not the refusal.
 TESSERA_DEV_PIN_CONTRACT_SHA256 = (
-    "bedb74655ae21a9b6e8f7547271954843ae81388f540dd1146bef5233b462920"
+    "cb0ccccb7d0ec296cacfdb02329e881e0d65761848d03acd8b0ee32158e605b3"
 )
 
 #: The ANSWER this pin was reviewed against -- every value the ADMISSION
@@ -163,102 +157,147 @@ TESSERA_DEV_PIN_CONTRACT_SHA256 = (
 #: routes that need it, or what runs when it is absent) does -- with a
 #: field-level diff naming it.  The git diff of this literal is the review.
 TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
-     'lane_schema': 'tessera.lane-eligibility.v3',
-     'quant_method': 'tessera',
-     'fused_module': {'schema': 'tessera.fused-module.v1',
-                      'fields': {'body': 'shared',
-                                 'columns': 'shared',
-                                 'family': 'shared',
-                                 'grid': 'shared',
-                                 'plane': 'shared',
-                                 'q256': 'per_member',
-                                 'rows': 'per_member',
-                                 'structure': 'shared'},
-                      'sidecar_q256': 'int_or_per_role_list',
-                      'mixed_rung_receipt': False},
-     'native_extensions': [{'module_name_prefix': 'tessera_nvfp4_',
-                            'filename_glob': 'tessera_nvfp4_*.so',
-                            'match': 'basename_fnmatch',
-                            'routes': ['TESSERA_NVFP4'],
-                            'when_unavailable': {'resident': {'status': 'substituted',
-                                                              'decoder': 'torch_materialize_stock'},
-                                                 'streamed': {'status': 'refused',
-                                                              'decoder': None}}}],
-     'families': {'TESSERA_BF16_K1': {'reader_rate_range_q256': [256, 4096],
-                                      'attested_rungs_q256': [1792],
-                                      'max_world_size': 1},
-                  'TESSERA_E2M1_K2': {'reader_rate_range_q256': [896, 896],
-                                      'attested_rungs_q256': [896],
-                                      'max_world_size': 1},
-                  'TESSERA_E4M3_K1': {'reader_rate_range_q256': [256, 2048],
-                                      'attested_rungs_q256': [1024],
-                                      'max_world_size': 1}},
-     'cells': [['tessera_bf16_k1_dense_sm121_batch_mm_w16a16',
-                'sm_121',
-                'TESSERA_BF16_K1',
-                'dense',
-                'batch',
-                [1792],
-                'bf16_unquantized',
-                'backed_with_serve_flag',
-                'device_qualified',
-                'tessera',
-                ['TESSERA_SERVE_MODE=resident|streamed']],
-               ['tessera_bf16_k1_dense_sm121_decode_mm_w16a16',
-                'sm_121',
-                'TESSERA_BF16_K1',
-                'dense',
-                'decode',
-                [1792],
-                'bf16_unquantized',
-                'backed_with_serve_flag',
-                'device_qualified',
-                'tessera',
-                ['TESSERA_SERVE_MODE=resident|streamed']],
-               ['tessera_e2m1_k2_dense_sm121_batch_scaled_mm_w4a4',
-                'sm_121',
-                'TESSERA_E2M1_K2',
-                'dense',
-                'batch',
-                [896],
-                'e2m1_group16_ue4m3_static',
-                'backed_with_serve_flag',
-                'device_qualified',
-                'tessera',
-                ['TESSERA_SERVE_MODE=resident|streamed']],
-               ['tessera_e2m1_k2_dense_sm121_decode_scaled_mm_w4a4',
-                'sm_121',
-                'TESSERA_E2M1_K2',
-                'dense',
-                'decode',
-                [896],
-                'e2m1_group16_ue4m3_static',
-                'backed_with_serve_flag',
-                'device_qualified',
-                'tessera',
-                ['TESSERA_SERVE_MODE=resident|streamed']],
-               ['tessera_e4m3_k1_dense_sm121_batch_scaled_mm_w8a8',
-                'sm_121',
-                'TESSERA_E4M3_K1',
-                'dense',
-                'batch',
-                [1024],
-                'fp8_per_token_dynamic',
-                'backed_with_serve_flag',
-                'device_qualified',
-                'tessera',
-                ['TESSERA_SERVE_MODE=resident|streamed']],
-               ['tessera_e4m3_k1_dense_sm121_decode_scaled_mm_w8a8',
-                'sm_121',
-                'TESSERA_E4M3_K1',
-                'dense',
-                'decode',
-                [1024],
-                'fp8_per_token_dynamic',
-                'backed_with_serve_flag',
-                'device_qualified',
-                'tessera',
-                ['TESSERA_SERVE_MODE=resident|streamed']]]}
+ 'lane_schema': 'tessera.lane-eligibility.v4',
+ 'quant_method': 'tessera',
+ 'fused_module': {'schema': 'tessera.fused-module.v1',
+                  'fields': {'body': 'shared',
+                             'columns': 'shared',
+                             'family': 'shared',
+                             'grid': 'shared',
+                             'plane': 'shared',
+                             'q256': 'per_member',
+                             'rows': 'per_member',
+                             'structure': 'shared'},
+                  'sidecar_q256': 'int_or_per_role_list',
+                  'mixed_rung_receipt': False},
+ 'native_extensions': [{'module_name_prefix': 'tessera_nvfp4_',
+                        'filename_glob': 'tessera_nvfp4_*.so',
+                        'match': 'basename_fnmatch',
+                        'routes': ['TESSERA_NVFP4'],
+                        'when_unavailable': {'resident': {'status': 'substituted',
+                                                          'decoder': 'torch_materialize_stock'},
+                                             'streamed': {'status': 'refused', 'decoder': None}}},
+                       {'module_name_prefix': 'tessera_window_gemv',
+                        'filename_glob': 'tessera_window_gemv*.so',
+                        'match': 'basename_fnmatch',
+                        'routes': ['TESSERA_BF16', 'TESSERA_FP8'],
+                        'when_unavailable': {'resident': {'status': 'substituted',
+                                                          'decoder': 'torch_window'},
+                                             'streamed': {'status': 'substituted',
+                                                          'decoder': 'torch_window'}}}],
+ 'families': {'TESSERA_BF16_K1': {'reader_rate_range_q256': [256, 4096],
+                                  'attested_rungs_q256': [1792],
+                                  'max_world_size': 1},
+              'TESSERA_E2M1_K2': {'reader_rate_range_q256': [896, 896],
+                                  'attested_rungs_q256': [896],
+                                  'max_world_size': 1},
+              'TESSERA_E4M3_K1': {'reader_rate_range_q256': [256, 2048],
+                                  'attested_rungs_q256': [1024],
+                                  'max_world_size': 1}},
+ 'cells': [['tessera_bf16_k1_dense_sm121_batch',
+            'sm_121',
+            'TESSERA_BF16_K1',
+            'dense',
+            'batch',
+            [1792],
+            'bf16_unquantized',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=resident|streamed'],
+            [['torch.mm', 'torch_window']],
+            ['resident', 'streamed']],
+           ['tessera_bf16_k1_dense_sm121_decode',
+            'sm_121',
+            'TESSERA_BF16_K1',
+            'dense',
+            'decode',
+            [1792],
+            'bf16_unquantized',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=resident|streamed'],
+            [['torch.mm', 'torch_window']],
+            ['resident', 'streamed']],
+           ['tessera_e2m1_k2_dense_sm121_batch',
+            'sm_121',
+            'TESSERA_E2M1_K2',
+            'dense',
+            'batch',
+            [896],
+            'e2m1_group16_ue4m3_static',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=resident|streamed'],
+            [['torch._scaled_mm', 'native_span2']],
+            ['resident', 'streamed']],
+           ['tessera_e2m1_k2_dense_sm121_decode',
+            'sm_121',
+            'TESSERA_E2M1_K2',
+            'dense',
+            'decode',
+            [896],
+            'e2m1_group16_ue4m3_static',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=resident|streamed'],
+            [['torch._scaled_mm', 'native_span2']],
+            ['resident', 'streamed']],
+           ['tessera_e4m3_k1_dense_sm121_batch_resident',
+            'sm_121',
+            'TESSERA_E4M3_K1',
+            'dense',
+            'batch',
+            [1024],
+            'fp8_per_token_dynamic',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=resident'],
+            [['torch._scaled_mm', 'torch_window']],
+            ['resident']],
+           ['tessera_e4m3_k1_dense_sm121_batch_streamed',
+            'sm_121',
+            'TESSERA_E4M3_K1',
+            'dense',
+            'batch',
+            [1024],
+            'fp8_per_token_dynamic',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=streamed'],
+            [['tessera_window_gemv::gemv', 'window_gemv'], ['torch._scaled_mm', 'window_gemv']],
+            ['streamed']],
+           ['tessera_e4m3_k1_dense_sm121_decode_resident',
+            'sm_121',
+            'TESSERA_E4M3_K1',
+            'dense',
+            'decode',
+            [1024],
+            'fp8_per_token_dynamic',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=resident'],
+            [['torch._scaled_mm', 'torch_window']],
+            ['resident']],
+           ['tessera_e4m3_k1_dense_sm121_decode_streamed',
+            'sm_121',
+            'TESSERA_E4M3_K1',
+            'dense',
+            'decode',
+            [1024],
+            'fp8_per_token_dynamic',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=streamed'],
+            [['tessera_window_gemv::gemv', 'window_gemv']],
+            ['streamed']]]}
 
 #: Route statuses under which a cell says a native route EXECUTES.
 _NATIVE_ROUTE_STATUSES = frozenset(
@@ -387,6 +426,8 @@ class TesseraRouteCell:
     qualification: str
     requires_plugin: str
     requires_serve_flags: tuple[str, ...]
+    executes: tuple[tuple[str, str], ...]
+    residency_modes: tuple[str, ...]
 
     @property
     def native(self) -> bool:
@@ -627,6 +668,11 @@ def contract_answer(contract: "TesseraContract") -> dict:
     field the route gate reads.  Two contracts with the same answer admit the
     same units.
 
+    Schema v4's executed launches and residency scope are retained per cell.
+    They identify which serving path the route claim covers; a changed
+    decoder or narrowed residency therefore requires the same review as a
+    changed rung, even when the cell's id and route status stay unchanged.
+
     ``native_extensions`` is here for a second gate, not the admission one:
     §7.4 says an A/B's arms must have identical native-extension residency,
     ``tools/serve_fingerprint.py`` decides residency by matching mapped
@@ -690,6 +736,8 @@ def contract_answer(contract: "TesseraContract") -> dict:
                 cell.qualification,
                 cell.requires_plugin,
                 sorted(cell.requires_serve_flags),
+                [list(launch) for launch in sorted(cell.executes)],
+                sorted(cell.residency_modes),
             ]
             for cell in contract.cells
         ),
@@ -1105,31 +1153,34 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             f"{path}.lane_eligibility.schema must be {TESSERA_LANE_SCHEMA!r}, "
             f"got {lane_schema!r}"
         )
+    try:
+        table = _parse_table(lane, formats, "", commit, sha)
+    except LaneEligibilityError as exc:
+        raise TesseraContractError(f"{path}: {exc}") from exc
     cells: list[TesseraRouteCell] = []
-    for i, cell in enumerate(_require(lane, "cells", f"{path}.lane_eligibility")):
-        where = f"{path}.lane_eligibility.cells[{i}]"
-        if not isinstance(cell, Mapping):
-            raise TesseraContractError(f"{where} must be a JSON object")
-        family = str(_require(cell, "family", where))
-        if family not in reader_range:
+    for cell in table.cells:
+        if cell.predicates:
             raise TesseraContractError(
-                f"{where} names family {family!r}, which the contract's "
-                "formats table does not publish"
+                f"{path}.lane_eligibility.cells[{cell.id!r}].predicates "
+                "cannot be evaluated by shape-free development admission; "
+                "a constrained route must not enter an unconditional menu. "
+                "Pass structural facts through admission before accepting "
+                "predicated cells."
             )
         cells.append(TesseraRouteCell(
-            cell_id=str(_require(cell, "id", where)),
-            platform=str(_require(cell, "platform", where)),
-            family=family,
-            structure=str(_require(cell, "structure", where)),
-            regime=str(_require(cell, "regime", where)),
-            rungs_q256=frozenset(
-                int(r) for r in _require(cell, "rungs_q256", where)),
-            activation_contract=str(_require(cell, "activation_contract", where)),
-            route_status=str(_require(cell, "route_status", where)),
-            qualification=str(_require(cell, "qualification", where)),
-            requires_plugin=str(cell.get("requires_plugin", "")),
-            requires_serve_flags=tuple(
-                str(f) for f in cell.get("requires_serve_flags", ())),
+            cell_id=cell.id,
+            platform=cell.platform,
+            family=cell.family,
+            structure=cell.structure,
+            regime=cell.regime,
+            rungs_q256=frozenset(cell.rungs_q256),
+            activation_contract=cell.activation_contract,
+            route_status=cell.route_status,
+            qualification=cell.qualification,
+            requires_plugin=cell.requires_plugin,
+            requires_serve_flags=cell.requires_serve_flags,
+            executes=cell.executes,
+            residency_modes=cell.residency_modes,
         ))
 
     extensions = _parse_native_extensions(
