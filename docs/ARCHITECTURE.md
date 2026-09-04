@@ -3,6 +3,15 @@
 As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **raw scoped
+census handoff instructions** (§9.4). The driver prints the producer's actual
+artifact/output/runtime-image census API, preserving compiled mode when
+requested, and a consumer fill command with the exact allocation and artifact
+paths. A log summary and caller-supplied route list are not v5 evidence. The
+census must run inside the same verified runtime image; instructions explicitly
+note that combined dense compiled traces cannot prove per-regime agreement.
+The scoped receipt implementation remains the separate #126 integration leg.
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **scope-preserving
 serve instructions** (§9.4). The printed Tessera launch recipe now supplies
 the validated exact `IMAGE`, eager/compiled `TESSERA_LANE_EAGER`, residency

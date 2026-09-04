@@ -2564,8 +2564,22 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   printf '  Serve:      '
   printf ' %q' "${TESSERA_PRINT_SERVE[@]}"
   printf '\n'
-  echo "  Route census: python ${TESSERA_REPO%/}/tools/tessera_route_census.py --log <serve.log>"
-  echo "  Close census: python -m prismaquant.shipcard_cli fill-route-census ${WORK_DIR}/exported/shipcard.json --census <census.json> --priced-route TESSERA_NVFP4 [...]"
+  echo "  Run the route census inside the same verified runtime image; keep its complete raw JSON."
+  TESSERA_PRINT_CENSUS=("TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE}" python3
+    "${TESSERA_REPO%/}/tools/tessera_route_census.py" "${WORK_DIR}/exported"
+    '<raw-census.json>' --runtime-image "${TESSERA_RUNTIME_IMAGE:-<verified-image@sha256:digest>}")
+  if [[ "${TESSERA_EXECUTION_MODE:-}" == "compiled" ]]; then
+    TESSERA_PRINT_CENSUS+=(--compiled)
+    echo "  Note: the producer's combined dense compiled trace cannot prove per-regime route agreement."
+  fi
+  printf '  Route census:'
+  printf ' %q' "${TESSERA_PRINT_CENSUS[@]}"
+  printf '\n'
+  printf '  Close census:'
+  printf ' %q' python3 -m prismaquant.shipcard_cli fill-route-census \
+    "${WORK_DIR}/exported/shipcard.json" --census '<raw-census.json>' \
+    --layer-config "${WORK_DIR}/artifacts/layer_config.json" --model-dir "${WORK_DIR}/exported"
+  printf '\n'
   echo "  Verify:      python -m prismaquant.shipcard_cli verify ${WORK_DIR}/exported/shipcard.json"
   exit 0
 fi
