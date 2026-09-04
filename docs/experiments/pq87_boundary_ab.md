@@ -1,7 +1,10 @@
 # PrismaQuant #87: boundary instrument A/B
 
-Status: prepared, opt-in; no physical measurement claimed. Run after the
-Tessera #113/#5 GPU campaign, through one exclusive PrismaBuild action.
+Status: opt-in; the first BF16 instrument run is recorded in
+`docs/results/pq87_bf16_boundary_ab_2026-09-04.md`. It used the coordinator's
+approved Sparky idle window between MoE encoding and final serving, through
+one exclusive PrismaBuild action. Further runs require the same scheduling
+coordination; no quantized-artifact discrimination has been measured here.
 
 The first population is the local Qwen3-0.6B BF16 checkpoint. It is a small
 non-DeepSeek thinking model, so it tests the contributor's claim about the
@@ -69,7 +72,8 @@ use one server at a time with explicit KV bytes/max-sequences/context limits,
 and collect the server log, profiler window, power and Netdata series from
 both boxes. Report work per joule if making a speed claim; GPU utilization
 alone is not diagnostic. No launch permission or capacity is implied by this
-document, and this preparation has consumed no GPU slot.
+document. The original preparation consumed no GPU slot; the physical run and
+its completed GPU handoff are recorded separately in the results document.
 
 After the physical result, the remaining decision is which versioned,
 control-relative rule replaces the current mandatory 64/zero boundary gate.

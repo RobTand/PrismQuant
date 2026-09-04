@@ -453,15 +453,15 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "gguf-skeleton": _key_pairs("MODEL_PATH"),
     # --- Tessera lane ------------------------------------------------------
     # The plan is a projection of the allocation onto the exporter's per-tensor
-    # vocabulary, so its identity includes checkpoint, coverage decision and
-    # explicitly supplied serving scope. The
-    # allocation itself is guarded upstream by `layer_config.json`'s own
-    # stages; what is NOT recoverable from that file is the coverage mode, and
+    # vocabulary, so its identity includes the exact allocation content,
+    # checkpoint, coverage decision and explicitly supplied serving scope.
+    # The allocator can rewrite layer_config.json on every invocation; its
+    # path is not an identity. What is NOT recoverable from that file is the coverage mode, and
     # it is the one setting that changes the artifact without changing the
     # allocation: `broadcast-by-role` extrapolates a single-layer allocation to
     # every depth, `as-allocated` does not. A skip-if-exists plan built under
     # the other mode is a different artifact.
-    "tessera-plan": _key_pairs("MODEL_PATH", "COVER<-TESSERA_PLAN_COVER",
+    "tessera-plan": _key_pairs("MODEL_PATH", "COVER<-TESSERA_PLAN_COVER", "ASSIGNMENT_DIGEST",
                                *_TESSERA_SCOPE_SETTINGS),
 }
 
@@ -554,6 +554,8 @@ def check_stage_settings(
     * artifact present, this stage never recorded -> WARN and record
       (trust-on-first-use: artifacts predating a stage's guard are not
       invalidated, which is the pre-R5 contract for missing manifests).
+      Tessera plans are the exception: an old plan cannot be bound to a new
+      allocation by recording today's hash after translation already happened.
     """
     declared = dict((document.get("artifacts") or {}).get(stage) or {})
     unresolved = list((document.get("unresolved") or {}).get(stage) or [])
@@ -575,6 +577,12 @@ def check_stage_settings(
 
     if artifact_path.exists():
         if not manifest_path.exists():
+            if stage == "tessera-plan":
+                return 2, [
+                    f"[pipeline] ERROR: {stage}: {artifact_path} has no recorded "
+                    "allocation content binding; refusing silent reuse. "
+                    "Rebuild the plan from the current allocation.",
+                ]
             return 0, [
                 f"[pipeline] WARNING: {stage}: reusing {artifact_path} which "
                 "has no settings manifest (predates the settings-hash guard); "
@@ -587,6 +595,12 @@ def check_stage_settings(
             if isinstance(legacy, Mapping) and set(legacy) == set(declared):
                 prev = dict(legacy)
         if prev is None:
+            if stage == "tessera-plan":
+                return 2, [
+                    f"[pipeline] ERROR: {stage}: {artifact_path} has no recorded "
+                    "allocation content binding for this stage; refusing silent reuse. "
+                    "Rebuild the plan from the current allocation.",
+                ]
             messages.append(
                 f"[pipeline] WARNING: {stage}: {artifact_path} predates this "
                 "stage's settings guard; recording the current settings "

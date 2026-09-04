@@ -262,7 +262,8 @@ def test_shell_gates_selected_scope_before_the_external_translator():
     ("TESSERA_EXECUTION_MODE", "eager"), ("TESSERA_RESIDENCY", "resident"),
 ])
 def test_tessera_plan_cache_identity_changes_with_serving_target(key, value):
-    legacy = {"MODEL_PATH": "model", "TESSERA_PLAN_COVER": "as-allocated"}
+    legacy = {"MODEL_PATH": "model", "TESSERA_PLAN_COVER": "as-allocated",
+              "ASSIGNMENT_DIGEST": "a" * 64}
     before, missing = stage_settings_projection("tessera-plan", legacy)
     assert missing == []
     after, _ = stage_settings_projection("tessera-plan", {**legacy, key: value})
