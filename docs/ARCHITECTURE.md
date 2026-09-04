@@ -46,6 +46,51 @@ against the declared model profile. Missing facts cannot silently become
 dense. The helper delegates value validation to `ServingContext`; it does
 not change a runtime default or attest any new serving cell.
 
+Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the paired
+instrument's **exact native weight identity** (§7.2). Each boundary binding
+carries the existing model-metadata hash plus the shared safetensors content
+manifest; its compound `artifact_id` is recomputed during replay. The client
+hashes before and after measurement and uses the existing weight-stat
+attestation around each hash and across the interval to refuse mutation,
+including same-size replacement or change-and-restore. Generic shipcard
+identity is unchanged. These observations attest source content during the
+measurement, not what a pre-existing server loaded earlier: the physical
+campaign must pin/freeze the same artifact before launch. Gate:
+`tests/test_measure_boundary_control_identity.py`.
+
+Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for shared serve
+process discovery. `tools/serve_fingerprint.py` now identifies the vLLM
+executable, Python module/script or worker process title rather than searching
+arbitrary argv payloads. A measurement client's `--image spark-vllm@...` and
+a shell's quoted launch command no longer join the server process census or
+change its session identity. Gate: `tests/test_serve_fingerprint_descendants.py`.
+
+Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the **opt-in
+paired boundary instrument** (§7.2). `prismaquant/boundary_control.py`
+records a frozen prompt/seed schedule and replays every raw scored outcome.
+The BF16 budget grows until no sampled completion is censored, bounded by
+the live model context minus chat-tokenized input lengths; exhausting that
+bound or the explicit iteration backstop is inconclusive. A candidate uses
+the identical final cap and schedule, with common campaign/host/stack and
+tokenization bindings. `tools/measure_boundary_control.py` captures live
+process/residency manifests before and after, and can also run the historical
+raw-request arm in the same control session. Per-stratum defect deltas are
+**advisory only**: this adds no pass threshold, fills no shipcard slot, and
+does not replace the historical mandatory 64/zero policy. No physical served
+result is claimed by implementation or CPU tests.
+
+Review follow-up on the same branch binds the actual chat token-ID arrays,
+not merely their lengths, and requires the same producer-source closure digest
+across arms. The BF16 label also refuses an observed non-BF16 dtype or an
+explicit quantization override even when the source config says bfloat16.
+
+Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the boundary
+probe's input refusal (§7.2). Empty prompt/repetition populations, non-finite
+or nonpositive sampling temperatures, nonpositive token caps and malformed
+defect bounds now fail before HTTP, rather than producing an empty pass or
+asking the endpoint to validate the measurement contract. This does not
+change any shipping threshold. Gate: `tests/test_ship_boundary_behavior.py`.
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **complete encoder
 recipe provenance** (§5.4). The default activation-aware recipe is projected
 from Tessera's `ActivationSource.config_block()`, excluding only Hessian
@@ -7374,15 +7419,30 @@ visible as stutter, while either empty side remains zero-tag/cap-truncation.
 Both schema identities and the endpoint are filed in the shipcard and replayed
 offline.
 
+The live check refuses an empty prompt/repetition population, non-finite or
+nonpositive temperature, nonpositive integer token cap, or negative/noninteger
+defect bound before contacting the endpoint. An empty sample cannot certify a
+boundary check, regardless of its nominal defect count.
+
 This endpoint fix is necessary and insufficient. Physical evidence invalidated
 the current 64-token cap and a universal zero roster: healthy DSV4 still filed
 7/30 cap truncations at 64, while stock Qwen3-8B filed 10/15 even at 600. The
 pending policy is a same-session BF16 control whose cap grows until the control
 reaches its own finishing fixed point, bounded by the declared model context
 and an explicit backstop; the quantized arm is then scored control-relative at
-that exact cap. Until that paired receipt is specified and replayed, the old
-64/zero values remain fail-closed, #87 remains `needs-decision`, and a boundary
-check cannot promote an artifact.
+that exact cap. The opt-in `boundary_control.py` instrument now specifies and
+replays that paired receipt: every prompt/seed outcome, cap-growth step, score
+and aggregate is checked, and the candidate names the exact control digest.
+The CLI `tools/measure_boundary_control.py` reads the context from the live
+`/v1/models` identity and input lengths from chat `/tokenize`; it retains
+pre/post process/residency manifests and refuses a changed serve. It can
+record raw-request A versus chat-request B at the historical initial cap,
+followed by the uncensored control budget. Relative counts are per stratum,
+without an invented significance or tolerance threshold. The budget is fit on
+this frozen schedule, so the report is a detector and must not select artifact
+calibration content. Until a physical paired measurement and a replacement
+shipping policy are approved, the old 64/zero values remain fail-closed, #87
+remains `needs-decision`, and this instrument cannot promote an artifact.
 
 **Spec-decode refusal.** `_spec_decode_on` scrapes `/metrics` for
 `vllm:spec_decode`; if present the perplexity check **refuses a verdict** rather than return
