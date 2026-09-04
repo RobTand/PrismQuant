@@ -37,7 +37,7 @@ The shape of the fix is therefore as important as the values:
 * Route status alone never removes an honestly priced rung from the allocator's
   menu (principle 1). It gates EXPORT, per artifact, per principle 9.
 
-Schemas v3/v4, and why absence carries the whole weight
+Schemas v3/v4/v5, and why absence carries the whole weight
 ---------------------------------------------------
 ``tessera.lane-eligibility.v3`` is a **closed-world cell table**. It declares
 ``platforms``, ``regimes``, ``structures`` and a list of ``cells``, each cell
@@ -55,6 +55,10 @@ axis. A caller must name a residency; two cells in the same scope may never
 claim the same residency. The published serve flag selects that axis, and the
 family's ``residency_modes`` bounds it. Legacy v3 tables retain their original
 resolution semantics and never acquire fabricated launch claims.
+
+``tessera.lane-eligibility.v5`` additionally requires every cell to name its
+exact image digest and execution-mode scope. Missing target context is
+unattested, never a request to use the global dense image or another cell.
 
 One parser, and why the vocabulary is wider than one publisher
 ---------------------------------------------------------------
@@ -96,7 +100,8 @@ audit state, the other a lane's executed route under the pinned release.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -104,15 +109,16 @@ from typing import Any, Mapping, Sequence
 #: Schema of the eligibility table PrismaQuant consumes, published by Tessera's
 #: own vLLM plugin
 #: (``tessera.serving``, entry point ``tessera``, ``quant_method: "tessera"``).
-#: v4 adds executed launches and residency to v3's closed-world cell table.
-#: The parser owns both grammars; plugin requirements remain optional only
+#: v4 adds launches/residency; v5 adds exact runtime image/execution scope.
+#: The parser owns these grammars; plugin requirements remain optional only
 #: for explicitly identified legacy v3 tables.
 #:
 #: Until 2026-09-02 this set also carried ``gridbook.lane-eligibility.v3``, the
 #: same wire format published by the retired Gridbook codebook lane. That lane
 #: was removed with Rob's decision to put Tessera in PrismaQuant and remove
 #: Gridbook; see ``archive/gridbook_lane_2026-09-02/README.md``.
-LANE_ELIGIBILITY_SCHEMA_TESSERA = "tessera.lane-eligibility.v4"
+LANE_ELIGIBILITY_SCHEMA_TESSERA = "tessera.lane-eligibility.v5"
+LANE_ELIGIBILITY_SCHEMA_TESSERA_V4 = "tessera.lane-eligibility.v4"
 LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3 = "tessera.lane-eligibility.v3"
 
 #: Every eligibility-table schema this parser accepts. The check is a set
@@ -121,12 +127,19 @@ LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3 = "tessera.lane-eligibility.v3"
 #: subset of either supported grammar (see ``_parse_table``).
 LANE_ELIGIBILITY_SCHEMAS = frozenset({
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V4,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3,
 })
 
 #: The residency vocabulary in Tessera's v4 flag grammar. Each format row
 #: publishes the subset its route supports; no cell can widen that subset.
 TESSERA_RESIDENCY_MODES = frozenset({"resident", "streamed"})
+TESSERA_EXECUTION_MODES = frozenset({"eager", "compiled"})
+_LAUNCH_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V4, LANE_ELIGIBILITY_SCHEMA_TESSERA,
+})
+_DIGEST_IMAGE = re.compile(
+    r"[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[0-9a-f]{64}")
 
 #: Schema of the provenance payload this module produces. It was
 #: ``prismaquant.cb_route_attestation.v2`` until 2026-09-02, when the Gridbook
@@ -213,6 +226,48 @@ RATE_ADDRESSED_FORMAT_KINDS = frozenset({
 
 class LaneEligibilityError(ValueError):
     """The materialized contract or its eligibility table is malformed."""
+
+
+@dataclass(frozen=True)
+class ServingContext:
+    """The explicit target of a cell lookup; no field has a runtime default."""
+
+    platform: str
+    structure: str
+    residency: str
+    runtime_image: str
+    execution_mode: str
+
+    def __post_init__(self) -> None:
+        for name, value in self.as_dict().items():
+            if not isinstance(value, str) or not value.strip():
+                raise LaneEligibilityError(f"serving_context.{name} must be a non-empty string")
+        for name, allowed in (("structure", STRUCTURES),
+                              ("residency", TESSERA_RESIDENCY_MODES),
+                              ("execution_mode", TESSERA_EXECUTION_MODES)):
+            if getattr(self, name) not in allowed:
+                raise LaneEligibilityError(
+                    f"serving_context.{name} must be one of {sorted(allowed)}")
+        if not _DIGEST_IMAGE.fullmatch(self.runtime_image):
+            raise LaneEligibilityError(
+                "serving_context.runtime_image must be an exact repository@sha256:<64 lowercase hex> reference")
+
+    def as_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+    def key(self) -> tuple[str, ...]:
+        return tuple(self.as_dict().values())
+
+
+def cell_matches_serving_context(cell: Any, context: ServingContext) -> bool:
+    """Match a parsed v5 cell's whole scope, shared by every admission path."""
+    return (
+        cell.platform == context.platform
+        and cell.structure == context.structure
+        and context.residency in cell.residency_modes
+        and cell.runtime_image == context.runtime_image
+        and context.execution_mode in cell.execution_modes
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +405,8 @@ class EligibilityCell:
     executes: tuple[tuple[str, str], ...] = ()
     #: Parsed from the v4 cell's explicit TESSERA_SERVE_MODE flag.
     residency_modes: tuple[str, ...] = ()
+    runtime_image: str = ""
+    execution_modes: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(
@@ -380,9 +437,12 @@ class EligibilityCell:
         }
         if is_trellis:
             required.add("activation_contract")
-        is_v4 = schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+        is_v4 = schema in _LAUNCH_SCHEMAS
+        is_v5 = schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
         if is_v4:
             required.update({"requires_plugin", "executes"})
+        if is_v5:
+            required.add("runtime")
         _require_keys(payload, where, required=required,
                       optional=set() if is_v4 else {"requires_plugin"})
 
@@ -435,6 +495,10 @@ class EligibilityCell:
         if is_v4:
             executes, cell_modes = parse_v4_cell_contract(
                 payload, where, residency_modes=residency_modes)
+        runtime_image = ""
+        execution_modes: tuple[str, ...] = ()
+        if is_v5:
+            runtime_image, execution_modes = parse_v5_runtime(payload["runtime"], where + ".runtime")
         flags = tuple(str(v) for v in payload["requires_serve_flags"])
         if flags and status != ROUTE_STATUS_BACKED_WITH_SERVE_FLAG:
             raise LaneEligibilityError(
@@ -464,6 +528,8 @@ class EligibilityCell:
             is_trellis=is_trellis,
             executes=executes,
             residency_modes=cell_modes,
+            runtime_image=runtime_image,
+            execution_modes=execution_modes,
         )
 
     def covers_rung(self, facts: UnitStructuralFacts) -> bool:
@@ -509,6 +575,10 @@ class EligibilityCell:
                 {"symbol": symbol, "decoder": decoder}
                 for symbol, decoder in self.executes
             ]
+        if self.runtime_image:
+            payload["runtime"] = {
+                "image": self.runtime_image, "execution_modes": list(self.execution_modes),
+            }
         return payload
 
 
@@ -590,6 +660,8 @@ class RegimeRoute:
     detail: str = ""
     executes: tuple[tuple[str, str], ...] = ()
     residency: str = ""
+    runtime_image: str = ""
+    execution_mode: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -610,6 +682,9 @@ class RegimeRoute:
             ]
         if self.residency:
             payload["residency"] = self.residency
+        if self.runtime_image:
+            payload["runtime_image"] = self.runtime_image
+            payload["execution_mode"] = self.execution_mode
         return payload
 
 
@@ -697,6 +772,8 @@ def resolve_unit_route(
     *,
     platform: str | None = None,
     residency: str | None = None,
+    runtime_image: str | None = None,
+    execution_mode: str | None = None,
 ) -> UnitRoute:
     """Resolve one unit's route status against the pinned eligibility table.
 
@@ -708,10 +785,13 @@ def resolve_unit_route(
     platform-scoped, so resolving without one cannot name a route: a missing or
     unpublished platform yields ``unattested``, never a match-any.
 
-    v4 additionally requires ``residency``, the explicit serve mode for the
+    v4 and v5 additionally require ``residency``, the explicit serve mode for the
     artifact. It filters cells before route selection; omitting it cannot
     choose whichever same-scope cell happened to be listed first. v3 keeps
     its original behavior and makes no claim about executed launches.
+    V5 also requires ``runtime_image`` and ``execution_mode``. Every regime
+    must resolve on that same complete target; cells from different runtime
+    scopes cannot jointly attest one artifact.
     """
     if not table.present:
         return UnitRoute(
@@ -758,7 +838,8 @@ def resolve_unit_route(
             ),
         )
 
-    is_v4 = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    is_v4 = table.schema in _LAUNCH_SCHEMAS
+    is_v5 = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
     if is_v4 and residency not in TESSERA_RESIDENCY_MODES:
         return UnitRoute(
             facts=facts,
@@ -771,12 +852,23 @@ def resolve_unit_route(
             ),
         )
 
+    serving_context = None
+    if is_v5:
+        try:
+            serving_context = ServingContext(
+                platform=platform, structure=facts.structure, residency=residency,
+                runtime_image=runtime_image, execution_mode=execution_mode)
+        except LaneEligibilityError as exc:
+            return UnitRoute(facts=facts, route_status=ROUTE_STATUS_UNATTESTED,
+                             in_scope=True, unattested_reason=str(exc))
+
     candidates = [
         cell for cell in table.cells
         if cell.platform == platform
         and cell.family == facts.payload_family
         and cell.structure == facts.structure
         and (not is_v4 or residency in cell.residency_modes)
+        and (not is_v5 or cell_matches_serving_context(cell, serving_context))
         and cell.covers_rung(facts)
         and cell.matches(facts)
     ]
@@ -818,6 +910,8 @@ def resolve_unit_route(
             activation_contract=best.activation_contract,
             executes=best.executes,
             residency=str(residency) if is_v4 else "",
+            runtime_image=str(runtime_image) if is_v5 else "",
+            execution_mode=str(execution_mode) if is_v5 else "",
         ))
 
     unclaimed = [
@@ -845,6 +939,8 @@ def resolve_unit_route(
             f"rung {facts.k if facts.k is not None else facts.rate_q256!r} on "
             f"{platform}"
             + (f" at residency {residency!r}" if is_v4 else "")
+            + (f", runtime_image {runtime_image!r}, execution_mode {execution_mode!r}"
+               if is_v5 else "")
         )
         return UnitRoute(
             facts=facts,
@@ -1167,7 +1263,8 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
 
     families, trellis_families = _published_families(formats)
     schema = str(block["schema"])
-    is_v4 = schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    is_v4 = schema in _LAUNCH_SCHEMAS
+    is_v5 = schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
     family_modes: dict[str, tuple[str, ...]] = {}
     if is_v4:
         for i, entry in enumerate(formats):
@@ -1222,14 +1319,17 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
         scopes: dict[tuple[str, ...], str] = {}
         for cell in cells:
             for mode in cell.residency_modes:
-                scope = (cell.platform, cell.family, cell.structure, cell.regime, mode)
-                previous = scopes.get(scope)
-                if previous is not None:
-                    raise LaneEligibilityError(
-                        f"{where}.cells {previous!r} and {cell.id!r} both cover "
-                        f"{scope}; overlapping residency scopes make route "
-                        "resolution depend on cell order")
-                scopes[scope] = cell.id
+                for execution in cell.execution_modes if is_v5 else ("",):
+                    scope = (cell.platform, cell.family, cell.structure, cell.regime, mode)
+                    if is_v5:
+                        scope += (cell.runtime_image, execution)
+                    previous = scopes.get(scope)
+                    if previous is not None:
+                        raise LaneEligibilityError(
+                            f"{where}.cells {previous!r} and {cell.id!r} both cover "
+                            f"{scope}; overlapping serving scopes make route "
+                            "resolution depend on cell order")
+                    scopes[scope] = cell.id
 
     return EligibilityTable(
         present=True,
@@ -1244,6 +1344,25 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
         families=families,
         trellis_families=trellis_families,
     )
+
+
+def parse_v5_runtime(payload: Any, where: str) -> tuple[str, tuple[str, ...]]:
+    """The v5 runtime grammar, shared by both contract readers."""
+    if not isinstance(payload, Mapping):
+        raise LaneEligibilityError(f"{where} must be a JSON object")
+    _require_keys(payload, where, required={"image", "execution_modes"}, optional=set())
+    image = payload["image"]
+    if not isinstance(image, str) or not _DIGEST_IMAGE.fullmatch(image):
+        raise LaneEligibilityError(
+            f"{where}.image must be an exact repository@sha256:<64 lowercase hex> reference")
+    modes = payload["execution_modes"]
+    if (not isinstance(modes, list) or not modes
+            or any(not isinstance(mode, str) or mode not in TESSERA_EXECUTION_MODES for mode in modes)
+            or len(set(modes)) != len(modes)):
+        raise LaneEligibilityError(
+            f"{where}.execution_modes must be a non-empty list of distinct values from "
+            f"{sorted(TESSERA_EXECUTION_MODES)}")
+    return image, tuple(modes)
 
 
 def parse_v4_cell_contract(

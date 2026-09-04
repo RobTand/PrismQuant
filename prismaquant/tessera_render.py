@@ -26,6 +26,7 @@ A second copy of a rate constant is a drift bug waiting for a rate to change.
 from __future__ import annotations
 
 import functools
+from typing import TYPE_CHECKING
 
 from functools import lru_cache
 
@@ -42,6 +43,9 @@ from .tessera_formats import (
     tessera_wire_recipe,
 )
 from .tessera_serving_runtime_pin import TESSERA_SERVING_PLUGIN_NAME
+
+if TYPE_CHECKING:
+    from .lane_eligibility import ServingContext
 
 __all__ = [
     "TESSERA_CONV_MEMORY",
@@ -160,7 +164,9 @@ def _release_pin_satisfied() -> bool:
     return True
 
 
-def tessera_attesting_cells(name: str, *, table=None, formats=None) -> tuple:
+def tessera_attesting_cells(
+        name: str, *, table=None, formats=None,
+        serving_context: ServingContext | None = None) -> tuple:
     """The native device-qualified cells covering this rung, or ``()``.
 
     The match predicate of :func:`tessera_lane_admission`'s first conjunct,
@@ -170,8 +176,13 @@ def tessera_attesting_cells(name: str, *, table=None, formats=None) -> tuple:
     verdict -- the caller reports *why* (no table, unpublished family, rate
     no cell names), exactly as the admission does.  The plugin-requirement
     check stays in the admission: it is a defect verdict, not a match rule.
+    A v5 table must cover every published regime within the same explicit
+    serving context; neither missing scope nor another image's cell attests it.
     """
-    from .lane_eligibility import resolve_payload_rung
+    from .lane_eligibility import (
+        LANE_ELIGIBILITY_SCHEMA_TESSERA, cell_matches_serving_context,
+        resolve_payload_rung,
+    )
 
     if table is None or formats is None:
         pinned_table, pinned_formats = _pinned_serving_table()
@@ -182,18 +193,26 @@ def tessera_attesting_cells(name: str, *, table=None, formats=None) -> tuple:
     family, _k, rate = resolve_payload_rung(name, published_formats=formats)
     if rate is None or not table.governs(family):
         return ()
-    return tuple(
+    scoped = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    if scoped and serving_context is None:
+        return ()
+    matched = tuple(
         cell for cell in table.cells
         if cell.is_trellis
         and cell.family == family
         and rate in cell.rungs_q256
         and cell.qualification == "device_qualified"
         and cell.route_status in _NATIVE_ROUTE_STATUSES
+        and (not scoped or cell_matches_serving_context(cell, serving_context))
     )
+    if scoped and {cell.regime for cell in matched} != set(table.regimes):
+        return ()
+    return matched
 
 
 def tessera_lane_admission(
-        name: str, *, table=None, formats=None) -> tuple[bool, str]:
+        name: str, *, table=None, formats=None,
+        serving_context: ServingContext | None = None) -> tuple[bool, str]:
     """Does a pinned runtime execute this Tessera rung natively, and why not?
 
     Returns ``(attested, reason)``.  ``reason`` is empty when the answer is
@@ -213,7 +232,9 @@ def tessera_lane_admission(
     1. **The table admits the rung.**  The contract publishes the name's
        payload family (``TESSERA_E2M1_K2`` for ``TESSERA_E2M1_K2_R896``) and
        carries a ``device_qualified`` cell whose route executes natively and
-       whose ``rungs_q256`` names this rate, on any platform it names.  No
+       whose ``rungs_q256`` names this rate. V5 additionally requires every
+       regime within the caller's explicit platform, structure, residency,
+       runtime image and execution mode; v3/v4 retain their legacy lookup. No
        table, an unpublished family, a rate no cell names, a ``compile_only``
        cell or a ``fallback`` route all answer False.
     2. **Every matching cell states its plugin requirement.**  Stock vLLM has
@@ -237,9 +258,8 @@ def tessera_lane_admission(
        PENDING sentinels and **every Tessera rung is producer-ineligible by
        the pin, not by an edit here**.
 
-    The per-artifact question -- THIS platform, THIS unit's regimes -- stays
-    with ``lane_eligibility.resolve_unit_route`` at export; this is
-    the menu-level admission, one lookup.
+    This is the scoped menu-level admission, one lookup. Per-unit structural
+    predicates stay with ``lane_eligibility.resolve_unit_route`` at export.
 
     History: until 2026-09-02 this was a module constant (``False``), then a
     lookup against GRIDBOOK's serving pin, whose unreleased contract v13/v14
@@ -247,7 +267,8 @@ def tessera_lane_admission(
     Gridbook pin no longer governs Tessera admission.
     """
     from .lane_eligibility import (
-        LaneEligibilityError, resolve_payload_rung,
+        LANE_ELIGIBILITY_SCHEMA_TESSERA, LaneEligibilityError,
+        resolve_payload_rung,
     )
     if table is None or formats is None:
         pinned_table, pinned_formats = _pinned_serving_table()
@@ -265,8 +286,20 @@ def tessera_lane_admission(
     if not table.governs(family):
         return False, (
             f"the packaged Tessera contract does not publish {family}")
-    matched = list(tessera_attesting_cells(name, table=table, formats=formats))
+    scoped = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    if scoped and serving_context is None:
+        return False, (
+            f"{name}: the packaged Tessera v5 contract requires an explicit "
+            "serving context (platform, structure, residency, runtime image "
+            "and execution mode)")
+    scope = {"serving_context": serving_context} if serving_context is not None else {}
+    matched = list(tessera_attesting_cells(name, table=table, formats=formats, **scope))
     if not matched:
+        if scoped:
+            return False, (
+                f"the packaged Tessera contract has no complete device-qualified "
+                f"native regime population for {family} R{rate} in serving "
+                f"context {serving_context.as_dict()}")
         published = _published_rungs(formats, family)
         return False, (
             f"the packaged Tessera contract publishes {family} at rungs "
@@ -303,14 +336,17 @@ def _published_rungs(formats, family: str) -> list[int]:
     return sorted(int(r) for r in row.get("candidate_rungs_q256", ()))
 
 
-def tessera_lane_attested(name: str, *, table=None, formats=None) -> bool:
+def tessera_lane_attested(
+        name: str, *, table=None, formats=None,
+        serving_context: ServingContext | None = None) -> bool:
     """The boolean half of :func:`tessera_lane_admission`.  **The one seam.**
 
     Kept as its own name because it is what every gate consults and what the
     tests substitute; the reason string is a separate read so that patching
     the verdict cannot silently invent a rationale for it.
     """
-    return tessera_lane_admission(name, table=table, formats=formats)[0]
+    scope = {"serving_context": serving_context} if serving_context is not None else {}
+    return tessera_lane_admission(name, table=table, formats=formats, **scope)[0]
 
 
 def is_tessera_format(name: object) -> bool:
@@ -444,7 +480,8 @@ def tessera_rung_is_serialisable(name: str) -> bool:
     return family_grid_is_serialisable(parsed[0])
 
 
-def _producer_eligible(name: str) -> bool:
+def _producer_eligible(
+        name: str, *, serving_context: ServingContext | None = None) -> bool:
     """Producer-eligibility for one rung: the AND of two independent gates.
 
     (a) **The wire can carry it** -- the grid's digest is a permanent
@@ -465,7 +502,8 @@ def _producer_eligible(name: str) -> bool:
 
     if not tessera_rung_is_serialisable(name):
         return False
-    return route_admission(name).admits(menu_mode())
+    scope = {"serving_context": serving_context} if serving_context is not None else {}
+    return route_admission(name, **scope).admits(menu_mode())
 
 
 def _plan(family: TesseraFamily, body_rate_q256: int, n_columns: int, recipe):
@@ -630,7 +668,9 @@ def _identity_activation(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
+def synthesize_tessera_spec(
+        name: str, *, recipe=None, shape=None,
+        serving_context: ServingContext | None = None):
     """Build a ``FormatSpec`` for a Tessera rung on demand, or return None.
 
     Returning None rather than raising for a non-Tessera name is what lets
@@ -639,7 +679,9 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
     naming the registry, not a Tessera parse failure.
 
     ``recipe`` is the wire being described and defaults to the one the
-    exporter writes for this family at this rung.
+    exporter writes for this family at this rung. ``serving_context`` scopes
+    producer eligibility, not the wire or its price. Under v5 the attested
+    menu requires this context; research keeps its existing unattested policy.
 
     Every recipe charges something **per unit** -- a CHANNEL row field, a
     WINDOW table, a TCQ forest -- so no Tessera rung has a bits-per-parameter
@@ -793,7 +835,8 @@ def synthesize_tessera_spec(name: str, *, recipe=None, shape=None):
         # wire half (a) is unconditional in both modes; only the attestation
         # half (b) relaxes, and it relaxes into ``route_status: unattested``
         # stamped on the candidate, which is what export fails closed on.
-        producer_eligible=_producer_eligible(name),
+        producer_eligible=_producer_eligible(name, **(
+            {"serving_context": serving_context} if serving_context is not None else {})),
         # The shape-aware price, for a wire whose per-unit planes make the
         # rate a function of the tensor.  Exactly one of this and
         # ``exact_bits_per_param`` is set: a rung either has a rate or it has

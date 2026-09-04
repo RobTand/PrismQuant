@@ -71,9 +71,13 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from functools import lru_cache
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from .lane_eligibility import ServingContext
 
 from .lane_eligibility import (
+    LANE_ELIGIBILITY_SCHEMA_TESSERA,
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
     ROUTE_STATUS_UNATTESTED,
@@ -248,6 +252,10 @@ class RouteAdmission:
     #: family, or ``None`` when no contract governs it.  ``closed_world``
     #: semantics: absence is "not attested at any degree", not "any degree".
     max_world_size: "int | None" = None
+    #: The caller's explicit target, never inferred from a matching cell.
+    serving_context: "ServingContext | None" = None
+    #: Whether this contract requires the complete serving scope for admission.
+    requires_serving_context: bool = False
 
     @property
     def attested(self) -> bool:
@@ -422,7 +430,9 @@ def check_tessera_activation_agreement(name, route, cell_contracts) -> None:
         )
 
 
-def route_admission(name: str) -> RouteAdmission:
+def route_admission(
+    name: str, *, serving_context: "ServingContext | None" = None,
+) -> RouteAdmission:
     """The pinned runtime's verdict on one Tessera rung.  **The one seam.**
 
     This is the single function in the production path that reads a serving
@@ -467,6 +477,10 @@ def route_admission(name: str) -> RouteAdmission:
     whenever cells attest the rung: the priced ``route`` and the executed
     cell ``activation_contract`` must project to the same ``(act_bits,
     act_group_size)``, on both the dev-pin and the packaged-contract paths.
+
+    A v5 development contract requires the caller's complete serving context.
+    Its own scoped lookup checks every required regime under that one target;
+    an absent context cannot borrow the runtime or structure of another cell.
     """
     from .tessera_render import (
         _pinned_serving_table, tessera_attesting_cells, tessera_lane_admission,
@@ -484,11 +498,14 @@ def route_admission(name: str) -> RouteAdmission:
     contract = tessera_runtime_contract()
     flags: tuple[str, ...] = ()
     world: "int | None" = None
+    requires_context = False
     if contract is not None:
         source = _tessera_attestation_source(contract)
         world = contract.max_world_size.get(family.name)
+        requires_context = bool(getattr(contract, "requires_serving_context", False))
         cells = (
-            contract.native_cells(family.name, rung)
+            (contract.native_cells(family.name, rung, serving_context=serving_context)
+             if serving_context is not None else contract.native_cells(family.name, rung))
             if contract.governs(family.name) else ()
         )
         if cells:
@@ -525,14 +542,23 @@ def route_admission(name: str) -> RouteAdmission:
                 if contract.governs(family.name) else
                 f"the pinned Tessera contract does not publish {family.name}"
             )
+            if requires_context:
+                detail += (
+                    "; no explicit serving context was supplied"
+                    if serving_context is None else
+                    f" under serving context {serving_context.as_dict()}"
+                )
     else:
         table, formats = _pinned_serving_table()
         source = _packaged_attestation_source(table)
+        requires_context = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+        scope = ({"serving_context": serving_context}
+                 if serving_context is not None else {})
         # The VERDICT stays ``tessera_lane_attested``: it is the seam every
         # gate consults and the one the tests substitute.  The REASON is read
         # separately and only when the verdict is False, so patching the
         # verdict cannot invent a rationale the contract never gave.
-        if bool(tessera_lane_attested(name, table=table, formats=formats)):
+        if bool(tessera_lane_attested(name, table=table, formats=formats, **scope)):
             status = ROUTE_STATUS_BACKED
             detail = (
                 "the packaged Tessera contract attests a device-qualified "
@@ -540,8 +566,8 @@ def route_admission(name: str) -> RouteAdmission:
             )
         else:
             status = ROUTE_STATUS_UNATTESTED
-            detail = tessera_lane_admission(name, table=table, formats=formats)[1]
-        attesting = tessera_attesting_cells(name, table=table, formats=formats)
+            detail = tessera_lane_admission(name, table=table, formats=formats, **scope)[1]
+        attesting = tessera_attesting_cells(name, table=table, formats=formats, **scope)
         if attesting:
             check_tessera_activation_agreement(
                 name, route,
@@ -561,6 +587,8 @@ def route_admission(name: str) -> RouteAdmission:
         detail=detail,
         requires_serve_flags=flags,
         max_world_size=world,
+        serving_context=serving_context,
+        requires_serving_context=requires_context,
     )
 
 
@@ -573,7 +601,10 @@ def route_admission(name: str) -> RouteAdmission:
 TESSERA_LANE_ID = "tessera_admission"
 
 
-def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
+def tessera_resolved_serving_lane(
+    name: str, *, runtime_version: str = "",
+    serving_context: "ServingContext | None" = None,
+):
     """The resolved serving route of one Tessera rung, or None.
 
     ``serving_profiles.serving_lane_route`` covers formats by NAME out of a
@@ -598,7 +629,8 @@ def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
 
     if parse_tessera_format_name(name) is None:
         return None
-    admission = route_admission(name)
+    admission = (route_admission(name, serving_context=serving_context)
+                 if serving_context is not None else route_admission(name))
     return ResolvedServingLane(
         lane_id=TESSERA_LANE_ID,
         format=name,
@@ -614,6 +646,7 @@ def tessera_resolved_serving_lane(name: str, *, runtime_version: str = ""):
         route_status=admission.route_status,
         requires_serve_flags=admission.requires_serve_flags,
         route_status_source=admission.source,
+        serving_context=getattr(admission, "serving_context", serving_context),
     )
 
 
@@ -1113,7 +1146,7 @@ class MenuRung:
         return self.admission.route_status
 
     def as_dict(self) -> dict:
-        return {
+        payload = {
             "format": self.format_name,
             "family": self.family,
             "body_rate_q256": self.body_rate_q256,
@@ -1128,6 +1161,9 @@ class MenuRung:
             "tp_degree": int(self.tp_degree),
             "tp_parallel_kind": self.parallel_kind,
         }
+        if self.admission.serving_context is not None:
+            payload["serving_context"] = self.admission.serving_context.as_dict()
+        return payload
 
 
 @lru_cache(maxsize=1)
@@ -1173,6 +1209,7 @@ def expand_tessera_menu(
     tp_degree: int = 1,
     parallel_kind: str = PARALLEL_NONE,
     max_act_bits: "int | None" = None,
+    serving_context: "ServingContext | None" = None,
 ) -> list[MenuRung]:
     """Every Tessera rung legal for one unit, cheapest first.
 
@@ -1205,7 +1242,8 @@ def expand_tessera_menu(
         lo, hi = spec.mathematical_q256_bounds
         for rung in range(lo, hi + 1, max(1, int(step_q256))):
             name = spec.format_name(rung)
-            admission = route_admission(name)
+            admission = (route_admission(name, serving_context=serving_context)
+                         if serving_context is not None else route_admission(name))
             if not admission.admits(mode):
                 continue
             legal, _reason = tessera_tp_legal(

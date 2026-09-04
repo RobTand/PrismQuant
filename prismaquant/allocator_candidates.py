@@ -9,6 +9,10 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .lane_eligibility import ServingContext
 
 from . import format_registry as fr
 from .activation_fair_pricing import (
@@ -2072,6 +2076,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      activation_pricing: ActivationFairPricing | None = None,
                      bit_precision: float | None = None,
                      tessera_menu_report: dict | None = None,
+                     context_by_unit: Mapping[str, ServingContext] | None = None,
                      ) -> dict[str, list[Candidate]]:
     """Build runtime-legal format candidates for every measured Linear.
 
@@ -2088,10 +2093,14 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     ``activation_pricing`` (ultraplan P5a) is the run's ONE per-family
     activation calibration; it corrects the weight-only branches and stamps
     the branch that priced every candidate. ``target_profile``'s declared
-    serving lanes (P5b) are resolved once per format and attached to every
-    candidate, so the concrete route — activation contract, whether the
+    serving lanes (P5b) are resolved once per format and explicit serving
+    context, then attached to every candidate, so the concrete route —
+    activation contract, whether the
     consumer's fused mid-M kernel backs this rung, fallback — travels WITH
     the choice instead of being reconstructed from the format name later.
+    A v5 contract requires each unit's context from ``context_by_unit``; an
+    absent entry remains unbound and cannot borrow another unit's attestation.
+    The existing research menu may still price an unattested writable rung.
     """
     refuse_retired_trellis_surface()
     gains = calibrated_gains or {}
@@ -2100,13 +2109,19 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     source_counts: Counter[str] = Counter()
     activation_branch_counts: Counter[str] = Counter()
     unpriceable: dict[str, list[str]] = {}
-    lane_by_format: dict[str, object] = {
-        spec.name: serving_lane_route(target_profile, spec.name)
-        for spec in formats
-    }
+    unserved: dict[str, list[str]] = {}
+    lane_cache: dict[tuple, object] = {}
+    admission_cache: dict[tuple, object] = {}
     for name, s in stats.items():
         if name not in costs:
             continue
+        serving_context = (
+            context_by_unit.get(name) if context_by_unit is not None else None
+        )
+        context_key = None if serving_context is None else serving_context.key()
+        scope_kwargs = (
+            {} if serving_context is None else {"serving_context": serving_context}
+        )
         shape = _shape_from_stats(s)
         in_features = int(s.get("in_features", 0) or 0)
         out_features = int(s.get("out_features", 0) or 0)
@@ -2178,6 +2193,38 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                     [],
                 ).append(name)
                 continue
+            if spec.name.startswith("TESSERA_"):
+                from . import tessera_menu
+
+                cache_key = (spec.name, context_key)
+                if cache_key not in admission_cache:
+                    admission_cache[cache_key] = tessera_menu.route_admission(
+                        spec.name, **scope_kwargs
+                    )
+                admission = admission_cache[cache_key]
+                if (
+                    admission.requires_serving_context
+                    and not admission.admits(tessera_menu.menu_mode())
+                ):
+                    reason = "tessera_serving_context"
+                    if mask_records is not None:
+                        mask_records.append({
+                            "qname": name,
+                            "format": spec.name,
+                            "reason": reason,
+                            "detail": admission.detail,
+                            "shape": [out_features, in_features],
+                            "out_features": out_features,
+                            "in_features": in_features,
+                            "source_kind": source_kind,
+                            "serving_context": (
+                                None if serving_context is None
+                                else serving_context.as_dict()
+                            ),
+                        })
+                    masked.setdefault((spec.name, reason), []).append(name)
+                    unserved.setdefault(name, []).append(spec.name)
+                    continue
             gain = float(gains.get(spec.name, gains.get(entry_fmt, 1.0)))
             # Always use measured joint output perturbation when available.
             # Packed experts can carry an unmeasured output_mse placeholder;
@@ -2248,7 +2295,12 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                 s.setdefault("_serialized_sidecar_identity_by_format", {})[
                     spec.name
                 ] = serialized_sidecar_identity
-            lane = lane_by_format.get(spec.name)
+            cache_key = (spec.name, context_key)
+            if cache_key not in lane_cache:
+                lane_cache[cache_key] = serving_lane_route(
+                    target_profile, spec.name, **scope_kwargs
+                )
+            lane = lane_cache[cache_key]
             if lane is not None:
                 s.setdefault("_serving_lane_by_format", {})[spec.name] = lane
             cands.append(Candidate(
@@ -2284,6 +2336,19 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
             for branch, count in sorted(activation_branch_counts.items())
         )
         print(f"[alloc] activation-pricing branch: {summary}", flush=True)
+    unserved_units = sorted(name for name in unserved if name not in out)
+    if unserved_units:
+        detail = "\n".join(
+            f"    {name}: unattested formats={sorted(unserved[name])}"
+            for name in unserved_units
+        )
+        raise ValueError(
+            f"{len(unserved_units)} Linear(s) have no serving-eligible format "
+            "left after Tessera serving-context admission:\n"
+            f"{detail}\n"
+            "Provide each unit's explicit attested serving context or a legal "
+            "fallback format. Refusing to omit these units from the allocation."
+        )
     starved = sorted(n for n in unpriceable if n not in out)
     if starved:
         # Excluding the unmeasured-activation candidates left these Linears
@@ -2328,12 +2393,13 @@ def selection_serving_lane_provenance(
     assignment: dict[str, str],
     candidates: dict[str, list[Candidate]] | None = None,
     target_profile: str | None = None,
+    context_by_unit: Mapping[str, ServingContext] | None = None,
 ) -> dict:
     """Per-selected-unit serving-route + activation-pricing provenance (P5b).
 
     "Neither repo can price an unbacked lane" only holds if the shipped
     artifact says which lane every selected unit actually rides. This walks
-    the FINAL (expanded) assignment and reports, per format and in aggregate:
+    the FINAL (expanded) assignment and reports, per unit, format and in aggregate:
     the activation contract, whether the consumer's fused mid-M kernel backs
     that rung, the fallback route it takes when it does not, and which
     estimator priced the unit's activation cost.
@@ -2341,12 +2407,15 @@ def selection_serving_lane_provenance(
     Routes are read from the chosen ``Candidate`` where one exists — the
     candidate is the object the DP actually saw — and re-resolved from the
     target profile for expanded members of aggregated super items, which have
-    no candidate of their own. The two agree by construction (the lane is a
-    function of format and profile); the fallback exists so an expanded
-    packed-expert assignment is not silently reported as laneless.
+    no candidate of their own. Resolution is scoped by the unit's explicit
+    serving context; equal format names need not have equal routes. A format
+    summary carries one route only when all its selected units agree, while
+    ``by_unit`` preserves each route when contexts or conflicting routes exist.
     """
-    lane_cache: dict[str, object] = {}
+    lane_cache: dict[tuple, object] = {}
     by_format: dict[str, dict] = {}
+    by_unit: dict[str, dict] = {}
+    include_by_unit = context_by_unit is not None
     branch_counts: Counter[str] = Counter()
     contract_counts: Counter[str] = Counter()
     route_status_counts: Counter[str] = Counter()
@@ -2356,6 +2425,9 @@ def selection_serving_lane_provenance(
 
     for name in sorted(assignment):
         fmt = str(assignment[name])
+        serving_context = (
+            context_by_unit.get(name) if context_by_unit is not None else None
+        )
         lane = None
         branch = None
         for cand in (candidates or {}).get(name, ()):
@@ -2364,9 +2436,35 @@ def selection_serving_lane_provenance(
                 branch = cand.activation_pricing
                 break
         if lane is None:
-            if fmt not in lane_cache:
-                lane_cache[fmt] = serving_lane_route(target_profile, fmt)
-            lane = lane_cache[fmt]
+            context_key = None if serving_context is None else serving_context.key()
+            cache_key = (fmt, context_key)
+            if cache_key not in lane_cache:
+                scope_kwargs = (
+                    {} if serving_context is None
+                    else {"serving_context": serving_context}
+                )
+                lane_cache[cache_key] = serving_lane_route(
+                    target_profile, fmt, **scope_kwargs
+                )
+            lane = lane_cache[cache_key]
+        route = None if lane is None else lane.as_dict()
+        unit_row = {"format": fmt, "route": route}
+        lane_context = getattr(lane, "serving_context", None)
+        if lane_context is not None:
+            # The chosen candidate's recorded context owns its route even if
+            # a caller now supplies a different context for the same unit.
+            serving_context = lane_context
+            include_by_unit = True
+        if serving_context is not None:
+            unit_row["serving_context"] = serving_context.as_dict()
+        by_unit[name] = unit_row
+        if fmt not in by_format:
+            by_format[fmt] = {"format": fmt, "units": 0, "route": route}
+        row = by_format[fmt]
+        if row["route"] != route:
+            row["route"] = None
+            include_by_unit = True
+        row["units"] += 1
         branch_counts[str(branch) if branch else "unrecorded"] += 1
         if lane is None:
             n_no_lane += 1
@@ -2376,12 +2474,7 @@ def selection_serving_lane_provenance(
             # as evidence of absence (units_on_fallback_route = 0 was reachable
             # only by never having looked).
             route_status_counts["no_declared_lane"] += 1
-            by_format.setdefault(fmt, {
-                "format": fmt, "units": 0, "route": None})["units"] += 1
             continue
-        row = by_format.setdefault(fmt, {
-            "format": fmt, "units": 0, "route": lane.as_dict()})
-        row["units"] += 1
         contract_counts[lane.activation_contract or "unspecified"] += 1
         route_status_counts[
             getattr(lane, "route_status", None) or "no_declared_lane"] += 1
@@ -2394,7 +2487,7 @@ def selection_serving_lane_provenance(
             if lane.rung is not None:
                 fallback_rungs.add(int(lane.rung))
 
-    return {
+    report = {
         "schema": SERVING_LANE_SCHEMA,
         "target_profile": str(target_profile or "research"),
         "serving_runtime_version": serving_runtime_version(),
@@ -2425,6 +2518,9 @@ def selection_serving_lane_provenance(
             fmt: row for fmt, row in sorted(by_format.items())
         },
     }
+    if include_by_unit:
+        report["by_unit"] = by_unit
+    return report
 
 
 def summarize_applicability_masks(

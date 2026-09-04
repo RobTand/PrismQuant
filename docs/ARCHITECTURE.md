@@ -1,7 +1,23 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq-tessera-v4-consumer`. Stamps
+As of: 2026-09-04 · `codex/pq-tessera-v5-scope`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **runtime-scoped
+Tessera admission** (§5.7, §9.4; Tessera #126, approved by Rob). A v5 cell
+requires an exact image digest and explicit eager/compiled execution modes;
+the shared parser retains both and refuses malformed or overlapping scopes.
+An immutable `ServingContext` supplies platform, per-unit structure, residency,
+runtime image and execution mode. Admission requires every declared regime
+under that same context. Menu and candidate provenance retain it, and campaign
+and candidate caches include it in their keys. Missing context remains
+unattested; a unit whose final candidate is excluded is refused by name rather
+than omitted from allocation. Explicit legacy v4 reads remain supported.
+This adds no positive MoE attestation and changes no image default, wire bytes
+or quality threshold. The development source pin remains the reviewed v4
+source until a separate review of the producer's v5 contract; the release pin
+remains PENDING. Name-only/CLI callers without an explicit context remain
+closed under v5 rather than guessing a model-wide MoE or runtime scope.
 
 Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **development
 admission's predicate refusal** (§5.7). The shared parser retained cell
@@ -5872,8 +5888,8 @@ read §9.2's Tessera passage as history. The per-artifact question (this
 platform, this unit's regimes) still stays with `resolve_unit_route` at export.
 
 **One cell parser, with explicit version semantics.** `lane_eligibility.py`
-reads Tessera's v4 table for export and for `tessera_runtime_contract.py`'s
-development pin. A v4 cell requires `requires_plugin: "tessera"`, non-empty
+reads Tessera's v4/v5 tables for export and for `tessera_runtime_contract.py`'s
+development pin. A v4 or v5 cell requires `requires_plugin: "tessera"`, non-empty
 `executes` pairs and exactly one residency selector bounded by its family's
 `residency_modes`. Two cells may not claim the same platform/family/structure/
 regime/residency scope, even at different rungs. `resolve_unit_route` takes an
@@ -5883,6 +5899,18 @@ includes those values, so changing a decoder cannot retain the old answer.
 Explicit legacy Tessera v3 tables retain their original grammar and carry no
 fabricated launches. Gridbook schemas remain refused. Release admission is
 still gated by the exact PENDING release pin.
+V5 additionally requires `runtime: {image, execution_modes}` on every cell:
+an immutable image reference and a non-empty subset of `eager`/`compiled`,
+never an implicit fallback to `versions.attested_on`. Its overlap key includes
+the image and each execution mode. `ServingContext` supplies every lookup
+axis explicitly; the shared matcher reads all five fields before admitting
+cells. The development menu and released-pin helpers require all declared
+regimes on that one context, and both the runtime scopes and the required
+regime roster enter the reviewed answer. `context_by_unit` threads explicit
+contexts through campaign and candidate APIs; caches key by shape/format
+**and context**, so a rank-two expert cannot borrow a same-shaped dense menu.
+Research mode can retain a writable but explicitly unattested rung; attested
+mode cannot, and removing a unit's last candidate produces a named refusal.
 The development reader also refuses non-empty cell predicates: its family/rate
 menu lookup has no unit facts with which to evaluate a shape constraint.
 Export's `resolve_unit_route` has those facts and evaluates the predicates.
@@ -8877,7 +8905,8 @@ are NAMED by the lane spec, never vendored.
 (`prismaquant.tessera_serving_runtime_pin.v1`), read by
 `tessera_serving_runtime_pin.py`; and the contract the plugin packages,
 `tessera/serving/runtime_contract.json` (`tessera.runtime-contract.v1`, lane
-table `tessera.lane-eligibility.v4`), read through `importlib.resources`.
+table `tessera.lane-eligibility.v4`, with the consumer also supporting the
+runtime-scoped v5 revision), read through `importlib.resources`.
 PrismaQuant never vendors or imports the serving half. Unlike the Gridbook
 serving pin this one binds no wheel digest: Tessera publishes no wheel and is
 installed from a source checkout, so a digest would be a claim about an
@@ -8887,7 +8916,7 @@ artifact that does not exist.
 `requires_plugin: "tessera"` — stock vLLM has no reader for these bytes, so the
 route is not merely flag-gated, and an export gate has to be able to refuse an
 artifact whose serve command would not install the runtime. The shared parser
-carries it as a required v4 cell key (optional only in legacy v3) and
+carries it as a required v4/v5 cell key (optional only in legacy v3) and
 aggregates it as `requires_plugins`
 through `RegimeRoute` / `UnitRoute` / `EligibilityTable.provenance()`;
 `tessera_lane_attested` RAISES on a cell that claims a native route without it,
