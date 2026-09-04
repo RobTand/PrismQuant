@@ -38,6 +38,7 @@ def released_table(monkeypatch):
                 "runtime": {"image": image, "execution_modes": modes},
             })
     formats = {FAMILY: {"family": FAMILY, "kind": "tessera_wire",
+                       "name_pattern": FAMILY + "_R{k}",
                        "candidate_rungs_q256": [1024],
                        "residency_modes": ["resident", "streamed"]}}
     table = lane._parse_table({
