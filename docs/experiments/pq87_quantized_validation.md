@@ -42,9 +42,13 @@ The controller refuses overlap between screen and heldout prompts, mutable
 image tags, ambiguous model identity, missing telemetry URLs and an unbounded
 manifest. Original sources are never edited; copied model bytes are mounted
 read-only through both container aliases. Shutdown must leave no serving
-process before the next arm. Exact-container cleanup is recorded even after
-timeout or refusal, and the coordinator checks actual worker completion before
-releasing the GPU to another task.
+process before the next arm. Docker publishes a fresh CID file; cleanup
+inspects that exact ID and verifies both the pool action label and a new
+campaign nonce before any stop/remove. Output basenames never identify a
+cleanup target. Prelaunch failures clean nothing, and a name collision
+refuses without touching the existing container. Exact-owned-container
+cleanup is recorded even after timeout or refusal, and the coordinator checks
+actual worker completion before releasing the GPU to another task.
 
 Remaining after this first campaign: an additional representative model/shape
 population with its own BF16 control; actual heldout/gold/downstream evidence
@@ -93,3 +97,15 @@ Selected files: `test_boundary_policy.py`, `test_boundary_control.py`,
 inside the bounded CPU-only pool action. These fixtures verify the policy,
 manifest and safety guards; they do not prove a Docker lifecycle or a served
 quantized population.
+
+Independent source review then found the old basename cleanup could touch an
+unrelated container after prelaunch failure. The owned-container correction
+has separate red/green evidence: action
+`d953742a3fea0d650b250951169123b2cac8d4ebdbf7ddcdc46f90a67e2476a3`
+was **5 failed, 11 deselected**, including `Failed: cleaned uncreated container
+pq87-shared-basename` and absent ownership helpers. Action
+`2383a1f48370038e91a8e2384b4e7e89b81bf909e973e75baa3bd3ea24f105a5`
+was **121 passed, 0 failed, 0 skipped**, all eight files collected and the
+same three compile checks successful, on the CPU-only population above.
+Receipt: `4eb9490f3acac4d30aa2f0dad6270df16ad9f96525aefa5bb567c02970a7b547`;
+result: `be4aeb24f9ae8fd7491f3fef903146989165206df6705d80e26c7c40a408fc5f`.

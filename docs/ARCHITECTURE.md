@@ -16,6 +16,11 @@ is inconclusive, never an automatic retry or a default promotion. The
 reference native NVFP4 candidate's existing shipcard is unfilled. This one
 model cannot cover the additional representative population or gold/downstream
 promotion gates. Gate: `tests/test_pq87_paired_validation.py`.
+Container cleanup uses a Docker-published exact ID and verifies both the
+PrismaBuild action label and a fresh campaign nonce before any stop/remove.
+An unused output directory does not prove Docker-name ownership; prelaunch
+failure cleans nothing, name collisions refuse, and uncertain creation stays
+inconclusive for PrismaBuild's action-owner cleanup.
 
 Re-stamped (2026-09-04, `codex/pq87-paired-policy`) for the **opt-in paired
 no-new-boundary-failures decision** (§7.2; #87). The separately versioned

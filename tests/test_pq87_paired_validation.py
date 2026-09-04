@@ -80,3 +80,57 @@ def test_ppl_binding_requires_observed_live_residency(field, value):
     before[field] = value
     with pytest.raises(ValueError, match="residency|session"):
         _driver().require_ppl_binding(before, "/models/candidate", "nonce")
+
+
+def test_prelaunch_failure_never_cleans_a_basename_container(tmp_path, monkeypatch):
+    driver = _driver()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(_manifest()))
+    monkeypatch.setenv("PRISMABUILD_CONTAINER_OWNER", "a" * 64)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(driver.instrument, "bootstrap", lambda: (
+        tmp_path, None, SimpleNamespace(digest=lambda value: "digest")))
+    commands = []
+    def check_output(command, **kwargs):
+        commands.append(command)
+        if command[0] == "git":
+            return "source\n"
+        raise RuntimeError("prelaunch image missing")
+    monkeypatch.setattr(driver.subprocess, "check_output", check_output)
+    monkeypatch.setattr(driver.instrument, "cleanup_container", lambda name: pytest.fail(
+        f"cleaned uncreated container {name}"))
+    assert driver.host(SimpleNamespace(manifest=str(manifest), out=str(tmp_path / "shared-basename"))) == 0
+    assert not any(command[1] in {"stop", "rm"} for command in commands)
+
+
+def test_container_name_collision_refuses_without_cleanup(monkeypatch):
+    driver = _driver()
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout='[{"Id":"existing"}]')
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    with pytest.raises(ValueError, match="already exists"):
+        driver.require_container_name_available("already-owned")
+    assert commands == [["docker", "inspect", "already-owned"]]
+
+
+@pytest.mark.parametrize("mismatch", ["action", "nonce", "id"])
+def test_cleanup_refuses_an_unowned_container_id(tmp_path, monkeypatch, mismatch):
+    driver = _driver()
+    cid = "c" * 64
+    cidfile = tmp_path / "container.cid"
+    cidfile.write_text(cid + "\n")
+    observed = {"Id": cid, "Name": "/our-name", "Config": {"Labels": {
+        "prismabuild.action": "a" * 64, "prismaquant.pq87.campaign": "nonce"}}}
+    if mismatch == "id":
+        observed["Id"] = "b" * 64
+    else:
+        observed["Config"]["Labels"]["prismabuild.action" if mismatch == "action"
+                                     else "prismaquant.pq87.campaign"] = "other"
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout=json.dumps([observed])))
+    monkeypatch.setattr(driver.instrument, "cleanup_container", lambda name: pytest.fail(
+        f"cleaned unowned container {name}"))
+    result = driver.cleanup_owned_container(cidfile, "our-name", "a" * 64, "nonce", attempted=True)
+    assert not result["safe"]
