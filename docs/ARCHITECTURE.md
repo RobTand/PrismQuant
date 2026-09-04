@@ -3,6 +3,17 @@
 As of: 2026-09-04 · `codex/pq184-prepriced-cost-override`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for **actual
+prepriced cost dispatch** (§4.10; #184). `COST_PATH_OVERRIDE` now runs the
+shared read-only intake before probe/GPU work, passes the original supplied
+path to the allocator, and bypasses the entire local/render/AURA cost-builder
+and finalization stage. Its separate local receipt is reverified immediately
+before allocation, including lexical-path resolution and exact SHA-256.
+Supplied files and their sidecars are not rewritten. No-override generation,
+`COST_MODE` defaults and existing allocator/serving gates remain unchanged;
+the requested mode must match the explicit producer stamp, never be inferred
+by changing a default. Evidence: `docs/results/prepriced_cost_override_2026-09-04.md`.
+
 Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for the
 **read-only prepriced-input validator** (§4.10; #184). The explicit
 `prepriced_cost` CLI validates existing schema, objective currency,
