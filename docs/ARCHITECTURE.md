@@ -5507,7 +5507,9 @@ Two properties make the numbers comparable with the rest of the menu:
 * **Rendering identity (§P8).** The tensor that is priced *is* the decoded wire:
   `_encode_and_render` returns `read_unit_artifact(unit.blob)`, and the blob is
   stored beside the render in the cache. Not two code paths that agree — one
-  object.
+  object. This proves the cached wire is the priced wire, not that an export
+  or serving runtime reused it; those paths owe their own exact-byte and
+  served receipts. The packed bridge remains tracked by PrismaQuant #183.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while

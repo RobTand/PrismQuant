@@ -27,9 +27,11 @@ Rendering identity, and the wire
 --------------------------------
 The render is not ``render_tessera_weight``'s reconstruction; it is
 ``read_unit_artifact(encode_linear(...).blob)`` -- **the bytes, decoded**.  So the
-cache entry holds the wire beside the dequantised render, the export leg writes
-exactly the bytes this cost was measured on, and the identity holds by
-construction rather than by two code paths agreeing (principle 8).
+cache entry holds the wire beside the dequantised render. Checkpoint resume
+verifies those bytes against their producer input receipt. That proves the
+cached wire is the priced wire; export reuse and served qualification still
+owe their own receipts. The packed producer-plan/cached-wire bridge remains
+the separate work tracked by PrismaQuant #183 (principle 8).
 
 What this stage does NOT do
 ---------------------------
