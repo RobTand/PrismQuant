@@ -106,7 +106,8 @@ def test_length_sanity_is_blind_to_stutter_the_boundary_scorer_catches():
 # ---------------------------------------------------------------------------
 
 class _BoundaryHandler(BaseHTTPRequestHandler):
-    mode: str = "clean"  # "clean" | "broken"
+    mode: str = "clean"
+    requests: list[dict] = []
 
     def log_message(self, *a, **kw):
         pass
@@ -128,14 +129,63 @@ class _BoundaryHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         req = json.loads(self.rfile.read(n))
+        self.requests.append({"path": self.path, "body": req})
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.end_headers()
+            return
         if self.mode == "clean":
-            body = {"choices": [{"text": "<think>12</think> 12",
-                                 "finish_reason": "stop"}]}
+            # Current vLLM's reasoning parser removes the delimiter and files
+            # the two sides separately.  The client must reconstruct boundary
+            # semantics before passing text to the frozen scorer.
+            body = {"choices": [{
+                "message": {"reasoning": "12", "content": " 12"},
+                "finish_reason": "stop",
+            }]}
+        elif self.mode == "legacy":
+            # Older OpenAI-compatible vLLM stacks used this field spelling.
+            body = {"choices": [{
+                "message": {"reasoning_content": "12", "content": " 12"},
+                "finish_reason": "stop",
+            }]}
+        elif self.mode == "raw":
+            # With no reasoning parser, chat content retains the raw delimiter
+            # and is scored without synthesis.
+            body = {"choices": [{
+                "message": {"content": "<think>12</think> 12"},
+                "finish_reason": "stop",
+            }]}
+        elif self.mode == "stutter":
+            # A parser consumes the first close token only; any repeated close
+            # remains in content and must still be visible to the scorer.
+            body = {"choices": [{
+                "message": {
+                    "reasoning": "first trace",
+                    "content": "</think> second trace 12",
+                },
+                "finish_reason": "stop",
+            }]}
+        elif self.mode == "empty_reasoning":
+            body = {"choices": [{
+                "message": {"reasoning": "", "content": "12"},
+                "finish_reason": "stop",
+            }]}
+        elif self.mode == "malformed_finish":
+            body = {"choices": [{
+                "message": {"reasoning": "12", "content": " 12"},
+                "finish_reason": ["length"],
+            }]}
         else:
-            # The broken shape from the issue: no clean </think> under
-            # sampling (T10 failing 6/6 on the broken artifact).
-            body = {"choices": [{"text": "12 12 12 12 12 12",
-                                 "finish_reason": "stop"}]}
+            # No answer-side content means the parser never observed a usable
+            # reasoning boundary.  The client must retain zero-tag and cap
+            # defects rather than inventing a close token from this shape.
+            body = {"choices": [{
+                "message": {
+                    "reasoning": "12 12 12 12 12 12",
+                    "content": None,
+                },
+                "finish_reason": "length",
+            }]}
         out = json.dumps(body).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -146,6 +196,7 @@ class _BoundaryHandler(BaseHTTPRequestHandler):
 @pytest.fixture
 def boundary_server():
     _BoundaryHandler.mode = "clean"
+    _BoundaryHandler.requests = []
     srv = HTTPServer(("127.0.0.1", 0), _BoundaryHandler)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -161,6 +212,62 @@ def test_boundary_check_passes_a_clean_serve(boundary_server):
     assert r.passed, r.detail
     assert r.metrics["n_generations"] == 2
     assert r.metrics["n_defects"] == 0
+    assert r.metrics["endpoint"] == "/v1/chat/completions"
+    assert r.metrics["request_schema"] == \
+        "prismaquant.boundary_chat_request/1"
+    assert r.metrics["response_schema"] == \
+        "prismaquant.boundary_chat_response/1"
+    assert len(_BoundaryHandler.requests) == 2
+    for observed in _BoundaryHandler.requests:
+        assert observed["path"] == "/v1/chat/completions"
+        body = observed["body"]
+        assert body["messages"] == [{"role": "user", "content": "9²"}]
+        assert "prompt" not in body
+        assert body["include_reasoning"] is True
+        assert body["skip_special_tokens"] is False
+        assert body["chat_template_kwargs"] == {
+            "thinking": True,
+            "enable_thinking": True,
+        }
+
+
+@pytest.mark.parametrize("mode", ["legacy", "raw"])
+def test_boundary_check_accepts_both_declared_chat_response_shapes(
+    boundary_server, mode,
+):
+    _BoundaryHandler.mode = mode
+    r = vqm.check_boundary_behavior(
+        boundary_server, "any", prompts=("9²",), reps=1)
+    assert r.passed, r.detail
+    assert r.metrics["n_defects"] == 0
+
+
+def test_boundary_check_preserves_stutter_after_reasoning_parser_split(
+    boundary_server,
+):
+    _BoundaryHandler.mode = "stutter"
+    r = vqm.check_boundary_behavior(
+        boundary_server, "any", prompts=("9²",), reps=1)
+    assert not r.passed
+    assert r.metrics["defects_by_kind"]["think_stutter"] == 1
+
+
+def test_boundary_check_does_not_invent_a_close_for_empty_reasoning(
+    boundary_server,
+):
+    _BoundaryHandler.mode = "empty_reasoning"
+    r = vqm.check_boundary_behavior(
+        boundary_server, "any", prompts=("9²",), reps=1)
+    assert not r.passed
+    assert r.metrics["defects_by_kind"]["zero_tag"] == 1
+
+
+def test_boundary_check_refuses_a_malformed_finish_reason(boundary_server):
+    _BoundaryHandler.mode = "malformed_finish"
+    r = vqm.check_boundary_behavior(
+        boundary_server, "any", prompts=("9²",), reps=1)
+    assert not r.passed
+    assert "finish_reason" in r.detail
 
 
 def test_boundary_check_fails_a_broken_serve(boundary_server):
@@ -170,6 +277,7 @@ def test_boundary_check_fails_a_broken_serve(boundary_server):
     assert not r.passed
     assert r.metrics["n_defects"] == 2
     assert r.metrics["defects_by_kind"]["zero_tag"] == 2
+    assert r.metrics["defects_by_kind"]["cap_truncation"] == 2
 
 
 def test_boundary_check_refuses_a_greedy_temperature():
@@ -221,8 +329,17 @@ def _artifact(tmp_path, *, name="exported"):
     return model_dir, compute_model_sha(model_dir)
 
 
-def _ship_gate_record(model_sha, *, source, boundary_defects=0,
-                      boundary_passed=True, drop_boundary=False):
+def _ship_gate_record(
+    model_sha,
+    *,
+    source,
+    boundary_defects=0,
+    boundary_passed=True,
+    boundary_endpoint="/v1/chat/completions",
+    boundary_request_schema="prismaquant.boundary_chat_request/1",
+    boundary_response_schema="prismaquant.boundary_chat_response/1",
+    drop_boundary=False,
+):
     from prismaquant.shipcard import make_record
 
     ledger = {name: {"passed": True} for name in _producer_check_names()}
@@ -236,6 +353,9 @@ def _ship_gate_record(model_sha, *, source, boundary_defects=0,
     }
     ledger["boundary_behavior"] = {
         "passed": boundary_passed,
+        "endpoint": boundary_endpoint,
+        "request_schema": boundary_request_schema,
+        "response_schema": boundary_response_schema,
         "n_prompts": len(vqm.BOUNDARY_PROMPTS),
         "reps": vqm.DEFAULT_BOUNDARY_REPS,
         "n_generations": len(vqm.BOUNDARY_PROMPTS)
@@ -338,3 +458,27 @@ def test_verify_accepts_a_clean_boundary_receipt(tmp_path):
 
     path, model_dir = _full_card(tmp_path)
     assert verify(load_shipcard(path), model_dir=model_dir) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "needle"),
+    [
+        ("boundary_endpoint", "/v1/completions", "endpoint"),
+        ("boundary_request_schema", "prompt-string-v0", "request schema"),
+        ("boundary_response_schema", "text-choice-v0", "response schema"),
+    ],
+)
+def test_verify_refuses_boundary_receipt_from_the_wrong_http_contract(
+    tmp_path, field, value, needle,
+):
+    """A clean count from the raw endpoint is not boundary evidence.
+
+    Even if a caller copies zeros into the metrics, replay must reject the
+    endpoint/schema that never applied a chat template or exposed the
+    reasoning boundary.
+    """
+    from prismaquant.shipcard import load_shipcard, verify
+
+    path, model_dir = _full_card(tmp_path, **{field: value})
+    problems = verify(load_shipcard(path), model_dir=model_dir)
+    assert any(needle in problem for problem in problems), problems
