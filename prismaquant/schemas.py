@@ -8,6 +8,7 @@ load while malformed artifacts fail before optimization or export begins.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import math
 from numbers import Integral, Real
 from typing import NotRequired, TypedDict
 
@@ -70,6 +71,14 @@ def _as_number(value, path: str | None, where: str) -> float:
     if not _is_number(value):
         _fail(path, where, "expected a number")
     return float(value)
+
+
+def _as_finite_cost_number(value, path: str | None, where: str) -> float:
+    """A usable cost must be finite; other handoff schemas keep their rules."""
+    out = _as_number(value, path, where)
+    if not math.isfinite(out):
+        _fail(path, where, "expected a finite number")
+    return out
 
 
 def _validate_router_number_map(
@@ -154,7 +163,7 @@ def validate_probe_payload(payload, path: str | None = None):
 
 
 def validate_cost_payload(payload, path: str | None = None):
-    """Validate the measured quantization-cost pickle contract."""
+    """Validate cost structure and finite numeric signals on non-error rows."""
     if not _is_mapping(payload):
         _fail(path, "", "cost payload is not a mapping")
     costs = payload.get("costs")
@@ -187,7 +196,9 @@ def validate_cost_payload(payload, path: str | None = None):
                 "fisher_output_mse",
             ):
                 if field in entry:
-                    _as_number(entry[field], path, f".costs[{name!r}][{fmt!r}].{field}")
+                    _as_finite_cost_number(
+                        entry[field], path, f".costs[{name!r}][{fmt!r}].{field}"
+                    )
                     has_signal = True
             if "cost_source" in entry and not isinstance(entry["cost_source"], str):
                 _fail(
@@ -205,7 +216,7 @@ def validate_cost_payload(payload, path: str | None = None):
                         "must be a sequence when present",
                     )
                 for idx, value in enumerate(values):
-                    _as_number(
+                    _as_finite_cost_number(
                         value,
                         path,
                         f".costs[{name!r}][{fmt!r}]"

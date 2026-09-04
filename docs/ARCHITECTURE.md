@@ -1,7 +1,15 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
+As of: 2026-09-04 · `codex/pq184-prepriced-cost-override`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for
+**finite cost-schema signals** (§4.10), encountered during #184 intake
+work. `schemas.validate_cost_payload` now refuses non-finite values in
+the existing primary scalar fields and per-expert weight-MSE vector,
+naming the input file and exact field/element. Finite signed values,
+diagnostic error rows and non-cost schema behavior are unchanged. This
+adds no numeric threshold, cost estimator or promotion claim.
 
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **selected
 export scope and shipcard binding** (§5.7, §9.4; Tessera #126). V5 export
@@ -4659,6 +4667,14 @@ twin of anything live — it is the only one of the two left, and §4.10 is its
 seam.
 
 ### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
+
+**Shared cost intake.** `schemas.validate_cost_payload` requires finite
+numbers in each non-error row's existing cost scalar fields and
+`weight_mse_per_expert` elements. A finite sibling field cannot hide a
+NaN or infinity. Refusals name the source file and exact field/element;
+diagnostic error rows remain non-prices, and probe/router schema rules
+are unchanged. This guard applies to every cost consumer, not only to
+an external pipeline override.
 
 Every other entry on the format menu is a *point*: `NVFP4` is one rate, `FP8_E4M3`
 is one rate, and a menu is the handful of them a launcher lists. A Tessera family
