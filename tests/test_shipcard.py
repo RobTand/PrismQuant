@@ -37,6 +37,9 @@ from prismaquant.shipcard import (
 )
 from prismaquant.shipcard_cli import main as shipcard_cli
 from prismaquant.validate_quantized_model import (
+    BOUNDARY_ENDPOINT,
+    BOUNDARY_REQUEST_SCHEMA,
+    BOUNDARY_RESPONSE_SCHEMA,
     DEFAULT_BOUNDARY_MAX_TOKENS,
     DEFAULT_BOUNDARY_REPS,
     DEFAULT_BOUNDARY_TEMPERATURE,
@@ -177,6 +180,9 @@ def _ship_gate_record(model_sha, *, passed=True, source="artifact",
         # zero defects, so the fixture must look like a real measurement.
         ledger["boundary_behavior"] = {
             "passed": True,
+            "endpoint": BOUNDARY_ENDPOINT,
+            "request_schema": BOUNDARY_REQUEST_SCHEMA,
+            "response_schema": BOUNDARY_RESPONSE_SCHEMA,
             "n_prompts": 5,
             "reps": 6,
             "n_generations": 30,
@@ -1482,5 +1488,4 @@ def test_build_without_forensics_is_left_alone():
     legacy = {"build": {"achieved_bpp": {"value": 4.3065, "source": "x"}}}
     assert verify(legacy, model_dir=None, required=[]) == []
     assert verify(_forensic_build(), model_dir=None, required=[]) == []
-
 
