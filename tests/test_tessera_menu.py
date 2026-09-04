@@ -399,8 +399,11 @@ def test_the_dev_pin_attests_exactly_the_rungs_the_contract_publishes(dev_pin):
     for rung in rungs:
         # Read off the cell, not typed: these cells are backed_with_serve_flag.
         assert rung.admission.route_status == tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
-        assert rung.admission.requires_serve_flags == (
-            "TESSERA_SERVE_MODE=resident|streamed",)
+        cells = contract.native_cells(
+            rung.admission.payload_family, rung.body_rate_q256)
+        assert rung.admission.requires_serve_flags == tuple(sorted({
+            flag for cell in cells for flag in cell.requires_serve_flags
+        }))
         assert rung.admission.source.startswith("tessera_dev_pin:runtime_contract:")
         assert rung.admission.max_world_size == 1
 
@@ -435,9 +438,8 @@ def test_a_prose_only_tessera_edit_does_not_re_stale_the_pin(dev_pin, monkeypatc
     payload["changelog"] = [{"contract_version": 999, "change": "prose only"}]
     for entry in payload["formats"]:
         entry["detail"] = "rewritten prose that no gate reads"
-    for cell in payload["lane_eligibility"]["cells"]:
-        cell["rationale"] = "rewritten prose that no gate reads"
-        cell["detail"] = "also rewritten"
+    # v4 cells contain only grammar fields: injecting detail/rationale there
+    # would create a malformed cell, not rewrite existing publisher prose.
     for unit in payload["tensor_parallel"].get("units", ()):
         for axis in unit.get("loader_axes", ()) or ():
             if isinstance(axis, dict):
