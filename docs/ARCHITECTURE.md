@@ -4,6 +4,14 @@ As of: 2026-09-04 · `codex/pq184-prepriced-cost-override`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for
+**Tessera currency-stamp completeness** (§4.10), encountered during
+#184 intake work. `cost_currency` recognizes Tessera rows through the
+existing format grammar and refuses a usable row with a missing or
+unknown campaign currency. Removing the stamp can no longer evade the
+objective gate. Diagnostic error rows are not prices; unstamped stock
+tables keep their existing behavior. No currency or estimator changes.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for
 **finite cost-schema signals** (§4.10), encountered during #184 intake
 work. `schemas.validate_cost_payload` now refuses non-finite values in
 the existing primary scalar fields and per-expert weight-MSE vector,
@@ -4675,6 +4683,15 @@ NaN or infinity. Refusals name the source file and exact field/element;
 diagnostic error rows remain non-prices, and probe/router schema rules
 are unchanged. This guard applies to every cost consumer, not only to
 an external pipeline override.
+
+`cost_currency.require_run_currency` requires each usable Tessera-format
+row to carry the campaign-owned currency stamp before checking that its
+table's explicit cost mode names the matching objective. Membership comes
+from `tessera_formats.parse_tessera_format_name`, not a prefix guess or
+hardcoded family roster. Missing or unknown currency refuses with the
+unit and format named; dropping a stamp cannot opt a price out of the
+gate. Diagnostic error rows are excluded, and legacy stock rows without
+a Tessera format or currency remain outside this gate's jurisdiction.
 
 Every other entry on the format menu is a *point*: `NVFP4` is one rate, `FP8_E4M3`
 is one rate, and a menu is the handful of them a launcher lists. A Tessera family
