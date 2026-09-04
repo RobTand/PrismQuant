@@ -46,6 +46,13 @@ One thing this module does not test, on purpose: **the quality of the
 allocation.**  The surrogate is measured to mis-rank Tessera rungs
 (``tessera_menu.surrogate_selection_caveat``).  What is asserted here is that
 the DP *saw a menu*, not that it chose well.
+
+The campaign predates the required ``provenance.cost_mode`` stamp. Allocation
+tests validate its original schema and row currency, then use a temporary
+copy with that missing metadata reconstructed from the committed producer.
+The source hash and the evidence commits accompany the reconstruction; no
+cost value or campaign artifact is changed, and the production gate still
+refuses an unstamped table.
 """
 from __future__ import annotations
 
@@ -109,6 +116,71 @@ def installed_contract(monkeypatch):
     return contract
 
 
+def _historical_cost_fixture(tmp_path):
+    """Add the producer's later mode stamp to a validated test-only copy.
+
+    ``4d2d9b26`` already requires the scorer to return output_mse and writes
+    every row in the currency below. ``7bc4d249`` adds the unconditional
+    production-render-score stamp without changing that scoring. These are
+    evidence for the reconstruction, not an assertion that either commit
+    produced the historical file.
+    """
+    import pickle
+
+    raw = COSTS.read_bytes()
+    original = pickle.loads(raw)
+    assert isinstance(original, dict), "historical campaign payload must be a mapping"
+    assert original.get("schema") == "prismaquant.tessera_campaign_cost.v1"
+    currency = "output_mse_under_route_activation_contract"
+    assert original.get("currency") == currency
+    provenance = original.get("provenance")
+    assert isinstance(provenance, dict), "historical campaign provenance is missing"
+    assert "cost_mode" not in provenance, "this fixture is the pre-stamp campaign"
+    costs = original.get("costs")
+    assert isinstance(costs, dict) and costs, "historical campaign has no costs"
+    row_formats = set()
+    for unit, rows in costs.items():
+        assert isinstance(rows, dict) and rows, f"{unit}: no campaign rows"
+        for name, row in rows.items():
+            where = f"{unit}/{name}"
+            assert isinstance(name, str) and name.startswith("TESSERA_"), where
+            assert isinstance(row, dict), where
+            assert row.get("currency") == currency, where
+            source = row.get("cost_source")
+            assert source in {
+                "tessera_campaign_measured", "tessera_campaign_interpolated",
+            }, where
+            measured = source == "tessera_campaign_measured"
+            assert row.get("output_mse_measured") is measured, where
+            assert row.get("tessera_provenance") == (
+                "measured" if measured else "interpolated"), where
+            assert "output_mse" in row and "predicted_dloss" not in row, where
+            row_formats.add(name)
+    formats = original.get("formats")
+    assert isinstance(formats, list) and set(formats) == row_formats
+
+    payload = dict(original)
+    payload["provenance"] = {
+        **provenance,
+        "cost_mode": "production-render-score",
+        "test_fixture_reconstruction": {
+            "source_path": str(COSTS),
+            "source_sha256": hashlib.sha256(raw).hexdigest(),
+            "producer_semantics_reviewed_at": "4d2d9b26b64aa9c682724ae701a662a67253ed2f",
+            "cost_mode_stamp_introduced_at": "7bc4d249dd7157cccb807f574917b011b0778345",
+            "note": (
+                "Test-only reconstruction of missing cost_mode from the "
+                "original campaign schema, row currencies and committed "
+                "producer semantics; all historical cost values are retained."
+            ),
+        },
+    }
+    path = tmp_path / "historical-cost-with-mode.pkl"
+    path.write_bytes(pickle.dumps(payload))
+    assert COSTS.read_bytes() == raw, "historical campaign artifact changed"
+    return path
+
+
 def _allocate(tmp_path, monkeypatch, *, target_bits="4.5"):
     """Run the allocator's own entry point; return the parsed layer config.
 
@@ -122,11 +194,12 @@ def _allocate(tmp_path, monkeypatch, *, target_bits="4.5"):
     from prismaquant import allocator
 
     tmp_path.mkdir(parents=True, exist_ok=True)
+    costs = _historical_cost_fixture(tmp_path)
     layer_config = tmp_path / "layer_config.json"
     monkeypatch.setattr("sys.argv", [
         "allocator",
         "--probe", str(PROBE),
-        "--costs", str(COSTS),
+        "--costs", str(costs),
         "--formats", "TESSERA",
         "--target-bits", target_bits,
         "--target-profile", "tessera_research_sm121",

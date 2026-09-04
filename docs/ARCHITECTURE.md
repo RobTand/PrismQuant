@@ -1,6 +1,6 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq-175-ci-tessera`. Stamps
+As of: 2026-09-04 · `codex/pq-ship-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-04, `codex/pq-175-ci-tessera`) for the **pinned Tessera
@@ -16,6 +16,23 @@ status is preserved by a separate shell assignment, so an empty ref cannot
 fall back to Tessera's default branch. Gate:
 `tests/test_ci_tessera_install.py` (pre-fix: the workflow contained no pinned
 Tessera checkout).
+Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **development
+admission's predicate refusal** (§5.7). The shared parser retained cell
+predicates, but the shape-free development reader discarded them. It now
+refuses non-empty predicates before constructing an unconditional menu; the
+export resolver continues to evaluate predicates against unit facts. The
+reviewed contract has no predicated cells, so its current menu is unchanged.
+Test: `test_tessera_dev_predicates.py`.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **Tessera lane
+schema v4 consumption** (§5.7, §9.4). Development and export readers now share
+the cell parser. Executed `(symbol, decoder)` pairs and explicit residency
+scope are retained; malformed launches, missing plugin/residency declarations
+and overlapping scopes refuse. Per-unit route resolution requires a residency
+for v4 and records the selected launches. The development answer is reviewed
+against Tessera `1221d2a`, including its window-GEMV native extension, while
+the exact release pin remains PENDING and no routed-MoE attestation is added.
+Tests: `test_lane_eligibility_v4.py`, `test_tessera_contract_v4.py`.
 
 Re-stamped (2026-09-03, `muse/pq-172-173-append`) for the **append-identity
 follow-ups** (§5.4; RobTand/prismaquant#172, #173). Two configurations the
@@ -5824,7 +5841,7 @@ under `vllm.general_plugins`, registering `quant_method = "tessera"`, selected
 by the checkpoint with no enable flag and one operator knob
 `TESSERA_SERVE_MODE=resident|streamed`. `tessera_lane_attested(name)` resolves
 the name to its payload family and rate through
-`gridbook_lane_eligibility.resolve_payload_rung` against the contract that
+`lane_eligibility.resolve_payload_rung` against the contract that
 plugin PACKAGES — `tessera/serving/runtime_contract.json`, reached by
 `importlib.resources.files("tessera.serving")`, never repo-root arithmetic —
 and answers True only on the AND of three conjuncts, each of which fails closed
@@ -5850,7 +5867,7 @@ alone:
    dependency — and a producer-side import is not a serving release.
 
 **It is False today by the PIN, not by an edit and not by an absent table.**
-Tessera's packaged contract publishes both families with `device_qualified`
+Tessera's packaged contract publishes its attested families with `device_qualified`
 native cells and the package imports fine here; what withholds them is
 `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, whose `commit`
 and `version` are the conspicuous sentinels `PENDING_TESSERA_RELEASE_COMMIT` /
@@ -5871,35 +5888,35 @@ lane is withdrawn and the Gridbook pin no longer governs Tessera admission**;
 read §9.2's Tessera passage as history. The per-artifact question (this
 platform, this unit's regimes) still stays with `resolve_unit_route` at export.
 
-**The parser is shared, and the widenings are additive.**
-`gridbook_lane_eligibility.py` reads both vendors' tables — the v3 cell grammar
-is identical and a second copy of it would be a drift bug — through three
-additive changes: `LANE_ELIGIBILITY_SCHEMAS` accepts
-`tessera.lane-eligibility.v3` beside `gridbook.lane-eligibility.v3`;
-`FORMAT_KIND_TESSERA_WIRE` joins `tcq_trellis` in
-`RATE_ADDRESSED_FORMAT_KINDS`, so `EligibilityCell.is_trellis` now means
-"rate-addressed" and both dispatch sites (`_published_families`,
-`resolve_payload_rung`) test the set rather than one constant; and
-`requires_plugin` is an OPTIONAL cell key, emitted from `as_dict()` only when
-non-empty, so a Gridbook cell serializes byte-for-byte as it did. Every
-pre-existing Gridbook eligibility test passes unchanged.
+**One cell parser, with explicit version semantics.** `lane_eligibility.py`
+reads Tessera's v4 table for export and for `tessera_runtime_contract.py`'s
+development pin. A v4 cell requires `requires_plugin: "tessera"`, non-empty
+`executes` pairs and exactly one residency selector bounded by its family's
+`residency_modes`. Two cells may not claim the same platform/family/structure/
+regime/residency scope, even at different rungs. `resolve_unit_route` takes an
+explicit `residency`; omission is unattested, and a resolved `RegimeRoute`
+carries both the residency and launches. The reviewed development answer
+includes those values, so changing a decoder cannot retain the old answer.
+Explicit legacy Tessera v3 tables retain their original grammar and carry no
+fabricated launches. Gridbook schemas remain refused. Release admission is
+still gated by the exact PENDING release pin.
+The development reader also refuses non-empty cell predicates: its family/rate
+menu lookup has no unit facts with which to evaluate a shape constraint.
+Export's `resolve_unit_route` has those facts and evaluates the predicates.
 
-**What is not here.** No PrismaQuant exporter writes a Tessera wire
-(`export_native_compressed.py` has no Tessera codec; every Tessera checkpoint
-served so far was written by the Tessera repository's own exporter), no ship
-gate has been RUN on this lane, no `run-pipeline.sh` stage names a Tessera
-format, and `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16`. What IS here since
-2026-09-02 is the declared bar: `prismaquant/lane_specs/tessera.json` (§9.4)
-states the serve, endpoint, gates, KL evaluator and executed activation
-contracts before an exporter exists, which is the order that makes the bar
-something an exporter is built against.
-`tessera_{allocator,footprint,rate_surface}.py` are the §4.9 trellis trio
-re-pointed at Tessera families (36 lines differ after renaming), imported by
-nothing in the pipeline; `trellis_menu` remains the only allocation-time seam
-and still refuses (§4.9). Tests (collected):
-`tests/test_tessera_formats.py` (44), `tests/test_tessera_footprint.py` (42),
-`tests/test_tessera_shape_dependent_recipe.py` (15),
-`tests/test_tessera_lane_admission.py` (16). Register entry: D33.
+**The boundary has an export arm, not a second codec.**
+`prismaquant/run-pipeline.sh` selects `EXPORT_CONTAINER=tessera`, preflights
+the lane and calls Tessera's own plan and encoding tools under `TESSERA_REPO`.
+`export_native_compressed.py` deliberately has no Tessera codec. The arm opens
+a lane-gated shipcard; `prismaquant/lane_specs/tessera.json` (§9.4) declares the
+serve, endpoint, gates, KL evaluator and executed activation contracts.
+Allocation uses `tessera_menu` and its reviewed development contract; that
+research menu does not bypass the exact release pin required for export.
+The pending release and supported producer-tool boundary remain D33, rather
+than an absence of pipeline integration. Tests include
+`test_tessera_formats.py`, `test_tessera_footprint.py`,
+`test_tessera_shape_dependent_recipe.py`, `test_tessera_lane_admission.py`,
+`test_tessera_menu.py` and `test_tessera_export_lane.py`.
 
 ## 6. Export & serving invariants
 
@@ -8882,9 +8899,11 @@ hours rather than after them.
 **The runtime is Tessera's.** Package `tessera.serving` in the Tessera
 repository: a `vllm.general_plugins` entry point
 `tessera = "tessera.serving:register"` registering `quant_method = "tessera"`,
-two dense routes (NVFP4 W4A4 at `e2m1_group16_ue4m3_static`, per-channel FP8
-W8A8 at `fp8_per_token_dynamic`), a streamed window decoder and the span-2
-NVFP4 CUDA decoder. **There is no enable flag**: the checkpoint's
+the routes and executed decoders published by its packaged contract. The
+reviewed development contract includes NVFP4 W4A4 at
+`e2m1_group16_ue4m3_static`, FP8 W8A8 at `fp8_per_token_dynamic` and BF16 at
+`bf16_unquantized`; each route's cells name its residency and launches.
+**There is no enable flag**: the checkpoint's
 `quantization_config.quant_method` selects the plugin, and the single operator
 knob is `TESSERA_SERVE_MODE=resident|streamed`, declared rather than defaulted
 because it changes the artifact's footprint and is folded into vLLM's
@@ -8900,7 +8919,7 @@ are NAMED by the lane spec, never vendored.
 (`prismaquant.tessera_serving_runtime_pin.v1`), read by
 `tessera_serving_runtime_pin.py`; and the contract the plugin packages,
 `tessera/serving/runtime_contract.json` (`tessera.runtime-contract.v1`, lane
-table `tessera.lane-eligibility.v3`), read through `importlib.resources`.
+table `tessera.lane-eligibility.v4`), read through `importlib.resources`.
 PrismaQuant never vendors or imports the serving half. Unlike the Gridbook
 serving pin this one binds no wheel digest: Tessera publishes no wheel and is
 installed from a source checkout, so a digest would be a claim about an
@@ -8910,14 +8929,15 @@ artifact that does not exist.
 `requires_plugin: "tessera"` — stock vLLM has no reader for these bytes, so the
 route is not merely flag-gated, and an export gate has to be able to refuse an
 artifact whose serve command would not install the runtime. The shared parser
-carries it as an optional cell key and aggregates it as `requires_plugins`
+carries it as a required v4 cell key (optional only in legacy v3) and
+aggregates it as `requires_plugins`
 through `RegimeRoute` / `UnitRoute` / `EligibilityTable.provenance()`;
 `tessera_lane_attested` RAISES on a cell that claims a native route without it,
 because a contract defect must be loud rather than silently admitted.
 
 **Scope, from the table and not from prose.** `structures: ["dense"]` and no
 `routed_moe` cell — no served measurement covers routed experts, and absence is
-the honest state under a closed-world v3 table, not a refusal. Both
+the honest state under a closed-world v4 table, not a refusal. The published
 `tensor_parallel` units declare `max_world_size: 1`: a Tessera unit is one blob
 per vLLM module against a shared rate schedule, so a sharded form needs
 per-rank wires rather than a byte range. `expert_parallel.units` is empty.
