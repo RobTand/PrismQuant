@@ -149,9 +149,9 @@ BOUNDARY_PROMPTS: tuple[str, ...] = (
 #: Closed defect vocabulary for one sampled generation. `zero_tag` (no
 #: `</think>` emitted — the runaway shape), `think_stutter` (more than one
 #: `</think>` — the stutter/loop shape), and `cap_truncation` (the server
-#: stopped on `length`: on these terse prompts a clean model answers in far
-#: fewer tokens, so hitting the cap means the model never reached its answer
-#: — the hang presentation from the issue).
+#: stopped on `length`). A cap hit describes censored output; healthy thinking
+#: models can also exhaust the historical cap, so it alone does not establish
+#: an artifact defect (issue #87).
 BOUNDARY_DEFECTS: tuple[str, ...] = (
     "zero_tag",
     "think_stutter",
@@ -472,9 +472,10 @@ def check_boundary_behavior(
     not apply the model's chat template and cannot exercise this boundary.
     Reasoning-parser responses are recovered through
     :func:`_boundary_text_from_chat_choice` before scoring. Fails when
-    total defects exceed `max_defects` (default 0: any stutter, zero-tag
-    runaway, or cap-truncation on these terse prompts is a functional
-    failure). Runs alongside KL/PPL, not replacing them.
+    total flagged generations exceed `max_defects`. The historical 64-token
+    cap and zero bound remain fail-closed pending #87's paired-control policy;
+    neither is a calibrated universal artifact-quality threshold. Runs
+    alongside KL/PPL, not replacing them.
     """
     if not temperature or temperature <= 0:
         return CheckResult(
