@@ -118,3 +118,14 @@ ran the packed capture, pin, architecture, and docs-staleness test files:
 28 passed, no skips. Receipt:
 `3efcb00dcd0f8c45f89f0b43024c9dfd0701d38c587acea076ae5dc13e964609`.
 Both dtypes ran on CPU; this remains no GPU claim.
+
+The exact dtype red-replay action was
+`d46da88826cefffba47b9b853f5344982e0b81af10a5fd87f2f6540a73e5ee5f`.
+
+## Integration base
+
+The distinct fixes were transplanted onto main
+`10dd23957d6cf9ad784f8eac59fb914f66f6d89e` after endpoint PR #185 merged,
+on branch `codex/pq183-packed-capture`. Only the architecture stamp insertion
+needed conflict resolution; both sets of prose were retained. The prior
+dependency copies are not part of this branch's PR diff.

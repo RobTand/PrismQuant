@@ -1,6 +1,6 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq183-packed-campaign`. Stamps
+As of: 2026-09-04 · `codex/pq183-packed-capture`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **profile-pinned
