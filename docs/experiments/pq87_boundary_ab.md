@@ -55,6 +55,15 @@ source bootstrap and fingerprint collector without importing torch into the
 measurement client. The numerical-stack fingerprint must agree across paired
 arms; any mismatch is a refusal, not permission to weaken the pairing.
 
+Capture the exact safetensors content manifest before server startup, serve
+that frozen artifact through a read-only mount, and compare the client's
+recorded content identity with the pre-launch identity. The client retains
+full pre/post content manifests and hashes their combination with the existing
+model metadata into `artifact_id`; weight-stat checks also refuse a write
+restored to its original bytes during the interval. This client alone cannot
+prove what an already-running server loaded before its first observation.
+The outer launcher owns that pre-launch/frozen-source assertion.
+
 The enclosing action must reserve the entire physical GPU token capacity,
 use one server at a time with explicit KV bytes/max-sequences/context limits,
 and collect the server log, profiler window, power and Netdata series from

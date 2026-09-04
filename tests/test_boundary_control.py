@@ -23,7 +23,13 @@ def _contract():
 
 
 def _binding(artifact="bf16"):
-    return {"campaign_id": "paired-test", "artifact_id": artifact,
+    from prismaquant.shipcard import WEIGHT_CONTENT_MANIFEST_SCHEMA
+    content = {"model_sha": _api().digest(artifact), "weight_content_manifest": {
+        "schema": WEIGHT_CONTENT_MANIFEST_SCHEMA, "algorithm": "sha256",
+        "files": {"model.safetensors": {"bytes": len(artifact), "sha256": _api().digest(artifact)}},
+    }}
+    return {"campaign_id": "paired-test", "artifact_id": _api().artifact_content_id(content),
+            "artifact_content": content,
             "serve_session_id": artifact + "-session",
             "serve_fingerprint": "a" * 64, "host_boot_id": "boot-1",
             "model_context_tokens": 70, "prompt_tokens": [6],

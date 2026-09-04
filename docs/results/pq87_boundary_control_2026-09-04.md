@@ -94,3 +94,55 @@ discovery no longer calls a client a server because its image argument contains
   fingerprint file remains red and is not represented as green by this subset.
   All three changed executable modules also passed compilation. No GPU result
   or changed shipping threshold is claimed.
+
+## Exact native weight identity follow-up
+
+Root review found that generic `shipcard.compute_model_sha` represents native
+safetensors by names and sizes, so equal-size content changes could retain the
+paired instrument's artifact ID. The instrument now combines that existing
+metadata identity with `build_weight_content_manifest`, retains the composite
+inside each measurement binding, and recomputes its digest during replay.
+`weight_stat_attestation` brackets each full hash and the measurement interval;
+both content and stats must stay unchanged before a receipt is written.
+Generic shipcard identity and the mandatory boundary policy are unchanged.
+
+Pre-fix action
+`cf18a78f7fd2e1949d137ee200525960db79c61c4335748cebe0982745645604`
+sealed tests-only snapshot `616f7d94db198e0e70fa7df1979cb4ff3a84504c`:
+**6 failed, 0 passed, 0 skipped** in 3.01 seconds. Exact regression lines:
+
+- Equal-size replacement: `AssertionError: assert
+  '081c4cfa9808771bd1338272b6401b50b3b0058771c04f8304e3e5ab91b94aed'
+  != '081c4cfa9808771bd1338272b6401b50b3b0058771c04f8304e3e5ab91b94aed'`.
+- During-measurement replacement and change-and-restore: both
+  `Failed: DID NOT RAISE <class 'ValueError'>`.
+- Missing native weights: `Failed: DID NOT RAISE <class 'FileNotFoundError'>`.
+- Stable-content receipt and replay-tamper checks: `KeyError: 'artifact_pre'`
+  and `KeyError: 'artifact_content'` respectively, because those exact
+  content records did not yet exist. These two failures establish missing
+  evidence fields, not an already-existing replay arithmetic defect.
+
+After merging main `b6d6824e` (merge `088264b4`), action
+`bbca6ff0659d4a64bf365943c79df5b903b7d0a1ad405146c3fe5e1aa7b4c6bc`
+sealed snapshot `79d2218cec02530ac9216e4898f15c9304b924f8`; CAS receipt
+`1d99c6cace6e6e5cf2c0474d5771a39edfee9d4f949078c11407fd6e7409bc8f`.
+**243 passed, 0 failed, 0 skipped**, 17.79 seconds. Population: CPU-only
+Sparky, one CPU, 3 GiB, `CUDA_VISIBLE_DEVICES=''`, the eleven explicit files
+from the prior nine-file population plus `test_tessera_serve_fingerprint.py`
+and `test_measure_boundary_control_identity.py`. All selected modules
+collected; skip reasons: none. No CUDA-gated surface or master suite was run.
+The three changed executable modules also passed `py_compile`.
+
+This run used the immutable Tessera `1221d2a` source archive
+`/mnt/shared/pq-v4-source.o2Tc3O/tessera-1221d2a-src.tar`, verifying SHA-256
+`b4755a30d60974ec2758c2060fc4d3954f2e1b7c7bb11602a05f0b783ba60bc8`
+before extracting it on the worker. The nine previously baselined fingerprint
+failures are now green with main's reviewed v4 consumer; no release sentinel
+was promoted. As above, only the three unused calibration symlinks were
+omitted from snapshots and immediately restored locally.
+
+The physical campaign still has to capture the same exact content before
+server startup and serve a frozen artifact. These client observations prove
+source-content stability during the measurement, not what an already-running
+server loaded earlier. No GPU A/B, speed claim, or new policy promotion is
+implied by these CPU results.

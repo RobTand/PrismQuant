@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 
 from prismaquant import validate_quantized_model as vqm
 
@@ -21,6 +22,20 @@ SCORER = "prismaquant.boundary_close_count/1"
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
                                     separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def artifact_content_id(content):
+    """Bind exact safetensors bytes plus the existing model metadata scope."""
+    from prismaquant.shipcard import _closed_weight_content_manifest
+
+    if (not isinstance(content, dict)
+            or set(content) != {"model_sha", "weight_content_manifest"}
+            or not isinstance(content["model_sha"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", content["model_sha"]) is None):
+        raise ValueError("artifact_content requires model_sha and exact weight content manifest")
+    _closed_weight_content_manifest(content["weight_content_manifest"],
+                                    where="boundary artifact_content")
+    return digest(content)
 
 
 def _positive(value, field):
@@ -82,6 +97,8 @@ def _validate(contract, binding):
                   "serve_fingerprint", "host_boot_id", "producer_source_sha256"):
         if not isinstance(binding.get(field), str) or not binding[field].strip():
             raise ValueError(f"missing {field}")
+    if binding["artifact_id"] != artifact_content_id(binding.get("artifact_content")):
+        raise ValueError("artifact_id differs from exact artifact_content")
     context = _positive(binding.get("model_context_tokens"), "model_context_tokens")
     counts = binding.get("prompt_tokens")
     if not isinstance(counts, list) or len(counts) != len(prompts):

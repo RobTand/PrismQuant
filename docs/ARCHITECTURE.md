@@ -1,5 +1,17 @@
 # PrismaQuant Architecture
 
+Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the paired
+instrument's **exact native weight identity** (§7.2). Each boundary binding
+carries the existing model-metadata hash plus the shared safetensors content
+manifest; its compound `artifact_id` is recomputed during replay. The client
+hashes before and after measurement and uses the existing weight-stat
+attestation around each hash and across the interval to refuse mutation,
+including same-size replacement or change-and-restore. Generic shipcard
+identity is unchanged. These observations attest source content during the
+measurement, not what a pre-existing server loaded earlier: the physical
+campaign must pin/freeze the same artifact before launch. Gate:
+`tests/test_measure_boundary_control_identity.py`.
+
 Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for shared serve
 process discovery. `tools/serve_fingerprint.py` now identifies the vLLM
 executable, Python module/script or worker process title rather than searching
