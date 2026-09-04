@@ -288,6 +288,14 @@ _HEAD_SETTINGS: tuple[str, ...] = (
     "LM_HEAD_DP_UNPINNED",
 )
 
+# Scoped Tessera exports carry explicit runtime input in the plan identity.
+# These fields are absent from legacy unscoped manifests, preserving reuse of
+# existing plans. The endpoint, not this projection, refuses incomplete input.
+_TESSERA_SCOPE_SETTINGS: tuple[str, ...] = (
+    "TESSERA_PLATFORM", "TESSERA_RUNTIME_IMAGE", "TESSERA_EXECUTION_MODE",
+    "TESSERA_RESIDENCY", "TESSERA_TARGET_PROFILE",
+)
+
 
 def _key_pairs(*specs: str) -> tuple[tuple[str, str], ...]:
     """``"NS<-PRODUCTION_RENDER_COST_NSAMPLES"`` -> ``("NS", "PRODUCTION_…")``."""
@@ -445,14 +453,16 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "gguf-skeleton": _key_pairs("MODEL_PATH"),
     # --- Tessera lane ------------------------------------------------------
     # The plan is a projection of the allocation onto the exporter's per-tensor
-    # vocabulary, so its identity is (checkpoint, coverage decision). The
+    # vocabulary, so its identity includes checkpoint, coverage decision and
+    # explicitly supplied serving scope. The
     # allocation itself is guarded upstream by `layer_config.json`'s own
     # stages; what is NOT recoverable from that file is the coverage mode, and
     # it is the one setting that changes the artifact without changing the
     # allocation: `broadcast-by-role` extrapolates a single-layer allocation to
     # every depth, `as-allocated` does not. A skip-if-exists plan built under
     # the other mode is a different artifact.
-    "tessera-plan": _key_pairs("MODEL_PATH", "COVER<-TESSERA_PLAN_COVER"),
+    "tessera-plan": _key_pairs("MODEL_PATH", "COVER<-TESSERA_PLAN_COVER",
+                               *_TESSERA_SCOPE_SETTINGS),
 }
 
 
@@ -488,6 +498,8 @@ def stage_settings_projection(
     projection: dict[str, str] = {}
     unresolved: list[str] = []
     for manifest_key, source in keys:
+        if stage == "tessera-plan" and source in _TESSERA_SCOPE_SETTINGS and not settings.get(source):
+            continue
         if source in settings:
             projection[manifest_key] = str(settings[source])
         else:

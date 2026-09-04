@@ -3,6 +3,23 @@
 As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **selected
+export scope and shipcard binding** (§5.7, §9.4; Tessera #126). V5 export
+requires a complete runtime target before work and rechecks every selected
+Tessera unit against allocation contexts, source headers/name projection,
+profile topology and same-runtime native, device-qualified cells covering all
+regimes before the external translator runs. Exact two-dimensional source
+units are supported; packed/aggregate shapes and predicates needing the
+producer's fused-unit projection refuse. No projection is guessed. The shell
+threads scope into allocator and export gates and keys plan reuse by the
+resolved platform, image, mode and residency. Name-only body intake checks
+serializability and defers admission to per-unit gates; the head has its own
+explicit context. `--write-build-json` binds exact raw assignment SHA and
+validated scope through the existing shipcard `--build-json` interface,
+providing the independent allocation anchor for scoped census replay. This
+does not yet implement that replay or the prepriced cost-stage repair (#184).
+The release pin stays PENDING and no serving or GPU result is claimed.
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **scoped
 campaign and allocator entry points** (§5.7; Tessera #126). The real CLIs
 thread the explicit target and each unit's discovered/probed structure
